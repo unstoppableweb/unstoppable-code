@@ -35,7 +35,11 @@ import {
   type SharedAutomationModelConfig,
 } from '../automations';
 import {
+  asWrittenThenSpaced,
+  displayableLabel,
+  ESCAPES_AS_WRITTEN,
   findSecretMaterialRule,
+  type EscapeReadingOptions,
   type SecretMaterialRule,
   isPortableCapabilityPathSegment,
   isSafeCapabilityRelativePath,
@@ -284,7 +288,7 @@ const SECRET_PLACEHOLDER_ASSIGNMENT_PATTERN = new RegExp(
  */
 export function neutralizePlaceholderAssignment(assignment: string): string {
   const placeholder = assignment.slice(assignment.search(/[=:]/) + 1);
-  return findSecretMaterialRule(placeholder) === null
+  return findSecretMaterialRule(placeholder, ESCAPES_AS_WRITTEN) === null
     ? 'placeholder=example'
     : assignment;
 }
@@ -294,9 +298,10 @@ export function neutralizePlaceholderAssignment(assignment: string): string {
  * text being written or shared, refuses a real value in placeholder
  * brackets. `ignored` reads every placeholder as a placeholder, as stored
  * definitions were checked when they were written, so one already stored
- * still loads (CAN-7226).
+ * still loads (CAN-7226). `escapes` is how escapes written as text are read
+ * (CAN-7627).
  */
-export interface SharedCredentialCheckOptions {
+export interface SharedCredentialCheckOptions extends EscapeReadingOptions {
   readonly placeholderContents?: 'checked' | 'ignored';
 }
 
@@ -692,7 +697,8 @@ function containsUserInfoCredential(
   checkContents: boolean,
 ): boolean {
   const marked = text.replace(NAMED_PLACEHOLDER_PATTERN, (placeholder) =>
-    !checkContents || findSecretMaterialRule(placeholder) === null
+    !checkContents ||
+    findSecretMaterialRule(placeholder, ESCAPES_AS_WRITTEN) === null
       ? PLACEHOLDER_MARKER
       : placeholder,
   );
@@ -756,10 +762,31 @@ export type SharedTextCredentialRule =
  * The first credential check a shared text trips once named placeholders
  * are neutralized, or null. Names the rule only, never the matched text.
  * Placeholder contents are checked unless the caller reads stored text.
+ * Text that trips nothing as written is checked once more with each escape
+ * written as text read as a space (asWrittenThenSpaced, CAN-7627).
  */
 export function findSharedTextCredentialRule(
   text: string,
   options: SharedCredentialCheckOptions = {},
+): SharedTextCredentialRule | null {
+  return asWrittenThenSpaced(options, (read) =>
+    sharedTextReadingRule(read(text), options),
+  );
+}
+
+/**
+ * The shared check read as written, for labelSecretRule and displayableLabel,
+ * which add the spaced reading themselves (CAN-7627).
+ */
+export function sharedTextLabelCheck(
+  text: string,
+): SharedTextCredentialRule | null {
+  return findSharedTextCredentialRule(text, ESCAPES_AS_WRITTEN);
+}
+
+function sharedTextReadingRule(
+  text: string,
+  options: SharedCredentialCheckOptions,
 ): SharedTextCredentialRule | null {
   const checkContents = options.placeholderContents !== 'ignored';
   const neutralized = text.replace(
@@ -769,7 +796,7 @@ export function findSharedTextCredentialRule(
         ? neutralizePlaceholderAssignment(assignment)
         : 'placeholder=example',
   );
-  const material = findSecretMaterialRule(neutralized);
+  const material = findSecretMaterialRule(neutralized, ESCAPES_AS_WRITTEN);
   if (material !== null) return material;
   if (containsEnvSecretAssignment(neutralized)) return 'env_assignment';
   if (containsUserInfoCredential(text, checkContents)) return 'url_credentials';
@@ -881,7 +908,9 @@ export function credentialNextStep(
  * looks like a secret is never echoed: it reads as [redacted key] (CAN-7226).
  */
 export function credentialPathSegment(key: string): string {
-  return findSecretMaterialRule(key) === null ? key : '[redacted key]';
+  return displayableLabel(key, '[redacted key]', (text) =>
+    findSecretMaterialRule(text, ESCAPES_AS_WRITTEN),
+  );
 }
 
 /** A credential finding names the field and asks for a placeholder, never the value. */

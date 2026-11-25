@@ -66,9 +66,12 @@ import {
 } from './golden/desktop-host';
 import { CHUNKING_SCENARIO, GOLDEN_SCENARIOS } from './golden/scenarios';
 import {
+  CLAUDE_MODEL,
   PROJECT,
   WORKTREE,
   chatStart,
+  claudeResult,
+  jsonl,
   codexChatEvent,
   codexTurnEvents,
   delegationEvent,
@@ -77,7 +80,12 @@ import {
   pipelineState,
   helperEntry,
 } from './golden/fixtures';
-import { ObservabilityAuditEntrySchema } from '@canopy/protocol/canopy-core';
+import {
+  ObservabilityAuditEntrySchema,
+  PipelineRunCostViewSchema,
+} from '@canopy/protocol/canopy-core';
+import { stepBillingRoute } from '@canopy/execution-engine/pipelines/step-billing-route';
+import type { StepResult } from '@canopy/execution-engine/node/pipelines/executor/types';
 
 const mockPricing = GOLDEN_PRICING_STATE;
 const mockAccount = goldenAccount;
@@ -1278,4 +1286,267 @@ it('reloads local-memory injection and holdout anchors for newly supported provi
     await disposeAll(host);
     restoreGoldenEnvironment(setCurrentService);
   }
+});
+
+// CAN-7305: a workflow step that pauses on the Claude limit and resumes on AI
+// Credits bills each attempt on its own route, and every step's latest record
+// bills the way its outputs say it ran.
+describe('observability golden: mixed-source run with a resumed step (CAN-7305)', () => {
+  const executionId = 'exec-mixed-source';
+  const startMs = Date.parse(GOLDEN_START_TIME);
+  const isoAt = (offsetMs: number): string =>
+    new Date(startMs + offsetMs).toISOString();
+  const minute = 60_000;
+  const credits = { canopy_ai_credits_routed: 'true' };
+  const gateway = {
+    canopy_model_gateway_routed: 'true',
+    canopy_ai_credits_routed: 'true',
+  };
+  const routeBasis = {
+    ai_credits: 'ai_credits',
+    model_gateway: 'org_gateway',
+    account_proxy: 'account_proxy',
+  } as const;
+
+  beforeEach(() => useGoldenTimers());
+  afterEach(() => restoreGoldenEnvironment(setCurrentService));
+
+  function claude(
+    options: Omit<Parameters<typeof agentStep>[0], 'provider' | 'model'>,
+  ): StepResult {
+    return agentStep({ provider: 'claude', model: CLAUDE_MODEL, ...options });
+  }
+
+  function runState(
+    steps: Record<string, StepResult>,
+    done = false,
+  ): ReturnType<typeof pipelineState> {
+    return pipelineState({
+      id: executionId,
+      status: done ? 'success' : 'running',
+      startedAt: isoAt(0),
+      ...(done ? { completedAt: isoAt(20 * minute) } : {}),
+      jobs: { build: job(done ? 'success' : 'running', steps) },
+    });
+  }
+
+  function claudeOutput(
+    context: Parameters<GoldenScenario['run']>[0],
+    stepId: string,
+    sessionId: string,
+    costUsd: number,
+    recovery?: number,
+  ): void {
+    context.pipelineOutput({
+      executionId,
+      jobId: 'build',
+      stepId,
+      attempt: 0,
+      ...(recovery === undefined ? {} : { recovery }),
+      data: jsonl([
+        claudeResult({
+          sessionId,
+          input: 1_000,
+          output: 100,
+          cacheRead: 0,
+          cacheWrite: 0,
+          runningCostUsd: costUsd,
+        }),
+      ]),
+    });
+  }
+
+  it('records the paused attempt and the resumed attempt on their own routes, and totals the run by basis', async () => {
+    const codex = (status?: StepResult['status']): StepResult =>
+      agentStep({
+        provider: 'codex',
+        harness: 'codex',
+        model: GOLDEN_CODEX_MODEL,
+        startedAt: isoAt(0),
+        ...(status ? { status, completedAt: isoAt(2 * minute) } : {}),
+      });
+    const local = (status?: StepResult['status']): StepResult =>
+      agentStep({
+        provider: 'ollama',
+        model: 'llama3',
+        startedAt: isoAt(0),
+        ...(status ? { status, completedAt: isoAt(2 * minute) } : {}),
+      });
+    const finished = (outputs: Record<string, string> = {}): StepResult =>
+      claude({
+        startedAt: isoAt(0),
+        status: 'success',
+        completedAt: isoAt(2 * minute),
+        outputs,
+      });
+    const settledSteps = {
+      native: finished(),
+      gateway: finished(gateway),
+      local: local('success'),
+      'api-key': codex('success'),
+    };
+    const captured = await captureScenario({
+      name: 'Mixed-source run with a resumed step',
+      run: async (context) => {
+        context.host.setClock(isoAt(0));
+        context.ingest.syncPipelineExecutionState(
+          runState({
+            native: claude({ startedAt: isoAt(0) }),
+            resumed: claude({ startedAt: isoAt(0) }),
+            gateway: claude({ startedAt: isoAt(0) }),
+            local: local(),
+            'api-key': codex(),
+          }),
+        );
+        claudeOutput(context, 'native', 'session-native', 0.05);
+        claudeOutput(context, 'resumed', 'session-paused', 0.1);
+        claudeOutput(context, 'gateway', 'session-gateway', 0.2);
+        claudeOutput(context, 'local', 'session-local', 0.3);
+        context.pipelineOutput({
+          executionId,
+          jobId: 'build',
+          stepId: 'api-key',
+          attempt: 0,
+          data: jsonl(
+            codexTurnEvents({
+              threadId: 'thread-api-key',
+              turnId: 'turn-api-key',
+              input: 900,
+              cachedInput: 0,
+              output: 90,
+              reasoning: 0,
+            }),
+          ),
+        });
+        context.host.setClock(isoAt(2 * minute));
+        // The resumed step pauses on the limit; the rest finish.
+        const paused = (recoveryCount?: number): StepResult =>
+          claude({
+            startedAt: isoAt(0),
+            status: 'paused',
+            ...(recoveryCount === undefined ? {} : { recoveryCount }),
+          });
+        context.ingest.syncPipelineExecutionState(
+          runState({ ...settledSteps, resumed: paused() }),
+        );
+        await context.shutdownAndRestart();
+        // The resume raises the recovery number while the step is paused.
+        context.host.setClock(isoAt(10 * minute));
+        context.ingest.syncPipelineExecutionState(
+          runState({ ...settledSteps, resumed: paused(1) }),
+        );
+        context.ingest.syncPipelineExecutionState(
+          runState({
+            ...settledSteps,
+            resumed: claude({
+              startedAt: isoAt(10 * minute),
+              recoveryCount: 1,
+            }),
+          }),
+        );
+        // A resume continues the paused session, whose running total
+        // includes the paused attempt's 0.10.
+        claudeOutput(context, 'resumed', 'session-paused', 0.35, 1);
+        context.host.setClock(isoAt(12 * minute));
+        context.ingest.syncPipelineExecutionState(
+          runState(
+            {
+              ...settledSteps,
+              resumed: claude({
+                startedAt: isoAt(10 * minute),
+                recoveryCount: 1,
+                status: 'success',
+                completedAt: isoAt(12 * minute),
+                outputs: credits,
+              }),
+            },
+            true,
+          ),
+        );
+        await context.settle();
+      },
+    });
+    try {
+      const view =
+        captured.costIndex.views[`${PROJECT}/${WORKTREE}/run/${executionId}`];
+      if (!isRecord(view) || view.status !== 'ok' || !isRecord(view.value)) {
+        throw new Error('Expected a run cost view');
+      }
+      const run = PipelineRunCostViewSchema.parse(view.value);
+      const steps: readonly {
+        stepId: string;
+        outputs: Record<string, string>;
+        basis: string;
+      }[] = [
+        { stepId: 'native', outputs: {}, basis: 'subscription' },
+        { stepId: 'resumed', outputs: credits, basis: 'ai_credits' },
+        { stepId: 'gateway', outputs: gateway, basis: 'org_gateway' },
+        { stepId: 'local', outputs: {}, basis: 'local' },
+        { stepId: 'api-key', outputs: {}, basis: 'api_key' },
+      ];
+
+      // The resumed step: two records, each attempt on its own route.
+      const resumed = captured.auditEntries
+        .filter((entry) => entry.stepId === 'resumed')
+        .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+      expect(resumed).toEqual([
+        expect.objectContaining({
+          billingBasis: 'subscription',
+          status: 'interrupted',
+          totalCostUsd: 0.1,
+        }),
+        expect.objectContaining({
+          recovery: 1,
+          billingBasis: 'ai_credits',
+          status: 'success',
+          totalCostUsd: 0.25,
+        }),
+      ]);
+      expect(resumed[1]?.id).toContain('/resumed/0/r1:');
+      expect(resumed[0]?.id).not.toContain('/r1');
+      for (const entry of resumed) {
+        expect(ObservabilityAuditEntrySchema.parse(entry)).toMatchObject({
+          stepId: 'resumed',
+        });
+      }
+      const resumedRow = run.steps.find((step) => step.stepId === 'resumed');
+      expect(resumedRow?.attemptCount).toBe(2);
+      // Never 100% Subscription once the resumed attempt ran on AI Credits.
+      expect(resumedRow?.totals.byBilling.ai_credits).toBeCloseTo(0.25, 6);
+      expect(resumedRow?.totals.byBilling.subscription).toBeCloseTo(0.1, 6);
+      expect(run.run.agentStepCount).toBe(5);
+
+      // Every step's latest record bills the way its outputs say it ran.
+      for (const { stepId, outputs, basis } of steps) {
+        const latest = captured.auditEntries
+          .filter((entry) => entry.stepId === stepId)
+          .sort((left, right) => right.startedAt.localeCompare(left.startedAt))
+          .at(0);
+        const route = stepBillingRoute(outputs);
+        if (route !== undefined) expect(routeBasis[route]).toBe(basis);
+        expect([stepId, latest?.billingBasis]).toEqual([stepId, basis]);
+      }
+
+      // The gateway step is unpriced and still named; the split sums to the
+      // overall unpriced count, and the run total to its per-basis amounts.
+      const totals = run.run.totals;
+      expect(totals.byBilling.org_gateway).toBe(0);
+      expect(totals.notPricedByBilling).toEqual({ org_gateway: 1, local: 1 });
+      expect(
+        Object.values(totals.notPricedByBilling ?? {}).reduce(
+          (sum, count) => sum + count,
+          0,
+        ),
+      ).toBe(totals.notPricedCount);
+      expect(totals.usd).toBeCloseTo(
+        Object.values(totals.byBilling).reduce((sum, usd) => sum + usd, 0),
+        6,
+      );
+      expect(totals.byBilling.subscription).toBeCloseTo(0.15, 6);
+      expect(totals.byBilling.ai_credits).toBeCloseTo(0.25, 6);
+      expect(totals.byBilling.api_key).toBeGreaterThan(0);
+    } finally {
+      await disposeAll(captured.host);
+    }
+  });
 });

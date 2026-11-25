@@ -73,15 +73,15 @@ import { registerOpenCodeConnectionHandlers } from './opencode-connection';
 import { registerAntigravityRuntimeHandlers } from './antigravity-runtime';
 import { registerAccountProxyHandlers } from './account-proxy';
 import { registerLocalModelGatewayHandlers } from './local-model-gateway';
+import { registerModelGatewayDeviceUseHandlers } from './model-gateway-device-use';
 import { registerCursorConnectionHandlers } from './cursor-connection';
 import { registerCursorApprovalCheckHandlers } from './cursor-approval-check';
 import { registerFileAnnotationsHandlers } from './file-annotations';
 import {
-  addPlanContentChangeListener,
   addPlanDiagramArtifactChangeListener,
   addPlanShareChangeListener,
 } from '../lib/plan-persistence';
-import { schedulePlanDiagramGeneration } from '../lib/plan-diagram-scheduler';
+import { followPlanContentChanges } from '../canopy-runtime/plan-diagram-host';
 import {
   initializeSharedPlanSync,
   queueSharedPlanSync,
@@ -310,7 +310,11 @@ export function registerAllIpcHandlers(
   );
   registerRunsHandlers(canopyRuntime.dispatcher, canopyRuntime.resolveCaller);
   registerSharedContainerHandlers(canopyRuntime);
-  registerDetectedPlansHandlers(getMainWindow);
+  registerDetectedPlansHandlers(
+    getMainWindow,
+    canopyRuntime.dispatcher,
+    canopyRuntime.resolveCaller,
+  );
   registerCodeReviewHandlers(
     getMainWindow,
     canopyRuntime.dispatcher,
@@ -323,9 +327,10 @@ export function registerAllIpcHandlers(
   registerCursorConnectionHandlers();
   registerCopilotConnectionHandlers();
   registerOpenCodeConnectionHandlers();
-  registerAntigravityRuntimeHandlers();
+  registerAntigravityRuntimeHandlers(canopyRuntime);
   registerAccountProxyHandlers();
   registerLocalModelGatewayHandlers();
+  registerModelGatewayDeviceUseHandlers();
   registerFileAnnotationsHandlers(
     () => [accessors.getMainWindow(), accessors.getAppAdvisorWindow()],
     canopyRuntime.dispatcher,
@@ -333,9 +338,7 @@ export function registerAllIpcHandlers(
   );
   initializeSharedPlanSync({ getWindow: getMainWindow });
   getPlanFileSyncService().configure({ getWindow: getMainWindow });
-  addPlanContentChangeListener((plan) =>
-    schedulePlanDiagramGeneration(plan, getMainWindow),
-  );
+  followPlanContentChanges(getMainWindow);
   addPlanShareChangeListener((plan) => {
     queueSharedPlanSync(plan, 'plan');
     syncPlanRealtimeSubscription(plan);

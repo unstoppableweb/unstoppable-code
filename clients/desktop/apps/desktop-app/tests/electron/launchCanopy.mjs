@@ -216,6 +216,8 @@ const DEFAULT_E2E_CLIENT_FEATURE_FLAGS = {
   'canopy-desktop-account-proxy': true,
   'canopy-desktop-skill-suggestions': true,
   'canopy-desktop-external-agents-menu': true,
+  // Unconfigured default (CAN-7604): Slack requests to the Orchestrator.
+  'canopy-desktop-slack-orchestrator-requests': true,
   // MUST stay pinned: this flag's LaunchDarkly-enabled-unavailable default is
   // `false` (deployed environments fail closed until a revision producer
   // exists), and this launcher always seeds from THAT map. Without the pin the

@@ -1,11 +1,17 @@
 import type { CanopyFramedConnection } from '@canopy/core-transport/types';
 import {
   CANOPY_ERROR_KINDS,
+  CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   type CanopyErrorPayload,
   type CoreRuntimeInitializeResult,
 } from '@canopy/protocol/canopy-core';
 
 import { CanopyClientError, createCanopyClient } from '../index';
+import {
+  encodedSize,
+  STREAM_BUDGET_BYTES,
+  TERMINAL_RESERVATION_BYTES,
+} from '../stream-budget';
 import type { CanopyClient, CanopyClientStreamFrame } from '../types';
 import {
   CANONICAL_DEFINITIONS,
@@ -976,6 +982,267 @@ export function describeCanopyClientConformance(
       ]);
       expect(client.signal.aborted).toBe(false);
     });
+
+    it('asks the core once to drop a stream it ended when the definitions list unsubscribe, and takes an already-gone answer quietly', async () => {
+      const pair = await createPair();
+      pairs.push(pair);
+      const unsubscribes: Record<string, unknown>[] = [];
+      const core = serveCanonicalCore(pair.server, {
+        ...HANDLERS,
+        // The core already dropped it, as a supersede or a cap may have.
+        'core.events.unsubscribe': (params) => {
+          unsubscribes.push(params);
+          return { unsubscribed: false };
+        },
+      });
+      cores.push(core);
+      const client = await createCanopyClient({
+        connection: pair.client,
+        clientName: 'conformance',
+        clientVersion: '1.0.0',
+        definitions: {
+          ...CANONICAL_DEFINITIONS,
+          instructions: {
+            ...CANONICAL_DEFINITIONS.instructions,
+            'core.events.unsubscribe':
+              CORE_TRANSPORT_INSTRUCTION_DEFINITIONS['core.events.unsubscribe'],
+          },
+        },
+      });
+      const handle = await client.openStream('core.test.ticks', { count: 1 });
+      expect(ticksOf(await drain(handle.frames))).toEqual([0, 'completed']);
+      // Sent on a later turn, so an echo's reply lands after its answer.
+      await client.query('core.test.echo', { text: 'flush' });
+      await sleep(50);
+      await client.query('core.test.echo', { text: 'flush' });
+      expect(unsubscribes).toEqual([
+        { subscriptionId: handle.openResult.subscriptionId },
+      ]);
+      expect(client.signal.aborted).toBe(false);
+
+      // Without unsubscribe in the definitions, nothing goes out.
+      const plain = await open();
+      const ended = await plain.client.openStream('core.test.ticks', {
+        count: 0,
+      });
+      expect(ticksOf(await drain(ended.frames))).toEqual(['completed']);
+      await flush(plain.client);
+      expect(plain.core.requests.map(({ method }) => method)).not.toContain(
+        'core.events.unsubscribe',
+      );
+    });
+
+    it('asks the core once to drop a stream it refused locally, after its end, and only when the definitions list unsubscribe', async () => {
+      const unsubscribes: Record<string, unknown>[] = [];
+      const handlers: CanonicalHandlers = {
+        ...HANDLERS,
+        'core.events.unsubscribe': (params) => {
+          unsubscribes.push(params);
+          return { unsubscribed: true };
+        },
+      };
+      /**
+       * Fills the connection's byte pool exactly: four held streams, each
+       * at its stream budget with two unread items, so the next open cannot
+       * reserve its terminal and is refused after the core opened it.
+       */
+      const refuseAnOpen = async (
+        core: CanonicalCoreServer,
+        server: CanopyFramedConnection,
+        client: Pick<CanonicalClient, 'openStream' | 'query'>,
+        /** How many unsubscribes the core has had once that first end arrives. */
+        asked: number,
+      ): Promise<string> => {
+        let sequence = 0;
+        const half = (STREAM_BUDGET_BYTES - TERMINAL_RESERVATION_BYTES) / 2;
+        for (let stream = 0; stream < 4; stream += 1) {
+          const held = await client.openStream('core.test.ticks', holdOpen);
+          const { subscriptionId } = held.openResult;
+          for (const tick of [1, 2]) {
+            sequence += 1;
+            const frame = (pad: string): unknown => ({
+              jsonrpc: '2.0',
+              method: 'core.test.ticks.item',
+              params: {
+                subscriptionId,
+                cursor: { daemonEpoch: 'epoch-1', sequence },
+                itemId: `item-${String(sequence)}`,
+                occurredAt: '2026-10-07T12:00:00Z',
+                item: { tick, pad },
+              },
+            });
+            const pad = 'x'.repeat(half - encodedSize(frame('')));
+            await core.emit(subscriptionId, { tick, pad });
+          }
+        }
+        await client.query('core.test.echo', { text: 'flush' });
+        expect(
+          await rejection(client.openStream('core.test.ticks', holdOpen)),
+        ).toMatchObject({ kind: 'resource_exhausted' });
+        const opens = core.requests.filter(
+          ({ method }) => method === 'core.test.ticks',
+        );
+        const refused = subscriptionIdFor(opens.at(-1)?.id ?? '');
+        // The core ends the refused stream; its first end alone asks.
+        await core.end(refused);
+        await client.query('core.test.echo', { text: 'flush' });
+        await sleep(50);
+        await client.query('core.test.echo', { text: 'flush' });
+        expect(unsubscribes.length).toBe(asked);
+        // Then the core sends it another end.
+        await server.send({
+          jsonrpc: '2.0',
+          method: 'core.test.ticks.end',
+          params: {
+            subscriptionId: refused,
+            cursor: { daemonEpoch: 'epoch-1', sequence: 0 },
+            outcome: 'completed',
+            error: null,
+          },
+        });
+        await client.query('core.test.echo', { text: 'flush' });
+        await sleep(50);
+        await client.query('core.test.echo', { text: 'flush' });
+        return refused;
+      };
+
+      const pair = await createPair();
+      pairs.push(pair);
+      const core = serveCanonicalCore(pair.server, handlers);
+      cores.push(core);
+      const client = await createCanopyClient({
+        connection: pair.client,
+        clientName: 'conformance',
+        clientVersion: '1.0.0',
+        definitions: {
+          ...CANONICAL_DEFINITIONS,
+          instructions: {
+            ...CANONICAL_DEFINITIONS.instructions,
+            'core.events.unsubscribe':
+              CORE_TRANSPORT_INSTRUCTION_DEFINITIONS['core.events.unsubscribe'],
+          },
+        },
+      });
+      const refused = await refuseAnOpen(core, pair.server, client, 1);
+      expect(unsubscribes).toEqual([{ subscriptionId: refused }]);
+      expect(client.signal.aborted).toBe(false);
+
+      // Without unsubscribe in the definitions, nothing goes out.
+      const plain = await open(handlers);
+      await refuseAnOpen(plain.core, plain.server, plain.client, 1);
+      expect(plain.core.requests.map(({ method }) => method)).not.toContain(
+        'core.events.unsubscribe',
+      );
+    }, 60_000);
+
+    /** A client with `core.events.unsubscribe` in its definitions. */
+    const withUnsubscribe = async (
+      handlers: CanonicalHandlers,
+    ): Promise<{
+      client: Pick<
+        CanonicalClient,
+        'openStream' | 'query' | 'close' | 'signal'
+      >;
+      core: CanonicalCoreServer;
+      server: CanopyFramedConnection;
+      loseNextReply: (() => void) | undefined;
+    }> => {
+      const pair = await createPair();
+      pairs.push(pair);
+      const core = serveCanonicalCore(pair.server, {
+        ...HANDLERS,
+        ...handlers,
+      });
+      cores.push(core);
+      const client = await createCanopyClient({
+        connection: pair.client,
+        clientName: 'conformance',
+        clientVersion: '1.0.0',
+        definitions: {
+          ...CANONICAL_DEFINITIONS,
+          instructions: {
+            ...CANONICAL_DEFINITIONS.instructions,
+            'core.events.unsubscribe':
+              CORE_TRANSPORT_INSTRUCTION_DEFINITIONS['core.events.unsubscribe'],
+          },
+        },
+      });
+      return {
+        client,
+        core,
+        server: pair.server,
+        loseNextReply: pair.loseNextReply,
+      };
+    };
+    /** Lets a later-turn unsubscribe go out and settle. */
+    const settleUnsubscribes = async (
+      client: Pick<CanonicalClient, 'query'>,
+    ): Promise<void> => {
+      await client.query('core.test.echo', { text: 'flush' });
+      await sleep(50);
+      await client.query('core.test.echo', { text: 'flush' });
+    };
+
+    lostReplyCase(
+      'asks the core once to drop a stream whose open reply the binding lost, at its end, so the row it kept goes',
+      async () => {
+        /** The core's rows, ended or not, kept until unsubscribed. */
+        const rows = new Set<string>();
+        const unsubscribes: unknown[] = [];
+        let opens = 0;
+        const { client, core, server, loseNextReply } = await withUnsubscribe({
+          'core.events.unsubscribe': (params) => {
+            unsubscribes.push(params.subscriptionId);
+            return {
+              unsubscribed: rows.delete(String(params.subscriptionId)),
+            };
+          },
+          'core.test.ticks': () => {
+            opens += 1;
+            const id = core.requests.filter(
+              ({ method }) => method === 'core.test.ticks',
+            )[opens - 1]?.id;
+            rows.add(subscriptionIdFor(id ?? ''));
+            return undefined;
+          },
+        });
+        if (loseNextReply === undefined)
+          throw new Error('The binding offers no loseNextReply.');
+        loseNextReply();
+        // The core committed the row; only its id never reached the client.
+        await rejection(client.openStream('core.test.ticks', holdOpen));
+        const [lost] = [...rows];
+        if (lost === undefined) throw new Error('The core kept no row.');
+        // An invalid end asks nothing.
+        await server.send({
+          jsonrpc: '2.0',
+          method: 'core.test.ticks.end',
+          params: {
+            subscriptionId: 'sub-stray',
+            cursor: { daemonEpoch: 'epoch-1', sequence: 0 },
+            outcome: 'unknown',
+            error: null,
+          },
+        });
+        // Its end reaches a client that has no stream for it, then the core
+        // sends that end again, as a push stream's sync does.
+        await core.end(lost);
+        await server.send({
+          jsonrpc: '2.0',
+          method: 'core.test.ticks.end',
+          params: {
+            subscriptionId: lost,
+            cursor: { daemonEpoch: 'epoch-1', sequence: 0 },
+            outcome: 'completed',
+            error: null,
+          },
+        });
+        await settleUnsubscribes(client);
+        expect(unsubscribes).toEqual([lost]);
+        expect(rows.has(lost)).toBe(false);
+        expect(client.signal.aborted).toBe(false);
+      },
+    );
 
     it('ends open streams as cancelled on abort and as errors at their deadline', async () => {
       const { client, core } = await open();

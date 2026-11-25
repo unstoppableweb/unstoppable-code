@@ -62,6 +62,7 @@ import {
   w5RecordTargetFor,
   w5ResourceNamespace,
 } from './contract';
+import { validateW5RecordCaptureResult } from './capture-result';
 
 /*
  * The daemon side of the W5 record port (W6g, CAN-5498): the only place a
@@ -404,16 +405,7 @@ function capturedResult(
       })),
     },
   };
-  // Below one frame; the host reads a refused capture live.
-  if (
-    Buffer.byteLength(JSON.stringify(wire)) >
-    CORE_WORKSPACE_RECORDS_LIMITS.resultBytes
-  )
-    throw new W5CommitRefusedError(
-      'invalid-state',
-      'The W5 capture exceeds its limits.',
-      { capture: 'limit-exceeded' },
-    );
+  validateW5RecordCaptureResult(wire);
   return wire;
 }
 

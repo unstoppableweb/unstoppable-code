@@ -381,6 +381,9 @@ function deriveEntryDisplay(tabs: PersistedChatTab[]): CoworkWorkEntrySummary {
         ? { executionHarness: tab.executionHarness }
         : {}),
       ...(tab.model ? { model: tab.model } : {}),
+      ...(tab.claudeConnectorAvailability
+        ? { claudeConnectorAvailability: tab.claudeConnectorAvailability }
+        : {}),
       ...(tab.unread === true ? { unread: true } : {}),
       pluginSelections: normalizePluginSelections(tab.pluginSelections),
     })),

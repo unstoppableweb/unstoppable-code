@@ -40,6 +40,51 @@ const ENTRY_TOO_LONG =
 const RECORD_WITHHELD = 'looks like it holds a credential';
 const RECORD_TOO_LONG = 'too long to check for credentials';
 const FIELD_WITHHELD = 'Withheld because it looks like it holds a credential';
+const USER_NAME_PLACEHOLDER = '<user>';
+
+export interface FeedbackScrubOptions {
+  /**
+   * Account names replaced with `<user>` wherever they appear as a path
+   * segment in a `log-entries` copy (CAN-6895). Windows logs carry
+   * `C:\Users\<name>`, UNC and escaped forms of the profile path; matching
+   * the segment covers each of them. Without names, every byte that is not
+   * withheld is copied unchanged.
+   */
+  readonly redactPathUserNames?: readonly string[];
+}
+
+type TextRedactor = (text: string) => string;
+
+/**
+ * Replaces each name where it is a whole path segment: after `\` or `/`, and
+ * before a separator, quote, whitespace (including the CR of a CRLF line),
+ * punctuation that ends a logged value, a sentence-ending `.`, or the end of
+ * the text. Matching is case-insensitive, as Windows paths are. A long name's
+ * 8.3 short form (`ALEXAN~1`) is replaced too.
+ */
+function pathUserNameRedactor(
+  names: readonly string[] | undefined,
+): TextRedactor | undefined {
+  const alternatives = new Set<string>();
+  for (const name of names ?? []) {
+    const trimmed = name.trim();
+    if (trimmed === '' || /[\\/]/.test(trimmed)) continue;
+    alternatives.add(escapeRegExp(trimmed));
+    const compact = trimmed.replace(/[\s.]/g, '');
+    if (compact.length > 8 || compact !== trimmed)
+      alternatives.add(`${escapeRegExp(compact.slice(0, 6))}~\\d{1,6}`);
+  }
+  if (alternatives.size === 0) return undefined;
+  const pattern = new RegExp(
+    `(?<=[\\\\/])(?:${[...alternatives].join('|')})(?=[\\\\/"'\\s,;:)\\]}>]|\\.(?:\\s|$)|$)`,
+    'giu',
+  );
+  return (text) => text.replace(pattern, USER_NAME_PLACEHOLDER);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 /** The same checks the shared container scanner and CAN-7615's logSafeText use. */
 function looksLikeCredential(text: string): boolean {
@@ -136,6 +181,7 @@ class UnitScrubber {
   constructor(
     private readonly mode: 'log-entries' | 'jsonl-records',
     private readonly emit: (bytes: Buffer) => void,
+    private readonly redact?: TextRedactor,
   ) {}
 
   write(chunk: Buffer): void {
@@ -209,7 +255,7 @@ class UnitScrubber {
     if (unit === undefined) return;
     this.unit = undefined;
     if (unit.tooLong) {
-      this.emit(this.marker(unit, undefined));
+      this.emit(this.redacted(this.marker(unit, undefined)));
       return;
     }
     const bytes = Buffer.concat(unit.parts);
@@ -218,7 +264,15 @@ class UnitScrubber {
       this.mode === 'log-entries'
         ? looksLikeCredential(text)
         : jsonUnitHoldsCredential(text);
-    this.emit(holds ? this.marker(unit, text) : bytes);
+    this.emit(this.redacted(holds ? this.marker(unit, text) : bytes));
+  }
+
+  /** The bytes with account path segments replaced; unchanged when none match. */
+  private redacted(bytes: Buffer): Buffer {
+    if (this.redact === undefined) return bytes;
+    const text = bytes.toString('utf8');
+    const redacted = this.redact(text);
+    return redacted === text ? bytes : Buffer.from(redacted, 'utf8');
   }
 
   /** `text` is the unit's text when it was checked, undefined when too long. */
@@ -291,7 +345,7 @@ class DocumentScrubber {
 class FeedbackScrubStream extends Transform {
   private readonly scrubber: UnitScrubber | DocumentScrubber;
 
-  constructor(mode: FeedbackScrubMode) {
+  constructor(mode: FeedbackScrubMode, options: FeedbackScrubOptions) {
     super();
     const emit = (bytes: Buffer): void => {
       if (bytes.length > 0) this.push(bytes);
@@ -299,7 +353,13 @@ class FeedbackScrubStream extends Transform {
     this.scrubber =
       mode === 'json-document'
         ? new DocumentScrubber(emit)
-        : new UnitScrubber(mode, emit);
+        : new UnitScrubber(
+            mode,
+            emit,
+            mode === 'log-entries'
+              ? pathUserNameRedactor(options.redactPathUserNames)
+              : undefined,
+          );
   }
 
   override _transform(
@@ -321,7 +381,13 @@ class FeedbackScrubStream extends Transform {
   }
 }
 
-/** A stream that copies a bundled file with its credential-shaped units withheld. */
-export function createFeedbackScrub(mode: FeedbackScrubMode): Transform {
-  return new FeedbackScrubStream(mode);
+/**
+ * A stream that copies a bundled file with its credential-shaped units
+ * withheld and, for `log-entries` given names, account path segments replaced.
+ */
+export function createFeedbackScrub(
+  mode: FeedbackScrubMode,
+  options: FeedbackScrubOptions = {},
+): Transform {
+  return new FeedbackScrubStream(mode, options);
 }

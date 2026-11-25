@@ -311,7 +311,11 @@ export function useDetectedMcpServers(
   useEffect(() => {
     stopAttempt(cancelOnDisposeRef.current);
     requestSeqRef.current += 1;
-    setState({ ...EMPTY_STATE });
+    // A state still empty from mount stays as it is, so mounting the chat does
+    // not render it twice.
+    setState((previous) =>
+      previous === EMPTY_STATE ? previous : { ...EMPTY_STATE },
+    );
     setSignInFailure(null);
   }, [options.ownerKey, stopAttempt]);
   const [proxyUpdatingKey, setProxyUpdatingKey] = useState<string | null>(null);

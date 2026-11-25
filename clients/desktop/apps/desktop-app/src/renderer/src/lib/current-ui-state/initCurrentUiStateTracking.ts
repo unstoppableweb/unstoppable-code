@@ -94,8 +94,20 @@ function pipelinePauseFactsChanged(
  * production process).
  */
 export function initCurrentUiStateTracking(): () => void {
-  const recompute = (): void =>
-    useCurrentUiStateStore.getState().recomputeEnvelope();
+  let disposed = false;
+  let queued = false;
+  // A navigation writes to several of these stores, about a dozen times in
+  // one switch, and each write rebuilt and hashed the whole snapshot inside
+  // the switch's first frame. Writes made together rebuild it once, in a
+  // microtask once the code that made them returns.
+  const recompute = (): void => {
+    if (queued) return;
+    queued = true;
+    queueMicrotask(() => {
+      queued = false;
+      if (!disposed) useCurrentUiStateStore.getState().recomputeEnvelope();
+    });
+  };
 
   const unsubNav = useNavigationStore.subscribe(recompute);
   const unsubNavigationHistory = useNavigationHistoryStore.subscribe(recompute);
@@ -185,9 +197,10 @@ export function initCurrentUiStateTracking(): () => void {
 
   // Compute once so consumers reading the envelope at startup see a
   // non-empty snapshot.
-  recompute();
+  useCurrentUiStateStore.getState().recomputeEnvelope();
 
   return (): void => {
+    disposed = true;
     unsubNav();
     unsubNavigationHistory();
     unsubChat();

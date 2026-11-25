@@ -109,17 +109,45 @@ function buildFallbackPrepareRequest(
   return base;
 }
 
-/** Whether the host executing these calls has the exact-snapshot channels. */
-async function hostHasSnapshots(): Promise<boolean> {
+interface HostFeedbackCapabilities {
+  /** The host has the exact-snapshot channels. */
+  readonly snapshots: boolean;
+  /** The host accepts `source` on report errors (CAN-6895). */
+  readonly errorSource: boolean;
+}
+
+/**
+ * One probe of the host executing these calls. Not cached: Remote Control can
+ * switch hosts between calls.
+ */
+async function probeHostCapabilities(): Promise<HostFeedbackCapabilities> {
   try {
-    const { snapshots, version } =
-      await window.api.feedbackDiagnosticsCapabilities();
-    return snapshots === true && version === 1;
+    const capabilities = await window.api.feedbackDiagnosticsCapabilities();
+    const snapshots =
+      capabilities.snapshots === true && capabilities.version === 1;
+    return {
+      snapshots,
+      errorSource: snapshots && capabilities.errorSource === true,
+    };
   } catch (error) {
     reportClientAppError(error);
     // An older host refuses the unknown channel.
-    return false;
+    return { snapshots: false, errorSource: false };
   }
+}
+
+/**
+ * Older hosts parse report errors strictly and reject an unknown `source` key,
+ * even one set to undefined, so omit the key unless the host accepts it.
+ */
+function errorForHost(
+  error: FeedbackReportError | undefined,
+  errorSource: boolean,
+): FeedbackReportError | undefined {
+  if (error === undefined || errorSource || !('source' in error)) return error;
+  const { source, ...rest } = error;
+  void source;
+  return rest;
 }
 
 const SNAPSHOT_GONE_PATTERN =
@@ -173,13 +201,13 @@ export function createDesktopFeedbackReportClient(): FeedbackReportClient {
     async draft() {
       // Read now, not after the awaits: this is where the person was.
       const context = buildFeedbackContext();
-      const [appVersion, snapshots] = await Promise.all([
+      const [appVersion, { snapshots }] = await Promise.all([
         // App version is best-effort; omit it on failure.
         window.api.update.getAppVersion().catch((error: unknown) => {
           reportClientAppError(error);
           return undefined;
         }),
-        hostHasSnapshots(),
+        probeHostCapabilities(),
       ]);
       return {
         context: {
@@ -193,22 +221,37 @@ export function createDesktopFeedbackReportClient(): FeedbackReportClient {
     },
     submit(request) {
       return withReportErrors(async () => {
-        const snapshots = await hostHasSnapshots();
+        const { snapshots, errorSource } = await probeHostCapabilities();
         if (!snapshots && request.error)
           throw new Error(ERROR_REPORT_UNAVAILABLE_COPY);
         // A disconnected/replaced host cannot turn an inspected archive into
         // a fresh legacy collection. Ordinary old-host feedback still works.
         if (!snapshots && request.diagnosticsSnapshotId)
           throw new FeedbackDiagnosticsExpiredError();
+        if (!snapshots)
+          return toResult(await window.api.submitFeedback(request));
+        const { error, ...rest } = request;
+        const hostError = errorForHost(error, errorSource);
         return toResult(
-          snapshots
-            ? await window.api.submitFeedbackReport(request)
-            : await window.api.submitFeedback(request),
+          await window.api.submitFeedbackReport(
+            hostError ? { ...rest, error: hostError } : rest,
+          ),
         );
       });
     },
-    prepareDiagnostics: (request) =>
-      withReportErrors(() => window.api.prepareFeedbackDiagnostics(request)),
+    prepareDiagnostics: ({ error, ...request }) =>
+      withReportErrors(async () => {
+        // Probe only when there is a key to gate, so other previews keep their
+        // single round trip.
+        const errorSource =
+          error !== undefined && 'source' in error
+            ? (await probeHostCapabilities()).errorSource
+            : false;
+        const hostError = errorForHost(error, errorSource);
+        return window.api.prepareFeedbackDiagnostics(
+          hostError ? { ...request, error: hostError } : request,
+        );
+      }),
     readDiagnosticsEntry: (snapshotId, entryPath) =>
       withReportErrors(() =>
         window.api.readFeedbackDiagnosticsEntry(snapshotId, entryPath),
@@ -219,10 +262,15 @@ export function createDesktopFeedbackReportClient(): FeedbackReportClient {
       withReportErrors(() => window.api.releaseFeedbackDiagnostics(snapshotId)),
     saveCollectedDiagnostics: ({ context, description, error }) =>
       withReportErrors(async () => {
-        if (error && !(await hostHasSnapshots()))
+        const capabilities = error ? await probeHostCapabilities() : undefined;
+        if (capabilities && !capabilities.snapshots)
           throw new Error(ERROR_REPORT_UNAVAILABLE_COPY);
         const prepared = await window.api.prepareFeedback(
-          buildFallbackPrepareRequest(context, description, error),
+          buildFallbackPrepareRequest(
+            context,
+            description,
+            errorForHost(error, capabilities?.errorSource === true),
+          ),
         );
         await window.api.showInFinder({ absolutePath: prepared.absolutePath });
         return { filename: prepared.filename };

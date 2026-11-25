@@ -77,6 +77,23 @@ export interface CleanRunStep {
   readonly interrupted?: boolean;
 }
 
+/**
+ * The steps a running turn's line may count: the ones already done. A call
+ * still waiting for its result, and the thought the run ends on, are what
+ * the turn is doing now, which its status line says. Empty until a call has
+ * finished, so the line never reads "Thought" and then changes its words.
+ */
+export function settledCleanRunSteps(
+  steps: readonly CleanRunStep[],
+): CleanRunStep[] {
+  const settled = steps.filter(
+    (step, index) =>
+      step.pending !== true &&
+      !(step.kind === 'thinking' && index === steps.length - 1),
+  );
+  return settled.some((step) => step.kind !== 'thinking') ? settled : [];
+}
+
 const RUN_PHRASES: Record<StepKind, (count: number) => string> = {
   thinking: () => 'thought',
   search: (count) => `searched ${count === 1 ? 'once' : `${count} times`}`,

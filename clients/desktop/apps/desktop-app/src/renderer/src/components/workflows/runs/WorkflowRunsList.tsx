@@ -98,6 +98,7 @@ export interface WorkflowRunRowActions {
   readonly dialogAnchorRef: RefCallback<HTMLElement>;
   /** The execution, watcher and cancel dialogs these actions open. */
   readonly dialogs: ReactNode;
+  readonly actionFeedback: ReactNode;
 }
 
 /**
@@ -423,6 +424,7 @@ export function useWorkflowRunRowActions(
     handleAction,
     busyKeys,
     dialogAnchorRef: executionActions.dialogAnchorRef,
+    actionFeedback: executionActions.renderActionError(),
     dialogs,
   };
 }

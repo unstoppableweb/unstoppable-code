@@ -37,23 +37,58 @@ export function createWorkerScriptAdapter(
     (loading ??= loadWorker().then(createWorkerScriptHandlers));
   return {
     queries: {
-      'worker.script.execution.get': async (params, context) =>
-        (await handlers()).queries['worker.script.execution.get'](
-          params,
-          context,
-        ),
-      'worker.script.execution.list': async (params, context) =>
-        (await handlers()).queries['worker.script.execution.list'](
-          params,
-          context,
-        ),
-      // Read from the shared run logs and the host's process table, like
-      // Stop, so it needs no route (CAN-6601).
-      'worker.script.execution.groupMembers': async (params, context) =>
-        (await handlers()).queries['worker.script.execution.groupMembers'](
-          params,
-          context,
-        ),
+      // The daemon reads the same run logs, never signalling a run's process
+      // as it reads (CAN-7663).
+      'worker.script.execution.get': async (params, context) => {
+        const reads = await import('../lib/daemon-script-read-route');
+        return reads.readScriptRunsInDaemon(
+          'get',
+          params.scope,
+          (session) =>
+            session.query('worker.script.execution.get', params, {
+              signal: context.signal,
+            }),
+          async () =>
+            (await handlers()).queries['worker.script.execution.get'](
+              params,
+              context,
+            ),
+        );
+      },
+      'worker.script.execution.list': async (params, context) => {
+        const reads = await import('../lib/daemon-script-read-route');
+        return reads.readScriptRunsInDaemon(
+          'list',
+          params.scope,
+          (session) =>
+            session.query('worker.script.execution.list', params, {
+              signal: context.signal,
+            }),
+          async () =>
+            (await handlers()).queries['worker.script.execution.list'](
+              params,
+              context,
+            ),
+        );
+      },
+      // Read from the shared run logs and the host's process table, so the
+      // daemon answers it on a selected host (CAN-7663).
+      'worker.script.execution.groupMembers': async (params, context) => {
+        const reads = await import('../lib/daemon-script-read-route');
+        return reads.readScriptRunsInDaemon(
+          'groupMembers',
+          params.scope,
+          (session) =>
+            session.query('worker.script.execution.groupMembers', params, {
+              signal: context.signal,
+            }),
+          async () =>
+            (await handlers()).queries['worker.script.execution.groupMembers'](
+              params,
+              context,
+            ),
+        );
+      },
     },
     instructions: {
       // The daemon branch needs no keyed replay: LocalWorkerExecution never

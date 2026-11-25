@@ -38,13 +38,30 @@ export type CollectionEntryWrite =
   | { status: 'missing' }
   | { status: 'unreadable' }
   | { status: 'conflict'; currentRevision: string }
-  | { status: 'ambiguousMembers' };
+  | { status: 'ambiguousMembers' }
+  | { status: 'tooLarge' };
 
 export type CollectionEntryRemoval =
   | { status: 'deleted' }
   | { status: 'missing' }
   | { status: 'unreadable' }
   | { status: 'conflict'; currentRevision: string };
+
+/**
+ * What a delete needs (`read: "management"`): the revision of any stored
+ * collection, or the hash of the stored bytes of one that cannot be read.
+ * `unreadable` when even its bytes cannot be read.
+ */
+export type CollectionEntryManagement =
+  | { status: 'found'; revision: string }
+  | { status: 'corrupt'; storedBytesHash: string }
+  | { status: 'missing' }
+  | { status: 'unreadable' };
+
+/** `changed` when the stored bytes changed and still cannot be read. */
+export type CollectionEntryCorruptRemoval =
+  | CollectionEntryRemoval
+  | { status: 'changed' };
 
 export interface CollectionEntryDraft {
   name: string;
@@ -60,15 +77,27 @@ export interface CoreCollectionEntryHost {
   /**
    * Replaces at `expectedRevision`, keeping provenance and the share link;
    * `ambiguousMembers` when the edit changes MCP members the store can't tell
-   * apart, so it writes nothing.
+   * apart, and `tooLarge` when the entry it would write fails `fits`, so it
+   * writes nothing.
    */
   replace(
     id: string,
     expectedRevision: string,
     draft: CollectionEntryDraft,
+    fits?: (entry: StoredCollectionEntry) => boolean,
   ): Promise<CollectionEntryWrite>;
   /** Deletes only at `expectedRevision`; its members, shares and selections stay. */
   delete(id: string, expectedRevision: string): Promise<CollectionEntryRemoval>;
+  /** The store's local management read, as delete makes it (CAN-4170 PR 3b-2a). */
+  readManagement(id: string): Promise<CollectionEntryManagement>;
+  /**
+   * Deletes a collection that cannot be read, only while its stored bytes
+   * still have `storedBytesHash`; `conflict` once it can be read again.
+   */
+  deleteCorrupt(
+    id: string,
+    storedBytesHash: string,
+  ): Promise<CollectionEntryCorruptRemoval>;
 }
 
 type LocalInstructionDefinitions = Omit<
@@ -120,18 +149,38 @@ const unreadable = (): CanopyOperationError =>
   });
 const notYet = (what: string): CanopyOperationError =>
   fail('capability_unavailable', `${what} isn't served through core yet.`);
+const tooLarge = (): CanopyOperationError =>
+  fail('resource_exhausted', 'This collection is too large to record.');
 const keyReused = (): CanopyOperationError =>
   fail('conflict', 'This idempotency key was used with other parameters.');
 
 /**
- * CAN-5898: whether the ledger can record the largest result this upsert could
- * answer, with every member unresolved and provenance and share at their
- * widest, so a write is never made that its replay can't answer.
+ * CAN-5898: whether the ledger can record this entry's answer with every
+ * member unresolved, so a write is never made that its replay can't answer.
+ */
+function answerFits(entry: StoredCollectionEntry): boolean {
+  return isBoundedCanopyJsonValue({
+    entry: {
+      ...entry,
+      unresolvedMembers: unresolvedMembers(entry.members, {
+        collectionIds: [],
+        skillRefs: [],
+        pluginRefs: [],
+        mcpServerRefs: [],
+      }),
+    },
+  });
+}
+
+/**
+ * Whether a create's answer fits, with its revision, provenance and share at
+ * their widest. A replace is checked on the entry it would write, under the
+ * store's lock, since it keeps the stored provenance and share as they are.
  */
 function recordable(draft: CollectionEntryDraft): boolean {
   const widest = 'w'.repeat(256);
   const stamp = '2026-01-01T00:00:00.000+00:00';
-  const worst: CatalogCollectionEntry = {
+  return answerFits({
     kind: 'collection',
     entryId: collectionEntryId('f'.repeat(128)),
     revision: widest,
@@ -151,15 +200,9 @@ function recordable(draft: CollectionEntryDraft): boolean {
       contentHash: widest.slice(0, 128),
       shareScope: 'organization',
       sharedAt: stamp,
+      accountId: 'w'.repeat(512),
     },
-    unresolvedMembers: unresolvedMembers(draft.members, {
-      collectionIds: [],
-      skillRefs: [],
-      pluginRefs: [],
-      mcpServerRefs: [],
-    }),
-  };
-  return isBoundedCanopyJsonValue({ entry: worst });
+  });
 }
 
 const storeIdOf = (entryId: string): string =>
@@ -244,6 +287,7 @@ export function createCoreCollectionEntryHandlers(options: {
     write: CollectionEntryWrite,
     installed: CatalogSelectionRefs,
   ): { entry: CatalogCollectionEntry } => {
+    if (write.status === 'tooLarge') throw tooLarge();
     if (write.status === 'missing') throw notFound();
     if (write.status === 'unreadable') throw unreadable();
     if (write.status === 'conflict') throw conflict(write.currentRevision);
@@ -260,6 +304,24 @@ export function createCoreCollectionEntryHandlers(options: {
       'core.catalog.entry.get': async (params) => {
         if (params.read === 'importReadiness')
           throw notYet('Import readiness for a shared collection');
+        if (params.read === 'management') {
+          const management = await host.readManagement(
+            storeIdOf(params.entryId),
+          );
+          if (management.status === 'missing') throw notFound();
+          if (management.status === 'unreadable') throw unreadable();
+          return management.status === 'found'
+            ? {
+                read: 'management',
+                entryId: params.entryId,
+                revision: management.revision,
+              }
+            : {
+                read: 'management',
+                entryId: params.entryId,
+                storedBytesHash: management.storedBytesHash,
+              };
+        }
         const read = await host.read(storeIdOf(params.entryId));
         if (read.status === 'missing') throw notFound();
         if (read.status === 'unreadable') throw unreadable();
@@ -278,19 +340,20 @@ export function createCoreCollectionEntryHandlers(options: {
           description: params.description,
           members: params.members,
         };
-        if (!recordable(draft))
-          throw fail(
-            'resource_exhausted',
-            'This collection is too large to record.',
-          );
+        // Only a new key meets the size bound: a recorded key replays (the
+        // bound may have narrowed since), and a reused one is refused as such.
+        // A replace meets it in the store, on the entry it would write.
+        const fresh =
+          (await runs.receiptState({
+            kind: 'core.catalog.entry.upsert',
+            context,
+            params,
+          })) === 'none';
+        if (fresh && params.entryId === null && !recordable(draft))
+          throw tooLarge();
         // A new key reads the installed catalog before admission, so a failed
         // read refuses with nothing written and stays retryable under its key.
-        const recorded = await runs.recordedOperationId({
-          kind: 'core.catalog.entry.upsert',
-          context,
-          params,
-        });
-        const installedFirst = recorded === null ? await readInstalled() : null;
+        const installedFirst = fresh ? await readInstalled() : null;
         return runs.run({
           kind: 'core.catalog.entry.upsert',
           context,
@@ -308,6 +371,7 @@ export function createCoreCollectionEntryHandlers(options: {
                     storeIdOf(params.entryId),
                     params.expectedRevision,
                     draft,
+                    answerFits,
                   ),
                   installed,
                 );
@@ -324,14 +388,24 @@ export function createCoreCollectionEntryHandlers(options: {
           decode: (outcome) =>
             CatalogCollectionDeleteResultSchema.safeParse(outcome).data ?? null,
           effect: async () => {
-            const removal = await host.delete(
-              storeIdOf(params.entryId),
-              params.expectedRevision,
-            );
+            const id = storeIdOf(params.entryId);
+            const removal =
+              'expectedStoredBytesHash' in params
+                ? await host.deleteCorrupt(id, params.expectedStoredBytesHash)
+                : await host.delete(id, params.expectedRevision);
             if (removal.status === 'missing') throw notFound();
             if (removal.status === 'unreadable') throw unreadable();
             if (removal.status === 'conflict')
               throw conflict(removal.currentRevision);
+            if (removal.status === 'changed')
+              throw fail(
+                'conflict',
+                'This collection changed since it was read.',
+                {
+                  code: codes.revisionConflict,
+                  retry: REFRESH,
+                },
+              );
             return {
               kind: 'collection' as const,
               entryId: params.entryId,

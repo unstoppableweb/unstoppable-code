@@ -111,12 +111,37 @@ describe('core.publication / core.sharedContainer shared-container contract (CAN
         requiredGrants,
       ]),
     ).toEqual([
+      [
+        'query',
+        'inherent',
+        'core-only',
+        ['core.publication.read', 'core.workspace.read'],
+      ],
+      [
+        'query',
+        'inherent',
+        'core-only',
+        ['core.publication.read', 'core.workspace.read'],
+      ],
+      [
+        'instruction',
+        'keyed',
+        'core-only',
+        ['core.publication.write', 'core.workspace.write'],
+      ],
       ['query', 'inherent', 'core-only', ['core.publication.read']],
-      ['query', 'inherent', 'core-only', ['core.publication.read']],
-      ['instruction', 'keyed', 'core-only', ['core.publication.write']],
-      ['query', 'inherent', 'core-only', ['core.publication.read']],
-      ['query', 'inherent', 'core-only', ['core.workspace.read']],
-      ['query', 'inherent', 'core-only', ['core.publication.read']],
+      [
+        'query',
+        'inherent',
+        'core-only',
+        ['core.publication.read', 'core.workspace.read'],
+      ],
+      [
+        'query',
+        'inherent',
+        'core-only',
+        ['core.publication.read', 'core.workspace.read'],
+      ],
     ]);
     const composed = [
       ...Object.keys(CANOPY_QUERY_DEFINITIONS),
@@ -181,19 +206,24 @@ describe('core.publication / core.sharedContainer shared-container contract (CAN
     expect(fileScopeGet.result.parse({ fileScope: allowlist })).toEqual({
       fileScope: allowlist,
     });
-    // The store keeps any id its charset allows, so a saved id reads back.
-    const longId = 'n'.repeat(600);
-    expect(
-      fileScopeUpdate.params.safeParse({
-        ...request,
-        includedNoteIds: [longId],
-      }).success,
-    ).toBe(true);
-    expect(
-      fileScopeGet.result.safeParse({
-        fileScope: { ...fileScope, includedNoteIds: [longId] },
-      }).success,
-    ).toBe(true);
+    // A note or prompt id is a file stem of at most 255 characters, requested
+    // or stored (CAN-6501 PR 6); the store drops a longer one.
+    for (const [id, accepted] of [
+      ['n'.repeat(255), true],
+      ['n'.repeat(256), false],
+    ] as const) {
+      expect(
+        fileScopeUpdate.params.safeParse({
+          ...request,
+          includedNoteIds: [id],
+        }).success,
+      ).toBe(accepted);
+      expect(
+        fileScopeGet.result.safeParse({
+          fileScope: { ...fileScope, includedNoteIds: [id] },
+        }).success,
+      ).toBe(accepted);
+    }
   });
 
   it('replays a scope save only under its key and refuses reuse as a conflict', () => {

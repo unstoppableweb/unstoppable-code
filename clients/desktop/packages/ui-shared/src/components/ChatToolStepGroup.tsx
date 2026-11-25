@@ -10,6 +10,7 @@ import {
 import { StepTenseProvider } from './chat-look';
 import {
   STEP_GROUP_BODY_CLASS,
+  STEP_GROUP_INSET_NESTED_BODY_CLASS,
   STEP_GROUP_NESTED_BODY_CLASS,
   StepRow,
 } from './chat/StepRow';
@@ -47,6 +48,7 @@ export const ChatToolStepGroup = memo(function ChatToolStepGroup({
   interruptedCount = 0,
   live,
   inset = true,
+  bareChildren = false,
 }: {
   /** Plain-words summary of every step in the run. */
   summary: string;
@@ -97,6 +99,11 @@ export const ChatToolStepGroup = memo(function ChatToolStepGroup({
    * already insets it (the web timer row inside its message).
    */
   inset?: boolean;
+  /**
+   * The opened content has no text inset of its own (the live line's
+   * thought), so an inset line insets it too. Step rows carry their own.
+   */
+  bareChildren?: boolean;
 }): JSX.Element {
   const [open, setOpen] = useState<boolean | null>(null);
   // A host reveal opens the group as saved state, so it can be closed again.
@@ -167,7 +174,14 @@ export const ChatToolStepGroup = memo(function ChatToolStepGroup({
         />
       </div>
       {isOpen && expandable ? (
-        <div className={STEP_GROUP_NESTED_BODY_CLASS} data-chat-reveal-body="">
+        <div
+          className={
+            inset && bareChildren
+              ? STEP_GROUP_INSET_NESTED_BODY_CLASS
+              : STEP_GROUP_NESTED_BODY_CLASS
+          }
+          data-chat-reveal-body=""
+        >
           {hiddenSteps ?? children}
         </div>
       ) : null}
@@ -175,7 +189,11 @@ export const ChatToolStepGroup = memo(function ChatToolStepGroup({
         // "Show only recent steps": the newest steps stay in view under
         // the closed line while the run is live.
         <div
-          className={STEP_GROUP_NESTED_BODY_CLASS}
+          className={
+            inset && bareChildren
+              ? STEP_GROUP_INSET_NESTED_BODY_CLASS
+              : STEP_GROUP_NESTED_BODY_CLASS
+          }
           data-testid="chat-tool-step-live"
         >
           {liveSteps}

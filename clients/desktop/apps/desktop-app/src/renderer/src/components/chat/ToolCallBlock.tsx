@@ -137,7 +137,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
           toolDisplayScope,
         );
   // The agent secret tools read their result: "Provided 3 of 4", a
-  // command's exit and redactions, or "0600 · git-excluded".
+  // command's exit and redactions, or "0600 · kept out of git".
   const displayLabel =
     label ??
     agentSecretToolRowLabel(

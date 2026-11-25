@@ -123,8 +123,14 @@ function canOmitFailedPackage(error: unknown): boolean {
  * Prefix of every staging directory this process creates. Startup recovery
  * prunes only other prefixes: it runs after publication state rehydrates,
  * which can outlast the publish debounce, so a publish may already be staging.
+ * Drawn on first use rather than at import, so importing this module has no
+ * side effect.
  */
-const PROCESS_STAGING_DIR_PREFIX = `revision-${randomUUID()}-`;
+let processStagingDirPrefix: string | undefined;
+function getProcessStagingDirPrefix(): string {
+  processStagingDirPrefix ??= `revision-${randomUUID()}-`;
+  return processStagingDirPrefix;
+}
 
 function sha256(bytes: Buffer): string {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -318,7 +324,7 @@ export async function pruneSharedContainerPublishStaging(): Promise<void> {
   }
   await Promise.all(
     entries
-      .filter((entry) => !entry.startsWith(PROCESS_STAGING_DIR_PREFIX))
+      .filter((entry) => !entry.startsWith(getProcessStagingDirPrefix()))
       .map((entry) => rm(join(root, entry), { recursive: true, force: true })),
   );
 }
@@ -856,7 +862,10 @@ async function runPublishSharedContainerRevision<TInventory>(
 
   await mkdir(getSharedContainerPublishStagingRootDir(), { recursive: true });
   const temporaryDir = await mkdtemp(
-    join(getSharedContainerPublishStagingRootDir(), PROCESS_STAGING_DIR_PREFIX),
+    join(
+      getSharedContainerPublishStagingRootDir(),
+      getProcessStagingDirPrefix(),
+    ),
   );
   try {
     let staged: Awaited<ReturnType<typeof stageSharedContainerRevision>>;

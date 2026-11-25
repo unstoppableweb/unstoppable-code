@@ -506,6 +506,18 @@ export function initializeRemoteControl(options: {
         await import('./host/hosted-chat-desktop');
       return dispatchHostedChatCommandOnDesktop(request, attribution);
     },
+    hostedOrchestratorReads: {
+      readsChat: async (entryId, chatId): Promise<boolean> => {
+        const { hostedSlackOrchestratorReads } =
+          await import('./host/hosted-chat-desktop');
+        return hostedSlackOrchestratorReads.readsChat(entryId, chatId);
+      },
+      turnStatus: async (request): Promise<unknown> => {
+        const { hostedSlackOrchestratorReads } =
+          await import('./host/hosted-chat-desktop');
+        return hostedSlackOrchestratorReads.turnStatus(request);
+      },
+    },
     completeAccountProxySignIn: async (
       controllerDeviceId,
       callback,

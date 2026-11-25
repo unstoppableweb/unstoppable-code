@@ -116,7 +116,12 @@ function writeTranscript(claudeDir, cwd, sessionId, title, prompt, timestamp) {
 
 /**
  * @param {object} options
- * @param {string} options.userDataDir
+ * @param {string} [options.userDataDir]
+ * @param {string} [options.claudeDir] The Claude store to seed; defaults to
+ *   `<userDataDir>/provider-state/claude`. Pass the launch's own
+ *   `CLAUDE_CONFIG_DIR` when it is elsewhere.
+ * @param {string} [options.fixturesParent] Parent of the generated fixture
+ *   directory; defaults to the OS temp directory.
  * @param {{ gitApp?: string; notes?: string }} [options.activityTimestamps]
  * @param {Array<{ name: string; lastActivityAt: string; rules?: string }>} [options.extraGitProjects]
  * @param {Array<{ id: string; title: string; prompt: string; lastActivityAt: string }>} [options.scratchSessions]
@@ -124,11 +129,20 @@ function writeTranscript(claudeDir, cwd, sessionId, title, prompt, timestamp) {
  */
 export function seedExternalProjectImportFixture({
   userDataDir,
+  claudeDir: claudeDirOption,
+  fixturesParent = os.tmpdir(),
   scratchSessions = [],
   activityTimestamps = {},
   extraGitProjects = [],
 }) {
-  const fixturesRoot = mkdtempSync(path.join(os.tmpdir(), 'can2439-fixtures-'));
+  if (!claudeDirOption && !userDataDir) {
+    throw new Error('Pass userDataDir or claudeDir.');
+  }
+  const claudeDir =
+    claudeDirOption ?? path.join(userDataDir, 'provider-state', 'claude');
+  const fixturesRoot = mkdtempSync(
+    path.join(fixturesParent, 'can2439-fixtures-'),
+  );
 
   const gitApp = path.join(fixturesRoot, IMPORT_FIXTURE_GIT_PROJECT);
   mkdirSync(gitApp, { recursive: true });
@@ -183,7 +197,6 @@ export function seedExternalProjectImportFixture({
     };
   });
 
-  const claudeDir = path.join(userDataDir, 'provider-state', 'claude');
   mkdirSync(claudeDir, { recursive: true });
   writeFileSync(
     path.join(claudeDir, '.claude.json'),

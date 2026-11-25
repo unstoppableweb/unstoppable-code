@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, type JSX } from 'react';
+import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import {
   SETTINGS_CARD_CLASS,
   SETTINGS_CARD_GROUP_CLASS,
@@ -23,7 +23,7 @@ import {
 } from '../errors';
 import { AI_GATEWAY_ERROR_SCOPE } from './ai-gateway-copy';
 
-type CloudKeyStatus =
+export type CloudKeyStatus =
   SettingsOperationResult<'organization.settings.ai-gateway.cloud-key.read'>['status'];
 
 // One line per stored state; `stale_url` is a key saved for an older address.
@@ -65,36 +65,51 @@ const REFRESH_CODES: ReadonlySet<string | undefined> = new Set([
   'key_changed',
 ]);
 
+export type CloudChatsKeyState = CloudKeyStatus | 'off';
+
 /**
- * Whether cloud chats take a key for this organization's gateway, whether or
- * not the gateway is on: the key routes answer 404 while cloud keys are off.
- * `null` until the read answers, or when it fails for another reason.
+ * The member's cloud chats key state for this organization's gateway, whether
+ * or not the gateway is on: `off` while cloud keys are off (the key routes
+ * answer 404), `null` until the read answers or when it fails for another
+ * reason. The setter takes a status the key section just saved or removed.
  */
-export function useCloudChatsKeysAvailable(
+export function useCloudChatsKeyState(
   organizationId: string,
-): boolean | null {
+  baseUrl?: string,
+  revision?: number,
+): readonly [CloudChatsKeyState | null, (status: CloudChatsKeyState) => void] {
   const client = useSettingsClient();
-  const [available, setAvailable] = useState<boolean | null>(null);
+  const [state, setState] = useState<CloudChatsKeyState | null>(null);
+  // Bumped by every reported save or removal, so a read that started earlier
+  // can't replace the status it returned.
+  const generationRef = useRef(0);
   useEffect(() => {
     let cancelled = false;
+    const generation = generationRef.current;
+    const stale = (): boolean =>
+      cancelled || generation !== generationRef.current;
     void client
       .read('organization.settings.ai-gateway.cloud-key.read', {
         organizationId,
       })
       .then(
-        () => {
-          if (!cancelled) setAvailable(true);
+        (result) => {
+          if (!stale()) setState(result.status);
         },
         (err: unknown) => {
-          if (!cancelled)
-            setAvailable(settingsErrorFacts(err).status === 404 ? false : null);
+          if (!stale())
+            setState(settingsErrorFacts(err).status === 404 ? 'off' : null);
         },
       );
     return (): void => {
       cancelled = true;
     };
-  }, [client, organizationId]);
-  return available;
+  }, [client, organizationId, baseUrl, revision]);
+  const report = useCallback((status: CloudChatsKeyState): void => {
+    generationRef.current += 1;
+    setState(status);
+  }, []);
+  return [state, report];
 }
 
 /**
@@ -109,12 +124,15 @@ export function CloudChatsKeySection({
   organizationId,
   baseUrl,
   revision,
+  onStatusChange,
 }: {
   readonly organizationId: string;
   /** Re-reads the status when the gateway address changes. */
   readonly baseUrl?: string;
   /** Re-reads the status after a key is saved elsewhere on the page. */
   readonly revision?: number;
+  /** Told every status the section settles on, read or written. */
+  readonly onStatusChange?: (status: CloudChatsKeyState) => void;
 }): JSX.Element | null {
   const client = useSettingsClient();
   const errorCopy = useSettingsErrorCopy(AI_GATEWAY_ERROR_SCOPE);
@@ -146,11 +164,13 @@ export function CloudChatsKeySection({
         (result) => {
           if (stale()) return;
           setStatus(result.status);
+          onStatusChange?.(result.status);
         },
         (err: unknown) => {
           if (stale()) return;
           if (settingsErrorFacts(err).status === 404) {
             setStatus('off');
+            onStatusChange?.('off');
           } else {
             setLoadError(errorCopy.loadFailure(err));
           }
@@ -159,7 +179,15 @@ export function CloudChatsKeySection({
     return (): void => {
       cancelled = true;
     };
-  }, [client, errorCopy, organizationId, baseUrl, revision, reads]);
+  }, [
+    client,
+    errorCopy,
+    organizationId,
+    baseUrl,
+    revision,
+    reads,
+    onStatusChange,
+  ]);
 
   const run = async (
     action: 'save' | 'remove',
@@ -175,6 +203,7 @@ export function CloudChatsKeySection({
     try {
       const result = await call();
       setStatus(result.status);
+      onStatusChange?.(result.status);
       if (action === 'save') setKey('');
       // Remove goes away with the key; keep keyboard focus on the page.
       else inputRef.current?.focus();

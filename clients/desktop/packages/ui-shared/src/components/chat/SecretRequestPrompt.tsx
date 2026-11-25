@@ -8,30 +8,27 @@ import {
   useRef,
   useState,
   type JSX,
+  type ClipboardEvent,
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
 import { AGENT_SECRET_VALUE_MAX_LENGTH } from '@canopy/protocol/agent-secrets';
-import {
-  ClipboardIcon,
-  CloseLargeIcon,
-  EyeIcon,
-  EyeOffIcon,
-  KeyIcon,
-} from '../../icons/AppIcons';
+import { ArrowUpRightIcon, EyeIcon, EyeOffIcon } from '../../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { Button } from '../Button';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { FORM_FIELD_DESCRIPTION_CLASS, FormField } from '../FormField';
+import { FormField } from '../FormField';
 import { TextArea, TextInput } from '../Field';
 import { Notice } from '../Notice';
 import { OverlayScrollArea } from '../OverlayScrollArea';
-import { SegmentedControl } from '../SegmentedControl';
 import { TextLink } from '../TextLink';
 import { useChatAppName } from '../chat-look';
 import { isCoarsePointerNow } from '../useMediaQuery';
 import { ComposerIconButton } from './ComposerIconButton';
-import { COMPOSER_PROMPT_HEADER_CLASS } from './ComposerPrompt';
+import {
+  ComposerPromptHeader,
+  closeComposerPromptOnEscape,
+} from './ComposerPromptHeader';
 
 /** One requested secret as the form shows it: metadata only. */
 export interface SecretRequestPromptItem {
@@ -69,6 +66,12 @@ export interface SecretRequestPromptProps {
   readonly errorKind: 'submit' | 'decline' | null;
   /** Why the last submission was refused, when the host knows. */
   readonly errorMessage?: string;
+  /**
+   * The request can't take any answer now: it `ended` (stopped, timed out)
+   * or was already `answered`. The form locks with a neutral notice until
+   * the host removes it.
+   */
+  readonly settled?: 'ended' | 'answered';
   readonly disconnected?: boolean;
   /**
    * The computer that keeps the values is offline, for a form answered from
@@ -76,6 +79,8 @@ export interface SecretRequestPromptProps {
    * never queued, so the form says why and stays locked until it is back.
    */
   readonly computerOffline?: boolean;
+  /** The paired computer's name, for the offline notice. */
+  readonly computerName?: string;
   /**
    * Why this viewer can't answer, when they can't (a guest, or someone who
    * can't send in the chat): the form shows locked with this hint.
@@ -88,8 +93,15 @@ export interface SecretRequestPromptProps {
 }
 
 /** Mockups §3, paired web: why the form is locked while the computer is away. */
-const COMPUTER_OFFLINE_NOTICE =
-  "Your computer is offline. Secrets go straight to it and are never queued, so you can provide them once it's back online.";
+function computerOfflineNotice(computerName: string | undefined): string {
+  return `${computerName ?? 'Your computer'} is offline. Secrets go straight to it, so provide them once it's back online.`;
+}
+
+/** Why a form that can no longer take an answer is locked. */
+const SETTLED_NOTICE = {
+  ended: 'This request has ended. Nothing was sent.',
+  answered: 'This request was already answered. Nothing was sent.',
+} as const;
 
 /** Below this, output redaction may miss a value (it matches 4+ characters). */
 const SHORT_VALUE_WARNING_LENGTH = 8;
@@ -197,15 +209,17 @@ function labelOf(item: SecretRequestPromptItem): string {
 
 // CAN-7049: a value that misses its prefix is often the wrong secret, and the
 // one that matters most is an account sign-in password typed in by habit. The
-// copy names that case plainly and never promises the hint is right.
+// helper line under the fields and the Send anyway dialog name that case, so
+// the field's own message only gives the hint, and never promises it's right.
 function mismatchCopy(prefix: string): string {
-  return `This doesn't look like the value asked for. It usually starts with ${prefix}. Never enter an account sign-in password here.`;
+  return `These values usually start with ${prefix}.`;
 }
 
 function loginHelperCopy(appName: string | undefined): string {
+  // Each note is a full sentence: they run together as one paragraph.
   return appName !== undefined && appName.length > 0
-    ? `Don't enter your account sign-in password here. ${appName} never needs it. Not sure? Choose Decline; none of these values will be sent.`
-    : "Don't enter your account sign-in password here. Not sure? Choose Decline; none of these values will be sent.";
+    ? `Never enter your account password here. ${appName} never needs it.`
+    : 'Never enter your account password here.';
 }
 
 /** A description's link, as the form shows it: the parsed target and host. */
@@ -224,7 +238,8 @@ function countOf(text: string, character: string): number {
 
 /**
  * The first standalone `https:` URL in an agent's description, as a link
- * placed after the remaining text. Only that token moves: other URLs, and
+ * placed after the text, with the URL's host left in its place. Only that
+ * token moves: other URLs, and
  * anything malformed, plain `http:`, or carrying credentials, stay text. A
  * trailing sentence mark or an unbalanced `)` stays in the text; a query,
  * fragment or balanced path parenthesis stays in the URL. A visible host
@@ -271,13 +286,13 @@ function splitDescriptionLink(description: string): {
     )
       continue;
     const start = match.index + lead;
-    let before = description.slice(0, start);
+    const before = description.slice(0, start);
     const after = description.slice(start + candidate.length);
-    // No space left before a sentence mark the URL sat in front of.
-    if (after.length === 0 || /^[\s.,;:!?)]/.test(after))
-      before = before.replace(/\s+$/, '');
+    // The host stays where the URL was so the sentence still reads; a
+    // description that was only the URL leaves no text.
+    const bare = `${before}${after}`.replace(/[\s.,;:!?()]/g, '') === '';
     return {
-      text: `${before}${after}`.trim(),
+      text: bare ? '' : `${before}${parsed.hostname}${after}`.trim(),
       link: { href: parsed.href, host: parsed.hostname },
     };
   }
@@ -298,8 +313,11 @@ interface PendingConfirmation {
 const MULTILINE_MASK_CLASS = 'secret-text-mask';
 
 const FOOTER_COPY: Record<SecretRequestPromptProps['accessMode'], string> = {
-  ask: 'Hidden from the agent. It can use the value in commands; output is redacted.',
-  full: "Available to the agent's commands. The agent could print it, so redaction is best effort.",
+  // "Hidden", never "never sees": output redaction matches the exact value,
+  // so a command that re-encodes it can get past.
+  ask: 'Hidden from the agent and command output.',
+  // Full access runs commands without approval, so nothing checks a print.
+  full: "In Full access, the agent's commands can print this value.",
   cloud: "Sent to this chat's cloud workspace and stored encrypted.",
 };
 
@@ -325,15 +343,16 @@ export function SecretRequestPrompt({
   busy,
   errorKind,
   errorMessage,
+  settled,
   disconnected = false,
   computerOffline = false,
+  computerName,
   readOnlyHint,
   onSubmit,
   onDecline,
   onClose,
 }: SecretRequestPromptProps): JSX.Element {
   const titleId = useId();
-  const pasteId = useId();
   const helperId = useId();
   const appName = useChatAppName();
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -342,10 +361,7 @@ export function SecretRequestPrompt({
   );
   const [values, setValues] = useState<Record<string, string>>({});
   const [visible, setVisible] = useState<Record<string, boolean>>({});
-  const [modes, setModes] = useState<Record<string, FieldMode>>({});
   const [attempted, setAttempted] = useState(false);
-  const [pasteOpen, setPasteOpen] = useState(false);
-  const [pasteText, setPasteText] = useState('');
   const [pasteResult, setPasteResult] = useState<string | null>(null);
   // Counts edits to values and modes, so a confirmation can tell whether the
   // submission it was asked about is still the one on screen without
@@ -361,19 +377,18 @@ export function SecretRequestPrompt({
   const activeConfirmationRef = useRef<PendingConfirmation | null>(null);
   const locked =
     busy !== null ||
+    settled !== undefined ||
     disconnected ||
     computerOffline ||
     readOnlyHint !== undefined;
-  // Locking forgets what was revealed and drops Paste .env with its text, so
-  // nothing shows in the clear again when the form unlocks without a new
-  // Reveal or Paste. Adjusted during render, so no frame shows it.
+  // Locking forgets what was revealed, so nothing shows in the clear again
+  // when the form unlocks without a new Reveal. Adjusted during render, so no
+  // frame shows it.
   const [wasLocked, setWasLocked] = useState(locked);
   if (wasLocked !== locked) {
     setWasLocked(locked);
     if (locked) {
       setVisible({});
-      setPasteOpen(false);
-      setPasteText('');
       setPasteResult(null);
     }
   }
@@ -389,17 +404,11 @@ export function SecretRequestPrompt({
     setValues((current) => ({ ...current, [name]: value }));
     setRevision((current) => current + 1);
   };
-  const setMode = (name: string, mode: FieldMode): void => {
-    cancelConfirmation();
-    setModes((current) => ({ ...current, [name]: mode }));
-    setRevision((current) => current + 1);
-  };
 
   // Values never outlive the prompt.
   useEffect(
     () => (): void => {
       setValues({});
-      setPasteText('');
     },
     [],
   );
@@ -409,12 +418,18 @@ export function SecretRequestPrompt({
   ): string | undefined =>
     computerOffline
       ? 'Unavailable while offline'
-      : item.required === false
-        ? 'Leave empty to skip'
-        : undefined;
+      : item.held === true
+        ? 'Using your saved value'
+        : item.required === false
+          ? 'Leave empty to skip'
+          : undefined;
 
+  // A held field left empty reuses the chat's value; typing replaces it.
   const modeOf = (item: SecretRequestPromptItem): FieldMode =>
-    item.held === true ? (modes[item.name] ?? 'held') : 'enter';
+    // Trimmed, as the send is: spaces alone never replace a saved value.
+    item.held === true && (values[item.name] ?? '').trim().length === 0
+      ? 'held'
+      : 'enter';
 
   const checks = useMemo(
     () =>
@@ -481,7 +496,6 @@ export function SecretRequestPrompt({
       : shownMismatches
           .map(({ item, text }) => `${labelOf(item)}: ${text}`)
           .join(' ');
-  const hasTypedField = items.some((item) => modeOf(item) === 'enter');
 
   const confirmationValid =
     confirmation !== null &&
@@ -531,12 +545,9 @@ export function SecretRequestPrompt({
         if (value.trim().length > 0) entered[item.name] = value;
       }
     }
-    // Cleared as sent, pasted text included: a failed send asks for the
-    // values again.
+    // Cleared as sent: a failed send asks for the values again.
     setValues({});
     setVisible({});
-    setPasteText('');
-    setPasteOpen(false);
     setPasteResult(null);
     setAttempted(false);
     setConfirmation(null);
@@ -605,38 +616,33 @@ export function SecretRequestPrompt({
     cancelConfirmation();
     setValues({});
     setVisible({});
-    setPasteText('');
-    setPasteOpen(false);
     setPasteResult(null);
     setAttempted(false);
     setRevision((current) => current + 1);
     onDecline();
   };
 
-  const applyPaste = (): void => {
-    cancelConfirmation();
+  /**
+   * A paste into any field that holds `.env` lines for requested names fills
+   * those fields instead, and the raw text goes nowhere, so a whole `.env`
+   * pasted by habit never becomes one value. Any other paste goes in as usual.
+   */
+  const fillFromPaste = (
+    event: ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>,
+  ): void => {
     const parsed = parseDotenvForSecrets(
-      pasteText,
-      items
-        .filter((item) => modeOf(item) === 'enter' || item.held)
-        .map((item) => item.name),
+      event.clipboardData.getData('text'),
+      items.map((item) => item.name),
     );
-    setPasteText('');
     const names = Object.keys(parsed);
-    setPasteResult(
-      names.length === 0
-        ? 'No requested names found in the pasted text.'
-        : `Filled ${names.length} of ${items.length}.`,
-    );
     if (names.length === 0) return;
+    event.preventDefault();
+    cancelConfirmation();
     setValues((current) => ({ ...current, ...parsed }));
-    setModes((current) => {
-      const next = { ...current };
-      for (const name of names) next[name] = 'enter';
-      return next;
-    });
     setRevision((current) => current + 1);
-    setPasteOpen(false);
+    setPasteResult(
+      `Filled ${names.length} of ${items.length} fields from the pasted text.`,
+    );
   };
 
   const handleFieldKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
@@ -652,28 +658,33 @@ export function SecretRequestPrompt({
     if (!isCoarsePointerNow()) firstFieldRef.current?.focus();
   }, []);
 
-  const notice = readOnlyHint
-    ? { intent: 'neutral' as const, message: readOnlyHint }
-    : computerOffline
-      ? { intent: 'neutral' as const, message: COMPUTER_OFFLINE_NOTICE }
-      : disconnected
+  const notice = settled
+    ? { intent: 'neutral' as const, message: SETTLED_NOTICE[settled] }
+    : readOnlyHint
+      ? { intent: 'neutral' as const, message: readOnlyHint }
+      : computerOffline
         ? {
             intent: 'neutral' as const,
-            message: 'Reconnect to provide secrets.',
+            message: computerOfflineNotice(computerName),
           }
-        : errorKind === 'submit'
+        : disconnected
           ? {
-              intent: 'destructive' as const,
-              message: errorMessage
-                ? `${errorMessage} Enter the values again.`
-                : "Couldn't send the secrets. Enter them again.",
+              intent: 'neutral' as const,
+              message: 'Reconnect to continue.',
             }
-          : errorKind === 'decline'
+          : errorKind === 'submit'
             ? {
                 intent: 'destructive' as const,
-                message: "Couldn't decline. The request is still waiting.",
+                message: errorMessage
+                  ? `${errorMessage} Enter the values again.`
+                  : "Couldn't send the secrets. Enter them again.",
               }
-            : null;
+            : errorKind === 'decline'
+              ? {
+                  intent: 'destructive' as const,
+                  message: "Couldn't decline. The request is still waiting.",
+                }
+              : null;
 
   const title =
     items.length === 1
@@ -685,16 +696,13 @@ export function SecretRequestPrompt({
   if (confirmationOpen) {
     const [only] = mismatched;
     const whole =
-      provideCount > 1
-        ? " Sending will provide all the values you've supplied."
-        : '';
+      provideCount > 1 ? ` This sends all ${provideCount} values.` : '';
     confirmationMessage =
       mismatched.length === 1 && only !== undefined ? (
         <span className={REPLAY_BLOCK_CLASS}>
-          The value for “{labelOf(only.item)}” doesn't start with{' '}
+          “{labelOf(only.item)}” doesn't start with{' '}
           <span className="font-mono">{only.mismatch.prefix}</span>, so it may
-          be the wrong value. If it's an account sign-in password, choose
-          Cancel.
+          be the wrong value.
           {whole}
         </span>
       ) : (
@@ -711,9 +719,7 @@ export function SecretRequestPrompt({
               </li>
             ))}
           </ul>
-          <span>
-            If any is an account sign-in password, choose Cancel.{whole}
-          </span>
+          {whole && <span>{whole.trim()}</span>}
         </span>
       );
   }
@@ -724,7 +730,10 @@ export function SecretRequestPrompt({
       data-testid="chat-secret-request-prompt"
       role="group"
       aria-labelledby={titleId}
-      className="flex flex-col gap-2 pb-1 text-pretty"
+      // pb-3 plus the box's 4px puts Decline and Provide 16px from the
+      // bottom, as far as they sit from the side. The 8px the other prompts
+      // use fits a round send button in the corner, not a row of labels.
+      className="flex flex-col gap-2 pb-3 text-pretty"
       onKeyDown={(event): void => {
         // The confirmation portals out but its key events still bubble here
         // through React. Leave them to the dialog: its own Escape closes only
@@ -733,24 +742,12 @@ export function SecretRequestPrompt({
           if (event.key === 'Enter' && event.repeat) event.preventDefault();
           return;
         }
-        if (event.key !== 'Escape' || event.defaultPrevented) return;
-        // Another portaled overlay inside this tree answers its own Escape.
-        // The window's own `Node`, so a popped-out window's nodes match.
-        const view = event.currentTarget.ownerDocument.defaultView;
-        if (
-          view !== null &&
-          event.target instanceof view.Node &&
-          !event.currentTarget.contains(event.target)
-        )
-          return;
-        event.preventDefault();
-        close();
+        closeComposerPromptOnEscape(event, close);
       }}
     >
-      <div className={`${COMPOSER_PROMPT_HEADER_CLASS} items-start`}>
-        <span aria-hidden className="shrink-0 pt-1.5 fg-secondary">
-          <KeyIcon size={16} />
-        </span>
+      <ComposerPromptHeader
+        close={{ onClose: close, testId: 'chat-secret-request-close' }}
+      >
         <div className="flex min-w-0 flex-1 flex-col gap-0.5 py-1">
           <div id={titleId} className="text-s font-medium fg-primary">
             <span className={REPLAY_BLOCK_CLASS}>{title}</span>
@@ -761,34 +758,7 @@ export function SecretRequestPrompt({
             {reason}
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="compact"
-            disabled={locked}
-            aria-expanded={pasteOpen && !locked}
-            aria-controls={pasteId}
-            onClick={(): void => {
-              setPasteOpen((open) => !open);
-              setPasteResult(null);
-            }}
-            data-testid="chat-secret-request-paste-toggle"
-          >
-            <ClipboardIcon size={14} />
-            Paste .env
-          </Button>
-          <ComposerIconButton
-            capsule
-            tone="strong"
-            aria-label="Close"
-            onClick={close}
-            data-testid="chat-secret-request-close"
-          >
-            <CloseLargeIcon size={16} />
-          </ComposerIconButton>
-        </div>
-      </div>
+      </ComposerPromptHeader>
 
       <form
         className="flex flex-col gap-3 px-3"
@@ -799,48 +769,20 @@ export function SecretRequestPrompt({
           requestSubmit();
         }}
       >
-        {pasteOpen && !locked && (
-          <div id={pasteId} className="flex flex-col gap-2">
-            <FormField
-              label="Paste .env lines"
-              description="Only the requested names are used. The text is cleared after reading."
-            >
-              {(control) => (
-                <div className={REPLAY_BLOCK_CLASS}>
-                  <TextArea
-                    {...control}
-                    mono
-                    rows={3}
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={pasteText}
-                    onChange={(event): void => setPasteText(event.target.value)}
-                    data-testid="chat-secret-request-paste"
-                  />
-                </div>
-              )}
-            </FormField>
-            <div>
-              <Button
-                type="button"
-                size="compact"
-                disabled={locked || pasteText.trim().length === 0}
-                onClick={applyPaste}
-                data-testid="chat-secret-request-paste-apply"
-              >
-                Fill fields
-              </Button>
-            </div>
-          </div>
-        )}
         {pasteResult !== null && (
           <div className="text-xs fg-secondary" role="status">
             {pasteResult}
           </div>
         )}
 
-        {/* Many secrets scroll within the box; the actions stay in view. */}
-        <OverlayScrollArea viewportClassName="max-h-[min(40vh,24rem)]">
+        {/* Many secrets scroll within the box; the actions stay in view.
+            The list's 4px keeps focus rings unclipped; -mx-1 takes it back
+            so fields line up with the title and notes. */}
+        <OverlayScrollArea
+          className="-mx-1"
+          // dvh: with a phone's keyboard open, 40vh runs past the screen.
+          viewportClassName="max-h-[min(40dvh,24rem)]"
+        >
           <div className="flex flex-col gap-3 p-1">
             {items.map((item) => {
               const mode = modeOf(item);
@@ -889,11 +831,14 @@ export function SecretRequestPrompt({
                         >
                           {labelOf(item)}
                         </span>
-                        <span
-                          className={`${REPLAY_BLOCK_CLASS} rounded-sm bg-subtle px-1.5 py-0.5 font-mono text-xs fg-secondary`}
-                        >
-                          {item.name}
-                        </span>
+                        {/* Without a label, the name is the label already. */}
+                        {labelOf(item) !== item.name && (
+                          <span
+                            className={`${REPLAY_BLOCK_CLASS} rounded-sm bg-subtle px-1.5 py-0.5 font-mono text-xs fg-secondary`}
+                          >
+                            {item.name}
+                          </span>
+                        )}
                       </span>
                     }
                     {...(item.required === false
@@ -909,13 +854,21 @@ export function SecretRequestPrompt({
                               {description.link !== null && (
                                 <>
                                   {description.text.length > 0 ? ' ' : null}
+                                  {/* The host is the part worth reading: where
+                                      the link goes. "Open" keeps it from
+                                      reading as a bare URL; the accessible
+                                      name adds what it's for. */}
                                   <TextLink
                                     href={description.link.href}
                                     variant="inline"
                                     replayBlock
+                                    withIcon
+                                    className="align-bottom"
+                                    aria-label={`Open ${description.link.host} to find ${labelOf(item)}`}
                                     data-testid={`chat-secret-request-description-link-${item.name}`}
                                   >
-                                    Where to find it ({description.link.host})
+                                    Open {description.link.host}
+                                    <ArrowUpRightIcon size={12} aria-hidden />
                                   </TextLink>
                                 </>
                               )}
@@ -927,11 +880,14 @@ export function SecretRequestPrompt({
                     dataTestId={`chat-secret-request-field-${item.name}`}
                   >
                     {(formControl) => {
-                      // Every typed field also points at the login helper.
+                      // Every field also points at the password warning.
                       const control = {
                         ...formControl,
                         'aria-describedby': [
                           formControl['aria-describedby'],
+                          mode === 'held'
+                            ? `${helperId}-${item.name}-held`
+                            : undefined,
                           helperId,
                         ]
                           .filter(
@@ -940,38 +896,8 @@ export function SecretRequestPrompt({
                           )
                           .join(' '),
                       };
-                      return item.held === true && mode === 'held' ? (
-                        <SegmentedControl<FieldMode>
-                          label="Value source"
-                          describedBy={`${helperId}-${item.name}-label`}
-                          value={mode}
-                          semantics="radio"
-                          onChange={(next): void => setMode(item.name, next)}
-                          options={[
-                            { value: 'held', label: "Use this chat's value" },
-                            { value: 'enter', label: 'Enter new' },
-                          ]}
-                        />
-                      ) : (
+                      return (
                         <div className="flex flex-col gap-1.5">
-                          {item.held === true && (
-                            <SegmentedControl<FieldMode>
-                              label="Value source"
-                              describedBy={`${helperId}-${item.name}-label`}
-                              value={mode}
-                              semantics="radio"
-                              onChange={(next): void =>
-                                setMode(item.name, next)
-                              }
-                              options={[
-                                {
-                                  value: 'held',
-                                  label: "Use this chat's value",
-                                },
-                                { value: 'enter', label: 'Enter new' },
-                              ]}
-                            />
-                          )}
                           <div
                             className={
                               item.kind === 'multiline' && !shown
@@ -998,6 +924,7 @@ export function SecretRequestPrompt({
                                     : undefined
                                 }
                                 placeholder={fieldPlaceholder(item)}
+                                onPaste={fillFromPaste}
                                 onChange={(event): void =>
                                   setValue(item.name, event.target.value)
                                 }
@@ -1028,6 +955,7 @@ export function SecretRequestPrompt({
                                 placeholder={fieldPlaceholder(item)}
                                 trailing={toggle}
                                 onKeyDown={handleFieldKeyDown}
+                                onPaste={fillFromPaste}
                                 onChange={(event): void =>
                                   setValue(item.name, event.target.value)
                                 }
@@ -1040,6 +968,14 @@ export function SecretRequestPrompt({
                       );
                     }}
                   </FormField>
+                  {item.held === true && mode === 'held' && (
+                    <span
+                      id={`${helperId}-${item.name}-held`}
+                      className="text-xs fg-tertiary"
+                    >
+                      Enter a new value to change it.
+                    </span>
+                  )}
                   {mode === 'enter' &&
                     error === undefined &&
                     (check.ok || check.warning) && (
@@ -1060,18 +996,33 @@ export function SecretRequestPrompt({
           </div>
         </OverlayScrollArea>
 
-        {/* Once, outside the scroll area, so it stays in view; every typed
-            field points at it. Kept for `password` fields too: a database
-            password can belong here, an account sign-in password can't. */}
-        {hasTypedField && (
-          <p
+        {/* One paragraph of notes above the actions, wrapping as it needs:
+            where the value goes, then the password warning a step stronger
+            than the fine print. Every field points at the warning.
+            "Account" password, since a database password can belong here
+            and a sign-in password can't. */}
+        <p className="text-xs fg-tertiary">
+          <span data-testid="chat-secret-request-footer">
+            {FOOTER_COPY[accessMode]}
+          </span>{' '}
+          {storage === 'session' && (
+            <>
+              <span data-testid="chat-secret-request-session-storage">
+                {/* Secure storage is unavailable: values live in memory
+                    and go when the app quits. */}
+                Only available in this session.
+              </span>{' '}
+            </>
+          )}
+          <span
             id={helperId}
-            className={FORM_FIELD_DESCRIPTION_CLASS}
+            className="fg-secondary"
             data-testid="chat-secret-request-login-helper"
           >
             {loginHelperCopy(appName)}
-          </p>
-        )}
+          </span>
+        </p>
+
         {/* Always mounted so a new mismatch is announced politely; the text
             holds steady while the same fields mismatch. Agent-supplied
             labels and prefixes stay out of replay. */}
@@ -1099,6 +1050,7 @@ export function SecretRequestPrompt({
             type="button"
             size="compact"
             disabled={locked}
+            aria-busy={busy === 'decline'}
             onClick={decline}
             data-testid="chat-secret-request-decline"
           >
@@ -1109,6 +1061,7 @@ export function SecretRequestPrompt({
             variant="primary"
             size="compact"
             disabled={locked || (attempted && !canSubmit)}
+            aria-busy={busy === 'submit'}
             data-testid="chat-secret-request-provide"
           >
             {/* The ellipsis: this opens a confirmation, it doesn't send. */}
@@ -1135,23 +1088,6 @@ export function SecretRequestPrompt({
             cancelTestId="chat-secret-request-mismatch-cancel"
           />
         )}
-
-        <div className="flex items-start gap-2 text-xs fg-tertiary">
-          <span aria-hidden className="shrink-0 pt-0.5">
-            <EyeOffIcon size={12} />
-          </span>
-          <div className="flex flex-col gap-0.5">
-            <span data-testid="chat-secret-request-footer">
-              {FOOTER_COPY[accessMode]}
-            </span>
-            {storage === 'session' && (
-              <span data-testid="chat-secret-request-session-storage">
-                Secure storage is unavailable, so these values are kept only
-                until you quit.
-              </span>
-            )}
-          </div>
-        </div>
       </form>
     </div>
   );

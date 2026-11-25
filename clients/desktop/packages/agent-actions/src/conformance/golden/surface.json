@@ -435,6 +435,8 @@
                   "enabled": { "type": "boolean" },
                   "onlyThisGateway": { "type": "boolean" },
                   "promptCachePassthrough": { "type": "boolean" },
+                  "useInCloudChats": { "type": "boolean" },
+                  "useOnThisComputer": { "type": "boolean" },
                   "addDiscovered": { "const": true }
                 },
                 "additionalProperties": false

@@ -21,6 +21,7 @@
     "./components/ButtonLink": "./src/components/ButtonLink.tsx",
     "./components/ProductPreviewParts": "./src/components/ProductPreviewParts.tsx",
     "./components/chat/CompactTranscriptMessage": "./src/components/chat/CompactTranscriptMessage.tsx",
+    "./components/chat/TurnHoverScope": "./src/components/chat/TurnHoverScope.tsx",
     "./components/page-header-copy": "./src/components/page-header-copy.ts",
     "./components/tooltip-handoff": "./src/components/tooltip-handoff.tsx",
     "./components/AutomationDefinitionSummary": "./src/components/AutomationDefinitionSummary.tsx",

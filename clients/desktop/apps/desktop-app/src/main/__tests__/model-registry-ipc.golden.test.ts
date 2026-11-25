@@ -152,6 +152,15 @@ function fakeSources(): DesktopProviderSources {
       antigravity: true,
       opencode: true,
     }),
+    platformSupported: () => ({
+      claude: true,
+      codex: true,
+      ollama: true,
+      cursor: true,
+      copilot: true,
+      antigravity: true,
+      opencode: true,
+    }),
     readAuthState: () => Promise.resolve('ready'),
     readUsage: () =>
       Promise.resolve({ updatedAt: '2026-11-06T00:00:00.000Z', providers: [] }),

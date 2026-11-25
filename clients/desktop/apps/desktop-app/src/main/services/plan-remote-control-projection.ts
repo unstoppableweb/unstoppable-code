@@ -25,7 +25,7 @@ export function toPlanSummary(plan: TrackedPlanData): RemoteControlPlanSummary {
   };
 }
 
-export function toPlanDetail(plan: TrackedPlanData): RemoteControlPlanDetail {
+function toPlanDetail(plan: TrackedPlanData): RemoteControlPlanDetail {
   return {
     ...toPlanSummary(plan),
     // Transport plan §1.4: `content` is the canonical markdown body field.

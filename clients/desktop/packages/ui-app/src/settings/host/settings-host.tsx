@@ -137,6 +137,60 @@ export interface AiGatewayConnectionKeyProps {
   readonly revision: number;
 }
 
+/** Sign-in found one AI gateway on the account and another on this device. */
+export interface DeviceAiGatewayChoice {
+  readonly deviceBaseUrl: string;
+  readonly deviceDisplayName: string | null;
+  readonly accountBaseUrl: string;
+  readonly accountDisplayName: string | null;
+  /** The account gateway revision shown; replacing it must match. */
+  readonly accountRevision: string;
+}
+
+/** `device` replaces the account's gateway with this device's; `account` keeps it. */
+export type DeviceAiGatewayDecision = 'device' | 'account';
+
+/** The pending sign-in choice of a host that keeps a device AI gateway. */
+export interface DeviceAiGatewayChoicePort {
+  /** The pending choice, or null when there is none. */
+  read(): Promise<DeviceAiGatewayChoice | null>;
+  /**
+   * Rejects with a `SettingsOperationError` when the choice didn't apply,
+   * including a 409 `stale_revision` when the account's gateway changed
+   * since `accountRevision` was read.
+   */
+  choose(
+    decision: DeviceAiGatewayDecision,
+    accountRevision: string,
+  ): Promise<void>;
+}
+
+/** This computer's own key for an AI gateway, as its status row reads it. */
+export type AiGatewayDeviceKeyStatus =
+  | 'loading'
+  | 'saved'
+  | 'rejected'
+  | 'missing'
+  /** A key saved for another URL of the same gateway; it can't send. */
+  | 'old-url'
+  /** This computer doesn't use the gateway, whatever key it holds. */
+  | 'not-used'
+  | 'unavailable';
+
+export interface AiGatewayDeviceKeyInput {
+  readonly organizationId: string;
+  readonly baseUrl: string;
+  /** Bumped after a key is saved on the page, so the host reads it again. */
+  readonly revision: number;
+}
+
+/** Whether this computer uses a Personal AI gateway (CAN-7644). */
+export interface AiGatewayDeviceUse {
+  /** `null` until this computer's choice is read. */
+  readonly used: boolean | null;
+  setUsed(used: boolean): Promise<void>;
+}
+
 export interface SettingsUiHost {
   /** Fixed-table hosted settings data access. */
   readonly client: AccountOrganizationSettingsClient;
@@ -172,6 +226,27 @@ export interface SettingsUiHost {
    * the configured gateway asks for the key in the desktop app.
    */
   readonly AiGatewayConnectionKey?: ComponentType<AiGatewayConnectionKeyProps>;
+  /**
+   * The choice between the account's AI gateway and one set up on this
+   * device before sign-in. Only a host that keeps a device gateway supplies it.
+   */
+  readonly deviceAiGatewayChoice?: DeviceAiGatewayChoicePort;
+  /**
+   * The state of this device's own key for an AI gateway, for the page's
+   * "This computer" status. Only a host that is itself a device running
+   * agents supplies it; it is the same for the host's whole lifetime.
+   */
+  readonly useAiGatewayDeviceKey?: (
+    input: AiGatewayDeviceKeyInput,
+  ) => AiGatewayDeviceKeyStatus;
+  /**
+   * Whether this device uses the account's Personal AI gateway, saved on the
+   * device only. A device host supplies it and returns `null` while the
+   * gateway isn't the account's (signed out, or another organization).
+   */
+  readonly useAiGatewayDeviceUse?: (
+    organizationId: string,
+  ) => AiGatewayDeviceUse | null;
 }
 
 const SettingsHostContext = createContext<SettingsUiHost | null>(null);
@@ -248,6 +323,37 @@ export function useSettingsAiGatewayConnectionKey():
   | ComponentType<AiGatewayConnectionKeyProps>
   | undefined {
   return useSettingsHost().AiGatewayConnectionKey;
+}
+
+/** The host's device AI gateway choice, when it keeps a device gateway. */
+export function useSettingsDeviceAiGatewayChoice():
+  | DeviceAiGatewayChoicePort
+  | undefined {
+  return useSettingsHost().deviceAiGatewayChoice;
+}
+
+const NO_DEVICE_KEY = (): null => null;
+
+/**
+ * This device's key state for an AI gateway, or `null` on a host with no
+ * device of its own. The host's port never changes, so the hook it names is
+ * called on every render either way.
+ */
+export function useSettingsAiGatewayDeviceKey(
+  input: AiGatewayDeviceKeyInput,
+): AiGatewayDeviceKeyStatus | null {
+  const useDeviceKey = useSettingsHost().useAiGatewayDeviceKey ?? NO_DEVICE_KEY;
+  return useDeviceKey(input);
+}
+
+const NO_DEVICE_USE = (): null => null;
+
+/** This device's "Use on this computer" choice, or `null` where none applies. */
+export function useSettingsAiGatewayDeviceUse(
+  organizationId: string,
+): AiGatewayDeviceUse | null {
+  const useDeviceUse = useSettingsHost().useAiGatewayDeviceUse ?? NO_DEVICE_USE;
+  return useDeviceUse(organizationId);
 }
 
 export function useSettingsPrivacy(): SettingsReplayPrivacy {

@@ -44,6 +44,19 @@ import {
 } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 
+/**
+ * The chat width as last read or saved. The controls mount again on every
+ * switch to a worktree; starting from the known width, the read that
+ * confirms it renders nothing, and the menu never shows the other width
+ * first.
+ */
+let lastKnownChatWidth: 'default' | 'full' = 'default';
+
+function rememberChatWidth(width: unknown): 'default' | 'full' {
+  lastKnownChatWidth = width === 'full' ? 'full' : 'default';
+  return lastKnownChatWidth;
+}
+
 interface WorkspaceLayoutControlsProps {
   projectId: string;
   worktreeId: string;
@@ -65,7 +78,9 @@ export function WorkspaceLayoutControls({
   const { terminalPty } = useScopeCapabilities({ projectId });
   const [menuOpen, setMenuOpen] = useState(false);
   const [conversionBusy, setConversionBusy] = useState(false);
-  const [chatWidth, setChatWidth] = useState<'default' | 'full'>('default');
+  const [chatWidth, setChatWidth] = useState<'default' | 'full'>(
+    lastKnownChatWidth,
+  );
   const [widthBusy, setWidthBusy] = useState(false);
   useEffect(() => {
     let active = true;
@@ -76,7 +91,7 @@ export function WorkspaceLayoutControls({
         .loadPreferences()
         .then((prefs) => {
           if (active && request === version)
-            setChatWidth(prefs.chatWidth === 'full' ? 'full' : 'default');
+            setChatWidth(rememberChatWidth(prefs.chatWidth));
         })
         .catch(() => {
           /* Keep the last confirmed preference on read failure. */
@@ -96,7 +111,7 @@ export function WorkspaceLayoutControls({
     setWidthBusy(true);
     try {
       const prefs = await window.api.savePreferences({ chatWidth: next });
-      setChatWidth(prefs.chatWidth === 'full' ? 'full' : 'default');
+      setChatWidth(rememberChatWidth(prefs.chatWidth));
       applyChatWidth(prefs.chatWidth);
       emitPreferencesUpdated(prefs);
     } catch (error) {

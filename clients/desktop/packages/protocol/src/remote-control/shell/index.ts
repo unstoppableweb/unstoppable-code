@@ -15,6 +15,8 @@ import type { AutoDeleteAttention } from './auto-delete-attention';
 import type { WorktreeRecoveryRequest } from './worktree-recovery';
 import type { CoworkFolderMissing } from '../../canopy-core/core/workspace/cowork-folder';
 import { z } from 'zod';
+import type { ClaudeConnectorAvailability } from './claude-connector-availability';
+export * from './claude-connector-availability';
 import type { UsageLimitsSnapshot } from '../../provider-usage';
 export * from './w5-recovery';
 import type { W5RecoveryStatus } from './w5-recovery';
@@ -7691,6 +7693,8 @@ export interface RemoteControlStandaloneChatSummary extends RemoteControlStandal
   executionHarness?: AgentExecutionHarness;
   /** Whether persisted context or pending execution prevents changing harness. */
   modelHarnessLocked?: boolean;
+  /** Availability for this chat’s last observed Claude launch, not connector health. */
+  claudeConnectorAvailability?: ClaudeConnectorAvailability;
   /**
    * Current model id (registry key), distinct from {@link modelLabel} which is
    * the human-readable display string. Lets the portal's standalone model
@@ -8393,6 +8397,16 @@ export interface RemoteControlChatEventPayload {
 export interface RemoteControlAppAdvisorChatEventPayload {
   chatId: string;
   message: RemoteControlChatMessage;
+}
+
+/** One Orchestrator Work Entry, open chats or not (CAN-7604). */
+export interface RemoteControlAppAdvisorWorkEntry {
+  readonly id: string;
+  readonly title?: string;
+  readonly createdAt?: string;
+  readonly lastMessageAt?: string;
+  /** The entry's place in the desktop's registry order. */
+  readonly order: number;
 }
 
 /**
@@ -9451,6 +9465,8 @@ export interface RemoteControlChatSummaryEntity {
   executionHarness?: AgentExecutionHarness;
   /** Whether persisted context or pending execution prevents changing harness. */
   modelHarnessLocked?: boolean;
+  /** Availability for this chat’s last observed Claude launch, not connector health. */
+  claudeConnectorAvailability?: ClaudeConnectorAvailability;
   /** For multi-repo workspaces, the currently selected repo for this chat. */
   selectedRepoId?: string;
   /** True when this is the active chat for its scope (e.g. drives sidebar selection). */
@@ -10163,6 +10179,7 @@ export interface RemoteControlSessionShellState {
       executionHarness?: AgentExecutionHarness;
       /** Whether persisted context or pending execution prevents changing harness. */
       modelHarnessLocked?: boolean;
+      claudeConnectorAvailability?: ClaudeConnectorAvailability;
       /**
        * Current model id (registry key), distinct from {@link modelLabel} which
        * is the human-readable display string. Lets the standalone/cowork model
@@ -10223,6 +10240,13 @@ export interface RemoteControlSessionShellState {
    * Optional and purely additive — pre-App-Advisor snapshots omit it.
    */
   appAdvisorChats?: RemoteControlAppAdvisorChatSummary[];
+  /**
+   * Every Orchestrator Work Entry on the paired desktop, in registry order,
+   * including those with no open chat (CAN-7604), so an entry whose chats
+   * all closed, such as Slack conversations, stays in the nav. Optional and
+   * additive: without it the nav groups entries from `appAdvisorChats`.
+   */
+  appAdvisorWorkEntries?: RemoteControlAppAdvisorWorkEntry[];
   /** App Advisor scope membership, independent of the workspace scopes. */
   appAdvisorItemGroups?: SidebarItemGroup[];
   todoLists?: RemoteControlChatTodoProjection[];

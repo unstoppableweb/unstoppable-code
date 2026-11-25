@@ -310,12 +310,45 @@ export interface CanopyOrgBillingState {
   trialEndedAt?: string;
 }
 
+/**
+ * The Personal gateway's configuration, on or off. `baseUrl` is null when no
+ * gateway is configured, so a client can tell a removed gateway from one that
+ * is turned off, and both from a server that predates this field (absent).
+ */
+export interface PersonalModelGatewayConfig {
+  organizationId: string;
+  enabled: boolean;
+  baseUrl: string | null;
+}
+
+/**
+ * One organization's gateway as every member may see it, on or off. The URL
+ * stays with members the organization offers it to (its enforced policy), so
+ * this carries only a fingerprint: the lowercase hex SHA-256 of the gateway URL
+ * after {@link normalizeModelGatewayBaseUrl}, present while one is configured.
+ */
+export interface OrganizationModelGatewayConfig {
+  organizationId: string;
+  enabled: boolean;
+  configured: boolean;
+  baseUrlFingerprint?: string;
+}
+
 export interface CanopyAccountResponse {
   /** External ID of the personal organization, excluded from visible teams. */
   personalOrganizationId?: string;
+  /** Present only while the Personal gateway is on: clients route through it. */
   personalModelGateway?: {
     organizationId: string;
   } & ModelGatewayEnforcedPolicy;
+  /** Present whenever the Personal organization exists. */
+  personalModelGatewayConfig?: PersonalModelGatewayConfig;
+  /**
+   * One entry per organization the member belongs to. Absent from a server
+   * that predates it; otherwise an organization missing from it, or with
+   * `configured: false`, has no gateway.
+   */
+  organizationModelGatewayConfigs?: OrganizationModelGatewayConfig[];
   account: CanopyServerAccountInfo;
   capabilities: readonly string[];
   organizations: CanopyOrganizationSummary[];

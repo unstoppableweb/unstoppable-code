@@ -35,9 +35,9 @@ import { activityProjectId } from './schedule-filter';
 
 /**
  * The desktop Library rows (CAN-3981): a pure projection over what the
- * renderer already loads. Every automation is a row and every pipeline is a
- * row; a pipeline and the automations that run it are never folded together.
- * Nothing here reads or writes a store, so the page passes in the current
+ * renderer already loads. Every automation is a row, and so is every
+ * pipeline no listed automation runs: a user pipeline that one does shows
+ * only as the chain of that automation's row. Nothing here reads or writes a store, so the page passes in the current
  * context's activities, pipelines and executions.
  */
 
@@ -475,13 +475,11 @@ export function compactAutomationTrigger(
 
 function automationActions(
   activity: ScheduledActivity,
+  opensWorkflow: boolean,
 ): readonly WorkflowLibraryAction[] {
-  const actions: WorkflowLibraryAction[] = [
-    'toggle',
-    'run',
-    'edit',
-    'view-runs',
-  ];
+  const actions: WorkflowLibraryAction[] = ['toggle', 'run', 'edit'];
+  if (opensWorkflow) actions.push('open-workflow');
+  actions.push('view-runs');
   if (canDuplicateAutomation(activity)) actions.push('duplicate');
   // A usage-limit resume binds to a local execution, so it is not shared.
   if (activity.action.type !== 'pipeline_execution_resume') {
@@ -497,6 +495,21 @@ function projectAutomationRow(
   input: LibraryProjectionInput,
 ): WorkflowLibraryRow {
   const trigger = automationTrigger(activity, input.locale);
+  // The pipeline this row stands for has no row of its own, so its other
+  // triggers still find the workflow in the Trigger filter.
+  const runs = scheduledUserPipeline(activity, input.pipelines);
+  const triggers = runs
+    ? Array.from(
+        new Set([
+          trigger.kind,
+          ...pipelineTriggerKinds(runs.triggerTypes ?? []),
+        ]),
+      )
+    : [trigger.kind];
+  // Search still finds it by the pipeline's name and description.
+  const searchText = runs
+    ? [runs.name, runs.description ?? ''].join('\n').trim()
+    : '';
   const chain = automationChain(activity.action, input);
   const installed = activity.installedFrom !== undefined;
   const sharer = installed ? input.sharerForInstalled?.(activity) : undefined;
@@ -518,11 +531,12 @@ function projectAutomationRow(
     key: automationLibraryKey(activity.id),
     kind: 'automation',
     name: activity.name,
-    triggers: [trigger.kind],
+    triggers,
     triggerText: trigger.text,
     // An If command is the automation's own gate, shown before its action.
     steps: activity.ifCommand ? ['gate', ...chain.steps] : chain.steps,
     summary: chain.summary,
+    ...(searchText ? { searchText } : {}),
     // A copy keeps its suffix even after the share is revoked.
     source: installed ? 'shared' : 'mine',
     ...(installed
@@ -538,7 +552,7 @@ function projectAutomationRow(
     enabled: activity.enabled,
     ...(projectId ? { projectId } : {}),
     ...(projectName ? { projectName } : {}),
-    actions: automationActions(activity),
+    actions: automationActions(activity, runs !== undefined),
   };
 }
 
@@ -776,6 +790,39 @@ export function workflowDeleteMessage({
     .join(' ');
 }
 
+/**
+ * The listed user pipeline a schedule runs, outside a workflow page. Its
+ * Library row is the schedule's row, whose Open workflow opens it.
+ */
+export function scheduledUserPipeline(
+  activity: Pick<ScheduledActivity, 'action' | 'workflowSchedule'>,
+  pipelines: readonly PipelineInfo[],
+): PipelineInfo | undefined {
+  const { action } = activity;
+  if (activity.workflowSchedule !== undefined) return undefined;
+  if (action.type !== 'worktree_pipeline') return undefined;
+  const target = findTargetPipeline(action, pipelines);
+  return target?.source === 'user' ? target : undefined;
+}
+
+/**
+ * User pipelines a listed schedule runs. Each is already that schedule row's
+ * chain, so listing it again as a Manual row shows one workflow twice. Only
+ * listed schedules count: one in another context leaves the pipeline its own
+ * row here.
+ */
+function scheduledUserPipelineIds(
+  activities: readonly ScheduledActivity[],
+  pipelines: readonly PipelineInfo[],
+): Set<string> {
+  return new Set(
+    activities.flatMap((activity) => {
+      const pipeline = scheduledUserPipeline(activity, pipelines);
+      return pipeline ? [pipeline.id] : [];
+    }),
+  );
+}
+
 /** Every Library row for the current context, automations then pipelines. */
 export function projectLibraryRows(
   input: LibraryProjectionInput,
@@ -825,12 +872,17 @@ export function projectLibraryRows(
   const viewerId = input.viewerId;
   const authorAutomationIds = authorShareRemoteIds(input.activities, viewerId);
   // Only a listed local copy absorbs its share: one hidden under its
-  // automation or Workflow page leaves the share visible.
-  const listedPipelines = withoutAutomationOwnedPipelines(
+  // automation or Workflow page leaves the share visible. One shown as a
+  // listed schedule's chain still absorbs it, so that workflow stays one row.
+  const unownedPipelines = withoutAutomationOwnedPipelines(
     input.pipelines,
     hiddenPipelineIds,
   );
-  const authorPipelineIds = authorShareRemoteIds(listedPipelines, viewerId);
+  const authorPipelineIds = authorShareRemoteIds(unownedPipelines, viewerId);
+  const listedPipelines = withoutAutomationOwnedPipelines(
+    unownedPipelines,
+    scheduledUserPipelineIds(input.activities, input.pipelines),
+  );
   const pipelines = listedPipelines.filter(
     (pipeline) =>
       !(

@@ -1,7 +1,10 @@
 import { classifyError } from '@canopy/protocol/app-errors/classification';
 import { randomBytes } from 'node:crypto';
 import type { DeviceKind } from '@canopy/protocol/device-relay';
-import type { HostedDelegation } from '@canopy/protocol/remote-control';
+import type {
+  HostedDelegation,
+  HostedFirstPartyClient,
+} from '@canopy/protocol/remote-control';
 import type { DeviceKeyPair } from '../crypto/device-key';
 import {
   assertHello1Sender,
@@ -145,6 +148,11 @@ export interface SessionGrant {
   readonly rootDeviceId: string | null;
   /** Milliseconds since the epoch the grant lapses at, or null. */
   readonly expiresAt: number | null;
+  /**
+   * The first-party server caller a verified v2 delegation names (CAN-7604),
+   * such as the web's Slack worker. Absent for every other session.
+   */
+  readonly firstPartyClient?: HostedFirstPartyClient;
 }
 
 /**
@@ -165,13 +173,25 @@ function sameGrant(left: SessionGrant, right: SessionGrant): boolean {
   return (
     left.kind === right.kind &&
     left.kindAuthenticated === right.kindAuthenticated &&
-    left.rootDeviceId === right.rootDeviceId
+    left.rootDeviceId === right.rootDeviceId &&
+    left.firstPartyClient === right.firstPartyClient
   );
+}
+
+/** How often a session acknowledges received data. */
+export interface AckCadence {
+  bytes: number;
+  intervalMs: number;
 }
 
 export interface SecureSessionOptions {
   /** Overrides {@link RESEND_BUFFER_BYTES}, for tests. */
   resendBufferBytes?: number;
+  /**
+   * Overrides {@link ACK_BYTES} and {@link ACK_INTERVAL_MS}, for tests of a
+   * peer that acknowledges late.
+   */
+  ackCadence?: AckCadence;
 }
 
 interface RetainedFrame {
@@ -200,6 +220,7 @@ export class SecureSession {
     (reason: SessionCloseReason) => void
   >();
   private readonly stateListeners = new Set<(state: SessionState) => void>();
+  private readonly heldReleaseListeners = new Set<() => void>();
   private closedReason: SessionCloseReason | null = null;
   private lastReceivedAtValue = Date.now();
   /** When the handshake finished (wall clock). */
@@ -212,6 +233,7 @@ export class SecureSession {
   private retainedBytes = 0;
   private readonly resendBufferBytes: number;
   private unackedBytes = 0;
+  private readonly ackCadence: AckCadence;
   private ackTimer: ReturnType<typeof setTimeout> | null = null;
   /** Closed while suspended, still holding frames for the peer's resume. */
   private lingering = false;
@@ -227,6 +249,10 @@ export class SecureSession {
     this.channel = new SecureChannel(handshake.sendKey, handshake.receiveKey);
     this.dataHeader = envelopeHeader('data', sessionId);
     this.resendBufferBytes = options.resendBufferBytes ?? RESEND_BUFFER_BYTES;
+    this.ackCadence = options.ackCadence ?? {
+      bytes: ACK_BYTES,
+      intervalMs: ACK_INTERVAL_MS,
+    };
     // Held from the first frame, so a drop right after the hello can resume;
     // released at once if the peers do not negotiate it.
     this.retaining = handshake.purpose === 'control';
@@ -299,6 +325,21 @@ export class SecureSession {
     return () => this.closeListeners.delete(listener);
   }
 
+  /**
+   * Sealed bytes held for a resume that the peer has not acknowledged yet.
+   * Senders that can wait, such as tunnel streams, hold back while it is
+   * high, so the re-send buffer never overflows and resume stays possible.
+   */
+  get heldBytes(): number {
+    return this.retainedBytes;
+  }
+
+  /** Told whenever held bytes are let go, usually because an ack arrived. */
+  onHeldBytesReleased(listener: () => void): () => void {
+    this.heldReleaseListeners.add(listener);
+    return () => this.heldReleaseListeners.delete(listener);
+  }
+
   /** Told of every change between active, suspended and resuming. */
   onStateChange(listener: (state: SessionState) => void): () => void {
     this.stateListeners.add(listener);
@@ -324,7 +365,7 @@ export class SecureSession {
   /** Sends one message; returns false when the session or relay is down. */
   sendMessage(
     value: unknown,
-    options: Pick<MessageCodecOptions, 'onSerialized'> = {},
+    options: Pick<MessageCodecOptions, 'onSerialized' | 'compress'> = {},
   ): boolean {
     if (this.closedReason !== null) return false;
     // An unserializable value throws here and fails only this message.
@@ -390,8 +431,20 @@ export class SecureSession {
   }
 
   private dropRetained(): void {
+    const held = this.retainedBytes;
     this.retained = [];
     this.retainedBytes = 0;
+    if (held > 0) this.notifyHeldReleased();
+  }
+
+  private notifyHeldReleased(): void {
+    for (const listener of Array.from(this.heldReleaseListeners)) {
+      try {
+        listener();
+      } catch {
+        // A listener's failure must not reach the receive path.
+      }
+    }
   }
 
   /** Lets go of held frames the peer has received. */
@@ -404,7 +457,9 @@ export class SecureSession {
       this.retainedBytes -= this.retained[index]?.envelope.byteLength ?? 0;
       index += 1;
     }
-    if (index > 0) this.retained = this.retained.slice(index);
+    if (index === 0) return;
+    this.retained = this.retained.slice(index);
+    this.notifyHeldReleased();
   }
 
   /** Feeds one data envelope body; protocol violations end the session. */
@@ -465,7 +520,7 @@ export class SecureSession {
   private noteReceived(byteLength: number): void {
     if (!this.resumeNegotiatedValue) return;
     this.unackedBytes += byteLength;
-    if (this.unackedBytes >= ACK_BYTES) {
+    if (this.unackedBytes >= this.ackCadence.bytes) {
       this.sendAck();
       return;
     }
@@ -473,7 +528,7 @@ export class SecureSession {
     this.ackTimer = setTimeout(() => {
       this.ackTimer = null;
       this.sendAck();
-    }, ACK_INTERVAL_MS);
+    }, this.ackCadence.intervalMs);
     this.ackTimer.unref?.();
   }
 
@@ -585,6 +640,7 @@ export class SecureSession {
     this.retaining = false;
     this.messageListeners.clear();
     this.stateListeners.clear();
+    this.heldReleaseListeners.clear();
     const listeners = Array.from(this.closeListeners);
     this.closeListeners.clear();
     for (const listener of listeners) listener(reason);
@@ -614,6 +670,8 @@ export interface SessionManagerOptions {
   resumeRetryMs?: number;
   /** Overrides {@link RESEND_BUFFER_BYTES} for every session, for tests. */
   resendBufferBytes?: number;
+  /** Overrides the ack cadence for every session, for tests. */
+  ackCadence?: AckCadence;
 }
 
 /** The manager's bookkeeping for a session that is not active. */
@@ -816,14 +874,11 @@ export class RemoteSessionManager {
     result: HandshakeResult,
     grant: SessionGrant | null,
   ): SecureSession {
-    const { resendBufferBytes } = this.options;
-    return new SecureSession(
-      sessionId,
-      result,
-      this.options.transport,
-      grant,
-      resendBufferBytes === undefined ? {} : { resendBufferBytes },
-    );
+    const { resendBufferBytes, ackCadence } = this.options;
+    return new SecureSession(sessionId, result, this.options.transport, grant, {
+      ...(resendBufferBytes === undefined ? {} : { resendBufferBytes }),
+      ...(ackCadence === undefined ? {} : { ackCadence }),
+    });
   }
 
   private trackSession(key: string, session: SecureSession): void {

@@ -1497,6 +1497,7 @@ describe('controller connection and pairing against a desktop host', () => {
       {
         version: { protocolVersion: 17, appVersion: '1.0.0' },
         controller: { kind: 'browser', minVersion: 17 },
+        secretRequestSettleReason: true,
       },
     ]);
     harness.scheduler.advance(120_000);

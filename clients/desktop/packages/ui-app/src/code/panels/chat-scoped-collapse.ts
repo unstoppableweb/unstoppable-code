@@ -1,5 +1,7 @@
 import { useEffect } from 'react';
 import {
+  isSidePanelFoldedForWidth,
+  setSidePanelReopenWhenWide,
   usePanelLayoutStore,
   type WorktreePanelLayout,
 } from './panel-layout-store';
@@ -18,6 +20,8 @@ import { isChatScopedPanelKind } from './panel-chat-scope';
  */
 
 const STORAGE_KEY = 'canopy.panels.chatSideViewCollapsed.v1';
+/** Minimal mode's Side Panel. */
+const SIDE_PANEL_GROUP_ID = 'group-extras';
 /** Bounds the remembered chats so storage cannot grow without end. */
 const MAX_REMEMBERED = 400;
 
@@ -90,7 +94,7 @@ function sideViewGroupIds(layout: WorktreePanelLayout): string[] {
   for (const [groupId, group] of Object.entries(layout.groups)) {
     if (group.tabs.some((tab) => tab.kind === 'chat')) continue;
     if (
-      groupId === 'group-extras' ||
+      groupId === SIDE_PANEL_GROUP_ID ||
       (group.tabs.length > 0 &&
         group.tabs.every((tab) => isChatScopedPanelKind(tab.kind)))
     ) {
@@ -150,6 +154,15 @@ export function useChatScopedSideViewCollapse(layoutKey: string): void {
             );
             const collapsed = collapsedOf(groupId);
             if (wanted === undefined || collapsed === undefined) continue;
+            if (
+              groupId === SIDE_PANEL_GROUP_ID &&
+              isSidePanelFoldedForWidth(layoutKey)
+            ) {
+              // Folded for a narrow window: it stays folded until the window
+              // widens, then opens unless this chat had it closed.
+              setSidePanelReopenWhenWide(layoutKey, !wanted);
+              continue;
+            }
             if (wanted === collapsed) continue;
             if (!apply(groupId, wanted)) {
               pending.set(groupId, { wanted, refusedAt: collapsed });
@@ -177,6 +190,13 @@ export function useChatScopedSideViewCollapse(layoutKey: string): void {
       // to be restored keeps what the chat wants.
       for (const groupId of groupIds) {
         if (pending.has(groupId)) continue;
+        // A Side Panel folded for a narrow window is not the chat's choice.
+        if (
+          groupId === SIDE_PANEL_GROUP_ID &&
+          isSidePanelFoldedForWidth(layoutKey)
+        ) {
+          continue;
+        }
         const collapsed = collapsedOf(groupId);
         if (collapsed === undefined) continue;
         remember(memoryKey(layoutKey, groupId, chat), collapsed);

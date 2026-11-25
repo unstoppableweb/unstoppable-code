@@ -12,6 +12,10 @@ import {
 } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
+import {
+  isStepStartupInjectionName,
+  stepEnvironmentNameLabel,
+} from '../provider-process/step-environment';
 
 function isAlreadyExists(error: unknown): boolean {
   if (typeof error !== 'object' || error === null || !('code' in error))
@@ -237,7 +241,9 @@ function refusesCursorEnvironmentName(
 }
 
 /**
- * Names in `requested` that this runtime will not forward, in sorted order.
+ * Names in a step-declared `requested` environment that this runtime will not
+ * forward, in sorted order: the refused names and the loader and shell-startup
+ * names (`isStepStartupInjectionName`).
  * `platform` must match the one `prepareCursorRuntimeEnvironment` builds for;
  * both default to the host so a caller that passes neither stays consistent.
  */
@@ -247,8 +253,11 @@ export function withheldCursorEnvironmentNames(
 ): string[] {
   const withheld = new Set<string>();
   for (const key of Object.keys(requested ?? {})) {
-    const name = key.toUpperCase();
-    if (refusesCursorEnvironmentName(name, platform)) withheld.add(name);
+    if (
+      refusesCursorEnvironmentName(key.toUpperCase(), platform) ||
+      isStepStartupInjectionName(key)
+    )
+      withheld.add(stepEnvironmentNameLabel(key));
   }
   return Array.from(withheld).sort();
 }
@@ -369,4 +378,58 @@ export async function prepareCursorRuntimeEnvironment(
     NODE_COMPILE_CACHE: cache,
     NO_OPEN_BROWSER: '1',
   };
+}
+
+/** Canonical-home environment keys a pipeline-declared environment must never override. */
+const CANONICAL_HOME_ENVIRONMENT_KEYS: readonly string[] = [
+  'HOME',
+  'USERPROFILE',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'HOMESHARE',
+];
+
+/**
+ * Strips canonical-home overrides and loader and shell-startup names
+ * (`isStepStartupInjectionName`: the bash launcher and the loader act on them
+ * before the approval hook) from a
+ * pipeline-declared environment before it is merged into the Cursor spawn
+ * environment. `prepareCursorRuntimeEnvironment` is the sole authority for
+ * Cursor's private home overlay and separately deletes every refused name
+ * (`CURSOR_*` included) from the merged object, so a pipeline-declared
+ * CURSOR_API_KEY never reaches the spawned child either. This is Cursor's own
+ * sanitizer (not a reused Codex helper) so Cursor spawn-state scoping stays
+ * independent of Codex's runtime boundary.
+ */
+function sanitizeCursorStepEnvironment(
+  environment: Record<string, string>,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(environment).filter(([key]) => {
+      const name = key.toUpperCase();
+      return (
+        !CANONICAL_HOME_ENVIRONMENT_KEYS.includes(name) &&
+        !isStepStartupInjectionName(name)
+      );
+    }),
+  );
+}
+
+/**
+ * The environment a pipeline step's cursor-agent runs with, its version probe
+ * included: the driver's base environment, then the step's own values without
+ * home overrides or loader and shell-startup names
+ * (`withheldCursorEnvironmentNames` reports
+ * them), inside the private runtime profile.
+ */
+export function prepareCursorStepEnvironment(
+  stateDir: string,
+  baseEnvironment: NodeJS.ProcessEnv,
+  stepEnvironment: Record<string, string>,
+): Promise<NodeJS.ProcessEnv> {
+  return prepareCursorRuntimeEnvironment(stateDir, {
+    ...baseEnvironment,
+    ...sanitizeCursorStepEnvironment(stepEnvironment),
+    NO_OPEN_BROWSER: '1',
+  });
 }

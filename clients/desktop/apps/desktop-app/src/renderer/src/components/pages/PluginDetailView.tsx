@@ -36,6 +36,7 @@ import type {
 import type {
   MarketplaceInfo,
   PluginInfo,
+  SelectedOfficialCodexListing,
 } from '@canopy/execution-engine/types/plugins';
 import type { PluginStandInCandidate } from '@canopy/protocol/plugins';
 import { pluginInfoHarnessRows } from '@canopy/plugin-interop/harness-support';
@@ -55,6 +56,7 @@ import { computePluginShareableRef } from '@/hooks/useUnifiedTableData';
 import { SharePluginModal } from '@/components/plugins/SharePluginModal';
 import { pluginNeedsInstall } from '../../lib/pluginInstallStatus';
 import type { MarketplaceShareAction } from '@canopy/ui-shared/lib';
+import { officialMarketplaceProvider } from '@canopy/ui-shared/lib/unified-plugin-entry';
 import { formatDate } from '../../lib/format';
 import { installDesktopCustomizeTelemetry } from '../../lib/customizeTelemetry';
 
@@ -355,10 +357,41 @@ export function PluginDetailView({
     try {
       setAutoInstallError('');
       if (request.kind === 'providers') {
+        let selectedOfficialCodexListing:
+          | SelectedOfficialCodexListing
+          | undefined;
+        if (
+          discoveryEnabled &&
+          plugin.marketplaceId === marketplace.id &&
+          officialMarketplaceProvider(marketplace.id) === 'Codex' &&
+          request.providers.length === 1 &&
+          request.providers[0] === 'codex'
+        ) {
+          const facet = plugin.facets?.codex;
+          const { marketplacePath, marketplaceName } =
+            marketplace.providerStatus?.codex ?? {};
+          if (
+            facet?.mode === 'native' &&
+            facet.name &&
+            marketplacePath &&
+            marketplaceName &&
+            (facet.marketplacePath === undefined ||
+              facet.marketplacePath === marketplacePath)
+          ) {
+            selectedOfficialCodexListing = {
+              marketplacePath,
+              marketplaceName,
+              pluginName: facet.name,
+            };
+          }
+        }
         const result = await window.plugins.installBuiltInPlugin({
           marketplaceId: plugin.marketplaceId,
           pluginName: plugin.name,
           providers: request.providers,
+          ...(selectedOfficialCodexListing
+            ? { selectedOfficialCodexListing }
+            : {}),
         });
         if (!result.success || !result.data)
           throw Object.assign(new Error(result.error ?? 'Unknown error.'), {

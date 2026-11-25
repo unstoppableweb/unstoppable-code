@@ -48,6 +48,7 @@ export * from './McpServerManagement';
 export * from './CloudReachBackSection';
 export * from './ReachBackApprovalDialog';
 export * from './ProviderConnectorDetail';
+export * from './ClaudeConnectorRoutingGuidance';
 
 export {
   MarketplaceEntityHeader,

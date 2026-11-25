@@ -50,9 +50,9 @@ const featureFlag = {
   placement: 'core-only',
 } as const;
 
-// The desktop dispatcher composes these (CAN-4181 F3); the shared registries
-// leave them out, so the daemon answers an unknown method until it serves them,
-// and the web core joins in F4.
+// The desktop dispatcher (CAN-4181 F3) and the web core (F4) compose these;
+// the shared registries leave them out, so the daemon answers an unknown
+// method until it serves them.
 export const CORE_FEATURE_FLAG_QUERY_DEFINITIONS = defineCanopyQueryRegistry(
   'core',
   {

@@ -62,6 +62,22 @@ it('preserves legacy session and relay messages without granting new features', 
   ).toBe(false);
 });
 
+it('preserves the optional typed-steer feature in a host hello (CAN-7350)', () => {
+  const features = {
+    controllerProfiles: true,
+    pairingProof: true,
+    hostedDelegation: false,
+  };
+  const hello = { name: 'Host', platform: 'linux', appVersion: '1' };
+  expect(HelloResultSchema.parse({ ...hello, features }).features).toEqual(
+    features,
+  );
+  const withSteer = { ...features, chatSendSteerIntent: true };
+  expect(
+    HelloResultSchema.parse({ ...hello, features: withSteer }).features,
+  ).toEqual(withSteer);
+});
+
 it('holds web controllers to their own host floor, not the current protocol', () => {
   // Protocol 19 (CAN-6187) is the first host that honors `targetId` on
   // `pipelines:execute`, a browser channel; an older one would run a cloud

@@ -325,6 +325,71 @@ describe('preference helper qualification (CAN-4471)', () => {
     ).toBeNull();
   });
 
+  it('turns the account proxy on by default and keeps a turned-off proxy off', () => {
+    const connection = {
+      id: 'proxy-1234',
+      kind: 'local' as const,
+      url: 'http://127.0.0.1:8317',
+    };
+    const enabled = (data: Record<string, unknown> | undefined): boolean =>
+      normalizePreferences(data, 'persisted').accountProxyEnabled === true;
+    // Fresh, and every profile the retired Labs opt-in stored as off before
+    // it connected anything.
+    expect(enabled(undefined)).toBe(true);
+    expect(enabled({ accountProxyEnabled: false })).toBe(true);
+    expect(
+      enabled({
+        accountProxyEnabled: true,
+        accountProxyConnection: connection,
+      }),
+    ).toBe(true);
+    // Connected, then turned off: stays off with its connection kept.
+    const off = normalizePreferences(
+      { accountProxyEnabled: false, accountProxyConnection: connection },
+      'persisted',
+    );
+    expect(off.accountProxyEnabled).toBe(false);
+    expect(off.accountProxyConnection?.id).toBe('proxy-1234');
+
+    // The Settings switch marks its choice, which then holds with or
+    // without a connection, including while one is replaced or removed.
+    const context = {
+      loadError: null,
+      migrationTimestamp: (): string => '2026-01-01T00:00:00.000Z',
+    };
+    const on = normalizePreferences(
+      { accountProxyConnection: connection },
+      'persisted',
+    );
+    const turnedOff = mergePreferenceUpdate(
+      on,
+      { accountProxyEnabled: false, accountProxyEnabledSetByUser: true },
+      context,
+    );
+    expect(turnedOff.accountProxyEnabled).toBe(false);
+    const cleared = mergePreferenceUpdate(
+      turnedOff,
+      { accountProxyConnection: null },
+      context,
+    );
+    expect(cleared.accountProxyEnabled).toBe(false);
+    expect(
+      mergePreferenceUpdate(
+        cleared,
+        { accountProxyEnabled: true, accountProxyEnabledSetByUser: true },
+        context,
+      ).accountProxyEnabled,
+    ).toBe(true);
+    // Turned off with no connection yet, as the switch saves while setup
+    // replaces one: still off.
+    expect(
+      enabled({
+        accountProxyEnabled: false,
+        accountProxyEnabledSetByUser: true,
+      }),
+    ).toBe(false);
+  });
+
   it('keeps corrupt onboarding records distinct from never-initialized records', () => {
     const fresh = normalizePreferences(undefined, 'persisted');
     expect(fresh.planModeHint).toEqual({ version: 1, generation: 0 });

@@ -26,6 +26,7 @@ type ClaudeModsSkippedReasonCopyKey =
   | 'digest-changed'
   | 'kill-switch'
   | 'authority-unreadable'
+  | 'install-list-unreadable'
   | 'unreadable';
 
 export const CLAUDE_MODS_SKIPPED_COPY = {
@@ -61,6 +62,10 @@ export const CLAUDE_MODS_SKIPPED_COPY = {
     'digest-changed': 'Changed since you allowed it',
     'kill-switch': 'Every Mod is turned off',
     'authority-unreadable': "This app couldn't read its Mod settings",
+    // The plugin may be fine: Claude's own record of installs is damaged, and
+    // Claude loads no installed plugin until it is repaired.
+    'install-list-unreadable':
+      "Claude's list of installed plugins couldn't be read",
     unreadable: "This app couldn't read the plugin",
   } satisfies Record<ClaudeModsSkippedReasonCopyKey, string>,
   sources: {
@@ -149,6 +154,8 @@ export function claudeModsSkippedReasonText(reason: string): string {
       return reasons['kill-switch'];
     case 'authority-unreadable':
       return reasons['authority-unreadable'];
+    case 'install-list-unreadable':
+      return reasons['install-list-unreadable'];
     default:
       return reasons.unreadable;
   }

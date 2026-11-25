@@ -865,6 +865,9 @@ export function createDaemonPipelineOwnerPorts(
           pluginId: plugin.pluginId,
           installPath: plugin.installPath,
           ...(plugin.notLoaded && { notLoaded: true as const }),
+          ...(plugin.installListUnreadable && {
+            installListUnreadable: true as const,
+          }),
         })),
         ...(context.sessionModIds !== undefined && {
           sessionModIds: context.sessionModIds,

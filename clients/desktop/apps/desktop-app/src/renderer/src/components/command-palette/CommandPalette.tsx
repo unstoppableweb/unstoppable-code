@@ -8,7 +8,7 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
-import { useAccountProxyStatus } from '@/stores/accountProxyStore';
+import { useAccountProxyPageAvailable } from '@/stores/accountProxyStore';
 import { useAutomationScope } from '@/hooks/useAutomationScope';
 import type {
   ChatSearchCatalogEntry,
@@ -326,7 +326,7 @@ export function CommandPalette({
     accountFacts.personalOrganizationId,
   ]);
 
-  const accountProxyAvailable = useAccountProxyStatus()?.available === true;
+  const accountProxyAvailable = useAccountProxyPageAvailable();
   const settingSections = useMemo(() => {
     const sections: SettingsSectionEntry[] = getVisibleNavItems(
       window.platform,

@@ -89,6 +89,8 @@ export interface WorkspaceCommitEventBindingOptions {
    * what it captured; it rejects when its capture failed.
    */
   readonly readCache?: (plan: CanopyWorkspaceInvalidationPlan) => Promise<void>;
+  readonly onStreamChanged?: (live: boolean) => void;
+  readonly onInvalidated?: () => void;
   /** The bridge's first broad re-read retry delay; tests inject their clock. */
   readonly retryDelayMs?: number;
 }
@@ -149,6 +151,8 @@ export function createWorkspaceCommitEventBinding({
   handlers,
   isOwnOrigin,
   readCache,
+  onStreamChanged,
+  onInvalidated,
   retryDelayMs,
 }: WorkspaceCommitEventBindingOptions): WorkspaceCommitEventBinding {
   // Each list's membership as this subscriber last read it.
@@ -237,6 +241,8 @@ export function createWorkspaceCommitEventBinding({
     apply,
     ...(retryDelayMs !== undefined && { retryDelayMs }),
     onDelivered: noteFirstCommittedDelivery(isOwnOrigin),
+    ...(onStreamChanged && { onStreamChanged }),
+    ...(onInvalidated && { onInvalidated }),
     onError: (error) =>
       logMainProcessWarn(
         '[workspace-commit-events] delivery or subscription failed',

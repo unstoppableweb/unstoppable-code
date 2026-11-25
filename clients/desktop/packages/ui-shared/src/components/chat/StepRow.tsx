@@ -324,3 +324,8 @@ export const STEP_GROUP_BODY_CLASS = 'flex flex-col';
 
 /** An opened group's steps, each glyph on the group row's words. */
 export const STEP_GROUP_NESTED_BODY_CLASS = `${STEP_GROUP_BODY_CLASS} pl-6`;
+/**
+ * The same under a row with its own 12px text inset (the live line): its
+ * words start 12px further in, so its opened content does too.
+ */
+export const STEP_GROUP_INSET_NESTED_BODY_CLASS = `${STEP_GROUP_BODY_CLASS} pl-9 pr-3`;

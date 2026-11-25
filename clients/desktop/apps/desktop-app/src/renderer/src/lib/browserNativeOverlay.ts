@@ -201,14 +201,53 @@ function intersectsTargetRect(
   return rectsOverlap(element.getBoundingClientRect(), targetRect);
 }
 
+/**
+ * The document's overlay elements, kept between topology changes.
+ *
+ * Every pane asks "does an overlay cover me?" on each frame of a window
+ * resize, and a hidden Browser tab asks too. Answering from a fresh search
+ * of the whole document each time cost a fifth of a resize with a page open
+ * (four tabs, 128 steps: 410 ms). The shared observer already knows when
+ * the set of overlays can have changed, so the search runs once per change;
+ * each caller still tests visibility and position itself.
+ */
+let cachedOverlayElements: Element[] | null = null;
+/** The same for everything the topology filter looks for. */
+let cachedTopologyElements: Element[] | null = null;
+
+function overlayElements(root: ParentNode): Element[] {
+  const observer = overlayTopologyObserver;
+  if (observer === null || root !== document) {
+    return Array.from(
+      root.querySelectorAll(BROWSER_NATIVE_VIEW_OVERLAY_SELECTOR),
+    );
+  }
+  // Changes the observer has seen and not delivered yet (a caller running in
+  // the same task as the change): hand them on, and search again now.
+  // A window resize restyles panels in the task every pane asks in, so most
+  // of what is undelivered moves things without adding or removing an
+  // overlay, and the kept list still holds.
+  const undelivered = observer.takeRecords();
+  if (undelivered.length > 0) {
+    const change = topologyChange(undelivered);
+    if (change === 'set') {
+      cachedOverlayElements = null;
+      cachedTopologyElements = null;
+    }
+    queueMicrotask(() => notifyOverlayTopologyListeners(undelivered, change));
+  }
+  cachedOverlayElements ??= Array.from(
+    document.querySelectorAll(BROWSER_NATIVE_VIEW_OVERLAY_SELECTOR),
+  );
+  return cachedOverlayElements;
+}
+
 export function hasBrowserNativeViewOverlay(
   root: ParentNode = document,
   targetRect: BrowserNativeViewOverlayTargetRect | null = null,
 ): boolean {
   const skipMarked = mirrorDraws(targetRect);
-  return Array.from(
-    root.querySelectorAll(BROWSER_NATIVE_VIEW_OVERLAY_SELECTOR),
-  ).some(
+  return overlayElements(root).some(
     (element) =>
       isElementVisibleForNativeOverlay(element, skipMarked) &&
       intersectsTargetRect(element, targetRect),
@@ -224,9 +263,7 @@ export function findBrowserNativeViewOverlays(
   targetRect: BrowserNativeViewOverlayTargetRect,
 ): HTMLElement[] {
   const skipMarked = mirrorDraws(targetRect);
-  const overlays = Array.from(
-    root.querySelectorAll(BROWSER_NATIVE_VIEW_OVERLAY_SELECTOR),
-  ).filter(
+  const overlays = overlayElements(root).filter(
     (element): element is HTMLElement =>
       isElementVisibleForNativeOverlay(element, skipMarked) &&
       intersectsTargetRect(element, targetRect),
@@ -250,7 +287,17 @@ export function findBrowserNativeViewOverlays(
 
 type OverlayTopologyListener = () => void;
 
-const overlayTopologyListeners = new Set<OverlayTopologyListener>();
+interface OverlayTopologySubscriber {
+  readonly listener: OverlayTopologyListener;
+  /**
+   * While this returns true the subscriber hears every DOM change, as it
+   * needs while it tracks where something sits (a copy drawn over a page
+   * follows its original through any reflow).
+   */
+  readonly everyChange?: () => boolean;
+}
+
+const overlayTopologySubscribers = new Set<OverlayTopologySubscriber>();
 let overlayTopologyObserver: MutationObserver | null = null;
 
 const OVERLAY_OBSERVED_ATTRIBUTES = [
@@ -265,9 +312,170 @@ const OVERLAY_OBSERVED_ATTRIBUTES = [
   'style',
 ];
 
-function notifyOverlayTopologyListeners(): void {
-  for (const listener of Array.from(overlayTopologyListeners)) {
-    listener();
+/**
+ * Everything the subscribers look for: overlays, elements drawn above a
+ * page, opt-in and opt-out markers, and the page areas themselves.
+ */
+const OVERLAY_TOPOLOGY_SELECTOR = [
+  BROWSER_NATIVE_VIEW_OVERLAY_SELECTOR,
+  BROWSER_NATIVE_VIEW_OVERLAY_MARKER_SELECTOR,
+  ABOVE_BROWSER_SELECTOR,
+  `[${BROWSER_NATIVE_VIEW_AVAILABLE_ATTRIBUTE}]`,
+].join(', ');
+
+/** A class or style value that put an element on a floating layer. */
+const OVERLAY_LAYER_VALUE = new RegExp(
+  `(?:^|\\s)z-(?:${BROWSER_NATIVE_VIEW_OVERLAY_LAYERS.join('|')})(?:\\s|$)|--z-index-(?:${BROWSER_NATIVE_VIEW_OVERLAY_LAYERS.join('|')})`,
+);
+
+const INLINE_DISPLAY = /(?:^|;)\s*display\s*:\s*([^;]+)/;
+const INLINE_VISIBILITY = /(?:^|;)\s*visibility\s*:\s*([^;]+)/;
+
+/** Whether an inline style change touched `display` or `visibility`. */
+function inlineVisibilityChanged(
+  oldStyle: string | null,
+  element: HTMLElement,
+): boolean {
+  const before = oldStyle ?? '';
+  const display = INLINE_DISPLAY.exec(before)?.[1]?.trim() ?? '';
+  const visibility = INLINE_VISIBILITY.exec(before)?.[1]?.trim() ?? '';
+  return (
+    display !== element.style.display || visibility !== element.style.visibility
+  );
+}
+
+type OverlayTopologyChange = 'none' | 'moved' | 'set';
+
+/** A node no longer in the document: its own subtree is all there is. */
+function isOrHoldsOverlayTopology(node: Node): boolean {
+  return (
+    node instanceof Element &&
+    (node.matches(OVERLAY_TOPOLOGY_SELECTOR) ||
+      node.querySelector(OVERLAY_TOPOLOGY_SELECTOR) !== null)
+  );
+}
+
+/**
+ * Whether a DOM change can alter what the subscribers see: an overlay, a
+ * marked element or a page area appearing, going, or changing, or something
+ * around one of them being shown or hidden.
+ *
+ * The observer watches the whole document, and nearly all of what it sees
+ * is unrelated: streamed text, list rows, hover classes. Re-testing every
+ * pane, the mirror and the Orchestrator page for each of those meant a
+ * document-wide search and a layout on most frames while a page was open.
+ *
+ * `inDocument` lists the document's topology elements. A resize restyles
+ * many large containers at once, and asking each of them for its own subtree
+ * would search the page once per container.
+ */
+function overlayTopologyChange(
+  record: MutationRecord,
+  inDocument: () => readonly Element[],
+): OverlayTopologyChange {
+  const touches = (node: Node): boolean =>
+    node instanceof Element &&
+    (node.matches(OVERLAY_TOPOLOGY_SELECTOR) ||
+      inDocument().some((element) => node.contains(element)));
+  if (record.type === 'childList') {
+    for (const node of Array.from(record.addedNodes)) {
+      if (isOrHoldsOverlayTopology(node)) return 'set';
+    }
+    for (const node of Array.from(record.removedNodes)) {
+      if (isOrHoldsOverlayTopology(node)) return 'set';
+    }
+    // Rows coming or going inside an open overlay (a menu's results arriving,
+    // a filter cleared) can change what it covers without moving it.
+    const parent =
+      record.target instanceof Element
+        ? record.target
+        : record.target.parentElement;
+    return parent?.closest(BROWSER_NATIVE_VIEW_OVERLAY_SELECTOR) != null
+      ? 'moved'
+      : 'none';
+  }
+  if (record.type !== 'attributes') return 'none';
+  const target = record.target;
+  const onLayer =
+    (record.attributeName === 'class' || record.attributeName === 'style') &&
+    target instanceof Element
+      ? {
+          before:
+            record.oldValue !== null &&
+            OVERLAY_LAYER_VALUE.test(record.oldValue),
+          now: OVERLAY_LAYER_VALUE.test(
+            target.getAttribute(record.attributeName) ?? '',
+          ),
+        }
+      : null;
+  // An element that joined or left a floating layer: after leaving it no
+  // longer matches, and only its old value says it was one.
+  if (onLayer !== null && onLayer.before !== onLayer.now) return 'set';
+  if (
+    record.attributeName !== 'class' &&
+    record.attributeName !== 'style' &&
+    record.attributeName !== 'hidden' &&
+    record.attributeName !== 'aria-hidden'
+  ) {
+    // Roles and markers: rare, and each one is topology by itself.
+    return 'set';
+  }
+  // A style change that leaves `display` and `visibility` alone only moves
+  // or sizes its element (a panel or a divider during a window resize, a
+  // virtual row): that matters when the element is itself an overlay or a
+  // marked element, not around one, and never to which elements there are.
+  if (
+    record.attributeName === 'style' &&
+    target instanceof HTMLElement &&
+    !inlineVisibilityChanged(record.oldValue, target)
+  ) {
+    return target.matches(OVERLAY_TOPOLOGY_SELECTOR) ? 'moved' : 'none';
+  }
+  // Classes, styles and hiding matter on an overlay or around one.
+  return touches(target) ? 'set' : 'none';
+}
+
+/**
+ * The strongest change among `records`: `set` when the overlays, marked
+ * elements or page areas there are may differ, `moved` when one of them
+ * only moved or was sized, `none` for everything else.
+ */
+function topologyChange(
+  records: readonly MutationRecord[],
+): OverlayTopologyChange {
+  // Kept until a change that can add or remove one: every other change (a
+  // class on a row, a hidden attribute on a list) is then judged without
+  // searching the document.
+  const inDocument = (): readonly Element[] => {
+    cachedTopologyElements ??= Array.from(
+      document.querySelectorAll(OVERLAY_TOPOLOGY_SELECTOR),
+    );
+    return cachedTopologyElements;
+  };
+  let strongest: OverlayTopologyChange = 'none';
+  for (const record of records) {
+    const change = overlayTopologyChange(record, inDocument);
+    if (change === 'set') return 'set';
+    if (change === 'moved') strongest = 'moved';
+  }
+  return strongest;
+}
+
+function notifyOverlayTopologyListeners(
+  records?: readonly MutationRecord[],
+  judged?: OverlayTopologyChange,
+): void {
+  const change =
+    judged ?? (records === undefined ? 'set' : topologyChange(records));
+  const relevant = change !== 'none';
+  if (change === 'set') {
+    cachedOverlayElements = null;
+    cachedTopologyElements = null;
+  }
+  for (const subscriber of Array.from(overlayTopologySubscribers)) {
+    if (relevant || subscriber.everyChange?.() === true) {
+      subscriber.listener();
+    }
   }
 }
 
@@ -283,22 +491,28 @@ export function notifyBrowserOverlayTopologyChanged(): void {
  */
 export function subscribeBrowserOverlayTopology(
   listener: OverlayTopologyListener,
+  options: { everyChange?: () => boolean } = {},
 ): () => void {
-  overlayTopologyListeners.add(listener);
+  const subscriber: OverlayTopologySubscriber = {
+    listener,
+    everyChange: options.everyChange,
+  };
+  overlayTopologySubscribers.add(subscriber);
   if (
     overlayTopologyObserver === null &&
     typeof MutationObserver !== 'undefined' &&
     typeof document !== 'undefined' &&
     document.body
   ) {
-    overlayTopologyObserver = new MutationObserver(
-      notifyOverlayTopologyListeners,
-    );
+    overlayTopologyObserver = new MutationObserver((records) => {
+      notifyOverlayTopologyListeners(records);
+    });
     overlayTopologyObserver.observe(document.body, {
       childList: true,
       subtree: true,
       attributes: true,
       attributeFilter: OVERLAY_OBSERVED_ATTRIBUTES,
+      attributeOldValue: true,
     });
   }
   let unsubscribed = false;
@@ -307,10 +521,12 @@ export function subscribeBrowserOverlayTopology(
       return;
     }
     unsubscribed = true;
-    overlayTopologyListeners.delete(listener);
-    if (overlayTopologyListeners.size === 0 && overlayTopologyObserver) {
+    overlayTopologySubscribers.delete(subscriber);
+    if (overlayTopologySubscribers.size === 0 && overlayTopologyObserver) {
       overlayTopologyObserver.disconnect();
       overlayTopologyObserver = null;
+      cachedOverlayElements = null;
+      cachedTopologyElements = null;
     }
   };
 }

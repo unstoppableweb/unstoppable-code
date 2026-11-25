@@ -6,16 +6,22 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   containsSecretMaterial,
+  displayableLabel,
+  ESCAPES_AS_WRITTEN,
   findSecretMaterialRule,
+  labelSecretRule,
   type SecretMaterialRule,
 } from '../../capability-files';
 import { PIPELINE_PACKAGE_MAX_FILE_BYTES } from '../../pipelines/package';
 import {
+  credentialPathSegment,
   encodeSharedContainerDefinitionDocument,
   findSharedTextCredentialRule,
   parseSharedContainerDefinitionDocument,
+  sharedTextLabelCheck,
   validateSharedContainerDefinitionDocument,
 } from '../../shared-containers/capability-definitions';
 import { SECRET_ASSIGNMENT_KEYS_SOURCE } from '../../secret-redaction';
@@ -32,6 +38,7 @@ import {
   scanSharedSkillForSecrets,
   collectionSkillSecretMessage,
   packagedSkillSecretMessage,
+  pluginSecretMessage,
   sharedSkillSecretMessage,
   templateInstallSkillSecretMessage,
 } from '../secret-scan';
@@ -342,18 +349,21 @@ const keepLineBoundaries = (text: string): string =>
   Array.from(text, (character) =>
     isControl(character) && !'\t\n\r'.includes(character) ? ' ' : character,
   ).join('');
+// develop's pattern list, read only as written: the reference never reads
+// escapes, so CAN-7627's spaced reading shows up as a change against it.
+const developMaterial = (text: string): boolean =>
+  findSecretMaterialRule(text, ESCAPES_AS_WRITTEN) !== null;
 function referenceWithoutExpressions(
   text: string,
   read: (text: string) => string = stripControls,
 ): string {
   return read(text).replace(
     REFERENCE_EXPRESSION,
-    (expression, inner: string) =>
-      containsSecretMaterial(inner) ? expression : '""',
+    (expression, inner: string) => (developMaterial(inner) ? expression : '""'),
   );
 }
 function referencePackageCheck(text: string): boolean {
-  return containsSecretMaterial(
+  return developMaterial(
     referenceWithoutExpressions(text).replace(
       REFERENCE_PLACEHOLDER,
       'placeholder=example',
@@ -368,11 +378,11 @@ function r2Check(
   text: string,
   read: (text: string) => string = stripControls,
 ): boolean {
-  return containsSecretMaterial(
+  return developMaterial(
     referenceWithoutExpressions(text, read).replace(
       REFERENCE_PLACEHOLDER,
       (assignment) =>
-        containsSecretMaterial(assignment.slice(assignment.search(/[=:]/) + 1))
+        developMaterial(assignment.slice(assignment.search(/[=:]/) + 1))
           ? assignment
           : 'placeholder=example',
     ),
@@ -381,14 +391,29 @@ function r2Check(
 // develop plus R2 plus CAN-7626: develop's stripped reading, or a reading
 // that keeps line boundaries. Either one tripping refuses, so this only
 // ever refuses more than develop plus R2.
-function intendedPackageCheck(text: string): boolean {
+function asWrittenPackageCheck(text: string): boolean {
   return r2Check(text) || r2Check(text, keepLineBoundaries);
 }
-// The two intended changes against develop, by which reading explains them.
+// CAN-7627's spaced reading, written out here: each escape written as text
+// reads as a space.
+const REFERENCE_ESCAPES =
+  /\\(?:[nrtbfv0aeNLP_]|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2})|%(?:u[0-9A-Fa-f]{4}|[0-9A-Fa-f]{2})/g;
+const spacedReading = (text: string): string =>
+  text.replace(REFERENCE_ESCAPES, ' ');
+// The whole check again on the spaced reading, only when the text as
+// written trips nothing (CAN-7627), so this only ever refuses more.
+function intendedPackageCheck(text: string): boolean {
+  if (asWrittenPackageCheck(text)) return true;
+  const spaced = spacedReading(text);
+  return spaced !== text && asWrittenPackageCheck(spaced);
+}
+// The three intended changes against develop, by which reading explains them.
 const placeholderValueChange = (text: string): boolean =>
   r2Check(text) !== referencePackageCheck(text);
 const lineBoundaryChange = (text: string): boolean =>
   !r2Check(text) && r2Check(text, keepLineBoundaries);
+const escapeReadingChange = (text: string): boolean =>
+  !asWrittenPackageCheck(text) && intendedPackageCheck(text);
 
 describe('package text check matches the desktop analysis (CAN-7226)', () => {
   const token = `gh${'p'}_${'R'.repeat(30)}`;
@@ -455,14 +480,26 @@ describe('package text check matches the desktop analysis (CAN-7226)', () => {
     'token: <your\nkey>',
     'token: {{ your\nkey }}',
     'token: ${{ secrets.\nNAME }}',
+    // Every rule's sample after an escape written as text (CAN-7627), and an
+    // escaped key whose value is a placeholder or a printf format.
+    ...SAMPLES.flatMap(([, sample]) => [
+      `echo done\\n${sample}`,
+      `a: "done\\u000a${sample}"`,
+      `done%0A${sample}`,
+    ]),
+    'Run with NPM\\u005fTOKEN=${LITERAL_VALUE} set.',
+    "printf 'username=%s\\npassword=%s\\n'",
   ];
-  it.each(CORPUS)('agrees with develop plus R2 and CAN-7626 on %j', (text) => {
-    expect(findPackageTextCredentialRule(text) !== null).toBe(
-      intendedPackageCheck(text),
-    );
-  });
+  it.each(CORPUS)(
+    'agrees with develop plus R2, CAN-7626 and CAN-7627 on %j',
+    (text) => {
+      expect(findPackageTextCredentialRule(text) !== null).toBe(
+        intendedPackageCheck(text),
+      );
+    },
+  );
 
-  it('differs from develop on the corpus only where a placeholder holds a real value, a secret starts a line, or a line break splits a placeholder', () => {
+  it('differs from develop on the corpus only where a placeholder holds a real value, a secret starts a line, a line break splits a placeholder, or an escape written as text hides a boundary', () => {
     const changed = CORPUS.filter(
       (text) =>
         (findPackageTextCredentialRule(text) !== null) !==
@@ -470,9 +507,13 @@ describe('package text check matches the desktop analysis (CAN-7226)', () => {
     );
     expect(changed).toEqual(
       CORPUS.filter(
-        (text) => placeholderValueChange(text) || lineBoundaryChange(text),
+        (text) =>
+          placeholderValueChange(text) ||
+          lineBoundaryChange(text) ||
+          escapeReadingChange(text),
       ),
     );
+    expect(CORPUS.filter(escapeReadingChange).length).toBeGreaterThan(0);
     const atLineStart = (text: string): boolean =>
       SAMPLES.some(
         ([, sample]) =>
@@ -544,11 +585,13 @@ describe('package text check matches the desktop analysis (CAN-7226)', () => {
       if (verdict !== intendedPackageCheck(text)) disagreements.push(text);
       if (verdict !== referencePackageCheck(text)) changed += 1;
       // A change against develop must be a placeholder holding a real value,
-      // or a reading that keeps line boundaries tripping.
+      // a reading that keeps line boundaries tripping, or the spaced reading
+      // of an escape written as text tripping.
       if (
         verdict !== referencePackageCheck(text) &&
         !placeholderValueChange(text) &&
-        !lineBoundaryChange(text)
+        !lineBoundaryChange(text) &&
+        !escapeReadingChange(text)
       )
         unexplained.push(text);
     }
@@ -582,6 +625,100 @@ describe('package text check matches the desktop analysis (CAN-7226)', () => {
     expect(disagreements).toEqual([]);
     expect(unexplained).toEqual([]);
     expect(changed).toBeGreaterThan(0);
+  });
+
+  const ESCAPE_FRAGMENTS = ['\\n', '\\t', '\\0', '\\N', '%0A', '\\u000a'];
+  function nextFromSeed(start: number): (bound: number) => number {
+    let seed = start;
+    return (bound) => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return Math.floor(seed / 65536) % bound;
+    };
+  }
+
+  it('agrees on 20,000 generated mixes across escapes written as text (CAN-7627)', () => {
+    const { disagreements, unexplained, changed } = checkMixes(
+      [...MIX_FRAGMENTS, ...ESCAPE_FRAGMENTS],
+      nextFromSeed(7627),
+    );
+    expect(disagreements).toEqual([]);
+    expect(unexplained).toEqual([]);
+    expect(changed).toBeGreaterThan(0);
+  });
+
+  // Every check returns develop's result whenever develop's finds anything:
+  // the spaced reading only runs when the text as written trips nothing
+  // (CAN-7627). Over the corpus and a generated mix set across escapes.
+  it("keeps every check's result as written whenever that finds anything (CAN-7627)", () => {
+    const bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
+    const CHECKS: readonly (readonly [
+      string,
+      (text: string, options?: typeof ESCAPES_AS_WRITTEN) => unknown,
+    ])[] = [
+      [
+        'findSecretMaterialRule',
+        (text, options) => findSecretMaterialRule(text, options),
+      ],
+      [
+        'findSharedTextCredentialRule',
+        (text, options) => findSharedTextCredentialRule(text, options),
+      ],
+      [
+        'findPackageTextCredentialRule',
+        (text, options) => findPackageTextCredentialRule(text, options),
+      ],
+      [
+        'findPackageFileCredentialRule',
+        (text, options) => findPackageFileCredentialRule(bytes(text), options),
+      ],
+      [
+        'findSharedMemberFileCredentialRule',
+        (text, options) =>
+          findSharedMemberFileCredentialRule(bytes(text), options),
+      ],
+      [
+        'findPackageEntryCredential (member file)',
+        (text, options) =>
+          findPackageEntryCredential(
+            { definitionDocument: false, bytes: bytes(text) },
+            options,
+          ),
+      ],
+      [
+        'findPackageEntryCredential (definition document)',
+        (text, options) =>
+          findPackageEntryCredential(
+            { definitionDocument: true, bytes: bytes(text) },
+            options,
+          ),
+      ],
+      [
+        'scanSharedSkillForSecrets',
+        (text, options) =>
+          scanSharedSkillForSecrets(
+            { skillName: 'notes', files: [{ path: 'SKILL.md', text }] },
+            options,
+          ),
+      ],
+    ];
+    const next = nextFromSeed(76270);
+    const mixes = Array.from({ length: 2_000 }, () => {
+      let text = '';
+      const parts = 1 + next(8);
+      for (let part = 0; part < parts; part += 1) {
+        const fragments = [...MIX_FRAGMENTS, ...ESCAPE_FRAGMENTS];
+        text += fragments[next(fragments.length)];
+      }
+      return text;
+    });
+    const differences: string[] = [];
+    for (const text of [...CORPUS, ...mixes])
+      for (const [name, check] of CHECKS) {
+        const asWritten = check(text, ESCAPES_AS_WRITTEN);
+        if (asWritten !== null && !isDeepStrictEqual(check(text), asWritten))
+          differences.push(`${name}: ${JSON.stringify(text)}`);
+      }
+    expect(differences).toEqual([]);
   });
 
   // A file's bytes, as develop's desktop analysis read them before CAN-7226:
@@ -775,6 +912,37 @@ describe('package definition documents are checked as the desktop checks them (C
       expect(findPackageEntryCredential(entry(bytes))).toBeNull();
     },
   );
+
+  // A token after an escape written as text in a field (CAN-7627): the
+  // field check and the raw check both read it as written, so develop's
+  // hosted check passed this stored definition; the spaced pass refuses it.
+  it('refuses a stored definition whose field holds a token after an escape written as text (CAN-7627)', () => {
+    const validated = validateSharedContainerDefinitionDocument({
+      version: 1,
+      kind: 'pipeline_definition',
+      references: [],
+      name: 'deploy',
+      yaml: 'steps:\n  - run: echo done\n',
+    });
+    if (!validated.ok) throw new Error(validated.errors.join('; '));
+    const bytes = new TextEncoder().encode(
+      new TextDecoder()
+        .decode(encodeSharedContainerDefinitionDocument(validated.value))
+        .replace('echo done', `echo done\\\\n${token}`),
+    );
+    expect(
+      parseSharedContainerDefinitionDocument(bytes, {
+        ...written,
+        escapes: 'as-written',
+      }).ok,
+    ).toBe(true);
+    expect(parseSharedContainerDefinitionDocument(bytes, written).ok).toBe(
+      false,
+    );
+    expect(findPackageEntryCredential(entry(bytes))).toEqual({
+      rule: 'github_token',
+    });
+  });
 
   it('refuses a definition holding a literal token, as the desktop does', () => {
     const bytes = withValue('${{ secrets.GITHUB_TOKEN }}', token);
@@ -2539,6 +2707,22 @@ const ADVERSARIAL_UNITS: readonly (readonly [string, string])[] = [
   ['control characters', '\u0001'],
   ['words split by a control character', 'a\u0001b'],
   ['token prefixes at line starts', 'done\nghp_'],
+  // Escapes written as text, which the spaced reading reads as spaces
+  // (CAN-7627).
+  ['escaped line feeds', '\\n'],
+  ['words before escaped line feeds', 'a\\n'],
+  ['backslash runs before a letter', '\\\\n'],
+  ['unfinished unicode escapes', '\\u000'],
+  ['unicode escapes', '\\u000a'],
+  ['unfinished percent escapes', '%0'],
+  ['percent escapes between words', 'a%0Ab'],
+  ['percent-u escapes', '%u000a'],
+  ['escaped NULs', '\\0'],
+  ['YAML line separators', '\\L'],
+  ['token prefixes after escapes', 'done\\nghp_'],
+  ['jwt prefixes after escapes', 'x\\neyJa.'],
+  ['credential equals after escapes', 'x\\napi_key'],
+  ['escaped breaks in an angle placeholder', 'token: <a\\n'],
 ];
 
 // Growth, not wall time (CAN-7592): a loaded runner slows both timings
@@ -3501,5 +3685,259 @@ describe('the package profile keeps line boundaries (CAN-7626)', () => {
   ])('passes %s', (_label, text) => {
     expect(findPackageTextCredentialRule(text)).toBeNull();
     expect(findPackageFileCredentialRule(encoder.encode(text))).toBeNull();
+  });
+});
+
+// An escape written as text before a token, such as `\n` in a JSON or YAML
+// string, `%0A` or `\u000a`, leaves a letter or digit where the token's
+// leading boundary should be. Each check reads its text as written and, when
+// that finds nothing, once more with each escape read as a space (CAN-7627).
+describe('a token after an escape written as text is refused by every check (CAN-7627)', () => {
+  const ESCAPES = [
+    '\\n',
+    '\\t',
+    '\\r',
+    '\\r\\n',
+    '\\b',
+    '\\f',
+    '\\v',
+    '\\0',
+    '\\a',
+    '\\e',
+    '\\N',
+    '\\_',
+    '\\L',
+    '\\P',
+    '%0A',
+    '%09',
+    '%0D%0A',
+    '%u000a',
+    '\\u000a',
+    '\\x0a',
+  ];
+  const CONTAINERS: readonly (readonly [string, (body: string) => string])[] = [
+    ['a JSON string', (body) => `{"a":"${body}"}`],
+    ['a YAML double-quoted string', (body) => `a: "${body}"`],
+    ['a YAML single-quoted string', (body) => `a: '${body}'`],
+    ['plain text', (body) => body],
+  ];
+  const bytes = (text: string): Uint8Array => new TextEncoder().encode(text);
+  const everyCheck = (text: string): unknown[] => [
+    findSecretMaterialRule(text),
+    findSharedTextCredentialRule(text),
+    findSharedMemberFileCredentialRule(bytes(text)),
+    findPackageTextCredentialRule(text),
+    findPackageFileCredentialRule(bytes(text)),
+    findPackageEntryCredential({
+      definitionDocument: false,
+      bytes: bytes(text),
+    })?.rule ?? null,
+  ];
+
+  // The shared and member checks keep the rule develop names when develop
+  // already refuses the text: develop's env rule catches `api_key=…` after
+  // any escape, so those two name env_assignment there.
+  it.each(
+    SAMPLES.flatMap(([rule, sample]) =>
+      ESCAPES.flatMap((escape) =>
+        CONTAINERS.map(
+          ([where, wrap]) =>
+            [rule, escape, where, wrap(`done${escape}${sample}`)] as const,
+        ),
+      ),
+    ),
+  )(
+    'names %s after %s in %s, in every check',
+    (rule, _escape, _where, text) => {
+      expect(everyCheck(text)).toEqual([
+        rule,
+        findSharedTextCredentialRule(text, ESCAPES_AS_WRITTEN) ?? rule,
+        findSharedMemberFileCredentialRule(bytes(text), ESCAPES_AS_WRITTEN) ??
+          rule,
+        rule,
+        rule,
+        rule,
+      ]);
+    },
+  );
+
+  // An entity ends in `;`, which is already a boundary.
+  it.each(
+    SAMPLES.flatMap(([rule, sample]) =>
+      ['&#10;', '&#x0a;'].map(
+        (entity) => [rule, entity, `done${entity}${sample}`] as const,
+      ),
+    ),
+  )('already names %s after the entity %s', (rule, _entity, text) => {
+    expect(everyCheck(text)).toEqual(Array(6).fill(rule));
+  });
+
+  it.each([
+    'C:\\\\new\\\\data',
+    'C:\\new\\data',
+    'const pattern = /\\bgh[opusr]_[A-Za-z0-9]{20,}/;',
+    'const match = header.match(/Bearer\\s+(.+)/i);',
+    'if (/^Authorization\\s*:/i.test(line)) return;',
+    '{"a":"line one\\nline two"}',
+    'a: "line one\\nline two"',
+    'echo "first\\tsecond\\r\\nthird"',
+    'GET /search?q=a%20b%0Ac',
+    'Strings end at the first \\0 byte, so pad them.',
+    'char buf[] = "name\\0value";',
+    'print("a\\N{EN DASH}b")',
+    "preg_match('/^\\N+$/', $line)",
+    'echo -e "\\e[1;31mERROR\\e[0m done"',
+    'const bell = /\\a/;',
+    'const controls = /[\\a\\e\\f]/g;',
+    'title: "a\\_b"',
+    'note: "line one\\Lline two\\Pline three\\Nline four"',
+  ])('finds nothing in the ordinary escaped text %j', (text) => {
+    expect(everyCheck(text)).toEqual(Array(6).fill(null));
+  });
+
+  it.each(SAMPLES)(
+    'keeps the rule %s for a secret it finds as written, with escapes around it',
+    (rule, sample) => {
+      for (const text of [
+        `before ${sample} after`,
+        `x\\n before ${sample} after %0A`,
+      ])
+        expect(findSecretMaterialRule(text)).toBe(rule);
+    },
+  );
+
+  it('keeps the rule develop names when a later rule already refused the text', () => {
+    const note = `{"note":"Run with NPM\\u005fTOKEN=${repeat('Z', 16)} set."}\n`;
+    expect(findSharedTextCredentialRule(note)).toBe('env_assignment');
+    expect(findSharedMemberFileCredentialRule(bytes(note))).toBe(
+      'env_assignment',
+    );
+    expect(findPackageFileCredentialRule(bytes(note))).toBe(
+      'credential_assignment',
+    );
+    const printf = "printf 'username=%s\\npassword=%s\\n'";
+    expect(findSharedTextCredentialRule(printf)).toBe('env_assignment');
+    expect(findSharedMemberFileCredentialRule(bytes(printf))).toBe(
+      'env_assignment',
+    );
+  });
+
+  // Stated: the material check has no placeholder notion, so an escaped key
+  // with a template value trips it, as `token=${X}` always did; every
+  // profile neutralizes the placeholder in the spaced reading.
+  it.each([
+    ['an escaped underscore', 'Run with NPM\\u005fTOKEN=${LITERAL_VALUE} set.'],
+    ['an escaped NUL', 'PATH=/bin\\0TOKEN=${SECRET}\\0'],
+  ])(
+    'refuses a key behind %s with a template value in the material check alone, a stated false positive',
+    (_label, text) => {
+      expect(everyCheck(text)).toEqual([
+        'credential_assignment',
+        null,
+        null,
+        null,
+        null,
+        null,
+      ]);
+    },
+  );
+
+  // A label (a file, path, name or key) is shown only when it is clean both
+  // as written and with each escape read as a space, whichever pass made the
+  // finding. One label here is a secret only as written (its percent escapes
+  // read as spaces hide it), the other only when spaced.
+  const LABELS = [
+    ['only as written', `skills/pwd=%53%65%63%72%65%74/helper`],
+    ['only when spaced', `skills/done%0Agh${'p'}_${repeat('L', 30)}/helper`],
+  ] as const;
+  const caughtAsWritten = `done gh${'p'}_${repeat('W', 30)}`;
+  const caughtSpaced = `done\\ngh${'p'}_${repeat('S', 30)}`;
+  const messages = (
+    finding: Parameters<typeof sharedSkillSecretMessage>[0],
+  ): string[] => [
+    sharedSkillSecretMessage(finding),
+    collectionSkillSecretMessage(finding),
+    packagedSkillSecretMessage(finding),
+    pluginSecretMessage(finding),
+  ];
+
+  it.each(
+    LABELS.flatMap(([which, label]) =>
+      [
+        ['as written', caughtAsWritten],
+        ['spaced', caughtSpaced],
+      ].map(([pass, text]) => [which, pass, label, text] as const),
+    ),
+  )(
+    'never shows a file path that is a secret %s, in a finding the %s pass makes',
+    (_which, _pass, label, text) => {
+      const finding = scanSharedSkillForSecrets({
+        skillName: 'notes',
+        files: [{ path: `${label}/SKILL.md`, text }],
+      });
+      expect(finding).toMatchObject({ file: '[redacted path]' });
+      if (finding === null) throw new Error('no finding');
+      for (const message of messages(finding))
+        expect(message).not.toContain(label);
+    },
+  );
+
+  it.each(LABELS)(
+    'never shows a skill name that is a secret %s',
+    (_which, label) => {
+      for (const text of ['Write tidy notes.', caughtAsWritten, caughtSpaced]) {
+        const finding = scanSharedSkillForSecrets({
+          skillName: label,
+          files: [{ path: 'SKILL.md', text }],
+        });
+        expect(finding).toMatchObject({ skillName: '[redacted name]' });
+        if (finding === null) throw new Error('no finding');
+        for (const message of messages(finding))
+          expect(message).not.toContain(label);
+      }
+    },
+  );
+
+  it.each([
+    ['only as written', 'api_key=%41%42%43'],
+    ['only when spaced', `done%0Agh${'p'}_${repeat('K', 30)}`],
+  ])('never shows an object key that is a secret %s', (_which, key) => {
+    expect(credentialPathSegment(key)).toBe('[redacted key]');
+  });
+
+  it.each(LABELS)(
+    'the one label helper hides a label that is a secret %s',
+    (_which, label) => {
+      expect(labelSecretRule(label, sharedTextLabelCheck)).not.toBeNull();
+      expect(displayableLabel(label, '[redacted]', sharedTextLabelCheck)).toBe(
+        '[redacted]',
+      );
+      expect(
+        displayableLabel('notes/setup.md', null, sharedTextLabelCheck),
+      ).toBe('notes/setup.md');
+    },
+  );
+
+  // Every site that shows or names a label (a file, path, name, key or other
+  // shown value) goes through labelSecretRule or displayableLabel, so no site
+  // can check a label one way only. The analyzer holds no other label check;
+  // the hosted upload and plugin checks are guarded in their own goldens.
+  it.each([
+    '../../../../desktop-shared/src/node/pipelines/package-analyzer.ts',
+  ])('%s checks labels only through the one helper', (relative) => {
+    const source = readFileSync(join(__dirname, relative), 'utf8');
+    expect(source).not.toMatch(/findSharedTextCredentialRule\(/);
+    expect(source).not.toMatch(/findSecretMaterialRule\(/);
+    expect(source).toMatch(/labelSecretRule\(|displayableLabel\(/);
+  });
+
+  // Stated, failing toward flagging: a printf `%s` is not one of the package
+  // placeholder forms.
+  it('refuses a printf format after an escaped line break in the package checks, a stated false positive', () => {
+    const printf = "printf 'username=%s\\npassword=%s\\n'";
+    expect(findPackageTextCredentialRule(printf)).toBe('credential_assignment');
+    expect(findPackageFileCredentialRule(bytes(printf))).toBe(
+      'credential_assignment',
+    );
   });
 });

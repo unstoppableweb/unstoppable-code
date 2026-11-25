@@ -33,8 +33,17 @@ export function createWorkerCodeGraphReadAdapter(
   });
   return {
     queries: {
-      'worker.codeGraph.status.get':
-        handlers.queries['worker.codeGraph.status.get'],
+      // A selected agent status read may take the daemon route (CAN-5093).
+      'worker.codeGraph.status.get': (params, context) =>
+        onDaemonCodeGraphRoute(
+          (daemon) =>
+            daemon.readCodeGraphScopeInDaemon(
+              'worker.codeGraph.status.get',
+              params,
+            ),
+          async () =>
+            handlers.queries['worker.codeGraph.status.get'](params, context),
+        ),
       // A renderer worktree summary may take the daemon route (CAN-5089).
       'worker.codeGraph.query': (params, context) => {
         const inProcess = async (): Promise<WorkerCodeGraphQueryResult> =>
@@ -48,8 +57,20 @@ export function createWorkerCodeGraphReadAdapter(
       },
       'worker.codeGraph.snapshot.export':
         handlers.queries['worker.codeGraph.snapshot.export'],
-      'worker.codeGraph.languages.validate':
-        handlers.queries['worker.codeGraph.languages.validate'],
+      // A selected steering language check may take the daemon route (CAN-5093).
+      'worker.codeGraph.languages.validate': (params, context) =>
+        onDaemonCodeGraphRoute(
+          (daemon) =>
+            daemon.readCodeGraphScopeInDaemon(
+              'worker.codeGraph.languages.validate',
+              params,
+            ),
+          async () =>
+            handlers.queries['worker.codeGraph.languages.validate'](
+              params,
+              context,
+            ),
+        ),
     },
     instructions: {
       'worker.codeGraph.snapshot.import':

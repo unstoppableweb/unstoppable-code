@@ -2,6 +2,7 @@ import type { AppError } from '@canopy/protocol/app-errors';
 import type { CloneJobSnapshot } from '@canopy/protocol/clone-jobs';
 import type { McpRemovalRecovery } from '@canopy/protocol/mcp-removal';
 import type { CopilotHostSelection } from '@canopy/protocol/copilot-selection';
+import type { ClaudeConnectorAvailability } from '@canopy/protocol/remote-control/shell';
 import type { ProjectDeletionPendingRecovery } from '@canopy/protocol/remote-control/shell/project-deletion-discard';
 import type { AntigravityModelEntry } from '@canopy/execution-engine/lib/antigravity-models';
 import type { OrganizationLayerView } from './lib/organization-capabilities';
@@ -2775,6 +2776,19 @@ export type LocalModelGatewayResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: SettingsErrorPayload };
 
+/** Sign-in found one gateway on the account and another on this device. */
+export interface LocalModelGatewayMigrationChoice {
+  deviceBaseUrl: string;
+  deviceDisplayName: string | null;
+  accountBaseUrl: string;
+  accountDisplayName: string | null;
+  /** The account gateway revision shown; replacing it must match. */
+  accountRevision: string;
+}
+
+/** `device` replaces the account's gateway; `account` keeps it. */
+export type LocalModelGatewayMigrationDecision = 'device' | 'account';
+
 export interface ModelGatewayCredentialState {
   secureStorageFailure?: SecureStorageFailure;
   organizationId: string;
@@ -2784,6 +2798,13 @@ export interface ModelGatewayCredentialState {
   lastValidatedAt?: string;
   lastError?: string;
   storageAvailable: boolean;
+  /**
+   * No key matches the requested URL, but this computer holds one saved for
+   * another URL of the same gateway. Status only: that key can't send.
+   */
+  keyForOtherUrl?: true;
+  /** This computer opted out of the Personal gateway (CAN-7657). */
+  notUsedOnThisComputer?: true;
 }
 
 export interface ModelGatewayCredentialValidation {
@@ -3012,6 +3033,8 @@ export interface CanopyCloudAccountPublicState {
   personalOrganizationId?: string;
   personalModelGateway?: CanopyAccountResponse['personalModelGateway'];
   personalModelGatewayEnforcementUnavailable?: boolean;
+  personalModelGatewayConfig?: CanopyAccountResponse['personalModelGatewayConfig'];
+  organizationModelGatewayConfigs?: CanopyAccountResponse['organizationModelGatewayConfigs'];
   organizations?: CanopyOrganizationSummary[];
   teams?: CanopyTeamSummary[];
   /**
@@ -3404,6 +3427,8 @@ export interface CliInstallResult {
 
 export interface UpdateInfoData {
   version: string;
+  /** Linux package files changed on disk; applying only relaunches the app. */
+  installedByPackageManager?: true;
   releaseDate?: string;
   releaseNotes?: string | null;
   /** Linux .deb updates are metadata-only. This is the official brand page. */
@@ -3488,6 +3513,7 @@ export type UpdateEvent =
   | { type: 'download-progress'; progress: DownloadProgressData }
   | { type: 'downloaded'; info: UpdateInfoData }
   | { type: 'install-pending'; pending: boolean }
+  | { type: 'install-refused'; state: UpdateState }
   | { type: 'error'; message: string };
 
 /**
@@ -6540,7 +6566,9 @@ export type {
 } from '@canopy/execution-engine/types/codex-speed-capabilities';
 export type {
   OverlayLayerApi,
+  OverlayLayerEdgeAnchor,
   OverlayLayerFocusRequest,
+  OverlayLayerFollow,
   OverlayLayerRect,
   OverlayLayerSetBoundsRequest,
   OverlayLayerSlot,
@@ -6717,9 +6745,12 @@ export interface AiCreditsRoutingState {
   activatedAt: number;
   /**
    * Provider-reported quota reset time (ms since epoch), when known.
-   * Session-scoped routing stops applying at this time. Session routing with
-   * no reset time stays in effect until the user clears it or the provider's
-   * native account changes.
+   * Session-scoped routing stops applying at this time. Session routing that
+   * starts without one learns it from a later usage read, retried after the
+   * provider's Retry-After while the chat's composer is mounted (CAN-7484).
+   * Until then it stays in effect until the user clears it, the provider's
+   * native account changes, or main records restored allowance
+   * (`subscriptionRestoredAt`, CAN-3992).
    */
   resetsAt?: number;
   /**
@@ -7344,10 +7375,17 @@ export interface PreferencesData extends TerminalDrawerPreferences {
   copilotEnabled?: boolean;
   opencodeEnabled?: boolean;
   /**
-   * Per-user opt-in for the account proxy (Settings > Labs). Off by
-   * default; the `canopy-desktop-account-proxy` flag must also be on.
+   * Whether the account proxy is turned on (Settings > Multi-account proxy).
+   * On by default. The `canopy-desktop-account-proxy` flag must also be on.
    */
   accountProxyEnabled?: boolean;
+  /**
+   * Set when the user chose `accountProxyEnabled` with the Settings switch,
+   * so that choice holds whether or not a connection is saved. Without it
+   * the value came from the retired Labs opt-in, which stored `false` for
+   * everyone, and counts as off only beside a saved connection.
+   */
+  accountProxyEnabledSetByUser?: boolean;
   /**
    * The proxy this device connects to. Written by the main process only (the
    * management key lives in secure storage, keyed by `id`); renderer saves
@@ -7526,6 +7564,17 @@ export interface PreferencesData extends TerminalDrawerPreferences {
    * runs from pipeline details remain available.
    */
   pipelineAdvisorEnabled: boolean;
+  /**
+   * Whether Slack requests from the person's own Slack link may start
+   * Orchestrator turns on this computer (CAN-7604). Off by default. Set on
+   * this computer in Settings → Integrations, where turning it on also turns
+   * on `allowIncoming`, which every Slack request needs; browser, mobile and hosted
+   * controllers can't change it (a full desktop controller, which can change
+   * anything here, can). Read on every hosted Slack send, so turning it off
+   * refuses the next one. It gates sends only: transcript reads and turn
+   * status stay available so in-flight turns can finish and be read.
+   */
+  slackOrchestratorRequestsEnabled: boolean;
   /** Injects organization memory into eligible interactive chat turns. */
   orgMemoryInjectionEnabled: boolean;
   /**
@@ -11320,6 +11369,8 @@ export interface ParkedProviderSession {
 }
 
 export interface PersistedChatTab {
+  /** Last actual Claude launch, written only by canonical event ingestion. */
+  claudeConnectorAvailability?: ClaudeConnectorAvailability;
   /** Main-owned activation recovery facts. Transfers and forks strip replay authority. */
   mcpActivation?: McpActivationRecord;
   executionContext?: string;
@@ -14136,6 +14187,8 @@ export interface SecretRequestSettleResponse {
   accepted: boolean;
   /** Why the submission was refused, safe to show. Never echoes a value. */
   error?: string;
+  /** Set when the request can no longer take any answer. */
+  reason?: 'ended' | 'answered';
 }
 
 /** One chat, for the Secrets chip's channels. */
@@ -16088,6 +16141,7 @@ export interface CoworkWorkEntrySummary {
 }
 
 export interface CoworkWorkEntryChatSummary {
+  claudeConnectorAvailability?: ClaudeConnectorAvailability;
   id: string;
   title: string;
   customTitle?: string;
@@ -20762,8 +20816,23 @@ export interface CanopyApi {
       input: LocalModelGatewayConnectInput,
     ) => Promise<LocalModelGatewayResult<AiGatewayConnectionResult>>;
     onChanged: (cb: () => void) => () => void;
-    /** Sign-in kept the account's different gateway; fires once per revision. */
+    /** The account and this device name different gateways; fires once per revision. */
     onMigrationConflict: (cb: () => void) => () => void;
+    /** The pending sign-in choice between the two, or null when none. */
+    readMigrationChoice: () => Promise<
+      LocalModelGatewayResult<LocalModelGatewayMigrationChoice | null>
+    >;
+    chooseMigration: (
+      decision: LocalModelGatewayMigrationDecision,
+      accountRevision: string,
+    ) => Promise<LocalModelGatewayResult<null>>;
+  };
+  /** Personal AI gateways this computer opts out of (CAN-7644). */
+  modelGatewayDeviceUse: {
+    /** Personal organization ids whose account gateway this computer skips. */
+    read: () => Promise<string[]>;
+    set: (input: { organizationId: string; used: boolean }) => Promise<void>;
+    onChanged: (cb: () => void) => () => void;
   };
   searchLinearIssues: (query: string) => Promise<LinearTicketSearchResult[]>;
   resolvePullRequest: (
@@ -20806,6 +20875,8 @@ export interface CanopyApi {
   feedbackDiagnosticsCapabilities: () => Promise<{
     snapshots: true;
     version: 1;
+    /** The host accepts `source` on feedback report errors (CAN-6895). */
+    errorSource?: boolean;
   }>;
   submitFeedback: (
     request: FeedbackSubmitRequest,
@@ -27920,6 +27991,7 @@ export const IPC_CHANNELS = {
   copilotConnectionProgress: 'copilot-connection:progress',
   opencodeConnectionProgress: 'opencode-connection:progress',
   antigravityRuntimeStatus: 'antigravity-runtime:status',
+  antigravityRuntimeHostSupport: 'antigravity-runtime:host-support',
   antigravityRuntimeInstall: 'antigravity-runtime:install',
   antigravityRuntimeCancel: 'antigravity-runtime:cancel',
   antigravityRuntimeProgress: 'antigravity-runtime:progress',
@@ -28469,6 +28541,12 @@ export const IPC_CHANNELS = {
   localModelGatewayConnect: 'local-model-gateway:connect',
   localModelGatewayChanged: 'local-model-gateway:changed',
   localModelGatewayMigrationConflict: 'local-model-gateway:migration-conflict',
+  localModelGatewayMigrationChoiceRead:
+    'local-model-gateway:migration-choice-read',
+  localModelGatewayMigrationChoose: 'local-model-gateway:migration-choose',
+  modelGatewayDeviceUseRead: 'model-gateway-device-use:read',
+  modelGatewayDeviceUseSet: 'model-gateway-device-use:set',
+  modelGatewayDeviceUseChanged: 'model-gateway-device-use:changed',
   settingsLoadCanopyCloudAccount: 'settings:load-canopy-cloud-account',
   settingsCanopyCloudSessionStatusChanged:
     'settings:canopy-cloud-session-status-changed',
@@ -28986,6 +29064,10 @@ export const IPC_CHANNELS = {
   appAdvisorSettingsView: REMOTE_IPC_CHANNELS.appAdvisorSettingsView,
   appAdvisorSettingsPatch: REMOTE_IPC_CHANNELS.appAdvisorSettingsPatch,
   appAdvisorSettingsChanged: 'app-advisor:settings-changed',
+  // Served by this computer's host session to a Slack session only
+  // (CAN-7604): where one Slack message's Orchestrator turn stands. No
+  // renderer or preload calls it.
+  appAdvisorSlackTurnStatus: 'app-advisor:slack-turn-status',
   appAdvisorLoadClaudeMd: 'app-advisor:load-claude-md',
   appAdvisorSaveClaudeMd: 'app-advisor:save-claude-md',
   appAdvisorReportWindowUiState: 'app-advisor:report-window-ui-state',

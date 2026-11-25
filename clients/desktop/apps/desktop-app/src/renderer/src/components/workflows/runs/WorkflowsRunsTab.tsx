@@ -105,6 +105,7 @@ export function WorkflowsRunsTab({
           listed.
         </Notice>
       )}
+      {rowActions.actionFeedback}
       <WorkflowRunsList
         rows={feed.rows}
         loading={feed.loading}

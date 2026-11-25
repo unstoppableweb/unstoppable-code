@@ -1,4 +1,5 @@
 import { load } from 'js-yaml';
+import { join } from 'node:path';
 import { app } from 'electron';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { reportMainAppError } from '@canopy/desktop-instrumentation/electron/main';
@@ -11,6 +12,11 @@ import {
   type LinuxPackageArchitecture,
   type PackageManagedLinuxInstallSource,
 } from './updater/linux-manual-update';
+import {
+  createDpkgBackend,
+  watchInstalledPackage,
+  type InstalledPackageWatch,
+} from './updater/linux-installed-package';
 import {
   verifiedLinuxRelease,
   verifiedLinuxMetadata,
@@ -25,7 +31,10 @@ import {
   windowsUpdateErrorCode,
   windowsUpdateErrorMessage,
 } from './updater/windows-update';
-import { logMainProcessError } from './lib/main-process-logging';
+import {
+  logMainProcessError,
+  logMainProcessWarn,
+} from './lib/main-process-logging';
 import type { CustomPublishOptions } from 'builder-util-runtime';
 import {
   ACTIONABLE_PHASES,
@@ -115,6 +124,16 @@ type ProgressInfoLike = {
 };
 
 type BeforeInstallUpdate = () => Promise<void>;
+interface UpdaterOptions {
+  isWorkflowDirty: () => boolean;
+  linuxRoots?: { dpkgDir: string; execPath?: string };
+  isPackageTransactionRunning?: () => boolean;
+  /** Host supplies the routed terminal port without loading the PTY graph here. */
+  startPackageTransactionTracking?: (
+    processNames: readonly string[],
+    onReadinessChange: () => void,
+  ) => () => void;
+}
 type UpdaterBrowserWindow = SendableBrowserWindow & {
   webContents: SendableBrowserWindow['webContents'] & {
     isLoading(): boolean;
@@ -135,6 +154,12 @@ let installInFlight: Promise<void> | null = null;
 let unsubscribeChatSessionActivity: (() => void) | null = null;
 let activeTargetUpdate: TargetUpdateInfo | null = null;
 let updaterGeneration = 0;
+let isWorkflowDirty: () => boolean = () => false;
+let isPackageTransactionRunning: () => boolean = () => false;
+let linuxRoots: UpdaterOptions['linuxRoots'];
+let linuxInstalledPackageWatch: InstalledPackageWatch | null = null;
+let linuxInstalledPackageWatchStart: Promise<void> | null = null;
+let stopPackageTransactionTracking: (() => void) | null = null;
 /**
  * Cached GitHub token used to configure the electron-updater feed URL.
  * Resolving the token can shell out to `gh` and inspect the keychain, which
@@ -367,9 +392,11 @@ function sendToRenderer(event: UpdateEvent): void {
 
 function setState(nextState: UpdateState, event?: UpdateEvent): void {
   const wasPending = updateState.installPending ?? false;
-  // installPending is only meaningful while phase === 'downloaded'. Any other
-  // phase implicitly cancels a deferred install.
-  if (nextState.phase !== 'downloaded' && wasPending) {
+  // Only a suspended Linux package relaunch retains intent outside downloaded.
+  // Every other transition keeps the existing implicit cancellation behavior.
+  const suspendedPackage =
+    nextState.phase === 'idle' && hasLinuxInstalledUpdate(nextState);
+  if (nextState.phase !== 'downloaded' && !suspendedPackage && wasPending) {
     nextState = { ...nextState, installPending: false };
   }
   updateState = nextState;
@@ -410,10 +437,14 @@ function isDeferredInstallReady(): boolean {
   return (
     updateState.installPending === true &&
     updateState.phase === 'downloaded' &&
+    (!hasLinuxInstalledUpdate() ||
+      linuxInstalledPackageWatch?.isRelaunchReady() === true) &&
     !rendererBusy &&
     // Main includes live non-ambient provider background work and delegations,
     // even after the renderer settles the foreground turn.
-    !hasActiveChatWork()
+    !hasActiveChatWork() &&
+    !isWorkflowDirty() &&
+    !isPackageTransactionRunning()
   );
 }
 
@@ -431,23 +462,71 @@ function maybeRunDeferredInstall(): void {
     if (!isDeferredInstallReady()) {
       return;
     }
-    void runInstallUpdate().catch((error: unknown) => {
+    void runInstallUpdate('deferred').catch((error: unknown) => {
       // The updater state/event already captures the failure.
       reportUpdaterFailure('install_deferred', error);
     });
   }, DEFERRED_INSTALL_IDLE_DEBOUNCE_MS);
 }
 
-async function runInstallUpdate(): Promise<void> {
+async function runInstallUpdate(
+  source: 'immediate' | 'deferred',
+): Promise<void> {
   ensureDistributionAllowsUpdates();
-  refuseLinuxInstall();
+  refuseLinuxInstall(true);
+  const linuxRelaunch = hasLinuxInstalledUpdate();
+  const generation = updaterGeneration;
+  if (linuxRelaunch) {
+    // Re-check at the handoff, outside handleUpdaterError: safety refusals
+    // must leave the relaunch prompt and any queued restart intact.
+    const blocked = linuxRelaunchBlockReason();
+    if (blocked) {
+      if (source === 'deferred') return;
+      throw new Error(blocked);
+    }
+  }
   if (installInFlight) {
     return installInFlight;
   }
   clearDeferredInstallIdleTimer();
 
-  installInFlight = (async (): Promise<void> => {
+  const installation = (async (): Promise<void> => {
+    if (linuxRelaunch) {
+      // Keep the captured route: a baseline/unsettled callback may withdraw
+      // downloaded while this async read runs. Never fall into an installer.
+      const result = await linuxInstalledPackageWatch?.readNow();
+      const blocked =
+        generation !== updaterGeneration
+          ? linuxUpdateCopy(BRAND, RELEASE_FLAVOR).relaunchWaitForPackage
+          : (linuxRelaunchBlockReason() ??
+            (result !== 'installed-changed' || !hasLinuxInstalledUpdate()
+              ? linuxUpdateCopy(BRAND, RELEASE_FLAVOR).relaunchWaitForPackage
+              : null));
+      // Safety refusals are not installer errors and must not discard intent.
+      if (blocked) {
+        if (source === 'deferred') return;
+        if (generation === updaterGeneration) {
+          // Core already returned its running receipt. A safety refusal is
+          // not an installer failure: acknowledge it with the actual ready
+          // or withdrawn snapshot, preserving any queued relaunch intent.
+          const state: UpdateState = { ...updateState, message: blocked };
+          setState(state, { type: 'install-refused', state });
+        }
+        throw new Error(blocked);
+      }
+      if (source === 'deferred' && !isDeferredInstallReady()) return;
+    }
     try {
+      if (linuxRelaunch) {
+        restoreStartupEnvironmentForRelaunch();
+        app.relaunch();
+        if (beforeInstallUpdate) await beforeInstallUpdate();
+        app.quit();
+        // quit begins an asynchronous lifecycle. Consume this queued handoff
+        // before a late package poll or activity event can schedule it again.
+        setInstallPending(false);
+        return;
+      }
       if (beforeInstallUpdate) {
         await beforeInstallUpdate();
       }
@@ -455,12 +534,20 @@ async function runInstallUpdate(): Promise<void> {
       getAutoUpdater().quitAndInstall();
     } catch (error) {
       throw handleUpdaterError(error);
-    } finally {
-      installInFlight = null;
     }
   })();
-
-  return installInFlight;
+  installInFlight = installation;
+  try {
+    await installation;
+  } finally {
+    // A handoff can finish synchronously when no cleanup hook was supplied.
+    // Clear only after assigning the flight, never inside its IIFE.
+    if (installInFlight === installation) {
+      installInFlight = null;
+      if (linuxRelaunch && generation === updaterGeneration)
+        maybeRunDeferredInstall();
+    }
+  }
 }
 
 function toErrorMessage(error: unknown): string {
@@ -586,7 +673,7 @@ interface LinuxPackageInstall {
  */
 async function ensureLinuxPackage(): Promise<LinuxPackageInstall> {
   const source = app.isPackaged
-    ? await detectLinuxInstallSource()
+    ? await detectLinuxInstallSource(linuxInstallRoots())
     : { kind: 'unknown' as const };
   if (source.kind !== 'deb' && source.kind !== 'pacman') {
     throw new UnsupportedLinuxUpdateError(
@@ -632,8 +719,125 @@ function linuxUpdateInfo(
   };
 }
 
-function refuseLinuxInstall(): void {
-  if (hostPlatformOperatingSystem() === 'linux')
+/** Includes suspended candidates so their local intent survives feed checks. */
+function hasLinuxInstalledUpdate(state: UpdateState = updateState): boolean {
+  return (
+    hostPlatformOperatingSystem() === 'linux' &&
+    state.info?.installedByPackageManager === true
+  );
+}
+
+function linuxRelaunchBlockReason(): string | null {
+  const copy = linuxUpdateCopy(BRAND, RELEASE_FLAVOR);
+  if (isWorkflowDirty()) return copy.relaunchBlockedByEdits;
+  if (isPackageTransactionRunning()) return copy.relaunchWaitForTerminal;
+  if (
+    updateState.phase !== 'downloaded' ||
+    linuxInstalledPackageWatch?.isRelaunchReady() !== true
+  )
+    return copy.relaunchWaitForPackage;
+  return null;
+}
+
+function linuxInstallRoots(): { dpkgInfoDir?: string; execPath?: string } {
+  return linuxRoots
+    ? {
+        dpkgInfoDir: join(linuxRoots.dpkgDir, 'info'),
+        execPath: linuxRoots.execPath,
+      }
+    : {};
+}
+
+async function startLinuxInstalledPackageWatch(
+  options?: UpdaterOptions,
+): Promise<void> {
+  if (hostPlatformOperatingSystem() !== 'linux' || !app.isPackaged) return;
+  const generation = updaterGeneration;
+  const source = await detectLinuxInstallSource(linuxInstallRoots());
+  if (generation !== updaterGeneration || source.kind !== 'deb') return;
+  const backend = createDpkgBackend({
+    packageName: source.packageName,
+    dpkgDir: linuxRoots?.dpkgDir,
+  });
+  stopPackageTransactionTracking =
+    options?.startPackageTransactionTracking?.(
+      backend.transactionProcessNames,
+      maybeRunDeferredInstall,
+    ) ?? null;
+  linuxInstalledPackageWatch = watchInstalledPackage({
+    backend,
+    runningVersion: app.getVersion(),
+    onInstalledChange(rawVersion): void {
+      if (generation !== updaterGeneration) return;
+      const wasSuspended =
+        hasLinuxInstalledUpdate() && updateState.phase === 'idle';
+      const info: UpdateInfoData = {
+        version: backend.toAppVersion(rawVersion),
+        installedByPackageManager: true,
+      };
+      activeTargetUpdate = null;
+      setState(
+        {
+          phase: 'downloaded',
+          info,
+          installPending: updateState.installPending,
+        },
+        { type: 'downloaded', info },
+      );
+      // The renderer's downloaded event cannot carry pending across a
+      // suspended snapshot with info. Restore its queued badge explicitly.
+      if (wasSuspended && updateState.installPending)
+        sendToRenderer({ type: 'install-pending', pending: true });
+    },
+    onBaselineRestored(): void {
+      if (generation !== updaterGeneration || !hasLinuxInstalledUpdate())
+        return;
+      setInstallPending(false);
+      setState({ phase: 'idle' });
+      // Existing cancellation event also invalidates the renderer's installed
+      // prompt. Send after idle (even if never queued) so getState sees reset.
+      sendToRenderer({ type: 'install-pending', pending: false });
+      void runAutomaticCheck().catch((error: unknown) => {
+        reportUpdaterFailure('check_periodic', error);
+      });
+    },
+    onReadinessChange(result): void {
+      if (generation !== updaterGeneration) return;
+      if (
+        result !== 'installed-changed' &&
+        hasLinuxInstalledUpdate() &&
+        updateState.phase === 'downloaded'
+      ) {
+        clearDeferredInstallIdleTimer();
+        setState({
+          ...updateState,
+          phase: 'idle',
+          message: linuxUpdateCopy(BRAND, RELEASE_FLAVOR)
+            .relaunchWaitForPackage,
+        });
+        // As on baseline restoration, invalidate the old renderer prompt.
+        // Main/core retain pending intent in the authoritative idle snapshot.
+        sendToRenderer({ type: 'install-pending', pending: false });
+      }
+      maybeRunDeferredInstall();
+    },
+    onPoll(): void {
+      if (generation === updaterGeneration) maybeRunDeferredInstall();
+    },
+  });
+  await linuxInstalledPackageWatch.readNow();
+}
+
+async function readLinuxInstalledPackage(): Promise<void> {
+  await linuxInstalledPackageWatchStart;
+  await linuxInstalledPackageWatch?.readNow();
+}
+
+function refuseLinuxInstall(allowInstalledRelaunch = false): void {
+  if (
+    hostPlatformOperatingSystem() === 'linux' &&
+    !(allowInstalledRelaunch && hasLinuxInstalledUpdate())
+  )
     throw new Error(linuxUpdateCopy(BRAND, RELEASE_FLAVOR).manual);
 }
 
@@ -641,11 +845,15 @@ async function checkLinuxUpdates(
   request?: TargetUpdateRequest,
   generation = updaterGeneration,
 ): Promise<void> {
+  // Local package state must win before even a checking event is emitted.
+  // Keep this outside the feed-error catch so a relaunch refusal stays ready.
+  await readLinuxInstalledPackage();
+  if (generation !== updaterGeneration || hasLinuxInstalledUpdate()) return;
   try {
     const install = await ensureLinuxPackage();
     if (request) refusePackageManagerTarget(install);
     const { architecture } = install;
-    if (generation !== updaterGeneration) return;
+    if (generation !== updaterGeneration || hasLinuxInstalledUpdate()) return;
     setState({ phase: 'checking' }, { type: 'checking' });
     const target = request
       ? await getTargetReleaseInfo(request.tag, architecture)
@@ -681,7 +889,7 @@ async function checkLinuxUpdates(
         architecture,
       );
     }
-    if (generation !== updaterGeneration) return;
+    if (generation !== updaterGeneration || hasLinuxInstalledUpdate()) return;
     if (!release)
       throw new Error(linuxUpdateCopy(BRAND, RELEASE_FLAVOR).unavailable);
     if (
@@ -714,7 +922,7 @@ async function checkLinuxUpdates(
       available ? { type: 'available', info } : { type: 'not-available' },
     );
   } catch (error) {
-    if (generation !== updaterGeneration) return;
+    if (generation !== updaterGeneration || hasLinuxInstalledUpdate()) return;
     invalidateGitHubAuthCache();
     const message = linuxFailureMessage(error);
     setState(
@@ -1189,6 +1397,7 @@ function scheduleAutomaticChecks(): void {
 export function startUpdater(
   getWindow: () => UpdaterBrowserWindow | null,
   beforeInstall?: BeforeInstallUpdate,
+  options?: UpdaterOptions,
 ): void {
   getWindowRef = getWindow;
   // Do not even construct electron-updater for source builds: doing so can
@@ -1197,10 +1406,18 @@ export function startUpdater(
   // Local-only builds never schedule an update check either.
   if (IS_SOURCE_BUILD || isLocalOnlyBuild()) return;
   beforeInstallUpdate = beforeInstall ?? null;
-  if (
-    hostPlatformOperatingSystem() !== 'linux' &&
-    unsubscribeChatSessionActivity === null
-  ) {
+  isWorkflowDirty = options?.isWorkflowDirty ?? ((): boolean => false);
+  isPackageTransactionRunning =
+    options?.isPackageTransactionRunning ?? ((): boolean => false);
+  linuxRoots = options?.linuxRoots;
+  if (linuxInstalledPackageWatchStart === null) {
+    linuxInstalledPackageWatchStart = startLinuxInstalledPackageWatch(
+      options,
+    ).catch((error: unknown) => {
+      logMainProcessWarn('Installed package watcher could not start', error);
+    });
+  }
+  if (unsubscribeChatSessionActivity === null) {
     unsubscribeChatSessionActivity = subscribeChatSessionActivity(() => {
       maybeRunDeferredInstall();
     });
@@ -1211,6 +1428,14 @@ export function startUpdater(
 
 export function stopUpdater(): void {
   updaterGeneration += 1;
+  linuxInstalledPackageWatch?.dispose();
+  linuxInstalledPackageWatch = null;
+  linuxInstalledPackageWatchStart = null;
+  stopPackageTransactionTracking?.();
+  stopPackageTransactionTracking = null;
+  isWorkflowDirty = (): boolean => false;
+  isPackageTransactionRunning = (): boolean => false;
+  linuxRoots = undefined;
   if (hostPlatformOperatingSystem() === 'linux')
     updateState = { phase: 'idle' };
   if (startupTimer) {
@@ -1279,11 +1504,22 @@ export async function checkForVersion(
   request: TargetUpdateRequest,
 ): Promise<void> {
   ensureDistributionAllowsUpdates();
+  const generation = updaterGeneration;
+  if (hostPlatformOperatingSystem() === 'linux') {
+    await readLinuxInstalledPackage();
+    if (generation !== updaterGeneration) return;
+    if (hasLinuxInstalledUpdate()) {
+      if (updateState.phase !== 'downloaded')
+        throw new Error(
+          linuxUpdateCopy(BRAND, RELEASE_FLAVOR).relaunchWaitForPackage,
+        );
+      throw new Error(linuxUpdateCopy(BRAND, RELEASE_FLAVOR).relaunchFirst);
+    }
+  }
   if (checkInFlight) {
     throw new Error('An update check is already in progress.');
   }
 
-  const generation = updaterGeneration;
   checkInFlight = (async (): Promise<void> => {
     try {
       if (hostPlatformOperatingSystem() === 'linux') {
@@ -1377,7 +1613,11 @@ export async function downloadUpdate(): Promise<void> {
 /** Throws, with the message people see, when an install cannot start now. */
 export function assertInstallAllowed(): void {
   ensureDistributionAllowsUpdates();
-  refuseLinuxInstall();
+  refuseLinuxInstall(true);
+  if (hasLinuxInstalledUpdate()) {
+    const blocked = linuxRelaunchBlockReason();
+    if (blocked) throw new Error(blocked);
+  }
   if (updateState.phase !== 'downloaded') {
     throw new Error('No downloaded update is ready to install.');
   }
@@ -1385,12 +1625,12 @@ export function assertInstallAllowed(): void {
 
 export async function installUpdate(): Promise<void> {
   assertInstallAllowed();
-  await runInstallUpdate();
+  await runInstallUpdate('immediate');
 }
 
 export function scheduleUpdate(): void {
   ensureDistributionAllowsUpdates();
-  refuseLinuxInstall();
+  refuseLinuxInstall(true);
   if (updateState.phase !== 'downloaded') {
     throw new Error('No downloaded update is ready to install.');
   }
@@ -1456,6 +1696,11 @@ export function reportRendererBusyState(busy: boolean): void {
   }
   rendererBusy = busy;
   notifyStateListeners();
+  maybeRunDeferredInstall();
+}
+
+/** Wakes a queued relaunch when workflow edits are saved, discarded or lost. */
+export function reportWorkflowDirtyState(): void {
   maybeRunDeferredInstall();
 }
 

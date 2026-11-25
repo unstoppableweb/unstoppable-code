@@ -12,6 +12,7 @@ it('lists no mutation fence operation in any access mode, and relays none to any
     'replica',
     'delegated-execution',
     'read-only',
+    'owner',
   ];
   expect(Object.keys(INTERFACE_RELAY_ALLOWLIST).sort()).toEqual(
     [...modes].sort(),

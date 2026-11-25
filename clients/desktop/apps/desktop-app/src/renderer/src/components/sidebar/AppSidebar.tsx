@@ -4,6 +4,7 @@ import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   Fragment,
   lazy,
+  memo,
   Suspense,
   type JSX,
   useEffect,
@@ -168,10 +169,15 @@ const DesktopSidebarActivityToggle = lazy(() =>
   })),
 );
 
-const DesktopSharedSidebarHost = lazy(() =>
-  import('./DesktopSharedSidebarHost').then((module) => ({
-    default: module.DesktopSharedSidebarHost,
-  })),
+// Memoized: its two props never change with this component's own state, and
+// without it every render here (Settings opening, a page switch, the
+// Orchestrator row lighting up) re-rendered every project and chat row.
+const DesktopSharedSidebarHost = memo(
+  lazy(() =>
+    import('./DesktopSharedSidebarHost').then((module) => ({
+      default: module.DesktopSharedSidebarHost,
+    })),
+  ),
 );
 
 export interface AppSidebarProps {

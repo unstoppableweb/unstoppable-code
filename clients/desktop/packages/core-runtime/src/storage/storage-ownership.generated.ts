@@ -2,6 +2,18 @@
 import type { StorageOwnershipRow } from './writer-authority';
 export const STORAGE_OWNERSHIP = [
   {
+    "id": "app_advisor_slack_conversations",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/remote-control/host/hosted-orchestrator-desktop"
+    ]
+  },
+  {
     "id": "app_advisor_watchers",
     "transitionOwner": "legacy",
     "currentWriters": [

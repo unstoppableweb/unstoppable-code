@@ -307,8 +307,19 @@ function answeredFrom(options: SecretRequestAnswerOptions): {
     : { answeredFrom: options.answeredFrom };
 }
 
-function refused(error: string): SecretRequestSettleResponse {
-  return { accepted: false, error };
+const ENDED = 'This request is no longer waiting.';
+const ANSWERED = 'This request was already answered.';
+
+type ClosedReason = 'ended' | 'answered';
+
+/** `reason` marks a request no answer can land on any more: the form locks. */
+function refused(
+  error: string,
+  reason?: ClosedReason,
+): SecretRequestSettleResponse {
+  return reason === undefined
+    ? { accepted: false, error }
+    : { accepted: false, error, reason };
 }
 
 async function pendingSecretRequest(requestId: string): Promise<
@@ -317,11 +328,12 @@ async function pendingSecretRequest(requestId: string): Promise<
       request: McpSecretRequest;
       questionText: string;
     }
-  | { error: string }
+  | { error: string; reason?: ClosedReason }
 > {
   const live = chatQuestionScope(requestId);
   const port = getChatStateCommandPort();
-  if (!live || !port) return { error: 'This request is no longer waiting.' };
+  if (!live) return { error: ENDED, reason: 'ended' };
+  if (!port) return { error: "Couldn't reach this chat. Try again." };
   const scope: ChatSecretScope = {
     projectId: live.workspaceId,
     worktreeId: live.worktreeId,
@@ -342,9 +354,9 @@ async function pendingSecretRequest(requestId: string): Promise<
   }
   const question = record?.questions[0];
   if (!record || !question?.secretRequest)
-    return { error: 'This request is no longer waiting.' };
+    return { error: ENDED, reason: 'ended' };
   if (record.answeredAt !== undefined || record.dismissedAt !== undefined)
-    return { error: 'This request was already answered.' };
+    return { error: ANSWERED, reason: 'answered' };
   return {
     scope,
     request: question.secretRequest,
@@ -439,11 +451,10 @@ export async function submitSecretRequest(
   const began = beginSettlingSecretRequest(requestId);
   if (began === 'busy')
     return refused('This request is already being answered.');
-  if (began === 'stopping')
-    return refused('This request is no longer waiting.');
+  if (began === 'stopping') return refused(ENDED, 'ended');
   try {
     const pending = await pendingSecretRequest(requestId);
-    if ('error' in pending) return refused(pending.error);
+    if ('error' in pending) return refused(pending.error, pending.reason);
     const { scope, request, questionText } = pending;
     const store = getChatSecretStore();
     const held = new Set(
@@ -455,7 +466,7 @@ export async function submitSecretRequest(
     const invalid = validateSubmission(request, submission, held);
     if (invalid !== undefined) return refused(invalid);
     if (!getDesktopChatWaits().isOpen(requestId))
-      return refused('This request is no longer waiting.');
+      return refused(ENDED, 'ended');
     const entered = Object.keys(submission.values);
     // Stored before the agent resumes, so its next command can use them.
     let undo: () => Promise<void>;
@@ -490,11 +501,9 @@ export async function submitSecretRequest(
           "[agent-secrets] Couldn't write back a refused secret submission",
         );
       });
-      return refused(
-        settled === 'unavailable'
-          ? "Couldn't reach this chat. Try again."
-          : 'This request is no longer waiting.',
-      );
+      return settled === 'unavailable'
+        ? refused("Couldn't reach this chat. Try again.")
+        : refused(ENDED, 'ended');
     }
     const sources: Record<string, 'entered' | 'chat'> = {};
     for (const entry of outcome.secrets)
@@ -522,11 +531,10 @@ export async function declineSecretRequest(
   const began = beginSettlingSecretRequest(requestId);
   if (began === 'busy')
     return refused('This request is already being answered.');
-  if (began === 'stopping')
-    return refused('This request is no longer waiting.');
+  if (began === 'stopping') return refused(ENDED, 'ended');
   try {
     const pending = await pendingSecretRequest(requestId);
-    if ('error' in pending) return refused(pending.error);
+    if ('error' in pending) return refused(pending.error, pending.reason);
     const settled = await settle(
       requestId,
       pending.scope,
@@ -540,11 +548,9 @@ export async function declineSecretRequest(
       },
     );
     if (settled !== 'applied')
-      return refused(
-        settled === 'unavailable'
-          ? "Couldn't reach this chat. Try again."
-          : 'This request is no longer waiting.',
-      );
+      return settled === 'unavailable'
+        ? refused("Couldn't reach this chat. Try again.")
+        : refused(ENDED, 'ended');
     void getChatSecretStore().audit({
       event: 'declined',
       scope: pending.scope,

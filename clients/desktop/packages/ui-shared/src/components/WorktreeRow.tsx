@@ -1468,7 +1468,11 @@ export interface WorktreeRowActionChipProps {
  * it consumes no layout width. Individual actions own their hover treatment;
  * the host deliberately adds no surface, border, or shadow.
  */
-const WorktreeRowInlineActions = createContext(false);
+/**
+ * True when the row draws its auto-delete badge at the chip's usual end
+ * inset: the chip then sits one badge-width further in, left of the badge.
+ */
+const WorktreeRowChipBesideBadge = createContext(false);
 
 export function WorktreeRowActionChip({
   displayMode = 'list',
@@ -1478,7 +1482,7 @@ export function WorktreeRowActionChip({
   testIdSuffix,
   children,
 }: WorktreeRowActionChipProps): JSX.Element {
-  const inline = useContext(WorktreeRowInlineActions);
+  const besideBadge = useContext(WorktreeRowChipBesideBadge);
   return (
     <div
       data-testid={withTestIdSuffix('worktree-row-action-chip', testIdSuffix)}
@@ -1486,27 +1490,33 @@ export function WorktreeRowActionChip({
       data-row-menu-active={menuOpen ? 'true' : undefined}
       data-always-visible={alwaysVisible || undefined}
       className={
-        inline
-          ? 'relative inline-flex shrink-0 items-center justify-end'
-          : displayMode === 'list'
-            ? // The controls sit as far from the row's right edge as from its
-              // top: 2px beside the label line, 4px centered in a one-line row.
-              // Fine-pointer controls align with the label line: the subtitle
-              // block below it is a fixed mt-0.5 + h-4 = 1.125rem. Coarse
-              // pointers instead center the 44px hitbox in the 44px row; lifting
-              // that full hitbox overlaps the workspace-header actions above it.
-              `absolute right-0.5 top-[calc(50%-0.5625rem)] flex -translate-y-1/2 items-center justify-end group-data-[worktree-single-line=true]:right-1 group-data-[worktree-single-line=true]:top-1/2 pointer-coarse:top-1/2 ${
-                // While the row's own menu is open the actions are hidden: the
-                // menu already identifies its row, and its trigger holds focus,
-                // so `group-focus-within` would otherwise keep the whole cluster
-                // lit for as long as the menu is up. Opacity on the chip beats
-                // the children's own reveal classes, and every control stays
-                // mounted and focusable — the trigger is the menu's anchor.
-                // The old z-40 lift (so a hovered sibling row could not paint
-                // over these) is redundant once they are invisible.
-                menuOpen ? 'opacity-0' : ''
-              }`
-            : `flex w-full items-center ${menuOpen ? 'opacity-0' : ''}`
+        displayMode === 'list'
+          ? // The controls sit as far from the row's right edge as from its
+            // top: 2px beside the label line, 4px centered in a one-line row.
+            // Fine-pointer controls align with the label line: the subtitle
+            // block below it is a fixed mt-0.5 + h-4 = 1.125rem. Coarse
+            // pointers instead center the 44px hitbox in the 44px row; lifting
+            // that full hitbox overlaps the workspace-header actions above it.
+            `absolute top-[calc(50%-0.5625rem)] flex -translate-y-1/2 items-center justify-end group-data-[worktree-single-line=true]:top-1/2 pointer-coarse:top-1/2 ${
+              besideBadge
+                ? // One-line rows hold the badge 4px in, so the chip sits 32px in
+                  // (48px on touch, beside the 44px badge); each pointer gets
+                  // its own one-line offset, since the group rule outranks a
+                  // bare pointer one.
+                  'right-7.5 pointer-fine:group-data-[worktree-single-line=true]:right-8 pointer-coarse:right-11.5 pointer-coarse:group-data-[worktree-single-line=true]:right-12'
+                : 'right-0.5 group-data-[worktree-single-line=true]:right-1'
+            } ${
+              // While the row's own menu is open the actions are hidden: the
+              // menu already identifies its row, and its trigger holds focus,
+              // so `group-focus-within` would otherwise keep the whole cluster
+              // lit for as long as the menu is up. Opacity on the chip beats
+              // the children's own reveal classes, and every control stays
+              // mounted and focusable — the trigger is the menu's anchor.
+              // The old z-40 lift (so a hovered sibling row could not paint
+              // over these) is redundant once they are invisible.
+              menuOpen ? 'opacity-0' : ''
+            }`
+          : `flex w-full items-center ${menuOpen ? 'opacity-0' : ''}`
       }
     >
       {children}
@@ -3398,9 +3408,14 @@ function WorktreeRowImpl(
           className={`min-w-0 flex-1 self-center ${isTearingDownVisual ? 'opacity-50' : ''} ${
             // Coarse pointers center the always-visible 44px chip hitbox over
             // the whole two-line block, so its reserve stays on the wrapper.
-            actionChipSlot !== undefined && !autoDelete
-              ? 'pointer-coarse:pr-12'
-              : ''
+            // The auto-delete badge adds its own 44px.
+            actionChipSlot !== undefined
+              ? autoDelete
+                ? 'pointer-coarse:pr-23'
+                : 'pointer-coarse:pr-12'
+              : autoDelete
+                ? 'pointer-coarse:pr-10'
+                : ''
           }`}
         >
           {/* Fine-pointer hover chips align with the label line only, so the
@@ -3412,9 +3427,7 @@ function WorktreeRowImpl(
             // the row never changes height when the slot appears, empties,
             // or hides under the hover action chips.
             className={`flex min-h-5 items-center gap-1 ${
-              actionChipSlot !== undefined && !autoDelete
-                ? actionChipHoverPadding
-                : ''
+              actionChipSlot !== undefined ? actionChipHoverPadding : ''
             }`}
           >
             {/* Done titles keep the same text color as every other row — the
@@ -3426,18 +3439,6 @@ function WorktreeRowImpl(
             >
               {branchLabel}
             </p>
-            {autoDelete && (
-              <>
-                <WorktreeRowInlineActions.Provider value={true}>
-                  {actionChipSlot}
-                </WorktreeRowInlineActions.Provider>
-                <SidebarAutoDeleteBadge
-                  autoDelete={autoDelete}
-                  onActivate={onAutoDeleteActivate}
-                  readOnly={autoDeleteReadOnly}
-                />
-              </>
-            )}
             {/* The pin is persistent metadata like the shared badge, so it
                 takes the same lane, first in line: a pinned idle row shows it
                 where the ••• appears, and a shared or busy row steps it left
@@ -3643,6 +3644,16 @@ function WorktreeRowImpl(
               >
                 {classicTrailingStatus}
               </span>
+            )}
+            {/* The auto-delete badge sits at the row's end, where the last
+                hover button usually does; last in the line, this shifts all
+                of its content (status included) and its hover reserve one
+                badge-width in. */}
+            {autoDelete && (
+              <span
+                aria-hidden="true"
+                className="w-6 shrink-0 pointer-coarse:hidden"
+              />
             )}
           </div>
 
@@ -4024,7 +4035,21 @@ function WorktreeRowImpl(
           {popoverSlots}
         </div>
 
-        {!autoDelete && actionChipSlot}
+        <WorktreeRowChipBesideBadge.Provider value={autoDelete !== undefined}>
+          {actionChipSlot}
+        </WorktreeRowChipBesideBadge.Provider>
+        {/* Persistent removal intent at the row's end, at the action chip's
+            inset; the chip sits left of it. It never moves between rest and
+            hover, so a click aimed at it never lands on another action. */}
+        {autoDelete && (
+          <span className="absolute right-0.5 top-[calc(50%-0.5625rem)] flex -translate-y-1/2 items-center group-data-[worktree-single-line=true]:right-1 group-data-[worktree-single-line=true]:top-1/2 pointer-coarse:top-1/2">
+            <SidebarAutoDeleteBadge
+              autoDelete={autoDelete}
+              onActivate={onAutoDeleteActivate}
+              readOnly={autoDeleteReadOnly}
+            />
+          </span>
+        )}
         {multiSelected && <span className="sr-only">Selected</span>}
       </div>
     );

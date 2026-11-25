@@ -24,6 +24,7 @@ import {
 import { wakeLockHolder, wakeLockHolderKey } from '@canopy/core-runtime';
 import { getRemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import type { HostedFirstPartyClient } from '@canopy/protocol/remote-control';
 import type {
   RemoteControlForgetDeviceRequest,
   RemoteControlOpenPairingWindowResult,
@@ -220,6 +221,15 @@ export interface RemoteControlServiceDeps {
     request: unknown,
     attribution: HostedChatAttribution,
   ) => Promise<unknown>;
+  /**
+   * A Slack session's Orchestrator reads (CAN-7604): which entries' transcripts
+   * it may read, and one message's turn status. Without them a Slack session
+   * reads nothing in the Orchestrator.
+   */
+  hostedOrchestratorReads?: {
+    readsChat(entryId: string, chatId: string): Promise<boolean>;
+    turnStatus(request: unknown): Promise<unknown>;
+  };
   /** Hands a controller's account proxy sign-in redirect to the proxy here. */
   completeAccountProxySignIn?: (
     controllerDeviceId: string,
@@ -1752,6 +1762,9 @@ export class RemoteControlService {
       kindAuthenticated: true,
       rootDeviceId: root.deviceId,
       expiresAt: delegation.expiresAt,
+      ...(delegation.firstPartyClient === undefined
+        ? {}
+        : { firstPartyClient: delegation.firstPartyClient }),
     };
   }
 
@@ -1866,7 +1879,17 @@ export class RemoteControlService {
                 request,
                 attributedDeviceId,
                 session.peerDeviceId,
+                grant.firstPartyClient,
               ),
+            ...(grant.firstPartyClient === undefined
+              ? {}
+              : {
+                  hostedProfile: { firstPartyClient: grant.firstPartyClient },
+                }),
+            ...(grant.firstPartyClient === 'slack' &&
+            this.deps.hostedOrchestratorReads
+              ? { hostedOrchestrator: this.deps.hostedOrchestratorReads }
+              : {}),
           }
         : {}),
     });
@@ -1914,6 +1937,7 @@ export class RemoteControlService {
     request: unknown,
     rootDeviceId: string,
     sessionDeviceId: string,
+    firstPartyClient: HostedFirstPartyClient | undefined,
   ): Promise<unknown> {
     const dispatch = this.deps.dispatchHostedChatCommand;
     const root = this.deps.store
@@ -1930,13 +1954,19 @@ export class RemoteControlService {
             rootDeviceId,
             rootName: root.name,
             accountUserId: accountUserIdFrom(this.deps.signedInAccount()),
+            ...(firstPartyClient === undefined ? {} : { firstPartyClient }),
           });
     if (!dispatch || sender === null) {
       return Promise.reject(
         new RemoteChannelUnavailableError(IPC_CHANNELS.chatCommand),
       );
     }
-    return dispatch(request, { sender, rootDeviceId, sessionDeviceId });
+    return dispatch(request, {
+      sender,
+      rootDeviceId,
+      sessionDeviceId,
+      ...(firstPartyClient === undefined ? {} : { firstPartyClient }),
+    });
   }
 
   /** A connected controller's App Advisor window, for its calls and tools. */

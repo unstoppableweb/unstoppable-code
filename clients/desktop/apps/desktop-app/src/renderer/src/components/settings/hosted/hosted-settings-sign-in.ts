@@ -3,6 +3,7 @@ import type { CanopyApi } from '@canopy/desktop-shared/types';
 import { toAppError } from '@canopy/protocol/app-errors';
 import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
 import { brandText } from '@/lib/brand';
+import { isIpcCancellation } from '@/lib/errors';
 import { inlineFailure } from '@/lib/inline-app-error';
 import {
   beginHostedSettingsAction,
@@ -43,6 +44,8 @@ export function startHostedSettingsSignIn(): void {
       }
     })
     .catch((error: unknown) => {
+      // A cancelled or replaced sign-in shows nothing (CAN-6895).
+      if (isIpcCancellation(error)) return;
       const appError = toAppError(resolveClientAppError(error));
       if (appError)
         raiseHostedSettingsFailure(

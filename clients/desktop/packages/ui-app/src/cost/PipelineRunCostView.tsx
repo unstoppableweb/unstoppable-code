@@ -18,11 +18,13 @@ import {
   CostLegend,
   CostObservedTotal,
   CostSplitBar,
+  COST_BILLING_LABELS,
   COST_NOT_PRICED_LABEL,
   ProxyAccountCostList,
   ProxyAccountNames,
   COST_SOURCE_COLORS,
   costBarScale,
+  costBillingBasesUsed,
   costSourceSegments,
   formatCostAmountIn,
   formatCostTotalIn,
@@ -66,6 +68,12 @@ function stepMetadata(step: PipelineRunStepCost): string {
   parts.push(`${formatTokenCount(stepTokenCount(step))} tokens`);
   if (step.attemptCount > 1) {
     parts.push(plural(step.attemptCount, 'attempt', 'attempts'));
+  }
+  // How the step was paid: a step resumed on AI Credits after a limit pause
+  // reads "Subscription, AI Credits".
+  const bases = costBillingBasesUsed(step.totals);
+  if (bases.length > 0) {
+    parts.push(bases.map((basis) => COST_BILLING_LABELS[basis]).join(', '));
   }
   return parts.join(' · ');
 }

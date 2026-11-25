@@ -19,6 +19,7 @@ const MODES: readonly InterfaceRelayAccessMode[] = [
   'replica',
   'delegated-execution',
   'read-only',
+  'owner',
 ];
 const KINDS: readonly InterfaceRelayOperationKind[] = [
   'query',

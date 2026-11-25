@@ -32,6 +32,11 @@ export interface ClaudeModPluginInput {
    */
   notLoaded?: true;
   /**
+   * An ambient id enabled in settings whose install record can't be read:
+   * Claude's `installed_plugins.json` is unreadable or does not parse.
+   */
+  installListUnreadable?: true;
+  /**
    * A Mod Claude wrote in a session: the `<name>@inline` ids Claude loads it
    * under, turned off in place of `pluginId` (Canopy's `<name>@claude-session`).
    */
@@ -939,7 +944,12 @@ export function evaluateClaudeModAdmission(
         enabledPlugins[plugin.pluginId] = false;
         return;
       }
-      failClosed('inspection-failed', null);
+      failClosed(
+        plugin.installListUnreadable
+          ? 'install-list-unreadable'
+          : 'inspection-failed',
+        null,
+      );
       return;
     }
     const inspection = inspectClaudePluginHooks(plugin.installPath);

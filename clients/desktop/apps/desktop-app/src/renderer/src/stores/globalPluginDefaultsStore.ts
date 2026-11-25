@@ -23,6 +23,23 @@ interface GlobalPluginDefaultsState {
 let preferencesSyncSubscribed = false;
 let hydrationPromise: Promise<boolean> | null = null;
 
+/**
+ * The selections to hold for `preferences`. Selections equal to the held ones
+ * keep their object: every preferences broadcast (one per navigation) carries
+ * a new copy, and each new one rendered every open composer again.
+ */
+function heldSelections(
+  current: GlobalPluginDefaultsState,
+  preferences: PreferencesData,
+): ChatTabPluginSelections {
+  const selections =
+    preferences.globalPluginSelections ?? emptyPluginSelections();
+  return current.hydrated &&
+    JSON.stringify(current.selections) === JSON.stringify(selections)
+    ? current.selections
+    : selections;
+}
+
 export const useGlobalPluginDefaultsStore = create<GlobalPluginDefaultsState>(
   (set, get) => ({
     selections: emptyPluginSelections(),
@@ -40,16 +57,14 @@ export const useGlobalPluginDefaultsStore = create<GlobalPluginDefaultsState>(
         // dropped because this store lives for the whole renderer session.
         window.api.onPreferencesSynced((preferences) => {
           set({
-            selections:
-              preferences.globalPluginSelections ?? emptyPluginSelections(),
+            selections: heldSelections(get(), preferences),
             hydrated: true,
           });
         });
       }
       if (preferences) {
         set({
-          selections:
-            preferences.globalPluginSelections ?? emptyPluginSelections(),
+          selections: heldSelections(get(), preferences),
           hydrated: true,
         });
         return Promise.resolve(true);
@@ -64,8 +79,7 @@ export const useGlobalPluginDefaultsStore = create<GlobalPluginDefaultsState>(
         .loadPreferences()
         .then((preferences) => {
           set({
-            selections:
-              preferences.globalPluginSelections ?? emptyPluginSelections(),
+            selections: heldSelections(get(), preferences),
             hydrated: true,
           });
           return true;

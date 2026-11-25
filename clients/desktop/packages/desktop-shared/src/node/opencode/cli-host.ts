@@ -26,6 +26,7 @@ import {
 } from '@canopy/execution-engine/pipelines/config-paths';
 import type { OpenCodePromptRunnerRequest } from '@canopy/execution-engine/node/pipelines/executor/types';
 import type { ApprovalRule } from '../../types';
+import { withoutStepStartupInjection } from '../provider-process/step-environment';
 import type { OpenCodePromptHost } from '../pipelines/opencode-prompt-runner';
 import {
   createHeadlessApprovalSession,
@@ -157,7 +158,9 @@ export function createCliOpenCodeHost(
             environment: false,
           }),
           ...Object.fromEntries(
-            Object.entries(request.environment).filter(
+            Object.entries(
+              withoutStepStartupInjection(request.environment),
+            ).filter(
               ([key]) =>
                 ![
                   'HOME',

@@ -84,6 +84,8 @@ interface CallOptions {
   readonly signal?: AbortSignal;
   readonly execution?: object;
   readonly headers?: Readonly<Record<string, string>>;
+  /** Internal: sent as the transport's `background`. */
+  readonly background?: boolean;
 }
 interface PendingCall {
   respond(response: Response): void;
@@ -92,6 +94,8 @@ interface PendingCall {
 interface RequestSpec<T> {
   readonly signal?: AbortSignal;
   readonly headers?: Readonly<Record<string, string>>;
+  /** Sent as the transport's `background`. */
+  readonly background?: boolean;
   readonly deadlineAt?: number;
   readonly definition?: Definition;
   accept(response: Response): T;
@@ -115,6 +119,8 @@ const MAX_REFUSED_ID_BYTES = 1024 * 1024;
 // Locally ended streams the core still serves; the oldest past it is
 // forgotten, and its frames are then only held while an open waits.
 const MAX_ORPHANED_STREAMS = 1_024;
+// Subscriptions already asked to be dropped, so a resent end asks no more.
+const MAX_ASKED_UNSUBSCRIBES = 1_024;
 
 function clientError(
   kind: CanopyErrorPayload['kind'],
@@ -235,6 +241,25 @@ interface StreamSpec {
 /** A stream opened by the core but refused locally; its frames are dropped. */
 type RefusedStream = Pick<StreamSpec, 'name' | 'definition' | 'notification'>;
 
+/** Whether `message` is a valid end frame of `route`'s stream. */
+function validEnd(
+  route: RefusedStream,
+  message: CanopyJsonRpcNotification,
+): boolean {
+  if (
+    message.method !== `${route.name}.end` ||
+    !safeParseCanopySchema(route.notification, message).success
+  )
+    return false;
+  const fields = Object.fromEntries(
+    Object.entries(message.params).filter(([key]) => key !== 'subscriptionId'),
+  );
+  const end = safeParseCanopySchema(route.definition.end, fields);
+  if (!end.success || !isRecord(end.data)) return false;
+  const { cursor, outcome, error } = end.data;
+  return CanopyStreamEndSchema.safeParse({ cursor, outcome, error }).success;
+}
+
 /** A buffered frame and the bytes it holds against both budgets. */
 interface Entry {
   readonly frame: Frame;
@@ -248,7 +273,8 @@ interface Entry {
  * frames are dropped. When the definitions list `core.events.unsubscribe`,
  * the core is asked to drop the subscription (CAN-5970, CAN-6194); a core that
  * does not serve it answers an error, ignored, and runs its handler until its
- * own end.
+ * own end. An end frame from the core asks the same once, so the core can drop
+ * the row it kept to send that frame again (CAN-4181).
  */
 class ClientStream {
   readonly handle: StreamHandle;
@@ -474,6 +500,8 @@ class ClientSession {
   private readonly orphans = new Map<string, string>();
   /** Stream opens given up before their reply, by request id. */
   private readonly abandonedOpens = new Map<number, string>();
+  /** Subscriptions asked to be dropped, oldest first. */
+  private readonly asked = new Set<string>();
   private refusedIdBytes = 0;
   private readonly budget = new ByteBudget(CONNECTION_BUDGET_BYTES);
   private closeReason: CanopyClientError | null = null;
@@ -568,7 +596,16 @@ class ClientSession {
             method: name.data,
             params,
           },
-          spec.headers === undefined ? undefined : { headers: spec.headers },
+          spec.headers === undefined && spec.background === undefined
+            ? undefined
+            : {
+                ...(spec.headers === undefined
+                  ? {}
+                  : { headers: spec.headers }),
+                ...(spec.background === undefined
+                  ? {}
+                  : { background: spec.background }),
+              },
         )
         .catch((error: unknown) => {
           const failure = toCanopyClientError(error);
@@ -597,6 +634,9 @@ class ClientSession {
     return this.request(name, prepared.params, {
       ...prepared,
       ...(options.headers === undefined ? {} : { headers: options.headers }),
+      ...(options.background === undefined
+        ? {}
+        : { background: options.background }),
       accept: (response) => {
         if ('error' in response)
           throw this.responseError(prepared.definition, response);
@@ -688,6 +728,9 @@ class ClientSession {
             if (this.streams.get(subscriptionId) !== stream) return;
             this.streams.delete(subscriptionId);
             if (orphaned) this.orphan(subscriptionId, name);
+            // The core ended it and its end frame is here: the core may drop
+            // what it kept to send that frame again.
+            else this.unsubscribe(subscriptionId);
           },
         },
         cursor,
@@ -870,7 +913,8 @@ class ClientSession {
           continue;
         }
         // Unknown or locally ended subscriptions are never answered; their
-        // frames are held while an open waits for its reply, else dropped.
+        // frames are held while an open waits for its reply, else dropped,
+        // and an unknown one's end asks the core once to drop it.
         const { subscriptionId } = message.params;
         if (typeof subscriptionId !== 'string') continue;
         const stream = this.streams.get(subscriptionId);
@@ -882,7 +926,8 @@ class ClientSession {
           // a stray one only lets later frames be held, never delivered.
           if (message.method === `${this.orphans.get(subscriptionId)}.end`)
             this.orphans.delete(subscriptionId);
-        } else this.early.hold(subscriptionId, message);
+        } else if (!this.early.hold(subscriptionId, message))
+          this.dropUnknownEnd(subscriptionId, message);
         continue;
       }
       // One reply in flight: a core that stops draining stops being read.
@@ -895,14 +940,34 @@ class ClientSession {
   /** A subscription the core may still serve that nothing here reads. */
   private orphan(subscriptionId: string, name: string): void {
     this.orphans.set(subscriptionId, name);
-    // Refused locally, never sent, unless the definitions list it. A later
-    // turn, outside the receive loop.
-    void Promise.resolve()
-      .then(() => this.call('instruction', UNSUBSCRIBE, { subscriptionId }, {}))
-      .catch(() => {});
+    this.unsubscribe(subscriptionId);
     const oldest = this.orphans.keys().next().value;
     if (this.orphans.size > MAX_ORPHANED_STREAMS && oldest !== undefined)
       this.orphans.delete(oldest);
+  }
+
+  /**
+   * Asks the core once to drop a subscription; any answer is final. Refused
+   * locally, never sent, unless the definitions list it. A later turn,
+   * outside the receive loop.
+   */
+  private unsubscribe(subscriptionId: string): void {
+    this.asked.delete(subscriptionId);
+    this.asked.add(subscriptionId);
+    const oldest = this.asked.values().next().value;
+    if (this.asked.size > MAX_ASKED_UNSUBSCRIBES && oldest !== undefined)
+      this.asked.delete(oldest);
+    void Promise.resolve()
+      // Cleanup the app never asked for: sent as background.
+      .then(() =>
+        this.call(
+          'instruction',
+          UNSUBSCRIBE,
+          { subscriptionId },
+          { background: true },
+        ),
+      )
+      .catch(() => {});
   }
 
   /** False when retaining the id would pass a bound. */
@@ -918,30 +983,45 @@ class ClientSession {
     return true;
   }
 
-  /** Drops a refused stream's frames; only its valid end frees the id. */
+  /**
+   * Drops a refused stream's frames; only its valid end frees the id, and
+   * then the core is asked once to drop what it kept to send that end again.
+   */
   private dropRefused(
     subscriptionId: string,
     message: CanopyJsonRpcNotification,
   ): void {
     const route = this.refused.get(subscriptionId);
-    if (
-      !route ||
-      message.method !== `${route.name}.end` ||
-      !safeParseCanopySchema(route.notification, message).success
-    )
-      return;
-    const fields = Object.fromEntries(
-      Object.entries(message.params).filter(
-        ([key]) => key !== 'subscriptionId',
-      ),
-    );
-    const end = safeParseCanopySchema(route.definition.end, fields);
-    if (!end.success || !isRecord(end.data)) return;
-    const { cursor, outcome, error } = end.data;
-    if (!CanopyStreamEndSchema.safeParse({ cursor, outcome, error }).success)
-      return;
+    if (!route || !validEnd(route, message)) return;
     this.refused.delete(subscriptionId);
     this.refusedIdBytes -= encodedSize(subscriptionId);
+    this.unsubscribe(subscriptionId);
+  }
+
+  /**
+   * A valid end of a subscription this client never learned, with no open
+   * waiting that could claim it: the core committed an open whose reply was
+   * lost. The core is asked once to drop it, as for a stream that ended here.
+   * shortcut: such an end held for a waiting open is dropped unasked, and the
+   * core's next resend of it asks; upgrade if waiting opens hide them.
+   */
+  private dropUnknownEnd(
+    subscriptionId: string,
+    message: CanopyJsonRpcNotification,
+  ): void {
+    const name = message.method.slice(0, -'.end'.length);
+    const definition = ownDefinition(this.definitions.streams, name);
+    // Only a stream this connection opened has composed its envelopes.
+    const notification = this.envelopes.get(`stream:${name}`)?.notification;
+    if (
+      !message.method.endsWith('.end') ||
+      !definition ||
+      !notification ||
+      this.asked.has(subscriptionId) ||
+      !validEnd({ name, definition, notification }, message)
+    )
+      return;
+    this.unsubscribe(subscriptionId);
   }
 
   /**

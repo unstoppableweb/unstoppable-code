@@ -29,6 +29,7 @@ export type {
   CodexProcessRecoveryResult,
 } from './connection';
 export {
+  CodexAppServerJsonRpcError,
   CodexRecoverableProcessExitError,
   CodexUnsafeRecoveryError,
   isCodexAppServerRequestTimeoutError,

@@ -113,6 +113,12 @@ export const CatalogCollectionShareLinkSchema = z.strictObject({
   contentHash: z.string().min(1).max(128),
   shareScope: z.enum(COLLECTION_SHARE_SCOPES),
   sharedAt: TimestampSchema,
+  /**
+   * The cloud account the share was made under: a pin, never a selector. An
+   * operation acting on the share refuses when another account, or none, is
+   * signed in (CAN-4170 PR 5b/5d). Absent on links recorded without one.
+   */
+  accountId: IdSchema.optional(),
 });
 
 export const CatalogCollectionEntrySchema = z.strictObject({
@@ -174,12 +180,35 @@ export const CatalogCollectionUpsertResultSchema = z.strictObject({
   entry: CatalogCollectionEntrySchema,
 });
 
-export const CatalogCollectionDeleteParamsSchema = z.strictObject({
+/** The SHA-256 of a stored collection's bytes, for one that cannot be read. */
+export const CatalogCollectionStoredBytesHashSchema = z
+  .string()
+  .regex(/^[a-f0-9]{64}$/);
+
+const deleteFields = {
   kind: z.literal('collection'),
   entryId: CatalogCollectionEntryIdSchema,
-  expectedRevision: CatalogCollectionRevisionSchema,
   _meta: KeyedMetaSchema,
-});
+};
+
+/**
+ * Delete at the revision a read returned, or a collection that cannot be read
+ * at the stored bytes hash `read: "management"` answered. Only delete takes
+ * that hash; it is never a revision.
+ */
+export const CatalogCollectionDeleteParamsSchema = z.union([
+  z.strictObject({
+    ...deleteFields,
+    expectedRevision: CatalogCollectionRevisionSchema,
+  }),
+  z.strictObject({
+    ...deleteFields,
+    expectedStoredBytesHash: CatalogCollectionStoredBytesHashSchema,
+  }),
+]);
+export type CatalogCollectionDeleteParams = z.output<
+  typeof CatalogCollectionDeleteParamsSchema
+>;
 
 export const CatalogCollectionDeleteResultSchema = z.strictObject({
   kind: z.literal('collection'),
@@ -233,9 +262,20 @@ export const CatalogCollectionGetParamsSchema = z.discriminatedUnion('read', [
     fromPublicShare: z.boolean(),
     _meta: QueryMetaSchema,
   }),
+  /**
+   * What a delete needs: the revision of any stored collection, including one
+   * `entry` refuses, or the stored bytes hash of one that cannot be read.
+   */
+  z.strictObject({
+    kind: z.literal('collection'),
+    read: z.literal('management'),
+    entryId: CatalogCollectionEntryIdSchema,
+    _meta: QueryMetaSchema,
+  }),
 ]);
 
-export const CatalogCollectionGetResultSchema = z.discriminatedUnion('read', [
+// A plain union: `management` answers one of two shapes under one `read`.
+export const CatalogCollectionGetResultSchema = z.union([
   z.strictObject({
     read: z.literal('entry'),
     entry: CatalogCollectionEntrySchema,
@@ -243,6 +283,16 @@ export const CatalogCollectionGetResultSchema = z.discriminatedUnion('read', [
   z.strictObject({
     read: z.literal('importReadiness'),
     readiness: CatalogCollectionImportReadinessSchema,
+  }),
+  z.strictObject({
+    read: z.literal('management'),
+    entryId: CatalogCollectionEntryIdSchema,
+    revision: CatalogCollectionRevisionSchema,
+  }),
+  z.strictObject({
+    read: z.literal('management'),
+    entryId: CatalogCollectionEntryIdSchema,
+    storedBytesHash: CatalogCollectionStoredBytesHashSchema,
   }),
 ]);
 

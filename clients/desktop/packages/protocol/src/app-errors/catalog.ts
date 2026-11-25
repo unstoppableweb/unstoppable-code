@@ -107,6 +107,19 @@ export const APP_ERROR_CATALOG = {
     summary: 'Service unavailable',
     status: 503,
   },
+  // CAN-7137: a write refused because the background service (Core) is
+  // unavailable for the rest of this run. Only a relaunch reconnects it, so
+  // the copy says Restart instead of the generic Reload.
+  'external.background_service_unavailable': {
+    kind: 'external',
+    recovery: 'fix_first',
+    copy: {
+      title: "Something's stuck in the background.",
+      description:
+        "Restart the app to get things working again. Until then, you can't add or change projects.",
+    },
+    summary: 'Background service unavailable',
+  },
   'external.rate_limited': {
     kind: 'external',
     recovery: 'wait',
@@ -180,6 +193,17 @@ export const APP_ERROR_CATALOG = {
     summary: 'Disk full',
     status: 'ENOSPC',
   },
+  'external.removal_not_permitted': {
+    kind: 'external',
+    recovery: 'fix_first',
+    copy: {
+      title: "Couldn't remove the remaining files.",
+      description:
+        'Check file permissions or immutable flags, then try again. The remaining files were kept.',
+    },
+    summary: 'File removal not permitted by the operating system',
+    status: 'EPERM',
+  },
   'external.chat_history_link_outside': {
     kind: 'external',
     recovery: 'fix_first',
@@ -189,6 +213,37 @@ export const APP_ERROR_CATALOG = {
         "One of its files links outside the app's data folder. Remove the link, then try again.",
     },
     summary: 'Chat history file links outside the data folder',
+  },
+  'external.sign_in_timed_out': {
+    kind: 'external',
+    recovery: 'try_again',
+    copy: {
+      title: 'Sign-in timed out.',
+      description: "It wasn't finished in your browser in time.",
+    },
+    summary: 'Browser sign-in timed out',
+  },
+  'external.browser_unavailable': {
+    kind: 'external',
+    recovery: 'fix_first',
+    copy: {
+      title: "Couldn't open a web browser.",
+      description:
+        'Set a default browser in your system settings, then try again.',
+    },
+    summary: 'System browser could not be opened',
+  },
+  // OpenCode's sign-in program is installed separately, so the copy must not
+  // assume the app ships the program (CAN-6895).
+  'external.sign_in_launch_failed': {
+    kind: 'external',
+    recovery: 'fix_first',
+    copy: {
+      title: "Couldn't start the sign-in program.",
+      description:
+        'Security software may have blocked it, or it may be missing. Allow or reinstall it, then try again.',
+    },
+    summary: 'Sign-in program failed to launch',
   },
 } as const satisfies Record<string, AppErrorDefinition>;
 

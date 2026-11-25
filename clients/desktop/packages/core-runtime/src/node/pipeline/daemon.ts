@@ -4,6 +4,7 @@
 export {
   CORE_PIPELINE_DEFINITION_CALLER_GRANTS,
   CORE_PIPELINE_DEFINITION_OPERATIONS,
+  CORE_PIPELINE_DEFINITION_OWNER_GRANTS,
   createCorePipelineDefinitionModule,
   createDaemonDefinitionSidecarWriter,
   createDaemonPipelineDefinitionHost,

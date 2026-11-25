@@ -344,9 +344,24 @@ export function useHorizontalOverflowScroll<
     const resizeObserver =
       view && 'ResizeObserver' in view ? new view.ResizeObserver(update) : null;
     resizeObserver?.observe(el);
+    // Content changes land in bursts (a tab switch, a streaming title), and
+    // each measurement makes the browser lay the page out, so they share one
+    // measurement on the next frame.
+    let mutationFrame: number | null = null;
+    const updateOnNextFrame = (): void => {
+      if (!view || typeof view.requestAnimationFrame !== 'function') {
+        update();
+        return;
+      }
+      if (mutationFrame !== null) return;
+      mutationFrame = view.requestAnimationFrame(() => {
+        mutationFrame = null;
+        update();
+      });
+    };
     const mutationObserver =
       view && 'MutationObserver' in view
-        ? new view.MutationObserver(update)
+        ? new view.MutationObserver(updateOnNextFrame)
         : null;
     mutationObserver?.observe(el, {
       childList: true,
@@ -381,6 +396,7 @@ export function useHorizontalOverflowScroll<
       clearHideTimer();
       resizeObserver?.disconnect();
       mutationObserver?.disconnect();
+      if (mutationFrame !== null) view?.cancelAnimationFrame(mutationFrame);
     };
   };
 

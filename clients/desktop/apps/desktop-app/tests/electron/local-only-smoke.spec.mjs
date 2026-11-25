@@ -15,6 +15,11 @@
 //   therefore reaches the mock the way a user's own provider would:
 //   ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY in the launch environment.
 //
+// A second case (CAN-7628) starts from a fresh profile: consent, the
+// first-run Claude project import, and a Home send with no Codex executable.
+// It needs the E2E build's temp-project import seam, so it skips in the
+// production export build.
+//
 // The launcher and mock helpers live in ./local-only/ and import nothing
 // outside apps/desktop-app/tests/electron and node_modules, so the export can
 // run this file with playwright.local-smoke.config.mjs.
@@ -35,10 +40,16 @@ import {
 import { CanopyAppDriver } from './canopyApp.mjs';
 import {
   createTempRoots,
+  isProductionLocalOnlyBuild,
   launchLocalOnlyApp,
   removeTempRoots,
 } from './local-only/launcher.mjs';
 import { startMockProvider } from './local-only/mock-provider.mjs';
+import {
+  IMPORT_FIXTURE_GIT_PROJECT,
+  externalProjectCandidateIdFor,
+  seedExternalProjectImportFixture,
+} from './seeders/seedExternalProjectImportFixture.mjs';
 
 const EGRESS_LOG = 'local-only-egress.jsonl';
 const MAIN_CANARY_HOST = 'canary-main.local-only-smoke.invalid';
@@ -54,6 +65,8 @@ const WORKTREE_BRANCH = 'local-smoke-branch';
 // build has no seam, so the spec stays idle past both before quitting.
 const STARTUP_TASK_IDLE_MS = 6_500;
 const STARTUP_TASK_SETTLE_MS = 2_000;
+const FIRST_SEND_MARKER = 'Canopy-C7628FIRSTSEND';
+const FIRST_SEND_REPLY = 'Claude first send reached the loopback mock';
 
 test.describe.configure({ retries: 0 });
 
@@ -339,6 +352,187 @@ test('a local-only build reaches no host but loopback through workspace, worktre
     await mock?.stop();
     await proxy?.close();
     removeTempRoots(roots);
+  }
+});
+
+// CAN-7628: a fresh local-only profile with a Claude key and no Codex
+// executable (the launcher points CODEX_EXECUTABLE at a missing file) accepts
+// consent, imports a Claude project, and sends from Home with the default
+// model. Before the fix, chat:send-message rejected with a raw
+// `spawn …/uninstalled-codex ENOENT` once the plugin catalog held Codex
+// facets.
+test('a fresh local-only profile without Codex imports a Claude project and completes the first Home send', async ({}, testInfo) => {
+  // The first-run import lists only Claude projects outside the OS temp dir
+  // in a production build; the E2E build lifts that through
+  // CANOPY_E2E_ALLOW_TEMP_PROJECT_IMPORT, which the production local-only
+  // build compiles out. The first case above still runs in both shapes.
+  test.skip(
+    isProductionLocalOnlyBuild(),
+    'Production discovery excludes temp-dir projects and has no E2E import seam.',
+  );
+  test.setTimeout(120_000);
+
+  let mock;
+  let proxy;
+  let roots;
+  let app;
+  const cleanupErrors = [];
+  try {
+    mock = await startMockProvider();
+    proxy = await startRefusingProxy();
+    roots = createTempRoots();
+    const fixture = seedExternalProjectImportFixture({
+      claudeDir: roots.claude,
+      fixturesParent: roots.fixtures,
+    });
+    await mock.registerScenario(FIRST_SEND_MARKER, {
+      llm: { steps: [{ text: FIRST_SEND_REPLY, stopReason: 'end_turn' }] },
+    });
+
+    app = await launchLocalOnlyApp({
+      roots,
+      proxyUrl: proxy.url,
+      noProxy: NO_PROXY_VALUE,
+      freshFirstRun: true,
+      extraEnv: {
+        ANTHROPIC_BASE_URL: mock.baseUrl,
+        ANTHROPIC_API_KEY: 'local-only-smoke-not-a-real-key',
+        ...fixture.env,
+      },
+    });
+    const { electronApp, window } = app;
+
+    // Every child process main starts goes through ChildProcess#spawn. Record
+    // each attempt to start the configured Codex executable from here on;
+    // the import, memory refresh, inventory reads and send all follow.
+    // Earlier startup launches and other processes (the core daemon) are not
+    // observed here.
+    await electronApp.evaluate(() => {
+      const { ChildProcess } = process.getBuiltinModule('node:child_process');
+      const original = ChildProcess.prototype.spawn;
+      const attempts = [];
+      globalThis.__localOnlyCodexSpawnAttempts = attempts;
+      ChildProcess.prototype.spawn = function spawn(options) {
+        if (options?.file === process.env.CODEX_EXECUTABLE) {
+          attempts.push(new Error('Codex spawn attempt').stack);
+        }
+        return original.call(this, options);
+      };
+    });
+
+    // 1. Consent, then the first-run import page lists the fixture project.
+    const driver = new CanopyAppDriver(window);
+    await driver.acceptLegalConsent();
+    await driver.waitForShell({ timeout: 30_000 });
+    const row = window.getByTestId(
+      `first-run-import-row-${externalProjectCandidateIdFor(fixture.gitApp)}`,
+    );
+    await expect(row.getByRole('checkbox')).toBeVisible({ timeout: 30_000 });
+    await row.getByRole('checkbox').check();
+    await window.getByTestId('first-run-import-submit').click();
+
+    // 2. Home, with the project actually imported.
+    const editor = window
+      .getByTestId('home-composer-editor')
+      .locator('visible=true');
+    await expect(editor).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(() => indexIds(roots.data), { timeout: 30_000 })
+      .toContain(IMPORT_FIXTURE_GIT_PROJECT);
+
+    // 3. The first send, on the default Claude model.
+    const prompt = `[${FIRST_SEND_MARKER}] Reply to this request`;
+    await editor.fill(prompt);
+    await expect(
+      window.getByTestId('home-send-button').locator('visible=true'),
+    ).toBeEnabled();
+    await editor.press('Enter');
+    await expect(
+      window.getByText(prompt, { exact: true }).locator('visible=true').first(),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      window
+        .getByText(FIRST_SEND_REPLY, { exact: true })
+        .locator('visible=true')
+        .first(),
+      `No mock reply. Mock output:\n${mock.output()}`,
+    ).toBeVisible({ timeout: 60_000 });
+    await expect(
+      window.getByRole('button', { name: 'Stop generation', exact: true }),
+    ).toHaveCount(0, { timeout: 30_000 });
+    await expect(window.getByText(/ENOENT/)).toHaveCount(0);
+
+    // 4. The Claude reads that used to start Codex answer with Claude content.
+    const reads = await window.evaluate(async () => ({
+      inventory: await window.invocableInventory.list({
+        providerType: 'claude',
+      }),
+      status: await window.installedItems.listStatus(),
+    }));
+    expect(reads.inventory.success).toBe(true);
+    expect(reads.inventory.data.entries.length).toBeGreaterThan(0);
+    expect(
+      reads.inventory.data.entries.filter(
+        (entry) => entry.provider !== 'claude',
+      ),
+    ).toEqual([]);
+    const claudeSkill = reads.inventory.data.entries.find(
+      (entry) => entry.name === 'canopy-config' && entry.kind === 'skill',
+    );
+    expect(claudeSkill?.enableRef).toEqual({
+      kind: 'skill',
+      sourceId: 'builtin:app',
+      skillName: 'canopy-config',
+    });
+    expect(reads.status.items).toContainEqual(
+      expect.objectContaining({
+        target: claudeSkill.enableRef,
+        status: 'available',
+      }),
+    );
+
+    expect(
+      await electronApp.evaluate(
+        () => globalThis.__localOnlyCodexSpawnAttempts,
+      ),
+      'Main tried to start the missing Codex executable.',
+    ).toEqual([]);
+
+    await app.close();
+    expect(
+      readEgressLog(roots.data),
+      'Electron tried to reach a non-loopback host; see the attached egress log.',
+    ).toEqual([]);
+    expect(
+      Object.keys(proxy.summary().byHost),
+      `Child processes tried to reach hosts through the proxy: ${JSON.stringify(proxy.summary())}`,
+    ).toEqual([]);
+  } finally {
+    for (const cleanup of [
+      () => app?.close(),
+      async () => {
+        const log = roots ? path.join(roots.data, EGRESS_LOG) : null;
+        if (!log || !existsSync(log)) return;
+        const copy = testInfo.outputPath(EGRESS_LOG);
+        copyFileSync(log, copy);
+        await testInfo.attach(EGRESS_LOG, {
+          path: copy,
+          contentType: 'application/jsonl',
+        });
+      },
+      () => mock?.stop(),
+      () => proxy?.close(),
+      () => removeTempRoots(roots),
+    ]) {
+      try {
+        await cleanup();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+  }
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(cleanupErrors, 'Local-only smoke cleanup failed');
   }
 });
 

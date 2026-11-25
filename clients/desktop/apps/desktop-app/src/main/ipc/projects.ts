@@ -32,10 +32,12 @@ import { validateId, validateOptionalRepoId } from '../lib/validation';
 import { sendToWindow } from '../lib/window-send';
 import { reconcileGitPendingWorktrees } from '../lib/worktree-boot-recovery';
 import {
+  admitSidebarItems,
   readAllSidebarItems,
   resolveWorktreeEffectiveFor,
-  validateSidebarItems,
+  validatePreservedWorkspaceId,
 } from '../lib/sidebar-items';
+import { ProjectsReloadRequiredError } from '../lib/sidebar-save-errors';
 import { resolveRemoteBridgeSender } from '../remote-control/host/bridge-window';
 import { recordMetadataWork } from '@canopy/desktop-shared/node/work-counters';
 import { saveSidebarItems } from '../lib/sidebar-save-adapter';
@@ -468,7 +470,7 @@ export function registerProjectHandlers(
   const needsReload = new WeakSet<IpcMainInvokeEvent['sender']>();
   const refuseUntilReloaded = (event: IpcMainInvokeEvent): void => {
     if (event?.sender && needsReload.has(event.sender))
-      throw new Error('Reload your projects before saving changes.');
+      throw new ProjectsReloadRequiredError();
   };
   const markNeedsReload = (
     event: IpcMainInvokeEvent,
@@ -792,10 +794,15 @@ export function registerProjectHandlers(
     IPC_CHANNELS.projectsSave,
     async (event, items: SidebarItem[], options?: SidebarItemsSaveOptions) => {
       refuseUntilReloaded(event);
-      validateSidebarItems(items);
-      options?.preserveWorkspaceIds?.forEach((workspaceId) => {
-        validateId(workspaceId, 'preserved project id');
-      });
+      // Legacy and duplicate rows this window was delivered are admitted and
+      // preserved, so they never block saving the other projects (CAN-7357).
+      // An early refusal only: the adapter's check inside the queue, against
+      // the same delivered snapshot, decides what is preserved.
+      admitSidebarItems(
+        items,
+        event?.sender ? deliveredSidebarItems.get(event.sender) : undefined,
+      );
+      options?.preserveWorkspaceIds?.forEach(validatePreservedWorkspaceId);
       // Resolved before any write, so an untrusted sender changes nothing.
       const commands = metadataCommands(event);
       const worktreeCommands = guardedCommands(event);
@@ -818,15 +825,22 @@ export function registerProjectHandlers(
         // projection, except for workspaces this save preserved: their edits
         // were not applied, so they keep the baseline they were edited from.
         if (event?.sender) {
-          const previousById = new Map(
-            (previousItems ?? []).map((item) => [item.id, item]),
-          );
+          // Every delivered row per id, so a duplicate-id row stays delivered
+          // as often as it was and stays preserved on the next save.
+          const previousById = new Map<string, SidebarItem[]>();
+          for (const item of previousItems ?? [])
+            previousById.set(item.id, [
+              ...(previousById.get(item.id) ?? []),
+              item,
+            ]);
+          const restored = new Set<string>();
           deliveredSidebarItems.set(
             event.sender,
             items.flatMap((item) => {
               if (!preservedWorkspaceIds.has(item.id)) return [item];
-              const previous = previousById.get(item.id);
-              return previous ? [previous] : [];
+              if (restored.has(item.id)) return [];
+              restored.add(item.id);
+              return previousById.get(item.id) ?? [];
             }),
           );
         }

@@ -8,8 +8,13 @@ const mockQueries: unknown[][] = [];
 const mockInstruction = jest.fn();
 jest.mock('../../canopy-runtime/desktop-runtime', () => ({
   getActiveDesktopRuntime: (): object => ({
-    query: (...args: unknown[]): Promise<{ content: string }> => {
-      mockQueries.push(args);
+    query: (operation: string, ...rest: unknown[]): Promise<object> => {
+      mockQueries.push([operation, ...rest]);
+      if (operation === 'core.plan.list')
+        // The second record isn't a tracked plan, so the list leaves it out.
+        return Promise.resolve({ plans: [mockPlan, { id: 'not-a-plan' }] });
+      if (operation === 'core.plan.get')
+        return Promise.resolve({ plan: mockPlan });
       return Promise.resolve({ content: '# Project rules' });
     },
     instruction: (...args: unknown[]): unknown => mockInstruction(...args),
@@ -21,14 +26,20 @@ jest.mock('../../lib/workspace-registry', () => ({
   isCoworkWorkspace: (): boolean => mockCowork,
 }));
 
-const mockTrackedPlanLists: unknown[] = [];
-jest.mock('../../services/plans-service', () => ({
-  listTrackedPlanData: (request: unknown): Promise<Array<{ id: string }>> => {
-    mockTrackedPlanLists.push(request);
-    return Promise.resolve([{ id: 'p' }]);
-  },
-  readTrackedPlanData: (): Promise<null> => Promise.resolve(null),
-}));
+const mockPlan = {
+  id: 'p',
+  projectId: 'proj',
+  worktreeId: 'w',
+  source: 'claude',
+  title: 'Plan',
+  content: '# Plan',
+  reviewStatus: 'pending',
+  createdAt: '2026-11-23T00:00:00.000Z',
+  updatedAt: '2026-11-23T00:00:00.000Z',
+  latestRevisionNumber: 1,
+  revisions: [],
+  linkedExecutionIds: [],
+};
 
 let mockOrgProjectsEnabled = true;
 jest.mock('../../feature-flags', () => ({
@@ -68,7 +79,10 @@ jest.mock('../../lib/workspace-context-service', () => ({
   }),
 }));
 
-import { CORE_WORKSPACE_INSTRUCTIONS_GRANTS } from '@canopy/protocol/canopy-core';
+import {
+  CORE_WORKSPACE_INSTRUCTIONS_GRANTS,
+  PLAN_GRANTS,
+} from '@canopy/protocol/canopy-core';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import { mainAdvisorWorkspaceActionHost } from '../advisor-workspace-action-host';
 
@@ -77,7 +91,6 @@ const ORG = { kind: 'organization', organizationId: 'org-1' } as const;
 beforeEach(() => {
   mockQueries.length = 0;
   mockInstruction.mockClear();
-  mockTrackedPlanLists.length = 0;
   mockCatalogLists.length = 0;
   mockSends.length = 0;
   mockContextInitialize.mockClear();
@@ -123,12 +136,37 @@ describe('App Advisor workspace action host (CAN-5998)', () => {
     await expect(
       host.listTrackedPlans({ projectId: 'cowork', worktreeId: 'w' }),
     ).resolves.toEqual([]);
-    expect(mockTrackedPlanLists).toEqual([]);
+    expect(mockQueries).toEqual([]);
+  });
 
-    mockCowork = false;
+  it('lists and reads tracked plans through core.plan.list and core.plan.get as the Advisor chat, with only the read grant (CAN-4165)', async () => {
+    const host = mainAdvisorWorkspaceActionHost({ chatId: 'advisor-chat' });
+    const caller = {
+      principalId: 'local-desktop-user',
+      clientInstanceId: 'agent-action:advisor-chat',
+      authorityId: 'local-desktop',
+      interfaceKind: 'mcp',
+      grants: [PLAN_GRANTS.read],
+    };
+    const scope = { projectId: 'proj', worktreeId: 'w' };
+
+    await expect(host.listTrackedPlans(scope)).resolves.toEqual([mockPlan]);
     await expect(
-      host.listTrackedPlans({ projectId: 'proj', worktreeId: 'w' }),
-    ).resolves.toEqual([{ id: 'p' }]);
+      host.readTrackedPlan({ ...scope, planId: 'p' }),
+    ).resolves.toEqual(mockPlan);
+    expect(mockQueries).toEqual([
+      ['core.plan.list', { scope }, { caller }],
+      ['core.plan.get', { scope, planId: 'p' }, { caller }],
+    ]);
+    expect(mockInstruction).not.toHaveBeenCalled();
+
+    await expect(
+      host.listTrackedPlans({ projectId: '../x', worktreeId: 'w' }),
+    ).rejects.toThrow();
+    await expect(
+      host.readTrackedPlan({ ...scope, planId: '../x' }),
+    ).rejects.toThrow();
+    expect(mockQueries).toHaveLength(2);
   });
 
   it('reads the selected organization from main and answers the disabled catalog while the feature is off', async () => {

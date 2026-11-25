@@ -14,6 +14,7 @@ import { brandText } from '@/lib/brand';
 import { useCloudAccountAvailable } from '@/lib/cloud-account';
 import { GUEST_SIGN_IN_CTA_LABEL } from '@/lib/guest-cta-copy';
 import { openAuthenticatedCloudPageReported } from '@/lib/openAuthenticatedCloudPage';
+import { describeSignInFailure } from '@/lib/sign-in-failure';
 import { useAccountProxyStatus } from '@/stores/accountProxyStore';
 import { useAiCreditsBannerStore } from '@/stores/aiCreditsBannerStore';
 import {
@@ -96,6 +97,13 @@ import { CloneProgressPrompt } from './CloneProgressPrompt';
 import { CloudAccountRecoveryPrompt } from './CloudAccountRecoveryPrompt';
 import { ResumeQueuePrompt } from './ResumeQueuePrompt';
 import { UpdatePrompt } from './UpdatePrompt';
+
+/**
+ * The sidebar's sign-in failure when neither a cancellation nor an external
+ * error explains it. Any stage can throw, including the token exchange, so it
+ * doesn't claim the start failed (CAN-6895).
+ */
+const SIGN_IN_FAILED_COPY = "Couldn't sign in.";
 
 /**
  * The `Sync paused` row's explanation (CAN-3512). Activity
@@ -380,10 +388,13 @@ export function SidebarAccountMenu({
   // kick off login, then broadcast the account-changed event so this menu (and
   // every other subscriber) reloads. `startCanopyCloudOAuthLogin()` resolves
   // with `{ status, account }` and can return `status.authenticated !== true`
-  // (cancelled/failed) WITHOUT throwing, so we must only announce success and
-  // close the menu when the sign-in actually authenticated — otherwise a
-  // cancelled login would falsely report success. The `signingInRef` guard
-  // prevents a second in-flight OAuth attempt from a rapid double-click.
+  // WITHOUT throwing, so we must only announce success and close the menu when
+  // the sign-in actually authenticated. A rejection goes through
+  // `describeSignInFailure` (CAN-6895): a cancelled or replaced sign-in shows
+  // nothing, an external failure (timeout, no browser, service down) shows its
+  // catalog copy, and anything else shows "Couldn't sign in.". The
+  // `signingInRef` guard prevents a second in-flight OAuth attempt from a
+  // rapid double-click; `finally` clears it on every outcome.
   const handleSignIn = (): void => {
     if (signingInRef.current) return;
     signingInRef.current = true;
@@ -399,18 +410,15 @@ export function SidebarAccountMenu({
           window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
           closeMenu();
         } else {
-          addToast('Unable to complete sign-in.', 'error');
+          addToast(SIGN_IN_FAILED_COPY, 'error');
         }
       })
       .catch((error: unknown) => {
-        // Keep the row available for retry, but do not make an IPC/configuration
-        // failure look like an inert button.
-        addToast(
-          'Unable to start sign-in. Check Cloud configuration.',
-          'error',
-          undefined,
-          { caught: error },
-        );
+        // Keep the row available for retry, but do not make a failure look
+        // like an inert button.
+        const failure = describeSignInFailure(error, SIGN_IN_FAILED_COPY);
+        if (failure.cancelled) return;
+        addToast(failure.message, 'error', undefined, { caught: error });
       })
       .finally(() => {
         signingInRef.current = false;

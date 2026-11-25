@@ -86,8 +86,16 @@ export function localModelGatewayProjection(
 }
 
 /**
+ * Personal organizations whose account gateway this computer doesn't use
+ * (CAN-7657), saved on each desktop. "Use only my AI gateway" applies
+ * everywhere, so an enforced gateway ignores it.
+ */
+export type ModelGatewayDeviceOptOuts = ReadonlySet<string>;
+
+/**
  * The Personal gateway that routes for this account: the account's own, or
- * the device gateway while the account names no Personal organization.
+ * the device gateway while the account names no Personal organization. The
+ * account's own is left out while this computer opts out of it.
  */
 export function effectivePersonalModelGateway(
   account: Pick<
@@ -95,6 +103,7 @@ export function effectivePersonalModelGateway(
     'personalOrganizationId' | 'personalModelGateway'
   > | null,
   localGateway?: PersonalModelGatewayProjection | null,
+  deviceOptOuts?: ModelGatewayDeviceOptOuts,
 ): {
   personalOrganizationId?: string;
   personalModelGateway?: PersonalModelGatewayProjection;
@@ -107,12 +116,15 @@ export function effectivePersonalModelGateway(
         }
       : {};
   }
+  const gateway = account?.personalModelGateway;
+  const optedOut =
+    gateway !== undefined &&
+    !gateway.enforced &&
+    deviceOptOuts?.has(normalizeUuid(gateway.organizationId) ?? '') === true;
   return {
     personalOrganizationId:
       normalizeUuid(account?.personalOrganizationId) ?? undefined,
-    ...(account?.personalModelGateway
-      ? { personalModelGateway: account.personalModelGateway }
-      : {}),
+    ...(gateway && !optedOut ? { personalModelGateway: gateway } : {}),
   };
 }
 
@@ -127,6 +139,7 @@ export function resolveModelGatewayIndex(
     | 'personalModelGatewayEnforcementUnavailable'
   > | null,
   localGateway?: PersonalModelGatewayProjection | null,
+  deviceOptOuts?: ModelGatewayDeviceOptOuts,
 ): ModelGatewayIndex {
   const byOrganization = new Map<string, OrganizationModelGateway>();
   for (const setting of account?.enforcedSettings ?? []) {
@@ -151,7 +164,11 @@ export function resolveModelGatewayIndex(
         previous?.unavailable === true,
     });
   }
-  const personal = effectivePersonalModelGateway(account, localGateway);
+  const personal = effectivePersonalModelGateway(
+    account,
+    localGateway,
+    deviceOptOuts,
+  );
   const personalOrganizationId = personal.personalOrganizationId;
   const personalGateway = personal.personalModelGateway;
   if (

@@ -13,6 +13,7 @@ import type {
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
 import { runClaudeCliProcessOffMain } from '../agents/claude-process-host-runner';
 
 /**
@@ -107,6 +108,23 @@ const CLAUDE_API_KEY_ENV_VARS: readonly string[] = [
 
 /** `claude mcp list` emits `name: detail - status`, one server per line. */
 const LIST_LINE = /^(.+?):\s+(.*?)\s+-\s+(.*)$/;
+const CLAUDE_CONNECTORS_DISABLED_WARNING =
+  /^[\t ]*(?:(?:warning:|⚠\uFE0F?)[\t ]*)?claude\.ai connectors are disabled\b/im;
+
+function hasClaudeConnectorsDisabledWarning(output: string): boolean {
+  return CLAUDE_CONNECTORS_DISABLED_WARNING.test(
+    stripVTControlCharacters(output),
+  );
+}
+
+function claudeConnectorsDisabled(): ProviderConnectorListResult {
+  return {
+    provider: 'claude',
+    connectors: [],
+    unavailableReason: 'api-key-precedence',
+    detail: 'Claude Code turned off claude.ai connectors for this check.',
+  };
+}
 
 function firstNonEmpty(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -137,8 +155,9 @@ export async function listClaudeProviderConnectors(): Promise<ProviderConnectorL
   }
 
   let stdout: string;
+  let stderr: string;
   try {
-    ({ stdout } = await runClaudeCliProcessOffMain({
+    ({ stdout, stderr } = await runClaudeCliProcessOffMain({
       command: getBundledClaudeBinaryPath(),
       args: ['mcp', 'list'],
       env,
@@ -146,18 +165,29 @@ export async function listClaudeProviderConnectors(): Promise<ProviderConnectorL
       maxOutputBytes: LIST_MAX_OUTPUT_BYTES,
     }));
   } catch (error: unknown) {
+    const detail = error instanceof Error ? error.message : 'Unknown error';
+    if (hasClaudeConnectorsDisabledWarning(detail)) {
+      return claudeConnectorsDisabled();
+    }
     return {
       provider: 'claude',
       connectors: [],
       unavailableReason: 'cli-failed',
-      detail: error instanceof Error ? error.message : 'Unknown error',
+      detail,
     };
   }
 
+  const alternateRoutes = parseClaudeAlternateRoutes(stdout);
+  if (
+    hasClaudeConnectorsDisabledWarning(stdout) ||
+    hasClaudeConnectorsDisabledWarning(stderr)
+  ) {
+    return { ...claudeConnectorsDisabled(), alternateRoutes };
+  }
   return {
     provider: 'claude',
     connectors: parseClaudeConnectorList(stdout),
-    alternateRoutes: parseClaudeAlternateRoutes(stdout),
+    alternateRoutes,
   };
 }
 

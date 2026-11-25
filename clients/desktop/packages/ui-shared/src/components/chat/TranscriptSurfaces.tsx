@@ -5,13 +5,18 @@ type TranscriptSurfaceProps = HTMLAttributes<HTMLDivElement> & {
   readonly ref?: Ref<HTMLDivElement>;
 };
 
+/**
+ * A section's sticky head. With a pinned turn header inside it, the head keeps
+ * the 4px under the header's hairline as its own padding: this wrapper paints
+ * nothing there, so the backing ends at the hairline.
+ */
 export function StickyPromptSurface(
   props: TranscriptSurfaceProps,
 ): JSX.Element {
   return (
     <div
       {...props}
-      className="group/sticky sticky top-0 z-20 before:absolute before:inset-x-0 before:-top-2 before:h-2 before:bg-base"
+      className="group/sticky sticky top-0 z-20 has-[[data-turn-header]]:pb-1 before:absolute before:inset-x-0 before:-top-2 before:h-2 before:bg-base"
     />
   );
 }
@@ -25,23 +30,20 @@ export function StickyPromptFade(): JSX.Element {
   );
 }
 
+/**
+ * The pinned head's opaque backing: the prompt and the turn header under it.
+ * Its bottom edge is the seam content scrolls under (`data-sticky-backing`).
+ * Always painted, so the head is covered on the first frame it pins rather
+ * than once a scroll handler marks it; at rest it sits on the same surface
+ * color and does not show.
+ */
 export function StickyPromptBacking({
   children,
 }: {
   readonly children: ReactNode;
 }): JSX.Element {
   return (
-    <div className="relative group-data-[stuck]/sticky:bg-base">{children}</div>
-  );
-}
-
-export function StickyTurnBacking({
-  children,
-}: {
-  readonly children: ReactNode;
-}): JSX.Element {
-  return (
-    <div className="relative bg-base before:absolute before:inset-x-0 before:-top-2 before:h-2 before:bg-base">
+    <div className="relative bg-base" data-sticky-backing="">
       {children}
     </div>
   );

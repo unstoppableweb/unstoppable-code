@@ -203,9 +203,11 @@ function applyResponse(
     return;
   }
 
+  // A list that lands after the last reader left stays unloaded: nobody
+  // heard change events since, so the next reader lists again.
+  if (cache.subscribers.size > 0) cache.hasLoaded = true;
   // Keep the previously shown entries when the backend serves an empty
   // placeholder during a rebuild; adopt entries in every other case.
-  cache.hasLoaded = true;
   if (
     !context.enabled &&
     response.rebuilding &&
@@ -307,6 +309,11 @@ function subscribeToCache(
   if (provider === undefined) return NOOP;
   const cache = getOrCreateCache(provider);
   if (!cache.subscribers.has(subscriber)) {
+    // The first reader after a gap: a list still on the wire was asked before
+    // the gap and may predate a change nobody heard, so one more follows it.
+    if (cache.subscribers.size === 0 && cache.inFlightList) {
+      cache.reloadAfterInFlight = true;
+    }
     cache.subscribers.add(subscriber);
     activeSubscriberCount += 1;
   }
@@ -315,8 +322,11 @@ function subscribeToCache(
   return (): void => {
     if (!cache.subscribers.delete(subscriber)) return;
     activeSubscriberCount = Math.max(0, activeSubscriberCount - 1);
-    if (cache.subscribers.size === 0 && inventoryCaches.get(provider) === cache)
-      inventoryCaches.delete(provider);
+    // The rows stay for the next reader: switching chats unmounts every reader
+    // and mounts new ones in the same commit, and dropping the rows there
+    // re-rendered the new transcript and composer twice (empty, then listed).
+    // Nobody hears change events while unsubscribed, so that reader lists again.
+    if (cache.subscribers.size === 0) cache.hasLoaded = false;
     if (activeSubscriberCount === 0) {
       unsubscribeInventoryChanged?.();
       unsubscribeInventoryChanged = null;
@@ -380,8 +390,10 @@ export function useInvocableInventory(
     const cache = getOrCreateCache(providerType);
     const context = { enabled: contextEnabled, generation: contextGeneration };
     const contextChanged = updateWorkspaceGeneration(cache, context);
+    // Rows kept from an earlier reader are shown while this list checks them,
+    // so only an empty cache reports loading.
     if (contextChanged || (!cache.hasLoaded && !cache.inFlightList))
-      void requestList(cache, context, true, true);
+      void requestList(cache, context, cache.entries.length === 0, true);
   }, [contextEnabled, contextGeneration, providerType]);
 
   const refresh = useCallback(

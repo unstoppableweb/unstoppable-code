@@ -57,9 +57,15 @@ export function registerFeedbackHandlers(): void {
       void revokeFeedbackDiagnostics();
     });
   }
-  registerIpcHandler<[], { snapshots: true; version: 1 }>(
+  // `errorSource` is additive: this host accepts `source` on report errors.
+  // The protocol version stays 1 because older clients ignore the flag.
+  registerIpcHandler<[], { snapshots: true; version: 1; errorSource: true }>(
     IPC_CHANNELS.feedbackDiagnosticsCapabilities,
-    () => ({ snapshots: true, version: 1 }),
+    () => ({
+      snapshots: true,
+      version: 1,
+      errorSource: true,
+    }),
   );
   registerIpcHandler<
     [FeedbackDiagnosticsPrepareRequest],

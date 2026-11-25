@@ -88,7 +88,17 @@ import {
 } from './default-layout';
 import { DEFAULT_TERMINAL_GROUP_ID } from './panel-group-ids';
 import { retargetTemplateForWorktree } from './default-layout-template';
-import { prepareBrowserPanelMigration } from './browser-panel-migration';
+import {
+  prepareBrowserPanelMigration,
+  readBrowserStateAhead,
+} from './browser-panel-migration';
+import {
+  dropWorktreeLayoutReadAhead,
+  readWorktreeLayoutAhead,
+  savedWorktreeLayoutReadAhead,
+  worktreeLayoutReadAheadSettled,
+  worktreeModeReadAhead,
+} from './layout-read-ahead';
 import { panelSurfaceForWorktreeKey } from './panel-surface';
 import {
   hideOptionalMinimalRegions,
@@ -355,6 +365,70 @@ function minimalLayoutOnLoad(
   return hide ? hideOptionalMinimalRegions(canonical) : canonical;
 }
 
+/**
+ * Each worktree's last Minimal repair on revisit: the file handed to
+ * `restoreLayout` and the layout that came out of it, both serialized.
+ */
+const minimalRevisitRepairs = new Map<
+  string,
+  { readonly file: string; readonly result: string }
+>();
+
+function layoutServesEveryPanelKind(
+  worktreeKey: string,
+  file: SerializablePanelLayoutFile,
+): boolean {
+  const servesNode = (
+    node: SerializablePanelLayoutFile['grid']['root'],
+  ): boolean =>
+    node.type === 'branch'
+      ? node.children.every(servesNode)
+      : node.panels.every((panel) =>
+          layoutScopeServesPanelKind(worktreeKey, panel.kind),
+        );
+  return servesNode(file.grid.root);
+}
+
+/**
+ * Brings a Minimal worktree's in-memory layout back to Minimal's shape when
+ * the worktree is shown again: tabs of closed chats, terminals and browsers
+ * go, new ones arrive, and a group the layout lost is rebuilt.
+ *
+ * `restoreLayout` rebuilds the whole grid, which re-renders every panel of
+ * the worktree a second time on each switch. So the rebuild is skipped when
+ * it is known to change nothing: the layout is exactly what the last repair
+ * left, and repairing it gives exactly the file that repair restored from.
+ * `restoreLayout` builds its result from that file alone (plus the kinds the
+ * scope refuses, checked here), so it would build the same layout again.
+ * Anything else (a moved tab, a resized group, a new chat) runs the rebuild.
+ */
+function repairMinimalLayoutOnRevisit(worktreeKey: string): boolean {
+  const store = usePanelLayoutStore.getState();
+  const current = store.serializeLayout(worktreeKey);
+  if (current === null) return false;
+  const repaired = minimalLayoutOnLoad(worktreeKey, current);
+  const file = JSON.stringify(repaired);
+  const known = minimalRevisitRepairs.get(worktreeKey);
+  if (
+    known !== undefined &&
+    known.file === file &&
+    known.result === JSON.stringify(current) &&
+    layoutServesEveryPanelKind(worktreeKey, repaired)
+  ) {
+    return true;
+  }
+  minimalRevisitRepairs.delete(worktreeKey);
+  if (!store.restoreLayout(worktreeKey, repaired)) return true;
+  const result = usePanelLayoutStore.getState().serializeLayout(worktreeKey);
+  if (result !== null) {
+    minimalRevisitRepairs.set(worktreeKey, {
+      file,
+      result: JSON.stringify(result),
+    });
+  }
+  return true;
+}
+
 function cancelPendingSave(worktreeKey: string): void {
   const timer = pendingSaves.get(worktreeKey);
   if (timer !== undefined) {
@@ -478,12 +552,16 @@ function saveNow(worktreeKey: string): Promise<void> {
   const { projectId, worktreeId } = splitWorktreeKey(worktreeKey);
   const hasUserChanges = customizedKeys.has(worktreeKey);
   const request = { projectId, worktreeId, layout: file, hasUserChanges };
+  // A layout read ahead before this save no longer says what is saved. It is
+  // dropped again once the save settles, for a read that went out meanwhile.
+  dropWorktreeLayoutReadAhead(worktreeKey);
   const promise = isWebCoreScope(projectId)
     ? Promise.resolve(webCorePanelLayouts.saveLayout(request))
     : window.api.panelLayout.saveWorktreeLayout(request);
   inFlightSaves.set(worktreeKey, promise);
   void promise.then(
     () => {
+      dropWorktreeLayoutReadAhead(worktreeKey);
       if (inFlightSaves.get(worktreeKey) === promise)
         failedSaves.delete(worktreeKey);
       if (hasUserChanges) {
@@ -495,6 +573,7 @@ function saveNow(worktreeKey: string): Promise<void> {
         inFlightSaves.delete(worktreeKey);
     },
     () => {
+      dropWorktreeLayoutReadAhead(worktreeKey);
       if (inFlightSaves.get(worktreeKey) === promise) {
         inFlightSaves.delete(worktreeKey);
         failedSaves.add(worktreeKey);
@@ -558,11 +637,18 @@ export async function forkWorktreePanelLayout({
   usePanelWindowsStore.getState().disposeWorktreeAuxWindows(destinationKey);
   usePanelLayoutStore.getState().disposeLayout(destinationKey);
   hydratedKeys.delete(destinationKey);
-  await window.api.panelLayout.saveWorktreeLayout({
-    projectId,
-    worktreeId: destinationWorktreeId,
-    layout,
-  });
+  // The copy replaces whatever was read ahead for the destination, before
+  // the save and for a read that went out while it was under way.
+  dropWorktreeLayoutReadAhead(destinationKey);
+  try {
+    await window.api.panelLayout.saveWorktreeLayout({
+      projectId,
+      worktreeId: destinationWorktreeId,
+      layout,
+    });
+  } finally {
+    dropWorktreeLayoutReadAhead(destinationKey);
+  }
   return true;
 }
 
@@ -826,6 +912,15 @@ function handleLayoutsChanged(
 
   const keysToSave = new Set<string>();
 
+  // A layout that left memory (its worktree deleted or archived, a shared
+  // copy replaced) may be replaced on disk too: nothing read ahead for it is
+  // used.
+  for (const layoutKey of Object.keys(previous)) {
+    if (layouts[layoutKey] === undefined) {
+      dropWorktreeLayoutReadAhead(layoutKey);
+    }
+  }
+
   for (const worktreeKey of Array.from(hydratedKeys)) {
     const record = layouts[worktreeKey];
     if (record === undefined) {
@@ -834,6 +929,7 @@ function handleLayoutsChanged(
       failedSaves.delete(worktreeKey);
       layoutDimensions.delete(worktreeKey);
       inFlightSaves.delete(worktreeKey);
+      minimalRevisitRepairs.delete(worktreeKey);
       cancelPendingSave(worktreeKey);
       continue;
     }
@@ -988,6 +1084,24 @@ async function applySavedDefaultLayout(worktreeKey: string): Promise<boolean> {
 }
 
 /**
+ * Reads a worktree's saved layout from its store. A layout read ahead when
+ * the user pointed at or pressed the worktree's row answers at once while it
+ * is still current (see `layout-read-ahead.ts`).
+ */
+async function readSavedWorktreeLayout(
+  worktreeKey: string,
+): Promise<
+  Awaited<ReturnType<typeof window.api.panelLayout.loadWorktreeLayout>>
+> {
+  const readAhead = savedWorktreeLayoutReadAhead(worktreeKey);
+  if (readAhead !== undefined) return readAhead;
+  const { projectId, worktreeId } = splitWorktreeKey(worktreeKey);
+  return isWebCoreScope(projectId)
+    ? webCorePanelLayouts.loadLayout({ projectId, worktreeId })
+    : window.api.panelLayout.loadWorktreeLayout({ projectId, worktreeId });
+}
+
+/**
  * Restore-or-default entry point for WorktreePart's ensure-layout effect.
  * Awaits the persisted-layout load BEFORE building anything: a valid file
  * rebuilds the grid via `restoreLayout`, everything else (missing file,
@@ -1006,7 +1120,18 @@ export function ensureWorktreePanelLayout(worktreeKey: string): Promise<void> {
 
   const generation = panelHydrationGeneration(worktreeKey);
   const promise = (async (): Promise<void> => {
-    const mode = await useWorkspaceLayoutModeStore.getState().load(worktreeKey);
+    // A first visit reads the mode, the saved layout and the browser state.
+    // None needs another's answer, so all three go out together: one after
+    // another, the page's loading card stayed up for three round trips.
+    const firstVisit =
+      usePanelLayoutStore.getState().layouts[worktreeKey] === undefined;
+    const [modeRead, savedLayoutRead] = await Promise.allSettled([
+      useWorkspaceLayoutModeStore.getState().load(worktreeKey),
+      firstVisit ? readSavedWorktreeLayout(worktreeKey) : null,
+      firstVisit ? readBrowserStateAhead(worktreeKey) : null,
+    ]);
+    if (modeRead.status === 'rejected') throw modeRead.reason;
+    const mode = modeRead.value;
     if (!isPanelHydrationGenerationCurrent(worktreeKey, generation)) return;
     if (
       mode === 'minimal' &&
@@ -1023,19 +1148,11 @@ export function ensureWorktreePanelLayout(worktreeKey: string): Promise<void> {
     }
     if (usePanelLayoutStore.getState().layouts[worktreeKey] !== undefined) {
       if (mode === 'minimal') {
-        const current = usePanelLayoutStore
-          .getState()
-          .serializeLayout(worktreeKey);
-        if (current === null) return;
-        usePanelLayoutStore
-          .getState()
-          .restoreLayout(
-            worktreeKey,
-            minimalLayoutOnLoad(worktreeKey, current),
-          );
+        if (!repairMinimalLayoutOnRevisit(worktreeKey)) return;
       }
       hydratedKeys.add(worktreeKey);
       rememberLayoutDimensions(worktreeKey);
+      dropWorktreeLayoutReadAhead(worktreeKey);
       return;
     }
     let restored = false;
@@ -1044,13 +1161,11 @@ export function ensureWorktreePanelLayout(worktreeKey: string): Promise<void> {
       ReturnType<typeof prepareBrowserPanelMigration>
     > | null = null;
     try {
-      const { projectId, worktreeId } = splitWorktreeKey(worktreeKey);
-      const response = isWebCoreScope(projectId)
-        ? webCorePanelLayouts.loadLayout({ projectId, worktreeId })
-        : await window.api.panelLayout.loadWorktreeLayout({
-            projectId,
-            worktreeId,
-          });
+      // A failed read falls back to the default layout, like any other
+      // failure in here.
+      if (savedLayoutRead.status === 'rejected') throw savedLayoutRead.reason;
+      const response =
+        savedLayoutRead.value ?? (await readSavedWorktreeLayout(worktreeKey));
       if (!isPanelHydrationGenerationCurrent(worktreeKey, generation)) return;
       if (
         response.layout !== null &&
@@ -1142,6 +1257,8 @@ export function ensureWorktreePanelLayout(worktreeKey: string): Promise<void> {
     removeScopeUnavailablePanels(worktreeKey);
     hydratedKeys.add(worktreeKey);
     rememberLayoutDimensions(worktreeKey);
+    // The layout is in memory from here on, and is what gets saved.
+    dropWorktreeLayoutReadAhead(worktreeKey);
     void maybeOpenStartPage(worktreeKey, generation, !restored, (operation) =>
       withAutomaticLayoutChanges(worktreeKey, operation),
     );
@@ -1167,6 +1284,94 @@ export function ensureWorktreePanelLayout(worktreeKey: string): Promise<void> {
 
   ensurePromises.set(worktreeKey, promise);
   return promise;
+}
+
+/** A row pointed at reuses reads this recent instead of reading again. */
+const POINTED_READ_REUSE_MS = 1000;
+/** A pressed row reads again unless its reads only just went out. */
+const PRESSED_READ_REUSE_MS = 150;
+
+/**
+ * How a sidebar row shows intent to open its worktree:
+ *
+ * - `point`: the pointer rests on it, or keyboard focus moved onto it;
+ * - `press`: the pointer went down on it, and its click follows a moment
+ *   later;
+ * - `activate`: Enter or Space on the focused row, which opens it in the
+ *   same task.
+ */
+export type WorktreeLayoutReadAheadIntent = 'point' | 'press' | 'activate';
+
+/**
+ * Gets ready what {@link ensureWorktreePanelLayout} waits for on a first
+ * visit, for a worktree whose sidebar row shows intent to open it. With all
+ * of it in memory when the click lands, hydration finishes in the click's
+ * own frame and the grid mounts without the loading card being painted.
+ *
+ * Pointing at the row (or moving keyboard focus onto it) only reads: the
+ * saved mode and the saved layout are kept as raw answers, which expire if
+ * the row is not opened (`layout-read-ahead.ts`).
+ *
+ * Pressing the row is followed by its click a moment later, so it also
+ * starts the two store hydrations the visit itself starts next: the
+ * worktree's browser state and, for a Minimal worktree that has terminals,
+ * its terminal state. Both are the visit's own deduplicated calls made early,
+ * so the visit joins them instead of starting over. They fill store buckets
+ * only: no panel, window, browser view or terminal attachment is made, and a
+ * press that is not followed by a visit leaves the same buckets a visited
+ * and left worktree has. A cloud scope is left to its visit, whose terminal
+ * hydration can reattach a shell.
+ *
+ * Activating the row from the keyboard is its press, made in the same task
+ * as the visit: the two hydrations start before the visit renders, and side
+ * by side instead of the terminal read waiting for the browser read. Only
+ * the reads kept from when focus moved onto the row are used: reading the
+ * mode and the layout again would only duplicate the visit's own reads.
+ *
+ * Nothing here builds a layout, restores a popped-out window or saves.
+ */
+export function readWorktreePanelLayoutAhead(
+  worktreeKey: string,
+  options: { intent: WorktreeLayoutReadAheadIntent },
+): void {
+  if (isAuxPanelLayoutKey(worktreeKey)) return;
+  const { projectId, worktreeId } = splitWorktreeKey(worktreeKey);
+  if (projectId === '' || worktreeId === '' || isWebCoreScope(projectId)) {
+    return;
+  }
+  // A layout in memory, or one whose hydration is under way, reads nothing.
+  if (
+    usePanelLayoutStore.getState().layouts[worktreeKey] !== undefined ||
+    ensurePromises.has(worktreeKey)
+  ) {
+    return;
+  }
+  const { intent } = options;
+  const read =
+    intent === 'activate'
+      ? worktreeLayoutReadAheadSettled(worktreeKey)
+      : readWorktreeLayoutAhead(
+          worktreeKey,
+          intent === 'press' ? PRESSED_READ_REUSE_MS : POINTED_READ_REUSE_MS,
+        );
+  if (intent === 'point') return;
+  // `allSettled`: a hydration that fails here is the visit's to report, when
+  // it makes the same call and finds the state missing.
+  void Promise.allSettled([
+    Promise.resolve().then(() => readBrowserStateAhead(worktreeKey)),
+    // Without a kept mode, the visit's own mode read decides on terminals.
+    read?.then((): Promise<void> | undefined => {
+      const mode = worktreeModeReadAhead(worktreeKey)?.mode;
+      if (
+        mode !== 'minimal' ||
+        !layoutScopeServesPanelKind(worktreeKey, 'terminal') ||
+        usePanelLayoutStore.getState().layouts[worktreeKey] !== undefined
+      ) {
+        return undefined;
+      }
+      return ensureTerminalWorktreeHydrated(projectId, worktreeId);
+    }),
+  ]);
 }
 
 export function disposeWorktreePanelHydration(worktreeKey: string): void {
@@ -1230,6 +1435,7 @@ export async function resetLayoutToDefault(
     return false;
   }
   cancelPendingSave(worktreeKey);
+  dropWorktreeLayoutReadAhead(worktreeKey);
   // Captured BEFORE disposal: the panel⇄resource sweeps skip a disposed
   // family (transient teardown), so omitted resources must be closed here.
   const boundBefore = collectFamilyResourceBindings(worktreeKey);

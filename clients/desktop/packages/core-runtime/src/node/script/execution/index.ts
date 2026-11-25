@@ -51,6 +51,7 @@ export {
   type ScriptRunChild,
   type ScriptRunChildReap,
   type ScriptRunChildReapOptions,
+  type ScriptRunReapPass,
   type ScriptRunSpawner,
   type ScriptRunWriterFence,
   type ScriptRunWriterState,

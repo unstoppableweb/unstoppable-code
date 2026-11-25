@@ -942,6 +942,33 @@ export const desktopWorkEntryBulkState: GetWorkEntryBulkState = (
     : { pinned: entry.pinned === true, done: entry.status === 'done' };
 };
 
+/**
+ * Longest the sidebar waits for the Chats section before showing what it
+ * has. Long enough for the chat workspaces to load at startup, short enough
+ * that a failed load never leaves the sidebar loading.
+ */
+const CHATS_SECTION_WAIT_CAP_MS = 1500;
+
+/**
+ * Whether the Chats section can show: the workspace it lists has arrived in
+ * the sidebar's data, or the wait is over. Until then the sidebar keeps its
+ * loading rows. Showing the projects first and Chats a moment later pushed
+ * every project down by the Chats header once it arrived, under the pointer
+ * of whoever was about to click a row.
+ */
+function useChatsSectionSettled(hasChatsWorkspace: boolean): boolean {
+  const [waitOver, setWaitOver] = useState(false);
+  useEffect(() => {
+    if (hasChatsWorkspace) return undefined;
+    const timer = window.setTimeout(
+      () => setWaitOver(true),
+      CHATS_SECTION_WAIT_CAP_MS,
+    );
+    return (): void => window.clearTimeout(timer);
+  }, [hasChatsWorkspace]);
+  return hasChatsWorkspace || waitOver;
+}
+
 export function DesktopSharedSidebarHost({
   client = ipcCanopyClient,
   testIds = DESKTOP_SHARED_SIDEBAR_TEST_IDS,
@@ -1351,6 +1378,12 @@ export function DesktopSharedSidebarHost({
         : localSurfaceSnapshot,
     [localSurfaceSnapshot, cloudRows],
   );
+  const chatsWorkspaceId = defaultCoworkWorkspaceIdForContext(scopingContext);
+  const chatsSectionSettled = useChatsSectionSettled(
+    (surfaceSnapshot ?? snapshot)?.workspaces.some(
+      (workspace) => workspace.localId === chatsWorkspaceId,
+    ) ?? false,
+  );
   const cloudRowKind = useCallback(
     (localId: string): CloudSidebarRowKind => {
       const project = cloudRows?.workspaces.find(
@@ -1527,7 +1560,17 @@ export function DesktopSharedSidebarHost({
   const setChatsSectionCollapsed = useSidebarStore(
     (state) => state.setChatsSectionCollapsed,
   );
-  const activePage = useNavigationStore((state) => state.activePage);
+  // The pages this component tells apart. Reading the page itself re-rendered
+  // every row on a move between pages the sidebar shows the same way
+  // (Workflows, Customize, Feed).
+  const activePage = useNavigationStore((state) =>
+    state.activePage === 'main' ||
+    state.activePage === 'chat' ||
+    state.activePage === 'home' ||
+    state.activePage === 'kanban'
+      ? state.activePage
+      : 'other',
+  );
   const homeWorkspaceId = useHomeComposerStore((state) => state.workspaceId);
   const activeChatProjectId = useStandaloneChatStore(
     (state) => state.activeChatProjectId,
@@ -2059,7 +2102,9 @@ export function DesktopSharedSidebarHost({
         contentState={
           (surfaceSnapshot ?? snapshot).workspaces.length ||
           scopingContext?.kind === 'organization'
-            ? 'ready'
+            ? chatsSectionSettled
+              ? 'ready'
+              : 'loading'
             : 'empty'
         }
         worktreeDiffStatsStyle={worktreeDiffStatsStyle}

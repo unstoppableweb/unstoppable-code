@@ -61,6 +61,7 @@ export function focusWindow(
 ): void {
   if (!window || window.isDestroyed()) return;
   if (!shouldShowUiAutomationWindow()) return;
+  noteUserActivation();
 
   if (window.isMinimized()) window.restore();
   if (!window.isVisible()) window.show();
@@ -104,4 +105,31 @@ export function focusMainWindow(options?: FocusMainWindowOptions): void {
  */
 export function isAppFrontmost(): boolean {
   return BrowserWindow.getFocusedWindow() !== null;
+}
+
+/** How long after a person's own raise a follow-up request may still raise. */
+const USER_ACTIVATION_GRACE_MS = 3000;
+let lastUserActivationAt = Number.NEGATIVE_INFINITY;
+
+/**
+ * Records that the person just asked for the app from outside it (a
+ * notification click, the focus shortcut, a deep link). OS activation is
+ * asynchronous, so the request that follows can arrive before a window holds
+ * focus; {@link mayTakeForeground} lets it through.
+ */
+export function noteUserActivation(): void {
+  lastUserActivationAt = Date.now();
+}
+
+/**
+ * Whether a window may come in front of other applications now: the person
+ * is already in this app, or just asked for it. A request from the renderer
+ * while neither holds cannot come from their own input, whatever it says, so
+ * it must show without activating.
+ */
+export function mayTakeForeground(): boolean {
+  return (
+    isAppFrontmost() ||
+    Date.now() - lastUserActivationAt < USER_ACTIVATION_GRACE_MS
+  );
 }

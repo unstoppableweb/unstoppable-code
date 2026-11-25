@@ -38,7 +38,9 @@ import {
   WORKSPACE_INDEX_STORAGE,
   withStorageAdmission,
 } from './w5-storage';
-import { validateId } from './validation';
+import { isSafeWorkspaceId } from '@canopy/core-runtime/node/identifiers';
+import { IdentifierValidationError, validateId } from './validation';
+import { SidebarItemsInvalidError } from './sidebar-save-errors';
 import { desktopW5FileStore } from './w5-commit-log-file-store';
 import type { W5NamedUnreadableError } from './w5-file-store';
 import {
@@ -52,6 +54,7 @@ import {
   getWorkspacesRootDir,
   getWorkspaceWorktreeDir,
   getWorkspaceWorktreeRepoDir,
+  w5RecordReadPaths,
 } from './paths';
 import { scheduleDesktopStructureChanged } from '../services/desktop-structure-signal';
 import {
@@ -90,6 +93,7 @@ import { countArchivedContainers } from './archived-containers';
 import { readWorkEntrySidebarSummary } from './cowork-work-entries-file';
 import { settleAll } from '@canopy/desktop-shared/node/lib/detached-work';
 import { workspaceStorageUnavailable } from './workspace-storage-availability';
+import { createW5ImageReadCache } from './w5-read-view';
 import {
   runWithMetadataReadCaller,
   type MetadataReadCaller,
@@ -131,8 +135,23 @@ function createDesktopWorkspaceIndexRepository(): StoredWorkspaceIndexRepository
       scheduleDesktopStructureChanged('structural.sidebar-items'),
     onRefused: recordWorkspaceIndexWriteRefused,
   });
+  const cachedRead =
+    createW5ImageReadCache<Awaited<ReturnType<typeof repository.readStored>>>();
+  const readStored = (): ReturnType<typeof repository.readStored> =>
+    cachedRead(w5RecordReadPaths.index(), () => repository.readStored());
   return {
     ...repository,
+    read: async () => {
+      const { entries, authority, unserved, unreadableRowIds } =
+        await readStored();
+      return {
+        entries,
+        authority,
+        ...(unserved && { unserved }),
+        ...(unreadableRowIds && { unreadableRowIds }),
+      };
+    },
+    readStored,
     update: (change) =>
       withStorageAdmission([WORKSPACE_INDEX_STORAGE], () =>
         repository.update(change),
@@ -1531,55 +1550,130 @@ export async function removeWorkspaceIndexEntry(
   return true;
 }
 
-export function validateSidebarItems(items: SidebarItem[]): void {
-  const seenIds = new Set<string>();
+/** Strict: every id must pass `validateId` and appear once. */
+export function validateSidebarItems(items: readonly SidebarItem[]): void {
+  admitSidebarItems(items);
+}
+
+const passesValidateId = (id: string): boolean => {
+  try {
+    validateId(id, 'item id');
+    return true;
+  } catch (error) {
+    if (error instanceof IdentifierValidationError) return false;
+    throw error;
+  }
+};
+
+const countIds = (items: readonly SidebarItem[]): Map<string, number> => {
+  const counts = new Map<string, number>();
+  for (const item of items) counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
+  return counts;
+};
+
+/**
+ * Validates a `projects:save` request against the projection this window was
+ * delivered (CAN-7357). The read path delivers legacy ids (uppercase or `_`)
+ * and duplicate-id rows that strict validation refuses, which made every save
+ * fail until the data changed. Those rows are admitted only so the other
+ * projects can save, and come back in `preserveIds`: the save skips them, so
+ * their edits are not written and their index rows are left as they are.
+ *
+ * - A legacy id is admitted when it is safe (`isSafeWorkspaceId`) and equals a
+ *   delivered id exactly; ids are never case-folded.
+ * - An id `delivered` holds more than once is preserved, and admitted while
+ *   `items` holds it no more often than `delivered` does.
+ * - An unsafe or undelivered legacy id still throws `IdentifierValidationError`,
+ *   and an id `items` holds more often than `delivered` throws
+ *   `SidebarItemsInvalidError('duplicate-id')`.
+ *
+ * Without `delivered` (a sender with no recorded load) it is as strict as
+ * {@link validateSidebarItems}. Preserved ids are used for set membership
+ * only, never to build a path.
+ */
+export function admitSidebarItems(
+  items: readonly SidebarItem[],
+  delivered?: readonly SidebarItem[],
+): { readonly preserveIds: ReadonlySet<string> } {
+  const deliveredCounts = countIds(delivered ?? []);
+  const preserveIds = new Set<string>();
+  for (const [id, count] of deliveredCounts) if (count > 1) preserveIds.add(id);
+  const seen = new Map<string, number>();
 
   for (const item of items) {
-    validateId(item.id, 'item id');
-
-    if (seenIds.has(item.id)) {
-      throw new Error(`Duplicate sidebar item id: ${item.id}`);
+    if (!passesValidateId(item.id)) {
+      if (!isSafeWorkspaceId(item.id) || !deliveredCounts.has(item.id))
+        validateId(item.id, 'item id');
+      preserveIds.add(item.id);
     }
-    seenIds.add(item.id);
 
-    if (item.externalPath !== undefined && !isAbsolute(item.externalPath)) {
-      throw new Error(
-        `Invalid externalPath for project ${item.id}: must be an absolute path`,
+    const count = (seen.get(item.id) ?? 0) + 1;
+    seen.set(item.id, count);
+    if (count > Math.max(1, deliveredCounts.get(item.id) ?? 0)) {
+      throw new SidebarItemsInvalidError(
+        'duplicate-id',
+        `Duplicate sidebar item id: ${item.id}`,
       );
     }
 
-    if (item.type === 'cowork') {
-      continue;
-    }
+    validateSidebarItemFields(item);
+  }
+  return { preserveIds };
+}
 
-    if (item.type === 'single-repo') {
-      if ('temporary' in item) {
-        throw new Error(`temporary is only valid for multi-repo projects`);
-      }
-      if (!item.repoPath || !isAbsolute(item.repoPath)) {
-        throw new Error(
-          `Invalid repoPath for project ${item.id}: must be an absolute path`,
-        );
-      }
-      validateWorktreeCompatibilitySymlinks(item.id, item.worktrees);
-      continue;
-    }
+/**
+ * A `preserveWorkspaceIds` entry: a current id or a safe legacy one. These ids
+ * only reduce what a save writes (the renderer sends the projects it failed to
+ * load), and are used for set membership only.
+ */
+export function validatePreservedWorkspaceId(id: unknown): void {
+  if (isSafeWorkspaceId(id)) return;
+  validateId(id, 'preserved project id');
+}
 
-    if (item.sourceRepoPath !== undefined && !isAbsolute(item.sourceRepoPath)) {
-      throw new Error(
-        `Invalid sourceRepoPath for project ${item.id}: must be an absolute path`,
+function validateSidebarItemFields(item: SidebarItem): void {
+  if (item.externalPath !== undefined && !isAbsolute(item.externalPath)) {
+    throw new SidebarItemsInvalidError(
+      'external-path',
+      `Invalid externalPath for project ${item.id}: must be an absolute path`,
+    );
+  }
+
+  if (item.type === 'cowork') return;
+
+  if (item.type === 'single-repo') {
+    if ('temporary' in item) {
+      throw new SidebarItemsInvalidError(
+        'temporary',
+        `temporary is only valid for multi-repo projects`,
       );
     }
-
-    for (const repo of item.repos) {
-      if (!isAbsolute(repo.repoPath)) {
-        throw new Error(
-          `Invalid repoPath for project repo ${item.id}/${repo.id}: must be an absolute path`,
-        );
-      }
+    if (!item.repoPath || !isAbsolute(item.repoPath)) {
+      throw new SidebarItemsInvalidError(
+        'repo-path',
+        `Invalid repoPath for project ${item.id}: must be an absolute path`,
+      );
     }
     validateWorktreeCompatibilitySymlinks(item.id, item.worktrees);
+    return;
   }
+
+  if (item.sourceRepoPath !== undefined && !isAbsolute(item.sourceRepoPath)) {
+    throw new SidebarItemsInvalidError(
+      'source-repo-path',
+      `Invalid sourceRepoPath for project ${item.id}: must be an absolute path`,
+    );
+  }
+
+  for (const repo of item.repos) {
+    if (!isAbsolute(repo.repoPath)) {
+      throw new SidebarItemsInvalidError(
+        'repo-path',
+        `Invalid repoPath for project repo ${item.id}/${repo.id}: must be an absolute path`,
+      );
+    }
+  }
+  validateWorktreeCompatibilitySymlinks(item.id, item.worktrees);
 }
 
 function validateWorktreeCompatibilitySymlinks(
@@ -1589,12 +1683,14 @@ function validateWorktreeCompatibilitySymlinks(
   for (const worktree of worktrees) {
     for (const link of worktree.compatibilitySymlinks ?? []) {
       if (!isAbsolute(link.path)) {
-        throw new Error(
+        throw new SidebarItemsInvalidError(
+          'compatibility-symlink',
           `Invalid compatibilitySymlink.path for worktree ${workspaceId}/${worktree.id}: must be an absolute path`,
         );
       }
       if (!isAbsolute(link.targetPath)) {
-        throw new Error(
+        throw new SidebarItemsInvalidError(
+          'compatibility-symlink',
           `Invalid compatibilitySymlink.targetPath for worktree ${workspaceId}/${worktree.id}: must be an absolute path`,
         );
       }

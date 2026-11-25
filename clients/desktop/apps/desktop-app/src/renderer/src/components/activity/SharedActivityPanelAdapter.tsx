@@ -38,6 +38,7 @@ import type {
   WorktreeSelection,
 } from '@canopy/desktop-shared/types';
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
+import { usePanelVisible } from '@canopy/ui-app/panel-contexts';
 import { isActivitySectionVisibleForTarget } from '@canopy/app-state';
 import type {
   RemoteControlChatTodoProjection,
@@ -106,6 +107,7 @@ import { MemorySection } from './MemorySection';
 import { SettingsGearButton } from './RunOutputControls';
 import { useScriptsSectionHostModel } from './ScriptsSection';
 import { useAutoExpandActivityRail } from './useAutoExpandActivityRail';
+import { useHiddenRailContentMounted } from './useHiddenRailContentMounted';
 
 const LazyCostActivityPreviewSection = lazy(() =>
   import('./cost/CostActivityPreviewSection').then((module) => ({
@@ -225,6 +227,23 @@ export function SharedActivityPanelAdapter({
       ? selectedWorktree
       : null;
 
+  // The rail's own panel tells whether it is on screen. A rail on screen
+  // mounts at once; a hidden one (its group collapsed, or another tab of the
+  // group shown) mounts once the browser is idle, after the frames that show
+  // the worktree. The Activity card has its own idle mount
+  // (`ActivityCardChatLayout`), so it mounts at once here.
+  const railShown = usePanelVisible();
+  const contentMounted = useHiddenRailContentMounted(
+    railShown || layout === 'card',
+    selectedWorktree
+      ? `${selectedWorktree.projectId}/${selectedWorktree.worktreeId}`
+      : null,
+  );
+  if (!contentMounted) {
+    // The same empty stand-in a rail with no worktree renders.
+    return <div data-testid="activity-panel" data-activity-pending="" />;
+  }
+
   return (
     <CostActivityScopeHost
       projectId={costEntry?.projectId ?? null}
@@ -326,11 +345,16 @@ function SharedActivityPanelAdapterContents({
   } | null>(null);
   const onMemoryEmptyChange = useCallback(
     (empty: boolean) => {
-      setMemoryState((current) =>
-        current?.projectId === projectId && current.empty === empty
-          ? current
-          : { projectId, empty },
-      );
+      setMemoryState((current) => {
+        // Nothing reported for this project yet reads as empty (see
+        // `memoryEmpty`), so a first report of "empty" changes nothing and
+        // must not render the whole rail again.
+        const known =
+          current !== null && current.projectId === projectId
+            ? current.empty
+            : true;
+        return known === empty ? current : { projectId, empty };
+      });
     },
     [projectId],
   );

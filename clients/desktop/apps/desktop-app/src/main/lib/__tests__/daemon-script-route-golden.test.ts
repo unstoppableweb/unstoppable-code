@@ -30,10 +30,11 @@ jest.mock('../../canopy-runtime/electron-daemon-access', () => ({
     Promise.resolve({ authorityId: 'local', canonicalDataRoot: mockDataRoot }),
 }));
 const mockNoteFallback = jest.fn();
+let mockLatched = false;
 jest.mock('../../canopy-runtime/electron-daemon-health', () => ({
   getElectronDaemonHealth: (): unknown => ({
     setConsumerEnabled: (): void => undefined,
-    isLatched: (): boolean => false,
+    isLatched: (): boolean => mockLatched,
     noteFallback: (...args: unknown[]): void => {
       mockNoteFallback(...args);
     },
@@ -125,6 +126,7 @@ import {
   type ScriptRunWriterState,
 } from '@canopy/core-runtime/node/script/execution';
 import type {
+  CanopyCallerDescriptor,
   CanopyHostExecution,
   WorkerScriptExecuteParams,
   WorkerScriptExecutionOutputItem,
@@ -133,6 +135,10 @@ import {
   IPC_CHANNELS,
   type ScriptRunResponse,
 } from '@canopy/desktop-shared/types';
+import {
+  resetWorkCounters,
+  snapshotWorkCounters,
+} from '@canopy/desktop-shared/node/work-counters';
 import { resetResolvedCanopyDataDirForTests } from '@canopy/execution-engine/canopy-paths';
 import { createDefaultEnvironmentConfig } from '@canopy/desktop-shared/lib/user-environment';
 import { registerSecretsEnvInjector } from '@canopy/execution-engine/pipelines/config-paths';
@@ -384,6 +390,42 @@ function createDaemonDouble(): DaemonDouble {
         );
       return Promise.reject(new Error(`Unexpected ${name}`));
     },
+    query: (name: string, params: unknown): Promise<unknown> => {
+      calls.push({
+        name,
+        params,
+        execution: undefined,
+        idempotencyKey: undefined,
+      });
+      if (name === 'worker.script.execution.groupMembers')
+        return Promise.resolve(
+          scripts.queries['worker.script.execution.groupMembers'](
+            params as Parameters<
+              (typeof scripts.queries)['worker.script.execution.groupMembers']
+            >[0],
+            context({}),
+          ),
+        );
+      if (name === 'worker.script.execution.get')
+        return Promise.resolve(
+          scripts.queries['worker.script.execution.get'](
+            params as Parameters<
+              (typeof scripts.queries)['worker.script.execution.get']
+            >[0],
+            context({}),
+          ),
+        );
+      if (name === 'worker.script.execution.list')
+        return Promise.resolve(
+          scripts.queries['worker.script.execution.list'](
+            params as Parameters<
+              (typeof scripts.queries)['worker.script.execution.list']
+            >[0],
+            context({}),
+          ),
+        );
+      return Promise.reject(new Error(`Unexpected ${name}`));
+    },
     openStream: async (name: string, params: unknown): Promise<unknown> => {
       calls.push({
         name,
@@ -520,6 +562,7 @@ beforeEach(() => {
   mockPlatform = 'darwin';
   mockLabsSnapshot.mockClear();
   mockBridge = false;
+  mockLatched = false;
   mockNoteFallback.mockReset();
   mkdirSync(join(root, 'ledger'));
   process.env = {
@@ -1029,5 +1072,274 @@ describePosix('daemon script route (CAN-5087)', () => {
     } finally {
       sleeper.kill('SIGKILL');
     }
+  });
+});
+
+// CAN-7663: an orphaned run's group members, read through the real desktop
+// dispatcher and worker.script adapter.
+describePosix('daemon script reads (CAN-7663)', () => {
+  const READER: CanopyCallerDescriptor = {
+    principalId: 'local-desktop-user',
+    clientInstanceId: 'renderer',
+    authorityId: 'local',
+    interfaceKind: 'desktop',
+    grants: ['worker.script.read'],
+  };
+  const groupMembers = (): Promise<unknown> =>
+    runtime.query(
+      'worker.script.execution.groupMembers',
+      {
+        scope: { workspaceId: 'project', worktreeId: 'task' },
+        scriptKey: 'echo',
+        executionId: 'not-a-run',
+      },
+      { caller: READER },
+    );
+  const notOrphaned = { payload: { code: 'worker.script.notOrphaned' } };
+  const reads = (): DaemonCall[] =>
+    double.calls.filter(
+      ({ name }) => name === 'worker.script.execution.groupMembers',
+    );
+
+  it.each(['darwin', 'linux'])(
+    "reads an orphaned run's group members from the daemon (%s)",
+    async (platform) => {
+      mockPlatform = platform;
+      const local = jest.spyOn(desktopScriptWorker, 'groupMembers');
+      try {
+        // The daemon's refusal is the answer: nothing reads in process.
+        await expect(groupMembers()).rejects.toMatchObject(notOrphaned);
+        expect(reads().map(({ params }) => params)).toEqual([
+          {
+            scope: { workspaceId: 'project', worktreeId: 'task' },
+            scriptKey: 'echo',
+            executionId: 'not-a-run',
+          },
+        ]);
+        expect(local).not.toHaveBeenCalled();
+      } finally {
+        local.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    ['on Windows', (): void => void (mockPlatform = 'win32')],
+    [
+      'while the daemon is latched unreachable',
+      (): void => void (mockLatched = true),
+    ],
+  ])('reads the group members in process %s', async (_name, arrange) => {
+    arrange();
+    const local = jest.spyOn(desktopScriptWorker, 'groupMembers');
+    try {
+      await expect(groupMembers()).rejects.toMatchObject(notOrphaned);
+      expect(double.calls).toEqual([]);
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(local).toHaveBeenCalledTimes(1);
+    } finally {
+      local.mockRestore();
+    }
+  });
+
+  it('an unreachable daemon reads the group members in process and notes the fallback', async () => {
+    mockGet.mockRejectedValue(
+      markUnreachable(new Error('down'), 'connection_lost'),
+    );
+    const local = jest.spyOn(desktopScriptWorker, 'groupMembers');
+    try {
+      await expect(groupMembers()).rejects.toMatchObject(notOrphaned);
+      expect(local).toHaveBeenCalledTimes(1);
+      expect(mockNoteFallback).toHaveBeenCalledWith(
+        'scripts',
+        'connection_lost',
+      );
+    } finally {
+      local.mockRestore();
+    }
+  });
+});
+
+// CAN-7663: each key's latest run and one key's run, read through the real
+// desktop dispatcher and worker.script adapter.
+describePosix('daemon script run log reads (CAN-7663)', () => {
+  const READER: CanopyCallerDescriptor = {
+    principalId: 'local-desktop-user',
+    clientInstanceId: 'renderer',
+    authorityId: 'local',
+    interfaceKind: 'desktop',
+    grants: ['worker.script.read'],
+  };
+  const scope = { workspaceId: 'project', worktreeId: 'task' };
+  const get = (): Promise<unknown> =>
+    runtime.query(
+      'worker.script.execution.get',
+      { scope, scriptKey: 'echo', tailLines: 0 },
+      { caller: READER },
+    );
+  const list = (): Promise<unknown> =>
+    runtime.query(
+      'worker.script.execution.list',
+      { scope, tailLines: 0 },
+      { caller: READER },
+    );
+  const reads = (): string[] =>
+    double.calls
+      .map(({ name }) => name)
+      .filter(
+        (name) =>
+          name === 'worker.script.execution.get' ||
+          name === 'worker.script.execution.list',
+      );
+
+  it.each(['darwin', 'linux'])(
+    'reads a run and the runs from the daemon (%s)',
+    async (platform) => {
+      mockPlatform = platform;
+      const localGet = jest.spyOn(desktopScriptWorker, 'get');
+      const localList = jest.spyOn(desktopScriptWorker, 'list');
+      try {
+        await expect(get()).resolves.toEqual({ run: null });
+        await expect(list()).resolves.toEqual({ runs: [] });
+        expect(reads()).toEqual([
+          'worker.script.execution.get',
+          'worker.script.execution.list',
+        ]);
+        expect(localGet).not.toHaveBeenCalled();
+        expect(localList).not.toHaveBeenCalled();
+      } finally {
+        localGet.mockRestore();
+        localList.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    ['on Windows', (): void => void (mockPlatform = 'win32')],
+    [
+      'while the daemon is latched unreachable',
+      (): void => void (mockLatched = true),
+    ],
+  ])('reads a run and the runs in process %s', async (_name, arrange) => {
+    arrange();
+    const localGet = jest.spyOn(desktopScriptWorker, 'get');
+    const localList = jest.spyOn(desktopScriptWorker, 'list');
+    try {
+      await expect(get()).resolves.toEqual({ run: null });
+      await expect(list()).resolves.toEqual({ runs: [] });
+      expect(double.calls).toEqual([]);
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(localGet).toHaveBeenCalledTimes(1);
+      expect(localList).toHaveBeenCalledTimes(1);
+    } finally {
+      localGet.mockRestore();
+      localList.mockRestore();
+    }
+  });
+
+  it('an unreachable daemon reads in process and notes the fallback', async () => {
+    mockGet.mockRejectedValue(
+      markUnreachable(new Error('down'), 'connection_lost'),
+    );
+    const localGet = jest.spyOn(desktopScriptWorker, 'get');
+    const localList = jest.spyOn(desktopScriptWorker, 'list');
+    try {
+      await expect(get()).resolves.toEqual({ run: null });
+      await expect(list()).resolves.toEqual({ runs: [] });
+      expect(localGet).toHaveBeenCalledTimes(1);
+      expect(localList).toHaveBeenCalledTimes(1);
+      expect(mockNoteFallback).toHaveBeenCalledWith(
+        'scripts',
+        'connection_lost',
+      );
+    } finally {
+      localGet.mockRestore();
+      localList.mockRestore();
+    }
+  });
+});
+
+// CAN-7663: each routed script run read counts where it ran in the `route`
+// work counters, which a performance receipt reads as route evidence.
+describePosix('daemon script read route records (CAN-7663)', () => {
+  const READER: CanopyCallerDescriptor = {
+    principalId: 'local-desktop-user',
+    clientInstanceId: 'renderer',
+    authorityId: 'local',
+    interfaceKind: 'desktop',
+    grants: ['worker.script.read'],
+  };
+  const scope = { workspaceId: 'project', worktreeId: 'task' };
+  const readAll = async (): Promise<void> => {
+    await runtime.query(
+      'worker.script.execution.get',
+      { scope, scriptKey: 'echo', tailLines: 0 },
+      { caller: READER },
+    );
+    await runtime.query(
+      'worker.script.execution.list',
+      { scope, tailLines: 0 },
+      { caller: READER },
+    );
+    await expect(
+      runtime.query(
+        'worker.script.execution.groupMembers',
+        { scope, scriptKey: 'echo', executionId: 'not-a-run' },
+        { caller: READER },
+      ),
+    ).rejects.toMatchObject({
+      payload: { code: 'worker.script.notOrphaned' },
+    });
+  };
+  const scriptRoutes = (): Record<string, number> =>
+    Object.fromEntries(
+      Object.entries(snapshotWorkCounters().route).filter(([key]) =>
+        key.startsWith('scripts.'),
+      ),
+    );
+
+  beforeEach(() => {
+    resetWorkCounters();
+  });
+
+  it.each(['darwin', 'linux'])(
+    'counts each read on the daemon path (%s)',
+    async (platform) => {
+      mockPlatform = platform;
+      await readAll();
+      expect(scriptRoutes()).toEqual({
+        'scripts.get.daemon.served': 1,
+        'scripts.list.daemon.served': 1,
+        'scripts.groupMembers.daemon.refused': 1,
+      });
+    },
+  );
+
+  it.each([
+    ['on Windows', (): void => void (mockPlatform = 'win32')],
+    [
+      'while the daemon is latched unreachable',
+      (): void => void (mockLatched = true),
+    ],
+  ])('counts each read as direct %s', async (_name, arrange) => {
+    arrange();
+    await readAll();
+    expect(scriptRoutes()).toEqual({
+      'scripts.get.direct': 1,
+      'scripts.list.direct': 1,
+      'scripts.groupMembers.direct': 1,
+    });
+  });
+
+  it('counts each read an unreachable daemon left in process as a fallback', async () => {
+    mockGet.mockRejectedValue(
+      markUnreachable(new Error('down'), 'connection_lost'),
+    );
+    await readAll();
+    expect(scriptRoutes()).toEqual({
+      'scripts.get.daemon.fallback': 1,
+      'scripts.list.daemon.fallback': 1,
+      'scripts.groupMembers.daemon.fallback': 1,
+    });
   });
 });

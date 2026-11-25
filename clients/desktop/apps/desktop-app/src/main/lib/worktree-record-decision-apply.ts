@@ -1387,12 +1387,21 @@ export type CoworkWorkspaceRecordRefusal =
   | 'identity-changed'
   | 'activity-unavailable';
 export class CoworkWorkspaceRecordRefusedError extends Error {
+  declare readonly cause?: unknown;
   constructor(
     readonly reason: CoworkWorkspaceRecordRefusal,
     message: string,
+    /** The error behind the refusal, when there is one. */
+    cause?: unknown,
   ) {
     super(message);
     this.name = 'CoworkWorkspaceRecordRefusedError';
+    if (cause !== undefined)
+      Object.defineProperty(this, 'cause', {
+        value: cause,
+        configurable: true,
+        writable: true,
+      });
   }
 }
 function refuseCowork(

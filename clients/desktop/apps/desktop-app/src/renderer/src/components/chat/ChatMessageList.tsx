@@ -6,6 +6,7 @@ import {
   StickyPromptFade,
   StickyPromptSurface,
 } from '@canopy/ui-shared/components/chat';
+import { setTurnHover } from '@canopy/ui-shared/components/chat/TurnHoverScope';
 import { isCreditHeldQueuedMessage } from '@canopy/ui-shared/lib/queued-message-force';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import {
@@ -21,6 +22,7 @@ import {
 } from '@/lib/desktop-chat-visual-host';
 import { CHAT_TURN_FOCUS_HIGHLIGHT_MS } from './chat-call-focus';
 import { useWorkspaceIsReadOnly } from '@/lib/workspace-access';
+import { useMountedAfterFirstPaint } from '@/lib/useMountedAfterFirstPaint';
 import { useActivityStore } from '@/stores/activityStore';
 import {
   useChatStore,
@@ -64,8 +66,13 @@ import {
   useVirtualizer,
   type Range,
   type VirtualItem,
+  type Virtualizer,
 } from '@tanstack/react-virtual';
-import type { ReactNode } from 'react';
+import type {
+  FocusEvent as ReactFocusEvent,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+} from 'react';
 import {
   memo,
   useCallback,
@@ -76,6 +83,7 @@ import {
   useRef,
   useState,
   type JSX,
+  type RefCallback,
   type RefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -99,7 +107,10 @@ import {
   getFilePathMentionIndex,
   type FilePathMentionIndex,
 } from '@/lib/filePathMentionIndex';
-import { buildInvocableMentionIndex } from '@/lib/invocableMentionIndex';
+import {
+  invocableMentionIndexFor,
+  type InvocableMentionIndex,
+} from '@/lib/invocableMentionIndex';
 import {
   getChatScrollPosition,
   getSavedChatScrollPosition,
@@ -147,7 +158,6 @@ import {
   OverlayScrollArea,
   QUEUED_MESSAGE_EDITING_TOOLTIP,
   QUEUED_MESSAGE_SENDING_TOOLTIP,
-  ScrollToBottomButton,
   isCapabilityTileReceipt,
   resolveTurnStartingStatus,
   useCompactQueue,
@@ -185,10 +195,17 @@ import {
 import {
   estimateTranscriptSectionHeight,
   progressiveTranscriptRange,
+  recalledTranscriptViewportRect,
+  rememberTranscriptViewportRect,
   shouldPreloadTranscriptFileIndex,
   shouldVirtualizeTranscript,
+  transcriptOverscanLimits,
+  type TranscriptOverscanLimits,
+  type TranscriptViewportRect,
 } from './chat-message-list-state';
 import { ChatMessageItem, type SpawningCallTarget } from './ChatMessageItem';
+import { TranscriptScrollToBottom } from './TranscriptScrollToBottom';
+import { createScrollButtonVisibility } from './transcript-scroll-button-visibility';
 import { ForkedFromLink } from './ForkedFromLink';
 import {
   computeIncrementalTurnGroups,
@@ -220,6 +237,7 @@ import {
   publishStickyUserHeight,
   readStickyUserHeight,
 } from './sticky-user-height';
+import { StickyTurnHeaderSlotScope } from './sticky-turn-header-slot';
 import {
   computeTranscriptStickySections,
   type TranscriptStickySection,
@@ -238,11 +256,23 @@ const EMPTY_AGENT_ARTIFACTS: readonly AgentArtifactReceiptV1[] = [];
 const NO_RUN_KEYS: ReadonlySet<string> = new Set();
 const NO_VIRTUAL_ITEMS: VirtualItem[] = [];
 const NO_MOUNTED_TRANSCRIPT_SECTIONS: ReadonlySet<number> = new Set();
+const NO_SAVED_TRANSCRIPT_MEASUREMENT_KEYS: ReadonlySet<VirtualItem['key']> =
+  new Set();
+const NO_TRANSCRIPT_VIEWPORT_RECT: TranscriptViewportRect = {
+  width: 0,
+  height: 0,
+};
 const NEAR_BOTTOM_THRESHOLD = 80;
 const TRANSCRIPT_OVERSCAN_ITEMS = 2;
 const MAX_VIRTUALIZED_STICKY_SECTION_ITEMS = 20;
 /** Upper bound on history pages fetched while honoring one deep link. */
 const CHAT_TURN_FOCUS_MAX_PAGE_LOADS = 64;
+/**
+ * From how many loaded messages a newly shown transcript draws its rows one
+ * frame after the rest of the chat (`useMountedAfterFirstPaint`). Below it
+ * the rows cost little, and a first send from Home shows its prompt at once.
+ */
+const TRANSCRIPT_ROWS_DEFER_MIN_MESSAGES = 4;
 
 interface TranscriptMessageAnchor {
   chatId: string;
@@ -313,11 +343,33 @@ interface StickyUserMessageHeaderProps {
   onResetToPoint?: (userMessageId: string) => Promise<void>;
   appliedMemory?: AppliedOrgMemoryTurn;
   chatPendingQuestions: PendingQuestion[];
-  invocableMentionIndex: ReturnType<typeof buildInvocableMentionIndex> | null;
+  invocableMentionIndex: InvocableMentionIndex | null;
   filePathMentionIndex: FilePathMentionIndex | null;
   chatId: string;
   forceExpandedUserMessage: boolean;
   onJumpToMessage?: (element: HTMLElement) => void;
+  /** The slot the head turn renders its header into, under the prompt. */
+  headerSlotRef: RefCallback<HTMLDivElement>;
+}
+
+function reportTurnPointerEnter(event: ReactMouseEvent<HTMLElement>): void {
+  setTurnHover(event.currentTarget, 'pointer', true);
+}
+
+function reportTurnPointerLeave(event: ReactMouseEvent<HTMLElement>): void {
+  setTurnHover(event.currentTarget, 'pointer', false);
+}
+
+// Focus anywhere in the turn reveals its footer, as hover does. Focus moving
+// within the turn keeps it revealed.
+function reportTurnFocus(event: ReactFocusEvent<HTMLElement>): void {
+  setTurnHover(event.currentTarget, 'focus', true);
+}
+
+function reportTurnBlur(event: ReactFocusEvent<HTMLElement>): void {
+  const next = event.relatedTarget;
+  if (next instanceof Node && event.currentTarget.contains(next)) return;
+  setTurnHover(event.currentTarget, 'focus', false);
 }
 
 function isNearBottom(el: HTMLElement): boolean {
@@ -382,13 +434,15 @@ function useAgentArtifactProjection(
  * section — including watcher-fired turns, which deliberately do not break
  * the stick.
  *
- * While pinned (detected via a sentinel at the section top), the bubble gains
- * a full-width opaque `bg-base` backing so transcript content passes behind
- * it. Nothing else is painted: bands and fades around the pinned stack read
- * as black bars sitting on the transcript, and content disappearing behind an
- * opaque bubble is the intended effect. The measured header height is
- * published to the section's summary chips (`publishStickyUserHeight`) so
- * they can pin directly beneath it.
+ * The head turn's "Working for" / "Worked for" header renders into a slot
+ * under the bubble (`StickyTurnHeaderSlotContext`), so prompt and header are
+ * one sticky box with one full-width opaque `bg-base` backing: transcript
+ * content passes behind the whole head and is cut at the header's hairline,
+ * with nothing showing between the bubble and the header and nothing painted
+ * past the hairline. No offset between them is measured, so they cannot drift
+ * apart, and a section handoff moves them together. The measured head height
+ * is published on the section (`publishStickyUserHeight`) for scroll math
+ * that lands content below the pinned head.
  */
 const StickyUserMessageHeader = memo(function StickyUserMessageHeader({
   group,
@@ -401,17 +455,11 @@ const StickyUserMessageHeader = memo(function StickyUserMessageHeader({
   chatId,
   forceExpandedUserMessage,
   onJumpToMessage,
+  headerSlotRef,
 }: StickyUserMessageHeaderProps): JSX.Element {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   // Early access only bottom-pins prompts that can collapse; with it off, any
   // prompt reported as expanded keeps develop's pin edge.
-
-  // Stuck state itself is owned by the transcript's geometric scroll pass
-  // (`updateStickySummaryPinnedState`), which sets `data-stuck` here
-  // imperatively — CSS variants react to it with no React re-render and no
-  // IntersectionObserver. (An observer's isIntersecting does NOT change when
-  // a scroll jump teleports the sentinel from above the viewport to below
-  // it, which left stale stuck states behind.)
   useLayoutEffect(() => {
     const wrapper = wrapperRef.current;
     if (!wrapper) return undefined;
@@ -429,9 +477,8 @@ const StickyUserMessageHeader = memo(function StickyUserMessageHeader({
     //    taller-than-viewport expanded message pinned at the top made its
     //    own bottom unreachable.
     // 2. Publish the pinned VISIBLE height (wrapper height + the negative
-    //    top) so per-turn summary chips can stick right below the pinned
-    //    stack (`top: var(--chat-sticky-user-height)`), tracking
-    //    expand/collapse height changes live.
+    //    top) for scroll math that lands content below the pinned head,
+    //    tracking expand/collapse height changes live.
     let content = wrapper.querySelector<HTMLElement>(
       '[data-testid="user-message-content"]',
     );
@@ -498,30 +545,39 @@ const StickyUserMessageHeader = memo(function StickyUserMessageHeader({
     };
   }, []);
 
-  // The hoisted prompt is no longer inside its own turn's `group/turn`
-  // wrapper, so CSS alone cannot link the two. Mirror hover onto that wrapper
-  // by id: `data-hover` is what the turn's controls react to, exactly as if
-  // the prompt had been hovered in place. Scoped by id rather than by section,
-  // so watcher-fired follow-ups in the same section stay untouched.
-  const setTurnHover = useCallback(
+  // The hoisted prompt is no longer inside its own turn's wrapper, so it
+  // reports its own hover for that turn, found by id: the turn's footer then
+  // reacts exactly as if the prompt had been hovered in place. Scoped by id
+  // rather than by section, so watcher-fired follow-ups in the same section
+  // stay untouched.
+  const promptHoveredTurnRef = useRef<HTMLElement | null>(null);
+  const setPromptHover = useCallback(
     (hovered: boolean): void => {
-      const wrapper = wrapperRef.current;
-      if (!wrapper) return;
-      const section = wrapper.closest('[data-chat-sticky-section]');
+      // Leave the turn this prompt entered, even if it has since been
+      // replaced or this header is going away.
+      const entered = promptHoveredTurnRef.current;
+      promptHoveredTurnRef.current = null;
+      if (entered) setTurnHover(entered, 'prompt', false);
+      if (!hovered) return;
+      const section = wrapperRef.current?.closest('[data-chat-sticky-section]');
       if (!(section instanceof HTMLElement)) return;
       const turn = section.querySelector<HTMLElement>(
         `[data-chat-turn-group="${CSS.escape(group.userMessage.id)}"]`,
       );
-      turn?.toggleAttribute('data-hover', hovered);
+      if (!turn) return;
+      promptHoveredTurnRef.current = turn;
+      setTurnHover(turn, 'prompt', true);
     },
     [group.userMessage.id],
   );
+  // No mouse-leave arrives for a header that unmounts under the pointer.
+  useEffect(() => (): void => setPromptHover(false), [setPromptHover]);
 
   return (
     <StickyPromptSurface
       ref={wrapperRef}
-      onMouseEnter={(): void => setTurnHover(true)}
-      onMouseLeave={(): void => setTurnHover(false)}
+      onMouseEnter={(): void => setPromptHover(true)}
+      onMouseLeave={(): void => setPromptHover(false)}
       // The scroller's `py-2` insets the pinned position by 8px, leaving a
       // strip where content would otherwise scroll past above the bubble. The
       // `before` strip (anchored to this unbordered wrapper so the card's
@@ -531,33 +587,29 @@ const StickyUserMessageHeader = memo(function StickyUserMessageHeader({
       data-testid="sticky-user-message"
       data-sticky-user-message-id={group.userMessage.id}
     >
-      {/* Only paints while a summary banner or a follow-up user bubble is
-          sliding behind this bubble (`data-underlap`). The bubble is opaque,
-          so it already hides the banner — but it ends in a hard edge, and the
-          banner emerging from under it reads as a flat-topped,
-          square-cornered slab. This gradient starts at the bubble's own
-          bottom edge and fades out below it, so the banner dissolves across
-          the seam instead of being cut by it.
-
-          An overlay rather than a clip or mask on the banner: those crop the
-          banner's box shadow, which must stay intact.
-
-          Rendered BEFORE the bubble on purpose. Both are positioned, so DOM
-          order decides paint order within the header — first here means the
-          bubble's own drop shadow, which falls into exactly this band, paints
-          over the gradient instead of being washed out by it. It still covers
-          the banner, which sits a stacking level below the whole header.
-          Absolutely positioned, so it never alters layout. */}
-      <StickyPromptFade />
-      {/* While stuck, the bubble gets an opaque `bg-base` backing so the
-          transcript passes behind the pinned stack rather than through it.
-          The backing covers the banners and the gap above them and stops at
-          the last banner's edge — it must not run past it, which is what read
-          as a black bar laid across the transcript. All stuck styling is
-          paint-only and attribute-driven, so stuck-state changes NEVER alter
-          layout — a layout-affecting toggle here feeds back into the sticky
-          math and oscillates the scroller. */}
+      {/* One opaque backing behind the bubble and the turn header, so the
+          transcript passes behind the pinned head rather than through it. It
+          stops at the header's hairline: the space below the line is the
+          surface's own padding, outside this box. A band running past the
+          last row is what read as a black bar laid across the transcript. */}
       <StickyPromptBacking>
+        {/* Only paints while a follow-up user bubble is sliding behind the
+            head (`data-underlap`). The head is opaque, so it already hides
+            the bubble — but it ends in a hard edge, and the bubble emerging
+            from under it reads as a flat-topped, square-cornered slab. This
+            gradient starts at the backing's bottom edge (the hairline when
+            the turn header is pinned) and fades out below it, so the bubble
+            dissolves across the seam instead of being cut by it.
+
+            An overlay rather than a clip or mask on the bubble: those crop
+            the bubble's box shadow, which must stay intact.
+
+            Rendered BEFORE the bubble on purpose. Both are positioned, so DOM
+            order decides paint order — first here means the bubble's own drop
+            shadow, which falls into exactly this band, paints over the
+            gradient instead of being washed out by it. Absolutely positioned,
+            so it never alters layout. */}
+        <StickyPromptFade />
         <ChatMessageItem
           message={group.userMessage}
           outputlessAutoResume={outputlessAutoResume}
@@ -569,6 +621,14 @@ const StickyUserMessageHeader = memo(function StickyUserMessageHeader({
           originChatTabId={chatId}
           forceExpandedUserMessage={forceExpandedUserMessage}
           onJumpToMessage={onJumpToMessage}
+        />
+        {/* The head turn's header, portaled in by `TurnGroupRenderer`. The
+            8px above it is the section's inter-item gap it had in flow; an
+            empty slot (a turn with no header) takes no space. */}
+        <div
+          ref={headerSlotRef}
+          className="pt-2 empty:hidden"
+          data-testid="sticky-turn-header"
         />
       </StickyPromptBacking>
     </StickyPromptSurface>
@@ -691,6 +751,7 @@ export function ChatMessageList({
   editingScheduledMessageId = null,
   runningScheduledMessageId = null,
   enableForkedFromLink = false,
+  composerBelow = false,
 }: {
   pagingControls?: ReactNode;
   transcriptTurns?: TranscriptTurnSummary[];
@@ -764,6 +825,12 @@ export function ChatMessageList({
    * chat surface opts in; read-only archive viewers leave it off.
    */
   enableForkedFromLink?: boolean;
+  /**
+   * A composer sits right under the transcript. Its top padding shows the
+   * scroller's 8px overhang, so the fade above it needs only 8px; without
+   * one (archive viewers) that overhang is clipped and the fade keeps 16px.
+   */
+  composerBelow?: boolean;
 }): JSX.Element {
   const oneTimeScheduledMessages = useMemo(
     (): ScheduledQueuedMessage[] =>
@@ -971,7 +1038,9 @@ export function ChatMessageList({
   );
   const suppressAutoScrollRef = useRef(suppressAutoScroll);
   suppressAutoScrollRef.current = suppressAutoScroll;
-  const [showScrollButton, setShowScrollButton] = useState(false);
+  // Written by the scroll handler and read by the button alone, so a scroll
+  // crossing the bottom threshold does not re-render this list.
+  const [scrollButtonVisibility] = useState(createScrollButtonVisibility);
   const [retainedInteractionKeys, setRetainedInteractionKeys] = useState<
     ReadonlySet<string>
   >(() => new Set());
@@ -1089,6 +1158,10 @@ export function ChatMessageList({
   }, [receivingProjectId]);
   useReconcileNativeTaskStops(chatTarget);
   const linkActions = useChatMessageLinkActions(worktreeTarget);
+  // The platform cannot change under a mounted list, and reading it asks the
+  // browser for `navigator.userAgentData`, which this list did on every
+  // render, a streamed frame's included.
+  const lookUpSelection = useMemo(chatMessageLookUpSelection, []);
   const {
     sourceSdkSessionId,
     sourceIsClaudeTerminal,
@@ -1488,7 +1561,7 @@ export function ChatMessageList({
   const invocableMentionIndex = useMemo(
     () =>
       invocableInventory.entries.length > 0
-        ? buildInvocableMentionIndex(invocableInventory.entries)
+        ? invocableMentionIndexFor(invocableInventory.entries)
         : null,
     [invocableInventory.entries],
   );
@@ -1565,6 +1638,18 @@ export function ChatMessageList({
   const virtualizationEnabled = useMemo(
     () => shouldVirtualizeTranscript(turnGroups),
     [turnGroups],
+  );
+  // A switch to a chat with history mounts the whole chat around the
+  // transcript in one commit, and its rows were most of it. A newly shown
+  // transcript therefore draws its scroller, composer and trays in the
+  // switch's frame and its rows in the next one. The scroller already sits
+  // where it will rest: an empty scroller pinned to the bottom, or a virtual
+  // window of its full height at the restored offset, so the rows land where
+  // they would have and the content observer settles the position before
+  // that frame is drawn.
+  const transcriptRowsMounted = useMountedAfterFirstPaint(
+    `${worktreeTarget?.projectId ?? ''}/${worktreeTarget?.worktreeId ?? ''}/${chatId}`,
+    messages.length >= TRANSCRIPT_ROWS_DEFER_MIN_MESSAGES,
   );
   const pinUserMessages = useContext(PinUserMessagesContext);
   // Sticky sections: each real (typed, non-watcher) user turn heads a section
@@ -1705,9 +1790,20 @@ export function ChatMessageList({
   // A restored position places sections from their saved sizes. Those mount
   // with the visible ones: mounted on a later frame, a section would be
   // re-measured after the restore settled and shift the restored view.
+  //
+  // A chat left at the bottom has no offset to restore: it reopens pinned to
+  // its tail, and the pin follows any section above that measures differently
+  // from its saved size. Its off-screen neighbours therefore join one per
+  // frame, as on a first visit. Mounting them with the tail made every return
+  // to such a chat (a tab switch remounts the transcript) build, style and lay
+  // out about three sections' worth of DOM in the frame of the click instead
+  // of one. Their saved sizes still place them, so nothing moves meanwhile.
   const savedTranscriptMeasurementKeys = useMemo(
-    () => new Set(initialTranscriptMeasurements.map((item) => item.key)),
-    [initialTranscriptMeasurements],
+    (): ReadonlySet<VirtualItem['key']> =>
+      getSavedChatScrollPosition(scrollTarget)?.atBottom === true
+        ? NO_SAVED_TRANSCRIPT_MEASUREMENT_KEYS
+        : new Set(initialTranscriptMeasurements.map((item) => item.key)),
+    [initialTranscriptMeasurements, scrollTarget],
   );
   const isTranscriptSectionMeasured = useCallback(
     (index: number): boolean =>
@@ -1726,6 +1822,64 @@ export function ChatMessageList({
   const [transcriptOverscanPass, setTranscriptOverscanPass] = useState(0);
   const [transcriptAnchorSectionIndex, setTranscriptAnchorSectionIndex] =
     useState<number | null>(null);
+  // The virtualizer, for the range extractor it is built from: the extractor
+  // sizes the overscan from the window's own positions.
+  const transcriptVirtualizerRef = useRef<Virtualizer<
+    HTMLDivElement,
+    Element
+  > | null>(null);
+  // The overscan granted to the committed visible sections. A scroll that
+  // brings the viewport near an edge of them asks for more (see
+  // `growTranscriptOverscan`); a grant stays while they are the visible ones.
+  const transcriptOverscanRef = useRef<{
+    target: ChatScrollPositionTarget;
+    startIndex: number;
+    endIndex: number;
+    limits: TranscriptOverscanLimits;
+  } | null>(null);
+  const transcriptOverscanLimitsFor = useCallback(
+    (
+      range: Range,
+      target: ChatScrollPositionTarget,
+      scrollTop?: number,
+    ): TranscriptOverscanLimits => {
+      const virtualizer = transcriptVirtualizerRef.current;
+      if (!virtualizer) {
+        return { before: range.overscan, after: range.overscan };
+      }
+      const height = virtualizer.scrollRect?.height ?? 0;
+      // An opening transcript asks for an offset past its end, which the
+      // browser clamps to the real bottom.
+      const top = Math.max(
+        0,
+        Math.min(
+          scrollTop ?? virtualizer.scrollOffset ?? 0,
+          virtualizer.getTotalSize() - height,
+        ),
+      );
+      const limits = transcriptOverscanLimits(
+        range,
+        { top, height },
+        (index) =>
+          index >= 0 && index < range.count
+            ? virtualizer.measurementsCache[index]
+            : undefined,
+      );
+      const granted = transcriptOverscanRef.current;
+      if (
+        granted?.target !== target ||
+        granted.startIndex !== range.startIndex ||
+        granted.endIndex !== range.endIndex
+      ) {
+        return limits;
+      }
+      return {
+        before: Math.max(limits.before, granted.limits.before),
+        after: Math.max(limits.after, granted.limits.after),
+      };
+    },
+    [],
+  );
   const extractTranscriptRange = useCallback(
     (range: Range): number[] => {
       if (materializeTranscriptItems) return allTranscriptIndexes;
@@ -1737,6 +1891,7 @@ export function ChatMessageList({
             ? mountedSections.indexes
             : NO_MOUNTED_TRANSCRIPT_SECTIONS,
           isTranscriptSectionMeasured,
+          transcriptOverscanLimitsFor(range, scrollTarget),
         ),
       );
       if (searchSelection)
@@ -1770,6 +1925,7 @@ export function ChatMessageList({
       retainedInteractionIndexes,
       isTranscriptSectionMeasured,
       scrollTarget,
+      transcriptOverscanLimitsFor,
       transcriptOverscanPass,
       transcriptAnchorSectionIndex,
     ],
@@ -1802,6 +1958,16 @@ export function ChatMessageList({
       estimateTranscriptSectionHeight(stickySections[index]?.items ?? []),
     [stickySections],
   );
+  // The viewport this chat was last shown at, so the first render windows a
+  // restored position for its real height instead of a viewport of none (see
+  // `rememberTranscriptViewportRect`). Only a hint: the virtualizer reads the
+  // real size when it mounts.
+  const initialTranscriptRect = useMemo(
+    (): TranscriptViewportRect =>
+      recalledTranscriptViewportRect(scrollTarget) ??
+      NO_TRANSCRIPT_VIEWPORT_RECT,
+    [scrollTarget],
+  );
   const transcriptVirtualizer = useVirtualizer({
     count: virtualizationEnabled ? stickySections.length : 0,
     getScrollElement: getTranscriptScrollElement,
@@ -1811,11 +1977,54 @@ export function ChatMessageList({
     overscan: TRANSCRIPT_OVERSCAN_ITEMS,
     initialMeasurementsCache: initialTranscriptMeasurements,
     initialOffset: initialTranscriptOffset,
+    initialRect: initialTranscriptRect,
     // Resolve a prepended page's stable row before rendering/measuring it.
     // A later scrollTop correction races estimate-to-measurement adjustments.
     anchorTo: 'end',
     useAnimationFrameWithResizeObserver: true,
   });
+  useLayoutEffect(() => {
+    transcriptVirtualizerRef.current = transcriptVirtualizer;
+  }, [transcriptVirtualizer]);
+  // Overscan is sized from where the viewport sits among the visible
+  // sections, and the virtualizer extracts its range again only when those
+  // sections change. A scroll inside a long section therefore asks here once
+  // the viewport comes close enough to an edge to need the next section.
+  const growTranscriptOverscan = useCallback(
+    (scrollTop: number): void => {
+      const granted = transcriptOverscanRef.current;
+      const range = transcriptVirtualizerRef.current?.range;
+      if (
+        !granted ||
+        !range ||
+        range.startIndex !== granted.startIndex ||
+        range.endIndex !== granted.endIndex
+      ) {
+        // Nothing committed yet, or other sections became the visible ones:
+        // that render extracts the range and grants its own overscan.
+        return;
+      }
+      const limits = transcriptOverscanLimitsFor(
+        {
+          startIndex: range.startIndex,
+          endIndex: range.endIndex,
+          overscan: TRANSCRIPT_OVERSCAN_ITEMS,
+          count: transcriptVirtualizerRef.current?.options.count ?? 0,
+        },
+        granted.target,
+        scrollTop,
+      );
+      if (
+        limits.before <= granted.limits.before &&
+        limits.after <= granted.limits.after
+      ) {
+        return;
+      }
+      transcriptOverscanRef.current = { ...granted, limits };
+      setTranscriptOverscanPass((pass) => pass + 1);
+    },
+    [transcriptOverscanLimitsFor],
+  );
   // A host that keeps one list across chat tabs (the pipeline chat panel, plan
   // explore) switches chats in place. The virtualizer reads `initialOffset`
   // only while it holds no offset of its own, so the switched chat's first
@@ -1857,119 +2066,64 @@ export function ChatMessageList({
     virtualizationEnabled,
   ]);
 
-  const updateScrollState = useCallback((el: HTMLElement): void => {
-    const nearBottom = isNearBottom(el);
-    isNearBottomRef.current = nearBottom;
-    setShowScrollButton(!nearBottom);
-  }, []);
-
-  // Scroll pass for the sticky container's bottom edge: mark each pinned
-  // turn-summary chip (`data-pinned`, read by UI automation) and
-  // its section (`data-chat-sticky-summary-pinned`, hides the stuck user
-  // message's own bottom border so the single border renders under the chip
-  // — the workspace-header container shape). Imperative DOM attributes styled
-  // by CSS variants, so no React re-render happens per scroll frame; the few
-  // rect reads run after layout is already clean.
-  const updateStickySummaryPinnedState = useCallback(
+  const updateScrollState = useCallback(
     (el: HTMLElement): void => {
-      const sections = el.querySelectorAll<HTMLElement>(
-        '[data-chat-sticky-section]',
-      );
-      const finishPerformanceStage = beginTranscriptPerformanceStage(
-        'sticky_geometry',
-        { sections: sections.length },
-      );
-      sections.forEach((section) => {
-        const header = section.querySelector<HTMLElement>(
-          '[data-testid="sticky-user-message"]',
-        );
-        const chips = Array.from(
-          section.querySelectorAll<HTMLElement>(
-            '[data-testid="sticky-turn-summary"]',
-          ),
-        );
-        if (!header) {
-          section.removeAttribute('data-chat-sticky-summary-pinned');
-          chips.forEach((chip) => chip.removeAttribute('data-pinned'));
-          return;
-        }
-        const sectionRect = section.getBoundingClientRect();
-        const headerRect = header.getBoundingClientRect();
-        // A sticky header is stuck exactly when it is displaced downward
-        // from its natural position at the section top. Pure geometry —
-        // unlike an IntersectionObserver sentinel, this cannot go stale
-        // when a scroll jump teleports the section without an intersection
-        // change, and a header resting at the top of the transcript is
-        // correctly NOT stuck.
-        const stuck = headerRect.top > sectionRect.top + 1;
-        if (stuck) {
-          header.setAttribute('data-stuck', 'true');
-        } else {
-          header.removeAttribute('data-stuck');
-          section.removeAttribute('data-chat-sticky-summary-pinned');
-          chips.forEach((chip) => chip.removeAttribute('data-pinned'));
-          header.removeAttribute('data-underlap');
-          return;
-        }
-        // Only the LAST matching chip owns the pinned slot: during a
-        // handoff the outgoing chip still overlaps the slot while the
-        // incoming chip pins, and both carrying the container's bottom
-        // border would draw a double line.
-        let winner: HTMLElement | null = null;
-        chips.forEach((chip) => {
-          const rect = chip.getBoundingClientRect();
-          if (
-            rect.top <= headerRect.bottom + 9 &&
-            rect.bottom > headerRect.bottom
-          ) {
-            winner = chip;
-          }
-        });
-        // The seam only exists while a chip or a follow-up user bubble
-        // (steering, watcher-fired) STRADDLES the header's bottom edge: part
-        // of it hidden behind the opaque backing, part of it emerging below
-        // the backing's hard edge, which reads as a flat-topped,
-        // square-cornered slab. Flag that, and only that, so the header can
-        // fade it across the seam.
-        //
-        // Both halves of the test are load-bearing. Without the `bottom`
-        // half, a chip resting entirely above the header — fully hidden,
-        // no seam — sets the flag, and the gradient then paints in the
-        // ordinary pinned state where it washes out the pinned chip's own
-        // shadow. Without the `top` half, every pinned chip qualifies.
-        const straddles = (element: HTMLElement): boolean => {
-          const rect = element.getBoundingClientRect();
-          return (
-            rect.top < headerRect.bottom - 1 && rect.bottom > headerRect.bottom
-          );
-        };
-        let straddling = false;
-        chips.forEach((chip) => {
-          chip.toggleAttribute('data-pinned', chip === winner);
-          if (straddles(chip)) straddling = true;
-        });
-        // Only check bubbles while the pinned slot is empty. A pinned chip's
-        // opaque backing already covers bubbles in its turn; fading at the
-        // header seam would paint over the chip instead.
-        // The hoisted header sits outside every `data-chat-turn-group`
-        // wrapper, so its own bubble never matches.
-        if (!straddling && winner === null) {
-          straddling = Array.from(
-            section.querySelectorAll<HTMLElement>(
-              '[data-chat-turn-group] [data-testid="remote-control-chat-message-content"]',
-            ),
-          ).some(straddles);
-        }
-        header.toggleAttribute('data-underlap', straddling);
-        section.toggleAttribute(
-          'data-chat-sticky-summary-pinned',
-          winner !== null,
-        );
-      });
-      finishPerformanceStage();
+      const nearBottom = isNearBottom(el);
+      isNearBottomRef.current = nearBottom;
+      scrollButtonVisibility.set(!nearBottom);
     },
-    [],
+    [scrollButtonVisibility],
   );
+
+  // Scroll pass for the pinned head's bottom edge. A follow-up user bubble
+  // (steering, watcher-fired) that STRADDLES the head's bottom edge — part
+  // hidden behind the opaque backing, part emerging below it — reads as a
+  // flat-topped, square-cornered slab, so the head is flagged
+  // (`data-underlap`) to fade it across the seam. Both halves of the test are
+  // load-bearing: a bubble resting entirely above the edge is fully hidden
+  // and has no seam, and without the `top` half every bubble below the head
+  // would qualify. An imperative DOM attribute styled by a CSS variant, so no
+  // React re-render happens per scroll frame; it only paints the fade, never
+  // the backing, so a late frame costs nothing but the softening.
+  const updateStickyUnderlapState = useCallback((el: HTMLElement): void => {
+    const sections = el.querySelectorAll<HTMLElement>(
+      '[data-chat-sticky-section]',
+    );
+    const finishPerformanceStage = beginTranscriptPerformanceStage(
+      'sticky_geometry',
+      { sections: sections.length },
+    );
+    sections.forEach((section) => {
+      const header = section.querySelector<HTMLElement>(
+        '[data-testid="sticky-user-message"]',
+      );
+      if (!header) return;
+      const sectionRect = section.getBoundingClientRect();
+      const headerRect = header.getBoundingClientRect();
+      // A sticky head is stuck exactly when it is displaced downward from
+      // its natural position at the section top.
+      const stuck = headerRect.top > sectionRect.top + 1;
+      // The seam is the backing's edge (the header's hairline), not the
+      // head's box, which keeps unpainted padding below the hairline.
+      const edge = (
+        header.querySelector('[data-sticky-backing]') ?? header
+      ).getBoundingClientRect().bottom;
+      // The hoisted head sits outside every `data-chat-turn-group` wrapper,
+      // so its own bubble never matches.
+      const straddling =
+        stuck &&
+        Array.from(
+          section.querySelectorAll<HTMLElement>(
+            '[data-chat-turn-group] [data-testid="remote-control-chat-message-content"]',
+          ),
+        ).some((bubble) => {
+          const rect = bubble.getBoundingClientRect();
+          return rect.top < edge - 1 && rect.bottom > edge;
+        });
+      header.toggleAttribute('data-underlap', straddling);
+    });
+    finishPerformanceStage();
+  }, []);
 
   // Scroll events drive the pass; this covers everything else that can move
   // sections without scrolling (initial mount at a restored offset, section
@@ -1977,8 +2131,8 @@ export function ChatMessageList({
   // ResizeObserver).
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) updateStickySummaryPinnedState(el);
-  }, [stickySections, updateStickySummaryPinnedState]);
+    if (el) updateStickyUnderlapState(el);
+  }, [stickySections, updateStickyUnderlapState]);
 
   const applyScrollTop = useCallback(
     (el: HTMLElement, top: number): void => {
@@ -2201,7 +2355,8 @@ export function ChatMessageList({
     };
     const onScroll = (): void => {
       pageViewportRef.current = { height: el.scrollHeight, top: el.scrollTop };
-      updateStickySummaryPinnedState(el);
+      updateStickyUnderlapState(el);
+      growTranscriptOverscan(pageViewportRef.current.top);
       // A user can scroll before our programmatic-scroll frame settles. Only
       // suppress the event for the offset we actually applied (after clamping).
       if (
@@ -2237,7 +2392,13 @@ export function ChatMessageList({
         finishPerformanceStage({ collapsed: 1 });
         return;
       }
-      updateStickySummaryPinnedState(el);
+      // Layout is clean inside a resize observation, so these reads are free.
+      rememberTranscriptViewportRect(activeScrollTargetRef.current, {
+        width: el.offsetWidth,
+        height: el.offsetHeight,
+      });
+      updateStickyUnderlapState(el);
+      growTranscriptOverscan(pageViewportRef.current.top);
       if (reapplyAfterAdoption) {
         reapplyIntendedPosition();
         finishPerformanceStage({ restored: 1 });
@@ -2285,10 +2446,11 @@ export function ChatMessageList({
     };
   }, [
     applyScrollTop,
+    growTranscriptOverscan,
     pinToBottom,
     restorePendingPosition,
     updateScrollState,
-    updateStickySummaryPinnedState,
+    updateStickyUnderlapState,
   ]);
 
   // A worktree/workspace transition normally unmounts the whole panel. Save
@@ -2952,7 +3114,8 @@ export function ChatMessageList({
     // must not leave a dangling request that re-fires against an unrelated
     // chat later, but a turn that merely sits on an older page must not be
     // discarded before that page was requested.
-    if (!transcriptHydrated) return;
+    // Rows drawn a frame after the chat have nothing to scroll to before.
+    if (!transcriptHydrated || !transcriptRowsMounted) return;
     const { userMessageId, nonce } = pendingChatTurnFocus;
     const consume = (): void => {
       turnFocusLoadRef.current = null;
@@ -3002,6 +3165,7 @@ export function ChatMessageList({
     pendingChatTurnFocus,
     stickySections,
     transcriptHydrated,
+    transcriptRowsMounted,
     turnFocusLoadGeneration,
     worktreeTarget,
   ]);
@@ -3023,7 +3187,6 @@ export function ChatMessageList({
     index: number,
     sectionOptions?: {
       hideUserMessage?: boolean;
-      stickyTurnSummary?: boolean;
       suppressLeadingForkDivider?: boolean;
     },
   ): JSX.Element => {
@@ -3101,7 +3264,6 @@ export function ChatMessageList({
             placement.byTurn[item.userMessage.id] ?? EMPTY_AGENT_ARTIFACTS
           }
           hideUserMessage={sectionOptions?.hideUserMessage === true}
-          stickyTurnSummary={sectionOptions?.stickyTurnSummary === true}
           forceExpandedUserMessage={
             materializeTranscriptItems ||
             Boolean(
@@ -3138,24 +3300,31 @@ export function ChatMessageList({
       item.kind === 'turn-group' ? item.userMessage.id : item.message.id;
     return (
       <div
-        // `group/turn` scopes the hover reveal of the turn-level feedback
-        // control (CAN-1521) and the completion stamp to this turn, and only
-        // this turn. No new DOM.
+        // The pointer over this turn, and only this turn, puts its footer in
+        // its hovered state (CAN-1521), as does focus inside it. The wrapper
+        // reports the pointer and focus, and
+        // the footer's own shared `TurnHoverScope` reacts: a `group/turn` class here
+        // would make every hover restyle the whole turn (see that component).
         //
-        // It stays here even when this group's user message is hoisted into
-        // the sticky header and is no longer a descendant. Hovering the
-        // hoisted prompt reaches this scope through `data-hover`, which the
-        // header toggles on this element by id — see `StickyUserMessageHeader`.
-        // Widening the scope to the section instead would also catch every
-        // watcher-fired follow-up turn grouped into it, so hovering one turn
-        // would reveal every other turn's controls.
+        // A user message hoisted into the sticky header is no longer a
+        // descendant, so the header reports its hover for this turn by id:
+        // see `StickyUserMessageHeader`. Widening the scope to the section
+        // instead would also catch every watcher-fired follow-up turn grouped
+        // into it, so hovering one turn would reveal every other turn's
+        // controls.
         className={
-          item.kind === 'turn-group'
-            ? 'group/turn flex flex-col gap-2'
-            : undefined
+          item.kind === 'turn-group' ? 'flex flex-col gap-2' : undefined
         }
         data-chat-turn-group={item.kind === 'turn-group' ? key : undefined}
         data-chat-transcript-item-id={key}
+        onMouseEnter={
+          item.kind === 'turn-group' ? reportTurnPointerEnter : undefined
+        }
+        onMouseLeave={
+          item.kind === 'turn-group' ? reportTurnPointerLeave : undefined
+        }
+        onFocus={item.kind === 'turn-group' ? reportTurnFocus : undefined}
+        onBlur={item.kind === 'turn-group' ? reportTurnBlur : undefined}
       >
         {index === 0 &&
           forkDividerIndex === -1 &&
@@ -3188,48 +3357,54 @@ export function ChatMessageList({
     section: TranscriptStickySection,
   ): JSX.Element => {
     // Without pinning, the section's user message renders in its turn like
-    // any other message, and nothing sticks.
+    // any other message, and nothing sticks. A continuation of a section
+    // split by the item cap repeats the prompt but not its turn, so its head
+    // pins the prompt alone: the header belongs to the turn in the first part.
     const stickyGroup = pinUserMessages ? section.stickyGroup : undefined;
     return (
-      <>
-        {stickyGroup && (
-          <StickyUserMessageHeader
-            group={stickyGroup}
-            outputlessAutoResume={outputlessResumes.has(
-              stickyGroup.userMessage.id,
+      <StickyTurnHeaderSlotScope>
+        {(headerSlotRef) => (
+          <>
+            {stickyGroup && (
+              <StickyUserMessageHeader
+                headerSlotRef={headerSlotRef}
+                group={stickyGroup}
+                outputlessAutoResume={outputlessResumes.has(
+                  stickyGroup.userMessage.id,
+                )}
+                onResetToPoint={stickyResetHandler(stickyGroup)}
+                appliedMemory={memoryByMessageId?.[stickyGroup.userMessage.id]}
+                chatPendingQuestions={chatPendingQuestions}
+                invocableMentionIndex={invocableMentionIndex}
+                filePathMentionIndex={filePathMentionIndex}
+                chatId={chatId}
+                forceExpandedUserMessage={
+                  materializeTranscriptItems ||
+                  Boolean(
+                    searchSelection &&
+                    searchSelection.messageId === searchSelection.turnId,
+                  )
+                }
+                onJumpToMessage={jumpToUserMessage}
+              />
             )}
-            onResetToPoint={stickyResetHandler(stickyGroup)}
-            appliedMemory={memoryByMessageId?.[stickyGroup.userMessage.id]}
-            chatPendingQuestions={chatPendingQuestions}
-            invocableMentionIndex={invocableMentionIndex}
-            filePathMentionIndex={filePathMentionIndex}
-            chatId={chatId}
-            forceExpandedUserMessage={
-              materializeTranscriptItems ||
-              Boolean(
-                searchSelection &&
-                searchSelection.messageId === searchSelection.turnId,
-              )
-            }
-            onJumpToMessage={jumpToUserMessage}
-          />
+            {section.items.map((item, offset) => {
+              const index = section.startIndex + offset;
+              return (
+                <div key={getTranscriptItemKey(index)}>
+                  {renderTranscriptItem(item, index, {
+                    hideUserMessage: item === stickyGroup,
+                    suppressLeadingForkDivider:
+                      section.startIndex === 0 &&
+                      forkDividerIndex === -1 &&
+                      forkedFrom !== undefined,
+                  })}
+                </div>
+              );
+            })}
+          </>
         )}
-        {section.items.map((item, offset) => {
-          const index = section.startIndex + offset;
-          return (
-            <div key={getTranscriptItemKey(index)}>
-              {renderTranscriptItem(item, index, {
-                hideUserMessage: item === stickyGroup,
-                stickyTurnSummary: stickyGroup !== undefined,
-                suppressLeadingForkDivider:
-                  section.startIndex === 0 &&
-                  forkDividerIndex === -1 &&
-                  forkedFrom !== undefined,
-              })}
-            </div>
-          );
-        })}
-      </>
+      </StickyTurnHeaderSlotScope>
     );
   };
 
@@ -3240,28 +3415,44 @@ export function ChatMessageList({
   const transcriptVirtualItems = virtualizationEnabled
     ? transcriptVirtualizer.getVirtualItems()
     : NO_VIRTUAL_ITEMS;
+  const renderedTranscriptVirtualItems = transcriptRowsMounted
+    ? transcriptVirtualItems
+    : NO_VIRTUAL_ITEMS;
   finishVirtualRangePerformanceStage({
     mountedSections: transcriptVirtualItems.length,
   });
 
   const transcriptSectionCount = stickySections.length;
   useLayoutEffect(() => {
-    const mounted = new Set(transcriptVirtualItems.map((item) => item.index));
+    const mounted = new Set(
+      renderedTranscriptVirtualItems.map((item) => item.index),
+    );
     mountedTranscriptSectionsRef.current = {
       target: scrollTarget,
       indexes: mounted,
     };
     const range = transcriptVirtualizer.range;
-    if (!range || materializeTranscriptItems) return undefined;
+    // Rows waiting for the next frame grow no overscan before they mount.
+    if (!range || materializeTranscriptItems || !transcriptRowsMounted)
+      return undefined;
+    const visible = {
+      startIndex: range.startIndex,
+      endIndex: range.endIndex,
+      overscan: TRANSCRIPT_OVERSCAN_ITEMS,
+      count: transcriptSectionCount,
+    };
+    const limits = transcriptOverscanLimitsFor(visible, scrollTarget);
+    transcriptOverscanRef.current = {
+      target: scrollTarget,
+      startIndex: visible.startIndex,
+      endIndex: visible.endIndex,
+      limits,
+    };
     const next = progressiveTranscriptRange(
-      {
-        startIndex: range.startIndex,
-        endIndex: range.endIndex,
-        overscan: TRANSCRIPT_OVERSCAN_ITEMS,
-        count: transcriptSectionCount,
-      },
+      visible,
       mounted,
       isTranscriptSectionMeasured,
+      limits,
     );
     // Schedule a pass only while it would mount another section.
     if (next.every((index) => mounted.has(index))) return undefined;
@@ -3275,8 +3466,10 @@ export function ChatMessageList({
     isTranscriptSectionMeasured,
     materializeTranscriptItems,
     scrollTarget,
+    renderedTranscriptVirtualItems,
+    transcriptOverscanLimitsFor,
+    transcriptRowsMounted,
     transcriptSectionCount,
-    transcriptVirtualItems,
     transcriptVirtualizer,
   ]);
 
@@ -3494,7 +3687,9 @@ export function ChatMessageList({
           // Scrolled up, the transcript fades out into the composer (and any
           // banners above it) instead of stopping at a hard edge. At the
           // bottom nothing fades, so the latest line always reads in full.
-          edgeFadeSize={16}
+          // With no composer below, the clipped 8px overhang would hide an
+          // 8px fade entirely, so it stays 16px there.
+          edgeFadeSize={composerBelow ? 8 : 16}
           edgeFadeEdges="bottom"
         >
           {/* Session replay records this as a same-size placeholder: the
@@ -3504,69 +3699,21 @@ export function ChatMessageList({
             ref={contentRef}
             data-testid="chat-message-list-content"
           >
-            {/* Keep the loading lane stable: changing its height outside the
-                virtual window would move an otherwise correctly anchored row. */}
-            {pagingControls && <div className="h-9">{pagingControls}</div>}
-            {turnGroups.length === 0 &&
-              forkDividerIndex === -1 &&
-              forkedFrom && <ForkedFromLink forkedFrom={forkedFrom} />}
-            {!virtualizationEnabled ? (
-              stickySections.map((section) => (
-                <Stack key={section.key} gap="inline">
-                  {section.startIndex === 0 &&
-                    forkDividerIndex === -1 &&
-                    forkedFrom && <ForkedFromLink forkedFrom={forkedFrom} />}
-                  <TranscriptTurnSection data-chat-sticky-section={section.key}>
-                    {renderStickySection(section)}
-                  </TranscriptTurnSection>
-                </Stack>
-              ))
-            ) : (
-              <div
-                data-testid="chat-transcript-virtual-window"
-                className="relative w-full"
-                style={{
-                  height: `${transcriptTotalSize}px`,
-                }}
-              >
-                {transcriptVirtualItems.map((virtualItem) => {
-                  const section = stickySections[virtualItem.index];
-                  if (!section) return null;
-                  return (
-                    <div
-                      key={virtualItem.key}
-                      ref={measureTranscriptElement}
-                      data-index={virtualItem.index}
-                      data-section-item-count={section.items.length}
-                      onClickCapture={(event): void => {
-                        const target = event.target;
-                        if (
-                          target instanceof Element &&
-                          target.closest('button[aria-expanded]')
-                        ) {
-                          retainInteractiveTranscriptItem(virtualItem.index);
-                        }
-                      }}
-                      onFocusCapture={(event): void => {
-                        const target = event.target;
-                        if (
-                          target instanceof Element &&
-                          target.closest(
-                            'input, textarea, select, [contenteditable="true"]',
-                          )
-                        ) {
-                          retainInteractiveTranscriptItem(virtualItem.index);
-                        }
-                      }}
-                      // Layout `top` (not `translateY`): a transform would
-                      // leave every row's layout position at 0, which breaks
-                      // the sticky-header math for the section's hoisted user
-                      // message — position: sticky works off layout geometry.
-                      className="flex flex-col absolute left-0 w-full pb-2 gap-2"
-                      style={{
-                        top: `${virtualItem.start}px`,
-                      }}
-                    >
+            {/* Rows waiting for the next frame: a plain transcript shows
+                nothing meanwhile (anything below its rows would sit at the
+                top for a frame), a virtual one keeps its window at full
+                height so the restored offset already holds. */}
+            {!transcriptRowsMounted && !virtualizationEnabled ? null : (
+              <>
+                {/* Keep the loading lane stable: changing its height outside the
+                  virtual window would move an otherwise correctly anchored row. */}
+                {pagingControls && <div className="h-9">{pagingControls}</div>}
+                {turnGroups.length === 0 &&
+                  forkDividerIndex === -1 &&
+                  forkedFrom && <ForkedFromLink forkedFrom={forkedFrom} />}
+                {!virtualizationEnabled ? (
+                  stickySections.map((section) => (
+                    <Stack key={section.key} gap="inline">
                       {section.startIndex === 0 &&
                         forkDividerIndex === -1 &&
                         forkedFrom && (
@@ -3577,172 +3724,237 @@ export function ChatMessageList({
                       >
                         {renderStickySection(section)}
                       </TranscriptTurnSection>
-                    </div>
+                    </Stack>
+                  ))
+                ) : (
+                  <div
+                    data-testid="chat-transcript-virtual-window"
+                    className="relative w-full"
+                    style={{
+                      height: `${transcriptTotalSize}px`,
+                    }}
+                  >
+                    {renderedTranscriptVirtualItems.map((virtualItem) => {
+                      const section = stickySections[virtualItem.index];
+                      if (!section) return null;
+                      return (
+                        <div
+                          key={virtualItem.key}
+                          ref={measureTranscriptElement}
+                          data-index={virtualItem.index}
+                          data-section-item-count={section.items.length}
+                          onClickCapture={(event): void => {
+                            const target = event.target;
+                            if (
+                              target instanceof Element &&
+                              target.closest('button[aria-expanded]')
+                            ) {
+                              retainInteractiveTranscriptItem(
+                                virtualItem.index,
+                              );
+                            }
+                          }}
+                          onFocusCapture={(event): void => {
+                            const target = event.target;
+                            if (
+                              target instanceof Element &&
+                              target.closest(
+                                'input, textarea, select, [contenteditable="true"]',
+                              )
+                            ) {
+                              retainInteractiveTranscriptItem(
+                                virtualItem.index,
+                              );
+                            }
+                          }}
+                          // Layout `top` (not `translateY`): a transform would
+                          // leave every row's layout position at 0, which breaks
+                          // the sticky-header math for the section's hoisted user
+                          // message — position: sticky works off layout geometry.
+                          className="flex flex-col absolute left-0 w-full pb-2 gap-2"
+                          style={{
+                            top: `${virtualItem.start}px`,
+                          }}
+                        >
+                          {section.startIndex === 0 &&
+                            forkDividerIndex === -1 &&
+                            forkedFrom && (
+                              <ForkedFromLink forkedFrom={forkedFrom} />
+                            )}
+                          <TranscriptTurnSection
+                            data-chat-sticky-section={section.key}
+                          >
+                            {renderStickySection(section)}
+                          </TranscriptTurnSection>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {/* A Claude Mod's log lines: shown here only, never saved. A
+                  cloud chat runs in the web core, which draws no Mod surface. */}
+                {worktreeTarget &&
+                chatId &&
+                !isWebCoreScope(worktreeTarget.projectId) ? (
+                  <ClaudeModLogNotices
+                    chat={{
+                      projectId: worktreeTarget.projectId,
+                      worktreeId: worktreeTarget.worktreeId,
+                      chatId,
+                    }}
+                  />
+                ) : null}
+                {inputDelivery?.version === 1 && worktreeTarget && (
+                  <InputDeliveryList
+                    rows={inputDeliveryViews(
+                      inputDelivery,
+                      steeringCapabilities,
+                    )}
+                    onFocusedRowRemoved={() => {
+                      document.dispatchEvent(
+                        new CustomEvent('canopy:focus-chat-input'),
+                      );
+                    }}
+                    onAction={async (row, action, text) => {
+                      let refusal: string | undefined;
+                      const result = await useChatStore
+                        .getState()
+                        .dispatchChatCommand(
+                          worktreeTarget,
+                          {
+                            type: 'chat.input_delivery_action',
+                            chatId,
+                            rowId: row.id,
+                            rowRevision: row.revision,
+                            action,
+                            ...(text !== undefined ? { text } : {}),
+                          },
+                          {
+                            onResult: (commandResult) => {
+                              if (commandResult.outcome === 'rejected')
+                                refusal = commandResult.reason;
+                            },
+                          },
+                        );
+                      if (result !== 'accepted')
+                        throw new Error(
+                          (result === 'rejected' && refusal) ||
+                            'The message changed or the action could not be confirmed. Review its current status.',
+                        );
+                    }}
+                  />
+                )}
+                <UnsavedQueuedEdits
+                  worktreeTarget={worktreeTarget}
+                  chatId={chatId}
+                />
+                {queuedMessages.map((message, i) => {
+                  if (compactQueue) return null;
+                  // The message being edited steps out of the queue: its editor
+                  // takes the composer's place (CAN-3607).
+                  if (editingQueuedMessageIndex === i) return null;
+                  const creditHeld = isCreditHeldQueuedMessage(message);
+                  const forceAction = creditHeld
+                    ? undefined
+                    : queuedRowForceAction(message, localTurn);
+                  return (
+                    <QueuedMessageBubble
+                      key={`bubble-${getQueuedMessageKey(message)}`}
+                      settingsHeld={message.restartHeldChanges}
+                      message={message}
+                      index={i}
+                      onClear={onClearQueuedMessage}
+                      turnPhase={queuedRowTurnPhase(message, localTurn)}
+                      onForce={
+                        forceAction === 'interrupt'
+                          ? onForceQueuedMessage
+                          : undefined
+                      }
+                      onRunNow={
+                        forceAction === 'run-now'
+                          ? onForceQueuedMessage
+                          : undefined
+                      }
+                      onRetry={
+                        forceAction === 'retry'
+                          ? onForceQueuedMessage
+                          : undefined
+                      }
+                      onSteer={
+                        !sourceIsClaudeTerminal &&
+                        worktreeTarget &&
+                        message.hostQueueEntryId &&
+                        message.canSteer === true &&
+                        !message.editLocked &&
+                        steeringCapabilities?.steer
+                          ? (): void => {
+                              if (!message.hostQueueEntryId) return;
+                              void useChatStore
+                                .getState()
+                                .dispatchChatCommand(worktreeTarget, {
+                                  type: 'chat.steer_queued_message',
+                                  chatId,
+                                  queuedMessageId: message.hostQueueEntryId,
+                                });
+                            }
+                          : undefined
+                      }
+                      onEdit={onEditQueuedMessage}
+                      steeringSupported={
+                        !sourceIsClaudeTerminal &&
+                        Boolean(worktreeTarget && steeringCapabilities?.steer)
+                      }
+                      canForce={i === 0 && !creditHeld}
+                      anyEditing={anyQueuedEditOpen}
+                    />
                   );
                 })}
-              </div>
-            )}
-            {/* A Claude Mod's log lines: shown here only, never saved. A
-                cloud chat runs in the web core, which draws no Mod surface. */}
-            {worktreeTarget &&
-            chatId &&
-            !isWebCoreScope(worktreeTarget.projectId) ? (
-              <ClaudeModLogNotices
-                chat={{
-                  projectId: worktreeTarget.projectId,
-                  worktreeId: worktreeTarget.worktreeId,
-                  chatId,
-                }}
-              />
-            ) : null}
-            {inputDelivery?.version === 1 && worktreeTarget && (
-              <InputDeliveryList
-                rows={inputDeliveryViews(inputDelivery, steeringCapabilities)}
-                onFocusedRowRemoved={() => {
-                  document.dispatchEvent(
-                    new CustomEvent('canopy:focus-chat-input'),
+                {/* Only one-time sends render as bubbles; recurring automations
+                  surface as a composer notice (`ScheduledAutomationsNotice`),
+                  since a cron job always has a next run and would otherwise pin
+                  its prompt under the conversation forever. */}
+                {oneTimeScheduledMessages.map((scheduled) => {
+                  if (editingScheduledMessageId === scheduled.automationId) {
+                    return null;
+                  }
+                  const message = scheduledMessageAsQueuedMessage(scheduled);
+                  return (
+                    <QueuedMessageBubble
+                      key={`scheduled-${scheduled.automationId}`}
+                      index={0}
+                      message={message}
+                      onClear={(): void => undefined}
+                      anyEditing={anyQueuedEditOpen}
+                      scheduled={{
+                        automationId: scheduled.automationId,
+                        activityName: scheduled.activityName,
+                        scheduledAt: scheduled.scheduledAt,
+                        running:
+                          runningScheduledMessageId === scheduled.automationId,
+                        onEdit: (): void =>
+                          onEditScheduledMessage?.(scheduled.automationId),
+                        onClear: (): void =>
+                          onClearScheduledMessage?.(scheduled.automationId),
+                        onInterrupt: (): void =>
+                          onInterruptScheduledMessage?.(scheduled.automationId),
+                        ...(scheduled.workflowPipelineId !== undefined
+                          ? {
+                              onOpenWorkflow: (): void =>
+                                openScheduleWorkflow(scheduled),
+                            }
+                          : {}),
+                      }}
+                    />
                   );
-                }}
-                onAction={async (row, action, text) => {
-                  let refusal: string | undefined;
-                  const result = await useChatStore
-                    .getState()
-                    .dispatchChatCommand(
-                      worktreeTarget,
-                      {
-                        type: 'chat.input_delivery_action',
-                        chatId,
-                        rowId: row.id,
-                        rowRevision: row.revision,
-                        action,
-                        ...(text !== undefined ? { text } : {}),
-                      },
-                      {
-                        onResult: (commandResult) => {
-                          if (commandResult.outcome === 'rejected')
-                            refusal = commandResult.reason;
-                        },
-                      },
-                    );
-                  if (result !== 'accepted')
-                    throw new Error(
-                      (result === 'rejected' && refusal) ||
-                        'The message changed or the action could not be confirmed. Review its current status.',
-                    );
-                }}
-              />
+                })}
+              </>
             )}
-            <UnsavedQueuedEdits
-              worktreeTarget={worktreeTarget}
-              chatId={chatId}
-            />
-            {queuedMessages.map((message, i) => {
-              if (compactQueue) return null;
-              // The message being edited steps out of the queue: its editor
-              // takes the composer's place (CAN-3607).
-              if (editingQueuedMessageIndex === i) return null;
-              const creditHeld = isCreditHeldQueuedMessage(message);
-              const forceAction = creditHeld
-                ? undefined
-                : queuedRowForceAction(message, localTurn);
-              return (
-                <QueuedMessageBubble
-                  key={`bubble-${getQueuedMessageKey(message)}`}
-                  settingsHeld={message.restartHeldChanges}
-                  message={message}
-                  index={i}
-                  onClear={onClearQueuedMessage}
-                  turnPhase={queuedRowTurnPhase(message, localTurn)}
-                  onForce={
-                    forceAction === 'interrupt'
-                      ? onForceQueuedMessage
-                      : undefined
-                  }
-                  onRunNow={
-                    forceAction === 'run-now' ? onForceQueuedMessage : undefined
-                  }
-                  onRetry={
-                    forceAction === 'retry' ? onForceQueuedMessage : undefined
-                  }
-                  onSteer={
-                    !sourceIsClaudeTerminal &&
-                    worktreeTarget &&
-                    message.hostQueueEntryId &&
-                    message.canSteer === true &&
-                    !message.editLocked &&
-                    steeringCapabilities?.steer
-                      ? (): void => {
-                          if (!message.hostQueueEntryId) return;
-                          void useChatStore
-                            .getState()
-                            .dispatchChatCommand(worktreeTarget, {
-                              type: 'chat.steer_queued_message',
-                              chatId,
-                              queuedMessageId: message.hostQueueEntryId,
-                            });
-                        }
-                      : undefined
-                  }
-                  onEdit={onEditQueuedMessage}
-                  steeringSupported={
-                    !sourceIsClaudeTerminal &&
-                    Boolean(worktreeTarget && steeringCapabilities?.steer)
-                  }
-                  canForce={i === 0 && !creditHeld}
-                  anyEditing={anyQueuedEditOpen}
-                />
-              );
-            })}
-            {/* Only one-time sends render as bubbles; recurring automations
-                surface as a composer notice (`ScheduledAutomationsNotice`),
-                since a cron job always has a next run and would otherwise pin
-                its prompt under the conversation forever. */}
-            {oneTimeScheduledMessages.map((scheduled) => {
-              if (editingScheduledMessageId === scheduled.automationId) {
-                return null;
-              }
-              const message = scheduledMessageAsQueuedMessage(scheduled);
-              return (
-                <QueuedMessageBubble
-                  key={`scheduled-${scheduled.automationId}`}
-                  index={0}
-                  message={message}
-                  onClear={(): void => undefined}
-                  anyEditing={anyQueuedEditOpen}
-                  scheduled={{
-                    automationId: scheduled.automationId,
-                    activityName: scheduled.activityName,
-                    scheduledAt: scheduled.scheduledAt,
-                    running:
-                      runningScheduledMessageId === scheduled.automationId,
-                    onEdit: (): void =>
-                      onEditScheduledMessage?.(scheduled.automationId),
-                    onClear: (): void =>
-                      onClearScheduledMessage?.(scheduled.automationId),
-                    onInterrupt: (): void =>
-                      onInterruptScheduledMessage?.(scheduled.automationId),
-                    ...(scheduled.workflowPipelineId !== undefined
-                      ? {
-                          onOpenWorkflow: (): void =>
-                            openScheduleWorkflow(scheduled),
-                        }
-                      : {}),
-                  }}
-                />
-              );
-            })}
           </TranscriptReadingColumn>
         </OverlayScrollArea>
-        {showScrollButton && (
-          // Above the pinned user bubble (z-20).
-          <div className="absolute left-1/2 bottom-3 z-30 flex -translate-x-1/2">
-            <ScrollToBottomButton
-              onClick={handleScrollToBottom}
-              dataTestId="chat-scroll-to-bottom"
-              ariaLabel="Scroll to bottom"
-            />
-          </div>
-        )}
+        <TranscriptScrollToBottom
+          visibility={scrollButtonVisibility}
+          onClick={handleScrollToBottom}
+        />
       </div>
       {/* While a turn streams, the capability tiles it produced. Background
           work is the composer drawer's; completed turns list their tiles and
@@ -3799,9 +4011,7 @@ export function ChatMessageList({
                         value={delegationStopControls}
                       >
                         <ChatMessageLinkActionsProvider value={linkActions}>
-                          <ChatMessageLookUpProvider
-                            value={chatMessageLookUpSelection()}
-                          >
+                          <ChatMessageLookUpProvider value={lookUpSelection}>
                             <StreamingTranscript
                               id={chatId}
                               hasContent={messages.length > 0}

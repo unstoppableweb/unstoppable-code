@@ -106,6 +106,12 @@ const maxWidthClasses: Record<string, string> = {
 let nextFocusTrapId = 0;
 /** Frames to keep retrying a focus return into a shell that is still inert. */
 const INERT_RESTORE_ATTEMPTS = 10;
+/**
+ * A shell a window page still covers: `inert`, or hidden and marked
+ * `aria-hidden` (the desktop main shell, which hides without `inert` so that
+ * covering it does not restyle everything inside).
+ */
+const COVERED_SHELL_SELECTOR = '[inert], [aria-hidden="true"]';
 
 interface FocusTrapEntry {
   readonly id: number;
@@ -682,9 +688,10 @@ export function useModalFocusTrap(
           isRestorable(previouslyFocused, doc, ownerDocument)
             ? previouslyFocused
             : resolveFallbackFocus(restoreFocusRefRef.current, doc);
-        // The shell behind a window page stays inert until it re-renders, so
-        // a target there cannot take focus yet: try again on the next frames
-        // while focus is still nowhere.
+        // The shell behind a window page stays covered until it re-renders
+        // (`inert`, or hidden under `aria-hidden`), so a target there cannot
+        // take focus yet: try again on the next frames while focus is still
+        // nowhere.
         const restore = (attempt: number): void => {
           if (!restoreTarget) return;
           restoreTarget.focus();
@@ -693,7 +700,7 @@ export function useModalFocusTrap(
             doc.activeElement === restoreTarget ||
             attempt >= INERT_RESTORE_ATTEMPTS ||
             !view ||
-            restoreTarget.closest('[inert]') === null
+            restoreTarget.closest(COVERED_SHELL_SELECTOR) === null
           )
             return;
           view.requestAnimationFrame((): void => {

@@ -2,6 +2,7 @@ import type {
   SDKResultMessage,
   SDKSystemMessage,
 } from '../agents/claude-sdk-message-types';
+import { readClaudeConnectorAvailability } from '@canopy/protocol/remote-control/shell';
 import { CHILD_TOOL_LIVENESS_STAMP } from '@canopy/agent-transcript';
 import type {
   AiCreditsNoBillingSourceEventData,
@@ -62,6 +63,7 @@ import {
  *   own fixed outcomes; otherwise emptied.
  * - `deliverySummary`: a delivery failure's summary, kept only when it is
  *   the fixed summary of a known failure.
+ * - `connectorAvailability`: a closed, value-free Claude launch fact.
  * - `errorBody`: an error event's error, a string (emptied) or a record
  *   (its type and code kept, its message emptied).
  * - `{ each: fields }`: an array of records, each with its own allowlist.
@@ -80,6 +82,7 @@ type FieldRule =
   | 'fixedResult'
   | 'deliverySummary'
   | 'errorBody'
+  | 'connectorAvailability'
   | { readonly each: Fields }
   | Fields;
 
@@ -153,6 +156,7 @@ const CANOPY_STAMPS = {
   canopy_display_error_code: 'token',
   canopy_user_message_source: 'token',
   canopy_fork_model_context: 'token',
+  canopy_claude_connector_availability: 'connectorAvailability',
   canopy_stop_cause: 'token',
   canopy_proxy: 'token',
   // A task-notification result while a foreground turn runs ends nothing.
@@ -444,6 +448,11 @@ const CANOPY_EVENT_KINDS = {
   canopy_usage_limit_reached: USAGE_LIMIT,
   canopy_ai_credits_no_billing_source: NO_BILLING_SOURCE,
   canopy_ai_credits_routing: CREDITS_ROUTING,
+  canopy_claude_connector_availability: {
+    ...STAMPED,
+    type: 'token',
+    availability: 'connectorAvailability',
+  },
   canopy_transient_retry_state: TRANSIENT_RETRY,
   canopy_set_auto_archive_requested: AUTO_ARCHIVE,
   canopy_child_tools_ended: CHILD_TOOLS_ENDED,
@@ -610,6 +619,8 @@ function project(value: unknown, rule: Disposition): unknown {
       return typeof value === 'string' && DELIVERY_SUMMARIES.has(value)
         ? value
         : undefined;
+    case 'connectorAvailability':
+      return readClaudeConnectorAvailability(value);
     case 'errorBody':
       if (typeof value === 'string') return '';
       return projectFields(value, {

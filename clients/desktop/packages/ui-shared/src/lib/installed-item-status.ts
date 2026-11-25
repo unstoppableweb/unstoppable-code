@@ -480,7 +480,7 @@ export interface InstalledItemStatusSource {
     request: UninstallInstalledItemRequest,
   ): Promise<InstalledItemMutationResult>;
   /** Fires when the host learns state changed elsewhere; returns cleanup. */
-  subscribe?(onChange: () => void): () => void;
+  subscribe?(refresh: () => Promise<boolean>): () => void;
 }
 
 /** A mutation's outcome, reconciled to the effective state the host returned. */
@@ -502,6 +502,12 @@ export interface InstalledItemStatusController {
   /** Target keys with a mutation in flight. */
   readonly pendingKeys: ReadonlySet<string>;
   readonly refresh: () => void;
+  /**
+   * Refresh and report the outcome of the read that owns the displayed state.
+   * If superseded before publishing, follow the newer read in the same source
+   * generation. A failed read or retired source reports false.
+   */
+  readonly refreshAndReport: () => Promise<boolean>;
   readonly setStatus: (
     target: InstalledItemTarget,
     status: InstalledItemStatus,

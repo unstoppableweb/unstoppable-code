@@ -8,6 +8,7 @@ import {
 } from '@canopy/protocol/remote-control/shell';
 import {
   describeCleanRun,
+  settledCleanRunSteps,
   getToolDisplayFamily,
   groupCleanSteps,
   isAskUserQuestionToolName,
@@ -204,6 +205,8 @@ export function stepParts(
 export function describeCleanTurnSteps(
   segment: Extract<CleanTurnSegment, { kind: 'steps' }>,
   evidence?: TurnOutcomeEvidence,
+  /** Count only the steps already done (a running turn's Compact line). */
+  settledOnly = false,
 ): {
   label: string;
   failed: number;
@@ -221,7 +224,11 @@ export function describeCleanTurnSteps(
       });
       // Native agents own their lifecycle; Codex agents have no paired result.
       // Parent-turn completeness cannot establish their interruption.
-      return { kind: 'agent', blocked: result.kind === 'blocked' };
+      return {
+        kind: 'agent',
+        blocked: result.kind === 'blocked',
+        pending: data.result === undefined,
+      };
     }
     const toolName = readToolName(data);
     const input = readInput(data);
@@ -240,7 +247,9 @@ export function describeCleanTurnSteps(
             'interrupted'),
     };
   });
-  const { label, failed, blocked, interrupted, kind } = describeCleanRun(steps);
+  const { label, failed, blocked, interrupted, kind } = describeCleanRun(
+    settledOnly ? settledCleanRunSteps(steps) : steps,
+  );
   return {
     label,
     failed,

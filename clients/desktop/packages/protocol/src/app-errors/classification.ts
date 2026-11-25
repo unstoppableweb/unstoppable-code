@@ -87,10 +87,12 @@ const classificationCodes: Record<AppErrorCode, true> = {
   'external.ai_credits_owner_unavailable': true,
   'external.offline': true,
   'external.service_unavailable': true,
+  'external.background_service_unavailable': true,
   'external.rate_limited': true,
   'external.sign_in_required': true,
   'external.state_changed': true,
   'external.disk_full': true,
+  'external.removal_not_permitted': true,
   'external.runtime_unreachable': true,
   'external.sync_paused': true,
   'external.worktree_recovery_required': true,
@@ -98,6 +100,9 @@ const classificationCodes: Record<AppErrorCode, true> = {
   'external.worktree_recovery_cleanup': true,
   'external.worktree_recovery_unreadable': true,
   'external.chat_history_link_outside': true,
+  'external.sign_in_timed_out': true,
+  'external.browser_unavailable': true,
+  'external.sign_in_launch_failed': true,
 };
 
 function usableClassification(value: unknown): value is ErrorClassification {

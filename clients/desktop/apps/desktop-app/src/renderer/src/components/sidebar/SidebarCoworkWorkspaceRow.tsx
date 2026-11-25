@@ -162,6 +162,7 @@ import { useStickyWorkspaceSlotHost } from '@canopy/ui-app/sidebar';
 import {
   findChatsSelectedPinHosts,
   findSelectedPinHosts,
+  sameSelectedPinHosts,
   type ChatsSelectedPinHosts,
   type SelectedPinHosts,
   type SelectedPinSeat,
@@ -1110,7 +1111,6 @@ function SidebarCoworkWorkspaceRowImpl({
   // Early access: the list disclosure reads More / Less, with no count, and
   // rows inside a group keep 1px between them like every other row.
   const compactDisclosure = useLabsExperimentEnabled('sidebar');
-  const activePage = useNavigationStore((s) => s.activePage);
   const navigate = useNavigationStore((s) => s.navigate);
   const openWorkspaceSettingsModal = useNavigationStore(
     (s) => s.openWorkspaceSettingsModal,
@@ -1173,7 +1173,11 @@ function SidebarCoworkWorkspaceRowImpl({
   // task made with "+" shows right away, like a new code task does. That also
   // covers an empty task a project switch opened, and the row drops out again
   // once the user leaves the chat page or opens a sibling task.
-  const isActiveOnChatPage = isActive && activePage === 'chat';
+  // Only whether this project shows on the chat page: a move between pages
+  // must not re-render every other project's chat rows.
+  const isActiveOnChatPage = useNavigationStore(
+    (s) => isActive && s.activePage === 'chat',
+  );
   const openEmptyEntryId = isActiveOnChatPage ? activeWorkEntryId : null;
   // CAN-1074: pinned entries lead, then the tail follows the workspace's sort
   // mode. Ordering happens before capping so a capped section (the Chats
@@ -1490,17 +1494,28 @@ function SidebarCoworkWorkspaceRowImpl({
     useState<ChatsSelectedPinHosts | null>(null);
   const chatsSeat = selectedPinSeat === 'chats';
   const disableSelectedPin = chatsSeat && itemGroups.length > 0;
+  // The hosts are the rail's own pin seats, found whether or not an entry is
+  // selected: copies portal into them only while one is. Finding them ahead
+  // lets a selection render its copies in its own commit, instead of a second
+  // render of the whole row in the switch's first frame. A selection still
+  // looks again, in case the rail made its seats later; hosts that did not
+  // change keep their state.
   useLayoutEffect(() => {
     const origin = workspaceRootRef.current;
-    setSelectedPinHosts(
-      selectedEntryRendered && !disableSelectedPin && !chatsSeat
-        ? findSelectedPinHosts(origin)
-        : null,
-    );
-    setChatsPinHosts(
-      selectedEntryRendered && !disableSelectedPin && chatsSeat
+    const nextSelected =
+      !disableSelectedPin && !chatsSeat ? findSelectedPinHosts(origin) : null;
+    const nextChats =
+      !disableSelectedPin && chatsSeat
         ? findChatsSelectedPinHosts(origin)
-        : null,
+        : null;
+    setSelectedPinHosts((previous) =>
+      sameSelectedPinHosts(previous, nextSelected) ? previous : nextSelected,
+    );
+    setChatsPinHosts((previous) =>
+      previous?.top === nextChats?.top &&
+      previous?.bottomRow === nextChats?.bottomRow
+        ? previous
+        : nextChats,
     );
   }, [selectedEntryRendered, chatsSeat, disableSelectedPin]);
 
@@ -1620,11 +1635,11 @@ function SidebarCoworkWorkspaceRowImpl({
       // copy opened". Here the user clicked a row in the chat sidebar, so the
       // chat page plus the failure toast is the recovery surface — the sidebar
       // they need to retry from is only visible on it.
-      if (activePage !== 'chat') {
+      if (useNavigationStore.getState().activePage !== 'chat') {
         navigate('chat');
       }
     },
-    [item.id, activePage, navigate],
+    [item.id, navigate],
   );
 
   const handleOpenArchivedOverview = useCallback((): void => {

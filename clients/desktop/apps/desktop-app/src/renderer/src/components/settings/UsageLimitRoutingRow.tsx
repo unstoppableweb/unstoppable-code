@@ -10,6 +10,7 @@ import {
   type SettingsSelectOption,
 } from '@canopy/ui-shared/components';
 import { invalidateAiCreditsUsageCache } from '@/hooks/useAiCreditsUsage';
+import { ClaudeConnectorRoutingSettingNote } from './ClaudeConnectorRoutingSettingNote';
 import { SettingsRow } from './SettingsLayout';
 
 const WAIT_OPTION: SettingsSelectOption = { value: 'off', label: 'Wait' };
@@ -101,6 +102,8 @@ export function UsageLimitRoutingRow({
           />
         </span>
       }
-    />
+    >
+      <ClaudeConnectorRoutingSettingNote route="ai-credits" />
+    </SettingsRow>
   );
 }

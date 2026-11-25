@@ -70,10 +70,20 @@ export interface CanopyFramedConnection {
    * Resolves once the frame is accepted by a bounded peer buffer
    * (backpressure). `headers` go on this message's own request where the
    * binding has one (HTTP); other bindings ignore them.
+   *
+   * `background` marks the client's own cleanup, and is neutral for
+   * connection health: where a binding ends the connection after requests
+   * fail in a row (HTTP: five failing alone, CAN-6558, or two with no
+   * response, CAN-6442), a background request neither counts toward that
+   * run, trips it, nor resets it. It still fails alone as any request does.
+   * Requests without it are judged as before; other bindings ignore it.
    */
   send(
     message: CanopyJsonRpcMessage,
-    options?: { readonly headers?: Readonly<Record<string, string>> },
+    options?: {
+      readonly headers?: Readonly<Record<string, string>>;
+      readonly background?: boolean;
+    },
   ): Promise<void>;
   /** Next validated envelope; rejects with the close reason or `cancelled`. */
   receive(options?: {

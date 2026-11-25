@@ -3416,8 +3416,14 @@ export async function resolvePipelineModelInputs(options: {
   // executor as the raw alias string, so resolve it here too; an unknown
   // `$...` id throws the normalizer's "Unknown pipeline model alias" error
   // instead of reaching the provider as a bogus model id.
+  const pipelineModel = resolvePipelineModelAlias(selectedModel);
   const resolvedModel = pipelineRuntimeModel(
-    resolvePipelineModelAlias(selectedModel),
+    options.runtime.resolveOwnerGatewayModel
+      ? await options.runtime.resolveOwnerGatewayModel(
+          pipelineModel,
+          options.scope,
+        )
+      : pipelineModel,
     options.runtime,
   );
   assertPipelineRuntimeModelIsNotAgentModel(resolvedModel);
@@ -7220,6 +7226,9 @@ async function runStepBody(
       scope: {
         ...(options.projectId ? { projectId: options.projectId } : {}),
         ...(options.worktreeId ? { worktreeId: options.worktreeId } : {}),
+        ...(options.executionContext !== undefined && {
+          executionContext: options.executionContext,
+        }),
       },
     });
     // Gate on the model the step will ACTUALLY run on, not just on the two

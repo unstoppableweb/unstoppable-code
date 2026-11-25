@@ -116,10 +116,10 @@ export function useTranscriptSearch(
   pageSource?: TranscriptSearchPageSource,
 ): TranscriptSearchState {
   const [query, setQuery] = useState('');
-  const [result, setResult] = useState<ChatTranscriptSearchResult>({
-    matches: [],
-    totalCount: 0,
-  });
+  // The shared empty result: the mount effects below reset to it, and a
+  // different object here would re-render the whole chat right after mount.
+  const [result, setResult] =
+    useState<ChatTranscriptSearchResult>(EMPTY_RESULT);
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [selection, setSelection] = useState<TranscriptSearchSelection | null>(
     null,

@@ -131,6 +131,7 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   branchNamingInstructions: '',
   globalInstructions: createEmptyGlobalInstructionsConfig(),
   pipelineAdvisorEnabled: true,
+  slackOrchestratorRequestsEnabled: false,
   orgMemoryInjectionEnabled: true,
   // Local memory is enabled by default (CAN-2657); an explicit opt-out is
   // persisted normally and keeps provider-native memory on harness defaults.

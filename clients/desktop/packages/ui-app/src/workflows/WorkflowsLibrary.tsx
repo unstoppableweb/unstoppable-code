@@ -143,6 +143,7 @@ const LIBRARY_MENU_ROWS: Readonly<
   run: { icon: <PlayIcon />, group: 'manage' },
   add: { icon: <PlusIcon />, group: 'manage' },
   edit: { icon: <PencilIcon />, group: 'manage' },
+  'open-workflow': { icon: <WorkflowIcon />, group: 'manage' },
   'view-runs': { icon: <HistoryIcon />, group: 'manage' },
   duplicate: { icon: <CopyIcon />, group: 'manage' },
   share: { icon: <ShareIcon />, group: 'share' },

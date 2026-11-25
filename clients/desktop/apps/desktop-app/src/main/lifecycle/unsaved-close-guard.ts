@@ -58,6 +58,8 @@ export interface UnsavedCloseGuardDeps {
   sendRequest: (request: UnsavedCloseRequest) => boolean;
   ackTimeoutMs?: number;
   createRequestId?: () => string;
+  /** Every actual dirty-state transition, including renderer disappearance. */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 export interface InterceptOptions {
@@ -117,6 +119,12 @@ export function createUnsavedCloseGuard(
   let confirmedTimer: ReturnType<typeof setTimeout> | null = null;
   let pending: PendingPrompt | null = null;
 
+  function setDirty(next: boolean): void {
+    if (dirty === next) return;
+    dirty = next;
+    deps.onDirtyChange?.(dirty);
+  }
+
   function clearConfirmed(): void {
     confirmed = false;
     if (confirmedTimer !== null) clearTimeout(confirmedTimer);
@@ -136,9 +144,7 @@ export function createUnsavedCloseGuard(
   }
 
   return {
-    setDirty(next: boolean): void {
-      dirty = next;
-    },
+    setDirty,
     isDirty(): boolean {
       return dirty;
     },
@@ -198,11 +204,11 @@ export function createUnsavedCloseGuard(
     },
     handleDecision(requestId: string, proceed: boolean): void {
       if (!pending || pending.requestId !== requestId) return;
-      if (proceed) dirty = false;
+      if (proceed) setDirty(false);
       settle(proceed);
     },
     handleRendererGone(): void {
-      dirty = false;
+      setDirty(false);
       settle(true);
     },
   };

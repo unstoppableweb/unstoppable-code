@@ -1,7 +1,9 @@
-import { isAntigravityHarnessReleased } from '@/lib/antigravity-settings';
+import {
+  isAntigravityHarnessReleased,
+  useAntigravityHostSupported,
+} from '@/lib/antigravity-settings';
 import { GoogleSubscriptionConnection } from './GoogleSubscriptionConnection';
 import { OpenCodeConnection } from './OpenCodeConnection';
-import { AccountProxyOptInSection } from './account-proxy/AccountProxyOptInSection';
 import { isCursorHarnessReleased } from '@/lib/cursor-settings';
 import { isCopilotHarnessReleased } from '@/lib/copilot-settings';
 import { isOpenCodeHarnessReleased } from '@/lib/opencode-settings';
@@ -39,12 +41,12 @@ export function ExperimentsTab(): JSX.Element {
   const antigravityReleased = useFeatureFlagsStore(
     isAntigravityHarnessReleased,
   );
+  const antigravityHostSupported = useAntigravityHostSupported(
+    antigravityEnabled && !antigravityReleased,
+  );
   const cursorReleased = useFeatureFlagsStore(isCursorHarnessReleased);
   const copilotReleased = useFeatureFlagsStore(isCopilotHarnessReleased);
   const opencodeReleased = useFeatureFlagsStore(isOpenCodeHarnessReleased);
-  const accountProxyFlagEnabled = useFeatureFlagsStore((state) =>
-    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopAccountProxy.key),
-  );
   const [delegationPreferences, setDelegationPreferences] = useState<
     Pick<
       PreferencesLoadResult,
@@ -128,12 +130,11 @@ export function ExperimentsTab(): JSX.Element {
           <CursorApprovalCheck />
         </>
       )}
-      {window.platform === 'darwin' &&
+      {antigravityHostSupported &&
         antigravityEnabled &&
         !antigravityReleased && <GoogleSubscriptionConnection />}
       {copilotHarnessEnabled && !copilotReleased && <CopilotConnection />}
       {opencodeHarnessEnabled && !opencodeReleased && <OpenCodeConnection />}
-      {accountProxyFlagEnabled && <AccountProxyOptInSection />}
       <RendererCodeCacheSection />
     </SettingsPage>
   );

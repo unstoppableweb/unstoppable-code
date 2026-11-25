@@ -18,14 +18,17 @@ import type {
 } from '@canopy/protocol/canopy-server';
 import {
   normalizeOrgEnforcedSettingsWithStatus,
-  personalGatewayAccountFields,
+  modelGatewayAccountFields,
 } from '@canopy/desktop-shared/lib/org-enforced-parsing';
 import { normalizeOrgBillingStates } from '@canopy/desktop-shared/lib/org-billing-state-parsing';
 import type {
   CanopyOrganizationSummary,
   CanopyTeamSummary,
 } from '@canopy/protocol/pipelines';
+import { classifyError } from '@canopy/protocol/app-errors';
+import { classifyFetchFailure } from '@canopy/desktop-shared/node/lib/app-error-classification';
 import { getCanopyCloudBaseUrl } from './config';
+import { OAuthLoginEndedError } from './oauth-login-errors';
 import { parseAuthoritativeOrganizationSnapshot } from './organization-snapshot';
 import {
   type CanopyCloudAccountEntry,
@@ -75,6 +78,8 @@ interface DesktopOAuthTokenResponse {
   personalOrganizationId?: string;
   personalModelGateway?: CanopyAccountResponse['personalModelGateway'];
   personalModelGatewayEnforcementUnavailable?: boolean;
+  personalModelGatewayConfig?: CanopyAccountResponse['personalModelGatewayConfig'];
+  organizationModelGatewayConfigs?: CanopyAccountResponse['organizationModelGatewayConfigs'];
   organizations: CanopyOrganizationSummary[];
   teams: CanopyTeamSummary[];
   enforcedSettings: CanopyOrgEnforcedSettings[];
@@ -286,7 +291,7 @@ async function persistCompletedLogin(
       : {}),
     organizations: tokenResponse.organizations,
     teams: tokenResponse.teams,
-    ...personalGatewayAccountFields(tokenResponse),
+    ...modelGatewayAccountFields(tokenResponse),
     ...(tokenResponse.personalModelGatewayEnforcementUnavailable
       ? { personalModelGatewayEnforcementUnavailable: true }
       : {}),
@@ -321,7 +326,7 @@ async function persistCompletedLogin(
       ),
       organizations: tokenResponse.organizations,
       teams: tokenResponse.teams,
-      ...personalGatewayAccountFields(tokenResponse),
+      ...modelGatewayAccountFields(tokenResponse),
       ...(tokenResponse.personalModelGatewayEnforcementUnavailable
         ? { personalModelGatewayEnforcementUnavailable: true }
         : {}),
@@ -526,7 +531,7 @@ function parseDesktopOAuthTokenResponse(
       ),
     organizations,
     teams: parseArray(value.teams, parseTeam),
-    ...personalGatewayAccountFields(value),
+    ...modelGatewayAccountFields(value),
     enforcedSettings: normalizedEnforcement.settings,
     ...(normalizedEnforcement.telemetryEnforcementUnavailable === true
       ? { telemetryEnforcementUnavailable: true }
@@ -577,19 +582,28 @@ async function exchangeCode(input: {
       },
     );
   } catch (error) {
-    throw new CloudOAuthExchangeError(
-      error instanceof Error ? error.message : 'Token exchange failed.',
-      'network_error',
-      null,
+    // Offline and unreachable-service evidence comes from the fetch failure
+    // itself; an aborted fetch stays unclassified.
+    throw classifyFetchFailure(
+      error,
+      new CloudOAuthExchangeError(
+        error instanceof Error ? error.message : 'Token exchange failed.',
+        'network_error',
+        null,
+      ),
     );
   }
 
   if (!response.ok) {
-    throw new CloudOAuthExchangeError(
+    const failure = new CloudOAuthExchangeError(
       await readErrorResponse(response),
       'http_error',
       response.status,
     );
+    // Server errors are the service's; 4xx, including 429, stay defects.
+    throw response.status >= 500
+      ? classifyError(failure, 'external.service_unavailable')
+      : failure;
   }
 
   try {
@@ -888,7 +902,7 @@ async function runCanopyCloudOAuthLogin(
       correlationId,
       clientDeviceId,
     });
-    throw new Error('OAuth login replaced.');
+    throw new OAuthLoginEndedError('replaced');
   }
   if (generation <= cancelledGeneration) {
     recordOAuthDiagnostic({
@@ -899,7 +913,7 @@ async function runCanopyCloudOAuthLogin(
       correlationId,
       clientDeviceId,
     });
-    throw new Error('OAuth login cancelled.');
+    throw new OAuthLoginEndedError('cancelled');
   }
 
   const clientVersion = app?.getVersion?.() ?? null;
@@ -1327,9 +1341,12 @@ async function runCanopyCloudOAuthLogin(
           },
           (error: unknown) => {
             abandon(
-              error instanceof Error
-                ? error
-                : new Error('Failed to open browser for OAuth login.'),
+              classifyError(
+                error instanceof Error
+                  ? error
+                  : new Error('Failed to open browser for OAuth login.'),
+                'external.browser_unavailable',
+              ),
               'browser_open_failed',
             );
           },
@@ -1337,7 +1354,13 @@ async function runCanopyCloudOAuthLogin(
       });
 
       timeoutId = setTimeout(() => {
-        abandon(new Error('OAuth login timed out.'), 'timeout');
+        abandon(
+          classifyError(
+            new Error('OAuth login timed out.'),
+            'external.sign_in_timed_out',
+          ),
+          'timeout',
+        );
       }, LOGIN_TIMEOUT_MS);
 
       currentPending = {
@@ -1350,7 +1373,9 @@ async function runCanopyCloudOAuthLogin(
           }
           controller.abort();
           abandon(
-            new Error(`OAuth login ${reason}.`),
+            new OAuthLoginEndedError(
+              reason === 'replaced' ? 'replaced' : 'cancelled',
+            ),
             reason === 'replaced' ? 'replaced' : 'cancelled',
           );
         },

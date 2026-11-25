@@ -56,12 +56,17 @@ function config(): OpenCodeRuntimeConfig {
 const metadata = config();
 export const OPENCODE_RUNTIME_VERSION = metadata.version;
 
+/**
+ * The pinned artifact for a host, or undefined when none is pinned. x64 pins
+ * use OpenCode's baseline builds on every platform; Linux pins are its glibc
+ * builds, not the `-musl` packages.
+ */
 export function getOpenCodeRuntimeArtifact(
   platform: string = process.platform,
   arch: string = process.arch,
 ): OpenCodeRuntimeArtifact | undefined {
   if (
-    !['darwin', 'win32'].includes(platform) ||
+    !['darwin', 'linux', 'win32'].includes(platform) ||
     !['arm64', 'x64'].includes(arch)
   )
     return undefined;

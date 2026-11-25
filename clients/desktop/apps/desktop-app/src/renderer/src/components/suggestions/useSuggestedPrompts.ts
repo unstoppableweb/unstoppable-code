@@ -5,6 +5,7 @@ import { useDetectedMcpServers } from '../../hooks/useDetectedMcpServers';
 import type { SuggestedPrompt } from './mcpPromptIndex';
 import {
   eligibleCuratedServers,
+  minimumSuggestedPromptCount,
   pickSuggestedPrompts,
   suggestionPoolSignature,
 } from './suggestedPrompts';
@@ -30,6 +31,13 @@ export interface UseSuggestedPromptsOptions {
    */
   holdAcrossMounts?: boolean;
   /**
+   * Keep the picked set for a seed key while the app runs, so a chat shows
+   * the same prompts each time it is opened, from the visit's first frame,
+   * instead of rolling a new set once its inventory arrives. The pool rules
+   * still apply: a changed pool rolls a new set.
+   */
+  keepWhileAppRuns?: boolean;
+  /**
    * Whether prompts may come from this computer's MCP servers. A cloud chat
    * runs elsewhere, so it takes the surface's pool without reading them
    * (CAN-6175). Defaults to true.
@@ -51,6 +59,11 @@ export interface UseSuggestedPromptsOptions {
 export interface UseSuggestedPromptsResult {
   prompts: readonly SuggestedPrompt[];
   loading: boolean;
+  /**
+   * While `loading`, how many prompts the pick will hold at least, so the
+   * surface can keep their room from its first frame. 0 otherwise.
+   */
+  reservedCount: number;
 }
 
 interface PickedSet {
@@ -103,11 +116,26 @@ function pickIsMcpIndependent(pick: PickedSet): boolean {
 const heldPicks = new Map<string, PickedSet>();
 const heldInstanceCounts = new Map<string, number>();
 /**
- * Last impression id-join per `${surface}:${seedKey}`, so a held double-mount
- * (or an unchanged-set re-render) records a single impression per distinct
- * displayed set.
+ * Last impression id-join per held `${surface}:${seedKey}`, so a held
+ * double-mount records a single impression per distinct displayed set.
  */
 const lastImpressions = new Map<string, string>();
+
+/** Picks kept while the app runs (`keepWhileAppRuns`), most recent last. */
+const keptPicks = new Map<string, PickedSet>();
+/** Kept picks at once; the least recently stored goes first. */
+const KEPT_PICK_LIMIT = 200;
+
+function keepPick(keepKey: string, pick: PickedSet): void {
+  keptPicks.delete(keepKey);
+  keptPicks.set(keepKey, pick);
+  if (keptPicks.size > KEPT_PICK_LIMIT) {
+    for (const oldest of keptPicks.keys()) {
+      keptPicks.delete(oldest);
+      break;
+    }
+  }
+}
 
 /**
  * Resolves the MCP-aware suggested prompts for one empty-state surface
@@ -115,8 +143,8 @@ const lastImpressions = new Map<string, string>();
  * curated servers, and picks a stable rotating subset (generic fallbacks when
  * none are eligible). Passing `null` selections keeps the hook fully inert
  * (no fetch, no prompts, no telemetry) — callers pass `null` for excluded or
- * hidden surfaces. Fires one impression telemetry event per distinct
- * displayed set.
+ * hidden surfaces. Fires one impression telemetry event per showing of a
+ * set (see the impression effect below).
  *
  * A pick is keyed to its eligible pool, not to the selections snapshot: a
  * selections change whose inventory yields the same pool keeps the same
@@ -134,6 +162,7 @@ export function useSuggestedPrompts(
     surface,
     seedKey,
     holdAcrossMounts,
+    keepWhileAppRuns,
     starterPrompts,
     seedingBlueprintStarterPrompts,
     localInventory = true,
@@ -196,12 +225,22 @@ export function useSuggestedPrompts(
   // rename must not re-roll an otherwise unchanged pool.
   const signature = suggestionPoolSignature(eligible.map((s) => s.key));
   const holdKey = holdAcrossMounts === true ? `${surface}:${seedKey}` : null;
+  const keepKey = keepWhileAppRuns === true ? `${surface}:${seedKey}` : null;
 
-  const [pick, setPick] = useState<PickedSet | null>(() =>
-    holdKey !== null ? (heldPicks.get(holdKey) ?? null) : null,
-  );
-  const pickRef = useRef<PickedSet | null>(pick);
-  pickRef.current = pick;
+  const [pick, setPick] = useState<PickedSet | null>(() => {
+    if (holdKey !== null) return heldPicks.get(holdKey) ?? null;
+    if (keepKey !== null) return keptPicks.get(keepKey) ?? null;
+    return null;
+  });
+  // A seed key this instance holds no pick for yet (a visit mounted it, or
+  // it moved to another chat) starts from the set kept for that key.
+  const keptForKey = keepKey === null ? undefined : keptPicks.get(keepKey);
+  const current =
+    pick !== null && pick.surface === surface && pick.seedKey === seedKey
+      ? pick
+      : (keptForKey ?? pick);
+  const pickRef = useRef<PickedSet | null>(current);
+  pickRef.current = current;
 
   useEffect(() => {
     if (selectionsKey === null || !inventoryReady) return;
@@ -214,12 +253,15 @@ export function useSuggestedPrompts(
           : { ...kept, selectionsKey };
       if (confirmed !== pick) setPick(confirmed);
       if (holdKey !== null) heldPicks.set(holdKey, confirmed);
+      if (keepKey !== null) keepPick(keepKey, confirmed);
     };
     if (
-      pick !== null &&
-      pickMatchesPool(pick, surface, seedKey, starterPromptsKey, signature)
+      current !== null &&
+      pickMatchesPool(current, surface, seedKey, starterPromptsKey, signature)
     ) {
-      if (pick.selectionsKey !== selectionsKey) confirm(pick);
+      if (current.selectionsKey !== selectionsKey || current !== pick) {
+        confirm(current);
+      }
       return;
     }
     // Adopt a concurrent sibling's held pick before rolling a fresh one, so
@@ -252,6 +294,7 @@ export function useSuggestedPrompts(
     if (holdKey !== null) {
       heldPicks.set(holdKey, next);
     }
+    if (keepKey !== null) keepPick(keepKey, next);
     // `starterPrompts` itself is intentionally NOT a dependency: callers pass a
     // fresh array identity on every render, and `starterPromptsKey` is its
     // structural stand-in.
@@ -260,11 +303,13 @@ export function useSuggestedPrompts(
     selectionsKey,
     inventoryReady,
     pick,
+    current,
     seedKey,
     signature,
     starterPromptsKey,
     eligible,
     holdKey,
+    keepKey,
     surface,
   ]);
 
@@ -296,25 +341,43 @@ export function useSuggestedPrompts(
   // suppressed the moment selections change; generic prompts stay put.
   const activePick =
     selectionsKey !== null &&
-    pick !== null &&
-    pick.surface === surface &&
-    pick.seedKey === seedKey &&
-    pick.starterPromptsKey === starterPromptsKey &&
-    (pick.selectionsKey === selectionsKey || pickIsMcpIndependent(pick))
-      ? pick
+    current !== null &&
+    current.surface === surface &&
+    current.seedKey === seedKey &&
+    current.starterPromptsKey === starterPromptsKey &&
+    (current.selectionsKey === selectionsKey || pickIsMcpIndependent(current))
+      ? current
       : null;
 
+  // The set this instance last recorded an impression for, by seed key. One
+  // impression per showing: the same set shown again by this instance for
+  // the same seed key (after typing in the composer, or a hidden panel shown
+  // again) is the same showing; a visit that mounts the surface, or moves
+  // it to another chat and back, is a new one.
+  const recordedRef = useRef<string | null>(null);
   useEffect(() => {
     if (activePick === null || activePick.prompts.length === 0) return;
-    const impressionKey = `${surface}:${seedKey}`;
     const idJoin = activePick.prompts.map((prompt) => prompt.id).join(',');
-    if (lastImpressions.get(impressionKey) === idJoin) return;
-    lastImpressions.set(impressionKey, idJoin);
+    const showing = JSON.stringify([surface, seedKey, idJoin]);
+    if (recordedRef.current === showing) return;
+    recordedRef.current = showing;
+    if (holdKey !== null) {
+      if (lastImpressions.get(holdKey) === idJoin) return;
+      lastImpressions.set(holdKey, idJoin);
+    }
     trackSuggestedPromptImpression(surface, activePick.prompts);
-  }, [activePick, surface, seedKey]);
+  }, [activePick, surface, seedKey, holdKey]);
 
+  const picking = selectionsKey !== null && activePick === null;
   return {
     prompts: activePick?.prompts ?? [],
-    loading: selectionsKey !== null && activePick === null,
+    loading: picking,
+    reservedCount: picking
+      ? minimumSuggestedPromptCount(
+          surface,
+          starterPrompts,
+          seedingBlueprintStarterPrompts,
+        )
+      : 0,
   };
 }

@@ -3,6 +3,24 @@ import type { PlatformOperatingSystem } from '../../platform/platform-services';
 const directoryIdentity =
   /^(\d+):(\d+):(-?\d+(?:\.\d+)?)(?::([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}))?$/i;
 
+/**
+ * A volume's device number can change across reboots and remounts on macOS
+ * (APFS renumbering) and Linux (btrfs gives each subvolume an anonymous
+ * device at mount). There a device-only difference matches when the inode,
+ * birth time and any incarnation marker match. Linux also needs a real birth
+ * time: without one the inode alone would vouch for the directory. Windows
+ * volume serial numbers stay exact.
+ */
+function toleratesDeviceDrift(
+  operatingSystem: PlatformOperatingSystem | null,
+  birthtimeMs: string,
+): boolean {
+  return (
+    operatingSystem === 'darwin' ||
+    (operatingSystem === 'linux' && Number(birthtimeMs) !== 0)
+  );
+}
+
 /** Persisted evidence only. Current-attempt observations and worker bindings stay exact. */
 export function matchesRecordedDirectoryIdentity(
   recorded: string | null | undefined,
@@ -17,7 +35,8 @@ export function matchesRecordedDirectoryIdentity(
     observed !== null &&
     saved[0] === recorded &&
     observed[0] === live &&
-    (saved[1] === observed[1] || operatingSystem === 'darwin') &&
+    (saved[1] === observed[1] ||
+      toleratesDeviceDrift(operatingSystem, saved[3])) &&
     saved[2] === observed[2] &&
     saved[3] === observed[3] &&
     (saved[4] === undefined || saved[4] === observed[4])

@@ -1,9 +1,7 @@
 import { StepRow } from '@canopy/ui-shared/components';
 import { RevertIcon } from '@canopy/ui-shared/icons/AppIcons';
-import {
-  StickyTurnBacking,
-  RevertedTurnSurface,
-} from '@canopy/ui-shared/components/chat';
+import { RevertedTurnSurface } from '@canopy/ui-shared/components/chat';
+import { TurnHoverScope } from '@canopy/ui-shared/components/chat/TurnHoverScope';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
@@ -71,6 +69,7 @@ import {
   TurnFooterRow,
   TurnOutcomeControl,
   TurnWorkHeader,
+  isTurnTimerPaused,
   STEP_GROUP_BODY_CLASS,
   type TurnStartingSetup,
   ToolApprovalWaitProvider,
@@ -79,6 +78,7 @@ import {
   extractExitPlanModePlan,
   useChatDetail,
   useTurnCollapse,
+  CollapsibleBlockBody,
   type TurnSummaryChip,
 } from '@canopy/ui-shared/components';
 import {
@@ -115,6 +115,7 @@ import {
 import {
   memo,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -124,6 +125,7 @@ import {
   type MouseEvent,
   type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { AutoArchiveToggleButton } from './AutoArchiveToggleButton';
 import { ChatMessageItem, type SpawningCallTarget } from './ChatMessageItem';
@@ -141,7 +143,7 @@ import { ResetToPointDialog } from './ResetToPointDialog';
 import { TurnMoreActions } from './TurnMoreActions';
 import { DesktopAgentActivitySection } from './DesktopAgentActivitySection';
 import { RunCommentsButton } from './RunCommentsButton';
-import { StickyTurnSummary } from './StickyTurnSummary';
+import { StickyTurnHeaderSlotContext } from './sticky-turn-header-slot';
 import { CleanToolStepGroup } from './ToolStepGroup';
 import { TurnDiffSummary } from './TurnDiffSummary';
 import { continuationPromptId } from './continuation-transcript-turns';
@@ -286,8 +288,8 @@ function contentOffsetTop(element: HTMLElement, scroller: HTMLElement): number {
 }
 
 /**
- * Brings a turn's tool row into view below the pinned prompt and summary
- * (`origin`, the summary banner), and focuses its toggle without a second
+ * Brings a turn's tool row into view below the pinned head (the prompt and
+ * its turn's header), and focuses its toggle without a second
  * scroll. Leaves focus alone when the reader has moved it elsewhere than the
  * banner or the `control` they used.
  */
@@ -305,12 +307,10 @@ function landOnToolRow(
     const section = row.closest('[data-chat-sticky-section]');
     const scrollerInset =
       Number.parseFloat(window.getComputedStyle(scroller).paddingTop) || 0;
+    // The pinned head holds the prompt and its turn's header.
     const pinnedHead =
       section instanceof HTMLElement ? readStickyUserHeight(section) : 0;
-    const pinnedSummary = origin?.isConnected
-      ? origin.getBoundingClientRect().height
-      : 0;
-    const overlayInset = scrollerInset + pinnedHead + pinnedSummary + 8;
+    const overlayInset = scrollerInset + pinnedHead + 8;
     cancelTravel = startScrollTravel(scroller, () => {
       // A third of the way down, never under the pinned prompt and summary.
       const room = scroller.clientHeight - row.getBoundingClientRect().height;
@@ -348,6 +348,7 @@ function DesktopCollapsedTurnSummary({
   userMessageId,
   timer,
   outcome,
+  pinned = false,
 }: {
   counts: TurnSummaryCounts;
   /** Blocked, errored and interrupted steps; omitted without metadata. */
@@ -373,6 +374,8 @@ function DesktopCollapsedTurnSummary({
   timer?: TurnHeaderTimer;
   /** Clean chat look: how the turn ended, when not plainly complete. */
   outcome?: TurnTerminalStatus;
+  /** The header renders in its section's sticky head, under the prompt. */
+  pinned?: boolean;
 }): JSX.Element {
   // The work header owns the disclosure toggle.
 
@@ -535,6 +538,7 @@ function DesktopCollapsedTurnSummary({
       title={describeStepCounts(stepCounts) || undefined}
       stepCount={chips.reduce((total, chip) => total + chip.count, 0)}
       outcome={outcomeControl}
+      pinned={pinned}
       dataTestId="turn-work-header"
     />
   );
@@ -592,7 +596,6 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   filePathMentionIndex,
   completedAgentArtifacts = [],
   hideUserMessage = false,
-  stickyTurnSummary = false,
   forceExpandedUserMessage = false,
   onJumpToMessage,
   onShowSpawningCall,
@@ -670,19 +673,14 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   /**
    * True when the transcript list hoisted this turn's user message into a
    * sticky section header and renders it there itself. The group then skips
-   * its own user bubble so the message appears exactly once. Never combined
-   * with `isReverted` — reverted turns keep their internal collapsed
-   * rendering and are not hoisted.
+   * its own user bubble so the message appears exactly once, and renders its
+   * "Working for" / "Worked for" header into the head's slot under that
+   * prompt (`StickyTurnHeaderSlotContext`), so the two pin as one box. Never
+   * combined with `isReverted` — reverted turns keep their internal
+   * collapsed rendering and are not hoisted. Other turns in the section
+   * (watcher-fired follow-ups) keep their header in place.
    */
   hideUserMessage?: boolean;
-  /**
-   * True when this turn renders inside a sticky transcript section: its
-   * completed-turn summary chip pins just below the sticky user message
-   * (`top: var(--chat-sticky-user-height)`), bounded to this turn's own
-   * wrapper — so in a section with watcher-fired turns, each turn's summary
-   * scrolls into the pinned slot as its content reaches the top.
-   */
-  stickyTurnSummary?: boolean;
   forceExpandedUserMessage?: boolean;
   /** Transcript-supplied click-to-jump handler for this turn's user bubble. */
   onJumpToMessage?: (element: HTMLElement) => void;
@@ -694,6 +692,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
    */
   revealRequest?: { messageId: string };
 }): JSX.Element {
+  const headerSlot = useContext(StickyTurnHeaderSlotContext);
   // Live runs are removed by placement. Their completed records can become
   // available before the parent turn ends; capability tiles remain pinned.
   const recordArtifacts = useMemo(
@@ -995,17 +994,17 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     }, [group.assistantMessages, transcriptTurn]);
 
   // Summary counts include both intermediate and trailing tool messages
-  // since both are hidden when collapsed.
-  const computedSummary = useMemo(
+  // since both are hidden when collapsed. A paged turn shows the counts its
+  // index projected for the whole turn, so its loaded rows (hundreds, on the
+  // long turn a chat opens to) are not counted for a result nobody reads.
+  const projectedSummary =
+    transcriptTurn?.before !== undefined ? transcriptTurn.summary : undefined;
+  const summary = useMemo(
     () =>
+      projectedSummary ??
       computeTurnSummary([...intermediateMessages, ...trailingToolMessages]),
-    [intermediateMessages, trailingToolMessages],
+    [projectedSummary, intermediateMessages, trailingToolMessages],
   );
-
-  const summary =
-    transcriptTurn?.before !== undefined
-      ? transcriptTurn.summary
-      : computedSummary;
 
   // Outcomes count the same steps as the summary; receipts may sit on any
   // message of the turn, including a system notice beside the final answer.
@@ -1045,16 +1044,20 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     transcriptTurn?.before !== undefined ||
     (transcriptTurn?.complete === true &&
       projectedDeniedToolUseIds === undefined);
+  // Likewise computed only for a turn that does not show projected outcomes.
   const computedOutcomes = useMemo(
     () =>
-      computeTurnOutcomes(
-        [...intermediateMessages, ...trailingToolMessages],
-        group.assistantMessages,
-        receiptOwnerId,
-        projectedDeniedToolUseIds,
-        outcomeEvidence,
-      ),
+      usesProjectedOutcomes
+        ? undefined
+        : computeTurnOutcomes(
+            [...intermediateMessages, ...trailingToolMessages],
+            group.assistantMessages,
+            receiptOwnerId,
+            projectedDeniedToolUseIds,
+            outcomeEvidence,
+          ),
     [
+      usesProjectedOutcomes,
       intermediateMessages,
       trailingToolMessages,
       group.assistantMessages,
@@ -1869,17 +1872,48 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   const liveLineInSteps =
     (!cleanGrouping || liveStepWindowEnabled) &&
     lastCleanSegment?.kind === 'steps';
+  // A paused turn is not working, so its row holds no "Thinking". Compact's
+  // status line stays: it is where a held call says it waits.
+  const timerRowHoldsNoLine =
+    liveLineInSteps ||
+    (!groupToolCalls &&
+      isTurnTimerPaused({
+        finishedAt: timerBlock?.completedAt,
+        pausedAt: timerBlock?.pausedAt,
+        resumedAt: timerBlock?.resumedAt,
+        waitingForUser,
+      }));
+  // Compact: one status line, always in the row under the turn, says what
+  // the turn does now. Its runs stay closed lines that only count their
+  // steps, so nothing changes place while the turn streams.
+  // The line opens to the run's latest thought, so thinking can be read
+  // while the turn runs without a row of its own coming and going.
+  const liveThoughts =
+    groupToolCalls && lastCleanSegment?.kind === 'steps'
+      ? lastCleanSegment.steps.filter(
+          (step) => step.type === 'thinking' && step.text.trim() !== '',
+        )
+      : [];
+  const liveThought = liveThoughts[liveThoughts.length - 1];
   const cleanLiveLine =
     !showStarting &&
     !group.isComplete &&
-    (cleanGrouping && !liveStepWindowEnabled
-      ? cleanSegments[cleanSegments.length - 1]?.kind !== 'steps'
-      : !stepShimmersOnScreen) ? (
+    (groupToolCalls || !stepShimmersOnScreen) ? (
       <CleanToolStepGroup
         live
+        activityOf={
+          groupToolCalls && lastCleanSegment?.kind === 'steps'
+            ? lastCleanSegment
+            : undefined
+        }
         workingLabel={showChoosingModel ? 'Choosing a model…' : undefined}
         isCodeReviewChat={isCodeReviewChat}
-      />
+        bareChildren
+      >
+        {liveThought?.type === 'thinking' ? (
+          <CollapsibleBlockBody content={liveThought.text} nested />
+        ) : undefined}
+      </CleanToolStepGroup>
     ) : null;
 
   // When this turn was rolled back by a later revert_info marker, wrap the
@@ -1906,6 +1940,9 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
     return text.slice(0, 80).trimEnd() + '…';
   }, [group.userMessage.blocks]);
 
+  // A turn heading its section renders its header under the hoisted prompt,
+  // in the sticky head, so they pin as one box.
+  const pinnedHeader = hideUserMessage && !isReverted;
   const liveHeader = (
     <TurnWorkHeader
       startedAt={timerBlock?.startedAt}
@@ -1916,6 +1953,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
       waitingForUser={waitingForUser}
       live
       trailing={cleanLiveActions}
+      pinned={pinnedHeader}
       dataTestId="turn-work-header"
     />
   );
@@ -1940,6 +1978,14 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   ) : null;
   if (isRevertedCollapsed && revertedHeader)
     return wrapReverted(revertedHeader);
+
+  // The head's slot exists from its first commit, before paint.
+  const placeHeader = (header: JSX.Element): ReactNode =>
+    !pinnedHeader
+      ? header
+      : headerSlot
+        ? createPortal(header, headerSlot)
+        : null;
 
   return wrapReverted(
     <ToolApprovalWaitProvider value={approvalWait}>
@@ -1969,50 +2015,11 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
           dataTestId="turn-starting-status"
         />
       ) : !group.isComplete ? (
-        stickyTurnSummary && !isReverted ? (
-          // Pinned like the finished turn's header, in the same wrapper, so
-          // finishing only changes its words.
-          <StickyTurnSummary>
-            <StickyTurnBacking>{liveHeader}</StickyTurnBacking>
-          </StickyTurnSummary>
-        ) : (
-          liveHeader
-        )
+        placeHeader(liveHeader)
       ) : null}
 
-      {hasIntermediateContent && group.isComplete ? (
-        <>
-          {stickyTurnSummary && !isReverted ? (
-            // Pins below the sticky user message. The containing block is
-            // this turn's own wrapper, so the summary unsticks at the turn's
-            // end and the next turn's summary (e.g. a watcher-fired
-            // follow-up's) scrolls into the pinned slot in its place. The
-            // fade band mirrors the sticky header's: sized to the inter-item
-            // gap, invisible in normal flow, softening content that slides
-            // under the pinned row.
-            <StickyTurnSummary>
-              {/* Opaque backdrop behind the flat summary row plus a `before`
-                  strip filling the gap above it, so the pinned bubble and this
-                  row read as one covered stack with no content showing between
-                  them. It deliberately stops at the row's bottom edge: a band
-                  running past the last banner is what read as a black bar
-                  sitting on the transcript. */}
-              <StickyTurnBacking>
-                <DesktopCollapsedTurnSummary
-                  counts={summary}
-                  outcomes={outcomes}
-                  outcomeSteps={outcomeSteps}
-                  isExpanded={!isCollapsed}
-                  onToggle={toggleSummary}
-                  onJumpToOutcome={jumpToOutcome}
-                  isCodeReviewChat={isCodeReviewChat}
-                  userMessageId={group.userMessage.id}
-                  timer={timerBlock ?? undefined}
-                  outcome={headerOutcome}
-                />
-              </StickyTurnBacking>
-            </StickyTurnSummary>
-          ) : (
+      {hasIntermediateContent && group.isComplete
+        ? placeHeader(
             <DesktopCollapsedTurnSummary
               counts={summary}
               outcomes={outcomes}
@@ -2024,10 +2031,10 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
               userMessageId={group.userMessage.id}
               timer={timerBlock ?? undefined}
               outcome={headerOutcome}
-            />
-          )}
-        </>
-      ) : null}
+              pinned={pinnedHeader}
+            />,
+          )
+        : null}
 
       {(historyLoading || !isCollapsed || !group.isComplete) &&
         pagingTurn?.before !== undefined &&
@@ -2069,7 +2076,17 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
                   ? cleanLiveLine
                   : undefined
               }
-              live={!group.isComplete && index === cleanSegments.length - 1}
+              alwaysFolded={groupToolCalls}
+              settledOnly={
+                groupToolCalls &&
+                !group.isComplete &&
+                index === cleanSegments.length - 1
+              }
+              live={
+                !groupToolCalls &&
+                !group.isComplete &&
+                index === cleanSegments.length - 1
+              }
               outcomeEvidence={outcomeEvidence}
               deniedToolUseIds={cleanDeniedToolUseIds}
               workingLabel={showChoosingModel ? 'Choosing a model…' : undefined}
@@ -2164,48 +2181,50 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
       ) : null}
 
       {showStarting ? null : timerBlock ? (
-        <TurnTimer
-          key={`timer-${group.userMessage.id}`}
-          pending={pendingTimer}
-          startedAt={timerBlock.startedAt}
-          pausedAt={timerBlock.pausedAt}
-          resumedAt={timerBlock.resumedAt}
-          accumulatedPausedDurationMs={timerBlock.accumulatedPausedDurationMs}
-          waitingForUser={waitingForUser}
-          completedAt={timerBlock.completedAt ?? null}
-          completionStatus={completionStatus}
-          workingLabel={showChoosingModel ? 'Choosing a model…' : undefined}
-          liveLine={liveLineInSteps ? null : cleanLiveLine}
-          autoRoutedModel={autoRoutedModel}
-          watcherButton={watcherButton}
-          archiveToggleButton={archiveToggleButton}
-          shareButton={moreMenu ? undefined : shareButton}
-          moreMenu={moreMenu}
-          feedbackControl={moreMenu ? undefined : feedbackControl}
-          {...(planCopy !== undefined
-            ? { planCopy }
-            : group.isComplete
-              ? { copyText: replyCopyText }
-              : {})}
-          commentsButton={moreMenu ? undefined : commentsButton}
-          showForkAction={showForkAction}
-          onFork={forkHandler}
-          forkDisabled={cloudForkPending}
-          showBranchAction={
-            !moreMenu && showLocalTurnActions && canBranch && !isActiveTimer
-          }
-          onBranch={
-            showLocalTurnActions && canBranch && chatId
-              ? (): void => {
-                  void branchTab(chatId, forkTarget, {
-                    forkAfterUserMessageId,
-                  });
-                }
-              : undefined
-          }
-        />
+        <TurnHoverScope>
+          <TurnTimer
+            key={`timer-${group.userMessage.id}`}
+            pending={pendingTimer}
+            startedAt={timerBlock.startedAt}
+            pausedAt={timerBlock.pausedAt}
+            resumedAt={timerBlock.resumedAt}
+            accumulatedPausedDurationMs={timerBlock.accumulatedPausedDurationMs}
+            waitingForUser={waitingForUser}
+            completedAt={timerBlock.completedAt ?? null}
+            completionStatus={completionStatus}
+            workingLabel={showChoosingModel ? 'Choosing a model…' : undefined}
+            liveLine={timerRowHoldsNoLine ? null : cleanLiveLine}
+            autoRoutedModel={autoRoutedModel}
+            watcherButton={watcherButton}
+            archiveToggleButton={archiveToggleButton}
+            shareButton={moreMenu ? undefined : shareButton}
+            moreMenu={moreMenu}
+            feedbackControl={moreMenu ? undefined : feedbackControl}
+            {...(planCopy !== undefined
+              ? { planCopy }
+              : group.isComplete
+                ? { copyText: replyCopyText }
+                : {})}
+            commentsButton={moreMenu ? undefined : commentsButton}
+            showForkAction={showForkAction}
+            onFork={forkHandler}
+            forkDisabled={cloudForkPending}
+            showBranchAction={
+              !moreMenu && showLocalTurnActions && canBranch && !isActiveTimer
+            }
+            onBranch={
+              showLocalTurnActions && canBranch && chatId
+                ? (): void => {
+                    void branchTab(chatId, forkTarget, {
+                      forkAfterUserMessageId,
+                    });
+                  }
+                : undefined
+            }
+          />
+        </TurnHoverScope>
       ) : (
-        <>
+        <TurnHoverScope>
           <ChatMessageItem
             message={group.timerMessage}
             chatPendingQuestions={chatPendingQuestions}
@@ -2244,7 +2263,7 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
               )}
             </TurnFooterRow>
           )}
-        </>
+        </TurnHoverScope>
       )}
       {showForkAction && cloudForkTarget !== null ? (
         <CloudForkNotice target={cloudForkTarget} />

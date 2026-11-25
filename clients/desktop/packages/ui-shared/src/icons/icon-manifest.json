@@ -1682,6 +1682,13 @@
       "class": "direct",
       "note": "Shared Lucide replacement for the legacy singleSignOn icon; 2px stroke, regular 20px / compact 14px."
     },
+    "slack": {
+      "source": "repo",
+      "name": "SlackLogo",
+      "fill": 0,
+      "class": "identity",
+      "note": "Repository logo from Simple Icons 9.0.0 (CC0-1.0); later releases dropped Slack."
+    },
     "sparkle": {
       "source": "lucide",
       "name": "sparkles",

@@ -36,6 +36,7 @@ export function PipelineExecutionActionDialogs({
   followUp,
   followUpRunning,
   followUpError,
+  followUpErrorRecorded,
   onCloseFollowUp,
   onRunFollowUp,
 }: {
@@ -44,6 +45,7 @@ export function PipelineExecutionActionDialogs({
   followUp: PipelineExecutionFollowUpDialog | null;
   followUpRunning: boolean;
   followUpError: string | null;
+  followUpErrorRecorded: boolean;
   onCloseFollowUp: () => void;
   onRunFollowUp: PlanReadyPipelineModalOnRun;
 }): JSX.Element {
@@ -66,6 +68,7 @@ export function PipelineExecutionActionDialogs({
             onRun={onRunFollowUp}
             isRunning={followUpRunning}
             runError={followUpError}
+            runErrorRecorded={followUpErrorRecorded}
             ownerDocument={followUp.ownerDocument}
           />
         </Suspense>

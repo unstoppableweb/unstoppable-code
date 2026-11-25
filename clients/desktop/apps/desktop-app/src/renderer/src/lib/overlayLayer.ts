@@ -9,6 +9,7 @@
 
 import { overlayLayerFrameName } from '@canopy/desktop-shared/lib/overlay-layer';
 import type {
+  OverlayLayerFollow,
   OverlayLayerApi,
   OverlayLayerRect,
   OverlayLayerSlot,
@@ -39,8 +40,14 @@ export interface OverlayLayer {
    * teardown; a listener added after loss is never called.
    */
   onLost(listener: () => void): () => void;
-  /** Sets native layer bounds. A rejected IPC loses the layer; this never rejects. */
-  setBounds(bounds: OverlayLayerRect | null): Promise<void>;
+  /**
+   * Sets native layer bounds, and with `follow` how they move with the
+   * window. A rejected IPC loses the layer; this never rejects.
+   */
+  setBounds(
+    bounds: OverlayLayerRect | null,
+    follow?: OverlayLayerFollow,
+  ): Promise<void>;
   /** Moves focus into the layer or back to the main page; this never rejects. */
   focus(target: 'layer' | 'main'): Promise<void>;
 }
@@ -345,7 +352,10 @@ export function openOverlayLayer(slot: OverlayLayerSlot): OverlayLayer | null {
           }
         };
       },
-      setBounds: async (bounds: OverlayLayerRect | null): Promise<void> => {
+      setBounds: async (
+        bounds: OverlayLayerRect | null,
+        follow?: OverlayLayerFollow,
+      ): Promise<void> => {
         if (layerRecord.lost) {
           return;
         }
@@ -356,7 +366,11 @@ export function openOverlayLayer(slot: OverlayLayerSlot): OverlayLayer | null {
             loseRecord(layerRecord, true);
             return;
           }
-          await api.setBounds({ slot, bounds });
+          await api.setBounds(
+            bounds !== null && follow !== undefined
+              ? { slot, bounds, follow }
+              : { slot, bounds },
+          );
           if (layerRecord.lost) {
             return;
           }

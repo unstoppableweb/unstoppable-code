@@ -1,7 +1,15 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getCodexRuntimeService } from '../codex/runtime-service';
-import type { CodexRuntimeAdmin } from '@canopy/execution-engine/node/codex-runtime';
+import {
+  CodexNotInstalledError,
+  withInstalledCodex,
+} from '../codex/codex-executable-availability';
+import { resolveCodexHomeWithoutSpawn } from '../codex/resolve-codex-home';
+import {
+  CodexAppServerJsonRpcError,
+  type CodexRuntimeAdmin,
+} from '@canopy/execution-engine/node/codex-runtime';
 import { isPathInside } from '../lib/path-safety';
 import { codexMarketplaceRootFromPath } from './codex-marketplace-paths';
 import type { MarketplaceAddParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/MarketplaceAddParams';
@@ -74,10 +82,12 @@ function withTimeout<T>(
 async function withConnection<T>(
   action: (admin: CodexRuntimeAdmin) => Promise<T>,
 ): Promise<T> {
-  return withTimeout(
-    action(getCodexRuntimeService().admin()),
-    MARKETPLACE_OPERATION_TIMEOUT_MS,
-    'Codex marketplace operation',
+  return withInstalledCodex(() =>
+    withTimeout(
+      action(getCodexRuntimeService().admin()),
+      MARKETPLACE_OPERATION_TIMEOUT_MS,
+      'Codex marketplace operation',
+    ),
   );
 }
 
@@ -124,7 +134,7 @@ function normalizeCodexMarketplaceSource(source: string): string {
 export async function readCodexMarketplaceInstallMetadata(
   marketplaceName: string,
 ): Promise<CodexMarketplaceInstallMetadata | null> {
-  const { codexHome } = await getCodexRuntimeService().getCanonicalState();
+  const codexHome = await resolveCodexHomeWithoutSpawn();
   const installMetadataPath = path.join(
     codexHome,
     '.tmp',
@@ -230,7 +240,9 @@ export async function addCodexMarketplace(
     };
   } catch (error) {
     const message = errorMessage(error);
-    const alreadySatisfied = isAlreadyAddedError(message);
+    const alreadySatisfied =
+      error instanceof CodexAppServerJsonRpcError &&
+      isAlreadyAddedError(message);
     const marketplaceName = alreadySatisfied
       ? alreadyAddedMarketplaceName(message)
       : undefined;
@@ -256,11 +268,10 @@ export async function addCodexMarketplace(
         (!sameSource && canRepairMissingLocalSource)
       ) {
         const removeResult = await removeCodexMarketplace(marketplaceName);
-        if (removeResult.accepted) {
-          return addCodexMarketplace(source, {
-            repairEquivalentSourceConflict: false,
-          });
-        }
+        if (!removeResult.accepted) return removeResult;
+        return addCodexMarketplace(source, {
+          repairEquivalentSourceConflict: false,
+        });
       }
       if (!sameSource || /different source/i.test(message)) {
         return {
@@ -324,10 +335,12 @@ export async function removeCodexMarketplace(
     };
   } catch (error) {
     const message = errorMessage(error);
+    const alreadyRemoved =
+      error instanceof CodexAppServerJsonRpcError && isNotFoundError(message);
     return {
-      accepted: isNotFoundError(message),
+      accepted: alreadyRemoved,
       marketplaceName,
-      alreadySatisfied: isNotFoundError(message) ? true : undefined,
+      alreadySatisfied: alreadyRemoved ? true : undefined,
       error: message,
     };
   }
@@ -377,13 +390,17 @@ export async function readCuratedCodexInstalledRoots(
   const roots = new Map<string, string>();
   if (!plugins.length || path.basename(marketplaceName) !== marketplaceName)
     return roots;
-  const { codexHome } = await getCodexRuntimeService().getCanonicalState();
-  const result = await withConnection((connection) =>
-    connection.request('skills/list', {
-      cwds: [codexHome],
-      forceReload: true,
-    }),
-  );
+  const state = await readCuratedCodexState(async (codexHome) => ({
+    codexHome,
+    result: await withConnection((connection) =>
+      connection.request('skills/list', {
+        cwds: [codexHome],
+        forceReload: true,
+      }),
+    ),
+  }));
+  if (!state) return roots;
+  const { codexHome, result } = state;
   if (result.data.some((entry) => entry.errors.length > 0)) return roots;
   const canonicalHome = await fs.promises.realpath(codexHome);
   const cacheRoot = path.join(canonicalHome, 'plugins', 'cache');
@@ -421,6 +438,20 @@ export async function readCuratedCodexInstalledRoots(
   return roots;
 }
 
+async function readCuratedCodexState<T>(
+  read: (codexHome: string) => Promise<T>,
+): Promise<T | null> {
+  try {
+    const { codexHome } = await withInstalledCodex(() =>
+      getCodexRuntimeService().getCanonicalState(),
+    );
+    return await read(codexHome);
+  } catch (error) {
+    if (error instanceof CodexNotInstalledError) return null;
+    throw error;
+  }
+}
+
 // One bounded attempt per revision per process. Failed installs are retried on
 // app restart or a subsequent catalog revision, never by a rescan loop.
 const curatedRefreshAttempts = new Map<string, string>();
@@ -434,8 +465,12 @@ export async function refreshCuratedCodexPlugins(
   sourceRoot: string,
 ): Promise<boolean> {
   let refreshed = false;
-  const { codexHome } = await getCodexRuntimeService().getCanonicalState();
-  const listing = await listCodexPlugins();
+  const state = await readCuratedCodexState(async (codexHome) => ({
+    codexHome,
+    listing: await listCodexPlugins(),
+  }));
+  if (!state) return false;
+  const { codexHome, listing } = state;
   if (listing.marketplaceLoadErrors.length) return false;
   const marketplaces = listing.marketplaces.filter(
     (row) => row.name === marketplaceName,

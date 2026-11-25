@@ -1,4 +1,7 @@
-import { isAntigravityHarnessReleased } from '@/lib/antigravity-settings';
+import {
+  isAntigravityHarnessReleased,
+  useAntigravityHostSupported,
+} from '@/lib/antigravity-settings';
 import { GoogleSubscriptionConnection } from './GoogleSubscriptionConnection';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { isCursorHarnessReleased } from '@/lib/cursor-settings';
@@ -59,6 +62,8 @@ function LlmProviderSection({
   const antigravityReleased = useFeatureFlagsStore(
     isAntigravityHarnessReleased,
   );
+  const antigravityHostSupported =
+    useAntigravityHostSupported(antigravityReleased);
   const copilotReleased = useFeatureFlagsStore(isCopilotHarnessReleased);
   const opencodeReleased = useFeatureFlagsStore(isOpenCodeHarnessReleased);
   const accountProxyFlagEnabled = useFeatureFlagsStore((state) =>
@@ -100,7 +105,7 @@ function LlmProviderSection({
         ))}
         <ProviderAuthPanel provider="claude" layout="row" />
         <ProviderAuthPanel provider="codex" layout="row" />
-        {window.platform === 'darwin' && antigravityReleased && (
+        {antigravityHostSupported && antigravityReleased && (
           <GoogleSubscriptionConnection placement="row" />
         )}
         {/* Released Copilot and OpenCode are provider rows too (and render

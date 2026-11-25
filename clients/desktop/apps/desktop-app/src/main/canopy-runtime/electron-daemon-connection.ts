@@ -23,8 +23,17 @@ type Connection = CanopyLeaseClient & CanopyAuthorityConnection;
 export type ElectronDaemonReachability =
   /** An attach (setup or lease reconnect) resolved with a usable client. */
   | { readonly kind: 'reached' }
-  /** A connected client dropped while its session was live. */
+  /**
+   * A connected client dropped while its session was live or still in setup.
+   * That session reports the restart's outcome: a reach,
+   * `reconnect_failed` / `endpoint_repair_required`, or `abandoned`.
+   */
   | { readonly kind: 'lost' }
+  /**
+   * The last session restarting after a `lost` closed before reporting its
+   * outcome, e.g. its owner closed or replaced it. Nothing proves either way.
+   */
+  | { readonly kind: 'abandoned' }
   | {
       readonly kind: 'unreachable';
       readonly reason: BackgroundServiceUnreachableReason;
@@ -168,6 +177,8 @@ export function createElectronDaemonConnectionService<C extends Connection>(
   const admissions = new Map<string, Promise<unknown>>();
   let disposed = false;
   let disposing: Promise<void> | undefined;
+  /** Open sessions between their `lost` and reporting the restart's outcome. */
+  let restarts = 0;
   const observe = (event: ElectronDaemonReachability): void => {
     if (disposed) return;
     try {
@@ -233,11 +244,23 @@ export function createElectronDaemonConnectionService<C extends Connection>(
         ),
       options.setupTimeoutMs ?? 30_000,
     );
+    // Set by this session's `lost` until it reports the restart's outcome:
+    // health hides that restart until then, even before setup finished.
+    let restarting = false;
+    const setRestarting = (next: boolean): void => {
+      if (restarting === next) return;
+      restarting = next;
+      restarts += next ? 1 : -1;
+    };
     const close = (): Promise<void> => {
       if (closing) return closing;
       let timer: ReturnType<typeof setTimeout>;
       const cleanup = (async (): Promise<void> => {
         lifetime.abort(stop());
+        if (restarting) {
+          setRestarting(false);
+          if (restarts === 0) observe({ kind: 'abandoned' });
+        }
         owner.removeEventListener('abort', onLoss);
         try {
           await lease?.release('normal_shutdown');
@@ -325,12 +348,17 @@ export function createElectronDaemonConnectionService<C extends Connection>(
           if (
             !lifetime.signal.aborted &&
             (lease === undefined || lease.client === client)
-          )
+          ) {
+            setRestarting(true);
             observe({ kind: 'lost' });
+          }
         },
         { once: true },
       );
-      if (!client.signal.aborted) observe({ kind: 'reached' });
+      if (!client.signal.aborted) {
+        setRestarting(false);
+        observe({ kind: 'reached' });
+      }
       return client;
     };
     const attach = (): Promise<C> => {
@@ -415,7 +443,8 @@ export function createElectronDaemonConnectionService<C extends Connection>(
           if (
             daemonUnreachableReason(error) !== null ||
             ownedLease.client.signal.aborted
-          )
+          ) {
+            setRestarting(false);
             observe({
               kind: 'unreachable',
               reason:
@@ -423,6 +452,7 @@ export function createElectronDaemonConnectionService<C extends Connection>(
                   ? 'endpoint_repair_required'
                   : 'reconnect_failed',
             });
+          }
         },
       }));
       try {
@@ -494,7 +524,14 @@ export function createElectronDaemonConnectionService<C extends Connection>(
       entry.failedAt = performance.now();
       const reason = daemonUnreachableReason(error);
       if (reason) {
-        observe({ kind: 'unreachable', reason });
+        // Lost mid-setup, its restart failed: reported like an established
+        // lease giving up, since health shows nothing else while it restarts.
+        const shown =
+          restarting && reason !== 'endpoint_repair_required'
+            ? 'reconnect_failed'
+            : reason;
+        setRestarting(false);
+        observe({ kind: 'unreachable', reason: shown });
         try {
           options.onSetupFailure?.(error, reason);
         } catch {

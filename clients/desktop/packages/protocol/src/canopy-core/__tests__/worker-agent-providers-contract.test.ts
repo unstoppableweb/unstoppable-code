@@ -2,6 +2,8 @@ import {
   WORKER_AGENT_PROVIDER_QUERY_DEFINITIONS,
   WorkerAgentProviderListParamsSchema,
   WorkerAgentProviderListResultSchema,
+  WorkerAgentProviderPlatformGetParamsSchema,
+  WorkerAgentProviderPlatformGetResultSchema,
   type WorkerAgentModel,
   type WorkerAgentProviderListResult,
 } from '../worker/agent-providers';
@@ -297,4 +299,45 @@ it("the definition matches the catalog page's contract", () => {
     requiredGrants: ['worker.agent.read'],
     plane: 'worker',
   });
+});
+
+it('platform support takes only a worker selection and returns closed provider ids', () => {
+  expect(
+    WORKER_AGENT_PROVIDER_QUERY_DEFINITIONS[
+      'worker.agent.provider.platform.get'
+    ],
+  ).toMatchObject({
+    placement: 'target-selectable',
+    idempotency: 'inherent',
+    requiredGrants: ['worker.agent.read'],
+    plane: 'worker',
+  });
+  expect(
+    WorkerAgentProviderPlatformGetParamsSchema.safeParse({
+      scope: { targetId: 'in_process_worker' },
+    }).success,
+  ).toBe(true);
+  for (const params of [
+    { scope: {}, probe: false },
+    { scope: { executable: '/usr/bin/agy' } },
+    {},
+  ])
+    expect(
+      WorkerAgentProviderPlatformGetParamsSchema.safeParse(params).success,
+    ).toBe(false);
+  const result = {
+    authorityId: 'local-desktop',
+    targetId: 'in_process_worker',
+    providerIds: ['claude', 'codex', 'antigravity'],
+  };
+  expect(WorkerAgentProviderPlatformGetResultSchema.parse(result)).toEqual(
+    result,
+  );
+  for (const bad of [
+    { ...result, providerIds: ['gemini'] },
+    { ...result, executable: '/usr/bin/agy' },
+  ])
+    expect(
+      WorkerAgentProviderPlatformGetResultSchema.safeParse(bad).success,
+    ).toBe(false);
 });

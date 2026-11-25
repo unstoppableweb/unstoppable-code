@@ -3,7 +3,6 @@ import {
   useSettingsBootstrap,
   useSettingsStoreApi,
 } from '@canopy/app-state/settings';
-import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import {
   replayBlockClassFor,
   HOSTED_SETTINGS_PAGE_REPLAY_PRIVACY,
@@ -27,8 +26,8 @@ import {
 } from '@canopy/ui-app/settings/pages';
 import { lazyLoadErrorBoundaryHost } from '@/lib/desktop-error-boundary-host';
 import { openAuthenticatedCloudPage } from '@/lib/openAuthenticatedCloudPage';
-import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { useDeviceAiGatewaySettingsAvailable } from '@/hooks/useDeviceAiGatewaySettingsAvailable';
 // Imported here, inside the hosted content chunk, so the device sections
 // load with hosted pages rather than with the overlay.
 import { AccountDeviceSettings } from './AccountDeviceSettings';
@@ -341,9 +340,7 @@ export function HostedSettingsContent({
 }: HostedSettingsContentProps): JSX.Element {
   const account = useHostedSettingsAccount();
   // Signed out, the AI gateway page sets up this device's own gateway.
-  const aiGatewayEnabled = useFeatureFlagsStore((state) =>
-    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyAiGatewaySettingsEnabled.key),
-  );
+  const aiGatewayEnabled = useDeviceAiGatewaySettingsAvailable();
   const route = location.route;
   if (account.status === 'loading') {
     if (route.scope !== 'account') return <HostedRouteLoading route={route} />;

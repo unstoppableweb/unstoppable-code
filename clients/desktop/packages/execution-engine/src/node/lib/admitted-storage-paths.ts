@@ -187,6 +187,19 @@ function dataRootFile(name: string): AdmittedStorageNamespace | undefined {
   );
 }
 
+function isSlackConversationsPath(
+  target: string,
+  dataRoot: string | null,
+): boolean {
+  if (basename(target).toLowerCase() !== 'slack-conversations.json')
+    return false;
+  const parent = fold(dirname(target));
+  return dataRoot === null
+    ? basename(parent) === 'app-advisor' &&
+        basename(dirname(parent)) === 'app-workspaces'
+    : parent === fold(resolve(dataRoot, 'app-workspaces', 'app-advisor'));
+}
+
 /** Whether `targetPath` has a curated row's file name; no data root needed. */
 export function isAdmittedStorageCandidate(targetPath: string): boolean {
   const target = resolve(targetPath);
@@ -194,6 +207,7 @@ export function isAdmittedStorageCandidate(targetPath: string): boolean {
   return (
     mcpRow(target, null) !== undefined ||
     codeReviewRow(target, null) !== undefined ||
+    isSlackConversationsPath(target, null) ||
     dataRootFile(name) !== undefined ||
     isPluginCachePath(target, null) ||
     name === APPROVALS_FILE ||
@@ -227,6 +241,8 @@ export function admittedStorageRowForPath(
   if (mcp !== undefined) return mcp;
   const review = codeReviewRow(target, dataRoot);
   if (review !== undefined) return review;
+  if (isSlackConversationsPath(target, dataRoot))
+    return 'app_advisor_slack_conversations';
   if (isPluginCachePath(target, dataRoot)) return 'plugin_cache';
   const secureRoot =
     secureDataRoot === undefined && dataRoot === null ? null : secureDataRoot;

@@ -30,6 +30,7 @@ import type { AiGatewayHarness } from '@canopy/protocol/ai-gateway-models';
 import {
   isUnavailableModelSelection,
   resolveGatewayModelEntry,
+  resolveOwnerGatewayModelId,
 } from '@canopy/execution-engine/lib/gateway-model-availability';
 export {
   isRemovedGatewayOnlyModel,
@@ -94,6 +95,7 @@ import {
   readLocalModelGatewayProjection,
   readLocalModelGatewayProjectionStatus,
 } from '../lib/model-gateway-state';
+import { readModelGatewayDeviceOptOuts } from '../lib/model-gateway-device-use';
 import {
   readModelPolicyDecision,
   isOrgModelPolicyActiveForStoredAccount,
@@ -1307,13 +1309,15 @@ export async function resolveOrgGatewayCredential(
   }
   const account = await loadCanopyCloudAccount();
   // Personal work routes to the account's Personal gateway, or to the device
-  // gateway while the account names no Personal organization.
+  // gateway while the account names no Personal organization, and never to
+  // one this computer opts out of.
   const ownerOrganizationId =
     owner?.kind === 'personal'
       ? effectivePersonalModelGateway(
           account,
           await readLocalModelGatewayProjection(),
-        ).personalOrganizationId
+          await readModelGatewayDeviceOptOuts(),
+        ).personalModelGateway?.organizationId
       : owner?.kind === 'organization'
         ? owner.organizationId
         : undefined;
@@ -1393,7 +1397,7 @@ export async function resolveAiCreditsRoutingOverride(
 }
 
 async function resolveRoutingOverride(
-  model: string | undefined,
+  requestedModel: string | undefined,
   provider: ModelHarness,
   routingState: AiCreditsRoutingState | undefined,
   routeSessionId: string | undefined,
@@ -1405,6 +1409,10 @@ async function resolveRoutingOverride(
   }
   const attributionPromise = resolveRoutingOverrideAttribution(options);
   const attribution = await attributionPromise;
+  const model =
+    requestedModel === undefined
+      ? undefined
+      : resolveOwnerGatewayModelId(requestedModel, attribution.workOwner);
   const gatewayRequirement = await getModelGatewayRequirementForOwner(
     attribution.workOwner,
     'resolveAiCreditsRoutingOverride',

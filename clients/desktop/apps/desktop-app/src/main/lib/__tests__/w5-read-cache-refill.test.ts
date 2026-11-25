@@ -1,4 +1,6 @@
 import type * as LegacyStorage from './fixtures/w5-legacy-storage';
+import type * as NativeFs from 'node:fs';
+import type * as AsyncFs from 'node:fs/promises';
 // CAN-7155 (W5 readers S-9, PR 2): the read cache's W5e step, broad refill
 // and warm, driven by main's real binding over the real bridge, `core.events`
 // module, W5e event source, record port and commit-log worker. Another
@@ -18,14 +20,29 @@ import type * as LegacyStorage from './fixtures/w5-legacy-storage';
 // its split, leaves nothing served and the cache not ready until a broad retry
 // completes; a failed targeted capture stops serving only its files.
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
+  watch,
+  type FSWatcher,
+  type PathLike,
+  type WatchOptions,
+  type WatchListener,
 } from 'node:fs';
+import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+jest.mock('node:fs', () => ({
+  ...jest.requireActual<typeof NativeFs>('node:fs'),
+  watch: jest.fn(),
+}));
+jest.mock('node:fs/promises', () => ({
+  ...jest.requireActual<typeof AsyncFs>('node:fs/promises'),
+}));
 import type * as TsxWorkerThreads from '../../ledger/__tests__/fixtures/tsx-worker-threads';
 jest.mock('node:worker_threads', () =>
   jest
@@ -49,14 +66,24 @@ jest.mock('../../observability', () => ({
 jest.mock('../../services/desktop-structure-signal', () => ({
   scheduleDesktopStructureChanged: jest.fn(),
 }));
+jest.mock('../worktree-watch-recovery', () => ({
+  createWorktreeWatch: jest.fn(() => ({ close: jest.fn(), retire: jest.fn() })),
+}));
+jest.mock('../window-send', () => ({ sendToWindow: jest.fn() }));
 jest.mock('../desktop-telemetry', () => ({
   recordWorkspaceCrudTelemetry: jest.fn(),
   recordWorktreeCrudTelemetry: jest.fn(),
 }));
 
 import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
-import type { WorkspaceConfigFile } from '@canopy/desktop-shared/types';
+import { isRetiredTemporaryWorkspace } from '@canopy/desktop-shared/lib/workspace-visibility';
 import {
+  IPC_CHANNELS,
+  type WorktreeData,
+  type WorkspaceConfigFile,
+} from '@canopy/desktop-shared/types';
+import {
+  CanopyClientError,
   planCanopyWorkspaceInvalidation,
   type CanopyEventsConnection,
   type CanopyWorkspaceInvalidationPlan,
@@ -66,15 +93,32 @@ import {
   type W5CaptureFile,
   type W5CaptureRequest,
 } from '@canopy/core-runtime/node/w5/commit-log/capture-contract';
-import { classifyW5FileProvenance } from '@canopy/core-runtime/node/w5/commit-log/eligibility';
+import {
+  classifyW5FileProvenance,
+  classifyW5RevisionEligibility,
+} from '@canopy/core-runtime/node/w5/commit-log/eligibility';
 import type { W5CommitLogFileStore } from '@canopy/core-runtime/node/w5/commit-log-file-store';
 import { W5_READ_CACHE_IDLE_RETRIES } from '@canopy/core-runtime/node/w5/committed-read-cache';
-import { CORE_WORKSPACE_INVALIDATED_EVENT } from '@canopy/protocol/canopy-core';
+import {
+  CORE_WORKSPACE_INVALIDATED_EVENT,
+  CORE_WORKSPACE_RECORDS_LIMITS,
+} from '@canopy/protocol/canopy-core';
 import {
   createDesktopW5ReadCache,
+  W5_READ_CACHE_REFRESH_MS,
   type DesktopW5ReadCache,
   type W5ReadCacheSchedule,
 } from '../../canopy-runtime/w5-read-cache';
+import {
+  registerDesktopW5ReadCacheServer,
+  runDesktopW5CachedReadView,
+} from '../../canopy-runtime/w5-cached-workspace-services';
+import { defaultCoreWorkspaceReadServices } from '../../canopy-runtime/core-workspace-adapter';
+import { createElectronDaemonHealth } from '../../canopy-runtime/electron-daemon-health';
+import {
+  createDesktopRuntime,
+  type DesktopCanopyDispatcher,
+} from '../../canopy-runtime/desktop-runtime';
 import {
   createWorkspaceCommitEventBinding,
   type WorkspaceCommitEventBinding,
@@ -85,15 +129,40 @@ import {
   type W5HostedMetadataHarness,
   type W5HostedMetadataHarnessOptions,
 } from './fixtures/w5-hosted-metadata-harness';
-import { __setDesktopW5FileStoreForTests } from '../w5-commit-log-file-store';
+import {
+  __setDesktopW5FileStoreForTests,
+  installDesktopW5FileStore,
+  runW5ReadView,
+} from '../w5-commit-log-file-store';
 import type { W5RecordPortClient } from '../w5-daemon-record-store';
 import {
   createW5DaemonRecordStore,
   installW5DaemonRecordStoreForTests,
   w5RecordPortTransport,
 } from '../w5-daemon-record-store';
+import {
+  resetWorkCounters,
+  runWithW5Caller,
+  snapshotWorkCounters,
+} from '@canopy/desktop-shared/node/work-counters';
 import { nodeW5FileStore } from '../w5-file-store';
-import { writeWorkspaceConfig } from '../workspace-persistence';
+import {
+  WORKSPACE_MANIFEST_STORAGE,
+  withStorageAdmission,
+} from '../w5-storage';
+import { withW5RepositoryLock } from '../w5-repository-locks';
+import {
+  writeWorkspaceConfig,
+  writeWorkspaceWorktrees,
+  readWorkspaceWorktreesDetailed,
+} from '../workspace-persistence';
+import { getWorkspaceIndexRepository } from '../sidebar-items';
+import { createWorktreeWatch } from '../worktree-watch-recovery';
+import { sendToWindow } from '../window-send';
+import {
+  stopWorktreesFileWatchers,
+  syncWorktreesFileWatchers,
+} from '../worktrees-file-watcher';
 
 jest.setTimeout(120_000);
 
@@ -120,6 +189,29 @@ interface Timer {
   live: boolean;
 }
 let timers: Timer[];
+class DirectoryWatch extends EventEmitter implements FSWatcher {
+  closed = false;
+  close(): void {
+    this.closed = true;
+    this.emit('close');
+  }
+  ref(): this {
+    return this;
+  }
+  unref(): this {
+    return this;
+  }
+}
+let directoryWatches: Map<string, DirectoryWatch>;
+let failedWatches: Set<string>;
+let nativeMissingWatches: Set<string>;
+function directoryWatch(id?: string): DirectoryWatch {
+  const directory = id ? join(dir, 'workspaces', id) : join(dir, 'workspaces');
+  const watcher = directoryWatches.get(directory);
+  expect(watcher?.closed).toBe(false);
+  if (!watcher) throw new Error(`No cache invalidation watch for ${directory}`);
+  return watcher;
+}
 /** The cache's clock; only a case moves it. */
 let clock: number;
 const schedule: W5ReadCacheSchedule = (run, ms) => {
@@ -165,25 +257,36 @@ let binding: WorkspaceCommitEventBinding;
 let restore: () => void;
 let originalDataDir: string | undefined;
 let captures: W5CaptureRequest[];
+let coverageAtCapture: string[][];
 /** Plans the binding applied, in order, and what each handler saw. */
 let applied: CanopyWorkspaceInvalidationPlan[];
 let seen: { handler: string; commitId: number | undefined }[];
 let acks: number[];
 let stepGate: Deferred | undefined;
 let handlerGate: Deferred | undefined;
+let handlerFailure: boolean;
+let bridgeRetryMs: number;
 let beforeOpen: (() => Promise<void>) | undefined;
+let afterOpen: (() => Promise<void>) | undefined;
 /** A slow consumer's subscribe window, so a test can make it lag. */
 let maxInFlight: number | undefined;
 /** The daemon health latch, as the cache reads it. */
 let usable: boolean;
+let healthFailure: (() => void) | undefined;
+let healthRecovery: (() => void) | undefined;
 /** Holds the cache's next captures until opened. */
 let captureGate: Deferred | undefined;
+/** Holds discovery (broad) captures until opened; targeted captures pass. */
+let discoveryGate: Deferred | undefined;
 /** Captures report this many unresolved commits, as a log awaiting recovery. */
 let unresolved: number | undefined;
 /** Captures this matches reject, as a daemon that cannot answer them. */
 let failing: ((request: W5CaptureRequest) => boolean) | undefined;
 /** Captures report abandoned history, as a log that lost a commit. */
 let abandoned: boolean;
+/** A typed authority refusal, below every host capture consumer. */
+let captureRefusal: string | undefined;
+let endStream: (() => void) | undefined;
 const waiters = new Set<() => void>();
 
 /** Resolves once `ready` holds; rechecked after every plan and ack. */
@@ -235,11 +338,22 @@ function connection(client: W5HostedEventsClient): CanopyEventsConnection {
       const hook = beforeOpen;
       beforeOpen = undefined;
       await hook?.();
-      return client.openStream(
+      endStream = (): void =>
+        options?.onFrame?.({
+          kind: 'end',
+          cursor: { daemonEpoch: client.identity.daemonEpoch, sequence: 0 },
+          outcome: 'completed',
+          error: null,
+        });
+      const handle = await client.openStream(
         name,
         maxInFlight === undefined ? params : { ...params, maxInFlight },
         options,
       );
+      const opened = afterOpen;
+      afterOpen = undefined;
+      await opened?.();
+      return handle;
     },
     instruction: async (name, params, options) => {
       const result = await client.instruction(name, params, options);
@@ -341,27 +455,76 @@ beforeEach(() => {
   originalDataDir = process.env.CANOPY_DATA_DIR;
   process.env.CANOPY_DATA_DIR = dir;
   captures = [];
+  coverageAtCapture = [];
   applied = [];
   seen = [];
   acks = [];
   stepGate = undefined;
   handlerGate = undefined;
+  handlerFailure = false;
+  bridgeRetryMs = NEVER_MS;
   beforeOpen = undefined;
+  afterOpen = undefined;
   maxInFlight = undefined;
   usable = true;
+  healthFailure = undefined;
+  healthRecovery = undefined;
   captureGate = undefined;
+  discoveryGate = undefined;
   unresolved = undefined;
   failing = undefined;
   abandoned = false;
+  captureRefusal = undefined;
+  endStream = undefined;
   timers = [];
+  directoryWatches = new Map();
+  failedWatches = new Set();
+  nativeMissingWatches = new Set();
+  jest
+    .mocked(watch)
+    .mockImplementation(
+      (
+        path: PathLike,
+        options?:
+          | WatchOptions
+          | string
+          | null
+          | WatchListener<string>
+          | WatchListener<Buffer>,
+        listener?: WatchListener<string> | WatchListener<Buffer>,
+      ): FSWatcher => {
+        const directory = String(path);
+        if (failedWatches.has(directory))
+          throw new Error('Watch creation failed');
+        // Missing-directory probes exercise the native ENOENT enrollment path.
+        if (nativeMissingWatches.has(directory) && !existsSync(directory))
+          return jest
+            .requireActual<typeof NativeFs>('node:fs')
+            .watch(directory);
+        const watcher = new DirectoryWatch();
+        if (typeof options === 'function') watcher.on('change', options);
+        else if (listener) watcher.on('change', listener);
+        directoryWatches.set(directory, watcher);
+        return watcher;
+      },
+    );
   clock = 0;
   readCache = createDesktopW5ReadCache({
     usable: () => usable,
+    onUnavailable: (revoke, recover) => {
+      healthFailure = revoke;
+      healthRecovery = recover;
+      return (): void => {
+        healthFailure = undefined;
+        healthRecovery = undefined;
+      };
+    },
     retryFirstMs: RETRY_MS,
     ownRefillMs: OWN_MS,
     schedule,
     now: () => clock,
   });
+  readCache.setStreamReady(true);
 });
 
 /** The harness, Electron's store and the binding; the cache warms on activate. */
@@ -376,9 +539,25 @@ async function prepare(
   options: Partial<W5HostedMetadataHarnessOptions> = {},
 ): Promise<W5CommitLogFileStore> {
   await start(options);
+  const transport = w5RecordPortTransport(() => Promise.resolve(records));
   const store = createW5DaemonRecordStore({
     root: harness.root,
-    transport: w5RecordPortTransport(() => Promise.resolve(records)),
+    transport: {
+      ...transport,
+      capture: (request) => {
+        if (captureRefusal)
+          return Promise.reject(
+            new CanopyClientError({
+              kind: 'failed_precondition',
+              code: 'core.workspaceRecords.captureRefused',
+              message: 'The W5 records cannot be read.',
+              retry: { kind: 'never' },
+              details: { capture: captureRefusal },
+            }),
+          );
+        return transport.capture(request);
+      },
+    },
     projection: readCache,
   });
   electron = store;
@@ -387,7 +566,14 @@ async function prepare(
     ...store,
     capture: async (request) => {
       captures.push(request);
+      coverageAtCapture.push(
+        Array.from(directoryWatches.entries()).flatMap(([path, watch]) =>
+          watch.closed ? [] : [path],
+        ),
+      );
+      wake();
       await captureGate?.promise;
+      if (request.discoverWorkspaces) await discoveryGate?.promise;
       if (failing?.(request)) throw new Error('The capture failed');
       if (!store.capture) throw new Error('The daemon-backed store captures');
       const result = await store.capture(request);
@@ -415,7 +601,12 @@ async function prepare(
   };
   binding = createWorkspaceCommitEventBinding({
     isOwnOrigin: (id) => id === 'electron-main',
-    retryDelayMs: NEVER_MS,
+    retryDelayMs: bridgeRetryMs,
+    onStreamChanged: (ready) => {
+      readCache.setStreamReady(ready);
+      wake();
+    },
+    onInvalidated: () => readCache.revoke(),
     readCache: async (plan) => {
       await stepGate?.promise;
       await readCache.apply(plan);
@@ -427,6 +618,7 @@ async function prepare(
       refreshWorkspaceRegistries: async () => {
         note('refreshWorkspaceRegistries')();
         await handlerGate?.promise;
+        if (handlerFailure) throw new Error('Registry refresh failed');
       },
       reconcileManifestPluginDefaults: () => Promise.resolve(),
       listWorkspaceIds: () => ['a', 'b'],
@@ -444,6 +636,7 @@ afterEach(async () => {
   stepGate?.open();
   handlerGate?.open();
   captureGate?.open();
+  discoveryGate?.open();
   await binding.close();
   readCache.dispose();
   await settleDetachedWork();
@@ -456,13 +649,1480 @@ afterEach(async () => {
 });
 
 describe('the read cache over W5e (CAN-7155)', () => {
-  test('warm: one discovery capture fills every listed workspace', async () => {
+  describe('cache-owned native invalidation coverage', () => {
+    const caller = {
+      principalId: 'test-user',
+      clientInstanceId: 'test-client',
+      authorityId: 'local-desktop',
+      interfaceKind: 'test' as const,
+      grants: ['core.workspace.read' as const, 'core.worktree.read' as const],
+    };
+    const row = {
+      id: 'manual',
+      branchName: 'manual',
+      createdAt: '2026-11-01T00:00:00Z',
+    };
+    const index = (ids: readonly string[]): void =>
+      writeFileSync(
+        join(dir, 'workspaces', 'index.json'),
+        JSON.stringify({
+          version: 1,
+          workspaces: ids.map((id, order) => ({
+            id,
+            name: id,
+            type: id === 'b' ? 'cowork' : 'multi-repo',
+            color: '#7C3AED',
+            collapsed: false,
+            order,
+          })),
+        }),
+      );
+    const seed = (): void => {
+      index(['a', 'b']);
+      writeFileSync(
+        join(dir, 'workspaces', 'a', 'workspace.json'),
+        JSON.stringify({ ...CONFIG, temporary: true }),
+      );
+      writeFileSync(
+        join(dir, 'workspaces', 'b', 'workspace.json'),
+        JSON.stringify({ version: 1, type: 'cowork' }),
+      );
+      for (const id of ['a', 'b'])
+        writeFileSync(
+          join(dir, 'workspaces', id, 'worktrees.json'),
+          JSON.stringify({ version: 1, worktrees: [] }),
+        );
+    };
+    const serve = async (
+      files: readonly W5CaptureFile[],
+      discoverWorkspaces = false,
+    ): Promise<boolean> => {
+      __setDesktopW5FileStoreForTests(undefined);
+      try {
+        return (
+          (await readCache.serve({ files, discoverWorkspaces })) !== undefined
+        );
+      } finally {
+        __setDesktopW5FileStoreForTests(electron);
+      }
+    };
+    async function withReaders(
+      run: (
+        cached: DesktopCanopyDispatcher,
+        today: DesktopCanopyDispatcher,
+      ) => Promise<void>,
+    ): Promise<void> {
+      installDesktopW5FileStore(electron);
+      registerDesktopW5ReadCacheServer(readCache);
+      const cached = createDesktopRuntime({
+        workspaceServices: {
+          ...defaultCoreWorkspaceReadServices(),
+          readView: runDesktopW5CachedReadView,
+        },
+      });
+      const today = createDesktopRuntime();
+      __setDesktopW5FileStoreForTests(undefined);
+      try {
+        await run(cached, today);
+      } finally {
+        __setDesktopW5FileStoreForTests(electron);
+        registerDesktopW5ReadCacheServer(undefined);
+        await Promise.all([cached.shutdown(), today.shutdown()]);
+      }
+    }
+    test('health recovery on the same quiet stream coalesces a broad refill before the next cached read', async () => {
+      await compose();
+      await attach();
+      const health = createElectronDaemonHealth({
+        warn: jest.fn(),
+        info: jest.fn(),
+      });
+      health.setConsumerEnabled('workspace_records', true);
+      health.observe({ kind: 'reached' });
+      health.onStatusChanged((status) => {
+        usable = status.state === 'ok' && !health.isLatched();
+        if (usable) healthRecovery?.();
+        else healthFailure?.();
+      });
+      await withReaders(async (cached, today) => {
+        const expected = await today.queryWorkspaceListForLegacyIpc(
+          {},
+          { caller },
+        );
+        expect(readCache.ready()).toBe(true);
+        expect(live(own)).toHaveLength(0);
+        health.observe({ kind: 'unreachable', reason: 'host_unavailable' });
+        expect(readCache.ready()).toBe(false);
+        const before = captures.length;
+        const plans = applied.length;
+        const acknowledged = acks.length;
+        const broad = discoveries();
+        // Try again can confirm an already-active lease without reopening events.
+        await health.retry(() => Promise.resolve(true));
+        healthRecovery?.();
+        expect(readCache.ready()).toBe(false);
+        expect(captures).toHaveLength(before);
+        expect(live(own)).toHaveLength(1);
+        await fire(own);
+        expect(discoveries()).toBe(broad + 1);
+        expect(readCache.ready()).toBe(true);
+        expect(applied).toHaveLength(plans);
+        expect(acks).toHaveLength(acknowledged);
+        const refilled = captures.length;
+        const served = jest.spyOn(readCache, 'serve');
+        expect(
+          await cached.queryWorkspaceListForLegacyIpc({}, { caller }),
+        ).toEqual(expected);
+        expect(served).toHaveBeenCalledTimes(1);
+        await expect(served.mock.results[0]?.value).resolves.toBeDefined();
+        served.mockRestore();
+        expect(captures).toHaveLength(refilled);
+        expect(live(own)).toHaveLength(0);
+      });
+    });
+
+    test('healthy retry status changes do not schedule health recovery while already serving', async () => {
+      await compose();
+      await attach();
+      const health = createElectronDaemonHealth({
+        warn: jest.fn(),
+        info: jest.fn(),
+      });
+      health.setConsumerEnabled('workspace_records', true);
+      health.observe({ kind: 'reached' });
+      const retries: string[] = [];
+      health.onStatusChanged((status) => {
+        retries.push(status.retry);
+        usable = status.state === 'ok' && !health.isLatched();
+        if (usable) healthRecovery?.();
+        else healthFailure?.();
+      });
+      expect(ready()).toBe(true);
+      const before = captures.length;
+      const scheduled = timers.length;
+      await health.retry(() => Promise.resolve(true));
+      health.observe({ kind: 'reached' });
+      expect(retries).toEqual(['running', 'idle']);
+      expect(ready()).toBe(true);
+      expect(captures).toHaveLength(before);
+      expect(timers).toHaveLength(scheduled);
+      expect(live(own)).toHaveLength(0);
+    });
+
+    test.each(['hidden-list', 'cowork-list', 'manifest'] as const)(
+      '%s: notification invalidates before the next dispatcher read',
+      async (change) => {
+        seed();
+        await compose();
+        const id = change === 'cowork-list' ? 'b' : 'a';
+        const kind = change === 'manifest' ? 'manifest' : 'worktrees';
+        const filename =
+          kind === 'manifest' ? 'workspace.json' : 'worktrees.json';
+        const file: W5CaptureFile = { kind, workspaceId: id };
+        // Neither hidden temporary nor Cowork workspaces is enrolled by the sidebar watcher.
+        const watcher = directoryWatch(id);
+        expect(await serve([file])).toBe(true);
+        if (change === 'hidden-list')
+          await withReaders(async (cached) => {
+            const before = await cached.queryWorkspaceListForLegacyIpc(
+              {},
+              { caller },
+            );
+            const hidden = before.legacyResult.items.find(
+              (item) => item.id === 'a',
+            );
+            if (!hidden) throw new Error('The temporary workspace is indexed');
+            expect(isRetiredTemporaryWorkspace(hidden)).toBe(true);
+          });
+        writeFileSync(
+          join(dir, 'workspaces', id, filename),
+          JSON.stringify(
+            kind === 'manifest'
+              ? { ...CONFIG, temporary: true, alwaysShow: true }
+              : { version: 1, worktrees: [row] },
+          ),
+        );
+        watcher.emit('change', 'change', filename);
+        expect(readCache.cache.projection().state(file)).toBe('dirty');
+        expect(await serve([file])).toBe(false);
+        await withReaders(async (cached, today) => {
+          const read = (runtime: DesktopCanopyDispatcher): Promise<unknown> =>
+            kind === 'manifest'
+              ? runtime.queryWorkspaceGetForLegacyIpc(
+                  { workspaceId: id },
+                  { caller },
+                )
+              : runtime.readWorktreeListForLegacy(id, { caller });
+          const expected = await read(today);
+          expect(await read(cached)).toEqual(expected);
+          if (kind === 'manifest')
+            expect(expected).toMatchObject({
+              legacyResult: { alwaysShow: true },
+            });
+          else
+            expect(expected).toMatchObject({
+              legacyResult: [expect.objectContaining({ id: row.id })],
+            });
+          if (change === 'hidden-list') {
+            const reloaded = await cached.queryWorkspaceListForLegacyIpc(
+              {},
+              { caller },
+            );
+            const visible = reloaded.legacyResult.items.find(
+              (item) => item.id === 'a',
+            );
+            if (!visible) throw new Error('The temporary workspace is indexed');
+            expect(isRetiredTemporaryWorkspace(visible)).toBe(false);
+            expect(reloaded).toEqual(
+              await today.queryWorkspaceListForLegacyIpc({}, { caller }),
+            );
+          }
+        });
+        await fire(own);
+        expect(await serve([file])).toBe(true);
+        await expectFresh([file]);
+      },
+    );
+
+    test('index notification refreshes discovery and enrolls a workspace added out of band', async () => {
+      seed();
+      await compose();
+      mkdirSync(join(dir, 'workspaces', 'c'));
+      writeFileSync(
+        join(dir, 'workspaces', 'c', 'workspace.json'),
+        JSON.stringify(CONFIG),
+      );
+      writeFileSync(
+        join(dir, 'workspaces', 'c', 'worktrees.json'),
+        JSON.stringify({ version: 1, worktrees: [row] }),
+      );
+      index(['a', 'b', 'c']);
+      directoryWatch().emit('change', 'change', 'index.json');
+      expect(await serve([], true)).toBe(false);
+      await withReaders(async (cached, today) => {
+        const expected = await today.queryWorkspaceListForLegacyIpc(
+          {},
+          { caller },
+        );
+        expect(expected.legacyResult.items.map((item) => item.id)).toContain(
+          'c',
+        );
+        expect(
+          await cached.queryWorkspaceListForLegacyIpc({}, { caller }),
+        ).toEqual(expected);
+      });
+      await fire(own);
+      // Discovery's new files may need the existing coalesced miss refresh.
+      if (live(retry).length) await fire(retry);
+      if (live(own).length) await fire(own);
+      directoryWatch('c');
+      await readCache.apply(BROAD);
+      expect(await serve([], true)).toBe(true);
+      await expectFresh();
+    });
+
+    test.each(['creation', 'error', 'close'] as const)(
+      '%s failure falls back and re-enrollment fences old captures',
+      async (failure) => {
+        seed();
+        const path = join(dir, 'workspaces', 'a');
+        if (failure === 'creation') failedWatches.add(path);
+        await compose();
+        if (failure !== 'creation') {
+          const watcher = directoryWatch('a');
+          if (failure === 'error')
+            watcher.emit('error', new Error('Watch lost'));
+          else watcher.close();
+          failedWatches.add(path);
+        }
+        const file: W5CaptureFile = { kind: 'worktrees', workspaceId: 'a' };
+        expect(await serve([file])).toBe(false);
+        expect(await serve([], true)).toBe(false);
+        // Coverage loss revokes the whole serving token.
+        expect(await serve([{ kind: 'manifest', workspaceId: 'b' }])).toBe(
+          false,
+        );
+        writeFileSync(
+          join(path, 'worktrees.json'),
+          JSON.stringify({ version: 1, worktrees: [row] }),
+        );
+        await withReaders(async (cached, today) => {
+          expect(
+            await cached.readWorktreeListForLegacy('a', { caller }),
+          ).toEqual(await today.readWorktreeListForLegacy('a', { caller }));
+        });
+        // Enrollment starts a broad refill at once. Hold it, so its token
+        // cannot race the targeted refill's check.
+        expect(readCache.cache.rebuilding()).toBe(false);
+        discoveryGate = deferred();
+        const broad = discoveries();
+        failedWatches.delete(path);
+        // Enrolling on a read must not bless bytes captured without the watch.
+        expect(await serve([file])).toBe(false);
+        expect(readCache.cache.rebuilding()).toBe(true);
+        directoryWatch('a');
+        expect(readCache.cache.projection().state(file)).toBe('dirty');
+        await readCache.cache.refillMarked();
+        await until(() => discoveries() > broad);
+        // A targeted refill cannot re-arm a revoked serving token.
+        expect(await serve([file])).toBe(false);
+        // Enrollment's broad refill issues a token newer than the coverage
+        // loss; the own refill joins it.
+        discoveryGate.open();
+        await fire(own);
+        expect(await serve([file])).toBe(true);
+        await expectFresh([file]);
+      },
+    );
+
+    test.each(['missing', 'handles'] as const)(
+      'unavailable coverage (%s) bounds broad completions and keeps reads fresh',
+      async (failure) => {
+        seed();
+        const path = join(dir, 'workspaces', 'a');
+        if (failure === 'missing') {
+          rmSync(path, { recursive: true });
+          nativeMissingWatches.add(path);
+        } else failedWatches.add(path);
+        await compose();
+        const count = discoveries();
+        for (let run = 0; run < W5_READ_CACHE_IDLE_RETRIES; run += 1)
+          await fire(retry);
+        expect(discoveries()).toBe(count + W5_READ_CACHE_IDLE_RETRIES);
+        expect(live(retry)).toHaveLength(0);
+        expect(readCache.cache.owed()).toBe(false);
+        expect(ready()).toBe(false);
+        const stopped = captures.length;
+        await withReaders(async (cached, today) => {
+          for (let read = 0; read < 2; read += 1) {
+            expect(
+              await cached.queryWorkspaceListForLegacyIpc({}, { caller }),
+            ).toEqual(
+              await today.queryWorkspaceListForLegacyIpc({}, { caller }),
+            );
+            expect(
+              await cached.readWorktreeListForLegacy('a', { caller }),
+            ).toEqual(await today.readWorktreeListForLegacy('a', { caller }));
+          }
+        });
+        expect(captures).toHaveLength(stopped);
+        expect(readCache.cache.owed()).toBe(false);
+        expect(live(retry)).toHaveLength(0);
+
+        // Revocation owes a new attempt but is not a capture or timer driver.
+        readCache.revoke();
+        expect(readCache.cache.owed()).toBe(true);
+        expect(captures).toHaveLength(stopped);
+        expect(live(retry)).toHaveLength(0);
+        // An existing W5e plan supplies that attempt, promoted to broad.
+        await readCache.apply({ ...BROAD, broad: false, manifests: ['b'] });
+        for (let run = 1; run < W5_READ_CACHE_IDLE_RETRIES; run += 1)
+          await fire(retry);
+        expect(discoveries()).toBe(count + W5_READ_CACHE_IDLE_RETRIES * 2);
+        expect(readCache.cache.owed()).toBe(false);
+        expect(live(retry)).toHaveLength(0);
+      },
+    );
+
+    test('enrollment after the idle bound starts exactly one broad refill without firing a timer', async () => {
+      seed();
+      const path = join(dir, 'workspaces', 'a');
+      rmSync(path, { recursive: true });
+      nativeMissingWatches.add(path);
+      await compose();
+      for (let run = 0; run < W5_READ_CACHE_IDLE_RETRIES; run += 1)
+        await fire(retry);
+      expect(readCache.cache.owed()).toBe(false);
+      const before = discoveries();
+      mkdirSync(path);
+      writeFileSync(join(path, 'workspace.json'), JSON.stringify(CONFIG));
+      writeFileSync(
+        join(path, 'worktrees.json'),
+        JSON.stringify({ version: 1, worktrees: [row] }),
+      );
+      const file: W5CaptureFile = { kind: 'worktrees', workspaceId: 'a' };
+      expect(await serve([file])).toBe(false);
+      // Repeat reads during enrollment's re-arm cannot start another build.
+      expect(await serve([file])).toBe(false);
+      await settleDetachedWork();
+      expect(discoveries()).toBe(before + 1);
+      expect(await serve([file])).toBe(true);
+      expect(readCache.cache.owed()).toBe(false);
+      expect(live(retry)).toHaveLength(0);
+      await expectFresh();
+      // The pre-existing own-refill debounce must not discover again.
+      await fire(own);
+      expect(discoveries()).toBe(before + 1);
+      expect(live(retry)).toHaveLength(0);
+    });
+
+    test('armed repeat serves check one root stat each without resolving or capturing again', async () => {
+      seed();
+      await compose();
+      const fs = jest.requireMock<typeof AsyncFs>('node:fs/promises');
+      const stat = jest.spyOn(fs, 'stat');
+      const resolve = jest.spyOn(fs, 'realpath');
+      const before = captures.length;
+      try {
+        for (let read = 0; read < 3; read += 1)
+          expect(await serve([{ kind: 'index' }])).toBe(true);
+        expect(stat.mock.calls).toEqual(
+          Array.from({ length: 3 }, () => [harness.root, { bigint: true }]),
+        );
+        expect(resolve).not.toHaveBeenCalled();
+        expect(captures).toHaveLength(before);
+      } finally {
+        stat.mockRestore();
+        resolve.mockRestore();
+      }
+    });
+
+    test.each(['revoke', 'broad-refill', 'dispose'] as const)(
+      'a pending async root stat cannot serve across %s',
+      async (loss) => {
+        seed();
+        await compose();
+        const entered = deferred();
+        const release = deferred();
+        const fs = jest.requireMock<typeof AsyncFs>('node:fs/promises');
+        const native = jest.requireActual<typeof AsyncFs>('node:fs/promises');
+        const stat = jest.spyOn(fs, 'stat').mockImplementationOnce(async () => {
+          const identity = await native.stat(harness.root, { bigint: true });
+          entered.open();
+          await release.promise;
+          return identity;
+        });
+        const pending = serve([{ kind: 'index' }]);
+        let rebuilding: Promise<void> | undefined;
+        try {
+          await entered.promise;
+          if (loss === 'dispose') readCache.dispose();
+          else if (loss === 'revoke') readCache.revoke();
+          else {
+            captureGate = deferred();
+            rebuilding = readCache.apply(BROAD);
+          }
+          expect(readCache.cache.serving()).toBe(false);
+          release.open();
+          expect(await pending).toBe(false);
+        } finally {
+          release.open();
+          await pending;
+          captureGate?.open();
+          await rebuilding;
+          stat.mockRestore();
+        }
+      },
+    );
+
+    test('root replacement after the last warm capture cannot arm the first token', async () => {
+      seed();
+      const store = await prepare();
+      const saved = `${harness.root}-saved`;
+      let replaced = false;
+      try {
+        await readCache.activate({
+          ...store,
+          capture: async (request) => {
+            if (!store.capture) throw new Error('Capture required');
+            const captured = await store.capture(request);
+            // Enrollment fences discovery; its trailing capture is the last warm read.
+            if (!request.discoverWorkspaces && !replaced) {
+              renameSync(harness.root, saved);
+              mkdirSync(harness.root);
+              writeFileSync(
+                join(harness.root, 'index.json'),
+                JSON.stringify({ version: 1, workspaces: [] }),
+              );
+              replaced = true;
+            }
+            return captured;
+          },
+        });
+        expect(replaced).toBe(true);
+        expect(captures.at(-1)?.discoverWorkspaces).toBe(false);
+        // Watches still follow the old inodes: no notification can hide the race.
+        directoryWatch();
+        directoryWatch('a');
+        directoryWatch('b');
+        expect(readCache.cache.serving()).toBe(false);
+        expect(ready()).toBe(false);
+        expect(await serve([{ kind: 'index' }])).toBe(false);
+        if (!electron.capture) throw new Error('Capture required');
+        const request = {
+          files: [{ kind: 'index' }],
+          discoverWorkspaces: false,
+        } as const;
+        const fresh = await electron.capture(request);
+        expect(
+          readCache.cache.projection().image({ kind: 'index' }),
+        ).not.toEqual(fresh.capture.files[0]);
+        await withReaders(async (cached, today) => {
+          expect(
+            await cached.queryWorkspaceListForLegacyIpc({}, { caller }),
+          ).toEqual(await today.queryWorkspaceListForLegacyIpc({}, { caller }));
+        });
+        rmSync(harness.root, { recursive: true });
+        renameSync(saved, harness.root);
+        await readCache.apply(BROAD);
+        expect(await serve([{ kind: 'index' }])).toBe(false);
+        expect(readCache.cache.serving()).toBe(false);
+      } finally {
+        if (existsSync(saved)) {
+          rmSync(harness.root, { recursive: true, force: true });
+          renameSync(saved, harness.root);
+        }
+      }
+    });
+
+    test('a revocation during async root certification fences the broad ticket', async () => {
+      seed();
+      await compose();
+      const entered = deferred();
+      const release = deferred();
+      const fs = jest.requireMock<typeof AsyncFs>('node:fs/promises');
+      const native = jest.requireActual<typeof AsyncFs>('node:fs/promises');
+      const stat = jest
+        .spyOn(fs, 'stat')
+        .mockImplementationOnce(() =>
+          native.stat(harness.root, { bigint: true }),
+        )
+        .mockImplementationOnce(async () => {
+          const identity = await native.stat(harness.root, { bigint: true });
+          entered.open();
+          await release.promise;
+          return identity;
+        });
+      const pending = readCache.apply(BROAD);
+      try {
+        await entered.promise;
+        readCache.revoke();
+        release.open();
+        await pending;
+        expect(readCache.cache.serving()).toBe(false);
+        expect(await serve([{ kind: 'index' }])).toBe(false);
+      } finally {
+        release.open();
+        await pending;
+        stat.mockRestore();
+      }
+      await readCache.apply(BROAD);
+      expect(await serve([{ kind: 'index' }])).toBe(true);
+    });
+
+    test.each(['ancestor-missing', 'root-replaced'] as const)(
+      'root identity loss (%s) terminally revokes without a native notification',
+      async (failure) => {
+        seed();
+        await compose();
+        const request = {
+          files: [{ kind: 'index' }],
+          discoverWorkspaces: false,
+        } as const;
+        expect(await serve(request.files)).toBe(true);
+        const original = failure === 'ancestor-missing' ? dir : harness.root;
+        const saved = `${original}-saved`;
+        renameSync(original, saved);
+        if (failure === 'root-replaced') mkdirSync(original);
+        const before = captures.length;
+        try {
+          // Mock watches remain live on the old inodes, as on Linux.
+          directoryWatch();
+          directoryWatch('a');
+          expect(await serve(request.files)).toBe(false);
+          expect(readCache.cache.serving()).toBe(false);
+          expect(captures).toHaveLength(before);
+          if (!electron.capture) throw new Error('Capture required');
+          if (failure === 'ancestor-missing') {
+            const refusal = {
+              reason: 'invalid-state',
+              details: { capture: 'root-unavailable' },
+            };
+            await expect(electron.capture(request)).rejects.toMatchObject(
+              refusal,
+            );
+            await withReaders(async () => {
+              const fresh = await runW5ReadView(request, (view) =>
+                Promise.resolve(view),
+              );
+              expect(fresh).toMatchObject({
+                status: 'uncaptured',
+                reason: 'root-unavailable',
+                error: refusal,
+              });
+              expect(
+                await runDesktopW5CachedReadView(request, (view) =>
+                  Promise.resolve(view),
+                ),
+              ).toEqual(fresh);
+            });
+          } else {
+            expect(
+              (await electron.capture(request)).capture.files[0],
+            ).toMatchObject({
+              state: 'absent',
+            });
+            await withReaders(async (cached, today) => {
+              expect(
+                await cached.queryWorkspaceListForLegacyIpc({}, { caller }),
+              ).toEqual(
+                await today.queryWorkspaceListForLegacyIpc({}, { caller }),
+              );
+            });
+          }
+        } finally {
+          if (failure === 'root-replaced')
+            rmSync(original, { recursive: true });
+          renameSync(saved, original);
+        }
+        // Restoring the original path and a successful refill cannot unlatch it.
+        await readCache.apply(BROAD);
+        expect(readCache.cache.projection().serve(request).status).toBe(
+          'served',
+        );
+        expect(await serve(request.files)).toBe(false);
+      },
+    );
+
+    test('a native notification fences a refill already holding older bytes', async () => {
+      seed();
+      const counted = await prepare();
+      const release = deferred();
+      const captured = deferred();
+      let holding = false;
+      await readCache.activate({
+        ...counted,
+        capture: async (request) => {
+          if (!counted.capture) throw new Error('Capture required');
+          const result = await counted.capture(request);
+          if (holding) {
+            captured.open();
+            await release.promise;
+          }
+          return result;
+        },
+      });
+      holding = true;
+      const pending = readCache.apply(BROAD);
+      await captured.promise;
+      const file: W5CaptureFile = { kind: 'worktrees', workspaceId: 'a' };
+      writeFileSync(
+        join(dir, 'workspaces', 'a', 'worktrees.json'),
+        JSON.stringify({ version: 1, worktrees: [row] }),
+      );
+      directoryWatch('a').emit('change', 'change', 'worktrees.json');
+      release.open();
+      await pending;
+      await expectFresh([file]);
+      expect(await serve([file])).toBe(true);
+    });
+
+    test('re-enrollment fences a delayed targeted capture and retired watch events stay inert', async () => {
+      seed();
+      const counted = await prepare();
+      const release = deferred();
+      const captured = deferred();
+      let holding = false;
+      await readCache.activate({
+        ...counted,
+        capture: async (request) => {
+          if (!counted.capture) throw new Error('Capture required');
+          const result = await counted.capture(request);
+          if (holding) {
+            captured.open();
+            await release.promise;
+          }
+          return result;
+        },
+      });
+      holding = true;
+      const file: W5CaptureFile = { kind: 'manifest', workspaceId: 'a' };
+      const pending = readCache.apply({
+        broad: false,
+        index: false,
+        workspaces: [],
+        manifests: ['a'],
+        worktreeLists: [],
+      });
+      await captured.promise;
+      const retired = directoryWatch('a');
+      retired.emit('error', new Error('Lost during capture'));
+      writeFileSync(
+        join(dir, 'workspaces', 'a', 'workspace.json'),
+        JSON.stringify({ ...CONFIG, alwaysShow: true }),
+      );
+      expect(await serve([file])).toBe(false);
+      const replacement = directoryWatch('a');
+      expect(replacement).not.toBe(retired);
+      release.open();
+      await pending;
+      expect(readCache.cache.projection().state(file)).toBe('dirty');
+      expect(await serve([file])).toBe(false);
+      await fire(own);
+      await expectFresh([file]);
+      const count = captures.length;
+      retired.emit('change', 'rename', 'a');
+      retired.emit('error', new Error('Late error'));
+      retired.emit('close');
+      expect(replacement.closed).toBe(false);
+      expect(await serve([file])).toBe(true);
+      expect(captures).toHaveLength(count);
+      expect(live(own)).toHaveLength(0);
+    });
+
+    test('index removal during a broad rebuild prunes only the accepted membership', async () => {
+      seed();
+      const counted = await prepare();
+      const release = deferred();
+      const captured = deferred();
+      let holding = false;
+      await readCache.activate({
+        ...counted,
+        capture: async (request) => {
+          if (!counted.capture) throw new Error('Capture required');
+          const result = await counted.capture(request);
+          if (holding) {
+            captured.open();
+            await release.promise;
+          }
+          return result;
+        },
+      });
+      holding = true;
+      const removed = directoryWatch('b');
+      const pending = readCache.apply(BROAD);
+      await captured.promise;
+      index(['a']);
+      directoryWatch().emit('change', 'change', 'index.json');
+      expect(removed.closed).toBe(false);
+      release.open();
+      await pending;
+      expect(removed.closed).toBe(true);
+      expect(await serve([], true)).toBe(true);
+      expect(await serve([{ kind: 'worktrees', workspaceId: 'b' }])).toBe(
+        false,
+      );
+      await withReaders(async (cached, today) => {
+        const result = await cached.queryWorkspaceListForLegacyIpc(
+          {},
+          { caller },
+        );
+        expect(result.legacyResult.items.map((item) => item.id)).toEqual(['a']);
+        expect(result).toEqual(
+          await today.queryWorkspaceListForLegacyIpc({}, { caller }),
+        );
+      });
+    });
+
+    test('ambiguous workspace events dirty the whole directory', async () => {
+      seed();
+      await compose();
+      directoryWatch('b').emit('change', 'change', null);
+      expect(await serve([{ kind: 'manifest', workspaceId: 'b' }])).toBe(false);
+      expect(await serve([{ kind: 'worktrees', workspaceId: 'b' }])).toBe(
+        false,
+      );
+      await fire(own);
+      expect(await serve([{ kind: 'manifest', workspaceId: 'b' }])).toBe(true);
+      expect(await serve([{ kind: 'worktrees', workspaceId: 'b' }])).toBe(true);
+    });
+
+    test.each([
+      ['rename', 'workspaces'],
+      ['rename', Buffer.from('workspaces')],
+      ['rename', null],
+      ['change', null],
+      ['change', 'workspaces'],
+      ['unknown', 'index.json'],
+    ])(
+      'root replacement (%s, %s) revokes every watch',
+      async (event, filename) => {
+        seed();
+        await compose();
+        const rootWatch = directoryWatch();
+        const oldA = directoryWatch('a');
+        const oldB = directoryWatch('b');
+        renameSync(join(dir, 'workspaces'), join(dir, 'old-workspaces'));
+        mkdirSync(join(dir, 'workspaces'));
+        rootWatch.emit('change', event, filename);
+        expect(rootWatch.closed).toBe(true);
+        expect(oldA.closed).toBe(true);
+        expect(oldB.closed).toBe(true);
+        expect(await serve([{ kind: 'index' }])).toBe(false);
+        expect(await serve([{ kind: 'worktrees', workspaceId: 'a' }])).toBe(
+          false,
+        );
+      },
+    );
+  });
+
+  test('warm: discovery enrolls every directory before accepting its files', async () => {
     await compose();
     expect(readCache.ready()).toBe(false); // A test store is installed.
     expect(readCache.cache.warmed()).toBe(true);
-    expect(captures).toHaveLength(1);
+    // The store exposes the canonical root and captured index only in its
+    // result. Discovery enrolls watches; only the subsequent capture can be
+    // accepted under those watches. No separate Electron index read is used.
+    expect(captures).toHaveLength(2);
     expect(captures[0]?.discoverWorkspaces).toBe(true);
+    expect(coverageAtCapture[0]).toEqual([]);
+    expect(coverageAtCapture[1]).toEqual(
+      ['', 'a', 'b'].map((id) => join(dir, 'workspaces', id)),
+    );
+    expect(captures[1]).toEqual({ files: cached(), discoverWorkspaces: false });
     expect(cached()).toHaveLength(5);
+    await expectFresh();
+  });
+
+  test.each(['missing', 'changed'] as const)(
+    'a warm cache stops serving every file after a %s root refuses a targeted refill, even after recovery',
+    async (failure) => {
+      const counted = await prepare();
+      await readCache.activate(counted);
+      const request = {
+        files: [{ kind: 'index' }],
+        discoverWorkspaces: false,
+      } as const;
+      let moved = false;
+      __setDesktopW5FileStoreForTests(undefined);
+      try {
+        expect(await readCache.serve(request)).toBeDefined();
+        if (failure === 'missing') {
+          renameSync(harness.root, `${harness.root}-saved`);
+          moved = true;
+        } else {
+          // The typed refusal returned by the record port after a root swap.
+          captureRefusal = 'root-changed';
+        }
+        // A targeted failure must also stop serving unrelated warm files.
+        // Broad failures already un-warm the whole cache.
+        await expect(
+          readCache.apply({
+            broad: false,
+            index: false,
+            workspaces: [],
+            manifests: ['a'],
+            worktreeLists: [],
+          }),
+        ).rejects.toMatchObject({
+          reason: 'invalid-state',
+          details: {
+            capture:
+              failure === 'missing' ? 'root-unavailable' : 'root-changed',
+          },
+        });
+        expect(await readCache.serve(request)).toBeUndefined();
+        if (moved) {
+          renameSync(`${harness.root}-saved`, harness.root);
+          moved = false;
+        }
+        captureRefusal = undefined;
+        await readCache.apply(BROAD);
+        expect(readCache.cache.projection().serve(request).status).toBe(
+          'served',
+        );
+        expect(await readCache.serve(request)).toBeUndefined();
+      } finally {
+        if (moved) renameSync(`${harness.root}-saved`, harness.root);
+        __setDesktopW5FileStoreForTests(electron);
+      }
+    },
+  );
+
+  test.each([
+    'fallback',
+    'batching',
+    'preparation',
+    'commit-read',
+    'revision',
+  ] as const)(
+    '%s captures latch typed root refusals before a subsequent warm list',
+    async (path) => {
+      const caller = {
+        principalId: 'test-user',
+        clientInstanceId: 'test-client',
+        authorityId: 'local-desktop',
+        interfaceKind: 'test' as const,
+        grants: ['core.workspace.read' as const, 'core.worktree.read' as const],
+      };
+      writeFileSync(
+        join(dir, 'workspaces', 'index.json'),
+        JSON.stringify({
+          version: 1,
+          workspaces: ['a', 'b'].map((id, order) => ({
+            id,
+            name: id,
+            type: 'multi-repo',
+            color: '#7C3AED',
+            collapsed: false,
+            order,
+          })),
+        }),
+      );
+      for (const id of ['a', 'b'])
+        writeFileSync(
+          join(dir, 'workspaces', id, 'workspace.json'),
+          JSON.stringify(CONFIG),
+        );
+      await compose();
+      installDesktopW5FileStore(electron);
+      registerDesktopW5ReadCacheServer(readCache);
+      const runtime = createDesktopRuntime({
+        workspaceServices: {
+          ...defaultCoreWorkspaceReadServices(),
+          readView: runDesktopW5CachedReadView,
+        },
+      });
+      __setDesktopW5FileStoreForTests(undefined);
+      try {
+        expect(
+          (await runtime.queryWorkspaceListForLegacyIpc({}, { caller }))
+            .legacyResult.items,
+        ).toHaveLength(2);
+        captureRefusal =
+          path === 'preparation' ? 'root-changed' : 'root-unavailable';
+        const refusal = {
+          reason: 'invalid-state',
+          details: { capture: captureRefusal },
+        };
+        const request = { files: [MANIFEST], discoverWorkspaces: false };
+        if (path === 'fallback') {
+          await expect(
+            runtime.queryWorkspaceGetForLegacyIpc(
+              { workspaceId: 'unlisted' },
+              { caller },
+            ),
+          ).rejects.toThrow();
+        } else if (path === 'preparation') {
+          await expect(
+            electron.captureForPreparation?.(request),
+          ).rejects.toMatchObject(refusal);
+        } else if (path === 'revision') {
+          await expect(
+            electron.readRevisions([{ kind: 'workspace', workspaceId: 'a' }]),
+          ).rejects.toMatchObject(refusal);
+        } else {
+          const readFile = (): ReturnType<typeof electron.read> =>
+            electron.read(join(harness.root, 'a', 'workspace.json'));
+          const read =
+            path === 'commit-read'
+              ? await electron.withCommit(
+                  { operation: 'golden.root-refusal' },
+                  readFile,
+                )
+              : await readFile();
+          expect(read).toMatchObject({ state: 'unreadable', error: refusal });
+        }
+        // A warm list must capture and fail closed, not return old rows.
+        await expect(
+          runtime.queryWorkspaceListForLegacyIpc({}, { caller }),
+        ).rejects.toThrow();
+        captureRefusal = undefined;
+        await electron.capture?.(request);
+        await readCache.apply(BROAD);
+        expect(readCache.cache.projection().serve(request).status).toBe(
+          'served',
+        );
+        expect(await readCache.serve(request)).toBeUndefined();
+      } finally {
+        registerDesktopW5ReadCacheServer(undefined);
+        __setDesktopW5FileStoreForTests(electron);
+        await runtime.shutdown();
+      }
+    },
+  );
+
+  test.each([
+    'limit-exceeded',
+    'unsupported-platform',
+    'confinement-unavailable',
+  ])(
+    '%s capture refusals do not latch unrelated warm files',
+    async (reason) => {
+      await compose();
+      captureRefusal = reason;
+      await expect(
+        electron.captureForPreparation?.({
+          files: [MANIFEST],
+          discoverWorkspaces: false,
+        }),
+      ).rejects.toMatchObject({
+        reason: 'invalid-state',
+        details: { capture: reason },
+      });
+      __setDesktopW5FileStoreForTests(undefined);
+      try {
+        expect(
+          await readCache.serve({
+            files: [{ kind: 'index' }],
+            discoverWorkspaces: false,
+          }),
+        ).toBeDefined();
+      } finally {
+        __setDesktopW5FileStoreForTests(electron);
+      }
+    },
+  );
+
+  test('a foreign plan stops serving named files synchronously while its capture is pending', async () => {
+    await compose();
+    const commitId = await foreignWrite({ alwaysShow: true });
+    captureGate = deferred();
+    const applying = readCache.apply({
+      broad: false,
+      index: false,
+      workspaces: [],
+      manifests: ['a'],
+      worktreeLists: [],
+      commitId,
+    });
+    __setDesktopW5FileStoreForTests(undefined);
+    try {
+      expect(
+        await readCache.serve({ files: [MANIFEST], discoverWorkspaces: false }),
+      ).toBeUndefined();
+      expect(
+        await readCache.serve({
+          files: [{ kind: 'manifest', workspaceId: 'b' }],
+          discoverWorkspaces: false,
+        }),
+      ).toBeDefined();
+    } finally {
+      __setDesktopW5FileStoreForTests(electron);
+      captureGate.open();
+      await applying;
+      captureGate = undefined;
+    }
+    expect(readCache.cache.projection().holds(MANIFEST, commitId)).toBe(true);
+    await expectFresh();
+  });
+
+  test('an unreadable file image does not latch unrelated warm files', async () => {
+    mkdirSync(join(dir, 'workspaces', 'a', 'workspace.json'));
+    await compose();
+    expect(readCache.cache.projection().image(MANIFEST)).toMatchObject({
+      state: 'unreadable',
+    });
+    __setDesktopW5FileStoreForTests(undefined);
+    try {
+      expect(
+        await readCache.serve({
+          files: [{ kind: 'index' }],
+          discoverWorkspaces: false,
+        }),
+      ).toBeDefined();
+    } finally {
+      __setDesktopW5FileStoreForTests(electron);
+    }
+  });
+
+  test('a capture-refusal observer throwing preserves the typed refusal', async () => {
+    await compose();
+    const observing = jest
+      .spyOn(readCache, 'noteCaptureRefused')
+      .mockImplementation(() => {
+        throw new Error('The observer failed');
+      });
+    captureRefusal = 'root-changed';
+    try {
+      await expect(
+        electron.captureForPreparation?.({
+          files: [MANIFEST],
+          discoverWorkspaces: false,
+        }),
+      ).rejects.toMatchObject({
+        reason: 'invalid-state',
+        details: { capture: 'root-changed' },
+      });
+      expect(observing).toHaveBeenCalledTimes(1);
+    } finally {
+      observing.mockRestore();
+    }
+  });
+
+  test.each(['connection', 'stream'] as const)(
+    '%s loss stops serving until the replacement stream broad refill completes',
+    async (loss) => {
+      await compose();
+      const client = await attach();
+      await until(() => applied.some((plan) => plan.broad));
+      const request = { files: [MANIFEST], discoverWorkspaces: false };
+      __setDesktopW5FileStoreForTests(undefined);
+      expect(await readCache.serve(request)).toBeDefined();
+      __setDesktopW5FileStoreForTests(electron);
+      captureGate = deferred();
+      const before = captures.length;
+      if (loss === 'connection') await client.close();
+      else endStream?.();
+      // No reconnect latch, timer or completed reattachment is needed.
+      expect(usable).toBe(true);
+      expect(ready()).toBe(false);
+      __setDesktopW5FileStoreForTests(undefined);
+      try {
+        expect(await readCache.serve(request)).toBeUndefined();
+      } finally {
+        __setDesktopW5FileStoreForTests(electron);
+      }
+      const attaching = loss === 'connection' ? attach() : Promise.resolve();
+      try {
+        await until(() => captures.length > before);
+        expect(captures.at(-1)?.discoverWorkspaces).toBe(true);
+        expect(ready()).toBe(false);
+      } finally {
+        captureGate.open();
+        await attaching;
+        captureGate = undefined;
+      }
+      await until(() => applied.filter((plan) => plan.broad).length >= 2);
+      await until(ready);
+      expect(ready()).toBe(true);
+      await expectFresh();
+    },
+  );
+
+  test('a superseded stream open cannot consume its replacement reconciliation', async () => {
+    await compose();
+    const initial = await attach();
+    await foreignWrite({ alwaysShow: true });
+    await until(() => acks.length > 0);
+    const cursor = {
+      daemonEpoch: initial.identity.daemonEpoch,
+      sequence: acks.at(-1),
+    };
+    await initial.close();
+    const opened = deferred();
+    const release = deferred();
+    afterOpen = async (): Promise<void> => {
+      opened.open();
+      await release.promise;
+    };
+    const first = await harness.connectEvents('electron-main');
+    const attachingFirst = binding.attach(connection(first));
+    await opened.promise;
+    await first.close();
+    const replacement = await harness.connectEvents('electron-main');
+    const replay = jest.spyOn(replacement, 'openStream');
+    const attachingReplacement = binding.attach(connection(replacement));
+    try {
+      expect(ready()).toBe(false);
+    } finally {
+      release.open();
+    }
+    await attachingFirst;
+    await attachingReplacement;
+    expect(replay).toHaveBeenCalledWith(
+      'core.events.subscribe',
+      expect.objectContaining({ cursor }),
+      expect.anything(),
+    );
+    expect(applied.filter((plan) => plan.broad)).toHaveLength(2);
+    expect(ready()).toBe(true);
+    await expectFresh();
+  });
+
+  test.each(['recovery-required', 'conflict'] as const)(
+    'a foreign %s decision withholds unrelated cached revisions until reconciliation',
+    async (failure) => {
+      rmSync(join(dir, 'workspaces', 'index.json'));
+      await compose();
+      await getWorkspaceIndexRepository().update(() => ({
+        entries: ['a', 'b'].map((id, order) => ({
+          id,
+          name: id,
+          type: 'multi-repo' as const,
+          color: '#7C3AED',
+          collapsed: false,
+          order,
+        })),
+        result: undefined,
+      }));
+      await write({});
+      await writeWorkspaceConfig('b', CONFIG);
+      await readCache.apply(BROAD);
+      await attach();
+      const request = {
+        files: [
+          { kind: 'index' } as const,
+          { kind: 'manifest', workspaceId: 'b' } as const,
+        ],
+        discoverWorkspaces: false,
+      };
+      const resource = { kind: 'workspace', workspaceId: 'b' } as const;
+      const dispatcherRead = async (eligible: boolean): Promise<void> => {
+        installDesktopW5FileStore(electron);
+        registerDesktopW5ReadCacheServer(readCache);
+        const cached = createDesktopRuntime({
+          workspaceServices: {
+            ...defaultCoreWorkspaceReadServices(),
+            readView: runDesktopW5CachedReadView,
+          },
+        });
+        const today = createDesktopRuntime();
+        const caller = {
+          principalId: 'test-user',
+          clientInstanceId: 'test-client',
+          authorityId: 'local-desktop',
+          interfaceKind: 'test' as const,
+          grants: ['core.workspace.read' as const],
+        };
+        __setDesktopW5FileStoreForTests(undefined);
+        try {
+          const result = await cached.queryWorkspaceListForLegacyIpc(
+            {},
+            { caller },
+          );
+          const fresh = await today.queryWorkspaceListForLegacyIpc(
+            {},
+            { caller },
+          );
+          expect(result.canonicalResult).toEqual(fresh.canonicalResult);
+          const row = result.canonicalResult?.items.find(
+            (item) => item.workspaceId === 'b',
+          );
+          expect(row).toBeDefined();
+          if (eligible) expect(row).toHaveProperty('revision');
+          else expect(row).not.toHaveProperty('revision');
+        } finally {
+          __setDesktopW5FileStoreForTests(electron);
+          registerDesktopW5ReadCacheServer(undefined);
+          await Promise.all([cached.shutdown(), today.shutdown()]);
+        }
+      };
+      const serve = async (): ReturnType<typeof readCache.serve> => {
+        __setDesktopW5FileStoreForTests(undefined);
+        try {
+          return await readCache.serve(request);
+        } finally {
+          __setDesktopW5FileStoreForTests(electron);
+        }
+      };
+      const before = await serve();
+      if (!before || !electron.capture)
+        throw new Error('Expected warm capture');
+      expect(
+        classifyW5RevisionEligibility(before.capture, resource, 'complete'),
+      ).toMatchObject({ status: 'eligible' });
+      await dispatcherRead(true);
+      const events = harness.events().length;
+      stepGate = deferred();
+      const manifest = join(harness.root, 'a', 'workspace.json');
+      const savedManifest = join(harness.root, 'a', 'workspace.json.saved');
+      let replacedManifest = false;
+      harness.hooks.commit.before = (): Promise<void> => {
+        harness.hooks.commit.before = undefined;
+        if (failure === 'recovery-required') {
+          // Fail apply after the preimage read, independent of OS permissions.
+          renameSync(manifest, savedManifest);
+          replacedManifest = true;
+          mkdirSync(manifest);
+        } else {
+          writeFileSync(
+            manifest,
+            JSON.stringify({ ...CONFIG, alwaysShow: false }),
+          );
+        }
+        return Promise.resolve();
+      };
+      try {
+        await expect(foreignWrite({ alwaysShow: true })).rejects.toMatchObject(
+          failure === 'recovery-required'
+            ? { reason: 'recovery-required' }
+            : { name: 'W5FileWriteRefusedError' },
+        );
+      } finally {
+        if (replacedManifest) {
+          rmSync(manifest, { recursive: true, force: true });
+          renameSync(savedManifest, manifest);
+        }
+      }
+      const { capture: fresh } = await electron.capture(request);
+      const eligibility = classifyW5RevisionEligibility(
+        fresh,
+        resource,
+        'complete',
+      );
+      expect(eligibility).toEqual({
+        status: 'unverified',
+        reason:
+          failure === 'recovery-required' ? 'pending' : 'abandoned-history',
+      });
+      const invalidations = harness.events().slice(events);
+      // Hold the reconciliation open: no stale revision may escape meanwhile.
+      captureGate = deferred();
+      const capturesBefore = captures.length;
+      stepGate.open();
+      // With no event, probe immediately rather than hiding the stale read
+      // behind a timeout waiting for a reconciliation that will never start.
+      if (invalidations.length)
+        await until(() => captures.length > capturesBefore);
+      await dispatcherRead(false);
+      expect(await serve()).toBeUndefined();
+      expect(invalidations).toEqual([
+        expect.objectContaining({ name: CORE_WORKSPACE_INVALIDATED_EVENT }),
+      ]);
+      const plansBefore = applied.length;
+      captureGate.open();
+      await until(() => applied.length > plansBefore);
+      const after = await serve();
+      if (!after) throw new Error('Expected reconciled capture');
+      expect(
+        classifyW5RevisionEligibility(after.capture, resource, 'complete'),
+      ).toEqual(eligibility);
+      await dispatcherRead(false);
+    },
+  );
+
+  test('repeated connection losses reject stale reconciliations and ordinary retries', async () => {
+    await compose();
+    const first = await attach();
+    const before = captures.length;
+    captureGate = deferred();
+    await first.close();
+    const second = await harness.connectEvents('electron-main');
+    const attachingSecond = binding.attach(connection(second));
+    await until(() => captures.length > before);
+    expect(ready()).toBe(false);
+    await second.close();
+    // The cache's retry can update images, but cannot restore continuity.
+    readCache.markDirty([MANIFEST]);
+    const retrying = fire(own);
+    const replacementOpen = deferred();
+    beforeOpen = (): Promise<void> => replacementOpen.promise;
+    const third = attach();
+    captureGate.open();
+    try {
+      await attachingSecond;
+      await retrying;
+      expect(ready()).toBe(false);
+    } finally {
+      replacementOpen.open();
+    }
+    await third;
+    expect(ready()).toBe(true);
+    await expectFresh();
+    captureGate = undefined;
+  });
+
+  test('revocations fence pending broad tickets and disconnected refills cannot re-arm', async () => {
+    await compose();
+    expect(ready()).toBe(true);
+    captureGate = deferred();
+    const before = captures.length;
+    const pending = readCache.apply(BROAD);
+    await until(() => captures.length > before);
+    readCache.revoke();
+    readCache.revoke();
+    captureGate.open();
+    await pending;
+    captureGate = undefined;
+    expect(ready()).toBe(false);
+    await readCache.cache.refillMarked();
+    expect(ready()).toBe(false);
+    readCache.setStreamReady(false);
+    await readCache.apply(BROAD);
+    expect(ready()).toBe(false);
+    readCache.setStreamReady(true);
+    expect(ready()).toBe(false);
+    await readCache.apply(BROAD);
+    expect(ready()).toBe(true);
+    await expectFresh();
+  });
+
+  test('health failure revokes before any reader and only a healthy broad refill re-arms', async () => {
+    await compose();
+    expect(ready()).toBe(true);
+    usable = false;
+    healthFailure?.();
+    expect(ready()).toBe(false);
+    await readCache.cache.refillBroad();
+    expect(ready()).toBe(false);
+    usable = true;
+    await readCache.cache.refillMarked();
+    expect(ready()).toBe(false);
+    await readCache.apply(BROAD);
+    expect(ready()).toBe(true);
+  });
+
+  test('health recovery during a broad refill cannot overtake a second health failure', async () => {
+    await compose();
+    expect(ready()).toBe(true);
+    usable = false;
+    healthFailure?.();
+    usable = true;
+    healthRecovery?.();
+    expect(live(own)).toHaveLength(1);
+    captureGate = deferred();
+    const before = captures.length;
+    const pending = fire(own);
+    await until(() => captures.length > before);
+    healthRecovery?.();
+    expect(live(own)).toHaveLength(1);
+    await fire(own);
+    expect(ready()).toBe(false);
+    usable = false;
+    healthFailure?.();
+    captureGate.open();
+    await pending;
+    captureGate = undefined;
+    expect(ready()).toBe(false);
+    usable = true;
+    healthRecovery?.();
+    expect(ready()).toBe(false);
+    expect(live(own)).toHaveLength(1);
+    const broad = discoveries();
+    await fire(own);
+    expect(discoveries()).toBe(broad + 1);
+    expect(ready()).toBe(true);
+    await expectFresh();
+  });
+
+  test.each([
+    'inactive',
+    'disconnected',
+    'unhealthy',
+    'terminal',
+    'disposed',
+  ] as const)(
+    'health recovery schedules nothing while the cache is %s',
+    async (state) => {
+      if (state === 'inactive') await prepare();
+      else await compose();
+      usable = false;
+      healthFailure?.();
+      const recover = healthRecovery;
+      if (state === 'disconnected') readCache.setStreamReady(false);
+      if (state === 'terminal') readCache.cache.revoke(true);
+      if (state === 'disposed') readCache.dispose();
+      usable = state !== 'unhealthy';
+      const before = captures.length;
+      const scheduled = timers.length;
+      recover?.();
+      expect(timers).toHaveLength(scheduled);
+      expect(captures).toHaveLength(before);
+      expect(ready()).toBe(false);
+    },
+  );
+
+  test('a targeted plan after stream loss settles its files without starting discovery', async () => {
+    await compose();
+    readCache.setStreamReady(false);
+    const commitId = await foreignWrite({ alwaysShow: true });
+    const before = captures.length;
+    await readCache.apply({
+      ...BROAD,
+      broad: false,
+      manifests: ['a'],
+      commitId,
+    });
+    expect(captures.slice(before)).toEqual([
+      { files: [MANIFEST], discoverWorkspaces: false },
+    ]);
+    expect(ready()).toBe(false);
+    await expectFresh([MANIFEST]);
+    readCache.setStreamReady(true);
+    expect(ready()).toBe(false);
+    await readCache.apply(BROAD);
+    expect(ready()).toBe(true);
     await expectFresh();
   });
 
@@ -540,7 +2200,7 @@ describe('the read cache over W5e (CAN-7155)', () => {
     await expectFresh();
   });
 
-  test('reconnect: commits made while detached replay from the cursor', async () => {
+  test('reconnect: cursor replay is preceded by a broad refill on the replacement stream', async () => {
     await compose();
     const client = await attach();
     await until(() => applied.some((plan) => plan.broad));
@@ -553,7 +2213,7 @@ describe('the read cache over W5e (CAN-7155)', () => {
     const commitId = await foreignWrite({ alwaysShow: true });
     await attach();
     await until(() => applied.some((plan) => plan.commitId === commitId));
-    expect(discoveries()).toBe(broad);
+    expect(discoveries()).toBe(broad + 1);
     await expectFresh();
   });
 
@@ -786,6 +2446,125 @@ describe('the read cache over W5e (CAN-7155)', () => {
     expect(readCache.cache.owed()).toBe(false);
     expect(cached()).toHaveLength(1 + 2 * ids.length);
     await expectFresh(cached().slice(0, 200));
+  });
+
+  test('split refills cannot serve an assembled capture over the record-port encoded limit', async () => {
+    writeFileSync(
+      join(dir, 'workspaces', 'index.json'),
+      JSON.stringify({
+        version: 1,
+        workspaces: ['a', 'b'].map((id, order) => ({
+          id,
+          name: id.toUpperCase(),
+          type: 'multi-repo',
+          color: '#7C3AED',
+          collapsed: false,
+          order,
+        })),
+      }),
+    );
+    for (const id of ['a', 'b'])
+      writeFileSync(
+        join(dir, 'workspaces', id, 'workspace.json'),
+        JSON.stringify({ ...CONFIG, padding: 'x'.repeat(3 * 1024 * 1024) }),
+      );
+    const counted = await prepare();
+    await writeWorkspaceWorktrees('a', [
+      { id: 'wt-1', branchName: 'feature', createdAt: '2026-11-01T00:00:00Z' },
+    ]);
+    await readCache.activate(counted);
+    await attach();
+    await until(() => applied.some((plan) => plan.broad));
+    expect(ready()).toBe(true);
+    expect(
+      captures.filter((request) => !request.discoverWorkspaces).length,
+    ).toBeGreaterThan(1);
+    const projection = readCache.cache.projection();
+    const resource = {
+      kind: 'worktree',
+      workspaceId: 'a',
+      worktreeId: 'wt-1',
+    } as const;
+    const narrow = projection.serve({
+      files: [MANIFEST, { kind: 'worktrees', workspaceId: 'a' }],
+      discoverWorkspaces: false,
+    });
+    expect(narrow.status).toBe('served');
+    if (narrow.status !== 'served')
+      throw new Error('The smaller capture must be served');
+    expect(
+      classifyW5RevisionEligibility(narrow.capture, resource, 'complete')
+        .status,
+    ).toBe('eligible');
+    const images = cached().map((file) => projection.image(file));
+    const decodedBytes = images.reduce(
+      (sum, image) =>
+        sum +
+        (image?.state === 'present'
+          ? Buffer.byteLength(image.base64, 'base64')
+          : 0),
+      0,
+    );
+    expect(decodedBytes).toBeLessThan(W5_CAPTURE_LIMITS.bytes);
+    expect(Buffer.byteLength(JSON.stringify(images))).toBeGreaterThan(
+      CORE_WORKSPACE_RECORDS_LIMITS.resultBytes,
+    );
+    if (!electron.capture) throw new Error('The daemon-backed store captures');
+    for (const discoverWorkspaces of [false, true]) {
+      const request = { files: cached(), discoverWorkspaces };
+      await expect(electron.capture(request)).rejects.toMatchObject({
+        reason: 'invalid-state',
+        details: { capture: 'limit-exceeded' },
+      });
+      for (let repeat = 0; repeat < 2; repeat += 1)
+        expect(projection.serve(request)).toEqual({
+          status: 'unserved',
+          reason: 'limit-exceeded',
+          refresh: [],
+        });
+    }
+    // q-28: the dispatcher must use today's live fallback, not publish the
+    // eligible row revision available in the narrower cached capture.
+    installDesktopW5FileStore(electron);
+    registerDesktopW5ReadCacheServer(readCache);
+    const served = createDesktopRuntime({
+      workspaceServices: {
+        ...defaultCoreWorkspaceReadServices(),
+        readView: runDesktopW5CachedReadView,
+      },
+    });
+    const today = createDesktopRuntime();
+    const caller = {
+      principalId: 'test-user',
+      clientInstanceId: 'test-client',
+      authorityId: 'local-desktop',
+      interfaceKind: 'test' as const,
+      grants: ['core.workspace.read' as const, 'core.worktree.read' as const],
+    };
+    __setDesktopW5FileStoreForTests(undefined);
+    try {
+      const expected = await today.queryWorktreeListForLegacyIpc(
+        {},
+        { caller },
+      );
+      const result = await served.queryWorktreeListForLegacyIpc({}, { caller });
+      expect(result).toEqual(expected);
+      const row = result.canonicalResult?.items.find(
+        (item) => item.worktreeId === 'wt-1',
+      );
+      expect(row).toBeDefined();
+      expect(row).not.toHaveProperty('revision');
+      expect(
+        projection.serve({
+          files: [{ kind: 'worktrees', workspaceId: 'a' }],
+          discoverWorkspaces: false,
+        }).status,
+      ).toBe('served');
+    } finally {
+      __setDesktopW5FileStoreForTests(electron);
+      registerDesktopW5ReadCacheServer(undefined);
+      await Promise.all([served.shutdown(), today.shutdown()]);
+    }
   });
 
   test('own decisions share one trailing refill, and none runs during the warm', async () => {
@@ -1052,5 +2831,1004 @@ describe('the read cache over W5e (CAN-7155)', () => {
     expect(readCache.cache.owed()).toBe(false);
     expect(live(retry)).toHaveLength(0);
     await expectFresh();
+  });
+});
+
+/*
+ * CAN-7155 PR 3 (Seam A): the composition root's read view over the warm
+ * cache. The dispatcher's wrapper reads, which the branch observer, the
+ * sidebar, `readProjectWorktrees` and the poller's row lookup make, read
+ * exactly as today's captured reads do, without capturing; another origin's
+ * commit is read once its plan applied; the issuing desktop's own write is
+ * read through a capture until its trailing refill settles it.
+ */
+describe('dispatcher reads served from the read cache (CAN-7155 Seam A)', () => {
+  const caller = {
+    principalId: 'test-user',
+    clientInstanceId: 'test-client',
+    authorityId: 'local-desktop',
+    interfaceKind: 'test' as const,
+    grants: ['core.workspace.read' as const, 'core.worktree.read' as const],
+  };
+
+  test('a second broad invalidation in recovery backoff revokes a newer serving token', async () => {
+    rmSync(join(dir, 'workspaces', 'index.json'));
+    bridgeRetryMs = 10;
+    await compose();
+    await getWorkspaceIndexRepository().update(() => ({
+      entries: ['a', 'b'].map((id, order) => ({
+        id,
+        name: id,
+        type: 'multi-repo' as const,
+        color: '#7C3AED',
+        collapsed: false,
+        order,
+      })),
+      result: undefined,
+    }));
+    await write({});
+    await writeWorkspaceConfig('b', CONFIG);
+    await attach();
+    const latest = harness.events().at(-1)?.cursor.sequence;
+    if (latest === undefined) throw new Error('Expected a retained seed event');
+    await until(() => acks.includes(latest));
+    const initial = applied.length;
+    const initialAcks = acks.length;
+    jest.useFakeTimers({
+      doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask', 'performance'],
+    });
+    try {
+      handlerFailure = true;
+      await foreignWrite({ alwaysShow: true });
+      // A targeted handler fails, then all three broad reconciliations fail.
+      await until(() => applied.length >= initial + 2);
+      await jest.advanceTimersByTimeAsync(bridgeRetryMs);
+      await until(() => applied.length >= initial + 3);
+      await jest.advanceTimersByTimeAsync(bridgeRetryMs * 2);
+      await until(
+        () => applied.length >= initial + 4 && acks.length > initialAcks,
+      );
+      handlerFailure = false;
+      // The cache's independent live broad refill can finish during bridge backoff.
+      await readCache.apply(BROAD);
+      expect(ready()).toBe(true);
+      const before = captures.length;
+      const acknowledged = acks.length;
+      const manifest = join(harness.root, 'a', 'workspace.json');
+      harness.hooks.commit.before = (): Promise<void> => {
+        harness.hooks.commit.before = undefined;
+        writeFileSync(
+          manifest,
+          JSON.stringify({ ...CONFIG, alwaysShow: false }),
+        );
+        return Promise.resolve();
+      };
+      await expect(foreignWrite({ alwaysShow: false })).rejects.toMatchObject({
+        name: 'W5FileWriteRefusedError',
+      });
+      await until(() => acks.length > acknowledged);
+      expect(captures).toHaveLength(before);
+      expect(harness.events().at(-1)).toMatchObject({
+        name: CORE_WORKSPACE_INVALIDATED_EVENT,
+      });
+
+      installDesktopW5FileStore(electron);
+      registerDesktopW5ReadCacheServer(readCache);
+      const cached = createDesktopRuntime({
+        workspaceServices: {
+          ...defaultCoreWorkspaceReadServices(),
+          readView: runDesktopW5CachedReadView,
+        },
+      });
+      const today = createDesktopRuntime();
+      __setDesktopW5FileStoreForTests(undefined);
+      try {
+        const params = { workspaceId: 'b' };
+        const fresh = await today.queryWorkspaceGetForLegacyIpc(params, {
+          caller,
+        });
+        expect(fresh.canonicalResult).not.toHaveProperty('revision');
+        expect(
+          await cached.queryWorkspaceGetForLegacyIpc(params, { caller }),
+        ).toEqual(fresh);
+        expect(readCache.ready()).toBe(false);
+        await readCache.cache.refillMarked();
+        expect(readCache.ready()).toBe(false);
+        await jest.advanceTimersByTimeAsync(bridgeRetryMs * 8);
+        await until(() => readCache.ready());
+        expect(
+          await cached.queryWorkspaceGetForLegacyIpc(params, { caller }),
+        ).toEqual(fresh);
+      } finally {
+        __setDesktopW5FileStoreForTests(electron);
+        registerDesktopW5ReadCacheServer(undefined);
+        await Promise.all([cached.shutdown(), today.shutdown()]);
+      }
+    } finally {
+      handlerFailure = false;
+      harness.hooks.commit.before = undefined;
+      jest.useRealTimers();
+    }
+  });
+
+  test.each([
+    'replace',
+    'empty',
+    'malformed',
+    'missing',
+    'poll-missing',
+    'replace-during-broad',
+  ] as const)(
+    'an external worktree list change (%s) invalidates before the watcher reload and refills only that list',
+    async (change) => {
+      const file = { kind: 'worktrees', workspaceId: 'a' } as const;
+      const path = join(dir, 'workspaces', 'a', 'worktrees.json');
+      writeFileSync(
+        join(dir, 'workspaces', 'index.json'),
+        JSON.stringify({
+          version: 1,
+          workspaces: ['a', 'b'].map((id, order) => ({
+            id,
+            name: id.toUpperCase(),
+            type: 'multi-repo',
+            color: '#7C3AED',
+            collapsed: false,
+            order,
+          })),
+        }),
+      );
+      const oldRows: WorktreeData[] = [
+        {
+          id: 'old',
+          branchName: 'old',
+          createdAt: '2026-11-01T00:00:00Z',
+        },
+      ];
+      const newRows: WorktreeData[] = change.startsWith('replace')
+        ? [
+            {
+              id: 'new',
+              branchName: 'new',
+              createdAt: '2026-11-02T00:00:00Z',
+            },
+          ]
+        : [];
+      for (const id of ['a', 'b'])
+        writeFileSync(
+          join(dir, 'workspaces', id, 'workspace.json'),
+          JSON.stringify(CONFIG),
+        );
+      writeFileSync(path, JSON.stringify({ version: 1, worktrees: oldRows }));
+      const counted = await prepare();
+      await readCache.activate(counted);
+      const releaseBroad = deferred();
+      let rebuilding: Promise<void> | undefined;
+      // A cache miss must use the production slot's real capture, not the
+      // test slot (which makes the cache stand aside) or an uninstalled host.
+      installDesktopW5FileStore(electron);
+      registerDesktopW5ReadCacheServer(readCache);
+      const runtime = createDesktopRuntime({
+        workspaceServices: {
+          ...defaultCoreWorkspaceReadServices(),
+          readView: runDesktopW5CachedReadView,
+        },
+      });
+      const today = createDesktopRuntime();
+      __setDesktopW5FileStoreForTests(undefined);
+      try {
+        const identities = (
+          rows: readonly WorktreeData[],
+        ): { id: string; branchName: string }[] =>
+          rows.map(({ id, branchName }) => ({ id, branchName }));
+        expect(
+          identities(
+            (await runtime.readWorktreeListForLegacy('a', { caller }))
+              .legacyResult,
+          ),
+        ).toEqual(identities(oldRows));
+        syncWorktreesFileWatchers(
+          [
+            {
+              id: 'a',
+              type: 'multi-repo',
+              name: 'A',
+              color: '#7C3AED',
+              collapsed: false,
+              order: 0,
+              repos: [],
+              worktrees: oldRows,
+            },
+          ],
+          () => null,
+          new Set(),
+          undefined,
+          true,
+        );
+        const watch = jest.mocked(createWorktreeWatch).mock.calls.at(-1)?.[0];
+        if (!watch) throw new Error('The list watcher must be installed');
+        await watch.poll();
+        if (change === 'replace-during-broad') {
+          const capture = counted.capture?.bind(counted);
+          if (!capture) throw new Error('The daemon-backed store captures');
+          const captured = deferred();
+          jest
+            .spyOn(counted, 'capture')
+            .mockImplementationOnce(async (request) => {
+              const result = await capture(request);
+              captured.open();
+              await releaseBroad.promise;
+              return result;
+            });
+          rebuilding = readCache.apply(BROAD);
+          await captured.promise;
+        }
+        if (change === 'missing' || change === 'poll-missing') rmSync(path);
+        else
+          writeFileSync(
+            path,
+            change === 'malformed'
+              ? '{'
+              : JSON.stringify({ version: 1, worktrees: newRows }),
+          );
+        // Start the reload in the dispatch itself: invalidation cannot wait
+        // for reconciliation, a timer or the refill's capture to finish.
+        const nextReload = (): Promise<
+          Awaited<ReturnType<typeof runtime.readWorktreeListForLegacy>>
+        > =>
+          new Promise((resolve, reject) => {
+            jest.mocked(sendToWindow).mockImplementation((_window, channel) => {
+              if (channel === IPC_CHANNELS.worktreesFileChanged)
+                void runtime
+                  .readWorktreeListForLegacy('a', { caller })
+                  .then(resolve, reject);
+              return true;
+            });
+          });
+        const reload = nextReload();
+        const before = captures.length;
+        if (change === 'poll-missing') {
+          const scheduled = jest.spyOn(globalThis, 'setTimeout');
+          try {
+            await watch.poll();
+            // Fail before waiting for a notification the broken poll drops.
+            expect(scheduled.mock.calls.some(([, ms]) => ms === 500)).toBe(
+              true,
+            );
+          } finally {
+            scheduled.mockRestore();
+          }
+        } else watch.onChange('change', 'worktrees.json');
+        const loaded = await reload;
+        expect(identities(loaded.legacyResult)).toEqual(identities(newRows));
+        // Full provenance, not only membership, must equal today's capture
+        // before the targeted refill and again once the cache serves it.
+        expect(loaded).toEqual(
+          await today.readWorktreeListForLegacy('a', { caller }),
+        );
+        expect(readCache.cache.projection().state(file)).toBe('dirty');
+        expect(captures).toHaveLength(before);
+        // Invalidation is local; a broad rebuild still gates serving globally.
+        const unaffected = {
+          files: [{ kind: 'worktrees', workspaceId: 'b' }],
+          discoverWorkspaces: false,
+        } as const;
+        expect(readCache.cache.projection().serve(unaffected).status).toBe(
+          'served',
+        );
+        if (!rebuilding)
+          expect(await readCache.serve(unaffected)).toBeDefined();
+        await fire(own);
+        expect(captures.slice(before)).toEqual([
+          { files: [file], discoverWorkspaces: false },
+        ]);
+        expect(readCache.cache.projection().state(file)).toBe('current');
+        if (rebuilding) {
+          expect(readCache.cache.rebuilding()).toBe(true);
+          expect(readCache.ready()).toBe(false);
+          expect(await readCache.serve(unaffected)).toBeUndefined();
+        }
+        // The delayed broad capture has the same log position but old bytes.
+        // It cannot undo the targeted refill, even after the mark is settled.
+        releaseBroad.open();
+        await rebuilding;
+        await expectFresh();
+        expect(
+          await readCache.serve({ files: [file], discoverWorkspaces: false }),
+        ).toBeDefined();
+        expect(
+          await runtime.readWorktreeListForLegacy('a', { caller }),
+        ).toEqual(loaded);
+        if (change === 'missing' || change === 'poll-missing') {
+          if (change === 'poll-missing') {
+            const unchanged = jest.spyOn(globalThis, 'setTimeout');
+            try {
+              await watch.poll();
+              await watch.poll();
+              expect(unchanged.mock.calls.some(([, ms]) => ms === 500)).toBe(
+                false,
+              );
+            } finally {
+              unchanged.mockRestore();
+            }
+          }
+          // A native deletion can be followed by polling after watch recovery.
+          // Recreating the original bytes is a change from the observed absence.
+          writeFileSync(
+            path,
+            JSON.stringify({ version: 1, worktrees: oldRows }),
+          );
+          const recreated = nextReload();
+          const scheduled = jest.spyOn(globalThis, 'setTimeout');
+          try {
+            await watch.poll();
+            expect(scheduled.mock.calls.some(([, ms]) => ms === 500)).toBe(
+              true,
+            );
+          } finally {
+            scheduled.mockRestore();
+          }
+          const restored = await recreated;
+          expect(identities(restored.legacyResult)).toEqual(
+            identities(oldRows),
+          );
+          expect(restored).toEqual(
+            await today.readWorktreeListForLegacy('a', { caller }),
+          );
+          expect(readCache.cache.projection().state(file)).toBe('dirty');
+          const beforeRestore = captures.length;
+          await fire(own);
+          expect(captures.slice(beforeRestore)).toEqual([
+            { files: [file], discoverWorkspaces: false },
+          ]);
+          expect(
+            await runtime.readWorktreeListForLegacy('a', { caller }),
+          ).toEqual(restored);
+          const unchanged = jest.spyOn(globalThis, 'setTimeout');
+          try {
+            await watch.poll();
+            expect(unchanged.mock.calls.some(([, ms]) => ms === 500)).toBe(
+              false,
+            );
+          } finally {
+            unchanged.mockRestore();
+          }
+          // Deletion/recreation must not disable content-based self-write
+          // suppression: the app's own commit already updates its cache.
+          const selfRows = oldRows.map((row) => ({
+            ...row,
+            branchName: 'own',
+          }));
+          await writeWorkspaceWorktrees('a', selfRows);
+          const selfWrite = jest.spyOn(globalThis, 'setTimeout');
+          try {
+            await watch.poll();
+            expect(selfWrite.mock.calls.some(([, ms]) => ms === 500)).toBe(
+              false,
+            );
+          } finally {
+            selfWrite.mockRestore();
+          }
+          await fire(own);
+          expect(
+            identities(
+              (await runtime.readWorktreeListForLegacy('a', { caller }))
+                .legacyResult,
+            ),
+          ).toEqual(identities(selfRows));
+        }
+      } finally {
+        releaseBroad.open();
+        await rebuilding;
+        stopWorktreesFileWatchers();
+        jest.mocked(sendToWindow).mockReset();
+        __setDesktopW5FileStoreForTests(electron);
+        registerDesktopW5ReadCacheServer(undefined);
+        await Promise.all([runtime.shutdown(), today.shutdown()]);
+      }
+    },
+  );
+
+  test.each(['unrelated', 'selected'] as const)(
+    'scoped reads match fresh revisions after a pending commit resolves (%s)',
+    async (affected) => {
+      writeFileSync(
+        join(dir, 'workspaces', 'index.json'),
+        JSON.stringify({
+          version: 1,
+          workspaces: ['a', 'b'].map((id, order) => ({
+            id,
+            name: id.toUpperCase(),
+            type: 'multi-repo',
+            color: '#7C3AED',
+            collapsed: false,
+            order,
+          })),
+        }),
+      );
+      const counted = await prepare();
+      const organizationId = '11111111-1111-4111-8111-111111111111';
+      const config: WorkspaceConfigFile = {
+        ...CONFIG,
+        alwaysShow: false,
+        owner: {
+          type: 'organization',
+          organizationId,
+          projectId: '22222222-2222-4222-8222-222222222222',
+          instanceId: '33333333-3333-4333-8333-333333333333',
+          bindingGeneration: 1,
+        },
+      };
+      await writeWorkspaceConfig('a', config, { ownership: 'replace' });
+      const oldRows: WorktreeData[] = [
+        {
+          id: 'wt-1',
+          branchName: 'before',
+          createdAt: '2026-11-01T00:00:00Z',
+        },
+      ];
+      await writeWorkspaceWorktrees('a', oldRows);
+      await readCache.activate(counted);
+      const file = { kind: 'worktrees', workspaceId: 'a' } as const;
+      const request = {
+        files: [...(affected === 'selected' ? [MANIFEST] : []), file],
+        discoverWorkspaces: false,
+      };
+      const path = join(harness.root, 'a', 'workspace.json');
+      const saved = `${path}.saved`;
+      const previous = await foreignStore.read(path);
+      if (previous.state !== 'present')
+        throw new Error('Expected the pending commit preimage');
+      let pendingId: number | undefined;
+      let replaced = false;
+      harness.hooks.commit.before = (request): Promise<void> => {
+        if (!request.files.some((file) => file.path === path))
+          throw new Error('Expected only the selected fixture write');
+        harness.hooks.commit.before = undefined;
+        renameSync(path, saved);
+        replaced = true;
+        mkdirSync(path);
+        return Promise.resolve();
+      };
+      harness.hooks.commit.after = (_request, outcome): Promise<void> => {
+        if (outcome.status === 'recovery-required')
+          pendingId = outcome.commitId;
+        return Promise.resolve();
+      };
+      try {
+        // List-bearing commits recheck preimages before deciding. Fail a
+        // manifest apply instead; organization-scoped reads select it too.
+        await expect(
+          withStorageAdmission([WORKSPACE_MANIFEST_STORAGE], () =>
+            foreignStore.replace(
+              path,
+              JSON.stringify({ ...config, alwaysShow: true }, null, 2),
+              WORKSPACE_MANIFEST_STORAGE,
+              {
+                operation: 'w5.workspace_manifest.write',
+                advance: [{ kind: 'workspace', workspaceId: 'a' }],
+                previousRaw: previous.raw,
+              },
+            ),
+          ),
+        ).rejects.toMatchObject({ reason: 'recovery-required' });
+      } finally {
+        harness.hooks.commit.before = undefined;
+        harness.hooks.commit.after = undefined;
+        if (replaced) {
+          rmSync(path, { recursive: true, force: true });
+          renameSync(saved, path);
+        }
+      }
+      if (pendingId === undefined) throw new Error('Expected a pending commit');
+      await readCache.apply({
+        broad: false,
+        index: false,
+        workspaces: [],
+        manifests: affected === 'selected' ? ['a'] : [],
+        worktreeLists: ['a'],
+      });
+      const pending = readCache.cache.projection().serve(request);
+      if (pending.status !== 'served')
+        throw new Error('Pending images are served');
+      expect(pending.capture.log.unresolvedCommits).toBe(1);
+      if (affected === 'selected')
+        expect(
+          pending.capture.files.find((image) => image.kind === 'manifest'),
+        ).toMatchObject({
+          base64: Buffer.from(previous.raw).toString('base64'),
+        });
+      const resource = {
+        kind: 'worktree',
+        workspaceId: 'a',
+        worktreeId: 'wt-1',
+      } as const;
+      expect(
+        classifyW5RevisionEligibility(pending.capture, resource, 'complete'),
+      ).toEqual({ status: 'unverified', reason: 'pending' });
+      // Recovery can change selected bytes at the same commit id. Clearing
+      // the global counter on another file cannot certify those old bytes.
+      expect(
+        await harness.host().retryRecoveryRequiredCommit(pendingId),
+      ).toMatchObject({
+        status: 'applied',
+        commitId: pendingId,
+      });
+      if (affected === 'selected') {
+        __setDesktopW5FileStoreForTests(foreignStore);
+        try {
+          await writeWorkspaceConfig('b', CONFIG);
+        } finally {
+          __setDesktopW5FileStoreForTests(electron);
+        }
+      }
+      // A different selector sees resolution at the same or a later position;
+      // the selected list keeps its earlier, pending evidence.
+      await readCache.apply({
+        broad: false,
+        index: false,
+        workspaces: [],
+        manifests: ['b'],
+        worktreeLists: [],
+      });
+      expect(readCache.cache.projection().commitId(file)).toBe(pendingId);
+      const queries: W5CaptureRequest[] = [];
+      installDesktopW5FileStore({
+        ...electron,
+        capture: (captureRequest) => {
+          queries.push(captureRequest);
+          if (!electron.capture) throw new Error('The store captures');
+          return electron.capture(captureRequest);
+        },
+      });
+      registerDesktopW5ReadCacheServer(readCache);
+      const cached = createDesktopRuntime({
+        workspaceServices: {
+          ...defaultCoreWorkspaceReadServices(),
+          readView: runDesktopW5CachedReadView,
+        },
+      });
+      const today = createDesktopRuntime();
+      const params = {
+        worktreeId: 'wt-1',
+        scope: {
+          workspaceId: 'a',
+          ...(affected === 'selected' ? { organizationId } : {}),
+        },
+      };
+      __setDesktopW5FileStoreForTests(undefined);
+      try {
+        const expected = await today.queryWorktreeGetForLegacyIpc(params, {
+          caller,
+        });
+        expect(expected.canonicalResult).toHaveProperty('revision');
+        expect(expected.canonicalResult).toMatchObject({ branch: 'before' });
+        const before = queries.length;
+        for (let i = 0; i < 2; i += 1)
+          expect(
+            await cached.queryWorktreeGetForLegacyIpc(params, { caller }),
+          ).toEqual(expected);
+        expect(queries).toHaveLength(before + 2);
+        const refresh = (timer: Timer): boolean =>
+          timer.ms === W5_READ_CACHE_REFRESH_MS;
+        expect(live(refresh)).toHaveLength(1);
+        const beforeRefill = captures.length;
+        await fire(refresh);
+        expect(captures.slice(beforeRefill)).toEqual([request]);
+        const afterRefill = queries.length;
+        expect(
+          await cached.queryWorktreeGetForLegacyIpc(params, { caller }),
+        ).toEqual(expected);
+        expect(queries).toHaveLength(afterRefill);
+        expect(live(refresh)).toHaveLength(0);
+        if (!electron.capture) throw new Error('The store captures');
+        const fresh = await electron.capture(request);
+        const settled = readCache.cache.projection().serve(request);
+        if (settled.status !== 'served')
+          throw new Error('The refreshed images must be served');
+        expect(settled.capture).toEqual(fresh.capture);
+        if (affected === 'selected')
+          expect(
+            settled.capture.files.find((image) => image.kind === 'manifest'),
+          ).not.toEqual(
+            pending.capture.files.find((image) => image.kind === 'manifest'),
+          );
+      } finally {
+        __setDesktopW5FileStoreForTests(electron);
+        registerDesktopW5ReadCacheServer(undefined);
+        await Promise.all([cached.shutdown(), today.shutdown()]);
+      }
+    },
+  );
+
+  test('repeat reads capture nothing and equal the captured read', async () => {
+    const workspaces = join(dir, 'workspaces');
+    writeFileSync(
+      join(workspaces, 'index.json'),
+      JSON.stringify({
+        version: 1,
+        workspaces: ['a', 'b'].map((id, order) => ({
+          id,
+          name: id.toUpperCase(),
+          type: 'multi-repo',
+          color: '#7C3AED',
+          collapsed: false,
+          order,
+        })),
+      }),
+    );
+    for (const id of ['a', 'b'])
+      writeFileSync(
+        join(workspaces, id, 'workspace.json'),
+        JSON.stringify(CONFIG),
+      );
+    writeFileSync(
+      join(workspaces, 'a', 'worktrees.json'),
+      JSON.stringify({
+        version: 1,
+        worktrees: [
+          {
+            id: 'wt-1',
+            branchName: 'feature',
+            createdAt: '2026-11-01T00:00:00Z',
+            includedRepoIds: ['repo-a'],
+          },
+        ],
+      }),
+    );
+    await compose();
+    await attach();
+    await until(() => applied.some((plan) => plan.broad));
+    directoryWatch();
+    directoryWatch('a');
+    directoryWatch('b');
+    // Today's per-query captures, apart from the cache's own (`captures`).
+    const queries: W5CaptureRequest[] = [];
+    const queryStore: W5CommitLogFileStore = {
+      ...electron,
+      capture: (request) => {
+        queries.push(request);
+        if (!electron.capture) throw new Error('The store captures');
+        return electron.capture(request);
+      },
+    };
+    installDesktopW5FileStore(queryStore);
+    registerDesktopW5ReadCacheServer(readCache);
+    const served = createDesktopRuntime({
+      workspaceServices: {
+        ...defaultCoreWorkspaceReadServices(),
+        readView: runDesktopW5CachedReadView,
+      },
+    });
+    const today = createDesktopRuntime();
+    const read = async (
+      runtime: DesktopCanopyDispatcher,
+    ): Promise<unknown[]> => {
+      // Reads run as production's do: no test store shadows the slot.
+      __setDesktopW5FileStoreForTests(undefined);
+      try {
+        return [
+          await runtime.queryWorkspaceListForLegacyIpc({}, { caller }),
+          await runtime.queryWorktreeListForLegacyIpc({}, { caller }),
+          await runtime.readWorktreeListForLegacy('a', { caller }),
+          await runtime.queryWorkspaceGetForLegacyIpc(
+            { workspaceId: 'a' },
+            { caller },
+          ),
+          await runtime.queryWorktreeGetForLegacyIpc(
+            { worktreeId: 'wt-1', scope: { workspaceId: 'a' } },
+            { caller },
+          ),
+          await runtime.queryWorktreeGetForLegacyIpc(
+            { worktreeId: 'wt-1' },
+            { caller },
+          ),
+        ];
+      } finally {
+        __setDesktopW5FileStoreForTests(electron);
+      }
+    };
+    /**
+     * Reads through the cache as the moved background readers do; returns
+     * today's captures they made. A served read records no capture work,
+     * charges its caller none, and decodes only images it had not served.
+     */
+    const readServed = async (
+      options: { decodes?: false; parses?: false } = {},
+    ): Promise<number> => {
+      // Fresh captures (also the unselected-host and miss path) must not
+      // pay the parsed memo's deep-copy cost for disposable images.
+      const copies = jest.spyOn(globalThis, 'structuredClone');
+      let expected: unknown[];
+      try {
+        expected = await read(today);
+        expect(
+          copies.mock.calls.filter(
+            ([value]) =>
+              value !== null &&
+              typeof value === 'object' &&
+              (('detail' in value && 'manifest' in value) ||
+                ('authority' in value &&
+                  ('storedFields' in value || 'document' in value))),
+          ),
+        ).toEqual([]);
+      } finally {
+        copies.mockRestore();
+      }
+      const before = queries.length;
+      const cacheCaptures = captures.length;
+      resetWorkCounters();
+      const parse = jest.spyOn(JSON, 'parse');
+      let parsedFiles: unknown[][];
+      try {
+        expect(
+          await runWithW5Caller('background:branch-observer', () =>
+            read(served),
+          ),
+        ).toEqual(expected);
+        parsedFiles = parse.mock.calls.filter(([raw]) =>
+          /"(?:workspaces|worktrees|repos)":/.test(String(raw)),
+        );
+      } finally {
+        parse.mockRestore();
+      }
+      if (options.parses === false) expect(parsedFiles).toEqual([]);
+      expect(captures).toHaveLength(cacheCaptures);
+      const made = queries.length - before;
+      const { w5, w5Caller } = snapshotWorkCounters();
+      if (made === 0) {
+        expect(w5).toMatchObject({ 'readView.cached': 6 });
+        for (const key of [
+          'readView.captured',
+          'read.backend.capture',
+          'port.capture',
+        ])
+          expect(w5[key]).toBeUndefined();
+        expect(w5Caller).toEqual({});
+        if (options.decodes === false)
+          expect(w5['decoded.view.bytes']).toBeUndefined();
+      }
+      return made;
+    };
+    const wasE2e: unknown = Reflect.get(globalThis, '__CANOPY_E2E__');
+    Object.defineProperty(globalThis, '__CANOPY_E2E__', {
+      value: true,
+      configurable: true,
+      writable: true,
+    });
+    try {
+      expect(await readServed()).toBe(0);
+      expect(await readServed({ decodes: false, parses: false })).toBe(0);
+      // An existing captured view, like GB4, keeps today's nested read path.
+      __setDesktopW5FileStoreForTests(undefined);
+      try {
+        await runDesktopW5CachedReadView(
+          { files: [{ kind: 'index' }], discoverWorkspaces: false },
+          async () => {
+            expect(await readServed()).toBe(6);
+          },
+        );
+      } finally {
+        __setDesktopW5FileStoreForTests(electron);
+      }
+      __setDesktopW5FileStoreForTests(undefined);
+      try {
+        const config = await served.queryWorkspaceGetForLegacyIpc(
+          { workspaceId: 'a' },
+          { caller },
+        );
+        config.legacyResult.repos.push({
+          id: 'poison',
+          name: 'Poison',
+          repoPath: '/poison',
+        });
+        const row = await served.queryWorktreeGetForLegacyIpc(
+          { worktreeId: 'wt-1' },
+          { caller },
+        );
+        if (!row.legacyResult) throw new Error('Expected the seeded row');
+        row.legacyResult.branchName = 'poison';
+        row.legacyResult.includedRepoIds?.push('poison');
+      } finally {
+        __setDesktopW5FileStoreForTests(electron);
+      }
+      expect(await readServed({ parses: false })).toBe(0);
+      // A lock held, on a list no read names (today's locked reads would
+      // wait on it), by `holder` until the returned release runs.
+      const holdLock = async (
+        holder: (work: () => Promise<void>) => Promise<void>,
+      ): Promise<() => Promise<void>> => {
+        const release = deferred();
+        const held = deferred();
+        const holding = holder(() =>
+          withW5RepositoryLock(
+            {
+              kind: 'list',
+              path: join(workspaces, 'unlisted', 'worktrees.json'),
+            },
+            () => {
+              held.open();
+              return release.promise;
+            },
+          ),
+        );
+        await held.promise;
+        return async () => {
+          release.open();
+          await holding;
+        };
+      };
+      // Another reader's lock, taken inside its read view, which refuses
+      // writes: reads are still served.
+      __setDesktopW5FileStoreForTests(undefined);
+      const releaseReader = await holdLock((work) =>
+        runDesktopW5CachedReadView(
+          { files: [{ kind: 'index' }], discoverWorkspaces: false },
+          work,
+        ),
+      ).finally(() => __setDesktopW5FileStoreForTests(electron));
+      try {
+        expect(await readServed()).toBe(0);
+      } finally {
+        await releaseReader();
+      }
+      // A real locked list read outside a view, with repair disabled.
+      const held = deferred();
+      const release = deferred();
+      installDesktopW5FileStore({
+        ...queryStore,
+        read: async (path) => {
+          const result = await electron.read(path);
+          if (path === join(workspaces, 'unlisted', 'worktrees.json')) {
+            held.open();
+            await release.promise;
+          }
+          return result;
+        },
+      });
+      __setDesktopW5FileStoreForTests(undefined);
+      const plainRead = readWorkspaceWorktreesDetailed('unlisted', {
+        persistRemovalCleanup: false,
+      });
+      await held.promise;
+      try {
+        expect(await readServed()).toBe(0);
+      } finally {
+        release.open();
+        await plainRead;
+        installDesktopW5FileStore(queryStore);
+      }
+      // A writer-capable lock makes the cache take today's capture path.
+      // This pins fallback equality, not read-after-writer ordering: today's
+      // path captures before taking the list lock and can capture old bytes.
+      const releaseWriter = await holdLock((work) => work());
+      try {
+        expect(await readServed()).toBe(6);
+        expect(snapshotWorkCounters().w5).toMatchObject({
+          'readView.cacheMiss.writing': 6,
+        });
+      } finally {
+        await releaseWriter();
+      }
+      expect(await readServed()).toBe(0);
+      // Another origin's commit: read once its plan applied, not captured.
+      const foreignId = await foreignWrite({ alwaysShow: true });
+      await until(() => applied.some((plan) => plan.commitId === foreignId));
+      expect(await readServed()).toBe(0);
+      const [, , , get] = await read(served);
+      expect(get).toMatchObject({ legacyResult: { alwaysShow: true } });
+      // An own write is read through a capture until its refill settles it,
+      // and leaves the other workspace's manifest servable.
+      await write({ alwaysShow: false });
+      // Every read names the index, which the write's advance left verifying.
+      expect(await readServed()).toBe(6);
+      await fire(own);
+      expect(await readServed()).toBe(0);
+      const [, , , after] = await read(served);
+      expect(after).toMatchObject({ legacyResult: { alwaysShow: false } });
+      // Index and manifest are both required for scoped organization reads.
+      const organizationId = '11111111-1111-4111-8111-111111111111';
+      await writeWorkspaceConfig(
+        'a',
+        {
+          ...CONFIG,
+          owner: {
+            type: 'organization',
+            organizationId,
+            projectId: '22222222-2222-4222-8222-222222222222',
+            instanceId: '33333333-3333-4333-8333-333333333333',
+            bindingGeneration: 1,
+          },
+        },
+        { ownership: 'replace' },
+      );
+      await fire(own);
+      const unchangedManifest = { kind: 'manifest', workspaceId: 'b' } as const;
+      const unchangedCommit = readCache.cache
+        .projection()
+        .commitId(unchangedManifest);
+      await getWorkspaceIndexRepository().update(({ entries }) => ({
+        entries: entries.map((entry) =>
+          entry.id === 'a' ? { ...entry, name: 'Renamed' } : entry,
+        ),
+        result: undefined,
+      }));
+      await fire(own);
+      expect(readCache.cache.projection().commitId(unchangedManifest)).toBe(
+        unchangedCommit,
+      );
+      __setDesktopW5FileStoreForTests(undefined);
+      try {
+        const params = { workspaceId: 'a', scope: { organizationId } };
+        const expected = await today.queryWorkspaceGetForLegacyIpc(params, {
+          caller,
+        });
+        // The own refill covers both the index and a's advanced revision.
+        // Even the first scoped read must serve without another capture.
+        const before = queries.length;
+        const scoped = await served.queryWorkspaceGetForLegacyIpc(params, {
+          caller,
+        });
+        expect(scoped).toEqual(expected);
+        expect(scoped.canonicalResult).toMatchObject({ name: 'Renamed' });
+        expect(queries).toHaveLength(before);
+        const refresh = (timer: Timer): boolean =>
+          timer.ms === W5_READ_CACHE_REFRESH_MS;
+        expect(live(refresh)).toHaveLength(0);
+
+        // b was not advanced: discovery needs its older manifest's evidence
+        // at the new index position. Misses coalesce into one refresh.
+        const list = await today.queryWorkspaceListForLegacyIpc({}, { caller });
+        const beforeMiss = queries.length;
+        resetWorkCounters();
+        for (let i = 0; i < 2; i += 1)
+          expect(
+            await served.queryWorkspaceListForLegacyIpc({}, { caller }),
+          ).toEqual(list);
+        expect(queries).toHaveLength(beforeMiss + 2);
+        expect(snapshotWorkCounters().w5['readView.cacheMiss.lagging']).toBe(2);
+        // A slow refresh must also coalesce misses while its capture runs.
+        captureGate = deferred();
+        const beforeRefresh = captures.length;
+        const refreshing = fire(refresh);
+        try {
+          // Root identity I/O precedes the counted capture.
+          await until(() => captures.length > beforeRefresh);
+          expect(captures).toHaveLength(beforeRefresh + 1);
+          const beforeInFlightMiss = queries.length;
+          expect(
+            await served.queryWorkspaceListForLegacyIpc({}, { caller }),
+          ).toEqual(list);
+          expect(queries).toHaveLength(beforeInFlightMiss + 1);
+          expect(captures).toHaveLength(beforeRefresh + 1);
+          expect(live(refresh)).toHaveLength(0);
+        } finally {
+          captureGate.open();
+          await refreshing;
+          captureGate = undefined;
+        }
+        expect(captures.slice(beforeRefresh)).toEqual([
+          {
+            files: [unchangedManifest],
+            discoverWorkspaces: false,
+          },
+        ]);
+        const afterRefresh = queries.length;
+        expect(
+          await served.queryWorkspaceListForLegacyIpc({}, { caller }),
+        ).toEqual(list);
+        expect(queries).toHaveLength(afterRefresh);
+        expect(live(refresh)).toHaveLength(0);
+      } finally {
+        __setDesktopW5FileStoreForTests(electron);
+      }
+    } finally {
+      Object.defineProperty(globalThis, '__CANOPY_E2E__', {
+        value: wasE2e,
+        configurable: true,
+        writable: true,
+      });
+      registerDesktopW5ReadCacheServer(undefined);
+      await Promise.all([served.shutdown(), today.shutdown()]);
+    }
   });
 });

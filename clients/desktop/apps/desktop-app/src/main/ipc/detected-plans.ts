@@ -1,5 +1,11 @@
 import type { BrowserWindow } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { types } from 'node:util';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import {
+  PLAN_ERROR_CODES,
+  type CanopyCallerDescriptor,
+} from '@canopy/protocol/canopy-core';
 import {
   IPC_CHANNELS,
   type DetectedPlanEntry,
@@ -7,91 +13,140 @@ import {
   type DetectedPlansListRequest,
   type DetectedPlansScanRequest,
   type DetectedPlansScanResponse,
-  WORKSPACE_ROOT_REPO_ID,
 } from '@canopy/desktop-shared/types';
-import { resolveWorktreePlanDetectionRules } from '../lib/plan-detection-config';
-import { listWorkspaceWorktreeRepoEntries } from '../lib/worktree-repo-entries';
-import { getWorkspaceWorktreeDir } from '../lib/paths';
-import { matchCandidatePaths } from '../lib/detected-plan-matcher';
-import {
-  appendDetectedPlans,
-  readDetectedPlans,
-  updateDetectedPlan,
-} from '../lib/detected-plan-persistence';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
+import { withTrackedPlansIpcProjection } from '../canopy-runtime/plan-update-publisher';
+import { legacyError } from '../canopy-runtime/tracked-plan-projection';
 import { validateId } from '../lib/validation';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { sendToWindow } from '../lib/window-send';
+import type { DesktopIpcCallerResolver } from './file-tree';
+import { planCaller, validateScope } from './plans';
 import { registerIpcHandler } from './register';
 
-export async function scanDetectedPlans(
+/*
+ * The detected-plans channels project `core.plan.detected.*` (CAN-4165 PR
+ * 5b). The main window keeps hearing of a channel write from the channel, as
+ * before; the publisher announces a write from another binding (PR 7c).
+ */
+
+type PlanDispatcher = Pick<DesktopCanopyDispatcher, 'query' | 'instruction'>;
+
+/** The operation's longest candidate path; a longer one can't match a rule. */
+const MAX_CANDIDATE_PATH = 4_096;
+
+/**
+ * The channel always answered the writer's own refusal of a damaged file,
+ * and the other refusals as the tracked-plans channels do.
+ */
+async function projected<Result>(call: () => Promise<Result>): Promise<Result> {
+  try {
+    return await withTrackedPlansIpcProjection(call);
+  } catch (error) {
+    if (
+      error instanceof CanopyOperationError &&
+      error.payload.code === PLAN_ERROR_CODES.DAMAGED_STATE &&
+      types.isNativeError(error.runtimeCause)
+    )
+      throw error.runtimeCause;
+    throw legacyError(error);
+  }
+}
+
+export async function listDetectedPlansForIpc(
+  dispatcher: PlanDispatcher,
+  caller: CanopyCallerDescriptor,
+  request: DetectedPlansListRequest,
+): Promise<DetectedPlanEntry[]> {
+  const scope = validateScope(request);
+  // Cowork workspaces have no detected-plan storage (worktree-only feature).
+  if (isCoworkWorkspace(scope.projectId)) return [];
+  return projected(
+    async () =>
+      (
+        await dispatcher.query(
+          'core.plan.detected.list',
+          { scope },
+          { caller: planCaller(caller, 'read') },
+        )
+      ).detected,
+  );
+}
+
+export async function scanDetectedPlansForIpc(
+  dispatcher: PlanDispatcher,
+  caller: CanopyCallerDescriptor,
   request: DetectedPlansScanRequest,
 ): Promise<DetectedPlansScanResponse> {
-  validateId(request.projectId, 'projectId');
-  validateId(request.worktreeId, 'worktreeId');
+  const scope = validateScope(request);
   validateId(request.chatId, 'chatId');
-  const rules = await resolveWorktreePlanDetectionRules(
-    request.projectId,
-    request.worktreeId,
+  // Nothing is detected where nothing is stored (worktree-only feature).
+  if (isCoworkWorkspace(scope.projectId))
+    return { entries: [], newlyDetected: [] };
+  const candidatePaths = request.candidatePaths.filter(
+    (path) => path.length > 0 && path.length <= MAX_CANDIDATE_PATH,
   );
-  const existing = await readDetectedPlans(
-    request.projectId,
-    request.worktreeId,
-  );
-  if (rules.includes.length === 0) {
-    return { entries: existing, newlyDetected: [] };
-  }
-  const worktreePath = getWorkspaceWorktreeDir(
-    request.projectId,
-    request.worktreeId,
-  );
-  const repoEntries = await listWorkspaceWorktreeRepoEntries(
-    request.projectId,
-    worktreePath,
-  ).catch(() => []);
-  const repos =
-    repoEntries.length > 0
-      ? repoEntries.map((repo) => ({
-          repoId: repo.repoId,
-          repoPath: repo.repoPath,
-        }))
-      : [{ repoId: WORKSPACE_ROOT_REPO_ID, repoPath: worktreePath }];
-  const matches = matchCandidatePaths({
-    candidatePaths: request.candidatePaths,
-    repos,
-    rules,
+  return projected(async () => {
+    const { detected, newlyDetected } = await dispatcher.instruction(
+      'core.plan.detected.scan',
+      { scope, chatId: request.chatId, candidatePaths },
+      {
+        caller: planCaller(caller, 'write'),
+        metadata: { idempotencyKey: randomUUID() },
+      },
+    );
+    return { entries: detected, newlyDetected };
   });
-  const existingKeys = new Set(
-    existing.map((entry) => `${entry.sourceRepoId}::${entry.sourceFilePath}`),
+}
+
+export async function updateDetectedPlanForIpc(
+  dispatcher: PlanDispatcher,
+  caller: CanopyCallerDescriptor,
+  request: DetectedPlanUpdateRequest,
+): Promise<DetectedPlanEntry[]> {
+  const scope = validateScope(request);
+  validateId(request.entryId, 'entryId');
+  if (request.importedPlanId !== undefined) {
+    validateId(request.importedPlanId, 'importedPlanId');
+  }
+  return projected(
+    async () =>
+      (
+        await dispatcher.instruction(
+          'core.plan.detected.update',
+          {
+            scope,
+            entryId: request.entryId,
+            ...(request.status ? { status: request.status } : {}),
+            ...(request.bannerSeen !== undefined
+              ? { bannerSeen: request.bannerSeen }
+              : {}),
+            ...(request.importedPlanId
+              ? { importedPlanId: request.importedPlanId }
+              : {}),
+          },
+          {
+            caller: planCaller(caller, 'write'),
+            metadata: { idempotencyKey: randomUUID() },
+          },
+        )
+      ).detected,
   );
-  const now = new Date().toISOString();
-  const fresh: DetectedPlanEntry[] = matches
-    .filter(
-      (match) =>
-        !existingKeys.has(`${match.sourceRepoId}::${match.sourceFilePath}`),
-    )
-    .map((match) => ({
-      id: randomUUID(),
-      sourceRepoId: match.sourceRepoId,
-      sourceFilePath: match.sourceFilePath,
-      status: 'detected',
-      bannerSeen: false,
-      detectedInChatId: request.chatId,
-      detectedAt: now,
-    }));
-  const entries =
-    fresh.length > 0
-      ? await appendDetectedPlans(request.projectId, request.worktreeId, fresh)
-      : existing;
-  return { entries, newlyDetected: fresh };
 }
 
 export function registerDetectedPlansHandlers(
   getWindow: () => BrowserWindow | null,
+  dispatcher: PlanDispatcher,
+  resolveCaller: DesktopIpcCallerResolver,
 ): void {
   registerIpcHandler<[DetectedPlansScanRequest], DetectedPlansScanResponse>(
     IPC_CHANNELS.detectedPlansScan,
-    async (_event, request) => {
-      const response = await scanDetectedPlans(request);
+    async (event, request) => {
+      const response = await scanDetectedPlansForIpc(
+        dispatcher,
+        resolveCaller(event),
+        request,
+      );
       if (response.newlyDetected.length > 0) {
         sendToWindow(getWindow(), IPC_CHANNELS.detectedPlansUpdated, {
           projectId: request.projectId,
@@ -105,40 +160,17 @@ export function registerDetectedPlansHandlers(
 
   registerIpcHandler<[DetectedPlansListRequest], DetectedPlanEntry[]>(
     IPC_CHANNELS.detectedPlansList,
-    async (_event, request) => {
-      validateId(request.projectId, 'projectId');
-      validateId(request.worktreeId, 'worktreeId');
-      // Cowork workspaces have no detected-plan storage (worktree-only
-      // feature); empty list instead of the resolve-worktree throw.
-      if (isCoworkWorkspace(request.projectId)) {
-        return [];
-      }
-      return readDetectedPlans(request.projectId, request.worktreeId);
-    },
+    (event, request) =>
+      listDetectedPlansForIpc(dispatcher, resolveCaller(event), request),
   );
 
   registerIpcHandler<[DetectedPlanUpdateRequest], DetectedPlanEntry[]>(
     IPC_CHANNELS.detectedPlansUpdate,
-    async (_event, request) => {
-      validateId(request.projectId, 'projectId');
-      validateId(request.worktreeId, 'worktreeId');
-      validateId(request.entryId, 'entryId');
-      if (request.importedPlanId !== undefined) {
-        validateId(request.importedPlanId, 'importedPlanId');
-      }
-      const entries = await updateDetectedPlan(
-        request.projectId,
-        request.worktreeId,
-        request.entryId,
-        {
-          ...(request.status ? { status: request.status } : {}),
-          ...(request.bannerSeen !== undefined
-            ? { bannerSeen: request.bannerSeen }
-            : {}),
-          ...(request.importedPlanId
-            ? { importedPlanId: request.importedPlanId }
-            : {}),
-        },
+    async (event, request) => {
+      const entries = await updateDetectedPlanForIpc(
+        dispatcher,
+        resolveCaller(event),
+        request,
       );
       sendToWindow(getWindow(), IPC_CHANNELS.detectedPlansUpdated, {
         projectId: request.projectId,

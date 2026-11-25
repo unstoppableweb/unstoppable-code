@@ -14,6 +14,16 @@ function getApi(): BackgroundServiceApi | undefined {
 }
 
 /**
+ * Restart app on this computer: resolves whether the restart was scheduled
+ * (`false` in a dev build, or while a workflow has unsaved edits). The one
+ * restart call for the background service notice and the Restart app action
+ * beside a background-service error (CAN-7137).
+ */
+export function restartLocalApp(): Promise<boolean> {
+  return window.api.restartApp();
+}
+
+/**
  * This computer's background service status for the shared notice
  * (CAN-5541, CAN-7061), with Try again and Restart app. Never calls the
  * blocked channels in a window that shows another computer: `local` false
@@ -52,7 +62,7 @@ export function useLocalBackgroundServiceNotice(
               const next = await getApi()?.retry();
               if (next) accept(next);
             },
-            onRestart: (): Promise<boolean> => window.api.restartApp(),
+            onRestart: restartLocalApp,
           }
         : undefined,
     [local, status, accept],

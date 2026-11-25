@@ -1,5 +1,8 @@
 import { useCallback, useState, type JSX } from 'react';
-import type { McpSecretRequest } from '@canopy/desktop-shared/types';
+import type {
+  McpSecretRequest,
+  SecretRequestSettleResponse,
+} from '@canopy/desktop-shared/types';
 import {
   SecretRequestPrompt,
   type SecretRequestPromptSubmission,
@@ -37,11 +40,12 @@ export function SecretRequestComposerPrompt({
   const [busy, setBusy] = useState<'submit' | 'decline' | null>(null);
   const [errorKind, setErrorKind] = useState<'submit' | 'decline' | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | undefined>();
+  const [settled, setSettled] = useState<'ended' | 'answered' | undefined>();
 
   const settle = useCallback(
     (
       kind: 'submit' | 'decline',
-      send: () => Promise<{ accepted: boolean; error?: string }>,
+      send: () => Promise<SecretRequestSettleResponse>,
     ): void => {
       setBusy(kind);
       setErrorKind(null);
@@ -52,6 +56,7 @@ export function SecretRequestComposerPrompt({
           if (!response.accepted) {
             setErrorKind(kind);
             setErrorMessage(response.error);
+            setSettled(response.reason);
           }
         })
         .catch((error: unknown) => {
@@ -105,6 +110,7 @@ export function SecretRequestComposerPrompt({
       busy={busy}
       errorKind={errorKind}
       {...(errorMessage !== undefined ? { errorMessage } : {})}
+      {...(settled !== undefined ? { settled } : {})}
       disconnected={disconnected}
       onSubmit={submit}
       onDecline={decline}

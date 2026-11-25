@@ -113,6 +113,7 @@ export function createGitTabFailedLoadPreferences(): PreferencesData {
     branchNamingThinkingLevel: 'off',
     branchNamingInstructions: '',
     pipelineAdvisorEnabled: true,
+    slackOrchestratorRequestsEnabled: false,
     orgMemoryInjectionEnabled: true,
     localMemoryLearnFromChats: false,
     localMemoryEnabled: true,

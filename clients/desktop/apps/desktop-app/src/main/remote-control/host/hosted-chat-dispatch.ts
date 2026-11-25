@@ -1,3 +1,9 @@
+import type { HostedFirstPartyClient } from '@canopy/protocol/remote-control';
+import { HOSTED_SLACK_CONVERSATIONS_TARGET } from '@canopy/protocol/remote-control/channels';
+import {
+  APP_ADVISOR_PROJECT_ID,
+  isBotProjectId,
+} from '@canopy/protocol/chat-targets';
 import type { ExternalAgentSender } from '@canopy/protocol/remote-control/shell';
 import { RpcPublicError } from '../transport/rpc-peer';
 import type {
@@ -54,6 +60,8 @@ export interface HostedChatAttribution {
   readonly rootDeviceId: string;
   /** The delegated session's own device. */
   readonly sessionDeviceId: string;
+  /** The first-party caller the session's verified delegation names. */
+  readonly firstPartyClient?: HostedFirstPartyClient;
 }
 
 export interface HostedQuestionAnswerRequest {
@@ -63,6 +71,55 @@ export interface HostedQuestionAnswerRequest {
   readonly answers: McpQuestionAnswer[];
   readonly commandId: string;
   readonly attribution: HostedChatAttribution;
+}
+
+/** Where a Slack message's tab stands once it has been opened (CAN-7604). */
+export type HostedSlackTabOutcome =
+  /** The message was sent in its tab; the send's own result. */
+  | { readonly status: 'dispatched'; readonly result: ChatCommandResult }
+  /** The message was already sent: queued, running or in the transcript. */
+  | { readonly status: 'sent' }
+  | { readonly status: 'refused'; readonly reason: string };
+
+/**
+ * Whether this computer takes Slack requests: `unavailable` while the
+ * feature flag is off (the setting isn't shown), else its Slack gate.
+ */
+export type HostedSlackRequestsState = 'on' | 'off' | 'unavailable';
+
+/**
+ * A Slack session's Orchestrator send (CAN-7604), served on this computer:
+ * the gate, the Slack conversations entry and the caller's tab (one per
+ * person per Slack thread).
+ */
+export interface HostedOrchestratorDeps {
+  /** This computer's Slack flag and gate, read for every send. */
+  slackRequests(): Promise<HostedSlackRequestsState>;
+  /** The Slack conversations entry, created or recreated when missing. */
+  slackConversationsEntry(): Promise<string>;
+  /**
+   * Readies the caller's tab in `entryId` for a new message: reuses it,
+   * restores it from the entry's history under the same ID, or creates it on
+   * the Orchestrator's own model, then marks it to close once the next turn
+   * completes, and runs `send` there. Never adds a second tab for a thread.
+   * The check that the message isn't already sent and the send run under one
+   * per-chat lock, so two deliveries of one message start one turn.
+   *
+   * The tab ID is the caller's `chatId`, which the web's Slack worker derives
+   * from the thread and the sender. This computer can't check that
+   * derivation: the root-signed Slack delegation is the trust boundary, and
+   * the ID only ever names a tab in the Slack conversations entry.
+   */
+  openSlackTab(
+    target: {
+      readonly entryId: string;
+      readonly chatId: string;
+      readonly userMessageId: string;
+      readonly commandId: string;
+    },
+    attribution: HostedChatAttribution,
+    send: () => Promise<ChatCommandResult>,
+  ): Promise<HostedSlackTabOutcome>;
 }
 
 export interface HostedChatDispatchDeps {
@@ -98,6 +155,8 @@ export interface HostedChatDispatchDeps {
   answerQuestion(
     request: HostedQuestionAnswerRequest,
   ): Promise<ChatQuestionRespondOutcome>;
+  /** A Slack session's Orchestrator send; without it every Bot is refused. */
+  orchestrator?: HostedOrchestratorDeps;
   /** Whether an accepted send started its turn or waits in the queue. */
   sendDelivery?(
     target: { projectId: string; worktreeId: string; chatId: string },
@@ -108,6 +167,11 @@ export interface HostedChatDispatchDeps {
 /** A send's reply also says whether it started or was queued, as Portal's does. */
 export type HostedChatCommandResult = ChatCommandResult & {
   delivery?: 'accepted' | 'queued';
+  /**
+   * The Work Entry an Orchestrator send landed in (CAN-7604), so the caller
+   * can read the thread's transcript; the send itself names a reserved target.
+   */
+  worktreeId?: string;
 };
 
 export const HOSTED_SECRET_ANSWER_REFUSAL =
@@ -118,6 +182,13 @@ export const HOSTED_MODEL_PROVIDER_REFUSAL =
 
 export const HOSTED_CHAT_COMMAND_REFUSAL =
   "Agents can't make this chat change.";
+
+export const HOSTED_SLACK_REQUESTS_OFF_REFUSAL =
+  "This computer isn't listening for Slack mentions. Turn it on in Settings → Integrations on this computer.";
+
+// No setting to point at: the flag hides it on this computer.
+export const HOSTED_SLACK_REQUESTS_UNAVAILABLE_REFUSAL =
+  "This computer isn't listening for Slack mentions yet.";
 
 type TabSettingsPatchCommand = Extract<
   ChatCommand,
@@ -170,6 +241,12 @@ export function createHostedChatDispatcher(
 ) => Promise<HostedChatCommandResult> {
   return async (value, attribution) => {
     const request = deps.validate(value);
+    // A Bot is never an ordinary hosted chat (CAN-7604).
+    if (isBotProjectId(request.projectId))
+      return sendToOrchestrator(deps, request, attribution);
+    // A first-party session only ever reaches the Orchestrator.
+    if (attribution.firstPartyClient !== undefined)
+      return refused(request, 'rejected', HOSTED_CHAT_COMMAND_REFUSAL);
     const command = request.command;
     switch (command.type) {
       case 'chat.create_tab': {
@@ -358,5 +435,99 @@ export function createHostedChatDispatcher(
         break;
     }
     return refused(request, 'rejected', HOSTED_CHAT_COMMAND_REFUSAL);
+  };
+}
+
+/**
+ * A Slack session's message to the Orchestrator (CAN-7604). Only the plain
+ * send to the reserved Slack conversations target is served, and only while
+ * this computer's Slack gate is on. It lands in the caller's tab of the Slack
+ * conversations entry, on the Orchestrator's own model and approval mode,
+ * attributed to the verified Slack sender. Anything else naming a Bot is
+ * refused before anything changes.
+ */
+async function sendToOrchestrator(
+  deps: HostedChatDispatchDeps,
+  request: ChatCommandRequest,
+  attribution: HostedChatAttribution,
+): Promise<HostedChatCommandResult> {
+  const command = request.command;
+  const orchestrator = deps.orchestrator;
+  if (
+    orchestrator === undefined ||
+    attribution.firstPartyClient !== 'slack' ||
+    request.projectId !== APP_ADVISOR_PROJECT_ID ||
+    request.worktreeId !== HOSTED_SLACK_CONVERSATIONS_TARGET ||
+    command.type !== 'chat.send_message' ||
+    command.model !== undefined ||
+    command.planMode !== undefined
+  )
+    return refused(request, 'rejected', HOSTED_CHAT_COMMAND_REFUSAL);
+  const slackRequests = await orchestrator.slackRequests();
+  if (slackRequests === 'unavailable')
+    return refused(
+      request,
+      'rejected',
+      HOSTED_SLACK_REQUESTS_UNAVAILABLE_REFUSAL,
+    );
+  if (slackRequests === 'off')
+    return refused(request, 'rejected', HOSTED_SLACK_REQUESTS_OFF_REFUSAL);
+  const entryId = await orchestrator.slackConversationsEntry();
+  const tab = await orchestrator.openSlackTab(
+    {
+      entryId,
+      chatId: command.chatId,
+      userMessageId: command.userMessageId,
+      commandId: request.commandId,
+    },
+    attribution,
+    () =>
+      deps.dispatch(
+        {
+          schemaVersion: request.schemaVersion,
+          commandId: request.commandId,
+          projectId: APP_ADVISOR_PROJECT_ID,
+          worktreeId: entryId,
+          origin: 'portal',
+          command: {
+            type: 'chat.send_message',
+            chatId: command.chatId,
+            userMessageId: command.userMessageId,
+            text: command.text,
+            agentSent: attribution.sender,
+          },
+        },
+        attribution,
+      ),
+  );
+  if (tab.status === 'refused') return refused(request, 'rejected', tab.reason);
+  if (tab.status === 'sent') {
+    return {
+      commandId: request.commandId,
+      // Placeholder: nothing was committed, and the tab's revision isn't
+      // read. Callers use the outcome, never the revision.
+      revision: 0,
+      outcome: 'already_applied',
+      entityId: command.chatId,
+      messageId: command.userMessageId,
+      worktreeId: entryId,
+    };
+  }
+  const sent = tab.result;
+  if (sent.outcome !== 'applied' && sent.outcome !== 'already_applied')
+    return { ...sent, worktreeId: entryId };
+  return {
+    ...sent,
+    worktreeId: entryId,
+    ...(deps.sendDelivery === undefined
+      ? {}
+      : await deps.sendDelivery(
+          {
+            projectId: APP_ADVISOR_PROJECT_ID,
+            worktreeId: entryId,
+            chatId: command.chatId,
+          },
+          sent.messageId ?? command.userMessageId,
+        )),
   };
 }

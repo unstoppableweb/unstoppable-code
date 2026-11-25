@@ -16,6 +16,7 @@ import {
 } from '@canopy/execution-engine/pipelines/config-paths';
 import { classifyAgentFailure } from '@canopy/execution-engine/agent-failures';
 import { hasAnySelections } from '../../types';
+import { stepStartupInjectionNames } from '../provider-process/step-environment';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -190,6 +191,14 @@ export async function runOpenCodePipelinePrompt(
   };
   try {
     signal.throwIfAborted();
+    // The hosts drop these from the step's environment before every OpenCode
+    // launch; say so, as Cursor steps do, rather than drop them in silence.
+    const withheld = stepStartupInjectionNames(request.environment);
+    if (withheld.length > 0)
+      emit({
+        type: 'warning',
+        message: `OpenCode does not receive these step environment variables: ${withheld.join(', ')}. The loader or shell would act on them before tool approval starts.`,
+      });
     const model = getRawOpenCodeModelId(request.model);
 
     const cwd = resolve(request.cwd);

@@ -210,7 +210,10 @@ function AppAdvisorDockSlot(): JSX.Element {
     const resizeObserver = new ResizeObserver(update);
     resizeObserver.observe(slot);
     window.addEventListener('resize', update);
-    const unsubscribeOverlays = subscribeBrowserOverlayTopology(update);
+    // While an overlay hides the page, any reflow can uncover it again.
+    const unsubscribeOverlays = subscribeBrowserOverlayTopology(update, {
+      everyChange: () => !reported.current.visible,
+    });
     return (): void => {
       disposed = true;
       resizeObserver.disconnect();

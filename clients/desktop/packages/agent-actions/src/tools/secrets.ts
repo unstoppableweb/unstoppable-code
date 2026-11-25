@@ -289,7 +289,8 @@ export const REQUEST_SECRETS_JSON_SCHEMA: AgentJsonSchema = {
             type: 'string',
             minLength: 1,
             maxLength: REQUEST_SECRETS_DESCRIPTION_MAX_LENGTH,
-            description: 'Where to find the value or what it is for.',
+            description:
+              "An https:// link to the page with the value; the form shows it as a link. Add a short note only for what that page won't tell them, such as which key to copy. Don't list navigation steps.",
           },
           kind: {
             type: 'string',

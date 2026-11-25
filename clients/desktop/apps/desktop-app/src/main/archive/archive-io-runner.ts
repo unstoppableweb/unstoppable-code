@@ -1,4 +1,5 @@
 import { sanitizedDestructiveCode } from '../lib/destructive-failure-context';
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import { archiveErrorWithFrames } from '../lib/archive-error-frames';
 import * as path from 'node:path';
 import { utilityProcess, type UtilityProcess } from 'electron';
@@ -208,6 +209,8 @@ function handleMessage(state: WorkerState, message: unknown): void {
           ? diagnostic
           : sanitizedDestructiveCode(response.code);
       if (code !== 'unknown') Object.assign(record.error, { code });
+      if (code === 'external.removal_not_permitted')
+        classifyError(record.error, code);
     }
     recordArchiveIoDiagnostic(record.request, {
       stage: 'failed',

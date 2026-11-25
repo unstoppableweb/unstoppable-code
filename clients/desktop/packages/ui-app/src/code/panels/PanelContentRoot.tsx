@@ -81,6 +81,8 @@ import {
   PanelWorktreeContext,
   worktreeSelectionFromPanelOwnerKey,
   type PanelHostState,
+  type PanelPlacement,
+  type PanelWorktreeSelection,
 } from './panel-contexts';
 
 export interface RenderPanelContentArgs {
@@ -120,6 +122,34 @@ function ownerKeyOf(layoutKey: string): string {
 
 function containerKey(ownerKey: string, panelId: string): string {
   return `${ownerKey}::${panelId}`;
+}
+
+// One object per owner and per placement, for as long as it describes the
+// same thing. Context compares values by identity: a new object on every
+// render of this root made every reader (the composer, the Activity rail,
+// each panel's wrapper) render again on every layout commit and every render
+// of the grid above, with nothing of theirs changed.
+const CONTEXT_VALUE_LIMIT = 512;
+const ownerSelections = new Map<string, PanelWorktreeSelection | null>();
+const panelPlacements = new Map<string, PanelPlacement>();
+
+function ownerSelectionOf(ownerKey: string): PanelWorktreeSelection | null {
+  const known = ownerSelections.get(ownerKey);
+  if (known !== undefined) return known;
+  if (ownerSelections.size >= CONTEXT_VALUE_LIMIT) ownerSelections.clear();
+  const selection = worktreeSelectionFromPanelOwnerKey(ownerKey);
+  ownerSelections.set(ownerKey, selection);
+  return selection;
+}
+
+function panelPlacementOf(layoutKey: string, groupId: string): PanelPlacement {
+  const key = `${layoutKey}\u0000${groupId}`;
+  const known = panelPlacements.get(key);
+  if (known !== undefined) return known;
+  if (panelPlacements.size >= CONTEXT_VALUE_LIMIT) panelPlacements.clear();
+  const placement: PanelPlacement = { layoutKey, groupId };
+  panelPlacements.set(key, placement);
+  return placement;
 }
 
 const panelContentContainers = new Map<string, HTMLElement>();
@@ -229,7 +259,7 @@ export function PanelContentRoot({
   const portals: ReactNode[] = [];
   for (const layoutKey of mountedLayoutKeys) {
     const ownerKey = ownerKeyOf(layoutKey);
-    const ownerSelection = worktreeSelectionFromPanelOwnerKey(ownerKey);
+    const ownerSelection = ownerSelectionOf(ownerKey);
     // Host state is per layout: an auxiliary window is its own page, so its
     // content never inherits the main page's `visible`.
     const layoutHostState =
@@ -238,6 +268,7 @@ export function PanelContentRoot({
         : auxPanelHostState(hostState);
     const { viewModel } = layouts[layoutKey];
     for (const group of viewModel.groups) {
+      const placement = panelPlacementOf(layoutKey, group.groupId);
       const isActiveGroup = group.groupId === viewModel.activeGroupId;
       const isGroupVisible =
         viewModel.maximizedGroupId === null ||
@@ -259,9 +290,7 @@ export function PanelContentRoot({
           createPortal(
             <PanelHostContext.Provider value={layoutHostState}>
               <PanelWorktreeContext.Provider value={ownerSelection}>
-                <PanelPlacementContext.Provider
-                  value={{ layoutKey, groupId: group.groupId }}
-                >
+                <PanelPlacementContext.Provider value={placement}>
                   <PanelVisibilityContext.Provider value={isVisible}>
                     {/* The portal's key holds this boundary to one panel across
                         tab switches, moves and pop-outs. A panel bound to new

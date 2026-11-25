@@ -623,6 +623,9 @@ export function ChatContent({
                 value={searchOpen && !canonicalSearchEnabled}
               >
                 <ChatMessageList
+                  // Hosts with `hideComposer` draw the composer themselves; only
+                  // a read-only scope has none below the transcript.
+                  composerBelow={!readOnly}
                   canonicalSearch={canonicalSearchEnabled}
                   searchSelection={transcriptSearch.selection}
                   pagingControls={pageControls}

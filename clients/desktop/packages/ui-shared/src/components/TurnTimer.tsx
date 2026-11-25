@@ -675,25 +675,30 @@ export function TurnTimer({
   if (state !== 'completed') {
     // Clean chat look, running or paused: the row is the live line's slot,
     // the same height with or without it. The line brings its own inset. A
-    // paused turn is not working, so it holds no live line.
+    // paused turn is not working, so it holds no default line; a host that
+    // passes its own line decides what a paused turn shows.
     return (
       <TurnFooterRow
         hostTurnGap={hostTurnGap}
         data-testid="turn-timer"
         data-state={state}
       >
-        {state !== 'live' ? null : liveLine === undefined ? (
-          <ChatToolStepGroup
-            summary=""
-            inset={inset}
-            live={{
-              label: workingLabel ?? 'Thinking',
-              icon: null,
-            }}
-          />
-        ) : (
-          liveLine
-        )}
+        {/* The row is a flex row: the slot must be able to shrink, or a
+            long line (a command) runs past the turn instead of truncating. */}
+        <div className="min-w-0 flex-1">
+          {liveLine !== undefined ? (
+            liveLine
+          ) : state !== 'live' ? null : (
+            <ChatToolStepGroup
+              summary=""
+              inset={inset}
+              live={{
+                label: workingLabel ?? 'Thinking',
+                icon: null,
+              }}
+            />
+          )}
+        </div>
       </TurnFooterRow>
     );
   }

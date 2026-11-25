@@ -42,7 +42,7 @@ import {
   isGatewayRoutableModel,
   resolveOrgGatewayOrganizationId,
 } from '@canopy/execution-engine/lib/gateway-model-availability';
-import { hasModelGatewayCredential } from './model-gateway-credential-store';
+import { hasUsableModelGatewayCredential } from './model-gateway-credential-store';
 import {
   isModelExcludedByGatewayRequirement,
   listOrgGatewayModelsForOrganization,
@@ -948,7 +948,8 @@ export async function resolveConcreteModelDispatchability(
   )
     return 'dispatchable';
   // An organization or Personal AI gateway model bills to the member's own
-  // gateway key, never AI Credits, so with that key on this device the credits
+  // gateway key, never AI Credits, so with a key for the gateway's current URL
+  // on this device the credits
   // read below can't judge it (CAN-6444): a gateway-only user with no credits
   // was refused here before their first turn. Without a key (or when the key
   // store can't be read) it falls through to the credits check as before, so a
@@ -956,7 +957,9 @@ export async function resolveConcreteModelDispatchability(
   const gatewayOrganizationId = resolveOrgGatewayOrganizationId(model);
   if (
     gatewayOrganizationId !== undefined &&
-    (await hasModelGatewayCredential(gatewayOrganizationId).catch(() => false))
+    (await hasUsableModelGatewayCredential(gatewayOrganizationId).catch(
+      () => false,
+    ))
   )
     return 'dispatchable';
   // A GATEWAY-ONLY model skips the native shortcut entirely.

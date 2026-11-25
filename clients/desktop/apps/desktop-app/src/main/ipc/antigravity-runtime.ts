@@ -3,6 +3,11 @@ import {
   IPC_CHANNELS,
   type AntigravityRuntimeStatus,
 } from '@canopy/desktop-shared/types';
+import {
+  isProviderPlatformSupportedThroughWorker,
+  type WorkerAgentProviderPlatformDispatcher,
+} from '../agent-providers/provider-platform-projection';
+import type { DesktopIpcCallerResolver } from './file-tree';
 import { registerIpcHandler } from './register';
 import { validateId } from '../lib/validation';
 import { sendToWebContents } from '../lib/web-contents-send';
@@ -10,7 +15,7 @@ import { sendToWebContents } from '../lib/web-contents-send';
 /**
  * The one owner of the managed Antigravity CLI install: status, install,
  * cancel and the progress event. Install and cancel are local-only under
- * remote control; status is readable remotely.
+ * remote control; status and host support are readable remotely.
  */
 let shuttingDown = false;
 
@@ -83,11 +88,28 @@ export async function shutdownAntigravityRuntimeInstalls(): Promise<void> {
   await shutdownAntigravityRuntimeInstall();
 }
 
-export function registerAntigravityRuntimeHandlers(): void {
+export function registerAntigravityRuntimeHandlers(runtime: {
+  dispatcher: WorkerAgentProviderPlatformDispatcher;
+  resolveCaller: DesktopIpcCallerResolver;
+}): void {
   registerIpcHandler(IPC_CHANNELS.antigravityRuntimeStatus, (event) => {
     assertOwner(event);
     return readStatus();
   });
+  // A projection of worker.agent.provider.platform.get, which answers from
+  // pinned artifacts alone: no executable lookup or hashing, so pickers and
+  // Settings rows can ask on every window without touching the CLI.
+  registerIpcHandler(
+    IPC_CHANNELS.antigravityRuntimeHostSupport,
+    (event): Promise<boolean> => {
+      assertOwner(event);
+      return isProviderPlatformSupportedThroughWorker(
+        runtime.dispatcher,
+        runtime.resolveCaller(event),
+        'antigravity',
+      );
+    },
+  );
   registerIpcHandler(
     IPC_CHANNELS.antigravityRuntimeInstall,
     (event, operationId?: unknown) => {

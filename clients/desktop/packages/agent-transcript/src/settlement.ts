@@ -122,6 +122,88 @@ export function persistedInterruptedSettlementTime(
   });
 }
 
+/** Blocks that mark time or context rather than carry the turn's work. */
+function isSettlementMarkerBlock(
+  block: PersistedChatMessage['blocks'][number],
+): boolean {
+  return (
+    block.type === 'turn_timer' ||
+    block.type === 'wake_boundary' ||
+    block.type === 'mcp_activation' ||
+    block.type.endsWith('_info')
+  );
+}
+
+/** Whether the answer tracker must look past this row. */
+function isIgnoredAnswerRow(message: PersistedChatMessage): boolean {
+  return (
+    Boolean(message.parentBlockId) ||
+    Boolean(message.parentToolUseId) ||
+    message.hidden === true ||
+    isSyntheticSettlementMessage(message) ||
+    message.blocks.every(isSettlementMarkerBlock)
+  );
+}
+
+/** A nonblank assistant text that reports no question or failure. */
+function isAnswerRow(message: PersistedChatMessage): boolean {
+  if (message.role !== 'assistant') return false;
+  const content = message.blocks.filter(
+    (block) => !isSettlementMarkerBlock(block),
+  );
+  const last = content[content.length - 1];
+  return (
+    last?.type === 'text' &&
+    last.text.trim().length > 0 &&
+    last.asyncQuestion === undefined &&
+    last.authFailure === undefined &&
+    last.authFailures === undefined &&
+    last.errorCode === undefined &&
+    last.sessionResumeFailure === undefined &&
+    last.modelAccessFailure === undefined
+  );
+}
+
+/**
+ * Follows one root turn, row by row, and reports whether its last root row is
+ * a saved answer (CAN-7612). Retains only the boundary identity and flags,
+ * never message bodies, so legacy migration can stream through it. The
+ * result is a candidate: the caller still checks tool closure across the
+ * whole turn, children included.
+ */
+export class SettlementAnswerTracker {
+  private state: 'before' | 'inside' | 'after' = 'before';
+  private answered = false;
+
+  constructor(private readonly userMessageId: string | undefined) {}
+
+  observe(message: PersistedChatMessage): void {
+    if (this.userMessageId === undefined || this.state === 'after') return;
+    if (isRootUserTurnBoundary(message)) {
+      if (this.state === 'inside') this.state = 'after';
+      else if (message.id === this.userMessageId) this.state = 'inside';
+      return;
+    }
+    if (this.state !== 'inside' || isIgnoredAnswerRow(message)) return;
+    this.answered = isAnswerRow(message);
+  }
+
+  /** Whether the tracked turn was found and its last root row answers it. */
+  get endsInAnswer(): boolean {
+    return this.state !== 'before' && this.answered;
+  }
+}
+
+/** {@link SettlementAnswerTracker} over a full transcript. */
+export function persistedTurnEndsInAnswer(
+  messages: Iterable<PersistedChatMessage>,
+  userMessageId: string | undefined,
+): boolean {
+  const tracker = new SettlementAnswerTracker(userMessageId);
+  for (const message of messages) tracker.observe(message);
+  return tracker.endsInAnswer;
+}
+
 /** Conservative legacy projection; original stored output remains untouched. */
 export function settledToolInterruption(
   message: PersistedChatMessage,

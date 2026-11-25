@@ -1,3 +1,5 @@
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
+import { ErrorBanner } from '@canopy/ui-shared/components';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   useCallback,
@@ -18,17 +20,17 @@ import type {
 import type { PipelinePluginCollectionRunContext } from './PipelineTriggerModal';
 import { dispatchAppAction } from '@/lib/app-actions/dispatcher';
 import { extractIpcErrorMessage } from '@/lib/errors';
-import { revealChatPanel } from '@/lib/panels/reveal-chat-panel';
+import {
+  revealChatPanel,
+  type ChatPanelRevealTarget,
+} from '@/lib/panels/reveal-chat-panel';
 import { openTrackedPlan } from '@/lib/plans/open-tracked-plan';
-import { resolveSendMessageTargetTab } from '@/stores/chat/context';
 import { canRetryExecution, hasRerunReplayData } from '@/lib/execution-actions';
 import {
   retainAppAdvisorWatchersBridge,
   useAppAdvisorWatchersStore,
 } from '@/stores/appAdvisorWatchersStore';
 import { useChatStore } from '@/stores/chatStore';
-import { useGitHubStore } from '@/stores/githubStore';
-import type { ToastMeta } from '@/stores/toastStore';
 import {
   usePipelineExecutionActionsStore,
   withInFlightId,
@@ -74,21 +76,29 @@ export interface PipelineExecutionActions {
   /** Opens App Advisor on a failed run. Resolves true once it opened. */
   debugFailure: (executionId: string) => Promise<boolean>;
   /** Asks the run's worktree chat to review its saved plan. */
-  chatFollowUp: (executionId: string) => Promise<void>;
+  chatFollowUp: (executionId: string) => Promise<boolean>;
   /** Asks the run's worktree chat to review its saved report. */
-  reportChatFollowUp: (executionId: string) => Promise<void>;
+  reportChatFollowUp: (executionId: string) => Promise<boolean>;
   /** Opens the plan-ready pipeline dialog for the run's saved plan. */
   pipelineFollowUp: (executionId: string) => Promise<void>;
   /** Opens the run's report dialog. */
   openReport: (executionId: string) => void;
   /** Opens the run's tracked plan in its own worktree. */
-  openPlan: (executionId: string) => Promise<void>;
+  openPlan: (executionId: string) => Promise<boolean>;
   /**
    * The report and follow-up dialog host. Render it once in the consuming
    * surface. It renders nothing in place; the dialogs portal into the owner
    * document.
    */
   readonly dialogs: JSX.Element;
+  /**
+   * Place next to the workflow controls. A detail supplies its guarded chat
+   * navigation callback so a successful recovery also closes a covering modal.
+   */
+  renderActionError: (
+    scope?: string | ReadonlySet<string>,
+    onChatRevealed?: () => void,
+  ) => JSX.Element | null;
   /**
    * Attach to any element of the consuming surface: dialogs open in that
    * element's document, so a surface in an auxiliary window gets them there.
@@ -108,15 +118,26 @@ export interface UsePipelineExecutionActionsOptions {
   ownerDocument?: Document;
 }
 
-function addPipelineToast(
-  message: string,
-  type: 'error' | 'info' | 'success',
-  caught?: Pick<ToastMeta, 'caught'>,
-): void {
-  useGitHubStore
-    .getState()
-    .addToast(message, type, undefined, { category: 'Pipeline', ...caught });
+interface RunActionError {
+  readonly message: string;
+  readonly reported: boolean;
 }
+
+type RunAction =
+  | 'resume'
+  | 'retry'
+  | 'rerun'
+  | 'debug'
+  | 'plan'
+  | 'workflow'
+  | 'plan-chat'
+  | 'report-chat';
+
+type ShowActionError = (
+  message: string,
+  recordResult?: boolean,
+  openChat?: () => Promise<boolean>,
+) => void;
 
 function getExecutionPlanPath(state: ExecutionState): string | undefined {
   return (
@@ -134,13 +155,14 @@ function createRequestId(): string {
 /** The run's state from the cache, or one read by id. */
 async function resolveExecution(
   executionId: string,
+  showError: ShowActionError,
 ): Promise<ExecutionState | null> {
   const store = usePipelineRunsStore.getState();
   const state =
     store.statesById[executionId] ??
     (await store.loadExecutionDetails(executionId));
   if (!state) {
-    addPipelineToast('Failed to load workflow execution details', 'error');
+    showError('Failed to load workflow execution details', true);
     return null;
   }
   return state;
@@ -164,11 +186,12 @@ function selectExecutionWorktree(state: ExecutionState): void {
  */
 async function ensureExecutionChatContext(
   state: ExecutionState,
+  showError: ShowActionError,
 ): Promise<boolean> {
   if (state.project_id && state.worktree_id) {
     selectExecutionWorktree(state);
   } else if (!useChatStore.getState().selectedWorktree) {
-    addPipelineToast('No worktree is selected for chat follow-up', 'error');
+    showError('No worktree is selected for chat follow-up');
     return false;
   }
 
@@ -184,7 +207,7 @@ async function ensureExecutionChatContext(
   const deadline = Date.now() + 5000;
   while (!useChatStore.getState().worktreeChats[targetKey]) {
     if (Date.now() >= deadline) {
-      addPipelineToast('Timed out waiting for chat tabs to load', 'error');
+      showError('Timed out waiting for chat tabs to load', true);
       return false;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -192,103 +215,111 @@ async function ensureExecutionChatContext(
   return true;
 }
 
-/** The worktree chat scope a follow-up for this run is sent to. */
-function followUpChatScope(
-  state: ExecutionState,
-): { projectId: string; worktreeId: string } | null {
-  if (state.project_id && state.worktree_id) {
-    return { projectId: state.project_id, worktreeId: state.worktree_id };
-  }
-  return useChatStore.getState().selectedWorktree;
+/** Reveal failure is recovered locally without sending the accepted message again. */
+async function revealFollowUpTarget(
+  target: ChatPanelRevealTarget,
+): Promise<boolean> {
+  const [result] = await Promise.allSettled([revealChatPanel(target)]);
+  return result.status === 'fulfilled' && result.value;
 }
 
-/** How often to look for the chat a send creates while it is in flight. */
-const CREATED_CHAT_POLL_MS = 25;
+/**
+ * Keep the run visible until admission answers. The send may outlive that
+ * answer, so observe its promise but let an explicit acceptance reveal the
+ * chat immediately. The first admission outcome is authoritative.
+ */
+function dispatchFollowUpMessage(
+  message: string,
+): Promise<ChatPanelRevealTarget | undefined> {
+  return new Promise<ChatPanelRevealTarget | undefined>((resolve, reject) => {
+    let recipient: ChatPanelRevealTarget | undefined;
+    const rejectDispatch = (): void => {
+      reject(new Error('The chat could not accept this workflow follow-up'));
+    };
+    void useChatStore
+      .getState()
+      .sendMessage(message, undefined, undefined, undefined, {
+        onTargetResolved: (target): void => {
+          recipient = target;
+        },
+        onDispatchAccepted: (): void => resolve(recipient),
+        onDispatchRejected: rejectDispatch,
+        onPreDispatchRejected: rejectDispatch,
+        throwOnDispatchFailure: true,
+        suppressDispatchErrorToast: true,
+      })
+      // A completed send is the compatibility acknowledgment when no callback
+      // fires. Consume a later rejection after an authoritative callback too.
+      .then(() => resolve(recipient), reject);
+  });
+}
 
 /**
  * Brings the chat that receives a follow-up into view: selects its tab,
  * expands its group, leaves a conflicting maximize, and focuses its window
- * when it is popped out. `sendMessage` writes to the worktree's active chat
- * (or the first writable one, or a new one), and selecting that chat is a
- * no-op for the panel grid when it is already active, so the receiving chat
- * is resolved the same way the send does and revealed explicitly.
+ * when it is popped out. The send captures its actual recipient before
+ * admission, so changing selection while it waits cannot redirect this reveal
+ * or the later recovery to a different chat.
  */
-function revealFollowUpChat(
-  scope: { projectId: string; worktreeId: string } | null,
-  sending: () => Promise<void>,
-): Promise<void> {
-  if (!scope) return sending();
-  const scopeKey = `${scope.projectId}/${scope.worktreeId}`;
-  const before = useChatStore.getState().worktreeChats[scopeKey];
-  const resolution = before
-    ? resolveSendMessageTargetTab(before, undefined)
-    : ({ kind: 'abort' } as const);
-  if (resolution.kind === 'existing') {
-    void revealChatPanel({ ...scope, chatId: resolution.chatId });
-    return sending();
-  }
-  if (resolution.kind === 'abort') return sending();
-  // The send creates the chat: reveal it as soon as it is the active tab,
-  // without waiting for the send itself to finish. The send may first wait
-  // for a chat-state refresh, so keep looking for as long as it is in flight
-  // and once more after it settles, rather than on a deadline of our own.
-  const knownIds = new Set(before?.tabs.map((tab) => tab.id));
-  const createdChatId = (): string | null => {
-    const wc = useChatStore.getState().worktreeChats[scopeKey];
-    return wc && wc.activeTabId && !knownIds.has(wc.activeTabId)
-      ? wc.activeTabId
-      : null;
-  };
-  let settled = false;
-  const sent = sending().finally(() => {
-    settled = true;
-  });
-  void (async (): Promise<void> => {
-    for (;;) {
-      // Read `settled` before looking, so the look after it flips is the
-      // final one.
-      const lastLook = settled;
-      const chatId = createdChatId();
-      if (chatId !== null) {
-        await revealChatPanel({ ...scope, chatId });
-        return;
-      }
-      if (lastLook) return;
-      await new Promise((resolve) => setTimeout(resolve, CREATED_CHAT_POLL_MS));
-    }
-  })();
-  return sent;
+async function revealFollowUpChat(
+  sending: () => Promise<ChatPanelRevealTarget | undefined>,
+  onTarget?: (target: ChatPanelRevealTarget) => void,
+): Promise<boolean> {
+  const target = await sending();
+  if (!target) return false;
+  onTarget?.(target);
+  return revealFollowUpTarget(target);
 }
 
 async function sendExecutionFollowUp(
   executionId: string,
   buildMessage: (state: ExecutionState) => string | null,
   missingMessage: string,
-): Promise<void> {
+  action: RunAction,
+  beginAction: (executionId: string, action: RunAction) => ShowActionError,
+): Promise<boolean> {
   const inFlight = usePipelineExecutionActionsStore.getState();
-  if (inFlight.chatFollowUpInProgress) return;
+  if (inFlight.chatFollowUpInProgress) return false;
+  const showError = beginAction(executionId, action);
   usePipelineExecutionActionsStore.setState({ chatFollowUpInProgress: true });
   try {
-    const state = await resolveExecution(executionId);
-    if (!state) return;
+    const state = await resolveExecution(executionId, showError);
+    if (!state) return false;
     const message = buildMessage(state);
     if (!message) {
-      addPipelineToast(missingMessage, 'error');
-      return;
+      showError(missingMessage);
+      return false;
     }
-    if (!(await ensureExecutionChatContext(state))) return;
+    if (!(await ensureExecutionChatContext(state, showError))) return false;
     // Re-select the run's worktree immediately before sending in case the
     // user changed selection while its tabs were loading.
     selectExecutionWorktree(state);
-    await revealFollowUpChat(followUpChatScope(state), () =>
-      useChatStore.getState().sendMessage(message),
+    let target: ChatPanelRevealTarget | undefined;
+    const revealed = await revealFollowUpChat(
+      () => dispatchFollowUpMessage(message),
+      (resolvedTarget) => {
+        target = resolvedTarget;
+      },
     );
+    if (!revealed) {
+      const sentTarget = target;
+      // Recovery opens the accepted send's chat; it must never send it again.
+      showError(
+        'Follow-up sent, but the chat could not be opened',
+        true,
+        sentTarget
+          ? (): Promise<boolean> => revealFollowUpTarget(sentTarget)
+          : undefined,
+      );
+      return false;
+    }
+    return true;
   } catch (error: unknown) {
-    addPipelineToast(
+    reportClientAppError(error);
+    showError(
       error instanceof Error ? error.message : 'Failed to start chat follow-up',
-      'error',
-      { caught: error },
     );
+    return false;
   } finally {
     usePipelineExecutionActionsStore.setState({
       chatFollowUpInProgress: false,
@@ -320,7 +351,91 @@ export function usePipelineExecutionActions(
   const [followUp, setFollowUp] =
     useState<PipelineExecutionFollowUpDialog | null>(null);
   const [followUpRunning, setFollowUpRunning] = useState(false);
-  const [followUpError, setFollowUpError] = useState<string | null>(null);
+  const [followUpError, setFollowUpError] = useState<RunActionError | null>(
+    null,
+  );
+  const [actionErrors, setActionErrors] = useState(
+    () =>
+      new Map<
+        string,
+        {
+          executionId: string;
+          message: string;
+          openChat?: () => Promise<boolean>;
+        }
+      >(),
+  );
+  const dismissActionError = useCallback((key: string): void => {
+    setActionErrors((current) => {
+      if (!current.has(key)) return current;
+      const next = new Map(current);
+      next.delete(key);
+      return next;
+    });
+  }, []);
+  const beginAction = useCallback(
+    (executionId: string, action: RunAction): ShowActionError => {
+      const key = `${executionId}:${action}`;
+      dismissActionError(key);
+      return (message, recordResult = false, openChat): void => {
+        if (recordResult) {
+          reportClientAppError(
+            new Error(`Workflow run action failed: ${action}`),
+          );
+        }
+        setActionErrors((current) =>
+          new Map(current).set(key, { executionId, message, openChat }),
+        );
+      };
+    },
+    [dismissActionError],
+  );
+  const renderActionError = useCallback(
+    (
+      scope?: string | ReadonlySet<string>,
+      onChatRevealed?: () => void,
+    ): JSX.Element | null => {
+      const visible = [...actionErrors].filter(
+        ([, error]) =>
+          scope === undefined ||
+          (typeof scope === 'string'
+            ? error.executionId === scope
+            : scope.has(error.executionId)),
+      );
+      if (!visible.length) return null;
+      return (
+        <>
+          {visible.map(([key, { message, openChat }]) => (
+            <ErrorBanner
+              key={key}
+              error={message}
+              errorSource="workflow-run-action"
+              blockMessageFromReplay
+              errorRecordingDisabled
+              retryLabel="Open chat"
+              onRetry={
+                openChat
+                  ? () => {
+                      void openChat()
+                        .then((opened) => {
+                          if (opened) {
+                            dismissActionError(key);
+                            onChatRevealed?.();
+                          }
+                        })
+                        .catch(reportClientAppError);
+                    }
+                  : undefined
+              }
+              onDismiss={() => dismissActionError(key)}
+              testId="workflow-run-action-error"
+            />
+          ))}
+        </>
+      );
+    },
+    [actionErrors, dismissActionError],
+  );
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -359,6 +474,7 @@ export function usePipelineExecutionActions(
         usePipelineExecutionActionsStore.getState().resumingId === executionId
       )
         return;
+      const showError = beginAction(executionId, 'resume');
       usePipelineExecutionActionsStore.setState({ resumingId: executionId });
       try {
         const result = await usePipelineRunsStore
@@ -370,125 +486,125 @@ export function usePipelineExecutionActions(
               : {},
           );
         if (!result.success) {
-          addPipelineToast(
-            result.error ?? 'Failed to resume execution',
-            'error',
-          );
+          showError(result.error ?? 'Failed to resume execution', true);
         }
       } catch (error: unknown) {
-        addPipelineToast(extractIpcErrorMessage(error), 'error', {
-          caught: error,
-        });
+        reportClientAppError(error);
+        showError(extractIpcErrorMessage(error));
       } finally {
         usePipelineExecutionActionsStore.setState((state) =>
           state.resumingId === executionId ? { resumingId: null } : state,
         );
       }
     },
-    [],
+    [beginAction],
   );
 
-  const retry = useCallback(async (executionId: string): Promise<void> => {
-    if (
-      usePipelineExecutionActionsStore.getState().retryingIds.has(executionId)
-    )
-      return;
-    usePipelineExecutionActionsStore.setState((state) => ({
-      retryingIds: withInFlightId(state.retryingIds, executionId, true),
-    }));
-    try {
-      const state = await resolveExecution(executionId);
-      if (!state) return;
-      if (state.parent_execution_id) {
-        addPipelineToast('Only root executions can be retried', 'error');
-        return;
-      }
-      if (!canRetryExecution(state)) {
-        addPipelineToast(
-          'Only failed or cancelled executions can be retried',
-          'error',
-        );
-        return;
-      }
-      const result = await usePipelineRunsStore
-        .getState()
-        .retryExecution(executionId);
-      if (!result.success) {
-        addPipelineToast(result.error ?? 'Failed to retry execution', 'error');
-      }
-    } catch (error: unknown) {
-      addPipelineToast(extractIpcErrorMessage(error), 'error', {
-        caught: error,
-      });
-    } finally {
-      usePipelineExecutionActionsStore.setState((state) => ({
-        retryingIds: withInFlightId(state.retryingIds, executionId, false),
-      }));
-    }
-  }, []);
-
-  const rerun = useCallback(async (executionId: string): Promise<void> => {
-    if (
-      usePipelineExecutionActionsStore.getState().rerunningIds.has(executionId)
-    )
-      return;
-    usePipelineExecutionActionsStore.setState((state) => ({
-      rerunningIds: withInFlightId(state.rerunningIds, executionId, true),
-    }));
-    try {
-      const state = await resolveExecution(executionId);
-      if (!state) return;
-      if (state.parent_execution_id) {
-        addPipelineToast('Only root executions can be rerun', 'error');
-        return;
-      }
+  const retry = useCallback(
+    async (executionId: string): Promise<void> => {
       if (
-        state.status !== 'success' &&
-        state.status !== 'failure' &&
-        state.status !== 'cancelled'
-      ) {
-        addPipelineToast('Only terminal executions can be rerun', 'error');
+        usePipelineExecutionActionsStore.getState().retryingIds.has(executionId)
+      )
         return;
-      }
-      if (!hasRerunReplayData(state)) {
-        addPipelineToast(
-          'This execution cannot be rerun because its original plan input was not preserved',
-          'error',
-        );
-        return;
-      }
-      const result = await usePipelineRunsStore
-        .getState()
-        .rerunExecution(executionId);
-      if (!result.success) {
-        addPipelineToast(result.error ?? 'Failed to rerun execution', 'error');
-      }
-    } catch (error: unknown) {
-      addPipelineToast(extractIpcErrorMessage(error), 'error', {
-        caught: error,
-      });
-    } finally {
+      const showError = beginAction(executionId, 'retry');
       usePipelineExecutionActionsStore.setState((state) => ({
-        rerunningIds: withInFlightId(state.rerunningIds, executionId, false),
+        retryingIds: withInFlightId(state.retryingIds, executionId, true),
       }));
-    }
-  }, []);
+      try {
+        const state = await resolveExecution(executionId, showError);
+        if (!state) return;
+        if (state.parent_execution_id) {
+          showError('Only root executions can be retried');
+          return;
+        }
+        if (!canRetryExecution(state)) {
+          showError('Only failed or cancelled executions can be retried');
+          return;
+        }
+        const result = await usePipelineRunsStore
+          .getState()
+          .retryExecution(executionId);
+        if (!result.success) {
+          showError(result.error ?? 'Failed to retry execution', true);
+        }
+      } catch (error: unknown) {
+        reportClientAppError(error);
+        showError(extractIpcErrorMessage(error));
+      } finally {
+        usePipelineExecutionActionsStore.setState((state) => ({
+          retryingIds: withInFlightId(state.retryingIds, executionId, false),
+        }));
+      }
+    },
+    [beginAction],
+  );
+
+  const rerun = useCallback(
+    async (executionId: string): Promise<void> => {
+      if (
+        usePipelineExecutionActionsStore
+          .getState()
+          .rerunningIds.has(executionId)
+      )
+        return;
+      const showError = beginAction(executionId, 'rerun');
+      usePipelineExecutionActionsStore.setState((state) => ({
+        rerunningIds: withInFlightId(state.rerunningIds, executionId, true),
+      }));
+      try {
+        const state = await resolveExecution(executionId, showError);
+        if (!state) return;
+        if (state.parent_execution_id) {
+          showError('Only root executions can be rerun');
+          return;
+        }
+        if (
+          state.status !== 'success' &&
+          state.status !== 'failure' &&
+          state.status !== 'cancelled'
+        ) {
+          showError('Only terminal executions can be rerun');
+          return;
+        }
+        if (!hasRerunReplayData(state)) {
+          showError(
+            'This execution cannot be rerun because its original plan input was not preserved',
+          );
+          return;
+        }
+        const result = await usePipelineRunsStore
+          .getState()
+          .rerunExecution(executionId);
+        if (!result.success) {
+          showError(result.error ?? 'Failed to rerun execution', true);
+        }
+      } catch (error: unknown) {
+        reportClientAppError(error);
+        showError(extractIpcErrorMessage(error));
+      } finally {
+        usePipelineExecutionActionsStore.setState((state) => ({
+          rerunningIds: withInFlightId(state.rerunningIds, executionId, false),
+        }));
+      }
+    },
+    [beginAction],
+  );
 
   const debugFailure = useCallback(
     async (executionId: string): Promise<boolean> => {
       if (usePipelineExecutionActionsStore.getState().debuggingFailureId) {
         return false;
       }
+      const showError = beginAction(executionId, 'debug');
       usePipelineExecutionActionsStore.setState({
         debuggingFailureId: executionId,
       });
       try {
-        const state = await resolveExecution(executionId);
+        const state = await resolveExecution(executionId, showError);
         if (!state) return false;
         if (state.status !== 'failure') {
-          addPipelineToast(
+          showError(
             `Only failed workflow runs can be debugged with ${ORCHESTRATOR_LABEL}`,
-            'error',
           );
           return false;
         }
@@ -498,32 +614,31 @@ export function usePipelineExecutionActions(
           action: { type: 'pipeline.debug_run', executionId },
         });
         if (!response.ok) {
-          addPipelineToast(
+          showError(
             response.error?.message ??
               `Failed to open ${ORCHESTRATOR_LABEL} for workflow debug`,
-            'error',
+            true,
           );
           return false;
         }
         return true;
       } catch (error: unknown) {
-        addPipelineToast(
+        reportClientAppError(error);
+        showError(
           error instanceof Error
             ? error.message
             : `Failed to open ${ORCHESTRATOR_LABEL} for workflow debug`,
-          'error',
-          { caught: error },
         );
         return false;
       } finally {
         usePipelineExecutionActionsStore.setState({ debuggingFailureId: null });
       }
     },
-    [],
+    [beginAction],
   );
 
   const chatFollowUp = useCallback(
-    (executionId: string): Promise<void> =>
+    (executionId: string): Promise<boolean> =>
       sendExecutionFollowUp(
         executionId,
         (state) => {
@@ -531,12 +646,14 @@ export function usePipelineExecutionActions(
           return planPath ? `Review this plan: ${planPath}` : null;
         },
         'This workflow run does not have a saved plan file',
+        'plan-chat',
+        beginAction,
       ),
-    [],
+    [beginAction],
   );
 
   const reportChatFollowUp = useCallback(
-    (executionId: string): Promise<void> =>
+    (executionId: string): Promise<boolean> =>
       sendExecutionFollowUp(
         executionId,
         (state) => {
@@ -546,8 +663,10 @@ export function usePipelineExecutionActions(
           return reportPath ? `Review this report: ${reportPath}` : null;
         },
         'This workflow run does not have a saved report file',
+        'report-chat',
+        beginAction,
       ),
-    [],
+    [beginAction],
   );
 
   const openReport = useCallback(
@@ -567,46 +686,58 @@ export function usePipelineExecutionActions(
     [dialogDocument],
   );
 
-  const openPlan = useCallback(async (executionId: string): Promise<void> => {
-    const state = await resolveExecution(executionId);
-    if (!state) return;
-    const summary = usePipelineRunsStore
-      .getState()
-      .summaries.find((entry) => entry.id === executionId);
-    const planId = state.planId ?? summary?.planId;
-    const projectId = state.project_id ?? summary?.project_id;
-    const worktreeId = state.worktree_id ?? summary?.worktree_id;
-    if (!planId || !projectId || !worktreeId) {
-      addPipelineToast(
-        'This workflow run is not linked to a tracked plan',
-        'error',
-      );
-      return;
-    }
-    // Open (or reveal) the plan in its owning worktree, switching to that
-    // worktree when another is shown.
-    await openTrackedPlan({ projectId, worktreeId, planId });
-  }, []);
+  const openPlan = useCallback(
+    async (executionId: string): Promise<boolean> => {
+      const showError = beginAction(executionId, 'plan');
+      try {
+        const state = await resolveExecution(executionId, showError);
+        if (!state) return false;
+        const summary = usePipelineRunsStore
+          .getState()
+          .summaries.find((entry) => entry.id === executionId);
+        const planId = state.planId ?? summary?.planId;
+        const projectId = state.project_id ?? summary?.project_id;
+        const worktreeId = state.worktree_id ?? summary?.worktree_id;
+        if (!planId || !projectId || !worktreeId) {
+          showError('This workflow run is not linked to a tracked plan');
+          return false;
+        }
+        const result = await openTrackedPlan(
+          { projectId, worktreeId, planId },
+          { reportFailure: false },
+        );
+        if (result.status === 'placed' || result.status === 'revealed')
+          return true;
+        showError(
+          'Could not open the tracked plan for this workflow run',
+          true,
+        );
+      } catch (error: unknown) {
+        reportClientAppError(error);
+        showError(extractIpcErrorMessage(error));
+      }
+      return false;
+    },
+    [beginAction],
+  );
 
   const pipelineFollowUp = useCallback(
     async (executionId: string): Promise<void> => {
       // Capture the dialog document before awaiting: the surface that asked
       // may move or close while the run loads.
       const targetDocument = dialogDocument();
-      const state = await resolveExecution(executionId);
+      const showError = beginAction(executionId, 'workflow');
+      const state = await resolveExecution(executionId, showError);
       if (!state) return;
       if (!getExecutionPlanPath(state)) {
-        addPipelineToast(
-          'This workflow run does not have a saved plan file',
-          'error',
-        );
+        showError('This workflow run does not have a saved plan file');
         return;
       }
       if (!mountedRef.current) return;
       setFollowUpError(null);
       setFollowUp({ execution: state, ownerDocument: targetDocument });
     },
-    [dialogDocument],
+    [beginAction, dialogDocument],
   );
 
   const closeFollowUp = useCallback((): void => {
@@ -625,12 +756,18 @@ export function usePipelineExecutionActions(
     ): Promise<void> => {
       const execution = followUp?.execution;
       if (!execution) {
-        setFollowUpError('Missing execution context for follow-up run');
+        setFollowUpError({
+          message: 'Missing execution context for follow-up run',
+          reported: false,
+        });
         return;
       }
       const planPath = getExecutionPlanPath(execution);
       if (!planPath) {
-        setFollowUpError('This workflow run does not have a saved plan file');
+        setFollowUpError({
+          message: 'This workflow run does not have a saved plan file',
+          reported: false,
+        });
         return;
       }
 
@@ -647,12 +784,15 @@ export function usePipelineExecutionActions(
             repoId: selectedRepoId,
           });
         } catch (error: unknown) {
+          reportClientAppError(error);
           setFollowUpRunning(false);
-          setFollowUpError(
-            error instanceof Error
-              ? error.message
-              : 'Failed to resolve worktree path',
-          );
+          setFollowUpError({
+            message:
+              error instanceof Error
+                ? error.message
+                : 'Failed to resolve worktree path',
+            reported: true,
+          });
           return;
         }
       }
@@ -700,13 +840,23 @@ export function usePipelineExecutionActions(
         });
 
         if (!result.success) {
-          setFollowUpError(result.error ?? 'Workflow execution failed');
+          reportClientAppError(
+            new Error('Workflow follow-up execution failed'),
+          );
+          setFollowUpError({
+            message: result.error ?? 'Workflow execution failed',
+            reported: true,
+          });
           return;
         }
         setFollowUp(null);
         setFollowUpError(null);
       } catch (error: unknown) {
-        setFollowUpError(extractIpcErrorMessage(error));
+        reportClientAppError(error);
+        setFollowUpError({
+          message: extractIpcErrorMessage(error),
+          reported: true,
+        });
       } finally {
         setFollowUpRunning(false);
       }
@@ -723,7 +873,8 @@ export function usePipelineExecutionActions(
         onCloseReport={closeReport}
         followUp={followUp}
         followUpRunning={followUpRunning}
-        followUpError={followUpError}
+        followUpError={followUpError?.message ?? null}
+        followUpErrorRecorded={followUpError?.reported ?? false}
         onCloseFollowUp={closeFollowUp}
         onRunFollowUp={runFollowUp}
       />
@@ -753,6 +904,7 @@ export function usePipelineExecutionActions(
       openReport,
       openPlan,
       dialogs,
+      renderActionError,
       dialogAnchorRef,
     }),
     [
@@ -768,6 +920,7 @@ export function usePipelineExecutionActions(
       openReport,
       openPlan,
       dialogs,
+      renderActionError,
       dialogAnchorRef,
     ],
   );

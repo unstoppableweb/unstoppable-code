@@ -25,6 +25,14 @@ import {
 } from '@canopy/agent-transcript';
 import { withProxyFailureRestored } from './ai-credits-proxy-failure-restore';
 import { chatInputRefusal } from '@canopy/protocol/remote-control/shell/input-delivery';
+import {
+  classifyClaudeConnectorAvailability,
+  type ClaudeConnectorManagedRoute,
+} from './claude-connector-availability';
+import {
+  CLAUDE_CONNECTOR_AVAILABILITY_EVENT,
+  type ClaudeConnectorAvailability,
+} from '@canopy/protocol/remote-control/shell';
 import { withClaudeAiCreditsFallbackError } from './claude-ai-credits-fallback-error';
 import { claudeManagedSettingsGuard } from './claude-managed-settings';
 import { normalizeClaudeMaxTurns } from '@canopy/desktop-shared/constants/preferences';
@@ -423,6 +431,7 @@ interface QueuedClaudeMessage {
   submissionId?: UUID;
   localSendEpoch?: number;
   steering?: boolean;
+  canHandoff?: () => boolean;
   countsTowardSkillUsage?: boolean;
 }
 
@@ -2696,10 +2705,16 @@ export class ClaudeCodeProvider implements AgentProvider {
             pendingOrdinaryMessages.delete(message);
             return true;
           }
-          return (
-            message.submissionId !== undefined &&
-            inputDelivery.claimYield(message.submissionId)
-          );
+          if (message.submissionId === undefined) return false;
+          if (message.canHandoff && !message.canHandoff()) {
+            inputDelivery.refuseBeforeHandoff(
+              message.submissionId,
+              'The named turn or its settings changed before handoff',
+              'steering-unavailable',
+            );
+            return false;
+          }
+          return inputDelivery.claimYield(message.submissionId);
         },
         (receipt) => {
           if (
@@ -2770,7 +2785,7 @@ export class ClaudeCodeProvider implements AgentProvider {
         queryLoopExited = true;
         settleTerminalWaiters();
         disposeSkillUsage();
-        inputDelivery.dispose();
+        inputDelivery.dispose('session-ended');
         reapHostedProcesses();
         clearRunningTurn();
         runningTurnStartEffect = undefined;
@@ -2781,7 +2796,7 @@ export class ClaudeCodeProvider implements AgentProvider {
         queryLoopExited = true;
         settleTerminalWaiters();
         disposeSkillUsage();
-        inputDelivery.dispose();
+        inputDelivery.dispose('session-ended');
         reapHostedProcesses();
         if (!ownsSession()) return;
         ownedKey.markTurnIdle();
@@ -2831,7 +2846,7 @@ export class ClaudeCodeProvider implements AgentProvider {
         return { sessionId: currentProviderSessionId };
       },
       hasPendingSteeringInput: () => inputDelivery.hasPending(),
-      submitSteeringInput(text, attemptId, userMessageId, target) {
+      submitSteeringInput(text, attemptId, userMessageId, target, handoff) {
         void target;
         if (abortController.signal.aborted)
           return Promise.resolve({
@@ -2840,7 +2855,12 @@ export class ClaudeCodeProvider implements AgentProvider {
             reason: 'No active turn to steer',
             refusal: chatInputRefusal('no-active-turn'),
           });
-        if (!runningTurn || runningTurnTerminalReceived)
+        const turn = runningTurn;
+        if (
+          !turn ||
+          runningTurnTerminalReceived ||
+          (handoff && handoff.expectedTurnId !== turn.userMessageId)
+        )
           return Promise.resolve({
             kind: 'rejected',
             attemptId,
@@ -2848,6 +2868,7 @@ export class ClaudeCodeProvider implements AgentProvider {
             fallback: 'ordinary',
             refusal: chatInputRefusal('no-active-turn'),
           });
+        const query = queryRef;
         return inputDelivery.submit(
           text,
           attemptId,
@@ -2858,6 +2879,18 @@ export class ClaudeCodeProvider implements AgentProvider {
               submissionId: attemptId as UUID,
               userMessageId,
               steering: true,
+              ...(handoff
+                ? {
+                    canHandoff: () =>
+                      ownsSession() &&
+                      !abortController.signal.aborted &&
+                      queryRef === query &&
+                      runningTurn?.id === turn.id &&
+                      runningTurn.userMessageId === handoff.expectedTurnId &&
+                      !runningTurnTerminalReceived &&
+                      handoff.canHandoff(),
+                  }
+                : {}),
             };
             if (waitingForMessage) {
               const resolve = waitingForMessage;
@@ -2865,7 +2898,10 @@ export class ClaudeCodeProvider implements AgentProvider {
               resolve(message);
             } else messageQueue.push(message);
           },
-          { pendingOnDeadline: true },
+          {
+            pendingOnDeadline: true,
+            refuseBeforeHandoffOnDeadline: handoff !== undefined,
+          },
         );
       },
       withdrawSteeringInput: (attemptId) => inputDelivery.withdraw(attemptId),
@@ -3366,121 +3402,138 @@ export class ClaudeCodeProvider implements AgentProvider {
             | { type: 'tool_result'; tool_use_id: string; content: string }
             | { type: 'text'; text: string }
           >;
-      // Async generator for multi-turn prompts (same pattern as Conductor claudeHandler.ts:1164-1196)
-      const promptInput = (async function* (): AsyncGenerator<{
+      interface ClaudePromptMessage {
         type: 'user';
         message: { role: 'user'; content: ClaudePromptContent };
         parent_tool_use_id: null;
         session_id: string;
         uuid?: UUID;
-      }> {
-        while (!abortController.signal.aborted) {
-          let queuedMessage: QueuedClaudeMessage | undefined;
+      }
+      const stagedHandoffs = new WeakMap<ClaudePromptMessage, () => boolean>();
+      // Async generator for multi-turn prompts (same pattern as Conductor claudeHandler.ts:1164-1196)
+      const promptInput =
+        (async function* (): AsyncGenerator<ClaudePromptMessage> {
+          while (!abortController.signal.aborted) {
+            let queuedMessage: QueuedClaudeMessage | undefined;
 
-          if (messageQueue.length > 0) {
-            queuedMessage = messageQueue.shift();
-          } else {
-            queuedMessage = await new Promise<QueuedClaudeMessage | undefined>(
-              (resolve) => {
+            if (messageQueue.length > 0) {
+              queuedMessage = messageQueue.shift();
+            } else {
+              queuedMessage = await new Promise<
+                QueuedClaudeMessage | undefined
+              >((resolve) => {
                 setWaiter(resolve);
-              },
-            );
-          }
+              });
+            }
 
-          if (queuedMessage === undefined) {
-            // Session destroyed
-            return;
-          }
+            if (queuedMessage === undefined) {
+              // Session destroyed
+              return;
+            }
 
-          const inventory = await loadCachedInventory().catch(() => null);
-          if (abortController.signal.aborted) return;
-          const normalizedText = inventory
-            ? normalizeInvocationToken(
+            const inventory = await loadCachedInventory().catch(() => null);
+            if (abortController.signal.aborted) return;
+            const normalizedText = inventory
+              ? normalizeInvocationToken(
+                  queuedMessage.text,
+                  inventory.entries.filter(
+                    (entry) => entry.provider === invocationProvider,
+                  ),
+                )
+              : queuedMessage.text;
+
+            const isTypedSteer = queuedMessage.canHandoff !== undefined;
+            if (!isTypedSteer && !canYieldMessage(queuedMessage)) continue;
+            setActiveTurn(queuedMessage);
+            let skillUsageStarted = false;
+            const startSkillUsage = (turnId: string): void => {
+              if (queuedMessage.steering || skillUsageStarted) return;
+              skillUsageStarted = true;
+              const turn = skillUsage.startTurn(
+                turnId,
+                queuedMessage.countsTowardSkillUsage === true,
+              );
+              skillUsage.observeInvocation(
+                turn,
                 queuedMessage.text,
-                inventory.entries.filter(
+                inventory?.entries.filter(
                   (entry) => entry.provider === invocationProvider,
-                ),
-              )
-            : queuedMessage.text;
-
-          if (!canYieldMessage(queuedMessage)) continue;
-          setActiveTurn(queuedMessage);
-          let skillUsageStarted = false;
-          const startSkillUsage = (turnId: string): void => {
-            if (queuedMessage.steering || skillUsageStarted) return;
-            skillUsageStarted = true;
-            const turn = skillUsage.startTurn(
-              turnId,
-              queuedMessage.countsTowardSkillUsage === true,
-            );
-            skillUsage.observeInvocation(
-              turn,
-              queuedMessage.text,
-              inventory?.entries.filter(
-                (entry) => entry.provider === invocationProvider,
-              ) ?? [],
-            );
-          };
-          // Claude reports a steer's lifecycle under the UUID it was sent
-          // with, and input delivery knows it only by its attempt id, so a
-          // delegate's steered message keeps that id, not its delivery id.
-          const deliveryUuid = queuedMessage.steering
-            ? queuedMessage.submissionId
-            : (managedDelegation?.parent.nativeMessageUuid(
-                queuedMessage.userMessageId,
-              ) ?? queuedMessage.submissionId);
-          // A normal turn starts with a bounded hint when entries assigned
-          // to this chat changed since it last looked.
-          const ledgerHint =
-            ledger.tools !== null && !queuedMessage.steering
-              ? await ledger.tools.assignmentHint()
-              : undefined;
-          const turnText = ledgerHint
-            ? `${ledgerHint}\n\n${normalizedText}`
-            : normalizedText;
-          onPromptDispatched(queuedMessage, startSkillUsage, deliveryUuid);
-          if (!queuedMessage.steering)
-            ownedKey.markTurnActive(queuedMessage.userMessageId);
-          const promptText =
-            managedDelegation?.applyPolicyGuidance(turnText) ?? turnText;
-          const forkToolResults = pendingForkToolResults;
-          pendingForkToolResults = undefined;
-          yield {
-            type: 'user' as const,
-            message: {
-              role: 'user' as const,
-              content: forkToolResults
-                ? [
-                    ...forkToolResults.map((result) => ({
-                      type: 'tool_result' as const,
-                      tool_use_id: result.toolUseId,
-                      content: result.content,
-                    })),
-                    { type: 'text' as const, text: promptText },
-                  ]
-                : promptText,
-            },
-            parent_tool_use_id: null,
-            session_id: key,
-            ...(deliveryUuid ? { uuid: deliveryUuid } : {}),
-          };
-        }
-      })();
+                ) ?? [],
+              );
+            };
+            // Claude reports a steer's lifecycle under the UUID it was sent
+            // with, and input delivery knows it only by its attempt id, so a
+            // delegate's steered message keeps that id, not its delivery id.
+            const deliveryUuid = queuedMessage.steering
+              ? queuedMessage.submissionId
+              : (managedDelegation?.parent.nativeMessageUuid(
+                  queuedMessage.userMessageId,
+                ) ?? queuedMessage.submissionId);
+            // A normal turn starts with a bounded hint when entries assigned
+            // to this chat changed since it last looked.
+            const ledgerHint =
+              ledger.tools !== null && !queuedMessage.steering
+                ? await ledger.tools.assignmentHint()
+                : undefined;
+            const turnText = ledgerHint
+              ? `${ledgerHint}\n\n${normalizedText}`
+              : normalizedText;
+            if (!isTypedSteer)
+              onPromptDispatched(queuedMessage, startSkillUsage, deliveryUuid);
+            if (!queuedMessage.steering)
+              ownedKey.markTurnActive(queuedMessage.userMessageId);
+            const promptText =
+              managedDelegation?.applyPolicyGuidance(turnText) ?? turnText;
+            const forkToolResults = isTypedSteer
+              ? undefined
+              : pendingForkToolResults;
+            if (!isTypedSteer) pendingForkToolResults = undefined;
+            const prompt: ClaudePromptMessage = {
+              type: 'user' as const,
+              message: {
+                role: 'user' as const,
+                content: forkToolResults
+                  ? [
+                      ...forkToolResults.map((result) => ({
+                        type: 'tool_result' as const,
+                        tool_use_id: result.toolUseId,
+                        content: result.content,
+                      })),
+                      { type: 'text' as const, text: promptText },
+                    ]
+                  : promptText,
+              },
+              parent_tool_use_id: null,
+              session_id: key,
+              ...(deliveryUuid ? { uuid: deliveryUuid } : {}),
+            };
+            if (isTypedSteer) {
+              const stagedMessage = queuedMessage;
+              let claimed = false;
+              stagedHandoffs.set(prompt, () => {
+                if (claimed) return false;
+                claimed = true;
+                if (!canYieldMessage(stagedMessage)) return false;
+                onPromptDispatched(
+                  stagedMessage,
+                  startSkillUsage,
+                  deliveryUuid,
+                );
+                return true;
+              });
+            }
+            yield prompt;
+          }
+        })();
 
       // A point-in-time fork resume can be refused by the CLI, and the only
       // safe recovery is a second fresh `query()` with no source-session
       // resume fields. `promptInput`
       // is a single live generator over the message queue, so the prompt it
       // already handed to the failed attempt would otherwise be lost: buffer
-      // every yielded prompt and replay them into the retry in order. `next()` is
+      // yielded ordinary prompts and replay them into the retry in order. `next()` is
       // driven manually rather than with `for await` so tearing down an
       // attempt's wrapper never closes the shared generator underneath it.
-      type ClaudePromptMessage =
-        Awaited<
-          ReturnType<(typeof promptInput)['next']>
-        > extends IteratorResult<infer TValue>
-          ? TValue
-          : never;
       const bufferedPrompts: ClaudePromptMessage[] = [];
       let replayBufferedPrompts = false;
       let pendingPromptNext:
@@ -3497,7 +3550,10 @@ export class ClaudeCodeProvider implements AgentProvider {
         pendingPromptNext = tracked;
         return tracked;
       };
-      const nextPromptAttempt = (): AsyncGenerator<ClaudePromptMessage> =>
+      let currentPromptAttempt = 0;
+      const nextPromptAttempt = (
+        promptAttempt: number,
+      ): AsyncGenerator<ClaudePromptMessage> =>
         (async function* (): AsyncGenerator<ClaudePromptMessage> {
           if (replayBufferedPrompts) {
             replayBufferedPrompts = false;
@@ -3526,7 +3582,11 @@ export class ClaudeCodeProvider implements AgentProvider {
             // message cannot be consumed by the abandoned wrapper.
             const next = await nextSharedPrompt();
             if (next.done === true) return;
-            if (
+            const claimHandoff = stagedHandoffs.get(next.value);
+            if (claimHandoff) {
+              if (promptAttempt !== currentPromptAttempt) return;
+              if (!claimHandoff()) continue;
+            } else if (
               forkResumePointRequested &&
               !forkResumePointAccepted &&
               !forkResumePointRejected
@@ -4047,6 +4107,25 @@ export class ClaudeCodeProvider implements AgentProvider {
           : {}),
         ...(ambientSecrets?.env ?? {}),
       };
+
+      const connectorManagedRoute: ClaudeConnectorManagedRoute | undefined =
+        accountProxyRoute
+          ? 'account_proxy'
+          : aiCreditsRouting?.organizationId
+            ? 'organization_gateway'
+            : aiCreditsRouting
+              ? 'ai_credits'
+              : undefined;
+      const connectorManagedEnv =
+        accountProxyRoute?.env ?? aiCreditsRouting?.env;
+      type ConnectorLaunch = {
+        classify(apiKeySource?: unknown): ClaudeConnectorAvailability;
+        started: boolean;
+        initSeen: boolean;
+        apiKeySource?: unknown;
+      };
+      let latestConnectorAttempt: symbol | undefined;
+      let latestConnectorLaunch: ConnectorLaunch | undefined;
 
       const approvalMode = getApprovalMode();
       approvalSession = createApprovalSession({
@@ -4706,40 +4785,78 @@ export class ClaudeCodeProvider implements AgentProvider {
             claudeModAdmission.settings,
           )
         : undefined;
+      const connectorSettingsEnv = (
+        admittedSdkSettings ?? nativeMemoryOptions.settings
+      )?.env;
       // Read once for this CLI process: the option is a launch flag, so an
       // open chat follows a settings change once its session restarts.
       const promptSuggestionsEnabled =
         invocation.providerType === 'claude' &&
         (await readPromptSuggestionsEnabled());
 
-      const buildSdkOptions = (): QueryOptions => ({
+      const buildSdkOptions = (attempt: symbol): QueryOptions => ({
         ...(claudeMaxTurns === null ? {} : { maxTurns: claudeMaxTurns }),
         cwd: opts.cwd,
         abortController,
         pathToClaudeCodeExecutable: getBundledClaudeBinaryPath(),
         spawnClaudeCodeProcess: (options): SpawnedProcess => {
-          // Snapshot this launch's records now; record them once it starts.
+          // Snapshot this process’s facts now; publish only after its real
+          // PID arrives. Strict discovery/helper queries never enter this path.
           const skippedNotice = buildClaudeModsSkippedEvent(key);
-          return spawnHostedProcess(
-            options,
-            skippedNotice
-              ? (): void => {
-                  try {
-                    void Promise.resolve(emitEvent(skippedNotice)).catch(
-                      (): void => {
-                        logMainProcessWarn(
-                          '[claude-session] Failed to emit skipped Claude Mods notice',
-                        );
-                      },
-                    );
-                  } catch {
-                    logMainProcessWarn(
-                      '[claude-session] Failed to emit skipped Claude Mods notice',
-                    );
-                  }
-                }
-              : undefined,
-          );
+          let launch: ConnectorLaunch | undefined;
+          if (
+            invocation.providerType === 'claude' &&
+            latestConnectorAttempt === attempt
+          ) {
+            const launchId = randomUUID();
+            launch = {
+              classify: (apiKeySource): ClaudeConnectorAvailability =>
+                classifyClaudeConnectorAvailability(
+                  launchId,
+                  options.env,
+                  connectorManagedRoute,
+                  apiKeySource,
+                  {
+                    ...(isRecord(connectorSettingsEnv)
+                      ? { settingsEnv: connectorSettingsEnv }
+                      : {}),
+                    ...(connectorManagedEnv
+                      ? { managedEnv: connectorManagedEnv }
+                      : {}),
+                  },
+                ),
+              started: false,
+              initSeen: false,
+            };
+            latestConnectorLaunch = launch;
+          }
+          return spawnHostedProcess(options, (): void => {
+            if (
+              !ownsSession() ||
+              abortController.signal.aborted ||
+              latestConnectorAttempt !== attempt
+            )
+              return;
+            const emitLaunchEvent = (event: unknown): void => {
+              const warn = (): void =>
+                logMainProcessWarn(
+                  '[claude-session] Failed to admit process-start metadata',
+                );
+              try {
+                void Promise.resolve(emitEvent(event)).catch(warn);
+              } catch {
+                warn();
+              }
+            };
+            if (launch && latestConnectorLaunch === launch && !launch.started) {
+              launch.started = true;
+              emitLaunchEvent({
+                type: CLAUDE_CONNECTOR_AVAILABILITY_EVENT,
+                availability: launch.classify(launch.apiKeySource),
+              });
+            }
+            if (skippedNotice) emitLaunchEvent(skippedNotice);
+          });
         },
         env: sdkEnv,
         ...(invocation.providerType === 'claude'
@@ -4985,7 +5102,10 @@ export class ClaudeCodeProvider implements AgentProvider {
       const createSdkQuery = (
         prompt: Parameters<typeof claudeQuery>[0]['prompt'],
       ): Query => {
-        const queryOptions = buildSdkOptions();
+        const attempt = Symbol();
+        latestConnectorAttempt = attempt;
+        latestConnectorLaunch = undefined;
+        const queryOptions = buildSdkOptions(attempt);
         const resumeSessionId = queryOptions.resume;
         if (invocationProvider === 'claude') {
           getExecutionObservabilityIngest().beginClaudeQuery(
@@ -5010,7 +5130,7 @@ export class ClaudeCodeProvider implements AgentProvider {
         }
       };
       const startAttempt = (): Query => {
-        const prompt = nextPromptAttempt();
+        const prompt = nextPromptAttempt(++currentPromptAttempt);
         const attempt = __CANOPY_E2E__
           ? createE2eClaudeQueryWithPrelude({
               scope: {
@@ -5153,6 +5273,18 @@ export class ClaudeCodeProvider implements AgentProvider {
                   typeof data.session_id === 'string' &&
                   data.parent_tool_use_id == null
                 ) {
+                  const launch = latestConnectorLaunch;
+                  // Init is sent again for each turn. Only this process’s first
+                  // root init may refine its own (unknown) launch fact.
+                  delete data.canopy_claude_connector_availability;
+                  if (launch && !launch.initSeen && ownsSession()) {
+                    launch.initSeen = true;
+                    launch.apiKeySource = data.apiKeySource;
+                    if (launch.started) {
+                      data.canopy_claude_connector_availability =
+                        launch.classify(data.apiKeySource);
+                    }
+                  }
                   claudeProviderSessionId = data.session_id;
                   claudeModSurface.init(data);
                   // The commands Mods register as the session starts reach

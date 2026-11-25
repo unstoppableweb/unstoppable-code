@@ -2,6 +2,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  CATALOG_COLLECTION_OPERATION_CODES,
+  CatalogCollectionUpsertResultSchema,
   CatalogEntryPublishResultSchema,
   CatalogCollectionDeleteResultSchema,
   CatalogEntryUnpublishResultSchema,
@@ -12,6 +14,7 @@ import {
   CatalogSourceDeleteResultSchema,
   CatalogSourceUpsertResultSchema,
   isBoundedCanopyJsonValue,
+  type CatalogCollectionUpsertParams,
 } from '@canopy/protocol/canopy-core';
 import { CanopyOperationError } from '../../../runtime/errors';
 import type { CanopyHandlerContext } from '../../../runtime/types';
@@ -20,8 +23,10 @@ import { OperationLedger } from '../../operations/ledger';
 import {
   CORE_CATALOG_MUTATION_KINDS,
   CatalogMutationRuns,
+  createCoreCollectionEntryHandlers,
   type CatalogMutationRequest,
   type CoreCatalogMutationKind,
+  type CoreCollectionEntryHost,
 } from '..';
 
 const context: CanopyHandlerContext = {
@@ -131,6 +136,99 @@ describe('catalog mutation receipts (CAN-4123)', () => {
       },
     });
     expect(effect).toHaveBeenCalledTimes(1);
+  });
+
+  // CAN-4170 PR 3b-2a: the share account pin narrowed the upsert size bound,
+  // so an outcome recorded under the earlier bound must still replay.
+  it('replays a recorded collection upsert the size bound now refuses, and refuses only a new key', async () => {
+    const { runs } = open();
+    const skills = Array.from({ length: 268 }, (_, index) => ({
+      sourceId: 'user',
+      skillName: `skill-${String(index).padStart(4, '0')}`.padEnd(16, 'x'),
+    }));
+    const upsert = (key: string): CatalogCollectionUpsertParams => ({
+      kind: 'collection' as const,
+      entryId: null,
+      expectedRevision: null,
+      name: 'Cap',
+      description: '',
+      members: { skills, plugins: [], mcpServers: [] },
+      sharedRevision: null,
+      _meta: { idempotencyKey: key },
+    });
+    const saved = CatalogCollectionUpsertResultSchema.parse({
+      entry: {
+        kind: 'collection',
+        entryId: 'collection:aaaaaaaa-0000-4000-8000-000000000001',
+        revision: 'rev-1',
+        name: 'Cap',
+        description: '',
+        members: { skills, plugins: [], mcpServers: [] },
+        updatedAt: '2026-11-01T00:00:00.000Z',
+        sharedSource: null,
+        share: null,
+        unresolvedMembers: [],
+      },
+    });
+    const keyReused = (): CanopyOperationError =>
+      new CanopyOperationError({
+        kind: 'conflict',
+        message: 'This idempotency key was used with other parameters.',
+        retry: { kind: 'never' },
+      });
+    await runs.run({
+      kind: 'core.catalog.entry.upsert',
+      context,
+      params: upsert('k'),
+      codes: CATALOG_COLLECTION_OPERATION_CODES.upsert,
+      keyReused,
+      decode: (outcome) =>
+        CatalogCollectionUpsertResultSchema.safeParse(outcome).data ?? null,
+      effect: () => Promise.resolve(saved),
+    });
+    const unexpected = (): Promise<never> =>
+      Promise.reject(new Error('the host was called'));
+    const create = jest.fn(unexpected);
+    const host: CoreCollectionEntryHost = {
+      read: unexpected,
+      create,
+      replace: unexpected,
+      delete: unexpected,
+      readManagement: unexpected,
+      deleteCorrupt: unexpected,
+    };
+    const { instructions } = createCoreCollectionEntryHandlers({
+      host,
+      runs,
+      installed: () =>
+        Promise.resolve({
+          collectionIds: [],
+          skillRefs: [],
+          pluginRefs: [],
+          mcpServerRefs: [],
+        }),
+    });
+    const handle = instructions['core.catalog.entry.upsert'];
+    expect(await handle(upsert('k'), context)).toEqual(saved);
+    await expect(handle(upsert('k2'), context)).rejects.toMatchObject({
+      payload: { kind: 'resource_exhausted' },
+    });
+    expect(
+      await runs.recordedOperationId({
+        kind: 'core.catalog.entry.upsert',
+        context,
+        params: upsert('k2'),
+      }),
+    ).toBeNull();
+    await expect(
+      handle({ ...upsert('k'), name: 'Renamed' }, context),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'conflict',
+        message: 'This idempotency key was used with other parameters.',
+      },
+    });
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("replays a restart's interruption instead of running again", async () => {

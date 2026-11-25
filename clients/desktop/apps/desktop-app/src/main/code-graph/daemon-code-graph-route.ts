@@ -9,6 +9,8 @@ import {
 import {
   WORKER_CODE_GRAPH_GRANTS,
   type CanopyCallerDescriptor,
+  type CanopyQueryParams,
+  type CanopyQueryResult,
   type WorkerCodeGraphBuildParams,
   type WorkerCodeGraphBuildResult,
   type WorkerCodeGraphGenerationReport,
@@ -135,6 +137,28 @@ export function selectDaemonCodeGraphForMain(workspaceId: string): boolean {
   return selectDaemonCodeGraphForMainExclusion(workspaceId) === null;
 }
 
+/**
+ * Which hosts send Electron main's agent status reads and steering language
+ * checks to the daemon (CAN-5093): macOS and Linux. Windows reads them in
+ * process.
+ */
+export const DAEMON_AGENT_CODE_GRAPH_READ_PLATFORMS: Readonly<
+  Record<PlatformOperatingSystem, boolean>
+> = { darwin: true, linux: true, win32: false };
+
+/** Why an agent status read or language check stays in process, or `null`. */
+export function selectDaemonAgentCodeGraphReadExclusion(
+  workspaceId: string,
+): 'platform' | 'latched' | 'workspace' | 'unavailable' | null {
+  const platform = hostPlatform();
+  if (
+    platform === null ||
+    DAEMON_AGENT_CODE_GRAPH_READ_PLATFORMS[platform] !== true
+  )
+    return 'platform';
+  return selectDaemonCodeGraphForMainExclusion(workspaceId);
+}
+
 /** Why a build Electron main starts stays in process, or `null` (see above). */
 export function selectDaemonCodeGraphForMainExclusion(
   workspaceId: string,
@@ -150,14 +174,14 @@ export function selectDaemonCodeGraphForMainExclusion(
   return null;
 }
 
-/** A renderer or agent build the route excluded (CAN-5093 field evidence). */
+/** A renderer or agent build, or an agent read, the route excluded (CAN-5093 field evidence). */
 export function noteDaemonCodeGraphBuildExcluded(
   exclusion: 'platform' | 'caller' | 'latched' | 'workspace' | 'unavailable',
 ): void {
   recordDaemonRoute('code_graph', exclusion);
 }
 
-/** How a selected renderer or agent build settled, success or failure. */
+/** How a selected renderer or agent build, or agent read, settled, success or failure. */
 export function noteDaemonCodeGraphBuildSettled(
   outcome: DaemonCodeGraphRouteOutcome,
 ): void {
@@ -384,6 +408,31 @@ export async function queryCodeGraphInDaemon(
   const { read, ...answer } = result;
   if (read) recordCodeGraphReadReport(read, key, codeGraphReadRecorders);
   return answer;
+}
+
+type DaemonCodeGraphScopeRead =
+  | 'worker.codeGraph.status.get'
+  | 'worker.codeGraph.languages.validate';
+
+/**
+ * One worktree status read or custom-language validation in the daemon
+ * (CAN-5093). As with the summary read, a session that closed under the
+ * read reads as an unreachable daemon, so the answer comes from in process.
+ */
+export async function readCodeGraphScopeInDaemon<
+  Name extends DaemonCodeGraphScopeRead,
+>(
+  operation: Name,
+  params: CanopyQueryParams<Name>,
+): Promise<CanopyQueryResult<Name>> {
+  const session = await client();
+  try {
+    return await session.query(operation, params);
+  } catch (error) {
+    throw session.signal.aborted && !owner.signal.aborted
+      ? markUnreachable(error, 'connection_lost')
+      : error;
+  }
 }
 
 const BUILD_STATE_RANK: Readonly<Record<CodeGraphBuildState, number>> = {

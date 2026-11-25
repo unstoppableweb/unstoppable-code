@@ -105,12 +105,15 @@ export function createElectronDaemonHealth(
   let recoveries = 0;
   let restartRequired = false;
   let handoffFailure: BackgroundServiceHandoffFailure | undefined;
+  /** The first latched failure kept hidden by the current `reconnecting`. */
+  let hiddenReason: BackgroundServiceUnreachableReason | undefined;
 
   const update = (
     state: BackgroundServiceStatus['state'],
     retry: BackgroundServiceStatus['retry'],
     reason?: BackgroundServiceUnreachableReason,
   ): void => {
+    if (state !== 'reconnecting') hiddenReason = undefined;
     const recovery =
       state === 'unavailable' && restartRequired ? 'restart_app' : undefined;
     const handoff = recovery ? handoffFailure : undefined;
@@ -163,15 +166,35 @@ export function createElectronDaemonHealth(
     latched = false;
     update('ok', 'idle');
   };
+  /**
+   * Whether `reason` replaces the shown status. Later attach failures don't
+   * prove the blocking files were repaired, so the repair command stays
+   * until reached() clears it. Outside Try again, which reports its own
+   * attempt, a lost daemon is the lease's to diagnose: another session's
+   * attach failing during the restart, or after the lease gave up, only
+   * latches. Its first latched diagnosis otherwise stays.
+   */
+  const replacesShown = (
+    reason: BackgroundServiceUnreachableReason,
+  ): boolean => {
+    if (status.reason === 'endpoint_repair_required') return false;
+    if (
+      reason === 'endpoint_repair_required' ||
+      reason === 'reconnect_failed' ||
+      retrying !== undefined
+    )
+      return true;
+    if (status.state === 'reconnecting') return false;
+    return status.reason === undefined || !LATCHING_REASONS.has(status.reason);
+  };
+  const latch = (reason: BackgroundServiceUnreachableReason): void => {
+    if (!LATCHING_REASONS.has(reason)) return;
+    latched = true;
+    if (status.state === 'reconnecting') hiddenReason ??= reason;
+  };
   const unreachable = (reason: BackgroundServiceUnreachableReason): void => {
-    if (LATCHING_REASONS.has(reason)) latched = true;
-    // Later attach failures don't prove the blocking files were repaired.
-    // Keep the command visible until reached() clears the diagnosis.
-    update(
-      'unavailable',
-      status.retry,
-      status.reason === 'endpoint_repair_required' ? status.reason : reason,
-    );
+    latch(reason);
+    if (replacesShown(reason)) update('unavailable', status.retry, reason);
   };
 
   return {
@@ -195,18 +218,28 @@ export function createElectronDaemonHealth(
           // its 30 s delivery bound for a retried or hung one.
           if (status.state === 'ok') update('reconnecting', status.retry);
           return;
+        case 'abandoned':
+          // No lease is left to finish the restart it was hiding: show what
+          // latched meanwhile, else as when the last consumer turns off.
+          if (status.state !== 'reconnecting') return;
+          if (!latched) return reached();
+          return update(
+            'unavailable',
+            status.retry,
+            hiddenReason ?? 'reconnect_failed',
+          );
         case 'unreachable':
           return unreachable(event.reason);
       }
     },
     noteFallback(consumer, reason): void {
       if (stopped || !consumers.has(consumer)) return;
-      if (LATCHING_REASONS.has(reason)) latched = true;
+      latch(reason);
       // A real loss reported `lost` first, so the restart decides; from `ok`,
       // the session closed on its own or the lease already replaced it.
       if (reason === 'connection_lost') return;
       // The connection event usually came first; its reason stays.
-      if (status.state !== 'unavailable')
+      if (status.state !== 'unavailable' && replacesShown(reason))
         update('unavailable', status.retry, reason);
     },
     isLatched: () => latched,

@@ -423,7 +423,7 @@ interface WindowSite {
 const PLAN_IMPORT =
   "S3-2c, after Mike's say: the move takes its row out of his Phase 3 'plans' exclusion";
 const SCRIPT_EVENTS =
-  "S3-2c, after Mike's say on how the worktree script push moves";
+  'the Phase 4 script runs work (CAN-7663), where the worktree script push moves';
 const SHARED_PLAN =
   'S3-2c, after #9423, which rewrites this send, merges or closes';
 const BROWSER = 'browser owner, after #6583 and #6741';

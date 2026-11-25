@@ -4,13 +4,11 @@ import {
   type AiGatewayScope,
 } from '@canopy/protocol/model-gateway';
 import { z } from 'zod';
-import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import {
   SettingsOperationError,
   settingsErrorCodeForStatus,
   type SettingsOperationName,
 } from '@canopy/protocol/settings';
-import { getFeatureFlagService } from '../feature-flags';
 import type { SettingsBridgeSession } from '../canopy-cloud/settings-session';
 import {
   readCanopyCloudAccountWithStatus,
@@ -21,18 +19,18 @@ import {
   GatewayCredentialStorageUnavailableError,
 } from '../lib/model-gateway-credential-store';
 import { probeModelGateway } from './model-gateway-probe';
+import { aiGatewaySettingsAvailable } from './ai-gateway-availability';
 import {
   getLocalModelGatewayOrganizationId,
   LOCAL_MODEL_GATEWAY_ACCOUNT_ID,
+  readLocalModelGateway,
 } from '../lib/local-model-gateway-store';
 import { accountUsesDeviceModelGateway } from '@canopy/desktop-shared/lib/org-model-gateway';
 
-export function requireAiGatewaySettings(): void {
-  if (
-    !getFeatureFlagService().isEnabled(
-      CLIENT_FEATURE_FLAGS.canopyAiGatewaySettingsEnabled.key,
-    )
-  )
+/** The device gateway's settings gate, after loading the device store. */
+export async function requireDeviceAiGatewaySettings(): Promise<void> {
+  await readLocalModelGateway();
+  if (!aiGatewaySettingsAvailable())
     throw new SettingsOperationError({ code: 'not_found' });
 }
 export async function authorizeDesktopGatewayScope(
@@ -40,7 +38,6 @@ export async function authorizeDesktopGatewayScope(
   scope: AiGatewayScope,
   intent: 'read' | 'connect' | 'update' = 'connect',
 ): Promise<string> {
-  requireAiGatewaySettings();
   const current = await readCanopyCloudAccountWithStatus();
   if (
     current.status !== 'ok' ||
@@ -188,7 +185,7 @@ export async function connectDeviceGateway(
   raw: unknown,
   signal?: AbortSignal,
 ): Promise<AiGatewayConnectionResult> {
-  requireAiGatewaySettings();
+  await requireDeviceAiGatewaySettings();
   const parsed = aiGatewayConnectSchema
     .extend({ expectedOrganizationId: z.uuid() })
     .parse(raw);

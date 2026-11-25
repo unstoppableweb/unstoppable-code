@@ -122,6 +122,10 @@ export interface CanopyWorkspaceEventBridgeOptions {
   onError?(error: unknown): void;
   /** Each delivered event, own-origin included, before it is planned. */
   onDelivered?(event: CanopyEvent): void;
+  /** Stream lifecycle only; opening never certifies a host cache. */
+  onStreamChanged?(live: boolean): void;
+  /** Synchronous broad invalidation, including deliveries acknowledged in backoff. */
+  onInvalidated?(): void;
   /** Consecutive re-attaches after a failed stream, before waiting for the host. */
   maxReattachAttempts?: number;
   /** The first broad re-read retry delay; doubles per attempt. */
@@ -152,9 +156,9 @@ export interface CanopyWorkspaceEventBridge {
  * change or `snapshotRequired`) resumes with a null cursor, which the core
  * answers with its latest entry only; the bridge therefore applies a broad
  * invalidation once the stream is open, so a commit landing between the
- * snapshot and the open is never missed. A stream that fails or detaches
- * while its connection lives is re-attached from its cursor, then
- * invalidated broadly.
+ * snapshot and the open is never missed. Every replacement stream resumes
+ * from its cursor and reconciles broadly before delivery, including on a
+ * replacement connection. Continuity loss revokes host serving immediately.
  *
  * A delivery is acknowledged only once its plan applied or a broad re-read
  * covering it did. A failed plan holds its delivery, and every later one,
@@ -195,6 +199,26 @@ export function createCanopyWorkspaceEventBridge(
   let attempts = 0;
   // The open stream's session signal; the helper aborts it on stop.
   let streamSignal: AbortSignal | undefined;
+  let continuityGeneration = 0;
+  const notifyStream = (live: boolean): void => {
+    try {
+      options.onStreamChanged?.(live);
+    } catch {
+      // Observing never breaks delivery.
+    }
+  };
+  const invalidate = (): void => {
+    try {
+      options.onInvalidated?.();
+    } catch {
+      // Observing never breaks delivery.
+    }
+  };
+  const loseContinuity = (): void => {
+    continuityGeneration += 1;
+    broadOnOpen = true;
+    notifyStream(false);
+  };
   let recoveryOwed = false;
   let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
   let recoveryDelay = retryDelay * RECOVERY_FIRST;
@@ -220,6 +244,7 @@ export function createCanopyWorkspaceEventBridge(
   const recover = (): void => {
     if (closed || !recoveryOwed) return;
     broad().catch((error: unknown) => {
+      invalidate();
       report(error);
       recoveryDelay = Math.min(
         recoveryDelay * 2,
@@ -252,6 +277,7 @@ export function createCanopyWorkspaceEventBridge(
    * stopped (the helper then settles nothing).
    */
   const cover = async (signal: AbortSignal | undefined): Promise<void> => {
+    invalidate();
     for (let attempt = 0; attempt < BROAD_ATTEMPTS; attempt += 1) {
       if (attempt > 0) await pause(retryDelay * 2 ** (attempt - 1), signal);
       if (closed || signal?.aborted) return;
@@ -263,18 +289,20 @@ export function createCanopyWorkspaceEventBridge(
         await broad();
         return;
       } catch (error) {
+        invalidate();
         report(error);
       }
     }
     owedGeneration += 1;
     recoveryOwed = true;
+    invalidate();
     scheduleRecovery();
   };
 
   const subscription = createCanopyEventSubscription({
     families: [CORE_WORKSPACE_EVENT_FAMILY],
     snapshot: () => {
-      broadOnOpen = true;
+      loseContinuity();
       return Promise.resolve(null);
     },
     handle: async (delivery) => {
@@ -297,6 +325,7 @@ export function createCanopyWorkspaceEventBridge(
       try {
         await enqueue(plan);
       } catch (error) {
+        invalidate();
         report(error);
         await cover(streamSignal);
       }
@@ -334,22 +363,57 @@ export function createCanopyWorkspaceEventBridge(
     },
     openStream: async (name, params, streamOptions) => {
       const signal = streamOptions?.signal;
+      streamSignal = signal;
+      const continuity = continuityGeneration;
       // The helper aborts a session's signal whenever it stops that session.
       if (signal && !watched.has(signal)) {
         watched.add(signal);
         signal.addEventListener(
           'abort',
-          () => void Promise.resolve().then(() => reattach(connection)),
+          () => {
+            if (current === connection && streamSignal === signal)
+              loseContinuity();
+            void Promise.resolve().then(() => reattach(connection));
+          },
           { once: true },
         );
       }
-      const handle = await connection.openStream(name, params, streamOptions);
-      streamSignal = signal;
-      // Open: everything before this point is covered by one re-read, which
-      // applies (or is owed) before the stream delivers.
-      if (broadOnOpen) {
-        broadOnOpen = false;
-        await cover(signal);
+      const handle = await connection.openStream(name, params, {
+        ...streamOptions,
+        onFrame: (frame) => {
+          // End can arrive while an earlier handler is still blocked.
+          if (
+            frame.kind === 'end' &&
+            current === connection &&
+            streamSignal === signal
+          )
+            loseContinuity();
+          else if (
+            frame.kind !== 'end' &&
+            current === connection &&
+            streamSignal === signal &&
+            planCanopyWorkspaceInvalidation(frame.item, (id) =>
+              options.isOwnOrigin(id),
+            )?.broad
+          )
+            // Revoke before delivery queues behind an earlier handler.
+            invalidate();
+          streamOptions?.onFrame?.(frame);
+        },
+      });
+      if (
+        current === connection &&
+        streamSignal === signal &&
+        continuity === continuityGeneration &&
+        !connection.signal.aborted &&
+        !signal?.aborted
+      ) {
+        notifyStream(true);
+        // Only this live stream can consume its pending reconciliation.
+        if (broadOnOpen) {
+          broadOnOpen = false;
+          await cover(signal);
+        }
       }
       return handle;
     },
@@ -369,6 +433,7 @@ export function createCanopyWorkspaceEventBridge(
       }
       current = connection;
       attempts = 0;
+      loseContinuity();
       try {
         await subscription.attach(wrap(connection));
       } catch (error) {
@@ -382,6 +447,7 @@ export function createCanopyWorkspaceEventBridge(
     state: (authorityId) => subscription.state(authorityId),
     async close(): Promise<void> {
       closed = true;
+      loseContinuity();
       current = null;
       clearTimeout(recoveryTimer);
       recoveryTimer = undefined;

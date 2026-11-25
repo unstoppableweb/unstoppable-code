@@ -20,6 +20,7 @@
 //   openclaw → OpenClawLogo
 //   opencode → OpenCodeLogo
 //   requesty → RequestyLogo
+//   slack → SlackLogo
 import React, { type JSX } from 'react';
 import { AppIconBase, type AppIconBaseProps } from './AppIconBase';
 import { IconMergeQueue, IconShimmer } from './CanopyGlyphs';

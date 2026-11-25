@@ -28,6 +28,11 @@ import {
   type CanopyCloudAccountEntry,
 } from '../lib/canopy-cloud-account-store';
 import { resetCanopyCloudSessionCredential } from '../canopy-cloud/session-status';
+import {
+  loadModelGatewayCredential,
+  saveModelGatewayCredential,
+} from '../lib/model-gateway-credential-store';
+import { startModelGatewayStaleKeyCleanup } from '../lib/model-gateway-stale-key-cleanup';
 import { mintGuest } from '../canopy-cloud/guest-auth';
 
 jest.setTimeout(30_000);
@@ -113,6 +118,8 @@ const CAPABILITIES = [
 interface FakeAccount {
   readonly id: string;
   readonly organizations: readonly string[];
+  /** More account response fields, such as the AI gateway projection. */
+  readonly extra?: Record<string, unknown>;
 }
 const keys = new Map<string, FakeAccount>([
   ['csk_manual_one', { id: 'account-one', organizations: [ORG_A] }],
@@ -154,6 +161,7 @@ function accountBody(account: FakeAccount): Record<string, unknown> {
       organizationName: `Org ${organizationId.slice(0, 4)}`,
       policies: [],
     })),
+    ...account.extra,
   };
 }
 
@@ -727,6 +735,73 @@ const OAUTH_ENTRY: CanopyCloudAccountEntry = {
   createdAt: '2026-11-16T00:00:00.000Z',
   updatedAt: '2026-11-16T00:00:00.000Z',
 };
+
+// CAN-7641: a gateway removed on the web, or on another computer, leaves no
+// key on this one after its next account refresh; one turned off keeps it.
+describe('AI gateway keys after an account refresh', () => {
+  const PERSONAL = '33333333-3333-4333-8333-333333333333';
+  const GATEWAY_URL = 'https://gateway.example.test';
+  function gatewayFields(state: 'on' | 'off' | 'removed'): FakeAccount {
+    return {
+      id: 'account-one',
+      organizations: [ORG_A, ORG_B],
+      extra: {
+        personalOrganizationId: PERSONAL,
+        ...(state === 'on'
+          ? {
+              personalModelGateway: {
+                organizationId: PERSONAL,
+                kind: 'model-gateway',
+                baseUrl: GATEWAY_URL,
+                models: [],
+                enforced: false,
+                promptCachePassthrough: true,
+              },
+            }
+          : {}),
+        personalModelGatewayConfig: {
+          organizationId: PERSONAL,
+          enabled: state === 'on',
+          baseUrl: state === 'removed' ? null : GATEWAY_URL,
+        },
+        organizationModelGatewayConfigs: [],
+      },
+    };
+  }
+  async function storedKey(): Promise<string | null> {
+    return (
+      (await loadModelGatewayCredential(PERSONAL, GATEWAY_URL))?.apiKey ?? null
+    );
+  }
+  async function refreshAs(state: 'on' | 'off' | 'removed'): Promise<void> {
+    accountOverrides.set('csk_oauth_one', gatewayFields(state));
+    await invoke(IPC_CHANNELS.settingsRefreshCanopyCloudEnforcedSettings);
+  }
+
+  it('startModelGatewayStaleKeyCleanup keeps the key while the gateway is off and deletes it once removed', async () => {
+    await saveCanopyCloudAccount(OAUTH_ENTRY);
+    await refreshAs('on');
+    await saveModelGatewayCredential({
+      organizationId: PERSONAL,
+      apiKey: 'gateway-key',
+      baseUrlAtSave: GATEWAY_URL,
+    });
+    const stop = startModelGatewayStaleKeyCleanup();
+    try {
+      await refreshAs('off');
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(await storedKey()).toBe('gateway-key');
+
+      await refreshAs('removed');
+      const deadline = Date.now() + 5_000;
+      while ((await storedKey()) !== null && Date.now() < deadline)
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(await storedKey()).toBeNull();
+    } finally {
+      stop();
+    }
+  });
+});
 
 // The renderer hands the authenticated cloud page channel only a same-origin
 // path; main mints the one-time link with the stored key, which never leaves

@@ -23,6 +23,7 @@ import {
   mcpProviderAccountPhrase,
   mcpProviderRoutesDescription,
 } from './mcpConnectionCopy';
+import { ClaudeConnectorRoutingGuidance } from './ClaudeConnectorRoutingGuidance';
 import { buildProviderConnectorRows } from './providerConnectorRows';
 import {
   ArrowUpRightIcon,
@@ -67,6 +68,8 @@ export interface ProviderConnectorDetailProps {
   onConnected: () => void;
   /** Product name shown in the credentials explanation. */
   appName: string;
+  /** Host-owned navigation to the existing connections UI. */
+  onManageConnections?: () => void;
   /** Host-owned navigation to the provider's connector settings. */
   onOpenProviderSettings: (
     request: ProviderConnectorOpenSettingsRequest,
@@ -85,8 +88,7 @@ export interface ProviderConnectorDetailProps {
  * Canopy holds none of these credentials, which is the point: Gmail and Drive
  * are Google *restricted* scopes and Slack gates distribution on marketplace
  * review, so a first-party integration would mean carrying those approvals.
- * The provider already carries them, so the user links it there and the tools
- * appear in any Canopy chat on that provider.
+ * The provider already carries them, so the user links the connector there.
  */
 export function ProviderConnectorDetail({
   variant = 'page',
@@ -97,6 +99,7 @@ export function ProviderConnectorDetail({
   onConnected,
   appName,
   onOpenProviderSettings,
+  onManageConnections,
   McpServerLogoComponent = McpServerLogo,
 }: ProviderConnectorDetailProps): JSX.Element {
   const [busy, setBusy] = useState<ProviderConnectorProvider | null>(null);
@@ -181,6 +184,15 @@ export function ProviderConnectorDetail({
     </ProviderRecheckRow>
   );
 
+  const connectorGuidance = providers.some(
+    ({ provider }) => provider === 'claude',
+  ) ? (
+    <ClaudeConnectorRoutingGuidance
+      appName={appName}
+      onManageConnections={onManageConnections}
+    />
+  ) : null;
+
   if (variant === 'section') {
     // The host detail already shows the mark, name, and vendor; a second
     // header made the page read as two pages. The section says how this
@@ -192,6 +204,7 @@ export function ProviderConnectorDetail({
         dataTestId="provider-connector-detail"
       >
         {providerRows}
+        {connectorGuidance}
         {recheck}
       </PluginConnectionRouteSection>
     );
@@ -249,8 +262,7 @@ export function ProviderConnectorDetail({
             <p className="text-s leading-relaxed fg-secondary">
               Connect {displayName} with{' '}
               {mcpProviderAccountPhrase(providerLabels)}. {appName} never sees
-              these credentials, and the tools become available in any chat on
-              that provider.
+              these credentials.
             </p>
           </div>
 
@@ -278,6 +290,7 @@ export function ProviderConnectorDetail({
           )}
         </div>
         {providerRows}
+        {connectorGuidance}
       </div>
       {recheck}
     </div>
@@ -315,7 +328,7 @@ function ProviderRow({
       </DataTableCell>
       <DataTableCell align="right" overflow="wrap">
         <span className="inline-flex items-center justify-end gap-2">
-          {entry.unavailable ? (
+          {entry.unavailable && !entry.alternateRoute ? (
             // A provider Canopy could not read cannot honestly be offered as a
             // route — clicking through would send the user to link something that
             // still would not appear. The reason is on the tooltip.
@@ -349,7 +362,7 @@ function ProviderRow({
                 variant="ghost"
                 size="compact"
                 data-testid={testId}
-                disabled={busy}
+                disabled={busy || Boolean(entry.unavailable)}
                 onClick={() => void onConnect(entry.provider, entry.installUrl)}
               >
                 Connect anyway

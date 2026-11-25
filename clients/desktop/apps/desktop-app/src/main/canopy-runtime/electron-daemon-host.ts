@@ -17,10 +17,12 @@ import {
 } from '@canopy/core-client';
 import {
   canopyEndpointRepairRequiredError,
+  canopyLaunchDetails,
   connectCanopyClient,
   createCanopyDaemonHostLaunch,
   createDaemonOwnerCredential,
   createRecoverableCanopyStartupClaim,
+  waitForCanopyFileLockRetry,
   type CanopyConnectOptions,
   type CanopyDaemonBeforeSpawn,
 } from '@canopy/core-client/node';
@@ -67,6 +69,7 @@ import {
   WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS,
   WORKER_STREAM_DEFINITIONS,
   WORKER_SCRIPT_INSTRUCTION_DEFINITIONS,
+  WORKER_SCRIPT_QUERY_DEFINITIONS,
   WORKER_SCRIPT_STREAM_DEFINITIONS,
   WORKER_TERMINAL_INSTRUCTION_DEFINITIONS,
   WORKER_TERMINAL_QUERY_DEFINITIONS,
@@ -113,12 +116,27 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
     // Default eligible local renderer summary reads (CAN-5719).
     'worker.codeGraph.query':
       WORKER_CODE_GRAPH_READ_QUERY_DEFINITIONS['worker.codeGraph.query'],
+    // Eligible agent status reads and steering language checks (CAN-5093).
+    'worker.codeGraph.status.get':
+      WORKER_CODE_GRAPH_READ_QUERY_DEFINITIONS['worker.codeGraph.status.get'],
+    'worker.codeGraph.languages.validate':
+      WORKER_CODE_GRAPH_READ_QUERY_DEFINITIONS[
+        'worker.codeGraph.languages.validate'
+      ],
     // Orphaned Claude terminals after a main crash (CAN-5097).
     'worker.terminal.list':
       WORKER_TERMINAL_QUERY_DEFINITIONS['worker.terminal.list'],
     // Eligible local window workflows without model steps (CAN-5086).
     'worker.pipeline.execution.get':
       WORKER_PIPELINE_QUERY_DEFINITIONS['worker.pipeline.execution.get'],
+    // Script run reads: each key's latest run, one run, and an orphaned
+    // run's group members for a Force stop's confirmation (CAN-7663).
+    'worker.script.execution.get':
+      WORKER_SCRIPT_QUERY_DEFINITIONS['worker.script.execution.get'],
+    'worker.script.execution.list':
+      WORKER_SCRIPT_QUERY_DEFINITIONS['worker.script.execution.list'],
+    'worker.script.execution.groupMembers':
+      WORKER_SCRIPT_QUERY_DEFINITIONS['worker.script.execution.groupMembers'],
     // CAN-5092 S1a: typing only; production daemons do not serve operation
     // records, so the manifest refuses each call capability_unavailable.
     ...OPERATION_QUERY_DEFINITIONS,
@@ -248,12 +266,30 @@ export interface ElectronDaemonHostInputs {
    */
   readonly w5?: { readonly beforeSpawn?: CanopyDaemonBeforeSpawn };
 }
-const unavailable = (message: string): CanopyClientError =>
+const unavailable = (
+  message: string,
+  details?: Readonly<Record<string, string | number>>,
+): CanopyClientError =>
   new CanopyClientError({
     kind: 'failed_precondition',
     message,
     retry: { kind: 'never' },
+    ...(details && Object.keys(details).length > 0 ? { details } : {}),
   });
+
+const CHECK_FAILED = 'check failed: ';
+/** Windows sharing violations a scanner or writer can hold briefly (CAN-7137). */
+const LOCKED_CHECK_REASONS: ReadonlySet<string> = new Set(
+  ['EPERM', 'EBUSY', 'EACCES'].map((code) => `${CHECK_FAILED}${code}`),
+);
+
+/** The allowlisted errno a `check failed: <ERRNO>` reason names; never the reason text. */
+const permissionCheckDetails = (
+  reason: string,
+): Readonly<Record<string, string | number>> =>
+  reason.startsWith(CHECK_FAILED)
+    ? canopyLaunchDetails({ errno: reason.slice(CHECK_FAILED.length) })
+    : {};
 
 /** Fixed install or build location only; empty when neither is defined. */
 export function selectWindowsProcessPath(
@@ -351,8 +387,10 @@ export async function createElectronDaemonHost(
   async function privatePath(
     path: string,
     kind: 'file' | 'directory',
+    signal?: AbortSignal,
   ): Promise<void> {
-    for (let attempt = 0; attempt < 3; attempt++) {
+    let details: Readonly<Record<string, string | number>> = {};
+    for (let attempt = 1; attempt <= 3; attempt++) {
       const result = await platform.secureFiles.permissions({
         path,
         kind,
@@ -364,6 +402,17 @@ export async function createElectronDaemonHost(
         throw Object.assign(new Error('Core runtime file is absent.'), {
           code: 'ENOENT',
         });
+      details = permissionCheckDetails(result.reason);
+      // A Windows file lock retries inside the same three attempts, on
+      // core-client's shared private-file lock backoff.
+      if (
+        os === 'win32' &&
+        kind === 'file' &&
+        LOCKED_CHECK_REASONS.has(result.reason)
+      ) {
+        if (attempt < 3) await waitForCanopyFileLockRetry(attempt, signal);
+        continue;
+      }
       if (
         kind !== 'file' ||
         ![
@@ -373,7 +422,7 @@ export async function createElectronDaemonHost(
       )
         break;
     }
-    throw unavailable('Core runtime permissions are not private.');
+    throw unavailable('Core runtime permissions are not private.', details);
   }
   const prepareRuntime = async (signal: AbortSignal): Promise<void> => {
     signal.throwIfAborted();
@@ -519,7 +568,7 @@ export async function createElectronDaemonHost(
     },
     verifyPrivateFile: async (path, signal): Promise<void> => {
       signal.throwIfAborted();
-      await privatePath(path, 'file');
+      await privatePath(path, 'file', signal);
       signal.throwIfAborted();
     },
     ...(os !== 'win32' && {

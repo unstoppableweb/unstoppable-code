@@ -4,7 +4,9 @@ import {
   Children,
   Fragment,
   isValidElement,
+  useLayoutEffect,
   useRef,
+  type RefObject,
   type JSX,
   type ReactNode,
 } from 'react';
@@ -108,6 +110,63 @@ function visibleAboveContent(children: ReactNode): ReactNode[] {
   return Children.toArray(result);
 }
 
+/**
+ * Keeps the centred frame's top in view. The heading and notices hang above
+ * the composer out of flow, so in a host too short for them they would reach
+ * past the host's top edge, where no scrolling brings them back. The frame
+ * then moves down by what is missing, so the heading starts at the host's
+ * top padding and the rest scrolls. A host with room is not touched, and the
+ * measurements run in resize observers, after the browser's own layout.
+ */
+function useTopAnchor(
+  anchorRef: RefObject<HTMLDivElement | null>,
+  aboveRef: RefObject<HTMLDivElement | null>,
+  shellRef: RefObject<HTMLDivElement | null>,
+  enabled: boolean,
+): void {
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    const above = aboveRef.current;
+    const shell = shellRef.current;
+    const host = anchor?.parentElement;
+    if (
+      !enabled ||
+      !anchor ||
+      !above ||
+      !shell ||
+      !host ||
+      typeof ResizeObserver === 'undefined'
+    ) {
+      return undefined;
+    }
+    let shift = 0;
+    const update = (): void => {
+      const hostRect = host.getBoundingClientRect();
+      // A hidden host (a page kept mounted) has no layout to read.
+      if (hostRect.width === 0 && hostRect.height === 0) return;
+      const paddingTop = parseFloat(getComputedStyle(host).paddingTop) || 0;
+      // Where the hanging content starts when the frame sits centred.
+      const centredTop =
+        above.getBoundingClientRect().top + host.scrollTop - shift;
+      const next = Math.max(
+        0,
+        Math.ceil(hostRect.top + paddingTop - centredTop),
+      );
+      if (next === shift) return;
+      shift = next;
+      anchor.style.top = next === 0 ? '' : `${next}px`;
+    };
+    const observer = new ResizeObserver(update);
+    observer.observe(host);
+    observer.observe(above);
+    observer.observe(shell);
+    return (): void => {
+      observer.disconnect();
+      anchor.style.top = '';
+    };
+  }, [anchorRef, aboveRef, shellRef, enabled]);
+}
+
 export function ComposerHeroFrame({
   above,
   aboveNotices,
@@ -123,6 +182,9 @@ export function ComposerHeroFrame({
   hangingTestId,
 }: ComposerHeroFrameProps): JSX.Element {
   const composerFocusTarget = useRef<HTMLDivElement>(null);
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const aboveRef = useRef<HTMLDivElement>(null);
+  const shellRef = useRef<HTMLDivElement>(null);
   // The column keeps every wrapper and lets the ones that only position the
   // centred frame drop out of layout with `contents`.
   const column = layout === 'column';
@@ -134,8 +196,11 @@ export function ComposerHeroFrame({
   const noticeEndsAboveComposer =
     !column && noticeNodes.length > 0 && contextNodes.length === 0;
 
+  useTopAnchor(anchorRef, aboveRef, shellRef, !column);
+
   return (
     <div
+      ref={anchorRef}
       data-testid={anchorTestId}
       data-layout={layout}
       className={
@@ -147,10 +212,12 @@ export function ComposerHeroFrame({
         className={column ? 'contents' : GROUP_CLASSNAME[rhythm]}
       >
         <div
+          ref={shellRef}
           data-testid={shellTestId}
           className={column ? 'contents' : 'relative w-full -translate-y-1/2'}
         >
           <div
+            ref={aboveRef}
             className={
               column
                 ? 'contents'

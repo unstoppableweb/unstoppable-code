@@ -151,6 +151,26 @@ function normalizeClaudeModAdmissions(value: unknown): ClaudeModAdmission[] {
   });
 }
 
+/**
+ * The account proxy is on unless the user turned it off. A choice made with
+ * the Settings switch holds as stored. Earlier builds kept this as a Labs
+ * opt-in that every profile stored as `false`, so an unmarked `false` counts
+ * as off only beside a saved connection: a profile that never connected is
+ * on, and one that connected and then turned it off stays off with its
+ * connection kept.
+ */
+function normalizeAccountProxyEnabled(
+  data: Partial<PreferencesData> | Record<string, unknown> | undefined,
+): boolean {
+  if (data?.accountProxyEnabledSetByUser === true) {
+    return data.accountProxyEnabled !== false;
+  }
+  return !(
+    data?.accountProxyEnabled === false &&
+    normalizeAccountProxyConnection(data.accountProxyConnection) !== null
+  );
+}
+
 export function normalizePreferences(
   data: Partial<PreferencesData> | Record<string, unknown> | undefined,
   modelSelectionValidation: ModelSelectionValidation = 'runtime',
@@ -249,7 +269,8 @@ export function normalizePreferences(
         : (CopilotHostSelectionSchema.safeParse(data.copilotVaultSelection)
             .data ?? null),
     opencodeEnabled: data?.opencodeEnabled === true,
-    accountProxyEnabled: data?.accountProxyEnabled === true,
+    accountProxyEnabled: normalizeAccountProxyEnabled(data),
+    accountProxyEnabledSetByUser: data?.accountProxyEnabledSetByUser === true,
     accountProxyConnection: normalizeAccountProxyConnection(
       data?.accountProxyConnection,
     ),
@@ -495,6 +516,9 @@ export function normalizePreferences(
       typeof data?.pipelineAdvisorEnabled === 'boolean'
         ? data.pipelineAdvisorEnabled
         : DEFAULT_PREFERENCES.pipelineAdvisorEnabled,
+    // Only an explicit true turns the gate on (CAN-7604).
+    slackOrchestratorRequestsEnabled:
+      data?.slackOrchestratorRequestsEnabled === true,
     // This intentionally uses a new key instead of reinterpreting the legacy
     // opt-in `orgMemoryEnabled` preference. Existing installs therefore adopt
     // the new enabled-by-default behavior once, while a subsequent opt-out is

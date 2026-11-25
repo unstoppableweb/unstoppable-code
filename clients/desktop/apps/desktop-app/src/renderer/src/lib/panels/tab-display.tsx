@@ -390,6 +390,42 @@ function useAwaitingQuestion(chatTabId: string): boolean {
   );
 }
 
+/**
+ * Whether the tab's leading slot shows the background-work glyph: background
+ * work alone, with no turn streaming and nothing waiting on the user. That
+ * glyph carries the tab's unread state itself, in both tab bars.
+ */
+function showsBackgroundGlyph(state: {
+  backgroundTasks: number;
+  streaming: boolean;
+  awaitingUser: boolean;
+}): boolean {
+  return state.backgroundTasks > 0 && !state.streaming && !state.awaitingUser;
+}
+
+/**
+ * True while a fill tab's unread state shows only on its background glyph.
+ * The tab bar hides the glyph's slot from assistive technology, so the label
+ * names the state instead of the right-hand dot.
+ */
+function useUnreadOnBackgroundGlyph(chatTabId: string): boolean {
+  const tab = useBoundChatTab(chatTabId);
+  const background = useBoundChatBackgroundWork(chatTabId);
+  const awaitingApproval = useAwaitingApproval(tab);
+  const awaitingToolApproval = useAwaitingToolApproval(tab);
+  const awaitingQuestion = useAwaitingQuestion(chatTabId);
+  return (
+    usePanelTabStyle() === 'fill' &&
+    tab?.unread === true &&
+    showsBackgroundGlyph({
+      backgroundTasks: background.tasks,
+      streaming: tab.status === 'streaming',
+      awaitingUser:
+        awaitingApproval || awaitingToolApproval || awaitingQuestion,
+    })
+  );
+}
+
 /** ChatTabBar's default-model fallback for the provider logo. */
 function useDefaultWorktreeModel(): ChatModel | undefined {
   return useChatStore((s) =>
@@ -451,11 +487,12 @@ function ChatPanelTabLeadingContent({
   // Fill tabs show the question on their right, so the slot keeps the
   // tab's number rather than a busy spinner.
   if (
-    background.tasks > 0 &&
-    tab.status !== 'streaming' &&
-    !awaitingApproval &&
-    !awaitingToolApproval &&
-    !awaitingQuestion
+    showsBackgroundGlyph({
+      backgroundTasks: background.tasks,
+      streaming: tab.status === 'streaming',
+      awaitingUser:
+        awaitingApproval || awaitingToolApproval || awaitingQuestion,
+    })
   ) {
     // Background work alone. A shell doesn't block close, so its tab stays
     // closable.
@@ -805,6 +842,7 @@ function BoundChatTabLabel({
   fallbackTitle: string;
 }): JSX.Element {
   const tab = useBoundChatTab(tabId);
+  const unreadOnGlyph = useUnreadOnBackgroundGlyph(tabId);
   // ChatTabBar parity: chats prefer a custom name, then the generated
   // description; file tabs always show their (uniquely suffixed) title.
   const label =
@@ -817,7 +855,10 @@ function BoundChatTabLabel({
   return isFileTab ? (
     <>{label}</>
   ) : (
-    <span className={POSTHOG_REPLAY_MASK_CLASS}>{label}</span>
+    <>
+      <span className={POSTHOG_REPLAY_MASK_CLASS}>{label}</span>
+      {unreadOnGlyph ? <span className="sr-only">, unread</span> : null}
+    </>
   );
 }
 
@@ -1004,7 +1045,7 @@ function ClassicChatPanelTabTrailing({
  * appears on hover (the tab bar hides them while it shows the button): a
  * waiting question, plan review, tool approval, unread, and read-only. A
  * question outranks the other needs-input dots, so one indicator says what
- * the chat waits on.
+ * the chat waits on. Unread moves left while the background glyph shows.
  */
 function FillChatPanelTabTrailing({
   chatTabId,
@@ -1015,10 +1056,13 @@ function FillChatPanelTabTrailing({
   const awaitingApproval = useAwaitingApproval(tab);
   const awaitingToolApproval = useAwaitingToolApproval(tab);
   const awaitingQuestion = useAwaitingQuestion(chatTabId);
+  const unreadOnGlyph = useUnreadOnBackgroundGlyph(chatTabId);
   if (tab === undefined) {
     return null;
   }
-  const unread = tab.unread === true;
+  // The background glyph on the left turns blue instead, so the tab keeps
+  // one status mark.
+  const unread = tab.unread === true && !unreadOnGlyph;
   if (
     !awaitingQuestion &&
     !awaitingApproval &&

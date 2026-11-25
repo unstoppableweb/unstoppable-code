@@ -1,3 +1,10 @@
+import { randomUUID } from 'node:crypto';
+import { types } from 'node:util';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import {
+  PUBLICATION_GRANTS,
+  type CanopyGrantName,
+} from '@canopy/protocol/canopy-core';
 import { classifyError } from '@canopy/protocol/app-errors/classification';
 import { IdentifierValidationError } from '../lib/identifier-validation-error';
 import {
@@ -83,7 +90,6 @@ import {
   type SharedContainerLinkLanding,
   type SharedContainerRecipientRequest as SharedContainerRecipientWire,
 } from '@canopy/protocol/shared-containers';
-import { fileScopeIsAllowlist } from '@canopy/desktop-shared/lib/shared-container-scope-mode';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { CanopyCloudClientError } from '../canopy-cloud/client';
 import { getFeatureFlagService } from '../feature-flags';
@@ -122,46 +128,30 @@ import {
 import {
   MAX_SHARED_CONTAINER_APPROVED_FILE_PATHS,
   MAX_SHARED_CONTAINER_SELECTED_ITEM_IDS,
-  normalizeSharedContainerFileScope,
-  pinSharedContainerPreferredLayout,
   pinSharedContainerPreferredLayoutIfMissing,
-  readSharedContainerFileScope,
-  writeSharedContainerFileScope,
 } from '../shared-containers/file-scope-store';
 import { getSharedContainerPublicationStateStore } from '../shared-containers/publication-state';
 import {
   acceptSharedContainer,
   allowSharedContainerRun,
   forgetSharedContainerAcceptance,
-  getSharedContainerAcceptance,
   isSharedContainerAccepted,
   isSharedContainerRunAllowed,
   revokeSharedContainerRun,
-  listAcceptedSharedContainers,
   withSharedContainerRunLifecycle,
 } from '../shared-containers/acceptance-store';
 import { getSharedContainerPublishScheduler } from '../shared-containers/publish/scheduler';
 import { getSharedContainerReconciliationService } from '../shared-containers/reconciliation-service';
 import { getSharedContainerReader } from '../shared-containers/read/reader';
-import {
-  buildSharedContainerSharePreview,
-  listSharedContainerUntrackedCandidatePaths,
-} from '../shared-containers/share-preview';
 import { getTelemetrySyncService } from '../services/telemetry-sync-service';
 import { getSharedContainerInboxWatcher } from '../services/shared-container-inbox-watcher';
 import { getObservabilityService } from '../observability';
 import { registerIpcHandler } from './register';
 import {
-  projectSharedContainerRunEnvironment,
-  readSharedContainerRunEnvironment,
   removeSharedContainerRunEnvironment,
   writeSharedContainerRunEnvironment,
 } from '../shared-containers/run-env-store';
-import {
-  getSharedContainerRunCopyState,
-  measureSharedContainerRunCopyBytes,
-  refreshSharedContainerRunCopy,
-} from '../shared-containers/run/run-copy';
+import { refreshSharedContainerRunCopy } from '../shared-containers/run/run-copy';
 import { stopWorktreeScripts } from '../services/scripts-service';
 import { workerTerminal } from '../terminal/worker-terminal';
 import { listTrackedShellScriptsForWorktree } from '../lib/script-runner';
@@ -176,10 +166,6 @@ import {
   forkSourceNotAccepted,
   validateForkDestination,
 } from '../shared-containers/fork/destination';
-import {
-  getSharedContainerForkProvenancePath,
-  readSharedContainerForkProvenance,
-} from '../shared-containers/fork/provenance';
 import { sendToWebContents } from '../lib/web-contents-send';
 import {
   recordInviteSendTelemetry,
@@ -425,7 +411,8 @@ function validateSharedContainerListingRequest(
   }
 }
 
-function assertSharedContainerRunEnabled(): void {
+/** Desktop's one shared-container run gate; the core adapter reuses it. */
+export function assertSharedContainerRunEnabled(): void {
   assertSharedContainersEnabled();
   if (process.platform !== 'darwin') {
     throw new Error('Shared-container run is disabled.');
@@ -626,8 +613,39 @@ export function classifySharedContainerError(
   }
 }
 
+/** The grants of a read that answers local worktree or run detail. */
+const SHARED_CONTAINER_LOCAL_READ_GRANTS: CanopyGrantName[] = [
+  PUBLICATION_GRANTS.read,
+  'core.workspace.read',
+];
+
+/**
+ * The shared-containers channels project core.publication (CAN-6501 PR 6) and
+ * core.sharedContainer (PR 7) operations. A refusal keeps desktop's message;
+ * an internal answers with its own error, as before the move.
+ */
+function sharedContainerScopeCause(error: unknown): unknown {
+  // A Node errno error may come from another realm, which instanceof misses.
+  if (
+    error instanceof CanopyOperationError &&
+    error.payload.kind === 'internal' &&
+    (error.runtimeCause instanceof Error ||
+      types.isNativeError(error.runtimeCause))
+  )
+    return error.runtimeCause;
+  return error;
+}
+
+/**
+ * list-accepted, read-fork-provenance and run-status check the gate and the
+ * ids first, as before the move.
+ */
+function rethrowSharedContainerReadError(error: unknown): never {
+  throw sharedContainerScopeCause(error);
+}
+
 export function registerSharedContainerHandlers(runtime: {
-  dispatcher: Pick<DesktopCanopyDispatcher, 'instruction'>;
+  dispatcher: Pick<DesktopCanopyDispatcher, 'instruction' | 'query'>;
   resolveCaller: DesktopIpcCallerResolver;
 }): void {
   addTrackedPlansWriteListener((projectId, worktreeId) => {
@@ -718,21 +736,37 @@ export function registerSharedContainerHandlers(runtime: {
   registerIpcHandler<
     [SharedContainerPreviewRequest],
     SharedContainerSharePreview
-  >(IPC_CHANNELS.sharedContainersPreview, async (_event, request) => {
+  >(IPC_CHANNELS.sharedContainersPreview, async (event, request) => {
     assertSharedContainersEnabled();
     validateTarget(request);
     try {
-      return await buildSharedContainerSharePreview(request);
+      return await runtime.dispatcher.query(
+        'core.publication.preview.get',
+        {
+          projectId: request.projectId,
+          worktreeId: request.worktreeId,
+          organizationId: request.organizationId,
+          containerType: request.containerType,
+          audience: request.audience,
+        },
+        {
+          caller: {
+            ...runtime.resolveCaller(event),
+            grants: SHARED_CONTAINER_LOCAL_READ_GRANTS,
+          },
+        },
+      );
     } catch (error) {
-      recordSharedContainerPreviewFailure(request, error);
-      throw error;
+      const cause = sharedContainerScopeCause(error);
+      recordSharedContainerPreviewFailure(request, cause);
+      throw cause;
     }
   });
 
   registerIpcHandler<
     [SaveSharedContainerFileScopeRequest],
     SaveSharedContainerFileScopeResponse
-  >(IPC_CHANNELS.sharedContainersSaveFileScope, async (_event, request) => {
+  >(IPC_CHANNELS.sharedContainersSaveFileScope, async (event, request) => {
     assertSharedContainersEnabled();
     validateId(request.projectId, 'projectId');
     validateId(request.worktreeId, 'worktreeId');
@@ -811,102 +845,37 @@ export function registerSharedContainerHandlers(runtime: {
     ) {
       throw new Error('Too many includedRunScripts');
     }
-    const normalizedScope = normalizeSharedContainerFileScope({
-      includedPaths: request.includedPaths,
-      ...(request.excludedPaths !== undefined
-        ? { excludedPaths: request.excludedPaths }
-        : {}),
-      ...(request.legacyAllowlist === true ? { legacyAllowlist: true } : {}),
-      includedNoteIds: request.includedNoteIds ?? [],
-      excludedNoteIds: request.excludedNoteIds ?? [],
-      includedPromptIds: request.includedPromptIds ?? [],
-      excludedPromptIds: request.excludedPromptIds ?? [],
-      runSharingEnabled: request.runSharingEnabled,
-      runSharingDisabled: request.runSharingDisabled,
-      includedRunScripts: request.includedRunScripts,
-      excludedRunScripts: request.excludedRunScripts,
-    });
-    const isCoworkContainer = isCoworkWorkspace(request.projectId);
-    // Worktrees are permanently opt-out. Old clients and persisted previews
-    // may still send their former allowlist fields, but retaining those fields
-    // would stop an otherwise-default scope from collapsing back to no file.
-    let includedPaths = isCoworkContainer ? normalizedScope.includedPaths : [];
-    if (
-      normalizedScope.includedPaths.length > 0 &&
-      isCoworkContainer &&
-      fileScopeIsAllowlist('COWORK_WORK_ENTRY', normalizedScope)
-    ) {
-      const [persistedScope, currentCandidatePaths] = await Promise.all([
-        readSharedContainerFileScope(request.projectId, request.worktreeId),
-        listSharedContainerUntrackedCandidatePaths(
-          request.projectId,
-          request.worktreeId,
-        ),
-      ]);
-      const candidatePaths = new Set(currentCandidatePaths);
-      const previouslyApprovedPaths = new Set(persistedScope.includedPaths);
-      if (
-        normalizedScope.includedPaths.some(
-          (path) =>
-            !candidatePaths.has(path) && !previouslyApprovedPaths.has(path),
-        )
-      ) {
-        throw new Error('includedPaths must be current untracked files');
-      }
-      // A path may become tracked or disappear between opening the preview and
-      // editing the scope. It is safe to prune a previously persisted approval,
-      // but a never-approved non-candidate remains a forged request and fails.
-      includedPaths = normalizedScope.includedPaths.filter((path) =>
-        candidatePaths.has(path),
-      );
-    }
-    await writeSharedContainerFileScope(request.projectId, request.worktreeId, {
-      includedPaths,
-      ...(normalizedScope.excludedPaths !== undefined
-        ? { excludedPaths: normalizedScope.excludedPaths }
-        : {}),
-      ...(isCoworkContainer && normalizedScope.legacyAllowlist === true
-        ? { legacyAllowlist: true }
-        : {}),
-      includedNoteIds: normalizedScope.includedNoteIds,
-      excludedNoteIds: normalizedScope.excludedNoteIds,
-      includedPromptIds: normalizedScope.includedPromptIds,
-      excludedPromptIds: normalizedScope.excludedPromptIds,
-      runSharingEnabled: normalizedScope.runSharingEnabled,
-      runSharingDisabled: normalizedScope.runSharingDisabled,
-      includedRunScripts: normalizedScope.includedRunScripts,
-      excludedRunScripts: normalizedScope.excludedRunScripts,
-      // The store leaves the persisted preferred layout unchanged when this
-      // field is absent, which is `keep`.
-      ...(preferredLayoutRequest === 'clear'
-        ? { preferredLayout: { enabled: false } }
-        : {}),
-    });
-    try {
-      if (preferredLayoutRequest === 'pin-current') {
-        await pinSharedContainerPreferredLayout(
-          request.projectId,
-          request.worktreeId,
-        );
-      }
-    } finally {
-      // The scope write above has already persisted, so its publication is
-      // scheduled even when the pin fails.
-      void getSharedContainerPublishScheduler()
-        .scheduleKnown(request.projectId, request.worktreeId, true)
-        .catch((error) =>
-          logMainProcessWarn(
-            '[shared-containers] failed to schedule scope publication',
-            error,
-          ),
-        );
-    }
-    return {
-      fileScope: await readSharedContainerFileScope(
-        request.projectId,
-        request.worktreeId,
-      ),
-    };
+    return runtime.dispatcher
+      .instruction(
+        'core.publication.fileScope.update',
+        {
+          projectId: request.projectId,
+          worktreeId: request.worktreeId,
+          includedPaths: request.includedPaths,
+          excludedPaths: request.excludedPaths,
+          legacyAllowlist: request.legacyAllowlist,
+          includedNoteIds: request.includedNoteIds,
+          excludedNoteIds: request.excludedNoteIds,
+          includedPromptIds: request.includedPromptIds,
+          excludedPromptIds: request.excludedPromptIds,
+          runSharingEnabled: request.runSharingEnabled,
+          runSharingDisabled: request.runSharingDisabled,
+          includedRunScripts: request.includedRunScripts,
+          excludedRunScripts: request.excludedRunScripts,
+          preferredLayout: preferredLayoutRequest,
+        },
+        {
+          caller: {
+            ...runtime.resolveCaller(event),
+            grants: [PUBLICATION_GRANTS.write, 'core.workspace.write'],
+          },
+          // Each save is its own write; the renderer never retries one.
+          metadata: { idempotencyKey: randomUUID() },
+        },
+      )
+      .catch((error: unknown) => {
+        throw sharedContainerScopeCause(error);
+      });
   });
 
   registerIpcHandler<
@@ -1354,10 +1323,20 @@ export function registerSharedContainerHandlers(runtime: {
 
   registerIpcHandler<[], ListAcceptedSharedContainersResponse>(
     IPC_CHANNELS.sharedContainersListAccepted,
-    async () => {
+    async (event) => {
       assertSharedContainersEnabled();
-      const records = await listAcceptedSharedContainers();
-      return { containerIds: Object.keys(records), records };
+      return runtime.dispatcher
+        .query(
+          'core.sharedContainer.acceptance.list',
+          {},
+          {
+            caller: {
+              ...runtime.resolveCaller(event),
+              grants: [PUBLICATION_GRANTS.read],
+            },
+          },
+        )
+        .catch(rethrowSharedContainerReadError);
     },
   );
 
@@ -1400,46 +1379,22 @@ export function registerSharedContainerHandlers(runtime: {
   registerIpcHandler<
     [SharedContainerRunStatusRequest],
     SharedContainerRunStatus
-  >(IPC_CHANNELS.sharedContainersRunStatus, async (_event, request) => {
-    const run = await readRunConfig(request);
-    const acceptance = await getSharedContainerAcceptance(request.containerId);
-    const declared = new Set(run?.requiredEnv ?? []);
-    const stored = (
-      await readSharedContainerRunEnvironment(request.containerId)
-    ).filter((entry) => declared.has(entry.key));
-    const applied = new Map(stored.map((entry) => [entry.key, entry.value]));
-    const runCopy = await getSharedContainerRunCopyState(request.containerId);
-    const hasRunningProcesses =
-      listTrackedShellScriptsForWorktree({
-        projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
-        worktreeId: request.containerId,
-      }).length > 0 ||
-      workerTerminal.hasLiveTerminals({
-        projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
-        worktreeId: request.containerId,
-      });
-    return {
-      allowed: acceptance?.runAllowedAt !== undefined,
-      ...(acceptance?.runAllowedAt
-        ? { allowedAt: acceptance.runAllowedAt }
-        : {}),
-      ...(acceptance?.runAllowedPublisherUserId
-        ? { publisherUserId: acceptance.runAllowedPublisherUserId }
-        : {}),
-      ...(run ? { run } : {}),
-      values: projectSharedContainerRunEnvironment(request.containerId, stored),
-      unsetRequiredEnv:
-        run?.requiredEnv.filter((name) => !(applied.get(name) ?? '').trim()) ??
-        [],
-      runCopySizeBytes: String(
-        await measureSharedContainerRunCopyBytes(request.containerId),
-      ),
-      runCopyNeedsRefresh:
-        runCopy.state !== 'missing' &&
-        (runCopy.state === 'pending' ||
-          runCopy.revisionId !== request.revisionId),
-      hasRunningProcesses,
-    };
+  >(IPC_CHANNELS.sharedContainersRunStatus, async (event, request) => {
+    assertSharedContainerRunEnabled();
+    validateId(request.containerId, 'containerId');
+    validateId(request.revisionId, 'revisionId');
+    return runtime.dispatcher
+      .query(
+        'core.sharedContainer.run.get',
+        { containerId: request.containerId, revisionId: request.revisionId },
+        {
+          caller: {
+            ...runtime.resolveCaller(event),
+            grants: SHARED_CONTAINER_LOCAL_READ_GRANTS,
+          },
+        },
+      )
+      .catch(rethrowSharedContainerReadError);
   });
 
   registerIpcHandler<[SharedContainerRunConsentRequest], void>(
@@ -1654,20 +1609,24 @@ export function registerSharedContainerHandlers(runtime: {
   registerIpcHandler<
     [ReadSharedContainerForkProvenanceRequest],
     SharedContainerForkProvenance | null
-  >(
-    IPC_CHANNELS.sharedContainersReadForkProvenance,
-    async (_event, request) => {
-      assertSharedContainersEnabled();
-      validateId(request.projectId, 'projectId');
-      validateId(request.worktreeId, 'worktreeId');
-      return readSharedContainerForkProvenance(
-        getSharedContainerForkProvenancePath(
-          request.projectId,
-          request.worktreeId,
-        ),
-      );
-    },
-  );
+  >(IPC_CHANNELS.sharedContainersReadForkProvenance, async (event, request) => {
+    assertSharedContainersEnabled();
+    validateId(request.projectId, 'projectId');
+    validateId(request.worktreeId, 'worktreeId');
+    const { provenance } = await runtime.dispatcher
+      .query(
+        'core.sharedContainer.forkProvenance.get',
+        { projectId: request.projectId, worktreeId: request.worktreeId },
+        {
+          caller: {
+            ...runtime.resolveCaller(event),
+            grants: SHARED_CONTAINER_LOCAL_READ_GRANTS,
+          },
+        },
+      )
+      .catch(rethrowSharedContainerReadError);
+    return provenance;
+  });
 
   registerIpcHandler<
     [GetSharedContainerReplicaStateRequest],

@@ -29,6 +29,7 @@ import {
 import type { PanelKind } from '@canopy/protocol';
 import {
   PanelGridHost,
+  PanelGridLoadingCard,
   type PanelTabBarAddTab,
   type PanelTabBarProps,
   type PanelTabStyle,
@@ -269,14 +270,25 @@ export interface PanelGridSurfaceProps {
   fixedTopologyChromeForGroup?: (
     group: PanelGroupModel,
   ) => { hideLabel: string } | undefined;
+  /**
+   * Shown in the grid's place until its layout is in memory, so the frame
+   * never blinks to the bare page background. Defaults to the shared
+   * `PanelGridLoadingCard`. A host that already shows that card for a
+   * longer wait around this one passes `null`, so one element covers the
+   * whole wait.
+   */
+  loadingFallback?: ReactNode;
 }
 
 /**
  * A hidden chat's transcript mounts once its tab is first shown: a worktree
- * with many chats otherwise mounts and styles every one on each switch.
+ * with many chats otherwise mounts and styles every one on each switch. So
+ * does a hidden New tab: its catalog of what can be opened has nothing to run
+ * while nobody sees it, yet a collapsed group holding one built the whole
+ * list on every switch to its chat.
  */
-function isChatPanelKind(kind: string): boolean {
-  return kind === 'chat';
+function deferHiddenPanelContent(kind: string): boolean {
+  return kind === 'chat' || kind === 'new-tab';
 }
 
 export function PanelGridSurface({
@@ -289,6 +301,7 @@ export function PanelGridSurface({
   services,
   fixedTopology = false,
   fixedTopologyChromeForGroup,
+  loadingFallback = <PanelGridLoadingCard />,
 }: PanelGridSurfaceProps): JSX.Element {
   const worktreeKey = makeWorktreePanelKey(projectId, worktreeId);
   const {
@@ -847,7 +860,9 @@ export function PanelGridSurface({
 
   return (
     <>
-      {viewModel !== null && controller !== null && (
+      {viewModel === null || controller === null ? (
+        loadingFallback
+      ) : (
         <PanelHostContext.Provider value={hostState}>
           <PanelWorktreeContext.Provider value={ownerSelection}>
             <PanelGridHost
@@ -921,7 +936,7 @@ export function PanelGridSurface({
         renderPanelContent={renderPanelContent}
         auxLayoutKeys={auxLayoutKeys}
         includeAuxWindows={includeAuxWindowContent}
-        deferHiddenContent={isChatPanelKind}
+        deferHiddenContent={deferHiddenPanelContent}
         errorHost={services.panelErrorHost}
       />
     </>

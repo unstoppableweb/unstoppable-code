@@ -23,6 +23,8 @@ import { mergePluginSelections } from '../lib/plugin-selection-utils';
 import { resolveAgentDestinationDefaultModel } from './agent-default-model';
 import { getAgentModel } from './agent-model-store';
 import { organizationAgentGateAllows } from '../organization-capabilities/agent-gate';
+import type { WorkOwner } from '@canopy/protocol/llm-gateway';
+import { resolveOwnerGatewayModelId } from '@canopy/execution-engine/lib/gateway-model-availability';
 
 export interface ResolvedAgentModelRuntime {
   selectedModel: ChatModel;
@@ -74,11 +76,18 @@ export async function resolveAgentModelRuntime(options: {
    * route id instead, so their turns never re-resolve the default.
    */
   inheritDefaultFrom?: { projectId?: string };
+  /**
+   * The work owner, when the caller knows it: a bare AI gateway id saved
+   * before gateway ids were namespaced runs on the owner's own gateway row.
+   */
+  owner?: WorkOwner;
 }): Promise<ResolvedAgentModelRuntime> {
+  const ownerModel = (model: string): string =>
+    resolveModelAlias(resolveOwnerGatewayModelId(model, options.owner));
   if (!isAgentModel(options.model)) {
-    const providerType =
-      options.providerType ?? requireProviderForModel(options.model);
-    const executionHarness = getExecutionHarnessForModel(options.model);
+    const model = resolveOwnerGatewayModelId(options.model, options.owner);
+    const providerType = options.providerType ?? requireProviderForModel(model);
+    const executionHarness = getExecutionHarnessForModel(model);
     if (!executionHarness) {
       throw new Error(
         `No execution harness is available for model "${String(options.model)}".`,
@@ -86,7 +95,7 @@ export async function resolveAgentModelRuntime(options: {
     }
     return {
       selectedModel: options.model,
-      runtimeModel: options.model,
+      runtimeModel: model,
       providerType,
       executionHarness,
       systemPromptAppend: options.systemPromptAppend,
@@ -113,7 +122,7 @@ export async function resolveAgentModelRuntime(options: {
   }
   let choice = resolveAgentBaseModel(
     { explicitModel: route?.baseModel, agentDefaultModel: agent.baseModel },
-    resolveModelAlias,
+    ownerModel,
   );
   if (choice.kind === 'needs-destination-default') {
     choice = resolveAgentBaseModel(
@@ -123,7 +132,7 @@ export async function resolveAgentModelRuntime(options: {
           options.inheritDefaultFrom?.projectId,
         ),
       },
-      resolveModelAlias,
+      ownerModel,
     );
   }
   if (

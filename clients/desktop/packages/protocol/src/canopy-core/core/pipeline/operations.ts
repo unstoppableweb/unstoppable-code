@@ -39,7 +39,24 @@ export const PIPELINE_GRANTS = {
    * required grants, never holds it.
    */
   ownerRead: 'core.pipeline.ownerRead',
+  /**
+   * Installs a remote definition (CAN-7523). Only the daemon's proven owner
+   * connection and Electron main's own caller hold it; no interface profile
+   * lists the import.
+   */
+  ownerImport: 'core.pipeline.ownerImport',
 } as const;
+
+/**
+ * What `core.pipeline.definition.import` requires (CAN-7523). Owner proof alone
+ * grants the import: a deliberate, approved exception to the rule that owner
+ * proof does not establish trust, until E1 (CAN-4729) designates trusted
+ * connections and this grant moves to that designation. Sent only over Electron
+ * main's owner connection; Portal and remote installs go through main.
+ */
+export const PIPELINE_DEFINITION_IMPORT_GRANTS = [
+  PIPELINE_GRANTS.ownerImport,
+] as const;
 
 export const PIPELINE_DEFINITION_QUERY_ERROR_CODES = [
   'core.pipeline.definitionNotFound',
@@ -186,7 +203,7 @@ export const PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS =
       result: PipelineDefinitionImportResultSchema,
       error: PipelineDefinitionImportErrorSchema,
       idempotency: 'keyed',
-      requiredGrants: [PIPELINE_GRANTS.write],
+      requiredGrants: [...PIPELINE_DEFINITION_IMPORT_GRANTS],
     }),
     'core.pipeline.definition.setEnabled': defineCanopyInstruction({
       plane: 'core',

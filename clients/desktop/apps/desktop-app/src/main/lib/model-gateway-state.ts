@@ -1,3 +1,4 @@
+import { normalizeModelGatewayBaseUrl } from '@canopy/protocol/canopy-server';
 import { mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
@@ -19,6 +20,7 @@ import {
   soleEnforcingOrganizationId,
   type PersonalModelGatewayProjection,
   type OrganizationModelGateway,
+  type ModelGatewayDeviceOptOuts,
   type ModelGatewayIndex,
   type ModelGatewayRequirement,
 } from '@canopy/desktop-shared/lib/org-model-gateway';
@@ -30,12 +32,13 @@ import {
   toPublicCanopyCloudAccountState,
 } from './canopy-cloud-account-store';
 import { updateOrgGatewayModelCatalog } from './model-config';
-import { hasModelGatewayCredential } from './model-gateway-credential-store';
+import { hasUsableModelGatewayCredential } from './model-gateway-credential-store';
 import { getModelGatewayMarkerFilePath } from './paths';
 import { writeFileAtomically } from './atomic-file';
 import { shouldRecordUnknownEnforcementOwner } from '../agents/work-owner';
-import { personalGatewayAccountFields } from '@canopy/desktop-shared/lib/org-enforced-parsing';
+import { modelGatewayAccountFields } from '@canopy/desktop-shared/lib/org-enforced-parsing';
 import { readLocalModelGateway } from './local-model-gateway-store';
+import { readModelGatewayDeviceOptOuts } from './model-gateway-device-use';
 
 interface ModelGatewayMarkerFile {
   version: 1;
@@ -100,8 +103,11 @@ export async function readLocalModelGatewayProjection(): Promise<PersonalModelGa
   return read.ok ? read.projection : null;
 }
 let markerCache: ModelGatewayMarkerFile | null = null;
-/** The personal organization this computer has a gateway key for, if any. */
-let personalKeyOrganizationId: string | undefined;
+/**
+ * The personal gateway this computer holds a key for, as `organizationId` and
+ * URL, when that key was saved for the gateway's current URL.
+ */
+let personalKeyEndpoint: string | undefined;
 /** Latest key refresh; an older one that finishes later is dropped. */
 let personalKeyRefresh = 0;
 let markerWriteQueue: Promise<void> = Promise.resolve();
@@ -138,7 +144,7 @@ function normalizeMarker(value: unknown): ModelGatewayMarkerFile {
     personalOrganizationId:
       normalizeUuid(value.personalOrganizationId) ?? undefined,
     personalGatewayEnforced: value.personalGatewayEnforced === true,
-    ...personalGatewayAccountFields(value),
+    ...modelGatewayAccountFields(value),
     ...(governedOrganizationIds === undefined
       ? {}
       : { governedOrganizationIds }),
@@ -198,7 +204,12 @@ function markerForAccount(
       (index.personalOrganizationId
         ? index.byOrganization.get(index.personalOrganizationId)?.enforced
         : false),
-    personalModelGateway: account?.personalModelGateway,
+    // Only while it routes here: this computer may opt out of it (CAN-7657).
+    personalModelGateway:
+      index.personalOrganizationId !== undefined &&
+      index.byOrganization.has(index.personalOrganizationId)
+        ? account?.personalModelGateway
+        : undefined,
     orgEnforced: index.accountUnavailable || governedOrganizationIds.length > 0,
     governedOrganizationIds,
     ungovernedOrganizationIds,
@@ -299,6 +310,13 @@ function requirementFromMarker(
     : { kind: 'blocked', reason: 'organization-unavailable' };
 }
 
+function endpointKey(organizationId: string, baseUrl: string): string {
+  return JSON.stringify([
+    organizationId,
+    normalizeModelGatewayBaseUrl(baseUrl) ?? baseUrl,
+  ]);
+}
+
 function catalogGateways(
   index: ModelGatewayIndex,
 ): Parameters<typeof updateOrgGatewayModelCatalog>[0] {
@@ -313,12 +331,12 @@ function catalogGateways(
   index.byOrganization.forEach((gateway, organizationId) => {
     if (gateway.unavailable || !gateway.baseUrl) return;
     const personal = organizationId === index.personalOrganizationId;
-    // Without a key here, a personal gateway isn't set up on this computer.
-    // "Use only my AI gateway" keeps its models: that choice must still block.
+    // Without a key for its current URL, a personal gateway can't send from
+    // this computer. "Use only my AI gateway" still blocks other models
+    // through the requirement; the picker offers adding the key instead.
     if (
       personal &&
-      !gateway.enforced &&
-      personalKeyOrganizationId !== organizationId
+      personalKeyEndpoint !== endpointKey(organizationId, gateway.baseUrl)
     )
       return;
     gateways.push({
@@ -345,8 +363,9 @@ export function setCurrentModelGatewayAccount(
     | 'personalModelGatewayEnforcementUnavailable'
   > | null,
   localGateway: PersonalModelGatewayProjection | null = null,
+  deviceOptOuts?: ModelGatewayDeviceOptOuts,
 ): ModelGatewayAccountUpdate {
-  const next = resolveModelGatewayIndex(account, localGateway);
+  const next = resolveModelGatewayIndex(account, localGateway, deviceOptOuts);
   const allOrganizationIds = new Set<string>();
   currentIndex.byOrganization.forEach((_gateway, organizationId) =>
     allOrganizationIds.add(organizationId),
@@ -401,22 +420,30 @@ export function setCurrentModelGatewayAccount(
 }
 
 /**
- * Re-reads whether this computer has a key for the personal gateway. Returns
- * true when that changed, so the caller can republish the model registry.
+ * Re-reads whether this computer has a key for the personal gateway's current
+ * URL. Returns true when that changed, so the caller can republish the model
+ * registry.
  */
 export async function refreshPersonalGatewayKey(): Promise<boolean> {
   const refresh = ++personalKeyRefresh;
   const organizationId = currentIndex.personalOrganizationId;
+  const baseUrl = organizationId
+    ? currentIndex.byOrganization.get(organizationId)?.baseUrl
+    : undefined;
   let next: string | undefined;
   try {
-    if (organizationId && (await hasModelGatewayCredential(organizationId)))
-      next = organizationId;
+    if (
+      organizationId &&
+      baseUrl &&
+      (await hasUsableModelGatewayCredential(organizationId, baseUrl))
+    )
+      next = endpointKey(organizationId, baseUrl);
   } catch {
     // Unreadable secure storage holds no usable key.
   }
-  if (refresh !== personalKeyRefresh || next === personalKeyOrganizationId)
+  if (refresh !== personalKeyRefresh || next === personalKeyEndpoint)
     return false;
-  personalKeyOrganizationId = next;
+  personalKeyEndpoint = next;
   updateOrgGatewayModelCatalog(catalogGateways(currentIndex));
   return true;
 }
@@ -437,6 +464,7 @@ export async function getModelGatewayRequirementForOwner(
       const index = resolveModelGatewayIndex(
         account,
         local.ok ? local.projection : null,
+        await readModelGatewayDeviceOptOuts(),
       );
       // Only the account applier advances the shared index: an admission read
       // must not consume the diff before session invalidation processes it.
@@ -607,7 +635,7 @@ export async function resolveHelperModelForEnforcedGateway(
 export function resetModelGatewayStateForTests(): void {
   currentIndex = resolveModelGatewayIndex(null);
   markerCache = null;
-  personalKeyOrganizationId = undefined;
+  personalKeyEndpoint = undefined;
   personalKeyRefresh = 0;
   markerWriteQueue = Promise.resolve();
   unknownOwnerDiagnostics.clear();

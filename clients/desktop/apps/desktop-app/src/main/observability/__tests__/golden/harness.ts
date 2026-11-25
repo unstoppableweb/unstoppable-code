@@ -69,6 +69,8 @@ export interface GoldenPipelineOutput {
   stepId: string;
   attempt: number;
   iteration?: number;
+  /** The resumed attempt that wrote the output; absent before any recovery. */
+  recovery?: number;
   data: string;
 }
 

@@ -378,6 +378,8 @@ export interface AgentStepOptions {
   completedAt?: string;
   outputs?: Record<string, string>;
   error?: string;
+  /** The resumed attempt the step is on; absent before any recovery. */
+  recoveryCount?: number;
 }
 
 export function agentStep(options: AgentStepOptions): StepResult {
@@ -398,6 +400,9 @@ export function agentStep(options: AgentStepOptions): StepResult {
       ? {}
       : { agent_harness: options.harness }),
     ...(options.model === undefined ? {} : { agent_model: options.model }),
+    ...(options.recoveryCount === undefined
+      ? {}
+      : { recovery_count: options.recoveryCount }),
   };
 }
 

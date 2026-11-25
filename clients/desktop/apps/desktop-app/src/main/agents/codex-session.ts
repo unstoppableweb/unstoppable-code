@@ -98,6 +98,7 @@ import {
 } from './ai-credits-quota-state';
 import { recordUsageLimitedChat } from '../lib/usage-limited-chats-registry';
 import { recordChatEventDropped } from '../lib/chat-event-drop-diagnostics';
+import { commitCodexRepairThreadId } from '../services/chat-state-service';
 import { recordEventReceiptTime } from './event-receipt-time';
 import {
   classifyProviderRunEvent,
@@ -344,6 +345,15 @@ function isIncompatibleReasoningHistoryError(
   );
 }
 
+function isOverlengthCallIdError(message: string | undefined): boolean {
+  return (
+    message !== undefined &&
+    /\binput(?:\[\d+\]|\.\d+)\.call_id\b/i.test(message) &&
+    /\bmax(?:imum)?(?: length)?(?: (?:is|of))?[: ]+64\b/i.test(message) &&
+    /\b(?:string_above_max_length|too long|length \d+)\b/i.test(message)
+  );
+}
+
 /**
  * Session-wide ceiling on incompatible-reasoning rebuilds. The budget itself is
  * per thread, but each rebuild produces a *new* thread id, so a route that
@@ -376,6 +386,7 @@ const appliedCodexContextWindows = new WeakMap<
   CodexAppServerClient,
   {
     setting: CodexContextWindowSetting | undefined;
+    effectiveSetting: CodexContextWindowSetting;
     model: ChatModel | undefined;
     /**
      * The bounds weren't known when the client was built, so the setting
@@ -1582,6 +1593,14 @@ export class CodexProvider implements AgentProvider {
           withdraw: false,
           interrupt: false,
         },
+      getAppliedCodexContextWindow: () => {
+        const live = client;
+        return live?.getSteeringTarget()
+          ? appliedCodexContextWindows.get(live)?.effectiveSetting
+          : undefined;
+      },
+      getAppliedCodexThinkingLevel: (turnId) =>
+        client?.getAppliedThinkingLevel(turnId),
       getSteeringTarget: () => client?.getSteeringTarget(),
       getSteeringWorkingDirectory: () => opts.cwd,
       submitSteeringInput: (text, attemptId, userMessageId, target) =>
@@ -2465,8 +2484,11 @@ export class CodexProvider implements AgentProvider {
     let terminalAdmissionFailed = false;
     let currentMessage: QueuedCodexMessage | undefined;
     let currentExecutionUserMessageId: string | undefined;
-    const emitTerminal = async (data: unknown): Promise<void> => {
-      if (getClient()?.hasProviderOwnedTurn()) return;
+    const emitTerminal = async (
+      data: unknown,
+      settlePendingSend = false,
+    ): Promise<void> => {
+      if (!settlePendingSend && getClient()?.hasProviderOwnedTurn()) return;
       const terminalOutcome = readCodexTurnTerminalOutcome(data);
       const executionUserMessageId = currentMessage
         ? currentExecutionUserMessageId
@@ -2627,6 +2649,8 @@ export class CodexProvider implements AgentProvider {
           ? undefined
           : (getResumeThreadId() ?? opts.sdkSessionId);
       let forceMaterializeOnResume = false;
+      let repairCallIdsForThreadId: string | undefined;
+      let attemptedCallIdRepair = false;
 
       /**
        * Resolve AI Credits routing for the model the next turn will actually
@@ -3696,6 +3720,9 @@ export class CodexProvider implements AgentProvider {
         constructingClient = nextClient;
         appliedCodexContextWindows.set(nextClient, {
           setting: contextWindowSetting,
+          effectiveSetting: contextWindow.config
+            ? (contextWindowSetting ?? 'model-default')
+            : 'model-default',
           model: contextWindowModel,
           ...(contextWindow.resolved ? {} : { pending: contextWindowRoute }),
         });
@@ -3756,6 +3783,7 @@ export class CodexProvider implements AgentProvider {
           message.skillUsageTurnId ?? randomUUID(),
           message.countsTowardSkillUsage === true,
         );
+        let repairSetupFailed = false;
 
         try {
           message.staleProxyRouteRecoverySignal?.throwIfAborted();
@@ -3875,6 +3903,34 @@ export class CodexProvider implements AgentProvider {
             mockProvider: Boolean(resolveCodexMockAppServerOverride()),
           });
           getTurnPreparationSignal().throwIfAborted();
+          const callIdRepair =
+            repairCallIdsForThreadId && !managedDelegation?.activeCount
+              ? {
+                  threadId: repairCallIdsForThreadId,
+                  commitThreadId: (
+                    sourceId: string,
+                    replacementId: string,
+                    canCommit: () => boolean,
+                  ): Promise<boolean> =>
+                    commitCodexRepairThreadId(
+                      {
+                        projectId: opts.projectId,
+                        worktreeId: opts.worktreeId,
+                        chatId: opts.chatId,
+                      },
+                      sourceId,
+                      replacementId,
+                      () => turnState.ownsKeyResources() && canCommit(),
+                    ),
+                  onSettled: (): void => {
+                    repairCallIdsForThreadId = undefined;
+                    attemptedCallIdRepair = true;
+                  },
+                  onSetupFailure: (): void => {
+                    repairSetupFailed = true;
+                  },
+                }
+              : undefined;
           const turnResult = await activeClient.startTurn({
             text:
               managedDelegation?.applyPolicyGuidance(turnInput) ?? turnInput,
@@ -3882,6 +3938,7 @@ export class CodexProvider implements AgentProvider {
             submissionId: message.submissionId,
             clientUserMessageId: message.userMessageId ?? message.submissionId,
             executionUserMessageId: message.userMessageId,
+            callIdRepair,
             // The routed process catalog maps gateway IDs to portable standard
             // Responses metadata. Vercel does not preserve Lite's custom
             // grammar tool-call semantics, so routed turns use that gateway ID;
@@ -3911,6 +3968,16 @@ export class CodexProvider implements AgentProvider {
             setLastExecutionUserMessageId(currentExecutionUserMessageId);
           }
 
+          if (
+            !attemptedCallIdRepair &&
+            turnResult.status === 'failed' &&
+            isOverlengthCallIdError(turnResult.error)
+          ) {
+            // Compaction can fail after tools have run. Repair before the
+            // next send without replaying the failed turn.
+            repairCallIdsForThreadId =
+              activeClient.getThreadId() ?? initialThreadId;
+          }
           if (activeClient.hasProviderOwnedTurn()) {
             // The dispatched root settled, then a provider-owned root adopted
             // the same chat before this send loop resumed. Its native terminal
@@ -4141,6 +4208,33 @@ export class CodexProvider implements AgentProvider {
             );
           }
           if (getClient()?.hasProviderOwnedTurn()) {
+            const cancelled =
+              error instanceof Error && error.message === 'turn_cancelled';
+            if (
+              repairSetupFailed &&
+              currentExecutionUserMessageId &&
+              !isDestroyed()
+            ) {
+              const detail =
+                error instanceof Error ? error.message : String(error);
+              await emitTerminal(
+                cancelled
+                  ? {
+                      type: 'result',
+                      is_error: false,
+                      result: 'Turn cancelled',
+                    }
+                  : {
+                      type: 'result',
+                      is_error: true,
+                      result: detail,
+                      subtype: 'codex_error',
+                      errors: [detail],
+                      ...classifyCodexTransportError(error),
+                    },
+                true,
+              );
+            }
             resultEmitted = true;
             markCodexTurnFinished();
             clearActiveTurn();

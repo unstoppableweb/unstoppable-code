@@ -183,6 +183,36 @@ function failureMessage(failure: InlineFailure): string {
     : failure.error.copy.title;
 }
 
+/** A write refused while the background service is unavailable (CAN-7137). */
+function isBackgroundServiceRefusal(failure: InlineFailure): boolean {
+  return (
+    typeof failure.error !== 'string' &&
+    failure.error.code === 'external.background_service_unavailable'
+  );
+}
+
+/**
+ * An organization create or add failure as the organization notice shows
+ * it. A background-service refusal (CAN-7137) keeps its catalog title and
+ * description and offers Restart app; anything else leads with one sentence.
+ */
+function orgFailure(
+  kind: 'failed' | 'setup-failed',
+  failure: InlineFailure,
+): AddOrgProjectCreateError {
+  const { error } = failure;
+  if (
+    typeof error !== 'string' &&
+    error.code === 'external.background_service_unavailable'
+  ) {
+    const { title, description } = error.copy;
+    return description === undefined
+      ? { kind, message: title, recovery: 'restart_app' }
+      : { kind, title, message: description, recovery: 'restart_app' };
+  }
+  return { kind, message: failureMessage(failure) };
+}
+
 /**
  * A Remote add's failure. The clone path already rethrows safe clone copy
  * (`remoteWorkspaceFailureMessage`), which leads as it is; anything else
@@ -1732,9 +1762,9 @@ function AddRepoModalDraft({
     } catch (cause) {
       const appError = toAppError(resolveClientAppError(cause));
       if (appError && isCurrent(submission))
-        fail({
-          kind: createdProjectId === null ? 'failed' : 'setup-failed',
-          message: failureMessage(
+        fail(
+          orgFailure(
+            createdProjectId === null ? 'failed' : 'setup-failed',
             inlineFailure(
               appError,
               createdProjectId === null
@@ -1742,7 +1772,7 @@ function AddRepoModalDraft({
                 : "Couldn't set up the project.",
             ),
           ),
-        });
+        );
     }
   };
 
@@ -1855,7 +1885,7 @@ function AddRepoModalDraft({
     if (inOrganization)
       setOrgError({
         source: 'existing',
-        error: { kind: 'failed', message: failureMessage(failure) },
+        error: orgFailure('failed', failure),
       });
     else setErrorFailure(failure);
   };
@@ -3418,8 +3448,10 @@ function AddRepoModalDraft({
           </Stack>
         )}
 
-        {/* A failure can name folders and quote git output. */}
-        {error && mode === 'remote' ? (
+        {/* A failure can name folders and quote git output. A background
+            service refusal (CAN-7137) takes the desktop banner on every
+            option, for its Restart app action. */}
+        {error && mode === 'remote' && !isBackgroundServiceRefusal(error) ? (
           <RepositoryCloneError
             message={error.error}
             {...(error.details === undefined ? {} : { details: error.details })}

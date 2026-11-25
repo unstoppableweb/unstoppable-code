@@ -7095,6 +7095,42 @@ describe('portable CanopyClient adapter (golden)', () => {
     expect(context.fake.listenerCount(C.appAdvisorToolRequest)).toBe(0);
   });
 
+  test('lists every Orchestrator Work Entry, so one whose chats all closed stays in the nav (CAN-7604)', async () => {
+    const slackEntry = {
+      id: 'slack-entry',
+      title: 'Slack conversations',
+      createdAt: NOW,
+      lastMessageAt: NOW,
+    };
+    const context = harness({
+      [C.workEntriesList]: () => ({
+        entries: [...WORK_ENTRIES.entries, slackEntry],
+      }),
+      // Its Slack tabs closed on their own; none is open.
+      [C.chatGetState]: (request) =>
+        typeof request === 'object' &&
+        request !== null &&
+        Reflect.get(request, 'worktreeId') === slackEntry.id
+          ? { ...ADVISOR_STATE, tabsFile: { tabs: [] }, runtimeByChatId: {} }
+          : ADVISOR_STATE,
+    });
+    const { chats, workEntries } = await context.client.query(
+      'appAdvisor.chats',
+      {},
+    );
+    expect(chats.every((chat) => chat.workEntryId === 'entry-a')).toBe(true);
+    expect(workEntries).toEqual([
+      {
+        id: 'entry-a',
+        title: 'Plan the trip',
+        createdAt: NOW,
+        lastMessageAt: NOW,
+        order: 0,
+      },
+      { ...slackEntry, order: 1 },
+    ]);
+  });
+
   test('without an App Advisor surface the Orchestrator refuses before the transport', async () => {
     const fake = fakeTransport(ADVISOR_REPLIES);
     const client = createIpcCanopyClient(fake.transport, {

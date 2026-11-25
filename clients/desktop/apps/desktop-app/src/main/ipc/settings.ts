@@ -16,6 +16,7 @@ import {
 } from '../lib/provider-connection-events';
 import { BrowserWindow } from 'electron';
 import { loadCloudReleaseNotes } from '../canopy-cloud/release-notes';
+import { OAuthLoginEndedError } from '../canopy-cloud/oauth-login-errors';
 import { normalizePersonalOrganizationId } from '@canopy/protocol/workspace-context';
 import { normalizeMemorySearchOrganizationExternalIds } from '@canopy/desktop-shared/lib/org-memory';
 import { mkdir, rm } from 'node:fs/promises';
@@ -75,7 +76,7 @@ import {
 import { validateId } from '../lib/validation';
 import {
   normalizeOrgEnforcedSettingsWithStatus,
-  personalGatewayAccountFields,
+  modelGatewayAccountFields,
 } from '@canopy/desktop-shared/lib/org-enforced-parsing';
 import { normalizeOrgBillingStates } from '@canopy/desktop-shared/lib/org-billing-state-parsing';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
@@ -213,12 +214,19 @@ import {
 import {
   authorizeModelGatewayCredential,
   clearModelGatewayCredential,
+  clearModelGatewayCredentialsForEndpoint,
   GatewayCredentialStorageUnavailableError,
+  hasModelGatewayCredential,
   isModelGatewayCredentialStorageAvailable,
   loadModelGatewayCredential,
   saveModelGatewayCredential,
 } from '../lib/model-gateway-credential-store';
-import { refreshPersonalGatewayKey } from '../lib/model-gateway-state';
+import {
+  getCurrentModelGatewayIndex,
+  refreshPersonalGatewayKey,
+} from '../lib/model-gateway-state';
+import { isModelGatewayUsedOnThisComputer } from '../lib/model-gateway-device-use';
+import { normalizeUuid } from '@canopy/protocol/workspace-owner';
 import { broadcastModelRegistryUpdated } from '../models/model-registry';
 
 const REQUIRED_CANOPY_CLOUD_CAPABILITIES = [
@@ -245,6 +253,8 @@ type DesktopCanopyServerStatus = CanopyServerStatus & {
   personalOrganizationId?: string | null;
   personalModelGateway?: CanopyAccountResponse['personalModelGateway'];
   personalModelGatewayEnforcementUnavailable?: boolean;
+  personalModelGatewayConfig?: CanopyAccountResponse['personalModelGatewayConfig'];
+  organizationModelGatewayConfigs?: CanopyAccountResponse['organizationModelGatewayConfigs'];
 };
 
 function memorySearchOrganizationsField(payload: {
@@ -545,7 +555,7 @@ async function probeCanopyCloud(
       ),
       organizations,
       organizationsRefreshed: authoritativeOrganizations !== null,
-      ...personalGatewayAccountFields(payload),
+      ...modelGatewayAccountFields(payload),
       teams: normalizeCanopyTeams(payload.teams),
       enforcedSettings: normalizedEnforcement.settings,
       ...(normalizedEnforcement.telemetryEnforcementUnavailable === true
@@ -863,6 +873,8 @@ async function reprobeAndApplyAccountSnapshot(
   delete entryWithoutMemoryOrganizations.personalOrganizationId;
   delete entryWithoutMemoryOrganizations.personalModelGateway;
   delete entryWithoutMemoryOrganizations.personalModelGatewayEnforcementUnavailable;
+  delete entryWithoutMemoryOrganizations.personalModelGatewayConfig;
+  delete entryWithoutMemoryOrganizations.organizationModelGatewayConfigs;
   delete entryWithoutMemoryOrganizations.memorySearchOrganizationExternalId;
   delete entryWithoutMemoryOrganizations.memorySearchOrganizationExternalIds;
   const nextAccount: CanopyCloudAccountEntry = {
@@ -883,7 +895,7 @@ async function reprobeAndApplyAccountSnapshot(
     ...(status.personalOrganizationId
       ? { personalOrganizationId: status.personalOrganizationId }
       : {}),
-    ...personalGatewayAccountFields(status),
+    ...modelGatewayAccountFields(status),
     ...(status.personalModelGatewayEnforcementUnavailable
       ? { personalModelGatewayEnforcementUnavailable: true }
       : {}),
@@ -1474,7 +1486,7 @@ function awaitOAuthPreparation<T>(
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const onAbort = (): void => {
-      reject(new Error('OAuth login cancelled.'));
+      reject(new OAuthLoginEndedError('cancelled'));
     };
     if (signal.aborted) onAbort();
     else signal.addEventListener('abort', onAbort, { once: true });
@@ -1914,7 +1926,7 @@ export async function saveModelGatewayCredentialInOrder(
       normalizedInput.baseUrl,
       'in_app',
     );
-    await afterModelGatewayCredentialChanged();
+    await afterModelGatewayCredentialChanged(input.organizationId);
     return { valid: false, error: null };
   }
   const probe = await probeModelGatewayCredential(normalizedInput);
@@ -1959,11 +1971,18 @@ export async function saveModelGatewayCredentialInOrder(
       'api_key',
       probe.rejected ? 'authentication' : 'network',
     );
-  await afterModelGatewayCredentialChanged();
+  await afterModelGatewayCredentialChanged(input.organizationId);
   return { valid: probe.valid, error: probe.error };
 }
 
-async function afterModelGatewayCredentialChanged(): Promise<void> {
+/**
+ * After a gateway key changed by any path (a save, a removal, or the sign-in
+ * migration adopting this computer's key): republish the model registry and
+ * restart that gateway's sessions so they pick up the new key.
+ */
+export async function afterModelGatewayCredentialChanged(
+  organizationId: string,
+): Promise<void> {
   try {
     // A personal gateway's models show only once this computer has its key.
     if (await refreshPersonalGatewayKey()) broadcastModelRegistryUpdated();
@@ -1971,20 +1990,16 @@ async function afterModelGatewayCredentialChanged(): Promise<void> {
     // The registry catches up on the next account refresh.
   }
   try {
-    const { invalidateProviderAuthSessions } =
+    const { invalidateModelGatewaySessions } =
       await import('../agents/session-manager');
-    await Promise.all(
-      (['claude', 'codex'] as const).map((provider) =>
-        invalidateProviderAuthSessions(
-          provider,
-          'model-gateway-credential-changed',
-          { activeTurnPolicy: 'preserve' },
-        ),
-      ),
+    await invalidateModelGatewaySessions(
+      organizationId,
+      'model-gateway-credential-changed',
+      { activeTurnPolicy: 'preserve' },
     );
   } catch (error) {
     process.stderr.write(
-      `[settings] Failed to invalidate model gateway auth sessions after save: ${error instanceof Error ? error.name : 'unknown'}\n`,
+      `[settings] Failed to invalidate model gateway sessions after save: ${error instanceof Error ? error.name : 'unknown'}\n`,
     );
   }
 }
@@ -2001,29 +2016,44 @@ async function afterModelGatewayCredentialChanged(): Promise<void> {
  * after this clear. The wait is bounded by the probe's own 10 second timeout,
  * so at worst the removal's response, and the dialog's busy state, waits that
  * long.
+ *
+ * With `staleBaseUrlFingerprint`, an account sync saw the gateway leave the
+ * URL with that fingerprint, from any device: only keys saved for it are
+ * deleted, and connects already under way, which target another URL, are not
+ * fenced.
  */
 export async function clearModelGatewayCredentialForRemovedGateway(
   organizationId: string,
   expectedAccountId: string,
+  staleBaseUrlFingerprint?: string,
 ): Promise<boolean> {
   return enqueueModelGatewayCredentialSave(organizationId, async () => {
-    const scope = await readGatewayConnectionScope(organizationId);
-    const result = await clearModelGatewayCredential(
-      organizationId,
-      expectedAccountId,
-    );
-    if (result === 'unauthorized') {
-      logMainProcessWarn(
-        '[settings] Skipped removed AI gateway key clear for an unauthorized account',
-        { organizationId },
+    if (staleBaseUrlFingerprint !== undefined) {
+      const cleared = await clearModelGatewayCredentialsForEndpoint({
+        accountId: expectedAccountId,
+        organizationId,
+        baseUrlFingerprint: staleBaseUrlFingerprint,
+      });
+      if (!cleared) return true;
+    } else {
+      const scope = await readGatewayConnectionScope(organizationId);
+      const result = await clearModelGatewayCredential(
+        organizationId,
+        expectedAccountId,
       );
-      return false;
+      if (result === 'unauthorized') {
+        logMainProcessWarn(
+          '[settings] Skipped removed AI gateway key clear for an unauthorized account',
+          { organizationId },
+        );
+        return false;
+      }
+      // Fence a connect that started before the removal even when no key was
+      // stored; only a deleted key needs sessions and windows to re-read it.
+      advanceGatewayCredentialSaveGeneration(scope);
+      if (result === 'nothing-to-clear') return true;
     }
-    // Fence a connect that started before the removal even when no key was
-    // stored; only a deleted key needs sessions and windows to re-read it.
-    advanceGatewayCredentialSaveGeneration(scope);
-    if (result === 'nothing-to-clear') return true;
-    await afterModelGatewayCredentialChanged();
+    await afterModelGatewayCredentialChanged(organizationId);
     sendToAllWindows(
       IPC_CHANNELS.modelGatewayCredentialChanged,
       organizationId,
@@ -2248,7 +2278,7 @@ export async function saveCanopyCloudApiKeyForWindow(request: {
     ...(status.personalOrganizationId
       ? { personalOrganizationId: status.personalOrganizationId }
       : {}),
-    ...personalGatewayAccountFields(status),
+    ...modelGatewayAccountFields(status),
     ...(status.personalModelGatewayEnforcementUnavailable
       ? { personalModelGatewayEnforcementUnavailable: true }
       : {}),
@@ -2636,12 +2666,24 @@ export function registerSettingsHandlers(runtime: {
       const scope = await readGatewayConnectionScope(organizationId);
       const readGeneration = gatewayCredentialSaveGeneration(scope);
       let record: Awaited<ReturnType<typeof loadModelGatewayCredential>> = null;
+      let keyForOtherUrl = false;
+      let notUsedOnThisComputer = false;
       let secureStorageFailure: SecureStorageFailure | null = null;
       try {
         record = await loadModelGatewayCredential(
           organizationId,
           expectedBaseUrl,
         );
+        keyForOtherUrl =
+          !record?.apiKey.trim() &&
+          (await hasModelGatewayCredential(organizationId));
+        // An opt-out yields to "Use only my AI gateway", which keeps the
+        // gateway routing here.
+        notUsedOnThisComputer =
+          !(await isModelGatewayUsedOnThisComputer(organizationId)) &&
+          !getCurrentModelGatewayIndex().byOrganization.has(
+            normalizeUuid(organizationId) ?? organizationId,
+          );
         await observeGatewayConnection(
           organizationId,
           scope,
@@ -2674,6 +2716,8 @@ export function registerSettingsHandlers(runtime: {
         lastValidatedAt: record?.lastValidatedAt,
         lastError: record?.lastError,
         storageAvailable: isModelGatewayCredentialStorageAvailable(),
+        ...(keyForOtherUrl ? { keyForOtherUrl: true } : {}),
+        ...(notUsedOnThisComputer ? { notUsedOnThisComputer: true } : {}),
         ...(secureStorageFailure ? { secureStorageFailure } : {}),
       };
     },

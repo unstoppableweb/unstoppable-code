@@ -3,6 +3,7 @@ import {
   CANOPY_INSTRUCTION_DEFINITIONS,
   CANOPY_QUERY_DEFINITIONS,
   CANOPY_STREAM_DEFINITIONS,
+  CanopyRequestMetadataSchema,
 } from '..';
 import {
   CATALOG_COLLECTION_ERROR_CODES,
@@ -209,6 +210,101 @@ describe('core.catalog collection contract (CAN-4170)', () => {
         },
       }).success,
     ).toBe(true);
+  });
+
+  it('reads the cloud account a share link was made under, and no write sets it', () => {
+    const share = {
+      remoteId,
+      contentHash,
+      shareScope: 'organization',
+      sharedAt: '2026-11-03T10:00:00.000Z',
+    };
+    for (const link of [share, { ...share, accountId: 'user-1' }])
+      expect(
+        get.result.safeParse({
+          read: 'entry',
+          entry: { ...entry, share: link },
+        }).success,
+      ).toBe(true);
+    expect(
+      get.result.safeParse({
+        read: 'entry',
+        entry: { ...entry, share: { ...share, accountId: '' } },
+      }).success,
+    ).toBe(false);
+    // A pin the share was made under, never a selector a caller writes.
+    const create = {
+      kind: 'collection',
+      entryId: null,
+      expectedRevision: null,
+      name: 'Release kit',
+      description: '',
+      members,
+      sharedRevision: null,
+      _meta: keyed,
+    };
+    expect(
+      upsert.params.safeParse({
+        ...create,
+        share: { ...share, accountId: 'user-1' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('reads only the revision a delete needs, or the stored bytes hash of a collection that cannot be read', () => {
+    const management = { kind: 'collection', read: 'management', entryId };
+    expect(get.params.safeParse(management).success).toBe(true);
+    expect(get.params.safeParse({ ...management, remoteId }).success).toBe(
+      false,
+    );
+    const answered = { read: 'management', entryId };
+    expect(
+      get.result.safeParse({ ...answered, revision: 'rev-1' }).success,
+    ).toBe(true);
+    expect(
+      get.result.safeParse({ ...answered, storedBytesHash: contentHash })
+        .success,
+    ).toBe(true);
+    for (const refused of [
+      { ...answered },
+      { ...answered, revision: 'rev-1', storedBytesHash: contentHash },
+      { ...answered, storedBytesHash: 'rev-1' },
+      { ...answered, revision: 'rev-1', sharedSource: null },
+      { ...answered, revision: 'rev-1', remoteId },
+    ])
+      expect(get.result.safeParse(refused).success).toBe(false);
+  });
+
+  it('deletes a collection that cannot be read only at its stored bytes hash, and nothing else takes one', () => {
+    const request = { kind: 'collection', entryId, _meta: keyed };
+    expect(
+      remove.params.safeParse({
+        ...request,
+        expectedStoredBytesHash: contentHash,
+      }).success,
+    ).toBe(true);
+    for (const refused of [
+      { ...request, expectedStoredBytesHash: 'rev-1' },
+      {
+        ...request,
+        expectedRevision: 'rev-1',
+        expectedStoredBytesHash: contentHash,
+      },
+    ])
+      expect(remove.params.safeParse(refused).success).toBe(false);
+    expect(
+      upsert.params.safeParse({
+        kind: 'collection',
+        entryId,
+        expectedRevision: 'rev-1',
+        expectedStoredBytesHash: contentHash,
+        name: 'Release kit',
+        description: '',
+        members,
+        sharedRevision: null,
+        _meta: keyed,
+      }).success,
+    ).toBe(false);
   });
 
   it('analyzes, commits and installs a collection package', () => {
@@ -552,18 +648,45 @@ describe('core.catalog collection publish contract (CAN-4170)', () => {
     ).toBe(true);
   });
 
+  it('carries no share account in the document it publishes', () => {
+    expect(
+      publish.params.safeParse({
+        ...createShare,
+        document: { ...document, accountId: 'user-1' },
+      }).success,
+    ).toBe(false);
+  });
+
   it('keeps skill and plugin publish and unpublish byte-identical', async () => {
-    // The hashes were taken on develop before kind collection joined.
-    // #9761 (CAN-4733): params carry the optional _meta.dispatchId every keyed instruction does.
-    expect(await sha256(CatalogEntryPublishParamsSchema, 'input')).toBe(
-      'ef7ad2e40a32af3ffb8c06eba1dff0495f012e108e7610bfb585e99f302aae5e',
-    );
+    // The hashes were taken on develop before kind collection joined. The
+    // params hashes leave out `_meta`, which follows the shared request
+    // metadata (checked below), so a metadata-wide field doesn't move them.
+    expect(
+      await sha256(
+        CatalogEntryPublishParamsSchema.omit({ _meta: true }),
+        'input',
+      ),
+    ).toBe('da9b37262b8b035dd7659897a31e5a03d620dc9e1416efc590c3d106c47263cd');
     expect(await sha256(CatalogEntryPublishResultSchema, 'output')).toBe(
       '711735d88dea663c3bc776ea9bf22476637045674f73e1687dfe3119cd69ff58',
     );
-    expect(await sha256(CatalogEntryUnpublishParamsSchema, 'input')).toBe(
-      '8a3a3cc38d20639a7277d8fc51305e538f328f4f739196b1a4d5d99251c9a7f9',
+    expect(
+      await sha256(
+        CatalogEntryUnpublishParamsSchema.omit({ _meta: true }),
+        'input',
+      ),
+    ).toBe('fd5742bc53834bd8644245b535c4932ef4fd192c9c17dadbb7ad37d9041c307f');
+    const keyedMeta = z.toJSONSchema(
+      CanopyRequestMetadataSchema.required({ idempotencyKey: true }),
+      { io: 'input' },
     );
+    for (const params of [
+      CatalogEntryPublishParamsSchema,
+      CatalogEntryUnpublishParamsSchema,
+    ])
+      expect(z.toJSONSchema(params.shape._meta, { io: 'input' })).toEqual(
+        keyedMeta,
+      );
     expect(await sha256(CatalogEntryUnpublishResultSchema, 'output')).toBe(
       '5304416126e561d39381eb09cbce52b4d2c4e841644b320d074269156ac88eff',
     );

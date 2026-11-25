@@ -302,6 +302,8 @@ export interface ChatModelsSlice {
     modelPolicy?: ReadonlySet<string>,
     ownerScope?: ModelRegistryOwnerScope,
   ) => void;
+  /** {@link reconcileModelRegistry} again with its last catalog and owner. */
+  reconcileLoadedTabsWithModelRegistry: () => void;
   applyModelConfigDefaults: (
     defaults: Partial<Record<AgentProviderType, AgentModelConfig>>,
   ) => void;

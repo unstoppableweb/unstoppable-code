@@ -15,6 +15,7 @@ import {
 } from '@canopy/ui-app/settings/navigation';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { useDeviceAiGatewaySettingsAvailable } from '@/hooks/useDeviceAiGatewaySettingsAvailable';
 import {
   useHostedSettingsAccount,
   useHostedSettingsPersistedNavModel,
@@ -100,9 +101,7 @@ export function HostedSettingsNav({
   const digestsFlag = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDigestsEnabled.key),
   );
-  const aiGatewayFlag = useFeatureFlagsStore((state) =>
-    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyAiGatewaySettingsEnabled.key),
-  );
+  const aiGatewayFlag = useDeviceAiGatewaySettingsAvailable();
   // The browsed organization's own bootstrap decides its group once known.
   const organizationKnown = entry.data !== null;
   const organizationName =

@@ -12,6 +12,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { TextDecoder } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { loadBrand } from './brand/load-brand.mjs';
+import { LINUX_DICTATION_TARGETS } from './lib/linux-dictation.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const outputPath = join(root, 'dist', 'legal', 'THIRD_PARTY_NOTICES.txt');
@@ -36,16 +37,16 @@ const MOONSHINE_RUNTIME_VERSION = 'v0.1.6';
 
 function assertMoonshineRuntimePin() {
   const pinPath = 'apps/canopy-dictate-linux/moonshine-runtime.txt';
-  const pinned = readFileSync(join(root, pinPath), 'utf8')
+  const pins = readFileSync(join(root, pinPath), 'utf8')
     .split('\n')
-    .some(
-      (line) =>
-        /^linux-x64\s+(\S+)\s/.exec(line)?.[1] === MOONSHINE_RUNTIME_VERSION,
-    );
-  if (!pinned) {
-    throw new Error(
-      `${pinPath} must pin linux-x64 to ${MOONSHINE_RUNTIME_VERSION}, the Moonshine Voice version declared in BUNDLED_TOOLS. Update the Moonshine Voice and ONNX Runtime entries and re-vendor scripts/vendor/moonshine-voice and scripts/vendor/onnxruntime.`,
-    );
+    .map((line) => line.trim().split(/\s+/));
+  for (const target of LINUX_DICTATION_TARGETS) {
+    const pin = pins.find(([pinnedTarget]) => pinnedTarget === target);
+    if (pin?.[1] !== MOONSHINE_RUNTIME_VERSION) {
+      throw new Error(
+        `${pinPath} must pin ${target} to ${MOONSHINE_RUNTIME_VERSION}, the Moonshine Voice version declared in BUNDLED_TOOLS. Update the Moonshine Voice and ONNX Runtime entries and re-vendor scripts/vendor/moonshine-voice and scripts/vendor/onnxruntime.`,
+      );
+    }
   }
 }
 
@@ -86,22 +87,22 @@ const BUNDLED_TOOLS = [
   // in apps/canopy-dictate-linux/moonshine-runtime.txt (read by build.sh), not
   // in package.json; assertMoonshineRuntimePin() keeps the two in step.
   {
-    label: 'Moonshine Voice (libmoonshine.so, Linux x64 dictation runtime)',
+    label: 'Moonshine Voice (libmoonshine.so, Linux dictation runtime)',
     version: MOONSHINE_RUNTIME_VERSION,
     source: `https://github.com/moonshine-ai/moonshine/tree/${MOONSHINE_RUNTIME_VERSION}`,
     license: `MIT and bundled third-party licenses. Components compiled into libmoonshine.so keep their own licenses, listed under core/third-party/ in the upstream source at ${MOONSHINE_RUNTIME_VERSION}.`,
     licensePath: 'scripts/vendor/moonshine-voice/LICENSE',
   },
   {
-    label: 'ONNX Runtime (libonnxruntime.so.1, Linux x64 dictation runtime)',
+    label: 'ONNX Runtime (libonnxruntime.so.1, Linux dictation runtime)',
     version: '1.23.2',
     source: 'https://github.com/microsoft/onnxruntime/tree/v1.23.2',
     license:
-      "MIT and bundled third-party licenses. Microsoft's third-party notices for this build follow in the next entry.",
+      "MIT and bundled third-party licenses. The upstream ONNX Runtime 1.23.2 third-party notices, taken from Microsoft's NuGet package, follow in the next entry.",
     licensePath: 'scripts/vendor/onnxruntime/LICENSE',
   },
   {
-    label: 'ONNX Runtime third-party notices (bundled in libonnxruntime.so.1)',
+    label: 'ONNX Runtime 1.23.2 third-party notices (from the NuGet package)',
     version: '1.23.2',
     source: 'https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime/1.23.2',
     license: 'See the notices below.',

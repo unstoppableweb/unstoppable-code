@@ -642,6 +642,11 @@ function PanelGroupComponent({
       data-group-id={group.groupId}
       data-active={isActiveGroup ? 'true' : 'false'}
       data-collapsed={collapsedEdge ?? undefined}
+      // The styles that follow a fill tab bar key on this, not on a `:has()`
+      // lookup for the bar; a collapsed group shows no bar.
+      data-fill-tabs={
+        tabStyle === 'fill' && collapsedEdge === null ? '' : undefined
+      }
       data-title-edge={
         tracksTitleEdge ? (contentScrolled ? 'scrolled' : 'top') : undefined
       }
@@ -660,6 +665,7 @@ function PanelGroupComponent({
         <div
           className="canopy-panel-group-title"
           data-testid={`panel-group-title-${group.groupId}`}
+          data-fill-tabs={tabStyle === 'fill' ? '' : undefined}
         >
           <PanelTabBar
             groupId={group.groupId}

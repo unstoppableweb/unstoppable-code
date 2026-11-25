@@ -121,22 +121,27 @@ const renderWithoutProgress: PullRequestProgressRenderer = (_target, trigger) =>
  * the bar keeps a usable floor.
  *
  * Tailwind needs literal class strings, so these are constants rather than
- * a computed scale.
+ * a computed scale. The cluster's controls ease out and back in
+ * (`canopy-shed`) rather than popping; their `-ms-2` cancels the cluster's
+ * 8px gap while they are shut.
  */
 export const HEADER_PRIORITY = {
   /** First to go: archives are reachable from the chat surface too. */
-  archive: 'hidden @[560px]/topbar:flex',
+  archive:
+    'canopy-shed flex min-w-0 invisible w-0 -ms-2 overflow-clip opacity-0 @[560px]/topbar:overflow-visible @[560px]/topbar:visible @[560px]/topbar:w-auto @[560px]/topbar:ms-0 @[560px]/topbar:opacity-100',
   /**
    * Then the Create PR action. Applied to a WRAPPER, never the shared button:
    * Tailwind resolves competing display utilities by stylesheet order rather
    * than by position in the class attribute, so the button could otherwise
    * stay visible at every width and keep overflowing.
    */
-  createPr: 'hidden @[480px]/topbar:flex',
+  createPr:
+    'canopy-shed flex min-w-0 invisible w-0 -ms-2 overflow-clip opacity-0 @[480px]/topbar:overflow-visible @[480px]/topbar:visible @[480px]/topbar:w-auto @[480px]/topbar:ms-0 @[480px]/topbar:opacity-100',
   /** Then the PR/CI status badges (informational, not actions). */
   badges: 'hidden @[420px]/topbar:flex',
   /** Last: `Open in`. Below this only breadcrumb + Launch + menu remain. */
-  openIn: 'hidden @[360px]/topbar:flex',
+  openIn:
+    'canopy-shed flex min-w-0 invisible w-0 -ms-2 overflow-clip opacity-0 @[360px]/topbar:overflow-visible @[360px]/topbar:visible @[360px]/topbar:w-auto @[360px]/topbar:ms-0 @[360px]/topbar:opacity-100',
   /**
    * Pinned scripts (`WorktreeTopBarPins`) shed their labels before any other
    * header copy, showing the labelled pin above the threshold and the compact

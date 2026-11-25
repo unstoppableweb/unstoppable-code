@@ -17,6 +17,7 @@ import {
 } from '@canopy/protocol/agent-artifacts';
 import { isAgentDelegationTranscript } from '@canopy/protocol/delegation';
 import {
+  CLAUDE_CONNECTOR_AVAILABILITY_EVENT,
   readRemoteControlChatPartVisual,
   readRemoteControlToolOccurrence,
   readRemoteControlToolOutputLocator,
@@ -94,6 +95,7 @@ function readString(value: unknown, key: string): string | undefined {
 }
 
 const NON_MESSAGE_RUNTIME_CHAT_EVENT_TYPES = new Set([
+  CLAUDE_CONNECTOR_AVAILABILITY_EVENT,
   'canopy_ai_credits_routing',
   // Historical one-way archive request retained for persisted transcript
   // projection; new runtime events use canopy_set_auto_archive_requested.

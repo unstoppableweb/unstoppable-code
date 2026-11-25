@@ -51,9 +51,12 @@ export class PendingFrames {
     return frames;
   }
 
-  /** Holds a frame for an unregistered subscription while any open waits. */
-  hold(subscriptionId: string, message: CanopyJsonRpcNotification): void {
-    if (this.opens.size === 0) return;
+  /**
+   * Holds a frame for an unregistered subscription while any open waits;
+   * false when none waits, so no open could claim it.
+   */
+  hold(subscriptionId: string, message: CanopyJsonRpcNotification): boolean {
+    if (this.opens.size === 0) return false;
     const bytes = encodedSize(message);
     if (this.bytes + bytes > MAX_PENDING_FRAME_BYTES) {
       // The lost frame belongs to an open waiting now (a later open's frames
@@ -65,12 +68,13 @@ export class PendingFrames {
         open.overflowed = true;
       });
       this.clear();
-      return;
+      return true;
     }
     this.bytes += bytes;
     const frames = this.held.get(subscriptionId);
     if (frames) frames.push({ message, bytes });
     else this.held.set(subscriptionId, [{ message, bytes }]);
+    return true;
   }
 
   clear(): void {

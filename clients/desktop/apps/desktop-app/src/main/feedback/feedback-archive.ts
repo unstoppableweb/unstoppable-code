@@ -26,7 +26,11 @@ import type {
   FeedbackArea,
   FeedbackWorkspaceSelection,
 } from '@canopy/desktop-shared/types';
-import { createFeedbackScrub, type FeedbackScrubMode } from './feedback-scrub';
+import {
+  createFeedbackScrub,
+  type FeedbackScrubMode,
+  type FeedbackScrubOptions,
+} from './feedback-scrub';
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
 export class FeedbackArchiveSizeLimitError extends Error {
@@ -134,6 +138,8 @@ interface AddFileOptions {
   excludedZipPathPrefixes?: readonly string[];
   /** Withhold credential-shaped units as the file is written (CAN-7620). */
   scrub?: FeedbackScrubMode;
+  /** Extra scrub rules, such as account path segments (CAN-6895). */
+  scrubOptions?: FeedbackScrubOptions;
 }
 
 type LstatResult =
@@ -154,6 +160,7 @@ type BundleEntry =
       sourceRoot: string;
       stats: Stats;
       scrub?: FeedbackScrubMode;
+      scrubOptions?: FeedbackScrubOptions;
     };
 
 export class FeedbackBundleBuilder {
@@ -254,6 +261,9 @@ export class FeedbackBundleBuilder {
             sourceRoot: options.sourceRoot,
             stats: fileStat,
             ...(options.scrub === undefined ? {} : { scrub: options.scrub }),
+            ...(options.scrubOptions === undefined
+              ? {}
+              : { scrubOptions: options.scrubOptions }),
           },
     );
     this.included.add(normalizedZipPath);
@@ -473,7 +483,10 @@ export class FeedbackBundleBuilder {
                 settle(null, source);
                 return;
               }
-              const scrubbed = createFeedbackScrub(entry.scrub);
+              const scrubbed = createFeedbackScrub(
+                entry.scrub,
+                entry.scrubOptions,
+              );
               scrubbed.on('error', fail);
               settle(null, source.pipe(scrubbed));
             })().catch((error: unknown) => {

@@ -3,6 +3,7 @@ import {
   withShareStage,
 } from '../sharing/share-operation-result';
 import { PLUGINS_CHANNELS } from '@canopy/desktop-shared/constants/plugin-channels';
+import { PluginInstallRefreshTokenSchema } from '@canopy/protocol/remote-control';
 import { pluginCompanionsFromCatalog } from './plugin-companions';
 import { isCustomizeDiscoveryEnabledInMain } from '../lib/customize-discovery-enabled';
 import { CANOPY_CLOUD_SERVER_ID } from '@canopy/desktop-shared/constants/canopy-cloud';
@@ -1030,15 +1031,35 @@ export function registerPluginHandlers(): void {
       marketplaceId: string,
       pluginName: string,
       sourceUrl: string,
-    ) =>
-      withServedPluginHarnessInstalls(
+      bridgeInstallRefreshToken?: unknown,
+    ) => {
+      const senderId = event.sender.id;
+      const remote = resolveRemoteBridgeSender(event.sender) !== null;
+      const token = remote
+        ? PluginInstallRefreshTokenSchema.safeParse(bridgeInstallRefreshToken)
+        : undefined;
+      const result = await withServedPluginHarnessInstalls(
         await installPluginForCaller({
-          remote: resolveRemoteBridgeSender(event.sender) !== null,
+          remote,
           marketplaceId,
           pluginName,
           sourceUrl,
         }),
-      ),
+      );
+      // Remote Add needs a snapshot refresh, not a chat defaults invalidation.
+      if (remote && result.success) {
+        void import('../installed-items/installed-item-events')
+          .then(({ notifyInstalledItemSnapshotChanged }) =>
+            notifyInstalledItemSnapshotChanged(
+              token?.success
+                ? { senderId, installRefreshToken: token.data }
+                : undefined,
+            ),
+          )
+          .catch(() => undefined);
+      }
+      return result;
+    },
   );
   registerIpcHandler(
     PLUGINS_CHANNELS.PREPARE_CODEX_COMPATIBILITY,

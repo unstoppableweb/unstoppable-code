@@ -29,6 +29,7 @@ interface PlanReadyPipelineModalProps {
   onRun: PlanReadyPipelineModalOnRun;
   isRunning?: boolean;
   runError?: string | null;
+  runErrorRecorded?: boolean;
   watcherRecipientGroups?: WatcherRecipientGroup[];
   onWatcherSelectionChange?: (
     selection: PipelineWatcherSelection | null,
@@ -45,6 +46,7 @@ export function PlanReadyPipelineModal({
   onRun,
   isRunning = false,
   runError = null,
+  runErrorRecorded = false,
   watcherRecipientGroups,
   onWatcherSelectionChange,
   ownerDocument,
@@ -78,6 +80,7 @@ export function PlanReadyPipelineModal({
       onRun={onRun}
       isRunning={isRunning}
       runError={runError}
+      runErrorRecorded={runErrorRecorded}
       watcherRecipientGroups={watcherRecipientGroups}
       onWatcherSelectionChange={onWatcherSelectionChange}
       ownerDocument={ownerDocument}

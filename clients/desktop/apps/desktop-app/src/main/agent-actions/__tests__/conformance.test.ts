@@ -12,7 +12,7 @@ import {
 import { windowApprovalPort } from '../../approvals/prompt-bridge';
 import { windowAgentInterfacePort } from '../../agents/agent-interface-port';
 import { resetDesktopChatWaitsForTest } from '../../chat-waits/desktop-chat-waits';
-import { personalGatewayAccountFields } from '@canopy/desktop-shared/lib/org-enforced-parsing';
+import { modelGatewayAccountFields } from '@canopy/desktop-shared/lib/org-enforced-parsing';
 import {
   resolveModelGatewayIndex,
   gatewayRequirementForOwner,
@@ -1096,7 +1096,7 @@ describe('AI gateway desktop action boundaries', () => {
     resetDesktopApprovalBrokerForTests();
   });
   it('settings:save-canopy-cloud-api-key retains separate Personal policy without adding it to team enforcement', () => {
-    const fields = personalGatewayAccountFields({
+    const fields = modelGatewayAccountFields({
       personalOrganizationId: organizationId,
       personalModelGateway: {
         organizationId,
@@ -1124,7 +1124,7 @@ describe('AI gateway desktop action boundaries', () => {
       }),
     ).toEqual({ kind: 'unrestricted' });
     expect(
-      personalGatewayAccountFields({
+      modelGatewayAccountFields({
         personalOrganizationId: organizationId,
         personalModelGateway: {
           organizationId,
@@ -1134,6 +1134,6 @@ describe('AI gateway desktop action boundaries', () => {
         },
       }),
     ).toEqual({ personalModelGatewayEnforcementUnavailable: true });
-    expect(personalGatewayAccountFields({})).toEqual({});
+    expect(modelGatewayAccountFields({})).toEqual({});
   });
 });

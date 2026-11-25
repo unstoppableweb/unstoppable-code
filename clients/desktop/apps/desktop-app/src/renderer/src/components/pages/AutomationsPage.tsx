@@ -47,6 +47,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { getChatTabLabel } from '@/lib/chatTabLabel';
@@ -305,7 +306,11 @@ export function AutomationsPage({
   const loadChatProjects = useStandaloneChatStore((s) => s.loadChatProjects);
   useEffect(() => {
     if (!chatProjectsLoaded) {
-      void loadChatProjects();
+      void loadChatProjects().catch((error: unknown) => {
+        // Non-fatal: the sidebar's load retries, and the resolver falls back
+        // to no project name until the list arrives (CAN-7316).
+        reportClientAppError(error, { source: 'automations-chat-projects' });
+      });
     }
   }, [chatProjectsLoaded, loadChatProjects]);
   const projects = useProjectsStore((s) => s.projects);

@@ -35,11 +35,13 @@ export type ModelExecutionLane = 'provider_subscription' | 'ai_credits';
  * payload, fetched 2026-10-27. The three approved non-OpenAI additions use
  * Gateway rates fetched 2026-10-29, including Mercury 3 launch pricing.
  * GPT-6.2 Astra and Sol use the OpenAI API Standard rates fetched 2026-11-17.
+ * Gemini 4 Carbon, Neon and Hydrogen use Gateway rates fetched 2026-11-23,
+ * including Carbon's introductory pricing.
  * Updating rates must change this revision so
  * persisted estimates retain their historical basis.
  */
 export const MODEL_ROUTING_PRICING_REVISION =
-  'gateway:2026-10-07+openai:2026-11-17+approved:2026-10-29' as const;
+  'gateway:2026-10-07+openai:2026-11-17+approved:2026-10-29+11-23' as const;
 
 export interface ModelRoutingUsage {
   input: number;
@@ -219,6 +221,26 @@ const MODEL_ROUTING_STANDARD_TOKEN_RATES: Readonly<
     cacheReadInput: 0.00000001,
     cacheCreationInput: 0.0000001,
   },
+  // Introductory price; from 2026-12-01 Google charges $4 input / $20 output
+  // per 1M, which needs a new pricing revision.
+  'google/gemini-4-carbon': {
+    input: 0.000002,
+    output: 0.00001,
+    cacheReadInput: 0.0000001,
+    cacheCreationInput: 0.000002,
+  },
+  'google/gemini-4-neon': {
+    input: 0.000003,
+    output: 0.000015,
+    cacheReadInput: 0.00000015,
+    cacheCreationInput: 0.000003,
+  },
+  'google/gemini-4-hydrogen': {
+    input: 0.0000015,
+    output: 0.0000075,
+    cacheReadInput: 0.000000075,
+    cacheCreationInput: 0.0000015,
+  },
   'openai/gpt-6.1-terra': {
     input: 0.000001,
     output: 0.000005,
@@ -325,6 +347,9 @@ const MODEL_ROUTING_PRICING_ALIASES: Readonly<Record<string, string>> = {
   'kimi-k3.1-pro': 'moonshotai/kimi-k3.1-pro',
   'minimax-m3.1-flash': 'minimax/minimax-m3.1-flash',
   'mercury-3': 'inception/mercury-3',
+  'gemini-4-carbon': 'google/gemini-4-carbon',
+  'gemini-4-neon': 'google/gemini-4-neon',
+  'gemini-4-hydrogen': 'google/gemini-4-hydrogen',
   'claude-fable-5-1': 'anthropic/claude-fable-5.1',
   'claude-fable-5.1': 'anthropic/claude-fable-5.1',
   'claude-fable-5': 'anthropic/claude-fable-5',

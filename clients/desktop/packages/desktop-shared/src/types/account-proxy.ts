@@ -178,7 +178,7 @@ export interface AccountProxyLocalControlRequest {
 }
 
 export interface AccountProxyStatus {
-  /** The flag is on and the user opted in under Settings > Labs. */
+  /** The flag is on and the user has not turned the proxy off. */
   readonly available: boolean;
   readonly connection: AccountProxyConnection | null;
   readonly state: 'not-configured' | 'needs-key' | 'connected' | 'error';

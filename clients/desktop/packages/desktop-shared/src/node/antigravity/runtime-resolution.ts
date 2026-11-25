@@ -9,8 +9,10 @@ import {
 import { verifyManagedExecutable } from '../managed-runtime/verification';
 import {
   getAntigravityRuntimeArtifact,
+  isAntigravityPlatformSupported,
   managedAntigravityExecutable,
 } from './runtime-artifacts';
+import { verifyAntigravityExecutable } from './runtime-integrity';
 
 // Kept apart from runtime.ts so status readers can resolve the executable
 // without loading the ESM-only ACP client that runtime.ts imports.
@@ -57,7 +59,12 @@ export function antigravityEnvironment(
   ])
     delete env[key];
   for (const key of Object.keys(env)) {
-    if (/^(LD_|DYLD_|BASH_FUNC_)/.test(key)) delete env[key];
+    // A child receives each entry as `key=value`, so a key holding `=`
+    // arrives as the variable named before it (`BASH_ENV=/w/x` with value
+    // `y` arrives as BASH_ENV=/w/x=y), past every exact-name check here. An
+    // empty or NUL-holding key names no variable at all.
+    if (key === '' || /[=\0]/.test(key) || /^(LD_|DYLD_|BASH_FUNC_)/.test(key))
+      delete env[key];
   }
   // Vendor CLI mode, not Canopy's Electron; unaffected by Canopy's fuse.
   env.ELECTRON_RUN_AS_NODE = '1';
@@ -71,6 +78,10 @@ export function antigravityEnvironment(
  * The managed copy Canopy installed, when present and its bytes still match
  * the pinned executableSha256. A tampered or partial copy is skipped with a
  * warning so the override or PATH can still launch; cancellation propagates.
+ * On Linux the launch check is this same pinned-digest check, so resolution
+ * runs it through verifyAntigravityExecutable and shares its verdict per file
+ * identity: the file is hashed once, not once here and again before spawn,
+ * and an unchanged file is not hashed again on the next turn.
  */
 async function resolveManagedAntigravityExecutable(
   rootDir: string,
@@ -85,12 +96,15 @@ async function resolveManagedAntigravityExecutable(
     return undefined;
   }
   try {
-    await verifyManagedExecutable(
-      executable,
-      artifact.executableSha256,
-      signal ?? new AbortController().signal,
-      'Antigravity',
-    );
+    if (hostPlatformOperatingSystem() === 'linux')
+      await verifyAntigravityExecutable(executable, signal);
+    else
+      await verifyManagedExecutable(
+        executable,
+        artifact.executableSha256,
+        signal ?? new AbortController().signal,
+        'Antigravity',
+      );
     return executable;
   } catch (error) {
     signal?.throwIfAborted();
@@ -105,14 +119,16 @@ async function resolveManagedAntigravityExecutable(
 /**
  * Launch order: the verified managed copy, then ANTIGRAVITY_EXECUTABLE, then
  * a PATH `agy`/`antigravity`. verifyAntigravityExecutable still checks the
- * signature and version of whichever file this returns.
+ * signature (macOS) or pinned digest (Linux) and the version of whichever file
+ * this returns. Hosts without a pinned artifact, including Windows, are
+ * refused here, before any lookup.
  */
 export async function resolveAntigravityExecutable(
   options: { managedRootDir?: string; signal?: AbortSignal } = {},
 ): Promise<string> {
-  if (hostPlatformOperatingSystem() !== 'darwin')
+  if (!isAntigravityPlatformSupported())
     throw new Error(
-      'Google subscription chats are currently available on macOS.',
+      'Google subscription chats are currently available on macOS and Linux (x64 and arm64).',
     );
   options.signal?.throwIfAborted();
   const managed = await resolveManagedAntigravityExecutable(

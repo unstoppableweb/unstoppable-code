@@ -118,6 +118,13 @@ import {
 } from '../lib/w5-commit-log-file-store';
 import { nodeW5FileStore } from '../lib/w5-file-store';
 import {
+  createW5DegradedStore,
+  W5DaemonHandoffError,
+} from '../lib/w5-handoff-store';
+import { provisionCoworkWorkspaceRecord } from '../lib/cowork-workspace-records';
+import { CoworkWorkspaceRecordRefusedError } from '../lib/worktree-record-decision-apply';
+import { readErrorClassification } from '@canopy/protocol/app-errors/classification';
+import {
   WORKSPACE_MANIFEST_STORAGE,
   withStorageAdmission,
 } from '../lib/w5-storage';
@@ -464,6 +471,46 @@ describe('workspace index integrity (real fs)', () => {
       'gamma',
       DEFAULT_COWORK_WORKSPACE_ID,
     ]);
+  });
+
+  // CAN-7316: a failed W5 startup handoff refuses every write for the
+  // process's life. Provisioning there left a Cowork scaffold, failed every
+  // listing, and trapped later launches' pre-flip backup.
+  it('chat-project:list stays read-only and default provisioning refuses before any effect while the W5 handoff is degraded', async () => {
+    const handoffFailure = new W5DaemonHandoffError(
+      'backup_refused',
+      'missing-source',
+    );
+    await rm(getWorkspaceIndexFilePath(), { force: true });
+    __setDesktopW5FileStoreForTests(createW5DegradedStore(handoffFailure));
+    const defaultDir = path.join(
+      dataDir,
+      'workspaces',
+      DEFAULT_COWORK_WORKSPACE_ID,
+    );
+    try {
+      await expect(listCoworkWorkspacesAsChatProjects()).resolves.toEqual([]);
+      expect(existsSync(defaultDir)).toBe(false);
+
+      const refusal: unknown = await provisionCoworkWorkspaceRecord({
+        source: 'default_cowork_provision',
+        workspaceId: DEFAULT_COWORK_WORKSPACE_ID,
+      }).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(refusal).toBeInstanceOf(CoworkWorkspaceRecordRefusedError);
+      expect(refusal).toMatchObject({
+        reason: 'index-unavailable',
+        cause: handoffFailure,
+      });
+      expect(readErrorClassification(refusal)).toMatchObject({
+        code: 'external.service_unavailable',
+      });
+      expect(existsSync(defaultDir)).toBe(false);
+    } finally {
+      __setDesktopW5FileStoreForTests(nodeW5FileStore);
+    }
   });
 
   it('refuses a partial rewrite over an unreadable index and logs it', async () => {

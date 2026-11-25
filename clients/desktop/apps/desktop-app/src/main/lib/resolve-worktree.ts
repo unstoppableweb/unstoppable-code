@@ -1,5 +1,6 @@
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { isDefaultWorktreeBranchName } from '@canopy/desktop-shared/lib/default-worktree-branch';
+import { runWithW5Caller } from '@canopy/desktop-shared/node/work-counters';
 import {
   CODE_REVIEW_CHAT_PROJECT_ID,
   COWORK_HOME_WORKTREE_ID,
@@ -354,14 +355,17 @@ async function readWorktreeRow(
   target: WorktreeTargetIds,
 ): Promise<{ row: WorktreeData; listIsComplete: boolean } | null> {
   try {
-    const { legacyResult, legacyAuthority } =
-      await getDesktopCanopyRuntime().queryWorktreeGetForLegacyIpc(
-        {
-          worktreeId: target.worktreeId,
-          scope: { workspaceId: target.projectId },
-        },
-        { caller: WORKTREE_READ_CALLER },
-      );
+    const { legacyResult, legacyAuthority } = await runWithW5Caller(
+      'background:resolve-worktree',
+      () =>
+        getDesktopCanopyRuntime().queryWorktreeGetForLegacyIpc(
+          {
+            worktreeId: target.worktreeId,
+            scope: { workspaceId: target.projectId },
+          },
+          { caller: WORKTREE_READ_CALLER },
+        ),
+    );
     return {
       row: legacyResult,
       listIsComplete: legacyAuthority?.authority === 'ok',

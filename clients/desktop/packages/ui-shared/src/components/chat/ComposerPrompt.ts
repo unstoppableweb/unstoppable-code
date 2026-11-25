@@ -1,7 +1,9 @@
 /**
  * Shared geometry for prompts the composer box asks while the agent waits:
- * the plan-approval prompt and the question prompt. Both are a column (title,
- * answers, text row) on the box's 4px padding, each row adding its own 4px:
+ * the plan-approval prompt and the question prompt, whose title row the
+ * secret request prompt also uses (`ComposerPromptHeader`). Plan and question
+ * are a column (title, answers, text row) on the box's 4px padding, each row
+ * adding its own 4px:
  * every circle, x, and send sits 8px from the box's edges, as + and send do
  * on the one-line composer, and a highlighted row keeps 4px from the edge.
  */

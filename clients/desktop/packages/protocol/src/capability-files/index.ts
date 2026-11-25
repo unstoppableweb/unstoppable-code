@@ -146,18 +146,104 @@ const SECRET_RULES: readonly {
   },
 ];
 
+// An escape written as text, such as `\n` in a JSON or YAML string, `%0A` or
+// `\u000a`, leaves a letter or digit right before a token, so the token's
+// leading word boundary fails. The spaced reading puts a space where each
+// such escape was: the single-letter escapes of JSON, YAML and C strings,
+// `\uXXXX`, `\UXXXXXXXX`, `\xNN`, `%XX` and `%uXXXX` (CAN-7627). Regex
+// classes such as `\s` and `\w` stay as written.
+const BOUNDARY_ESCAPE_SOURCE =
+  '\\\\(?:[nrtbfv0aeNLP_]|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|x[0-9A-Fa-f]{2})|%(?:u[0-9A-Fa-f]{4}|[0-9A-Fa-f]{2})';
+const BOUNDARY_ESCAPE = new RegExp(BOUNDARY_ESCAPE_SOURCE);
+const BOUNDARY_ESCAPES = new RegExp(BOUNDARY_ESCAPE_SOURCE, 'g');
+
+/** How a secret check reads escapes written as text (CAN-7627). */
+export interface EscapeReadingOptions {
+  /**
+   * `as-written` reads text only as written, as every check did before
+   * CAN-7627. A check built from other checks passes it to them, so only its
+   * own two passes read escapes.
+   */
+  readonly escapes?: 'as-written';
+}
+
+/** For a check built from other checks: read the text only as written. */
+export const ESCAPES_AS_WRITTEN: EscapeReadingOptions = {
+  escapes: 'as-written',
+};
+
+function spacedEscapeReading(text: string): string {
+  return text.replace(BOUNDARY_ESCAPES, ' ');
+}
+
 /**
- * The first high-confidence secret signature in text, or null. Names the
- * rule only: callers report the rule, never the matched text.
+ * Runs a check on its texts as written and, only when that finds nothing and
+ * one of them holds an escape, once more with each escape read as a space
+ * (CAN-7627). The check reads every text through `read`. Each secret check
+ * that reads escapes goes through this one function, so each returns exactly
+ * its as-written result whenever that finds anything, and the spaced pass
+ * only ever adds findings.
  */
-export function findSecretMaterialRule(
-  text: string,
-): SecretMaterialRule | null {
-  if (text.length === 0) return null;
+export function asWrittenThenSpaced<Finding>(
+  options: EscapeReadingOptions,
+  check: (read: (text: string) => string) => Finding | null,
+): Finding | null {
+  let escaped = false;
+  const asWritten = check((text) => {
+    if (!escaped && BOUNDARY_ESCAPE.test(text)) escaped = true;
+    return text;
+  });
+  if (asWritten !== null || !escaped || options.escapes === 'as-written')
+    return asWritten;
+  return check(spacedEscapeReading);
+}
+
+/**
+ * The rule a label (a file, path, name, key or other shown value) trips as
+ * written or with each escape read as a space, or null (CAN-7627). `check`
+ * reads text as written. A site that names the rule in its message uses
+ * this; one that only shows or hides the label uses displayableLabel.
+ */
+export function labelSecretRule<Rule>(
+  label: string,
+  check: (text: string) => Rule | null,
+): Rule | null {
+  return check(label) ?? check(spacedEscapeReading(label));
+}
+
+/**
+ * A label a secret check may show, or `redacted` when labelSecretRule finds
+ * it trips `check` either way (CAN-7627). Every site that shows a label goes
+ * through this, whichever pass made a finding, so a label is never shown
+ * after only one reading of it was checked.
+ */
+export function displayableLabel<Redacted, Rule>(
+  label: string,
+  redacted: Redacted,
+  check: (text: string) => Rule | null,
+): string | Redacted {
+  return labelSecretRule(label, check) === null ? label : redacted;
+}
+
+function firstSecretRule(text: string): SecretMaterialRule | null {
   for (const { rule, pattern } of SECRET_RULES) {
     if (pattern.test(text)) return rule;
   }
   return null;
+}
+
+/**
+ * The first high-confidence secret signature in text, or null. Names the
+ * rule only: callers report the rule, never the matched text. Text that
+ * trips nothing as written is read once more with each escape written as
+ * text read as a space (asWrittenThenSpaced, CAN-7627).
+ */
+export function findSecretMaterialRule(
+  text: string,
+  options: EscapeReadingOptions = {},
+): SecretMaterialRule | null {
+  if (text.length === 0) return null;
+  return asWrittenThenSpaced(options, (read) => firstSecretRule(read(text)));
 }
 
 /** Return whether text contains a high-confidence secret signature. */

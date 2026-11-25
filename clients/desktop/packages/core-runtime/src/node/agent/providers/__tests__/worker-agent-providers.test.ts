@@ -76,13 +76,61 @@ function provider(
 function fakeHost(
   list: WorkerAgentProviderHost['list'] = () =>
     Promise.resolve({ providers: [provider('claude', ['opus'])] }),
-): WorkerAgentProviderHost & { list: jest.Mock } {
+  platformSupport: WorkerAgentProviderHost['platformSupport'] = () =>
+    Promise.resolve(['claude', 'codex', 'antigravity']),
+): WorkerAgentProviderHost & { list: jest.Mock; platformSupport: jest.Mock } {
   return {
     authorityId: 'local-desktop',
     targetId: 'in_process_worker',
     list: jest.fn(list),
+    platformSupport: jest.fn(platformSupport),
   };
 }
+
+function platformHandlerFor(
+  host: WorkerAgentProviderHost,
+): WorkerAgentProviderHandlers['queries']['worker.agent.provider.platform.get'] {
+  return createWorkerAgentProviderHandlers(host).queries[
+    'worker.agent.provider.platform.get'
+  ];
+}
+
+it('platform support answers from the host port in the fixed order, refusing another worker first', async () => {
+  const host = fakeHost();
+  const handler = platformHandlerFor(host);
+  for (const scope of [{ authorityId: 'other' }, { targetId: 'remote-1' }])
+    await expect(handler({ scope }, context)).rejects.toMatchObject({
+      payload: { kind: 'capability_unavailable' },
+    });
+  expect(host.platformSupport).not.toHaveBeenCalled();
+  await expect(handler({ scope: {} }, context)).resolves.toEqual({
+    authorityId: 'local-desktop',
+    targetId: 'in_process_worker',
+    providerIds: ['claude', 'codex', 'antigravity'],
+  });
+  // It never reads the provider list, which carries status and models.
+  expect(host.list).not.toHaveBeenCalled();
+});
+
+it('platform support refuses an unordered or failed host answer without raw text', async () => {
+  const unordered = platformHandlerFor(
+    fakeHost(undefined, () => Promise.resolve(['antigravity', 'claude'])),
+  );
+  await expect(unordered({ scope: {} }, context)).rejects.toMatchObject({
+    payload: { kind: 'internal' },
+  });
+  const failed = platformHandlerFor(
+    fakeHost(undefined, () =>
+      Promise.reject(new Error('raw manifest path /private/agy')),
+    ),
+  );
+  await expect(failed({ scope: {} }, context)).rejects.toMatchObject({
+    payload: {
+      kind: 'internal',
+      message: 'The agent provider platform support could not be read.',
+    },
+  });
+});
 
 function handlerFor(
   host: WorkerAgentProviderHost,

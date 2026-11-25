@@ -36,8 +36,9 @@ import { W5CommitLogHostError } from './commit-log-host';
  * journal entry, appended in the outcome continuation, so journal order is
  * commit order. An uncertain outcome, a worker's exit, or a replacement worker
  * whose launch recovery may have applied commits, is
- * `core.workspace.invalidated`; a
- * refused, replayed or recovery-required commit publishes nothing.
+ * `core.workspace.invalidated`. Recovery-required and abandoned-conflict
+ * decisions invalidate too: their log-wide eligibility changed without an
+ * applied file. Pre-decision refusals and replays publish nothing.
  */
 
 /** A host port, with the worker lifecycle hooks the source watches. */
@@ -263,6 +264,13 @@ export function createW5CommitEventSource(
             noteWorker();
             if (outcome.status === 'applied')
               committed(request, outcome, attribution);
+            // Returned conflicts are persisted abandonments (W5CommitOutcome);
+            // pre-decision revision/identity conflicts throw a certain refusal.
+            else if (
+              outcome.status === 'recovery-required' ||
+              outcome.status === 'conflict'
+            )
+              invalidate('uncertain', [`w5:${outcome.commitId}`]);
             return outcome;
           },
           (error: unknown) => {

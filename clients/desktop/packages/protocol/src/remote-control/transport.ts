@@ -19,6 +19,15 @@ export interface RemoteIpcTransport {
   on(channel: string, listener: (...args: unknown[]) => void): () => void;
 }
 
+/** Remote Control's browser catalog Add can opt into invoke-envelope metadata. */
+export interface BrowserRemoteIpcTransport extends RemoteIpcTransport {
+  invokeWithInstallRefreshToken?(
+    channel: string,
+    args: readonly unknown[],
+    installRefreshToken: string,
+  ): Promise<unknown>;
+}
+
 export const REMOTE_TRANSPORT_DISCONNECTED_CODE =
   'remote_transport_disconnected';
 

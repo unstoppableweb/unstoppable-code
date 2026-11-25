@@ -5430,7 +5430,13 @@ export function createWebCoreChatBackendCore(
         error.payload.kind === 'deadline_exceeded'
       )
         throw error;
-      return { accepted: false, error: secretRefusal(error) };
+      return {
+        accepted: false,
+        error: secretRefusal(error),
+        ...(error.payload.code === 'core.chat.secretRequest.notFound'
+          ? { reason: 'ended' as const }
+          : {}),
+      };
     }
   }
 

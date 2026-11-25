@@ -698,6 +698,32 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         actions: [{ label: 'Switch to subscription' }],
       },
       {
+        id: 'routing-status-session-unknown',
+        title: 'AI Credits routing: just this chat, reset unknown',
+        note: 'Session routing started while the reset time could not be read (CAN-7484). The sentence states the end condition until a later usage read learns the reset; it may wrap at the narrowest composer width.',
+        intent: 'neutral',
+        icon: <CoinsIcon size={16} aria-hidden="true" />,
+        heading: 'Using AI Credits',
+        message:
+          'This chat stays on AI Credits until you switch back. 1,240 credits left.',
+        actions: [{ label: 'Switch to subscription' }],
+      },
+      {
+        id: 'routing-status-session-reset',
+        title: 'AI Credits routing: just this chat, reset known',
+        note: 'Session routing ends at the reset, so the trailing slot names the plan the chat returns to and when (CAN-7484).',
+        intent: 'neutral',
+        icon: <CoinsIcon size={16} aria-hidden="true" />,
+        heading: 'Using AI Credits',
+        message: '1,240 credits left.',
+        aside: (
+          <span className="pr-1 shrink-0 whitespace-nowrap tabular-nums fg-tertiary">
+            Back to Claude Pro at 5:30 PM
+          </span>
+        ),
+        actions: [{ label: 'Switch to subscription' }],
+      },
+      {
         id: 'routing-status-org',
         title: 'AI Credits routing: org pool',
         intent: 'neutral',

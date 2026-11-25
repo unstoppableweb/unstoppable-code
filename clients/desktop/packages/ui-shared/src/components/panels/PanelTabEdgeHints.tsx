@@ -114,10 +114,14 @@ export function useHiddenBusyTabs(
     const measure = (): void => {
       frame = null;
       const next = measureHidden(strip, busyAttribute);
+      // The width only sizes the hints, so with nothing hidden on either
+      // side a new width changes nothing: a window resize would otherwise
+      // render the whole tab bar on every step.
       setHidden((previous) =>
         sameTabs(previous.start, next.start) &&
         sameTabs(previous.end, next.end) &&
-        previous.width === next.width
+        (previous.width === next.width ||
+          next.start.length + next.end.length === 0)
           ? previous
           : next,
       );

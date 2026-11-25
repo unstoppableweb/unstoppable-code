@@ -1,6 +1,8 @@
 import { type JSX, type ReactNode, useEffect, useState } from 'react';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { LoadingSpinner } from '@canopy/ui-shared/components';
+import { ErrorBanner } from '@canopy/ui-shared/components';
+import { toAppError, type AppErrorCode } from '@canopy/protocol/app-errors';
 import {
   CloseMediumIcon,
   DownloadIcon,
@@ -13,6 +15,8 @@ import { brand } from '@/lib/brand';
 import { useUpdateState } from '@/hooks/useUpdateState';
 import { formatVersionLabel } from '@/lib/version-label';
 import { pt } from '@/lib/platform-text';
+import { openLinuxUpdateTerminal } from '@/lib/linux-update-terminal';
+import { extractIpcErrorMessage } from '@/lib/errors';
 import { useNavigationStore } from '@/stores/navigationStore';
 import {
   SidebarFooterBanner,
@@ -54,6 +58,12 @@ export function UpdatePrompt(): JSX.Element {
   const openSettings = useNavigationStore((s) => s.openSettings);
   const manualLinux = window.platform === 'linux';
   const linuxCopy = linuxUpdateCopy(brand, __CANOPY_RELEASE_FLAVOR__);
+  const installed =
+    manualLinux && state.info?.installedByPackageManager === true;
+  const [actionError, setActionError] = useState<{
+    message: string;
+    code?: AppErrorCode;
+  } | null>(null);
   // Local click acknowledgement. The updater phase only advances once the
   // main process emits its next event — the first download-progress event can
   // lag several seconds behind the click — so reflect the requested action
@@ -67,7 +77,30 @@ export function UpdatePrompt(): JSX.Element {
   // acknowledged — or superseded — the pending action.
   useEffect(() => {
     setPendingAction(null);
+    setActionError(null);
   }, [state]);
+
+  const showActionError = (error: unknown): void => {
+    const classified = toAppError(error);
+    setActionError({
+      message: extractIpcErrorMessage(error),
+      code: classified?.code,
+    });
+    setPendingAction(null);
+  };
+  const openUpdateTerminal = async (): Promise<void> => {
+    try {
+      const result = await openLinuxUpdateTerminal();
+      if (!result.opened)
+        openSettings('canopy', { scrollTo: 'settings-linux-update-guidance' });
+    } catch (error: unknown) {
+      const classified = toAppError(error);
+      setActionError({
+        message: extractIpcErrorMessage(error),
+        code: classified?.code,
+      });
+    }
+  };
 
   const versionLabel = state.info?.version
     ? formatVersionLabel(state.info.version)
@@ -103,45 +136,56 @@ export function UpdatePrompt(): JSX.Element {
             });
           },
         }
-      : manualLinux
+      : manualLinux && state.info?.manualDownload && linuxCopy.apt
         ? {
             icon: <DownloadIcon size={16} aria-hidden="true" />,
             iconTone: 'accent',
-            label: linuxCopy.downloadLabel,
-            ariaLabel: `${linuxCopy.downloadLabel} (${versionLabel}): open the official download`,
-            title: state.info?.manualDownload
-              ? linuxCopy.downloadTooltip
-              : undefined,
-            onClick: state.info?.manualDownload
-              ? (): void => {
-                  const url = state.info?.manualDownload?.url;
-                  if (url)
-                    void window.api.browser
-                      .openExternal({ url })
-                      .catch(() => undefined);
-                }
-              : undefined,
+            label: 'Update available',
+            ariaLabel: `Update available (${versionLabel}): open in terminal`,
+            title: `Version ${versionLabel} is available.`,
+            onClick: (): void => {
+              void openUpdateTerminal();
+            },
           }
-        : pendingAction
+        : manualLinux
           ? {
-              icon: spinner,
-              label: 'Starting download…',
-              ariaLabel: `Starting download of ${versionLabel}`,
-            }
-          : {
               icon: <DownloadIcon size={16} aria-hidden="true" />,
               iconTone: 'accent',
-              label: 'Update available',
-              ariaLabel: `Update available (${versionLabel}): start download`,
-              onClick: (): void => {
-                setPendingAction('download');
-                void window.api.update.downloadUpdate().catch(() => {
-                  // Failures surface through the updater state stream as an
-                  // error event, which re-renders this banner.
-                  setPendingAction(null);
-                });
-              },
-            };
+              label: linuxCopy.downloadLabel,
+              ariaLabel: `${linuxCopy.downloadLabel} (${versionLabel}): open the official download`,
+              title: state.info?.manualDownload
+                ? linuxCopy.downloadTooltip
+                : undefined,
+              onClick: state.info?.manualDownload
+                ? (): void => {
+                    const url = state.info?.manualDownload?.url;
+                    if (url)
+                      void window.api.browser
+                        .openExternal({ url })
+                        .catch(() => undefined);
+                  }
+                : undefined,
+            }
+          : pendingAction
+            ? {
+                icon: spinner,
+                label: 'Starting download…',
+                ariaLabel: `Starting download of ${versionLabel}`,
+              }
+            : {
+                icon: <DownloadIcon size={16} aria-hidden="true" />,
+                iconTone: 'accent',
+                label: 'Update available',
+                ariaLabel: `Update available (${versionLabel}): start download`,
+                onClick: (): void => {
+                  setPendingAction('download');
+                  void window.api.update.downloadUpdate().catch(() => {
+                    // Failures surface through the updater state stream as an
+                    // error event, which re-renders this banner.
+                    setPendingAction(null);
+                  });
+                },
+              };
   } else if (state.phase === 'downloading' && !manualLinux) {
     view = {
       icon: spinner,
@@ -156,24 +200,27 @@ export function UpdatePrompt(): JSX.Element {
         </span>
       ),
     };
-  } else if (state.phase === 'downloaded' && !manualLinux) {
+  } else if (state.phase === 'downloaded' && (!manualLinux || installed)) {
     if (pendingAction) {
       view = {
         icon: spinner,
-        label: 'Restarting…',
-        ariaLabel: `Restarting to install ${versionLabel}`,
+        label: pt({ default: 'Restarting…', linux: 'Relaunching…' }),
+        ariaLabel: installed
+          ? `Relaunching to finish ${versionLabel}`
+          : `Restarting to install ${versionLabel}`,
       };
     } else if (state.installPending) {
       view = {
         icon: <TimeslotIcon size={16} aria-hidden="true" />,
         iconTone: 'accent',
         label: 'Update queued',
-        ariaLabel: `Update queued (${versionLabel}): installs when agents are idle, click to restart now`,
+        ariaLabel: installed
+          ? `Update queued (${versionLabel}): relaunches when agents are idle, click to relaunch now`
+          : `Update queued (${versionLabel}): installs when agents are idle, click to restart now`,
+        title: installed ? linuxCopy.installed.queued : undefined,
         onClick: (): void => {
           setPendingAction('install');
-          void window.api.update.installUpdate().catch(() => {
-            setPendingAction(null);
-          });
+          void window.api.update.installUpdate().catch(showActionError);
         },
         trailingAction: {
           icon: <CloseMediumIcon size={16} aria-hidden="true" />,
@@ -181,9 +228,9 @@ export function UpdatePrompt(): JSX.Element {
           title: 'Cancel scheduled install',
           testId: 'update-prompt-cancel-schedule',
           onClick: (): void => {
-            void window.api.update.cancelScheduledUpdate().catch(() => {
-              // Failures surface through the updater state stream.
-            });
+            void window.api.update
+              .cancelScheduledUpdate()
+              .catch(showActionError);
           },
         },
       };
@@ -191,23 +238,30 @@ export function UpdatePrompt(): JSX.Element {
       view = {
         icon: <RestartIcon size={16} aria-hidden="true" />,
         iconTone: 'accent',
-        label: 'Restart to update',
-        ariaLabel: `Update ready (${versionLabel}): restart to install`,
+        label: pt({
+          default: 'Restart to update',
+          linux: linuxCopy.installed.label,
+        }),
+        ariaLabel: installed
+          ? `Relaunch to finish (${versionLabel})`
+          : `Update ready (${versionLabel}): restart to install`,
+        title: installed ? linuxCopy.installed.title : undefined,
         onClick: (): void => {
           setPendingAction('install');
-          void window.api.update.installUpdate().catch(() => {
-            setPendingAction(null);
-          });
+          void window.api.update.installUpdate().catch(showActionError);
         },
         trailingAction: {
           icon: <TimeslotIcon size={16} aria-hidden="true" />,
-          ariaLabel: `Install ${versionLabel} when all agents are idle`,
-          title: 'Install when idle',
+          ariaLabel: installed
+            ? `Relaunch when idle (${versionLabel})`
+            : `Install ${versionLabel} when all agents are idle`,
+          title: pt({
+            default: 'Install when idle',
+            linux: linuxCopy.installed.relaunchWhenIdle,
+          }),
           testId: 'update-prompt-schedule',
           onClick: (): void => {
-            void window.api.update.scheduleUpdate().catch(() => {
-              // Failures surface through the updater state stream.
-            });
+            void window.api.update.scheduleUpdate().catch(showActionError);
           },
         },
       };
@@ -240,43 +294,35 @@ export function UpdatePrompt(): JSX.Element {
         };
   }
 
-  if (!view) {
+  const refusalMessage = installed ? state.message : undefined;
+  if (!view && !refusalMessage) {
     return <></>;
   }
 
   return (
     <div className="flex flex-col gap-2">
-      {manualLinux &&
-        state.phase === 'available' &&
-        state.info?.manualDownload &&
-        linuxCopy.apt && (
-          <div
-            className="flex flex-col gap-2 text-xs fg-secondary select-text"
-            data-testid="update-prompt-linux-guidance"
-          >
-            <p>{linuxCopy.apt.introduction}</p>
-            <code
-              className={`block font-mono break-words ${POSTHOG_REPLAY_BLOCK_CLASS}`}
-            >
-              {linuxCopy.apt.command}
-            </code>
-            <p>{linuxCopy.apt.bootstrap}</p>
-          </div>
-        )}
-      <SidebarFooterBanner
-        ariaLabel={view.ariaLabel}
-        surface="status"
-        onClick={view.onClick}
-        testId="update-prompt"
-        title={view.title ?? view.ariaLabel}
-        trailingAction={view.trailingAction}
-      >
-        <SidebarFooterBannerIcon tone={view.iconTone}>
-          {view.icon}
-        </SidebarFooterBannerIcon>
-        <span className="min-w-0 flex-1 truncate">{view.label}</span>
-        {view.trailing}
-      </SidebarFooterBanner>
+      <ErrorBanner
+        errorSource="sidebar-update-action"
+        error={actionError?.message ?? refusalMessage}
+        displayErrorCode={actionError?.code}
+        testId="update-prompt-action-error"
+      />
+      {view && (
+        <SidebarFooterBanner
+          ariaLabel={view.ariaLabel}
+          surface="status"
+          onClick={view.onClick}
+          testId="update-prompt"
+          title={view.title ?? view.ariaLabel}
+          trailingAction={view.trailingAction}
+        >
+          <SidebarFooterBannerIcon tone={view.iconTone}>
+            {view.icon}
+          </SidebarFooterBannerIcon>
+          <span className="min-w-0 flex-1 truncate">{view.label}</span>
+          {view.trailing}
+        </SidebarFooterBanner>
+      )}
     </div>
   );
 }

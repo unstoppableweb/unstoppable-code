@@ -5,7 +5,15 @@ import {
   PLAN_SOURCES,
   type PlanSource,
 } from '@canopy/protocol/canopy-core';
-import { derivePlanTitle } from '@canopy/protocol/plans';
+import {
+  derivePlanTitle,
+  isDataModelDiffDiagram,
+  isLogicDiffDiagram,
+  isParsedPlanGraph,
+  isPlanDiagramArtifacts,
+  type PlanDiagramArtifact,
+  type PlanDiagramArtifacts,
+} from '@canopy/protocol/plans';
 import { CanopyOperationError } from '../../runtime/errors';
 import {
   readPlanStateText,
@@ -109,12 +117,16 @@ export interface UpdatePlanInput extends PlanScopeIds {
   initiationSource?: string;
 }
 
+export type PlanDiagramKey = keyof PlanDiagramArtifacts;
+
 export type PlanCommit =
   | { kind: 'created'; plan: StoredPlan }
   | { kind: 'updated'; previous: StoredPlan; plan: StoredPlan }
   | { kind: 'deleted'; planId: string }
   | { kind: 'cleared' }
-  | { kind: 'installed' };
+  | { kind: 'installed' }
+  /** Only the plan's derived diagrams changed (CAN-4167). */
+  | { kind: 'diagram'; plan: StoredPlan; key: PlanDiagramKey };
 
 export interface PlanEngineHost {
   /** The worktree's plans file, from the host's canonical path helper. */
@@ -168,6 +180,36 @@ export interface PlanEngine {
    * be read is replaced too. An empty list changes nothing.
    */
   install(scope: PlanScopeIds, plans: readonly StoredPlan[]): Promise<void>;
+  /**
+   * Stores one generated diagram without touching the plan's content, so no
+   * content hook runs. A diagram from an older revision is stored as
+   * `stale`, and an older data model diagram never replaces a newer one.
+   * Null when the scope does not have the plan; the plan unchanged when the
+   * diagram is refused.
+   */
+  writeDiagram(
+    scope: PlanScopeIds,
+    planId: string,
+    key: PlanDiagramKey,
+    artifact: PlanDiagramArtifact<unknown>,
+  ): Promise<StoredPlan | null>;
+  /** Removes the data model diagram unless the plan moved past `expectedRevision`. */
+  removeDataModelDiagram(
+    scope: PlanScopeIds,
+    planId: string,
+    expectedRevision: number,
+  ): Promise<StoredPlan | null>;
+}
+
+function diagramFits(
+  key: PlanDiagramKey,
+  artifact: PlanDiagramArtifact<unknown>,
+): boolean {
+  const data = artifact.data;
+  if (data === null) return true;
+  if (key === 'sequence') return isParsedPlanGraph(data);
+  if (key === 'logicDiff') return isLogicDiffDiagram(data);
+  return isDataModelDiffDiagram(data);
 }
 
 const REVIEW_STATUSES: ReadonlySet<unknown> = new Set([
@@ -673,6 +715,72 @@ export function createPlanEngine(host: PlanEngineHost): PlanEngine {
       await withPlanStateLock(path, () =>
         commit(scope, path, [], { kind: 'cleared' }),
       );
+    },
+
+    async writeDiagram(scope, planId, key, artifact) {
+      const path = host.statePath(scope);
+      return withPlanStateLock(path, async () => {
+        const plans = await readForWrite(path);
+        const existing = plans.find((plan) => plan.id === planId);
+        if (!existing) return null;
+        const diagrams = existing.diagrams;
+        if (diagrams !== undefined && !isPlanDiagramArtifacts(diagrams))
+          return existing;
+
+        const lagsCurrentRevision =
+          (artifact.status === 'ready' || artifact.status === 'error') &&
+          artifact.derivedFromRevision < existing.latestRevisionNumber;
+        const nextArtifact = lagsCurrentRevision
+          ? { ...artifact, status: 'stale' as const }
+          : artifact;
+        if (!diagramFits(key, nextArtifact)) return existing;
+        if (key === 'dataModelDiff') {
+          const existingDataModelArtifact = diagrams?.dataModelDiff;
+          if (
+            lagsCurrentRevision &&
+            (existingDataModelArtifact === undefined ||
+              existingDataModelArtifact.derivedFromRevision >
+                artifact.derivedFromRevision)
+          )
+            return existing;
+        }
+
+        const updated: StoredPlan = {
+          ...existing,
+          diagrams: { ...diagrams, [key]: nextArtifact },
+        };
+        await commit(
+          scope,
+          path,
+          plans.map((plan) => (plan.id === planId ? updated : plan)),
+          { kind: 'diagram', plan: updated, key },
+        );
+        return updated;
+      });
+    },
+
+    async removeDataModelDiagram(scope, planId, expectedRevision) {
+      const path = host.statePath(scope);
+      return withPlanStateLock(path, async () => {
+        const plans = await readForWrite(path);
+        const existing = plans.find((plan) => plan.id === planId);
+        if (!existing) return null;
+        if (expectedRevision < existing.latestRevisionNumber) return existing;
+        const diagrams = existing.diagrams;
+        if (!isPlanDiagramArtifacts(diagrams) || !diagrams.dataModelDiff)
+          return existing;
+
+        const nextDiagrams: PlanDiagramArtifacts = { ...diagrams };
+        delete nextDiagrams.dataModelDiff;
+        const updated: StoredPlan = { ...existing, diagrams: nextDiagrams };
+        await commit(
+          scope,
+          path,
+          plans.map((plan) => (plan.id === planId ? updated : plan)),
+          { kind: 'diagram', plan: updated, key: 'dataModelDiff' },
+        );
+        return updated;
+      });
     },
 
     async install(scope, plans): Promise<void> {

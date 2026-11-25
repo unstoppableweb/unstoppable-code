@@ -1,4 +1,5 @@
 import type {
+  OverlayLayerFollow,
   OverlayLayerRect,
   OverlayLayerSlot as OverlayLayerSlotType,
 } from '@canopy/desktop-shared/types';
@@ -15,7 +16,10 @@ import {
   openOverlayLayer,
   type OverlayLayer,
 } from '@/lib/overlayLayer';
-import { calculateOverlayLayerBounds } from './overlayLayerBounds';
+import {
+  calculateOverlayLayerBounds,
+  overlayLayerEdges,
+} from './overlayLayerBounds';
 
 const SWIPE_TRANSITION_MS = 450;
 // A card playing its exit carries this until it unmounts.
@@ -62,6 +66,7 @@ export class OverlayLayerSlotController {
   private focusReturnTimer: number | null = null;
   private sentBounds: OverlayLayerRect | null = null;
   private pendingShrinkBounds: OverlayLayerRect | null = null;
+  private pendingShrinkFollow: OverlayLayerFollow | undefined = undefined;
   private isDisposed = false;
 
   private readonly onTopologyChange = (): void => {
@@ -201,8 +206,10 @@ export class OverlayLayerSlotController {
       return;
     }
 
+    // Only while the slot holds something, so it keeps hearing every change.
     this.topologyUnsubscribe = subscribeBrowserOverlayTopology(
       this.onTopologyChange,
+      { everyChange: () => true },
     );
     this.mainWindow.addEventListener('resize', this.onMainResize);
     this.mainWindow.addEventListener(
@@ -352,7 +359,24 @@ export class OverlayLayerSlotController {
     const bounds = this.calculateBounds(rect);
     this.setPlaceholderMarker('false');
     this.applyPosition(rect, bounds);
-    this.scheduleBoundsUpdate(layer, bounds);
+    this.scheduleBoundsUpdate(layer, bounds, this.calculateFollow());
+  }
+
+  /** How the bounds just measured move with the window, for main. */
+  private calculateFollow(): OverlayLayerFollow {
+    return {
+      viewport: {
+        width: Math.max(0, Math.ceil(this.mainWindow.innerWidth)),
+        height: Math.max(0, Math.ceil(this.mainWindow.innerHeight)),
+      },
+      edges: overlayLayerEdges(
+        this.placement,
+        this.hasAttributeInContent('[data-expanded]'),
+        this.hasAttributeInContent(
+          '[data-swipe-dragging], [data-swipe-settling], [data-swipe-flung]',
+        ),
+      ),
+    };
   }
 
   private calculateBounds(rect: DOMRect): OverlayLayerRect {
@@ -452,6 +476,7 @@ export class OverlayLayerSlotController {
   private scheduleBoundsUpdate(
     layer: OverlayLayer,
     nextBounds: OverlayLayerRect,
+    follow: OverlayLayerFollow,
   ): void {
     if (sameBounds(nextBounds, this.sentBounds)) {
       this.cancelPendingShrink();
@@ -463,20 +488,23 @@ export class OverlayLayerSlotController {
 
     this.cancelPendingShrink();
     if (boundsExpands(this.sentBounds, nextBounds)) {
-      this.sendBounds(layer, nextBounds);
+      this.sendBounds(layer, nextBounds, follow);
       return;
     }
 
     this.pendingShrinkBounds = nextBounds;
+    this.pendingShrinkFollow = follow;
     this.shrinkTimer = this.mainWindow.setTimeout(() => {
       this.shrinkTimer = null;
       const pendingBounds = this.pendingShrinkBounds;
+      const pendingFollow = this.pendingShrinkFollow;
       this.pendingShrinkBounds = null;
+      this.pendingShrinkFollow = undefined;
       if (layer !== this.layer || !pendingBounds) {
         return;
       }
 
-      this.sendBounds(layer, pendingBounds);
+      this.sendBounds(layer, pendingBounds, pendingFollow);
     }, SWIPE_TRANSITION_MS);
   }
 
@@ -486,11 +514,13 @@ export class OverlayLayerSlotController {
       this.shrinkTimer = null;
     }
     this.pendingShrinkBounds = null;
+    this.pendingShrinkFollow = undefined;
   }
 
   private sendBounds(
     layer: OverlayLayer,
     bounds: OverlayLayerRect | null,
+    follow?: OverlayLayerFollow,
   ): void {
     if (
       layer !== this.layer &&
@@ -503,7 +533,7 @@ export class OverlayLayerSlotController {
     }
 
     this.sentBounds = bounds;
-    void layer.setBounds(bounds);
+    void layer.setBounds(bounds, follow);
   }
 
   private attachLayerFocus(layer: OverlayLayer): void {

@@ -152,18 +152,33 @@ function page<T>(
   };
 }
 
+/** The requested revision is not the container's available or pinned one. */
+export class SharedContainerRevisionUnavailableError extends Error {
+  constructor() {
+    super('Shared-container revision is not available');
+    this.name = 'SharedContainerRevisionUnavailableError';
+  }
+}
+
 export class SharedContainerReader {
   constructor(readonly store: SharedContainerReplicaStore) {}
+
+  /** Whether the index still serves `request`'s revision. */
+  private async isRevisionCurrent(
+    request: SharedContainerRevisionRequest,
+  ): Promise<boolean> {
+    const state = await this.store.get(request.containerId);
+    return (
+      (state?.status === 'available' || state?.status === 'pinned') &&
+      state.revisionId === request.revisionId
+    );
+  }
 
   private async revisionRoot(
     request: SharedContainerRevisionRequest,
   ): Promise<string> {
-    const state = await this.store.get(request.containerId);
-    if (
-      (state?.status !== 'available' && state?.status !== 'pinned') ||
-      state.revisionId !== request.revisionId
-    ) {
-      throw new Error('Shared-container revision is not available');
+    if (!(await this.isRevisionCurrent(request))) {
+      throw new SharedContainerRevisionUnavailableError();
     }
     return this.store.resolveRevisionRootForRead(
       request.containerId,
@@ -194,15 +209,27 @@ export class SharedContainerReader {
     root: string;
     layout: AnySharedContainerRevisionLayout;
   }> {
-    const root = await this.revisionRoot(request);
-    const value = await this.readJson(
-      root,
-      this.store.resolvePathBelowForRead(root, 'artifacts', 'container.json'),
-    );
-    if (!isAnySharedContainerRevisionLayout(value)) {
-      throw new Error('Shared-container layout is invalid');
+    try {
+      const root = await this.revisionRoot(request);
+      const value = await this.readJson(
+        root,
+        this.store.resolvePathBelowForRead(root, 'artifacts', 'container.json'),
+      );
+      if (!isAnySharedContainerRevisionLayout(value)) {
+        throw new Error('Shared-container layout is invalid');
+      }
+      return { root, layout: value };
+    } catch (error) {
+      // A reconciliation or purge can move the revision between the index
+      // check and these reads: that is a stale revision, not a failure.
+      if (
+        !(error instanceof SharedContainerRevisionUnavailableError) &&
+        !(await this.isRevisionCurrent(request))
+      ) {
+        throw new SharedContainerRevisionUnavailableError();
+      }
+      throw error;
     }
-    return { root, layout: value };
   }
 
   /** Internal fork boundary: returns the validated layout for the pinned root. */

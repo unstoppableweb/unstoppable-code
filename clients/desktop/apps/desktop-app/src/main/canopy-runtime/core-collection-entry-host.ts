@@ -1,5 +1,7 @@
 import type {
+  CollectionEntryCorruptRemoval,
   CollectionEntryDraft,
+  CollectionEntryManagement,
   CollectionEntryRead,
   CollectionEntryRemoval,
   CollectionEntryWrite,
@@ -8,6 +10,7 @@ import type {
 } from '@canopy/core-runtime/node/catalog';
 import {
   CatalogCollectionEntrySchema,
+  CatalogCollectionRevisionSchema,
   collectionEntryId,
 } from '@canopy/protocol/canopy-core';
 import {
@@ -18,7 +21,10 @@ import type {
   CollectionConfig,
   CollectionMcpRef,
 } from '@canopy/desktop-shared/types/collections';
-import type { CollectionSaveGuard } from '../collections/collection-store';
+import type {
+  CollectionSaveGuard,
+  CollectionStoredBytesState,
+} from '../collections/collection-store';
 
 /** The collection store calls the host makes; tests inject fakes. */
 export interface DesktopCollectionEntryStore {
@@ -36,14 +42,25 @@ export interface DesktopCollectionEntryStore {
   ): Promise<void>;
   /** The store's own refusal of a save or delete, if `error` is one. */
   refusalOf(error: unknown): 'conflict' | 'not_found' | null;
+  /** Whether a config can be read, and its bytes hash when it can't. */
+  storedBytesState(id: string): Promise<CollectionStoredBytesState>;
+  deleteCorrupt(
+    id: string,
+    storedBytesHash: string,
+  ): Promise<
+    'deleted' | 'missing' | 'readable' | 'unreadable' | 'changed' | 'refused'
+  >;
 }
 
 type RevisedCollection = CollectionConfig & { revision: string };
 
+/** A replace's prepared entry failed the caller's `fits`, before any write. */
+class EntryTooLargeError extends Error {}
+
 const isRevised = (
   collection: CollectionConfig,
 ): collection is RevisedCollection =>
-  typeof collection.revision === 'string' && collection.revision.length > 0;
+  CatalogCollectionRevisionSchema.safeParse(collection.revision).success;
 
 const defaultStore: DesktopCollectionEntryStore = {
   read: async (id) =>
@@ -76,6 +93,14 @@ const defaultStore: DesktopCollectionEntryStore = {
     (error.code === 'conflict' || error.code === 'not_found')
       ? error.code
       : null,
+  storedBytesState: async (id) =>
+    (
+      await import('../collections/collection-store')
+    ).readCollectionStoredBytesState(id),
+  deleteCorrupt: async (id, storedBytesHash) =>
+    (
+      await import('../collections/collection-store')
+    ).deleteCorruptCollectionConfig(id, storedBytesHash),
 };
 
 const isShareScope = (value: string): value is CollectionShareScope =>
@@ -122,6 +147,9 @@ function storedEntry(collection: RevisedCollection): StoredCollectionEntry {
             contentHash: remote.contentHash,
             shareScope: remote.shareScope,
             sharedAt: remote.sharedAt,
+            ...(remote.accountId === undefined
+              ? {}
+              : { accountId: remote.accountId }),
           }
         : null,
   };
@@ -231,7 +259,12 @@ export function createDesktopCollectionEntryHost(
         }),
       );
     },
-    async replace(id, expectedRevision, draft): Promise<CollectionEntryWrite> {
+    async replace(
+      id,
+      expectedRevision,
+      draft,
+      fits,
+    ): Promise<CollectionEntryWrite> {
       const stored = await read(id);
       if (stored === 'unreadable') return { status: 'unreadable' };
       if (stored === null) return { status: 'missing' };
@@ -254,10 +287,21 @@ export function createDesktopCollectionEntryHost(
             mcpServers,
             createdAt: current.createdAt,
           },
-          { expectedRevision },
+          {
+            expectedRevision,
+            ...(fits
+              ? {
+                  validatePrepared: (prepared: CollectionConfig): void => {
+                    if (!fits(written(prepared)))
+                      throw new EntryTooLargeError();
+                  },
+                }
+              : {}),
+          },
         );
         return { status: 'written', entry: written(saved) };
       } catch (error) {
+        if (error instanceof EntryTooLargeError) return { status: 'tooLarge' };
         const refusal = store.refusalOf(error);
         if (refusal === null) throw error;
         if (refusal === 'not_found') return { status: 'missing' };
@@ -288,6 +332,43 @@ export function createDesktopCollectionEntryHost(
         if (latest === null) return { status: 'missing' };
         return { status: 'conflict', currentRevision: latest.revision };
       }
+    },
+    async readManagement(id): Promise<CollectionEntryManagement> {
+      const current = await readRevised(id, true);
+      if (current === null) return { status: 'missing' };
+      if (current !== 'unreadable')
+        return { status: 'found', revision: current.revision };
+      let state: CollectionStoredBytesState;
+      try {
+        state = await store.storedBytesState(id);
+      } catch {
+        return { status: 'unreadable' };
+      }
+      if (state.status === 'missing') return { status: 'missing' };
+      if (state.status === 'unreadable') return { status: 'unreadable' };
+      if (state.status === 'corrupt')
+        return { status: 'corrupt', storedBytesHash: state.storedBytesHash };
+      // Repaired between the two reads: answer its revision once it reads.
+      const repaired = await readRevised(id, true);
+      if (repaired === null) return { status: 'missing' };
+      return repaired === 'unreadable'
+        ? { status: 'unreadable' }
+        : { status: 'found', revision: repaired.revision };
+    },
+    async deleteCorrupt(
+      id,
+      storedBytesHash,
+    ): Promise<CollectionEntryCorruptRemoval> {
+      const outcome = await store.deleteCorrupt(id, storedBytesHash);
+      if (outcome === 'deleted') return { status: 'deleted' };
+      if (outcome === 'missing') return { status: 'missing' };
+      if (outcome === 'changed') return { status: 'changed' };
+      if (outcome === 'unreadable' || outcome === 'refused')
+        return { status: 'unreadable' };
+      const latest = await readRevised(id, true);
+      if (latest === 'unreadable') return { status: 'unreadable' };
+      if (latest === null) return { status: 'missing' };
+      return { status: 'conflict', currentRevision: latest.revision };
     },
   };
 }

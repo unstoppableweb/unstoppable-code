@@ -1,6 +1,6 @@
 import { ORCHESTRATOR_LABEL, REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import { type JSX, type ReactNode } from 'react';
-import { useAccountProxyStatus } from '@/stores/accountProxyStore';
+import { useAccountProxyPageAvailable } from '@/stores/accountProxyStore';
 import {
   isOllamaSupportedOnPlatform,
   isVoiceDictationPlatform,
@@ -466,7 +466,7 @@ export function getVisibleNavItems(
       : getOrderedNavItems();
   return orderedItems.filter((item) => {
     if (item.key === 'code-graph') return codeGraphEnabled;
-    // The flag and the Experiments opt-in must both be on (CAN-4019).
+    // Offered whenever the flag is on, also while the proxy is turned off.
     if (item.key === 'account-proxy') return accountProxyAvailable;
     if (item.key === 'remote-access') return remoteAccessEnabled;
     if (item.key === 'dictation') {
@@ -497,7 +497,7 @@ export function SettingsNav({
   renderHostedRail,
   localSelected = true,
 }: SettingsNavProps): JSX.Element {
-  const accountProxyAvailable = useAccountProxyStatus()?.available === true;
+  const accountProxyAvailable = useAccountProxyPageAvailable();
   const hostedLayout = renderHostedRail !== undefined;
   // Its only platform gate is dictation, which runs on this computer.
   const navItems = getVisibleNavItems(

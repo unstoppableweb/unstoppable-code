@@ -161,6 +161,7 @@ export async function openDelegatedTestSession({
   root,
   host,
   expiresAt,
+  firstPartyClient,
 }) {
   const identity = await generateDeviceIdentity();
   const device = await connectTestRelayDevice({
@@ -168,10 +169,12 @@ export async function openDelegatedTestSession({
     userExternalId,
     identity,
   });
+  // A first-party caller (CAN-7604) is named in a signed v2 delegation.
   const delegation = await signHostedDelegation(
     root,
     identity.publicKey,
     expiresAt,
+    firstPartyClient,
   );
   let resolveEnded;
   const ended = new Promise((resolve) => {

@@ -136,8 +136,9 @@ export function PipelineExecutionActionBar({
           data-testid={`pipeline-detail-debug-failure-${executionId}`}
           aria-label={`Debug failed workflow with ${ORCHESTRATOR_LABEL}`}
           onClick={() => {
-            onNavigatedAway?.('debug');
-            void actions.debugFailure(executionId);
+            void actions.debugFailure(executionId).then((opened) => {
+              if (opened) onNavigatedAway?.('debug');
+            });
           }}
           disabled={actions.debuggingFailureId !== null}
         >
@@ -153,8 +154,9 @@ export function PipelineExecutionActionBar({
             data-testid={`pipeline-detail-chat-follow-up-${executionId}`}
             disabled={chatFollowUpDisabled}
             onClick={() => {
-              onNavigatedAway?.('chat');
-              void actions.chatFollowUp(executionId);
+              void actions.chatFollowUp(executionId).then((opened) => {
+                if (opened) onNavigatedAway?.('chat');
+              });
             }}
           >
             <ChatIcon size="sm" />
@@ -176,8 +178,9 @@ export function PipelineExecutionActionBar({
               size="compact"
               data-testid={`pipeline-detail-plan-${executionId}`}
               onClick={() => {
-                onNavigatedAway?.('plan');
-                void actions.openPlan(executionId);
+                void actions.openPlan(executionId).then((opened) => {
+                  if (opened) onNavigatedAway?.('plan');
+                });
               }}
             >
               <PlanModeIcon size="sm" />
@@ -194,8 +197,9 @@ export function PipelineExecutionActionBar({
             data-testid={`pipeline-detail-report-chat-follow-up-${executionId}`}
             disabled={chatFollowUpDisabled}
             onClick={() => {
-              onNavigatedAway?.('report-chat');
-              void actions.reportChatFollowUp(executionId);
+              void actions.reportChatFollowUp(executionId).then((opened) => {
+                if (opened) onNavigatedAway?.('report-chat');
+              });
             }}
           >
             Chat

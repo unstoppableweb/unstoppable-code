@@ -11,6 +11,7 @@ const CLAUDE_MODS_SKIPPED_REASONS: readonly ClaudeModSkippedReason[] = [
   'kill-switch',
   'authority-unreadable',
   'inspection-failed',
+  'install-list-unreadable',
   'projection-failed',
 ];
 

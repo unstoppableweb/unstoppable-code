@@ -1,5 +1,6 @@
 import {
   personalAiGatewayConfigSchema,
+  personalAiGatewayUseInCloudChatsSchema,
   personalAiGatewayUpdateSchema,
   aiGatewayConnectSchema,
 } from '../model-gateway';
@@ -295,6 +296,7 @@ export const ACCOUNT_SETTINGS_OPERATIONS = {
     input: settingsEmptyInputSchema,
     result: z.looseObject({
       gateway: personalAiGatewayConfigSchema.nullable(),
+      useInCloudChats: personalAiGatewayUseInCloudChatsSchema,
     }),
     request: () => ({ method: 'GET', path: '/api/v1/settings/ai-gateway' }),
   }),
@@ -302,7 +304,10 @@ export const ACCOUNT_SETTINGS_OPERATIONS = {
     maxInputBytes: 512 * 1024,
     transport: 'backend',
     input: personalAiGatewayUpdateSchema,
-    result: z.looseObject({ gateway: personalAiGatewayConfigSchema }),
+    result: z.looseObject({
+      gateway: personalAiGatewayConfigSchema,
+      useInCloudChats: personalAiGatewayUseInCloudChatsSchema,
+    }),
     request: (input) => ({
       method: 'PATCH',
       path: '/api/v1/settings/ai-gateway',

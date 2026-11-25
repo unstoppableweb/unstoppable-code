@@ -3363,6 +3363,29 @@ const canopyApi: CanopyApi = {
         );
       };
     },
+    readMigrationChoice: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.localModelGatewayMigrationChoiceRead),
+    chooseMigration: (decision, accountRevision) =>
+      ipcRenderer.invoke(
+        IPC_CHANNELS.localModelGatewayMigrationChoose,
+        decision,
+        accountRevision,
+      ),
+  },
+  modelGatewayDeviceUse: {
+    read: () => ipcRenderer.invoke(IPC_CHANNELS.modelGatewayDeviceUseRead),
+    set: (input) =>
+      ipcRenderer.invoke(IPC_CHANNELS.modelGatewayDeviceUseSet, input),
+    onChanged: (callback) => {
+      const handler = (): void => callback();
+      ipcRenderer.on(IPC_CHANNELS.modelGatewayDeviceUseChanged, handler);
+      return () => {
+        ipcRenderer.removeListener(
+          IPC_CHANNELS.modelGatewayDeviceUseChanged,
+          handler,
+        );
+      };
+    },
   },
   loadCanopyCloudAccount: () =>
     ipcRenderer.invoke(IPC_CHANNELS.settingsLoadCanopyCloudAccount),
@@ -4187,6 +4210,8 @@ const canopyApi: CanopyApi = {
   },
   antigravityRuntime: {
     status: () => ipcRenderer.invoke(IPC_CHANNELS.antigravityRuntimeStatus),
+    hostSupported: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.antigravityRuntimeHostSupport),
     install: (operationId) =>
       ipcRenderer.invoke(IPC_CHANNELS.antigravityRuntimeInstall, operationId),
     cancel: (operationId) =>

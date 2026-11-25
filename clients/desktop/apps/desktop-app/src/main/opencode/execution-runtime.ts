@@ -1,7 +1,7 @@
 import { getRawOpenCodeModelId } from '@canopy/execution-engine/lib/opencode-models';
 import {
   resolveGatewayModelEntry,
-  resolveOwnerScopedModelId,
+  resolveOwnerGatewayModelId,
 } from '@canopy/execution-engine/lib/gateway-model-availability';
 import {
   prepareOpenCodeInferenceRoute,
@@ -70,7 +70,7 @@ export async function openOpenCodeExecutionRuntime(input: {
     if (!nativeModel) {
       const attribution = await options.attribution();
       const entry = resolveGatewayModelEntry(
-        resolveOwnerScopedModelId(options.model, attribution.workOwner),
+        resolveOwnerGatewayModelId(options.model, attribution.workOwner),
       );
       if (!entry)
         throw new Error(

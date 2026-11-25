@@ -9,6 +9,7 @@ import { readPreferencesFile } from '../lib/preferences-store';
 import { loadMarketplacesCacheOnly } from '../plugins/plugin-service';
 import { readClaudeDisabledInstalledPlugins } from '../plugins/claude-enabled-plugins';
 import { listCodexPlugins } from '../plugins/codex-marketplace-service';
+import { withOptionalCodex } from '../codex/codex-executable-availability';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -59,8 +60,11 @@ export async function readInstalledItemPolicy(
   const codexMarketplaces = marketplaces.filter((marketplace) =>
     marketplace.plugins.some((plugin) => plugin.facets?.codex),
   );
-  if (codexMarketplaces.length > 0) {
-    const codex = await listCodexPlugins();
+  const codex =
+    codexMarketplaces.length > 0
+      ? await withOptionalCodex(listCodexPlugins)
+      : null;
+  if (codex) {
     if (codex.marketplaceLoadErrors.length)
       throw new Error('Codex installed plugin state is unavailable.');
     for (const marketplace of codexMarketplaces) {

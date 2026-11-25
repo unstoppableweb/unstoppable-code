@@ -24,6 +24,7 @@ import {
   NOTIFICATION_ID_PREFIX,
 } from '../notifications/campaigns/click-router';
 import { sendToWindow } from '../lib/window-send';
+import { noteUserActivation } from '../lib/main-window-focus';
 import { registerIpcHandler } from './register';
 
 const NOTIFICATION_BODY_MAX_LENGTH = 240;
@@ -360,6 +361,7 @@ export function showOsNotification(
 
     notification.on('click', () => {
       const window = getWindow();
+      noteUserActivation();
       if (window && !window.isDestroyed()) {
         if (window.isMinimized()) {
           window.restore();

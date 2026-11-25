@@ -21,6 +21,16 @@ import {
 } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { codeGraphReadRefusalOf } from '@canopy/core-runtime/node/code-graph';
+import { withDaemonCodeGraphRoute } from './daemon-code-graph-route-context';
+import {
+  noteDaemonCodeGraphBuildExcluded,
+  noteDaemonCodeGraphBuildSettled,
+  selectDaemonAgentCodeGraphReadExclusion,
+} from './daemon-code-graph-route';
+import {
+  recordCodeGraphReadRoute,
+  type CodeGraphReadRouteOperation,
+} from '@canopy/desktop-shared/node/work-counters';
 
 /*
  * Electron main's one client of the worker's code-graph reads (CAN-4150).
@@ -216,18 +226,51 @@ export async function readWorkspaceBaseCodeGraphSummaries(
   return answer.result.value;
 }
 
+/**
+ * Runs one read Electron main starts on its own with the daemon route open
+ * where agent builds take it (CAN-5625), so it reads the daemon's graph host
+ * on the hosts `DAEMON_AGENT_CODE_GRAPH_READ_PLATFORMS` selects and in
+ * process otherwise (CAN-5093). Each read records where it ran, as the
+ * route's builds do, and in the `codeGraph.<operation>` route counters.
+ */
+async function onMainDaemonRoute<T>(
+  scope: CodeGraphReadScope,
+  operation: CodeGraphReadRouteOperation,
+  read: () => Promise<T>,
+): Promise<T> {
+  const exclusion = selectDaemonAgentCodeGraphReadExclusion(scope.projectId);
+  if (exclusion !== null) {
+    noteDaemonCodeGraphBuildExcluded(exclusion);
+    recordCodeGraphReadRoute(operation, `in_process.${exclusion}`);
+  }
+  const { value } = await withDaemonCodeGraphRoute(
+    exclusion === null,
+    read,
+    (outcome) => {
+      noteDaemonCodeGraphBuildSettled(outcome);
+      recordCodeGraphReadRoute(operation, `daemon.${outcome}`);
+    },
+  );
+  return value;
+}
+
 /** Whether the worktree has a graph, and whether a source build is pending. */
 export async function readWorktreeCodeGraphStatus(
   scope: CodeGraphReadScope,
   options: { via?: CodeGraphDispatchVia } = {},
 ): Promise<CodeGraphGraphState> {
   try {
-    return await dispatcher(options.via).query(
-      'worker.codeGraph.status.get',
-      {
-        scope: { workspaceId: scope.projectId, worktreeId: scope.worktreeId },
-      },
-      { caller: CODE_GRAPH_READS_CALLER },
+    return await onMainDaemonRoute(scope, 'status', () =>
+      dispatcher(options.via).query(
+        'worker.codeGraph.status.get',
+        {
+          scope: {
+            workspaceId: scope.projectId,
+            worktreeId: scope.worktreeId,
+          },
+        },
+        { caller: CODE_GRAPH_READS_CALLER },
+      ),
     );
   } catch (error) {
     throw codeGraphReadError(error);
@@ -239,12 +282,17 @@ export async function validateWorktreeCodeGraphLanguages(
   scope: CodeGraphReadScope,
 ): Promise<CodeGraphLanguagesValidation> {
   try {
-    return await dispatcher().query(
-      'worker.codeGraph.languages.validate',
-      {
-        scope: { workspaceId: scope.projectId, worktreeId: scope.worktreeId },
-      },
-      { caller: CODE_GRAPH_READS_CALLER },
+    return await onMainDaemonRoute(scope, 'languages', () =>
+      dispatcher().query(
+        'worker.codeGraph.languages.validate',
+        {
+          scope: {
+            workspaceId: scope.projectId,
+            worktreeId: scope.worktreeId,
+          },
+        },
+        { caller: CODE_GRAPH_READS_CALLER },
+      ),
     );
   } catch (error) {
     throw codeGraphReadError(error);

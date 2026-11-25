@@ -431,6 +431,7 @@ export type ClaudeModSkippedReason =
   | 'kill-switch'
   | 'authority-unreadable'
   | 'inspection-failed'
+  | 'install-list-unreadable'
   | 'projection-failed';
 
 export interface ClaudeModsSkippedEntry {

@@ -6,7 +6,7 @@ import {
 } from '@canopy/protocol/llm-gateway';
 import {
   resolveGatewayModelEntry,
-  resolveOwnerScopedModelId,
+  resolveOwnerGatewayModelId,
 } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { getRawOpenCodeModelId } from '@canopy/execution-engine/lib/opencode-models';
 import { normalizeModelGatewayBaseUrl } from '@canopy/protocol/canopy-server';
@@ -110,7 +110,7 @@ export async function openOpenCodeInferenceLease(options: {
     throw new Error(
       'The work owner is unavailable. Reopen this chat and try again.',
     );
-  const model = resolveOwnerScopedModelId(selectionModel, owner);
+  const model = resolveOwnerGatewayModelId(selectionModel, owner);
   const selected = resolveGatewayModelEntry(model);
   if (
     !selected ||

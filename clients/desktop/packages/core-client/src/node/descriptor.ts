@@ -4,6 +4,7 @@ import type {
   CanopyRuntimeDescriptor,
   CanopyRuntimeDescriptorSource,
 } from './daemon-ports';
+import { canopyLaunchDetails } from './daemon-refusal';
 import { canopyConnectError } from './endpoint';
 
 export type CanopyDescriptorState =
@@ -65,9 +66,14 @@ export function parseCanopyRuntimeDescriptor(
 const cancelled = (): CanopyClientError =>
   canopyConnectError('cancelled', 'Core discovery was cancelled.');
 
-/** Port failures keep a fixed kind and text: their details may name paths or tokens. */
+/**
+ * Port failures keep a fixed kind and text: their messages may name paths or
+ * tokens. Only the allowlisted launch facts, the step and the port's typed kind
+ * cross as details.
+ */
 async function callPort<T>(
   signal: AbortSignal,
+  operation: 'read_descriptor' | 'inspect_process',
   call: () => Promise<T>,
 ): Promise<T> {
   if (signal.aborted) throw cancelled();
@@ -88,9 +94,14 @@ async function callPort<T>(
         'capability_unavailable',
         'Core process identity cannot be verified on this host.',
       );
-    throw signal.aborted
-      ? cancelled()
-      : canopyConnectError('unavailable', 'Core discovery failed.');
+    if (signal.aborted) throw cancelled();
+    throw canopyConnectError('unavailable', 'Core discovery failed.', {
+      ...canopyLaunchDetails(error),
+      operation,
+      ...(error instanceof CanopyClientError
+        ? { portKind: error.payload.kind }
+        : {}),
+    });
   } finally {
     signal.removeEventListener('abort', onAbort);
   }
@@ -106,7 +117,9 @@ export async function classifyCanopyDescriptor(
       'invalid_argument',
       'Protocol versions must be positive integers.',
     );
-  const raw = await callPort(signal, () => source.read(signal));
+  const raw = await callPort(signal, 'read_descriptor', () =>
+    source.read(signal),
+  );
   if (raw === null) return { kind: 'absent' };
   const descriptor = parseCanopyRuntimeDescriptor(raw);
   if (!descriptor)
@@ -114,7 +127,7 @@ export async function classifyCanopyDescriptor(
       'failed_precondition',
       'Core runtime descriptor is malformed.',
     );
-  const running = await callPort(signal, () =>
+  const running = await callPort(signal, 'inspect_process', () =>
     supervisor.inspectProcess(descriptor.pid, signal),
   );
   if (!running) return { kind: 'stale', reason: 'process_exited' };

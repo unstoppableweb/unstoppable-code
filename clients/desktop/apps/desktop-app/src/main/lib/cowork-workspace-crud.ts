@@ -17,6 +17,7 @@ import {
   type W5WireDecisionCall,
 } from './w5-single-decision-operation';
 import {
+  desktopW5WriteRefusal,
   W5FileWriteRefusedError,
   W5RevisionConflictError,
 } from './w5-commit-log-file-store';
@@ -325,8 +326,16 @@ export async function listCoworkWorkspacesAsChatProjects(
   sidebarSnapshot?: SidebarItemsSnapshot,
   options: { provisionDefaults?: boolean } = {},
 ): Promise<ChatProjectData[]> {
+  const { file: sidebarItems, indexAuthority } =
+    sidebarSnapshot ?? (await readAllSidebarItemsSnapshot());
+  // Read only after the index read settled the startup handoff: while it
+  // failed, every W5 write is refused for the process's life, so provisioning
+  // would only leave a scaffold behind and fail the list (CAN-7316).
+  const provisionDefaults =
+    options.provisionDefaults !== false &&
+    desktopW5WriteRefusal() === undefined;
   const context = getWorkspaceContextService().getState().context;
-  if (options.provisionDefaults !== false && context.kind === 'organization') {
+  if (provisionDefaults && context.kind === 'organization') {
     detachedWorkCallback(() =>
       import('./org-cowork-binding-deps').then(
         ({ startOrgDefaultCoworkProvisioning }) =>
@@ -335,18 +344,19 @@ export async function listCoworkWorkspacesAsChatProjects(
       ),
     )();
   }
-  const { file: sidebarItems, indexAuthority } =
-    sidebarSnapshot ?? (await readAllSidebarItemsSnapshot());
   const { items } = sidebarItems;
   const coworkItems = items.filter(isCoworkSidebarItem);
 
   // Only a complete index read proves the default project is missing; a
   // degraded one would reset its settings or drop other projects (CAN-3329).
-  // The next listing retries.
+  // The next listing retries. While the startup handoff is degraded the
+  // listing is read-only instead: existing projects, or none on a fresh or
+  // trapped root, until the restart the background-service notice offers
+  // (CAN-7061, CAN-7316).
   const indexProvesDefaultMissing =
     indexAuthority === 'ok' || indexAuthority === 'absent';
   if (
-    options.provisionDefaults !== false &&
+    provisionDefaults &&
     indexProvesDefaultMissing &&
     !coworkItems.some((item) => item.id === DEFAULT_COWORK_WORKSPACE_ID)
   ) {

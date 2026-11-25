@@ -18,7 +18,7 @@ import {
   PLAN_DIAGRAM_SCHEMA_VERSION,
   type TrackedPlanData,
 } from '@canopy/desktop-shared/types';
-import type * as Scheduler from '../lib/plan-diagram-scheduler';
+import type * as Scheduler from '../canopy-runtime/plan-diagram-host';
 import type * as PlanPersistence from '../lib/plan-persistence';
 
 jest.setTimeout(60_000);
@@ -120,7 +120,7 @@ beforeAll(async () => {
   initClaudeModels([{ id: 'haiku', label: 'Haiku' }]);
   const registry = await import('../lib/workspace-registry');
   registry.registerWorkspaceTypes(new Map([[WORKSPACE_ID, 'single-repo']]));
-  scheduler = await import('../lib/plan-diagram-scheduler');
+  scheduler = await import('../canopy-runtime/plan-diagram-host');
   persistence = await import('../lib/plan-persistence');
   plan = await persistence.createTrackedPlan({
     ...scope,
@@ -129,7 +129,12 @@ beforeAll(async () => {
   });
 });
 
-afterAll(() => {
+afterAll(async () => {
+  // Plan writes record usage through the real observability service; settle
+  // its flush timer before this file's data root goes (CAN-6501 pattern).
+  await (await import('../observability'))
+    .peekObservabilityService()
+    ?.dispose();
   if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
   else process.env.CANOPY_DATA_DIR = originalDataDir;
   rmSync(root, { recursive: true, force: true });
@@ -220,25 +225,17 @@ describe('plan diagram scheduling (CAN-4167 golden)', () => {
   });
 
   it('generates at once for a manual request, bypassing the debounce', async () => {
-    scheduler.schedulePlanDiagramGeneration(plan, getWindow, {
-      immediate: true,
-    });
+    scheduler.requestPlanDiagramGeneration(plan, true);
     await waitFor(finished(2), 'the manual generation');
     expect([...calls].sort()).toEqual(['logicDiff', 'sequence']);
   });
 
   it('queues one rerun for requests made while a generation is in flight', async () => {
     hold = gate();
-    scheduler.schedulePlanDiagramGeneration(plan, getWindow, {
-      immediate: true,
-    });
+    scheduler.requestPlanDiagramGeneration(plan, true);
     await settle();
-    scheduler.schedulePlanDiagramGeneration(plan, getWindow, {
-      immediate: true,
-    });
-    scheduler.schedulePlanDiagramGeneration(plan, getWindow, {
-      immediate: true,
-    });
+    scheduler.requestPlanDiagramGeneration(plan, true);
+    scheduler.requestPlanDiagramGeneration(plan, true);
     await settle();
     const midFlight = { calls: [...calls].sort(), diagrams: await diagrams() };
     hold.release();
@@ -254,9 +251,7 @@ describe('plan diagram scheduling (CAN-4167 golden)', () => {
       content: '# Diagram golden\n\nAdd a column with ALTER TABLE users.',
     });
     plan = updated ?? plan;
-    scheduler.schedulePlanDiagramGeneration(plan, getWindow, {
-      immediate: true,
-    });
+    scheduler.requestPlanDiagramGeneration(plan, true);
     await waitFor(finished(3), 'the three generations');
     expect({
       calls: [...calls].sort(),

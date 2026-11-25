@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   RemoteControlAskUserQuestion,
   RemoteControlAskUserQuestionAnswer,
@@ -40,17 +40,51 @@ export interface ComposerQuestionPrompt {
 
 const NO_QUESTIONS: readonly RemoteControlAskUserQuestion[] = [];
 
+/** The request the composer asks and where its answer or skip goes. */
+export interface ComposerActiveQuestion {
+  readonly pending: ComposerPendingQuestion | undefined;
+  /** Undefined means the chat store's awaited answer and dismiss actions. */
+  readonly delivery: ComposerQuestionDelivery | undefined;
+}
+
+/**
+ * Picks the composer's question, App Advisor's own first, with the delivery
+ * of the store it came from. An App Advisor chat also asks through the
+ * chat's MCP questions (the injected AskUserQuestion tool), which only the
+ * chat store can answer or skip, so delivery follows the question's source,
+ * never the kind of composer.
+ */
+export function selectComposerQuestion(
+  appAdvisor: ComposerPendingQuestion | undefined,
+  appAdvisorDelivery: ComposerQuestionDelivery,
+  chat: ComposerPendingQuestion | undefined,
+): ComposerActiveQuestion {
+  return appAdvisor
+    ? { pending: appAdvisor, delivery: appAdvisorDelivery }
+    : { pending: chat, delivery: undefined };
+}
+
+/** An answer or skip that failed: its request and the exact send to retry. */
+interface FailedDelivery {
+  readonly requestId: string;
+  readonly kind: 'submit' | 'dismiss';
+  readonly send: () => Promise<unknown>;
+}
+
 /**
  * Connects a pending question to the composer's question prompt: the
  * step-by-step answer state plus its delivery (the chat store's awaited
  * answer and dismiss actions unless `delivery` says otherwise). A request
  * stays mounted (through `onDeliveryChange`) until its delivery settles, so
- * a failure keeps the prompt open with a retry.
+ * a failure keeps the prompt open with a retry. `liveRequestIds` lists every
+ * request the composer can still ask; a failure is forgotten, with the
+ * answer it holds, once its request is no longer among them.
  */
 export function useComposerQuestionPrompt(
   pending: ComposerPendingQuestion | undefined,
   onDeliveryChange: (requestId: string, retained: boolean) => void,
-  delivery?: ComposerQuestionDelivery,
+  delivery: ComposerQuestionDelivery | undefined,
+  liveRequestIds: ReadonlySet<string>,
 ): ComposerQuestionPrompt {
   const answerChatQuestion = useChatStore((s) => s.answerMcpQuestionAndWait);
   const dismissChatQuestion = useChatStore((s) => s.dismissMcpQuestionAndWait);
@@ -58,23 +92,61 @@ export function useComposerQuestionPrompt(
   const dismissQuestion = delivery?.dismiss ?? dismissChatQuestion;
   const disconnected = useChatSurfaceScope()?.disconnected === true;
   const [busy, setBusy] = useState<'answer' | 'dismiss' | null>(null);
-  const [errorKind, setErrorKind] = useState<'submit' | 'dismiss' | null>(null);
-  const lastAnswers = useRef<RemoteControlAskUserQuestionAnswer[] | null>(null);
+  const [failures, setFailures] = useState<ReadonlyMap<string, FailedDelivery>>(
+    () => new Map(),
+  );
   const requestId = pending?.requestId ?? '';
+  // Failures are kept per request: another request taking the composer (an
+  // App Advisor question asks first) shows no error and cannot retry one,
+  // since that would settle it with the other request's answer, and its own
+  // sends leave the failed request's retry in place for when it returns.
+  const activeFailure = failures.get(requestId) ?? null;
+  const errorKind = activeFailure?.kind ?? null;
+
+  // A request that expired, was cancelled or settled elsewhere takes its
+  // failure with it, and a failure that lands after it ended is not kept.
+  const live = useRef(liveRequestIds);
+  useEffect(() => {
+    live.current = liveRequestIds;
+    setFailures((previous) => {
+      const kept = [...previous].filter(([id]) => liveRequestIds.has(id));
+      return kept.length === previous.size ? previous : new Map(kept);
+    });
+  }, [liveRequestIds]);
+
+  const deliver = useCallback(
+    (attempt: FailedDelivery): void => {
+      const record = (failed: boolean): void =>
+        setFailures((previous) => {
+          const keep = failed && live.current.has(attempt.requestId);
+          if (!keep && !previous.has(attempt.requestId)) return previous;
+          const next = new Map(previous);
+          if (keep) next.set(attempt.requestId, attempt);
+          else next.delete(attempt.requestId);
+          return next;
+        });
+      setBusy(attempt.kind === 'submit' ? 'answer' : 'dismiss');
+      record(false);
+      onDeliveryChange(attempt.requestId, true);
+      void attempt
+        .send()
+        .then(() => onDeliveryChange(attempt.requestId, false))
+        .catch(() => record(true))
+        .finally(() => setBusy(null));
+    },
+    [onDeliveryChange],
+  );
 
   const submit = useCallback(
     (answers: RemoteControlAskUserQuestionAnswer[]): void => {
       if (!requestId) return;
-      lastAnswers.current = answers;
-      setBusy('answer');
-      setErrorKind(null);
-      onDeliveryChange(requestId, true);
-      void answerQuestion(requestId, answers)
-        .then(() => onDeliveryChange(requestId, false))
-        .catch(() => setErrorKind('submit'))
-        .finally(() => setBusy(null));
+      deliver({
+        requestId,
+        kind: 'submit',
+        send: () => answerQuestion(requestId, answers),
+      });
     },
-    [answerQuestion, onDeliveryChange, requestId],
+    [answerQuestion, deliver, requestId],
   );
 
   const prompt = useQuestionPrompt({
@@ -87,23 +159,20 @@ export function useComposerQuestionPrompt(
   const skip = useCallback((): void => {
     if (!requestId) return;
     discard();
-    setBusy('dismiss');
-    setErrorKind(null);
-    onDeliveryChange(requestId, true);
-    void dismissQuestion(requestId)
-      .then(() => onDeliveryChange(requestId, false))
-      .catch(() => setErrorKind('dismiss'))
-      .finally(() => setBusy(null));
-  }, [discard, dismissQuestion, onDeliveryChange, requestId]);
+    deliver({
+      requestId,
+      kind: 'dismiss',
+      send: () => dismissQuestion(requestId),
+    });
+  }, [deliver, discard, dismissQuestion, requestId]);
 
   const retry = useCallback((): void => {
-    if (errorKind === 'dismiss') skip();
-    else if (lastAnswers.current) {
-      // The form reopens after a failure, so edits since then saved again.
-      discard();
-      submit(lastAnswers.current);
-    }
-  }, [discard, errorKind, skip, submit]);
+    if (!activeFailure) return;
+    // The form reopens after a failure, so edits since then saved again.
+    discard();
+    // The same request through the same delivery it failed on.
+    deliver(activeFailure);
+  }, [activeFailure, deliver, discard]);
 
   return { prompt, busy, errorKind, disconnected, skip, retry };
 }

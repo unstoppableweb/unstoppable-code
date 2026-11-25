@@ -122,11 +122,15 @@ test('desktop preload avoids renderer vm and still exposes the IPC bridge', asyn
         ),
       ),
     ).rejects.toThrow('Invalid AI gateway endpoint.');
-    // Signed out, the device AI gateway's local-model-gateway:read, :update
-    // and :connect contract crosses the real preload and main, with its
+    // Signed out, the device AI gateway's local-model-gateway:read,
+    // local-model-gateway:update and local-model-gateway:connect contract
+    // crosses the real preload and main, with its
     // local-model-gateway:changed push (api.localModelGateway.onChanged) and
     // the api.localModelGateway.onMigrationConflict subscription. Its key reads
-    // through model-gateway:load-credential with the device gateway id.
+    // through model-gateway:load-credential with the device gateway id. The
+    // sign-in choice (local-model-gateway:migration-choice-read and
+    // local-model-gateway:migration-choose) has nothing to decide signed out
+    // and refuses an unknown decision.
     const device = await window.evaluate(async () => {
       const { api } = window;
       const changed = new Promise((resolve) => {
@@ -168,11 +172,31 @@ test('desktop preload avoids renderer vm and still exposes the IPC bridge', asyn
         'https://gateway.example.test',
       );
       const after = await api.localModelGateway.read();
+      const choice = await api.localModelGateway.readMigrationChoice();
+      const chooseSignedOut = await api.localModelGateway.chooseMigration(
+        'device',
+        'absent',
+      );
+      const chooseInvalid = await api.localModelGateway.chooseMigration(
+        'neither',
+        'absent',
+      );
       const notified = await Promise.race([
         changed,
         new Promise((resolve) => setTimeout(() => resolve(false), 10_000)),
       ]);
-      return { before, saved, stale, connect, key, after, notified };
+      return {
+        before,
+        saved,
+        stale,
+        connect,
+        key,
+        after,
+        choice,
+        chooseSignedOut,
+        chooseInvalid,
+        notified,
+      };
     });
     expect(device.before.gateway).toBeNull();
     expect(device.saved).toMatchObject({
@@ -196,7 +220,53 @@ test('desktop preload avoids renderer vm and still exposes the IPC bridge', asyn
       organizationId: device.before.organizationId,
     });
     expect(device.after.gateway?.revision).toBe(device.saved.value.revision);
+    expect(device.choice).toEqual({ ok: true, value: null });
+    expect(device.chooseSignedOut).toMatchObject({
+      ok: false,
+      error: { code: 'not_found' },
+    });
+    expect(device.chooseInvalid).toMatchObject({
+      ok: false,
+      error: { status: 400 },
+    });
     expect(device.notified).toBe(true);
+    // "Use on this computer" (CAN-7644): model-gateway-device-use:read and
+    // :set cross the real preload and main, with the
+    // model-gateway-device-use:changed push (api.modelGatewayDeviceUse.onChanged).
+    const deviceUse = await window.evaluate(async () => {
+      const { api } = window;
+      const organizationId = '22222222-2222-4222-8222-222222222222';
+      const changed = new Promise((resolve) => {
+        const stop = api.modelGatewayDeviceUse.onChanged(() => {
+          stop();
+          resolve(true);
+        });
+      });
+      const before = await api.modelGatewayDeviceUse.read();
+      await api.modelGatewayDeviceUse.set({ organizationId, used: false });
+      const off = await api.modelGatewayDeviceUse.read();
+      const notified = await Promise.race([
+        changed,
+        new Promise((resolve) => setTimeout(() => resolve(false), 10_000)),
+      ]);
+      await api.modelGatewayDeviceUse.set({ organizationId, used: true });
+      const on = await api.modelGatewayDeviceUse.read();
+      let refused = false;
+      try {
+        await api.modelGatewayDeviceUse.set({
+          organizationId: 'nope',
+          used: false,
+        });
+      } catch {
+        refused = true;
+      }
+      return { before, off, on, notified, refused };
+    });
+    expect(deviceUse.before).toEqual([]);
+    expect(deviceUse.off).toEqual(['22222222-2222-4222-8222-222222222222']);
+    expect(deviceUse.on).toEqual([]);
+    expect(deviceUse.notified).toBe(true);
+    expect(deviceUse.refused).toBe(true);
     expect(
       rendererWarnings.filter((message) =>
         message.includes(UNSUPPORTED_VM_WARNING),
@@ -234,7 +304,11 @@ test('desktop preload avoids renderer vm and still exposes the IPC bridge', asyn
       }
       return { capability, snapshot, manifest, released };
     });
-    expect(diagnostics.capability).toEqual({ snapshots: true, version: 1 });
+    expect(diagnostics.capability).toEqual({
+      snapshots: true,
+      version: 1,
+      errorSource: true,
+    });
     expect(diagnostics.snapshot).not.toHaveProperty('absolutePath');
     expect(diagnostics.manifest).toEqual({
       kind: 'text',
@@ -450,6 +524,21 @@ test.describe('native background service recovery', () => {
       await expect(
         window.getByTestId(`sidebar-project-header-${RECOVERY_PROJECT_ID}`),
       ).toBeVisible();
+      const sidebarRow = window
+        .locator(
+          `[data-testid="worktree-row"][data-worktree-id="${worktreeId}"]`,
+        )
+        .first();
+      let lastGoodRowText;
+      if (!degradedStartup) {
+        await expect(sidebarRow).toBeVisible();
+        lastGoodRowText = await sidebarRow.textContent();
+      }
+      const snapshotFailures = [];
+      window.on('console', (message) => {
+        if (message.text().includes('Shared sidebar snapshot refresh failed'))
+          snapshotFailures.push(message.text());
+      });
       const readRoots = () =>
         window.evaluate(
           (request) => window.api.getFileTreeRoots(request),
@@ -512,6 +601,50 @@ test.describe('native background service recovery', () => {
       await expect
         .poll(() => existsSync(descriptorPath), { timeout: 15_000 })
         .toBe(true);
+      // Observe the outage transition too, before any read can briefly toast.
+      await window.evaluate(() => {
+        window.recoveryCrashToasts = [];
+        window.recoveryHomeErrors = [];
+        window.recoveryRefreshWarnings = [];
+        const recordIn = (root) => {
+          const toasts = [...root.querySelectorAll('[data-toast-id]')];
+          if (root.matches?.('[data-toast-id]')) toasts.push(root);
+          for (const toast of toasts) {
+            if (toast.textContent?.includes('Something went wrong'))
+              window.recoveryCrashToasts.push(toast.textContent);
+            if (toast.textContent?.includes('Could not refresh project'))
+              window.recoveryRefreshWarnings.push(toast.textContent);
+          }
+          const banners = [
+            ...root.querySelectorAll('[data-testid="home-composer-error"]'),
+          ];
+          if (root.matches?.('[data-testid="home-composer-error"]'))
+            banners.push(root);
+          for (const banner of banners) {
+            if (banner.textContent?.includes('Something went wrong'))
+              window.recoveryHomeErrors.push(banner.textContent);
+          }
+        };
+        recordIn(document);
+        // A toast that appears then disappears during an awaited read is still
+        // a duplicate failure, even if an end-of-step count would miss it.
+        new MutationObserver((mutations) => {
+          recordIn(document);
+          // Also catch a node inserted and removed before observer delivery.
+          for (const mutation of mutations) {
+            for (const node of [
+              ...mutation.addedNodes,
+              ...mutation.removedNodes,
+            ]) {
+              if (node instanceof Element) recordIn(node);
+            }
+          }
+        }).observe(document.body, {
+          childList: true,
+          subtree: true,
+          characterData: true,
+        });
+      });
       const initialDescriptor = JSON.parse(
         readFileSync(descriptorPath, 'utf8'),
       );
@@ -556,6 +689,301 @@ test.describe('native background service recovery', () => {
       expect(unavailable).toMatchObject({
         state: 'unavailable',
         reason: 'reconnect_failed',
+      });
+
+      await test.step('unreachable reads keep the last sidebar and the single recovery notice', async () => {
+        // Exercise the renderer's real subscriber, not just an IPC rejection
+        // caught inside page.evaluate where it could never raise a toast.
+        const failuresBeforeRefresh = snapshotFailures.length;
+        await window.evaluate(() =>
+          window.api.invalidateDesktopSessionSnapshot(),
+        );
+        await expect
+          .poll(() => snapshotFailures.length)
+          .toBeGreaterThan(failuresBeforeRefresh);
+        await expect
+          .poll(() =>
+            window.evaluate(
+              () => typeof window.__canopyProjectsTestApi?.loadProjects,
+            ),
+          )
+          .toBe('function');
+        // projects:load resolves with a stale disk projection during an outage.
+        await launched.electronApp.evaluate(({ ipcMain }) => {
+          const load = ipcMain._invokeHandlers.get('projects:load');
+          if (!load) throw new Error('Missing projects:load handler');
+          globalThis.recoveryProjectsLoadHandler = load;
+          const outcomes = [];
+          globalThis.recoveryProjectsLoads = outcomes;
+          ipcMain.removeHandler('projects:load');
+          ipcMain.handle('projects:load', async (...args) => {
+            try {
+              const result = await load(...args);
+              outcomes.push({ ok: true, result });
+              return result;
+            } catch (error) {
+              outcomes.push({
+                ok: false,
+                error: String(error),
+              });
+              throw error;
+            }
+          });
+        });
+        let projectLoads;
+        try {
+          await window.evaluate(() =>
+            window.__canopyProjectsTestApi.loadProjects({
+              requireSuccess: true,
+            }),
+          );
+          projectLoads = await launched.electronApp.evaluate(
+            () => globalThis.recoveryProjectsLoads,
+          );
+        } finally {
+          await launched.electronApp.evaluate(({ ipcMain }) => {
+            ipcMain.removeHandler('projects:load');
+            ipcMain.handle(
+              'projects:load',
+              globalThis.recoveryProjectsLoadHandler,
+            );
+            delete globalThis.recoveryProjectsLoadHandler;
+            delete globalThis.recoveryProjectsLoads;
+          });
+        }
+        expect(projectLoads.length).toBeGreaterThan(0);
+        for (const outcome of projectLoads) {
+          expect(outcome).toMatchObject({
+            ok: true,
+            result: {
+              stale: true,
+              items: expect.arrayContaining([
+                expect.objectContaining({
+                  id: projectId,
+                  worktrees: expect.arrayContaining([
+                    expect.objectContaining({ id: worktreeId }),
+                  ]),
+                }),
+              ]),
+            },
+          });
+        }
+        await expect(sidebarRow).toBeVisible();
+        await expect(sidebarRow).toHaveText(lastGoodRowText);
+        await expect(
+          window.getByTestId('background-service-notice'),
+        ).toHaveCount(1);
+        await expect(
+          window.getByTestId('background-service-notice-retry'),
+        ).toBeVisible();
+        await expect(
+          window
+            .locator('[data-toast-id]')
+            .filter({ hasText: 'Something went wrong' }),
+        ).toHaveCount(0);
+        expect(await window.evaluate(() => window.recoveryCrashToasts)).toEqual(
+          [],
+        );
+        const mainLogPath = path.join(userDataDir, 'logs/main.log');
+        await expect
+          .poll(() =>
+            existsSync(mainLogPath) ? readFileSync(mainLogPath, 'utf8') : '',
+          )
+          .toContain('Shared sidebar snapshot refresh failed');
+        await test.info().attach('unavailable-snapshot-main-log', {
+          path: mainLogPath,
+          contentType: 'text/plain',
+        });
+        await test.info().attach('unavailable-project-refresh-warnings', {
+          body: JSON.stringify(
+            await window.evaluate(() => window.recoveryRefreshWarnings),
+          ),
+          contentType: 'application/json',
+        });
+        expect(
+          await window.evaluate(() => window.recoveryRefreshWarnings),
+        ).toEqual([]);
+        expect(
+          await window.evaluate(() => window.api.backgroundService.getStatus()),
+        ).toEqual(unavailable);
+      });
+
+      await test.step('a new chat opens while the service is down without a duplicate crash toast', async () => {
+        // Keep the recovery fixture's original consumer set until it latches.
+        // Selecting a worktree mounts additional daemon consumers.
+        await new CanopyAppDriver(window).selectWorktree(worktreeId, {
+          expandDefaultActivityRail: false,
+        });
+        const tabs = window.locator('[data-testid^="panel-tab-panel-chat-"]');
+        const before = new Set(
+          await tabs.evaluateAll((nodes) =>
+            nodes.map((node) => node.getAttribute('data-testid')),
+          ),
+        );
+        await window.getByTestId('panel-add-tab-group-chat').click();
+        await window.getByTestId('panel-add-menu-item-new-chat').click();
+        await expect(tabs).toHaveCount(before.size + 1);
+        const created = (
+          await tabs.evaluateAll((nodes) =>
+            nodes.map((node) => node.getAttribute('data-testid')),
+          )
+        ).find((id) => id !== null && !before.has(id));
+        expect(created).toBeTruthy();
+        await expect(window.getByTestId(created)).toHaveAttribute(
+          'aria-selected',
+          'true',
+        );
+        const chatId = created.slice('panel-tab-panel-chat-'.length);
+        await expect
+          .poll(() =>
+            window.evaluate(
+              async ({ target, chatId }) => {
+                const state = await window.api.chat.getState(target);
+                return state.tabsFile.tabs.some((tab) => tab.id === chatId);
+              },
+              { target, chatId },
+            ),
+          )
+          .toBe(true);
+        const createdPanel = window.locator(
+          `[data-testid="panel-content-chat"][data-panel-id="panel-chat-${chatId}"]`,
+        );
+        await expect(createdPanel).toBeVisible();
+        await expect(createdPanel.getByRole('textbox').first()).toBeEditable();
+        const failuresBeforeRefresh = snapshotFailures.length;
+        await window.evaluate(() =>
+          window.api.invalidateDesktopSessionSnapshot(),
+        );
+        await expect
+          .poll(() => snapshotFailures.length)
+          .toBeGreaterThan(failuresBeforeRefresh);
+        await expect(
+          window.getByTestId('background-service-notice'),
+        ).toHaveCount(1);
+        await expect(
+          window.getByTestId('background-service-notice-retry'),
+        ).toBeVisible();
+        await expect(
+          window
+            .locator('[data-toast-id]')
+            .filter({ hasText: 'Something went wrong' }),
+        ).toHaveCount(0);
+        expect(await window.evaluate(() => window.recoveryCrashToasts)).toEqual(
+          [],
+        );
+        await expect(sidebarRow).toBeVisible();
+        expect(
+          await window.evaluate(() => window.api.backgroundService.getStatus()),
+        ).toEqual(unavailable);
+      });
+
+      await test.step('Home creates a canonical task while the service is down', async () => {
+        // Observe the real write; never replace or suppress a failed write.
+        await launched.electronApp.evaluate(({ ipcMain }) => {
+          const create = ipcMain._invokeHandlers.get('work-entries:create');
+          if (!create) throw new Error('Missing work-entries:create handler');
+          globalThis.recoveryHomeCreate = null;
+          ipcMain.removeHandler('work-entries:create');
+          ipcMain.handle('work-entries:create', async (...args) => {
+            try {
+              const result = await create(...args);
+              globalThis.recoveryHomeCreate = { ok: true, result };
+              return result;
+            } catch (error) {
+              globalThis.recoveryHomeCreate = {
+                ok: false,
+                error: String(error),
+              };
+              throw error;
+            }
+          });
+        });
+        const home = await new CanopyAppDriver(window).openHomeForProject(
+          'cowork-default',
+        );
+        const prompt = 'Keep these recovery notes in a new task.';
+        await home.getByTestId('home-composer-editor').fill(prompt);
+        await home.getByTestId('home-send-button').click();
+        await expect
+          .poll(() =>
+            launched.electronApp.evaluate(() => globalThis.recoveryHomeCreate),
+          )
+          .not.toBeNull();
+        const outcome = await launched.electronApp.evaluate(
+          () => globalThis.recoveryHomeCreate,
+        );
+        await test.info().attach('unavailable-home-create-outcome', {
+          body: JSON.stringify(outcome),
+          contentType: 'application/json',
+        });
+        expect(
+          outcome,
+          'Home write failed; do not hide this failure',
+        ).toMatchObject({ ok: true });
+        const entryId = outcome.result.entry.id;
+        await expect
+          .poll(() =>
+            window.evaluate(async (entryId) => {
+              const { entries } = await window.api.workEntries.list({
+                projectId: 'cowork-default',
+              });
+              return entries.some((entry) => entry.id === entryId);
+            }, entryId),
+          )
+          .toBe(true);
+        await expect(home.getByTestId('home-composer-error')).toHaveCount(0);
+        await expect(
+          window.getByTestId('panel-content-chat').getByText(prompt).first(),
+        ).toBeVisible();
+        await expect
+          .poll(() =>
+            window.evaluate(
+              async ({ entryId, prompt }) => {
+                const state = await window.api.chat.getState({
+                  projectId: 'cowork-default',
+                  worktreeId: entryId,
+                });
+                return state.tabsFile.tabs.some((tab) =>
+                  tab.messages.some(
+                    (message) =>
+                      message.role === 'user' &&
+                      JSON.stringify(message).includes(prompt),
+                  ),
+                );
+              },
+              { entryId, prompt },
+            ),
+          )
+          .toBe(true);
+        expect(await window.evaluate(() => window.recoveryHomeErrors)).toEqual(
+          [],
+        );
+        expect(await window.evaluate(() => window.recoveryCrashToasts)).toEqual(
+          [],
+        );
+        await expect(
+          window
+            .locator('[data-toast-id]')
+            .filter({ hasText: 'Something went wrong' }),
+        ).toHaveCount(0);
+        await expect(
+          window.getByTestId('background-service-notice'),
+        ).toHaveCount(1);
+        await expect(
+          window.getByTestId('background-service-notice-retry'),
+        ).toBeVisible();
+        await test.info().attach('unavailable-project-refresh-warnings', {
+          body: JSON.stringify(
+            await window.evaluate(() => window.recoveryRefreshWarnings),
+          ),
+          contentType: 'application/json',
+        });
+        expect(
+          await window.evaluate(() => window.recoveryRefreshWarnings),
+        ).toEqual([]);
+        expect(
+          await window.evaluate(() => window.api.backgroundService.getStatus()),
+        ).toEqual(unavailable);
       });
 
       expect(bridge.restage('packaged daemon')).toBe('restaged');

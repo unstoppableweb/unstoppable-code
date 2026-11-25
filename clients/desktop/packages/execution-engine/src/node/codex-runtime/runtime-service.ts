@@ -276,6 +276,7 @@ export interface CodexInteractiveTransport {
       timeoutMs?: number;
       rejectOnOwnerFailure?: boolean;
       signal?: AbortSignal;
+      cancelInFlight?: boolean;
     },
   ): Promise<AppServerRequestResponse<TMethod>>;
   send(payload: Record<string, unknown>): void;
@@ -286,7 +287,10 @@ export interface CodexInteractiveTransport {
   registerRootThread(threadId: string): void;
   registerSubagentThread(threadId: string): void;
   unregisterThread(threadId: string): void;
-  unsubscribeThreadBestEffort(threadId: string): void;
+  unsubscribeThreadBestEffort(
+    threadId: string,
+    options?: { onlyIfUnowned?: boolean },
+  ): void;
   /** Record only a completed, locally owned thread before releasing its owner. */
   rememberIdleThread(threadId: string): void;
   /** An idle writer retained by another spawn profile cannot be resumed here. */
@@ -1776,8 +1780,8 @@ class DefaultCodexRuntimeService implements CodexRuntimeService {
         connection.registerSubagentThread(threadId, owner),
       unregisterThread: (threadId): void =>
         connection.unregisterThread(threadId, owner),
-      unsubscribeThreadBestEffort: (threadId): void =>
-        connection.unsubscribeThreadBestEffort(threadId),
+      unsubscribeThreadBestEffort: (threadId, options): void =>
+        connection.unsubscribeThreadBestEffort(threadId, options),
       rememberIdleThread: (threadId): void => {
         if (owner.hasActiveTurn()) return;
         this.releasedIdleThreads.delete(threadId);

@@ -7,6 +7,7 @@ import {
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_QUERY_DEFINITIONS,
   MUTATION_FENCE_GRANTS,
+  PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS,
   WORKER_PIPELINE_GRANTS,
   WORKER_PIPELINE_INSTRUCTION_DEFINITIONS,
   WORKER_PIPELINE_STREAM_DEFINITIONS,
@@ -44,6 +45,12 @@ export const ELECTRON_DAEMON_OWNER_DEFINITIONS = {
     'worker.pipeline.hostRequest.respond':
       WORKER_PIPELINE_INSTRUCTION_DEFINITIONS[
         'worker.pipeline.hostRequest.respond'
+      ],
+    // Only over the owner connection (CAN-7523): the daemon serves the
+    // import to its proven owner alone, until E1 (CAN-4729).
+    'core.pipeline.definition.import':
+      PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS[
+        'core.pipeline.definition.import'
       ],
   },
   streams: {

@@ -19,6 +19,11 @@ export interface CostSegment {
   readonly label: string;
   readonly value: number;
   readonly color: string;
+  /**
+   * Records with tokens and no price, set only on a segment with no dollars
+   * (an organization gateway step), so the legend can still name it.
+   */
+  readonly notPricedCount?: number;
 }
 
 export const COST_SOURCE_LABELS: Readonly<Record<CostSource, string>> = {
@@ -211,26 +216,50 @@ export function costSourceSegments(
   }));
 }
 
-/** Segments in COST_BILLING_BASES order with labels and COST_BILLING_COLORS. */
+/**
+ * Segments in COST_BILLING_BASES order with labels and COST_BILLING_COLORS.
+ * A basis with no dollars and unpriced records (`notPricedByBilling`) carries
+ * `notPricedCount`, so the legend shows it as `Not priced`.
+ */
 export function costBillingSegments(
   byBilling: Readonly<Record<CostBillingBasis, number>>,
+  notPricedByBilling?: CostTotals['notPricedByBilling'],
 ): CostSegment[] {
-  return COST_BILLING_BASES.map((basis) => ({
-    key: basis,
-    label: COST_BILLING_LABELS[basis],
-    value: byBilling[basis],
-    color: COST_BILLING_COLORS[basis],
-  }));
+  return COST_BILLING_BASES.map((basis) => {
+    const value = byBilling[basis];
+    const notPricedCount = notPricedByBilling?.[basis] ?? 0;
+    return {
+      key: basis,
+      label: COST_BILLING_LABELS[basis],
+      value,
+      color: COST_BILLING_COLORS[basis],
+      ...(value <= 0 && notPricedCount > 0 ? { notPricedCount } : {}),
+    };
+  });
 }
 
-/** costSourceSegments(totals.bySource) or costBillingSegments(totals.byBilling). */
+/**
+ * The billing bases a total used, in COST_BILLING_BASES order: each basis
+ * with dollars or unpriced records. A resumed workflow step can name two.
+ */
+export function costBillingBasesUsed(
+  totals: Pick<CostTotals, 'byBilling' | 'notPricedByBilling'>,
+): CostBillingBasis[] {
+  return COST_BILLING_BASES.filter(
+    (basis) =>
+      totals.byBilling[basis] > 0 ||
+      (totals.notPricedByBilling?.[basis] ?? 0) > 0,
+  );
+}
+
+/** costSourceSegments(totals.bySource) or costBillingSegments(totals.byBilling, totals.notPricedByBilling). */
 export function costTotalsSegments(
-  totals: Pick<CostTotals, 'bySource' | 'byBilling'>,
+  totals: Pick<CostTotals, 'bySource' | 'byBilling' | 'notPricedByBilling'>,
   dimension: CostDimension,
 ): CostSegment[] {
   return dimension === 'source'
     ? costSourceSegments(totals.bySource)
-    : costBillingSegments(totals.byBilling);
+    : costBillingSegments(totals.byBilling, totals.notPricedByBilling);
 }
 
 /** Bar scale 0..1: value / max, 0 when max <= 0, clamped. */

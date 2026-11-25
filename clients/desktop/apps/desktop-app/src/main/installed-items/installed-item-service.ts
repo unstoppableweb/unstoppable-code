@@ -1,4 +1,5 @@
 import { classifyError } from '@canopy/protocol/app-errors/classification';
+import { withOptionalCodex } from '../codex/codex-executable-availability';
 import { z } from 'zod';
 import { readFile, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -127,18 +128,38 @@ async function accountConnections(): Promise<
   }
 }
 
-async function records(): Promise<InstalledItemRecord[]> {
+async function records(
+  pluginMutationTarget?: InstalledItemRef,
+): Promise<InstalledItemRecord[]> {
   const cache = await catalog();
   canonicalMarketplaces = cache.marketplaces;
   const preferences = await readPreferencesFile();
   const recoveries = preferences.parkedCodexPlugins ?? [];
+  const target = pluginMutationTarget
+    ? canonicalInstalledItemRef(pluginMutationTarget, cache.marketplaces)
+    : undefined;
+  const requiresCodex =
+    target?.kind === 'plugin' &&
+    (cache.marketplaces.some(
+      (marketplace) =>
+        marketplace.id === target.marketplaceId &&
+        marketplace.plugins.some(
+          (plugin) =>
+            plugin.name.toLowerCase() === target.pluginName &&
+            plugin.facets.codex,
+        ),
+    ) ||
+      recoveries.some((entry) => entry.key === installedItemKey(target)));
   const hasCodex =
     recoveries.length > 0 ||
     cache.marketplaces.some((marketplace) =>
       marketplace.plugins.some((plugin) => plugin.facets.codex),
     );
-  // A failed provider read fails the snapshot. It never becomes an empty catalog.
-  const codex = hasCodex ? await listCodexPlugins() : null;
+  const codex = requiresCodex
+    ? await listCodexPlugins()
+    : hasCodex
+      ? await withOptionalCodex(listCodexPlugins)
+      : null;
   if (codex?.marketplaceLoadErrors.length)
     throw new Error('Codex installed plugin state is unavailable.');
   const result = new Map<string, InstalledItemRecord>();

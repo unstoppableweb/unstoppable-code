@@ -4,10 +4,12 @@ import { findExecutableOnPath as findOnPath } from '@canopy/core-platform/window
 export function findExecutableOnPath(
   name: string,
   pathEnv = process.env.PATH ?? '',
+  options?: { rejectInvalid: boolean },
 ): string | null {
   return findOnPath(name, {
     os: hostOperatingSystem(),
     pathEnv,
+    ...options,
     ...(process.env.PATHEXT !== undefined && { pathExt: process.env.PATHEXT }),
   });
 }

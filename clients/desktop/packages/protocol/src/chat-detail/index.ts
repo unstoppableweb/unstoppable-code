@@ -7,7 +7,9 @@ import { z } from 'zod';
  * - `recent`: back-to-back steps fold into one row ("Ran 3 commands"), and
  *   while the turn runs its newest steps stay in view under that row;
  * - `compact`: back-to-back steps fold into one row; open it to see each step.
- * Once a turn finishes, `recent` and `compact` look the same.
+ *   While the turn runs, one status line under it says what it does now.
+ * Once a turn finishes, `recent` and `compact` look the same, except that
+ * `compact` keeps a single step as a closed line too.
  */
 export const CHAT_DETAILS = ['detailed', 'recent', 'compact'] as const;
 

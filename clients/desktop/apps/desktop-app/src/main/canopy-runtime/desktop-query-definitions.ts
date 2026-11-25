@@ -17,19 +17,14 @@ import {
   CORE_PLAN_QUERY_DEFINITIONS,
   CORE_REVIEW_QUERY_DEFINITIONS,
   CORE_FEATURE_FLAG_QUERY_DEFINITIONS,
+  CORE_PUBLICATION_SHARED_CONTAINER_QUERY_DEFINITIONS,
+  CORE_SHARED_CONTAINER_QUERY_DEFINITIONS,
   WORKER_CATALOG_QUERY_DEFINITIONS,
   WORKER_VISUAL_QUERY_DEFINITIONS,
   composeCanopyQueryRegistries,
 } from '@canopy/protocol/canopy-core';
 
-// The tracked-plan reads (CAN-4165 PR 3b-2); detected plans join in PR 5.
-const {
-  'core.plan.detected.list': detectedPlanList,
-  ...CORE_PLAN_LIFECYCLE_QUERY_DEFINITIONS
-} = CORE_PLAN_QUERY_DEFINITIONS;
-void detectedPlanList;
-
-/** The desktop dispatcher's queries: the composed registry plus the catalog reads, the in-process worker's materialization read (CAN-4123), the config read (CAN-5992), the memory reads (CAN-5993), the agent watcher list (CAN-5994), the deferred tools search (CAN-5995), visual rendering (CAN-6040), the managed delegation reads (CAN-6291), the tracked-plan reads (CAN-4165), the code review read (CAN-4167) and the feature flag snapshot (CAN-4181) the daemon does not serve. */
+/** The desktop dispatcher's queries: the composed registry plus the catalog reads, the in-process worker's materialization read (CAN-4123), the config read (CAN-5992), the memory reads (CAN-5993), the agent watcher list (CAN-5994), the deferred tools search (CAN-5995), visual rendering (CAN-6040), the managed delegation reads (CAN-6291), the tracked and detected plan reads (CAN-4165), the code review read (CAN-4167), the feature flag snapshot (CAN-4181), the shared-container recipient reads (CAN-6501) and the shared-container scope and preview reads (CAN-6501) the daemon does not serve. */
 export const DESKTOP_QUERY_DEFINITIONS = composeCanopyQueryRegistries(
   CANOPY_QUERY_DEFINITIONS,
   CORE_WORKTREE_RECOVERY_QUERIES,
@@ -47,9 +42,11 @@ export const DESKTOP_QUERY_DEFINITIONS = composeCanopyQueryRegistries(
   CORE_AGENT_DEFERRED_TOOLS_QUERY_DEFINITIONS,
   WORKER_VISUAL_QUERY_DEFINITIONS,
   CORE_MANAGED_DELEGATION_QUERY_DEFINITIONS,
-  CORE_PLAN_LIFECYCLE_QUERY_DEFINITIONS,
+  CORE_PLAN_QUERY_DEFINITIONS,
   CORE_REVIEW_QUERY_DEFINITIONS,
   CORE_FEATURE_FLAG_QUERY_DEFINITIONS,
   CORE_CATALOG_COLLECTION_QUERY_DEFINITIONS,
+  CORE_PUBLICATION_SHARED_CONTAINER_QUERY_DEFINITIONS,
+  CORE_SHARED_CONTAINER_QUERY_DEFINITIONS,
 );
 export type DesktopQueryDefinitions = typeof DESKTOP_QUERY_DEFINITIONS;

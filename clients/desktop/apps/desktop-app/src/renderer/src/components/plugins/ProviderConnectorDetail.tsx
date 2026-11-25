@@ -4,11 +4,16 @@ import {
   type ProviderConnectorDetailProps as CoreProps,
 } from '@canopy/ui-app';
 import { brandText } from '@/lib/brand';
+import { useIsPageAvailable } from '@/lib/navigation/page-availability';
+import { useNavigationStore } from '@/stores/navigationStore';
 import { McpServerLogo } from '../shared/McpServerLogo';
 
 type ProviderConnectorDetailProps = Omit<
   CoreProps,
-  'appName' | 'onOpenProviderSettings' | 'McpServerLogoComponent'
+  | 'appName'
+  | 'onOpenProviderSettings'
+  | 'onManageConnections'
+  | 'McpServerLogoComponent'
 > & {
   /**
    * Fires once the provider's connector settings opened for a route, before
@@ -23,10 +28,17 @@ export function ProviderConnectorDetail({
   onConnectStarted,
   ...props
 }: ProviderConnectorDetailProps): JSX.Element {
+  const canManageConnections = useIsPageAvailable('plugins');
+  const navigate = useNavigationStore((state) => state.navigate);
   return (
     <ProviderConnectorDetailCore
       {...props}
       appName={brandText.appName}
+      onManageConnections={
+        canManageConnections
+          ? () => navigate('mcp-account-connections')
+          : undefined
+      }
       // Resolves remote catalog artwork, matching the connector's card.
       McpServerLogoComponent={McpServerLogo}
       onOpenProviderSettings={async (request) => {

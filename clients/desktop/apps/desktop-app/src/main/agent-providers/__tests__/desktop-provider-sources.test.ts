@@ -68,6 +68,10 @@ jest.mock('../../observability', () => ({
 jest.mock('../../models/model-registry', () => ({
   buildModelRegistrySnapshot: jest.fn(),
 }));
+// Antigravity is supported where a pinned CLI exists (macOS and Linux).
+jest.mock('@canopy/desktop-shared/node/antigravity/runtime-artifacts', () => ({
+  getAntigravityRuntimeArtifact: jest.fn(() => ({ version: '1' })),
+}));
 jest.mock('@canopy/desktop-shared/node/cursor/runtime-metadata', () => ({
   getCursorRuntimeArtifact: jest.fn(() => ({ version: '1' })),
 }));
@@ -194,9 +198,9 @@ it("a workspace's own credential counts for Claude and Codex", async () => {
   credentials.hasUserSuppliedProviderCredential.mockReturnValue(false);
 });
 
-it('a platform without the runtime artifact omits Cursor, Copilot and OpenCode', async () => {
+it('a platform without the runtime artifact omits Antigravity, Cursor, Copilot and OpenCode', async () => {
   expect(await desktopProviderSources.supported()).toEqual({
-    antigravity: process.platform === 'darwin',
+    antigravity: true,
     claude: true,
     codex: true,
     ollama: true,
@@ -204,25 +208,33 @@ it('a platform without the runtime artifact omits Cursor, Copilot and OpenCode',
     copilot: true,
     opencode: true,
   });
-  for (const [path, name] of [
+  for (const [path, name, unsupported] of [
+    [
+      '@canopy/desktop-shared/node/antigravity/runtime-artifacts',
+      'getAntigravityRuntimeArtifact',
+      undefined,
+    ],
     [
       '@canopy/desktop-shared/node/cursor/runtime-metadata',
       'getCursorRuntimeArtifact',
+      undefined,
     ],
     [
       '@canopy/desktop-shared/node/copilot/runtime-metadata',
       'getCopilotRuntimeArtifact',
+      undefined,
     ],
     [
       '@canopy/desktop-shared/node/opencode/runtime-metadata',
       'getOpenCodeRuntimeArtifact',
+      undefined,
     ],
   ] as const)
     jest
       .requireMock<Record<string, jest.Mock>>(path)
-      [name]?.mockReturnValueOnce(undefined);
+      [name]?.mockReturnValueOnce(unsupported);
   expect(await desktopProviderSources.supported()).toEqual({
-    antigravity: process.platform === 'darwin',
+    antigravity: false,
     claude: true,
     codex: true,
     ollama: true,
@@ -230,4 +242,48 @@ it('a platform without the runtime artifact omits Cursor, Copilot and OpenCode',
     copilot: false,
     opencode: false,
   });
+});
+
+it('platform support follows the pinned artifacts and ignores the rollout flags', async () => {
+  const flags = [
+    ['../../antigravity/feature-flag', 'isAntigravityHarnessEnabled'],
+    ['../../cursor/feature-flag', 'isCursorHarnessEnabled'],
+    ['../../copilot/feature-flag', 'isCopilotHarnessEnabled'],
+    ['../../opencode/feature-flag', 'isOpenCodeHarnessEnabled'],
+  ] as const;
+  for (const [path, name] of flags)
+    jest
+      .requireMock<Record<string, jest.Mock>>(path)
+      [name]?.mockReturnValue(false);
+  try {
+    const supported = await desktopProviderSources.supported();
+    expect([
+      supported.antigravity,
+      supported.cursor,
+      supported.copilot,
+      supported.opencode,
+    ]).toEqual([false, false, false, false]);
+    expect(await desktopProviderSources.platformSupported()).toEqual({
+      antigravity: true,
+      claude: true,
+      codex: true,
+      ollama: true,
+      cursor: true,
+      copilot: true,
+      opencode: true,
+    });
+    jest
+      .requireMock<
+        Record<string, jest.Mock>
+      >('@canopy/desktop-shared/node/antigravity/runtime-artifacts')
+      .getAntigravityRuntimeArtifact?.mockReturnValueOnce(undefined);
+    expect((await desktopProviderSources.platformSupported()).antigravity).toBe(
+      false,
+    );
+  } finally {
+    for (const [path, name] of flags)
+      jest
+        .requireMock<Record<string, jest.Mock>>(path)
+        [name]?.mockReturnValue(true);
+  }
 });

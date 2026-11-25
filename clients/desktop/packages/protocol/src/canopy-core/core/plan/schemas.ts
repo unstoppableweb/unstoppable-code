@@ -239,6 +239,8 @@ export const PlanImportParamsSchema = z.strictObject({
   /** The repository the path is inside; the worktree root for a single-repo workspace. */
   repoId: id,
   path: PlanRelativePathSchema,
+  /** Omitted, the import is recorded as the person's, as it always was. */
+  initiationSource: PlanInitiationSourceSchema.optional(),
 });
 export const PlanImportResultSchema = z.strictObject({
   plan: PlanRecordSchema,
@@ -272,7 +274,11 @@ export const PlanDiagramGenerateResultSchema = z.strictObject({
    * flight; `missing`: the scope has no such plan.
    */
   status: z.enum(PLAN_DIAGRAM_GENERATE_STATUSES),
-  /** The revision the diagrams are generated from; absent when `missing`. */
+  /**
+   * The plan revision the request was accepted at; absent when `missing`. A
+   * queued run generates from the plan as stored when it starts, and each
+   * diagram records the revision it came from in `derivedFromRevision`.
+   */
   revision: z.number().int().min(1).optional(),
 });
 

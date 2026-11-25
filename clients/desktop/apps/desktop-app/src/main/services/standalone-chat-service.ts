@@ -1143,6 +1143,9 @@ function buildStandaloneChatSummary(
         }
       : {}),
     executionHarness: tab.executionHarness,
+    ...(tab.claudeConnectorAvailability
+      ? { claudeConnectorAvailability: tab.claudeConnectorAvailability }
+      : {}),
     modelHarnessLocked:
       hasChatContinuationSession(tab) ||
       (tab.transcript?.messageCount ??
@@ -1199,6 +1202,7 @@ function buildCompactStandaloneChatSummary(
       messages: [],
       providerType: chat.providerType,
       executionHarness: chat.executionHarness,
+      claudeConnectorAvailability: chat.claudeConnectorAvailability,
       model: chat.model,
       unread: chat.unread,
       pluginSelections: chat.pluginSelections,
@@ -1315,6 +1319,9 @@ export function projectStandaloneChatSnapshot(
     providerType: chat.providerType,
     executionHarness: chat.executionHarness,
     modelHarnessLocked: chat.modelHarnessLocked,
+    ...(chat.claudeConnectorAvailability
+      ? { claudeConnectorAvailability: chat.claudeConnectorAvailability }
+      : {}),
     model: chat.model,
     ...(chat.usage !== undefined ? { usage: chat.usage } : {}),
     availableModels: chat.availableModels,
@@ -2365,6 +2372,12 @@ async function sendStandaloneChatMessageOnce(
                 existingTab?.globalInstructionsSnapshot,
               initiationSource: resolvePresentationSource(request, 'portal'),
               automationName: request.automationName,
+              ...(request.sendWhileRunning !== undefined
+                ? { sendWhileRunning: request.sendWhileRunning }
+                : {}),
+              ...(request.steerTurnId !== undefined
+                ? { steerTurnId: request.steerTurnId }
+                : {}),
               ...(request.agentSent ? { agentSent: request.agentSent } : {}),
             },
             'portal',

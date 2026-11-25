@@ -115,7 +115,7 @@ function invoke(
 }
 beforeAll(() => {
   registerSharedContainerHandlers({
-    dispatcher: { instruction: jest.fn() },
+    dispatcher: { instruction: jest.fn(), query: jest.fn() },
     resolveCaller: () => {
       throw new Error('Hosted notices must not dispatch to core');
     },

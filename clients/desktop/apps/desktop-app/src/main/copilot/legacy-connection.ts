@@ -7,6 +7,7 @@ import type { CopilotAccountUsage } from '@canopy/desktop-shared/types/copilot-c
 import { getFeatureFlagService } from '../feature-flags';
 import { notifyCopilotUsageChanged } from './usage-events';
 import { buildDelegationCursorEnvironment } from '@canopy/desktop-shared/node/delegation/environment';
+import { withoutStepStartupInjection } from '@canopy/desktop-shared/node/provider-process/step-environment';
 import type {
   CopilotAccount,
   CopilotConnectionStatus,
@@ -505,8 +506,12 @@ async function openCopilotRuntime(
         ...(options.restrictedEnvironment
           ? buildDelegationCursorEnvironment(baseEnvironment)
           : baseEnvironment),
+        // A pipeline step's own loader or shell-startup variables would run
+        // code in the runtime before any tool approval; never pass them on.
         ...Object.fromEntries(
-          Object.entries(options.environment ?? {}).filter(
+          Object.entries(
+            withoutStepStartupInjection(options.environment ?? {}),
+          ).filter(
             ([key]) =>
               ![
                 'HOME',

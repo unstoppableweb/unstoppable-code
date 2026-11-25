@@ -1,18 +1,55 @@
-// Golden (CAN-6714): the private Antigravity profile's PreToolUse hook is the
-// only gate for native tools that skip the ACP permission request. Antigravity
-// 1.5.1 treats empty hook output with exit 0 as allow, so the hook must print
-// exactly one decision or exit non-zero on every path. The hook uses macOS
-// /usr/bin/plutil, so this contract runs on the macOS platform-services lane.
+// Golden (CAN-6714, CAN-6718): the private Antigravity profile's PreToolUse
+// hook is the only gate for native tools that skip the ACP permission request.
+// Antigravity 1.5.1 treats empty hook output with exit 0 as allow, so the hook
+// must print exactly one decision or exit non-zero on every path. The hook
+// reads the tool name with macOS /usr/bin/plutil or, on Linux, with grep and
+// awk from fixed system paths, so this contract runs on the macOS and Linux
+// platform-services lanes.
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import type * as FsPromises from 'node:fs/promises';
+import {
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  truncate,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { brandEnvName } from '@canopy/execution-engine/brand/env';
-import { prepareAntigravityProfile } from '../runtime';
+import {
+  ANTIGRAVITY_LINUX_HOOK_TOOL_PATHS,
+  antigravityToolGateScript,
+  prepareAntigravityProfile,
+  resolveAntigravityHookTools,
+} from '../runtime';
 
 jest.mock('@canopy/desktop-shared/node/acp', () => ({ connectAcp: jest.fn() }));
 
-const darwinDescribe = process.platform === 'darwin' ? describe : describe.skip;
+/** Paths a case makes unusable, as if the host had no such file. */
+let missingFiles = new Set<string>();
+
+jest.mock('node:fs/promises', () => {
+  const actual = jest.requireActual<typeof FsPromises>('node:fs/promises');
+  return {
+    ...actual,
+    access: (...args: Parameters<typeof actual.access>): Promise<void> =>
+      missingFiles.has(String(args[0]))
+        ? Promise.reject(
+            Object.assign(new Error('ENOENT: no such file'), {
+              code: 'ENOENT',
+            }),
+          )
+        : actual.access(...args),
+  };
+});
+
+const darwin = process.platform === 'darwin';
+const linux = process.platform === 'linux';
+const gateDescribe = darwin || linux ? describe : describe.skip;
+const linuxIt = linux ? it : it.skip;
 
 let profile: string;
 let command: string;
@@ -33,7 +70,7 @@ function at(value: unknown, ...path: (string | number)[]): unknown {
   return current;
 }
 
-darwinDescribe('Antigravity native tool gate', () => {
+gateDescribe('Antigravity native tool gate', () => {
   beforeAll(async () => {
     profile = await mkdtemp(join(tmpdir(), 'agy-gate-golden-'));
     await prepareAntigravityProfile(profile);
@@ -121,12 +158,20 @@ darwinDescribe('Antigravity native tool gate', () => {
     // The hook pins its locale: a multibyte locale must not hide a control,
     // whether it arrives as an exported LC_ALL or only as LANG or LC_CTYPE.
     // Only the eucJP shapes fail without the pin; UTF-8 is a sanity case.
-    for (const [locale, charmap] of [
-      [{ LC_ALL: 'en_US.UTF-8' }, 'UTF-8'],
-      [{ LC_ALL: 'ja_JP.eucJP' }, 'eucJP'],
-      [{ LANG: 'ja_JP.eucJP' }, 'eucJP'],
-      [{ LC_CTYPE: 'ja_JP.eucJP' }, 'eucJP'],
-    ] as const) {
+    // Linux runners generate no eucJP locale; the Linux hook also runs grep
+    // and awk with an empty environment (the C locale), so it runs under the
+    // built-in C.UTF-8.
+    for (const [locale, charmap] of darwin
+      ? ([
+          [{ LC_ALL: 'en_US.UTF-8' }, 'UTF-8'],
+          [{ LC_ALL: 'ja_JP.eucJP' }, 'eucJP'],
+          [{ LANG: 'ja_JP.eucJP' }, 'eucJP'],
+          [{ LC_CTYPE: 'ja_JP.eucJP' }, 'eucJP'],
+        ] as const)
+      : ([
+          [{ LC_ALL: 'C.UTF-8' }, 'UTF-8'],
+          [{ LANG: 'C.UTF-8' }, 'UTF-8'],
+        ] as const)) {
       // A missing locale falls back to C, which would make these cases vacuous.
       const active = spawnSync('/usr/bin/locale', ['charmap'], {
         env: withLocale(locale),
@@ -165,4 +210,215 @@ darwinDescribe('Antigravity native tool gate', () => {
         'deny',
       );
   });
+
+  it('never sources a startup file named in the environment', async () => {
+    // bash sources BASH_ENV (and, in POSIX mode, ENV) before the hook's first
+    // line; workflow inputs reach the runtime's environment, so the hook's
+    // interpreter must ignore both, as the runtime spawns it.
+    const marker = join(profile, 'startup-sourced');
+    const startup = join(profile, 'startup.sh');
+    await writeFile(startup, `/usr/bin/touch '${marker}'\n`);
+    const env = {
+      ...process.env,
+      BASH_ENV: startup,
+      ENV: startup,
+      [brandEnvName('ANTIGRAVITY_MCP_SERVERS')]: 'canopy',
+    };
+    const run = spawnSync('/bin/sh', ['-c', command], {
+      input: call('read_file'),
+      env,
+    });
+    expect(run.stdout.toString().trim()).toBe('{"decision":"force_ask"}');
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  // The Linux parser is stricter than plutil, which reads a duplicate name
+  // last-wins: anything it cannot read as one unambiguous JSON object with a
+  // plain string name is denied.
+  linuxIt('denies payloads the Linux parser cannot read unambiguously', () => {
+    for (const stdin of [
+      '{"toolCall":{"name":"invoke_subagent","name":"read_file"}}',
+      '{"toolCall":{"name":"read_file"},"toolCall":{"name":"read_file"}}',
+      '{"toolCall":{"name":"read\\u005ffile"}}',
+      '{"tool\\u0043all":{"name":"read_file"}}',
+      '{"toolCall":{"na\\u006de":"read_file"}}',
+      '{"toolCall":{"name":"read_file"}} trailing',
+      '{"toolCall":{"name":"read_file"}}{}',
+      '{"toolCall":{"name":"read_file"},}',
+      '{"toolCall":{"name":"read_file",}}',
+      '["read_file"]',
+      '"read_file"',
+      '{"toolCall":["read_file"]}',
+      '{"toolCall":{"args":{"x":"bad\\q"},"name":"read_file"}}',
+      // A simple escape inside a \u escape must not join its digits.
+      '{"toolCall":{"args":{"x":"\\u12\\n34"},"name":"read_file"}}',
+      '{"toolCall":{"args":{"x":"\\u0\\t00e9"},"name":"read_file"}}',
+      '{"toolCall":{"args":{"x":"\\u12\\\\34"},"name":"read_file"}}',
+      '{"toolCall":{"args":{"x":"tab\there"},"name":"read_file"}}',
+      '{"toolCall":{"args":{"x":01},"name":"read_file"}}',
+      '{"toolCall":{"args":{"x":True},"name":"read_file"}}',
+      '{"toolCall":{"args":{"x":"unterminated},"name":"read_file"}}',
+      '{"toolCall":{"args":{"x":"line\nbreak"},"name":"read_file"}}',
+      '{"toolCall":{"name":"read_file"}\u000b}',
+      '{"args":{"toolCall":{"name":"read_file"}}}',
+    ])
+      expect([stdin, decide(stdin)]).toEqual([stdin, 'deny']);
+  });
+
+  linuxIt('reads valid payloads in any JSON layout', () => {
+    for (const stdin of [
+      ' {\r\n "toolCall" :\t{ "name" : "run_command" } }\n',
+      JSON.stringify(
+        {
+          conversationId: 'c',
+          toolCall: {
+            args: {
+              name: 'invoke_subagent',
+              nested: [1, -2.5e3, true, null, { s: 'q"\\/\u00e9\n' }],
+              toolCall: { name: 'search_web' },
+            },
+            name: 'write_file',
+          },
+        },
+        null,
+        2,
+      ),
+      '{"toolCall":{"name":"read_file","args":{}},"conversationId":"c"}',
+      // JSON allows a raw DEL in a string, and JSON.stringify and Go's
+      // encoding/json emit it unescaped; only C0 controls are invalid.
+      call('run_command', { CommandLine: 'a\u007fb' }),
+      // Escapes in sequence: an escaped backslash, then a literal u12, a
+      // newline and a \u escape.
+      '{"toolCall":{"args":{"x":"\\\\u12\\n\\u00e9\\\\"},"name":"read_file"}}',
+    ])
+      expect([stdin, decide(stdin)]).toEqual([stdin, 'force_ask']);
+    expect(
+      decide(call('invoke_subagent', { toolCall: { name: 'read_file' } })),
+    ).toBe('deny');
+    // A DEL in a tool name still denies.
+    for (const name of ['run_command\u007f', 'read\u007f_file'])
+      expect([name, decide(call(name))]).toEqual([name, 'deny']);
+  });
+
+  linuxIt('runs grep and awk without the inherited environment', async () => {
+    const run = (env: NodeJS.ProcessEnv, name: string): string => {
+      const result = spawnSync('/bin/sh', ['-c', command], {
+        input: call(name),
+        env: {
+          ...env,
+          [brandEnvName('ANTIGRAVITY_MCP_SERVERS')]: 'canopy',
+        },
+      });
+      return result.stdout.toString().trim();
+    };
+    const denied =
+      '{"decision":"deny","reason":"This tool is unavailable in this app."}';
+    for (const env of [
+      { ...process.env, GREP_OPTIONS: '-v' },
+      { ...process.env, LC_ALL: 'C.UTF-8', POSIXLY_CORRECT: '1' },
+    ])
+      expect(run(env, 'invoke_subagent')).toBe(denied);
+    // GNU awk keeps a script's globals across runs in a persistent heap named
+    // by GAWK_PERSIST_FILE; the parser's duplicate-key counters must not
+    // carry over, so every call starts clean. Other awks ignore the variable.
+    const heap = join(profile, 'gawk-heap.pma');
+    await writeFile(heap, '');
+    await truncate(heap, 64 * 1024 * 1024);
+    const persisted = { ...process.env, GAWK_PERSIST_FILE: heap };
+    for (const attempt of [1, 2, 3])
+      expect([attempt, run(persisted, 'read_file')]).toEqual([
+        attempt,
+        '{"decision":"force_ask"}',
+      ]);
+    expect(run(persisted, 'invoke_subagent')).toBe(denied);
+  });
+
+  linuxIt('runs bash, grep and awk from the paths it resolved', async () => {
+    const tools = await resolveAntigravityHookTools('linux');
+    const script = await readFile(join(profile, 'approval-hook.sh'), 'utf8');
+    expect(command.startsWith(`${tools.bash} -p '`)).toBe(true);
+    expect(script.startsWith(`#!${tools.bash}\n`)).toBe(true);
+    expect(script).toContain(`| exec -c ${tools.grep} -a -o -E `);
+    expect(script).toContain(`| exec -c ${tools.awk} '`);
+  });
+});
+
+// Linux distributions differ in where grep, awk and bash live (/bin without a
+// merged /usr). The hook takes each from a fixed list, never PATH, and a host
+// with none of a tool's paths refuses the launch instead of denying every tool.
+describe('Antigravity hook tool paths', () => {
+  afterEach(() => {
+    missingFiles = new Set();
+  });
+
+  it('takes the first usable fixed path for each tool', async () => {
+    const probed: string[] = [];
+    const present = new Set(['/usr/bin/bash', '/bin/grep', '/usr/bin/awk']);
+    const tools = await resolveAntigravityHookTools('linux', (file) => {
+      probed.push(file);
+      return Promise.resolve(present.has(file));
+    });
+    expect(tools).toEqual({
+      bash: '/usr/bin/bash',
+      grep: '/bin/grep',
+      awk: '/usr/bin/awk',
+    });
+    // Only the fixed candidates are probed, in order; PATH never is.
+    expect(probed).toEqual([
+      '/bin/bash',
+      '/usr/bin/bash',
+      '/usr/bin/grep',
+      '/bin/grep',
+      '/usr/bin/awk',
+    ]);
+    const script = antigravityToolGateScript('linux', tools);
+    expect(script.startsWith('#!/usr/bin/bash\n')).toBe(true);
+    expect(script).toContain('| exec -c /bin/grep -a -o -E ');
+    expect(script).toContain("| exec -c /usr/bin/awk '");
+    expect(script).not.toContain('/usr/bin/grep');
+    expect(script).not.toContain(' /bin/awk ');
+    expect(script).not.toContain('#!/bin/bash');
+  });
+
+  it.each(['bash', 'grep', 'awk'] as const)(
+    'refuses a Linux host without %s at any fixed path',
+    async (tool) => {
+      const candidates = ANTIGRAVITY_LINUX_HOOK_TOOL_PATHS[tool];
+      await expect(
+        resolveAntigravityHookTools('linux', (file) =>
+          Promise.resolve(!candidates.includes(file)),
+        ),
+      ).rejects.toThrow(
+        `Google chats need ${tool}, which wasn't found at ${candidates.join(' or ')}. Install it, then try again.`,
+      );
+    },
+  );
+
+  it('keeps the fixed macOS tools without probing', async () => {
+    const probe = jest.fn((): Promise<boolean> => Promise.resolve(false));
+    await expect(resolveAntigravityHookTools('darwin', probe)).resolves.toEqual(
+      { bash: '/bin/bash', grep: '/usr/bin/grep', awk: '/usr/bin/awk' },
+    );
+    expect(probe).not.toHaveBeenCalled();
+    expect(
+      antigravityToolGateScript('darwin').startsWith('#!/bin/bash\n'),
+    ).toBe(true);
+  });
+
+  (process.platform === 'linux' ? it : it.skip)(
+    'refuses to prepare a profile when awk is missing',
+    async () => {
+      missingFiles = new Set(ANTIGRAVITY_LINUX_HOOK_TOOL_PATHS.awk);
+      const dir = await mkdtemp(join(tmpdir(), 'agy-gate-tools-'));
+      try {
+        await expect(prepareAntigravityProfile(dir)).rejects.toThrow(
+          /Google chats need awk, which wasn't found at \/usr\/bin\/awk or \/bin\/awk/,
+        );
+        // Nothing was written, so no stale hook can run.
+        await expect(readdir(dir)).resolves.toEqual([]);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });

@@ -100,11 +100,23 @@ export function createBrowserViewFrame(
   return { frame, clip };
 }
 
+/** The layout each frame was last given. */
+const appliedLayouts = new WeakMap<BrowserViewFrame, string>();
+
+/**
+ * Applies `layout`, unless the frame already has it. The pane reports its
+ * area on every window resize event and again from its resize observer, so
+ * the same layout arrives several times per frame of a window resize, and
+ * each native move makes the page lay itself out and draw again.
+ */
 export function applyBrowserViewFrameLayout(
   views: BrowserViewFrame,
   page: WebContentsView,
   layout: BrowserViewFrameLayout,
 ): void {
+  const key = JSON.stringify(layout);
+  if (appliedLayouts.get(views) === key) return;
+  appliedLayouts.set(views, key);
   views.frame.setBounds(layout.frame);
   views.clip.setBounds(layout.clip);
   page.setBounds(layout.page);

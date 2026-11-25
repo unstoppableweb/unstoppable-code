@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { readdir, realpath, stat } from 'node:fs/promises';
 import { createJsonLineStream } from './json-lines';
@@ -5,6 +6,7 @@ import { isAbsolute, join, relative, sep } from 'node:path';
 import type { JsonValue } from './generated/serde_json/JsonValue';
 
 const MAX_ROLLOUT_FILES_SCANNED = 25_000;
+const MAX_CALL_ID_LENGTH = 64;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -23,6 +25,47 @@ export function isJsonValue(value: unknown): value is JsonValue {
     return value.every(isJsonValue);
   }
   return isRecord(value) && Object.values(value).every(isJsonValue);
+}
+
+/**
+ * Normalize a complete history seed before injection. Reserve existing IDs
+ * first so the same replacement can be used for both halves of a tool call.
+ */
+export function normalizeCodexHistoryCallIds(items: JsonValue[]): JsonValue[] {
+  const overlength = new Set<string>();
+  const reserved = new Set<string>();
+  for (const item of items) {
+    if (!isRecord(item) || typeof item.call_id !== 'string') continue;
+    const id = item.call_id;
+    if (
+      id.length > 2 * MAX_CALL_ID_LENGTH ||
+      (id.length > MAX_CALL_ID_LENGTH && [...id].length > MAX_CALL_ID_LENGTH)
+    ) {
+      overlength.add(id);
+    } else {
+      reserved.add(id);
+    }
+  }
+  if (overlength.size === 0) return items;
+
+  const replacements = new Map<string, string>();
+  for (const id of [...overlength].sort()) {
+    // Preserve lone surrogates in imported JSON instead of hashing them all as U+FFFD.
+    const digest = createHash('sha256').update(id, 'utf16le').digest('hex');
+    let candidate = digest;
+    for (let attempt = 1; reserved.has(candidate); attempt += 1) {
+      candidate = createHash('sha256')
+        .update(`${digest}:${attempt}`)
+        .digest('hex');
+    }
+    reserved.add(candidate);
+    replacements.set(id, candidate);
+  }
+  return items.map((item) => {
+    if (!isRecord(item) || typeof item.call_id !== 'string') return item;
+    const replacement = replacements.get(item.call_id);
+    return replacement ? { ...item, call_id: replacement } : item;
+  });
 }
 
 /**

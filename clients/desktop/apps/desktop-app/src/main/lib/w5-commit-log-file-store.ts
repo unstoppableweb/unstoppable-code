@@ -45,6 +45,7 @@ import { nodeW5FileStore, type W5FileStore } from './w5-file-store';
 import {
   createW5DegradedStore,
   W5DaemonHandoffError,
+  w5HandoffStoreFailure,
 } from './w5-handoff-store';
 import { noteW5CommitScopeOpened } from './w5-pre-effect-retry';
 
@@ -116,6 +117,22 @@ const currentStore = (): W5FileStore =>
   installedStore ??
   // Import-time and failed-startup callers get only degraded reads, never a local writer.
   uninitializedDaemonStore;
+
+/**
+ * The handoff error the current W5 store refuses writes with, when its
+ * startup handoff failed (CAN-7316). Synchronous and never waits: `undefined`
+ * while the handoff is pending, after it succeeded, before any handoff store
+ * is installed (today's throw-and-retry path, so a list that runs then is
+ * retried and reloads once the handoff succeeds), and for a store that
+ * registers no failure.
+ * Callers read it after an index read has settled through the store.
+ */
+export function desktopW5WriteRefusal(): W5DaemonHandoffError | undefined {
+  const store = currentStore();
+  return store === uninitializedDaemonStore
+    ? undefined
+    : w5HandoffStoreFailure(store);
+}
 
 export const desktopW5FileStore: W5RecordImageStore = {
   withCommit: (options, work) => withW5Commit(options, work),

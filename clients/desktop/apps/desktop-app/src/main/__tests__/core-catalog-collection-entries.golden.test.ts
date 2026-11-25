@@ -12,8 +12,9 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { CanopyOperationError } from '@canopy/core-runtime';
 import {
   collectionEntryId,
@@ -28,6 +29,7 @@ import type * as AccountCatalog from '../mcp/account-catalog';
 import type * as CloudAccountStore from '../lib/canopy-cloud-account-store';
 import type * as ServerClient from '../collections/canopy-server-client';
 import type * as SharedItemSubscriptions from '../canopy-cloud/shared-item-subscriptions';
+import type * as FsPromises from 'node:fs/promises';
 
 // Resource contexts are off unless a case turns them on, with the signed-in
 // account below and an organization whose context the foreground refuses.
@@ -101,6 +103,46 @@ jest.mock('../canopy-cloud/shared-item-subscriptions', () => ({
   recordSharedItemUninstall: (): void => undefined,
 }));
 
+// A disk error on the read of a config's text right after a read of its bytes
+// of the same file, as the hash delete's second read would meet it; or once,
+// on the next read of a config's text.
+const mockReadFault: {
+  path: string | null;
+  bytesRead: boolean;
+  nextText: string | null;
+} = {
+  path: null,
+  bytesRead: false,
+  nextText: null,
+};
+jest.mock('node:fs/promises', () => {
+  const actual = jest.requireActual<typeof FsPromises>('node:fs/promises');
+  return {
+    __esModule: true,
+    ...actual,
+    readFile: (
+      ...args: Parameters<typeof actual.readFile>
+    ): ReturnType<typeof actual.readFile> => {
+      if (args[0] === mockReadFault.nextText && args[1] !== undefined) {
+        mockReadFault.nextText = null;
+        return Promise.reject(
+          Object.assign(new Error('EIO: i/o error, read'), { code: 'EIO' }),
+        );
+      }
+      if (args[0] === mockReadFault.path) {
+        if (args[1] === undefined) mockReadFault.bytesRead = true;
+        else if (mockReadFault.bytesRead) {
+          mockReadFault.path = null;
+          return Promise.reject(
+            Object.assign(new Error('EIO: i/o error, read'), { code: 'EIO' }),
+          );
+        }
+      }
+      return actual.readFile(...args);
+    },
+  };
+});
+
 const SKILL: InstalledSkillInfo = {
   name: 'deploy',
   sourceId: 'user',
@@ -171,6 +213,21 @@ const ID_MALFORMED = 'bcbcbcbc-0000-4000-8000-00000000000d';
 const ORG_OUTSIDE = 'dededede-0000-4000-8000-00000000000e';
 const ID_MALFORMED_OUTSIDE = 'efefefef-0000-4000-8000-00000000000f';
 const ID_UNDATED = '13131313-0000-4000-8000-000000000010';
+const ID_PIN = '14141414-0000-4000-8000-000000000011';
+const ID_CORRUPT = '15151515-0000-4000-8000-000000000012';
+const ID_REPAIRED = '16161616-0000-4000-8000-000000000013';
+const ID_ODD = '17171717-0000-4000-8000-000000000014';
+const ID_GONE = '18181818-0000-4000-8000-000000000015';
+const ID_LONG = '19191919-0000-4000-8000-000000000016';
+const ID_LEGACY = '1a1a1a1a-0000-4000-8000-000000000017';
+const ID_DENIED = '1b1b1b1b-0000-4000-8000-000000000018';
+const ID_BLANK = '1c1c1c1c-0000-4000-8000-000000000019';
+const ID_PINCAP = '1d1d1d1d-0000-4000-8000-00000000001a';
+const ID_EIO = '1e1e1e1e-0000-4000-8000-00000000001b';
+const ID_ESCAPED = '1f1f1f1f-0000-4000-8000-00000000001c';
+const ID_FRACTION = '2a2a2a2a-0000-4000-8000-00000000001d';
+const ID_LATE = '2b2b2b2b-0000-4000-8000-00000000001e';
+const ID_FLAKY = '2c2c2c2c-0000-4000-8000-00000000001f';
 const UNREADABLE = {
   kind: 'failed_precondition',
   code: 'core.catalog.entryUnreadable',
@@ -335,6 +392,39 @@ function remove(
     },
   );
 }
+
+function management(id: string): Promise<unknown> {
+  return dispatcher.query(
+    'core.catalog.entry.get',
+    { kind: 'collection', read: 'management', entryId: collectionEntryId(id) },
+    { caller: caller(['core.catalog.read']) },
+  );
+}
+
+function removeCorrupt(
+  id: string,
+  expectedStoredBytesHash: string,
+  key = `collection-delete-${(keyCount += 1)}`,
+): Promise<unknown> {
+  return dispatcher.instruction(
+    'core.catalog.entry.delete',
+    {
+      kind: 'collection',
+      entryId: collectionEntryId(id),
+      expectedStoredBytesHash,
+      _meta: { idempotencyKey: key },
+    },
+    {
+      caller: caller(['core.catalog.write']),
+      metadata: { idempotencyKey: key },
+    },
+  );
+}
+
+const bytesHash = (id: string): string =>
+  createHash('sha256')
+    .update(readFileSync(configPath(id)))
+    .digest('hex');
 
 async function refusal(call: Promise<unknown>): Promise<unknown> {
   try {
@@ -799,7 +889,8 @@ describe('Local collections through core.catalog.entry (CAN-4170)', () => {
   });
 
   // The ledger records an outcome of up to 32,768 characters (CAN-5898); with
-  // 16-character skill names, 268 members fit the worst-case entry, 269 don't.
+  // 16-character skill names, 263 members fit the worst-case entry, share
+  // account pin included, 264 don't.
   it('saves a collection just under the ledger cap and refuses one just over it, writing nothing', async () => {
     const skills = (count: number): CatalogCollectionMembers['skills'] =>
       Array.from({ length: count }, (_, index) => ({
@@ -814,13 +905,13 @@ describe('Local collections through core.catalog.entry (CAN-4170)', () => {
         members: { skills: skills(count), plugins: [], mcpServers: [] },
       });
     const before = readdirSync(collectionsDir()).sort();
-    expect(await refusal(capped(269))).toMatchObject({
+    expect(await refusal(capped(264))).toMatchObject({
       kind: 'resource_exhausted',
     });
     expect(readdirSync(collectionsDir()).sort()).toEqual(before);
-    const saved: unknown = await capped(268);
+    const saved: unknown = await capped(263);
     expect(saved).toMatchObject({
-      entry: { name: 'Cap', members: { skills: skills(268) } },
+      entry: { name: 'Cap', members: { skills: skills(263) } },
     });
     const added = readdirSync(collectionsDir()).filter(
       (name) => !before.includes(name),
@@ -830,7 +921,7 @@ describe('Local collections through core.catalog.entry (CAN-4170)', () => {
     const id = file?.slice('collection-'.length, -'.json'.length) ?? '';
     expect(storedCollection(id)).toMatchObject({
       name: 'Cap',
-      skills: skills(268),
+      skills: skills(263),
     });
   });
 
@@ -1168,13 +1259,423 @@ describe('Local collections through core.catalog.entry (CAN-4170)', () => {
           }),
         ),
         delete: await refusal(remove(ID_OUTSIDE, 'rev-Outside')),
+        management: await refusal(management(ID_OUTSIDE)),
       }).toMatchObject({
         read: UNREADABLE,
         replace: UNREADABLE,
         delete: UNREADABLE,
+        management: UNREADABLE,
       });
     });
     expect(readFileSync(configPath(ID_OUTSIDE), 'utf8')).toBe(before);
+  });
+
+  it('reads the account a share was made under as stored, whoever is signed in, and acts on none of it yet', async () => {
+    seedConfig(ID_PIN, 'Pinned', {
+      remote: {
+        accountId: 'account-other',
+        remoteId: 'remote-pin',
+        contentHash: SHARE_HASH,
+        shareScope: 'private',
+        sharedAt: STAMP,
+      },
+    });
+    const pinned = {
+      remoteId: 'remote-pin',
+      contentHash: SHARE_HASH,
+      shareScope: 'private',
+      sharedAt: STAMP,
+      accountId: 'account-other',
+    };
+    // Signed out, then signed in as account-1: the pin is answered as stored.
+    expect((await entryOf(ID_PIN)).share).toEqual(pinned);
+    const before = collectionFiles();
+    await withResourceContext(async () => {
+      expect((await entryOf(ID_PIN)).share).toEqual(pinned);
+      const key = `collection-publish-${(keyCount += 1)}`;
+      expect(
+        await refusal(
+          dispatcher.instruction(
+            'core.catalog.entry.publish',
+            {
+              kind: 'collection',
+              mode: 'update',
+              publicationId: 'remote-pin',
+              sourceEntryId: collectionEntryId(ID_PIN),
+              expectedAccountId: 'account-1',
+              document: {
+                rawCollection:
+                  '{"version":1,"name":"Pinned","description":"","items":[]}',
+              },
+              _meta: { idempotencyKey: key },
+            },
+            {
+              caller: caller(['core.catalog.write']),
+              metadata: { idempotencyKey: key },
+            },
+          ),
+        ),
+      ).toMatchObject({ kind: 'capability_unavailable' });
+    });
+    expect(collectionFiles()).toEqual(before);
+  });
+
+  it('answers what a delete needs for a collection the contract cannot carry or whose share was revoked, and deletes it at that revision', async () => {
+    seedConfig(ID_ODD, 'Odd', { skills: {} });
+    expect(await management(ID_ODD)).toEqual({
+      read: 'management',
+      entryId: collectionEntryId(ID_ODD),
+      revision: 'rev-Odd',
+    });
+    expect(await remove(ID_ODD, 'rev-Odd')).toMatchObject({ deleted: true });
+    await recordInstall(ID_GONE, 'remote-gone', { kind: 'personal' });
+    await withResourceContext(async () => {
+      expect(await refusal(get(ID_GONE))).toMatchObject(UNREADABLE);
+      expect(await management(ID_GONE)).toEqual({
+        read: 'management',
+        entryId: collectionEntryId(ID_GONE),
+        revision: 'rev-Outside',
+      });
+      expect(await remove(ID_GONE, 'rev-Outside')).toMatchObject({
+        deleted: true,
+      });
+    });
+    expect({
+      odd: existsSync(configPath(ID_ODD)),
+      gone: existsSync(configPath(ID_GONE)),
+    }).toEqual({ odd: false, gone: false });
+    expect(await refusal(management(ID_NONE))).toMatchObject({
+      kind: 'not_found',
+      code: 'core.catalog.entryNotFound',
+    });
+  });
+
+  it('deletes a collection whose stored configuration cannot be parsed only at the hash of its bytes, which nothing else takes', async () => {
+    writeFileSync(configPath(ID_CORRUPT), '{ "version": 2, "collection": ');
+    const hash = bytesHash(ID_CORRUPT);
+    const before = readFileSync(configPath(ID_CORRUPT), 'utf8');
+    expect({
+      entry: await refusal(get(ID_CORRUPT)),
+      management: await management(ID_CORRUPT),
+      replace: await refusal(
+        upsert({
+          entryId: collectionEntryId(ID_CORRUPT),
+          expectedRevision: hash,
+          name: 'Corrupt renamed',
+        }),
+      ),
+      deleteAtHashAsRevision: await refusal(remove(ID_CORRUPT, hash)),
+      deleteAtOtherBytes: await refusal(
+        removeCorrupt(ID_CORRUPT, 'b'.repeat(64)),
+      ),
+    }).toEqual({
+      entry: { ...UNREADABLE, details: undefined },
+      management: {
+        read: 'management',
+        entryId: collectionEntryId(ID_CORRUPT),
+        storedBytesHash: hash,
+      },
+      replace: { ...UNREADABLE, details: undefined },
+      deleteAtHashAsRevision: { ...UNREADABLE, details: undefined },
+      deleteAtOtherBytes: {
+        kind: 'conflict',
+        code: 'core.catalog.revisionConflict',
+        details: undefined,
+      },
+    });
+    expect(readFileSync(configPath(ID_CORRUPT), 'utf8')).toBe(before);
+    // With resource contexts on, every delete reads the local snapshot first,
+    // which these bytes fail; this one is refused as the others are.
+    await withResourceContext(async () => {
+      expect({
+        atHash: await refusal(removeCorrupt(ID_CORRUPT, hash)),
+        atOtherBytes: await refusal(removeCorrupt(ID_CORRUPT, 'b'.repeat(64))),
+      }).toMatchObject({ atHash: UNREADABLE, atOtherBytes: UNREADABLE });
+    });
+    expect(readFileSync(configPath(ID_CORRUPT), 'utf8')).toBe(before);
+    const key = `collection-delete-${(keyCount += 1)}`;
+    const deleted = {
+      kind: 'collection',
+      entryId: collectionEntryId(ID_CORRUPT),
+      deleted: true,
+    };
+    expect(await removeCorrupt(ID_CORRUPT, hash, key)).toEqual(deleted);
+    expect(existsSync(configPath(ID_CORRUPT))).toBe(false);
+    expect(await removeCorrupt(ID_CORRUPT, hash, key)).toEqual(deleted);
+  });
+
+  it('refuses a hash delete once the collection can be read again, answering its revision, and reads a folder in its place as unreadable', async () => {
+    writeFileSync(configPath(ID_REPAIRED), '{ not json');
+    const hash = bytesHash(ID_REPAIRED);
+    seedConfig(ID_REPAIRED, 'Repaired');
+    expect(await refusal(removeCorrupt(ID_REPAIRED, hash))).toEqual({
+      kind: 'conflict',
+      code: 'core.catalog.revisionConflict',
+      details: { currentRevision: 'rev-Repaired' },
+    });
+    expect(storedCollection(ID_REPAIRED).revision).toBe('rev-Repaired');
+    expect({
+      management: await refusal(management(ID_B)),
+      delete: await refusal(removeCorrupt(ID_B, 'b'.repeat(64))),
+    }).toEqual({
+      management: { ...UNREADABLE, details: undefined },
+      delete: { ...UNREADABLE, details: undefined },
+    });
+    expect(statSync(configPath(ID_B)).isDirectory()).toBe(true);
+  });
+
+  it('answers a collection whose stored revision the contract cannot carry by its stored bytes hash, and deletes it there', async () => {
+    seedConfig(ID_LONG, 'Long', { revision: 'r'.repeat(257) });
+    const hash = bytesHash(ID_LONG);
+    expect(await management(ID_LONG)).toEqual({
+      read: 'management',
+      entryId: collectionEntryId(ID_LONG),
+      storedBytesHash: hash,
+    });
+    expect(await removeCorrupt(ID_LONG, hash)).toMatchObject({ deleted: true });
+    expect(existsSync(configPath(ID_LONG))).toBe(false);
+  });
+
+  it('answers no stored bytes hash with resource contexts on, even for a shared collection whose authorization fails', async () => {
+    // No install receipt, a share the hosted service refuses, and a revision
+    // the contract cannot carry.
+    seedConfig(ID_DENIED, 'Denied', {
+      revision: 'r'.repeat(257),
+      sharedSource: {
+        remoteId: 'remote-denied',
+        fetchedAt: STAMP,
+        fromPublicShare: false,
+        contentHash: SHARE_HASH,
+      },
+    });
+    const before = readFileSync(configPath(ID_DENIED), 'utf8');
+    await withResourceContext(async () => {
+      expect({
+        management: await refusal(management(ID_DENIED)),
+        delete: await refusal(removeCorrupt(ID_DENIED, bytesHash(ID_DENIED))),
+      }).toEqual({
+        management: { ...UNREADABLE, details: undefined },
+        delete: { ...UNREADABLE, details: undefined },
+      });
+    });
+    expect(readFileSync(configPath(ID_DENIED), 'utf8')).toBe(before);
+  });
+
+  it('reads a whitespace-only revision as a revision, so the hash delete keeps the config and answers it', async () => {
+    seedConfig(ID_BLANK, 'Blank', { revision: '   ' });
+    const hash = bytesHash(ID_BLANK);
+    expect({
+      management: await management(ID_BLANK),
+      delete: await refusal(removeCorrupt(ID_BLANK, hash)),
+    }).toEqual({
+      management: {
+        read: 'management',
+        entryId: collectionEntryId(ID_BLANK),
+        revision: '   ',
+      },
+      delete: {
+        kind: 'conflict',
+        code: 'core.catalog.revisionConflict',
+        details: { currentRevision: '   ' },
+      },
+    });
+    expect(existsSync(configPath(ID_BLANK))).toBe(true);
+  });
+
+  it('refuses a replace whose answer, with the share account pin, would be too large to record, writing nothing', async () => {
+    const skills = Array.from({ length: 268 }, (_, index) => ({
+      sourceId: 'user',
+      skillName: `skill-${String(index).padStart(4, '0')}`.padEnd(16, 'x'),
+    }));
+    seedConfig(ID_PINCAP, 'PinCap', {
+      skills,
+      plugins: [],
+      mcpServers: [],
+      revision: 'r'.repeat(256),
+      sharedSource: {
+        remoteId: 'A'.repeat(128),
+        fetchedAt: STAMP,
+        fromPublicShare: false,
+        contentHash: 'c'.repeat(128),
+      },
+      remote: {
+        remoteId: 'B'.repeat(128),
+        contentHash: 'd'.repeat(128),
+        shareScope: 'organization',
+        sharedAt: STAMP,
+        accountId: 'a'.repeat(512),
+      },
+    });
+    const before = readFileSync(configPath(ID_PINCAP), 'utf8');
+    expect(
+      await refusal(
+        upsert({
+          entryId: collectionEntryId(ID_PINCAP),
+          expectedRevision: 'r'.repeat(256),
+          name: 'PinCap',
+          members: { skills, plugins: [], mcpServers: [] },
+        }),
+      ),
+    ).toMatchObject({ kind: 'resource_exhausted' });
+    expect(readFileSync(configPath(ID_PINCAP), 'utf8')).toBe(before);
+  });
+
+  it('sizes a replace by the share it keeps as stored, refusing one whose answer could not be recorded under every retry, writing nothing', async () => {
+    const skills = Array.from({ length: 263 }, (_, index) => ({
+      sourceId: 'user',
+      skillName: `skill-${String(index).padStart(4, '0')}`.padEnd(16, 'x'),
+    }));
+    // Within the bound in ASCII; JSON writes each control character as six,
+    // and the fraction has no length limit.
+    const shares = [
+      {
+        id: ID_ESCAPED,
+        name: 'Escaped',
+        share: { accountId: '\u0001'.repeat(512) },
+      },
+      {
+        id: ID_FRACTION,
+        name: 'Fraction',
+        share: { sharedAt: `2026-11-01T00:00:00.${'1'.repeat(3000)}Z` },
+      },
+    ];
+    for (const { id, name, share } of shares) {
+      seedConfig(id, name, {
+        skills,
+        plugins: [],
+        mcpServers: [],
+        remote: {
+          remoteId: 'remote-wide',
+          contentHash: SHARE_HASH,
+          shareScope: 'organization',
+          sharedAt: STAMP,
+          ...share,
+        },
+      });
+      const before = readFileSync(configPath(id), 'utf8');
+      const replace = (): Promise<unknown> =>
+        upsert(
+          {
+            entryId: collectionEntryId(id),
+            expectedRevision: `rev-${name}`,
+            name,
+            members: { skills, plugins: [], mcpServers: [] },
+          },
+          { key: `oversized-${name}` },
+        );
+      expect([await refusal(replace()), await refusal(replace())]).toEqual([
+        expect.objectContaining({ kind: 'resource_exhausted' }),
+        expect.objectContaining({ kind: 'resource_exhausted' }),
+      ]);
+      expect(readFileSync(configPath(id), 'utf8')).toBe(before);
+    }
+  });
+
+  it('refuses an oversized replace whose first read meets a disk error, writing nothing under any retry', async () => {
+    const skills = Array.from({ length: 263 }, (_, index) => ({
+      sourceId: 'user',
+      skillName: `skill-${String(index).padStart(4, '0')}`.padEnd(16, 'x'),
+    }));
+    seedConfig(ID_FLAKY, 'Flaky', {
+      skills,
+      plugins: [],
+      mcpServers: [],
+      remote: {
+        remoteId: 'remote-wide',
+        contentHash: SHARE_HASH,
+        shareScope: 'organization',
+        sharedAt: STAMP,
+        accountId: '\u0001'.repeat(512),
+      },
+    });
+    const before = readFileSync(configPath(ID_FLAKY), 'utf8');
+    const replace = (): Promise<unknown> =>
+      upsert(
+        {
+          entryId: collectionEntryId(ID_FLAKY),
+          expectedRevision: 'rev-Flaky',
+          name: 'Flaky',
+          members: { skills, plugins: [], mcpServers: [] },
+        },
+        { key: 'oversized-flaky' },
+      );
+    mockReadFault.nextText = configPath(ID_FLAKY);
+    expect([await refusal(replace()), await refusal(replace())]).toEqual([
+      expect.objectContaining({ kind: 'resource_exhausted' }),
+      expect.objectContaining({ kind: 'resource_exhausted' }),
+    ]);
+    expect(mockReadFault.nextText).toBeNull();
+    expect(readFileSync(configPath(ID_FLAKY), 'utf8')).toBe(before);
+  });
+
+  it('records a replace of a missing collection under its key, so a retry replays not found after the collection appears', async () => {
+    const replace = (): Promise<unknown> =>
+      upsert(
+        {
+          entryId: collectionEntryId(ID_LATE),
+          expectedRevision: 'rev-Late',
+          name: 'Late renamed',
+        },
+        { key: 'replace-missing' },
+      );
+    expect(await refusal(replace())).toMatchObject({
+      kind: 'not_found',
+      code: 'core.catalog.entryNotFound',
+    });
+    seedConfig(ID_LATE, 'Late');
+    const before = readFileSync(configPath(ID_LATE), 'utf8');
+    expect(await refusal(replace())).toMatchObject({
+      kind: 'not_found',
+      code: 'core.catalog.entryNotFound',
+    });
+    expect(readFileSync(configPath(ID_LATE), 'utf8')).toBe(before);
+  });
+
+  it('keeps a readable config whose second read meets a disk error, answering the hash delete as unreadable', async () => {
+    seedConfig(ID_EIO, 'Eio');
+    const before = readFileSync(configPath(ID_EIO), 'utf8');
+    mockReadFault.path = configPath(ID_EIO);
+    mockReadFault.bytesRead = false;
+    expect(await refusal(removeCorrupt(ID_EIO, bytesHash(ID_EIO)))).toEqual({
+      ...UNREADABLE,
+      details: undefined,
+    });
+    expect(mockReadFault.path).toBeNull();
+    expect(readFileSync(configPath(ID_EIO), 'utf8')).toBe(before);
+  });
+
+  it('keeps a config that index recovery restores before a hash delete would remove it', async () => {
+    const paths = await import('../lib/paths');
+    writeFileSync(configPath(ID_LEGACY), '{ corrupt');
+    const hash = bytesHash(ID_LEGACY);
+    mkdirSync(dirname(paths.getBundlesIndexFilePath()), { recursive: true });
+    writeFileSync(
+      paths.getBundlesIndexFilePath(),
+      JSON.stringify({ version: 1, bundles: [{ id: ID_LEGACY }] }),
+    );
+    writeFileSync(
+      paths.getBundleConfigFilePath(ID_LEGACY),
+      JSON.stringify({
+        version: 1,
+        bundle: {
+          id: ID_LEGACY,
+          name: 'Legacy',
+          description: '',
+          skills: [],
+          plugins: [],
+          mcpServers: [],
+          createdAt: STAMP,
+          updatedAt: STAMP,
+        },
+      }),
+    );
+    // A missing index converts the retained legacy bundle onto this config.
+    rmSync(paths.getCollectionsIndexFilePath(), { force: true });
+    expect(await refusal(removeCorrupt(ID_LEGACY, hash))).toMatchObject({
+      kind: 'conflict',
+      code: 'core.catalog.revisionConflict',
+    });
+    expect(storedCollection(ID_LEGACY).name).toBe('Legacy');
   });
 
   it('never writes selections', () => {

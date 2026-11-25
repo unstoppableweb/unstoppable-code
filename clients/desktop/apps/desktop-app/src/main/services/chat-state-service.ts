@@ -329,7 +329,7 @@ import {
 import { validateId } from '../lib/validation';
 import { assertWritableScope } from '../lib/read-only-scope';
 import {
-  buildPersistedTurnInterruptedMutations,
+  buildPersistedTurnSettlement,
   settlePersistedInterruptedMessages,
   closeOpenPersistedTurnTimers,
   settlePersistedForkMessages,
@@ -347,7 +347,10 @@ import {
 } from '../lib/chat-turn-ends';
 import { isUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
 import { preserveSettledTurnTimers } from '../lib/settled-turn-timer-guard';
-import { recordInterruptedChats } from '../lib/usage-limited-chats-registry';
+import {
+  hasShutdownRecordForTurn,
+  recordInterruptedChats,
+} from '../lib/usage-limited-chats-registry';
 import {
   installChatTranscriptRewriteDiagnosticSink,
   installChatTranscriptRewriteRateDiagnosticSink,
@@ -2394,6 +2397,9 @@ function transcriptState(
     ...(tab.model ? { model: tab.model } : {}),
     ...(tab.usage ? { usage: tab.usage } : {}),
     ...(tab.agentUsage ? { agentUsage: tab.agentUsage } : {}),
+    ...(tab.claudeConnectorAvailability
+      ? { claudeConnectorAvailability: tab.claudeConnectorAvailability }
+      : {}),
     ...(tab.llmProviderUsageLimitBanner
       ? { llmProviderUsageLimitBanner: tab.llmProviderUsageLimitBanner }
       : {}),
@@ -6208,9 +6214,32 @@ export class ChatStateService implements ChatStateCommandPort {
               restartChatIds.add(chatId);
             }
             const now = this.now();
+            // Decide the outcome from the facts as found, before this cleanup
+            // exits the terminal or removes the turn's questions.
+            const settlement = await buildPersistedTurnSettlement(
+              chatId,
+              tab.messages,
+              runtime,
+              now,
+              queuedMessageIds,
+              tab,
+              {
+                pendingQuestion: (current.tabsFile.pendingQuestions ?? []).some(
+                  (question) =>
+                    question.chatId === chatId && question.delivery !== 'async',
+                ),
+                terminalActive: terminalActive === true,
+                hasShutdownRecord: (userMessageId) =>
+                  hasShutdownRecordForTurn(chatId, userMessageId),
+              },
+            );
             // Persist the resume target before closing its durable running marker.
             // A registry failure leaves the original state available for a retry.
-            if (isRealWorkspaceTarget(target)) {
+            // A turn that completed has nothing to resume.
+            if (
+              settlement.outcome === 'interrupted' &&
+              isRealWorkspaceTarget(target)
+            ) {
               await recordInterruptedChats([
                 {
                   ...target,
@@ -6242,8 +6271,11 @@ export class ChatStateService implements ChatStateCommandPort {
                   },
                 },
               });
-            // An app restart ends the marked turn without completing it, so
-            // its auto-archive ends here, before any resume (CAN-6014).
+            // An app restart ends the marked turn's live run, so its
+            // auto-archive ends here, before any resume (CAN-6014). A turn
+            // restart cleanup settles as completed (CAN-7612) is not archived
+            // either: archiving a chat on relaunch would hide the answer the
+            // person has not yet seen.
             if (tab.autoArchive === true)
               mutations.push({
                 type: 'tab.metadata_patched',
@@ -6261,16 +6293,7 @@ export class ChatStateService implements ChatStateCommandPort {
                   requestId: question.requestId,
                 });
             }
-            mutations.push(
-              ...buildPersistedTurnInterruptedMutations(
-                chatId,
-                tab.messages,
-                runtime,
-                now,
-                queuedMessageIds,
-                tab,
-              ),
-            );
+            mutations.push(...settlement.mutations);
           }
           return mutations;
         },
@@ -15536,6 +15559,7 @@ export class ChatStateService implements ChatStateCommandPort {
         delete fork.readOnly;
         delete fork.staleSessionDetected;
         delete fork.llmProviderUsageLimitBanner;
+        delete fork.claudeConnectorAvailability;
         delete fork.dismissedLlmProviderUsageLimitBannerKey;
         delete fork.attentionDismissedAt;
         delete fork.autoArchive;
@@ -16281,6 +16305,26 @@ export function getChatStateService(): ChatStateService {
  */
 export function resetChatStateServiceForTests(next?: ChatStateService): void {
   replaceChatStateService(next);
+}
+
+/** Durably swap the thread ID of a writable chat while its repair still owns the handoff. */
+export async function commitCodexRepairThreadId(
+  target: ChatScopeKey & { chatId: string },
+  sourceId: string,
+  replacementId: string,
+  canCommit: () => boolean,
+): Promise<boolean> {
+  const { updated } = await getChatStateService().updateCompatibilityTab(
+    { projectId: target.projectId, worktreeId: target.worktreeId },
+    target.chatId,
+    (tab) =>
+      tab.sdkSessionId === sourceId && !tab.readOnly && canCommit()
+        ? { ...tab, sdkSessionId: replacementId }
+        : null,
+    undefined,
+    { metadataOnly: true },
+  );
+  return updated;
 }
 
 /** Main-only watcher producer reads; never an interface command port. */

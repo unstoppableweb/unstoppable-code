@@ -13,6 +13,7 @@ import type {
 import {
   ChatCopyAction,
   ChatToolStepGroup,
+  CollapsibleBlockBody,
   PlanCopyAction,
   CollapsedTurnSummary,
   getElapsedSecond,
@@ -34,9 +35,11 @@ import {
   useTurnCollapse,
   useGroupToolCalls,
   type TurnSummary,
+  isTurnTimerPaused,
 } from '@canopy/ui-shared/components';
 import { ChatMessageView, normalizeChatMessageParts } from './ChatMessageView';
 import {
+  readPartText,
   ToolTurnSettledContext,
   useAskUserQuestionInteraction,
   useTurnWorkingStatus,
@@ -584,17 +587,46 @@ function TurnGroupViewImpl({
   // a step line above already says what the turn does.
   const liveLineInSteps =
     (!groupToolCalls || recentSteps) && lastCleanSegment?.kind === 'steps';
+  // Compact: one status line, always in the row under the turn, says what
+  // the turn does now. Its runs stay closed lines that only count their
+  // steps, so nothing changes place while the turn streams.
+  const compact = groupToolCalls && !recentSteps;
+  // A paused turn is not working, so its row holds no "Thinking". Compact's
+  // status line stays: it is where a held call says it waits.
+  const timerRowHoldsNoLine =
+    liveLineInSteps ||
+    (!compact &&
+      isTurnTimerPaused({
+        pausedAt: timer.pausedAt,
+        resumedAt: timer.resumedAt,
+      }));
+  // The line opens to the run's latest thought, so thinking can be read
+  // while the turn runs without a row of its own coming and going.
+  const liveThoughts =
+    compact && liveRun
+      ? stepParts(liveRun)
+          .filter((part) => part.kind === 'thinking')
+          .map((part) => (isRecord(part.data) ? readPartText(part.data) : ''))
+          .filter((text) => text.trim() !== '')
+      : [];
+  const liveThought = liveThoughts[liveThoughts.length - 1];
   const liveLine =
-    !complete &&
-    (groupToolCalls && !recentSteps
-      ? liveRun === undefined
-      : !stepShimmersOnScreen) ? (
+    !complete && (compact || !stepShimmersOnScreen) ? (
       // The timer row sits inside its message's text inset already.
       <ChatToolStepGroup
         summary=""
         inset={liveLineInSteps}
-        live={cleanLiveActivity(undefined, workingStatus)}
-      />
+        bareChildren
+        live={cleanLiveActivity(
+          compact ? liveRun : undefined,
+          workingStatus,
+          approvalWait,
+        )}
+      >
+        {liveThought ? (
+          <CollapsibleBlockBody content={liveThought} nested />
+        ) : null}
+      </ChatToolStepGroup>
     ) : null;
   const fallbackCopy =
     planCopy !== undefined ? (
@@ -742,10 +774,16 @@ function TurnGroupViewImpl({
               }
               // The line counts only the steps the window hides, so the
               // running step is said once, in its own row.
+              // Compact, on the running turn's last run: only the steps
+              // already done, and no line until one is; the status line
+              // says what runs now.
+              const settledOnly = compact && segment === liveRun;
               const done = describeCleanTurnSteps(
                 recent?.hidden ?? segment,
                 outcomeEvidence,
+                settledOnly,
               );
+              if (settledOnly && done.label === '') return null;
               // A call reveal opens the folded line that holds the call.
               const holdsRevealedCall =
                 revealRequest !== undefined &&
@@ -765,11 +803,19 @@ function TurnGroupViewImpl({
                   failedCount={done.failed}
                   blockedCount={done.blocked}
                   collapsedStepCount={
-                    recent !== undefined && recent.hidden === undefined
-                      ? 0
-                      : stepParts(recent?.hidden ?? segment).filter(
+                    // Compact keeps a run one closed line, except a run
+                    // that only thought: its thoughts stay their own rows.
+                    compact
+                      ? stepParts(segment).some(
                           (part) => part.kind !== 'thinking',
-                        ).length
+                        )
+                        ? undefined
+                        : 0
+                      : recent !== undefined && recent.hidden === undefined
+                        ? 0
+                        : stepParts(recent?.hidden ?? segment).filter(
+                            (part) => part.kind !== 'thinking',
+                          ).length
                   }
                   hiddenSteps={
                     recent?.hidden
@@ -781,15 +827,7 @@ function TurnGroupViewImpl({
                   openRequest={holdsRevealedCall ? revealRequest : undefined}
                   {...(recent !== undefined
                     ? { liveSteps: renderSteps(recent.shown) }
-                    : segment === liveRun
-                      ? {
-                          live: cleanLiveActivity(
-                            segment,
-                            workingStatus,
-                            approvalWait,
-                          ),
-                        }
-                      : {})}
+                    : {})}
                 >
                   {renderSteps(segment.messages)}
                 </ChatToolStepGroup>
@@ -826,7 +864,7 @@ function TurnGroupViewImpl({
               // ChatTranscript separates turns with an 8px column gap. Only the
               // turn's last row borders that gap; a row below keeps the full margin.
               turnTimerHostTurnGap={workingSlot == null}
-              turnTimerLiveLine={liveLineInSteps ? null : liveLine}
+              turnTimerLiveLine={timerRowHoldsNoLine ? null : liveLine}
               // Copy rides in the timer row only when it renders; otherwise the
               // actions row below carries it, so a reply never shows two.
               {...(inTimerRow && complete

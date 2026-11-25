@@ -20,6 +20,7 @@
  * whose last frame was a different layout or size, has it paint the right
  * one out of sight first (see {@link AppAdvisorViewHost.showFloating}).
  */
+import { handFocusWithoutActivating } from '../lib/focus-handoff';
 
 export type AppAdvisorViewPlacement = 'hidden' | 'floating' | 'docked' | 'full';
 
@@ -286,7 +287,16 @@ export class AppAdvisorViewHost<
       this.fit();
       const window = this.hostWindow;
       if (hadFocus && window && !window.isDestroyed()) {
-        window.webContents.focus();
+        // Never from the background: focusing the page would bring the app
+        // in front of the one the person is working in.
+        handFocusWithoutActivating(
+          window,
+          window.webContents,
+          (): boolean =>
+            this.placementValue === 'hidden' &&
+            !contents.isDestroyed() &&
+            contents.isFocused(),
+        );
       }
     }
     this.options.onPlacementChange();

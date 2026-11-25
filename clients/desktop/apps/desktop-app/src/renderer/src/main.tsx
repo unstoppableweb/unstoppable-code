@@ -7,7 +7,7 @@ import { OrgProjectAddStoreBridge } from '@/lib/orgProjectCatalogAdd';
 import { OnboardingTipsPreferencesBridge } from '@/components/onboarding-tips/OnboardingTipsPreferencesBridge';
 import { SuggestionsPreferencesBridge } from '@/components/suggestions/SuggestionsPreferencesBridge';
 import { SuggestionsProvider } from '@canopy/ui-app/suggestions';
-import './styles/globals.css';
+import './styles/app-styles';
 import type { ComponentType } from 'react';
 import { createRoot } from 'react-dom/client';
 import {

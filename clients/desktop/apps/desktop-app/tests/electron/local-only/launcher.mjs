@@ -23,6 +23,7 @@ import {
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { _electron as electron } from '@playwright/test';
 import electronPath from 'electron';
 
@@ -40,6 +41,16 @@ export function resolveMainEntry(env = process.env) {
     );
   }
   return mainEntry;
+}
+
+/**
+ * True for the public export's production local-only build: `build:local`
+ * writes `out/.local-only-build.json` and every other build removes it. That
+ * build has no E2E seams.
+ */
+export function isProductionLocalOnlyBuild(env = process.env) {
+  const appDir = path.dirname(path.dirname(resolveMainEntry(env)));
+  return existsSync(path.join(appDir, '.local-only-build.json'));
 }
 
 /** Extra Electron switches, space separated (CI passes `--no-sandbox` on Linux). */
@@ -65,8 +76,13 @@ export function createTempRoots() {
     providerHome: path.join(root, 'p', 'home'),
     fixtures: path.join(root, 'f'),
   };
-  for (const dir of Object.values(roots)) mkdirSync(dir, { recursive: true });
-  return roots;
+  try {
+    for (const dir of Object.values(roots)) mkdirSync(dir, { recursive: true });
+    return roots;
+  } catch (error) {
+    removeTempRoots(roots);
+    throw error;
+  }
 }
 
 export function removeTempRoots(roots) {
@@ -84,31 +100,31 @@ export function removeTempRoots(roots) {
  * shell: first-run onboarding done, the legal terms accepted, the one-time
  * notices dismissed, and a random MCP proxy port so a running app's port is
  * never taken. Sign-in is not seeded: there is no account in this build.
+ *
+ * `freshFirstRun` seeds only the MCP proxy port, so the app starts as a new
+ * install would: legal consent, then the first-run import page (CAN-7628).
  */
-function seedFirstRunState(dataDir) {
+function seedFirstRunState(dataDir, { freshFirstRun = false } = {}) {
   const at = '2026-01-01T00:00:00.000Z';
+  const mcpProxyPort = 20000 + Math.floor(Math.random() * 15000);
+  const preferences = freshFirstRun
+    ? { mcpProxyPort }
+    : {
+        onboardingCompleted: ['v1'],
+        initializedCuratedPluginDefaults: [],
+        legalConsentAcceptedAt: '2026-07-06T00:00:00.000Z',
+        legalConsentTosVersion: '2026-07-06',
+        mcpProxyPort,
+        approvalsUpgradeNoticeDismissed: true,
+        onboardingTipsDismissed: {
+          workflows: at,
+          'worktree-chat': at,
+          'workflows-schedule': at,
+        },
+      };
   writeFileSync(
     path.join(dataDir, 'preferences.json'),
-    `${JSON.stringify(
-      {
-        version: 1,
-        preferences: {
-          onboardingCompleted: ['v1'],
-          initializedCuratedPluginDefaults: [],
-          legalConsentAcceptedAt: '2026-07-06T00:00:00.000Z',
-          legalConsentTosVersion: '2026-07-06',
-          mcpProxyPort: 20000 + Math.floor(Math.random() * 15000),
-          approvalsUpgradeNoticeDismissed: true,
-          onboardingTipsDismissed: {
-            workflows: at,
-            'worktree-chat': at,
-            'workflows-schedule': at,
-          },
-        },
-      },
-      null,
-      2,
-    )}\n`,
+    `${JSON.stringify({ version: 1, preferences }, null, 2)}\n`,
   );
   // A fresh profile that gained a preferences file is not an upgrade.
   writeFileSync(
@@ -246,9 +262,10 @@ export async function launchLocalOnlyApp({
   proxyUrl,
   noProxy,
   extraEnv,
+  freshFirstRun = false,
 }) {
   const mainEntry = resolveMainEntry();
-  seedFirstRunState(roots.data);
+  seedFirstRunState(roots.data, { freshFirstRun });
   const extra = extraElectronArgs();
   const electronApp = await electron.launch({
     executablePath: electronPath,
@@ -264,39 +281,38 @@ export async function launchLocalOnlyApp({
   const child = electronApp.process();
   const pid = child.pid;
   let closed = false;
-  return {
-    electronApp,
-    window: await electronApp.firstWindow(),
-    async close() {
-      if (closed) return;
-      closed = true;
-      // A process killed by a signal keeps `exitCode` null; `signalCode` is set.
-      const hasExited = () =>
-        child.exitCode !== null || child.signalCode !== null;
-      const exited = new Promise((resolve) => {
-        if (hasExited()) resolve();
-        else child.once('exit', resolve);
-      });
-      await Promise.race([
-        electronApp.close().catch(() => undefined),
-        new Promise((resolve) => setTimeout(resolve, CLOSE_TIMEOUT_MS)),
-      ]);
-      if (!hasExited()) {
-        child.kill('SIGKILL');
+  async function close() {
+    if (closed) return;
+    closed = true;
+    // A process killed by a signal keeps `exitCode` null; `signalCode` is set.
+    const hasExited = () =>
+      child.exitCode !== null || child.signalCode !== null;
+    const exited = new Promise((resolve) => {
+      if (hasExited()) resolve();
+      else child.once('exit', resolve);
+    });
+    await Promise.race([
+      electronApp.close().catch(() => undefined),
+      delay(CLOSE_TIMEOUT_MS, undefined, { ref: false }),
+    ]);
+    if (!hasExited()) {
+      child.kill('SIGKILL');
+    }
+    await Promise.race([exited, delay(5_000, undefined, { ref: false })]);
+    // Playwright starts Electron in its own process group on POSIX; stop
+    // anything the app left behind in it (agent CLIs, helpers).
+    if (process.platform !== 'win32' && pid) {
+      try {
+        process.kill(-pid, 'SIGKILL');
+      } catch {
+        // The group is already gone.
       }
-      await Promise.race([
-        exited,
-        new Promise((resolve) => setTimeout(resolve, 5_000)),
-      ]);
-      // Playwright starts Electron in its own process group on POSIX; stop
-      // anything the app left behind in it (agent CLIs, helpers).
-      if (process.platform !== 'win32' && pid) {
-        try {
-          process.kill(-pid, 'SIGKILL');
-        } catch {
-          // The group is already gone.
-        }
-      }
-    },
-  };
+    }
+  }
+  try {
+    return { electronApp, window: await electronApp.firstWindow(), close };
+  } catch (error) {
+    await close().catch(() => undefined);
+    throw error;
+  }
 }

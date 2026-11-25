@@ -342,6 +342,102 @@ afterEach(async () => {
   jest.restoreAllMocks();
 });
 
+it('retains verified files-only recovery after a permission refusal and retries only its remaining quarantine', async () => {
+  const checkout = join(root, 'a', 'worktrees', 'one');
+  const quarantine = join(root, 'a', 'worktrees', '.one.archive-quarantine');
+  const worktree = (
+    await workspacePersistence.readWorkspaceWorktrees('a')
+  ).find((row) => row.id === 'one');
+  if (!worktree) throw new Error('Missing worktree fixture');
+  const {
+    prepareArchivedContainerRecovery,
+    finishArchivedContainerRecovery,
+    readArchivedContainerRecoveryJournal,
+  } = await import('../archived-container-recovery');
+  const { fsWithoutAsar } = await import('../remove-tree-without-asar');
+  const { readErrorClassification } =
+    await import('@canopy/protocol/app-errors/classification');
+  const { destructiveFailureCode } =
+    await import('../destructive-failure-context');
+  writeFileSync(join(checkout, 'locked.txt'), 'retained');
+  writeFileSync(join(checkout, 'ordinary.txt'), 'captured before removal');
+  const recovery = await prepareArchivedContainerRecovery({
+    projectId: 'a',
+    worktreeId: 'one',
+    worktree,
+  });
+  const manifest: Extract<ArchivedContainerManifest, { version: 3 }> = {
+    ...archivedManifestFields('a', 'one'),
+    version: 3,
+    recovery,
+    createdAt: worktree.createdAt,
+    originalWorktree: worktree,
+  };
+  const filesystem = fsWithoutAsar();
+  const remove = filesystem.rm;
+  const refusal = Object.assign(new Error(`EPERM: ${quarantine}`), {
+    code: 'EPERM',
+    syscall: 'unlink',
+    path: join(quarantine, 'locked.txt'),
+  });
+  const mockRemoval = jest
+    .spyOn(filesystem, 'rm')
+    .mockImplementation(async (path, options) => {
+      if (path !== quarantine) return remove(path, options);
+      // A failed recursive walk may already have removed ordinary files.
+      await fsPromises
+        .unlink(join(quarantine, 'ordinary.txt'))
+        .catch((error: unknown) => {
+          if (
+            typeof error !== 'object' ||
+            error === null ||
+            !('code' in error) ||
+            error.code !== 'ENOENT'
+          )
+            throw error;
+        });
+      throw refusal;
+    });
+  try {
+    const error = await finishArchivedContainerRecovery(manifest).catch(
+      (error: unknown) => error,
+    );
+    expect(error).toMatchObject({
+      code: 'external.removal_not_permitted',
+      path: '<removal-root>/locked.txt',
+    });
+    expect(String(error)).not.toContain(root);
+    expect(error).not.toHaveProperty('cause');
+    expect(readErrorClassification(error)?.code).toBe(
+      'external.removal_not_permitted',
+    );
+    expect(destructiveFailureCode(error)).toBe(
+      'external.removal_not_permitted',
+    );
+    expect(
+      await readArchivedContainerRecoveryJournal('a', 'one'),
+    ).toMatchObject({
+      phase: 'verified',
+    });
+    expect(readFileSync(join(quarantine, 'locked.txt'), 'utf8')).toBe(
+      'retained',
+    );
+    expect(existsSync(join(quarantine, 'ordinary.txt'))).toBe(false);
+    await expect(
+      finishArchivedContainerRecovery(manifest),
+    ).rejects.toMatchObject({
+      code: 'external.removal_not_permitted',
+    });
+  } finally {
+    mockRemoval.mockRestore();
+  }
+  await finishArchivedContainerRecovery(manifest);
+  expect(existsSync(quarantine)).toBe(false);
+  expect(await readArchivedContainerRecoveryJournal('a', 'one')).toMatchObject({
+    phase: 'removed',
+  });
+});
+
 describe('CAN-6899 live-state teardown failure', () => {
   const checkout = (): string => join(root, 'a', 'worktrees', 'one');
   /** Every entry under a directory with its kind, size and bytes. */

@@ -1,4 +1,5 @@
-import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, mkdir, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Readable, Writable } from 'node:stream';
@@ -8,6 +9,7 @@ import {
   type AcpClientOptions,
 } from '@canopy/desktop-shared/node/acp';
 import type { ProviderProcessOwner } from '@canopy/desktop-shared/node/provider-process/spawn';
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { brandEnvName } from '@canopy/execution-engine/brand/env';
 import type {
@@ -59,7 +61,8 @@ const MCP_SERVERS_ENV = brandEnvName('ANTIGRAVITY_MCP_SERVERS');
  * unreadable payload or a missing name is denied: 1.5.1 runs built-in tools
  * such as invoke_subagent and search_web without a permission request.
  * The runtime treats empty hook output as allow, so every path prints one
- * decision or exits non-zero. It runs under /bin/bash, whose printf builtin
+ * decision or exits non-zero. It runs under bash (/bin/bash, or on Linux the
+ * first of ANTIGRAVITY_LINUX_HOOK_TOOL_PATHS.bash), whose printf builtin
  * reports a failed write; macOS /usr/bin/printf and zsh's builtin do not.
  * An MCP tool qualifies only when its name starts with mcp_<server>_ for a
  * server the host routed into this process (MCP_SERVERS_ENV). Server names
@@ -69,25 +72,33 @@ const MCP_SERVERS_ENV = brandEnvName('ANTIGRAVITY_MCP_SERVERS');
  * (workspace-configuration.ts), chat turns are checked by
  * assertAntigravityMcpServersRouted, and pipeline, CLI, discovery and sign-in
  * launches route and deliver no MCP.
- * /bin/bash and /usr/bin/plutil are macOS paths; resolveAntigravityExecutable
- * refuses other platforms before the profile is prepared.
+ * Only the tool-name extraction differs by platform: macOS reads it with
+ * /usr/bin/plutil, and Linux, which has no plutil, with grep and awk from
+ * fixed paths (see antigravityLinuxToolName and resolveAntigravityHookTools).
+ * resolveAntigravityExecutable refuses other platforms before the profile is
+ * prepared.
  */
-const ANTIGRAVITY_TOOL_GATE_SCRIPT = [
-  '#!/bin/bash',
-  // Pattern classes follow the shell's locale; a multibyte locale such as
-  // ja_JP.eucJP can hide a control byte, so matching is byte-wise ASCII.
-  'LC_ALL=C',
-  // Bash command substitution silently removes NUL bytes. Read until a NUL
-  // instead: success means a NUL was found and the malformed payload is denied;
-  // EOF retains the full text, including trailing newlines. The builtin printf
-  // does not exec, so large writes do not hit argument limits.
-  // Only a string name is accepted:
-  // plutil prints a dictionary's keys for `raw`.
-  'input=',
-  "if IFS= read -r -d '' input; then",
-  `  printf '%s\\n' '{"decision":"deny","reason":"This tool is unavailable in this app."}' || exit 1`,
-  '  exit 0',
-  'fi',
+function antigravityToolGateHeader(bash: string): string[] {
+  return [
+    `#!${bash}`,
+    // Pattern classes follow the shell's locale; a multibyte locale such as
+    // ja_JP.eucJP can hide a control byte, so matching is byte-wise ASCII.
+    'LC_ALL=C',
+    // Bash command substitution silently removes NUL bytes. Read until a NUL
+    // instead: success means a NUL was found and the malformed payload is denied;
+    // EOF retains the full text, including trailing newlines. The builtin printf
+    // does not exec, so large writes do not hit argument limits.
+    // Only a string name is accepted:
+    // plutil prints a dictionary's keys for `raw`.
+    'input=',
+    "if IFS= read -r -d '' input; then",
+    `  printf '%s\\n' '{"decision":"deny","reason":"This tool is unavailable in this app."}' || exit 1`,
+    '  exit 0',
+    'fi',
+  ];
+}
+
+const ANTIGRAVITY_DARWIN_TOOL_NAME = [
   'type=$(printf \'%s\' "$input" | /usr/bin/plutil -type toolCall.name - 2>/dev/null) || type=',
   'name=',
   'if [ "$type" = string ]; then',
@@ -96,6 +107,100 @@ const ANTIGRAVITY_TOOL_GATE_SCRIPT = [
   '  name=${name%.}',
   "  name=${name%$'\\n'}",
   'fi',
+];
+
+/**
+ * Linux tool-name extraction (CAN-6718). `grep -o` splits the payload into
+ * JSON tokens in linear time, one per line; any byte outside a token becomes
+ * its own line, which awk then rejects. awk walks the tokens as strict JSON
+ * and prints `toolCall.name` only when the payload is one object whose
+ * `toolCall` is an object holding a string `name`. It is stricter than
+ * plutil and fails closed: a duplicate `toolCall` or `name` key, an escaped
+ * key at those levels, an escape inside the name (no qualifying name needs
+ * one), a raw C0 control character (0x01-0x1F; JSON forbids them unescaped)
+ * in any string, an invalid escape, number or literal, or trailing input
+ * prints nothing, which denies. Escapes are checked in one left-to-right
+ * pass, each where it starts in the original string, so removing one escape
+ * can never join the characters around it into another (`\u12\n34` is not
+ * `\u1234`). A raw DEL (0x7F) is valid JSON, and common
+ * serializers emit it unescaped, so it passes here; the decision still
+ * denies a name that contains one. A NUL never reaches awk: the header
+ * denies it. A string cannot span lines, so a printed name holds no newline.
+ * POSIX awk only: Debian and Ubuntu ship mawk as their awk.
+ *
+ * grep and awk run through bash's `exec -c`, with an empty environment: the
+ * hook inherits the runtime's environment, which workflow inputs reach, and
+ * these tools read it. An empty environment is the C locale, and it drops
+ * GREP_OPTIONS (older GNU grep) and GAWK_PERSIST_FILE, which would let GNU
+ * awk keep the parser's globals, such as its duplicate-key counters, from
+ * one call to the next. Removing the whole environment covers variables a
+ * future grep or awk adds as well.
+ */
+const ANTIGRAVITY_LINUX_TOOL_NAME_AWK = String.raw`
+function fail() { bad = 1; exit }
+function str(t) { return length(t) >= 2 && t ~ /^".*"$/ }
+function scalar(t,  u) {
+  if (str(t)) {
+    if (t ~ /[\001-\037]/) return 0
+    u = substr(t, 2, length(t) - 2)
+    gsub(/\\(["\\\/bfnrt]|u[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f])/, "", u)
+    return index(u, "\\") == 0
+  }
+  return t == "true" || t == "false" || t == "null" ||
+    t ~ /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/
+}
+function closed() { d--; st = d ? "comma" : "end" }
+function value(t,  role) {
+  role = ""
+  if (d == 1 && key[1] == "toolCall") role = "tool"
+  else if (d == 2 && tool[2] && key[2] == "name") role = "name"
+  if (t == "{" || t == "[") {
+    if (d == 0 && t != "{") fail()
+    d++
+    kind[d] = t
+    tool[d] = role == "tool" && t == "{"
+    key[d] = ""
+    st = t == "{" ? "key_or_end" : "value_or_end"
+    return
+  }
+  if (d == 0 || !scalar(t)) fail()
+  if (role == "name" && str(t) && index(t, "\\") == 0)
+    name = substr(t, 2, length(t) - 2)
+  st = "comma"
+}
+BEGIN { st = "value"; d = 0; name = "" }
+/^[ \t\r]+$/ { next }
+{
+  t = $0
+  if (st == "end") fail()
+  if (st == "value") value(t)
+  else if (st == "value_or_end") { if (t == "]") closed(); else value(t) }
+  else if (st == "key" || st == "key_or_end") {
+    if (st == "key_or_end" && t == "}") { closed(); next }
+    if (!str(t) || !scalar(t)) fail()
+    key[d] = substr(t, 2, length(t) - 2)
+    if ((d == 1 || tool[d]) && index(key[d], "\\")) fail()
+    if (d == 1 && key[d] == "toolCall" && ++calls > 1) fail()
+    if (d == 2 && tool[d] && key[d] == "name" && ++names > 1) fail()
+    st = "colon"
+  }
+  else if (st == "colon") { if (t != ":") fail(); st = "value" }
+  else if (st == "comma") {
+    if (t == ",") st = kind[d] == "{" ? "key" : "value"
+    else if ((t == "}" && kind[d] == "{") || (t == "]" && kind[d] == "[")) closed()
+    else fail()
+  }
+}
+END { if (!bad && st == "end") printf "%s", name }
+`;
+
+function antigravityLinuxToolName(tools: AntigravityHookTools): string[] {
+  return [
+    `name=$(printf '%s' "$input" | exec -c ${tools.grep} -a -o -E '"([^"\\\\]|\\\\.)*"|[][{}:,]|[^][{}:,"[:space:]]+|[[:space:]]+|.' | exec -c ${tools.awk} '${ANTIGRAVITY_LINUX_TOOL_NAME_AWK}' 2>/dev/null) || name=`,
+  ];
+}
+
+const ANTIGRAVITY_TOOL_GATE_DECISION = [
   // No tool name may contain an ASCII control character or DEL.
   'case "$name" in *[[:cntrl:]]*) name= ;; esac',
   'decision=deny',
@@ -114,7 +219,89 @@ const ANTIGRAVITY_TOOL_GATE_SCRIPT = [
   `  printf '%s\\n' '{"decision":"deny","reason":"This tool is unavailable in this app."}' || exit 1`,
   'fi',
   '',
-].join('\n');
+];
+
+/** The absolute paths the approval hook runs its interpreter and tools from. */
+export interface AntigravityHookTools {
+  readonly bash: string;
+  readonly grep: string;
+  readonly awk: string;
+}
+
+/** macOS always has these; its script is fixed and never probes. */
+const ANTIGRAVITY_SYSTEM_HOOK_TOOLS: AntigravityHookTools = {
+  bash: '/bin/bash',
+  grep: '/usr/bin/grep',
+  awk: '/usr/bin/awk',
+};
+
+/**
+ * The only places the Linux hook may take its tools from, in order. Distros
+ * without a merged /usr keep grep and bash only under /bin. PATH is never
+ * searched: the hook runs inside the runtime's environment, so a PATH entry
+ * could choose the parser that decides which tools run unapproved.
+ */
+export const ANTIGRAVITY_LINUX_HOOK_TOOL_PATHS: {
+  readonly [Tool in keyof AntigravityHookTools]: readonly string[];
+} = {
+  bash: ['/bin/bash', '/usr/bin/bash'],
+  grep: ['/usr/bin/grep', '/bin/grep'],
+  awk: ['/usr/bin/awk', '/bin/awk'],
+};
+
+async function isExecutableFile(file: string): Promise<boolean> {
+  try {
+    if (!(await stat(file)).isFile()) return false;
+    await access(file, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The hook's tools for a host platform. On Linux, each is the first
+ * executable file in ANTIGRAVITY_LINUX_HOOK_TOOL_PATHS; a missing tool
+ * refuses the launch, because a hook that cannot run denies every tool.
+ * `usable` is replaceable for tests.
+ */
+export async function resolveAntigravityHookTools(
+  platform: string = hostPlatformOperatingSystem(),
+  usable: (file: string) => Promise<boolean> = isExecutableFile,
+): Promise<AntigravityHookTools> {
+  if (platform !== 'linux') return ANTIGRAVITY_SYSTEM_HOOK_TOOLS;
+  const pick = async (tool: keyof AntigravityHookTools): Promise<string> => {
+    const candidates = ANTIGRAVITY_LINUX_HOOK_TOOL_PATHS[tool];
+    for (const candidate of candidates)
+      if (await usable(candidate)) return candidate;
+    throw new Error(
+      `Google chats need ${tool}, which wasn't found at ${candidates.join(' or ')}. Install it, then try again.`,
+    );
+  };
+  return {
+    bash: await pick('bash'),
+    grep: await pick('grep'),
+    awk: await pick('awk'),
+  };
+}
+
+/**
+ * The approval hook script for a host platform. Linux scripts embed the
+ * tools prepareAntigravityProfile resolved; the macOS script ignores `tools`.
+ */
+export function antigravityToolGateScript(
+  platform: string = hostPlatformOperatingSystem(),
+  tools: AntigravityHookTools = ANTIGRAVITY_SYSTEM_HOOK_TOOLS,
+): string {
+  const linux = platform === 'linux';
+  return [
+    ...antigravityToolGateHeader(
+      linux ? tools.bash : ANTIGRAVITY_SYSTEM_HOOK_TOOLS.bash,
+    ),
+    ...(linux ? antigravityLinuxToolName(tools) : ANTIGRAVITY_DARWIN_TOOL_NAME),
+    ...ANTIGRAVITY_TOOL_GATE_DECISION,
+  ].join('\n');
+}
 
 export const ANTIGRAVITY_AGENT_NAME = 'canopy';
 
@@ -202,10 +389,14 @@ export function assertAntigravityMcpServersRouted(
 export async function prepareAntigravityProfile(
   profile = antigravityProfileDirectory(),
 ): Promise<string> {
+  // Resolved first, so a host without the hook's tools refuses the launch
+  // before anything is written.
+  const platform = hostPlatformOperatingSystem();
+  const tools = await resolveAntigravityHookTools(platform);
   const config = join(profile, 'config');
   await mkdir(config, { recursive: true, mode: 0o700 });
   const script = join(profile, 'approval-hook.sh');
-  await replacePrivateFile(script, ANTIGRAVITY_TOOL_GATE_SCRIPT);
+  await replacePrivateFile(script, antigravityToolGateScript(platform, tools));
   const quote = (value: string): string => {
     return `'${value.replace(/'/g, `'"'"'`)}'`;
   };
@@ -219,7 +410,10 @@ export async function prepareAntigravityProfile(
             hooks: [
               {
                 type: 'command',
-                command: `/bin/bash ${quote(script)}`,
+                // -p (privileged mode): bash skips BASH_ENV and ENV and
+                // ignores inherited functions, SHELLOPTS and BASHOPTS, so no
+                // variable in the runtime's environment runs code first.
+                command: `${tools.bash} -p ${quote(script)}`,
                 timeout: 10,
               },
             ],

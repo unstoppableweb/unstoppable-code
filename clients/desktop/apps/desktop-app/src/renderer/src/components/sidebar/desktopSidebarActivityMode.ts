@@ -429,7 +429,13 @@ export function useDesktopSidebarActivityHost(
   const unreadSignature = useChatStore((state) =>
     enabled ? desktopUnreadSignature(state, cowork, coworkProjectIds) : '',
   );
-  const activePage = useNavigationStore((state) => state.activePage);
+  // Only the two pages that show a chat matter here; a move between other
+  // pages must not re-render the sidebar.
+  const activePage = useNavigationStore((state) =>
+    state.activePage === 'chat' || state.activePage === 'main'
+      ? state.activePage
+      : 'other',
+  );
   const activeChatKey = useChatStore((state) =>
     enabled ? desktopActiveChatKey(state, activePage, coworkProjectIds) : null,
   );

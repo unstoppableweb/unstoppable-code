@@ -28,11 +28,13 @@ import type {
   SubscriptionFilter,
   Unsubscribe,
 } from '@canopy/app-core';
-import type {
-  RemoteControlAppAdvisorChatSummary,
-  RemoteControlAskUserQuestion,
-  RemoteControlAskUserQuestionState,
-  RemoteControlChatFileReference,
+import {
+  readClaudeConnectorAvailability,
+  type RemoteControlAppAdvisorChatSummary,
+  type RemoteControlAppAdvisorWorkEntry,
+  type RemoteControlAskUserQuestion,
+  type RemoteControlAskUserQuestionState,
+  type RemoteControlChatFileReference,
 } from '@canopy/protocol/remote-control/shell';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/protocol/chat-targets';
 import { REMOTE_IPC_CHANNELS as C } from '@canopy/protocol/remote-control/channels';
@@ -369,6 +371,18 @@ export function createOrchestratorHandlers(
     }
     const entries = await listEntries();
     const chats: RemoteControlAppAdvisorChatSummary[] = [];
+    // Every entry, so one whose chats all closed stays in the nav (CAN-7604).
+    const workEntries: RemoteControlAppAdvisorWorkEntry[] = entries.map(
+      (entry, order) => ({
+        id: entry.id,
+        title: entry.title,
+        createdAt: entry.createdAt,
+        ...(entry.lastMessageAt === undefined
+          ? {}
+          : { lastMessageAt: entry.lastMessageAt }),
+        order,
+      }),
+    );
     for (const [entryOrder, entry] of entries.entries()) {
       const state = await readEntry(entry.id);
       const unread = new Set(
@@ -377,6 +391,11 @@ export function createOrchestratorHandlers(
       const tabs = state.tabsFile.tabs.filter(isChatTab);
       for (const [order, tab] of tabs.entries()) {
         const runtime = state.runtimeByChatId?.[tab.id];
+        const claudeConnectorAvailability = readClaudeConnectorAvailability(
+          'claudeConnectorAvailability' in tab
+            ? tab.claudeConnectorAvailability
+            : undefined,
+        );
         const questions = [...pending.values()]
           .filter((question) => question.chatId === tab.id)
           .map((question) => question.state);
@@ -395,6 +414,9 @@ export function createOrchestratorHandlers(
           ...(tab.providerType === undefined
             ? {}
             : { providerType: tab.providerType }),
+          ...(claudeConnectorAvailability
+            ? { claudeConnectorAvailability }
+            : {}),
           turnActive:
             runtime?.status !== undefined &&
             ACTIVE_RUNTIME_STATUSES.has(runtime.status),
@@ -410,7 +432,7 @@ export function createOrchestratorHandlers(
         });
       }
     }
-    return { chats };
+    return { chats, workEntries };
   };
 
   const answer = async (

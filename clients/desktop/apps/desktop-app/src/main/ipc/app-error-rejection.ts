@@ -34,8 +34,13 @@ import {
   RpcClosedError,
   RpcRemoteError,
 } from '../remote-control/transport/rpc-peer';
+import { ProjectsReloadRequiredError } from '../lib/sidebar-save-errors';
+import { W5DaemonHandoffError } from '../lib/w5-handoff-store';
 import { ipcShowsRawErrorDetail } from './app-error-policy';
+import { findInIpcErrorChain } from './error-chain';
+import { recordIpcRequestFailure } from './ipc-failure-diagnostics';
 import { preservesLegacyErrorText } from './legacy-error-text-contracts';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 
 const SAFE_FALLBACK =
   'Error: Something went wrong. Reload to get back to a working state.';
@@ -47,6 +52,49 @@ function ipcSource(channel: string): string {
     /^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/.test(source)
     ? source
     : 'ipc';
+}
+
+const DEFECT_LOG_WINDOW_MS = 60_000;
+const DEFECT_LOG_MAX_KEYS = 256;
+const DEFECT_LOG_NAME_MAX_LENGTH = 64;
+const defectLogState = new Map<
+  string,
+  { loggedAt: number; suppressed: number }
+>();
+
+/**
+ * One `main.log` line per IPC defect (CAN-6895), so a bundle without telemetry
+ * still names the failing channel. Only sanitized identity is written: never
+ * the message, stack, legacy text or raw channel (CAN-7096). At most one line
+ * per code, source and name each minute; the next line carries the count of
+ * occurrences skipped in between.
+ */
+function logIpcDefect(error: AppError): void {
+  try {
+    const now = Date.now();
+    if (error.kind !== 'defect') return;
+    const name = error.detail.name?.slice(0, DEFECT_LOG_NAME_MAX_LENGTH);
+    const key = `${error.code}|${error.source ?? ''}|${name ?? ''}`;
+    const previous = defectLogState.get(key);
+    if (previous && now - previous.loggedAt < DEFECT_LOG_WINDOW_MS) {
+      previous.suppressed += 1;
+      return;
+    }
+    if (!previous && defectLogState.size >= DEFECT_LOG_MAX_KEYS)
+      defectLogState.clear();
+    defectLogState.set(key, { loggedAt: now, suppressed: 0 });
+    logMainProcessWarn('[ipc] handler failed', {
+      referenceId: error.referenceId,
+      code: error.code,
+      source: error.source,
+      name,
+      errno: error.detail.errno,
+      operationCode: error.detail.operationCode,
+      suppressed: previous?.suppressed ?? 0,
+    });
+  } catch {
+    /* Logging must never change the rejection. */
+  }
 }
 
 function catalogLegacy(error: AppError): string {
@@ -78,6 +126,27 @@ function workspaceReadOverload(
   const cause =
     thrown instanceof CanopyOperationError ? thrown.runtimeCause : thrown;
   return cause instanceof W5RecordOverloadedError ? cause : undefined;
+}
+
+/**
+ * A named, trusted refusal caused by an unavailable background service (Core),
+ * on any channel (CAN-7137): the degraded W5 startup handoff, which only a
+ * relaunch recovers, or a save whose window loaded while Core was unreachable.
+ * The latter clears on the reload that follows recovery, but `projects:save`
+ * rejections are only logged by the renderer, so it changes the local record,
+ * never visible copy. Only these classes qualify; any other daemon failure
+ * keeps the CAN-4405 interim rule. The degraded store rejects every call with
+ * one shared handoff error, so the match is read, never marked.
+ */
+function backgroundServiceRefusal(
+  thrown: unknown,
+): W5DaemonHandoffError | ProjectsReloadRequiredError | undefined {
+  return findInIpcErrorChain(
+    thrown,
+    (value): value is W5DaemonHandoffError | ProjectsReloadRequiredError =>
+      (value instanceof W5DaemonHandoffError && value.reason !== 'cancelled') ||
+      value instanceof ProjectsReloadRequiredError,
+  );
 }
 
 /** Rejection conversion must never replace an application failure with a
@@ -150,15 +219,23 @@ export function toIpcRejection(
     // CAN-4405 owns mapping daemon failures to catalog codes. Until then no
     // nested transport evidence may present one as a generic Try again.
     const overload = workspaceReadOverload(channel, thrown);
-    if (operationFailure && !overload) classifyError(thrown, 'app.unexpected');
+    const refusal = overload ? undefined : backgroundServiceRefusal(thrown);
+    if (operationFailure && !overload && !refusal)
+      classifyError(thrown, 'app.unexpected');
     // W5's error carries a `kind` and isn't an AppError payload. Project it
     // into the shared shape while retaining the original operation metadata.
+    // A background-service refusal wins over any marker on the thrown value.
     const classified = overload
       ? classifyError(
           new Error(overload.message),
           'external.service_unavailable',
         )
-      : thrown;
+      : refusal
+        ? classifyError(
+            new Error('Background service unavailable'),
+            'external.background_service_unavailable',
+          )
+        : thrown;
     const nativeError = isNativeError(thrown) ? thrown : undefined;
     if (nativeError) rememberAppErrorNativeFrames(nativeError);
     let error = toAppError(classified);
@@ -236,6 +313,16 @@ export function toIpcRejection(
         })?.error ?? error;
     } catch {
       /* Leave shape unrecorded. */
+    }
+    // Logged whether or not the report was sent, so local-only and
+    // telemetry-off builds still get the line.
+    logIpcDefect(error);
+    // The local record exists with telemetry off; it never changes or delays
+    // the rejection (CAN-7137).
+    try {
+      recordIpcRequestFailure({ error, thrown, operationFailure });
+    } catch {
+      /* Recording is best effort. */
     }
     return new IpcAppErrorRejection(
       raw || preservesLegacyErrorText(channel, legacy)

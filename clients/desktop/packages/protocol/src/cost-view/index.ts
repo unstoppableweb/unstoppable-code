@@ -82,6 +82,15 @@ export interface CostTotals {
   readonly tokens: CostTokenTotals;
   /** Records with tokens and no price. Above zero, the UI says so. */
   readonly notPricedCount: number;
+  /**
+   * `notPricedCount` split by how the records were paid for (CAN-7305), so a
+   * basis with no dollars (an organization gateway) can still be named.
+   * Holds only bases above zero, and is absent when none is; totals built
+   * before the split, and sealed copies of them, omit it.
+   */
+  readonly notPricedByBilling?: Readonly<
+    Partial<Record<CostBillingBasis, number>>
+  >;
   /** True when any priced amount is an estimate rather than reported. */
   readonly hasEstimate: boolean;
 }

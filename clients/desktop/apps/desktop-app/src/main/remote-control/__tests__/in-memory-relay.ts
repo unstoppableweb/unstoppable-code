@@ -20,6 +20,39 @@ export class InMemoryRelayHub {
   /** Optional tap that may rewrite or drop frames in flight. */
   tap: ((from: string, to: string, payload: Buffer) => Buffer | null) | null =
     null;
+  /**
+   * Frames held for a device, delivered together by `release` as one
+   * socket read hands a client several frames at once.
+   */
+  private readonly held = new Map<string, Array<() => void>>();
+
+  /** Holds every frame to `deviceId` until `release`. */
+  hold(deviceId: string): void {
+    if (!this.held.has(deviceId)) this.held.set(deviceId, []);
+  }
+
+  heldCount(deviceId: string): number {
+    return this.held.get(deviceId)?.length ?? 0;
+  }
+
+  /** Delivers the held frames in order, in one go, and stops holding. */
+  release(deviceId: string): void {
+    const frames = this.held.get(deviceId) ?? [];
+    this.held.delete(deviceId);
+    for (const deliver of frames) deliver();
+  }
+
+  /** Each device's relay link; a cut loses every frame in flight on it. */
+  private readonly links = new Map<string, number>();
+
+  /** The device's relay connection is cut, as a relay restart does. */
+  cut(deviceId: string): void {
+    this.links.set(deviceId, this.link(deviceId) + 1);
+  }
+
+  private link(deviceId: string): number {
+    return this.links.get(deviceId) ?? 0;
+  }
 
   register(endpoint: InMemoryRelayEndpoint): void {
     this.endpoints.set(endpoint.deviceId, endpoint);
@@ -55,7 +88,15 @@ export class InMemoryRelayHub {
     if (frame === null) return true;
     const copy = Buffer.from(frame);
     this.delivered.push({ from, to, bytes: copy.byteLength });
-    setImmediate(() => target.deliver(from, copy));
+    const fromLink = this.link(from);
+    const toLink = this.link(to);
+    const deliver = (): void => {
+      if (this.link(from) !== fromLink || this.link(to) !== toLink) return;
+      target.deliver(from, copy);
+    };
+    const held = this.held.get(to);
+    if (held) held.push(deliver);
+    else setImmediate(deliver);
     return true;
   }
 }
@@ -69,6 +110,7 @@ export class InMemoryRelayEndpoint implements RemoteRelay {
   >();
   private readonly offlineListeners = new Set<(peer: string) => void>();
   private readonly undeliverableListeners = new Set<(peer: string) => void>();
+  private readonly onlineListeners = new Set<(peer: string) => void>();
 
   constructor(
     private readonly hub: InMemoryRelayHub,
@@ -112,6 +154,36 @@ export class InMemoryRelayEndpoint implements RemoteRelay {
     this.onPeersChange();
   }
 
+  /**
+   * Loses the relay connection: frames in flight to or from this device are
+   * dropped, and each side sees the other go offline.
+   */
+  dropConnection(): void {
+    if (!this.online) return;
+    const peers = this.hub.peersOf(this.deviceId);
+    this.online = false;
+    this.connectionStatus = 'stopped';
+    this.hub.cut(this.deviceId);
+    this.hub.unregister(this);
+    for (const peer of peers) this.peerOffline(peer.deviceId);
+  }
+
+  /** Joins again; each side sees the other come online. */
+  restoreConnection(peers: ReadonlyArray<InMemoryRelayEndpoint>): void {
+    this.online = true;
+    this.connectionStatus = 'connected';
+    this.hub.register(this);
+    for (const peer of peers) {
+      if (!peer.online) continue;
+      this.peerOnline(peer.deviceId);
+      peer.peerOnline(this.deviceId);
+    }
+  }
+
+  peerOnline(deviceId: string): void {
+    for (const listener of Array.from(this.onlineListeners)) listener(deviceId);
+  }
+
   notifyPeers(): void {
     this.onPeersChange();
   }
@@ -153,9 +225,10 @@ export class InMemoryRelayEndpoint implements RemoteRelay {
     return () => this.offlineListeners.delete(listener);
   }
 
-  // Presence here only goes offline; nothing announces a peer online.
-  onPeerOnline(): () => void {
-    return () => undefined;
+  // Only restoreConnection announces a peer online.
+  onPeerOnline(listener: (peer: string) => void): () => void {
+    this.onlineListeners.add(listener);
+    return () => this.onlineListeners.delete(listener);
   }
 }
 

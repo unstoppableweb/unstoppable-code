@@ -1,5 +1,10 @@
-import type { CanopyAccountResponse } from '@canopy/protocol/canopy-server';
+import type {
+  CanopyAccountResponse,
+  OrganizationModelGatewayConfig,
+  PersonalModelGatewayConfig,
+} from '@canopy/protocol/canopy-server';
 import { normalizePersonalOrganizationId } from '@canopy/protocol/workspace-context';
+import { normalizeUuid } from '@canopy/protocol/workspace-owner';
 // ---------------------------------------------------------------------------
 // Tolerant org-enforced settings parsing.
 //
@@ -367,12 +372,115 @@ export function normalizeOrgEnforcedSettingsWithStatus(value: unknown): {
   };
 }
 
-/** Personal is never included in organization consent or the enforcing union. */
-export function personalGatewayAccountFields(value: unknown): {
+export interface ModelGatewayAccountFields {
   personalModelGateway?: CanopyAccountResponse['personalModelGateway'];
   personalModelGatewayEnforcementUnavailable?: true;
-} {
-  if (!isRecord(value) || value.personalModelGateway === undefined) return {};
+  personalModelGatewayConfig?: PersonalModelGatewayConfig;
+  organizationModelGatewayConfigs?: OrganizationModelGatewayConfig[];
+}
+
+/**
+ * The account's gateway fields: the Personal routing projection and the saved
+ * configurations behind it. Personal is never included in organization
+ * consent or the enforcing union.
+ */
+export function modelGatewayAccountFields(
+  value: unknown,
+): ModelGatewayAccountFields {
+  if (!isRecord(value)) return {};
+  return {
+    ...personalGatewayRouteFields(value),
+    ...modelGatewayConfigFields(value),
+  };
+}
+
+function modelGatewayConfigFields(
+  value: Record<string, unknown>,
+): Pick<
+  ModelGatewayAccountFields,
+  'personalModelGatewayConfig' | 'organizationModelGatewayConfigs'
+> {
+  const personal = personalGatewayConfigField(value);
+  const organizations = organizationGatewayConfigsField(
+    value.organizationModelGatewayConfigs,
+  );
+  return {
+    ...(personal ? { personalModelGatewayConfig: personal } : {}),
+    ...(organizations
+      ? { organizationModelGatewayConfigs: organizations }
+      : {}),
+  };
+}
+
+function personalGatewayConfigField(
+  value: Record<string, unknown>,
+): PersonalModelGatewayConfig | undefined {
+  const raw = value.personalModelGatewayConfig;
+  const organizationId = normalizePersonalOrganizationId(
+    value.personalOrganizationId,
+  );
+  if (
+    !isRecord(raw) ||
+    organizationId === null ||
+    normalizePersonalOrganizationId(raw.organizationId) !== organizationId ||
+    typeof raw.enabled !== 'boolean'
+  )
+    return undefined;
+  if (raw.baseUrl === null)
+    return { organizationId, enabled: false, baseUrl: null };
+  // An unparseable URL is unknown, never "removed".
+  const baseUrl = normalizeModelGatewayBaseUrl(raw.baseUrl);
+  return baseUrl
+    ? { organizationId, enabled: raw.enabled, baseUrl }
+    : undefined;
+}
+
+const GATEWAY_URL_FINGERPRINT = /^[0-9a-f]{64}$/;
+
+/**
+ * One malformed entry makes the whole list unknown: an organization missing
+ * from it reads as a removed gateway, so a partial list is never kept.
+ */
+function organizationGatewayConfigsField(
+  raw: unknown,
+): OrganizationModelGatewayConfig[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const configs: OrganizationModelGatewayConfig[] = [];
+  for (const entry of raw) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.enabled !== 'boolean' ||
+      typeof entry.configured !== 'boolean'
+    )
+      return undefined;
+    const organizationId = normalizeUuid(entry.organizationId);
+    if (organizationId === null) return undefined;
+    if (!entry.configured) {
+      configs.push({ organizationId, enabled: false, configured: false });
+      continue;
+    }
+    if (
+      typeof entry.baseUrlFingerprint !== 'string' ||
+      !GATEWAY_URL_FINGERPRINT.test(entry.baseUrlFingerprint)
+    )
+      return undefined;
+    configs.push({
+      organizationId,
+      enabled: entry.enabled,
+      configured: true,
+      baseUrlFingerprint: entry.baseUrlFingerprint,
+    });
+  }
+  return configs;
+}
+
+function personalGatewayRouteFields(
+  value: Record<string, unknown>,
+): Pick<
+  ModelGatewayAccountFields,
+  'personalModelGateway' | 'personalModelGatewayEnforcementUnavailable'
+> {
+  if (value.personalModelGateway === undefined) return {};
   const raw = value.personalModelGateway;
   if (!isRecord(raw))
     return { personalModelGatewayEnforcementUnavailable: true };

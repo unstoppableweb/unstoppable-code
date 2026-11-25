@@ -37,6 +37,8 @@ export interface CostTurnRecord {
     readonly jobId?: string;
     readonly stepId?: string;
     readonly attempt?: number;
+    /** The resumed attempt of a paused step; absent before any recovery. */
+    readonly recovery?: number;
   };
   readonly provider: AgentProviderType;
   readonly model?: string;

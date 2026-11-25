@@ -174,6 +174,8 @@ export const SESSION_TRANSFER_FIELD_EXHAUSTIVENESS: Record<
   executionContext: true,
   // Stripped: in-flight activation belongs to the originating host and task.
   mcpActivation: true,
+  // Stripped: this records a launch on the originating worker.
+  claudeConnectorAvailability: true,
   id: true,
   inputDelivery: true,
   // Stripped: this receipt belongs to the local resume queue.

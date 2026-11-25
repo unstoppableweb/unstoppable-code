@@ -4,7 +4,8 @@ const maxWorkers = localJest.getLocalJestMaxWorkers();
 
 /** @type {import('jest').Config} */
 const config = {
-  testEnvironment: 'node',
+  testEnvironment:
+    '<rootDir>/apps/desktop-app/src/__tests__/jestFileScopedTimersEnvironment.ts',
   // Local direct runs share the same cap as the checks scripts; CI keeps its default.
   ...(maxWorkers === undefined ? {} : { maxWorkers }),
   // A worker keeps the heap of every suite it ran. Each CI leg runs its root

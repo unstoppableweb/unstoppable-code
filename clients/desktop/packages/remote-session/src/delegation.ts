@@ -4,6 +4,7 @@ import {
   decodeCanonicalBase64url,
   hostedDelegationSigningBytes,
   type HostedDelegation,
+  type HostedFirstPartyClient,
 } from '@canopy/protocol/remote-control';
 import { encodeBase64Url } from './bytes';
 import {
@@ -17,21 +18,24 @@ import {
  * ephemeral session identity until `expiresAt`. It travels in handshake
  * hello1 as `delegation`; its session key must equal hello1's initiator key,
  * which the transcript already binds, so the delegation itself is not added
- * to the transcript.
+ * to the transcript. A first-party server caller (CAN-7604) is named in the
+ * signed v2 bytes, so a host can trust it and an older host refuses it.
  */
 export async function signHostedDelegation(
   root: DeviceIdentity,
   sessionPublicKey: string,
   expiresAt: number,
+  firstPartyClient?: HostedFirstPartyClient,
 ): Promise<HostedDelegation> {
   const signature = await signWithIdentity(
     root,
-    hostedDelegationSigningBytes(sessionPublicKey, expiresAt),
+    hostedDelegationSigningBytes(sessionPublicKey, expiresAt, firstPartyClient),
   );
   return HostedDelegationSchema.parse({
     rootPublicKey: root.publicKey,
     sessionPublicKey,
     expiresAt,
+    ...(firstPartyClient === undefined ? {} : { firstPartyClient }),
     signature: encodeBase64Url(signature),
   });
 }
@@ -45,7 +49,12 @@ export type HostedDelegationRefusal =
   | 'root_not_trusted';
 
 export type HostedDelegationVerdict =
-  | { ok: true; rootPublicKey: string; expiresAt: number }
+  | {
+      ok: true;
+      rootPublicKey: string;
+      expiresAt: number;
+      firstPartyClient?: HostedFirstPartyClient;
+    }
   | { ok: false; reason: HostedDelegationRefusal };
 
 export interface VerifyHostedDelegationOptions {
@@ -83,7 +92,11 @@ export async function verifyHostedDelegation(
     signature === null ||
     !(await verifyEd25519(
       value.rootPublicKey,
-      hostedDelegationSigningBytes(value.sessionPublicKey, value.expiresAt),
+      hostedDelegationSigningBytes(
+        value.sessionPublicKey,
+        value.expiresAt,
+        value.firstPartyClient,
+      ),
       signature,
     ))
   ) {
@@ -93,5 +106,8 @@ export async function verifyHostedDelegation(
     ok: true,
     rootPublicKey: value.rootPublicKey,
     expiresAt: value.expiresAt,
+    ...(value.firstPartyClient === undefined
+      ? {}
+      : { firstPartyClient: value.firstPartyClient }),
   };
 }

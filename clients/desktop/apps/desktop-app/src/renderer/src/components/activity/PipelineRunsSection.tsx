@@ -299,6 +299,16 @@ export function PipelineRunsSection({
     () => collectVisibleExecutionTreeNodes(hiddenRoots, expandedIds),
     [expandedIds, hiddenRoots],
   );
+  const feedbackRunIds = useMemo(
+    () =>
+      new Set([
+        ...visibleNodes.map(({ summary }) => summary.id),
+        ...(hiddenExpanded
+          ? visibleHiddenNodes.map(({ summary }) => summary.id)
+          : []),
+      ]),
+    [hiddenExpanded, visibleHiddenNodes, visibleNodes],
+  );
   const prefetchMissingRows = useCallback(
     (nodes: ExecutionTreeNode[]): void => {
       for (const node of nodes) {
@@ -369,6 +379,7 @@ export function PipelineRunsSection({
       >
         <span ref={dialogAnchorRef} hidden />
         <PipelineRunsSectionBody
+          actionFeedback={actions.renderActionError(feedbackRunIds)}
           layout={frameless ? 'frameless' : 'card'}
           queuedExecutions={queuedExecutionsForWorktree}
           failedQueuedExecutions={failedQueuedExecutionsForWorktree}

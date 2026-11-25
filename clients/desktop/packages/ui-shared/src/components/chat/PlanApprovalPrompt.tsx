@@ -10,16 +10,19 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
-import { CloseLargeIcon, MapIcon, MessageIcon } from '../../icons/AppIcons';
+import { MapIcon, MessageIcon } from '../../icons/AppIcons';
 import { ComposerIconButton } from './ComposerIconButton';
 import {
   COMPOSER_PROMPT_BOX_CLASS,
   COMPOSER_PROMPT_EDITOR_CONTAINER_CLASS,
-  COMPOSER_PROMPT_HEADER_CLASS,
   COMPOSER_PROMPT_ROW_GLYPH_CLASS,
   COMPOSER_PROMPT_ROWS_CLASS,
   COMPOSER_PROMPT_TEXT_ROW_WITH_GLYPH_CLASS,
 } from './ComposerPrompt';
+import {
+  ComposerPromptHeader,
+  closeComposerPromptOnEscape,
+} from './ComposerPromptHeader';
 import { ComposerPromptTextRow } from './ComposerPromptTextRow';
 import { PlanCopyAction, type PlanCopyState } from './PlanCopyAction';
 
@@ -176,62 +179,53 @@ export function PlanApprovalPrompt({
       data-testid={expanded ? 'chat-plan-approval' : undefined}
       className={expanded ? 'flex flex-col gap-1' : undefined}
       onKeyDown={(event): void => {
-        if (
-          !expanded ||
-          onClose === undefined ||
-          event.key !== 'Escape' ||
-          event.defaultPrevented
-        )
-          return;
-        event.preventDefault();
-        onClose();
+        if (expanded && onClose !== undefined)
+          closeComposerPromptOnEscape(event, onClose);
       }}
     >
       {expanded && (
         <>
-          <div className={`${COMPOSER_PROMPT_HEADER_CLASS} items-center`}>
+          <ComposerPromptHeader
+            align="center"
+            // The composer's own controls in the primary ink: Copy and Open
+            // as labeled capsules led by an icon, named for the plan.
+            actions={
+              (planCopy || onOpenPlan) && (
+                <>
+                  {planCopy && (
+                    <PlanCopyAction
+                      state={planCopy}
+                      appearance="composer"
+                      dataTestId="chat-plan-copy"
+                    />
+                  )}
+                  {onOpenPlan && (
+                    <ComposerIconButton
+                      capsule
+                      autoWidth
+                      tone="strong"
+                      aria-label="Open plan"
+                      onClick={onOpenPlan}
+                      data-testid="chat-plan-explore"
+                    >
+                      <MapIcon size={14} aria-hidden="true" />
+                      <span>Open</span>
+                    </ComposerIconButton>
+                  )}
+                </>
+              )
+            }
+            {...(onClose
+              ? { close: { onClose, testId: 'chat-plan-approval-close' } }
+              : {})}
+          >
             <p
               id={titleId}
               className="min-w-0 flex-1 truncate text-s font-medium fg-primary"
             >
               {revised ? 'Implement the revised plan?' : 'Implement this plan?'}
             </p>
-            {/* Both header actions are the composer's own controls, in the
-            primary ink: Copy and Open as labeled capsules led by an icon,
-            named for the plan, x as the microphone's 32px circle in send's
-            column. */}
-            {planCopy && (
-              <PlanCopyAction
-                state={planCopy}
-                appearance="composer"
-                dataTestId="chat-plan-copy"
-              />
-            )}
-            {onOpenPlan && (
-              <ComposerIconButton
-                capsule
-                autoWidth
-                tone="strong"
-                aria-label="Open plan"
-                onClick={onOpenPlan}
-                data-testid="chat-plan-explore"
-              >
-                <MapIcon size={14} aria-hidden="true" />
-                <span>Open</span>
-              </ComposerIconButton>
-            )}
-            {onClose && (
-              <ComposerIconButton
-                capsule
-                tone="strong"
-                aria-label="Close"
-                onClick={onClose}
-                data-testid="chat-plan-approval-close"
-              >
-                <CloseLargeIcon size={16} />
-              </ComposerIconButton>
-            )}
-          </div>
+          </ComposerPromptHeader>
           <div
             role="group"
             aria-labelledby={titleId}

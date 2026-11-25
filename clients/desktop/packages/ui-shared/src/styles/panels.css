@@ -274,6 +274,19 @@
   display: none;
 }
 
+/* A panel group closing with an animation stays drawn until it has shrunk
+   away (`animatePanelLayoutChange`), and the dividers wait for the boxes to
+   settle rather than jumping ahead of them. */
+.canopy-split-view
+  > .split-view-container
+  > .split-view-view[data-layout-leaving] {
+  display: block;
+}
+
+[data-layout-animating] .canopy-sash {
+  visibility: hidden;
+}
+
 .canopy-split-view.vertical > .split-view-container > .split-view-view {
   width: 100%;
 }
@@ -1078,15 +1091,19 @@
    in from its edge, so their corners are the card's less that inset (6px in
    a 10px card), never below the floor. Tabs, `+`, ⌄, the chrome actions and
    the row's accessory controls (`TitlebarIconButton surface="panelChrome"`)
-   share it, so the row has one radius. */
-.canopy-panel-group-title:has(.canopy-panel-tab-bar[data-tab-style='fill']) {
+   share it, so the row has one radius.
+
+   The group and its title row carry `data-fill-tabs` while they hold a fill
+   tab bar. A `:has()` lookup for that bar made Chromium restyle the whole
+   pane on every element added or removed inside it, on each screen update. */
+.canopy-panel-group-title[data-fill-tabs] {
   --canopy-panel-tile-radius: max(
     calc(var(--inset-card-radius, 10px) - var(--canopy-panel-row-inset)),
     var(--canopy-panel-corner-floor)
   );
 }
 
-.canopy-panel-group-title:has(.canopy-panel-tab-bar[data-tab-style='fill'])
+.canopy-panel-group-title[data-fill-tabs]
   :is(
     .canopy-panel-add-tab,
     .canopy-panel-chrome button,
@@ -1098,9 +1115,7 @@
 /* A toolbar row in a pane's body (the Browser's address bar) keeps its
    controls the same row inset from the card's sides, so they take the tab
    row's radius: one corner for every control in the pane. */
-.canopy-panel-group:has(.canopy-panel-tab-bar[data-tab-style='fill'])
-  .canopy-panel-toolbar
-  :is(button, input) {
+.canopy-panel-group[data-fill-tabs] .canopy-panel-toolbar :is(button, input) {
   border-radius: max(
     calc(var(--inset-card-radius, 10px) - var(--canopy-panel-row-inset)),
     var(--canopy-panel-corner-floor)
@@ -1109,7 +1124,7 @@
 
 /* Fill tabs: the 28px tiles sit 4px from the card's top, the same 4px as
    their left inset, so the title row is 4 + 28 + 4px plus its hairline. */
-.canopy-panel-group-title:has(.canopy-panel-tab-bar[data-tab-style='fill']) {
+.canopy-panel-group-title[data-fill-tabs] {
   min-height: calc(36px + 0.5px);
 }
 
@@ -1166,8 +1181,7 @@
 
 /* Fill tabs: the trailing controls sit 4px from the card's right edge, the
    same 4px as the first tab's left and every control's top inset. */
-.canopy-panel-group-title:has(.canopy-panel-tab-bar[data-tab-style='fill'])
-  > .canopy-panel-chrome {
+.canopy-panel-group-title[data-fill-tabs] > .canopy-panel-chrome {
   padding-right: 4px;
 }
 
@@ -1303,16 +1317,7 @@
    there shows whole, and only text that runs past fades, over its last
    24px. Only on tabs that draw an ×. */
   max-width: calc(100% - 16px);
-  -webkit-mask-image: linear-gradient(
-    to right,
-    #000 calc(100% - var(--canopy-panel-close-fade, 24px)),
-    transparent
-  );
-  mask-image: linear-gradient(
-    to right,
-    #000 calc(100% - var(--canopy-panel-close-fade, 24px)),
-    transparent
-  );
+  --canopy-panel-title-fade: var(--canopy-panel-close-fade, 24px);
 }
 
 /* A narrow tab (down to the 96px floor) fades over 12px, so a few letters
@@ -1381,15 +1386,45 @@
   overflow: hidden;
   /* A title too long for its tab fades out over its last 8px instead of
      ending in "…", so a narrow tab keeps more of its letters. */
-  -webkit-mask-image: linear-gradient(
-    to right,
-    #000 calc(100% - 8px),
-    transparent
+  -webkit-mask-image: var(
+    --canopy-panel-title-no-mask,
+    linear-gradient(
+      to right,
+      #000 calc(100% - var(--canopy-panel-title-fade, 8px)),
+      transparent
+    )
   );
-  mask-image: linear-gradient(to right, #000 calc(100% - 8px), transparent);
+  mask-image: var(
+    --canopy-panel-title-no-mask,
+    linear-gradient(
+      to right,
+      #000 calc(100% - var(--canopy-panel-title-fade, 8px)),
+      transparent
+    )
+  );
   /* Grows, so the indicators sit at the label's right end. */
   flex: 1 1 auto;
   min-width: 0;
+}
+
+/* Only a title that overflows fades: one that fits keeps every letter
+   solid, even when it ends right at its box's edge. The title's own
+   horizontal scroll timeline is active only while its text overflows, and
+   an animation bound to it lifts the `none` override. The gradient stays in
+   the rule above, so the fade length follows the close button's state. */
+@supports (animation-timeline: scroll()) {
+  .canopy-panel-tab-title:where([data-tab-style='fill'] *) {
+    --canopy-panel-title-no-mask: none;
+    animation: canopy-panel-tab-title-fade 1ms linear both;
+    animation-timeline: scroll(self inline);
+  }
+}
+
+@keyframes canopy-panel-tab-title-fade {
+  from,
+  to {
+    --canopy-panel-title-no-mask: initial;
+  }
 }
 
 /* With no indicator or close button beside it, the title runs on through
@@ -2028,9 +2063,10 @@
   display: none;
 }
 
-/* An unread tab out of view: the tab's own unread dot (6px, accent) on ⌄'s
-   corner. Absolutely placed, so it never moves ⌄; it scales in with a
-   slight overshoot and out quickly (a plain fade with reduced motion). */
+/* An unread tab out of view: the tab's own unread dot (6px, the shared
+   unread blue `--fg-info`, never the theme accent) on ⌄'s corner.
+   Absolutely placed, so it never moves ⌄; it scales in with a slight
+   overshoot and out quickly (a plain fade with reduced motion). */
 .canopy-panel-tab-list-root::after {
   content: '';
   position: absolute;
@@ -2039,7 +2075,7 @@
   width: 6px;
   height: 6px;
   border-radius: 9999px;
-  background: var(--bg-accent);
+  background: var(--fg-info);
   pointer-events: none;
   scale: 0;
   transition: scale 120ms ease-in;

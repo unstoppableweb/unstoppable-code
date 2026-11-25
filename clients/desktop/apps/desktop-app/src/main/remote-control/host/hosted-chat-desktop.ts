@@ -1,4 +1,5 @@
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
+import type { CanopyQueryOptions } from '@canopy/core-runtime';
 import { resolveChatModelChangeHarness } from '@canopy/desktop-shared/lib/chat-model-selection';
 import { RpcPublicError } from '../transport/rpc-peer';
 import {
@@ -33,6 +34,12 @@ import {
   createHostedChatDispatcher,
   type HostedChatAttribution,
 } from './hosted-chat-dispatch';
+import {
+  createHostedOrchestratorDesktop,
+  isSlackConversationsChat,
+  readSlackTurnStatus,
+  type HostedOrchestratorChatReads,
+} from './hosted-orchestrator-desktop';
 
 /**
  * The desktop wiring of the hosted chat dispatcher (CAN-5985): main's trusted
@@ -48,6 +55,35 @@ function chatPort(): ChatStateCommandPort {
     );
   return port;
 }
+
+const orchestratorReadOptions: CanopyQueryOptions = {
+  caller: {
+    principalId: 'local-desktop-user',
+    clientInstanceId: 'hosted-slack-orchestrator',
+    authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+    interfaceKind: 'desktop',
+    grants: ['core.chat.read'],
+  },
+};
+
+const orchestratorChatReads: HostedOrchestratorChatReads = {
+  getState: async ({ projectId, worktreeId }) => {
+    const { legacyResult } =
+      await getActiveDesktopRuntime().queryChatStateForLegacyIpc(
+        { scope: { workspaceId: projectId, worktreeId } },
+        orchestratorReadOptions,
+      );
+    return legacyResult;
+  },
+  transcriptPage: async ({ projectId, worktreeId, chatId, before }) => {
+    const { legacyResult } =
+      await getActiveDesktopRuntime().queryChatTranscriptPageForLegacyIpc(
+        { scope: { workspaceId: projectId, worktreeId, chatId }, before },
+        orchestratorReadOptions,
+      );
+    return legacyResult;
+  },
+};
 
 /** A hosted session acts under its hosted root, with chat write only. */
 function hostedCaller(
@@ -182,8 +218,35 @@ export const dispatchHostedChatCommandOnDesktop = createHostedChatDispatcher({
       executionOptions: { agentSent: request.attribution.sender },
       dispatch: (next, options) => dispatch(next, request.attribution, options),
     }),
+  orchestrator: createHostedOrchestratorDesktop({
+    chatPort: () => orchestratorChatReads,
+    dispatch,
+  }),
   sendDelivery: async (target, userMessageId) => {
     const { delivery } = await sendReceiptFields(target, userMessageId);
     return delivery === undefined ? {} : { delivery };
   },
 });
+
+/**
+ * A Slack session's Orchestrator reads (CAN-7604). The hosted policy already
+ * admitted the exact `{ chatId, userMessageId }` status request.
+ */
+export const hostedSlackOrchestratorReads = {
+  readsChat: isSlackConversationsChat,
+  turnStatus: (request: unknown): Promise<unknown> => {
+    const chatId: unknown = Reflect.get(Object(request), 'chatId');
+    const userMessageId: unknown = Reflect.get(
+      Object(request),
+      'userMessageId',
+    );
+    if (typeof chatId !== 'string' || typeof userMessageId !== 'string')
+      return Promise.reject(
+        new RpcPublicError('The turn status request was not valid.'),
+      );
+    return readSlackTurnStatus(orchestratorChatReads, {
+      chatId,
+      userMessageId,
+    });
+  },
+};

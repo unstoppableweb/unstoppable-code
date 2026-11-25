@@ -581,20 +581,20 @@ export function reduceChatTurnHostEvent(
   };
 }
 
+/**
+ * Ends the turn an app restart orphaned. It is cancelled unless restart
+ * cleanup found its answer saved and no work left open (CAN-7612), in which
+ * case it completed. Either way its terminal reason records the restart.
+ */
 export function settleChatTurnForRestart(
   state: ChatTurnState,
   endedAtMs: number,
+  outcome: Extract<ChatTurnOutcome, 'cancelled' | 'completed'> = 'cancelled',
 ): { state: ChatTurnState; effects: ChatTurnEffect[] } {
   if (state.current === undefined) {
     return { state, effects: [] };
   }
-  return finalizeCurrentTurn(
-    state,
-    endedAtMs,
-    'cancelled',
-    undefined,
-    'restart',
-  );
+  return finalizeCurrentTurn(state, endedAtMs, outcome, undefined, 'restart');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -88,6 +88,7 @@ export async function createTerminalPanel(
   title = 'Terminal',
   initialCommand?: string,
   ownerDocument: Document = document,
+  onSpawned?: (terminalId: string) => void,
 ): Promise<boolean> {
   const ownerKey = getAuxPanelLayoutOwnerKey(worktreeKey) ?? worktreeKey;
   const { projectId, worktreeId } = splitKey(ownerKey);
@@ -117,6 +118,7 @@ export async function createTerminalPanel(
       rows: 24,
     });
     terminalId = session.id;
+    onSpawned?.(terminalId);
     useTerminalStore.getState().addGroupWithTerminal(session);
     // Creating a terminal is an explicit user gesture, so the new pane may
     // claim the caret once it mounts (CAN-2309).

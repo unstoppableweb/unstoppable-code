@@ -317,13 +317,7 @@ export function WorktreeLaunchButton({
               // becomes a square icon, freeing room for the status region. The
               // accessible name and tooltip carry the meaning either way.
               iconOnlyWhenNarrow
-              icon={
-                <RocketLaunchIcon
-                  size="sm"
-                  className="shrink-0 @[640px]/topbar:hidden"
-                  aria-hidden="true"
-                />
-              }
+              icon={<RocketLaunchIcon size="sm" aria-hidden="true" />}
             />
           </Tooltip>
         ))}

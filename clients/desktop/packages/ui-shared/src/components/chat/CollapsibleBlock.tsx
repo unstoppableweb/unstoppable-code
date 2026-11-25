@@ -41,6 +41,33 @@ export function thinkingHeadline(content: string): string | undefined {
 }
 
 /**
+ * An opened block's text: quiet prose in a box that scrolls. Also what
+ * Compact's status line opens to, so the thought a turn is on can be read
+ * while it runs.
+ */
+export function CollapsibleBlockBody({
+  content,
+  nested = false,
+}: {
+  content: string;
+  /**
+   * Inside a step group's opened body, which already starts on the row's
+   * words, so the text adds no indent of its own.
+   */
+  nested?: boolean;
+}): JSX.Element {
+  return (
+    <div
+      className={`${REPLAY_BLOCK_CLASS} ${nested ? 'pb-1 text-s' : STEP_ROW_BODY_CLASS} max-h-75 overflow-auto whitespace-pre-wrap break-words fg-tertiary`}
+      data-chat-reveal-body=""
+      data-testid="chat-thought-text"
+    >
+      {content}
+    </div>
+  );
+}
+
+/**
  * Shared collapsed transcript block (Thinking, tool results, generic parts).
  * One source of truth for the desktop chat renderer and the web portal so
  * icons, preview text, and expansion chrome cannot drift apart.
@@ -74,14 +101,7 @@ export function CollapsibleBlock({
         isOpen={isOpen}
         onToggle={(): void => setIsOpen((prev) => !prev)}
       />
-      {isOpen && (
-        <div
-          className={`${REPLAY_BLOCK_CLASS} ${STEP_ROW_BODY_CLASS} max-h-75 overflow-auto whitespace-pre-wrap break-words fg-tertiary`}
-          data-chat-reveal-body=""
-        >
-          {content}
-        </div>
-      )}
+      {isOpen && <CollapsibleBlockBody content={content} />}
     </div>
   );
 }

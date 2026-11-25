@@ -344,6 +344,14 @@ import {
   type CorePublicationAdapter,
 } from './core-publication-adapter';
 import {
+  createCorePublicationSharedContainerAdapter,
+  type CorePublicationSharedContainerAdapter,
+} from './core-publication-shared-container-adapter';
+import {
+  createCoreSharedContainerAdapter,
+  type CoreSharedContainerAdapter,
+} from './core-shared-container-adapter';
+import {
   createCoreOperationAdapter,
   type CoreOperationAdapter,
 } from './core-operation-adapter';
@@ -591,6 +599,10 @@ export interface CreateDesktopRuntimeOptions {
   reviewAdapter?: CoreReviewAdapter;
   /** Handler logic for `core.publication.*`; tests may inject an isolated adapter. */
   publicationAdapter?: CorePublicationAdapter;
+  /** Handler logic for the shared-container `core.publication.*` scope and preview; tests may inject an isolated adapter. */
+  publicationSharedContainerAdapter?: CorePublicationSharedContainerAdapter;
+  /** Handler logic for the `core.sharedContainer.*` reads; tests may inject an isolated adapter. */
+  sharedContainerAdapter?: CoreSharedContainerAdapter;
   /** Handler logic for `core.featureFlag.*`; tests may inject an isolated adapter. */
   featureFlagAdapter?: CoreFeatureFlagHandlers;
   /**
@@ -1633,6 +1645,11 @@ export function createDesktopRuntime(
   const reviewAdapter = options.reviewAdapter ?? createCoreReviewAdapter();
   const publicationAdapter =
     options.publicationAdapter ?? createCorePublicationAdapter();
+  const publicationSharedContainerAdapter =
+    options.publicationSharedContainerAdapter ??
+    createCorePublicationSharedContainerAdapter();
+  const sharedContainerAdapter =
+    options.sharedContainerAdapter ?? createCoreSharedContainerAdapter();
   const featureFlagAdapter =
     options.featureFlagAdapter ?? createCoreFeatureFlagAdapter();
   const operationAdapter =
@@ -1784,6 +1801,8 @@ export function createDesktopRuntime(
     planAdapter,
     reviewAdapter,
     publicationAdapter,
+    publicationSharedContainerAdapter,
+    sharedContainerAdapter,
     operationQueriesAndInstructions,
     ...(options.adapters ?? []),
   ];
@@ -2016,6 +2035,11 @@ export function createDesktopRuntime(
       ownedAdapter('core.plan', planAdapter),
       ownedAdapter('core.review', reviewAdapter),
       ownedAdapter('core.publication', publicationAdapter),
+      ownedAdapter(
+        'core.publication.sharedContainer',
+        publicationSharedContainerAdapter,
+      ),
+      ownedAdapter('core.sharedContainer', sharedContainerAdapter),
       owned(
         'core.operation',
         operationAdapter.queries,

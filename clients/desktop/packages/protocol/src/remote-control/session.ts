@@ -72,6 +72,13 @@ export const REMOTE_METHODS = {
   coreSubscribe: 'core.subscribe',
   /** Controller → host: close a stream opened with `core.subscribe`. */
   coreUnsubscribe: 'core.unsubscribe',
+  /**
+   * Controller → host, desktop controllers only: open one byte stream to a
+   * TCP address on the host. Its bytes then travel as `tunnel.*` events
+   * (docs/remote-control-protocol.md, "Tunnel streams"). Hosts released
+   * before it answer with an unknown-method error.
+   */
+  tunnelOpen: 'tunnel.open',
 } as const;
 
 export const REMOTE_EVENTS = {
@@ -93,6 +100,14 @@ export const REMOTE_EVENTS = {
   appAdvisorWindowState: 'appAdvisor.windowState',
   /** Host → controller: one frame of a core stream. */
   coreEvent: 'core.event',
+  /** Both ways: bytes of one tunnel stream, sent only against credit. */
+  tunnelData: 'tunnel.data',
+  /** Both ways: the receiver took this many bytes of a tunnel stream. */
+  tunnelCredit: 'tunnel.credit',
+  /** Both ways: the sender will send no more bytes on a tunnel stream. */
+  tunnelEnd: 'tunnel.end',
+  /** Both ways: a tunnel stream is abandoned in both directions. */
+  tunnelReset: 'tunnel.reset',
 } as const;
 
 /**
@@ -167,8 +182,136 @@ export const HelloParamsSchema = z.object({
   transport: RemoteTransportFeaturesSchema.optional(),
   /** This controller understands the exact worktree-base catalogue. */
   exactWorktreeBaseBranch: z.boolean().optional(),
+  /** This controller parses `reason` in a `secret-request.settle` result. */
+  secretRequestSettleReason: z.boolean().optional(),
+  /** This controller can carry web preview traffic as tunnel streams. */
+  webPreview: z.object({ version: z.number().int().positive() }).optional(),
 });
 export type HelloParams = z.infer<typeof HelloParamsSchema>;
+
+/**
+ * Tunnel streams: TCP-like byte streams carried side by side over one
+ * control session (docs/remote-control-protocol.md, "Tunnel streams").
+ * Version 1 fixes the limits below; a host advertises its own stream count
+ * and window in `features.webPreview`.
+ */
+export const REMOTE_TUNNEL_VERSION = 1;
+/** Largest `tunnel.data` payload, so each one seals into a single fragment. */
+export const TUNNEL_MAX_CHUNK_BYTES = 32 * 1024;
+/** Bytes a sender may have uncredited on one stream. */
+export const TUNNEL_INITIAL_WINDOW_BYTES = 256 * 1024;
+/**
+ * Bytes a sender may have uncredited across every stream of a session. Far
+ * below the 16 MiB re-send buffer, so a session carrying streams can still
+ * resume after a relay drop.
+ */
+export const TUNNEL_SESSION_WINDOW_BYTES = 4 * 1024 * 1024;
+/** Streams a host keeps open for one session, dialing ones included. */
+export const TUNNEL_MAX_STREAMS = 256;
+export const TUNNEL_MAX_STREAM_ID = 0xffff_ffff;
+const TUNNEL_MAX_HOST_LENGTH = 253;
+
+export const TunnelStreamIdSchema = z
+  .number()
+  .int()
+  .min(1)
+  .max(TUNNEL_MAX_STREAM_ID);
+
+/**
+ * Where a stream's destination is, as the controller classified it before
+ * opening. `loopback` is only `localhost`, `*.localhost` (any trailing dot
+ * removed), `127.0.0.0/8` and `::1`; `lan` is a private network address.
+ * The host refuses with `policy` an open whose resolved address is not of
+ * its class.
+ */
+export const TUNNEL_DESTINATION_CLASSES = ['loopback', 'lan'] as const;
+export type TunnelDestinationClass =
+  (typeof TUNNEL_DESTINATION_CLASSES)[number];
+
+export const TunnelOpenParamsSchema = z.object({
+  /** Chosen by the controller; larger than every id it used before. */
+  streamId: TunnelStreamIdSchema,
+  host: z.string().min(1).max(TUNNEL_MAX_HOST_LENGTH),
+  port: z.number().int().min(1).max(65535),
+  class: z.enum(TUNNEL_DESTINATION_CLASSES),
+  /** The bytes are TLS, so they are sent uncompressed. */
+  tls: z.boolean().optional(),
+});
+export type TunnelOpenParams = z.infer<typeof TunnelOpenParamsSchema>;
+
+export const TUNNEL_OPEN_FAILURE_CODES = [
+  /** Nothing accepted the connection at that address. */
+  'refused',
+  /** The name did not resolve, or the address did not answer in time. */
+  'unreachable',
+  /** The host's policy does not allow that destination. */
+  'policy',
+  /** Too many streams are open on this session. */
+  'limit',
+  /** The host does not carry tunnel streams for this controller now. */
+  'unavailable',
+] as const;
+export type TunnelOpenFailureCode = (typeof TUNNEL_OPEN_FAILURE_CODES)[number];
+
+export const TunnelOpenResultSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), code: z.enum(TUNNEL_OPEN_FAILURE_CODES) }),
+]);
+export type TunnelOpenResult = z.infer<typeof TunnelOpenResultSchema>;
+
+export const TunnelDataParamsSchema = z.object({
+  streamId: TunnelStreamIdSchema,
+  bytes: z
+    .instanceof(Uint8Array)
+    .refine(
+      (bytes) =>
+        bytes.byteLength > 0 && bytes.byteLength <= TUNNEL_MAX_CHUNK_BYTES,
+    ),
+});
+export type TunnelDataParams = z.infer<typeof TunnelDataParamsSchema>;
+
+export const TunnelCreditParamsSchema = z.object({
+  streamId: TunnelStreamIdSchema,
+  bytes: z.number().int().min(1).max(TUNNEL_SESSION_WINDOW_BYTES),
+});
+export type TunnelCreditParams = z.infer<typeof TunnelCreditParamsSchema>;
+
+export const TunnelEndParamsSchema = z.object({
+  streamId: TunnelStreamIdSchema,
+});
+export type TunnelEndParams = z.infer<typeof TunnelEndParamsSchema>;
+
+export const TUNNEL_RESET_CODES = [
+  /** The sender's side closed the stream before both directions ended. */
+  'cancelled',
+  /** The socket behind the stream failed. */
+  'error',
+  /** A malformed or out-of-order message for the stream. */
+  'protocol',
+  /** More bytes arrived than the receiver had credited. */
+  'flow_control',
+] as const;
+export type TunnelResetCode = (typeof TUNNEL_RESET_CODES)[number];
+
+export const TunnelResetParamsSchema = z.object({
+  streamId: TunnelStreamIdSchema,
+  code: z.enum(TUNNEL_RESET_CODES),
+});
+export type TunnelResetParams = z.infer<typeof TunnelResetParamsSchema>;
+
+/** What a host that carries tunnel streams advertises in its hello. */
+export const WebPreviewHostFeatureSchema = z.object({
+  version: z.number().int().positive(),
+  maxStreams: z.number().int().min(1).max(TUNNEL_MAX_STREAMS),
+  initialWindowBytes: z
+    .number()
+    .int()
+    .min(TUNNEL_MAX_CHUNK_BYTES)
+    .max(TUNNEL_SESSION_WINDOW_BYTES),
+  /** The host also lets streams reach its private network addresses. */
+  lan: z.boolean(),
+});
+export type WebPreviewHostFeature = z.infer<typeof WebPreviewHostFeatureSchema>;
 
 export const SessionEndedParamsSchema = z.object({
   reason: z.enum(['disconnected', 'revoked']),
@@ -189,6 +332,22 @@ export const InvokeParamsSchema = z.object({
   channel: z.string().min(1).max(256),
   args: z.array(z.unknown()),
   surface: RemoteSurfaceSchema.optional(),
+});
+
+/** Optional browser catalog Add correlation, not a grant or install input. */
+export const PluginInstallRefreshTokenSchema = z.uuidv4();
+
+export const PluginInstallRefreshNoticeSchema = z.object({
+  installRefreshToken: PluginInstallRefreshTokenSchema,
+});
+export type PluginInstallRefreshNotice = z.infer<
+  typeof PluginInstallRefreshNoticeSchema
+>;
+
+/** Old peers strip this optional field; invalid metadata is ignored. */
+export const InvokeRequestParamsSchema = InvokeParamsSchema.extend({
+  installRefreshToken:
+    PluginInstallRefreshTokenSchema.optional().catch(undefined),
 });
 
 export const AppAdvisorWindowParamsSchema = z.object({
@@ -292,6 +451,13 @@ export const HelloResultSchema = z.object({
       secretRequestSettle: z.boolean().optional(),
       /** Both peers support explicit local:/remote: worktree base refs. */
       exactWorktreeBaseBranch: z.boolean().optional(),
+      /** The host honors typed steer intent in sends (chat_send_steer_intent_v1). */
+      chatSendSteerIntent: z.boolean().optional(),
+      /**
+       * The host carries web preview tunnel streams for this controller.
+       * Absent means unsupported.
+       */
+      webPreview: WebPreviewHostFeatureSchema.optional(),
     })
     .optional(),
   /** The transport features the host accepted from the hello's offer. */
@@ -437,11 +603,25 @@ export type SecretRequestSettleParams = z.infer<
   typeof SecretRequestSettleParamsSchema
 >;
 
-/** Whether the host took the answer; `error` never echoes a value. */
+/**
+ * Why a request can no longer take an answer: it `ended` (stopped, timed out
+ * or gone) or was already `answered`.
+ */
+export const SecretRequestClosedReasonSchema = z.enum(['ended', 'answered']);
+export type SecretRequestClosedReason = z.infer<
+  typeof SecretRequestClosedReasonSchema
+>;
+
+/**
+ * Whether the host took the answer; `error` never echoes a value. `reason`
+ * goes only to a controller that set `secretRequestSettleReason` in hello,
+ * since older controllers parse this strictly.
+ */
 export const SecretRequestSettleResultSchema = z
   .object({
     accepted: z.boolean(),
     error: z.string().max(500).optional(),
+    reason: SecretRequestClosedReasonSchema.optional(),
   })
   .strict();
 export type SecretRequestSettleResult = z.infer<

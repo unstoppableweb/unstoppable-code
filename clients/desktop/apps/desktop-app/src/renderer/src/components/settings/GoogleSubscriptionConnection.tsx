@@ -10,6 +10,7 @@ import {
 } from '@canopy/ui-shared/components';
 import type { AntigravityRuntimeStatus } from '@canopy/desktop-shared/types/antigravity-runtime';
 import { useModelCatalogStore } from '@/stores/modelCatalogStore';
+import { useRemoteControlStore } from '@/stores/remoteControlStore';
 import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
 import { type InlineFailure } from '@/lib/inline-app-error';
 import { AuthLoginModal } from './AuthLoginModal';
@@ -31,6 +32,11 @@ export function GoogleSubscriptionConnection({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<InlineFailure | null>(null);
   const [runtime, setRuntime] = useState<AntigravityRuntimeStatus>();
+  // A window showing another computer reads that computer's status, but the
+  // install channel stays local, so it never offers the install.
+  const remote = useRemoteControlStore(
+    (store) => store.context.mode === 'remote',
+  );
   const [installing, setInstalling] = useState(false);
   const [runtimeError, setRuntimeError] = useState<string>();
   const mounted = useRef(true);
@@ -239,6 +245,19 @@ export function GoogleSubscriptionConnection({
                   >
                     Cancel
                   </Button>
+                ) : runtime?.supported &&
+                  !runtime.managed &&
+                  !inProgress &&
+                  remote ? (
+                  // Status follows the controlled computer, but install is
+                  // this computer's own download, so it can't install there.
+                  <p
+                    className="text-xs fg-secondary"
+                    data-testid="antigravity-runtime-remote-install"
+                  >
+                    Install it from Settings on the computer you&apos;re
+                    controlling.
+                  </p>
                 ) : runtime?.supported && !runtime.managed && !inProgress ? (
                   <Button
                     variant="secondary"

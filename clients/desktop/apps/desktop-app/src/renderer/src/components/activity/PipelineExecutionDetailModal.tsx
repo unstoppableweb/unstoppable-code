@@ -93,6 +93,15 @@ export function PipelineExecutionDetailModal({
   const [title, setTitle] = useState('Workflow run');
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const navigationRef = useRef({ mounted: false, revealTarget });
+  navigationRef.current.revealTarget = revealTarget;
+  useLayoutEffect(() => {
+    const navigation = navigationRef.current;
+    navigation.mounted = true;
+    return (): void => {
+      navigation.mounted = false;
+    };
+  }, []);
 
   // A covering modal gets out of the way when an action opens another
   // surface. Report and follow-up dialogs live in `actions`, so closing only
@@ -100,7 +109,12 @@ export function PipelineExecutionDetailModal({
   // follow-up never closed the modal.
   const handleNavigatedAway = useCallback(
     (destination: PipelineDetailDestination): void => {
-      if (destination === 'report-chat') return;
+      if (
+        !navigationRef.current.mounted ||
+        navigationRef.current.revealTarget !== revealTarget ||
+        destination === 'report-chat'
+      )
+        return;
       if (
         actions === undefined &&
         (destination === 'report' || destination === 'pipeline-follow-up')
@@ -109,7 +123,7 @@ export function PipelineExecutionDetailModal({
       }
       onCloseRef.current();
     },
-    [actions],
+    [actions, revealTarget],
   );
 
   return (

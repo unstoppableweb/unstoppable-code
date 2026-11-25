@@ -53,6 +53,7 @@ import {
   createDesktopRuntime,
   type DesktopCanopyDispatcher,
 } from './canopy-runtime/desktop-runtime';
+import { createDesktopW5CachedWorkspaceServices } from './canopy-runtime/w5-cached-workspace-services';
 import { setDesktopCanopyRuntime } from './canopy-runtime/desktop-runtime-access';
 import {
   disposeDesktopDaemonGitRoute,
@@ -470,7 +471,7 @@ import { buildMainEventLoopStallDiagnostic } from './lib/main-event-loop-stall-d
 import {
   focusMainWindow,
   focusWindow,
-  isAppFrontmost,
+  mayTakeForeground,
   setMainWindowResolver,
 } from './lib/main-window-focus';
 import {
@@ -688,6 +689,7 @@ import {
   startOrgEnforcedSettingsSync,
   stopOrgEnforcedSettingsSync,
 } from './services/org-enforced-settings';
+import { startModelGatewayStaleKeyCleanup } from './lib/model-gateway-stale-key-cleanup';
 import { startOrgProjectAutoConversion } from './services/org-project-auto-conversion-host';
 import { getOrgProjectCatalogService } from './services/org-project-catalog-service';
 import { installOrgProjectSnapshotInvalidation } from './services/org-project-snapshot-invalidation';
@@ -738,7 +740,11 @@ import {
 } from './startup-background-tasks';
 import { terminalPersistenceStore } from './terminal/persistence';
 import { workerTerminal } from './terminal/worker-terminal';
-import { startUpdater, stopUpdater } from './updater';
+import { startUpdater, stopUpdater, reportWorkflowDirtyState } from './updater';
+import {
+  createTerminalTransactionTracker,
+  type TerminalTransactionTracker,
+} from './updater/terminal-transactions';
 import { getVoiceService } from './voice/service';
 import { shutdownW5CommitLogHost } from './w5-commit-log/commit-log-host';
 import { recordDesktopInstanceEvent } from './lifecycle/desktop-instance-diagnostics';
@@ -913,6 +919,7 @@ let appIsQuitting = false;
 // Asks the main-window renderer before a close or quit drops unsaved workflow
 // edits (CAN-4072). Inert until the renderer reports dirty state.
 const unsavedCloseGuard = createUnsavedCloseGuard({
+  onDirtyChange: (): void => reportWorkflowDirtyState(),
   revealWindow: (): void => {
     // The user just asked to close or quit, so bringing the window forward
     // is theirs to expect; a hidden window would hold an invisible prompt.
@@ -932,6 +939,7 @@ const unsavedCloseGuard = createUnsavedCloseGuard({
   },
 });
 let runtimeCleanupPromise: Promise<void> | null = null;
+let packageTransactionTracker: TerminalTransactionTracker | null = null;
 let drainedProcessExitGuard: DrainedProcessExitGuard | null = null;
 let desktopCanopyRuntime: DesktopCanopyDispatcher | null = null;
 let closeChatStatePush: (() => void) | null = null;
@@ -959,6 +967,7 @@ let autoArchiveScheduler: ReturnType<typeof startAutoArchiveScheduler> | null =
 let disposeCuratedMcpRefresh: (() => void) | null = null;
 let disposeOnboardingProfileSync: (() => void) | null = null;
 let disposeLocalModelGatewayPolicySync: (() => void) | null = null;
+let disposeModelGatewayStaleKeyCleanup: (() => void) | null = null;
 let disposeLocalModelGatewayMigration: (() => void) | null = null;
 let usageAnalyticsOptOutPing: ReturnType<
   typeof startProductionUsageAnalyticsOptOutPing
@@ -2082,6 +2091,32 @@ function unlockStartupWork(): void {
         // cannot safely remain open or retry the memoized cleanup promise.
         app.exit(0);
       }),
+    {
+      isWorkflowDirty: (): boolean => unsavedCloseGuard.isDirty(),
+      isPackageTransactionRunning: (): boolean =>
+        packageTransactionTracker?.isRunning() ?? false,
+      startPackageTransactionTracking: (
+        transactionProcessNames,
+        onReadinessChange,
+      ): (() => void) => {
+        const tracker = createTerminalTransactionTracker({
+          terminal: workerTerminal,
+          transactionProcessNames,
+          onIdle: onReadinessChange,
+          onBusyChange: (busy): void => {
+            // Idle gets its own callback. A busy edge must also withdraw an
+            // existing timer, even when the transaction ends before it fires.
+            if (busy) onReadinessChange();
+          },
+        });
+        packageTransactionTracker = tracker;
+        return (): void => {
+          tracker.dispose();
+          if (packageTransactionTracker === tracker)
+            packageTransactionTracker = null;
+        };
+      },
+    },
   );
   recordRealisticStartupPerformanceEvent('startup:updater:started');
   cancelStartupBackgroundTasks = scheduleDeferredStartupBackgroundTasks(
@@ -2302,6 +2337,8 @@ async function cleanupRuntimeResources(
     disposeLocalModelGatewayMigration = null;
     disposeLocalModelGatewayPolicySync?.();
     disposeLocalModelGatewayPolicySync = null;
+    disposeModelGatewayStaleKeyCleanup?.();
+    disposeModelGatewayStaleKeyCleanup = null;
     disposeCuratedMcpRefresh?.();
     disposeCuratedMcpRefresh = null;
     disposeProviderPluginBackfill?.();
@@ -4032,7 +4069,9 @@ function presentAppAdvisorPanel(request?: AppAdvisorWindowOpenRequest): void {
   const main = mainWindow;
   if (!main || main.isDestroyed() || !shouldShowUiAutomationWindow()) return;
   if (main.isMinimized()) main.restore();
-  if (request?.background && !isAppFrontmost()) {
+  // A request that arrives while the person is in another app did not come
+  // from their own input here, whether or not it says `background`.
+  if (!mayTakeForeground()) {
     if (!main.isVisible()) main.showInactive();
     return;
   }
@@ -4066,9 +4105,9 @@ async function openAppAdvisorWindow(
   } else if (shouldShowUiAutomationWindow()) {
     // Keep UI-automation windows hidden/unfocused (still scriptable) so both
     // E2E and unpackaged release-like suites stay headless by default.
-    if (request?.background && !isAppFrontmost()) {
+    if (!mayTakeForeground()) {
       // CAN-1993: an agent or automation asked for the window while the user
-      // is in another application. `show()` is `activateIgnoringOtherApps:YES`
+      // is in another application, whether or not it says `background`. `show()` is `activateIgnoringOtherApps:YES`
       // on macOS and would yank this app in front of theirs, so only make the
       // window visible; it comes forward when they return on their own.
       if (win.isMinimized()) {
@@ -5723,6 +5762,8 @@ void app.whenReady().then(async (): Promise<void> => {
     getChatStatePort: getChatStateService,
     shutdownTimeoutMs: DESKTOP_CANOPY_RUNTIME_SHUTDOWN_TIMEOUT_MS,
     daemonFilesRoute: getDesktopDaemonFilesRoute,
+    // CAN-7155 Seam A stays unselected until the serving-enable follow-up.
+    workspaceServices: createDesktopW5CachedWorkspaceServices(),
   });
   setDesktopCanopyRuntime(desktopCanopyRuntime);
   if (__CANOPY_E2E__) {
@@ -7052,6 +7093,9 @@ void app.whenReady().then(async (): Promise<void> => {
       });
     }
     if (appIsQuitting) return;
+    // Before the first re-probe, so its baseline is the stored account and a
+    // gateway removed while the app was closed is seen at that refresh.
+    disposeModelGatewayStaleKeyCleanup ??= startModelGatewayStaleKeyCleanup();
     // Preference normalization validates persisted model ids against the model
     // registries above. The org-enforced sync can perform a partial preference
     // write during its immediate startup pass, so it must not start while those
@@ -7060,9 +7104,12 @@ void app.whenReady().then(async (): Promise<void> => {
     // The background sync only needs the side effect; its boolean return (did the
     // per-org billing state actually refresh?) is for callers that delete data on
     // a lapse verdict.
-    startOrgEnforcedSettingsSync(async (): Promise<void> => {
-      await reprobeAndApplyCanopyCloudEnforcedSettings();
-    });
+    startOrgEnforcedSettingsSync(
+      async (): Promise<void> => {
+        await reprobeAndApplyCanopyCloudEnforcedSettings();
+      },
+      { app, powerMonitor },
+    );
     // Signed out the re-probe never applies, so the device AI gateway reaches
     // the catalog through its own pass, after the model registries above.
     disposeLocalModelGatewayPolicySync ??= startLocalModelGatewayPolicySync();

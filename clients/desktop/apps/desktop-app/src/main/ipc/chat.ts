@@ -102,7 +102,10 @@ import {
   appendUserOverallPreferencesBlock,
   buildUserOverallPreferencesBlock,
 } from '@canopy/execution-engine/lib/global-instructions';
-import type { CodexReasoningProviderType } from '@canopy/execution-engine/lib/gateway-model-availability';
+import {
+  needsOwnerGatewayModelId,
+  type CodexReasoningProviderType,
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import type { PersistedChatDispatchMetadata } from '../lib/chat-tabs-reader';
 import type {
   CancelQueuedHookChatRequest,
@@ -195,6 +198,7 @@ import {
   restrictSessionApprovalRules,
 } from '../agents/session-manager';
 import { isNoBillingSourceRefusalCached } from '../agents/no-billing-source-refusal';
+import { captureTypedSteerTurnModelConfig } from '../agents/typed-steer-turn-model-config';
 import { generateHandoffSummary } from '../agents/utils';
 import {
   captureSessionWorkOwner,
@@ -416,8 +420,23 @@ import {
   projectQueueEditLock,
   projectQueueForce,
 } from './chat-queue-projections';
+import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 
 let chatCommandRuntime: DesktopCanopyRuntimeAccessors | undefined;
+
+/**
+ * The owner a standalone chat's session binds, read only when its saved model
+ * may be a bare AI gateway id: one itself or an Agent's base model.
+ */
+async function standaloneChatOwner(
+  model: string | undefined,
+  session: { projectId: string; worktreeId: string; chatId: string },
+): Promise<WorkOwner | undefined> {
+  if (!model || (!needsOwnerGatewayModelId(model) && !isAgentModel(model)))
+    return undefined;
+  captureSessionWorkOwner(session);
+  return resolveSessionWorkOwner(session);
+}
 
 export function dispatchCanonicalChatCommand(
   request: ChatCommandRequest,
@@ -2919,10 +2938,16 @@ export function registerChatHandlers(
           projectId: standaloneProjectId,
           worktreeId,
         });
+        const runtimeOwner = await standaloneChatOwner(model, {
+          projectId,
+          worktreeId,
+          chatId,
+        });
         const runtime = model
           ? await resolveAgentModelRuntime({
               projectId: standaloneProjectId,
               model,
+              ...(runtimeOwner && { owner: runtimeOwner }),
               systemPromptAppend,
               pluginSelections,
               providerType: effectiveProviderType,
@@ -3422,10 +3447,16 @@ export function registerChatHandlers(
             let resumedTurnRun: ChatTurnRunHandle | undefined;
             try {
               request.signal.throwIfAborted();
+              const resumedOwner = await standaloneChatOwner(model, {
+                projectId,
+                worktreeId,
+                chatId,
+              });
               const resumedRuntime = model
                 ? await resolveAgentModelRuntime({
                     projectId: standaloneProjectId,
                     model,
+                    ...(resumedOwner && { owner: resumedOwner }),
                     systemPromptAppend,
                     pluginSelections:
                       request.pluginSelections ?? pluginSelections,
@@ -3594,11 +3625,18 @@ export function registerChatHandlers(
                 { projectId, worktreeId, chatId },
                 request.userMessageId,
               );
-              turnRun.executeSync(() =>
+              turnRun.executeSync(() => {
                 resumedSession.sendMessage(request.continuationText, {
                   userMessageId: request.userMessageId,
-                }),
-              );
+                });
+                if (request.userMessageId === userMessageId) {
+                  captureTypedSteerTurnModelConfig(
+                    resumedSession,
+                    request.userMessageId,
+                    effectiveModelConfig,
+                  );
+                }
+              });
               turnRun.accepted();
             } catch (error) {
               resumedTurnRun?.abandon(error);
@@ -3755,7 +3793,7 @@ export function registerChatHandlers(
             { projectId, worktreeId, chatId },
             userMessageId,
           );
-          turnRun.executeSync(() =>
+          turnRun.executeSync(() => {
             session.sendMessage(submittedText, {
               userMessageId,
               ...((effectiveExecutionHarness === 'opencode' ||
@@ -3774,8 +3812,13 @@ export function registerChatHandlers(
                 (validatedInitiationSource === 'user' ||
                   validatedInitiationSource === 'portal') &&
                 !req.hiddenContext,
-            }),
-          );
+            });
+            captureTypedSteerTurnModelConfig(
+              session,
+              userMessageId,
+              effectiveModelConfig,
+            );
+          });
           turnRun.accepted();
           if (session.isDisposed?.() !== true) {
             await migrationNotice?.delivered();

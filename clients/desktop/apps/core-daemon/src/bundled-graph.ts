@@ -76,6 +76,7 @@ import {
   WORKER_CODE_GRAPH_GRANTS,
   WORKER_SCRIPT_GRANTS,
   WORKER_PIPELINE_GRANTS,
+  PIPELINE_DEFINITION_IMPORT_GRANTS,
   WORKER_TERMINAL_GRANTS,
   WORKER_OPERATION_RECEIPT_INSTRUCTION_DEFINITIONS,
   WORKER_OPERATION_RECEIPT_QUERY_DEFINITIONS,
@@ -160,9 +161,17 @@ export const DAEMON_REPLAYED_KEYED_INSTRUCTIONS: ReadonlySet<string> = new Set([
 /** The caller principal id only a proven owner connection gets (CAN-5771). */
 export const DAEMON_OWNER_PRINCIPAL_ID = 'desktop-owner';
 
-/** The grants the daemon's owner holds where it serves workflows (CAN-5771). */
+/**
+ * The grants the daemon's owner holds where it serves workflows (CAN-5771), and
+ * the definitions import (CAN-7523). Owner proof alone grants the import: a
+ * deliberate, approved exception to the rule that owner proof does not
+ * establish trust, until E1 (CAN-4729) designates trusted connections and this
+ * grant moves to that designation. Sent only over Electron main's owner
+ * connection; Portal and remote installs go through main.
+ */
 export const WORKER_PIPELINE_OWNER_GRANTS = [
   WORKER_PIPELINE_GRANTS.host,
+  ...PIPELINE_DEFINITION_IMPORT_GRANTS,
 ] as const;
 
 /**

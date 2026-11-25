@@ -13,7 +13,14 @@ import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 export function useSelectedCoworkEntryId(
   workspaceId: string | undefined,
 ): string | null {
-  const onChatPage = useNavigationStore((s) => s.activePage === 'chat');
+  // Read the page only for the active project, so moving to or from the chat
+  // page renders no other workspace's row.
+  const isActiveWorkspace = useStandaloneChatStore(
+    (s) => workspaceId !== undefined && s.activeChatProjectId === workspaceId,
+  );
+  const onChatPage = useNavigationStore(
+    (s) => isActiveWorkspace && s.activePage === 'chat',
+  );
   return useStandaloneChatStore((s) => {
     const entryId = s.activeWorkEntryId;
     if (

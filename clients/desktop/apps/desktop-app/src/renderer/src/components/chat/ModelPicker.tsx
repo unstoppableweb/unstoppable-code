@@ -7,6 +7,7 @@ import {
 } from '@/lib/modelRecoveryLease';
 import {
   isAntigravityHarnessReleased,
+  useAntigravityHostSupported,
   getAntigravitySettingsSection,
 } from '@/lib/antigravity-settings';
 import { useOpenCodeChatAvailable } from '@/hooks/useOpenCodeChatAvailable';
@@ -133,6 +134,8 @@ import {
   subscribeRendererBillingLaneFacts,
 } from '@/stores/billingLaneRuntime';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { usePersonalModelGateway } from '@/hooks/useOrgModelGateway';
+import { useGatewayKeyStatus } from '@/hooks/useGatewayKeyStatus';
 import { useCloudConnectGateStore } from '@/stores/cloudConnectGateStore';
 import { getProviderLabel } from '@/lib/providerLabels';
 import type { ProviderAvailability } from '@/hooks/useProviderAvailability';
@@ -776,6 +779,11 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
   const modelGatewayEnforced = useModelCatalogStore(
     (s) => s.modelGatewayEnforced,
   );
+  const personalGateway = usePersonalModelGateway();
+  const personalGatewayKey = useGatewayKeyStatus(
+    personalGateway?.organizationId ?? null,
+    personalGateway?.baseUrl ?? null,
+  );
   const personalOwner = useModelCatalogStore(
     (s) => s.activeOwner?.kind === 'personal',
   );
@@ -835,11 +843,13 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
     cursorMenuOpen,
   );
   const antigravityModels = catalogSnapshot?.antigravity;
-  const antigravityEnabled =
+  const antigravityWanted =
     props.allowAntigravity === true &&
     antigravityHarnessEnabled &&
-    window.platform === 'darwin' &&
     !modelGatewayEnforced;
+  // Main pins a CLI for this host (macOS or Linux, arm64 or x64); asked only
+  // once Google chats are on here.
+  const antigravityEnabled = useAntigravityHostSupported(antigravityWanted);
   const antigravityAvailable =
     antigravityEnabled && Boolean(antigravityModels?.length);
   const opencodeModels = opencodeCatalog.models;
@@ -1351,6 +1361,13 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
       };
     });
   }, [catalogSnapshot, rowById, vendorLabels]);
+  // Under "Use only my AI gateway", a personal gateway with no key for its
+  // current URL lists no models here: one row offers adding the key instead.
+  // A gateway with a key but no models keeps its own empty state.
+  const personalGatewayNeedsKey =
+    personalOwner &&
+    modelGatewayEnforced &&
+    (personalGatewayKey === 'missing' || personalGatewayKey === 'old-url');
   // Whether any model outside the user's AI gateways can run here, judged by
   // the same row gates the picker shows: native Claude and Codex, credits,
   // Ollama, Cursor, Copilot and OpenCode alike. A gate still loading reads as
@@ -2324,12 +2341,17 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
     // locked harness or a not-yet-loaded gateway list keeps its own rows.
     ...(organizationEmptiedList === 'gateway'
       ? {
-          emptyCatalog: personalOwner
+          emptyCatalog: personalGatewayNeedsKey
             ? {
-                title: 'Your AI gateway has no available models',
-                subtitle: 'Add a model in AI gateway settings',
+                title: 'Your AI gateway needs a key on this computer',
+                subtitle: 'Its models appear here once you add it',
               }
-            : organizationGatewayEmptyCatalog(activeOrganizationName),
+            : personalOwner
+              ? {
+                  title: 'Your AI gateway has no available models',
+                  subtitle: 'Add a model in AI gateway settings',
+                }
+              : organizationGatewayEmptyCatalog(activeOrganizationName),
         }
       : organizationEmptiedList === 'policy'
         ? {
@@ -3074,6 +3096,27 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
                             ? 'Showing only your AI gateway.'
                             : `${activeOrganizationName ?? 'Your organization'} routes all models through its AI gateway.`}
                         </div>
+                      ) : null}
+                      {personalGatewayNeedsKey ? (
+                        <Button
+                          size="compact"
+                          variant="secondary"
+                          className="w-full"
+                          data-testid="chat-model-gateway-add-key"
+                          onMouseDown={(e): void => {
+                            e.preventDefault();
+                          }}
+                          onClick={(): void => {
+                            dismissMenu();
+                            useNavigationStore
+                              .getState()
+                              .openSettings('account', {
+                                scrollTo: 'settings-model-gateway-credential',
+                              });
+                          }}
+                        >
+                          Add your key on this computer
+                        </Button>
                       ) : null}
                       {billing && showBillingFooter ? (
                         <div className="flex flex-col gap-1.5">

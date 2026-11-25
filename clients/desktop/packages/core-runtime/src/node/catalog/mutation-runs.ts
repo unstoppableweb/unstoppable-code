@@ -258,6 +258,26 @@ export class CatalogMutationRuns {
     }
   }
 
+  /**
+   * Whether a keyed request's receipt is recorded, reused with other params,
+   * or new ('none' too when the ledger cannot say).
+   */
+  async receiptState(request: {
+    kind: CoreCatalogMutationKind;
+    context: CanopyHandlerContext;
+    params: KeyedParams;
+  }): Promise<'recorded' | 'key-reused' | 'none'> {
+    try {
+      const { status } = await this.operations.lookupReceipt(
+        request.kind,
+        receiptOf(request.context, request.params),
+      );
+      return status === 'none' || status === 'key-reused' ? status : 'recorded';
+    } catch {
+      return 'none';
+    }
+  }
+
   private async admit(
     request: {
       kind: CoreCatalogMutationKind;

@@ -3,6 +3,7 @@ import {
   withProviderConnectionAttempt,
   type ConnectionMethod,
 } from '../lib/provider-connection-events';
+import { withoutStepStartupInjection } from '@canopy/desktop-shared/node/provider-process/step-environment';
 import {
   openCodeAccountMetadataSchema,
   type OpenCodeAccountSnapshot,
@@ -240,7 +241,9 @@ export async function openManagedOpenCodeRuntime(options: {
           : false,
       }),
       ...Object.fromEntries(
-        Object.entries(options.environment ?? {}).filter(
+        Object.entries(
+          withoutStepStartupInjection(options.environment ?? {}),
+        ).filter(
           ([key]) =>
             ![
               'HOME',

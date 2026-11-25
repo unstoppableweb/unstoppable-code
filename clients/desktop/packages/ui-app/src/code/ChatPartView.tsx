@@ -505,7 +505,7 @@ function partData(part: RemoteControlChatPart): Record<string, unknown> {
 }
 
 /** First non-empty string among the common text-carrying fields. */
-function readPartText(data: Record<string, unknown>): string {
+export function readPartText(data: Record<string, unknown>): string {
   return (
     readString(data, 'text') ??
     readString(data, 'content') ??

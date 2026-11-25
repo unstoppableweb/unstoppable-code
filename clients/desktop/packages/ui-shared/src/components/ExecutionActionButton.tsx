@@ -7,6 +7,7 @@ import type {
   Ref,
 } from 'react';
 import { Button, type ButtonVariant } from './Button';
+import { MorphLabel } from './MorphLabel';
 import { Tooltip } from './Tooltip';
 
 export type ExecutionActionButtonVariant =
@@ -44,10 +45,10 @@ export interface ExecutionActionButtonProps extends Pick<
    */
   placement?: 'row' | 'detail';
   /**
-   * Inside a `@container/topbar` narrower than 640px, drop the label and
-   * collapse the `primary` capsule to a 28px circle so the status region
-   * keeps its room; the icon, accessible name, and tooltip carry the
-   * meaning. The other variants keep their label.
+   * Inside a `@container/topbar` narrower than 640px, the `primary` capsule
+   * morphs into a 28px circle showing only its icon, so the status region
+   * keeps its room; from 640px it shows only its label. The accessible name
+   * and tooltip carry the meaning. The other variants keep their label.
    */
   iconOnlyWhenNarrow?: boolean;
   className?: string;
@@ -88,15 +89,6 @@ const BUTTON_VARIANTS: Record<ExecutionActionButtonVariant, ButtonVariant> = {
 };
 
 /**
- * Narrow, the primary action is the 28px icon-only circle. From 640px of the
- * top bar the button widens to its label, and this inner span supplies the
- * labelled capsule's inset, which the icon-only button leaves out.
- */
-const COLLAPSE_CONTENT_CLASS =
-  'inline-flex items-center gap-1.5 @[640px]/topbar:px-3';
-const COLLAPSED_LABEL_CLASS = 'hidden @[640px]/topbar:inline';
-
-/**
  * Run/rerun/retry/stop and similar execution actions, on `Button` (see
  * {@link BUTTON_VARIANTS}). Pure display: parent owns the dispatch. The
  * wrapper adds only the click and keydown containment an execution row
@@ -125,7 +117,7 @@ export function ExecutionActionButton({
   const labelNode = label ? (
     <span
       data-execution-action-label
-      className={`whitespace-nowrap ${collapses ? COLLAPSED_LABEL_CLASS : labelClassName}${shimmer ? ' canopy-text-shimmer' : ''}`}
+      className={`whitespace-nowrap ${collapses ? '' : labelClassName}${shimmer ? ' canopy-text-shimmer' : ''}`}
     >
       {label}
     </span>
@@ -156,14 +148,20 @@ export function ExecutionActionButton({
           {...shared}
           size="compact"
           iconOnly
+          // Narrow, the 28px icon circle; from 640px of top bar, the
+          // labelled capsule. The content morphs between the two (icon out,
+          // label in) and the button follows its width.
+          contentWidth
           aria-label={ariaLabel}
           // Never a window drag handle: the top bar is a drag region and the
           // class is inert everywhere else, including the web.
-          className={`electron-no-drag pointer-coarse:before:hidden @[640px]/topbar:w-auto ${className}`}
+          className={`electron-no-drag pointer-coarse:before:hidden ${className}`}
         >
-          <span className={COLLAPSE_CONTENT_CLASS}>
-            {icon}
-            {labelNode}
+          <span className="canopy-morph-pad" data-morph-at="topbar-640">
+            <MorphLabel at="topbar-640" show="narrow">
+              {icon}
+            </MorphLabel>
+            <MorphLabel at="topbar-640">{labelNode}</MorphLabel>
           </span>
         </Button>
       ) : labelNode === null ? (

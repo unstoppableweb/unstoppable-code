@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { MorphLabel } from '@canopy/ui-shared/components';
 import {
   repoRequiresCommitAndPush,
   repoRequiresPush,
@@ -83,21 +84,17 @@ export function getCreatePrCompactLabel(params: CreatePrLabelParams): string {
 }
 
 /**
- * The button's copy, swapped by available bar width rather than re-measured
- * in JS: below 640px only the object renders. Both strings are always in the
- * DOM (one hidden), so the swap costs no layout pass and automation can find
- * either.
+ * The button's copy. The object (`PR` / `N PRs`) always shows; the verb
+ * folds in from 640px of bar width and away below it, so the capsule morphs
+ * between `Create PR` and `PR` instead of swapping copy. Its non-breaking
+ * space keeps the word gap tight while it shows.
  */
 export function CreatePrLabel(params: CreatePrLabelParams): JSX.Element {
   return (
-    <>
-      <span className="@[640px]/topbar:hidden">
-        {getCreatePrCompactLabel(params)}
-      </span>
-      <span className="hidden @[640px]/topbar:inline">
-        {getCreatePrLabel(params)}
-      </span>
-    </>
+    <span className="inline-flex whitespace-nowrap">
+      <MorphLabel at="topbar-640">{'Create\u00a0'}</MorphLabel>
+      {getCreatePrCompactLabel(params)}
+    </span>
   );
 }
 

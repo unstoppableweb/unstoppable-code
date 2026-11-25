@@ -7,6 +7,7 @@ export interface W5RepositoryLock {
 interface Lease {
   lock: W5RepositoryLock;
   active: boolean;
+  writable: boolean;
   release: () => void;
   taskTail: Promise<void>;
 }
@@ -39,21 +40,42 @@ export function ownsW5RepositoryLock(): boolean {
   ].some((lease) => lease.active);
 }
 
-async function acquire(lock: W5RepositoryLock): Promise<Lease> {
+// Read views refuse writes; explicit plain-read leases cannot commit either.
+let readOnlyContext: () => boolean = () => false;
+let writableLeases = 0;
+
+/** The host names where writes are refused; those locks never order a commit. */
+export function setW5ReadOnlyLockContext(test: () => boolean): void {
+  readOnlyContext = test;
+}
+
+/** A lock that may order a commit is held or queued in this process. */
+export function hasW5WritableLocksInFlight(): boolean {
+  return writableLeases > 0;
+}
+
+async function acquire(
+  lock: W5RepositoryLock,
+  readOnly = false,
+): Promise<Lease> {
   const previous = tails.get(lock.path) ?? Promise.resolve();
   let release: () => void = () => {};
   const tail = new Promise<void>((resolve) => {
     release = resolve;
   });
   tails.set(lock.path, tail);
+  const writable = !readOnly && !readOnlyContext();
+  if (writable) writableLeases += 1;
   await previous;
   const lease: Lease = {
     lock,
     active: true,
+    writable,
     taskTail: Promise.resolve(),
     release: () => {
       if (!lease.active) return;
       lease.active = false;
+      if (lease.writable) writableLeases -= 1;
       release();
       if (tails.get(lock.path) === tail) tails.delete(lock.path);
     },
@@ -65,7 +87,11 @@ async function acquire(lock: W5RepositoryLock): Promise<Lease> {
 export async function withW5RepositoryLock<T>(
   lock: W5RepositoryLock,
   work: () => Promise<T>,
-  options?: { join?: boolean },
+  options?: {
+    join?: boolean;
+    /** The callback cannot write. Commit scopes still retain a writer lease. */
+    readOnly?: boolean;
+  },
 ): Promise<T> {
   const scope = scopeContext.getStore();
   if (scope && !scope.active)
@@ -137,7 +163,7 @@ export async function withW5RepositoryLock<T>(
     );
     return run;
   }
-  const lease = await acquire(lock);
+  const lease = await acquire(lock, options?.readOnly);
   const owned = new Map<string, Lease>(inherited);
   owned.set(lock.path, lease);
   try {
@@ -213,6 +239,13 @@ export async function withW5CommitLocks<T>(
   const leases = new Map<string, Lease>(
     Array.from(combined).filter(([, lease]) => lease.active),
   );
+  // A scope may inherit a plain reader's lease and then stage a decision.
+  for (const lease of leases.values()) {
+    if (!lease.writable && !readOnlyContext()) {
+      lease.writable = true;
+      writableLeases += 1;
+    }
+  }
   const ordered = Array.from(leases.values())
     .map((lease) => lease.lock)
     .sort(compare);

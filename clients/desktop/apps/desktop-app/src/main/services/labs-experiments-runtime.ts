@@ -1,4 +1,7 @@
-import { LABS_EXPERIMENTS_VERSION_HEADER } from '@canopy/protocol/experiments';
+import {
+  LABS_EXPERIMENTS_VERSION_HEADER,
+  STEER_BY_DEFAULT_EXPERIMENT,
+} from '@canopy/protocol/experiments';
 import type { LabsAvailabilityState } from '../feature-flags/labs-availability';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import {
@@ -147,6 +150,17 @@ export function getLabsExperimentsService(): LabsExperimentsService {
   instance.availabilityChanged();
   return instance;
 }
+export function readSteerByDefaultEnabledInMain(): boolean | 'unavailable' {
+  try {
+    return getLabsExperimentsService().isExperimentEnabled(
+      STEER_BY_DEFAULT_EXPERIMENT.id,
+    );
+  } catch (error) {
+    logMainProcessWarn('[steer-by-default] Could not read Labs setting', error);
+    return 'unavailable';
+  }
+}
+
 export async function initializeLabsExperimentsService(): Promise<void> {
   await getLabsExperimentsService().refreshChoices();
 }

@@ -15,7 +15,7 @@ import type {
 } from '@canopy/protocol/canopy-server';
 import {
   normalizeOrgEnforcedSettingsWithStatus,
-  personalGatewayAccountFields,
+  modelGatewayAccountFields,
 } from '@canopy/desktop-shared/lib/org-enforced-parsing';
 import {
   cloneOrgBillingStates,
@@ -83,6 +83,8 @@ export interface CanopyCloudAccountEntry {
   personalOrganizationId?: string;
   personalModelGateway?: CanopyAccountResponse['personalModelGateway'];
   personalModelGatewayEnforcementUnavailable?: boolean;
+  personalModelGatewayConfig?: CanopyAccountResponse['personalModelGatewayConfig'];
+  organizationModelGatewayConfigs?: CanopyAccountResponse['organizationModelGatewayConfigs'];
   organizations?: CanopyOrganizationSummary[];
   teams?: CanopyTeamSummary[];
   enforcedSettings?: CanopyOrgEnforcedSettings[];
@@ -315,7 +317,7 @@ function normalizeStoredAccountEntry(
       ? { serverApiKeyId: serverApiKeyId.trim() }
       : {}),
     capabilities: normalizeStringArray(capabilities),
-    ...personalGatewayAccountFields(value),
+    ...modelGatewayAccountFields(value),
     ...(value.personalModelGatewayEnforcementUnavailable === true
       ? { personalModelGatewayEnforcementUnavailable: true }
       : {}),
@@ -389,7 +391,7 @@ function cloneStoredEntry(
       ...team,
       organization: { ...team.organization },
     })),
-    ...personalGatewayAccountFields(entry),
+    ...modelGatewayAccountFields(entry),
     enforcedSettings: cloneEnforcedSettings(entry.enforcedSettings),
     orgBillingStates: cloneOrgBillingStates(entry.orgBillingStates),
   };
@@ -1098,7 +1100,7 @@ export function toPublicCanopyCloudAccountState(
       ...team,
       organization: { ...team.organization },
     })),
-    ...personalGatewayAccountFields(entry),
+    ...modelGatewayAccountFields(entry),
     ...(entry?.personalModelGatewayEnforcementUnavailable
       ? { personalModelGatewayEnforcementUnavailable: true }
       : {}),

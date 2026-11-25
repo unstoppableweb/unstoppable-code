@@ -1,23 +1,27 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   IPC_CHANNELS,
+  type DetectedPlansUpdatedEvent,
   type TrackedPlanData,
   type TrackedPlansUpdatedEvent,
 } from '@canopy/desktop-shared/types';
-import type { PlanScope } from '@canopy/protocol/canopy-core';
+import type { DetectedPlan, PlanScope } from '@canopy/protocol/canopy-core';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { sendToAllWindows } from '../lib/window-send';
 
 /*
- * `tracked-plans:updated` for a `core.plan.*` write the dispatcher committed.
- * A write through the `tracked-plans:*` IPC projection announces nothing to
- * windows, as those handlers never did: the renderer that asked applies the
- * answer itself. A write from any other binding reaches every window.
+ * `tracked-plans:updated`, or `detected-plans:updated` for a detected-plan
+ * write, for a `core.plan.*` write the dispatcher committed. A write through
+ * the `tracked-plans:*` or `detected-plans:*` IPC projection announces nothing
+ * here: those handlers answer the renderer that asked and send their own
+ * pushes, as they always did. A write from any other binding reaches every
+ * window.
  */
 
 export type DispatchedPlanChange =
   | { kind: 'upserted'; scope: PlanScope; plan: TrackedPlanData }
-  | { kind: 'removed'; scope: PlanScope; planId: string };
+  | { kind: 'removed'; scope: PlanScope; planId: string }
+  | { kind: 'detected'; scope: PlanScope; entries: DetectedPlan[] };
 
 const ipcProjection = new AsyncLocalStorage<true>();
 
@@ -34,6 +38,19 @@ export function publishDispatchedPlanChange(
   change: DispatchedPlanChange,
 ): void {
   if (ipcProjection.getStore()) return;
+  if (change.kind === 'detected') {
+    const event: DetectedPlansUpdatedEvent = {
+      projectId: change.scope.projectId,
+      worktreeId: change.scope.worktreeId,
+      entries: change.entries,
+    };
+    try {
+      sendToAllWindows(IPC_CHANNELS.detectedPlansUpdated, event);
+    } catch (error) {
+      logMainProcessWarn('[detected-plans] update was not published', error);
+    }
+    return;
+  }
   const event: TrackedPlansUpdatedEvent =
     change.kind === 'upserted'
       ? {

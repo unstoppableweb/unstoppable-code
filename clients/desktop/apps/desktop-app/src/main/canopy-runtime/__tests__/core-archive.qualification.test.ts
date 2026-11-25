@@ -1,5 +1,5 @@
 import { installRoutedW5GoldenStore } from '../../lib/__tests__/fixtures/w5-routed-golden-store';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -33,6 +33,11 @@ import { disposeElectronDaemonConnections } from '../electron-daemon-access';
 import { cancelDesktopSessionSnapshotInvalidation } from '../../services/desktop-session-snapshot-invalidation';
 import { peekObservabilityService } from '../../observability';
 import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-work';
+
+// Linux tolerates device-only drift only with a real birth time; the fixtures live under tmpdir.
+const toleratesDeviceDrift =
+  process.platform === 'darwin' ||
+  (process.platform === 'linux' && statSync(tmpdir()).birthtimeMs !== 0);
 
 const caller = (
   grants: CanopyCallerDescriptor['grants'],
@@ -2127,7 +2132,7 @@ it.each(
         );
         const accepted =
           identityChange === 'exact' ||
-          (identityChange === 'device' && process.platform === 'darwin');
+          (identityChange === 'device' && toleratesDeviceDrift);
         if (accepted) {
           expect(finished).toMatchObject({
             status: 'finished',

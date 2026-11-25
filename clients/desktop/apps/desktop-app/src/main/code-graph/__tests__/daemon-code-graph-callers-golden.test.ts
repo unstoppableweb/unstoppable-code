@@ -85,8 +85,12 @@ import { codeGraphUnavailableError } from '@canopy/core-runtime/node/code-graph'
 import {
   WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS,
   WORKER_CODE_GRAPH_QUERY_DEFINITIONS,
+  WORKER_CODE_GRAPH_READ_QUERY_DEFINITIONS,
+  WORKER_CODE_GRAPH_WRITE_INSTRUCTION_DEFINITIONS,
   type WorkerCodeGraphBuildParams,
   type WorkerCodeGraphBuildResult,
+  type WorkerCodeGraphLanguagesValidateResult,
+  type WorkerCodeGraphStatusGetResult,
 } from '@canopy/protocol/canopy-core';
 import {
   createWorkerCodeGraphAdapter,
@@ -100,8 +104,23 @@ import {
   startScheduledCodeGraphBuild,
   type ScheduledCodeGraphBuild,
 } from '../scheduled-builds';
-import { drainDaemonCodeGraphWorktree } from '../daemon-code-graph-route';
+import {
+  DAEMON_AGENT_CODE_GRAPH_READ_PLATFORMS,
+  drainDaemonCodeGraphWorktree,
+} from '../daemon-code-graph-route';
 import { scheduleCodeGraphBuild } from '../../lib/code-graph-scheduler';
+import { PLAN_EXPLORE_CHAT_PROJECT_ID } from '@canopy/desktop-shared/types';
+import {
+  resetWorkCounters,
+  snapshotWorkCounters,
+} from '@canopy/desktop-shared/node/work-counters';
+import * as routeTelemetry from '../../canopy-runtime/daemon-route-telemetry';
+import { createWorkerCodeGraphReadAdapter } from '../../canopy-runtime/worker-code-graph-read-adapter';
+import {
+  readWorktreeCodeGraphStatus,
+  setCodeGraphReadDispatcherForTests,
+  validateWorktreeCodeGraphLanguages,
+} from '../graph-reads';
 
 const LOCAL_RESULT: WorkerCodeGraphBuildResult = {
   kind: 'worktree',
@@ -454,5 +473,258 @@ describe('agent and scheduler builds on the daemon route (CAN-5625)', () => {
       workspaceId: 'project',
       worktreeId: 'remembered',
     });
+  });
+});
+
+describe('agent status reads and steering language checks on the daemon route (CAN-5093)', () => {
+  const LOCAL_STATUS: WorkerCodeGraphStatusGetResult = {
+    presence: 'absent',
+    buildState: 'idle',
+  };
+  const DAEMON_STATUS: WorkerCodeGraphStatusGetResult = {
+    presence: 'present',
+    buildState: 'running',
+  };
+  const LOCAL_LANGUAGES: WorkerCodeGraphLanguagesValidateResult = {
+    config: 'absent',
+    languages: [],
+    diagnostics: [],
+  };
+  const DAEMON_LANGUAGES: WorkerCodeGraphLanguagesValidateResult = {
+    config: 'present',
+    languages: [{ id: 'lua', extensions: ['.lua'] }],
+    diagnostics: [],
+  };
+  const localStatus = jest.fn(() =>
+    Promise.resolve({ ok: true as const, value: LOCAL_STATUS }),
+  );
+  const localLanguages = jest.fn(() =>
+    Promise.resolve({ ok: true as const, value: LOCAL_LANGUAGES }),
+  );
+  const SCOPE = { projectId: 'project', worktreeId: 'task' };
+  const WIRE_SCOPE = { scope: { workspaceId: 'project', worktreeId: 'task' } };
+
+  /** The daemon session's reads: records each query and answers it. */
+  function daemonReads(
+    answer: (name: string) => Promise<unknown> = (name) =>
+      Promise.resolve(
+        name === 'worker.codeGraph.status.get'
+          ? DAEMON_STATUS
+          : DAEMON_LANGUAGES,
+      ),
+  ): { name: string; params: unknown }[] {
+    const calls: { name: string; params: unknown }[] = [];
+    mockGet.mockResolvedValue({
+      client: {
+        signal: new AbortController().signal,
+        query: (name: string, params: unknown): Promise<unknown> => {
+          calls.push({ name, params });
+          return answer(name);
+        },
+      },
+    });
+    return calls;
+  }
+
+  beforeEach(() => {
+    localStatus.mockClear();
+    localLanguages.mockClear();
+    const reads = createWorkerCodeGraphReadAdapter(() =>
+      Promise.resolve({
+        status: localStatus,
+        query: () => Promise.reject(new Error('Unexpected query')),
+        exportSnapshot: () => Promise.reject(new Error('Unexpected snapshot')),
+        importSnapshot: () => Promise.reject(new Error('Unexpected import')),
+        validateLanguages: localLanguages,
+      }),
+    );
+    setCodeGraphReadDispatcherForTests(
+      createCanopyDispatcher({
+        profile: 'worker',
+        definitions: {
+          queries: WORKER_CODE_GRAPH_READ_QUERY_DEFINITIONS,
+          instructions: WORKER_CODE_GRAPH_WRITE_INSTRUCTION_DEFINITIONS,
+          streams: {},
+        },
+        handlers: {
+          queries: reads.queries,
+          instructions: reads.instructions,
+          streams: {},
+        },
+      }),
+    );
+  });
+
+  afterEach(() => {
+    setCodeGraphReadDispatcherForTests(null);
+  });
+
+  it.each(['darwin', 'linux'])(
+    'reads an agent status and a steering language check from the daemon on %s',
+    async (platform) => {
+      mockPlatform.mockReturnValue(platform);
+      const calls = daemonReads();
+      await expect(readWorktreeCodeGraphStatus(SCOPE)).resolves.toEqual(
+        DAEMON_STATUS,
+      );
+      await expect(validateWorktreeCodeGraphLanguages(SCOPE)).resolves.toEqual(
+        DAEMON_LANGUAGES,
+      );
+      expect(calls).toEqual([
+        { name: 'worker.codeGraph.status.get', params: WIRE_SCOPE },
+        { name: 'worker.codeGraph.languages.validate', params: WIRE_SCOPE },
+      ]);
+      expect(localStatus).not.toHaveBeenCalled();
+      expect(localLanguages).not.toHaveBeenCalled();
+    },
+  );
+
+  it('reads in process when the daemon cannot be reached', async () => {
+    mockGet.mockRejectedValue(
+      markUnreachable(new Error('down'), 'start_failed'),
+    );
+    await expect(readWorktreeCodeGraphStatus(SCOPE)).resolves.toEqual(
+      LOCAL_STATUS,
+    );
+    await expect(validateWorktreeCodeGraphLanguages(SCOPE)).resolves.toEqual(
+      LOCAL_LANGUAGES,
+    );
+    expect(localStatus).toHaveBeenCalledTimes(1);
+    expect(localLanguages).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a reached refusal as the answer', async () => {
+    daemonReads(() =>
+      Promise.reject(refusal('worker.codeGraph.graphScopeNotFound')),
+    );
+    await expect(readWorktreeCodeGraphStatus(SCOPE)).rejects.toBeDefined();
+    await expect(
+      validateWorktreeCodeGraphLanguages(SCOPE),
+    ).rejects.toBeDefined();
+    expect(localStatus).not.toHaveBeenCalled();
+    expect(localLanguages).not.toHaveBeenCalled();
+  });
+
+  it('routes only on the hosts its census constant selects: macOS and Linux', () => {
+    expect(DAEMON_AGENT_CODE_GRAPH_READ_PLATFORMS).toEqual({
+      darwin: true,
+      linux: true,
+      win32: false,
+    });
+  });
+
+  describe('where each read ran', () => {
+    let recorded: jest.SpyInstance;
+
+    beforeEach(() => {
+      resetWorkCounters();
+      recorded = jest
+        .spyOn(routeTelemetry, 'recordDaemonRoute')
+        .mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      recorded.mockRestore();
+    });
+
+    /** Both reads' route counters, the ones a perf sample's `work.route` carries. */
+    function readRoutes(): Record<string, number> {
+      return Object.fromEntries(
+        Object.entries(snapshotWorkCounters().route).filter(([key]) =>
+          key.startsWith('codeGraph.'),
+        ),
+      );
+    }
+
+    async function readBoth(): Promise<void> {
+      await readWorktreeCodeGraphStatus(SCOPE);
+      await validateWorktreeCodeGraphLanguages(SCOPE);
+    }
+
+    it.each(['darwin', 'linux'])(
+      'records both reads as served by the daemon on %s',
+      async (platform) => {
+        mockPlatform.mockReturnValue(platform);
+        daemonReads();
+        await readBoth();
+        expect(readRoutes()).toEqual({
+          'codeGraph.status.daemon.served': 1,
+          'codeGraph.languages.daemon.served': 1,
+        });
+        expect(recorded.mock.calls).toEqual([
+          ['code_graph', 'served'],
+          ['code_graph', 'served'],
+        ]);
+      },
+    );
+
+    it('records both reads as in process on Windows', async () => {
+      mockPlatform.mockReturnValue('win32');
+      const calls = daemonReads();
+      await readBoth();
+      expect(calls).toEqual([]);
+      expect(readRoutes()).toEqual({
+        'codeGraph.status.in_process.platform': 1,
+        'codeGraph.languages.in_process.platform': 1,
+      });
+      expect(recorded.mock.calls).toEqual([
+        ['code_graph', 'platform'],
+        ['code_graph', 'platform'],
+      ]);
+    });
+
+    it('records the in-process fallback when the daemon cannot be reached', async () => {
+      mockGet.mockRejectedValue(
+        markUnreachable(new Error('down'), 'start_failed'),
+      );
+      await readBoth();
+      expect(readRoutes()).toEqual({
+        'codeGraph.status.daemon.fallback': 1,
+        'codeGraph.languages.daemon.fallback': 1,
+      });
+      expect(recorded.mock.calls).toEqual([
+        ['code_graph', 'unreachable'],
+        ['code_graph', 'unreachable'],
+      ]);
+    });
+  });
+
+  it.each([
+    [
+      'a latched daemon',
+      (): void => {
+        mockLatched.mockReturnValue(true);
+      },
+      SCOPE,
+    ],
+    [
+      'a plan-explore placeholder workspace',
+      (): void => undefined,
+      { projectId: PLAN_EXPLORE_CHAT_PROJECT_ID, worktreeId: 'task' },
+    ],
+    [
+      'an ineligible platform',
+      (): void => {
+        mockPlatform.mockReturnValue('freebsd');
+      },
+      SCOPE,
+    ],
+    [
+      'Windows',
+      (): void => {
+        mockPlatform.mockReturnValue('win32');
+      },
+      SCOPE,
+    ],
+  ])('stays in process for %s', async (_case, arrange, scope) => {
+    arrange();
+    const calls = daemonReads();
+    await expect(readWorktreeCodeGraphStatus(scope)).resolves.toEqual(
+      LOCAL_STATUS,
+    );
+    await expect(validateWorktreeCodeGraphLanguages(scope)).resolves.toEqual(
+      LOCAL_LANGUAGES,
+    );
+    expect(calls).toEqual([]);
   });
 });

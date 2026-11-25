@@ -24,6 +24,7 @@ import {
   noteElectronW5Handoff,
 } from './electron-daemon-access';
 import type { W5FlipHandoffInput } from './w5-flip-handoff-sequence';
+import type { W5BackupRefusal } from '../lib/w5-backup';
 
 /*
  * TRANSITIONAL (CAN-5543, GB12): the flip launch's W5 startup. Installs the
@@ -62,6 +63,61 @@ const owner = new AbortController();
 /** `undefined` until a flip build starts it; the GB4 warning's input. */
 export function getW5FlipHandoffStatus(): W5FlipHandoffStatus | undefined {
   return status;
+}
+
+/** Every backup refusal: a `Record` so a new refusal must be listed here. */
+const BACKUP_REFUSAL_CODES: Record<W5BackupRefusal, true> = {
+  'incomplete-backup': true,
+  'corrupt-backup': true,
+  'source-changed': true,
+  'source-unreadable': true,
+  'missing-source': true,
+  'newer-writes': true,
+  'schema-downgrade': true,
+  'exclusive-required': true,
+};
+
+/**
+ * Path-free handoff sub-reasons the diagnostic may keep verbatim: the backup
+ * refusals and the flip step's and store's own codes. Anything else is
+ * `other`, since `detail` is an open string (CAN-7316).
+ */
+const W5_HANDOFF_DETAIL_CODES: ReadonlySet<string> = new Set([
+  ...Object.keys(BACKUP_REFUSAL_CODES),
+  'completion-invalid',
+  'host-unavailable',
+  'marker-unwritable',
+  'host-stopped',
+  'handoff-not-started',
+]);
+
+/** `<stage or unknown>: <failure>[: <detail code>]`, from closed codes only. */
+function w5HandoffDegradedReason(failure: W5DaemonHandoffError): string {
+  const { detail } = failure;
+  const code =
+    detail === undefined
+      ? ''
+      : `: ${W5_HANDOFF_DETAIL_CODES.has(detail) ? detail : 'other'}`;
+  return `${failure.stage ?? 'unknown'}: ${failure.reason}${code}`;
+}
+
+/**
+ * Persists the failure to app-events, which feedback bundles include on every
+ * platform, unlike `main.log` on win32 (CAN-7316). Best effort and never
+ * awaited: a diagnostics failure cannot change or delay the handoff outcome.
+ */
+function recordW5HandoffDegraded(failure: W5DaemonHandoffError): void {
+  void import('../observability')
+    .then(({ getObservabilityService }) =>
+      getObservabilityService().recordAppDiagnostic({
+        version: 1,
+        timestamp: new Date().toISOString(),
+        kind: 'w5_handoff_degraded',
+        reason: w5HandoffDegradedReason(failure),
+        ...w5FailureDiagnostics(failure),
+      }),
+    )
+    .catch(() => undefined);
 }
 
 /**
@@ -112,21 +168,25 @@ export function startW5FlipHandoff(input: W5FlipHandoffInput): Promise<void> {
             failure.underlying instanceof W5AuthorityUnreachableError
               ? (failure.underlying.cause ?? failure.underlying)
               : (failure.underlying ?? failure);
-          const facts = getLinuxDaemonStartDiagnostics()?.handoff({
+          // Content-free on every platform: the failing step, errno and port kind (CAN-7137).
+          const launch = {
             stage: failure.stage,
             errorKind: toCanopyClientError(launchError).payload.kind,
             refusal: canopyDaemonRefusal(launchError) ?? undefined,
             ...canopyLaunchDetails(launchError),
-          });
+          };
+          const facts = getLinuxDaemonStartDiagnostics()?.handoff(launch);
           logMainProcessWarn(
             'W5 startup handoff failed; workspace records are read-only',
             {
               reason: failure.reason,
               detail: failure.detail,
               ...w5FailureDiagnostics(failure),
+              ...launch,
               ...facts,
             },
           );
+          recordW5HandoffDegraded(failure);
         }
         throw failure;
       },

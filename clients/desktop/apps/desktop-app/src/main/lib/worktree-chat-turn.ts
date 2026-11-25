@@ -59,6 +59,7 @@ import {
   getExecutionHarnessForModel,
   getModelSource,
   getProviderForModel,
+  isAgentModel,
   isSetAutoArchiveRequestedEventData,
   requireProviderForModel,
   normalizeAgentModelConfig,
@@ -137,6 +138,10 @@ import {
 } from '../agents/work-owner';
 import { generateAndRenameBranch } from './branch-namer';
 import { readHelperUsage } from '@canopy/execution-engine/lib/helper-usage';
+import {
+  needsOwnerGatewayModelId,
+  resolveOwnerGatewayModelId,
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import { normalizeOrganizationExternalId } from '@canopy/desktop-shared/lib/org-memory';
 import { isCoworkWorkspace } from './workspace-registry';
 import { pairPendingAuthFailuresWithTool } from './auth-failure-event';
@@ -1507,13 +1512,36 @@ export async function prepareWorktreeTurnSession<
     | void
     | ProviderEventIngestResult,
 >(
-  options: DispatchWorktreeChatTurnOptions<TBeforeResult>,
+  requestedOptions: DispatchWorktreeChatTurnOptions<TBeforeResult>,
   timing?: TurnDispatchTiming,
   preparationOptions: {
     checkModelAvailability?: boolean;
     beforeSessionConfiguration?: () => Promise<void>;
   } = {},
 ): Promise<PreparedWorktreeTurnSession> {
+  // A bare AI gateway id saved before gateway ids were namespaced runs on the
+  // chat owner's own gateway row (CAN-7643).
+  const turnOwnerSession = {
+    projectId: requestedOptions.projectId,
+    worktreeId: requestedOptions.worktreeId,
+    chatId: requestedOptions.chatId,
+    ...(requestedOptions.executionContext === undefined
+      ? {}
+      : { executionContext: requestedOptions.executionContext }),
+  };
+  let turnOwner: WorkOwner | undefined;
+  let options = requestedOptions;
+  if (
+    requestedOptions.model !== undefined &&
+    needsOwnerGatewayModelId(requestedOptions.model)
+  ) {
+    captureSessionWorkOwner(turnOwnerSession);
+    turnOwner = await resolveSessionWorkOwner(turnOwnerSession);
+    options = {
+      ...requestedOptions,
+      model: resolveOwnerGatewayModelId(requestedOptions.model, turnOwner),
+    };
+  }
   const turnDispatchTiming =
     timing ?? options.turnDispatchTiming ?? new TurnDispatchTiming();
   await assertCoworkChatRootPresent(options.projectId, options.worktreeId);
@@ -1698,6 +1726,15 @@ export async function prepareWorktreeTurnSession<
     const systemPromptAppend = `${systemPromptBody}\n\n${chatAddressPrompt(
       agentChatAddress(options.projectId, options.worktreeId, options.chatId),
     )}`;
+    // An Agent's own base model may be a bare gateway id too.
+    if (
+      turnOwner === undefined &&
+      selectedModel &&
+      isAgentModel(selectedModel)
+    ) {
+      captureSessionWorkOwner(turnOwnerSession);
+      turnOwner = await resolveSessionWorkOwner(turnOwnerSession);
+    }
     const runtime = selectedModel
       ? await resolveAgentModelRuntime({
           projectId: options.projectId,
@@ -1706,6 +1743,7 @@ export async function prepareWorktreeTurnSession<
           pluginSelections: options.pluginSelections,
           providerType: effectiveProviderType,
           executionHarness: effectiveExecutionHarness,
+          ...(turnOwner && { owner: turnOwner }),
         })
       : undefined;
     const runtimeProviderType = runtime?.providerType ?? effectiveProviderType;

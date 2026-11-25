@@ -54,7 +54,15 @@ export const useStartPageStore = create<StartPageStoreState>((set, get) => ({
       .catch(() => null)
       .then((value) => {
         if ((projectEpochs.get(projectId) ?? 0) === epoch) {
-          set((state) => ({ resolved: { ...state.resolved, [key]: value } }));
+          set((state) =>
+            // Every worktree switch asks again. The same answer keeps the
+            // cached object, so the panel grid reading it is not rendered
+            // again for nothing.
+            key in state.resolved &&
+            JSON.stringify(state.resolved[key]) === JSON.stringify(value)
+              ? state
+              : { resolved: { ...state.resolved, [key]: value } },
+          );
         }
         return value;
       });

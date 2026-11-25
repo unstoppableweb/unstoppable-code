@@ -401,9 +401,12 @@ export async function ensureSharedContainerRunCopy(
 
 export async function measureSharedContainerRunCopyBytes(
   containerId: string,
+  signal?: AbortSignal,
 ): Promise<bigint> {
   const root = getSharedContainerRunRootDir(containerId);
   async function measure(path: string): Promise<bigint> {
+    // A cancelled caller stops the walk before its next entry.
+    signal?.throwIfAborted();
     let info;
     try {
       info = await lstat(path, { bigint: true });

@@ -2,8 +2,10 @@ import {
   WORKER_AGENT_PROVIDER_IDS,
   type WORKER_AGENT_PROVIDER_QUERY_DEFINITIONS,
   type WorkerAgentProvider,
+  type WorkerAgentProviderId,
   type WorkerAgentProviderListParams,
   type WorkerAgentProviderListResult,
+  type WorkerAgentProviderPlatformGetResult,
 } from '@canopy/protocol/canopy-core';
 
 import { CanopyOperationError } from '../../../runtime/errors';
@@ -49,6 +51,14 @@ export interface WorkerAgentProviderHost extends WorkerAgentServedSelection {
     },
     context: CanopyHandlerContext,
   ): Promise<WorkerAgentProviderInventory>;
+  /**
+   * The providers this worker's platform can run, from its pinned runtime
+   * artifacts and platform checks only: no executable lookup, hashing,
+   * status read or rollout flag.
+   */
+  platformSupport(
+    context: CanopyHandlerContext,
+  ): Promise<readonly WorkerAgentProviderId[]>;
 }
 
 export interface WorkerAgentProviderHandlers {
@@ -66,6 +76,35 @@ export function providerListFailedError(cause: unknown): CanopyOperationError {
     },
     cause,
   );
+}
+
+export function providerPlatformFailedError(
+  cause: unknown,
+): CanopyOperationError {
+  return new CanopyOperationError(
+    {
+      kind: 'internal',
+      message: 'The agent provider platform support could not be read.',
+      retry: { kind: 'never' },
+    },
+    cause,
+  );
+}
+
+/** Fixed provider order, no repeats, so clients can compare answers. */
+function orderedProviderIds(
+  providerIds: readonly WorkerAgentProviderId[],
+): WorkerAgentProviderId[] {
+  let previous = -1;
+  for (const providerId of providerIds) {
+    const index = WORKER_AGENT_PROVIDER_IDS.indexOf(providerId);
+    if (index <= previous)
+      throw providerPlatformFailedError(
+        new Error('Platform support is out of order or repeats a provider.'),
+      );
+    previous = index;
+  }
+  return [...providerIds];
 }
 
 function assertInventoryInvariants(
@@ -116,6 +155,24 @@ export function createWorkerAgentProviderHandlers(
           targetId: host.targetId,
           probed: params.probe,
           providers: [...inventory.providers],
+        };
+      },
+      'worker.agent.provider.platform.get': async (
+        params,
+        context,
+      ): Promise<WorkerAgentProviderPlatformGetResult> => {
+        assertWorkerAgentServedSelection(params.scope, host);
+        let providerIds: readonly WorkerAgentProviderId[];
+        try {
+          providerIds = await host.platformSupport(context);
+        } catch (error) {
+          if (error instanceof CanopyOperationError) throw error;
+          throw providerPlatformFailedError(error);
+        }
+        return {
+          authorityId: host.authorityId,
+          targetId: host.targetId,
+          providerIds: orderedProviderIds(providerIds),
         };
       },
     },

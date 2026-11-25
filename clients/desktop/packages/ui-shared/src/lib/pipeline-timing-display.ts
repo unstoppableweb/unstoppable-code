@@ -8,6 +8,20 @@ const TIMESTAMP_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
   second: '2-digit',
 };
 
+/**
+ * One formatter for every timestamp. `toLocaleString` builds a new one per
+ * call, which is the slow part: a list of runs formats one per row on every
+ * render.
+ */
+let cachedTimestampFormatter: Intl.DateTimeFormat | null = null;
+function timestampFormatter(): Intl.DateTimeFormat {
+  cachedTimestampFormatter ??= new Intl.DateTimeFormat(
+    undefined,
+    TIMESTAMP_FORMAT_OPTIONS,
+  );
+  return cachedTimestampFormatter;
+}
+
 /** Parses an ISO timestamp to epoch ms, or null when absent/invalid. */
 export function parseIsoToEpoch(iso: string | undefined): number | null {
   if (!iso) {
@@ -25,10 +39,7 @@ export function formatTimingTimestamp(iso: string | undefined): string {
     return TIMING_NOT_AVAILABLE;
   }
 
-  return new Date(timestamp).toLocaleString(
-    undefined,
-    TIMESTAMP_FORMAT_OPTIONS,
-  );
+  return timestampFormatter().format(new Date(timestamp));
 }
 
 export interface PipelineElapsedOptions {

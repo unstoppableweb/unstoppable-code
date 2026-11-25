@@ -26,6 +26,7 @@ const safeCodes = new Set([
   'TEARDOWN_TIMEOUT',
   'TEARDOWN_FAILED',
   'external.disk_full',
+  'external.removal_not_permitted',
   'external.offline',
   'ARCHIVE_TURN_DIFF_CLEANUP_FAILED',
   'EBUSY',

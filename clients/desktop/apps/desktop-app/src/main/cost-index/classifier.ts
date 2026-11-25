@@ -137,9 +137,10 @@ const MAX_AUDIT_ENTRY_ID_LENGTH = 512;
 /**
  * An audit entry's own id. The observability service writes ids such as
  * `chat:<project>/<worktree>/<chat>:<startedAt>` and
- * `pipeline:<run>/<job>/<step>/<attempt>:<startedAt>`, so `/` is expected. The
- * id is only ever a record key, never part of a file path; anything shaped
- * like a path is still refused.
+ * `pipeline:<run>/<job>/<step>/<attempt>[/i<iteration>][/r<recovery>]:<startedAt>`,
+ * so `/` is expected. The id is only ever a record key, never part of a file
+ * path; anything shaped like a path is still refused. Step, iteration and
+ * recovery are read from the entry's own fields, never parsed from the id.
  */
 function safeAuditEntryId(value: string | undefined): string | undefined {
   const normalized = value?.trim();
@@ -856,6 +857,9 @@ function pipelineRecord(
     ...(finiteNonNegative(entry.attempt) === undefined
       ? {}
       : { attempt: finiteNonNegative(entry.attempt) }),
+    ...(finiteNonNegative(entry.recovery) === undefined
+      ? {}
+      : { recovery: finiteNonNegative(entry.recovery) }),
   };
 }
 

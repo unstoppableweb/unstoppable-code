@@ -1520,12 +1520,15 @@ export function FilesTreeTab({
     };
   }, [cancelPendingCurrentFileScroll]);
 
-  useEffect(() => {
-    if (focusedId || roots.length === 0) return;
+  // Seeded while rendering, not in an effect: every row reads the focused id
+  // from context, so an effect re-rendered the whole tree right after mount.
+  if (!focusedId && roots.length > 0) {
     const firstId = explorerNodeId(roots[0], '');
-    setFocusedId(firstId);
-    setSelectionAnchorId(firstId);
-  }, [focusedId, roots]);
+    if (firstId !== focusedId) {
+      setFocusedId(firstId);
+      setSelectionAnchorId(firstId);
+    }
+  }
 
   useEffect(() => {
     if (!projectId || !worktreeId || hasExpansionState) return;

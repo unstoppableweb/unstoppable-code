@@ -145,6 +145,12 @@ export const CHAT_MESSAGE_COMMAND_ROUTES: Partial<
         chatId: send.chatId,
         messageId: send.userMessageId,
         text: send.text,
+        ...(send.sendWhileRunning !== undefined
+          ? { sendWhileRunning: send.sendWhileRunning }
+          : {}),
+        ...(send.steerTurnId !== undefined
+          ? { steerTurnId: send.steerTurnId }
+          : {}),
         ...(send.trackedPlanImplementation
           ? { trackedPlanImplementation: send.trackedPlanImplementation }
           : {}),
@@ -489,6 +495,12 @@ export function createCoreChatMessageAdapter(
               chatId: params.chatId,
               userMessageId: params.messageId,
               text: params.text,
+              ...(params.sendWhileRunning !== undefined
+                ? { sendWhileRunning: params.sendWhileRunning }
+                : {}),
+              ...(params.steerTurnId !== undefined
+                ? { steerTurnId: params.steerTurnId }
+                : {}),
               ...(params.trackedPlanImplementation
                 ? {
                     trackedPlanImplementation: params.trackedPlanImplementation,

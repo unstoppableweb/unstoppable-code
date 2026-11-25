@@ -51,7 +51,7 @@ export function WorktreeTopBarSurface(
   return (
     <div
       {...props}
-      className="@container/topbar relative flex shrink-0 cursor-default items-stretch bg-secondary after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-[var(--default-border-width)] after:bg-line-base after:content-['']"
+      className="@container/topbar canopy-shed-scope relative flex shrink-0 cursor-default items-stretch bg-secondary after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-[var(--default-border-width)] after:bg-line-base after:content-['']"
     />
   );
 }

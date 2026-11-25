@@ -98,6 +98,8 @@ import {
   HOSTED_CHAT_COMMAND_REFUSAL,
   HOSTED_MODEL_PROVIDER_REFUSAL,
   HOSTED_SECRET_ANSWER_REFUSAL,
+  HOSTED_SLACK_REQUESTS_OFF_REFUSAL,
+  HOSTED_SLACK_REQUESTS_UNAVAILABLE_REFUSAL,
   createHostedChatDispatcher,
   type HostedChatAttribution,
   type HostedQuestionAnswerRequest,
@@ -135,6 +137,8 @@ const MOBILE_ONLY_CHANNEL = 'account-proxy:status';
 const ACCOUNT_USER_ID = '00000000-0000-4000-8000-0000000000ab';
 /** The model Portal's create would start a new chat on here. */
 const DEFAULT_MODEL = 'default-model';
+/** The Orchestrator's own model, which a Slack thread's tab starts on. */
+const ORCHESTRATOR_MODEL = 'orchestrator-model';
 /** A model whose create seed carries plugin selections (CAN-7445). */
 const SEEDED_MODEL = 'seeded-model';
 const SEED_PLUGIN_SELECTIONS = {
@@ -281,6 +285,12 @@ interface HostedChatLog {
   questions: Map<string, PersistedPendingQuestion>;
   /** Chats created, with the model each started on. */
   tabs: Map<string, string | undefined>;
+  /** The Slack conversations entries created, oldest first (CAN-7604). */
+  slackEntries: string[];
+  /** The Slack thread tabs readied, in order. */
+  slackTabs: string[];
+  /** Turn status reads a Slack session made. */
+  slackStatusReads: unknown[];
 }
 
 /** A settings store whose writes can be failed or held. */
@@ -312,6 +322,10 @@ interface HostOptions {
   dir?: string;
   /** This host's version; the current protocol by default. */
   version?: { protocolVersion: number; appVersion: string };
+  /** This computer's Slack gate (CAN-7604); off by default. */
+  slackGate?: boolean;
+  /** The Slack requests feature flag (CAN-7604); on by default. */
+  slackFlag?: boolean;
 }
 
 interface Host {
@@ -410,11 +424,16 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
     requestId: string,
     answer: unknown,
     from: string,
-  ): Promise<{ accepted: boolean; error?: string }> => {
+  ): Promise<{
+    accepted: boolean;
+    error?: string;
+    reason?: 'ended' | 'answered';
+  }> => {
     if (settledSecretRequests.has(requestId))
       return Promise.resolve({
         accepted: false,
         error: 'This request was already answered.',
+        reason: 'answered',
       });
     settledSecretRequests.add(requestId);
     secretAnswers.push({ answer, from });
@@ -426,6 +445,14 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
     answers: [],
     questions: new Map(),
     tabs: new Map(),
+    slackEntries: [],
+    slackTabs: [],
+    slackStatusReads: [],
+  };
+  const slackEntry = (): string => {
+    if (hostedChat.slackEntries.length === 0)
+      hostedChat.slackEntries.push('slack-entry-1');
+    return hostedChat.slackEntries[hostedChat.slackEntries.length - 1] ?? '';
   };
   // The real dispatcher and validation over a recorded chat state: a send to
   // a chat that started without a model is refused, as its first turn could
@@ -475,6 +502,24 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
         question?.chatId === chatId ? question : undefined,
       );
     },
+    // The Slack conversations entry and tabs over the recorded chat state;
+    // the desktop module that owns them runs in the hosted MCP Electron spec.
+    orchestrator: {
+      slackRequests: () =>
+        Promise.resolve(
+          options.slackFlag === false
+            ? 'unavailable'
+            : options.slackGate === true
+              ? 'on'
+              : 'off',
+        ),
+      slackConversationsEntry: () => Promise.resolve(slackEntry()),
+      openSlackTab: async ({ chatId }, _attribution, send) => {
+        hostedChat.slackTabs.push(chatId);
+        hostedChat.tabs.set(chatId, ORCHESTRATOR_MODEL);
+        return { status: 'dispatched', result: await send() };
+      },
+    },
     answerQuestion: (request) => {
       hostedChat.answers.push(request);
       return Promise.resolve({
@@ -501,6 +546,17 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
     signedInAccount: (): string =>
       options.signedInAccount ?? `account:${ACCOUNT_USER_ID}`,
     ...(options.hostedChat === false ? {} : { dispatchHostedChatCommand }),
+    hostedOrchestratorReads: {
+      readsChat: (entryId, chatId): Promise<boolean> =>
+        Promise.resolve(
+          hostedChat.slackEntries.includes(entryId) &&
+            hostedChat.slackTabs.includes(chatId),
+        ),
+      turnStatus: (request): Promise<unknown> => {
+        hostedChat.slackStatusReads.push(request);
+        return Promise.resolve({ state: 'running', worktreeId: slackEntry() });
+      },
+    },
     deviceName: (): string => 'Host',
     platform: 'darwin',
     version: options.version ?? VERSION,
@@ -799,15 +855,17 @@ function delegate(
   root: DeviceKeyPair,
   sessionKey: string,
   expiresAt: number,
+  firstPartyClient?: 'slack',
 ): HostedDelegation {
   return {
     rootPublicKey: root.publicKey,
     sessionPublicKey: sessionKey,
     expiresAt,
+    ...(firstPartyClient === undefined ? {} : { firstPartyClient }),
     signature: encodeBase64Url(
       sign(
         null,
-        hostedDelegationSigningBytes(sessionKey, expiresAt),
+        hostedDelegationSigningBytes(sessionKey, expiresAt, firstPartyClient),
         root.privateKey,
       ),
     ),
@@ -886,6 +944,15 @@ describe('controller profiles', () => {
     expect(await invokeCode(rpc, 'no-such:channel')).toBe(
       'remote_channel_unavailable',
     );
+    // Only a Slack session reads Slack turn status (CAN-7604); a desktop
+    // controller is refused before the bridge.
+    const bridged = host.bridge.invokes.length;
+    expect(
+      await invokeCodeWith(rpc, IPC_CHANNELS.appAdvisorSlackTurnStatus, [
+        { chatId: 'chat-1', userMessageId: 'message-1' },
+      ]),
+    ).toBe('remote_channel_unavailable');
+    expect(host.bridge.invokes).toHaveLength(bridged);
   });
 
   it("keeps this computer's inventory sync switch out of every controller's reach (CAN-5986)", async () => {
@@ -3366,6 +3433,8 @@ describe('paired secret requests (U7)', () => {
       controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
     });
     expect(await settleCode(first.rpc, provide)).toEqual({ accepted: true });
+    // A controller that didn't ask for refusal reasons never gets one: older
+    // web builds parse the result strictly.
     expect(await settleCode(first.rpc, provide)).toEqual({
       accepted: false,
       error: 'This request was already answered.',
@@ -3376,13 +3445,18 @@ describe('paired secret requests (U7)', () => {
     await hello(again.rpc, {
       version: VERSION,
       controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+      secretRequestSettleReason: true,
     });
     expect(
       await settleCode(again.rpc, {
         ...provide,
         values: { NPM_TOKEN: 'another-value' },
       }),
-    ).toEqual({ accepted: false, error: 'This request was already answered.' });
+    ).toEqual({
+      accepted: false,
+      error: 'This request was already answered.',
+      reason: 'answered',
+    });
     expect(host.secretAnswers).toHaveLength(1);
   });
 });
@@ -3698,7 +3772,10 @@ describe('hosted delegation', () => {
     await expect(control(host, thief, valid)).rejects.toThrow();
   });
 
-  async function delegatedSession(options: HostOptions = {}): Promise<{
+  async function delegatedSession(
+    options: HostOptions = {},
+    firstPartyClient?: 'slack',
+  ): Promise<{
     host: Host;
     root: DeviceKeyPair;
     invoke: (channel: string, args: unknown[]) => Promise<string>;
@@ -3727,7 +3804,12 @@ describe('hosted delegation', () => {
     const { rpc } = await control(
       host,
       child,
-      delegate(root, child.identity.publicKey, Date.now() + 60_000),
+      delegate(
+        root,
+        child.identity.publicKey,
+        Date.now() + 60_000,
+        firstPartyClient,
+      ),
     );
     await hello(rpc);
     const request = (channel: string, args: unknown[]): Promise<unknown> =>
@@ -4104,6 +4186,246 @@ describe('hosted delegation', () => {
       expect(host.bridge.invokes).toEqual([]);
       expect(host.hostedChat.dispatched).toEqual([]);
     }
+  });
+
+  it('refuses every hosted call that names a Bot project, so the Orchestrator is never an ordinary chat (CAN-7604)', async () => {
+    const { host, invoke } = await delegatedSession();
+    for (const projectId of [
+      'app-advisor',
+      'bot--01hzzzzzzzzzzzzzzzzzzzzzzz',
+    ]) {
+      const scoped = { projectId, worktreeId: 'entry-1' };
+      const calls: Array<[string, unknown]> = [
+        ['chat:command', { ...envelope(send), ...scoped }],
+        [
+          'chat:command',
+          {
+            ...envelope({ type: 'chat.create_tab', tabId: 'chat-1' }),
+            ...scoped,
+          },
+        ],
+        ['work-entries:create', { projectId }],
+        ['chat:get-transcript-page', { ...scoped, chatId: 'chat-1' }],
+        [
+          'chat:cancel',
+          { ...scoped, chatId: 'chat-1', expectedUserMessageId: 'message-1' },
+        ],
+        [
+          'file:read-content',
+          { absolutePath: '/notes.md', workspaceTarget: scoped },
+        ],
+      ];
+      for (const [channel, arg] of calls) {
+        expect(await invoke(channel, [arg])).toBe('remote_channel_unavailable');
+      }
+    }
+    expect(host.bridge.invokes).toEqual([]);
+    expect(host.hostedChat.dispatched).toEqual([]);
+  });
+
+  const slackSend = {
+    schemaVersion: 1,
+    commandId: 'command-slack-1',
+    projectId: 'app-advisor',
+    worktreeId: 'slack-conversations',
+    command: {
+      type: 'chat.send_message',
+      chatId: 'slack-thread-1-sender-a',
+      userMessageId: 'slack-message-1',
+      text: 'What changed today?',
+    },
+  };
+
+  it("serves a Slack session's Orchestrator send only behind this computer's gate, as the verified Slack sender (CAN-7604)", async () => {
+    // Gate off: refused before an entry or a tab exists.
+    const off = await delegatedSession({}, 'slack');
+    expect(await off.request('chat:command', [slackSend])).toMatchObject({
+      outcome: 'rejected',
+      reason: HOSTED_SLACK_REQUESTS_OFF_REFUSAL,
+    });
+    expect(off.host.hostedChat.slackEntries).toEqual([]);
+    expect(off.host.hostedChat.dispatched).toEqual([]);
+
+    // Flag off: refused even with the gate on, without pointing at a setting
+    // this computer doesn't show.
+    const unoffered = await delegatedSession(
+      { slackGate: true, slackFlag: false },
+      'slack',
+    );
+    expect(await unoffered.request('chat:command', [slackSend])).toMatchObject({
+      outcome: 'rejected',
+      reason: HOSTED_SLACK_REQUESTS_UNAVAILABLE_REFUSAL,
+    });
+    expect(unoffered.host.hostedChat.slackEntries).toEqual([]);
+    expect(unoffered.host.hostedChat.dispatched).toEqual([]);
+
+    // Gate on: the thread's tab in the Slack conversations entry, sent as
+    // the verified Slack sender with no model or approval mode of its own,
+    // so the Orchestrator's settings on this computer apply.
+    const on = await delegatedSession({ slackGate: true }, 'slack');
+    expect(await on.request('chat:command', [slackSend])).toMatchObject({
+      outcome: 'applied',
+      entityId: 'slack-thread-1-sender-a',
+      worktreeId: 'slack-entry-1',
+    });
+    expect(on.host.hostedChat.slackTabs).toEqual(['slack-thread-1-sender-a']);
+    const [sent] = on.host.hostedChat.dispatched;
+    // Its own stable identity, apart from the agents pairing's.
+    const connectionId: unknown =
+      sent?.request.command.type === 'chat.send_message'
+        ? Reflect.get(Object(sent.request.command.agentSent), 'connectionId')
+        : undefined;
+    expect(connectionId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(sent?.request).toEqual({
+      schemaVersion: 1,
+      commandId: 'command-slack-1',
+      projectId: 'app-advisor',
+      worktreeId: 'slack-entry-1',
+      origin: 'portal',
+      command: {
+        type: 'chat.send_message',
+        chatId: 'slack-thread-1-sender-a',
+        userMessageId: 'slack-message-1',
+        text: 'What changed today?',
+        agentSent: {
+          kind: 'external_agent',
+          connectionId,
+          clientName: 'Slack',
+          verified: true,
+          userId: ACCOUNT_USER_ID,
+        },
+      },
+    });
+    expect(on.host.bridge.invokes).toEqual([]);
+
+    // Another person in the same Slack thread has their own tab: the tab ID
+    // is the caller's, per sender, in the same Slack conversations entry.
+    expect(
+      await on.request('chat:command', [
+        {
+          ...slackSend,
+          commandId: 'command-slack-2',
+          command: {
+            ...slackSend.command,
+            chatId: 'slack-thread-1-sender-b',
+            userMessageId: 'slack-message-2',
+          },
+        },
+      ]),
+    ).toMatchObject({ outcome: 'applied', worktreeId: 'slack-entry-1' });
+    expect(on.host.hostedChat.slackTabs).toEqual([
+      'slack-thread-1-sender-a',
+      'slack-thread-1-sender-b',
+    ]);
+    expect(on.host.hostedChat.slackEntries).toEqual(['slack-entry-1']);
+
+    // A Slack session makes only that send: no other Orchestrator command,
+    // no entry it names itself, no model, and no ordinary project.
+    for (const refused of [
+      { ...slackSend, worktreeId: 'slack-entry-1' },
+      {
+        ...slackSend,
+        command: { type: 'chat.create_tab', tabId: 'slack-thread-1-sender-a' },
+      },
+      { ...slackSend, command: { ...slackSend.command, model: DEFAULT_MODEL } },
+      { ...slackSend, projectId: 'project-1', worktreeId: 'worktree-1' },
+    ]) {
+      expect(await on.invoke('chat:command', [refused])).toBe(
+        'remote_channel_unavailable',
+      );
+    }
+    expect(
+      await on.invoke('work-entries:create', [{ projectId: 'app-advisor' }]),
+    ).toBe('remote_channel_unavailable');
+    expect(on.host.hostedChat.dispatched).toHaveLength(2);
+
+    // An agents session, even with the gate on, never reaches the Orchestrator.
+    const agents = await delegatedSession({ slackGate: true });
+    expect(await agents.invoke('chat:command', [slackSend])).toBe(
+      'remote_channel_unavailable',
+    );
+    expect(agents.host.hostedChat.dispatched).toEqual([]);
+  });
+
+  it("reads only the Slack conversations entries' transcripts and turn status, in a Slack session alone (CAN-7604)", async () => {
+    const slack = await delegatedSession({ slackGate: true }, 'slack');
+    await slack.request('chat:command', [slackSend]);
+    const read = {
+      projectId: 'app-advisor',
+      worktreeId: 'slack-entry-1',
+      chatId: 'slack-thread-1-sender-a',
+    };
+    expect(await slack.invoke('chat:get-transcript-page', [read])).toBe('ok');
+    expect(
+      await slack.invoke('chat:get-transcript-page', [
+        { ...read, worktreeId: 'another-entry' },
+      ]),
+    ).toBe('remote_channel_unavailable');
+    // Nor a chat in that entry no Slack message was sent to.
+    expect(
+      await slack.invoke('chat:get-transcript-page', [
+        { ...read, chatId: 'chat-made-on-this-computer' },
+      ]),
+    ).toBe('remote_channel_unavailable');
+    const status = {
+      chatId: 'slack-thread-1-sender-a',
+      userMessageId: 'slack-message-1',
+    };
+    expect(
+      await slack.request('app-advisor:slack-turn-status', [status]),
+    ).toEqual({ state: 'running', worktreeId: 'slack-entry-1' });
+    expect(slack.host.hostedChat.slackStatusReads).toEqual([status]);
+    // The read went to the bridge once; the status never did.
+    expect(slack.host.bridge.invokes).toEqual(['chat:get-transcript-page']);
+    // The read started the bridge, yet a Slack session hears none of this
+    // computer's pushes, which would carry every chat's events.
+    slack.host.mainPush('chat:event', [{ chatId: 'other-chat' }]);
+    slack.host.bridge.emitPush('chat:event', [{ chatId: 'other-chat' }]);
+    await settle(50);
+    expect(slack.child.pushes).toEqual([]);
+
+    const agents = await delegatedSession({ slackGate: true });
+    expect(await agents.invoke('chat:get-transcript-page', [read])).toBe(
+      'remote_channel_unavailable',
+    );
+    expect(await agents.invoke('app-advisor:slack-turn-status', [status])).toBe(
+      'remote_channel_unavailable',
+    );
+    expect(agents.host.hostedChat.slackStatusReads).toEqual([]);
+    // The same pushes do reach an agents session once its bridge runs.
+    expect(
+      await agents.invoke('chat:get-transcript-page', [
+        { projectId: 'project-1', worktreeId: 'worktree-1', chatId: 'chat-1' },
+      ]),
+    ).toBe('ok');
+    agents.host.mainPush('chat:event', [{ chatId: 'other-chat' }]);
+    await until(() => agents.child.pushes.length > 0);
+    expect(agents.child.pushes).toEqual(['chat:event']);
+  });
+
+  it('refuses a Slack claim the hosted root did not sign (CAN-7604)', async () => {
+    const { hub, host, root } = await hostedSetup();
+    const expiresAt = Date.now() + 60_000;
+    // A v1 signature with a Slack claim added after signing.
+    const added = addController(hub, 'hosted');
+    await expect(
+      control(host, added, {
+        ...delegate(root, added.identity.publicKey, expiresAt),
+        firstPartyClient: 'slack',
+      }),
+    ).rejects.toThrow();
+    // A v2 Slack signature with the claim taken off.
+    const stripped = addController(hub, 'hosted');
+    const { firstPartyClient: _claim, ...unclaimed } = delegate(
+      root,
+      stripped.identity.publicKey,
+      expiresAt,
+      'slack',
+    );
+    void _claim;
+    await expect(control(host, stripped, unclaimed)).rejects.toThrow();
   });
 
   it('admits only the empty provider-usage read through a hosted session', async () => {
@@ -4806,6 +5128,21 @@ describe('hosted delegation', () => {
       revoked: true,
     });
     expect((await host.readSettings()).pairedControllers).toEqual([]);
+  });
+
+  it('refuses every method but hello and invoke to a Slack session, so it never revokes the hosted root (CAN-7604)', async () => {
+    const { hub, host, root, other } = await hostedSetup();
+    const child = addController(hub, 'hosted');
+    const { rpc } = await control(
+      host,
+      child,
+      delegate(root, child.identity.publicKey, Date.now() + 60_000, 'slack'),
+    );
+    await hello(rpc);
+    await expect(rpc.request(REMOTE_METHODS.pairRevoke, {})).rejects.toThrow();
+    expect(
+      (await host.readSettings()).pairedControllers.map((pin) => pin.deviceId),
+    ).toEqual([root.deviceId, other.deviceId]);
   });
 });
 

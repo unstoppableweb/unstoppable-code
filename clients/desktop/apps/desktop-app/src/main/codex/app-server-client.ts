@@ -24,6 +24,7 @@ import {
   type ChatInputRefusal,
 } from '@canopy/protocol/remote-control/shell/input-delivery';
 import type { AiGatewayToolSchemaProfile } from '@canopy/protocol/ai-gateway-models';
+import { isThinkingLevel } from '@canopy/protocol/thinking';
 import {
   type AgentModelConfig,
   type ApprovalCheck,
@@ -133,6 +134,7 @@ import {
   isCodexRecoverableProcessExitError,
   isCodexThreadWriterConflictError,
   loadCodexThreadSeedItemsWithLoadCount,
+  normalizeCodexHistoryCallIds,
   projectCodexThreadItem,
   sanitizeSeedItemsForRouteChange,
   waitForCodexMcpServers,
@@ -279,6 +281,16 @@ interface StartTurnOptions {
   onAdmission?: () => void;
   text: string;
   cwd: string;
+  callIdRepair?: {
+    threadId: string;
+    commitThreadId(
+      sourceId: string,
+      replacementId: string,
+      canCommit: () => boolean,
+    ): Promise<boolean>;
+    onSettled(): void;
+    onSetupFailure(): void;
+  };
   /** Admitted Canopy message that owns this native execution. */
   executionUserMessageId?: string;
   submissionId?: string;
@@ -2596,6 +2608,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
   private pendingTurnStartAbort: {
     generation: number;
     controller: AbortController;
+    repairing?: boolean;
   } | null = null;
   private closing = false;
   private readonly accountUpdatedListeners = new Set<
@@ -3714,6 +3727,8 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       generation: turnStartGeneration,
       controller: turnStartAbortController,
     };
+    let attemptedCallIdRepair = false;
+    let setupFailed = true;
     try {
       const pendingMcpReloadReadiness = this.pendingMcpReloadReadiness;
       if (pendingMcpReloadReadiness) {
@@ -3731,12 +3746,16 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         opts,
         turnStartGeneration,
         turnStartAbortController.signal,
+        (attempted): void => {
+          attemptedCallIdRepair = attempted;
+        },
       );
       this.assertTurnStartNotCancelled(turnStartGeneration);
       await this.waitForTurnSlot(
         turnStartGeneration,
         turnStartAbortController.signal,
       );
+      setupFailed = false;
     } catch (error) {
       if (this.turnStartCancellation?.generation === turnStartGeneration) {
         throw this.turnStartCancellation.error;
@@ -3751,11 +3770,16 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
             0,
         );
         this.assertTurnStartNotCancelled(turnStartGeneration);
+        setupFailed = false;
         return this.startTurn(opts, processRecoveryAttempt + 1);
       }
+      const sourceWorkBlocksRepair =
+        attemptedCallIdRepair &&
+        (this.activeTurn !== null || this.hasLiveBackgroundWork());
       if (
         processRecoveryAttempt === 0 &&
         !this.disposed &&
+        !sourceWorkBlocksRepair &&
         isUnansweredThreadSetupRequest(error) &&
         // Only a worker with no other live work is replaced. Stopping it also
         // ends the request that timed out, so a thread it was still creating
@@ -3763,7 +3787,17 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         this.connection.recycleUnresponsiveProcess()
       ) {
         this.assertTurnStartNotCancelled(turnStartGeneration);
+        setupFailed = false;
         return this.startTurn(opts, processRecoveryAttempt + 1);
+      }
+      if (
+        attemptedCallIdRepair &&
+        !sourceWorkBlocksRepair &&
+        !this.disposed &&
+        !turnStartAbortController.signal.aborted &&
+        opts.callIdRepair?.threadId === this.threadId
+      ) {
+        opts.callIdRepair?.onSettled();
       }
       throw error;
     } finally {
@@ -3779,13 +3813,18 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       if (this.pendingTurnStartAbort?.generation === turnStartGeneration) {
         this.pendingTurnStartAbort = null;
       }
+      if (setupFailed) opts.callIdRepair?.onSetupFailure();
     }
     this.assertNotDisposed();
     const threadId = this.threadId;
     if (!threadId) {
       throw new Error('Codex app-server did not initialize a thread');
     }
-
+    const approvalMode = this.approvalMode;
+    if (opts.callIdRepair && this.needsSandboxReopen(approvalMode)) {
+      opts.callIdRepair.onSetupFailure();
+      throw new Error('turn_cancelled');
+    }
     let active: CodexTurnState | undefined;
     const result = new Promise<CodexTurnResult>((resolve, reject) => {
       active = {
@@ -3826,7 +3865,6 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
 
     const reasoningModel =
       opts.capabilityModel ?? opts.model ?? DEFAULT_CODEX_MODEL;
-    const approvalMode = this.approvalMode;
     const shouldClearPlanCollaborationMode =
       !opts.planMode &&
       (this.hasActivatedPlanCollaborationMode ||
@@ -3872,14 +3910,14 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
             }
           : undefined;
 
-    // Codex keeps a turn's sandbox override for later turns: remember it.
-    const turnSandbox = codexTurnSandbox(
-      approvalMode,
-      opts.cwd,
-      this.threadSandboxKind ?? codexThreadSandboxKind(approvalMode),
-    );
-    this.threadSandboxKind = turnSandbox.threadKind;
     try {
+      // Codex keeps a turn's sandbox override for later turns: remember it.
+      const turnSandbox = codexTurnSandbox(
+        approvalMode,
+        opts.cwd,
+        this.threadSandboxKind ?? codexThreadSandboxKind(approvalMode),
+      );
+      this.threadSandboxKind = turnSandbox.threadKind;
       const startParams: AppServerRequestParams<'turn/start'> = {
         threadId,
         input: [{ type: 'text', text: opts.text, text_elements: [] }],
@@ -4265,6 +4303,23 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     return { sessionId: threadId, turnId };
   }
 
+  getAppliedThinkingLevel(turnId: string): ThinkingLevel | undefined {
+    const active = this.activeTurn;
+    if (
+      !this.threadReady ||
+      active?.executionUserMessageId !== turnId ||
+      active.recoveryPromise ||
+      active.mergedResumeAnchor !== undefined ||
+      active.unresolvedMergeTurnIds?.has(active.turnId) ||
+      !this.getSteeringTarget()
+    ) {
+      return undefined;
+    }
+    const effort = active.startParams?.effort;
+    if (effort === 'none') return 'off';
+    return isThinkingLevel(effort) ? effort : undefined;
+  }
+
   async submitSteeringInput(
     text: string,
     attemptId: string,
@@ -4399,6 +4454,14 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     }
     this.rendererQuestionCancellationGeneration++;
     rejectAllForSession(this.sessionKey);
+    if (
+      options.userInitiated !== false &&
+      this.pendingTurnStartAbort?.repairing
+    ) {
+      // Cancel setup without restarting the worker. A live source turn still
+      // goes through the normal interrupt path below.
+      this.cancelPendingTurnStart(new Error('turn_cancelled'));
+    }
     if (!this.activeTurn && this.pendingTurnStartGeneration === null) {
       return;
     }
@@ -4649,11 +4712,25 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     opts: StartTurnOptions,
     turnStartGeneration: number,
     turnStartSignal: AbortSignal,
+    setCallIdRepairAttempted: (attempted: boolean) => void,
   ): Promise<void> {
     await this.connection.ensureInitialized({ signal: turnStartSignal });
     this.assertNotDisposed();
     this.assertTurnStartNotCancelled(turnStartGeneration);
-    if (this.threadReady) return;
+    const resumeThreadId = this.threadId ?? this.initialThreadId;
+    const callIdRepair =
+      opts.callIdRepair &&
+      opts.callIdRepair.threadId === resumeThreadId &&
+      !this.forceMaterializeOnResume &&
+      !this.hasLiveBackgroundWork()
+        ? opts.callIdRepair
+        : undefined;
+    if (this.threadReady && !callIdRepair) return;
+    const pendingStart = this.pendingTurnStartAbort;
+    if (callIdRepair && pendingStart?.generation === turnStartGeneration) {
+      pendingStart.repairing = true;
+    }
+    const sourceLastTurnId = this.lastKnownTurnId;
     const setupGeneration = this.threadSetupGeneration;
 
     const startThreadConfig = buildThreadConfig(
@@ -4681,7 +4758,6 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     );
     const providerRouteIdentity =
       codexThreadProviderRouteIdentity(startThreadConfig);
-    const resumeThreadId = this.threadId ?? this.initialThreadId;
     let establishedProviderRoute = false;
     const dynamicToolsField =
       this.dynamicTools && this.dynamicTools.length > 0
@@ -4695,7 +4771,9 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     const startParams: ThreadStartParams = {
       cwd: opts.cwd,
       approvalPolicy: codexApprovalPolicyFor(approvalMode),
-      ...this.openedThreadSandboxFields(approvalMode),
+      ...(callIdRepair
+        ? codexThreadSandboxFields(approvalMode)
+        : this.openedThreadSandboxFields(approvalMode)),
       // Thread start/resume/materialization is lifecycle metadata: Regular and
       // Fast keep their exact tier, Ultra fast sends an explicit `default`
       // (clearing any inherited tier) and each admitted `turn/start` carries
@@ -4749,6 +4827,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       const capabilityChanged =
         providerRouteChanged ||
         this.forceMaterializeOnResume ||
+        callIdRepair ||
         (!existingCapabilityLease && hasThreadScopedCapabilities) ||
         (existingCapabilityLease?.reasoningRouteFamily !== undefined &&
           existingCapabilityLease.reasoningRouteFamily !==
@@ -4761,21 +4840,25 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       this.connection.registerRootThread(resumeThreadId);
       try {
         if (capabilityChanged) {
+          if (callIdRepair) setCallIdRepairAttempted(true);
           const forcedRebuild = this.forceMaterializeOnResume;
           response = await this.materializeThreadFromHistory(
             resumeThreadId,
             startParams,
             turnStartGeneration,
-            forcedRebuild
-              ? undefined
-              : existingCapabilityLease?.reasoningRouteFamily,
-            // Only trim the pending input on the retry rebuild. That path runs
-            // *after* a turn already failed, so the rollout genuinely contains
-            // that input and re-sending it would duplicate the prompt. Every
-            // other reconstruction here is proactive — it happens before
-            // `turn/start`, nothing has been persisted yet, and trimming would
-            // delete a real trailing message the user still has.
-            forcedRebuild ? opts.text : undefined,
+            {
+              sourceRouteFamily: forcedRebuild
+                ? undefined
+                : existingCapabilityLease?.reasoningRouteFamily,
+              // Only trim the pending input on the retry rebuild. That path runs
+              // *after* a turn already failed, so the rollout genuinely contains
+              // that input and re-sending it would duplicate the prompt. Every
+              // other reconstruction here is proactive — it happens before
+              // `turn/start`, nothing has been persisted yet, and trimming would
+              // delete a real trailing message the user still has.
+              pendingUserInputText: forcedRebuild ? opts.text : undefined,
+              repairCallIds: Boolean(callIdRepair),
+            },
           );
           establishedProviderRoute = true;
           consumedForcedRebuild = forcedRebuild;
@@ -4816,7 +4899,10 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
               resumeThreadId,
               startParams,
               turnStartGeneration,
-              existingCapabilityLease?.reasoningRouteFamily,
+              {
+                sourceRouteFamily:
+                  existingCapabilityLease?.reasoningRouteFamily,
+              },
             );
             establishedProviderRoute = true;
           }
@@ -4854,9 +4940,12 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       } catch (error) {
         const failedThreadId = extractThreadId(response);
         if (failedThreadId) {
-          this.connection.unregisterThread(failedThreadId);
+          if (callIdRepair) await this.discardStartedThread(failedThreadId);
+          else this.connection.unregisterThread(failedThreadId);
         }
-        this.connection.unregisterThread(resumeThreadId);
+        if (!callIdRepair) {
+          this.connection.unregisterThread(resumeThreadId);
+        }
         throw error instanceof Error ? error : new Error(String(error));
       }
     } else {
@@ -4897,7 +4986,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     if (!threadId) {
       throw new Error('Codex app-server returned a thread without an id');
     }
-    this.lastKnownTurnId = latestThreadTurnId(response);
+    if (!callIdRepair) this.lastKnownTurnId = latestThreadTurnId(response);
     this.connection.registerRootThread(threadId);
 
     try {
@@ -4923,10 +5012,82 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         }
       }
     } catch (error) {
-      this.connection.unregisterThread(threadId);
+      if (callIdRepair) {
+        await this.discardStartedThread(threadId);
+      } else {
+        this.connection.unregisterThread(threadId);
+      }
       throw error;
     } finally {
       this.mcpStartupStates.delete(threadId);
+    }
+    if (callIdRepair) {
+      const sourceAdvanced = (): boolean =>
+        this.activeTurn !== null ||
+        this.lastKnownTurnId !== sourceLastTurnId ||
+        this.hasLiveBackgroundWork();
+      let committed = false;
+      try {
+        if (!sourceAdvanced()) {
+          committed = await callIdRepair.commitThreadId(
+            callIdRepair.threadId,
+            threadId,
+            () =>
+              !this.disposed &&
+              !turnStartSignal.aborted &&
+              setupGeneration === this.threadSetupGeneration &&
+              !sourceAdvanced(),
+          );
+        }
+        if (committed && sourceAdvanced()) {
+          // The source advanced while the new pointer was flushing. Restore
+          // the source before discarding a replacement that is now stale.
+          if (
+            !(await callIdRepair.commitThreadId(
+              threadId,
+              callIdRepair.threadId,
+              () => true,
+            ))
+          ) {
+            throw new Error('Chat changed while repairing Codex history');
+          }
+          committed = false;
+        }
+      } catch (error) {
+        // A rejected durability receipt can leave the pointer uncertain.
+        // Keep both rollouts and prevent a turn from using the replacement.
+        setCallIdRepairAttempted(false);
+        this.connection.unregisterThread(threadId);
+        this.connection.unsubscribeThreadBestEffort(threadId, {
+          onlyIfUnowned: true,
+        });
+        throw error;
+      }
+      if (!committed) {
+        const sourceResumedWork = sourceAdvanced();
+        setCallIdRepairAttempted(false);
+        await this.discardStartedThread(threadId);
+        this.assertNotDisposed();
+        this.assertTurnStartNotCancelled(turnStartGeneration);
+        if (!sourceResumedWork) {
+          throw new Error('Chat changed while repairing Codex history');
+        }
+        if (!this.threadReady) {
+          await this.ensureThread(
+            { ...opts, callIdRepair: undefined },
+            turnStartGeneration,
+            turnStartSignal,
+            setCallIdRepairAttempted,
+          );
+        }
+        return;
+      }
+      if (this.disposed) {
+        this.connection.unsubscribeThreadBestEffort(threadId, {
+          onlyIfUnowned: true,
+        });
+        this.assertNotDisposed();
+      }
     }
     if (this.threadId && this.threadId !== threadId) {
       this.retireProviderRunGeneration(true);
@@ -4962,8 +5123,16 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       }
     }
     this.threadId = threadId;
-    this.threadReady = true;
-    this.connection.markThreadReady(threadId);
+    this.threadReady = setupGeneration === this.threadSetupGeneration;
+    if (this.threadReady) this.connection.markThreadReady(threadId);
+    if (callIdRepair) {
+      this.lastKnownTurnId = latestThreadTurnId(response);
+      this.threadSandboxKind = codexThreadSandboxKind(approvalMode);
+      this.pendingReasoningRouteFamilyBackfill = null;
+      this.connection.unregisterThread(callIdRepair.threadId);
+      this.connection.unsubscribeThreadBestEffort(callIdRepair.threadId);
+      callIdRepair.onSettled();
+    }
     if (resumedResponse && threadId === resumeThreadId) {
       this.observeResumedBackgroundTerminalItems(threadId, response);
       this.reconcileResumedBackgroundWork(threadId);
@@ -4983,6 +5152,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     if (consumedForcedRebuild) {
       this.forceMaterializeOnResume = false;
     }
+    if (!this.threadReady) throw new Error('Codex worker changed during setup');
     void this.onEvent({
       type: 'system',
       subtype: 'init',
@@ -5035,11 +5205,17 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     sourceThreadId: string,
     params: ThreadStartParams,
     turnStartGeneration: number,
-    sourceRouteFamily?: string,
-    pendingUserInputText?: string,
+    options: {
+      sourceRouteFamily?: string;
+      pendingUserInputText?: string;
+      repairCallIds?: boolean;
+    },
   ): Promise<unknown> {
+    const { sourceRouteFamily, pendingUserInputText, repairCallIds } = options;
     const codexHome = getObservedCanonicalCodexHome();
-    const fallbackItems = await this.loadFallbackSeedItems();
+    const fallbackItems = repairCallIds
+      ? []
+      : await this.loadFallbackSeedItems();
     const {
       items: loadedItems,
       loadedItemCount,
@@ -5060,6 +5236,11 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
           source: 'fallback',
           loadedItemCount: fallbackItems.length,
         };
+    if (repairCallIds && seedSource !== 'rollout') {
+      throw new Error(
+        `Cannot repair Codex thread ${sourceThreadId}: no native rollout history was found`,
+      );
+    }
     // The canonical rollout retains every response item, including the user
     // input of the turn that just failed. The caller re-sends that same input
     // after this rebuild, so trim the persisted copy to keep the model from
@@ -5070,10 +5251,19 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     // its trailing item is a genuine earlier message — trimming there deletes
     // real history whenever the user repeated themselves, which the usage-limit
     // resume prompt (`Continue`) makes routine.
-    const seedItems =
+    let seedItems =
       seedSource === 'rollout'
         ? dropTrailingUserInput(loadedItems, pendingUserInputText)
         : loadedItems;
+    if (repairCallIds) {
+      const repaired = normalizeCodexHistoryCallIds(seedItems);
+      if (repaired === seedItems) {
+        throw new Error(
+          `Cannot repair Codex thread ${sourceThreadId}: no overlength call IDs were found`,
+        );
+      }
+      seedItems = repaired;
+    }
     // Only "nothing was ever loaded" is fatal, and that is measured on the
     // count *before* route sanitization. Narrowing a previously non-empty
     // history down to nothing is not fatal: it happens when the whole usable
@@ -5088,6 +5278,8 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       );
     }
 
+    this.assertNotDisposed();
+    this.assertTurnStartNotCancelled(turnStartGeneration);
     const response = await this.startThreadWithCapabilityLease(
       params,
       turnStartGeneration,
@@ -5095,7 +5287,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     if (seedItems.length > 0) {
       await this.injectStartedThreadHistory(response, seedItems);
     }
-    this.connection.unregisterThread(sourceThreadId);
+    if (!repairCallIds) this.connection.unregisterThread(sourceThreadId);
     return response;
   }
 
@@ -5138,19 +5330,18 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
         items: [...seedItems],
       });
     } catch (error) {
-      this.connection.unregisterThread(provisionalThreadId);
-      await this.connection
-        .request(
-          'thread/delete',
-          { threadId: provisionalThreadId },
-          { timeoutMs: 10_000 },
-        )
-        .catch(() => {});
-      await this.capabilityStore
-        ?.releaseLease(provisionalThreadId)
-        .catch(() => {});
+      await this.discardStartedThread(provisionalThreadId);
       throw error;
     }
+  }
+
+  private async discardStartedThread(threadId: string): Promise<void> {
+    this.connection.unregisterThread(threadId);
+    // Deletion can wait for authentication, which can be waiting for this chat.
+    void this.connection
+      .request('thread/delete', { threadId }, { timeoutMs: 10_000 })
+      .catch((): void => this.connection.unsubscribeThreadBestEffort(threadId));
+    await this.capabilityStore?.releaseLease(threadId).catch(() => {});
   }
 
   private async startThreadWithCapabilityLease(
@@ -5176,7 +5367,6 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       : null;
     refreshTimer?.unref?.();
     let provisionalThreadId: string | undefined;
-    let leasePersisted = false;
     try {
       const response = await this.request('thread/start', params);
       provisionalThreadId = extractThreadId(response) ?? undefined;
@@ -5200,25 +5390,12 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       } else {
         await this.capabilityStore.writeLease(lease);
       }
-      leasePersisted = true;
       this.assertNotDisposed();
       this.assertTurnStartNotCancelled(turnStartGeneration);
       return response;
     } catch (error) {
       if (provisionalThreadId) {
-        this.connection.unregisterThread(provisionalThreadId);
-        await this.connection
-          .request(
-            'thread/delete',
-            { threadId: provisionalThreadId },
-            { timeoutMs: 10_000 },
-          )
-          .catch(() => {});
-        if (leasePersisted) {
-          await this.capabilityStore
-            .releaseLease(provisionalThreadId)
-            .catch(() => {});
-        }
+        await this.discardStartedThread(provisionalThreadId);
       }
       if (pin) {
         await this.capabilityStore
@@ -8988,7 +9165,10 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     const requestOptions = {
       ...options,
       ...(this.pendingTurnStartAbort
-        ? { signal: this.pendingTurnStartAbort.controller.signal }
+        ? {
+            signal: this.pendingTurnStartAbort.controller.signal,
+            cancelInFlight: this.pendingTurnStartAbort.repairing,
+          }
         : {}),
     };
     return this.connection.request(method, params, requestOptions);

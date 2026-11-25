@@ -52,7 +52,9 @@ import type { InterruptedChatRecord } from '../lib/usage-limited-chats-registry'
 import { recordStaleWork } from '@canopy/desktop-shared/node/work-counters';
 import {
   isGatewayOnlyModel,
+  needsOwnerGatewayModelId,
   resolveGatewayModelEntry,
+  resolveOwnerGatewayModelId,
 } from '@canopy/execution-engine/lib/gateway-model-availability';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import {
@@ -1130,8 +1132,33 @@ async function getOrCreateSessionWithoutStartReservation(
   }
 }
 
-async function getOrCreateSessionImpl(
+/**
+ * A bare gateway id saved before gateway ids were namespaced runs on the
+ * session owner's own gateway row, not whichever gateway shares the id.
+ */
+function withOwnerGatewayModel(
   opts: AgentSessionOptions,
+  owner: WorkOwner | undefined,
+): AgentSessionOptions {
+  const model =
+    opts.model === undefined
+      ? undefined
+      : resolveOwnerGatewayModelId(opts.model, owner);
+  const selectedModel =
+    opts.selectedModel === undefined
+      ? undefined
+      : resolveOwnerGatewayModelId(opts.selectedModel, owner);
+  return model === opts.model && selectedModel === opts.selectedModel
+    ? opts
+    : {
+        ...opts,
+        ...(model !== undefined && { model }),
+        ...(selectedModel !== undefined && { selectedModel }),
+      };
+}
+
+async function getOrCreateSessionImpl(
+  requestedOpts: AgentSessionOptions,
   onEvent: (data: unknown) => void | Promise<void>,
   interfacePort: AgentInterfacePort,
   lifecycle?: {
@@ -1142,6 +1169,17 @@ async function getOrCreateSessionImpl(
 ): Promise<AgentSession> {
   if (sessionShutdownStarted)
     throw new Error('Application is stopping. Resume this chat after restart.');
+  let opts = requestedOpts;
+  if (
+    needsOwnerGatewayModelId(requestedOpts.model) ||
+    needsOwnerGatewayModelId(requestedOpts.selectedModel)
+  ) {
+    captureSessionWorkOwner(requestedOpts);
+    opts = withOwnerGatewayModel(
+      requestedOpts,
+      await resolveSessionWorkOwner(requestedOpts),
+    );
+  }
   const key = sessionKey(opts.projectId, opts.worktreeId, opts.chatId);
   const requestedSelectedModel = opts.selectedModel ?? opts.model;
   const requestedPluginSelectionsSignature = pluginSelectionsSignature(opts);
@@ -3605,6 +3643,54 @@ export async function invalidateProviderAuthSessions(
       key,
       entry,
       `invalidateProviderAuthSessions:${providerType}:${reason}`,
+    );
+  }
+}
+
+/** Whether a session's routing signature sends it through an organization's AI gateway. */
+function routesThroughModelGateway(
+  routingSignature: string,
+  organizationId: string,
+): boolean {
+  return routingSignature
+    .toLowerCase()
+    .startsWith(`routed:org:${organizationId.toLowerCase()}:`);
+}
+
+/**
+ * Retire the sessions that route through an organization's AI gateway, after
+ * this computer's key for it changed. Gateway routes read the key on every
+ * request, so this only starts their next turn on a fresh session; sessions
+ * on any other route keep running.
+ */
+export async function invalidateModelGatewaySessions(
+  organizationId: string,
+  reason: string,
+  options: { activeTurnPolicy?: 'interrupt' | 'preserve' } = {},
+): Promise<void> {
+  const toDestroy: { key: string; entry: ActiveSession }[] = [];
+  for (const [key, entry] of Array.from(sessions.entries())) {
+    if (
+      !routesThroughModelGateway(
+        entry.aiCreditsRoutingSignature,
+        organizationId,
+      )
+    )
+      continue;
+    if (
+      options.activeTurnPolicy === 'preserve' &&
+      hasActiveTurnOrNativeBackgroundWork(entry)
+    ) {
+      markSessionEntryForNextTurnRecreation(key, entry, 'organization');
+      continue;
+    }
+    toDestroy.push({ key, entry });
+  }
+  for (const { key, entry } of toDestroy) {
+    await destroySessionEntry(
+      key,
+      entry,
+      `invalidateModelGatewaySessions:${reason}`,
     );
   }
 }

@@ -283,6 +283,13 @@ test('an orphaned timer is settled with canonical runtime after app restart', as
     ).toBeVisible();
 
     const composer = window.getByRole('textbox').first();
+    await expect(composer).toBeVisible();
+    // The saved answer left nothing open, so the turn completed (CAN-7612):
+    // its footer never says Interrupted and nothing offers to resume it.
+    await expect(
+      panel.getByTestId('turn-timer-label').filter({ hasText: 'Interrupted' }),
+    ).toHaveCount(0);
+    await expect(window.getByTestId('interrupted-turn-resume')).toHaveCount(0);
     await composer.fill('Follow-up after the interrupted turn');
     await expect(
       window.getByRole('button', { name: 'Send message' }),

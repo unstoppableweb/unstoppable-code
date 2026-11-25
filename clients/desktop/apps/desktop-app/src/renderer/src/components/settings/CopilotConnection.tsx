@@ -129,7 +129,42 @@ export function CopilotConnection({
       if (mounted.current) setBusy(false);
     }
   };
-  if (status && !status.supported) return null;
+  if (status && !status.supported) {
+    // A Linux host without a Copilot pin says so rather than hide the
+    // provider. Other hosts without a pin keep hiding it, as before.
+    if (window.platform !== 'linux') return null;
+    const unavailable = (
+      <SettingsRow
+        dataTestId="copilot-connection"
+        label={
+          <span className="inline-flex items-center gap-2">
+            <GitHubIcon size="md" className="shrink-0 fg-primary" aria-hidden />
+            GitHub Copilot
+          </span>
+        }
+        description={
+          <span
+            role="status"
+            data-testid="copilot-connection-status"
+            className="block"
+          >
+            Not available on Linux yet
+          </span>
+        }
+        control={
+          <Button size="compact" disabled data-testid="copilot-connect">
+            Connect Copilot
+          </Button>
+        }
+      />
+    );
+    if (placement === 'row') return unavailable;
+    return (
+      <SettingsSection>
+        <SettingsGroup>{unavailable}</SettingsGroup>
+      </SettingsSection>
+    );
+  }
   const connected = status?.enabled && status.installed;
   const progress =
     busy && status?.phase !== 'connected' && status?.phase !== 'idle';

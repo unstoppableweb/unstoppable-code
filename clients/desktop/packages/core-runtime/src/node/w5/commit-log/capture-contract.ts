@@ -216,7 +216,10 @@ function isChainFor(chain: unknown, image: unknown): boolean {
   );
 }
 
-export function isW5CaptureResult(value: unknown): value is W5CaptureResult {
+/** Shape and decoded limits only; callers must enforce encoded response size. */
+export function isW5CaptureResultShape(
+  value: unknown,
+): value is W5CaptureResult {
   if (
     !isRecord(value) ||
     !hasOnlyKeys(value, ['files', 'discovery', 'log']) ||
@@ -311,7 +314,13 @@ export function isW5CaptureResult(value: unknown): value is W5CaptureResult {
           row.state === 'recovery-required') &&
         isFingerprint(row.previousFingerprint) &&
         isFingerprint(row.newFingerprint),
-    ) &&
+    )
+  );
+}
+
+export function isW5CaptureResult(value: unknown): value is W5CaptureResult {
+  return (
+    isW5CaptureResultShape(value) &&
     Buffer.byteLength(JSON.stringify(value)) <= W5_CAPTURE_LIMITS.responseBytes
   );
 }

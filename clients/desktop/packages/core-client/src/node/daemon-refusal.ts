@@ -1,4 +1,7 @@
-import type { CanopyErrorKind } from '@canopy/protocol/canopy-core';
+import {
+  CANOPY_ERROR_KINDS,
+  type CanopyErrorKind,
+} from '@canopy/protocol/canopy-core';
 import { CanopyClientError, toCanopyClientError } from '../errors';
 import { canopyConnectError } from './endpoint';
 
@@ -71,6 +74,18 @@ const LAUNCH_NATIVE_STAGES = ['load_failed', 'native_unknown'] as const;
 /** Why a startup claim was ambiguous, carried beside `details.claim`. */
 const CLAIM_CAUSES = ['stale_guard', 'guard_io', 'record_io'] as const;
 export type CanopyClaimCause = (typeof CLAIM_CAUSES)[number];
+/**
+ * Which discovery step failed. Closed and content-free; a wrapper sets its
+ * own operation after spreading the inner details, so the outer step wins.
+ */
+const LAUNCH_OPERATIONS = [
+  'read_descriptor',
+  'inspect_process',
+  'read_token',
+  'prepare_runtime',
+  'verify_private_file',
+] as const;
+export type CanopyLaunchOperation = (typeof LAUNCH_OPERATIONS)[number];
 
 export type CanopyLaunchDetails = {
   readonly errno?: (typeof LAUNCH_ERRNOS)[number];
@@ -78,6 +93,9 @@ export type CanopyLaunchDetails = {
   readonly signal?: (typeof LAUNCH_SIGNALS)[number];
   readonly nativeStage?: (typeof LAUNCH_NATIVE_STAGES)[number];
   readonly cause?: CanopyClaimCause;
+  readonly operation?: CanopyLaunchOperation;
+  /** The typed kind a port failure carried before discovery replaced it. */
+  readonly portKind?: CanopyErrorKind;
 };
 
 const own = (value: unknown, key: string): unknown =>
@@ -104,6 +122,8 @@ export function canopyLaunchDetails(value: unknown): CanopyLaunchDetails {
   const signal = allowed(LAUNCH_SIGNALS, own(source, 'signal'));
   const nativeStage = allowed(LAUNCH_NATIVE_STAGES, own(source, 'nativeStage'));
   const cause = allowed(CLAIM_CAUSES, own(source, 'cause'));
+  const operation = allowed(LAUNCH_OPERATIONS, own(source, 'operation'));
+  const portKind = allowed(CANOPY_ERROR_KINDS, own(source, 'portKind'));
   return {
     ...(errno ? { errno } : {}),
     ...(typeof exitCode === 'number' &&
@@ -115,8 +135,21 @@ export function canopyLaunchDetails(value: unknown): CanopyLaunchDetails {
     ...(signal ? { signal } : {}),
     ...(nativeStage ? { nativeStage } : {}),
     ...(cause ? { cause } : {}),
+    ...(operation ? { operation } : {}),
+    ...(portKind ? { portKind } : {}),
   };
 }
+
+/**
+ * Details for a wrapper that names its own step: the inner launch facts first,
+ * then the wrapper's operation, so the outer step wins over an inner one.
+ */
+export const canopyLaunchStepDetails =
+  (operation: CanopyLaunchOperation) =>
+  (error: unknown): CanopyLaunchDetails => ({
+    ...canopyLaunchDetails(error),
+    operation,
+  });
 
 export function canopyDaemonRefusalError(
   refusal: CanopyDaemonRefusal,

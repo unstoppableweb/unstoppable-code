@@ -40,14 +40,14 @@ export function chatSecretsAmbientLine(
 ): string {
   switch (ambient) {
     case 'live':
-      return "Full access: also set in the agent's own commands. It could print them, so redaction is best effort.";
+      return "In Full access, the agent's commands can print these.";
     case 'restart':
       return `${agentName} started before some of these. Restart to apply them to its own commands.`;
     case 'restart-pending':
       return `${agentName} restarts when it's idle, or at your next message.`;
     case 'off':
     case 'none':
-      return 'The agent uses these by name in commands. It never sees the values.';
+      return 'Hidden from the agent and command output.';
   }
 }
 
@@ -246,7 +246,7 @@ export function ChatSecretsRestartNotice({
       }
     >
       {pending
-        ? "When it's idle, or at your next message, so its own commands get this chat's secrets."
+        ? "When it's idle or at your next message, so its commands get the new secrets."
         : `${agentName}'s own commands get them after a restart. The conversation is kept.`}
     </Notice>
   );

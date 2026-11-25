@@ -7,6 +7,11 @@ import {
   warmUpChat,
 } from '@/lib/chat-interest';
 import { chatInterestRefKey } from '@/lib/chat-interest/tracker';
+import {
+  readWorktreePanelLayoutAhead,
+  type WorktreeLayoutReadAheadIntent,
+} from '@/lib/panels/persistence-bridge';
+import { makeWorktreePanelKey } from '@/stores/panelLayoutStore';
 import { resolveAttentionLanding } from './attention-landing';
 import { chatScopeKey } from './revisioned-sync';
 import { chatStoreApi } from './store-ref';
@@ -63,6 +68,25 @@ export interface ChatPrefetchHost {
     projectId: string,
     worktreeId: string,
   ): { readonly settled: Promise<void>; readonly discard: () => void } | null;
+  /**
+   * Gets ready what the target's panel grid waits for on a first visit, so
+   * the grid can mount in the click's own frame. Read-only for a target the
+   * user points at or moves keyboard focus onto (`point`). On `press` (the
+   * pointer went down on it, and the click follows) and `activate` (Enter or
+   * Space on the focused row, which opens it at once), the visit's own state
+   * reads may start now.
+   */
+  readLayoutAhead?(
+    target: ChatPrefetchTarget,
+    intent: WorktreeLayoutReadAheadIntent,
+  ): void;
+  /** The element keyboard focus is on now. */
+  focusedElement?(): unknown;
+  /**
+   * Calls `listener` with the target of each Enter or Space keydown, before
+   * the page's own handlers see it. Returns its removal.
+   */
+  onActivationKey?(listener: (target: unknown) => void): () => void;
 }
 
 interface Intent {
@@ -106,6 +130,19 @@ export function startChatPrefetch(host: ChatPrefetchHost): () => void {
   let idleActive = false;
   let cancelIdle: (() => void) | undefined;
   const intents = new Map<string, Intent>();
+  /**
+   * The target under the pointer, if any. Focus moving onto it is the
+   * pointer pressing it (the row takes focus on pointer down, well before
+   * the click); focus arriving anywhere else came from the keyboard.
+   */
+  let pointedKey: string | null = null;
+  /**
+   * The target keyboard focus last moved onto, with the element it moved
+   * onto. Enter or Space on that element opens the target in the same task:
+   * the keydown is its press.
+   */
+  let focusedTarget: { target: ChatPrefetchTarget; element: unknown } | null =
+    null;
   const inFlight = new Set<string>();
   /** Cloud tasks read ahead, by target: dropped when the pointer leaves. */
   const readAheads = new Map<string, () => void>();
@@ -277,10 +314,28 @@ export function startChatPrefetch(host: ChatPrefetchHost): () => void {
     cancelIdle = undefined;
   };
   const unsubscribeStore = host.subscribe(scheduleIdle);
+  // Not cleared when the target's intent ends: the pointer leaving a row that
+  // keeps keyboard focus ends it too. The element check below is what makes
+  // a key the row's own.
+  const removeActivationKey = host.onActivationKey?.((keyTarget) => {
+    if (
+      allowed() &&
+      focusedTarget !== null &&
+      focusedTarget.element !== null &&
+      keyTarget === focusedTarget.element
+    ) {
+      host.readLayoutAhead?.(focusedTarget.target, 'activate');
+    }
+  });
   const scheduler: NonNullable<typeof running> = {
     note: (target, source): void => {
       if (!allowed()) return;
       const key = targetKey(target);
+      if (source === 'pointer') pointedKey = key;
+      else {
+        focusedTarget = { target, element: host.focusedElement?.() ?? null };
+        if (pointedKey === key) host.readLayoutAhead?.(target, 'press');
+      }
       const previous = intents.get(key);
       if (previous) {
         if (source !== 'focus' || previous.timer === undefined) return;
@@ -302,6 +357,7 @@ export function startChatPrefetch(host: ChatPrefetchHost): () => void {
     },
     end: (target): void => {
       const key = targetKey(target);
+      if (pointedKey === key) pointedKey = null;
       clearTimeout(intents.get(key)?.timer);
       intents.delete(key);
       // A cloud task the pointer left is not opened: its reads are dropped.
@@ -312,12 +368,18 @@ export function startChatPrefetch(host: ChatPrefetchHost): () => void {
     dispose: (): void => {
       if (disposed) return;
       disposed = true;
+      pointedKey = null;
+      focusedTarget = null;
       clearPending();
       unsubscribeStore();
+      removeActivationKey?.();
       if (running === scheduler) running = null;
     },
   };
   const enqueue = (intent: Intent): void => {
+    // Not queued behind the transcript reads: two small reads, wanted by the
+    // click whether or not the chat itself needs a prefetch.
+    host.readLayoutAhead?.(intent.target, 'point');
     queue.unshift(intent);
     while (queue.length > QUEUE_LIMIT) {
       const dropped = queue.pop();
@@ -360,6 +422,30 @@ const browserHost: ChatPrefetchHost = {
   scheduleIdle: scheduleBrowserIdle,
   readAheadCloudTask: (projectId, worktreeId) =>
     readAheadWebCoreScope({ projectId, worktreeId }),
+  readLayoutAhead: (target, intent) => {
+    // A cloud task keeps its layout in this window's own storage.
+    if (target.kind === 'cloudTask') return;
+    readWorktreePanelLayoutAhead(
+      makeWorktreePanelKey(target.projectId, target.worktreeId),
+      { intent },
+    );
+  },
+  focusedElement: () => document.activeElement,
+  onActivationKey: (listener) => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (
+        (event.key === 'Enter' || event.key === ' ') &&
+        !event.repeat &&
+        !event.isComposing
+      ) {
+        listener(event.target);
+      }
+    };
+    // Capture on the window: ahead of the row's own handler, which opens it.
+    window.addEventListener('keydown', onKeyDown, { capture: true });
+    return (): void =>
+      window.removeEventListener('keydown', onKeyDown, { capture: true });
+  },
 };
 
 export function useChatPrefetch(): void {

@@ -792,14 +792,15 @@ export const CLIENT_FEATURE_FLAGS = {
     key: 'canopy-desktop-account-proxy',
     // On in unconfigured local builds; configured but unavailable fails
     // closed, so release builds stay off until LaunchDarkly serves `true`.
-    // The per-user opt-in preference (`accountProxyEnabled`) still gates
-    // every surface.
+    // There is no Labs opt-in: while the flag is on, the settings page is
+    // always offered, the proxy is on by default (`accountProxyEnabled`) and
+    // nothing routes until a proxy is connected.
     launchDarklyDisabledDefaultValue: true,
     launchDarklyEnabledUnavailableValue: false,
     localOnlyDefaultValue: true,
     ownership: 'both',
     description:
-      'Controls the desktop account proxy (CLIProxyAPI): the Labs opt-in, its settings, and routing agents through it.',
+      'Controls the desktop account proxy (CLIProxyAPI): its settings and routing agents through it.',
   },
   canopyDesktopMemoryLearnFromChats: {
     key: 'canopy-desktop-memory-learn-from-chats',
@@ -855,6 +856,19 @@ export const CLIENT_FEATURE_FLAGS = {
     ownership: 'interface',
     description:
       'Shows the External agents (MCP) row in the desktop account menu, which opens the hosted page through the authenticated Portal.',
+  },
+  canopyDesktopSlackOrchestratorRequests: {
+    key: 'canopy-desktop-slack-orchestrator-requests',
+    // On without LaunchDarkly, so local development shows and serves it; off
+    // when LaunchDarkly is configured but unavailable (CAN-7604).
+    launchDarklyDisabledDefaultValue: true,
+    launchDarklyEnabledUnavailableValue: false,
+    // Hosted (Slack reaches this computer through the web): off in a
+    // local-only build.
+    localOnlyDefaultValue: false,
+    ownership: 'both',
+    description:
+      "Offers Slack requests to the Orchestrator: shows the Slack section in Settings → Remote Control, desktop main serves a Slack session's send only while it is on, and the web Slack events endpoint records and announces mentions for a Slack workspace only while it is on for that workspace.",
   },
   canopySharedAgentSecretRequests: {
     key: 'canopy-shared-agent-secret-requests',
@@ -1011,6 +1025,7 @@ export type ClientFeatureFlagValues = {
   [CLIENT_FEATURE_FLAGS.canopyFreeAccessEnabled.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopAccountProxy.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopExternalAgentsMenu.key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopyDesktopSlackOrchestratorRequests.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopMemoryLearnFromChats.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopSkillSuggestions.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopDaemonFilesReads.key]: boolean;
@@ -1260,6 +1275,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
     [CLIENT_FEATURE_FLAGS.canopyDesktopExternalAgentsMenu.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopExternalAgentsMenu
         .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopSlackOrchestratorRequests.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopSlackOrchestratorRequests
+        .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopMemoryLearnFromChats.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopMemoryLearnFromChats
         .launchDarklyDisabledDefaultValue,
@@ -1504,6 +1522,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopyDesktopExternalAgentsMenu.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopExternalAgentsMenu
         .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopSlackOrchestratorRequests.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopSlackOrchestratorRequests
+        .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopMemoryLearnFromChats.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopMemoryLearnFromChats
         .launchDarklyEnabledUnavailableValue,
@@ -1715,6 +1736,9 @@ export const CLIENT_FEATURE_FLAG_LOCAL_ONLY_DEFAULTS: ClientFeatureFlagValues =
       CLIENT_FEATURE_FLAGS.canopyWebCoreClient.localOnlyDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopExternalAgentsMenu.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopExternalAgentsMenu
+        .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyDesktopSlackOrchestratorRequests.key]:
+      CLIENT_FEATURE_FLAGS.canopyDesktopSlackOrchestratorRequests
         .localOnlyDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopySharedAgentSecretRequests.key]:
       CLIENT_FEATURE_FLAGS.canopySharedAgentSecretRequests

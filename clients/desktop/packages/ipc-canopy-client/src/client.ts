@@ -98,6 +98,7 @@ import {
 } from '@canopy/protocol/remote-control/shell/worktree-discard-schemas';
 import {
   CHANNEL_UNAVAILABLE_CODE,
+  PluginInstallRefreshNoticeSchema,
   isChannelUnavailableRejection,
   type RemoteIpcTransport,
 } from '@canopy/protocol/remote-control';
@@ -2486,10 +2487,17 @@ class PortableIpcCanopyClient implements CanopyClient {
           isOrgProjectSetupProgress,
           (progress) => handler({ progress, occurredAt: progress.updatedAt }),
         ),
-      // CAN-7442: a payload-free notice to read the status again.
       'installedItems.changed': (handler) =>
-        channels.listen(C.installedItemsChanged, anyReply<unknown>(), () =>
-          handler({ occurredAt: this.now() }),
+        channels.listen(
+          C.installedItemsChanged,
+          anyReply<unknown>(),
+          (payload) => {
+            const notice = PluginInstallRefreshNoticeSchema.safeParse(payload);
+            handler({
+              occurredAt: this.now(),
+              ...(notice.success ? notice.data : {}),
+            });
+          },
         ),
       'cloneJobs.changed': (handler) =>
         channels.listen(C.cloneJobsChanged, Array.isArray, (raw) => {

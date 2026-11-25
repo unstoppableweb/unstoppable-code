@@ -123,6 +123,12 @@ export interface ScriptRunChildReapOptions {
   readonly signal: boolean;
 }
 
+/** One worktree's start-up reap: run records read, and those that failed. */
+export interface ScriptRunReapPass {
+  readonly checked: number;
+  readonly failed: readonly string[];
+}
+
 /** `unverifiable`: the inspector could not tell; the run is left as it is. */
 export type ScriptRunWriterState = 'running' | 'gone' | 'unverifiable';
 
@@ -658,6 +664,7 @@ export class ScriptRunLogStore {
     projectId: string,
     worktreeId: string,
     meta: PersistedScriptRunFile,
+    access: 'read' | 'reap' = 'reap',
   ): Promise<PersistedScriptRunFile> {
     if (meta.status !== 'running' || meta.instanceId === this.instanceId)
       return meta;
@@ -688,8 +695,10 @@ export class ScriptRunLogStore {
       const { writerFence } = this.options;
       // Only the host that started a run ends its process; an earlier
       // version's record, with no spawner, is reaped as before (CAN-7517).
+      // A run read through get or list never signals (CAN-7663).
       const signal =
-        meta.spawner === undefined || meta.spawner === writerFence?.spawner;
+        access === 'reap' &&
+        (meta.spawner === undefined || meta.spawner === writerFence?.spawner);
       const reaped = writerFence?.reapChild
         ? await writerFence
             .reapChild(meta.child, { signal })
@@ -910,7 +919,7 @@ export class ScriptRunLogStore {
       return { meta: null, lines: [] };
     }
     return {
-      meta: await this.reconcile(args.projectId, args.worktreeId, meta),
+      meta: await this.reconcile(args.projectId, args.worktreeId, meta, 'read'),
       lines: await readRunLogTailLines(logPath, args.maxLines),
     };
   }
@@ -952,13 +961,58 @@ export class ScriptRunLogStore {
             `${entry.name.slice(0, -'.json'.length)}.log`,
           );
           return {
-            meta: await this.reconcile(args.projectId, args.worktreeId, meta),
+            meta: await this.reconcile(
+              args.projectId,
+              args.worktreeId,
+              meta,
+              'read',
+            ),
             lines: await readRunLogTailLines(logPath, args.maxLines),
           };
         }),
     );
 
     return runs.flatMap((run) => (run ? [run] : []));
+  }
+
+  /**
+   * Reconciles each run recorded running in one worktree's run logs as a reap
+   * (CAN-7663), one run at a time: on CAN-6482's proofs, a run another
+   * instance started is lost once its writer is gone, and a proven process
+   * this host started is ended. Get and list never signal, so a host runs
+   * this once as it starts. A run that fails is named in `failed`.
+   */
+  async reapRuns(args: {
+    projectId: string;
+    worktreeId: string;
+  }): Promise<ScriptRunReapPass> {
+    const dirPath = this.options.paths.runDir(args.projectId, args.worktreeId);
+    const entries = await readdir(dirPath, { withFileTypes: true }).catch(
+      () => [],
+    );
+    const pass: { checked: number; failed: string[] } = {
+      checked: 0,
+      failed: [],
+    };
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      pass.checked += 1;
+      try {
+        const listed = await this.readMeta(join(dirPath, entry.name));
+        if (listed?.status !== 'running') continue;
+        await this.runLogs.awaitPendingWrite(
+          args.projectId,
+          args.worktreeId,
+          listed.script.scriptKey,
+        );
+        const meta = await this.readMeta(join(dirPath, entry.name));
+        if (meta?.status === 'running')
+          await this.reconcile(args.projectId, args.worktreeId, meta, 'reap');
+      } catch {
+        pass.failed.push(entry.name);
+      }
+    }
+    return pass;
   }
 
   /**

@@ -45,8 +45,8 @@ function mutationOutcome(
 
 /**
  * Loads the host's installed-item snapshot, refetches on host change events,
- * and refetches after mutations. Every read takes a sequence number, so a
- * slow earlier read never overwrites a newer state. Mutation responses may
+ * and refetches after mutations. Only the latest read may publish state, so a
+ * slow earlier read never overwrites a newer one. Mutation responses may
  * arrive out of order, so their snapshots never replace authoritative reads.
  * Pass `null` with a reason on hosts that cannot manage status.
  */
@@ -62,44 +62,76 @@ export function useInstalledItemStatuses(
   const [pendingKeys, setPendingKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
-  const sequenceRef = useRef(0);
+  const currentRead = useRef<{
+    readonly outcome: Promise<boolean>;
+    readonly finish: (result: boolean | PromiseLike<boolean>) => void;
+  } | null>(null);
   const sourceGenerationRef = useRef(0);
   const pendingRef = useRef(new Set<string>());
 
-  const load = useCallback((): void => {
-    if (!source) return;
-    const sequence = ++sequenceRef.current;
-    source.listStatus().then(
-      (snapshot) => {
-        if (sequence !== sequenceRef.current) return;
+  const activeSource = useRef<InstalledItemStatusSource | null>(null);
+  const startRead = useCallback(() => {
+    if (!source || activeSource.current !== source) return null;
+
+    let finish: (result: boolean | PromiseLike<boolean>) => void = (): void =>
+      undefined;
+    const outcome = new Promise<boolean>((resolve) => {
+      finish = resolve;
+    });
+    const read = { outcome, finish };
+    const previous = currentRead.current;
+    currentRead.current = read;
+    // Adopt the successor only if this read had not published yet. A read
+    // that already published keeps its outcome even if the reporter hasn't
+    // resumed by the time an independent refresh starts.
+    previous?.finish(outcome);
+    void (async (): Promise<void> => {
+      try {
+        const snapshot = await source.listStatus();
+        if (currentRead.current !== read) return;
         setState({ kind: 'ready', snapshot });
-      },
-      () => {
-        if (sequence !== sequenceRef.current) return;
+        finish(true);
+      } catch {
+        if (currentRead.current !== read) return;
         setState({ kind: 'error', message: READ_FAILED });
-      },
-    );
+        finish(false);
+      }
+    })();
+    return read;
   }, [source]);
+  const refreshAndReport = useCallback(async (): Promise<boolean> => {
+    const generation = sourceGenerationRef.current;
+    const read = startRead();
+    if (read === null) return false;
+    const succeeded = await read.outcome;
+    return generation === sourceGenerationRef.current && succeeded;
+  }, [startRead]);
+  const refresh = useCallback((): void => {
+    startRead();
+  }, [startRead]);
 
   useEffect(() => {
     sourceGenerationRef.current += 1;
     pendingRef.current = new Set();
     setPendingKeys(new Set());
     if (!source) {
-      sequenceRef.current += 1;
       setState({ kind: 'unsupported', reason: unsupportedReason });
       return undefined;
     }
+    activeSource.current = source;
     setState({ kind: 'loading' });
-    load();
-    const unsubscribe = source.subscribe?.(load);
+    refresh();
+    const unsubscribe = source.subscribe?.(refreshAndReport);
     return (): void => {
+      activeSource.current = null;
       // Invalidate in-flight reads for a source that is going away.
-      sequenceRef.current += 1;
+      const read = currentRead.current;
+      currentRead.current = null;
       sourceGenerationRef.current += 1;
+      read?.finish(false);
       unsubscribe?.();
     };
-  }, [source, unsupportedReason, load]);
+  }, [source, unsupportedReason, refresh, refreshAndReport]);
 
   const run = useCallback(
     async (
@@ -122,10 +154,10 @@ export function useInstalledItemStatuses(
         // A replaced source or an unmounted consumer must not refetch, but the
         // host did complete this mutation; report its real outcome so callers
         // such as Uninstall can still leave a detail whose item is gone.
-        if (generation === sourceGenerationRef.current) load();
+        if (generation === sourceGenerationRef.current) refresh();
         return mutationOutcome(result, target);
       } catch (error) {
-        if (generation === sourceGenerationRef.current) load();
+        if (generation === sourceGenerationRef.current) refresh();
         // Fixed copy: a caught message can quote paths. The caught error
         // stays on a non-enumerable `cause` for local debugging.
         const outcome: InstalledItemMutationOutcome = {
@@ -145,7 +177,7 @@ export function useInstalledItemStatuses(
         }
       }
     },
-    [source, unsupportedReason, load],
+    [source, unsupportedReason, refresh],
   );
 
   const setStatus = useCallback(
@@ -159,5 +191,12 @@ export function useInstalledItemStatuses(
     [run],
   );
 
-  return { state, pendingKeys, refresh: load, setStatus, uninstall };
+  return {
+    state,
+    pendingKeys,
+    refresh,
+    refreshAndReport,
+    setStatus,
+    uninstall,
+  };
 }

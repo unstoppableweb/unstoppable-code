@@ -55,8 +55,15 @@ async function invokeRaw(
   channel: RemoteIpcChannel,
   outdated: string,
   args: readonly unknown[],
+  installRefreshToken?: string,
 ): Promise<unknown> {
   try {
+    if (channel === C.pluginsInstallPlugin && installRefreshToken !== undefined)
+      return await channels.invokeWithInstallRefreshToken(
+        channel,
+        args,
+        installRefreshToken,
+      );
     return await channels.invoke(channel, anyReply<unknown>(), ...args);
   } catch (error) {
     if (isChannelUnavailableRejection(error, channel))
@@ -107,6 +114,7 @@ async function installPlugin(
       C.pluginsInstallPlugin,
       PLUGIN_INSTALL_HOST_OUTDATED,
       [args.marketplaceId, args.pluginName, ''],
+      args.installRefreshToken,
     ),
   );
   if (!parsed.success)

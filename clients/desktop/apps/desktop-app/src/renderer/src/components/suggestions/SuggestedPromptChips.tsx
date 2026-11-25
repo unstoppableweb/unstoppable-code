@@ -1,5 +1,10 @@
 import { memo, useMemo, type JSX } from 'react';
-import { HomeSection, SuggestionRow } from '@canopy/ui-shared';
+import {
+  DelayedLoadingPlaceholder,
+  HomeSection,
+  Skeleton,
+  SuggestionRow,
+} from '@canopy/ui-shared';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { useCuratedMcpServers } from '@/hooks/useCuratedMcpServers';
 import { McpServerLogo } from '@/components/shared/McpServerLogo';
@@ -7,7 +12,10 @@ import {
   DEFAULT_GENERIC_PROMPT_ICON,
   GENERIC_PROMPT_ICONS,
 } from './genericPromptIcons';
-import type { SuggestedPrompt } from './mcpPromptIndex';
+import {
+  GENERIC_FALLBACK_PROMPTS,
+  type SuggestedPrompt,
+} from './mcpPromptIndex';
 import {
   trackSuggestedPromptSelection,
   type SuggestedPromptSurface,
@@ -109,3 +117,41 @@ export const SuggestedPromptChips = memo(function SuggestedPromptChips({
     rows
   );
 });
+
+export interface SuggestedPromptsPlaceholderProps {
+  /** Rows the pick will hold at least; nothing is kept for 0. */
+  count: number;
+  surface: SuggestedPromptSurface;
+}
+
+const ignoreSampleSelect = (): void => undefined;
+
+/**
+ * Keeps the room of prompts still being picked, from the first frame, so the
+ * empty state above them does not move when they arrive. Shows nothing for
+ * the usual short wait, then a measured skeleton of the rows (the loading
+ * sequence in `docs/design/feedback.md`). The sample rows are the surface's
+ * own generic prompts, so the lines are the real lengths.
+ */
+export function SuggestedPromptsPlaceholder({
+  count,
+  surface,
+}: SuggestedPromptsPlaceholderProps): JSX.Element | null {
+  if (count <= 0) return null;
+  const pool = GENERIC_FALLBACK_PROMPTS[surface];
+  const samples = Array.from(
+    { length: count },
+    (_, index) => pool[index % pool.length],
+  ).filter((prompt): prompt is SuggestedPrompt => prompt !== undefined);
+  return (
+    <DelayedLoadingPlaceholder>
+      <Skeleton loading testId="suggested-prompts-loading">
+        <SuggestedPromptChips
+          prompts={samples}
+          surface={surface}
+          onSelect={ignoreSampleSelect}
+        />
+      </Skeleton>
+    </DelayedLoadingPlaceholder>
+  );
+}

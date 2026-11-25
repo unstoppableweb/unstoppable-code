@@ -108,6 +108,11 @@ export interface UseSidebarWorkEntryBulkInput {
   readonly rows: SidebarSelectionRows;
   /** The open Work Entry's key: a batch removes it last. */
   readonly activeKey?: string;
+  /**
+   * Reads the open Work Entry's key when a batch starts, for hosts that know
+   * it only from their rows' latest report. Wins over `activeKey`.
+   */
+  readonly readActiveKey?: () => string | undefined;
   readonly isWorkspaceCommandDisabled?: (workspaceLocalId: string) => boolean;
   readonly retentionDaysFor?: (workspaceLocalId: string) => number | undefined;
   /** Defaults to `work-entry-batch-removal-dialog`. */
@@ -317,7 +322,11 @@ export function useSidebarWorkEntryBulk(
       }
     },
     branchChoice: false,
-    activeKey: input.activeKey,
+    get activeKey(): string | undefined {
+      return input.readActiveKey === undefined
+        ? input.activeKey
+        : input.readActiveKey();
+    },
     dialogTestId: input.dialogTestId ?? 'work-entry-batch-removal-dialog',
     onStateChange: input.onStateChange,
   };

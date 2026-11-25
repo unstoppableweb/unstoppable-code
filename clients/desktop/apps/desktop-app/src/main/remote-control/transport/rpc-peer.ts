@@ -22,6 +22,7 @@ import {
   readRemoteOperationFailure,
   type RemoteOperationFailure,
 } from '@canopy/protocol/remote-control';
+import type { MessageCodecOptions } from './message-codec';
 import type { SecureSession, SessionCloseReason } from './session-manager';
 
 /**
@@ -322,18 +323,19 @@ export class RpcPeer {
 
   /**
    * Fire-and-forget; a payload that cannot be serialized is dropped.
-   * `onSerialized` is told the message's serialized size, for diagnostics.
+   * `onSerialized` is told the message's serialized size, for diagnostics;
+   * `compress: false` sends it uncompressed.
    */
   notify(
     name: string,
     payload: unknown,
-    onSerialized?: (byteLength: number) => void,
+    options: Pick<MessageCodecOptions, 'onSerialized' | 'compress'> = {},
   ): boolean {
     if (this.closed) return false;
     try {
       return this.session.sendMessage(
         { kind: 'event', name, payload },
-        { onSerialized },
+        options,
       );
     } catch {
       return false;

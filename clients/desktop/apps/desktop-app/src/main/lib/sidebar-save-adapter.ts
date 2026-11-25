@@ -8,8 +8,9 @@ import type {
 import { markForeignPipelineResultsSeen } from '../services/foreign-activity-sources';
 import { serializeWorkspaceMutation } from './chat-project-operation-queue';
 import {
+  admitSidebarItems,
   readAllSidebarItemsSnapshot,
-  validateSidebarItems,
+  validatePreservedWorkspaceId,
   WorkspaceIndexUnreadableError,
 } from './sidebar-items';
 import { IdentifierValidationError, validateId } from './validation';
@@ -214,15 +215,22 @@ export async function recordSidebarPipelineResultsSeen(
 export async function saveSidebarItems(
   request: SidebarSaveRequest,
 ): Promise<SidebarItemsFile> {
+  let admitted: ReadonlySet<string>;
   try {
     if (request.source !== 'projects_save')
       throw new SidebarSaveRefusedError(
         'invalid-request',
         'Unknown sidebar save source',
       );
-    validateSidebarItems(request.items);
-    request.options?.preserveWorkspaceIds?.forEach((id) =>
-      validateId(id, 'preserved project id'),
+    // Delivered legacy and duplicate-id rows are admitted but never written
+    // (CAN-7357): the targeted writers address a workspace by a valid, unique
+    // id. They are skipped below and reported in `preservedWorkspaceIds`.
+    admitted = admitSidebarItems(
+      request.items,
+      request.previousItems,
+    ).preserveIds;
+    request.options?.preserveWorkspaceIds?.forEach(
+      validatePreservedWorkspaceId,
     );
   } catch (error) {
     if (error instanceof IdentifierValidationError)
@@ -230,7 +238,10 @@ export async function saveSidebarItems(
     throw error;
   }
   // Pick only D10's declared options. Private repository options are discarded.
-  const preserve = new Set(request.options?.preserveWorkspaceIds ?? []);
+  const preserve = new Set([
+    ...(request.options?.preserveWorkspaceIds ?? []),
+    ...admitted,
+  ]);
   const replaceOrder = request.options?.replaceWorkspaceOrder === true;
   return serializeWorkspaceMutation(async () => {
     const snapshot = await readAllSidebarItemsSnapshot();

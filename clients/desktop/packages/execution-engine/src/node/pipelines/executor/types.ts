@@ -416,6 +416,16 @@ export interface ExecutionRuntime {
     /** The step env's CLAUDE_CONFIG_DIR, when the pipeline sets one. */
     claudeConfigDir?: string;
   }) => Promise<ClaudeModAdmissionContext | undefined>;
+  /**
+   * The model a step's saved selection runs on for the run's owner: a bare AI
+   * gateway id saved before gateway ids were namespaced resolves to the
+   * owner's own gateway row. Absent in a runtime whose model catalog already
+   * carries the owner's aliases (a daemon run) or that has no owner (the CLI).
+   */
+  resolveOwnerGatewayModel?: (
+    modelId: string,
+    scope?: PipelineModelPolicyScope,
+  ) => Promise<string>;
   /** `scope` names the step's workspace, whose default an inheriting Agent takes. */
   resolvePipelineAgentModelAlias?: (
     agentId: string,

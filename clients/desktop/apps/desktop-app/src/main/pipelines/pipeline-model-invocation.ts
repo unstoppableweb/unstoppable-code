@@ -17,6 +17,7 @@ import type {
 import { resolveAgentModelRuntime } from '../agents/agent-model-runtime';
 import { resolveAiCreditsRoutingOverride } from '../agents/ai-credits-routing';
 import { resolveBackgroundWorkOwner } from '../agents/work-owner';
+import { resolveOwnerGatewayModelId } from '@canopy/execution-engine/lib/gateway-model-availability';
 import {
   isModelBlockedByStoredPolicy,
   isOrgModelPolicyActiveForStoredAccount,
@@ -278,10 +279,18 @@ export async function resolveDesktopPipelineAgentModelAlias(
   agentId: string,
   scope?: PipelineModelPolicyScope,
 ): Promise<PipelineAgentModelAliasResolution | null> {
+  const owner = await resolveBackgroundWorkOwner(
+    {
+      ...(scope?.projectId ? { projectId: scope.projectId } : {}),
+      ...(scope?.worktreeId ? { worktreeId: scope.worktreeId } : {}),
+    },
+    scope?.executionContext,
+  );
   const resolved = await resolveAgentModelRuntime({
     model: agentId,
     projectId: scope?.projectId,
     inheritDefaultFrom: { projectId: scope?.projectId },
+    ...(owner && { owner }),
   }).catch((error: unknown) => {
     if (
       error instanceof AgentModelSelectionError &&
@@ -334,6 +343,21 @@ export async function resolveDesktopPipelineAgentModelAlias(
     instructions: agent.instructions,
     pluginSelections,
   };
+}
+
+/** A bare gateway id a step saved runs on the run owner's own gateway row. */
+export async function resolveDesktopPipelineOwnerGatewayModel(
+  modelId: string,
+  scope?: PipelineModelPolicyScope,
+): Promise<string> {
+  const owner = await resolveBackgroundWorkOwner(
+    {
+      ...(scope?.projectId ? { projectId: scope.projectId } : {}),
+      ...(scope?.worktreeId ? { worktreeId: scope.worktreeId } : {}),
+    },
+    scope?.executionContext,
+  );
+  return resolveOwnerGatewayModelId(modelId, owner);
 }
 
 export async function isDesktopPipelineModelBlocked(

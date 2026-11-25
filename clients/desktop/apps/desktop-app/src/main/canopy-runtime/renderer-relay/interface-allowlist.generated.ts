@@ -5,7 +5,8 @@ export type InterfaceRelayAccessMode =
   | 'authority'
   | 'replica'
   | 'delegated-execution'
-  | 'read-only';
+  | 'read-only'
+  | 'owner';
 export type InterfaceRelayOperationKind = 'query' | 'instruction' | 'stream';
 export type InterfaceRelayAllowlist = Readonly<
   Record<
@@ -153,6 +154,7 @@ export const INTERFACE_RELAY_ALLOWLIST: InterfaceRelayAllowlist = {
       'core.worktree.recovery.list',
       'worker.agent.initialize',
       'worker.agent.provider.list',
+      'worker.agent.provider.platform.get',
       'worker.agent.session.capabilities.get',
       'worker.agent.session.list',
       'worker.agent.usage.transaction.get',
@@ -318,7 +320,6 @@ export const INTERFACE_RELAY_ALLOWLIST: InterfaceRelayAllowlist = {
       'core.plan.delete',
       'core.plan.detected.scan',
       'core.plan.detected.update',
-      'core.plan.diagram.generate',
       'core.plan.import',
       'core.plan.update',
       'core.publication.comment.create',
@@ -629,7 +630,6 @@ export const INTERFACE_RELAY_ALLOWLIST: InterfaceRelayAllowlist = {
       'core.publication.fileScope.get',
       'core.publication.get',
       'core.publication.list',
-      'core.publication.preview.get',
       'core.pullRequest.get',
       'core.pullRequest.list',
       'core.pullRequest.mergeQueue.get',
@@ -669,6 +669,7 @@ export const INTERFACE_RELAY_ALLOWLIST: InterfaceRelayAllowlist = {
       'core.worktree.recovery.list',
       'worker.agent.initialize',
       'worker.agent.provider.list',
+      'worker.agent.provider.platform.get',
       'worker.agent.session.capabilities.get',
       'worker.agent.session.list',
       'worker.agent.usage.transaction.get',
@@ -751,5 +752,10 @@ export const INTERFACE_RELAY_ALLOWLIST: InterfaceRelayAllowlist = {
       'worker.script.execution.output',
       'worker.terminal.attach',
     ],
+  },
+  owner: {
+    query: [],
+    instruction: [],
+    stream: [],
   },
 };

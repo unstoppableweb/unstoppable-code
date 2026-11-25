@@ -11,6 +11,7 @@ import {
   SQUARE_CORNERS,
   type BrowserViewFrame,
 } from './browser-view-frame';
+import { PageAreaFollower } from './browser-view-resize-follow';
 import type {
   BrowserCornerRadii,
   BrowserHandoff,
@@ -105,6 +106,7 @@ import {
   ipcMain,
   session,
   type BrowserWindow,
+  type HandlerDetails,
   type OpenDialogOptions,
   type IpcMainEvent,
   type Rectangle,
@@ -114,6 +116,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { handFocusWithoutActivating } from '../lib/focus-handoff';
 import { KeyedAsyncLock } from '../lib/keyed-async-lock';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import {
@@ -171,6 +174,11 @@ import {
   sameBrowserUrl,
 } from './browser-url-policy';
 import { runSetChecked } from './actions/set-checked';
+import { BrowserPopupWindows } from './browser-popup-windows';
+import {
+  useBrowserUserAgent,
+  withoutElectronUserAgentToken,
+} from './browser-user-agent';
 import { runSelectOption } from './actions/select-option';
 import { runType } from './actions/type';
 import { runFill } from './actions/fill';
@@ -330,6 +338,8 @@ import {
 } from '@canopy/desktop-shared/types';
 import { denyPermission, onPermissionDenied } from './permission-denials';
 
+/** A host window is still resizing this long after its last `resize`. */
+const HOST_RESIZE_ACTIVE_MS = 400;
 const CONSOLE_LIMIT = 500;
 const NETWORK_LIMIT = 1000;
 const RECORDING_LIMIT = 1000;
@@ -1276,13 +1286,6 @@ function browserViewPreloadPath(): string {
   return join(__dirname, '../preload/browser-view.js');
 }
 
-function withoutElectronUserAgentToken(userAgent: string): string {
-  return userAgent
-    .split(/\s+/)
-    .filter((product) => !/^Electron\/[^\s]+$/.test(product))
-    .join(' ');
-}
-
 function toSnapshotForHydration(
   snapshot: BrowserSessionSnapshot,
 ): BrowserSessionSnapshot {
@@ -1372,6 +1375,19 @@ function hostZoomFactor(win: BrowserWindow | null): number {
   if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return 1;
   const factor = win.webContents.getZoomFactor();
   return Number.isFinite(factor) && factor > 0 ? factor : 1;
+}
+
+/** The host renderer's viewport in its own CSS px, from the window's size. */
+function hostViewport(
+  win: BrowserWindow | null,
+): { width: number; height: number } | null {
+  if (!win || win.isDestroyed()) return null;
+  const zoom = hostZoomFactor(win);
+  const content = win.getContentBounds();
+  return {
+    width: Math.round(content.width / zoom),
+    height: Math.round(content.height / zoom),
+  };
 }
 
 function snapshotUrlFromWebContents(url: string, fallback: string): string {
@@ -1718,7 +1734,8 @@ export class BrowserService {
     },
   });
   readonly downloads = new BrowserDownloads(
-    (id) => this.findByWebContentsId(id)?.snapshot,
+    (id) =>
+      (this.findByWebContentsId(id) ?? this.popupOpenerState(id))?.snapshot,
     undefined,
     this.taskFiles,
   );
@@ -1741,6 +1758,19 @@ export class BrowserService {
   >();
   private readonly postDispatchUnknownResults = new WeakSet<object>();
   private readonly sessions = new Map<string, LiveBrowserSession>();
+  /** How each live page's area has been moving with its window. */
+  private readonly pageAreaFollowers = new WeakMap<
+    LiveBrowserSession,
+    PageAreaFollower
+  >();
+  /** Host windows whose `resize` already moves their pages. */
+  private readonly resizeFollowedHosts = new WeakSet<BrowserWindow>();
+  /** Host pages whose reload or crash hides the pages they showed. */
+  private readonly reloadWatchedHosts = new WeakSet<WebContents>();
+  /** When each host window last resized. */
+  private readonly hostResizedAt = new WeakMap<BrowserWindow, number>();
+  /** Whether a host's renderer viewport was the window's size at rest. */
+  private readonly hostViewportTracked = new WeakMap<BrowserWindow, boolean>();
   private readonly worktreeStates = new Map<string, WorktreeBrowserState>();
   private readonly sessionArtifacts = new Map<
     string,
@@ -1756,6 +1786,25 @@ export class BrowserService {
     string,
     { selection?: BrowserCreateRequest['selection']; agent: boolean }
   >();
+  /** Native popup windows of tabs' scripted `window.open` calls. */
+  private readonly popupWindows = new BrowserPopupWindows({
+    isUrlAllowedInApp: (url): boolean => this.isUrlAllowedInApp(url),
+    openUrlExternally: (url): Promise<void> => this.openExternal(url),
+    requestPopupTab: (browserId, url): void => {
+      const state = this.sessions.get(browserId);
+      if (state) this.requestPopupTab(state, url);
+    },
+    warn: (browserId, text): void => {
+      const state = this.sessions.get(browserId);
+      if (state) this.captureConsole(state, { level: 'warning', text });
+    },
+    hostWindowFor: (browserId): BrowserWindow | null =>
+      this.sessions.get(browserId)?.hostWindow ?? null,
+    // A tab being disposed is gone for its popups: `closeFor` has already
+    // run, so a popup adopted now would outlive the tab and hold its session.
+    isOpenerLive: (browserId): boolean =>
+      this.sessions.has(browserId) && !this.liveDisposals.has(browserId),
+  });
   private readonly liveDisposals = new Map<string, Promise<void>>();
   private readonly persistenceQueues = new KeyedAsyncLock();
   private readonly mutationQueues = new KeyedAsyncLock();
@@ -2234,7 +2283,9 @@ export class BrowserService {
       };
       const result = await performBrowserProfileSwitch(journal, record, {
         allocate: async () => {
-          this.downloads.observe(await authority.acquireSession(resolution));
+          const nativeSession = await authority.acquireSession(resolution);
+          useBrowserUserAgent(nativeSession);
+          this.downloads.observe(nativeSession);
           return this.allocateProfileView(resolution.partition);
         },
         discard: (view) => {
@@ -3161,9 +3212,11 @@ export class BrowserService {
     if (resolution) {
       const nativeSession = await profileAuthority.acquireSession(resolution);
       assertCreationCurrent();
+      useBrowserUserAgent(nativeSession);
       this.downloads.observe(nativeSession);
     } else {
       const nativeSession = session.fromPartition(partition);
+      useBrowserUserAgent(nativeSession);
       nativeSession.setPermissionRequestHandler(denyPermission);
       nativeSession.setPermissionCheckHandler(() => false);
       if (request.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID) {
@@ -3707,30 +3760,33 @@ export class BrowserService {
     if (request.visible) state.hasBeenShown = true;
     state.bounds = request.bounds;
     state.visible = request.visible;
-    // The pane reports its client rect in the host renderer's CSS px; the
-    // view is positioned in window DIPs, which differ under the interface
-    // scale zoom. The pane resends on every `resize`, which a zoom change
-    // fires, so the view follows the zoom without a separate hook.
-    const zoom = hostZoomFactor(state.hostWindow);
     // A native view paints over the renderer's rounded card corners, so the
     // page rounds the corners its area rounds and keeps the rest square.
     if (request.cornerRadii) {
       state.cornerRadii = { ...request.cornerRadii };
     }
-    const radii = state.cornerRadii;
-    applyBrowserViewFrameLayout(
-      state.viewFrame,
-      state.view,
-      layoutBrowserViewFrame(
-        rectangleFromCapture(cssRectToWindowDips(request.bounds, zoom)),
-        {
-          topLeft: radii.topLeft * zoom,
-          topRight: radii.topRight * zoom,
-          bottomRight: radii.bottomRight * zoom,
-          bottomLeft: radii.bottomLeft * zoom,
-        },
-      ),
-    );
+    const follower = this.pageAreaFollower(state);
+    let area = request.bounds;
+    if (request.visible && request.viewport) {
+      follower.record({
+        viewport: request.viewport,
+        bounds: request.bounds,
+        at: Date.now(),
+      });
+      this.followHostResize(state.hostWindow);
+      // During a resize the report is for a size the window has already
+      // left. Placing the view by it would pull the page back to where it
+      // was a frame or two ago, so it only updates where the area is
+      // heading and the view stays at the window's current size.
+      const current = this.resizingHostViewport(
+        state.hostWindow,
+        request.viewport,
+      );
+      if (current) area = follower.predict(current) ?? request.bounds;
+    } else {
+      follower.forget();
+    }
+    this.placePageArea(state, area);
     this.showView(state, request.visible);
     this.updateBrowserResource(state);
     if (
@@ -3739,6 +3795,129 @@ export class BrowserService {
       request.bounds.height > 0
     )
       state.deferredInitialLoad?.settle(true);
+  }
+
+  /** Places the page's views over `bounds` (host renderer CSS px). */
+  private placePageArea(
+    state: LiveBrowserSession,
+    bounds: BrowserRectangle,
+  ): void {
+    // The pane reports its client rect in the host renderer's CSS px; the
+    // view is positioned in window DIPs, which differ under the interface
+    // scale zoom. The pane resends on every `resize`, which a zoom change
+    // fires, so the view follows the zoom without a separate hook.
+    const zoom = hostZoomFactor(state.hostWindow);
+    const radii = state.cornerRadii;
+    applyBrowserViewFrameLayout(
+      state.viewFrame,
+      state.view,
+      layoutBrowserViewFrame(
+        rectangleFromCapture(cssRectToWindowDips(bounds, zoom)),
+        {
+          topLeft: radii.topLeft * zoom,
+          topRight: radii.topRight * zoom,
+          bottomRight: radii.bottomRight * zoom,
+          bottomLeft: radii.bottomLeft * zoom,
+        },
+      ),
+    );
+  }
+
+  private pageAreaFollower(state: LiveBrowserSession): PageAreaFollower {
+    let follower = this.pageAreaFollowers.get(state);
+    if (!follower) {
+      follower = new PageAreaFollower();
+      this.pageAreaFollowers.set(state, follower);
+    }
+    return follower;
+  }
+
+  /**
+   * Moves this window's shown pages as the window resizes, in the `resize`
+   * event itself, to where their last reports say they are heading (see
+   * `browser-view-resize-follow.ts`). The renderer's next report places
+   * each one exactly; `state.bounds` keeps only what the renderer said.
+   */
+  private followHostResize(host: BrowserWindow | null): void {
+    if (!host || host.isDestroyed() || this.resizeFollowedHosts.has(host)) {
+      return;
+    }
+    this.resizeFollowedHosts.add(host);
+    host.on('resize', () => {
+      if (host.isDestroyed()) return;
+      this.hostResizedAt.set(host, Date.now());
+      const viewport = hostViewport(host);
+      // Only while the renderer's viewport is the window's own size: with
+      // docked developer tools it is not, and a size it never has would
+      // send the page somewhere it never is.
+      if (!viewport || this.hostViewportTracked.get(host) !== true) return;
+      for (const state of this.sessions.values()) {
+        if (state.hostWindow !== host || !state.visible) continue;
+        const predicted = this.pageAreaFollowers.get(state)?.predict(viewport);
+        if (predicted) this.placePageArea(state, predicted);
+      }
+    });
+  }
+
+  /**
+   * The host's viewport when a resize is under way and has already moved
+   * past `reported`, the viewport a page-area report was measured in. `null`
+   * when the report is current, and whenever the renderer's viewport is not
+   * known to follow the window's size.
+   */
+  private resizingHostViewport(
+    host: BrowserWindow | null,
+    reported: { width: number; height: number },
+  ): { width: number; height: number } | null {
+    const current = hostViewport(host);
+    if (!host || !current) return null;
+    // A px of rounding apart at a fractional zoom is the same viewport.
+    const same =
+      Math.abs(current.width - reported.width) <= 1 &&
+      Math.abs(current.height - reported.height) <= 1;
+    const resizing =
+      Date.now() - (this.hostResizedAt.get(host) ?? 0) <= HOST_RESIZE_ACTIVE_MS;
+    if (!resizing) {
+      // At rest the two agree, unless something else takes part of the
+      // window from the renderer.
+      this.hostViewportTracked.set(host, same);
+      return null;
+    }
+    return same || this.hostViewportTracked.get(host) !== true ? null : current;
+  }
+
+  /**
+   * A host page that reloads or crashes forgets which Browser pages it showed
+   * and never hides them, so they stayed over whatever page it loaded next
+   * (the New task page after a reload). They hide once the host's next page
+   * commits; the new page shows each one again when it lays its area out.
+   * `did-navigate` fires only for a committed main-frame, cross-document
+   * navigation, so a navigation the window cancels (an app link, a stray
+   * file drop) leaves them alone.
+   */
+  private hidePagesWhenHostReloads(host: BrowserWindow): void {
+    if (host.isDestroyed()) return;
+    const hideAll = (): void => {
+      for (const state of this.sessions.values()) {
+        if (state.hostWindow !== host || !state.visible) continue;
+        state.visible = false;
+        this.pageAreaFollowers.get(state)?.forget();
+        this.showView(state, false);
+        this.updateBrowserResource(state);
+      }
+    };
+    // The window's own page, and the app's page when another view hosts it.
+    for (const contents of new Set([
+      host.webContents,
+      rendererContentsOf(host.webContents),
+    ])) {
+      if (contents.isDestroyed() || this.reloadWatchedHosts.has(contents)) {
+        continue;
+      }
+      this.reloadWatchedHosts.add(contents);
+      contents.on('did-navigate', hideAll);
+      contents.on('render-process-gone', hideAll);
+    }
   }
 
   setVisible(browserId: string, visible: boolean): void {
@@ -3755,9 +3934,13 @@ export class BrowserService {
    * Hiding the page that owns keyboard focus hands focus to the host
    * renderer; otherwise keystrokes would go to a hidden page until the user
    * clicks. A tab-cycle chord pressed in the page relies on this, since the
-   * renderer only hides the page when it selects another tab. `isFocused()`
-   * is false while the window itself lacks OS focus, so the chord also
-   * records that the page held focus.
+   * renderer only hides the page when it selects another tab, so the chord
+   * also records that the page held focus.
+   *
+   * The page can still be its window's first responder while the app is in
+   * the background, and focusing the renderer then would bring the app in
+   * front of the one the person is working in. The hand-off waits for the
+   * window to regain OS focus instead.
    */
   private showView(state: LiveBrowserSession, visible: boolean): void {
     const hidesFocusedPage =
@@ -3768,8 +3951,21 @@ export class BrowserService {
     state.viewFrame.frame.setVisible(visible);
     state.view.setVisible(visible);
     const host = state.hostWindow;
+    if (visible && host) this.hidePagesWhenHostReloads(host);
     if (hidesFocusedPage && host && !host.isDestroyed()) {
-      rendererContentsOf(host.webContents).focus();
+      handFocusWithoutActivating(
+        host,
+        rendererContentsOf(host.webContents),
+        (): boolean => {
+          const page = state.view.webContents;
+          return (
+            page !== undefined &&
+            !page.isDestroyed() &&
+            page.isFocused() &&
+            !state.view.getVisible()
+          );
+        },
+      );
     }
   }
 
@@ -9215,11 +9411,7 @@ export class BrowserService {
     url: string,
     handled: NonNullable<BrowserActionEffects['popup']>['handled'],
   ): NonNullable<BrowserActionEffects['popup']> | undefined {
-    const actionId = this.taskFiles.attributionFor({
-      browserId: state.snapshot.id,
-      runtimeGeneration: state.snapshot.profile?.runtimeGeneration ?? 0,
-      taskIncarnationId: state.snapshot.profile?.taskIncarnationId ?? '',
-    });
+    const actionId = this.actionAttribution(state);
     if (actionId === undefined) return undefined;
     const popups = state.actionPopups ?? [];
     state.actionPopups = popups;
@@ -9235,6 +9427,86 @@ export class BrowserService {
     popups.push({ actionId, popup });
     popups.splice(0, Math.max(0, popups.length - ACTION_EFFECT_RECORD_LIMIT));
     return popup;
+  }
+
+  /** The agent action in flight on a tab, if any. */
+  private actionAttribution(state: LiveBrowserSession): string | undefined {
+    return this.taskFiles.attributionFor({
+      browserId: state.snapshot.id,
+      runtimeGeneration: state.snapshot.profile?.runtimeGeneration ?? 0,
+      taskIncarnationId: state.snapshot.profile?.taskIncarnationId ?? '',
+    });
+  }
+
+  /**
+   * A tab that opened a popup it does not hold as a window: a new tab (in
+   * the background for an agent), or in place in the sign-in pane.
+   */
+  private requestPopupTab(state: LiveBrowserSession, url: string): void {
+    const { projectId, worktreeId } = state.snapshot;
+    // A sign-in view has no tabs, so its popups continue in it.
+    if (isMcpOAuthBrowserScope(projectId, worktreeId)) {
+      this.noteActionPopup(state, url, 'opened_in_tab');
+      void this.navigate({
+        browserId: state.snapshot.id,
+        url,
+      });
+      return;
+    }
+    const newBrowserId = randomUUID();
+    const popup = this.noteActionPopup(state, url, 'opened_in_tab');
+    if (popup) popup.browserId = newBrowserId;
+    const selection = state.snapshot.profile?.selection;
+    this.popupTabs.set(newBrowserId, {
+      ...(selection ? { selection } : {}),
+      agent: popup !== undefined,
+    });
+    // The new tab is a separate session, so the page keeps no opener.
+    this.emitForSession(state, {
+      type: 'new-tab-requested',
+      browserId: state.snapshot.id,
+      snapshot: state.snapshot,
+      url,
+      newBrowserId,
+      ...(popup ? { presentation: 'background' } : {}),
+    });
+  }
+
+  /**
+   * Whether a tab's `window.open` gets a native popup window linked to the
+   * page (CAN-6497): a scripted popup the person caused, from a tab they
+   * can see, below the cap. Everything else keeps the tab path.
+   */
+  private opensPopupWindow(
+    state: LiveBrowserSession,
+    details: HandlerDetails,
+  ): boolean {
+    // Shift+click is a `new-window` with no features.
+    if (details.disposition !== 'new-window' || !details.features) return false;
+    const url = details.url || 'about:blank';
+    if (isFileBrowserUrl(url) || !this.isUrlAllowedInApp(url)) return false;
+    if (state.snapshot.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID)
+      return false;
+    if (this.actionAttribution(state) !== undefined) return false;
+    // A hidden tab's popup cannot come from the person.
+    if (!state.visible || !state.hostWindow || state.hostWindow.isDestroyed())
+      return false;
+    if (!this.popupWindows.hasRoomFor(state.snapshot.id)) {
+      this.captureConsole(state, {
+        level: 'warning',
+        text: 'This page has too many popup windows open, so it opened without a popup window.',
+      });
+      return false;
+    }
+    return true;
+  }
+
+  /** The opener tab of a popup window's guest. */
+  private popupOpenerState(
+    webContentsId: number,
+  ): LiveBrowserSession | undefined {
+    const browserId = this.popupWindows.openerFor(webContentsId);
+    return browserId === undefined ? undefined : this.sessions.get(browserId);
   }
 
   /** A denied permission request during an agent's action. */
@@ -10600,6 +10872,9 @@ export class BrowserService {
   ): Promise<void> {
     const state = this.sessions.get(browserId);
     if (!state) return;
+    // First: a later early return or listener removal must not leave a
+    // popup holding the tab's session (CAN-6497).
+    await this.popupWindows.closeFor(browserId);
     // Its pages can no longer read the staged copies of its uploads.
     await this.taskFiles
       .releaseUploads(
@@ -11414,42 +11689,15 @@ export class BrowserService {
       this.handleWillPreventUnload(state, event);
     });
     contents.setWindowOpenHandler((details) => {
+      if (this.opensPopupWindow(state, details)) {
+        return this.popupWindows.windowOpenResponse(state.snapshot.id);
+      }
       const targetIsFile = isFileBrowserUrl(details.url);
       if (
         this.isUrlAllowedInApp(details.url) &&
         (!targetIsFile || isTrustedLocalFileSource(details.referrer?.url))
       ) {
-        const { projectId, worktreeId } = state.snapshot;
-        // A sign-in view has no tabs, so its popups continue in it.
-        if (isMcpOAuthBrowserScope(projectId, worktreeId)) {
-          this.noteActionPopup(state, details.url, 'opened_in_tab');
-          void this.navigate({
-            browserId: state.snapshot.id,
-            url: details.url,
-          });
-        } else {
-          const newBrowserId = randomUUID();
-          const popup = this.noteActionPopup(
-            state,
-            details.url,
-            'opened_in_tab',
-          );
-          if (popup) popup.browserId = newBrowserId;
-          const selection = state.snapshot.profile?.selection;
-          this.popupTabs.set(newBrowserId, {
-            ...(selection ? { selection } : {}),
-            agent: popup !== undefined,
-          });
-          // The new tab is a separate session, so the page keeps no opener.
-          this.emitForSession(state, {
-            type: 'new-tab-requested',
-            browserId: state.snapshot.id,
-            snapshot: state.snapshot,
-            url: details.url,
-            newBrowserId,
-            ...(popup ? { presentation: 'background' } : {}),
-          });
-        }
+        this.requestPopupTab(state, details.url);
       } else if (targetIsFile) {
         this.noteActionPopup(state, details.url, 'blocked');
         this.captureConsole(state, {

@@ -16,8 +16,29 @@ function calendarDayOffset(timestamp: number, now: number): number {
   return Math.round((startOfDay(timestamp) - startOfDay(now)) / DAY_MS);
 }
 
+const formatters = new Map<string, Intl.DateTimeFormat>();
+
+/**
+ * One formatter per locale and shape, built once. Building one costs far more
+ * than formatting with it, and a Runs table of 100 rows built about 500 per
+ * render. The zone offset is in the key because a formatter keeps the time
+ * zone it was built in.
+ */
+function formatter(
+  shape: string,
+  locale: string | undefined,
+  options: Intl.DateTimeFormatOptions,
+): Intl.DateTimeFormat {
+  const key = `${shape}|${locale ?? ''}|${String(new Date().getTimezoneOffset())}`;
+  const known = formatters.get(key);
+  if (known) return known;
+  const built = new Intl.DateTimeFormat(locale, options);
+  formatters.set(key, built);
+  return built;
+}
+
 function clockLabel(timestamp: number, locale?: string): string {
-  return new Intl.DateTimeFormat(locale, {
+  return formatter('clock', locale, {
     hour: 'numeric',
     minute: '2-digit',
   }).format(timestamp);
@@ -28,11 +49,13 @@ function weekdayLabel(
   style: 'short' | 'long',
   locale?: string,
 ): string {
-  return new Intl.DateTimeFormat(locale, { weekday: style }).format(timestamp);
+  return formatter(`weekday-${style}`, locale, { weekday: style }).format(
+    timestamp,
+  );
 }
 
 function monthDayLabel(timestamp: number, locale?: string): string {
-  return new Intl.DateTimeFormat(locale, {
+  return formatter('month-day', locale, {
     month: 'short',
     day: 'numeric',
   }).format(timestamp);

@@ -372,7 +372,9 @@ export function useSidebarWorkspaces(): SidebarWorkspacesModel {
   const requestArchiveWorktree = useNavigationStore(
     (state) => state.requestArchiveWorktree,
   );
-  const activePage = useNavigationStore((state) => state.activePage);
+  // Only whether the worktree page shows: a move between other pages must
+  // not re-render the sidebar.
+  const onMainPage = useNavigationStore((state) => state.activePage === 'main');
 
   const selectedWorktree = useChatStore((state) => state.selectedWorktree);
   const selectWorktree = useChatStore((state) => state.selectWorktree);
@@ -404,8 +406,7 @@ export function useSidebarWorkspaces(): SidebarWorkspacesModel {
   const selectedWorktreeKey = selectedWorktree
     ? `${selectedWorktree.projectId}/${selectedWorktree.worktreeId}`
     : null;
-  const visibleSelectedWorktreeKey =
-    activePage === 'main' ? selectedWorktreeKey : null;
+  const visibleSelectedWorktreeKey = onMainPage ? selectedWorktreeKey : null;
 
   // Derive streaming/active/awaiting key strings as sorted primitives so the
   // selector only produces new values on real membership changes (not on every

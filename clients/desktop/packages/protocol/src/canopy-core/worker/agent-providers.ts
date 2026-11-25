@@ -213,6 +213,38 @@ export const WorkerAgentProviderListErrorSchema =
     retry: CanopyQueryRetryDirectiveSchema,
   });
 
+/*
+ * `worker.agent.provider.platform.get` (CAN-6718): which providers the
+ * selected worker's platform can run, from its pinned runtime artifacts and
+ * platform checks alone. It resolves no executable, hashes nothing, reads no
+ * status and applies no rollout flag, so a picker can ask it on every window.
+ */
+export const WorkerAgentProviderPlatformGetParamsSchema = z.strictObject({
+  scope: CanopyWorkspaceScopeSchema,
+});
+export type WorkerAgentProviderPlatformGetParams = z.output<
+  typeof WorkerAgentProviderPlatformGetParamsSchema
+>;
+
+export const WorkerAgentProviderPlatformGetResultSchema = z.strictObject({
+  authorityId: id,
+  targetId: id,
+  /** In the fixed provider order; providers the platform can't run are omitted. */
+  providerIds: z
+    .array(z.enum(WORKER_AGENT_PROVIDER_IDS))
+    .max(WORKER_AGENT_PROVIDER_IDS.length),
+});
+export type WorkerAgentProviderPlatformGetResult = z.output<
+  typeof WorkerAgentProviderPlatformGetResultSchema
+>;
+
+export const WorkerAgentProviderPlatformGetErrorSchema =
+  CanopyErrorPayloadSchema.extend({
+    // This query has no operation-specific error codes; callers branch on kind.
+    code: z.never().optional(),
+    retry: CanopyQueryRetryDirectiveSchema,
+  });
+
 export const WORKER_AGENT_PROVIDER_QUERY_DEFINITIONS =
   defineCanopyQueryRegistry('worker', {
     'worker.agent.provider.list': defineCanopyQuery({
@@ -223,6 +255,17 @@ export const WORKER_AGENT_PROVIDER_QUERY_DEFINITIONS =
       params: WorkerAgentProviderListParamsSchema,
       result: WorkerAgentProviderListResultSchema,
       error: WorkerAgentProviderListErrorSchema,
+      idempotency: 'inherent',
+      requiredGrants: [WORKER_AGENT_GRANTS.read],
+    }),
+    'worker.agent.provider.platform.get': defineCanopyQuery({
+      plane: 'worker',
+      domain: 'agent',
+      version: 1,
+      placement: 'target-selectable',
+      params: WorkerAgentProviderPlatformGetParamsSchema,
+      result: WorkerAgentProviderPlatformGetResultSchema,
+      error: WorkerAgentProviderPlatformGetErrorSchema,
       idempotency: 'inherent',
       requiredGrants: [WORKER_AGENT_GRANTS.read],
     }),

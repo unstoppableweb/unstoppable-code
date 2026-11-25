@@ -221,6 +221,54 @@ describe('chat message command adapter', () => {
     }
   });
 
+  it('preserves steer intent in both directions across the portable send adapter', async () => {
+    const { port, command } = createPort(receipt);
+    const runtime = createDesktopRuntime({ chatCommandPort: port });
+    const instruction = jest.spyOn(runtime, 'instruction');
+    const send: ChatCommand = {
+      type: 'chat.send_message',
+      chatId: 'chat-1',
+      userMessageId: 'message-1',
+      text: 'Follow up.',
+      sendWhileRunning: 'steer',
+      steerTurnId: 'turn-1',
+    };
+    try {
+      await dispatchTrustedChatCommand(
+        request(send),
+        createChatCommandDispatchOptions(port, runtime, caller),
+      );
+      expect(instruction).toHaveBeenCalledWith(
+        'core.chat.message.send',
+        expect.objectContaining({
+          sendWhileRunning: 'steer',
+          steerTurnId: 'turn-1',
+        }),
+        expect.anything(),
+      );
+      command.mockClear();
+      await runtime.instruction(
+        'core.chat.message.send',
+        {
+          scope: { workspaceId: 'project-1', worktreeId: 'worktree-1' },
+          commandId: 'portable-steer',
+          chatId: send.chatId,
+          messageId: send.userMessageId,
+          text: send.text,
+          sendWhileRunning: send.sendWhileRunning,
+          steerTurnId: send.steerTurnId,
+          _meta: { idempotencyKey: 'portable-steer' },
+        },
+        { caller, metadata: { idempotencyKey: 'portable-steer' } },
+      );
+      expect(command).toHaveBeenCalledWith(
+        expect.objectContaining({ command: send }),
+      );
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
   it.each(['Code', 'Cowork'])(
     '%s preserves trusted attachment identity and live authorization through canonical send and replay',
     async (mode) => {

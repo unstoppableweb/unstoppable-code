@@ -11,7 +11,10 @@ import {
   W5CommitRefusedError,
   W5ProcessFileLockTimeoutError,
 } from '@canopy/core-runtime/node/w5/commit-log/errors';
-import { deferUntilW5ReadViewCloses } from './w5-read-view';
+import {
+  createW5ImageReadCache,
+  deferUntilW5ReadViewCloses,
+} from './w5-read-view';
 import { equalW5Contents } from './w5-revision-diff';
 import { W5DaemonHandoffError } from './w5-handoff-store';
 import { afterW5Apply, afterW5Commit, onW5Abort } from './w5-commit-scope';
@@ -452,8 +455,11 @@ function filterRecentlyRemovedWorktrees(
 async function withWorktreeFileLock<T>(
   filePath: string,
   fn: () => Promise<T>,
+  readOnly = false,
 ): Promise<T> {
-  return withW5RepositoryLock({ kind: 'list', path: filePath }, fn);
+  return withW5RepositoryLock({ kind: 'list', path: filePath }, fn, {
+    readOnly,
+  });
 }
 
 /** Removes only the two W5 records; directory cleanup belongs to the caller. */
@@ -901,17 +907,35 @@ export async function readWorkspaceConfigDetailed(
 }
 
 /** The normalized config together with the manifest read it came from. */
+const cachedWorkspaceConfig = createW5ImageReadCache<{
+  detail: WorkspaceConfigDetail;
+  manifest: WorkspaceManifestRead;
+}>();
+
 async function readWorkspaceConfigState(workspaceId: string): Promise<{
   detail: WorkspaceConfigDetail;
   manifest: WorkspaceManifestRead;
 }> {
-  const manifest = await workspaceManifestRepository.read(workspaceId);
-  return { detail: await normalizeWorkspaceConfig(manifest), manifest };
+  const { detail, manifest } = await cachedWorkspaceConfig(
+    w5RecordReadPaths.manifest(workspaceId),
+    async () => {
+      const manifest = await workspaceManifestRepository.read(workspaceId);
+      return { detail: normalizeWorkspaceConfig(manifest), manifest };
+    },
+  );
+  // Account references can change independently of the W5 image.
+  return {
+    detail:
+      detail.authority === 'ok'
+        ? { ...detail, config: await withAccountMcpRefs(detail.config) }
+        : detail,
+    manifest,
+  };
 }
 
-async function normalizeWorkspaceConfig(
+function normalizeWorkspaceConfig(
   manifest: WorkspaceManifestRead,
-): Promise<WorkspaceConfigDetail> {
+): WorkspaceConfigDetail {
   if (manifest.authority !== 'ok') {
     const unserved =
       manifest.authority === 'unreadable'
@@ -1071,7 +1095,7 @@ async function normalizeWorkspaceConfig(
           : {}),
       };
       return {
-        config: await withAccountMcpRefs(config),
+        config,
         authority: 'ok',
         ownerMalformed:
           parsed.owner !== undefined && config.owner === undefined,
@@ -1791,7 +1815,9 @@ function readRepairingWorktrees(
     | { persistRemovalCleanup?: false; includeRecentlyRemoved?: true }
     | undefined,
 ): ReturnType<typeof readWorkspaceWorktreesDetailed> {
-  return withWorktreeFileLock(filePath, async () => {
+  const readLocked = async (): ReturnType<
+    typeof readWorkspaceWorktreesDetailed
+  > => {
     const { worktrees, authority, read } =
       await readWorkspaceWorktreesFileDetailed(workspaceId);
     const unserved = w5NamedUnreadable(readError(read));
@@ -1827,7 +1853,13 @@ function readRepairingWorktrees(
         .filter((worktree) => !kept.has(worktree))
         .map((worktree) => worktree.id),
     };
-  });
+  };
+  return withWorktreeFileLock(
+    filePath,
+    readLocked,
+    options?.persistRemovalCleanup === false ||
+      options?.includeRecentlyRemoved === true,
+  );
 }
 
 /**

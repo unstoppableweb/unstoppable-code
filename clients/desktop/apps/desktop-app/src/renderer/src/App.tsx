@@ -225,6 +225,7 @@ import {
 import { setFixedSidePanelTabsClosable } from './stores/panelLayoutStore';
 import { usePipelineCompatDetailStore } from './stores/pipelineCompatDetailStore';
 import { useProjectsStore } from './stores/projectsStore';
+import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { useReleaseHighlightsStore } from './stores/releaseHighlightsStore';
 import { useSidebarPageHandoffStore } from './stores/sidebarPageHandoffStore';
 import { useSidebarStore } from './stores/sidebarStore';
@@ -427,6 +428,23 @@ const SplitPreflightModalHost = lazy(() =>
 // back" cases immediately; the interval is a backstop for network recoveries
 // that fire neither event (e.g. a server that was down comes back up).
 const GUEST_MINT_RETRY_INTERVAL_MS = 30_000;
+
+// Preference keys every navigation writes. Approval defaults never read them,
+// so a broadcast that changes only these keeps the cached defaults: dropping
+// them re-rendered the open composer three times after each switch.
+const NAVIGATION_PREFERENCE_KEYS: ReadonlySet<string> = new Set([
+  'lastSelectedWorktreeProjectId',
+  'lastSelectedWorktreeId',
+  'lastActiveContext',
+]);
+
+function preferencesWithoutNavigation(preferences: object): string {
+  return JSON.stringify(
+    Object.entries(preferences).filter(
+      ([key]) => !NAVIGATION_PREFERENCE_KEYS.has(key),
+    ),
+  );
+}
 
 function App(): JSX.Element {
   useChatEventSubscriptions();
@@ -841,12 +859,17 @@ function App(): JSX.Element {
     // Initial display hydration happens in the layout effect below. This
     // subscription separately keeps the renderer current when the main process
     // pushes a preference change after startup.
+    let approvalPreferences: string | null = null;
     return window.api.onPreferencesSynced((preferences) => {
       applyChatWidth(preferences.chatWidth);
       // An answer or notifications turned on elsewhere clears a pending offer.
       applyOsNotificationOfferPreferences(preferences);
-      invalidateApprovalDefaults();
-      useChatStore.setState({ approvalDefaultsCache: {} });
+      const nextApprovalPreferences = preferencesWithoutNavigation(preferences);
+      if (nextApprovalPreferences !== approvalPreferences) {
+        approvalPreferences = nextApprovalPreferences;
+        invalidateApprovalDefaults();
+        useChatStore.setState({ approvalDefaultsCache: {} });
+      }
       useBrowserStore
         .getState()
         .setLocalServersOnly(preferences.inAppBrowserLocalServersOnly === true);
@@ -1125,6 +1148,17 @@ function App(): JSX.Element {
   // suppress the main page from being the active tab.
   useEffect(() => {
     void useProjectsStore.getState().loadProjects();
+    // The sidebar shows Projects and Chats together (it waits for the Chats
+    // workspace so the list does not jump), so the chat workspaces load
+    // beside the projects instead of after the sidebar's own code arrives.
+    if (!useStandaloneChatStore.getState().chatProjectsLoaded) {
+      void useStandaloneChatStore
+        .getState()
+        .loadChatProjects()
+        .then(undefined, () => {
+          // The sidebar's own load retries; the wait for Chats is capped.
+        });
+    }
   }, []);
 
   // Startup badge hydration without full transcripts: seed sidebar badges
@@ -1589,9 +1623,14 @@ function App(): JSX.Element {
       data-sidebar-hidden={sidebarHidden ? 'true' : undefined}
     >
       <div
-        inert={mainShellCovered}
+        // Under a covering page the sidebar is hidden from the accessibility
+        // tree here, and stops rendering once its fade ends
+        // (`.app-sidebar-page` in globals.css). Not `inert`: setting it
+        // restyled every element of the sidebar (15 to 20 ms) in the frame
+        // Settings opens, and again when it closes. The covering page takes
+        // the pointer, and its focus trap keeps the keyboard in it.
         aria-hidden={mainShellCovered || undefined}
-        className="relative h-full shrink-0"
+        className="app-sidebar-page relative h-full shrink-0"
         data-page-active={mainShellCovered ? 'false' : 'true'}
         data-testid="app-sidebar-page"
       >
@@ -1630,9 +1669,19 @@ function App(): JSX.Element {
       </div>
       <Surface
         variant="pane"
-        inert={mainShellCovered}
+        // Hidden under a covering page (Settings, project settings) by the
+        // attribute alone, with `content-visibility: hidden`
+        // (`[data-app-main-shell]` in globals.css): the page inside stops
+        // rendering and takes no focus, pointer or accessibility tree entry,
+        // and nothing inside it is restyled. `inert`, `visibility` or a
+        // class added and removed here restyled every element of the page
+        // (2,400 on a worktree page, about 20 ms) in the frame the page
+        // opens and again when it closes. The dialog focus restore reads
+        // `aria-hidden` to know this shell is still covered (DialogModal
+        // `useModalFocusTrap`).
         aria-hidden={mainShellCovered || undefined}
-        className={`relative flex min-w-0 flex-1 flex-col ${mainShellCovered ? 'invisible' : ''}`}
+        className="relative flex min-w-0 flex-1 flex-col"
+        data-app-main-shell=""
         data-testid="app-main-shell"
       >
         {shellDrawsTitlebarDragRegion(localPlatform()) && (

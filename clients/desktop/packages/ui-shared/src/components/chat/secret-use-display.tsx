@@ -10,7 +10,7 @@ import {
  * The transcript rows of RunWithSecrets ("Run with secrets": the command,
  * the secret names and, once settled, its exit, redaction count or the
  * missing names) and WriteSecretsFile ("Wrote secrets file": the path and
- * "0600 · git-excluded"). They read the call's names and the tool result,
+ * "0600 · kept out of git"). They read the call's names and the tool result,
  * which never holds a value: the executor redacted the output already.
  */
 
@@ -132,7 +132,7 @@ export function runWithSecretsStatusLabel(
   result: RunWithSecretsResultView,
 ): string {
   if (result.missing?.length)
-    return `not run: ${result.missing.join(', ')} ${result.missing.length === 1 ? 'is' : 'are'} not held`;
+    return `not run: ${result.missing.join(', ')} ${result.missing.length === 1 ? "isn't" : "aren't"} saved`;
   const parts = [
     result.timedOut
       ? 'timed out'
@@ -223,7 +223,7 @@ export function RunWithSecretsRowLabel({
         <Chip key={name} muted={missing.has(name)}>
           <span className="font-mono">{name}</span>
           {missing.has(name) ? (
-            <span className="fg-tertiary">not held</span>
+            <span className="fg-tertiary">not saved</span>
           ) : null}
         </Chip>
       ))}
@@ -243,7 +243,7 @@ export function RunWithSecretsRowLabel({
   );
 }
 
-/** The WriteSecretsFile row label: the path, then "0600 · git-excluded". */
+/** The WriteSecretsFile row label: the path, then "0600 · kept out of git". */
 export function WriteSecretsFileRowLabel({
   input,
   resultText,
@@ -265,7 +265,7 @@ export function WriteSecretsFileRowLabel({
       <span>{result ? 'Wrote secrets file' : 'Write secrets file'}</span>
       {path ? <Code>{path}</Code> : null}
       {result ? (
-        <Chip>{result.gitExcluded ? '0600 · git-excluded' : '0600'}</Chip>
+        <Chip>{result.gitExcluded ? '0600 · kept out of git' : '0600'}</Chip>
       ) : (
         writeSecretNames(call).map((name) => (
           <Chip key={name}>

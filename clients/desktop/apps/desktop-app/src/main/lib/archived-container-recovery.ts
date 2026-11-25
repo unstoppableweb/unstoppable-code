@@ -56,7 +56,11 @@ import { archiveGitEnv } from './git-tree-snapshot';
 import { getResolvedGitExecutableForSpawn } from './git-executable';
 import { validateId } from './validation';
 import { getGitCommonDir, removeWindowsWorktreeReparsePoints } from './git';
-import { removeTreeWithoutAsar } from './remove-tree-without-asar';
+import {
+  RemoveTreePermanentError,
+  removeTreeWithoutAsar,
+} from './remove-tree-without-asar';
+import { archiveRemovalError } from '../archive/archive-removal-error';
 import {
   canonicalizePossiblyMissingPath,
   removeAbsentWorktreeRegistrations,
@@ -1579,12 +1583,23 @@ export async function finishArchivedContainerRecovery(
   if (journal.phase !== 'removed') {
     await assertRecoveryQuarantineOwned(location.quarantine, journal);
     await removeWindowsWorktreeReparsePoints(location.quarantine);
-    await removeTreeWithoutAsar(location.quarantine, {
-      recursive: true,
-      force: true,
-      maxRetries: 5,
-      retryDelay: 100,
-    });
+    try {
+      await removeTreeWithoutAsar(location.quarantine, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
+    } catch (error) {
+      throw archiveRemovalError(
+        error instanceof RemoveTreePermanentError &&
+          error.code === 'EPERM' &&
+          'cause' in error
+          ? error.cause
+          : error,
+        location.quarantine,
+      );
+    }
     journal = { ...journal, phase: 'removed' };
     await writeJsonDurably(location.journal, journal);
   }

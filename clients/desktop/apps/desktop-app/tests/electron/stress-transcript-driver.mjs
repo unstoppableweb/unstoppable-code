@@ -48,7 +48,14 @@ export async function openStressChat(page, turns = 25) {
 export async function inspectStressHistory(page, { lastBatch = 159 } = {}) {
   const viewport = page.getByTestId('chat-message-list-scroll').last();
   const first = page.locator('[data-chat-turn-group="stress-0-prompt"]');
-  const summary = first.getByRole('button', { name: /^Agent steps:/ });
+  // A turn heading its section renders its header in the pinned head,
+  // outside its own wrapper; builds before that keep it in the wrapper.
+  // Comparisons run this driver against both.
+  const summary = page
+    .locator(
+      '[data-sticky-user-message-id="stress-0-prompt"], [data-chat-turn-group="stress-0-prompt"]',
+    )
+    .getByRole('button', { name: /^Agent steps:/ });
   await expect
     .poll(
       async () => {

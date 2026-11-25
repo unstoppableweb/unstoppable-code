@@ -2,7 +2,13 @@ import {
   isTerminalOperationStatus,
   type CanopyErrorPayload,
   type CanopyJsonValue,
+  type DelegationDispatchInput,
+  type DelegationLeaseRecord,
+  type DelegationLeaseTerms,
   type DelegationRecord,
+  type DelegationResolution,
+  type ExecutionTargetRegistration,
+  type OperationCancellation,
   type OperationRecord,
   type OperationRestart,
   type OperationRestartClass,
@@ -12,6 +18,7 @@ import {
 } from '@canopy/protocol/canopy-core';
 
 import type {
+  DelegationChange,
   OperationAcceptRequest,
   OperationAcceptResult,
   OperationLedger,
@@ -138,11 +145,42 @@ const RECOVERED: Record<
  * record. Only an explicit cancellation, through the owning domain's rules,
  * stops it.
  */
+/** One run of an admission batch, finished at once when it carries a terminal. */
+export interface OperationAdmissionRun {
+  readonly request: OperationAcceptRequest;
+  readonly finishAs?: {
+    status: OperationTerminalStatus;
+    outcome?: CanopyJsonValue;
+    error?: CanopyErrorPayload;
+  };
+}
+
+/** A source's runs and the state that fired them, admitted together. */
+export interface OperationAdmissionBatch {
+  readonly head?: { source: string; subject: string; value: string };
+  readonly runs: readonly OperationAdmissionRun[];
+}
+
+/** How one run of an admission batch was recorded. */
+export type OperationAdmissionOutcome =
+  | { status: 'accepted'; operation: OperationRecord }
+  /** Accepted and finished at once with its terminal. */
+  | { status: 'stopped'; operation: OperationRecord }
+  /** Accepted before; this is its recorded run. */
+  | { status: 'duplicate'; operation: OperationRecord }
+  /** Its key was used before with other parameters. */
+  | { status: 'keyReused' };
+
 export class OperationService {
   private readonly domains = new Map<string, OperationDomain>();
   private readonly listeners = new Set<OperationEventListener>();
   private readonly recoveries = new Set<Promise<void>>();
   private readonly cancelDeliveries = new Map<string, Promise<unknown>>();
+  /** In-process worker leases, per opened ledger and target. */
+  private readonly placements = new WeakMap<
+    OperationLedger,
+    Map<string, DelegationLeaseRecord>
+  >();
   private opening: Promise<OperationLedger> | null = null;
   private ledger: OperationLedger | null = null;
   private closed = false;
@@ -236,19 +274,162 @@ export class OperationService {
   }
 
   /**
-   * Run a write that commits with operation changes, such as a dispatch
-   * record and its child operation (CAN-4132), and publish the events it
-   * made. The write runs on the ready ledger; a throw publishes nothing.
+   * Accept a source's runs and record the state that fired them in one
+   * transaction (CAN-6986 L2). Each run is accepted, and finished at once
+   * when it carries a terminal, as a gate that stopped it does. A key used
+   * before with other parameters is that run's `keyReused` outcome, not a
+   * throw; any other failure rolls the batch back. Events are published in
+   * order once it commits, and none on a throw.
    */
-  async write<T>(
-    run: (ledger: OperationLedger) => {
-      value: T;
-      events: readonly (OperationLedgerEvent | null)[];
-    },
-  ): Promise<T> {
-    const { value, events } = run(await this.ready());
+  async admitInitiatedRuns(
+    batch: OperationAdmissionBatch,
+  ): Promise<OperationAdmissionOutcome[]> {
+    const ledger = await this.ready();
+    const events: (OperationLedgerEvent | null)[] = [];
+    const outcomes = ledger.atomically(() => {
+      const { head } = batch;
+      if (head) ledger.recordSourceHead(head.source, head.subject, head.value);
+      return batch.runs.map((run): OperationAdmissionOutcome => {
+        let accepted: OperationAcceptResult;
+        try {
+          accepted = ledger.accept(run.request);
+        } catch (error) {
+          if (
+            error instanceof OperationLedgerRefusedError &&
+            error.refusal === 'key-reused'
+          )
+            return { status: 'keyReused' };
+          throw error;
+        }
+        if (accepted.status !== 'accepted')
+          return { status: 'duplicate', operation: accepted.operation };
+        events.push(accepted.event);
+        if (!run.finishAs)
+          return { status: 'accepted', operation: accepted.operation };
+        const finished = ledger.finish(
+          accepted.operation.operationId,
+          run.finishAs,
+        );
+        events.push(finished.event);
+        return { status: 'stopped', operation: finished.operation };
+      });
+    });
     for (const event of events) this.publish(event);
-    return value;
+    return outcomes;
+  }
+
+  /**
+   * Accept one run and finish it at once with its terminal, as a gate that
+   * stopped it before it started does: two commits, as before L2, with the
+   * events published once both are in. A recorded run with the same key is
+   * a `duplicate` and is not finished again; a key used with other
+   * parameters throws, as `accept` does.
+   */
+  async admitFinished(
+    request: OperationAcceptRequest,
+    terminal: NonNullable<OperationAdmissionRun['finishAs']>,
+  ): Promise<
+    | { status: 'accepted'; operation: OperationRecord }
+    | { status: 'duplicate'; operation: OperationRecord }
+  > {
+    const ledger = await this.ready();
+    const accepted = ledger.accept(request);
+    if (accepted.status !== 'accepted')
+      return { status: 'duplicate', operation: accepted.operation };
+    const finished = ledger.finish(accepted.operation.operationId, terminal);
+    this.publish(accepted.event);
+    this.publish(finished.event);
+    return { status: 'accepted', operation: finished.operation };
+  }
+
+  /**
+   * End unfinished work as cancelled, recording the intent of a host stop
+   * that asked for it first when none is recorded. A missing or finished
+   * operation changes nothing.
+   */
+  async finishCancelled(
+    operationId: string,
+    intent?: OperationCancellation,
+  ): Promise<void> {
+    const ledger = await this.ready();
+    const current = ledger.get(operationId);
+    if (!current || isTerminalOperationStatus(current.status)) return;
+    const events: (OperationLedgerEvent | null)[] = [];
+    if (intent && !current.cancellation)
+      events.push(ledger.requestCancel(operationId, intent).event);
+    events.push(ledger.finish(operationId, { status: 'cancelled' }).event);
+    for (const event of events) this.publish(event);
+  }
+
+  /**
+   * Register an in-process execution target and take this ledger's lease
+   * on it, once per opened ledger: the first call after an open takes the
+   * lease, which settles dispatches an earlier run left unsettled, and later
+   * calls return it.
+   */
+  async placeInProcessWorker(
+    target: ExecutionTargetRegistration,
+    terms: DelegationLeaseTerms,
+  ): Promise<DelegationLeaseRecord> {
+    const ledger = await this.ready();
+    let leases = this.placements.get(ledger);
+    if (!leases) {
+      leases = new Map();
+      this.placements.set(ledger, leases);
+    }
+    const placed = leases.get(target.targetId);
+    if (placed) return placed;
+    ledger.registerTarget(target);
+    const lease = ledger.acquireLease(target.targetId, terms);
+    leases.set(target.targetId, lease);
+    return lease;
+  }
+
+  /** Record a dispatch and its child operation in one transaction. */
+  async acceptDispatch(
+    request: OperationAcceptRequest & {
+      parentOperationId: string;
+      runtimeDelegationId: string;
+    },
+    dispatch: DelegationDispatchInput,
+  ): Promise<{ result: OperationAcceptResult; delegation: DelegationRecord }> {
+    const accepted = (await this.ready()).acceptDispatch(request, dispatch);
+    if (accepted.result.status === 'accepted')
+      this.publish(accepted.result.event);
+    return accepted;
+  }
+
+  /** Record that a prepared dispatch was sent to its worker. */
+  async markDispatched(delegationId: string): Promise<DelegationChange> {
+    const change = (await this.ready()).markDispatched(delegationId);
+    this.publish(change.change.event);
+    return change;
+  }
+
+  /** Record that a dispatch's outcome is being asked for, or can't be. */
+  async markDelegation(
+    delegationId: string,
+    state: 'reconciling' | 'unreachable',
+  ): Promise<DelegationRecord> {
+    return (await this.ready()).markDelegation(delegationId, state);
+  }
+
+  /** Settle a dispatch and finish its child operation in one transaction. */
+  async settleDispatch(
+    delegationId: string,
+    settlement: {
+      status: OperationTerminalStatus;
+      outcome?: CanopyJsonValue;
+      error?: CanopyErrorPayload;
+      resolution: DelegationResolution;
+    },
+  ): Promise<DelegationChange> {
+    const change = (await this.ready()).settleDispatch(
+      delegationId,
+      settlement,
+    );
+    this.publish(change.change.event);
+    return change;
   }
 
   async get(operationId: string): Promise<OperationRecord | null> {

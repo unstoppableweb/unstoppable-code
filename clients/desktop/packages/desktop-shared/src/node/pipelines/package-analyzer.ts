@@ -47,6 +47,10 @@ import {
 } from '@canopy/protocol/pipelines';
 import { AppErrorErrnoSchema } from '@canopy/protocol/app-errors';
 import {
+  displayableLabel,
+  labelSecretRule,
+} from '@canopy/protocol/capability-files';
+import {
   collectPipelineCapabilityRefs,
   getPipelinePluginDefaultRef,
 } from '@canopy/execution-engine/pipelines/plugin-collections';
@@ -88,10 +92,10 @@ import {
 import { expandPipelineAssetPath } from './pipeline-assets';
 import {
   SHARED_CONTAINER_DEFINITION_DOCUMENT_PATH,
-  findSharedTextCredentialRule,
   parseSharedContainerDefinitionDocument,
   sharedContainerCredentialErrorField,
   sharedContainerCredentialErrorNextStep,
+  sharedTextLabelCheck,
   type SharedContainerDefinitionKind,
   type SharedTextCredentialRule,
 } from '@canopy/protocol/shared-containers';
@@ -626,7 +630,7 @@ function classifyInvocation(
   // into a publisher note the package uploads (CAN-7476).
   const dismissible =
     (origin === 'prompt' || origin === 'body') &&
-    findSharedTextCredentialRule(token.value) === null;
+    labelSecretRule(token.value, sharedTextLabelCheck) === null;
   if (isExplicitPathInvocationToken(token)) {
     return { kind: 'ignored', dismissed: false };
   }
@@ -1067,12 +1071,12 @@ interface CollectMemberFilesOptions {
 
 /** A name that looks like a secret, as a blocker may show it. */
 function shownSecretName(value: string): string {
-  return findSharedTextCredentialRule(value) === null ? value : REDACTED_NAME;
+  return displayableLabel(value, REDACTED_NAME, sharedTextLabelCheck);
 }
 
 /** A path that looks like a secret, as a blocker may show it. */
 function shownSecretPath(value: string): string {
-  return findSharedTextCredentialRule(value) === null ? value : REDACTED_PATH;
+  return displayableLabel(value, REDACTED_PATH, sharedTextLabelCheck);
 }
 
 /**
@@ -1081,7 +1085,7 @@ function shownSecretPath(value: string): string {
  * path never reaches the dialog or Remote Control (CAN-7476).
  */
 function withoutSecretDetails(message: string): string {
-  const rule = findSharedTextCredentialRule(message);
+  const rule = labelSecretRule(message, sharedTextLabelCheck);
   return rule === null
     ? message
     : `Part of this package looks like it contains a secret (${sharedSkillSecretRuleLabel(rule)}), so the details are hidden. Rename it, then share again.`;
@@ -1132,7 +1136,7 @@ function blockSecretShapedNames(
     redact: (shown: string) => void,
     isPath = false,
   ): void => {
-    const rule = findSharedTextCredentialRule(value);
+    const rule = labelSecretRule(value, sharedTextLabelCheck);
     if (rule === null) return;
     const shown = isPath ? REDACTED_PATH : REDACTED_NAME;
     redact(shown);
@@ -1192,10 +1196,9 @@ async function collectMemberFiles(
   // named after a token, is never shown by a cloud copy, just as the
   // scanner redacts it (CAN-7226).
   const shownPath = (relativePath: string): string =>
-    sharedProfile !== undefined &&
-    findSharedTextCredentialRule(relativePath) !== null
-      ? '[redacted path]'
-      : relativePath;
+    sharedProfile === undefined
+      ? relativePath
+      : displayableLabel(relativePath, '[redacted path]', sharedTextLabelCheck);
   const withhold: CollectMemberFilesOptions['withhold'] =
     options.withhold === undefined
       ? undefined
@@ -1286,7 +1289,7 @@ async function collectMemberFiles(
     if (finding !== null) return packagedSkillSecretMessage(finding);
     // A folder above the skill that looks like a secret would travel in the
     // package path, and a SKILL.md can't be left out, so it's refused.
-    const pathRule = findSharedTextCredentialRule(relativePath);
+    const pathRule = labelSecretRule(relativePath, sharedTextLabelCheck);
     return pathRule === null
       ? null
       : packagedSkillSecretMessage({
@@ -1310,10 +1313,11 @@ async function collectMemberFiles(
   // looks like a secret (CAN-7476).
   const owner: PackageFileOwner = {
     kind: descriptor.runtimeKind === 'plugin_fragment' ? 'plugin' : 'skill',
-    name:
-      findSharedTextCredentialRule(descriptor.rootName) === null
-        ? descriptor.rootName
-        : '[redacted name]',
+    name: displayableLabel(
+      descriptor.rootName,
+      '[redacted name]',
+      sharedTextLabelCheck,
+    ),
   };
   /** Why a share stopped for a supporting file: the rule and the file. */
   const memberFileSecretMessage = (
@@ -1766,7 +1770,7 @@ async function collectMemberFiles(
     const pathRule =
       sharedProfile === undefined || isPluginSkillFile(normalized)
         ? null
-        : findSharedTextCredentialRule(relativePath);
+        : labelSecretRule(relativePath, sharedTextLabelCheck);
     if (pathRule !== null) {
       if (withhold) {
         withhold({ relativePath, reason: 'suspected_secret' });
@@ -1895,7 +1899,7 @@ async function collectMemberFiles(
           ? agentRef.split(':', 2)
           : [descriptor.rootName, agentRef];
         if (qualifiedPlugin !== descriptor.rootName || !agentName) {
-          const secretRule = findSharedTextCredentialRule(agentRef);
+          const secretRule = labelSecretRule(agentRef, sharedTextLabelCheck);
           blockers.push({
             code: 'UNRESOLVED_INVOCATION',
             message:
@@ -2533,7 +2537,7 @@ async function analyzeCapabilityPackageOnce(
         continue;
       }
       if (decision.kind === 'unresolved') {
-        const secretRule = findSharedTextCredentialRule(invocation);
+        const secretRule = labelSecretRule(invocation, sharedTextLabelCheck);
         blockers.push({
           code: 'UNRESOLVED_INVOCATION',
           message:
@@ -2592,11 +2596,11 @@ async function analyzeCapabilityPackageOnce(
     // A definition's name and identity travel in the package, so one that
     // looks like a secret blocks before anything else reads it (CAN-7476).
     const nameRule =
-      findSharedTextCredentialRule(candidate.displayName) ??
-      findSharedTextCredentialRule(candidate.identity) ??
+      labelSecretRule(candidate.displayName, sharedTextLabelCheck) ??
+      labelSecretRule(candidate.identity, sharedTextLabelCheck) ??
       (candidate.sourceLabel === undefined
         ? null
-        : findSharedTextCredentialRule(candidate.sourceLabel));
+        : labelSecretRule(candidate.sourceLabel, sharedTextLabelCheck));
     if (nameRule !== null) {
       blockers.push({
         code: 'SUSPECTED_SECRET',
@@ -2694,7 +2698,7 @@ async function analyzeCapabilityPackageOnce(
           continue;
         }
         if (decision.kind === 'unresolved') {
-          const secretRule = findSharedTextCredentialRule(invocation);
+          const secretRule = labelSecretRule(invocation, sharedTextLabelCheck);
           blockers.push({
             code: 'UNRESOLVED_INVOCATION',
             message:
@@ -3003,7 +3007,7 @@ async function analyzeCapabilityPackageOnce(
         continue;
       }
       if (decision.kind === 'unresolved') {
-        const secretRule = findSharedTextCredentialRule(invocation);
+        const secretRule = labelSecretRule(invocation, sharedTextLabelCheck);
         blockers.push({
           code: 'UNRESOLVED_INVOCATION',
           message:
@@ -3323,7 +3327,9 @@ async function analyzeCapabilityPackageOnce(
   // emitted as a publisher note or a dismissal either (CAN-7476).
   const dismissedInvocationValues = Array.from(
     suppressedInvocations.values(),
-  ).filter(({ token }) => findSharedTextCredentialRule(token) === null);
+  ).filter(
+    ({ token }) => labelSecretRule(token, sharedTextLabelCheck) === null,
+  );
   const publisherNotesWithSources = dismissedInvocationValues.map(
     (dismissed) => {
       const note: PipelinePackagePublisherNote = {
@@ -3490,8 +3496,12 @@ async function analyzeCapabilityPackageOnce(
   const hideSteps = (located: { jobId?: string; stepId?: string }): void => {
     for (const field of ['jobId', 'stepId'] as const) {
       const value = located[field];
-      if (value !== undefined && findSharedTextCredentialRule(value) !== null)
-        located[field] = REDACTED_NAME;
+      if (value !== undefined)
+        located[field] = displayableLabel(
+          value,
+          REDACTED_NAME,
+          sharedTextLabelCheck,
+        );
     }
   };
   for (const blocker of finalizedBlockers) {

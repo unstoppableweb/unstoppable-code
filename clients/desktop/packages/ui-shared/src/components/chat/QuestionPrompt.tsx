@@ -8,26 +8,22 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
-import {
-  CheckIcon,
-  ChevronLeftMediumIcon,
-  CloseLargeIcon,
-} from '../../icons/AppIcons';
+import { CheckIcon } from '../../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { Button } from '../Button';
 import { Markdown } from '../Markdown';
 import { Notice, NoticeButton } from '../Notice';
 import { OverlayScrollArea } from '../OverlayScrollArea';
 import { TextInput } from '../Field';
-import { QuestionProgress } from './QuestionProgress';
-import { ComposerIconButton } from './ComposerIconButton';
 import {
-  COMPOSER_PROMPT_HEADER_CLASS,
-  COMPOSER_PROMPT_HEADER_WITH_GLYPH_CLASS,
   COMPOSER_PROMPT_ROW_GLYPH_CLASS,
   COMPOSER_PROMPT_ROWS_CLASS,
   isTypingOutside,
 } from './ComposerPrompt';
+import {
+  ComposerPromptHeader,
+  closeComposerPromptOnEscape,
+} from './ComposerPromptHeader';
 import { ComposerPromptTextRow } from './ComposerPromptTextRow';
 import { ComposerPromptRowButton } from './PlanApprovalPrompt';
 import { QuestionOptionText } from './QuestionOptionText';
@@ -208,34 +204,26 @@ export function QuestionPrompt({
           : 'contents'
       }
       onKeyDown={(event): void => {
-        if (!expanded || event.key !== 'Escape' || event.defaultPrevented)
-          return;
-        event.preventDefault();
-        onClose();
+        if (expanded) closeComposerPromptOnEscape(event, onClose);
       }}
     >
       {expanded && (
         <>
           {/* The title's first line centres on x's 32px circle. */}
-          <div
-            className={`${
-              step > 0
-                ? COMPOSER_PROMPT_HEADER_WITH_GLYPH_CLASS
-                : COMPOSER_PROMPT_HEADER_CLASS
-            } items-start`}
+          <ComposerPromptHeader
+            {...(step > 0
+              ? {
+                  back: {
+                    label: 'Previous question',
+                    onBack: prompt.back,
+                    disabled: locked,
+                    testId: 'chat-question-back',
+                  },
+                }
+              : {})}
+            progress={{ step, count: stepCount }}
+            close={{ onClose, testId: 'chat-question-close' }}
           >
-            {step > 0 && (
-              <ComposerIconButton
-                capsule
-                tone="strong"
-                aria-label="Previous question"
-                onClick={prompt.back}
-                disabled={locked}
-                data-testid="chat-question-back"
-              >
-                <ChevronLeftMediumIcon size={16} />
-              </ComposerIconButton>
-            )}
             <div
               id={titleId}
               className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 py-1.5 text-s font-medium fg-primary"
@@ -250,25 +238,7 @@ export function QuestionPrompt({
                 <span className="font-normal fg-tertiary">Optional</span>
               )}
             </div>
-            <div className="flex shrink-0 items-center gap-2">
-              {stepCount > 1 && (
-                <QuestionProgress
-                  count={stepCount}
-                  step={step}
-                  density="compact"
-                />
-              )}
-              <ComposerIconButton
-                capsule
-                tone="strong"
-                aria-label="Close"
-                onClick={onClose}
-                data-testid="chat-question-close"
-              >
-                <CloseLargeIcon size={16} />
-              </ComposerIconButton>
-            </div>
-          </div>
+          </ComposerPromptHeader>
 
           {rows.length > 0 && (
             // A long list scrolls within the box rather than covering the chat.

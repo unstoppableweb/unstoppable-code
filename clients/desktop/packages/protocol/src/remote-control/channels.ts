@@ -288,7 +288,8 @@ export const MOBILE_CONTROLLER_CHANNELS = [
  *   browser is directly connected to the account's own computer:
  *   - `installed-items:list-status` reads the status snapshot of installed
  *     plugins, skills, collections and MCP servers; it takes no argument.
- *     `installed-items:changed` is a payload-free notice to read it again.
+ *     `installed-items:changed` is a notice to read it again. A catalog Add
+ *     may carry a refresh token to the invoking browser session.
  *   - `installed-items:set-status` sets an already-installed item to active,
  *     available or disabled. It runs `claude plugin enable/disable`, parks or
  *     restores Codex installs, writes the computer's global plugin
@@ -563,6 +564,7 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
 export const HOSTED_CONTROLLER_CHANNELS: readonly string[] = [
   'activity:changed-files',
   'activity:file-diff',
+  'app-advisor:slack-turn-status',
   'chat:cancel',
   'chat:command',
   'chat:event',

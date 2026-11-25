@@ -1,7 +1,8 @@
 /**
  * The managed Antigravity CLI installs, verifies and reports its status
- * through one owner (antigravity-runtime:status, :install, :cancel and the
- * :progress event), and install stays local-only under remote control. The
+ * through one owner (antigravity-runtime:status, :host-support, :install,
+ * :cancel and the :progress event), and install stays local-only under
+ * remote control. Host support answers from the manifest alone. The
  * download is the real installer against a fake GitHub release: a tiny tgz
  * whose sha256 and sha512 this test computes and pins into the artifact.
  */
@@ -22,6 +23,7 @@ import { c as createTar } from 'tar';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { AntigravityRuntimeStatus } from '@canopy/desktop-shared/types/antigravity-runtime';
 import { IPC_REMOTE_DISPOSITIONS } from '@canopy/desktop-shared/remote-control/channel-dispositions';
+import type * as Verification from '@canopy/desktop-shared/node/managed-runtime/verification';
 import { verifyManagedExecutable } from '@canopy/desktop-shared/node/managed-runtime/verification';
 
 type Handler = (event: unknown, ...args: unknown[]) => unknown;
@@ -91,15 +93,56 @@ jest.mock('../../antigravity/models', () => ({
   },
 }));
 
-// No user copy on PATH: status depends only on the managed copy.
+// No user copy on PATH: status depends only on the managed copy. Each
+// lookup is counted, so a case can prove a read never resolved the CLI.
+let mockResolutions = 0;
 jest.mock('@canopy/desktop-shared/node/antigravity/runtime-resolution', () => ({
-  resolveAntigravityExecutable: (): Promise<string> =>
-    Promise.reject(
+  resolveAntigravityExecutable: (): Promise<string> => {
+    mockResolutions += 1;
+    return Promise.reject(
       new Error('Install Antigravity CLI 1.5.1, then refresh Google models.'),
-    ),
+    );
+  },
 }));
 
+// The real digest check, counted, so a case can prove a read never hashed.
+let mockHashes = 0;
+jest.mock('@canopy/desktop-shared/node/managed-runtime/verification', () => {
+  const actual = jest.requireActual<typeof Verification>(
+    '@canopy/desktop-shared/node/managed-runtime/verification',
+  );
+  return {
+    ...actual,
+    verifyManagedExecutable: (
+      ...args: Parameters<typeof actual.verifyManagedExecutable>
+    ): ReturnType<typeof actual.verifyManagedExecutable> => {
+      mockHashes += 1;
+      return actual.verifyManagedExecutable(...args);
+    },
+  };
+});
+
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { registerAntigravityRuntimeHandlers } from '../antigravity-runtime';
+import { createDesktopProviderHost } from '../../agent-providers/desktop-provider-host';
+import {
+  createDesktopRuntime,
+  type DesktopCanopyDispatcher,
+} from '../../canopy-runtime/desktop-runtime';
+import { createWorkerAgentAdapter } from '../../canopy-runtime/worker-agent-adapter';
+
+// Host support is a projection of worker.agent.provider.platform.get on a
+// real desktop dispatcher over the production desktop provider host.
+let runtime: DesktopCanopyDispatcher | undefined;
+/** Every worker query the handlers dispatch, by name. */
+const dispatched: string[] = [];
+const callerFor = (): CanopyCallerDescriptor => ({
+  principalId: 'desktop-ipc',
+  clientInstanceId: 'antigravity-runtime-owner',
+  authorityId: 'local-desktop',
+  interfaceKind: 'desktop',
+  grants: [],
+});
 
 class FakeContents extends EventEmitter {
   public readonly mainFrame = {};
@@ -168,6 +211,30 @@ function fakeRelease(url: string | URL | Request): Promise<Response> {
   return Promise.reject(new Error(`unexpected fetch ${target.href}`));
 }
 
+/** A release that sends a few bytes, then stalls until finished or aborted. */
+function stalledRelease(served: Archive): {
+  requested: Promise<void>;
+  finish: () => void;
+} {
+  let finish: () => void = () => undefined;
+  let markRequested: () => void = () => undefined;
+  const requested = new Promise<void>((resolve) => {
+    markRequested = resolve;
+  });
+  body = (): BodyInit =>
+    new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.enqueue(served.bytes.subarray(0, 8));
+        finish = (): void => {
+          controller.enqueue(served.bytes.subarray(8));
+          controller.close();
+        };
+        markRequested();
+      },
+    });
+  return { requested, finish: () => finish() };
+}
+
 function event(contents: FakeContents): object {
   return { sender: contents, senderFrame: contents.mainFrame };
 }
@@ -199,11 +266,28 @@ let main: FakeContents;
 let nextWindow = 1;
 
 beforeAll(() => {
-  registerAntigravityRuntimeHandlers();
+  runtime = createDesktopRuntime({
+    shutdownTimeoutMs: 25,
+    workerAgentAdapter: createWorkerAgentAdapter({
+      providerHost: createDesktopProviderHost(),
+      sinkFor: () => null,
+    }),
+  });
+  const dispatcher = runtime;
+  registerAntigravityRuntimeHandlers({
+    dispatcher: {
+      query: (name, params, options) => {
+        dispatched.push(name);
+        return dispatcher.query(name, params, options);
+      },
+    },
+    resolveCaller: callerFor,
+  });
   globalThis.fetch = jest.fn(fakeRelease) as typeof fetch;
 });
-afterAll(() => {
+afterAll(async () => {
   globalThis.fetch = realFetch;
+  await runtime?.shutdown();
 });
 beforeEach(() => {
   mockRoot = mkdtempSync(join(tmpdir(), 'agy-runtime-'));
@@ -214,7 +298,11 @@ beforeEach(() => {
   main = new FakeContents(nextWindow++);
   mockWindows.add(main);
 });
-afterEach(() => {
+afterEach(async () => {
+  // A failed case must not leave an install running for the next one to join.
+  const { shutdownAntigravityRuntimeInstall } =
+    await import('../../antigravity/connection');
+  await shutdownAntigravityRuntimeInstall();
   rmSync(mockRoot, { recursive: true, force: true });
 });
 
@@ -326,20 +414,13 @@ describe('Antigravity managed runtime owner', () => {
   it('cancel stops a running install and leaves nothing installed', async () => {
     const served = await archive('#!/bin/sh\necho cancelled\n');
     pin(served);
-    // A release that sends a few bytes and then stalls until cancelled.
-    body = (): BodyInit =>
-      new ReadableStream<Uint8Array>({
-        start(controller): void {
-          controller.enqueue(served.bytes.subarray(0, 8));
-        },
-      });
+    const release = stalledRelease(served);
     const running = invoke<AntigravityRuntimeStatus>(
       IPC_CHANNELS.antigravityRuntimeInstall,
       main,
       'op-c',
     );
-    for (let tick = 0; tick < 50 && mockSent.length === 0; tick++)
-      await new Promise((resolve) => setTimeout(resolve, 5));
+    await release.requested;
     expect(phases()[0]).toBe('downloading');
 
     await invoke(IPC_CHANNELS.antigravityRuntimeCancel, main, 'op-c');
@@ -359,18 +440,7 @@ describe('Antigravity managed runtime owner', () => {
   it('a joining window closing does not cancel the install', async () => {
     const served = await archive('#!/bin/sh\necho shared\n');
     pin(served);
-    // The release sends a few bytes, then waits until the test lets it finish.
-    let finish: () => void = () => undefined;
-    body = (): BodyInit =>
-      new ReadableStream<Uint8Array>({
-        start(controller): void {
-          controller.enqueue(served.bytes.subarray(0, 8));
-          finish = (): void => {
-            controller.enqueue(served.bytes.subarray(8));
-            controller.close();
-          };
-        },
-      });
+    const release = stalledRelease(served);
     const joiner = new FakeContents(nextWindow++);
     mockWindows.add(joiner);
     const started = invoke<AntigravityRuntimeStatus>(
@@ -378,18 +448,22 @@ describe('Antigravity managed runtime owner', () => {
       main,
       'op-origin',
     );
-    for (let tick = 0; tick < 50 && mockSent.length === 0; tick++)
-      await new Promise((resolve) => setTimeout(resolve, 5));
+    await release.requested;
+    // The owner joins in the same turn it starts watching the window.
+    const watched = new Promise<void>((resolve) => {
+      joiner.on('newListener', (name) => {
+        if (name === 'destroyed') resolve();
+      });
+    });
     const joined = invoke<AntigravityRuntimeStatus>(
       IPC_CHANNELS.antigravityRuntimeInstall,
       joiner,
       'op-joiner',
     );
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await watched;
 
     joiner.emit('destroyed');
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    finish();
+    release.finish();
 
     await expect(started).resolves.toMatchObject({
       installed: true,
@@ -444,6 +518,27 @@ describe('Antigravity managed runtime owner', () => {
     expect(mockMarkCatalogStale).toHaveBeenCalledTimes(1);
   });
 
+  it('host support answers from the manifest without resolving or hashing the CLI', async () => {
+    const served = await archive('#!/bin/sh\necho agy 1.5.1\n');
+    pin(served);
+    body = (): BodyInit => served.bytes;
+    await invoke(IPC_CHANNELS.antigravityRuntimeInstall, main, 'op-1');
+    // A managed copy is installed, so a status read would hash it.
+    mockResolutions = 0;
+    mockHashes = 0;
+    dispatched.length = 0;
+    await expect(
+      invoke(IPC_CHANNELS.antigravityRuntimeHostSupport, main),
+    ).resolves.toBe(true);
+    // The IPC is a projection of the worker query, not a main-only answer.
+    expect(dispatched).toEqual(['worker.agent.provider.platform.get']);
+    mockPlatform = 'win32';
+    await expect(
+      invoke(IPC_CHANNELS.antigravityRuntimeHostSupport, main),
+    ).resolves.toBe(false);
+    expect([mockResolutions, mockHashes]).toEqual([0, 0]);
+  });
+
   it('install is refused on win32', async () => {
     mockPlatform = 'win32';
     await expect(
@@ -468,5 +563,9 @@ describe('Antigravity managed runtime owner', () => {
     expect(IPC_REMOTE_DISPOSITIONS.antigravityRuntimeCancel).toBe('local');
     expect(IPC_REMOTE_DISPOSITIONS.antigravityRuntimeProgress).toBe('local');
     expect(IPC_REMOTE_DISPOSITIONS.antigravityRuntimeStatus).toBe('tunnel');
+    // A controller's picker follows the controlled computer's pin.
+    expect(IPC_REMOTE_DISPOSITIONS.antigravityRuntimeHostSupport).toBe(
+      'tunnel',
+    );
   });
 });

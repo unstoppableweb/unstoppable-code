@@ -25,7 +25,11 @@
  * length.
  */
 import {
+  asWrittenThenSpaced,
+  displayableLabel,
+  ESCAPES_AS_WRITTEN,
   findSecretMaterialRule,
+  type EscapeReadingOptions,
   type SecretMaterialRule,
 } from '../capability-files';
 import { SECRET_ASSIGNMENT_KEYS_SOURCE } from '../secret-redaction';
@@ -38,6 +42,7 @@ import {
   isSharedContainerDefinitionKind,
   neutralizePlaceholderAssignment,
   parseSharedContainerDefinitionDocument,
+  sharedTextLabelCheck,
   SHARED_CONTAINER_DEFINITION_DOCUMENT_PATH,
   type SharedTextCredentialRule,
 } from '../shared-containers/capability-definitions';
@@ -71,41 +76,54 @@ export interface SharedSkillSecretFinding {
 const SKILL_NAME_FINDING_FILE = '[skill name]';
 
 /**
- * A skill name or file path as a refusal may show it. The name comes from the
- * skill's own text, so one that itself looks like a secret is never echoed.
- */
-function displayableFindingLabel(label: string, redacted: string): string {
-  return findSharedTextCredentialRule(label) === null ? label : redacted;
-}
-
-/**
  * The first file of a skill whose text looks like it holds a secret, or
  * null. Pure: no I/O, network or logging, so desktop and the hosted service
  * run the same check (CAN-7226). The skill's name is shared too, so a name
  * that looks like a secret is refused even when no file is; it reads as
- * [redacted name], and a path that looks like one as [redacted path].
+ * [redacted name], and a path that looks like one as [redacted path]. The
+ * name and every file are checked as written first, and only then with each
+ * escape written as text read as a space (CAN-7627).
  */
-export function scanSharedSkillForSecrets(skill: {
-  readonly skillName: string;
-  readonly files: readonly SharedSkillFile[];
-}): SharedSkillSecretFinding | null {
-  const nameRule = findSharedTextCredentialRule(skill.skillName);
-  const named =
-    nameRule === null
-      ? { skillName: skill.skillName }
-      : { skillName: '[redacted name]', nameRule };
-  for (const file of skill.files) {
-    const rule = findSharedTextCredentialRule(file.text);
-    if (rule !== null)
-      return {
-        ...named,
-        file: displayableFindingLabel(file.path, '[redacted path]'),
-        rule,
-      };
-  }
-  return nameRule === null
-    ? null
-    : { ...named, file: SKILL_NAME_FINDING_FILE, rule: nameRule };
+export function scanSharedSkillForSecrets(
+  skill: {
+    readonly skillName: string;
+    readonly files: readonly SharedSkillFile[];
+  },
+  options: EscapeReadingOptions = {},
+): SharedSkillSecretFinding | null {
+  return asWrittenThenSpaced(options, (read) => {
+    const nameRule = findSharedTextCredentialRule(
+      read(skill.skillName),
+      ESCAPES_AS_WRITTEN,
+    );
+    const named = {
+      skillName: displayableLabel(
+        skill.skillName,
+        '[redacted name]',
+        sharedTextLabelCheck,
+      ),
+      ...(nameRule === null ? {} : { nameRule }),
+    };
+    for (const file of skill.files) {
+      const rule = findSharedTextCredentialRule(
+        read(file.text),
+        ESCAPES_AS_WRITTEN,
+      );
+      if (rule !== null)
+        return {
+          ...named,
+          file: displayableLabel(
+            file.path,
+            '[redacted path]',
+            sharedTextLabelCheck,
+          ),
+          rule,
+        };
+    }
+    return nameRule === null
+      ? null
+      : { ...named, file: SKILL_NAME_FINDING_FILE, rule: nameRule };
+  });
 }
 
 /** The rule a shared-container definition document's credential check trips. */
@@ -322,7 +340,7 @@ function blankPlainPipelineExpressions(text: string): string {
     const inner = text.slice(open + 3, close);
     result += text.slice(position, open);
     result +=
-      findSecretMaterialRule(inner) === null
+      findSecretMaterialRule(inner, ESCAPES_AS_WRITTEN) === null
         ? '""'
         : text.slice(open, close + 2);
     position = close + 2;
@@ -336,6 +354,7 @@ function packageReadingRule(reading: string): SecretMaterialRule | null {
       PACKAGE_PLACEHOLDER_ASSIGNMENT_PATTERN,
       neutralizePlaceholderAssignment,
     ),
+    ESCAPES_AS_WRITTEN,
   );
 }
 
@@ -349,14 +368,20 @@ function packageReadingRule(reading: string): SecretMaterialRule | null {
  * split is still found, and with line boundaries kept (CAN-7626). Either
  * reading tripping refuses, and the stripped one runs first, so it only ever
  * refuses more than the stripped reading alone and names the same rule.
+ * Text that trips neither is checked once more, both ways, with each escape
+ * written as text read as a space (asWrittenThenSpaced, CAN-7627).
  */
 export function findPackageTextCredentialRule(
   text: string,
+  options: EscapeReadingOptions = {},
 ): SecretMaterialRule | null {
-  return (
-    packageReadingRule(stripControlCharacters(text)) ??
-    packageReadingRule(keepLineBoundaries(text))
-  );
+  return asWrittenThenSpaced(options, (read) => {
+    const reading = read(text);
+    return (
+      packageReadingRule(stripControlCharacters(reading)) ??
+      packageReadingRule(keepLineBoundaries(reading))
+    );
+  });
 }
 
 // Built per call, not at module load: @canopy/protocol loads in test and
@@ -375,8 +400,9 @@ function decodePackageFile(bytes: Uint8Array): string {
  */
 export function findPackageFileCredentialRule(
   bytes: Uint8Array,
+  options: EscapeReadingOptions = {},
 ): SecretMaterialRule | null {
-  return findPackageTextCredentialRule(decodePackageFile(bytes));
+  return findPackageTextCredentialRule(decodePackageFile(bytes), options);
 }
 
 const TEXT_ESCAPE =
@@ -415,7 +441,9 @@ function escapeDecodedSecretRule(
   text: string,
 ): SharedTextCredentialRule | null {
   const decoded = escapeDecodedCopy(text);
-  return decoded === null ? null : findSharedTextCredentialRule(decoded);
+  return decoded === null
+    ? null
+    : findSharedTextCredentialRule(decoded, ESCAPES_AS_WRITTEN);
 }
 
 /**
@@ -443,19 +471,19 @@ function decodedJsonSecretRule(
   } catch {
     return 'unreadable';
   }
-  const whole = findSharedTextCredentialRule(decoded);
+  const whole = findSharedTextCredentialRule(decoded, ESCAPES_AS_WRITTEN);
   if (whole !== null) return whole;
   const pending: unknown[] = [parsed];
   while (pending.length > 0) {
     const value = pending.pop();
     if (typeof value === 'string') {
-      const rule = findSharedTextCredentialRule(value);
+      const rule = findSharedTextCredentialRule(value, ESCAPES_AS_WRITTEN);
       if (rule !== null) return rule;
     } else if (Array.isArray(value)) {
       for (const item of value) pending.push(item);
     } else if (typeof value === 'object' && value !== null) {
       for (const [key, item] of Object.entries(value)) {
-        const keyRule = findSharedTextCredentialRule(key);
+        const keyRule = findSharedTextCredentialRule(key, ESCAPES_AS_WRITTEN);
         if (keyRule !== null) return keyRule;
         if (
           typeof item === 'string' ||
@@ -463,8 +491,14 @@ function decodedJsonSecretRule(
           typeof item === 'boolean'
         ) {
           const pairRule =
-            findSharedTextCredentialRule(`${key}: ${String(item)}`) ??
-            findSharedTextCredentialRule(`${key}=${String(item)}`);
+            findSharedTextCredentialRule(
+              `${key}: ${String(item)}`,
+              ESCAPES_AS_WRITTEN,
+            ) ??
+            findSharedTextCredentialRule(
+              `${key}=${String(item)}`,
+              ESCAPES_AS_WRITTEN,
+            );
           if (pairRule !== null) return pairRule;
         }
         pending.push(item);
@@ -480,18 +514,24 @@ function decodedJsonSecretRule(
  * text, its decoded JSON and its escape-decoded copy. `unreadable` means the
  * file is JSON too deeply nested to check. The desktop analysis runs this on
  * every member file of a share or cloud copy, so the hosted side can run the
- * same check (CAN-7482).
+ * same check (CAN-7482). That whole sequence runs as written first, and
+ * only then on the text with each escape written as text read as a space
+ * (CAN-7627).
  */
 export function findSharedMemberFileCredentialRule(
   bytes: Uint8Array,
+  options: EscapeReadingOptions = {},
 ): SecretMaterialRule | SharedTextCredentialRule | 'unreadable' | null {
   const text = decodePackageFile(bytes);
-  return (
-    findPackageTextCredentialRule(text) ??
-    findSharedTextCredentialRule(text) ??
-    decodedJsonSecretRule(text) ??
-    escapeDecodedSecretRule(text)
-  );
+  return asWrittenThenSpaced(options, (read) => {
+    const reading = read(text);
+    return (
+      findPackageTextCredentialRule(reading, ESCAPES_AS_WRITTEN) ??
+      findSharedTextCredentialRule(reading, ESCAPES_AS_WRITTEN) ??
+      decodedJsonSecretRule(reading) ??
+      escapeDecodedSecretRule(reading)
+    );
+  });
 }
 
 /** Which secret check a package entry tripped. */
@@ -589,19 +629,40 @@ function parseJson(text: string): { ok: true; value: unknown } | { ok: false } {
  * secret material here. A document that does not parse or validate is
  * checked as raw bytes and, when it is JSON, on every decoded string and key,
  * so neither escapes nor unknown fields can hide a value. Every other entry is
- * a member file, read with findPackageFileCredentialRule.
+ * a member file, read with findPackageFileCredentialRule. All of that runs on
+ * the bytes as written first, and only then on the text with each escape
+ * written as text read as a space (CAN-7627).
  */
-export function findPackageEntryCredential(entry: {
-  readonly definitionDocument: boolean;
-  readonly bytes: Uint8Array;
-}): PackageEntryCredentialFinding | null {
-  if (entry.definitionDocument) {
-    const parsed = parseSharedContainerDefinitionDocument(entry.bytes, {
+export function findPackageEntryCredential(
+  entry: {
+    readonly definitionDocument: boolean;
+    readonly bytes: Uint8Array;
+  },
+  options: EscapeReadingOptions = {},
+): PackageEntryCredentialFinding | null {
+  const text = decodePackageFile(entry.bytes);
+  return asWrittenThenSpaced(options, (read) => {
+    const reading = read(text);
+    return packageEntryFinding(
+      entry.definitionDocument,
+      reading === text ? entry.bytes : new TextEncoder().encode(reading),
+    );
+  });
+}
+
+function packageEntryFinding(
+  definitionDocument: boolean,
+  bytes: Uint8Array,
+): PackageEntryCredentialFinding | null {
+  if (definitionDocument) {
+    const parsed = parseSharedContainerDefinitionDocument(bytes, {
       placeholderContents: 'checked',
+      escapes: 'as-written',
     });
     if (parsed.ok) {
       return firstJsonFinding(parsed.value, (text, kind, path) =>
-        kind === 'key' && findSecretMaterialRule(text) !== null
+        kind === 'key' &&
+        findSecretMaterialRule(text, ESCAPES_AS_WRITTEN) !== null
           ? { rule: DEFINITION_CREDENTIAL_RULE, field: path || 'document' }
           : null,
       );
@@ -613,16 +674,16 @@ export function findPackageEntryCredential(entry: {
         return { rule: DEFINITION_CREDENTIAL_RULE, field, nextStep };
     }
   }
-  const raw = findPackageFileCredentialRule(entry.bytes);
+  const raw = findPackageFileCredentialRule(bytes, ESCAPES_AS_WRITTEN);
   if (raw !== null) return { rule: raw };
-  if (!entry.definitionDocument) return null;
-  const decoded = parseJson(decodePackageFile(entry.bytes));
+  if (!definitionDocument) return null;
+  const decoded = parseJson(decodePackageFile(bytes));
   if (!decoded.ok) return null;
   return firstJsonFinding(decoded.value, (text, kind) => {
     const rule =
       kind === 'key'
-        ? findSecretMaterialRule(text)
-        : findPackageTextCredentialRule(text);
+        ? findSecretMaterialRule(text, ESCAPES_AS_WRITTEN)
+        : findPackageTextCredentialRule(text, ESCAPES_AS_WRITTEN);
     return rule === null ? null : { rule };
   });
 }

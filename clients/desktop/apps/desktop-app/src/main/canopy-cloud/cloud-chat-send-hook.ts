@@ -279,7 +279,7 @@ export function withCloudChatSendHook(
     openChannel: (request) => connection.openChannel(request),
     onChannel: (listener, options) => connection.onChannel(listener, options),
     close: (error) => connection.close(error),
-    send: async (message: CanopyJsonRpcMessage) => {
+    send: async (message: CanopyJsonRpcMessage, options) => {
       if ('method' in message && message.method === 'core.chat.message.send') {
         const margin = Math.min(CLOUD_CHAT_SEND_HOOK_MARGIN_MS, timeoutMs / 2);
         const notes = await withTimeout(
@@ -311,7 +311,7 @@ export function withCloudChatSendHook(
         if (key !== null && owed.has(key)) bound(awaiting, message.id, key);
       } else if ('method' in message && message.method === 'core.chat.archive')
         await onCloudChatArchived(message.params, deps);
-      return connection.send(message);
+      return connection.send(message, options);
     },
   };
 }

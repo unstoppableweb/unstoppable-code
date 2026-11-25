@@ -325,6 +325,16 @@ export type MarketplaceOperationKind =
   | 'remove'
   | 'install-built-in-plugin';
 
+/** Desktop-local identity of the official Codex listing seen at click time. */
+export interface SelectedOfficialCodexListing {
+  /** Provider manifest path, not the plugin's install or source directory. */
+  marketplacePath: string;
+  /** Provider-reported name, not the app's marketplace ID or display name. */
+  marketplaceName: string;
+  /** Exact provider facet name, without display or case normalization. */
+  pluginName: string;
+}
+
 /**
  * Request to install a locally managed (built-in or curated) plugin for one
  * or both providers.
@@ -340,6 +350,8 @@ export interface InstallBuiltInPluginRequest {
   pluginName: string;
   /** One or both providers to install for. */
   providers: PluginProvider[];
+  /** Selection to verify, not authorization or a trusted provider path. */
+  selectedOfficialCodexListing?: SelectedOfficialCodexListing;
 }
 
 /**

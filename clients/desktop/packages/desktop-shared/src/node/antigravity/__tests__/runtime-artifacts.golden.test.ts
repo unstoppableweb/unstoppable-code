@@ -8,6 +8,7 @@ import { getAntigravityRuntimeRootDir } from '@canopy/execution-engine/pipelines
 import {
   ANTIGRAVITY_MANAGED_EXECUTABLE_NAME,
   getAntigravityRuntimeArtifact,
+  isAntigravityPlatformSupported,
   managedAntigravityExecutable,
 } from '../runtime-artifacts';
 import { ANTIGRAVITY_RUNTIME_VERSION } from '../runtime-metadata';
@@ -21,6 +22,12 @@ describe('Antigravity runtime artifacts', () => {
       ANTIGRAVITY_RUNTIME_VERSION,
     );
     expect(getAntigravityRuntimeArtifact('darwin', 'x64')?.version).toBe(
+      ANTIGRAVITY_RUNTIME_VERSION,
+    );
+    expect(getAntigravityRuntimeArtifact('linux', 'x64')?.version).toBe(
+      ANTIGRAVITY_RUNTIME_VERSION,
+    );
+    expect(getAntigravityRuntimeArtifact('linux', 'arm64')?.version).toBe(
       ANTIGRAVITY_RUNTIME_VERSION,
     );
   });
@@ -49,10 +56,49 @@ describe('Antigravity runtime artifacts', () => {
     });
   });
 
-  it('returns undefined for win32 and linux', () => {
+  // CAN-6718: Linux has no OS signature to check, so its launch check
+  // compares the executable with these digests. They are Google's glibc
+  // builds from the same 1.5.1 GitHub release.
+  it('returns the linux-x64 artifact', () => {
+    expect(getAntigravityRuntimeArtifact('linux', 'x64')).toEqual({
+      version: '1.5.1',
+      url: `${BASE}/agy_cli_linux_x64.tar.gz`,
+      integrity:
+        'sha512-9wQGZU69lm8hFCQzglni040JnEhzTpAdwGl1Bj5aATfVW265Nmt1mDxpCLvCCukqJhdla7GR2O1v5CnWVLyk9Q==',
+      archiveBytes: 72209583,
+      executableSha256:
+        '72738cf0445918483956a5f0da33abdfcfb21a12dd9a421fd57d063782826669',
+    });
+  });
+
+  it('returns the linux-arm64 artifact', () => {
+    expect(getAntigravityRuntimeArtifact('linux', 'arm64')).toEqual({
+      version: '1.5.1',
+      url: `${BASE}/agy_cli_linux_arm64.tar.gz`,
+      integrity:
+        'sha512-/fikY+W/Ts2KAbaKU+AG564CVueuNRo545xm4E4nXG0ItLk/QjzFctI0hx97+FLEUj4BcVak756n3qGq/7Cixg==',
+      archiveBytes: 68424392,
+      executableSha256:
+        'd2b02615f4d0f8619966653a74b8f89160d12996ce763752ccc5e27a58029565',
+    });
+  });
+
+  it('returns undefined for win32 and unpinned architectures', () => {
     expect(getAntigravityRuntimeArtifact('win32', 'x64')).toBeUndefined();
-    expect(getAntigravityRuntimeArtifact('linux', 'arm64')).toBeUndefined();
+    expect(getAntigravityRuntimeArtifact('win32', 'arm64')).toBeUndefined();
+    expect(getAntigravityRuntimeArtifact('linux', 'ia32')).toBeUndefined();
+    expect(getAntigravityRuntimeArtifact('linux', 'arm')).toBeUndefined();
     expect(getAntigravityRuntimeArtifact('darwin', 'ia32')).toBeUndefined();
+  });
+
+  it('supports exactly the hosts with a pinned artifact', () => {
+    expect(isAntigravityPlatformSupported('darwin', 'arm64')).toBe(true);
+    expect(isAntigravityPlatformSupported('darwin', 'x64')).toBe(true);
+    expect(isAntigravityPlatformSupported('linux', 'x64')).toBe(true);
+    expect(isAntigravityPlatformSupported('linux', 'arm64')).toBe(true);
+    expect(isAntigravityPlatformSupported('win32', 'x64')).toBe(false);
+    expect(isAntigravityPlatformSupported('win32', 'arm64')).toBe(false);
+    expect(isAntigravityPlatformSupported('linux', 'arm')).toBe(false);
   });
 
   it('managedAntigravityExecutable returns the versioned path when present', () => {

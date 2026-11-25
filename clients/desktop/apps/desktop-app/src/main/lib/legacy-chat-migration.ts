@@ -44,8 +44,9 @@ import {
   type ChatMigrationSource,
   type ChatMigrationEntry,
 } from './chat-storage-v2';
+import { SettlementAnswerTracker } from '@canopy/agent-transcript/settlement';
 import {
-  buildPersistedTurnInterruptedMutations,
+  buildPersistedTurnSettlement,
   collectPersistedSettlementEvidence,
   hasOpenPersistedChatTurn,
   settlePersistedInterruptedStream,
@@ -531,20 +532,44 @@ export async function loadLegacyChatMigrationSource(
     const tab = state.tabsFile.tabs.find(
       (candidate) => candidate.id === chatId,
     );
+    // Evidence drops transcript text, so the answer is classified on the
+    // original rows as they stream past, within the orphan's own turn.
+    const answer = new SettlementAnswerTracker(
+      runtime.activeTurn?.userMessageId ??
+        hydrateChatTurnState(runtime.turn)?.current?.userMessageId,
+    );
     const evidence = tab
       ? await collectPersistedSettlementEvidence(
           input.messages(tab.messages).iterate(),
           completedAt,
+          answer,
         )
       : [];
-    for (const mutation of buildPersistedTurnInterruptedMutations(
+    const settlement = await buildPersistedTurnSettlement(
       chatId,
       evidence,
       runtime,
       completedAt,
       [],
       tab,
-    ))
+      {
+        endsInAnswer: answer.endsInAnswer,
+        pendingQuestion: (state.tabsFile.pendingQuestions ?? []).some(
+          (question) =>
+            question.chatId === chatId && question.delivery !== 'async',
+        ),
+        terminalActive:
+          tab?.claudeTerminal !== undefined &&
+          ['running', 'starting'].includes(tab.claudeTerminal.turnState),
+        // Loaded on demand: only a turn that otherwise completed reads the
+        // registry, and the migration graph stays free of it until then.
+        hasShutdownRecord: async (userMessageId) =>
+          (
+            await import('./usage-limited-chats-registry')
+          ).hasShutdownRecordForTurn(chatId, userMessageId),
+      },
+    );
+    for (const mutation of settlement.mutations)
       if (mutation.type !== 'message.upserted')
         state = applyMutation(state, mutation);
   }

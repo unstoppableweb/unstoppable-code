@@ -5,7 +5,7 @@ import {
   findGatewayForOrganization,
   selectGatewayForOwner,
   useOrgModelGateways,
-  usePersonalModelGateway,
+  useRoutedPersonalModelGateway,
 } from '@/hooks/useOrgModelGateway';
 import { useModelCatalogStore } from '@/stores/modelCatalogStore';
 import {
@@ -46,7 +46,7 @@ export function ModelGatewayKeyBanner({
   selectedGatewayOrganizationId?: string;
 }): JSX.Element | null {
   const gateways = useOrgModelGateways();
-  const personal = usePersonalModelGateway();
+  const personal = useRoutedPersonalModelGateway();
   const activeOwner = useModelCatalogStore((state) => state.activeOwner);
   const gateway = useMemo(() => {
     if (selectedGatewayOrganizationId === personal?.organizationId)
@@ -84,7 +84,9 @@ export function ModelGatewayKeyBanner({
           await window.api.loadModelGatewayCredential(organizationId);
         if (cancelled) return;
         if (!record.apiKey.trim()) {
-          setKeyState({ status: 'missing' });
+          setKeyState({
+            status: record.keyForOtherUrl ? 'stale-endpoint' : 'missing',
+          });
           return;
         }
         if (

@@ -1,5 +1,6 @@
 import { useCanopyCloudAccountState } from './useCanopyCloudAccountState';
 import { useLocalModelGateway } from './useLocalModelGateway';
+import { useModelGatewayDeviceOptOuts } from './useModelGatewayDeviceOptOuts';
 import {
   effectivePersonalModelGateway,
   localModelGatewayProjection,
@@ -167,6 +168,19 @@ export function useOrgModelGateways(): OrgModelGateway[] | undefined {
  * the account's own, or the device AI gateway while the account names no
  * Personal organization (signed out or a guest).
  */
+/**
+ * {@link usePersonalModelGateway}, without a gateway this computer opts out
+ * of (CAN-7644). "Use only my AI gateway" keeps it. For surfaces about
+ * sending here, such as the key banner; settings still show the gateway.
+ */
+export function useRoutedPersonalModelGateway(): OrgModelGateway | null {
+  const personal = usePersonalModelGateway();
+  const optOuts = useModelGatewayDeviceOptOuts();
+  if (!personal || personal.enforced) return personal;
+  const id = normalizeUuid(personal.organizationId);
+  return id !== null && optOuts?.has(id) ? null : personal;
+}
+
 export function usePersonalModelGateway(): OrgModelGateway | null {
   const { account } = useCanopyCloudAccountState();
   const device = useLocalModelGateway();

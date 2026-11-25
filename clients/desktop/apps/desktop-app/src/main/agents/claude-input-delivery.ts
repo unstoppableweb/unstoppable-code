@@ -14,6 +14,7 @@ import type { ChatInputSubmitResult } from './types';
 
 interface Attempt {
   yielded?: boolean;
+  refuseBeforeHandoffOnDeadline?: boolean;
   userMessageId: string;
   admitted: boolean;
   pickedUp: boolean;
@@ -52,6 +53,7 @@ export interface ClaudeInputSubmitOptions {
    * so expiry reads as `pending` and later lifecycle events settle it.
    */
   pendingOnDeadline?: boolean;
+  refuseBeforeHandoffOnDeadline?: boolean;
 }
 
 const UNCONFIRMED_REASON =
@@ -208,6 +210,15 @@ export class ClaudeInputDelivery {
         attempt.pickedUp ||
         attempt.withdrawn ||
         !attempt.settle
+      )
+        return;
+      if (
+        attempt.refuseBeforeHandoffOnDeadline &&
+        this.refuseBeforeHandoff(
+          id,
+          'The session did not take the message before the steering deadline',
+          'steering-unavailable',
+        )
       )
         return;
       attempt.pending = true;
@@ -443,6 +454,9 @@ export class ClaudeInputDelivery {
       };
     const attempt: Attempt = {
       userMessageId,
+      ...(options.refuseBeforeHandoffOnDeadline
+        ? { refuseBeforeHandoffOnDeadline: true }
+        : {}),
       admitted: false,
       pickedUp: false,
       withdrawn: false,
@@ -496,6 +510,34 @@ export class ClaudeInputDelivery {
     });
   }
 
+  /** A staged input can be refused with proof up to the SDK yield. */
+  refuseBeforeHandoff(
+    id: string,
+    reason: string,
+    refusal: ChatInputRefusalCode,
+  ): boolean {
+    const attempt = this.attempts.get(id);
+    if (
+      !attempt ||
+      this.disposed ||
+      attempt.yielded ||
+      attempt.pending ||
+      attempt.unknown ||
+      attempt.admitted ||
+      attempt.pickedUp ||
+      attempt.withdrawn
+    )
+      return false;
+
+    if (refusal === 'handoff-interrupted') {
+      attempt.withdrawn = true;
+      this.settleWithdrawn(id, attempt);
+    } else {
+      this.rejectUnaccepted(id, reason, refusal);
+    }
+    return true;
+  }
+
   endTurn(): void {
     if (this.disposed) return;
     this.frozen = true;
@@ -522,6 +564,17 @@ export class ClaudeInputDelivery {
         attemptId: id,
         reason: 'This session does not own the message',
       };
+    if (
+      attempt.refuseBeforeHandoffOnDeadline &&
+      this.refuseBeforeHandoff(
+        id,
+        'Submission withdrawn before delivery',
+        'handoff-interrupted',
+      )
+    ) {
+      this.observation(id, 'withdrawn');
+      return { kind: 'withdrawn', attemptId: id, evidenceId: id };
+    }
     try {
       const method = this.query?.cancelAsyncMessage;
       if (typeof method !== 'function')
@@ -626,8 +679,18 @@ export class ClaudeInputDelivery {
     }
   }
 
-  dispose(): void {
+  dispose(cause: 'interrupted' | 'session-ended' = 'interrupted'): void {
     if (this.disposed) return;
+    for (const [id, attempt] of this.attempts) {
+      if (attempt.refuseBeforeHandoffOnDeadline)
+        this.refuseBeforeHandoff(
+          id,
+          'The session ended before it took the message',
+          cause === 'session-ended'
+            ? 'session-not-steerable'
+            : 'handoff-interrupted',
+        );
+    }
     this.disposed = true;
     this.onEligibilityChanged();
     for (const [id, attempt] of Array.from(this.attempts)) {

@@ -196,7 +196,7 @@ function AiGatewaySetupDialogBody({
     let cancelled = false;
     setCurrent({ status: 'loading' });
     void client.read('account.settings.ai-gateway.read', {}).then(
-      ({ gateway }) => {
+      ({ gateway, useInCloudChats }) => {
         if (cancelled) return;
         // A promotion since the account read: reload rather than save here.
         if (gateway && gateway.organizationId !== organizationId) {
@@ -205,7 +205,7 @@ function AiGatewaySetupDialogBody({
         }
         setCurrent({
           status: 'ready',
-          config: personalGatewayEditorConfig(gateway),
+          config: personalGatewayEditorConfig(gateway, useInCloudChats),
         });
       },
       () => {

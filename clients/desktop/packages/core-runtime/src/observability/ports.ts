@@ -152,6 +152,8 @@ export interface PipelineStepOutputObservation {
   stepId: string;
   attempt: number;
   iteration?: number;
+  /** The resumed attempt; absent before the first recovery (CAN-7305). */
+  recovery?: number;
   data: string;
 }
 

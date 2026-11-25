@@ -1,7 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import type { CanopyClient } from '@canopy/app-core';
+import type {
+  CanopyClient,
+  InstalledItemsChangedEvent,
+} from '@canopy/app-core';
 import type {
   InstalledItemSnapshot,
   InstalledItemTarget,
@@ -42,6 +45,11 @@ export interface InstalledItemStatusSourceOptions {
    * when the host answered; never for a failed or unanswered request.
    */
   readonly onRemoved?: (removed: readonly InstalledItemTarget[]) => void;
+  /** Per subscriber: schedule a read, or reuse a read for the same mutation. */
+  readonly onStatusChange?: (
+    event: InstalledItemsChangedEvent,
+    refresh: () => Promise<boolean>,
+  ) => void;
 }
 
 /**
@@ -92,12 +100,18 @@ export function installedItemStatusSourceFromClient(
       if (result.removed.length > 0) options.onRemoved?.(result.removed);
       return result;
     },
-    subscribe: (onChange) =>
-      client.subscribe('installedItems.changed', () => onChange()),
+    subscribe: (refresh) =>
+      client.subscribe('installedItems.changed', (event) => {
+        if (options.onStatusChange === undefined) void refresh();
+        else options.onStatusChange(event, refresh);
+      }),
   };
 }
 
-export interface UseClientInstalledItemStatusesInput {
+export interface UseClientInstalledItemStatusesInput extends Pick<
+  InstalledItemStatusSourceOptions,
+  'onStatusChange'
+> {
   /** The host client, or null when the page has none to read from. */
   readonly client: CanopyClient | null;
   /** Shown while the host can't serve status. */
@@ -127,6 +141,7 @@ export function useClientInstalledItemStatuses({
   unsupportedReason,
   generation,
   onRemoved,
+  onStatusChange,
 }: UseClientInstalledItemStatusesInput): InstalledItemStatusController & {
   readonly canUninstall: boolean;
 } {
@@ -151,10 +166,11 @@ export function useClientInstalledItemStatuses({
             onHostOutdated: (message) =>
               setOutdated({ client, generation, message }),
             onRemoved,
+            onStatusChange,
           })
         : null,
     // `generation` rebuilds the source, so a reopened connection reads again.
-    [client, statusOn, outdatedMessage, generation, onRemoved],
+    [client, statusOn, outdatedMessage, generation, onRemoved, onStatusChange],
   );
   const reason = outdatedMessage ?? unsupportedReason;
   const controller = useInstalledItemStatuses(source, reason);
@@ -173,9 +189,26 @@ export function useClientInstalledItemStatuses({
       : source !== null
         ? LOADING
         : { kind: 'unsupported', reason };
-  const { pendingKeys, refresh, setStatus, uninstall } = controller;
+  const { pendingKeys, refresh, refreshAndReport, setStatus, uninstall } =
+    controller;
   return useMemo(
-    () => ({ state, pendingKeys, refresh, setStatus, uninstall, canUninstall }),
-    [state, pendingKeys, refresh, setStatus, uninstall, canUninstall],
+    () => ({
+      state,
+      pendingKeys,
+      refresh,
+      refreshAndReport,
+      setStatus,
+      uninstall,
+      canUninstall,
+    }),
+    [
+      state,
+      pendingKeys,
+      refresh,
+      refreshAndReport,
+      setStatus,
+      uninstall,
+      canUninstall,
+    ],
   );
 }

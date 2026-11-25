@@ -577,6 +577,11 @@ export interface AgentAuditEntry {
   stepId?: string;
   attempt?: number;
   /**
+   * The resumed attempt of a paused pipeline step (CAN-7305). Absent before
+   * the first recovery; each resumed attempt has its own record.
+   */
+  recovery?: number;
+  /**
    * Chat surface that executed this turn. Present only on chat event types
    * (worktree/standalone/app-advisor/plan chats); older persisted entries
    * may omit it, in which case `'canopy'` is implied.

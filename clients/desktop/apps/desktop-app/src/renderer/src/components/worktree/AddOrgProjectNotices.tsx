@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { Notice } from '@canopy/ui-shared';
+import { DesktopRestartAppAction } from '@/components/shared/DesktopRestartAppAction';
 import { brandText } from '@/lib/brand';
 import {
   orgCreateFolderRefusalText,
@@ -13,17 +14,32 @@ import {
  * Presentational: the dialog owns the draft, the folder check and the create.
  */
 
+/**
+ * A failure only a relaunch can recover (CAN-7137): the catalog's title leads,
+ * its description follows as `message`, and the notice offers Restart app.
+ */
+interface AddOrgProjectRecovery {
+  readonly title?: string;
+  readonly recovery?: 'restart_app';
+}
+
 /** What went wrong with the last create, as the dialog shows it. */
 export type AddOrgProjectCreateError =
   /** Nothing was created; the fields stay editable. */
-  | { readonly kind: 'failed'; readonly message: string }
+  | ({
+      readonly kind: 'failed';
+      readonly message: string;
+    } & AddOrgProjectRecovery)
   /** The per-member cap: the create action stays disabled, with no Try again. */
   | { readonly kind: 'limit-reached'; readonly message: string }
   /**
    * The project exists in the organization but not on this computer. The
    * fields lock and Try again only sets up that same project.
    */
-  | { readonly kind: 'setup-failed'; readonly message: string };
+  | ({
+      readonly kind: 'setup-failed';
+      readonly message: string;
+    } & AddOrgProjectRecovery);
 
 /**
  * Shown above every option that makes a project the organization owns, only
@@ -52,12 +68,17 @@ export function OrgProjectCreateErrorNotice({
 }: {
   readonly error: AddOrgProjectCreateError;
 }): JSX.Element {
+  const recovery = error.kind === 'limit-reached' ? undefined : error;
   return (
     <Notice
       errorSource="add-workspace-org-error"
       data-testid="add-workspace-org-error"
       data-error-kind={error.kind}
       intent={error.kind === 'limit-reached' ? 'attention' : 'destructive'}
+      {...(recovery?.title === undefined ? {} : { title: recovery.title })}
+      {...(recovery?.recovery === 'restart_app'
+        ? { actions: <DesktopRestartAppAction /> }
+        : {})}
     >
       {error.message}
     </Notice>

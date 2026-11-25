@@ -84,6 +84,23 @@ function visible(
       };
 }
 
+interface ScriptActionsState {
+  readonly key: string | null;
+  readonly snapshot: ScriptActionsSnapshot | null;
+  readonly status: ScriptActionsLoadStatus;
+  readonly error: string | null;
+  readonly appError: AppError | null;
+}
+
+/** One idle state, so resetting an idle hook does not render its host again. */
+const IDLE_STATE: ScriptActionsState = {
+  key: null,
+  snapshot: null,
+  status: 'idle',
+  error: null,
+  appError: null,
+};
+
 /**
  * Script-action snapshot for one project/worktree. Loads on mount, refreshes on
  * `scriptActions.changed`, window focus and after every write, and drops
@@ -116,19 +133,7 @@ export function useScriptActionsWithClient(
   const context: ScriptActionsContext | null =
     supported && projectId && worktreeId ? { projectId, worktreeId } : null;
   const key = contextKey(context);
-  const [state, setState] = useState<{
-    key: string | null;
-    snapshot: ScriptActionsSnapshot | null;
-    status: ScriptActionsLoadStatus;
-    error: string | null;
-    appError: AppError | null;
-  }>({
-    key: null,
-    snapshot: null,
-    status: 'idle',
-    error: null,
-    appError: null,
-  });
+  const [state, setState] = useState<ScriptActionsState>(IDLE_STATE);
   // Each target/mount gets a generation; late responses for an older one are dropped.
   const generationRef = useRef(0);
   // Rendering order is independent from submission authority: focus/list events
@@ -220,13 +225,7 @@ export function useScriptActionsWithClient(
     authorityRef.current += 1;
     keyRef.current = key;
     if (key === null) {
-      setState({
-        key: null,
-        snapshot: null,
-        status: 'idle',
-        error: null,
-        appError: null,
-      });
+      setState(IDLE_STATE);
       return undefined;
     }
     void load('list');

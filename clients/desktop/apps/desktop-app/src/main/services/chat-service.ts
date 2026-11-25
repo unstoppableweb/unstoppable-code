@@ -2163,6 +2163,9 @@ function chatSummaryEntity(input: {
       : undefined,
     providerType: input.tab.providerType,
     executionHarness: input.tab.executionHarness,
+    ...(input.tab.claudeConnectorAvailability
+      ? { claudeConnectorAvailability: input.tab.claudeConnectorAvailability }
+      : {}),
     modelHarnessLocked:
       hasChatContinuationSession(input.tab) ||
       (input.tab.transcript?.messageCount ??

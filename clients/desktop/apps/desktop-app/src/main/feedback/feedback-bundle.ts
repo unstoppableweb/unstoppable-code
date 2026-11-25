@@ -32,9 +32,18 @@ import {
   release,
   totalmem,
   type,
+  userInfo,
   version,
 } from 'node:os';
-import { dirname, join, posix, relative, resolve, sep } from 'node:path';
+import {
+  dirname,
+  join,
+  posix,
+  relative,
+  resolve,
+  sep,
+  win32 as win32Path,
+} from 'node:path';
 import { createInterface } from 'node:readline';
 import { finished } from 'node:stream/promises';
 import { app } from 'electron';
@@ -657,7 +666,7 @@ async function awaitFeedbackMainLogFence(): Promise<FeedbackMainLogFence> {
 
 async function includeAppLogs(builder: FeedbackBundleBuilder): Promise<void> {
   const platform = hostPlatformOperatingSystem();
-  if (platform !== 'darwin' && platform !== 'linux') {
+  if (platform !== 'darwin' && platform !== 'linux' && platform !== 'win32') {
     return;
   }
   if (platform === 'darwin') {
@@ -686,7 +695,27 @@ async function includeAppLogs(builder: FeedbackBundleBuilder): Promise<void> {
   await builder.addFileIfSafe(appUiLog, zipPath, {
     sourceRoot: dirname(appUiLog),
     scrub: 'log-entries',
+    // Windows logs carry the profile path, and with it the account name, in
+    // drive, UNC and escaped forms (CAN-6895). macOS and Linux copies are
+    // unchanged.
+    ...(platform === 'win32'
+      ? { scrubOptions: { redactPathUserNames: windowsAccountNames() } }
+      : {}),
   });
+}
+
+/** The account names a Windows profile path can hold. */
+function windowsAccountNames(): string[] {
+  const names = new Set<string>();
+  const profileName = win32Path.basename(getFeedbackHomeDir());
+  if (profileName !== '') names.add(profileName);
+  try {
+    const { username } = userInfo();
+    if (username !== '') names.add(username);
+  } catch {
+    // The profile folder name still covers the usual path.
+  }
+  return [...names];
 }
 
 /** The log and diagnostics collectors, for goldens that read what a bundle copies. */

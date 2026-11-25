@@ -15,6 +15,7 @@ import {
   createW5CommittedProjection,
   w5ProjectionFileKey,
   type W5CommittedProjection,
+  type W5ProjectionServe,
 } from './committed-projection';
 import { isW5CaptureLimitRefusal } from './record-port/batching-reader';
 
@@ -23,8 +24,8 @@ import { isW5CaptureLimitRefusal } from './record-port/batching-reader';
  * S-9): the W5e cache step, broad refill and own-commit refill. Host-neutral
  * and timer-free; the host holds the instance, supplies its capture and
  * retries what is still owed. TRANSITIONAL compatibility path, replaced by
- * W10's core read model (CAN-7153). Until a reader is switched onto it
- * (CAN-7155 PRs 3-4) nothing consults it.
+ * W10's core read model (CAN-7153). The dispatcher's workspace reads consult
+ * its projection (CAN-7155 PR 3, Seam A); direct readers follow in PR 4.
  *
  * Capture evidence carries no log identity. A capture shows a new log at
  * once only when its commit id or abandoned-commit count is below what one
@@ -33,7 +34,7 @@ import { isW5CaptureLimitRefusal } from './record-port/batching-reader';
  * new log at any commit id is replaced by the next broad refill (the bridge
  * plans one on every snapshot, epoch change included), and log-wide state
  * (abandonment, unresolved counts) always comes from the current log. Until
- * it completes, the old projection keeps serving. Revisit when the capture
+ * it completes, the serving token is revoked. Revisit when the capture
  * evidence carries a log identity.
  */
 
@@ -57,6 +58,14 @@ export type W5ReadCacheListener = (
 ) => void;
 
 export interface W5CommittedReadCache {
+  /** The only whole-cache serving authority; terminal revocations last for life. */
+  revoke(terminal?: boolean): void;
+  /** Hosts must not schedule recovery work after a lifetime-ending refusal. */
+  terminallyRevoked(): boolean;
+  /** Opening a stream permits a future broad refill, never serving by itself. */
+  setStreamReady(live: boolean): void;
+  serving(): boolean;
+  serve(request: W5CaptureRequest): W5ProjectionServe | undefined;
   /** The served projection; a completed broad refill or a new log replaces it. */
   projection(): W5CommittedProjection;
   /**
@@ -64,17 +73,22 @@ export interface W5CommittedReadCache {
    * failed one leaves every held file dirty until another completes.
    */
   warmed(): boolean;
+  /** A broad refill is running: the served projection may lack missed commits. */
+  rebuilding(): boolean;
   /**
    * A retry would capture something: a broad refill until the cache is
    * warmed, else files an own decision or a failed targeted capture left, or
    * unresolved commits, until `W5_READ_CACHE_IDLE_RETRIES`
-   * marked refills in a row settled nothing. A file refused as too large
+   * marked refills in a row settled nothing, or completed live broad refills
+   * could not arm the token. A file refused as too large
    * alone is owed again only once a plan, broad refill or own decision
    * names it.
    */
   owed(): boolean;
   /** The store's `onApplied` binding: synchronous, inside the decision. */
   noteOwnDecision(root: string, decision: W5StoreDecision): void;
+  /** External changes stop serving at once, including during a broad rebuild. */
+  markDirty(files: readonly W5CaptureFile[]): void;
   /** One capture of every marked file; coalesced. */
   refillMarked(): Promise<void>;
   /**
@@ -82,39 +96,41 @@ export interface W5CommittedReadCache {
    * on `limit-exceeded`; coalesced.
    */
   refillBroad(): Promise<void>;
-  /** The W5e step: skips a plan the projection already holds, else captures. */
+  /** The W5e step: skips held commits, else dirties named files before capture. */
   apply(plan: W5ReadCacheInvalidation): Promise<void>;
   /** Cached bytes changed (CAN-6970's signal source); returns the removal. */
   onResourcesChanged(listener: W5ReadCacheListener): () => void;
 }
 
 /**
- * Marked refills in a row that settle nothing (unresolved commits, or an
- * entry no capture admits) before `owed()` stops asking for more; a W5e
- * plan, broad refill or own decision restarts the count.
+ * Refills in a row that settle nothing, including completed live broad
+ * refills without certified coverage, before `owed()` stops asking for more.
+ * A revocation, W5e plan or own decision restarts the count.
  */
 export const W5_READ_CACHE_IDLE_RETRIES = 5;
 
 /** Runs `run` once at a time; calls during a run share one queued rerun. */
-function coalesced(run: () => Promise<void>): () => Promise<void> {
+function coalesced<T extends readonly unknown[]>(
+  run: (...args: T) => Promise<void>,
+): (...args: T) => Promise<void> {
   let inFlight: Promise<void> | undefined;
   let queued: Promise<void> | undefined;
-  const start = (): Promise<void> => {
+  const start = (...args: T): Promise<void> => {
     const pending: Promise<void> = Promise.resolve()
-      .then(run)
+      .then(() => run(...args))
       .finally(() => {
         if (inFlight === pending) inFlight = undefined;
       });
     inFlight = pending;
     return pending;
   };
-  return () => {
-    if (!inFlight) return start();
+  return (...args) => {
+    if (!inFlight) return start(...args);
     queued ??= inFlight
       .catch(() => undefined)
       .then(() => {
         queued = undefined;
-        return start();
+        return start(...args);
       });
     return queued;
   };
@@ -167,8 +183,30 @@ function indexedWorkspaces(image: W5FileImage | undefined): string[] {
 
 export function createW5CommittedReadCache(options: {
   readonly capture: W5ReadCacheCapture;
+  /** Checked only when a broad refill tries to arm the serving token. */
+  readonly servingCoverage?: (
+    projection: W5CommittedProjection,
+  ) =>
+    | readonly W5CaptureFile[]
+    | undefined
+    | Promise<readonly W5CaptureFile[] | undefined>;
 }): W5CommittedReadCache {
   let projection = createW5CommittedProjection();
+  // Broad/unknown stale sets, recovery, coverage and health revoke globally
+  // (root refusals terminally); clean targeted plans and known-file failures
+  // only dirty entries inside the token. Only a newer live broad refill arms it.
+  let sequence = 0;
+  let revokedAt = 0;
+  let servingToken:
+    | { readonly ticket: number; readonly files: ReadonlySet<string> }
+    | undefined;
+  let live = false;
+  let terminal = false;
+  const revoke = (permanent = false): void => {
+    revokedAt = ++sequence;
+    servingToken = undefined;
+    terminal ||= permanent;
+  };
   // A broad refill's fresh projection: every capture, own decision and mark
   // reaches it as it reaches the served one, so the swap loses none.
   let building: W5CommittedProjection | undefined;
@@ -181,7 +219,7 @@ export function createW5CommittedReadCache(options: {
   // Keys of files a capture refused as too large alone: left out of marked
   // refills, so an idle retry never re-reads them.
   const oversized = new Set<string>();
-  // Marked refills in a row that settled nothing, and the restarts that
+  // Unproductive completions in a row, and the restarts that
   // zero it, so a refill a restart overtook never counts.
   let idleRuns = 0;
   let restarts = 0;
@@ -273,6 +311,7 @@ export function createW5CommittedReadCache(options: {
       // log epoch. A broad refill in flight was filling from the old log and
       // starts over.
       projection = createW5CommittedProjection();
+      revoke();
       building = undefined;
       warm = false;
       highWater = commitId;
@@ -356,8 +395,7 @@ export function createW5CommittedReadCache(options: {
   const broadOnce = async (fresh: W5CommittedProjection): Promise<void> => {
     // Held files ride along, so a removed workspace's files read absent.
     const held = fresh.files();
-    // A broad refill names every file again.
-    resetIdle();
+    // A broad retry must not restart its own idle budget.
     oversized.clear();
     if (!(await discoverWithin(held))) {
       const index = await captureInto({
@@ -377,11 +415,14 @@ export function createW5CommittedReadCache(options: {
     const plan = fresh.refillPlan(oversized);
     if (plan) await captureFiles(plan.files);
   };
-  const refillBroad = coalesced(async () => {
+  const runBroad = coalesced(async (requestedTicket: number) => {
+    let ticket = requestedTicket;
+    const since = restarts;
     const held = new Map<string, W5CaptureFile>();
     try {
       // A new log seen mid-refill abandons the rebuild: build once more.
       for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (attempt > 0) ticket = ++sequence;
         for (const file of projection.files())
           held.set(w5ProjectionFileKey(file), file);
         const fresh = createW5CommittedProjection();
@@ -390,7 +431,6 @@ export function createW5CommittedReadCache(options: {
         building = fresh;
         await broadOnce(fresh);
         if (building !== fresh) continue;
-        building = undefined;
         const files = new Map(held);
         for (const file of fresh.files())
           files.set(w5ProjectionFileKey(file), file);
@@ -398,6 +438,17 @@ export function createW5CommittedReadCache(options: {
           projection = fresh;
         });
         warm = true;
+        const coverage = options.servingCoverage
+          ? await options.servingCoverage(projection)
+          : projection.files();
+        building = undefined;
+        if (coverage !== undefined && ticket > revokedAt && live && !terminal)
+          servingToken = {
+            ticket,
+            files: new Set(coverage.map(w5ProjectionFileKey)),
+          };
+        if (servingToken) resetIdle();
+        else if (live && !terminal && since === restarts) idleRuns += 1;
         return;
       }
     } catch (error) {
@@ -405,20 +456,67 @@ export function createW5CommittedReadCache(options: {
       // A broad refill means any commit may have been missed, so nothing held
       // is served, even files a split capture settled, until one completes.
       warm = false;
+      revoke();
       projection.markDirty(projection.files());
       throw error;
     }
   });
+  const refillBroad = (): Promise<void> => {
+    revoke();
+    return runBroad(++sequence);
+  };
 
   return {
+    revoke(permanent): void {
+      resetIdle();
+      revoke(permanent);
+    },
+    setStreamReady(ready): void {
+      if (!ready || ready !== live) {
+        resetIdle();
+        revoke();
+      }
+      live = ready;
+    },
+    serving: () => servingToken !== undefined,
+    terminallyRevoked: () => terminal,
+    serve(request): W5ProjectionServe | undefined {
+      const token = servingToken;
+      if (!token) return undefined;
+      const result = projection.serve(request);
+      if (
+        result.status === 'served' &&
+        !result.capture.files.every((file) =>
+          token.files.has(w5ProjectionFileKey(file)),
+        )
+      )
+        return undefined;
+      return result;
+    },
+    markDirty(files): void {
+      if (!files.length) return;
+      restart(files);
+      markDirty(files);
+    },
     projection: () => projection,
     warmed: () => warm,
+    rebuilding: () => building !== undefined,
     owed(): boolean {
       if (!warm) return true;
-      return idleRuns < W5_READ_CACHE_IDLE_RETRIES && retryPlan() !== null;
+      return (
+        idleRuns < W5_READ_CACHE_IDLE_RETRIES &&
+        ((live && !terminal && servingToken === undefined) ||
+          retryPlan() !== null)
+      );
     },
     noteOwnDecision(root, decision): void {
       const { outcome } = decision;
+      if (
+        outcome.status === 'conflict' ||
+        outcome.status === 'recovery-required' ||
+        (outcome.status === 'failed' && outcome.maybeCommitted)
+      )
+        revoke();
       // Only a new commit allocates past every earlier capture's position.
       if (outcome.status === 'applied' || outcome.status === 'conflict')
         highWater = Math.max(highWater, outcome.commitId);
@@ -448,7 +546,9 @@ export function createW5CommittedReadCache(options: {
     refillMarked,
     refillBroad,
     async apply(plan): Promise<void> {
-      if (plan.broad) return refillBroad();
+      resetIdle();
+      // Disconnected deliveries settle named files; reconciliation owns discovery.
+      if (plan.broad || (live && !servingToken)) return refillBroad();
       const files = plannedFiles(plan);
       restart(files);
       const { commitId } = plan;
@@ -462,6 +562,8 @@ export function createW5CommittedReadCache(options: {
         )
       )
         return;
+      // A known-newer foreign decision revokes these images before capture yields.
+      markDirty(files);
       try {
         await captureFiles(files);
       } catch (error) {

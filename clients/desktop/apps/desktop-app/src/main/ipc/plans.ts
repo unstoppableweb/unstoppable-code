@@ -28,12 +28,12 @@ import {
   shareTrackedPlanData,
   unshareTrackedPlanData,
 } from '../services/plans-service';
-import { getTrackedPlan } from '../lib/plan-persistence';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { withTrackedPlansIpcProjection } from '../canopy-runtime/plan-update-publisher';
 import {
   legacyError,
   planCreateParams,
+  planImportParams,
   planUpdateParams,
   trackedPlan,
   writtenTrackedPlan,
@@ -44,7 +44,6 @@ import {
   queueSharedPlanSync,
   refreshSharedPlanFromServer,
 } from '../lib/shared-plan-sync';
-import { schedulePlanDiagramGeneration } from '../lib/plan-diagram-scheduler';
 import { importTrackedPlanFromPath } from '../lib/plan-import';
 import { resolveTrackedPlansFilePath } from '../lib/resolve-worktree';
 import { validateId } from '../lib/validation';
@@ -55,14 +54,14 @@ import { registerIpcHandler } from './register';
 
 type PlanDispatcher = Pick<DesktopCanopyDispatcher, 'query' | 'instruction'>;
 
-function planCaller(
+export function planCaller(
   caller: CanopyCallerDescriptor,
   access: 'read' | 'write',
 ): CanopyCallerDescriptor {
   return { ...caller, grants: [PLAN_GRANTS[access]] };
 }
 
-function validateScope(request: TrackedPlanListRequest): {
+export function validateScope(request: TrackedPlanListRequest): {
   projectId: string;
   worktreeId: string;
 } {
@@ -159,6 +158,25 @@ export async function updateTrackedPlanForIpc(
   });
 }
 
+/** Starts or queues a plan's diagrams; a plan the worktree lacks does nothing. */
+export async function generateTrackedPlanDiagramsForIpc(
+  dispatcher: PlanDispatcher,
+  caller: CanopyCallerDescriptor,
+  request: GenerateTrackedPlanDiagramsRequest,
+): Promise<void> {
+  const scope = validateScope(request);
+  assertWritableScope(scope.projectId);
+  validateId(request.planId, 'planId');
+  await projected(async () => {
+    const idempotencyKey = randomUUID();
+    await dispatcher.instruction(
+      'core.plan.diagram.generate',
+      { scope, planId: request.planId },
+      { caller: planCaller(caller, 'write'), metadata: { idempotencyKey } },
+    );
+  });
+}
+
 export async function deleteTrackedPlanForIpc(
   dispatcher: PlanDispatcher,
   caller: CanopyCallerDescriptor,
@@ -177,7 +195,32 @@ export async function deleteTrackedPlanForIpc(
   });
 }
 
+export async function importTrackedPlanForIpc(
+  dispatcher: PlanDispatcher,
+  caller: CanopyCallerDescriptor,
+  request: ImportTrackedPlanRequest & { filePath: string },
+): Promise<ImportTrackedPlanResponse & { plan: TrackedPlanData }> {
+  const scope = validateScope(request);
+  const params = planImportParams(scope, request);
+  return projected(async () => {
+    const idempotencyKey = randomUUID();
+    const { plan } = await dispatcher.instruction('core.plan.import', params, {
+      caller: planCaller(caller, 'write'),
+      metadata: { idempotencyKey },
+    });
+    return {
+      plan: writtenTrackedPlan(plan),
+      trackedPlanFilePath: resolveTrackedPlansFilePath(
+        scope.projectId,
+        scope.worktreeId,
+      ),
+    };
+  });
+}
+
 export async function importTrackedPlanFromFile(
+  dispatcher: PlanDispatcher,
+  caller: CanopyCallerDescriptor,
   request: ImportTrackedPlanRequest,
   /** IPC event the request arrived on, so the open panel is owned by the
    * requesting window rather than floating free of the app (CAN-2706). */
@@ -185,13 +228,11 @@ export async function importTrackedPlanFromFile(
 ): Promise<ImportTrackedPlanResponse> {
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
-  if (request.filePath?.trim()) {
-    return importTrackedPlanFromPath({
-      projectId: request.projectId,
-      worktreeId: request.worktreeId,
-      filePath: request.filePath,
-      repoId: request.repoId,
-      initiationSource: request.initiationSource,
+  const { filePath } = request;
+  if (filePath?.trim()) {
+    return importTrackedPlanForIpc(dispatcher, caller, {
+      ...request,
+      filePath,
     });
   }
   const selection = await showOpenDialogForEvent(event, {
@@ -208,6 +249,8 @@ export async function importTrackedPlanFromFile(
       ),
     };
   }
+  // A dialog-picked file may be anywhere, which no portable path can name, so
+  // this branch still creates in process (CAN-4165 debt).
   return importTrackedPlanFromPath({
     projectId: request.projectId,
     worktreeId: request.worktreeId,
@@ -306,19 +349,12 @@ export function registerPlansHandlers(
 
   registerIpcHandler<[GenerateTrackedPlanDiagramsRequest], void>(
     IPC_CHANNELS.trackedPlansGenerateDiagrams,
-    async (_event, request) => {
-      validateId(request.projectId, 'projectId');
-      validateId(request.worktreeId, 'worktreeId');
-      validateId(request.planId, 'planId');
-      const plan = await getTrackedPlan(
-        request.projectId,
-        request.worktreeId,
-        request.planId,
-      );
-      if (plan) {
-        schedulePlanDiagramGeneration(plan, getWindow, { immediate: true });
-      }
-    },
+    (event, request) =>
+      generateTrackedPlanDiagramsForIpc(
+        dispatcher,
+        resolveCaller(event),
+        request,
+      ),
   );
 
   registerIpcHandler<
@@ -338,7 +374,12 @@ export function registerPlansHandlers(
   registerIpcHandler<[ImportTrackedPlanRequest], ImportTrackedPlanResponse>(
     IPC_CHANNELS.trackedPlansImport,
     async (event, request) => {
-      const response = await importTrackedPlanFromFile(request, event);
+      const response = await importTrackedPlanFromFile(
+        dispatcher,
+        resolveCaller(event),
+        request,
+        event,
+      );
       if (response.plan) {
         sendToWindow(getWindow(), IPC_CHANNELS.trackedPlansUpdated, {
           projectId: request.projectId,

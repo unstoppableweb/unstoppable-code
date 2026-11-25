@@ -5,6 +5,7 @@ import {
 } from '../crypto/device-key';
 import {
   RemoteSessionManager,
+  type AckCadence,
   type SessionGrant,
   type SecureSession,
 } from '../transport/session-manager';
@@ -25,6 +26,7 @@ export interface TestDevice {
 export function createTestDevice(
   hub: InMemoryRelayHub,
   name: string,
+  options: { ackCadence?: AckCadence } = {},
 ): TestDevice {
   const identity = generateDeviceKeyPair();
   const info = (): DeviceRelayDeviceInfo => ({
@@ -50,6 +52,7 @@ export function createTestDevice(
     onIncomingSession: (session: SecureSession): void => {
       incoming.push(session);
     },
+    ...options,
   });
   return { identity, endpoint, manager, incoming };
 }

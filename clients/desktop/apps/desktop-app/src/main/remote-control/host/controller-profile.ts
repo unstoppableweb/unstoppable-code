@@ -15,12 +15,15 @@ import {
   MOBILE_CONTROLLER_CHANNELS,
   browserInvocationAllowed,
   hostedInvocationAllowed,
+  scopedFileReadAllowed,
+  type HostedInvocationProfile,
 } from '@canopy/protocol/remote-control/channels';
 import {
   HOSTED_DELEGATION_MAX_MS,
   PAIR_PROOF_LABEL,
   decodeCanonicalBase64url,
   hostedDelegationSigningBytes,
+  type HostedFirstPartyClient,
   type HelloParams,
   type HelloResult,
   type HostedDelegation,
@@ -92,6 +95,7 @@ export function controllerMayInvoke(
   channel: string,
   args: readonly unknown[],
   disposition: (channel: string) => RemoteChannelDisposition,
+  hostedProfile: HostedInvocationProfile = {},
 ): boolean {
   if (!controllerMayUseChannel(kind, channel, disposition)) return false;
   // Require a workspace scope and refuse allowedRoot overrides into the
@@ -100,14 +104,16 @@ export function controllerMayInvoke(
     (kind === 'browser' || kind === 'mobile') &&
     channel === 'file:read-content'
   )
-    return hostedInvocationAllowed(channel, args);
+    return scopedFileReadAllowed(args);
   if (
     channel === CLAUDE_MOD_SURFACE_COMMAND_CHANNEL &&
     !controllerMaySendSurfaceCommand(nestedKind(args, 'command'))
   )
     return false;
   if (kind === 'browser') return browserInvocationAllowed(channel, args);
-  return kind !== 'hosted' || hostedInvocationAllowed(channel, args);
+  return (
+    kind !== 'hosted' || hostedInvocationAllowed(channel, args, hostedProfile)
+  );
 }
 
 const CLAUDE_MOD_SURFACE_COMMAND_CHANNEL = 'claude-mods:surface-command';
@@ -205,6 +211,14 @@ export function controllerPushWithheld(
   return !kindAllowed(CONTROLLER_SURFACE_PUSHES, nestedKind(args, 'push'));
 }
 
+/**
+ * The sender name of each first-party server caller (CAN-7604). The root's
+ * signature over the v2 delegation vouches for it, so it shows as verified.
+ */
+const FIRST_PARTY_CLIENT_NAMES: Readonly<
+  Record<HostedFirstPartyClient, string>
+> = { slack: 'Slack' };
+
 /** Domain label for the hosted agent attribution's connection identifier. */
 const HOSTED_AGENT_SENDER_LABEL = 'canopy-hosted-agent-sender-v1';
 
@@ -234,6 +248,9 @@ export function accountUserIdFrom(
  *   behind the hosted service sent it).
  * - `clientName`: the hosted pairing's name, as approved on this computer.
  * - `verified`: false; the computer cannot attest the agent's identity.
+ *   A session whose verified v2 delegation names a first-party client
+ *   (CAN-7604) is that client instead: its own name, its own connection
+ *   identifier and `verified: true`.
  * - `userId`: the signed-in account. Null (refuse) when it is not known.
  *
  * The controller never supplies any of it.
@@ -242,13 +259,17 @@ export function hostedAgentSender(input: {
   readonly rootDeviceId: string;
   readonly rootName: string;
   readonly accountUserId: string | null;
+  readonly firstPartyClient?: HostedFirstPartyClient;
 }): ExternalAgentSender | null {
   if (input.accountUserId === null) return null;
-  const digest = createHash('sha256')
+  const hash = createHash('sha256')
     .update(HOSTED_AGENT_SENDER_LABEL, 'utf8')
     .update(Buffer.from([0]))
-    .update(input.rootDeviceId, 'utf8')
-    .digest('hex');
+    .update(input.rootDeviceId, 'utf8');
+  // A first-party caller is its own sender, distinct from the agents pairing.
+  if (input.firstPartyClient !== undefined)
+    hash.update(Buffer.from([0])).update(input.firstPartyClient, 'utf8');
+  const digest = hash.digest('hex');
   // RFC 9562 version 8 (custom) with the RFC variant bits.
   const variant = ((parseInt(digest.slice(16, 17), 16) & 0x3) | 0x8).toString(
     16,
@@ -260,6 +281,15 @@ export function hostedAgentSender(input: {
     `${variant}${digest.slice(17, 20)}`,
     digest.slice(20, 32),
   ].join('-');
+  if (input.firstPartyClient !== undefined) {
+    return parseExternalAgentSender({
+      kind: 'external_agent',
+      connectionId,
+      clientName: FIRST_PARTY_CLIENT_NAMES[input.firstPartyClient],
+      verified: true,
+      userId: input.accountUserId,
+    });
+  }
   const name = input.rootName
     .replace(/\p{Cc}/gu, ' ')
     .replace(/\s+/g, ' ')
@@ -329,7 +359,8 @@ export function decidePairedKind(
 
 /**
  * Whether a hosted delegation is valid now: the root signed this session
- * key, it has not expired, and it does not outlive the ten-minute maximum.
+ * key (and the first-party client it names, under the v2 label), it has not
+ * expired, and it does not outlive the ten-minute maximum.
  * The caller checks that the root is pinned and the peer authenticated.
  */
 export function verifyHostedDelegation(
@@ -352,6 +383,7 @@ export function verifyHostedDelegation(
       hostedDelegationSigningBytes(
         delegation.sessionPublicKey,
         delegation.expiresAt,
+        delegation.firstPartyClient,
       ),
       importEd25519PublicKey(delegation.rootPublicKey),
       signature,

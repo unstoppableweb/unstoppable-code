@@ -273,7 +273,7 @@ export const DESKTOP_CONTROL_RECIPES = {
   'terminal-pane-row':
     'flex min-w-0 flex-1 items-center gap-1.5 text-left font-mono text-3xs',
   'workflow-rename': `focus-ring min-w-0 max-w-full truncate rounded-sm align-top text-left transition-colors hover:fg-accent ${REPLAY_MASK_CLASS}`,
-  'worktree-open-app': `focus-ring flex w-7 items-center justify-center gap-1.5 text-xs font-medium fg-primary transition-colors ${SECONDARY_SURFACE_HOVER_CLASS} @[560px]/prbar:w-auto @[560px]/prbar:justify-start @[560px]/prbar:px-2.5`,
+  'worktree-open-app': `canopy-shed focus-ring flex items-center gap-1.5 px-1.5 text-xs font-medium fg-primary transition-colors ${SECONDARY_SURFACE_HOVER_CLASS} @[560px]/prbar:px-2.5`,
   // A Customize row's split action (CAN-6813): the state segment and its
   // caret, each lighting up alone on the Add button's secondary surface.
   'customize-row-action': `focus-ring flex min-w-0 flex-1 items-center gap-1.5 pl-2.5 pr-2 text-xs font-medium fg-primary transition-colors ${SECONDARY_SURFACE_HOVER_CLASS} ${SECONDARY_SURFACE_OPEN_CLASS} aria-disabled:cursor-default disabled:cursor-default disabled:opacity-70`,

@@ -17,9 +17,9 @@ import { CoreSharedContainerForkResultSchema } from '../workspace/source-composi
  * A shared container's recipient-side state on this device (CAN-6501 PR 5):
  * the accepted containers, a fork's provenance and the run status, as
  * desktop's shared-containers list-accepted, read-fork-provenance and
- * run-status channels answer them. All three are local reads. Spec-first: no
- * registry composes them, so every runtime answers `capability_unavailable`
- * until a later CAN-6501 PR adds the handler.
+ * run-status channels answer them. All three are local reads, served by the
+ * desktop dispatcher (CAN-6501 PR 7); other runtimes answer
+ * `capability_unavailable`.
  */
 
 /** The container, revision, workspace and worktree id charset (`validateId`). */
@@ -116,7 +116,8 @@ export const CORE_SHARED_CONTAINER_QUERY_DEFINITIONS =
       ...sharedContainer,
       params: z.strictObject({ projectId: SlugSchema, worktreeId: SlugSchema }),
       result: SharedContainerForkProvenanceGetResultSchema,
-      requiredGrants: ['core.workspace.read'],
+      // A local worktree's detail: publication.read plus workspace.read.
+      requiredGrants: [PUBLICATION_GRANTS.read, 'core.workspace.read'],
     }),
     'core.sharedContainer.run.get': defineCanopyQuery({
       ...sharedContainer,
@@ -125,6 +126,7 @@ export const CORE_SHARED_CONTAINER_QUERY_DEFINITIONS =
         revisionId: SlugSchema,
       }),
       result: SharedContainerRunGetResultSchema,
-      requiredGrants: [PUBLICATION_GRANTS.read],
+      // The local run environment and run copy: plus workspace.read.
+      requiredGrants: [PUBLICATION_GRANTS.read, 'core.workspace.read'],
     }),
   });

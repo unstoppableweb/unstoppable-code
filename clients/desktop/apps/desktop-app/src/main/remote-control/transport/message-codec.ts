@@ -42,6 +42,11 @@ export interface MessageCodecOptions {
   maxMessageBytes?: number;
   /** Told the serialized (uncompressed) size, for diagnostics. */
   onSerialized?: (byteLength: number) => void;
+  /**
+   * False sends the message uncompressed whatever its size, for bytes that
+   * are already encrypted (TLS) and must not leak compressed sizes.
+   */
+  compress?: boolean;
 }
 
 export function encodeMessage(
@@ -58,7 +63,10 @@ export function encodeMessage(
   }
   let payload = serialized;
   let compressed = false;
-  if (serialized.byteLength >= COMPRESSION_THRESHOLD_BYTES) {
+  if (
+    options.compress !== false &&
+    serialized.byteLength >= COMPRESSION_THRESHOLD_BYTES
+  ) {
     const deflated = deflateRawSync(serialized, { level: 1 });
     if (deflated.byteLength < serialized.byteLength) {
       payload = deflated;

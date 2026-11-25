@@ -7,7 +7,12 @@ import {
   type ChildToolCloseContext,
   type ChildToolLiveness,
 } from './child-tool-liveness';
-import { parseOpenCodeReportedUsage } from '@canopy/protocol/remote-control/shell';
+import {
+  CLAUDE_CONNECTOR_AVAILABILITY_EVENT,
+  parseOpenCodeReportedUsage,
+  readClaudeConnectorAvailability,
+  type ClaudeConnectorAvailability,
+} from '@canopy/protocol/remote-control/shell';
 import { applyDelegationTranscriptEvent } from './delegation-transcript';
 import {
   parseClaudeAssistantBlocks,
@@ -106,6 +111,7 @@ type ChatBlock = PersistedChatBlock;
 type ChatMessage = PersistedChatMessage;
 
 export interface TranscriptReducerState {
+  claudeConnectorAvailability?: ClaudeConnectorAvailability;
   messages: ChatMessage[];
   status: 'idle' | 'streaming' | 'error';
   error: string | null;
@@ -1810,6 +1816,30 @@ export function applyClaudeTranscriptEvent(
   data: Record<string, unknown>,
   options: TranscriptReducerOptions,
 ): TranscriptReducerState {
+  if (data.type === CLAUDE_CONNECTOR_AVAILABILITY_EVENT) {
+    const fact =
+      data.parent_tool_use_id == null
+        ? readClaudeConnectorAvailability(data.availability)
+        : undefined;
+    return fact ? { ...state, claudeConnectorAvailability: fact } : state;
+  }
+  if (
+    data.type === 'system' &&
+    data.subtype === 'init' &&
+    data.parent_tool_use_id == null
+  ) {
+    const current = state.claudeConnectorAvailability;
+    const fact = readClaudeConnectorAvailability(
+      data.canopy_claude_connector_availability,
+    );
+    if (
+      current?.status === 'unknown' &&
+      fact &&
+      fact.status !== 'unknown' &&
+      current.launchId === fact.launchId
+    )
+      state = { ...state, claudeConnectorAvailability: fact };
+  }
   const provider = data.provider;
   if (
     state.usage?.reportedTurnUsage !== undefined &&

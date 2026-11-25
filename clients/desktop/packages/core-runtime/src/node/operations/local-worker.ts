@@ -32,7 +32,7 @@ import {
 import type { LocalWorkerTransport } from '../../runtime/local-worker-transport';
 import type { WorkerExecutorReceipt } from '../../runtime/worker-executor-receipts';
 import { OperationLedgerRefusedError } from './ledger/errors';
-import type { OperationAcceptResult, OperationLedger } from './ledger/ledger';
+import type { OperationAcceptResult } from './ledger/ledger';
 import type { OperationService } from './service';
 
 /** Completed worker results that report cancellation settle the child cancelled. */
@@ -149,10 +149,6 @@ export class LocalWorkerExecution {
     string,
     Promise<LocalWorkerDispatchResult>
   >();
-  private placed: {
-    ledger: OperationLedger;
-    lease: DelegationLeaseRecord;
-  } | null = null;
 
   constructor(
     private readonly options: {
@@ -223,58 +219,49 @@ export class LocalWorkerExecution {
     const controller = new AbortController();
     this.inFlight.set(delegationId, controller);
     try {
-      const admitted = await this.options.operations.write((ledger) => {
-        const accepted = ledger.acceptDispatch(
-          {
-            kind: request.operation,
-            status: 'queued',
-            receipt: {
-              // Keys are scoped to their parent, so families need not
-              // coordinate them.
-              caller: `core.delegation:${parent.operationId}`,
-              idempotencyKey: request.idempotencyKey,
-              fingerprint: digest({
-                params: parsed.data,
-                secrets,
-              }),
-            },
-            origin: { kind: 'delegation', sourceId: parent.operationId },
-            owner: parent.owner,
-            scope: { ...parent.scope, targetId: lease.targetId },
-            parentOperationId: parent.operationId,
-            authorityId: parent.authorityId,
-            runtimeDelegationId: delegationId,
-          },
-          {
-            delegationId,
-            targetId: lease.targetId,
-            leaseId: lease.leaseId,
-            operation: {
-              name: request.operation,
-              version: definition.version,
-              idempotency: definition.idempotency,
-            },
+      const admitted = await this.options.operations.acceptDispatch(
+        {
+          kind: request.operation,
+          status: 'queued',
+          receipt: {
+            // Keys are scoped to their parent, so families need not
+            // coordinate them.
+            caller: `core.delegation:${parent.operationId}`,
             idempotencyKey: request.idempotencyKey,
-            executorKey: keyed ? delegationId : null,
-            activation: {
-              delivery: 'inline-parameters',
-              digest: digest({
-                operation: request.operation,
-                version: definition.version,
-                params: parsed.data,
-              }),
-            },
-            secrets: [...secrets],
+            fingerprint: digest({
+              params: parsed.data,
+              secrets,
+            }),
           },
-        );
-        return {
-          value: accepted,
-          events:
-            accepted.result.status === 'accepted'
-              ? [accepted.result.event]
-              : [],
-        };
-      });
+          origin: { kind: 'delegation', sourceId: parent.operationId },
+          owner: parent.owner,
+          scope: { ...parent.scope, targetId: lease.targetId },
+          parentOperationId: parent.operationId,
+          authorityId: parent.authorityId,
+          runtimeDelegationId: delegationId,
+        },
+        {
+          delegationId,
+          targetId: lease.targetId,
+          leaseId: lease.leaseId,
+          operation: {
+            name: request.operation,
+            version: definition.version,
+            idempotency: definition.idempotency,
+          },
+          idempotencyKey: request.idempotencyKey,
+          executorKey: keyed ? delegationId : null,
+          activation: {
+            delivery: 'inline-parameters',
+            digest: digest({
+              operation: request.operation,
+              version: definition.version,
+              params: parsed.data,
+            }),
+          },
+          secrets: [...secrets],
+        },
+      );
       if (admitted.result.status !== 'accepted') {
         this.inFlight.delete(delegationId);
         return await this.replay(admitted.result, admitted.delegation);
@@ -311,19 +298,10 @@ export class LocalWorkerExecution {
    * lease settles dispatches an earlier run left unsettled.
    */
   private placement(): Promise<DelegationLeaseRecord> {
-    return this.options.operations.write((ledger) => {
-      if (this.placed?.ledger !== ledger) {
-        ledger.registerTarget(IN_PROCESS_WORKER_TARGET);
-        this.placed = {
-          ledger,
-          lease: ledger.acquireLease(
-            IN_PROCESS_WORKER_TARGET.targetId,
-            IN_PROCESS_LEASE_TERMS,
-          ),
-        };
-      }
-      return { value: this.placed.lease, events: [] };
-    });
+    return this.options.operations.placeInProcessWorker(
+      IN_PROCESS_WORKER_TARGET,
+      IN_PROCESS_LEASE_TERMS,
+    );
   }
 
   private async run(
@@ -339,10 +317,9 @@ export class LocalWorkerExecution {
         status: 'cancelled',
         resolution: 'not-started',
       });
-    const delegation = await this.options.operations.write((ledger) => {
-      const change = ledger.markDispatched(prepared.delegationId);
-      return { value: change.delegation, events: [change.change.event] };
-    });
+    const { delegation } = await this.options.operations.markDispatched(
+      prepared.delegationId,
+    );
     let value: unknown;
     try {
       value = await transport.instruction(name, params, {
@@ -384,10 +361,10 @@ export class LocalWorkerExecution {
         error: OUTCOME_UNKNOWN,
         resolution: 'unqueryable',
       });
-    await this.options.operations.write((ledger) => ({
-      value: ledger.markDelegation(delegation.delegationId, 'reconciling'),
-      events: [],
-    }));
+    await this.options.operations.markDelegation(
+      delegation.delegationId,
+      'reconciling',
+    );
     let receipt: WorkerExecutorReceipt | null;
     try {
       receipt = await this.options.transport.receipt(
@@ -396,10 +373,10 @@ export class LocalWorkerExecution {
       );
     } catch {
       // The child may still be running; a restart reconciles it as lost.
-      const unreachable = await this.options.operations.write((ledger) => ({
-        value: ledger.markDelegation(delegation.delegationId, 'unreachable'),
-        events: [],
-      }));
+      const unreachable = await this.options.operations.markDelegation(
+        delegation.delegationId,
+        'unreachable',
+      );
       const operation = await this.options.operations.get(
         delegation.childOperationId,
       );
@@ -483,10 +460,10 @@ export class LocalWorkerExecution {
     settlement: Settlement,
     value?: unknown,
   ): Promise<LocalWorkerDispatchResult> {
-    const settled = await this.options.operations.write((ledger) => {
-      const change = ledger.settleDispatch(delegationId, settlement);
-      return { value: change, events: [change.change.event] };
-    });
+    const settled = await this.options.operations.settleDispatch(
+      delegationId,
+      settlement,
+    );
     const { operation } = settled.change;
     const { delegation } = settled;
     return {

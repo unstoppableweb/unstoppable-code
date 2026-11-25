@@ -14,6 +14,8 @@ export type {
 export type { PanelGridController } from './grid-host-types';
 export { PanelGridHost } from './PanelGridHost';
 export type { PanelGridHostProps } from './PanelGridHost';
+export { PanelGridLoadingCard } from './PanelGridLoadingCard';
+export type { PanelGridLoadingCardProps } from './PanelGridLoadingCard';
 export { PanelGroup } from './PanelGroup';
 export type { PanelGroupProps } from './PanelGroup';
 export { PanelCollapsedBar } from './PanelCollapsedBar';

@@ -2683,21 +2683,24 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
     setNotificationChoice: props.onSetWorktreeNotificationLevel,
     requestNotificationState: props.onWorktreeNotificationSettingsRequested,
   });
-  // Work Entry rows (chats) select with the same gestures and confirm.
-  let openWorkEntryKey: string | undefined;
-  for (const listRows of selectionRows.rows.values()) {
-    const open = listRows.find((row) => row.kind === 'work-entry' && row.open);
-    if (open !== undefined) {
-      openWorkEntryKey = open.key;
-      break;
+  // Work Entry rows (chats) select with the same gestures and confirm. The
+  // open row is read when a batch starts: `rows` can hold a stale one.
+  const readSelectionRows = selectionRows.readLiveRows;
+  const readOpenWorkEntryKey = useCallback((): string | undefined => {
+    for (const listRows of readSelectionRows().values()) {
+      const open = listRows.find(
+        (row) => row.kind === 'work-entry' && row.open,
+      );
+      if (open !== undefined) return open.key;
     }
-  }
+    return undefined;
+  }, [readSelectionRows]);
   const workEntryBulk = useSidebarWorkEntryBulk({
     enabled: props.onRemoveWorkEntryInBatch !== undefined,
     remove: props.onRemoveWorkEntryInBatch,
     getFacts: props.getWorkEntryBatchRemovalFacts,
     rows: selectionRows.rows,
-    activeKey: openWorkEntryKey,
+    readActiveKey: readOpenWorkEntryKey,
     isWorkspaceCommandDisabled: props.isWorkspaceCommandDisabled,
     retentionDaysFor: props.workEntryRetentionDaysFor,
     dialogTestId: testIds?.workEntryBatchRemovalDialog,

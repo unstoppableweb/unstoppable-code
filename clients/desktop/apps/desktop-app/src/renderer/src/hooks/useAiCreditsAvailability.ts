@@ -254,6 +254,20 @@ export function readAiCreditsAvailabilityFresh(): Promise<AiCreditsAvailability>
   return promise.then(toAvailability);
 }
 
+/**
+ * The held answer when it is already this one, so re-reading a cached value on
+ * mount does not render the consumer again.
+ */
+function keepSameAvailability(
+  previous: { key: string; value: CachedAvailability } | null,
+  key: string,
+  value: CachedAvailability,
+): { key: string; value: CachedAvailability } {
+  return previous?.key === key && previous.value === value
+    ? previous
+    : { key, value };
+}
+
 export function useAiCreditsAvailability(
   scope?: AiCreditsScopeRequest,
 ): AiCreditsAvailability {
@@ -284,7 +298,7 @@ export function useAiCreditsAvailability(
     const entry = entryFor(key);
     if (entry.cache && isCacheFresh(entry)) {
       const fresh = entry.cache;
-      setAvailability({ key, value: fresh });
+      setAvailability((previous) => keepSameAvailability(previous, key, fresh));
       return (): void => {
         cancelled = true;
       };
@@ -293,7 +307,9 @@ export function useAiCreditsAvailability(
     entry.cache = null;
     void ensurePendingRead(key, stableScope).then((value) => {
       if (!cancelled) {
-        setAvailability({ key, value });
+        setAvailability((previous) =>
+          keepSameAvailability(previous, key, value),
+        );
       }
     });
     return (): void => {

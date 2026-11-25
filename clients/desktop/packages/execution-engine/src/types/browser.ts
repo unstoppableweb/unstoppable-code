@@ -297,6 +297,12 @@ export interface BrowserSetBoundsRequest {
    * corners. Absent keeps the view's current radii.
    */
   cornerRadii?: BrowserCornerRadii;
+  /**
+   * The renderer's viewport (CSS px) when it measured `bounds`. With it the
+   * host can tell how the area moves with the window, and place the view at
+   * a new window size before the renderer has laid that size out.
+   */
+  viewport?: { width: number; height: number };
 }
 
 export interface BrowserCornerRadii {

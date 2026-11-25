@@ -14,7 +14,7 @@ import {
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import {
   normalizeOrgEnforcedSettingsWithStatus,
-  personalGatewayAccountFields,
+  modelGatewayAccountFields,
 } from '../../lib/org-enforced-parsing';
 import {
   isModelBlocked,
@@ -156,7 +156,7 @@ export class CliOpenCodeAccount {
       enforcedSettings: parsed.settings,
       modelGatewayEnforcementUnavailable:
         parsed.modelGatewayEnforcementUnavailable,
-      ...personalGatewayAccountFields(snapshot),
+      ...modelGatewayAccountFields(snapshot),
     };
     const policy = modelPolicyForOwner(
       resolveModelPolicyIndex(policyAccount),

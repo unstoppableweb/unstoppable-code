@@ -31,6 +31,8 @@ import { subscribeToChatEvents } from '@/lib/chatEventFanout';
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import { useChatStore, useWorktreeChatRenderState } from '@/stores/chatStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
+import { reportRendererConsoleError } from '@/lib/renderer-error-logging';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
   isMainContentCoveredByAppAdvisorDock,
   subscribeAppAdvisorDockCover,
@@ -59,7 +61,7 @@ import { CoworkTopBar } from '@/components/panels/CoworkTopBar';
 import { PanelGridSurface } from '@/components/panels/PanelGridSurface';
 import { WorktreeGitActionError } from '@/components/github/WorktreeGitActionError';
 import type { PanelHostState } from '@/lib/panels/panel-host-context';
-import { LoadingSpinner } from '@/components/shared/loading/spinners/LoadingSpinner';
+import { PanelGridLoadingCard } from '@canopy/ui-shared/components/panels';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import type { WorktreeSelection } from '@canopy/desktop-shared/types';
 import { ForkedContainerNotice } from '@/components/shared-containers/ForkedContainerNotice';
@@ -85,6 +87,12 @@ const COWORK_FORK_FOCUS_TARGET = {
 
 /** Minimum spacing between chat-event-driven work-entry meta refreshes. */
 const CHAT_EVENT_REFRESH_THROTTLE_MS = 1000;
+
+/**
+ * Under the spinner while an entry's chats, and then its panel layout, load.
+ * One label for both waits, so the loading card does not change between them.
+ */
+const CHATS_LOADING_LABEL = 'Loading chats…';
 
 export function StandaloneChatPage(): JSX.Element {
   const initialize = useStandaloneChatStore((s) => s.initialize);
@@ -386,7 +394,18 @@ export function StandaloneChatPage(): JSX.Element {
 
     let cancelled = false;
     void (async (): Promise<void> => {
-      await initialize();
+      try {
+        await initialize();
+      } catch (error) {
+        // Leave the page uninitialized, as before (CAN-7316). The console line
+        // keeps the failure in local app-events, which feedback bundles carry;
+        // it used to surface only as an unhandled rejection.
+        reportClientAppError(error, { source: 'standalone-chat-initialize' });
+        reportRendererConsoleError('Standalone chat initialize failed', {
+          error,
+        });
+        return;
+      }
       if (cancelled) return;
       // Re-assert the active Work Entry selection: navigating away can leave
       // chatStore pointed at a code worktree while this page's store still
@@ -573,17 +592,16 @@ export function StandaloneChatPage(): JSX.Element {
             hostState={hostState}
             includeAuxWindowContent={false}
             onNewChatTab={handleTabStripNewChat}
+            loadingLabel={CHATS_LOADING_LABEL}
           />
         ) : (
-          <div
-            className="flex flex-1 items-center justify-center"
-            data-testid="standalone-chat-loading"
-          >
-            <div className="flex flex-col items-center gap-3 fg-secondary">
-              <LoadingSpinner tone="secondary" />
-              <span className="text-s">Loading chats…</span>
-            </div>
-          </div>
+          // The same card the grid shows while its layout loads, so the
+          // entry's wait and the grid's read as one: the card stays, and
+          // the spinner and label show only when the wait runs long.
+          <PanelGridLoadingCard
+            testId="standalone-chat-loading"
+            label={CHATS_LOADING_LABEL}
+          />
         )}
         <CoworkArchiveOverlay />
       </Surface>

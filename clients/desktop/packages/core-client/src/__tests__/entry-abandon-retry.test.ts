@@ -202,8 +202,8 @@ it.each(['delete', 'copy', 'move'] as const)(
         openChannel: (request) => pair.client.openChannel(request),
         onChannel: (listener, options) =>
           pair.client.onChannel(listener, options),
-        send: async (message) => {
-          await pair.client.send(message);
+        send: async (message, options) => {
+          await pair.client.send(message, options);
           if ('method' in message && message.method === name) {
             await admitted;
             throw new CanopyClientError({

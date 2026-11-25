@@ -28,6 +28,7 @@ import {
   updateWorkspaceConfig,
   WorkspaceConfigUnreadableError,
 } from './workspace-persistence';
+import { refuseCoworkProvisionWhileW5Degraded } from './cowork-w5-write-refusal';
 import {
   admitCoworkIndex,
   admitCoworkMetadataEntry,
@@ -160,6 +161,7 @@ export function applyCoworkProvisionDecision(
 ): Promise<CoworkProvisionOutcome> {
   return getWorkspaceIndexRepository().update(async (snapshot) => {
     admitCoworkIndex(snapshot.authority, snapshot.unserved);
+    refuseCoworkProvisionWhileW5Degraded();
     const entry = admitCoworkProvisionEntry(snapshot.entries, decision);
     const pass = await updateWorkspaceConfig(
       decision.workspaceId,

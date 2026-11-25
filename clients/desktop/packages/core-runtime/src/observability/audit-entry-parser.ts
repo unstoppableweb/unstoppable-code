@@ -775,6 +775,9 @@ export function normalizeAuditEntry(value: unknown): AgentAuditEntry | null {
   readOptionalNumberField(value, 'attempt', (attempt) => {
     entry.attempt = attempt;
   });
+  readOptionalNumberField(value, 'recovery', (recovery) => {
+    entry.recovery = recovery;
+  });
 
   const observedCost = parseObservedCost(value.observedCost);
   if (observedCost) {

@@ -19,14 +19,20 @@ import {
 import {
   createCoreWorkspaceAdapter,
   createCoreWorkspaceReadSnapshots,
+  defaultCoreWorkspaceReadServices,
   type CoreWorkspaceReadServices,
 } from '../core-workspace-adapter';
 import { DEFAULT_ACTIVITY_SECTION_ORDER } from '@canopy/desktop-shared/constants/activity';
 import { CORE_READ_SNAPSHOT_LIMITS } from '@canopy/core-runtime/node/workspace/core-workspace-read-snapshots';
 import { sanitizeRemoteUrl } from '../../lib/plan-share-repos';
-import type { W5ReadViewOutcome } from '../../lib/w5-read-view';
+import {
+  runInW5CapturedView,
+  type W5ReadViewOutcome,
+} from '../../lib/w5-read-view';
+import { getWorkspacesRootDir } from '../../lib/paths';
 import type {
   W5CaptureFile,
+  W5CaptureRequest,
   W5CaptureResult,
   W5FileImage,
 } from '../../w5-commit-log/commit-log-worker-contract';
@@ -2129,4 +2135,541 @@ describe('the read cache answers as the captured read (CAN-7155)', () => {
       await runtime.shutdown();
     },
   );
+});
+
+/*
+ * CAN-7155 (W5 readers S-9, PR 3, Seam A): the composition root's read view
+ * serves each dispatcher read from the projection's `serve`. Every wrapper
+ * read answers exactly as over a fresh capture of the same request, at pages
+ * either side of the 100-row default, with partial filters, and over an
+ * absent or unreadable index; a file the projection cannot answer, a
+ * manifest that may miss an index commit, an index discovery would refuse
+ * and a request over the capture limits are left to today's capture.
+ */
+describe('cached read views answer as a fresh capture (CAN-7155 Seam A)', () => {
+  const organizationId = '11111111-1111-4111-8111-111111111111';
+  const sha = (text: string): string =>
+    createHash('sha256').update(text, 'utf8').digest('hex');
+  const key = (file: W5CaptureFile): string =>
+    'workspaceId' in file ? `${file.kind}:${file.workspaceId}` : file.kind;
+
+  interface Spec {
+    readonly file: W5CaptureFile;
+    readonly contents: string | null;
+    readonly unreadable?: boolean;
+    /** The last logged image, when it differs from the bytes. */
+    readonly logged?: string;
+    readonly writtenAt?: number;
+  }
+
+  /** A data root of `rows` workspaces as the host captures it. */
+  function root(
+    rows: number,
+    index: 'present' | 'absent' | 'unreadable' = 'present',
+  ): {
+    specs: Map<string, Spec>;
+    ids: string[];
+    revisions: Record<string, number>;
+  } {
+    const ids = Array.from({ length: rows }, (_, i) => `ws-${i + 1}`);
+    const specs = new Map<string, Spec>();
+    const add = (spec: Spec): void => {
+      specs.set(key(spec.file), spec);
+    };
+    add({
+      file: { kind: 'index' },
+      contents:
+        index === 'present'
+          ? JSON.stringify({
+              version: 1,
+              workspaces: ids.map((id, order) => ({
+                id,
+                name: id,
+                type: 'multi-repo',
+                color: '#7C3AED',
+                collapsed: false,
+                order,
+              })),
+            })
+          : index === 'absent'
+            ? null
+            : '',
+      unreadable: index === 'unreadable',
+    });
+    ids.forEach((workspaceId, i) => {
+      add({
+        file: { kind: 'manifest', workspaceId },
+        contents: JSON.stringify({
+          version: 1,
+          type: 'multi-repo',
+          repos: [],
+          owner: {
+            type: 'organization',
+            organizationId,
+            projectId: '22222222-2222-4222-8222-222222222222',
+            instanceId: '33333333-3333-4333-8333-333333333333',
+            bindingGeneration: 1,
+          },
+        }),
+        // Every seventh manifest was edited outside the log.
+        ...(i % 7 === 6 && { logged: '{"version":2}' }),
+      });
+      add({
+        file: { kind: 'worktrees', workspaceId },
+        contents:
+          i === 0
+            ? JSON.stringify({
+                version: 1,
+                worktrees: ids.map((_, n) => ({
+                  ...worktree,
+                  id: `wt-${n + 1}`,
+                })),
+              })
+            : null,
+      });
+    });
+    const revisions: Record<string, number> = {
+      workspaces: 5,
+      'worktrees:ws-1': 3,
+    };
+    ids.forEach((id, i) => {
+      // ws-2 has no counter row: `no-revision`.
+      if (id !== 'ws-2') revisions[`workspace:${id}`] = i + 1;
+      revisions[`worktree:ws-1/wt-${i + 1}`] = 1;
+    });
+    return { specs, ids, revisions };
+  }
+
+  /** What the host returns for `files` at `commitId`. */
+  function captureOf(
+    specs: ReadonlyMap<string, Spec>,
+    files: readonly W5CaptureFile[],
+    revisions: Record<string, number>,
+    commitId = 9,
+    discovery: W5CaptureResult['discovery'] = 'not-requested',
+  ): W5CaptureResult {
+    const chosen = files.map((file) => {
+      const spec = specs.get(key(file));
+      if (!spec) throw new Error(`No spec for ${key(file)}`);
+      return spec;
+    });
+    return {
+      files: chosen.map(
+        ({ file, contents, unreadable }): W5FileImage =>
+          unreadable
+            ? { ...file, state: 'unreadable', reason: 'io' }
+            : contents === null
+              ? { ...file, state: 'absent' }
+              : {
+                  ...file,
+                  state: 'present',
+                  base64: Buffer.from(contents, 'utf8').toString('base64'),
+                },
+      ),
+      discovery,
+      log: {
+        commitId,
+        retainedCommits: commitId,
+        unresolvedCommits: 0,
+        schemaVersion: 2,
+        revisions,
+        files: chosen
+          .filter(({ contents }) => contents !== null)
+          .map(({ file, contents, logged, writtenAt }) => ({
+            file,
+            commitId: writtenAt ?? 9,
+            state: 'applied' as const,
+            previousFingerprint: null,
+            newFingerprint: sha(logged ?? String(contents)),
+          })),
+        chains: chosen.map(({ file, contents }) => ({
+          file,
+          decisions: contents === null ? 0 : 1,
+          startsAbsent: contents !== null,
+          discontinuities: 0,
+        })),
+        resourceRevisionEligibility: 'unproven',
+      },
+    };
+  }
+
+  /** As the host expands a request: index, the request, then discovery. */
+  function expand(
+    request: W5CaptureRequest,
+    ids: readonly string[],
+    indexPresent: boolean,
+  ): { files: W5CaptureFile[]; discovery: W5CaptureResult['discovery'] } {
+    const files = new Map<string, W5CaptureFile>();
+    const add = (file: W5CaptureFile): void => {
+      if (!files.has(key(file))) files.set(key(file), file);
+    };
+    if (request.discoverWorkspaces) add({ kind: 'index' });
+    for (const file of request.files) add(file);
+    if (request.discoverWorkspaces && indexPresent)
+      for (const workspaceId of ids) {
+        add({ kind: 'manifest', workspaceId });
+        add({ kind: 'worktrees', workspaceId });
+      }
+    return {
+      files: Array.from(files.values()),
+      discovery: !request.discoverWorkspaces
+        ? 'not-requested'
+        : indexPresent
+          ? 'complete'
+          : 'unavailable',
+    };
+  }
+
+  function discoveryFiles(ids: readonly string[]): W5CaptureFile[] {
+    return [
+      { kind: 'index' },
+      ...ids.flatMap((workspaceId): W5CaptureFile[] => [
+        { kind: 'manifest', workspaceId },
+        { kind: 'worktrees', workspaceId },
+      ]),
+    ];
+  }
+
+  type ReadView = NonNullable<CoreWorkspaceReadServices['readView']>;
+
+  function runtimeWith(readView: ReadView): DesktopCanopyDispatcher {
+    return createDesktopRuntime({
+      workspaceServices: {
+        ...defaultCoreWorkspaceReadServices(),
+        readView,
+      },
+    });
+  }
+
+  /** Every wrapper read, canonical result and legacy authority alike. */
+  async function readAll(
+    runtime: DesktopCanopyDispatcher,
+    ids: readonly string[],
+  ): Promise<unknown[]> {
+    const reads: Promise<unknown>[] = [
+      runtime.queryWorkspaceListForLegacyIpc({}, { caller }),
+      runtime.queryWorkspaceListForLegacyIpc({ pageSize: 7 }, { caller }),
+      runtime.queryWorkspaceListForLegacyIpc(
+        { scope: { organizationId } },
+        { caller },
+      ),
+      runtime.queryWorktreeListForLegacyIpc({}, { caller }),
+      runtime.queryWorktreeListForLegacyIpc(
+        { scope: { workspaceId: 'ws-1' } },
+        { caller },
+      ),
+      runtime.queryWorktreeListForLegacyIpc(
+        { scope: { workspaceId: 'ws-1', worktreeId: 'wt-2' } },
+        { caller },
+      ),
+      runtime.queryWorktreeListForLegacyIpc(
+        { scope: { workspaceId: 'ws-1', organizationId } },
+        { caller },
+      ),
+      runtime.readWorktreeListForLegacy('ws-1', { caller }),
+      runtime
+        .queryWorktreeGetForLegacyIpc({ worktreeId: 'wt-1' }, { caller })
+        .then((result) => {
+          expect(result).toMatchObject({
+            canonicalResult: { worktreeId: 'wt-1' },
+            legacyResult: { id: 'wt-1' },
+          });
+          return result;
+        }),
+      runtime
+        .queryWorktreeGetForLegacyIpc(
+          { worktreeId: 'wt-2', scope: { workspaceId: 'ws-1' } },
+          { caller },
+        )
+        .then((result) => {
+          expect(result).toMatchObject({
+            canonicalResult: { worktreeId: 'wt-2' },
+            legacyResult: { id: 'wt-2' },
+          });
+          return result;
+        }),
+      ...['ws-2', 'ws-3', 'ws-7'].map((workspaceId) =>
+        runtime
+          .queryWorkspaceGetForLegacyIpc({ workspaceId }, { caller })
+          .then((result) => {
+            expect(result).toMatchObject({ canonicalResult: { workspaceId } });
+            return result;
+          }),
+      ),
+    ];
+    const results = await Promise.all(reads);
+    const workspacePage = {
+      items: ids.slice(0, 100).map((workspaceId) => ({ workspaceId })),
+    };
+    const worktrees = ids.map((_, i) => ({ id: `wt-${i + 1}` }));
+    const worktreePage = {
+      items: worktrees.slice(0, 100).map(({ id }) => ({ worktreeId: id })),
+    };
+    const sidebar = { items: ids.map((id) => ({ id })) };
+    expect(results.slice(0, 8)).toMatchObject([
+      { canonicalResult: workspacePage, legacyResult: sidebar },
+      {
+        canonicalResult: {
+          items: ids.slice(0, 7).map((workspaceId) => ({ workspaceId })),
+        },
+        legacyResult: sidebar,
+      },
+      { canonicalResult: workspacePage, legacyResult: sidebar },
+      {
+        canonicalResult: worktreePage,
+        legacyResult: {
+          items: ids.map((id, i) => ({
+            id,
+            worktrees: i === 0 ? worktrees : [],
+          })),
+        },
+      },
+      { canonicalResult: worktreePage, legacyResult: worktrees },
+      {
+        canonicalResult: { items: [{ worktreeId: 'wt-2' }] },
+        legacyResult: worktrees,
+      },
+      { canonicalResult: worktreePage, legacyResult: worktrees },
+      { legacyResult: worktrees },
+    ]);
+    // Continuation tokens differ per runtime; everything else must not.
+    return results.map((result): unknown => {
+      const plain: unknown = JSON.parse(
+        JSON.stringify(result, (name: string, value: unknown) =>
+          name === 'nextCursor' && typeof value === 'string' ? 'cursor' : value,
+        ),
+      );
+      return plain;
+    });
+  }
+
+  /** The projection after one broad refill of the whole root. */
+  function warmed(
+    specs: ReadonlyMap<string, Spec>,
+    ids: readonly string[],
+    revisions: Record<string, number>,
+    indexPresent: boolean,
+  ): W5CommittedProjection {
+    const projection = createW5CommittedProjection();
+    projection.installCapture(
+      captureOf(
+        specs,
+        indexPresent ? discoveryFiles(ids) : [{ kind: 'index' }],
+        revisions,
+        9,
+        indexPresent ? 'complete' : 'unavailable',
+      ),
+      { ticket: projection.ticket(), authoritative: true },
+    );
+    return projection;
+  }
+
+  function servedView(projection: W5CommittedProjection): {
+    readView: ReadView;
+    unserved: string[];
+  } {
+    const unserved: string[] = [];
+    return {
+      unserved,
+      readView: (request, work) => {
+        const result = projection.serve(request);
+        if (result.status !== 'served') {
+          unserved.push(result.reason);
+          throw new Error('The cache could not serve the read');
+        }
+        return runInW5CapturedView(
+          result.capture,
+          getWorkspacesRootDir(),
+          work,
+          {
+            cacheParsedReads: true,
+          },
+        );
+      },
+    };
+  }
+
+  test.each([99, 100, 101, 107])(
+    '%i rows: every wrapper read equals the read over a fresh capture',
+    async (rows) => {
+      const { specs, ids, revisions } = root(rows);
+      const fresh: ReadView = (request, work) => {
+        const { files, discovery } = expand(request, ids, true);
+        return runInW5CapturedView(
+          captureOf(specs, files, revisions, 9, discovery),
+          getWorkspacesRootDir(),
+          work,
+        );
+      };
+      const { readView, unserved } = servedView(
+        warmed(specs, ids, revisions, true),
+      );
+      const today = runtimeWith(fresh);
+      const cached = runtimeWith(readView);
+      const expected = await readAll(today, ids);
+      expect(await readAll(cached, ids)).toEqual(expected);
+      expect(unserved).toEqual([]);
+      // The fixture publishes revisions and withholds partial, diverged and
+      // counterless ones.
+      const text = JSON.stringify(expected);
+      for (const label of [
+        '"status":"eligible"',
+        'projection-incomplete',
+        'diverged',
+        'no-revision',
+      ])
+        expect(text).toContain(label);
+      await Promise.all([today.shutdown(), cached.shutdown()]);
+    },
+  );
+
+  test.each(['absent', 'unreadable'] as const)(
+    'an %s index answers as a fresh capture',
+    async (index) => {
+      const { specs, revisions } = root(3, index);
+      const fresh: ReadView = (request, work) => {
+        const { files, discovery } = expand(request, [], false);
+        return runInW5CapturedView(
+          captureOf(specs, files, revisions, 9, discovery),
+          getWorkspacesRootDir(),
+          work,
+        );
+      };
+      const { readView, unserved } = servedView(
+        warmed(specs, [], revisions, false),
+      );
+      const today = runtimeWith(fresh);
+      const cached = runtimeWith(readView);
+      const read = (runtime: DesktopCanopyDispatcher): Promise<unknown> =>
+        runtime.queryWorkspaceListForLegacyIpc({}, { caller });
+      const expected = await read(today);
+      expect(expected).toMatchObject({
+        legacyAuthority: { indexAuthority: index },
+      });
+      const actual = await read(cached);
+      expect(actual).toMatchObject({
+        legacyAuthority: { indexAuthority: index },
+      });
+      expect(actual).toEqual(expected);
+      expect(unserved).toEqual([]);
+      await Promise.all([today.shutdown(), cached.shutdown()]);
+    },
+  );
+
+  const DISCOVER: W5CaptureRequest = { files: [], discoverWorkspaces: true };
+
+  test('a manifest is served only once no index commit postdates it', () => {
+    const { specs, ids, revisions } = root(3);
+    const projection = warmed(specs, ids, revisions, true);
+    const scoped: W5CaptureRequest = {
+      files: [{ kind: 'index' }, { kind: 'manifest', workspaceId: 'ws-2' }],
+      discoverWorkspaces: false,
+    };
+    // A manifest write alone leaves the index's last write where it was.
+    projection.installCapture(
+      captureOf(
+        specs,
+        [{ kind: 'index' }, { kind: 'manifest', workspaceId: 'ws-1' }],
+        revisions,
+        12,
+      ),
+      { ticket: projection.ticket(), authoritative: true },
+    );
+    expect(projection.serve(scoped).status).toBe('served');
+    // An index commit at 12 may have advanced every workspace it lists.
+    const index = specs.get('index');
+    if (!index) throw new Error('fixture');
+    const written = new Map(specs);
+    written.set('index', { ...index, writtenAt: 12 });
+    projection.installCapture(
+      captureOf(written, [{ kind: 'index' }], revisions, 13),
+      { ticket: projection.ticket(), authoritative: true },
+    );
+    expect(projection.serve(scoped)).toEqual({
+      status: 'unserved',
+      reason: 'lagging',
+      refresh: [{ kind: 'manifest', workspaceId: 'ws-2' }],
+    });
+    // ws-1's manifest was captured at 12, after nothing it could miss.
+    const listed = projection.serve(DISCOVER);
+    expect(listed.status === 'unserved' && listed.refresh).toEqual(
+      ['ws-2', 'ws-3'].map((workspaceId) => ({
+        kind: 'manifest',
+        workspaceId,
+      })),
+    );
+    projection.installCapture(
+      captureOf(
+        written,
+        ids.map((workspaceId) => ({ kind: 'manifest', workspaceId })),
+        revisions,
+        14,
+      ),
+      { ticket: projection.ticket(), authoritative: true },
+    );
+    expect(projection.serve(DISCOVER).status).toBe('served');
+  });
+
+  test('files it cannot answer are left to a capture', () => {
+    const { specs, ids, revisions } = root(3);
+    const projection = createW5CommittedProjection();
+    expect(projection.serve(DISCOVER)).toEqual({
+      status: 'unserved',
+      reason: 'not-current',
+      refresh: [{ kind: 'index' }],
+    });
+    // ws-2's list was never captured: only a listed workspace is refreshed.
+    projection.installCapture(
+      captureOf(
+        specs,
+        discoveryFiles(ids).filter((file) => key(file) !== 'worktrees:ws-2'),
+        revisions,
+      ),
+      { ticket: projection.ticket(), authoritative: true },
+    );
+    expect(projection.serve(DISCOVER)).toEqual({
+      status: 'unserved',
+      reason: 'not-current',
+      refresh: [{ kind: 'worktrees', workspaceId: 'ws-2' }],
+    });
+    expect(
+      projection.serve({
+        files: [{ kind: 'index' }, { kind: 'worktrees', workspaceId: 'ws-9' }],
+        discoverWorkspaces: false,
+      }),
+    ).toEqual({ status: 'unserved', reason: 'not-current', refresh: [] });
+    // A held (dirty) file is owed by the cache's own refill.
+    projection.markDirty([{ kind: 'manifest', workspaceId: 'ws-1' }]);
+    expect(
+      projection.serve({
+        files: [{ kind: 'manifest', workspaceId: 'ws-1' }],
+        discoverWorkspaces: false,
+      }),
+    ).toEqual({ status: 'unserved', reason: 'not-current', refresh: [] });
+  });
+
+  test('discovery a capture would refuse or not follow is not served', () => {
+    const { specs, ids, revisions } = root(128);
+    // 1 + 2 x 128 files: over the capture's file limit.
+    expect(warmed(specs, ids, revisions, true).serve(DISCOVER)).toEqual({
+      status: 'unserved',
+      reason: 'limit-exceeded',
+      refresh: [],
+    });
+    const invalid = new Map(specs);
+    invalid.set('index', {
+      file: { kind: 'index' },
+      contents: JSON.stringify({ workspaces: [{ id: '../escape' }] }),
+    });
+    const projection = createW5CommittedProjection();
+    projection.installCapture(captureOf(invalid, [{ kind: 'index' }], {}), {
+      ticket: projection.ticket(),
+      authoritative: true,
+    });
+    expect(projection.serve(DISCOVER)).toEqual({
+      status: 'unserved',
+      reason: 'invalid-index',
+      refresh: [],
+    });
+  });
 });

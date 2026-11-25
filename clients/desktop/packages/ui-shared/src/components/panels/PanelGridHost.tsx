@@ -1,6 +1,7 @@
 import {
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
@@ -489,6 +490,38 @@ export function PanelGridHost({
       />
     ) : null;
 
+  // What the host's per-group factories give each group, built once per
+  // group list and factory. `PanelGroup` is memoized: handed a new add-tab
+  // descriptor, accessory or chrome object on every render of this host, each
+  // group, its tab bar and every tab rendered again whenever anything above
+  // the grid did, with nothing of theirs changed.
+  const groupParts = useMemo(
+    () =>
+      new Map(
+        layout.groups.map((group) => [
+          group.groupId,
+          {
+            canPopOut: canPopOutGroup?.(group) ?? false,
+            fixedTopologyChrome: fixedTopologyChromeForGroup?.(group),
+            addTab: addTabForGroup?.(group),
+            tabStripAccessory: tabStripAccessoryForGroup?.(group),
+            emptyContent:
+              group.tabs.length === 0
+                ? emptyContentForGroup?.(group)
+                : undefined,
+          },
+        ]),
+      ),
+    [
+      layout.groups,
+      canPopOutGroup,
+      fixedTopologyChromeForGroup,
+      addTabForGroup,
+      tabStripAccessoryForGroup,
+      emptyContentForGroup,
+    ],
+  );
+
   const hasMultipleGroups = layout.groups.length > 1;
   const groupById = new Map(
     layout.groups.map((group) => [group.groupId, group]),
@@ -530,6 +563,7 @@ export function PanelGridHost({
           const isMaximized = group.groupId === layout.maximizedGroupId;
           const isGroupVisible =
             layout.maximizedGroupId === null || isMaximized;
+          const parts = groupParts.get(group.groupId);
 
           return createPortal(
             <PanelGroup
@@ -542,9 +576,9 @@ export function PanelGridHost({
               renderPanelContent={renderPanelContent}
               getPanelContentElement={getPanelContentElement}
               chrome={chromeLabels}
-              canPopOut={canPopOutGroup?.(group) ?? false}
+              canPopOut={parts?.canPopOut ?? false}
               fixedTopology={fixedTopology}
-              fixedTopologyChrome={fixedTopologyChromeForGroup?.(group)}
+              fixedTopologyChrome={parts?.fixedTopologyChrome}
               renderTabIcon={renderTabIcon}
               renderCollapsedTabIcon={renderCollapsedTabIcon}
               renderTabLabel={renderTabLabel}
@@ -558,13 +592,9 @@ export function PanelGridHost({
               renderTabAttention={renderTabAttention}
               canCloseTab={canCloseTab}
               tabStyle={tabStyle}
-              addTab={addTabForGroup?.(group)}
-              tabStripAccessory={tabStripAccessoryForGroup?.(group)}
-              emptyContent={
-                group.tabs.length === 0
-                  ? emptyContentForGroup?.(group)
-                  : undefined
-              }
+              addTab={parts?.addTab}
+              tabStripAccessory={parts?.tabStripAccessory}
+              emptyContent={parts?.emptyContent}
               onTabContextMenu={onTabContextMenu}
             />,
             leafElement,

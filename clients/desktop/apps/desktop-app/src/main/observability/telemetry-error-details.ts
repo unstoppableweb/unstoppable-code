@@ -21,6 +21,11 @@ const ERROR_NAMES: ReadonlySet<string> = new Set([
   'TimeoutError',
 ]);
 
+/** Whether a value is one of the standard error names telemetry keeps. */
+export function isStandardErrorName(value: unknown): value is string {
+  return typeof value === 'string' && ERROR_NAMES.has(value);
+}
+
 export function allowlistedErrorName(value: unknown): string {
   return typeof value === 'string' && ERROR_NAMES.has(value) ? value : 'Error';
 }

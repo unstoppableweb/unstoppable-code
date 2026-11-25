@@ -160,6 +160,7 @@ import type {
   RemoteControlChatHistoryChunk,
   RemoteControlChatHistoryRequest,
   RemoteControlAppAdvisorChatSummary,
+  RemoteControlAppAdvisorWorkEntry,
   RemoteControlEntityEnvelope,
   RemoteControlChatCloudAttachmentRef,
   RemoteControlAppAdvisorSettings,
@@ -486,7 +487,14 @@ export interface QueryMap
    */
   'appAdvisor.chats': {
     args: Record<string, never>;
-    result: { readonly chats: readonly RemoteControlAppAdvisorChatSummary[] };
+    result: {
+      readonly chats: readonly RemoteControlAppAdvisorChatSummary[];
+      /**
+       * Every Work Entry, including those with no open chat (CAN-7604).
+       * Older adapters omit it.
+       */
+      readonly workEntries?: readonly RemoteControlAppAdvisorWorkEntry[];
+    };
   };
   /**
    * One worktree's plan, script, hook, pipeline and summary rows on the
@@ -771,7 +779,12 @@ export interface CommandMap
    * install fails. Gated by `marketplacePluginInstall`.
    */
   'plugins.install': {
-    args: { readonly marketplaceId: string; readonly pluginName: string };
+    args: {
+      readonly marketplaceId: string;
+      readonly pluginName: string;
+      /** Correlates this browser detail's refresh, never selects a source. */
+      readonly installRefreshToken?: string;
+    };
     result: RemoteInstalledPlugin;
   };
   /**

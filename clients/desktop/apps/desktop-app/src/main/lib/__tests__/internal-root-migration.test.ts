@@ -3110,8 +3110,12 @@ jobs:
         identity.destination,
         entry,
       );
-      const accepted = change === 'device' && process.platform === 'darwin';
       const copied = await lstat(destination);
+      // Linux tolerates device-only drift only with a real birth time on the fixture's filesystem.
+      const accepted =
+        change === 'device' &&
+        (process.platform === 'darwin' ||
+          (process.platform === 'linux' && copied.birthtimeMs !== 0));
       expect(projected.directoryIdentity).toBe(
         accepted
           ? `${copied.dev}:${copied.ino}:${copied.birthtimeMs}:00000000-0000-4000-8000-000000000001`

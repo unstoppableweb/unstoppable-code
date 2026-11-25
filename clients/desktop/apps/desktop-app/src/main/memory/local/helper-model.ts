@@ -5,6 +5,7 @@ import {
   resolveProviderModelConfig,
   type AgentModelConfig,
   type ChatModel,
+  type ModelHarness,
   type PreferencesData,
   type ThinkingLevel,
 } from '@canopy/desktop-shared/types';
@@ -61,16 +62,7 @@ export function resolveLocalMemoryHelperModel(
   );
 }
 
-/**
- * A structured-helper model for `model` at `thinkingLevel`, resolved against
- * the provider defaults. Shared by the memory model and callers that run a
- * helper on the user's default chat model instead.
- */
-export function helperModelForChatModel(
-  model: ChatModel,
-  thinkingLevel: ThinkingLevel,
-  preferences: Pick<PreferencesData, 'providerModelConfigDefaults'>,
-): LocalMemoryHelperModel {
+function helperExecutionHarness(model: ChatModel): ModelHarness {
   const modelProvider = getProviderForModel(model);
   const executionHarness =
     getExecutionHarnessForModel(model) ??
@@ -82,8 +74,21 @@ export function helperModelForChatModel(
   if (!executionHarness) {
     throw new Error(`No execution harness is available for model "${model}".`);
   }
+  return executionHarness;
+}
+
+/**
+ * A structured-helper model for `model` at `thinkingLevel`, resolved against
+ * the provider defaults. Shared by the memory model and callers that run a
+ * helper on the user's default chat model instead.
+ */
+export function helperModelForChatModel(
+  model: ChatModel,
+  thinkingLevel: ThinkingLevel,
+  preferences: Pick<PreferencesData, 'providerModelConfigDefaults'>,
+): LocalMemoryHelperModel {
   const modelConfig = resolveProviderModelConfig(
-    executionHarness,
+    helperExecutionHarness(model),
     { thinkingLevel },
     preferences.providerModelConfigDefaults,
   );
@@ -117,6 +122,12 @@ export async function resolveLocalMemoryRunModel(
   let helperModel: LocalMemoryHelperModel;
   try {
     helperModel = resolveLocalMemoryHelperModel(preferences);
+    if (helperExecutionHarness(helperModel.model) === 'codex') {
+      const { isCodexExecutableInstalled } =
+        await import('../../codex/codex-executable-availability');
+      if (!(await isCodexExecutableInstalled()))
+        throw new LocalMemoryModelUnavailableError();
+    }
   } catch (error) {
     return {
       refusal:

@@ -41,11 +41,25 @@ export type InlineReplyDocumentReader = (
   signal: AbortSignal,
 ) => Promise<InlineReplyPreviewContent | null>;
 
-/** Saved and presented outputs get previews. Edit receipts stay in the files card. */
+/** Saved paths are literal: URL syntax in the basename must not hide its extension. */
+function literalExtension(path: string): string {
+  const fileName = path.split(/[\\/]/).pop() ?? path;
+  return fileExtension(fileName.replace(/[?#]/g, '_'));
+}
+
+/**
+ * Saved and presented tables get previews. Other files, such as the code and
+ * notes an agent writes while working, stay rows in the files card, and so do
+ * edit receipts.
+ */
 export function isInlineReplyOutput(
-  file: Pick<TurnFileRecord, 'change' | 'saved'>,
+  file: Pick<TurnFileRecord, 'path' | 'change' | 'saved'>,
 ): boolean {
-  return file.change !== 'updated' || file.saved === true;
+  const extension = literalExtension(file.path);
+  return (
+    (extension === 'csv' || extension === 'tsv') &&
+    (file.change !== 'updated' || file.saved === true)
+  );
 }
 
 const CODE_EXTENSIONS = new Set([

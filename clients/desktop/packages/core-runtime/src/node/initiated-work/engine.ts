@@ -22,11 +22,7 @@ import {
 import { stableStringify } from '@canopy/protocol/plans';
 
 import { OperationLedgerRefusedError } from '../operations/ledger/errors';
-import type {
-  OperationAcceptRequest,
-  OperationLedger,
-  OperationLedgerEvent,
-} from '../operations/ledger/ledger';
+import type { OperationAcceptRequest } from '../operations/ledger/ledger';
 import type {
   OperationCancelRequest,
   OperationRecovery,
@@ -51,6 +47,24 @@ import type {
  */
 
 export const INITIATED_WORK_DOMAIN = 'core.initiatedWork';
+
+/**
+ * The engine's own bookkeeping disagreed with the ledger's reply, so it
+ * refuses to guess. Nothing is started.
+ */
+export class InitiatedWorkInvariantError extends Error {
+  readonly code = 'admission-outcome-count';
+
+  constructor(
+    readonly expected: number,
+    readonly received: number,
+  ) {
+    super(
+      `The operation ledger answered ${received} admissions for ${expected} runs.`,
+    );
+    this.name = 'InitiatedWorkInvariantError';
+  }
+}
 
 /**
  * Why a gate skipped a run, when a source must tell the skip apart from its
@@ -461,55 +475,50 @@ export class InitiatedWorkEngine {
     };
     let acceptances: InitiatedWorkAcceptance[];
     try {
-      acceptances = await this.operations.write((ledger) =>
-        ledger.atomically(() => {
-          const events: (OperationLedgerEvent | null)[] = [];
-          if (input.head)
-            ledger.recordSourceHead(
-              input.head.source,
-              input.head.subject,
-              input.head.value,
-            );
-          const value = input.runs.map((admission): InitiatedWorkAcceptance => {
-            const stopped = admission.stopped;
-            let accepted: ReturnType<OperationLedger['accept']>;
-            try {
-              accepted = ledger.accept(
-                this.acceptRequest(admission, {
-                  keyed: !stopped || stopped.verdict.decision === 'skipped',
-                }),
-              );
-            } catch (error) {
-              if (
-                error instanceof OperationLedgerRefusedError &&
-                error.refusal === 'key-reused'
-              )
-                return { status: 'keyReused' };
-              throw error;
-            }
-            if (accepted.status !== 'accepted')
-              return { status: 'duplicate', operation: accepted.operation };
-            events.push(accepted.event);
-            const operationId = accepted.operation.operationId;
-            if (!stopped) return { status: 'accepted', operationId };
-            events.push(
-              ledger.finish(
-                operationId,
-                this.stoppedTerminal([], stopped.gate, stopped.verdict),
-              ).event,
-            );
+      const outcomes = await this.operations.admitInitiatedRuns({
+        ...(input.head && { head: input.head }),
+        runs: input.runs.map((admission) => {
+          const stopped = admission.stopped;
+          return {
+            request: this.acceptRequest(admission, {
+              keyed: !stopped || stopped.verdict.decision === 'skipped',
+            }),
+            ...(stopped && {
+              finishAs: this.stoppedTerminal([], stopped.gate, stopped.verdict),
+            }),
+          };
+        }),
+      });
+      // Outcomes are matched to runs by position, so a count that differs
+      // can't be attributed and fails closed.
+      if (outcomes.length !== input.runs.length)
+        throw new InitiatedWorkInvariantError(
+          input.runs.length,
+          outcomes.length,
+        );
+      acceptances = outcomes.map((outcome, index): InitiatedWorkAcceptance => {
+        switch (outcome.status) {
+          case 'accepted':
+            return {
+              status: 'accepted',
+              operationId: outcome.operation.operationId,
+            };
+          case 'stopped': {
+            const verdict = input.runs[index]?.stopped?.verdict;
             return {
               status: 'stopped',
-              operationId,
-              ...(stopped.verdict.decision === 'skipped' &&
-              stopped.verdict.code !== undefined
-                ? { code: stopped.verdict.code }
+              operationId: outcome.operation.operationId,
+              ...(verdict?.decision === 'skipped' && verdict.code !== undefined
+                ? { code: verdict.code }
                 : {}),
             };
-          });
-          return { value, events };
-        }),
-      );
+          }
+          case 'duplicate':
+            return { status: 'duplicate', operation: outcome.operation };
+          case 'keyReused':
+            return { status: 'keyReused' };
+        }
+      });
     } catch (error) {
       for (const slot of slots) release(slot);
       throw error;
@@ -896,27 +905,10 @@ export class InitiatedWorkEngine {
     gate: InitiatedWorkGate,
     verdict: Exclude<InitiatedWorkGateVerdict, { decision: 'passed' }>,
   ): Promise<InitiatedWorkSubmission<T>> {
-    const recorded = await this.operations.write<{
-      status: 'accepted' | 'duplicate';
-      operation: OperationRecord;
-    }>((ledger) => {
-      const accepted = ledger.accept(
-        this.acceptRequest(request, { keyed: verdict.decision === 'skipped' }),
-      );
-      if (accepted.status !== 'accepted')
-        return {
-          value: { status: 'duplicate', operation: accepted.operation },
-          events: [],
-        };
-      const finished = ledger.finish(
-        accepted.operation.operationId,
-        this.stoppedTerminal(passed, gate, verdict),
-      );
-      return {
-        value: { status: 'accepted', operation: finished.operation },
-        events: [accepted.event, finished.event],
-      };
-    });
+    const recorded = await this.operations.admitFinished(
+      this.acceptRequest(request, { keyed: verdict.decision === 'skipped' }),
+      this.stoppedTerminal(passed, gate, verdict),
+    );
     if (recorded.status !== 'accepted')
       return { disposition: 'duplicate', operation: recorded.operation };
     return this.stoppedSubmission(
@@ -1093,22 +1085,16 @@ export class InitiatedWorkEngine {
   ): Promise<void> {
     const intent = run.cancelRequest;
     await this.operations
-      .write((ledger: OperationLedger) => {
-        const current = ledger.get(operationId);
-        if (!current || isTerminalOperationStatus(current.status))
-          return { value: undefined, events: [] };
-        const events: (OperationLedgerEvent | null)[] = [];
-        if (intent && !current.cancellation)
-          events.push(
-            ledger.requestCancel(operationId, {
+      .finishCancelled(
+        operationId,
+        intent
+          ? {
               requestedAt: new Date(this.clock()).toISOString(),
               requestedBy: intent.requestedBy,
               reason: intent.reason,
-            }).event,
-          );
-        events.push(ledger.finish(operationId, { status: 'cancelled' }).event);
-        return { value: undefined, events };
-      })
+            }
+          : undefined,
+      )
       .catch((error: unknown) => {
         this.onError(error, 'record-cancelled-run');
       });

@@ -25,7 +25,8 @@ export interface ChatFileDropState {
   /**
    * The chat area to dim while dragging: the nearest element marked with
    * `data-chat-drop-zone`, or the composer itself when the host marks none.
-   * `null` for `ownBoxOnly`, which draws nothing of its own.
+   * `null` until the first drag, and for `ownBoxOnly`, which draws nothing
+   * of its own.
    */
   readonly zone: HTMLElement | null;
 }
@@ -58,7 +59,8 @@ export function useChatFileDrop({
       ? boxRef.current
       : (root?.closest<HTMLElement>(`[${CHAT_DROP_ZONE_ATTRIBUTE}]`) ?? root);
     if (!el) return undefined;
-    if (!ownBoxOnly) setZone(el);
+    // The zone is set as a drag starts rather than here, so mounting the
+    // composer does not render it again.
     const capture = ownBoxOnly;
     // Enter and leave fire for every child the pointer crosses.
     let depth = 0;
@@ -67,7 +69,10 @@ export function useChatFileDrop({
       if (!carriesFiles(event)) return;
       event.preventDefault();
       depth += 1;
-      if (depth === 1) setDragging(true);
+      if (depth === 1) {
+        if (!ownBoxOnly) setZone(el);
+        setDragging(true);
+      }
     };
     const onDragLeave = (event: DragEvent): void => {
       if (!carriesFiles(event)) return;

@@ -246,7 +246,15 @@ export function useAiCreditsUsage(
       : null;
   const setSnapshot = useCallback(
     (value: Snapshot | null): void =>
-      setKeyedSnapshot(value ? { key, value } : null),
+      // The held snapshot when it is already this one, so re-reading a cached
+      // value on mount does not render the consumer again.
+      setKeyedSnapshot((previous) =>
+        value === null
+          ? null
+          : previous?.key === key && previous.value === value
+            ? previous
+            : { key, value },
+      ),
     [key],
   );
   const [refreshing, setRefreshing] = useState(false);

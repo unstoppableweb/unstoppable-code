@@ -100,6 +100,14 @@ interface CapsuleButtonBaseProps
    * fill. The caller sets the label ink that must read at AA. It still
    * swallows clicks under a not-allowed cursor.
    */
+  /**
+   * An icon-only button takes its width from its content instead of its
+   * fixed square, and the content supplies the inset. For a control whose
+   * content morphs between its icon and its label (`MorphLabel`): the button
+   * follows that content frame by frame, in every browser, with no width of
+   * its own to animate.
+   */
+  contentWidth?: boolean;
   readOnlyAppearance?: boolean;
   /**
    * How far the hit area reaches on a touch screen. `expanded` (the default)
@@ -170,6 +178,7 @@ interface LinkButtonProps
   pressedHover?: undefined;
   quietWhenDisabled?: undefined;
   readOnlyAppearance?: undefined;
+  contentWidth?: undefined;
   /**
    * A text link keeps its own box by default. `expanded` grows it to 44px
    * tall on a touch screen, for a link with room above and below it.
@@ -439,6 +448,7 @@ export function buttonClassName({
   pressedHover = false,
   quietWhenDisabled = false,
   readOnlyAppearance = false,
+  contentWidth = false,
   touchArea,
   className = '',
 }: {
@@ -452,6 +462,7 @@ export function buttonClassName({
   pressedHover?: boolean;
   quietWhenDisabled?: boolean;
   readOnlyAppearance?: boolean;
+  contentWidth?: boolean;
   touchArea?: ButtonTouchArea;
   className?: string;
 } = {}): string {
@@ -473,7 +484,9 @@ export function buttonClassName({
       ? nestedIconButtonRadiusClassName(size)
       : SIZE_RADIUS_CLASS_NAMES[size];
   const contentSizeClassName = iconOnly
-    ? ICON_ONLY_SIZE_CLASS_NAMES[size]
+    ? contentWidth
+      ? 'px-0'
+      : ICON_ONLY_SIZE_CLASS_NAMES[size]
     : iconShape === 'nested' && size === 'compact'
       ? 'px-2.5'
       : leadingIcon
@@ -574,6 +587,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       pressedHover = false,
       quietWhenDisabled = false,
       readOnlyAppearance = false,
+      contentWidth = false,
       busyAppearance = 'default',
       touchArea,
       railPlacement,
@@ -622,6 +636,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
           pressedHover,
           quietWhenDisabled,
           readOnlyAppearance,
+          contentWidth,
           touchArea,
           className: fillRow
             ? `${FILL_ROW_CLASS_NAME} ${variant === 'link' || variant === 'cost-row-stack' || variant === 'cost-row-inline' ? '' : FILL_ROW_HOVER_CLASS_NAMES[variant]} ${placementClassName}`

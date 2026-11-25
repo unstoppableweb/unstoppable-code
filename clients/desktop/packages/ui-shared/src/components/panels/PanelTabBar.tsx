@@ -359,7 +359,10 @@ export function PanelChatTabBackgroundGlyph({
 }: {
   readonly backgroundTasks: number;
   readonly fill: boolean;
-  /** Classic tabs carry unread on the spinner; fill tabs show it on the right. */
+  /**
+   * The dot turns unread blue in place, in both bars, so the tab's one status
+   * mark stays on its left rather than splitting across both ends.
+   */
   readonly unread?: boolean;
   readonly blocksClose?: boolean;
 } & HTMLAttributes<HTMLSpanElement>): JSX.Element {
@@ -373,7 +376,7 @@ export function PanelChatTabBackgroundGlyph({
         state="background"
         backgroundTasks={backgroundTasks}
         sizePx={fill ? 10 : 12}
-        unread={!fill && unread}
+        unread={unread}
       />
     </span>
   );
@@ -1166,12 +1169,11 @@ function PanelTabBarComponent({
             (panels.css). Tooltips follow the classic label's rules. */}
         <span className="canopy-panel-tab-label">
           {hoverCard !== null ? (
+            // The tab carries the hover card, so the title needs no wrapper
+            // of its own, and it fades out like every fill title rather
+            // than ending in "…".
             <span className="canopy-panel-tab-title">
-              <span className="relative inline-flex w-full min-w-0">
-                <span className="truncate">
-                  {renderTabLabel ? renderTabLabel(tab) : tab.title}
-                </span>
-              </span>
+              {renderTabLabel ? renderTabLabel(tab) : tab.title}
             </span>
           ) : customTooltip !== null ? (
             // The trigger wrapper must shrink with the label (and grow from

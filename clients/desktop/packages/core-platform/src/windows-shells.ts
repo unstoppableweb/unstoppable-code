@@ -27,6 +27,7 @@ export function findExecutableOnPath(
     readonly os: PlatformOperatingSystem | null;
     readonly pathEnv: string;
     readonly pathExt?: string;
+    readonly rejectInvalid?: boolean;
   },
 ): string | null {
   const { os, pathEnv } = options;
@@ -49,15 +50,32 @@ export function findExecutableOnPath(
     for (const directory of directories)
       candidates.push(paths.join(directory, name));
   }
+  let invalid: Error | undefined;
   for (const candidate of candidates) {
     try {
-      if (!statSync(candidate).isFile()) continue;
+      if (!statSync(candidate).isFile()) {
+        if (options.rejectInvalid) {
+          invalid ??= new Error(`Executable is not a file: ${candidate}`);
+        }
+        continue;
+      }
       if (os !== 'win32') accessSync(candidate, constants.X_OK);
       return realpathSync(candidate);
-    } catch {
-      // Ignore missing entries.
+    } catch (error) {
+      if (
+        options.rejectInvalid &&
+        !(
+          typeof error === 'object' &&
+          error !== null &&
+          'code' in error &&
+          error.code === 'ENOENT'
+        )
+      ) {
+        invalid ??= error instanceof Error ? error : new Error(String(error));
+      }
     }
   }
+  if (invalid !== undefined) throw invalid;
   return null;
 }
 

@@ -409,13 +409,16 @@ export function CursorConnection({
   ) : account === undefined ? null : (
     // The visible line about this consequence was dropped for parity with
     // the peer rows; the hint keeps the side effect discoverable without a
-    // paragraph, since the credential store is shared with the user's own
-    // Cursor CLI.
+    // paragraph. Only macOS shares the credential store (the Keychain) with
+    // the user's own Cursor CLI; on Linux and Windows the sign-in lives in
+    // the app's private profile, so only that sign-in is signed out.
     <Tooltip
       label={
         account === null
           ? "Opens Cursor's sign-in in your browser."
-          : "Signs out the Cursor CLI on this computer, then opens Cursor's sign-in in your browser."
+          : window.platform === 'darwin'
+            ? "Signs out the Cursor CLI on this computer, then opens Cursor's sign-in in your browser."
+            : "Signs out Cursor in this app, then opens Cursor's sign-in in your browser. A Cursor CLI you installed yourself stays signed in."
       }
       contentClassName="max-w-64 whitespace-normal"
     >

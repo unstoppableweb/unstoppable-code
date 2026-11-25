@@ -22,6 +22,7 @@ import {
   CORE_MANAGED_DELEGATION_INSTRUCTION_DEFINITIONS,
   CORE_PLAN_INSTRUCTION_DEFINITIONS,
   CORE_PUBLICATION_COMMENT_INSTRUCTION_DEFINITIONS,
+  CORE_PUBLICATION_SHARED_CONTAINER_INSTRUCTION_DEFINITIONS,
   CORE_REVIEW_INSTRUCTION_DEFINITIONS,
   type WORKER_FILESYSTEM_WRITE_INSTRUCTION_DEFINITIONS,
   WORKER_AGENT_HELPER_INSTRUCTION_DEFINITIONS,
@@ -46,19 +47,6 @@ const {
 void daemonCredentialSet;
 void daemonCredentialClear;
 
-// The tracked-plan writes (CAN-4165 PR 3b-2); import and detected plans join
-// in PR 5, diagram generation in CAN-4167 PR 3b.
-const {
-  'core.plan.import': planImport,
-  'core.plan.detected.scan': detectedPlanScan,
-  'core.plan.detected.update': detectedPlanUpdate,
-  'core.plan.diagram.generate': planDiagramGenerate,
-  ...CORE_PLAN_LIFECYCLE_INSTRUCTION_DEFINITIONS
-} = CORE_PLAN_INSTRUCTION_DEFINITIONS;
-void planImport;
-void detectedPlanScan;
-void detectedPlanUpdate;
-void planDiagramGenerate;
 // The code review state writes (CAN-4167 PR 2c); generation joins in PR 2d.
 // Resolve isn't served yet: code-review persistence has no status change it
 // makes under its lock, and a read then a save could bring back a thread
@@ -96,9 +84,11 @@ void collectionImport;
  * deferred tools load (CAN-5995), the ShowVisual staging write
  * (CAN-5996), the managed delegation controls (CAN-6291), the MCP
  * account connect (CAN-6176 PR 4a), the worktree setup cancel (CAN-4097),
- * the tracked-plan writes (CAN-4165 PR 3b-2), the code review state
- * writes (CAN-4167 PR 2c) and the shared-run comment seen marker (CAN-4169
- * PR 2), this dispatcher only.
+ * the tracked-plan writes (CAN-4165 PR 3b-2), import (PR 5a) and the
+ * detected-plan writes (PR 5b), the code review state writes (CAN-4167
+ * PR 2c), the shared-run comment seen marker (CAN-4169 PR 2) and the
+ * shared-container scope save (CAN-6501 PR 6), this
+ * dispatcher only.
  * Composing throws on a name two maps define, so a registry that later
  * gains one of these fails at startup instead of serving two definitions.
  */
@@ -133,10 +123,13 @@ export const DESKTOP_INSTRUCTION_DEFINITIONS =
     CORE_AGENT_DEFERRED_TOOLS_INSTRUCTION_DEFINITIONS,
     CORE_CHAT_VISUAL_STAGE_INSTRUCTION_DEFINITIONS,
     CORE_MANAGED_DELEGATION_INSTRUCTION_DEFINITIONS,
-    CORE_PLAN_LIFECYCLE_INSTRUCTION_DEFINITIONS,
+    // Every core.plan instruction: tracked-plan writes and import (CAN-4165),
+    // the detected-plan writes (PR 5b) and diagram generation (CAN-4167 PR 3b).
+    CORE_PLAN_INSTRUCTION_DEFINITIONS,
     CORE_REVIEW_STATE_INSTRUCTION_DEFINITIONS,
     CORE_PUBLICATION_COMMENT_INSTRUCTION_DEFINITIONS,
     CORE_CATALOG_COLLECTION_LOCAL_INSTRUCTION_DEFINITIONS,
+    CORE_PUBLICATION_SHARED_CONTAINER_INSTRUCTION_DEFINITIONS,
   );
 
 export type DesktopInstructionDefinitions =

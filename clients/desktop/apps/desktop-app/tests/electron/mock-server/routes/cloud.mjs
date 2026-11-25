@@ -3239,6 +3239,18 @@ export async function handleCloudRequest(request, response, url) {
       ...(cloudScenario?.personalModelGateway
         ? { personalModelGateway: cloudScenario.personalModelGateway }
         : {}),
+      ...(cloudScenario?.personalModelGatewayConfig
+        ? {
+            personalModelGatewayConfig:
+              cloudScenario.personalModelGatewayConfig,
+          }
+        : {}),
+      ...(Array.isArray(cloudScenario?.organizationModelGatewayConfigs)
+        ? {
+            organizationModelGatewayConfigs:
+              cloudScenario.organizationModelGatewayConfigs,
+          }
+        : {}),
       ...(typeof cloudScenario?.personalOrganizationId === 'string'
         ? { personalOrganizationId: cloudScenario.personalOrganizationId }
         : {}),

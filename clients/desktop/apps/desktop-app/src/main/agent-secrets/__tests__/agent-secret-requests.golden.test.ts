@@ -719,7 +719,11 @@ describe('secretRequest.submit and decline', () => {
         values: { STRIPE_SECRET_KEY: CANARY },
         useHeld: [],
       }),
-    ).toEqual({ accepted: false, error: 'This request is no longer waiting.' });
+    ).toEqual({
+      accepted: false,
+      error: 'This request is no longer waiting.',
+      reason: 'ended',
+    });
     expect(respondToChatQuestion).not.toHaveBeenCalled();
     expect(stop()).toBe(1);
     expect((await request).status).toBe('cancelled');
@@ -783,6 +787,7 @@ describe('secretRequest.submit and decline', () => {
     expect(await refused).toEqual({
       accepted: false,
       error: 'This request is no longer waiting.',
+      reason: 'ended',
     });
     expect((await refusedRequest.result).status).toBe('cancelled');
     expect(await store.heldNames(scope, ['STRIPE_SECRET_KEY'])).toEqual([]);
@@ -1075,12 +1080,14 @@ describe('secretRequest.submit and decline', () => {
     expect(again).toEqual({
       accepted: false,
       error: 'This request was already answered.',
+      reason: 'answered',
     });
     expect(
       await declineSecretRequest(requestId, { answeredFrom: 'mobile' }),
     ).toEqual({
       accepted: false,
       error: 'This request was already answered.',
+      reason: 'answered',
     });
     expect(respondToChatQuestion).toHaveBeenCalledTimes(1);
     expect(await store.listNames(scope)).toEqual(['STRIPE_SECRET_KEY']);

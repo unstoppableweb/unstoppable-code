@@ -1,7 +1,5 @@
-import {
-  desktopAiGatewayEnabled,
-  executeDesktopAiGateway,
-} from './desktop-ai-gateway';
+import { executeDesktopAiGateway } from './desktop-ai-gateway';
+import { aiGatewaySettingsAvailable } from '../services/ai-gateway-availability';
 import type {
   AgentActionCall,
   AgentSettingsOpenResult,
@@ -121,12 +119,12 @@ export const desktopSettingsPort: AgentSettingsPort<CanopyInjectedToolRuntime> =
       opensSignedOut: (route) =>
         route.scope === 'account' &&
         route.page === 'ai-gateway' &&
-        desktopAiGatewayEnabled(),
+        aiGatewaySettingsAvailable(),
       getWindow: (call) =>
         call.host.worktreeActionRuntime?.getWindow() ??
         call.host.settingsWindow?.() ??
         null,
     }),
-    aiGatewayEnabled: desktopAiGatewayEnabled,
+    aiGatewayEnabled: aiGatewaySettingsAvailable,
     aiGateway: executeDesktopAiGateway,
   };

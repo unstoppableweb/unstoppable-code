@@ -182,9 +182,18 @@ export interface SteeringTarget {
   turnId?: string;
 }
 
+export interface TypedSteeringHandoff {
+  expectedTurnId: string;
+  /** Synchronous check of the queue head and the captured settings revision. */
+  canHandoff(): boolean;
+}
+
 export interface AgentSession {
   sendMessage(text: string, options?: AgentSessionSendOptions): void;
   getSteeringCapabilities?(): ChatSteeringCapabilities;
+  /** Window selection on the live Codex thread, when a steerable turn is known. */
+  getAppliedCodexContextWindow?(): CodexContextWindowSetting | undefined;
+  getAppliedCodexThinkingLevel?(turnId: string): ThinkingLevel | undefined;
   getSteeringWorkingDirectory?(): string;
   /**
    * Where a steer submitted now would land: the provider session (Claude SDK
@@ -197,6 +206,7 @@ export interface AgentSession {
     attemptId: string,
     userMessageId: string,
     target?: SteeringTarget,
+    handoff?: TypedSteeringHandoff,
   ): Promise<ChatInputSubmitResult>;
   withdrawSteeringInput?(attemptId: string): Promise<ChatInputWithdrawal>;
   /** Settles the old result before returning; preserves the reusable query. */

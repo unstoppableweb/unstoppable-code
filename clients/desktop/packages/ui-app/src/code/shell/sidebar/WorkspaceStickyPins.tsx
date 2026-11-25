@@ -4,6 +4,7 @@ import { useLayoutEffect, useState, type JSX, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   findSelectedPinHosts,
+  sameSelectedPinHosts,
   type SelectedPinHosts,
 } from './sticky-selected-item';
 import { useStickyWorkspaceSlotHost } from './use-sticky-workspace-slot-host';
@@ -61,9 +62,15 @@ export function WorkspaceStickyPins({
   const hasSelectedRow = renderSelectedRow !== undefined;
 
   useLayoutEffect(() => {
-    // Only claim the pin bands while this workspace owns the selection: they
-    // are singular, and a workspace that merely exists must not take them.
-    setPinHosts(hasSelectedRow ? findSelectedPinHosts(anchor) : null);
+    // Copies go into the pin bands only while this workspace owns the
+    // selection (see below): they are singular, and a workspace that merely
+    // exists must not take them. The hosts are found ahead, so a selection
+    // arriving renders its copies in its own commit rather than in a second
+    // render of the rail; hosts that did not change keep their state.
+    const next = findSelectedPinHosts(anchor);
+    setPinHosts((previous) =>
+      sameSelectedPinHosts(previous, next) ? previous : next,
+    );
   }, [anchor, hasSelectedRow]);
 
   return (

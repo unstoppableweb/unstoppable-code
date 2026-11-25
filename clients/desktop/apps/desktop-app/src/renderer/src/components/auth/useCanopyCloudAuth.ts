@@ -9,6 +9,7 @@ import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import { isConclusiveAccountRead } from '@canopy/desktop-shared/lib/canopy-cloud-account-read';
 import { brandText } from '@/lib/brand';
 import { isCanopyCloudConnected } from '@/lib/canopy-cloud';
+import { describeSignInFailure } from '@/lib/sign-in-failure';
 
 import type { SecureStorageFailure } from '@canopy/execution-engine/types/secure-storage';
 import {
@@ -1038,13 +1039,20 @@ export function useCanopyCloudAuth({
           result.guestDataMerged,
         );
       }
-    } catch {
+    } catch (error: unknown) {
+      // A cancellation, including a sign-in replaced from another surface,
+      // shows nothing; `finally` still clears the pending state (CAN-6895).
+      const failure = describeSignInFailure(
+        error,
+        `Couldn't finish signing in to ${cloudName}.`,
+      );
       if (
+        !failure.cancelled &&
         mountedRef.current &&
         activeOauthAttemptRef.current === attempt &&
         oauthCancelRequestedAttemptRef.current !== attempt
       ) {
-        setErrorMessage(`Unable to complete ${cloudName} sign-in.`);
+        setErrorMessage(failure.message);
       }
     } finally {
       if (activeOauthAttemptRef.current === attempt) {

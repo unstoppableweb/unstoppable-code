@@ -22,8 +22,10 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import type * as CloudConfig from '../canopy-cloud/config';
+import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import {
   cloud,
   fakeCloud,
@@ -102,6 +104,15 @@ let owned: OwnedDataRoot;
 let worktreePath: string;
 let fetchSpy: jest.SpyInstance;
 let pushes: ReturnType<typeof recordPushes>;
+let dispatcher: DesktopCanopyDispatcher | undefined;
+// The caller the IPC handlers resolve: the main window's renderer.
+const RENDERER: CanopyCallerDescriptor = {
+  principalId: 'local-desktop-user',
+  clientInstanceId: 'electron-web-contents:1',
+  authorityId: 'desktop-local',
+  interfaceKind: 'desktop',
+  grants: [],
+};
 
 const invoke = async (channel: string, ...args: unknown[]): Promise<unknown> =>
   stable(await invokeChannel(channel, ...args), owned.root);
@@ -251,21 +262,26 @@ beforeAll(async () => {
     );
   const registry = await import('../lib/workspace-registry');
   registry.registerWorkspaceTypes(new Map([[PROJECT_ID, 'single-repo']]));
+  const { createDesktopRuntime } =
+    await import('../canopy-runtime/desktop-runtime');
+  dispatcher = createDesktopRuntime({ shutdownTimeoutMs: 25 });
   const { registerSharedContainerHandlers } =
     await import('../ipc/shared-containers');
   registerSharedContainerHandlers({
-    dispatcher: { instruction: jest.fn() },
-    resolveCaller: () => {
-      throw new Error('Local-state channels must not dispatch to core');
-    },
+    dispatcher,
+    resolveCaller: () => RENDERER,
   });
 });
 
-afterAll(() => {
-  jest.useRealTimers();
-  fetchSpy?.mockRestore();
-  // Released even when a setup step threw, so the env and fs are restored.
-  owned?.release();
+afterAll(async () => {
+  try {
+    await dispatcher?.shutdown();
+  } finally {
+    jest.useRealTimers();
+    fetchSpy?.mockRestore();
+    // Released even when a setup step threw, so the env and fs are restored.
+    owned?.release();
+  }
 });
 
 // None of these channels reaches the hosted service, and nothing lands

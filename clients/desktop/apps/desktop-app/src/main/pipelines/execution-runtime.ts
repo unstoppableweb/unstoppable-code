@@ -74,6 +74,7 @@ import {
   resolveDesktopPipelineAgentModelAlias,
   resolveDesktopPipelineAiCreditsRouting,
   resolveDesktopPipelineHarnessInvocation,
+  resolveDesktopPipelineOwnerGatewayModel,
 } from './pipeline-model-invocation';
 import {
   PIPELINE_AGENT_SESSION_START_TIMEOUT_MS,
@@ -303,6 +304,7 @@ export function createElectronExecutionRuntime(
       getCodexGatewayProxyService().unregisterRoutesForSession(routeSessionId);
     },
     resolvePipelineAgentModelAlias: resolveDesktopPipelineAgentModelAlias,
+    resolveOwnerGatewayModel: resolveDesktopPipelineOwnerGatewayModel,
     isModelBlockedByOrgPolicy: isDesktopPipelineModelBlocked,
     checkNativeModelGatewayRoute: checkDesktopPipelineNativeGatewayRoute,
     isOrgModelPolicyActive: isDesktopPipelineOrgPolicyActive,

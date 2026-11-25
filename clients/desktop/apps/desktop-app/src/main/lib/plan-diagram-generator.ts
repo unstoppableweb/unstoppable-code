@@ -58,14 +58,13 @@ export interface GenerateSequenceDiagramResult {
  * AI Credits routing options shared by every plan diagram helper call
  * (ECW-9091 review round 7).
  *
- * Plan diagrams run from two kinds of trigger. `plan-diagram-scheduler.ts`
+ * Plan diagrams run from two kinds of trigger. The core plan diagram scheduler
  * debounces content changes and fires with no user action at that moment — that
  * must never route through AI Credits merely because the user has no native
  * login, or a credits-only user's daily allowance can be consumed by background
- * work. But its `immediate: true` path is reached from the
- * `trackedPlansGenerateDiagrams` IPC handler — a user clicking Generate — and
- * denying that would silently produce nothing. `options.userInitiated` carries
- * the distinction. Explicit routing modes and gateway-only models still route.
+ * work. But a person's `core.plan.diagram.generate` request — a user clicking
+ * Generate — runs at once, and denying that would silently produce nothing.
+ * `options.userInitiated` carries the distinction, from the caller's principal. Explicit routing modes and gateway-only models still route.
  *
  * `workspaceId` is equally load-bearing: the user-supplied-credential guard has
  * to resolve the same Canopy Environments assignment these helpers spawn with

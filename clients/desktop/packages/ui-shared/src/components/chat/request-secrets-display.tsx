@@ -123,8 +123,7 @@ export function requestSecretsStatusLabel(
 function chipMeta(secret: ResultSecret): string | null {
   if (secret.state === 'skipped') return 'skipped';
   if (secret.state === 'unavailable') return 'unavailable';
-  if (secret.source === 'chat') return 'already held';
-  if (secret.source === 'saved') return 'saved';
+  if (secret.source === 'chat' || secret.source === 'saved') return 'saved';
   return null;
 }
 

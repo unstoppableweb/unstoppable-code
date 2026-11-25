@@ -17,6 +17,7 @@ import {
 } from '@canopy/core-runtime/node/pipeline';
 import {
   isUnknownKeyedWriteOutcome,
+  PIPELINE_DEFINITION_IMPORT_GRANTS,
   PIPELINE_DEFINITION_LIST_MAX_LIMIT,
   PIPELINE_GRANTS,
   type CanopyCallerDescriptor,
@@ -26,6 +27,8 @@ import {
   type PipelineDefinitionDeleteResult,
   type PipelineDefinitionDuplicateParams,
   type PipelineDefinitionDuplicateResult,
+  type PipelineDefinitionImportParams,
+  type PipelineDefinitionImportResult,
   type PipelineDefinitionListParams,
   type PipelineDefinitionSetEnabledParams,
   type PipelineDefinitionSetEnabledResult,
@@ -71,7 +74,11 @@ export const PIPELINE_DEFINITION_DESKTOP_CALLER: CanopyCallerDescriptor = {
   clientInstanceId: 'electron-main-pipeline-definitions',
   authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
   interfaceKind: 'desktop',
-  grants: [PIPELINE_GRANTS.read, PIPELINE_GRANTS.write],
+  grants: [
+    PIPELINE_GRANTS.read,
+    PIPELINE_GRANTS.write,
+    ...PIPELINE_DEFINITION_IMPORT_GRANTS,
+  ],
 };
 
 /** The Portal reading definitions for a paired browser. */
@@ -98,7 +105,8 @@ export type PipelineDefinitionWriteOperation =
   | 'upsert'
   | 'delete'
   | 'duplicate'
-  | 'setEnabled';
+  | 'setEnabled'
+  | 'import';
 
 /**
  * The daemon route for main's definition writes. `serves` is the routing
@@ -123,6 +131,10 @@ export interface PipelineDefinitionWriteRoute {
     params: PipelineDefinitionSetEnabledParams,
     options?: CanopyClientInstructionOptions,
   ): Promise<PipelineDefinitionSetEnabledResult>;
+  import(
+    params: PipelineDefinitionImportParams,
+    options?: CanopyClientInstructionOptions,
+  ): Promise<PipelineDefinitionImportResult>;
 }
 
 let definitionWriteRoute: (() => PipelineDefinitionWriteRoute | null) | null =
@@ -365,26 +377,34 @@ export interface RemotePipelineImport {
 /**
  * Installs a curated or shared definition as a user pipeline through core,
  * which reads and validates the remote itself, and answers with the store's
- * legacy row. Throws core's typed error for the caller to word.
+ * legacy row. A daemon route that serves imports takes it, keyed like the
+ * other writes. Throws core's typed error for the caller to word.
  */
 export async function importRemotePipeline(
   input: RemotePipelineImport,
   caller: CanopyCallerDescriptor = PIPELINE_DEFINITION_DESKTOP_CALLER,
 ): Promise<PipelineInfo> {
   const idempotencyKey = randomUUID();
-  const { definition } = await getDesktopCanopyRuntime().instruction(
-    'core.pipeline.definition.import',
-    {
-      remoteDefinitionId: input.remoteDefinitionId,
-      targetScope: {},
-      expectedRemoteVersion: input.expectedRemoteVersion,
-      nameOverride: input.nameOverride,
-      ...(input.definitionId === undefined
-        ? {}
-        : { definitionId: input.definitionId }),
-      _meta: { idempotencyKey },
-    },
-    { caller, metadata: { idempotencyKey } },
+  const params: PipelineDefinitionImportParams = {
+    remoteDefinitionId: input.remoteDefinitionId,
+    targetScope: {},
+    expectedRemoteVersion: input.expectedRemoteVersion,
+    nameOverride: input.nameOverride,
+    ...(input.definitionId === undefined
+      ? {}
+      : { definitionId: input.definitionId }),
+    _meta: { idempotencyKey },
+  };
+  const { definition } = await sendDefinitionWrite(
+    'import',
+    idempotencyKey,
+    () =>
+      getDesktopCanopyRuntime().instruction(
+        'core.pipeline.definition.import',
+        params,
+        { caller, metadata: { idempotencyKey } },
+      ),
+    (route, options) => route.import(params, options),
   );
   return savedPipelineInfo(definition, parsePipelineText(definition.document));
 }

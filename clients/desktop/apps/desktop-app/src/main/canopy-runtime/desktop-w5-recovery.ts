@@ -26,6 +26,7 @@ import {
 } from '../lib/w5-recovery-request';
 import { disposeElectronDaemonConnections } from './electron-daemon-access';
 import { getElectronDaemonHealth } from './electron-daemon-health';
+import { revokeDesktopW5ReadCache } from './w5-read-cache';
 import {
   leaseElectronW5RecordPort,
   type ElectronW5RecordPortLease,
@@ -229,6 +230,7 @@ export function getDesktopW5RecoveryController(): DesktopW5RecoveryController {
       ];
     },
     quiesce: async (): Promise<void> => {
+      revokeDesktopW5ReadCache();
       getElectronDaemonHealth().beginRecovery();
       cancelPendingW5FlipHandoff();
       lease?.close();

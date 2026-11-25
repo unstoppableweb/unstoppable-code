@@ -81,6 +81,9 @@ function observeWorkspaceCommits(
       handlers: handlers.createDesktopWorkspaceCommitEventHandlers(),
       isOwnOrigin: (id) => ownClientInstances.has(id),
       readCache: (plan) => readCache.applyDesktopW5ReadCachePlan(plan),
+      onStreamChanged: (ready) =>
+        readCache.setDesktopW5ReadCacheStreamReady(ready),
+      onInvalidated: () => readCache.revokeDesktopW5ReadCache(),
     }),
   ));
   void pending

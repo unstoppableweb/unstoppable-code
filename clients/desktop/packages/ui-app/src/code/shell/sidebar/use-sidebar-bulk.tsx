@@ -227,6 +227,10 @@ type QueuedBulkItem = SidebarBatchItem<QueuedBulkTarget>;
 
 const NO_ROWS: SidebarSelectionRows = new Map();
 
+/**
+ * Same rows, ignoring which one is open: the open row changes on every
+ * navigation, and only gestures read it (see `readLiveRows`).
+ */
 function sameRows(a: SidebarSelectionRows, b: SidebarSelectionRows): boolean {
   if (a.size !== b.size) return false;
   for (const [listId, rows] of a) {
@@ -239,8 +243,7 @@ function sameRows(a: SidebarSelectionRows, b: SidebarSelectionRows): boolean {
         match.kind !== row.kind ||
         match.selectable !== row.selectable ||
         match.label !== row.label ||
-        match.projectName !== row.projectName ||
-        match.open !== row.open
+        match.projectName !== row.projectName
       ) {
         return false;
       }
@@ -249,9 +252,26 @@ function sameRows(a: SidebarSelectionRows, b: SidebarSelectionRows): boolean {
   return true;
 }
 
+function mergeReportedRows(
+  rowsByReporter: ReadonlyMap<string, SidebarSelectionRows>,
+): SidebarSelectionRows {
+  const merged = new Map<string, readonly SidebarSelectionRow[]>();
+  for (const reported of rowsByReporter.values()) {
+    for (const [listId, listRows] of reported) {
+      merged.set(listId, [...(merged.get(listId) ?? []), ...listRows]);
+    }
+  }
+  return merged;
+}
+
 /**
  * The rows every list in a rail reports, merged by list id. Mounted once per
  * rail, before the bindings that read the rows.
+ *
+ * `rows` re-renders the rail only when the rows themselves change. Their
+ * `open` flag can lag a navigation there: it moves on every switch, and
+ * publishing it re-rendered every row of the rail in the switch's first
+ * frame. Gestures read it from `readLiveRows`, the latest report.
  */
 export function useSidebarSelectionRows(): {
   readonly rows: SidebarSelectionRows;
@@ -260,19 +280,19 @@ export function useSidebarSelectionRows(): {
   readonly reporterFor: (
     listId: string,
   ) => (rows: SidebarSelectionRows) => void;
+  readonly readLiveRows: () => SidebarSelectionRows;
 } {
   const [rowsByReporter, setRowsByReporter] = useState<
     ReadonlyMap<string, SidebarSelectionRows>
   >(new Map());
-  const rows = useMemo((): SidebarSelectionRows => {
-    const merged = new Map<string, readonly SidebarSelectionRow[]>();
-    for (const reported of rowsByReporter.values()) {
-      for (const [listId, listRows] of reported) {
-        merged.set(listId, [...(merged.get(listId) ?? []), ...listRows]);
-      }
-    }
-    return merged;
-  }, [rowsByReporter]);
+  const rows = useMemo(
+    (): SidebarSelectionRows => mergeReportedRows(rowsByReporter),
+    [rowsByReporter],
+  );
+  // The latest report of each reporter, with its open row, and what `rows`
+  // holds of it.
+  const liveRef = useRef(new Map<string, SidebarSelectionRows>());
+  const publishedRef = useRef(new Map<string, SidebarSelectionRows>());
   const reportersRef = useRef(
     new Map<string, (next: SidebarSelectionRows) => void>(),
   );
@@ -280,21 +300,34 @@ export function useSidebarSelectionRows(): {
     (reporterId: string): ((next: SidebarSelectionRows) => void) => {
       const existing = reportersRef.current.get(reporterId);
       if (existing !== undefined) return existing;
-      const report = (next: SidebarSelectionRows): void =>
+      const report = (next: SidebarSelectionRows): void => {
+        if (next.size === 0) liveRef.current.delete(reporterId);
+        else liveRef.current.set(reporterId, next);
+        if (sameRows(publishedRef.current.get(reporterId) ?? NO_ROWS, next)) {
+          return;
+        }
+        if (next.size === 0) publishedRef.current.delete(reporterId);
+        else publishedRef.current.set(reporterId, next);
         setRowsByReporter((current) => {
-          const previous = current.get(reporterId) ?? NO_ROWS;
-          if (sameRows(previous, next)) return current;
           const updated = new Map(current);
           if (next.size === 0) updated.delete(reporterId);
           else updated.set(reporterId, next);
           return updated;
         });
+      };
       reportersRef.current.set(reporterId, report);
       return report;
     },
     [],
   );
-  return useMemo(() => ({ rows, reporterFor }), [rows, reporterFor]);
+  const readLiveRows = useCallback(
+    (): SidebarSelectionRows => mergeReportedRows(liveRef.current),
+    [],
+  );
+  return useMemo(
+    () => ({ rows, reporterFor, readLiveRows }),
+    [rows, reporterFor, readLiveRows],
+  );
 }
 
 /**
@@ -354,9 +387,11 @@ export function useSidebarBulk(input: {
   readonly reporterFor: (
     listId: string,
   ) => (rows: SidebarSelectionRows) => void;
+  /** The latest reported rows, with their current open row. */
+  readonly readLiveRows?: () => SidebarSelectionRows;
   readonly bindings: readonly SidebarBulkBinding[];
 }): SidebarBulk {
-  const { rows, reporterFor, bindings } = input;
+  const { rows, reporterFor, bindings, readLiveRows } = input;
   const bindingsRef = useRef(bindings);
   bindingsRef.current = bindings;
 
@@ -438,7 +473,7 @@ export function useSidebarBulk(input: {
     return filtered;
   }, [rows, enabledKinds, queuedKeys]);
   const [dialog, setDialog] = useState<BulkDialogState | null>(null);
-  const rawSelection = useSidebarRowSelection(selectableRows);
+  const rawSelection = useSidebarRowSelection(selectableRows, readLiveRows);
   const [selectionMode, setSelectionMode] = useState<SidebarSelectionSection>();
   const clearRows = rawSelection.clear;
   const exitSelection = useCallback((): void => {

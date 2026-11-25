@@ -1,5 +1,7 @@
+import { z } from 'zod';
 import {
   IPC_CHANNELS,
+  type LocalModelGatewayMigrationChoice,
   type LocalModelGatewayResult,
   type LocalModelGatewayState,
 } from '@canopy/desktop-shared/types';
@@ -17,9 +19,13 @@ import {
 } from '../lib/local-model-gateway-store';
 import {
   connectDeviceGateway,
-  requireAiGatewaySettings,
+  requireDeviceAiGatewaySettings,
   requireDeviceGatewayScope,
 } from '../services/ai-gateway-settings';
+import {
+  chooseLocalModelGatewayMigration,
+  readLocalModelGatewayMigrationChoice,
+} from '../services/local-model-gateway-migration';
 import { sendToAllWindows } from '../lib/window-send';
 import { registerIpcHandler } from './register';
 
@@ -59,7 +65,7 @@ export function registerLocalModelGatewayHandlers(): void {
       input: unknown,
     ): Promise<LocalModelGatewayResult<PersonalAiGatewayConfig>> =>
       settle(async () => {
-        requireAiGatewaySettings();
+        await requireDeviceAiGatewaySettings();
         await requireDeviceGatewayScope();
         const gateway = await updateLocalModelGateway(input);
         // A removal deleted the device key: key rows and banners re-read.
@@ -79,5 +85,30 @@ export function registerLocalModelGatewayHandlers(): void {
       input: unknown,
     ): Promise<LocalModelGatewayResult<AiGatewayConnectionResult>> =>
       settle(() => connectDeviceGateway(input)),
+  );
+
+  registerIpcHandler(
+    IPC_CHANNELS.localModelGatewayMigrationChoiceRead,
+    (): Promise<
+      LocalModelGatewayResult<LocalModelGatewayMigrationChoice | null>
+    > => settle(readLocalModelGatewayMigrationChoice),
+  );
+
+  registerIpcHandler(
+    IPC_CHANNELS.localModelGatewayMigrationChoose,
+    (
+      _event,
+      decision: unknown,
+      accountRevision: unknown,
+    ): Promise<LocalModelGatewayResult<null>> =>
+      settle(async () => {
+        const parsed = z
+          .tuple([z.enum(['device', 'account']), z.string().min(1).max(128)])
+          .safeParse([decision, accountRevision]);
+        if (!parsed.success)
+          throw new SettingsOperationError({ code: 'failed', status: 400 });
+        await chooseLocalModelGatewayMigration(...parsed.data);
+        return null;
+      }),
   );
 }

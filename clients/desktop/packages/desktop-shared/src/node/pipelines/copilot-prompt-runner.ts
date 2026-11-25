@@ -11,6 +11,7 @@ import {
 } from '@canopy/execution-engine/pipelines/config-paths';
 import { classifyAgentFailure } from '@canopy/execution-engine/agent-failures';
 import { hasAnySelections } from '../../types';
+import { stepStartupInjectionNames } from '../provider-process/step-environment';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -178,6 +179,14 @@ export async function runCopilotPipelinePrompt(
   };
   try {
     signal.throwIfAborted();
+    // The desktop host drops these from the step's environment before every
+    // Copilot launch; say so, as Cursor and OpenCode steps do.
+    const withheld = stepStartupInjectionNames(request.environment);
+    if (withheld.length > 0)
+      emit({
+        type: 'warning',
+        message: `Copilot does not receive these step environment variables: ${withheld.join(', ')}. The loader or shell would act on them before tool approval starts.`,
+      });
     const model = getRawCopilotModelId(request.model);
     if (!model) throw new Error('Choose a GitHub Copilot model for this step.');
     const cwd = resolve(request.cwd);

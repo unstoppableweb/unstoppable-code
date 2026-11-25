@@ -1692,6 +1692,247 @@ test('the desktop refuses forbidden effects from a valid delegated hosted sessio
   }
 });
 
+test('a Slack session reaches the Orchestrator only behind its gate, in one Slack conversations tab per thread and sender that closes after each turn (CAN-7604)', async () => {
+  test.setTimeout(240_000);
+  const root = await loadHostedRootIdentity(userA.userId);
+  const open = (firstPartyClient) =>
+    openDelegatedTestSession({
+      relay,
+      userExternalId: externalId,
+      root,
+      host: { deviceId: desktop.deviceId, publicKey: target.hostPublicKey },
+      expiresAt: Date.now() + 5 * 60_000,
+      ...(firstPartyClient ? { firstPartyClient } : {}),
+    });
+  const externalId = await externalIdOf(userA.userId);
+  const slack = await open('slack');
+  const agents = await open();
+  // The caller's tab ID is per Slack thread and per sender.
+  const slackThread = `slack-thread-${randomBytes(6).toString('hex')}`;
+  const thread = `${slackThread}-sender-a`;
+  const otherSender = `${slackThread}-sender-b`;
+  const send = (session, userMessageId, text, chatId = thread) =>
+    settle(
+      session.transport.invoke('chat:command', {
+        schemaVersion: 1,
+        commandId: randomUUID(),
+        projectId: 'app-advisor',
+        worktreeId: 'slack-conversations',
+        command: {
+          type: 'chat.send_message',
+          chatId,
+          userMessageId,
+          text,
+        },
+      }),
+    );
+  const status = async (userMessageId, chatId = thread) => {
+    const read = await settle(
+      slack.transport.invoke('app-advisor:slack-turn-status', {
+        chatId,
+        userMessageId,
+      }),
+    );
+    expect(read.ok, read.message).toBe(true);
+    return read.value;
+  };
+  const slackEntries = async () =>
+    (
+      await desktop.window.evaluate(() =>
+        window.api.workEntries.list({ projectId: 'app-advisor' }),
+      )
+    ).entries.filter((entry) => entry.title === 'Slack conversations');
+  try {
+    // Off by default: refused, and nothing is created.
+    const off = await send(slack, 'slack-message-0', 'Are you there?');
+    expect(off.ok, off.message).toBe(true);
+    expect(off.value).toMatchObject({ outcome: 'rejected' });
+    expect(await slackEntries()).toEqual([]);
+
+    // The Orchestrator's own model here differs from the worktree default.
+    await desktop.window.evaluate(() =>
+      window.api.savePreferences({
+        slackOrchestratorRequestsEnabled: true,
+        appAdvisorModel: 'sonnet',
+      }),
+    );
+    // An agents session never reaches the Orchestrator, gate or not.
+    const fromAgents = await send(agents, 'slack-message-0', 'Are you there?');
+    expect(fromAgents.ok).toBe(false);
+    expect(fromAgents.message).toMatch(HOST_PROFILE_REFUSAL);
+
+    const first = `Canopy-CSLACK${randomBytes(4).toString('hex')}`;
+    await registerScenario(DEFAULT_MOCK_BASE_URL, first, {
+      llm: {
+        steps: [
+          { text: 'Three pull requests merged.', stopReason: 'end_turn' },
+        ],
+      },
+    });
+    const sent = await send(
+      slack,
+      'slack-message-1',
+      `[${first}] What changed today?`,
+    );
+    expect(sent.ok, sent.message).toBe(true);
+    expect(sent.value).toMatchObject({ outcome: 'applied', entityId: thread });
+    const entryId = sent.value.worktreeId;
+    expect(entryId).toMatch(/\S/);
+    // The turn completes and its tab closes on its own.
+    await expect
+      .poll(() => status('slack-message-1'), { ...POLL, timeout: 90_000 })
+      .toEqual({ state: 'completed', worktreeId: entryId, closed: true });
+
+    // The Slack sender, verified, on the Orchestrator's own model.
+    const page = await settle(
+      slack.transport.invoke('chat:get-transcript-page', {
+        projectId: 'app-advisor',
+        worktreeId: entryId,
+        chatId: thread,
+      }),
+    );
+    expect(page.ok, page.message).toBe(true);
+    const prompt = page.value.messages.find((m) => m.id === 'slack-message-1');
+    expect(prompt?.agentSent, JSON.stringify(prompt)).toMatchObject({
+      kind: 'external_agent',
+      clientName: 'Slack',
+      verified: true,
+    });
+    expect(JSON.stringify(page.value.messages)).toContain(
+      'Three pull requests merged.',
+    );
+
+    // A resend after the tab closed starts nothing and reopens nothing.
+    const resent = await send(
+      slack,
+      'slack-message-1',
+      `[${first}] What changed today?`,
+    );
+    expect(resent.value).toMatchObject({
+      outcome: 'already_applied',
+      worktreeId: entryId,
+    });
+    expect(await status('slack-message-1')).toMatchObject({ closed: true });
+
+    // The thread's next message reopens the same tab in the same entry.
+    const second = `Canopy-CSLACK${randomBytes(4).toString('hex')}`;
+    await registerScenario(DEFAULT_MOCK_BASE_URL, second, {
+      llm: {
+        steps: [{ text: 'Nothing else changed.', stopReason: 'end_turn' }],
+      },
+    });
+    const next = await send(
+      slack,
+      'slack-message-2',
+      `[${second}] Anything else?`,
+    );
+    expect(next.value).toMatchObject({
+      outcome: 'applied',
+      worktreeId: entryId,
+    });
+    await expect
+      .poll(() => status('slack-message-2'), { ...POLL, timeout: 90_000 })
+      .toEqual({ state: 'completed', worktreeId: entryId, closed: true });
+
+    // Another person asking in the same Slack thread gets their own tab.
+    const third = `Canopy-CSLACK${randomBytes(4).toString('hex')}`;
+    await registerScenario(DEFAULT_MOCK_BASE_URL, third, {
+      llm: {
+        steps: [{ text: 'Your build is green.', stopReason: 'end_turn' }],
+      },
+    });
+    const fromOther = await send(
+      slack,
+      'slack-message-3',
+      `[${third}] Is my build green?`,
+      otherSender,
+    );
+    expect(fromOther.value).toMatchObject({
+      outcome: 'applied',
+      entityId: otherSender,
+      worktreeId: entryId,
+    });
+    await expect
+      .poll(() => status('slack-message-3', otherSender), {
+        ...POLL,
+        timeout: 90_000,
+      })
+      .toEqual({ state: 'completed', worktreeId: entryId, closed: true });
+
+    expect((await slackEntries()).map((entry) => entry.id)).toEqual([entryId]);
+    const state = await desktop.window.evaluate(
+      (worktreeId) =>
+        window.api.chat.getState({ projectId: 'app-advisor', worktreeId }),
+      entryId,
+    );
+    // One tab for each person's thread, open or closed. Any other tab is the
+    // empty one the Orchestrator window opens on an entry with none open.
+    const tabs = [
+      ...state.tabsFile.tabs,
+      ...state.archives.map((archive) => ({
+        id: archive.chatId,
+        turnCount: archive.turnCount,
+      })),
+    ];
+    expect(tabs.filter((tab) => tab.id === thread)).toHaveLength(1);
+    expect(tabs.filter((tab) => tab.id === otherSender)).toHaveLength(1);
+    // The thread ran on the Orchestrator's own model, not the worktree one.
+    expect(
+      state.archives.find((archive) => archive.chatId === thread)?.model,
+    ).toBe('sonnet');
+    for (const tab of tabs.filter(
+      (candidate) => candidate.id !== thread && candidate.id !== otherSender,
+    )) {
+      expect(
+        tab.messages?.length ?? tab.transcript?.messageCount ?? tab.turnCount,
+        JSON.stringify(tab),
+      ).toBe(0);
+    }
+
+    // Deleted by the person: the next Slack message makes a new entry under
+    // a new ID, never reusing the deleted one's.
+    await desktop.window.evaluate(
+      (entryId) =>
+        window.api.workEntries.delete({ projectId: 'app-advisor', entryId }),
+      entryId,
+    );
+    await expect.poll(async () => (await slackEntries()).length, POLL).toBe(0);
+    const fourth = `Canopy-CSLACK${randomBytes(4).toString('hex')}`;
+    await registerScenario(DEFAULT_MOCK_BASE_URL, fourth, {
+      llm: { steps: [{ text: 'Back again.', stopReason: 'end_turn' }] },
+    });
+    const recreated = await send(
+      slack,
+      'slack-message-4',
+      `[${fourth}] Still there?`,
+    );
+    expect(recreated.value).toMatchObject({ outcome: 'applied' });
+    const newEntryId = recreated.value.worktreeId;
+    expect(newEntryId).not.toBe(entryId);
+    expect((await slackEntries()).map((entry) => entry.id)).toEqual([
+      newEntryId,
+    ]);
+    await expect
+      .poll(() => status('slack-message-4'), { ...POLL, timeout: 90_000 })
+      .toEqual({ state: 'completed', worktreeId: newEntryId, closed: true });
+
+    // A Slack session reads no other entry, and no ordinary project.
+    const elsewhere = await settle(
+      slack.transport.invoke('desktop:session-snapshot'),
+    );
+    expect(elsewhere.ok).toBe(false);
+  } finally {
+    await desktop.window.evaluate(() =>
+      window.api.savePreferences({
+        slackOrchestratorRequestsEnabled: false,
+        appAdvisorModel: 'gpt-6.2-sol',
+      }),
+    );
+    slack.stop();
+    agents.stop();
+  }
+});
+
 async function externalIdOf(userId) {
   return withRemoteControlDbClient(async (client) => {
     const result = await client.query(

@@ -48,6 +48,7 @@ function deferred<T>(): {
 type WorkerQueryHandlers = Pick<
   CanopyQueryHandlerMap<CanopyHandlerContext>,
   | 'worker.agent.provider.list'
+  | 'worker.agent.provider.platform.get'
   | 'worker.agent.usageLimits.get'
   | 'worker.filesystem.roots.list'
   | 'worker.filesystem.directory.list'
@@ -78,6 +79,9 @@ function handlers(
 ): WorkerQueryHandlers {
   return {
     'worker.agent.provider.list': (): never => {
+      throw new Error('Not exercised.');
+    },
+    'worker.agent.provider.platform.get': (): never => {
       throw new Error('Not exercised.');
     },
     'worker.agent.usageLimits.get': (): never => {
@@ -214,6 +218,9 @@ describe('createCanopyDispatcher', () => {
         // @ts-expect-error Intentionally incomplete to verify runtime validation.
         handlers: {
           'worker.agent.provider.list': (): never => {
+            throw new Error('Not exercised.');
+          },
+          'worker.agent.provider.platform.get': (): never => {
             throw new Error('Not exercised.');
           },
           'worker.agent.usageLimits.get': (): never => {

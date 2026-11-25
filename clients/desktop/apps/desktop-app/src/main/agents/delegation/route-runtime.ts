@@ -1177,6 +1177,7 @@ export class DelegationRouteRuntime {
       task.thinkingLevel,
       host,
       owner.projectId,
+      await resolveSessionWorkOwner(owner),
     );
     let result = fresh;
     if (retainedOverlay && fresh.ok) {

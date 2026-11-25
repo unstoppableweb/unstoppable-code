@@ -9,6 +9,7 @@ import type {
 import {
   gatewayModelsSchema,
   personalAiGatewayConfigSchema,
+  personalAiGatewayUseInCloudChatsSchema,
   type AiGatewayScope,
   type PersonalAiGatewayConfig,
 } from '@canopy/protocol/model-gateway';
@@ -21,15 +22,15 @@ import {
 import { matchAiGatewayPreset } from '@canopy/protocol/model-gateway/presets';
 import { MODEL_GATEWAY_MAX_MODELS } from '@canopy/protocol/canopy-server';
 import { organizationConfigDetailSchema } from '@canopy/protocol/settings/organization';
-import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { CanopyInjectedToolRuntime } from '../canopy-tools/core';
-import { getFeatureFlagService } from '../feature-flags';
 import { acquireSettingsBridgeSession } from '../canopy-cloud/settings-session';
 import { executeSettingsOperation } from '../canopy-cloud/settings-client';
 import {
   readCanopyCloudAccountWithStatus,
   subscribeCanopyCloudAccountChanges,
 } from '../lib/canopy-cloud-account-store';
+import { aiGatewaySettingsAvailable } from '../services/ai-gateway-availability';
 import {
   authorizeDesktopGatewayScope,
   connectDesktopGateway,
@@ -46,6 +47,10 @@ import {
   readLocalModelGateway,
   updateLocalModelGateway,
 } from '../lib/local-model-gateway-store';
+import {
+  isModelGatewayUsedOnThisComputer,
+  setModelGatewayUsedOnThisComputer,
+} from '../lib/model-gateway-device-use';
 
 interface DiscoveryReceipt {
   accountId: string;
@@ -56,11 +61,6 @@ interface DiscoveryReceipt {
   models: DiscoveredGatewayModel[];
 }
 const discoveries = new Map<string, DiscoveryReceipt>();
-export function desktopAiGatewayEnabled(): boolean {
-  return getFeatureFlagService().isEnabled(
-    CLIENT_FEATURE_FLAGS.canopyAiGatewaySettingsEnabled.key,
-  );
-}
 function json(value: unknown): AgentJson {
   return z.json().parse(JSON.parse(JSON.stringify(value)));
 }
@@ -70,6 +70,12 @@ type GatewayPatch = Extract<
   AiGatewayAction,
   { type: 'settings.ai_gateway.update' }
 >['patch'];
+
+interface GatewayRead {
+  gateway: PersonalAiGatewayConfig | null;
+  /** Hosted Personal only: where the gateway is used. */
+  useOn?: { useInCloudChats: boolean; useOnThisComputer: boolean };
+}
 
 /**
  * Where one action's gateway lives. The approval flow is the same for both;
@@ -83,14 +89,14 @@ interface GatewayBackend {
   authorize(intent: GatewayIntent): Promise<void>;
   /** Abort when the account, Personal organization or device scope changes. */
   onScopeChange(abort: () => void): () => void;
-  readConfig(signal: AbortSignal): Promise<PersonalAiGatewayConfig | null>;
+  readConfig(signal: AbortSignal): Promise<GatewayRead>;
   connect(
     input: { baseUrl: string; apiKey?: string },
     signal: AbortSignal,
   ): Promise<AiGatewayConnectionResult>;
   write(input: {
     expectedRevision: string;
-    patch: Omit<GatewayPatch, 'addDiscovered'>;
+    patch: Omit<GatewayPatch, 'addDiscovered' | 'useOnThisComputer'>;
     models: PersonalAiGatewayConfig['models'];
     replaceModels: boolean;
   }): Promise<void>;
@@ -139,9 +145,20 @@ async function hostedGatewayBackend(
           {},
           { signal },
         );
-        return z
-          .object({ gateway: personalAiGatewayConfigSchema.nullable() })
-          .parse(value).gateway;
+        const read = z
+          .object({
+            gateway: personalAiGatewayConfigSchema.nullable(),
+            useInCloudChats: personalAiGatewayUseInCloudChatsSchema,
+          })
+          .parse(value);
+        return {
+          gateway: read.gateway,
+          useOn: {
+            useInCloudChats: read.useInCloudChats,
+            useOnThisComputer:
+              await isModelGatewayUsedOnThisComputer(organizationId),
+          },
+        };
       }
       const value = organizationConfigDetailSchema.parse(
         await executeSettingsOperation(
@@ -152,14 +169,16 @@ async function hostedGatewayBackend(
         ),
       );
       return {
-        organizationId,
-        displayName: value.modelGatewayDisplayName ?? null,
-        baseUrl: value.modelGatewayBaseUrl,
-        models: value.modelGatewayModels,
-        enabled: value.enforceMemberModelGateway,
-        onlyThisGateway: value.modelGatewayEnforced,
-        promptCachePassthrough: value.modelGatewayPromptCachePassthrough,
-        revision: value.modelGatewayRevision ?? 'absent',
+        gateway: {
+          organizationId,
+          displayName: value.modelGatewayDisplayName ?? null,
+          baseUrl: value.modelGatewayBaseUrl,
+          models: value.modelGatewayModels,
+          enabled: value.enforceMemberModelGateway,
+          onlyThisGateway: value.modelGatewayEnforced,
+          promptCachePassthrough: value.modelGatewayPromptCachePassthrough,
+          revision: value.modelGatewayRevision ?? 'absent',
+        },
       };
     },
     connect: (input, signal) =>
@@ -252,7 +271,7 @@ async function deviceGatewayBackend(
       subscribeCanopyCloudAccountChanges((next) => {
         if (!accountUsesDeviceModelGateway(next)) abort();
       }),
-    readConfig: () => readLocalModelGateway(),
+    readConfig: async () => ({ gateway: await readLocalModelGateway() }),
     connect: (input, signal) =>
       connectDeviceGateway(
         { expectedOrganizationId: organizationId, ...input },
@@ -274,7 +293,7 @@ export async function executeDesktopAiGateway(
   action: AiGatewayAction,
   call: AgentActionCall<CanopyInjectedToolRuntime>,
 ): Promise<AgentJson> {
-  if (!desktopAiGatewayEnabled())
+  if (!aiGatewaySettingsAvailable())
     throw new Error('AI gateway setup unavailable');
   const read = await readCanopyCloudAccountWithStatus();
   if (read.status !== 'ok') throw new Error('Signed-in account required');
@@ -309,15 +328,14 @@ export async function executeDesktopAiGateway(
     call.host.worktreeActionRuntime?.getWindow() ??
     call.host.settingsWindow?.() ??
     null;
-  const readConfig = (): Promise<PersonalAiGatewayConfig | null> =>
-    backend.readConfig(signal);
+  const readConfig = (): Promise<GatewayRead> => backend.readConfig(signal);
   try {
     signal.throwIfAborted();
     if (action.type === 'settings.ai_gateway.get') {
-      const gateway = await readConfig();
+      const { gateway, useOn } = await readConfig();
       await backend.authorize('read');
       signal.throwIfAborted();
-      return json({ scope, gateway });
+      return json({ scope, gateway, ...useOn });
     }
     if (!identity || !getWindow()) return { status: 'key_required' };
     const event = {
@@ -370,10 +388,15 @@ export async function executeDesktopAiGateway(
       });
       return json({ ...result, discoveryId });
     }
-    const current = await readConfig();
+    const { gateway: current, useOn } = await readConfig();
     if ((current?.revision ?? 'absent') !== action.expectedRevision)
       throw new Error('Stale gateway revision');
-    const { addDiscovered, ...patch } = action.patch;
+    const { addDiscovered, useOnThisComputer, ...patch } = action.patch;
+    if (
+      !useOn &&
+      (patch.useInCloudChats !== undefined || useOnThisComputer !== undefined)
+    )
+      throw new Error('Signed-in account required');
     const baseUrl =
       patch.baseUrl === undefined ? (current?.baseUrl ?? null) : patch.baseUrl;
     let models = patch.models ?? current?.models ?? [];
@@ -420,10 +443,33 @@ export async function executeDesktopAiGateway(
     const only = patch.onlyThisGateway ?? current?.onlyThisGateway ?? false;
     if (enabled && (!baseUrl || models.length === 0))
       throw new Error('Select a model before enabling');
+    if (
+      only &&
+      (patch.useInCloudChats === false || useOnThisComputer === false)
+    )
+      throw new Error('Use only my AI gateway applies everywhere');
     // Clearing the URL of a configured gateway removes it, so say so rather
     // than "Save AI gateway with 0 models". Removal implies disabling, so
     // that change isn't listed; any other policy change still shows.
     const removing = baseUrl === null && Boolean(current?.baseUrl);
+    const useOnChanges = [
+      ...(patch.useInCloudChats === undefined ||
+      patch.useInCloudChats === useOn?.useInCloudChats
+        ? []
+        : [
+            patch.useInCloudChats
+              ? 'use in cloud chats'
+              : "don't use in cloud chats",
+          ]),
+      ...(useOnThisComputer === undefined ||
+      useOnThisComputer === useOn?.useOnThisComputer
+        ? []
+        : [
+            useOnThisComputer
+              ? 'use on this computer'
+              : "don't use on this computer",
+          ]),
+    ];
     const policyChanges = [
       ...(patch.enabled === undefined || (removing && !enabled)
         ? []
@@ -437,6 +483,7 @@ export async function executeDesktopAiGateway(
               ? 'use only this gateway when enabled'
               : 'allow other providers',
           ]),
+      ...useOnChanges,
     ];
     const title =
       removing && current?.baseUrl
@@ -481,12 +528,31 @@ export async function executeDesktopAiGateway(
     signal.throwIfAborted();
     if (reusedReceipt && reusedReceipt.expiresAt < Date.now())
       throw new Error('Stale gateway discovery');
-    await backend.write({
-      expectedRevision: action.expectedRevision,
-      patch,
-      models,
-      replaceModels: addDiscovered === true,
-    });
+    // "This computer" is saved here only, so a change to it alone sends nothing.
+    if (Object.keys(patch).length > 0 || addDiscovered === true)
+      await backend.write({
+        expectedRevision: action.expectedRevision,
+        patch,
+        models,
+        replaceModels: addDiscovered === true,
+      });
+    if (useOnThisComputer !== undefined) {
+      const changed = await setModelGatewayUsedOnThisComputer(
+        organizationId,
+        useOnThisComputer,
+      );
+      const { refreshLocalModelGatewayPolicy } =
+        await import('../services/org-enforced-settings');
+      await refreshLocalModelGatewayPolicy();
+      // The key is unchanged, but its "This computer" status is not.
+      if (changed) {
+        const { sendToAllWindows } = await import('../lib/window-send');
+        sendToAllWindows(
+          IPC_CHANNELS.modelGatewayCredentialChanged,
+          organizationId,
+        );
+      }
+    }
     if (action.discoveryId) discoveries.delete(action.discoveryId);
     return { status: 'updated', organizationId };
   } finally {

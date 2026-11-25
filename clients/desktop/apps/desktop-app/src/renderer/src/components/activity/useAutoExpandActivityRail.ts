@@ -14,7 +14,10 @@
  * rendered rail cannot drift: it consumes the very same `sectionHasContent`
  * map the shared panel renders from. That works while the rail is shut because
  * a collapsed group's content stays mounted — the body is hidden with CSS only
- * (`PanelContentRoot`/`panels.css`) — and `usePanelPlacement()` supplies the
+ * (`PanelContentRoot`/`panels.css`). A rail that is shut when its worktree is
+ * shown mounts a moment later, once the browser is idle
+ * (`useHiddenRailContentMounted`), so the first check runs then.
+ * `usePanelPlacement()` supplies the
  * real group id, which is what makes Minimal (Work) mode work through the same
  * code path even though its rail is `group-extras`.
  *

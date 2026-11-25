@@ -8086,7 +8086,261 @@ async function sweepPointer(page, target) {
   await nextPaint(page);
 }
 
-async function runFrameSmoothness({ page, app, config, tasks, fixture }) {
+// An edge drag changes the window by a few points per display frame.
+const FRAME_SMOOTHNESS_RESIZE_STEPS = 32;
+const FRAME_SMOOTHNESS_RESIZE_STEP_POINTS = 10;
+// Past the 500 ms a loaded page waits before its standing snapshot is taken.
+const FRAME_SMOOTHNESS_WEBSITE_SETTLE_MS = 1_200;
+
+/**
+ * Narrows (or shortens) the main window step by step and brings it back, at
+ * one step per 60 Hz frame, as dragging a window edge does. The window never
+ * goes under its minimum size, and ends at the bounds it started with.
+ */
+async function sweepWindowSize(electronApp, page, axis) {
+  const { bounds, minimum } = await electronApp.evaluate(
+    ({ BrowserWindow }) => {
+      const [window] = BrowserWindow.getAllWindows();
+      const [width, height] = window.getMinimumSize();
+      return { bounds: window.getBounds(), minimum: { width, height } };
+    },
+  );
+  const room = Math.max(0, bounds[axis] - minimum[axis]);
+  const step = Math.min(
+    FRAME_SMOOTHNESS_RESIZE_STEP_POINTS,
+    Math.floor(room / FRAME_SMOOTHNESS_RESIZE_STEPS),
+  );
+  if (step < 1) throw new Error(`The window has no room to resize its ${axis}`);
+  const setSize = (size) =>
+    electronApp.evaluate(
+      ({ BrowserWindow }, next) => {
+        BrowserWindow.getAllWindows()[0].setBounds(next);
+      },
+      { ...bounds, [axis]: size },
+    );
+  for (let at = 1; at <= FRAME_SMOOTHNESS_RESIZE_STEPS; at += 1) {
+    await setSize(bounds[axis] - step * at);
+    await delay(FRAME_SMOOTHNESS_WHEEL_GAP_MS);
+  }
+  for (let at = FRAME_SMOOTHNESS_RESIZE_STEPS - 1; at >= 0; at -= 1) {
+    await setSize(bounds[axis] - step * at);
+    await delay(FRAME_SMOOTHNESS_WHEEL_GAP_MS);
+  }
+  await nextPaint(page);
+}
+
+/**
+ * Counts, in main, what a window resize costs while a website is open: how
+ * long the page's native view takes to follow each window size, how often
+ * the page is captured, and how long main's event loop stalls.
+ */
+async function startWebsiteResizeProbe(electronApp) {
+  await electronApp.evaluate(({ BrowserWindow, View }) => {
+    const [window] = BrowserWindow.getAllWindows();
+    const stats = {
+      windowResizes: 0,
+      viewMoves: 0,
+      pageCaptures: 0,
+      viewLagMs: [],
+      mainStallMs: [],
+    };
+    const undo = [];
+    let resizedAt = null;
+    const onResize = () => {
+      stats.windowResizes += 1;
+      resizedAt ??= performance.now();
+    };
+    window.on('resize', onResize);
+    undo.push(() => window.off('resize', onResize));
+    // Every native view move goes through `View.prototype.setBounds`, so the
+    // count does not depend on finding the page's own views. A page area
+    // moves three views (frame, clip, page).
+    const setBounds = View.prototype.setBounds;
+    View.prototype.setBounds = function setBoundsCounted(...args) {
+      stats.viewMoves += 1;
+      if (resizedAt !== null) {
+        stats.viewLagMs.push(performance.now() - resizedAt);
+        resizedAt = null;
+      }
+      return setBounds.apply(this, args);
+    };
+    undo.push(() => {
+      View.prototype.setBounds = setBounds;
+    });
+    const contentsPrototype = Object.getPrototypeOf(window.webContents);
+    const capturePage = contentsPrototype.capturePage;
+    contentsPrototype.capturePage = function capturePageCounted(...args) {
+      stats.pageCaptures += 1;
+      return capturePage.apply(this, args);
+    };
+    undo.push(() => {
+      contentsPrototype.capturePage = capturePage;
+    });
+    const tickMs = 4;
+    let last = performance.now();
+    const timer = setInterval(() => {
+      const now = performance.now();
+      const late = now - last - tickMs;
+      if (late > 8) stats.mainStallMs.push(late);
+      last = now;
+    }, tickMs);
+    undo.push(() => clearInterval(timer));
+    globalThis.__canopyPerfWebsiteResizeProbe = {
+      stats,
+      frames: window.contentView.children.length,
+      undo,
+    };
+  });
+}
+
+async function readWebsiteResizeProbe(electronApp, { stop = false } = {}) {
+  return electronApp.evaluate((_electron, end) => {
+    const probe = globalThis.__canopyPerfWebsiteResizeProbe;
+    if (!probe) return null;
+    if (end) {
+      for (const restore of probe.undo) restore();
+      delete globalThis.__canopyPerfWebsiteResizeProbe;
+    }
+    const sorted = (values) => [...values].sort((a, b) => a - b);
+    const at = (values, quantile) =>
+      values.length === 0
+        ? 0
+        : values[
+            Math.min(values.length - 1, Math.floor(values.length * quantile))
+          ];
+    const lag = sorted(probe.stats.viewLagMs);
+    const stalls = sorted(probe.stats.mainStallMs);
+    return {
+      websiteViews: probe.frames,
+      windowResizes: probe.stats.windowResizes,
+      viewMoves: probe.stats.viewMoves,
+      pageCaptures: probe.stats.pageCaptures,
+      viewLagMs: { p50: at(lag, 0.5), p95: at(lag, 0.95), max: at(lag, 1) },
+      mainStallMs: {
+        count: stalls.length,
+        max: at(stalls, 1),
+        total: stalls.reduce((sum, value) => sum + value, 0),
+      },
+    };
+  }, stop);
+}
+
+/**
+ * Opens one website beside the chat and sweeps the window width, as a user
+ * dragging the window edge with a page open does. The page has been open
+ * long enough to have its standing snapshot, as it would in normal use.
+ */
+async function measureWebsiteResize({ electronApp, page, tasks, iterations }) {
+  await addBrowserPanel(page, 1);
+  const [binding] = await browserPanelBindings(page);
+  if (!binding) throw new Error('The website panel was not bound.');
+  await expect(
+    page.getByTestId(`browser-pane-${binding.browserId}`),
+  ).toHaveAttribute('data-browser-state', 'live', { timeout: 30_000 });
+  const url = `${PERFORMANCE_MOCK_BASE_URL}/browser-fixture/one`;
+  const snapshot = await page.evaluate(
+    (request) => window.api.browser.navigate(request),
+    { browserId: binding.browserId, url },
+  );
+  if (snapshot?.url !== url) {
+    throw new Error('The website fixture did not load.');
+  }
+  // Beside the chat, as a page is usually kept: both re-lay-out per step.
+  await movePanelViaApi(page, binding.panelId, binding.groupId, 'right').catch(
+    () => undefined,
+  );
+  await delay(FRAME_SMOOTHNESS_WEBSITE_SETTLE_MS);
+  await nextPaint(page);
+
+  // What the page area and its native views look like before the sweep,
+  // so a run that moved no view says why.
+  const paneState = () =>
+    page.evaluate((browserId) => {
+      const pane = document.querySelector(
+        `[data-testid="browser-pane-${browserId}"]`,
+      );
+      const area = pane?.querySelector('[data-browser-native-view-available]');
+      const rect = area?.getBoundingClientRect();
+      return {
+        state: pane?.getAttribute('data-browser-state') ?? null,
+        available:
+          area?.getAttribute('data-browser-native-view-available') ?? null,
+        covered: area?.getAttribute('data-browser-native-view-covered') ?? null,
+        frozen: area?.getAttribute('data-browser-native-view-frozen') ?? null,
+        width: rect ? Math.round(rect.width) : null,
+        height: rect ? Math.round(rect.height) : null,
+      };
+    }, binding.browserId);
+  const nativeViews = () =>
+    electronApp.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].contentView.children.map((view) => ({
+        kind: view.constructor.name,
+        bounds: view.getBounds(),
+        visible:
+          typeof view.getVisible === 'function' ? view.getVisible() : null,
+        children: view.children.length,
+      })),
+    );
+  const before = { pane: await paneState(), views: await nativeViews() };
+  await startWebsiteResizeProbe(electronApp);
+  let duringSweep;
+  try {
+    await recordFrameWindow(
+      tasks,
+      'resize',
+      'window_width_with_website',
+      async () => {
+        for (let iteration = 0; iteration < iterations; iteration += 1) {
+          await sweepWindowSize(electronApp, page, 'width');
+        }
+      },
+    );
+    duringSweep = await readWebsiteResizeProbe(electronApp);
+    if (duringSweep) {
+      duringSweep.before = before;
+      duringSweep.after = {
+        pane: await paneState(),
+        views: await nativeViews(),
+      };
+    }
+    await delay(FRAME_SMOOTHNESS_WEBSITE_SETTLE_MS);
+    // The same pointer sweep and transcript scroll as earlier in the run,
+    // now with a live page beside the chat: what a page costs the rest of
+    // the app while it is open.
+    await recordFrameWindow(
+      tasks,
+      'feedback',
+      'hover_sidebar_with_website',
+      () => sweepPointer(page, page.getByTestId('sidebar-scroll-container')),
+    ).catch(() => undefined);
+    const transcript = page.getByTestId('chat-message-list-scroll').last();
+    await recordFrameWindow(
+      tasks,
+      'scroll',
+      'transcript_with_website',
+      async () => {
+        await wheelAtTrackpadCadence(page, transcript, -1);
+        await wheelAtTrackpadCadence(page, transcript, 1);
+      },
+    ).catch(() => undefined);
+  } finally {
+    const settled = await readWebsiteResizeProbe(electronApp, { stop: true });
+    if (duringSweep && settled) {
+      duringSweep.pageCapturesAfterSettle =
+        settled.pageCaptures - duringSweep.pageCaptures;
+    }
+  }
+  return duringSweep;
+}
+
+async function runFrameSmoothness({
+  page,
+  app,
+  electronApp,
+  config,
+  tasks,
+  fixture,
+}) {
   const iterations = config.frameSmoothnessIterations;
   const area = (name, label, operation) =>
     recordFrameWindow(tasks, name, label, operation);
@@ -8108,6 +8362,19 @@ async function runFrameSmoothness({ page, app, config, tasks, fixture }) {
     for (let iteration = 0; iteration < iterations; iteration += 1) {
       await wheelAtTrackpadCadence(page, transcript, -1);
       await wheelAtTrackpadCadence(page, transcript, 1);
+    }
+  });
+
+  // The window resized by an edge, over the long transcript and the loaded
+  // sidebar: width re-wraps every row, height moves the sticky geometry.
+  await area('resize', 'window_width', async () => {
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      await sweepWindowSize(electronApp, page, 'width');
+    }
+  });
+  await area('resize', 'window_height', async () => {
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      await sweepWindowSize(electronApp, page, 'height');
     }
   });
 
@@ -8285,12 +8552,76 @@ async function runFrameSmoothness({ page, app, config, tasks, fixture }) {
     }
   });
 
+  // Reveals and state switches. Each is optional: a control this build or
+  // page does not have is listed in `skipped`, never a failed run.
+  const skipped = [];
+  const optionalArea = async (name, label, operation) => {
+    try {
+      await area(name, label, operation);
+    } catch (error) {
+      skipped.push(
+        `${name}:${label}: ${String(error?.message ?? error).split('\n')[0]}`,
+      );
+    }
+  };
+  const clickTwice = async (target) => {
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      await target.click({ timeout: 5_000 });
+      await nextPaint(page);
+      await target.click({ timeout: 5_000 });
+      await nextPaint(page);
+    }
+  };
+  const setChatDetail = async (chatDetail) => {
+    await page.evaluate(
+      (value) => window.api.savePreferences({ chatDetail: value }),
+      chatDetail,
+    );
+    await nextPaint(page);
+    await nextPaint(page);
+  };
+  // A sidebar section collapsed and expanded over a loaded sidebar.
+  await optionalArea('reveal', 'sidebar_section', () =>
+    clickTwice(page.getByTestId('sidebar-section-code-toggle').first()),
+  );
+  // The chat detail level changed under an open long transcript.
+  await optionalArea('state', 'chat_detail', async () => {
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      for (const chatDetail of ['detailed', 'compact', 'recent']) {
+        await setChatDetail(chatDetail);
+      }
+    }
+  });
+  // The worktree page: its top bar, tab strips and chat.
+  await app.selectWorktree(WORKTREE_BRANCH, NO_ACTIVITY_RAIL);
+  await expect(visibleChatPanel(page)).toBeVisible({ timeout: 30_000 });
+  await nextPaint(page);
+  // The window resized over a worktree page: chat, tab strips and top bar.
+  await optionalArea('resize', 'worktree_page_width', async () => {
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      await sweepWindowSize(electronApp, page, 'width');
+    }
+  });
+  await openStressEntry(page);
+  await nextPaint(page);
+
+  // Last, since it leaves a website panel open beside the chat. A failure
+  // here is reported, and keeps the frame windows recorded above.
+  const websiteResize = await measureWebsiteResize({
+    electronApp,
+    page,
+    tasks,
+    iterations,
+  }).catch((error) => ({ error: String(error?.message ?? error) }));
+
   return {
     iterations,
     sidebarEntries: fixture.sidebarEntries,
     streamCharacters: fixture.characters,
     streamMs: config.transcriptStreamMs,
     loadedChatTabs: config.loadedChatTabs,
+    websiteResize,
+    skipped,
   };
 }
 
@@ -21322,6 +21653,8 @@ export function claudeGraphOrientationTurns(config) {
 
 async function prepareClaudeGraphOrientation(userDataDir, config, options) {
   const seed = seedWorkspace(userDataDir);
+  // Post-turn suggestions carry the chat's marker but are outside its script.
+  seedPromptSuggestionsOff(userDataDir);
   const worktreePath = seed.workspaces[0]?.worktreePath;
   if (!worktreePath) {
     throw new Error('Claude graph orientation fixture has no default worktree');
@@ -21579,14 +21912,94 @@ async function rebuildClaudeGraphFixture(page, fixture) {
 }
 
 async function readClaudeGraphTranscript(page) {
-  const data = await page.evaluate(
-    async ({ projectId, worktreeId }) =>
-      window.api.chat.loadTabs({ projectId, worktreeId }),
-    { projectId: WORKSPACE_ID, worktreeId: WORKTREE_ID },
+  const messages = await page.evaluate(
+    async ({ projectId, worktreeId, chatId }) => {
+      const data = await window.api.chat.loadTabs({ projectId, worktreeId });
+      const tab = data.tabs.find((tab) => tab.id === chatId);
+      if (!tab?.transcriptWindow) return tab?.messages ?? [];
+
+      const transcriptRevision = tab.transcriptWindow.transcriptRevision;
+      const rows = new Map();
+      const mergeRows = (transcriptPage) => {
+        for (const message of transcriptPage.messages) {
+          const ordinal = transcriptPage.messageOrdinals?.[message.id];
+          if (!Number.isSafeInteger(ordinal)) {
+            throw new Error(
+              `Graph transcript row has no ordinal: ${message.id}`,
+            );
+          }
+          rows.set(message.id, { message, ordinal });
+        }
+      };
+      const readPage = async (cursor) => {
+        const transcriptPage = await window.api.chat.getTranscriptPage({
+          projectId,
+          worktreeId,
+          chatId,
+          view: 'turns',
+          transcriptRevision,
+          ...cursor,
+        });
+        if (transcriptPage.transcriptRevision !== transcriptRevision) {
+          throw new Error('Graph transcript changed while reading its pages');
+        }
+        return transcriptPage;
+      };
+      const stickyHumanId = tab.transcriptWindow.latestHumanMessage?.id;
+      // loadTabs prepends a sticky prompt without a chronological ordinal.
+      // Recover it from history instead; all other rows must have ordinals.
+      let overview = {
+        ...tab.transcriptWindow,
+        messages: tab.messages.filter(
+          (message) =>
+            message.id !== stickyHumanId ||
+            tab.transcriptWindow.messageOrdinals?.[message.id] !== undefined,
+        ),
+      };
+      while (true) {
+        mergeRows(overview);
+        // Completed turns retain a frame and tail, not every tool-use row.
+        for (const turn of overview.turns ?? []) {
+          let before = turn.before;
+          while (before !== undefined) {
+            const older = await readPage({ turnId: turn.id, before });
+            const olderTurn = older.turns?.find(
+              (entry) => entry.id === turn.id,
+            );
+            if (
+              !olderTurn ||
+              (olderTurn.before !== undefined && olderTurn.before >= before)
+            ) {
+              throw new Error(
+                `Graph transcript turn cursor did not advance: ${turn.id}`,
+              );
+            }
+            mergeRows(older);
+            before = olderTurn.before;
+          }
+        }
+        if (overview.before === undefined) break;
+        const older = await readPage({ before: overview.before });
+        if (older.before !== undefined && older.before >= overview.before) {
+          throw new Error('Graph transcript history cursor did not advance');
+        }
+        overview = older;
+      }
+      if (stickyHumanId && !rows.has(stickyHumanId)) {
+        throw new Error(
+          `Graph transcript history did not include sticky human message: ${stickyHumanId}`,
+        );
+      }
+      return [...rows.values()]
+        .sort((left, right) => left.ordinal - right.ordinal)
+        .map((row) => row.message);
+    },
+    {
+      projectId: WORKSPACE_ID,
+      worktreeId: WORKTREE_ID,
+      chatId: CLAUDE_GRAPH_ORIENTATION_CHAT_ID,
+    },
   );
-  const messages =
-    data.tabs.find((tab) => tab.id === CLAUDE_GRAPH_ORIENTATION_CHAT_ID)
-      ?.messages ?? [];
   // Raw evidence: every block's kind and tool, with a short excerpt.
   const transcript = messages.map((message) => ({
     role: message.role,
@@ -21815,6 +22228,10 @@ async function runClaudeGraphOrientation({
       { turn: entry.tag },
     );
   }
+  return { mainEntryModules, branchRename, nonBuildWrite, rebuild };
+}
+
+async function checkClaudeGraphOrientation({ page, counters, tasks, fixture }) {
   const { messages, transcript } = await readClaudeGraphTranscript(page);
   const outcomes = classifyClaudeGraphSearchOutcomes(messages);
   const countErrors = claudeGraphSearchResultCountErrors(
@@ -21843,8 +22260,7 @@ async function runClaudeGraphOrientation({
       Object.entries(outcome).map(([kind, count]) => [`${tag}.${kind}`, count]),
     ),
   );
-  return {
-    mainEntryModules,
+  Object.assign(counters, {
     mockActivity,
     outcomes,
     transcript,
@@ -21852,10 +22268,7 @@ async function runClaudeGraphOrientation({
       fixture.turns,
       outcomes,
     ),
-    branchRename,
-    nonBuildWrite,
-    rebuild,
-  };
+  });
 }
 
 const W5_STORE = w5StoreScenarios({
@@ -22110,6 +22523,7 @@ const SCENARIOS = {
   'claude-graph-orientation': {
     prepare: prepareClaudeGraphOrientation,
     run: runClaudeGraphOrientation,
+    afterCapture: checkClaudeGraphOrientation,
     launchEnv: (fixture) => ({
       CANOPY_PERFORMANCE_CODE_GRAPH_SCHEDULER: '1',
       ...(fixture.releaseLike
@@ -22223,14 +22637,13 @@ const SCENARIOS = {
  * language check) and the orient turns call GetCodeGraphContext (the status
  * read), while a step that asks for several tools at once never occurs. The
  * journey's own keys are scoped to `claude-graph-orientation`, so this scenario
- * maps its scoped keys onto them. Prompt suggestions are off in this scenario:
- * each one is a model request after the turn that the journey's script does not
- * model, and both sides of a pair get the same setting.
+ * maps its scoped keys onto them. The shared prepare turns prompt suggestions
+ * off for both scenarios and both sides of a pair.
  */
 SCENARIOS['code-graph-agent-reads'] = {
   ...SCENARIOS['claude-graph-orientation'],
-  prepare: async (userDataDir, config, options) => {
-    const fixture = await prepareClaudeGraphOrientation(
+  prepare: (userDataDir, config, options) =>
+    prepareClaudeGraphOrientation(
       userDataDir,
       {
         ...config,
@@ -22240,10 +22653,7 @@ SCENARIOS['code-graph-agent-reads'] = {
           config.codeGraphAgentReadsFixtureFiles,
       },
       options,
-    );
-    seedPromptSuggestionsOff(userDataDir);
-    return fixture;
-  },
+    ),
 };
 
 function seedPromptSuggestionsOff(userDataDir) {
@@ -22891,14 +23301,22 @@ async function runPerformanceScenarioAttempt(
         assertHeadlessWindowEvidence(windowEvidence);
       } else if (options.studyViewportPreset)
         foreground.atEnd = await measuredWindowState(electronApp, page);
-      // Close the disk window at the boundary, stop the monitor, and only then
-      // wait for the closing read (a PowerShell CIM query on Windows).
+      // Start the closing disk read at the boundary in parallel with monitor
+      // stop, then await both before post-capture checks can issue any I/O.
       const diskClosing = diskIo?.stop();
       monitoring = await monitor.stop();
-      // Checks too heavy for the measured window (a heap snapshot); a throw
-      // fails the scenario like one from `run`.
-      await definition.afterCapture?.({ page, counters, config, fixture });
       const disk = await diskClosing;
+      // Heavy checks (heap snapshots, transcript paging) stay outside capture;
+      // a throw fails the scenario like one from `run`.
+      // Graph verification still counts in wall_ms, like projects-retention's
+      // heap check, preserving the timing boundary for stored baselines.
+      await definition.afterCapture?.({
+        page,
+        counters,
+        config,
+        fixture,
+        tasks,
+      });
       assertValidMonitoring(monitoring.summary);
       assertValidTypingSampling(monitoring.raw, tasks);
       const windowWork = scenarioWorkCounters(monitoring.summary, tasks);

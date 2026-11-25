@@ -12,6 +12,8 @@ import {
 } from '@canopy/execution-engine/pipelines/config-paths';
 import { startWindowsProcessTreeKill } from '@canopy/execution-engine/node/lib/process-kill';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import { classifyError } from '@canopy/protocol/app-errors';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 import { assertSignInWorkerContext } from './sign-in-worker-context';
 
 export type SignInTerminalProvider = Exclude<
@@ -89,6 +91,102 @@ function destroyPtyIfAvailable(pty: IPty): void {
   } catch {
     // best effort
   }
+}
+
+// Programming errors stay defects; matches PROGRAMMING_ERROR_NAMES in the
+// renderer's inline-app-error.ts.
+const PROGRAMMING_ERROR_NAMES = new Set([
+  'TypeError',
+  'RangeError',
+  'ReferenceError',
+  'SyntaxError',
+]);
+// node-pty's native module failing to load is a packaging defect, not
+// something security software did to the sign-in program.
+const NATIVE_MODULE_ERROR_CODES = new Set([
+  'MODULE_NOT_FOUND',
+  'ERR_DLOPEN_FAILED',
+]);
+
+type SignInLaunchFailureReason =
+  | 'not_found'
+  | 'access_denied'
+  | 'create_process'
+  | 'conpty'
+  | 'native_module'
+  | 'posix_spawn'
+  | 'other';
+
+function errorCode(error: Error): string | undefined {
+  const code: unknown = Reflect.get(error, 'code');
+  return typeof code === 'string' ? code : undefined;
+}
+
+/** Picks the log reason only; never decides the classification. */
+function launchFailureReason(
+  error: unknown,
+  windowsErrorCode: number | undefined,
+): SignInLaunchFailureReason {
+  if (!(error instanceof Error)) return 'other';
+  const code = errorCode(error);
+  if (code !== undefined && NATIVE_MODULE_ERROR_CODES.has(code))
+    return 'native_module';
+  if (code === 'ENOENT' || windowsErrorCode === 2 || windowsErrorCode === 3)
+    return 'not_found';
+  if (
+    code === 'EACCES' ||
+    code === 'EPERM' ||
+    windowsErrorCode === 5 ||
+    windowsErrorCode === 1260
+  )
+    return 'access_denied';
+  const message = error.message;
+  if (/conpty|pseudoconsole/i.test(message)) return 'conpty';
+  if (/CreateProcess/i.test(message)) return 'create_process';
+  if (/posix_spawn|execvp/i.test(message)) return 'posix_spawn';
+  return 'other';
+}
+
+/** node-pty's Windows launch errors end with `error code: N`. */
+function parseWindowsErrorCode(
+  error: unknown,
+  platform: string | null,
+): number | undefined {
+  if (platform !== 'win32' || !(error instanceof Error)) return undefined;
+  const match = /error code:\s*(\d{1,10})/i.exec(error.message);
+  if (!match) return undefined;
+  const value = Number(match[1]);
+  return Number.isSafeInteger(value) ? value : undefined;
+}
+
+/**
+ * Marks a launch failure as `external.sign_in_launch_failed` (CAN-6895) in
+ * place; the caller rethrows the same object, so identity checks still hold.
+ * Non-errors, programming errors and native-module load failures stay
+ * defects. Logs one line without the path, message or environment.
+ */
+function classifySignInLaunchFailure(
+  error: unknown,
+  provider: SignInTerminalProvider,
+): void {
+  const classified =
+    error instanceof Error &&
+    !PROGRAMMING_ERROR_NAMES.has(error.name) &&
+    !NATIVE_MODULE_ERROR_CODES.has(errorCode(error) ?? '');
+  try {
+    const platform = hostOperatingSystem();
+    const windowsErrorCode = parseWindowsErrorCode(error, platform);
+    logMainProcessWarn('[sign-in] launch failed', {
+      provider,
+      platform,
+      reason: launchFailureReason(error, windowsErrorCode),
+      windowsErrorCode,
+      classified,
+    });
+  } catch {
+    // Logging must never change the launch failure.
+  }
+  if (classified) classifyError(error, 'external.sign_in_launch_failed');
 }
 
 /** The only commands a sign-in terminal may run (custody rule 4). */
@@ -176,33 +274,43 @@ export class SignInTerminal {
         : { BROWSER: 'echo' }),
     };
 
-    const pty = (options.ptySpawn ?? spawnPty)(executable, args, {
-      name: 'xterm-256color',
-      cols,
-      rows,
-      cwd: (options.homedirFn ?? homedir)(),
-      env,
-    });
-    this.pty = pty;
-
+    // Only a throw from the spawn itself is a launch failure; listener setup
+    // failures below keep their existing handling.
+    const cwd = (options.homedirFn ?? homedir)();
+    let spawned = false;
     try {
-      this.dataDisposable = pty.onData((data: string): void => {
-        if (this.done) {
-          return;
-        }
-        this.emitter.output({ sessionId: this.sessionId, data });
+      const pty = (options.ptySpawn ?? spawnPty)(executable, args, {
+        name: 'xterm-256color',
+        cols,
+        rows,
+        cwd,
+        env,
       });
+      spawned = true;
+      this.pty = pty;
 
-      this.exitDisposable = pty.onExit((event): void => {
-        this.finalize(
-          event.exitCode,
-          typeof event.signal === 'number' ? String(event.signal) : null,
-        );
-      });
+      try {
+        this.dataDisposable = pty.onData((data: string): void => {
+          if (this.done) {
+            return;
+          }
+          this.emitter.output({ sessionId: this.sessionId, data });
+        });
+
+        this.exitDisposable = pty.onExit((event): void => {
+          this.finalize(
+            event.exitCode,
+            typeof event.signal === 'number' ? String(event.signal) : null,
+          );
+        });
+      } catch (error) {
+        this.done = true;
+        this.disposeResources();
+        forceKillPtyTree(pty);
+        throw error;
+      }
     } catch (error) {
-      this.done = true;
-      this.disposeResources();
-      forceKillPtyTree(pty);
+      if (!spawned) classifySignInLaunchFailure(error, provider);
       throw error;
     }
   }

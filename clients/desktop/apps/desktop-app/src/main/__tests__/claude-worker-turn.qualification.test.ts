@@ -8,6 +8,12 @@ import type * as AiCreditsRoutingModule from '../agents/ai-credits-routing';
 import type * as ClaudeModAdmissionLaunchModule from '../agents/claude-mod-admission-launch';
 import type * as LedgerToolsRuntimeModule from '../canopy-tools/ledger-tools-runtime';
 import type * as PreferencesStoreModule from '../lib/preferences-store';
+import { subscribeCommittedPreferences } from '../lib/preferences-committed';
+import {
+  flushPreferencesWrites,
+  readPreferencesFile,
+  updatePreferencesFile,
+} from '../lib/preferences-store';
 import type * as WorkOwnerModule from '../agents/work-owner';
 import type { AccountProxySessionRoute } from '../account-proxy/routing';
 import type { CanopyWorktreeSessionRoute } from '../mcp/http-proxy-service';
@@ -824,6 +830,92 @@ describe('claude sessions on the local worker', () => {
     } finally {
       allowResult.release();
       await session.destroy();
+    }
+  });
+
+  it('proves refusal of staged input when inherited defaults change before handoff (CAN-7350)', async () => {
+    let normalizationEntered = false;
+    const finishNormalization = createGate();
+    const finishQuery = createGate();
+    const sdkReadPending = createGate();
+    let handedOver: unknown;
+    let defaultsRevision = 0;
+    const original = await readPreferencesFile();
+    await updatePreferencesFile((previous) => ({
+      providerModelConfigDefaults: {
+        ...previous.providerModelConfigDefaults,
+        claude: { thinkingLevel: 'low' },
+      },
+    }));
+    scriptQuery(async function* (input) {
+      const prompt = await input.next();
+      if (prompt.done) return;
+      yield initFrame('defaults-race', prompt.value);
+      sdkReadPending.release();
+      const steer = await input.next();
+      if (!steer.done) {
+        handedOver = steer.value;
+        yield {
+          type: 'command_lifecycle',
+          command_uuid: readString(steer.value, 'uuid'),
+          state: 'queued',
+        };
+      }
+      await finishQuery.promise;
+    });
+    const log = eventLog();
+    const session = await openSession('claude', 'defaults-race', log.onEvent);
+    const unsubscribe = subscribeCommittedPreferences(() => {
+      defaultsRevision += 1;
+    });
+    try {
+      sendInTurn(session, 'Start a long turn', 'root-1');
+      await flushUntil(() => log.seen(isType('system')));
+      await sdkReadPending.promise;
+      mockLoadCachedInventory.mockImplementationOnce(() => {
+        normalizationEntered = true;
+        return finishNormalization.promise.then(() => null);
+      });
+      if (!session.submitSteeringInput)
+        throw new Error('Expected a steerable session');
+      const admittedRevision = defaultsRevision;
+      const admission = session.submitSteeringInput(
+        'Follow up with inherited defaults',
+        STEER_ATTEMPT,
+        'original-queued-message',
+        session.getSteeringTarget?.(),
+        {
+          expectedTurnId: 'root-1',
+          canHandoff: () => defaultsRevision === admittedRevision,
+        },
+      );
+      await flushUntil(() => normalizationEntered);
+      await updatePreferencesFile((previous) => ({
+        providerModelConfigDefaults: {
+          ...previous.providerModelConfigDefaults,
+          claude: { thinkingLevel: 'high' },
+        },
+      }));
+      expect(defaultsRevision).toBeGreaterThan(admittedRevision);
+      finishNormalization.release();
+      await expect(admission).resolves.toMatchObject({
+        kind: 'rejected',
+        attemptId: STEER_ATTEMPT,
+        fallback: 'ordinary',
+        refusal: { code: 'steering-unavailable' },
+      });
+      expect(handedOver).toBeUndefined();
+      expect(session.hasPendingSteeringInput?.()).toBe(false);
+      expect(log.seen(isType('result'))).toBe(false);
+    } finally {
+      finishNormalization.release();
+      finishQuery.release();
+      unsubscribe();
+      await session.destroy();
+      await updatePreferencesFile(() => ({
+        providerModelConfigDefaults: original.providerModelConfigDefaults,
+      }));
+      await flushPreferencesWrites();
     }
   });
 

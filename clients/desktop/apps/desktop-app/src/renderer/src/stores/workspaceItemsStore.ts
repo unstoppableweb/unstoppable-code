@@ -116,6 +116,22 @@ interface WorkspaceItemsState {
   ) => Promise<void>;
 }
 
+/**
+ * A list read again that holds what the store already has. Every chat that
+ * mounts reads these lists, several readers each, and storing an equal list
+ * as a new array re-rendered the composer once per read.
+ */
+function isSameListing<T>(
+  known: readonly T[] | undefined,
+  read: readonly T[],
+): boolean {
+  return (
+    known !== undefined &&
+    known.length === read.length &&
+    JSON.stringify(known) === JSON.stringify(read)
+  );
+}
+
 export const useWorkspaceItemsStore = create<WorkspaceItemsState>(
   (set, get) => ({
     notes: {},
@@ -131,7 +147,11 @@ export const useWorkspaceItemsStore = create<WorkspaceItemsState>(
               itemsScope(projectId, worktreeId),
             );
         const key = workspaceItemsKey(projectId, worktreeId);
-        set((state) => ({ notes: { ...state.notes, [key]: items } }));
+        set((state) =>
+          isSameListing(state.notes[key], items)
+            ? state
+            : { notes: { ...state.notes, [key]: items } },
+        );
       } catch {
         // Listing is best-effort; the card shows its empty state.
       }
@@ -179,9 +199,11 @@ export const useWorkspaceItemsStore = create<WorkspaceItemsState>(
               itemsScope(projectId, worktreeId),
             );
         const key = workspaceItemsKey(projectId, worktreeId);
-        set((state) => ({
-          prompts: { ...state.prompts, [key]: items },
-        }));
+        set((state) =>
+          isSameListing(state.prompts[key], items)
+            ? state
+            : { prompts: { ...state.prompts, [key]: items } },
+        );
       } catch {
         // Listing is best-effort; the card shows its empty state.
       }
@@ -237,12 +259,16 @@ export const useWorkspaceItemsStore = create<WorkspaceItemsState>(
         if (isCurrent?.() === false) return;
         if ((appliedAttachmentListings.get(key) ?? 0) > listing) return;
         appliedAttachmentListings.set(key, listing);
-        set((state) => ({
-          attachments: {
-            ...state.attachments,
-            [key]: items,
-          },
-        }));
+        set((state) =>
+          isSameListing(state.attachments[key], items)
+            ? state
+            : {
+                attachments: {
+                  ...state.attachments,
+                  [key]: items,
+                },
+              },
+        );
       } catch {
         // Listing is best-effort; the card shows its empty state.
       }

@@ -88,7 +88,7 @@ async function recoveryWarning(failure: () => Error): Promise<unknown[]> {
   const { registerSharedContainerHandlers } =
     await import('../ipc/shared-containers');
   registerSharedContainerHandlers({
-    dispatcher: { instruction: jest.fn() },
+    dispatcher: { instruction: jest.fn(), query: jest.fn() },
     resolveCaller: () => {
       throw new Error('Recovery must not dispatch to core');
     },

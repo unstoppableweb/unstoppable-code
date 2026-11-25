@@ -645,7 +645,7 @@ export function createInterimInMemoryBindingProvider(
     return {
       connectionId: client.connectionId,
       signal: client.signal,
-      send: (message) => client.send(message),
+      send: (message, sendOptions) => client.send(message, sendOptions),
       receive: (receiveOptions) => client.receive(receiveOptions),
       openChannel: (request) => client.openChannel(request),
       onChannel: (listener, channelOptions) =>

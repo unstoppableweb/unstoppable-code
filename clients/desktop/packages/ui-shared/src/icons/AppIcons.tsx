@@ -1,3 +1,4 @@
+import { memo, useMemo } from 'react';
 import type { CSSProperties, ComponentType, JSX, SVGProps } from 'react';
 import type { AppIconBaseProps } from './AppIconBase';
 import { DEFAULT_ICON_SIZE, isIconSize, resolveIconSize } from './icon-size';
@@ -264,6 +265,7 @@ import { ClaudeLogo } from './ClaudeLogo';
 import { CodexLogo } from './CodexLogo';
 import { CursorLogo } from './CursorLogo';
 import { LinearLogo } from './LinearLogo';
+import { SlackLogo } from './SlackLogo';
 import { LinkedInLogo } from './LinkedInLogo';
 import { OllamaLogo } from './OllamaLogo';
 
@@ -322,6 +324,10 @@ function createAppIcon(Glyph: AppGlyph): AppIcon {
   // Every icon with no size draws the default step.
   const fallback = resolveIconSize(DEFAULT_ICON_SIZE);
   const defaultSize = fallback.px;
+  // A parent re-renders far more often than its icons change (one sidebar
+  // render holds about 200 of them), so the artwork below renders again only
+  // when a prop of it did.
+  const StableGlyph = memo(Glyph);
   function AppIcon({
     width,
     height,
@@ -341,15 +347,18 @@ function createAppIcon(Glyph: AppGlyph): AppIcon {
     );
     const resolvedWidth = width ?? size ?? defaultSize;
     const resolvedHeight = height ?? size ?? defaultSize;
-    const resolvedStyle: CSSProperties = {
-      ...(width !== undefined || size !== undefined
-        ? { width: resolvedWidth }
-        : {}),
-      ...(height !== undefined || size !== undefined
-        ? { height: resolvedHeight }
-        : {}),
-      ...style,
-    };
+    const resolvedStyle = useMemo<CSSProperties>(
+      () => ({
+        ...(width !== undefined || size !== undefined
+          ? { width: resolvedWidth }
+          : {}),
+        ...(height !== undefined || size !== undefined
+          ? { height: resolvedHeight }
+          : {}),
+        ...style,
+      }),
+      [width, height, size, resolvedWidth, resolvedHeight, style],
+    );
     const isAriaHidden =
       ariaHidden ??
       (ariaHiddenAttribute === undefined
@@ -357,7 +366,7 @@ function createAppIcon(Glyph: AppGlyph): AppIcon {
         : ariaHiddenAttribute === true || ariaHiddenAttribute === 'true');
 
     return (
-      <Glyph
+      <StableGlyph
         {...props}
         {...(exactSize === undefined ? {} : { exactSize })}
         data-app-icon="true"
@@ -581,6 +590,7 @@ export const LayoutWindowIcon = /* @__PURE__ */ createAppIcon(IconLayoutWindow);
 export const LinkIcon = /* @__PURE__ */ createAppIcon(IconLink);
 export const BoardIcon = /* @__PURE__ */ createAppIcon(IconBoard);
 export const LinearIcon = /* @__PURE__ */ adaptLogo(LinearLogo, 'LinearLogo');
+export const SlackIcon = /* @__PURE__ */ adaptLogo(SlackLogo, 'SlackLogo');
 // Community identity marks. Distinct from the Lucide close `X` and the
 // existing profile-platform marks, which keep their own contracts.
 export const XSocialIcon = /* @__PURE__ */ createAppIcon(IconXSocial);

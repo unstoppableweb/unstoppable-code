@@ -289,14 +289,14 @@ function withPrincipalCheck(
   return {
     connectionId: connection.connectionId,
     signal: connection.signal,
-    send: (message) => {
+    send: (message, options) => {
       if (
         'method' in message &&
         message.method === INITIALIZE &&
         'id' in message
       )
         initializeIds.add(message.id);
-      return connection.send(message);
+      return connection.send(message, options);
     },
     receive: async (options) => {
       const message = await connection.receive(options);

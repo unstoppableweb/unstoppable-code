@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants, statSync } from 'node:fs';
-import { mkdir, open, rename, rm } from 'node:fs/promises';
+import { mkdir, open, readdir, rename, rm } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import { withW5ProcessFileLocks } from '@canopy/core-platform/w5-process-file-lock';
 import {
@@ -32,6 +32,7 @@ import {
   scriptContextUnavailableError,
   scriptRunFileStem,
   type ScriptExecutionWorkerHost,
+  type ScriptRunLogStore,
   type ScriptRunWriter,
   type ScriptRunChild,
   type ScriptRunChildReap,
@@ -385,6 +386,61 @@ export function createDaemonScriptHost(
   };
 }
 
+async function childDirectories(path: string): Promise<string[]> {
+  const entries = await readdir(path, { withFileTypes: true }).catch(() => []);
+  return entries.flatMap((entry) => {
+    if (!entry.isDirectory()) return [];
+    try {
+      validateId(entry.name, 'directory name');
+      return [entry.name];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/**
+ * One pass over every run the daemon's run logs record (CAN-7663), as the
+ * daemon starts and before it serves a script read: each is reconciled as a
+ * reap, so a proven process a dead core left is ended while get and list
+ * never signal. A worktree that fails is logged and the pass carries on;
+ * exported for tests.
+ */
+export async function reapInterruptedScriptRuns(options: {
+  readonly canonicalDataRoot: string;
+  readonly logs: Pick<ScriptRunLogStore, 'reapRuns'>;
+  readonly log?: (line: string) => void;
+  readonly signal?: AbortSignal;
+}): Promise<{ checked: number; failed: number }> {
+  const log =
+    options.log ??
+    ((line: string): void => {
+      process.stderr.write(line);
+    });
+  const totals = { checked: 0, failed: 0 };
+  const workspaces = join(options.canonicalDataRoot, 'workspaces');
+  for (const projectId of await childDirectories(workspaces)) {
+    const runs = join(workspaces, projectId, 'script-runs');
+    for (const worktreeId of await childDirectories(runs)) {
+      if (options.signal?.aborted) return totals;
+      const place = `${projectId}/${worktreeId}`;
+      try {
+        const pass = await options.logs.reapRuns({ projectId, worktreeId });
+        totals.checked += pass.checked;
+        totals.failed += pass.failed.length;
+        for (const file of pass.failed)
+          log(`[worker.script] start-up reap skipped ${place}/${file}\n`);
+      } catch (error) {
+        totals.failed += 1;
+        log(
+          `[worker.script] start-up reap skipped ${place}: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      }
+    }
+  }
+  return totals;
+}
+
 /**
  * `worker.script.*` over a script worker in this process (CAN-5087). Runs are
  * detached from their requests: a run ends on a cancel from any leased
@@ -404,6 +460,14 @@ export function createDaemonScriptModule(
       {
         name: 'worker.script.runs',
         plane: 'worker',
+        // Before any script read: a dead core's proven processes (CAN-7663).
+        start: async (signal): Promise<void> => {
+          await reapInterruptedScriptRuns({
+            canonicalDataRoot: options.canonicalDataRoot,
+            logs: worker.logs,
+            signal,
+          });
+        },
         stop: {
           5: async (): Promise<void> => {
             try {

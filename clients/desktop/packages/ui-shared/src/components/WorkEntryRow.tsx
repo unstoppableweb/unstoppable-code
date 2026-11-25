@@ -436,13 +436,7 @@ function WorkEntryRowImpl({
   const actionCount = compactActions
     ? 2
     : (onDelete ? 1 : 0) + (hasMenu ? 1 : 0);
-  const coarseActionCount = autoDelete
-    ? 0
-    : compactActions
-      ? hasMenu
-        ? 1
-        : 0
-      : actionCount;
+  const coarseActionCount = compactActions ? (hasMenu ? 1 : 0) : actionCount;
 
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -610,8 +604,7 @@ function WorkEntryRowImpl({
   // status (or the actions) carries the coarse-pointer action reserve.
   // Compact rows draw the pin beside the age instead of as a badge.
   const pinnedBadge = pinnedToTop && !compactActions;
-  const hasMetadataBadge =
-    autoDelete !== undefined || sharedWithTeammates || pinnedBadge;
+  const hasMetadataBadge = sharedWithTeammates || pinnedBadge;
   const coarseReserveClassName = hasTrailingStatus
     ? ''
     : coarseActionCount === 2
@@ -726,7 +719,7 @@ function WorkEntryRowImpl({
           compactActions
             ? compactTitleReserveClassName(coarseActionCount, hasMetadataBadge)
             : titleReserveClassName(
-                autoDelete ? 0 : actionCount,
+                actionCount,
                 hasTrailingStatus,
                 hasMetadataBadge,
               )
@@ -735,39 +728,6 @@ function WorkEntryRowImpl({
       >
         {title}
       </p>
-      {autoDelete && (
-        <>
-          {compactActions && (
-            <WorkEntryRowCompactActions
-              inline={autoDelete !== undefined}
-              pinned={pinnedToTop}
-              onTogglePin={onTogglePin}
-              onArchive={onArchive}
-              archiveDisabledReason={archiveDisabledReason}
-              menuButtonRef={hasMenu ? menuButtonRef : undefined}
-              menuOpen={menuOpen}
-              onToggleMenu={toggleMenuFromButton}
-              testIdFor={testIdFor}
-            />
-          )}
-          {!compactActions && actionCount > 0 && (
-            <WorkEntryRowActions
-              inline={autoDelete !== undefined}
-              onDelete={onDelete}
-              deleteDisabledReason={deleteDisabledReason}
-              menuButtonRef={hasMenu ? menuButtonRef : undefined}
-              menuOpen={menuOpen}
-              onToggleMenu={toggleMenuFromButton}
-              testIdFor={testIdFor}
-            />
-          )}
-          <SidebarAutoDeleteBadge
-            autoDelete={autoDelete}
-            onActivate={onAutoDeleteActivate}
-            readOnly={autoDeleteReadOnly}
-          />
-        </>
-      )}
       {/* Persistent metadata, outside the leading slot's priority contest:
           neither pinning nor shared-ness may hide the live status glyph. */}
       {pinnedBadge && (
@@ -816,39 +776,57 @@ function WorkEntryRowImpl({
           working={showWorking}
           backgroundTasks={shownBackgroundTasks}
           attentionDot={attentionDot}
-          actionCount={autoDelete ? 0 : actionCount}
+          actionCount={actionCount}
           testIdFor={testIdFor}
           onDotActivate={showUnreadPreview}
           onDotBlur={hideUnreadPreview}
         />
       )}
-      {!autoDelete && (
-        <>
-          {compactActions && (
-            <WorkEntryRowCompactActions
-              inline={autoDelete !== undefined}
-              pinned={pinnedToTop}
-              onTogglePin={onTogglePin}
-              onArchive={onArchive}
-              archiveDisabledReason={archiveDisabledReason}
-              menuButtonRef={hasMenu ? menuButtonRef : undefined}
-              menuOpen={menuOpen}
-              onToggleMenu={toggleMenuFromButton}
-              testIdFor={testIdFor}
-            />
-          )}
-          {!compactActions && actionCount > 0 && (
-            <WorkEntryRowActions
-              inline={autoDelete !== undefined}
-              onDelete={onDelete}
-              deleteDisabledReason={deleteDisabledReason}
-              menuButtonRef={hasMenu ? menuButtonRef : undefined}
-              menuOpen={menuOpen}
-              onToggleMenu={toggleMenuFromButton}
-              testIdFor={testIdFor}
-            />
-          )}
-        </>
+      {/* The auto-delete badge sits at the row's end, where the last action
+          usually does; this shifts the row's content, reserves included, one
+          badge-width in (the 6px gap makes up the rest of its 28px, or 44px
+          on touch). */}
+      {autoDelete && (
+        <span
+          aria-hidden="true"
+          className="w-5.5 shrink-0 pointer-coarse:w-9.5"
+        />
+      )}
+      {compactActions && (
+        <WorkEntryRowCompactActions
+          besideBadge={autoDelete !== undefined}
+          pinned={pinnedToTop}
+          onTogglePin={onTogglePin}
+          onArchive={onArchive}
+          archiveDisabledReason={archiveDisabledReason}
+          menuButtonRef={hasMenu ? menuButtonRef : undefined}
+          menuOpen={menuOpen}
+          onToggleMenu={toggleMenuFromButton}
+          testIdFor={testIdFor}
+        />
+      )}
+      {!compactActions && actionCount > 0 && (
+        <WorkEntryRowActions
+          besideBadge={autoDelete !== undefined}
+          onDelete={onDelete}
+          deleteDisabledReason={deleteDisabledReason}
+          menuButtonRef={hasMenu ? menuButtonRef : undefined}
+          menuOpen={menuOpen}
+          onToggleMenu={toggleMenuFromButton}
+          testIdFor={testIdFor}
+        />
+      )}
+      {/* Persistent removal intent at the row's end, at the actions' inset;
+          the actions sit left of it. It never moves between rest and hover,
+          so a click or tap aimed at it never lands on another action. */}
+      {autoDelete && (
+        <span className="absolute inset-y-0 right-0.5 flex items-center">
+          <SidebarAutoDeleteBadge
+            autoDelete={autoDelete}
+            onActivate={onAutoDeleteActivate}
+            readOnly={autoDeleteReadOnly}
+          />
+        </span>
       )}
       {renderMenu
         ? renderMenu({
@@ -1151,7 +1129,8 @@ export function WorkEntryRowTrailingStatus({
 }
 
 interface WorkEntryRowActionsProps {
-  inline?: boolean;
+  /** The auto-delete badge holds the row's end; sit left of it. */
+  besideBadge?: boolean;
   onDelete?: (event: MouseEvent<HTMLButtonElement>) => void;
   deleteDisabledReason?: string;
   /** The ••• button's ref; omitted when the row has no menu. */
@@ -1163,7 +1142,7 @@ interface WorkEntryRowActionsProps {
 
 /** The hover-revealed Delete and ••• rail buttons at the row's end. */
 function WorkEntryRowActions({
-  inline = false,
+  besideBadge = false,
   onDelete,
   deleteDisabledReason,
   menuButtonRef,
@@ -1173,11 +1152,9 @@ function WorkEntryRowActions({
 }: WorkEntryRowActionsProps): JSX.Element {
   return (
     <span
-      className={
-        inline
-          ? 'pointer-events-none inline-flex shrink-0 items-center'
-          : 'pointer-events-none absolute inset-y-0 right-0.5 flex items-center'
-      }
+      className={`pointer-events-none absolute inset-y-0 flex items-center ${
+        besideBadge ? 'right-7.5 pointer-coarse:right-11.5' : 'right-0.5'
+      }`}
     >
       {onDelete && (
         <RailIconButton
@@ -1215,7 +1192,8 @@ function WorkEntryRowActions({
 }
 
 interface WorkEntryRowCompactActionsProps {
-  inline?: boolean;
+  /** The auto-delete badge holds the row's end; sit left of it. */
+  besideBadge?: boolean;
   pinned: boolean;
   onTogglePin?: (pinned: boolean) => void;
   onArchive?: () => void;
@@ -1235,7 +1213,7 @@ interface WorkEntryRowCompactActionsProps {
  * for touch, which has no right-click.
  */
 function WorkEntryRowCompactActions({
-  inline = false,
+  besideBadge = false,
   pinned,
   onTogglePin,
   onArchive,
@@ -1250,11 +1228,9 @@ function WorkEntryRowCompactActions({
   );
   return (
     <span
-      className={
-        inline
-          ? 'pointer-events-none inline-flex shrink-0 items-center'
-          : 'pointer-events-none absolute inset-y-0 right-0.5 flex items-center'
-      }
+      className={`pointer-events-none absolute inset-y-0 flex items-center ${
+        besideBadge ? 'right-7.5 pointer-coarse:right-11.5' : 'right-0.5'
+      }`}
     >
       {onTogglePin ? (
         <RailIconButton

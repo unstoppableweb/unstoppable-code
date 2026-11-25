@@ -1,3 +1,4 @@
+import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import { AgentModelSelectionError } from '@canopy/execution-engine/lib/agent-model-selection';
 import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import type { AgentDelegationResult } from '@canopy/protocol/delegation';
@@ -71,6 +72,8 @@ export async function resolveDelegationModel(
   host: DelegationModelRuntimeHost,
   /** Parent workspace; an inheriting Agent runs on its default. */
   parentProjectId?: string,
+  /** The parent's work owner: a saved bare gateway id runs on its gateway. */
+  owner?: WorkOwner,
 ): Promise<AgentDelegationResult<PreparedDelegationModel>> {
   try {
     // Copy before invoking asynchronous host services. Their inputs never retain
@@ -80,6 +83,7 @@ export async function resolveDelegationModel(
         model: modelId,
         projectId: parentProjectId,
         inheritDefaultFrom: { projectId: parentProjectId },
+        ...(owner && { owner }),
       }),
     );
     const captured = await host.captureRoute(runtime);

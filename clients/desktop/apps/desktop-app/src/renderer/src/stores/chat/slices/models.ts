@@ -16,6 +16,7 @@ import {
   type ModelRegistrySnapshot,
   normalizeThinkingForProvider,
   pinInheritingAgentModel,
+  resolveKnownModel,
   resolveProviderModelConfig,
 } from '@canopy/desktop-shared/types';
 import { clampModelThinkingLevel } from '@canopy/protocol/thinking';
@@ -29,7 +30,10 @@ import {
   readCodexSpeedRecord,
   type CodexSpeed,
 } from '@canopy/execution-engine/lib/codex-speed';
-import { resolveOwnerScopedModelId } from '@canopy/execution-engine/lib/gateway-model-availability';
+import {
+  parseOrgGatewayModelId,
+  resolveOwnerScopedModelId,
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 import { getWorktreeChatContext, updateCapturedChatTab } from '../context';
 import {
@@ -65,7 +69,7 @@ import {
   requestTabDiscovery,
   resolveDiscoveryProviderType,
 } from '../discovery';
-import { parseWorktreeChatKey, splitWorktreeKey } from '../utils';
+import { parseWorktreeChatKey, splitWorktreeKey, worktreeKey } from '../utils';
 import { nextMsgId } from '../ids';
 import type { StateCreator } from 'zustand';
 import type {
@@ -116,6 +120,15 @@ const UNRESOLVED_PROVIDER_ERROR_PREFIX = 'Unknown model provider:';
 
 let nextPersistedModelSyncRequestId = 0;
 const persistedModelSyncRequests = new Map<string, number>();
+
+/** The catalog and owner the last registry reconciliation applied. */
+let lastRegistryReconcile:
+  | [
+      ModelRegistrySnapshot,
+      ReadonlySet<string> | undefined,
+      ModelRegistryOwnerScope | undefined,
+    ]
+  | undefined;
 
 const persistedModelSyncKey = (projectId: string, chatId: string): string =>
   `${projectId}/${chatId}`;
@@ -820,11 +833,17 @@ export const createModelsSlice: StateCreator<
     }
   },
 
+  reconcileLoadedTabsWithModelRegistry: (): void => {
+    if (lastRegistryReconcile)
+      get().reconcileModelRegistry(...lastRegistryReconcile);
+  },
+
   reconcileModelRegistry: (
     snapshot: ModelRegistrySnapshot,
     modelPolicy?: ReadonlySet<string>,
     ownerScope?: ModelRegistryOwnerScope,
   ): void => {
+    lastRegistryReconcile = [snapshot, modelPolicy, ownerScope];
     const owner = ownerScope?.owner;
     const blockedByLabel = ownerScope?.organizationName ?? 'Your organization';
     const routedModelIds = new Set(
@@ -931,6 +950,10 @@ export const createModelsSlice: StateCreator<
       providerType?: AgentProviderType;
       model: ChatModel;
       notice?: ChatModelChangeNotice;
+      /** A gateway id migration: the tab returns to this if main refuses. */
+      revertTo?: Pick<ChatTab, 'model' | 'providerType' | 'executionHarness'>;
+      /** The harness a gateway id migration keeps. */
+      executionHarness?: ChatTab['executionHarness'];
     }> = [];
 
     set((state) => {
@@ -959,27 +982,50 @@ export const createModelsSlice: StateCreator<
               tab.executionContext,
               chatTabHasConversationContent(tab),
             );
-          // A chat saved on a bare org model id whose row is now namespaced
-          // (`<id>@<orgId>`, because another org or a hosted model shares the
-          // id) moves to the owner's own row. Only when the bare id can no
-          // longer serve the chat — it no longer routes, or the owner's org
-          // makes its gateway the only route — so a deliberate pick of a
-          // hosted model under an additive gateway is left alone.
+          // Gateway rows are always `<id>@<orgId>`. A chat saved on a bare id
+          // (before that rule) moves once to the owner's own row, and a chat
+          // on a row that is gone (the device gateway's, after sign-in) moves
+          // to the same model on the owner's gateway. A registered bare id is
+          // a hosted or package model and stays, unless the owner's org makes
+          // its gateway the only route. The target is always a gateway row,
+          // never a hosted model.
+          const registeredModel = tab.model
+            ? resolveKnownModel(tab.model)
+            : undefined;
+          const scopedSource =
+            registeredModel === undefined
+              ? (parseOrgGatewayModelId(tab.model)?.modelId ?? tab.model)
+              : tab.model;
+          // A hosted or package model, or a package alias of one.
+          const hostedOrPackage =
+            registeredModel !== undefined &&
+            parseOrgGatewayModelId(registeredModel) === undefined;
           const scopedModel =
             inOwnerScope &&
-            tab.model &&
+            scopedSource &&
             (ownerScope?.gatewayEnforced === true ||
-              !getProviderForModel(tab.model))
-              ? resolveOwnerScopedModelId(tab.model, owner)
+              (!hostedOrPackage && registeredModel !== tab.model))
+              ? resolveOwnerScopedModelId(scopedSource, owner)
               : tab.model;
           if (
+            tab.status !== 'streaming' &&
             scopedModel &&
             scopedModel !== tab.model &&
+            parseOrgGatewayModelId(scopedModel) !== undefined &&
             routedModelIds.has(scopedModel) &&
             !(policy && isModelBlocked(scopedModel, policy))
           ) {
-            const scopedProviderType = getProviderForModel(scopedModel);
+            // The chat keeps the harness it runs on; only its id changes.
+            const scopedProviderType = getProviderForChatModel(
+              scopedModel,
+              tab.executionHarness,
+            );
             if (scopedProviderType) {
+              const scopedHarness =
+                tab.executionHarness !== undefined &&
+                scopedProviderType === tab.executionHarness
+                  ? tab.executionHarness
+                  : resolveSnapshotHarness(scopedModel, scopedProviderType);
               worktreeChanged = true;
               pendingDiscovery.push({
                 projectId,
@@ -988,16 +1034,19 @@ export const createModelsSlice: StateCreator<
                 pluginSelections: tab.pluginSelections,
                 providerType: scopedProviderType,
                 model: scopedModel,
+                ...(scopedHarness && { executionHarness: scopedHarness }),
+                revertTo: {
+                  model: tab.model,
+                  providerType: tab.providerType,
+                  executionHarness: tab.executionHarness,
+                },
               });
               return {
                 ...tab,
                 ...clearedUnresolvedProviderError(tab),
                 model: scopedModel,
                 providerType: scopedProviderType,
-                executionHarness: resolveSnapshotHarness(
-                  scopedModel,
-                  scopedProviderType,
-                ),
+                executionHarness: scopedHarness,
               };
             }
           }
@@ -1180,6 +1229,33 @@ export const createModelsSlice: StateCreator<
     });
 
     for (const change of pendingDiscovery) {
+      const { revertTo } = change;
+      // A migration main refused leaves the saved model in place, so the tab
+      // shows it too; the next reconciliation tries again.
+      const revert = (): void => {
+        if (!revertTo) return;
+        set((state) => {
+          const key = worktreeKey(change);
+          const worktreeChat = state.worktreeChats[key];
+          if (
+            !worktreeChat?.tabs.some(
+              (tab) => tab.id === change.chatId && tab.model === change.model,
+            )
+          )
+            return state;
+          return {
+            worktreeChats: {
+              ...state.worktreeChats,
+              [key]: {
+                ...worktreeChat,
+                tabs: worktreeChat.tabs.map((tab) =>
+                  tab.id === change.chatId ? { ...tab, ...revertTo } : tab,
+                ),
+              },
+            },
+          };
+        });
+      };
       void chatBackendFor(change)
         .chat.changeModel({
           projectId: change.projectId,
@@ -1187,8 +1263,13 @@ export const createModelsSlice: StateCreator<
           chatId: change.chatId,
           model: change.model,
           notice: change.notice,
+          ...(change.executionHarness && {
+            executionHarness: change.executionHarness,
+          }),
         })
-        .catch(() => {});
+        .then((accepted) => {
+          if (!accepted) revert();
+        }, revert);
 
       requestTabDiscovery({
         projectId: change.projectId,

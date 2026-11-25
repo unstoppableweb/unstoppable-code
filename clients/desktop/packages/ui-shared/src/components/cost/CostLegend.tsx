@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import {
+  COST_NOT_PRICED_LABEL,
   formatCostSegmentIn,
   formatCostShare,
   type CostSegment,
@@ -24,11 +25,24 @@ export function CostLegend({
   testId,
 }: CostLegendProps): JSX.Element {
   const currency = useCostCurrency();
-  const visibleSegments = segments.filter((segment) => segment.value > 0);
+  // A part with no dollars stays when it has unpriced records (an
+  // organization gateway): it reads `Not priced`, with no share, and stays
+  // out of the share total.
+  const visibleSegments = segments.filter(
+    (segment) => segment.value > 0 || isNotPricedSegment(segment),
+  );
   const total = visibleSegments.reduce(
-    (sum, segment) => sum + segment.value,
+    (sum, segment) => sum + Math.max(segment.value, 0),
     0,
   );
+  const amount = (segment: CostSegment): string =>
+    isNotPricedSegment(segment)
+      ? COST_NOT_PRICED_LABEL
+      : formatCostSegmentIn(segment, currency);
+  const share = (segment: CostSegment): string | undefined =>
+    showShare && !isNotPricedSegment(segment)
+      ? formatCostShare(segment.value, total)
+      : undefined;
 
   if (layout === 'list') {
     return (
@@ -38,10 +52,8 @@ export function CostLegend({
             key={segment.key}
             swatch={segment.color}
             label={segment.label}
-            value={formatCostSegmentIn(segment, currency)}
-            share={
-              showShare ? formatCostShare(segment.value, total) : undefined
-            }
+            value={amount(segment)}
+            share={share(segment)}
           />
         ))}
       </ValueRows>
@@ -62,12 +74,16 @@ export function CostLegend({
           key={segment.key}
           label={segment.label}
           swatch={segment.color}
-          detail={showShare ? formatCostShare(segment.value, total) : undefined}
+          detail={share(segment)}
           numeric
         >
-          {formatCostSegmentIn(segment, currency)}
+          {amount(segment)}
         </Fact>
       ))}
     </FactList>
   );
+}
+
+function isNotPricedSegment(segment: CostSegment): boolean {
+  return segment.value <= 0 && (segment.notPricedCount ?? 0) > 0;
 }

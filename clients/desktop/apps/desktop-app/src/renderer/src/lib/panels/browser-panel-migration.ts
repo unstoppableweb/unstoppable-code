@@ -507,6 +507,18 @@ export interface BrowserPanelMigrationPlan {
 }
 
 /**
+ * Reads a worktree's browser state, which
+ * {@link prepareBrowserPanelMigration} waits for. A first visit starts this
+ * with its layout read, so the two overlap; the migration then finds the
+ * state there, or joins the read under way.
+ */
+export function readBrowserStateAhead(worktreeKey: string): Promise<void> {
+  if (readRemoteControlContext().mode === 'remote') return Promise.resolve();
+  const { projectId, worktreeId } = splitWorktreeKey(worktreeKey);
+  return ensureBrowserWorktreeHydrated(projectId, worktreeId);
+}
+
+/**
  * Pre-restore migration entry point. Hydrates the worktree's browser state,
  * then transforms a legacy layout's unbound Browser placeholder into bound
  * Browser panels (or the recovery placeholder when hydration failed). Safe

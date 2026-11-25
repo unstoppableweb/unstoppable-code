@@ -289,7 +289,7 @@ beforeAll(async () => {
   const { registerSharedContainerHandlers } =
     await import('../ipc/shared-containers');
   registerSharedContainerHandlers({
-    dispatcher: { instruction: jest.fn() },
+    dispatcher: { instruction: jest.fn(), query: jest.fn() },
     resolveCaller: () => {
       throw new Error('Recipient view channels must not dispatch to core');
     },

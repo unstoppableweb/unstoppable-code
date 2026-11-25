@@ -175,5 +175,5 @@ export function mcpProviderRoutesDescription(
   appName: string,
   providers: readonly string[],
 ): string {
-  return `Connects through ${mcpProviderAccountPhrase(providers)}. Works in every chat on that provider, and ${appName} never sees these credentials.`;
+  return `Connects through ${mcpProviderAccountPhrase(providers)}. ${appName} never sees these credentials.`;
 }

@@ -25,7 +25,10 @@ function useShowFirstRun(): [boolean, () => void] {
   );
   // `shown` latches the page once it appears: its own import adds projects,
   // and only `onDone` may take it away.
-  const [eligible, setEligible] = useState<boolean | 'shown' | null>(null);
+  // Not eligible until preferences say so. A separate "not loaded yet" value
+  // showed the same Home, and then rendered all of it a second time on every
+  // visit when the reply changed that value to `false`.
+  const [eligible, setEligible] = useState<boolean | 'shown'>(false);
   useEffect(() => {
     let cancelled = false;
     window.api

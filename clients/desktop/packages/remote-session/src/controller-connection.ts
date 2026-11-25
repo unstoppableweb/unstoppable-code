@@ -15,11 +15,11 @@ import {
   UploadPutResultSchema,
   WEB_CONTROLLER_MIN_PROTOCOL_VERSION,
   unknownMethodMessage,
+  type BrowserRemoteIpcTransport,
   type ControllerKind,
   type HelloParams,
   type HelloResult,
   type HostedDelegation,
-  type RemoteIpcTransport,
   type RemoteSurface,
   type RemoteVersion,
   type SecretRequestSettleParams,
@@ -138,6 +138,8 @@ export async function helloHost(
     ...(profile.exactWorktreeBaseBranch === true
       ? { exactWorktreeBaseBranch: true }
       : {}),
+    // This build parses `reason` in a secret-request.settle result.
+    secretRequestSettleReason: true,
   };
   let answer: unknown;
   try {
@@ -250,9 +252,12 @@ export class RemoteControllerConnection {
     RemoteSurface,
     Map<string, Set<(...args: unknown[]) => void>>
   >();
-  private readonly transports = new Map<RemoteSurface, RemoteIpcTransport>();
+  private readonly transports = new Map<
+    RemoteSurface,
+    BrowserRemoteIpcTransport
+  >();
   private readonly scheduler: SchedulerPort;
-  readonly transport: RemoteIpcTransport;
+  readonly transport: BrowserRemoteIpcTransport;
 
   constructor(private readonly options: ControllerConnectionOptions) {
     this.scheduler = options.scheduler ?? defaultScheduler;
@@ -264,12 +269,14 @@ export class RemoteControllerConnection {
    * `app-advisor` is the App Advisor surface, where the host delivers
    * Orchestrator questions. One instance per surface.
    */
-  transportFor(surface: RemoteSurface): RemoteIpcTransport {
+  transportFor(surface: RemoteSurface): BrowserRemoteIpcTransport {
     const existing = this.transports.get(surface);
     if (existing) return existing;
-    const transport: RemoteIpcTransport = {
+    const transport: BrowserRemoteIpcTransport = {
       invoke: (channel, ...args): Promise<unknown> =>
         this.invoke(channel, args, surface),
+      invokeWithInstallRefreshToken: (channel, args, installRefreshToken) =>
+        this.invoke(channel, args, surface, installRefreshToken),
       send: (channel, ...args): void => this.send(channel, args, surface),
       on: (channel, listener): (() => void) =>
         this.on(channel, listener, surface),
@@ -466,14 +473,20 @@ export class RemoteControllerConnection {
 
   private async invoke(
     channel: string,
-    args: unknown[],
+    args: readonly unknown[],
     surface: RemoteSurface,
+    installRefreshToken?: string,
   ): Promise<unknown> {
     const rpc = await this.openRpc(channel);
     try {
       return await rpc.request(
         REMOTE_METHODS.invoke,
-        surface === 'main' ? { channel, args } : { channel, args, surface },
+        {
+          channel,
+          args,
+          ...(surface === 'main' ? {} : { surface }),
+          ...(installRefreshToken === undefined ? {} : { installRefreshToken }),
+        },
         { timeoutMs: null },
       );
     } catch (error) {

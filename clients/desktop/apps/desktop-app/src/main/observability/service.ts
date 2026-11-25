@@ -43,6 +43,7 @@ import type {
 } from '@canopy/core-runtime/node/code-graph';
 import { sanitizeAppDiagnosticRecord } from './app-diagnostic-privacy';
 import type {
+  AgentAuditBillingBasis,
   RendererDiagnosticsSummary,
   RemotePushSummary,
 } from '@canopy/execution-engine/types/observability';
@@ -190,11 +191,13 @@ import type {
   StepResult,
 } from '@canopy/execution-engine/node/pipelines/executor/types';
 import {
-  ACCOUNT_PROXY_ROUTED_OUTPUT_KEY,
   ACCOUNT_PROXY_SESSION_OUTPUT_KEY,
   AI_CREDITS_ROUTED_OUTPUT_KEY,
-  MODEL_GATEWAY_ROUTED_OUTPUT_KEY,
 } from '@canopy/execution-engine/node/pipelines/executor/step-runner';
+import {
+  stepBillingRoute,
+  type StepBillingRoute,
+} from '@canopy/execution-engine/pipelines/step-billing-route';
 import {
   getAgentObservabilityAppEventsDayFilePath,
   getAgentObservabilityAppEventsDir,
@@ -1076,6 +1079,14 @@ export interface AppDiagnosticRecord {
      */
     | 'codex_app_server_writer_handoff'
     /**
+     * A Codex app-server process survived the bounded termination escalation
+     * and the connection forgot it. Content-free: the app and app-server
+     * process IDs only. Join the app-server process ID with
+     * `resource_codex_app_server_stopped` or `codex_app_server_shared_restart`
+     * to find the trigger.
+     */
+    | 'codex_app_server_termination_failed'
+    /**
      * The chat transcript planner rewrote a chat's whole committed history
      * because an upsert patched or a removal deleted committed rows, or a
      * commit mixed committed and active rows, materialized a run, or replaced
@@ -1204,6 +1215,22 @@ export interface AppDiagnosticRecord {
      */
     | 'workspace_index_write_refused'
     /**
+     * The W5 startup handoff failed, so workspace records are read-only for
+     * the process's life (CAN-7316). Recorded once per failed handoff, never
+     * for a cancelled one. `reason` is `<stage or unknown>: <failure>[:
+     * <detail code>]` from closed codes only (an unknown detail is `other`);
+     * `errorName`/`errorCode` are the allowlisted W5 failure diagnostics. No
+     * `error` text, message, path or launch facts.
+     */
+    | 'w5_handoff_degraded'
+    /**
+     * `chat-project:list` rejected (CAN-7316). `reason` is the failing step
+     * (`sidebar_read` or `default_provision`); `error` is the privacy-safe
+     * error description (name, code, frames; no message). Deduplicated per
+     * process by step and error, since the renderer retries the list.
+     */
+    | 'chat_project_list_failed'
+    /**
      * An Agent Ledger lifecycle step (archive, delete, purge, restore, move,
      * external removal, workspace deletion, the intent journal, or startup
      * reconciliation) did not complete. Archive, restore and deletion never
@@ -1295,7 +1322,18 @@ export interface AppDiagnosticRecord {
      */
     | 'claude_process_untracked'
     | 'before_quit'
-    | 'runtime_cleanup_stage';
+    | 'runtime_cleanup_stage'
+    /**
+     * An IPC request failed (CAN-7137). Local only: never forwarded to
+     * telemetry, so it exists with error capture off. Carries `referenceId`,
+     * `ipcSource` (absent for a private channel), `appErrorCode`, an
+     * allowlisted `errorName`, `errorCode` (errno), a closed `reason` and
+     * `handoffStage`, `operationStatus`, `operationCode` and
+     * `suppressedCount`; never a message, path or argument. One record per
+     * source, code, name and reason per minute, so a reference id may match
+     * only the first failure in a window.
+     */
+    | 'ipc_request_failed';
   /** `claude_process_untracked` only: the reaped process. */
   claudeProcessId?: number;
   /** Shutdown stage identifiers and timing only; never work identities or raw errors. */
@@ -1306,6 +1344,23 @@ export interface AppDiagnosticRecord {
   /** Telemetry-only bounded metadata; legacy version-1 records may omit it. */
   errorName?: string;
   errorCode?: string;
+  /** `ipc_request_failed` only: the AppError reference id the user may quote. */
+  referenceId?: string;
+  /** `ipc_request_failed` only: `ipc:<channel>`, absent for a private channel. */
+  ipcSource?: string;
+  /** `ipc_request_failed` only: the catalog code the rejection carries. */
+  appErrorCode?: string;
+  /** `ipc_request_failed` only: the Core operation failure's kind. */
+  operationStatus?: string;
+  /** `ipc_request_failed` only: the Core operation failure's dotted code. */
+  operationCode?: string;
+  /** `ipc_request_failed` only: the W5 startup handoff stage that failed. */
+  handoffStage?: string;
+  /**
+   * `ipc_request_failed` only: same-key failures not recorded in the last
+   * window. A lower bound once more than 200 keys churn.
+   */
+  suppressedCount?: number;
   failureKind?: ProviderAuthFailureKind;
   exitCode?: number | null;
   processType?: string;
@@ -3237,15 +3292,66 @@ function finalIterationForAttempt(
 const MAX_HELD_ACCOUNT_PROXY_RESPONSES = 256;
 const MAX_HELD_ACCOUNT_PROXY_CHATS = 200;
 
+/**
+ * The resumed attempt a step state or output belongs to: 0 before any
+ * recovery. The runner leaves `recovery` off output before the first
+ * recovery, so a missing number is recovery 0.
+ */
+function pipelineStepRecovery(recovery: number | undefined): number {
+  return recovery !== undefined &&
+    Number.isSafeInteger(recovery) &&
+    recovery > 0
+    ? recovery
+    : 0;
+}
+
+/**
+ * One audit entry per step attempt, iteration and resumed attempt
+ * (CAN-7305): a step resumed after a pause bills on its own route, so it
+ * gets its own entry. Keys before any recovery are unchanged.
+ */
 function buildPipelineStepObservabilityKey(options: {
   executionId: string;
   jobId: string;
   stepId: string;
   attempt: number;
   iteration?: number;
+  recovery?: number;
 }): string {
   const iteration = Math.max(1, options.iteration ?? 1);
-  return `pipeline:${options.executionId}/${options.jobId}/${options.stepId}/${String(options.attempt)}${iteration >= 2 ? `/i${String(iteration)}` : ''}`;
+  const recovery = pipelineStepRecovery(options.recovery);
+  return `pipeline:${options.executionId}/${options.jobId}/${options.stepId}/${String(options.attempt)}${iteration >= 2 ? `/i${String(iteration)}` : ''}${recovery >= 1 ? `/r${String(recovery)}` : ''}`;
+}
+
+/** Output a resumed attempt wrote before its running state arrived. */
+const MAX_HELD_RECOVERY_OUTPUT_KEYS = 16;
+const MAX_HELD_RECOVERY_OUTPUT_BYTES = 64 * 1024;
+
+/** The basis a known step route bills on; the route decides it alone. */
+function stepRouteBillingBasis(
+  route: StepBillingRoute,
+): AgentAuditBillingBasis {
+  switch (route) {
+    case 'model_gateway':
+      return 'org_gateway';
+    case 'account_proxy':
+      return 'account_proxy';
+    case 'ai_credits':
+      return 'ai_credits';
+  }
+}
+
+/** The audit status a terminal step state closes its entry with. */
+function pipelineStepAuditStatus(
+  status: StepResult['status'],
+): AgentAuditStatus {
+  return status === 'success'
+    ? 'success'
+    : status === 'failure'
+      ? 'failure'
+      : status === 'cancelled'
+        ? 'cancelled'
+        : 'interrupted';
 }
 
 interface SerializedObservabilitySnapshot {
@@ -3448,6 +3554,14 @@ export class ObservabilityService {
   private readonly retiringTranscriptStates = new Set<TranscriptSidecarState>();
   private pendingTranscriptIndexRecords: TranscriptIndexRecord[] = [];
   private readonly finalizedPipelineStepKeys = new Set<string>();
+  /**
+   * Output of a resumed attempt that arrived before the state that opens its
+   * entry, by step key; replayed when the entry opens (CAN-7305).
+   */
+  private readonly heldRecoveryOutputs = new Map<
+    string,
+    { chunks: string[]; bytes: number }
+  >();
   private readonly pipelineOutputBuffers = new Map<string, string>();
   private droppedPipelineOutputChunks = 0;
   private droppedPipelineOutputBytes = 0;
@@ -8114,19 +8228,74 @@ export class ObservabilityService {
     stepId: string;
     attempt: number;
     iteration?: number;
+    recovery?: number;
     data: string;
   }): void {
     const key = buildPipelineStepObservabilityKey(event);
     const openEntry = this.openEntries.get(key);
     if (!openEntry) {
+      if (
+        pipelineStepRecovery(event.recovery) >= 1 &&
+        !this.finalizedPipelineStepKeys.has(key) &&
+        this.holdRecoveryOutput(key, event.data)
+      ) {
+        return;
+      }
       this.droppedPipelineOutputChunks += 1;
       this.droppedPipelineOutputBytes += Buffer.byteLength(event.data, 'utf8');
       this.pipelineOutputBuffers.delete(key);
       return;
     }
+    this.parsePipelineOutput(key, openEntry, event.data);
+  }
 
+  /**
+   * Holds a resumed attempt's output until the state that opens its entry
+   * arrives. False when the chunk is over the bounds; it is then dropped. A
+   * new key evicts the oldest held key when the map is full, so output held
+   * for an attempt whose entry never opens can't stop later holds.
+   */
+  private holdRecoveryOutput(key: string, data: string): boolean {
+    const bytes = Buffer.byteLength(data, 'utf8');
+    const held = this.heldRecoveryOutputs.get(key);
+    if (held) {
+      if (held.bytes + bytes > MAX_HELD_RECOVERY_OUTPUT_BYTES) return false;
+      held.chunks.push(data);
+      held.bytes += bytes;
+      return true;
+    }
+    if (bytes > MAX_HELD_RECOVERY_OUTPUT_BYTES) return false;
+    if (this.heldRecoveryOutputs.size >= MAX_HELD_RECOVERY_OUTPUT_KEYS) {
+      const oldest = this.heldRecoveryOutputs.entries().next().value;
+      if (oldest !== undefined) {
+        const [oldestKey, evicted] = oldest;
+        this.heldRecoveryOutputs.delete(oldestKey);
+        this.droppedPipelineOutputChunks += evicted.chunks.length;
+        this.droppedPipelineOutputBytes += evicted.bytes;
+      }
+    }
+    this.heldRecoveryOutputs.set(key, { chunks: [data], bytes });
+    return true;
+  }
+
+  private replayHeldRecoveryOutput(key: string): void {
+    const held = this.heldRecoveryOutputs.get(key);
+    if (!held) return;
+    this.heldRecoveryOutputs.delete(key);
+    const openEntry = this.openEntries.get(key);
+    if (!openEntry) return;
+    for (const data of held.chunks) {
+      this.parsePipelineOutput(key, openEntry, data);
+    }
+  }
+
+  private parsePipelineOutput(
+    key: string,
+    openEntry: OpenAuditEntry,
+    data: string,
+  ): void {
     const buffered = this.pipelineOutputBuffers.get(key) ?? '';
-    const normalized = `${buffered}${event.data}`
+    const normalized = `${buffered}${data}`
       .replace(/\r\n/g, '\n')
       .replace(/\r/g, '\n');
     const lines = normalized.split('\n');
@@ -8434,7 +8603,8 @@ export class ObservabilityService {
     step: StepResult;
     modelConfig?: AgentModelConfig;
   }): void {
-    const key = buildPipelineStepObservabilityKey(options);
+    const recovery = pipelineStepRecovery(options.step.recovery_count);
+    const key = buildPipelineStepObservabilityKey({ ...options, recovery });
     const status = options.step.status;
     const isTerminalStatus =
       status === 'success' ||
@@ -8464,6 +8634,17 @@ export class ObservabilityService {
     }
 
     const startedAt = options.step.started_at ?? new Date().toISOString();
+    if (
+      recovery >= 1 &&
+      !this.openEntries.has(key) &&
+      status !== 'running' &&
+      !isTerminalStatus
+    ) {
+      // A resume raises `recovery_count` while the step is still paused, with
+      // the paused attempt's `started_at`: only the resumed attempt's running
+      // (or terminal) state opens its entry.
+      return;
+    }
     if (!this.openEntries.has(key)) {
       // The in-process finalized set is only a fast path. On restart the
       // canonical audit row may have a different startedAt from the executor's
@@ -8483,9 +8664,35 @@ export class ObservabilityService {
       if (isTerminalStatus && recorded && recorded.status !== 'running') {
         this.finalizedPipelineStepKeys.add(key);
         this.observedTaskEntryIdsByKey.set(key, recorded.id);
+        this.heldRecoveryOutputs.delete(key);
+        this.correctReplayedStepBillingRoute(key, recorded, options.step);
         return;
       }
       if (isTerminalStatus && this.finalizedPipelineStepKeys.has(key)) {
+        this.heldRecoveryOutputs.delete(key);
+        return;
+      }
+      const earlier =
+        isTerminalStatus && !recorded && !this.heldRecoveryOutputs.has(key)
+          ? this.earlierRecoveryEntry(options, recovery)
+          : undefined;
+      if (earlier !== undefined) {
+        // The resumed attempt's own state and output were never seen: an
+        // empty row would bill nothing. An earlier attempt still open (a
+        // resume cancelled before it ran) ends with this state; a closed one
+        // is left as it ran rather than rebilled on this attempt's route.
+        this.finalizedPipelineStepKeys.add(key);
+        const earlierEntry = this.openEntries.get(earlier.key);
+        if (earlier.open && earlierEntry) {
+          if (options.step.completed_at) {
+            earlierEntry.entry.completedAt = options.step.completed_at;
+          }
+          this.finalizeOpenEntry(
+            earlier.key,
+            pipelineStepAuditStatus(status),
+            options.step.error,
+          );
+        }
         return;
       }
 
@@ -8522,6 +8729,7 @@ export class ObservabilityService {
         jobId: options.jobId,
         stepId: options.stepId,
         attempt: options.attempt,
+        ...(recovery >= 1 ? { recovery } : {}),
         linkTarget: {
           page: 'pipelines',
           kind: 'pipeline-execution',
@@ -8552,7 +8760,15 @@ export class ObservabilityService {
             : undefined,
         );
       }
+      // The paused attempt ends where the resumed one starts.
+      for (let earlier = recovery - 1; earlier >= 0; earlier -= 1) {
+        this.finalizeOpenEntry(
+          buildPipelineStepObservabilityKey({ ...options, recovery: earlier }),
+          'interrupted',
+        );
+      }
       this.startObservedTask(key, entry);
+      this.replayHeldRecoveryOutput(key);
     }
 
     const openEntry = this.openEntries.get(key);
@@ -8569,14 +8785,9 @@ export class ObservabilityService {
       );
     }
 
-    if (options.step.outputs[AI_CREDITS_ROUTED_OUTPUT_KEY] === 'true') {
-      openEntry.entry.aiCreditsRouted = true;
-    }
-    if (options.step.outputs[MODEL_GATEWAY_ROUTED_OUTPUT_KEY] === 'true') {
-      openEntry.entry.modelGatewayRouted = true;
-    }
-    if (options.step.outputs[ACCOUNT_PROXY_ROUTED_OUTPUT_KEY] === 'true') {
-      this.markObservedTaskAccountProxyRouted(key);
+    const route = stepBillingRoute(options.step.outputs);
+    this.applyPipelineStepRoute(openEntry, route, options.step.outputs);
+    if (route === 'account_proxy') {
       // Each attempt has a route of its own, so the route's whole count is
       // the step's.
       const routeSessionId =
@@ -8609,16 +8820,139 @@ export class ObservabilityService {
       if (completedAt) {
         openEntry.entry.completedAt = completedAt;
       }
-      const mappedStatus: AgentAuditStatus =
-        status === 'success'
-          ? 'success'
-          : status === 'failure'
-            ? 'failure'
-            : status === 'cancelled'
-              ? 'cancelled'
-              : 'interrupted';
-      this.finalizeOpenEntry(key, mappedStatus, error);
+      this.finalizeOpenEntry(key, pipelineStepAuditStatus(status), error);
     }
+  }
+
+  /**
+   * Applies a step's route, read once through `stepBillingRoute` so the
+   * audit record and the step's billing line agree, and recomputes the
+   * billing basis as soon as a route flag changes (CAN-7305).
+   */
+  private applyPipelineStepRoute(
+    openEntry: OpenAuditEntry,
+    route: StepBillingRoute | undefined,
+    outputs: Readonly<Record<string, string>>,
+  ): void {
+    if (route === undefined) return;
+    const entry = openEntry.entry;
+    const before = entry.billingBasis;
+    if (route === 'account_proxy') {
+      if (openEntry.accountProxyRouted !== true) {
+        this.applyAccountProxyRoute(openEntry, true);
+      }
+    } else {
+      if (route === 'ai_credits') {
+        entry.aiCreditsRouted = true;
+      } else {
+        entry.modelGatewayRouted = true;
+        // A gateway step also carries the AI Credits key; record it as the
+        // step's outputs say, as capture always has.
+        if (outputs[AI_CREDITS_ROUTED_OUTPUT_KEY] === 'true') {
+          entry.aiCreditsRouted = true;
+        }
+      }
+      if (entry.billingBasis !== undefined) {
+        entry.billingBasis = billingBasisAtEntryStart(
+          entry.provider,
+          openEntry.billingAccountKind,
+          entry.aiCreditsRouted === true,
+          entry.modelGatewayRouted === true || usedOrganizationGateway(entry),
+          openEntry.accountProxyRouted === true,
+        );
+      }
+    }
+    if (entry.billingBasis !== before) {
+      this.upsertRecentEntry(entry);
+    }
+  }
+
+  /**
+   * A step record closed before its route was known (a shutdown closes open
+   * entries as interrupted) is rebilled when a terminal state for the same
+   * attempt names the route. Only the route flags and basis change; a record
+   * that already carries a route is left as it was finalized.
+   */
+  private correctReplayedStepBillingRoute(
+    key: string,
+    recorded: AgentAuditEntry,
+    step: StepResult,
+  ): void {
+    const route = stepBillingRoute(step.outputs);
+    if (route === undefined) return;
+    // As in live capture, a record without a basis gets none.
+    if (recorded.billingBasis === undefined) return;
+    if (
+      recorded.billingBasis === 'org_gateway' ||
+      recorded.billingBasis === 'ai_credits' ||
+      recorded.billingBasis === 'account_proxy' ||
+      recorded.aiCreditsRouted === true ||
+      recorded.modelGatewayRouted === true
+    ) {
+      return;
+    }
+    const billingBasis = stepRouteBillingBasis(route);
+    if (recorded.billingBasis === billingBasis) return;
+    const corrected: AgentAuditEntry = { ...recorded, billingBasis };
+    if (route === 'ai_credits') {
+      corrected.aiCreditsRouted = true;
+    } else if (route === 'model_gateway') {
+      corrected.modelGatewayRouted = true;
+      if (step.outputs[AI_CREDITS_ROUTED_OUTPUT_KEY] === 'true') {
+        corrected.aiCreditsRouted = true;
+      }
+    }
+    if (corrected.aiCreditsRouted === true || route === 'account_proxy') {
+      // Live capture credits no native account for AI Credits or proxy work
+      // (`stampProviderAccountIdentity`, `captureProviderStartSnapshot`).
+      delete corrected.providerAccountKey;
+      delete corrected.providerAccountEmail;
+      delete corrected.providerPlanType;
+    }
+    this.enqueueAuditEntry(corrected);
+    this.upsertRecentEntry(corrected);
+    if (this.retainedPipelineEntriesByKey.has(key)) {
+      this.retainedPipelineEntriesByKey.set(key, corrected);
+    }
+  }
+
+  /**
+   * The latest earlier resumed attempt of the step that has an entry, open
+   * or closed; undefined when none does.
+   */
+  private earlierRecoveryEntry(
+    options: {
+      executionId: string;
+      jobId: string;
+      stepId: string;
+      attempt: number;
+      iteration?: number;
+    },
+    recovery: number,
+  ): { key: string; open: boolean } | undefined {
+    for (let earlier = recovery - 1; earlier >= 0; earlier -= 1) {
+      const earlierKey = buildPipelineStepObservabilityKey({
+        ...options,
+        recovery: earlier,
+      });
+      if (this.openEntries.has(earlierKey)) {
+        return { key: earlierKey, open: true };
+      }
+      if (this.finalizedPipelineStepKeys.has(earlierKey)) {
+        return { key: earlierKey, open: false };
+      }
+      const recorded =
+        this.retainedPipelineEntriesByKey.get(earlierKey) ??
+        this.recentEntries.find(
+          (entry) =>
+            entry.eventType === 'pipeline_agent_turn' &&
+            entry.id.startsWith(`${earlierKey}:`),
+        );
+      if (recorded && recorded.status !== 'running') {
+        return { key: earlierKey, open: false };
+      }
+    }
+    return undefined;
   }
 
   private countToolUse(

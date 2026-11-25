@@ -72,6 +72,7 @@ import {
   isSessionAccountProxyRouted,
   isSessionAiCreditsRouted,
 } from '../agents/session-manager';
+import { captureTypedSteerTurnModelConfig } from '../agents/typed-steer-turn-model-config';
 import { sendToWindowDetailed } from '../lib/window-send';
 import { getExecutionObservabilityIngest } from '../observability/ingest';
 import {
@@ -1497,7 +1498,7 @@ export async function dispatchAppAdvisorChatMessage(
       presentationSource,
     );
     try {
-      turnRun.executeSync(() =>
+      turnRun.executeSync(() => {
         session.sendMessage(providerSubmittedText, {
           userMessageId: request.userMessageId,
           ...(executionHarness === 'opencode' && request.attachmentPaths?.length
@@ -1508,8 +1509,13 @@ export async function dispatchAppAdvisorChatMessage(
                 },
               }
             : {}),
-        }),
-      );
+        });
+        captureTypedSteerTurnModelConfig(
+          session,
+          executionUserMessageId,
+          modelConfig,
+        );
+      });
       turnRun.accepted();
     } catch (error) {
       clearPresentationTurn(

@@ -1,19 +1,28 @@
 import { type JSX, type ReactNode, useId, useState } from 'react';
-import { Button, ToggleSwitch, ProviderStatusDot } from '@canopy/ui-shared';
+import {
+  Button,
+  Notice,
+  ToggleSwitch,
+  ProviderStatusDot,
+} from '@canopy/ui-shared';
 import {
   EyeIcon,
   EyeOffIcon,
   GlobeIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
+import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { toAppError } from '@canopy/protocol/app-errors';
+import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
+import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import type {
   AccountProxyError,
   AccountProxyStatus,
 } from '@canopy/desktop-shared/types/account-proxy';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
-import { useOpenSettingsSection } from '../settings-section-navigation';
 import {
   useAccountProxyLiveRefresh,
+  useAccountProxyPageAvailable,
   useAccountProxyStatus,
   useAccountProxyStore,
 } from '@/stores/accountProxyStore';
@@ -26,6 +35,7 @@ import {
   SettingsTextField,
 } from '../SettingsLayout';
 import { AccountProxyAccountList } from './AccountProxyAccountList';
+import { ClaudeConnectorRoutingSettingNote } from '../ClaudeConnectorRoutingSettingNote';
 import {
   AccountProxyAddAccount,
   AccountProxyLocalConnection,
@@ -401,10 +411,216 @@ function RoutingSection({
   );
 }
 
+const SWITCH_FAILED = "Couldn't change the account proxy setting. Try again.";
+const DISCONNECT_FAILED = "Couldn't disconnect the account proxy. Try again.";
+
+function TermsNotice(): JSX.Element {
+  return (
+    <SettingsSection>
+      <Notice intent="attention" title="Check each provider's terms.">
+        Using a subscription outside the provider's own apps can break its
+        terms, and the provider can suspend the account.
+      </Notice>
+      <ClaudeConnectorRoutingSettingNote route="account-proxy" />
+    </SettingsSection>
+  );
+}
+
+/**
+ * Turns the proxy off without removing its connection, and back on. Shown
+ * while a connection is saved; with none there is nothing to turn off. Off,
+ * new turns don't route through the proxy and it is not read, so Disconnect
+ * is offered here too. A turn already running on a server connection keeps
+ * its route until it ends; the proxy on this device stops at once.
+ */
+function TurnedOnSection({
+  status,
+}: {
+  readonly status: AccountProxyStatus;
+}): JSX.Element | null {
+  const toggleId = useId();
+  const [saving, setSaving] = useState(false);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [failure, setFailure] = useState<InlineFailure | null>(null);
+  // One at a time: turning the proxy on while Disconnect is still revoking
+  // its key would make the connection being removed usable again.
+  const busy = saving || disconnecting;
+  const connection = status.connection;
+  if (!connection) return null;
+  const on = status.available;
+  const local = connection.kind === 'local';
+  const where = local ? (
+    'the proxy on this device'
+  ) : (
+    <span className={`font-mono ${POSTHOG_REPLAY_BLOCK_CLASS}`}>
+      {accountProxyHost(connection.url)}
+    </span>
+  );
+  // Turning off stops the proxy on this device at once, ending its turns in
+  // progress; a turn already running on a server keeps its route until done.
+  const description = on ? (
+    local ? (
+      <>Turn off to stop {where} and end turns using it. Keeps its setup.</>
+    ) : (
+      <>Turn off to stop using {where} for new turns. Keeps its connection.</>
+    )
+  ) : local ? (
+    <>Off. The proxy on this device is stopped, and new turns don't use it.</>
+  ) : (
+    <>
+      Off. New turns don't use {where}; a turn already running may finish
+      through it.
+    </>
+  );
+  return (
+    <SettingsSection>
+      <SettingsGroup>
+        <SettingsRow
+          label="Use the account proxy"
+          htmlFor={toggleId}
+          dataTestId="account-proxy-enabled"
+          description={description}
+          control={
+            <ToggleSwitch
+              id={toggleId}
+              checked={on}
+              disabled={busy}
+              label="Use the account proxy"
+              dataTestId="account-proxy-enabled-toggle"
+              onChange={(next): void => {
+                setSaving(true);
+                setFailure(null);
+                void window.api
+                  .savePreferences({
+                    accountProxyEnabled: next,
+                    accountProxyEnabledSetByUser: true,
+                  })
+                  .catch((error: unknown) => {
+                    const appError = toAppError(resolveClientAppError(error));
+                    setFailure(
+                      appError
+                        ? inlineFailure(appError, SWITCH_FAILED)
+                        : { error: SWITCH_FAILED },
+                    );
+                  })
+                  .finally(() => setSaving(false));
+              }}
+            />
+          }
+        />
+        {on ? null : (
+          <SettingsRow
+            label="Remove the connection"
+            description="Deletes its key from this device."
+            control={
+              <Button
+                size="compact"
+                disabled={busy}
+                data-testid="account-proxy-disconnect-off"
+                onClick={(): void => {
+                  setDisconnecting(true);
+                  setFailure(null);
+                  void window.api.accountProxy
+                    ?.disconnect()
+                    .then((next) =>
+                      useAccountProxyStore.getState().setStatus(next),
+                    )
+                    .catch((error: unknown) => {
+                      const appError = toAppError(resolveClientAppError(error));
+                      setFailure(
+                        appError
+                          ? inlineFailure(appError, DISCONNECT_FAILED)
+                          : { error: DISCONNECT_FAILED },
+                      );
+                    })
+                    .finally(() => setDisconnecting(false));
+                }}
+              >
+                Disconnect
+              </Button>
+            }
+          />
+        )}
+      </SettingsGroup>
+      {failure ? (
+        <DesktopErrorBanner
+          errorSource="account-proxy-enabled-switch"
+          className=""
+          error={failure.error}
+          {...(failure.details === undefined
+            ? {}
+            : { details: failure.details })}
+          testId="account-proxy-enabled-error"
+        />
+      ) : null}
+    </SettingsSection>
+  );
+}
+
+/**
+ * Turns the proxy on when the computer reports it off with no connection:
+ * the user turned it off and then disconnected, or an older desktop paired
+ * over Remote Control still stores the retired Labs opt-in as off. Setup is
+ * refused until it is turned on.
+ */
+function TurnOnSection(): JSX.Element {
+  const [saving, setSaving] = useState(false);
+  const [failure, setFailure] = useState<InlineFailure | null>(null);
+  return (
+    <SettingsSection>
+      <SettingsGroup>
+        <SettingsRow
+          label="Turn on the account proxy"
+          description="It's turned off on this computer. Turn it on to set it up."
+          dataTestId="account-proxy-turn-on"
+          control={
+            <Button
+              size="compact"
+              disabled={saving}
+              data-testid="account-proxy-turn-on-button"
+              onClick={(): void => {
+                setSaving(true);
+                setFailure(null);
+                void window.api
+                  .savePreferences({
+                    accountProxyEnabled: true,
+                    accountProxyEnabledSetByUser: true,
+                  })
+                  .catch((error: unknown) => {
+                    const appError = toAppError(resolveClientAppError(error));
+                    setFailure(
+                      appError
+                        ? inlineFailure(appError, SWITCH_FAILED)
+                        : { error: SWITCH_FAILED },
+                    );
+                  })
+                  .finally(() => setSaving(false));
+              }}
+            >
+              Turn on
+            </Button>
+          }
+        />
+      </SettingsGroup>
+      {failure ? (
+        <DesktopErrorBanner
+          errorSource="account-proxy-turn-on"
+          className=""
+          error={failure.error}
+          {...(failure.details === undefined
+            ? {}
+            : { details: failure.details })}
+          testId="account-proxy-turn-on-error"
+        />
+      ) : null}
+    </SettingsSection>
+  );
+}
+
 /** Settings > Multi-account proxy (CAN-4019). */
 export function AccountProxyTab(): JSX.Element {
   const status = useAccountProxyStatus();
-  const openSettings = useOpenSettingsSection();
+  const pageAvailable = useAccountProxyPageAvailable();
   const [mode, setMode] = useState<AccountProxyMode>('server');
   const local = status?.connection?.kind === 'local';
   const connected =
@@ -424,7 +640,35 @@ export function AccountProxyTab(): JSX.Element {
     );
   }
 
-  if (!status.available) {
+  if (pageAvailable && !status.available && status.connection) {
+    return (
+      <SettingsPage
+        title="Multi-account proxy"
+        description={ACCOUNT_PROXY_PAGE_DESCRIPTION}
+        dataTestId="settings-tab-account-proxy"
+      >
+        <TermsNotice />
+        <TurnedOnSection status={status} />
+      </SettingsPage>
+    );
+  }
+
+  if (pageAvailable && !status.available) {
+    return (
+      <SettingsPage
+        title="Multi-account proxy"
+        description={ACCOUNT_PROXY_PAGE_DESCRIPTION}
+        dataTestId="settings-tab-account-proxy"
+      >
+        <TermsNotice />
+        <TurnOnSection />
+      </SettingsPage>
+    );
+  }
+
+  // The flag served off hides the page at once, before main has reconciled
+  // the proxy's status.
+  if (!pageAvailable || !status.available) {
     return (
       <SettingsPage
         title="Multi-account proxy"
@@ -434,16 +678,8 @@ export function AccountProxyTab(): JSX.Element {
         <SettingsSection>
           <SettingsGroup>
             <SettingsRow
-              label="Turn on the account proxy"
-              description="Turn on Use an account proxy in Labs to set it up."
-              control={
-                <Button
-                  size="compact"
-                  onClick={(): void => openSettings('experiments')}
-                >
-                  Open Labs
-                </Button>
-              }
+              label="Account proxy unavailable"
+              description="The account proxy isn't available right now. Try again later."
             />
           </SettingsGroup>
         </SettingsSection>
@@ -457,6 +693,8 @@ export function AccountProxyTab(): JSX.Element {
       description={ACCOUNT_PROXY_PAGE_DESCRIPTION}
       dataTestId="settings-tab-account-proxy"
     >
+      <TermsNotice />
+      <TurnedOnSection status={status} />
       {status.state === 'not-configured' ? (
         <SettingsSection title="Connection">
           {status.local.phase === 'unsupported' ? (

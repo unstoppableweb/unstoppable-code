@@ -6,10 +6,14 @@ import {
 } from 'slate-react';
 import {
   type ComponentPropsWithoutRef,
+  createContext,
   type FocusEvent,
   forwardRef,
+  memo,
   useCallback,
+  useContext,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   type ClipboardEvent,
@@ -21,7 +25,7 @@ import {
 } from 'react';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { FileReferencePillElement } from './FileReferencePill';
-import type { Descendant } from 'slate';
+import type { Descendant, Editor } from 'slate';
 import type {
   ChatEditor,
   SerializedEditorValue,
@@ -126,6 +130,119 @@ const LifecycleSafeEditableElement = forwardRef<
   return <div {...props} ref={ref} onBlur={handleBlur} />;
 });
 
+/**
+ * A handler whose identity never changes and that always calls the latest
+ * `handler`, so a parent's new closure does not re-render the editable.
+ */
+function useLatestHandler<Input>(
+  handler: ((input: Input) => void) | undefined,
+): (input: Input) => void {
+  const latest = useRef(handler);
+  useLayoutEffect(() => {
+    latest.current = handler;
+  });
+  // Slate reads a handler's return value to tell whether it took the event.
+  return useCallback((input: Input): void => latest.current?.(input), []);
+}
+
+/**
+ * What is drawn after the placeholder text. A context, so a new suffix
+ * element re-renders the placeholder alone, not the editable around it.
+ */
+const PlaceholderSuffixContext = createContext<ReactNode>(undefined);
+
+function PlaceholderContent({
+  children,
+}: {
+  children: ReactNode;
+}): JSX.Element {
+  const suffix = useContext(PlaceholderSuffixContext);
+  return suffix ? (
+    // The suffix sits one inline gap after the text, which may wrap.
+    <span className="inline-flex max-w-full items-center gap-2">
+      <span className="min-w-0">{children}</span>
+      {suffix}
+    </span>
+  ) : (
+    <>{children}</>
+  );
+}
+
+// The placeholder takes the tertiary text token. Slate draws it in the
+// editor's own ink at 33% opacity, which is no token and drifts with the
+// surface behind it, so its opacity is reset and the token set instead.
+// It shows at once, with no fade: the editor remounts on every chat switch,
+// and an entry animation blinked the placeholder in each time. Slate draws
+// it inside the first paragraph, the replay block, so session replay never
+// records it, which matters when it is conversation-derived (a next prompt
+// suggestion).
+function renderEditorPlaceholder({
+  attributes,
+  children,
+}: RenderPlaceholderProps): JSX.Element {
+  return (
+    <span
+      {...attributes}
+      style={{ ...attributes.style, opacity: 1 }}
+      className="fg-tertiary"
+    >
+      <PlaceholderContent>{children}</PlaceholderContent>
+    </span>
+  );
+}
+
+interface EditableSurfaceProps {
+  /**
+   * The editor's document and selection, only so that a change to either
+   * renders the editable. Slate tells the editable about a change itself
+   * once its provider has mounted, but a draft restored before that (a chat
+   * opening with one) reaches it only through its parent's next render.
+   */
+  content: Descendant[];
+  selection: Editor['selection'];
+  placeholder: string;
+  readOnly: boolean;
+  onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void;
+  onPaste: (event: ClipboardEvent<HTMLDivElement>) => void;
+  className: string;
+  dataTestId: string | undefined;
+}
+
+/**
+ * The Slate editable, memoized. After every render while it holds focus,
+ * Slate reads the DOM selection, and that read makes the browser lay the
+ * whole page out on the spot. The composer's parent re-renders through a
+ * streamed reply and every chat or worktree switch, so the editable only
+ * renders for its own changes: the editor's content and selection, and the
+ * props here.
+ */
+const EditableSurface = memo(function EditableSurface({
+  placeholder,
+  readOnly,
+  onKeyDown,
+  onPaste,
+  className,
+  dataTestId,
+}: EditableSurfaceProps): JSX.Element {
+  return (
+    <Editable
+      as={LifecycleSafeEditableElement}
+      data-chat-textarea
+      data-testid={dataTestId}
+      // The placeholder disappears once text is typed; keep it as the name.
+      aria-label={placeholder}
+      placeholder={placeholder}
+      renderPlaceholder={renderEditorPlaceholder}
+      readOnly={readOnly}
+      onKeyDown={onKeyDown}
+      onPaste={onPaste}
+      renderElement={renderEditorElement}
+      spellCheck={false}
+      className={className}
+    />
+  );
+});
+
 function SlateEditorInner(
   {
     editor,
@@ -169,7 +286,8 @@ function SlateEditorInner(
   }, [editor]);
   useTypeToComposer(containerRef, focusThisEditor, typeToFocus);
 
-  const renderElement = useCallback(renderEditorElement, []);
+  const handleKeyDown = useLatestHandler(onKeyDown);
+  const handlePaste = useLatestHandler(onPaste);
 
   const handleSelectionChange = useCallback((): void => {
     onSelectionChange?.();
@@ -195,35 +313,6 @@ function SlateEditorInner(
     [editableClassName, monospace],
   );
 
-  // The placeholder takes the tertiary text token. Slate draws it in the
-  // editor's own ink at 33% opacity, which is no token and drifts with the
-  // surface behind it, so its opacity is reset and the token set instead.
-  // It shows at once, with no fade: the editor remounts on every chat switch,
-  // and an entry animation blinked the placeholder in each time. Slate draws
-  // it inside the first paragraph, the replay block, so session replay never
-  // records it, which matters when it is conversation-derived (a next prompt
-  // suggestion).
-  const renderPlaceholder = useCallback(
-    ({ attributes, children }: RenderPlaceholderProps): JSX.Element => (
-      <span
-        {...attributes}
-        style={{ ...attributes.style, opacity: 1 }}
-        className="fg-tertiary"
-      >
-        {placeholderSuffix ? (
-          // The suffix sits one inline gap after the text, which may wrap.
-          <span className="inline-flex max-w-full items-center gap-2">
-            <span className="min-w-0">{children}</span>
-            {placeholderSuffix}
-          </span>
-        ) : (
-          children
-        )}
-      </span>
-    ),
-    [placeholderSuffix],
-  );
-
   return (
     <div
       ref={containerRef}
@@ -238,21 +327,18 @@ function SlateEditorInner(
           onSelectionChange ? handleSelectionChange : undefined
         }
       >
-        <Editable
-          as={LifecycleSafeEditableElement}
-          data-chat-textarea
-          data-testid={dataTestId}
-          // The placeholder disappears once text is typed; keep it as the name.
-          aria-label={placeholder}
-          placeholder={placeholder}
-          renderPlaceholder={renderPlaceholder}
-          readOnly={readOnly}
-          onKeyDown={onKeyDown}
-          onPaste={onPaste}
-          renderElement={renderElement}
-          spellCheck={false}
-          className={mergedEditableClassName}
-        />
+        <PlaceholderSuffixContext.Provider value={placeholderSuffix}>
+          <EditableSurface
+            content={editor.children}
+            selection={editor.selection}
+            placeholder={placeholder}
+            readOnly={readOnly}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            className={mergedEditableClassName}
+            dataTestId={dataTestId}
+          />
+        </PlaceholderSuffixContext.Provider>
       </Slate>
     </div>
   );

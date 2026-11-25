@@ -92,6 +92,9 @@ function liveActivity(
  */
 export const CleanToolStepGroup = memo(function CleanToolStepGroup({
   segment,
+  activityOf,
+  alwaysFolded = false,
+  settledOnly = false,
   live,
   workingLabel,
   forceExpanded = false,
@@ -102,9 +105,26 @@ export const CleanToolStepGroup = memo(function CleanToolStepGroup({
   trailingActivity,
   outcomeEvidence,
   deniedToolUseIds,
+  bareChildren,
   children,
 }: {
   segment?: CleanStepsSegment;
+  /**
+   * Compact: the turn's one status line stands apart from its runs, and
+   * reads what the turn does now from this run without drawing it.
+   */
+  activityOf?: CleanStepsSegment;
+  /**
+   * Compact: the run is one closed line from its first step to its last, so
+   * its rows never swap for a line as steps arrive.
+   */
+  alwaysFolded?: boolean;
+  /**
+   * Compact, on the running turn's last run: the line counts only the steps
+   * already done and stays away until one is, since the status line says
+   * what runs now.
+   */
+  settledOnly?: boolean;
   /** The run is the running turn's tail. */
   live: boolean;
   /** Replaces "Thinking" while the turn waits on something else. */
@@ -124,6 +144,8 @@ export const CleanToolStepGroup = memo(function CleanToolStepGroup({
   outcomeEvidence?: TurnOutcomeEvidence;
   /** Authoritative denials, including receipts outside this run. */
   deniedToolUseIds?: ReadonlySet<string>;
+  /** The opened content has no text inset of its own (the live thought). */
+  bareChildren?: boolean;
   /** The run's steps, rendered when the line is open. */
   children?: ReactNode;
 }): JSX.Element {
@@ -145,8 +167,21 @@ export const CleanToolStepGroup = memo(function CleanToolStepGroup({
         scope,
         outcomeEvidence,
         deniedToolUseIds,
+        settledOnly,
       )
     : undefined;
+  if (settledOnly && done?.label === '' && !forceExpanded) return <></>;
+  const countedSteps = segment
+    ? (hidden ?? segment.messages).reduce(
+        (count, message) =>
+          count +
+          message.blocks.filter(
+            (block) =>
+              cleanBlockRole(block) === 'step' && block.type !== 'thinking',
+          ).length,
+        0,
+      )
+    : 0;
   return (
     <ChatToolStepGroup
       summary={done?.label ?? ''}
@@ -159,22 +194,23 @@ export const CleanToolStepGroup = memo(function CleanToolStepGroup({
       liveSteps={liveSteps}
       hiddenSteps={hiddenSteps}
       trailingActivity={trailingActivity}
+      bareChildren={bareChildren}
       collapsedStepCount={
-        segment
-          ? (hidden ?? segment.messages).reduce(
-              (count, message) =>
-                count +
-                message.blocks.filter(
-                  (block) =>
-                    cleanBlockRole(block) === 'step' &&
-                    block.type !== 'thinking',
-                ).length,
-              0,
-            )
+        // Compact keeps a run one closed line, except a run that only
+        // thought: its thoughts stay their own rows, one click from the text.
+        segment && (!alwaysFolded || countedSteps === 0)
+          ? countedSteps
           : undefined
       }
       {...(live && hidden === undefined
-        ? { live: liveActivity(segment, workingLabel, scope, approvalWait) }
+        ? {
+            live: liveActivity(
+              segment ?? activityOf,
+              workingLabel,
+              scope,
+              approvalWait,
+            ),
+          }
         : {})}
     >
       {children}

@@ -331,6 +331,8 @@ export function SidebarAccountFooter({
         variant="section"
         boundary="top"
         data-testid={row.testIds?.footer ?? 'sidebar-account-footer'}
+        // The desktop's divider style finds the footer by this, not by tag.
+        data-sidebar-account-footer=""
         className="-mx-2"
       >
         <div className="px-2 pt-2">

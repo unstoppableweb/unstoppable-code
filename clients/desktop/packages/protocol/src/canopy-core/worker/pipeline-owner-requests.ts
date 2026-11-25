@@ -262,6 +262,7 @@ const ClaudeModAdmissionContextSchema = z.strictObject({
       pluginId: modPluginId,
       installPath: hostPath.nullable(),
       notLoaded: z.literal(true).optional(),
+      installListUnreadable: z.literal(true).optional(),
     }),
   ),
   sessionModIds: modList(modPluginId).optional(),

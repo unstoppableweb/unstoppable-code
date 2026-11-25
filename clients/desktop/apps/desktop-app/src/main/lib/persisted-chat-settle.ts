@@ -6,8 +6,10 @@ import {
 import {
   persistedInterruptedSettlementTime,
   persistedInterruptedTurnRange,
+  persistedTurnEndsInAnswer,
   isSyntheticSettlementMessage,
   supersedeToolInterruptions,
+  type SettlementAnswerTracker,
 } from '@canopy/agent-transcript/settlement';
 import { isRootUserTurnBoundary } from '@canopy/agent-transcript/lib/turn-boundary';
 import type {
@@ -23,6 +25,8 @@ import {
   serializeChatTurnState,
   settleChatTurnForRestart,
 } from '@canopy/agent-transcript/turn';
+import { withTurnEnd } from './chat-turn-ends';
+import { withInterruptedTurn } from './chat-turn-succession';
 
 /** Whether persisted reducer state still records a live turn, irrespective of
  * the legacy runtime status. Host reconciliation owns the liveness decision.
@@ -30,7 +34,6 @@ import {
 export function hasOpenPersistedChatTurn(value: unknown): boolean {
   return hydrateChatTurnState(value)?.current !== undefined;
 }
-import { withInterruptedTurn } from './chat-turn-succession';
 
 /**
  * Close every open `turn_timer` block. Used when a transcript leaves live
@@ -288,25 +291,78 @@ export function settlePersistedForkMessages(
 }
 
 /**
+ * What restart cleanup knows about an orphaned turn beyond its transcript.
+ * Callers read these before cleanup clears them; a fact a caller cannot
+ * establish must be reported as present, never assumed absent.
+ */
+export interface PersistedTurnSettlementFacts {
+  /**
+   * Whether the turn's last root row is a saved answer, for callers whose
+   * `messages` are body-free evidence. Derived from `messages` when omitted.
+   */
+  endsInAnswer?: boolean;
+  /** A synchronous question the provider still awaited. */
+  pendingQuestion: boolean;
+  /** A Claude terminal still running or starting the turn. */
+  terminalActive: boolean;
+  /**
+   * Whether a quit recorded this turn as still running. Asked only when every
+   * other fact says the turn completed; a record keeps it interrupted, since
+   * the app saw the turn live when it quit.
+   */
+  hasShutdownRecord: (userMessageId: string) => Promise<boolean>;
+}
+
+export type PersistedTurnSettlementOutcome = 'completed' | 'interrupted';
+
+export interface PersistedTurnSettlement {
+  /**
+   * How the turn settled. `completed` only when its answer was saved and
+   * nothing was left open (CAN-7612); otherwise `interrupted`.
+   */
+  outcome: PersistedTurnSettlementOutcome;
+  /** The settled turn's prompt, when the runtime named one. */
+  userMessageId?: string;
+  mutations: ChatCoreMutation[];
+}
+
+const ANSWER_SETTLEMENT_STATUSES: readonly ChatRuntimeState['status'][] = [
+  'streaming',
+  'completing',
+];
+
+/**
  * Atomically settle a transcript and its runtime when live host ownership is
  * lost. Only changed or appended messages are upserted so restart recovery
  * does not rewrite an otherwise unchanged transcript.
+ *
+ * A turn whose answer was saved, with no tool, question, pause or terminal
+ * left open and no quit record of it still running, settles as completed
+ * (CAN-7612): its timer closes at its last activity and nothing offers to
+ * resume it. Any other turn settles as interrupted, awaiting a resume.
  */
-export function buildPersistedTurnInterruptedMutations(
+export async function buildPersistedTurnSettlement(
   chatId: string,
   messages: PersistedChatMessage[],
   runtime: ChatRuntimeState,
   completedAt: number,
-  queuedMessageIds: string[] = runtime.queuedMessageIds,
-  tab?: Pick<PersistedChatTab, 'id' | 'interruptedTurns'>,
-): ChatCoreMutation[] {
-  const currentTurn = hydrateChatTurnState(runtime.turn)?.current;
+  queuedMessageIds: string[],
+  tab:
+    | Pick<
+        PersistedChatTab,
+        'id' | 'interruptedTurns' | 'turnEnds' | 'trackedPlanImplementation'
+      >
+    | undefined,
+  facts: PersistedTurnSettlementFacts,
+): Promise<PersistedTurnSettlement> {
+  const reducerTurn = hydrateChatTurnState(runtime.turn);
+  const currentTurn = reducerTurn?.current;
   if (
     currentTurn?.userMessageId &&
     runtime.activeTurn &&
     currentTurn.userMessageId !== runtime.activeTurn.userMessageId
   )
-    return [];
+    return { outcome: 'interrupted', mutations: [] };
   const activeTurn =
     runtime.activeTurn ??
     (currentTurn?.userMessageId
@@ -330,13 +386,36 @@ export function buildPersistedTurnInterruptedMutations(
     range.start,
     range.end,
   );
+  const timedMessages = closeOpenPersistedTurnTimers(
+    reconciledInterrupted,
+    completedAt,
+  );
   const settledMessages = closeOpenPersistedToolUsesInTurn(
-    closeOpenPersistedTurnTimers(reconciledInterrupted, completedAt),
+    timedMessages,
     completedAt,
     TOOL_SETTLEMENT_OUTPUT.app_restart,
     'app_restart',
     collectChildToolResultIds(messages),
   );
+  const userMessageId = activeTurn?.userMessageId;
+  const openPause = [currentTurn, reducerTurn?.lastEnded].some((turn) =>
+    turn?.pauses.some((pause) => pause.endedAtMs === undefined),
+  );
+  // Closing any tool, root or child, means work was cut off, whatever the
+  // root text suggested. An open timer alone is expected.
+  const outcome: PersistedTurnSettlementOutcome =
+    userMessageId !== undefined &&
+    messages[range.start]?.id === userMessageId &&
+    ANSWER_SETTLEMENT_STATUSES.includes(runtime.status) &&
+    !facts.pendingQuestion &&
+    !facts.terminalActive &&
+    !openPause &&
+    (facts.endsInAnswer ??
+      persistedTurnEndsInAnswer(messages, userMessageId)) &&
+    settledMessages.length === timedMessages.length &&
+    !(await facts.hasShutdownRecord(userMessageId))
+      ? 'completed'
+      : 'interrupted';
   const mutations: ChatCoreMutation[] = settledMessages.flatMap(
     (message, index) =>
       message === interrupted[index]
@@ -352,6 +431,44 @@ export function buildPersistedTurnInterruptedMutations(
             },
           ],
   );
+  const settledRuntime = { ...runtime };
+  const turn = reducerTurn ?? initialChatTurnState();
+  delete settledRuntime.activeTurn;
+  delete settledRuntime.deferredToolsReload;
+  if (outcome === 'completed' && userMessageId !== undefined) {
+    // Record the end a clean completion records, so every surface that reads
+    // turn ends, Remote Control included, reports it completed.
+    if (tab)
+      mutations.push({
+        type: 'tab.metadata_patched',
+        tabId: tab.id,
+        patch: {
+          turnEnds: withTurnEnd(
+            tab.turnEnds,
+            userMessageId,
+            'completed',
+            completedAt,
+            tab.trackedPlanImplementation?.userMessageId,
+          ),
+        },
+      });
+    delete settledRuntime.error;
+    delete settledRuntime.emptyCompletionRecovery;
+    mutations.push({
+      type: 'runtime.patched',
+      chatId,
+      runtime: {
+        ...settledRuntime,
+        turn: serializeChatTurnState(
+          settleChatTurnForRestart(turn, completedAt, 'completed').state,
+        ),
+        status: 'completed',
+        queuedMessageIds,
+        lastActivityAt: completedAt,
+      },
+    });
+    return { outcome, userMessageId, mutations };
+  }
   if (tab && activeTurn) {
     mutations.push({
       type: 'tab.metadata_patched',
@@ -364,11 +481,7 @@ export function buildPersistedTurnInterruptedMutations(
       },
     });
   }
-  const settledRuntime = { ...runtime };
-  const turn = hydrateChatTurnState(runtime.turn) ?? initialChatTurnState();
   const settledTurn = settleChatTurnForRestart(turn, completedAt);
-  delete settledRuntime.activeTurn;
-  delete settledRuntime.deferredToolsReload;
   mutations.push({
     type: 'runtime.patched',
     chatId,
@@ -386,7 +499,11 @@ export function buildPersistedTurnInterruptedMutations(
       },
     },
   });
-  return mutations;
+  return {
+    outcome,
+    ...(userMessageId !== undefined ? { userMessageId } : {}),
+    mutations,
+  };
 }
 
 /** Archive/restore settlement uses original activity rather than the archive action time. */
@@ -435,14 +552,18 @@ export function settlePersistedInterruptedMessages(
 }
 
 /** Retain turn anchors, timer state, tool identities and one activity stamp per
- * turn. Never retain transcript text or tool bodies during legacy migration. */
+ * turn. Never retain transcript text or tool bodies during legacy migration;
+ * `answer` sees each original row and keeps only body-free flags. */
 export async function collectPersistedSettlementEvidence(
   messages: AsyncIterable<PersistedChatMessage>,
   detectedAt: number,
+  answer?: SettlementAnswerTracker,
 ): Promise<PersistedChatMessage[]> {
   const evidence: PersistedChatMessage[] = [];
   let activity: PersistedChatMessage | undefined;
   for await (const message of messages) {
+    // Classify the original row before its text is dropped (CAN-7612).
+    answer?.observe(message);
     if (isRootUserTurnBoundary(message)) activity = undefined;
     const blocks: PersistedChatBlock[] = message.blocks.flatMap(
       (block): PersistedChatBlock[] => {

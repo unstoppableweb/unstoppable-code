@@ -220,7 +220,7 @@ export function effectiveRuntimeOperations(
     const reachable = Object.keys(ACCESS_MODES).some(
       (mode) =>
         ACCESS_MODES[mode].includes(principal) &&
-        (mode === 'authority' || !restricted(name)) &&
+        (mode === 'authority' || mode === 'owner' || !restricted(name)) &&
         listed(policy.modes[mode] ?? [], name, kind),
     );
     const available = operation.requiredGrants.every((grant) =>

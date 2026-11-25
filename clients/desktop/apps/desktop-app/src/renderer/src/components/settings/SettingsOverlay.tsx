@@ -288,7 +288,7 @@ interface SettingsOverlayProps {
   initialSection?: SettingsSection;
 }
 
-export function SettingsOverlay({
+function SettingsOverlayImpl({
   open = true,
   onClose,
   initialSection,
@@ -586,9 +586,11 @@ export function SettingsOverlay({
         // through `.settings-page-overlay` in globals.css.
         // Visible from the render that opens it, so the window page can move
         // focus in at once: `overlayVisible` only catches up in an effect.
-        className={`settings-page-overlay flex h-full w-full select-none fg-primary ${
-          open || overlayVisible ? '' : 'invisible'
-        }`}
+        // Hidden by an attribute, not by a class added and removed: a class
+        // change here restyled the whole rail (about 750 elements) in a
+        // frame of its own once the exit motion ended.
+        className="settings-page-overlay flex h-full w-full select-none fg-primary data-[settings-hidden]:invisible"
+        data-settings-hidden={open || overlayVisible ? undefined : 'true'}
         data-open={open ? 'true' : 'false'}
         data-settings-layout={'inset'}
         data-testid="settings-overlay"
@@ -635,3 +637,11 @@ export function SettingsOverlay({
     </DesktopHostedSettingsProvider>
   );
 }
+
+/**
+ * Settings stays mounted while closed, under the app root, which renders on
+ * every page switch and palette open. Its props change only when it opens,
+ * closes or is sent to another section, so those renders stop here instead
+ * of running through the kept-mounted rail.
+ */
+export const SettingsOverlay = memo(SettingsOverlayImpl);

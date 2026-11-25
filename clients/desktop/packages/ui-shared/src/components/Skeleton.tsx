@@ -121,6 +121,12 @@ function isLowFidelityDetail(element: Element): boolean {
   return (element.parentElement?.textContent?.trim() ?? '') !== '';
 }
 
+/** No layout box yet (a hidden tab): such an element is checked again. */
+function hasLayoutBox(element: Element): boolean {
+  const { width, height } = element.getBoundingClientRect();
+  return width !== 0 || height !== 0;
+}
+
 /** skullet leaves an element with this attribute out but keeps its space. */
 const SKULLET_IGNORE = 'skullet-ignore';
 
@@ -197,24 +203,149 @@ function hideSampleTestIds(root: HTMLElement): void {
   }
 }
 
-/** Marks the low-fidelity details in the measured copy under `root`. */
+/**
+ * What a plain element looked like when it was last checked. A loading
+ * skeleton renders again whenever its parent does, and checking an element
+ * measures it, which makes the browser lay the page out; an element that
+ * was plain and has not changed since is not measured again.
+ */
+const checkedPlain = new WeakMap<Element, string>();
+
+function plainSignature(element: Element): string {
+  return [
+    element.getAttribute('class') ?? '',
+    element.childElementCount,
+    element.childElementCount === 0 ? (element.textContent ?? '') : '',
+  ].join('\u0000');
+}
+
+/**
+ * The signature to check `element` under, or `null` when it is settled: it
+ * carries a mark, sits inside a marked or kept element, or was plain when
+ * last checked and has not changed. Reads no layout.
+ */
+function uncheckedSignature(element: Element): string | null {
+  if (element.hasAttribute(DROP_ATTRIBUTE)) return null;
+  // Marked on an earlier render. Writing the attribute again would make
+  // skullet measure and draw the whole copy again.
+  if (element.hasAttribute(SKULLET_IGNORE)) return null;
+  const signature = plainSignature(element);
+  if (checkedPlain.get(element) === signature) return null;
+  if (element.closest(`[${DROP_ATTRIBUTE}], [skullet-own]`)) return null;
+  if (element.closest(`[${CHIP_ATTRIBUTE}]`)) return null;
+  return signature;
+}
+
+/** Whether the measured copy under `root` holds an element still to check. */
+function hasUncheckedDetails(root: HTMLElement): boolean {
+  for (const element of root.querySelectorAll('[skullet-ghost] *')) {
+    if (uncheckedSignature(element) !== null) return true;
+  }
+  return false;
+}
+
+/** Rounds of reading the whole copy before its marks are written. */
+const MAX_MARKING_ROUNDS = 3;
+
+/**
+ * Marks the low-fidelity details in the measured copy under `root`.
+ *
+ * Every element is read before any mark is written. A mark written between
+ * two measurements makes the browser lay the whole page out again for the
+ * next one, which on a worktree switch cost one layout per marked element.
+ * A dropped or ignored element can change the size of the ones around it,
+ * so the copy is read again after its marks land, until a round adds none.
+ */
 function markLowFidelityDetails(root: HTMLElement): void {
   // Only the sample copy: skullet's own layer is never a detail.
-  for (const element of root.querySelectorAll('[skullet-ghost] *')) {
-    if (element.hasAttribute(DROP_ATTRIBUTE)) continue;
-    if (element.closest(`[${DROP_ATTRIBUTE}], [skullet-own]`)) continue;
-    if (element.closest(`[${CHIP_ATTRIBUTE}]`)) continue;
-    // An empty slot keeps its space: dropping it would move the text beside
-    // it off the line the loaded row draws it on.
-    if (isEmptySlot(element) || isWideField(element)) {
-      element.setAttribute(SKULLET_IGNORE, '');
-    } else if (isLowFidelityDetail(element)) {
-      element.setAttribute(DROP_ATTRIBUTE, '');
-    } else if (isChip(element)) {
+  const candidates = Array.from(root.querySelectorAll('[skullet-ghost] *'));
+  for (let round = 0; round < MAX_MARKING_ROUNDS; round += 1) {
+    const ignored: Element[] = [];
+    const dropped: Element[] = [];
+    const chips: Element[] = [];
+    const plain: [Element, string][] = [];
+    // The element last dropped or made a chip this round: what is inside it
+    // is left alone, as it is once the mark is written.
+    let marked: Element | null = null;
+    for (const element of candidates) {
+      if (marked?.contains(element)) continue;
+      const signature = uncheckedSignature(element);
+      if (signature === null) continue;
+      // An empty slot keeps its space: dropping it would move the text
+      // beside it off the line the loaded row draws it on.
+      if (isEmptySlot(element) || isWideField(element)) {
+        ignored.push(element);
+      } else if (isLowFidelityDetail(element)) {
+        dropped.push(element);
+        marked = element;
+      } else if (isChip(element)) {
+        chips.push(element);
+        marked = element;
+      } else if (hasLayoutBox(element)) {
+        plain.push([element, signature]);
+      }
+    }
+    for (const element of ignored) element.setAttribute(SKULLET_IGNORE, '');
+    for (const element of dropped) element.setAttribute(DROP_ATTRIBUTE, '');
+    for (const element of chips) {
       element.setAttribute(CHIP_ATTRIBUTE, '');
       element.setAttribute(SKULLET_BLOCK, '');
     }
+    if (ignored.length + dropped.length + chips.length === 0) {
+      // Nothing moved since these were read: they stay plain until they change.
+      for (const [element, signature] of plain) {
+        checkedPlain.set(element, signature);
+      }
+      return;
+    }
   }
+}
+
+/** A skeleton with no width or no height is hidden: a collapsed rail or tab. */
+function isShown(size: { width: number; height: number }): boolean {
+  return size.width > 0 && size.height > 0;
+}
+
+/** Skeleton roots waiting for the browser's next layout to be marked. */
+const awaitingLayout = new WeakSet<Element>();
+let layoutWatcher: ResizeObserver | null = null;
+
+function stopAwaitingLayout(root: Element): void {
+  if (awaitingLayout.delete(root)) layoutWatcher?.unobserve(root);
+}
+
+/**
+ * Marks the copy under `root` once the browser has laid the page out, and
+ * only when the root has a size.
+ *
+ * A skeleton renders again whenever its parent does. Measuring from that
+ * render's layout effect reads a page the commit has just changed, so the
+ * first read lays the whole page out in the middle of the commit. A resize
+ * observer reports a newly observed element after the browser's own layout
+ * and before paint, where the reads are free. It reports nothing for a root
+ * without a size (a collapsed rail, a hidden tab) until the root has one, so
+ * a hidden skeleton is not measured at all.
+ */
+function markWhenLaidOut(root: HTMLElement): void {
+  if (typeof ResizeObserver === 'undefined') {
+    markLowFidelityDetails(root);
+    return;
+  }
+  if (awaitingLayout.has(root)) return;
+  layoutWatcher ??= new ResizeObserver((entries) => {
+    for (const { target, contentRect } of entries) {
+      // Still hidden: it stays observed and is reported again with a size.
+      if (!isShown(contentRect)) continue;
+      // Marks can resize the root; it is observed again only when a later
+      // render leaves something unchecked.
+      stopAwaitingLayout(target);
+      if (target instanceof HTMLElement && target.isConnected) {
+        markLowFidelityDetails(target);
+      }
+    }
+  });
+  awaitingLayout.add(root);
+  layoutWatcher.observe(root);
 }
 
 /** Bars narrower than this (px) are slivers: a full stop, a lone glyph. */
@@ -391,17 +522,36 @@ export function Skeleton({
   const measurable = useMeasurable();
   const reducedMotion = useReducedMotion();
   const statusRef = useRef<HTMLDivElement>(null);
-  // Runs after skullet has laid the copy out; skullet measures it again on
-  // the attribute change.
+  // The measured copy this skeleton has already tried to mark on mount.
+  const seenCopyRef = useRef<Element | null>(null);
+  // Every render: a parent's render can change the sample. Nothing is
+  // measured or written here unless an element is still unchecked.
   useLayoutEffect(() => {
-    if (loading && measurable && statusRef.current) {
-      hideSampleTestIds(statusRef.current);
-      markLowFidelityDetails(statusRef.current);
+    const root = statusRef.current;
+    if (!loading || !measurable || !root) return;
+    hideSampleTestIds(root);
+    const copy = root.querySelector('[skullet-ghost]');
+    const mounted = copy !== seenCopyRef.current;
+    seenCopyRef.current = copy;
+    if (!hasUncheckedDetails(root)) return;
+    // A copy that has just mounted is marked at once. skullet measured it
+    // in this commit, which laid the page out, and it draws again on the
+    // next animation frame after a mark lands: marked from the observer,
+    // the skeleton would paint one frame of its unmarked drawing first.
+    if (mounted && isShown(root.getBoundingClientRect())) {
+      markLowFidelityDetails(root);
+      return;
     }
+    markWhenLaidOut(root);
   });
   useLayoutEffect(() => {
-    if (!loading || !measurable || !statusRef.current) return undefined;
-    return watchDrawnBars(statusRef.current);
+    const root = statusRef.current;
+    if (!loading || !measurable || !root) return undefined;
+    const stopWatchingBars = watchDrawnBars(root);
+    return (): void => {
+      stopWatchingBars();
+      stopAwaitingLayout(root);
+    };
   }, [loading, measurable, reducedMotion]);
   if (!loading) {
     return <div className={className}>{children}</div>;

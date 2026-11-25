@@ -1,5 +1,7 @@
 import type * as ArchiveFilesystem from 'node:fs/promises';
 import * as archiveDurability from '@canopy/execution-engine/node/lib/atomic-file';
+import * as archiveHostPlatform from '@canopy/core-platform/host-platform';
+import * as archiveDirectoryFlush from '@canopy/core-platform/directory-flush';
 import { execFileSync } from 'node:child_process';
 import canopy from '../../../../../brands/canopy/brand.json';
 import { migrateInternalRoot } from '@canopy/core-runtime/node/internal-root-migration';
@@ -9,6 +11,7 @@ import { createInternalRootRelocationRepairs } from '../internal-root-migration/
 import { desktopW5Durability } from '../w5-commit-log/durability';
 
 import {
+  chmod,
   mkdtemp,
   mkdir,
   writeFile,
@@ -22,6 +25,7 @@ import {
   link,
   cp,
 } from 'node:fs/promises';
+import { statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve, relative } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -32,6 +36,11 @@ import {
   inventoryArchiveRecoveryTree,
   archiveRecoveryDigest,
 } from '../archive-recovery-store';
+
+// Linux tolerates device-only drift only with a real birth time; the fixtures live under tmpdir.
+const toleratesDeviceDrift =
+  process.platform === 'darwin' ||
+  (process.platform === 'linux' && statSync(tmpdir()).birthtimeMs !== 0);
 
 describe('core.worktree.recovery.resolve persistence contract', () => {
   let root: string;
@@ -394,8 +403,7 @@ describe('core.worktree.recovery.resolve persistence contract', () => {
         JSON.stringify(receipt),
       );
       const accepted =
-        change === 'exact' ||
-        (change === 'device' && process.platform === 'darwin');
+        change === 'exact' || (change === 'device' && toleratesDeviceDrift);
       if (!accepted && evidence !== 'repository') {
         await expect(store.publishRetention(receipt)).rejects.toBeInstanceOf(
           ArchiveRecoveryRefusedError,
@@ -1416,3 +1424,143 @@ test.each([
   },
   30_000,
 );
+
+// CAN-4484: retention flushes the staged tree before it is retained. Windows
+// flushes a file only through a handle opened for writing, which a read-only
+// file refuses, so the shared flush lifts the attribute just for the open and
+// puts it back before the flush. The OS flush itself is recorded, not run.
+describe('retention of a read-only staged file', () => {
+  let root: string;
+  beforeEach(async () => {
+    root = await realpath(await mkdtemp(join(tmpdir(), 'archive-readonly-')));
+  });
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  async function retainAs(
+    os: 'win32' | 'darwin',
+    failReadOnlyFlush = false,
+  ): Promise<{
+    publish: Promise<unknown>;
+    store: ArchiveRecoveryStore;
+    input: ArchiveRecoveryPreparation;
+    readOnly: string;
+    writable: string;
+    flushed: { file: string; mode: number }[];
+    chmods: string[];
+  }> {
+    const store = new ArchiveRecoveryStore(root);
+    const input: ArchiveRecoveryPreparation = {
+      workspaceId: 'ws',
+      worktreeId: 'tree',
+      operationId: randomUUID(),
+      action: 'release',
+      revision: 'a'.repeat(64),
+      createdAt: '2026-11-01T00:00:00.000Z',
+      copies: [],
+      repositories: [],
+      sourceRecord: {},
+      capture: 'none',
+    };
+    const staging = store.stagingPath(input);
+    await mkdir(join(staging, 'nested'), { recursive: true });
+    const readOnly = join(staging, 'nested', 'reference.md');
+    const writable = join(staging, 'only-copy');
+    await writeFile(readOnly, 'kept as it was');
+    await writeFile(writable, 'unique');
+    await chmod(readOnly, 0o444);
+    const receipt = await store.prepare(input);
+
+    const filesystem =
+      jest.requireActual<typeof ArchiveFilesystem>('node:fs/promises');
+    const flushed: { file: string; mode: number }[] = [];
+    const chmods: string[] = [];
+    let flushingTree = false;
+    const realTree = archiveDurability.syncTreeDurably;
+    jest
+      .spyOn(archiveDurability, 'syncTreeDurably')
+      .mockImplementation(async (tree) => {
+        flushingTree = true;
+        try {
+          await realTree(tree);
+        } finally {
+          flushingTree = false;
+        }
+      });
+    const realOs = archiveHostPlatform.hostOperatingSystem;
+    jest
+      .spyOn(archiveHostPlatform, 'hostOperatingSystem')
+      .mockImplementation(() => (flushingTree ? os : realOs()));
+    // Directory flushes have their own platform contract.
+    const realFlushDirectory = archiveDirectoryFlush.flushDirectory;
+    jest
+      .spyOn(archiveDirectoryFlush, 'flushDirectory')
+      .mockImplementation(async (...args) =>
+        flushingTree ? 'flushed' : realFlushDirectory(...args),
+      );
+    const realChmod = filesystem.chmod;
+    jest.spyOn(filesystem, 'chmod').mockImplementation(async (...args) => {
+      chmods.push(String(args[0]));
+      await realChmod(...args);
+    });
+    const realOpen = filesystem.open;
+    jest.spyOn(filesystem, 'open').mockImplementation(async (...args) => {
+      const handle = await realOpen(...args);
+      const file = String(args[0]);
+      if (!flushingTree || !file.startsWith(staging)) return handle;
+      return Object.assign(Object.create(handle) as typeof handle, {
+        sync: async (): Promise<void> => {
+          flushed.push({ file, mode: (await lstat(file)).mode & 0o777 });
+          if (failReadOnlyFlush && file === readOnly)
+            throw Object.assign(new Error('i/o error'), { code: 'EIO' });
+        },
+        close: (): Promise<void> => handle.close(),
+      });
+    });
+    return {
+      publish: store.publishRetention(receipt),
+      store,
+      input,
+      readOnly,
+      writable,
+      flushed,
+      chmods,
+    };
+  }
+
+  test('on Windows a read-only file is flushed once and keeps its mode', async () => {
+    const run = await retainAs('win32');
+    await expect(run.publish).resolves.toMatchObject({ stage: 'retained' });
+    expect(run.flushed.map(({ file }) => file).sort()).toEqual(
+      [run.readOnly, run.writable].sort(),
+    );
+    // The attribute is back before the flush, so a crash there keeps it.
+    expect(run.flushed.find(({ file }) => file === run.readOnly)?.mode).toBe(
+      0o444,
+    );
+    expect(run.chmods).toEqual([run.readOnly, run.readOnly]);
+    expect((await lstat(run.readOnly)).mode & 0o777).toBe(0o444);
+  });
+
+  test('on Windows a failed flush leaves the mode restored and the staging unretained', async () => {
+    const run = await retainAs('win32', true);
+    await expect(run.publish).rejects.toMatchObject({ code: 'EIO' });
+    expect((await lstat(run.readOnly)).mode & 0o777).toBe(0o444);
+    jest.restoreAllMocks();
+    expect((await run.store.read('ws', run.input.operationId))?.stage).toBe(
+      'retention-intent',
+    );
+  });
+
+  test('on POSIX a read-only file is flushed once and no mode changes', async () => {
+    const run = await retainAs('darwin');
+    await expect(run.publish).resolves.toMatchObject({ stage: 'retained' });
+    expect(run.flushed.map(({ file }) => file).sort()).toEqual(
+      [run.readOnly, run.writable].sort(),
+    );
+    expect(run.chmods).toEqual([]);
+    expect((await lstat(run.readOnly)).mode & 0o777).toBe(0o444);
+  });
+});

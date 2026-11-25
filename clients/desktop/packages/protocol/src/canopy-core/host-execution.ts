@@ -22,9 +22,7 @@ export const CANOPY_HOST_EXECUTION_MEMBER = '_execution';
  * The operations whose request envelope admits `_execution`: the
  * `worker.git.*` operations whose Git children run with the forwarded
  * environment. `worker.git.executable.get` is absent because executable
- * selection keeps the daemon's own environment. `worker.git.diff.get` is
- * absent too: its change-set reads keep the daemon's own environment,
- * recorded debt (CAN-4729). The branch writes are idempotency `none`, so no
+ * selection keeps the daemon's own environment. The branch writes are idempotency `none`, so no
  * receipt or replay can run them again with a stale environment (CAN-4108,
  * CAN-5516). `worker.script.execute` takes the run's complete environment
  * (CAN-5087).
@@ -33,6 +31,8 @@ export const CANOPY_HOST_EXECUTION_OPERATIONS: ReadonlySet<string> = new Set([
   'worker.git.branch.list',
   'worker.git.remote.get',
   'worker.git.worktree.health.get',
+  // CAN-4729: its change-set reads run with the repository reads' environment.
+  'worker.git.diff.get',
   'worker.git.checkout',
   'worker.git.branch.create',
   'worker.git.branch.rename',

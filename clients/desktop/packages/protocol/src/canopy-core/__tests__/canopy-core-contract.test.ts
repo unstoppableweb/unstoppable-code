@@ -111,6 +111,7 @@ type Expect<Value extends true> = Value;
 type _QueryNamesAreExact = Expect<
   Equal<
     CanopyQueryName,
+    | 'worker.agent.provider.platform.get'
     | 'worker.agent.provider.list'
     | 'worker.agent.usageLimits.get'
     | 'worker.filesystem.roots.list'
@@ -205,6 +206,7 @@ type _QueryNamesAreExact = Expect<
 type _WorkerNamesAreExact = Expect<
   Equal<
     WorkerPlaneQueryName,
+    | 'worker.agent.provider.platform.get'
     | 'worker.agent.provider.list'
     | 'worker.agent.usageLimits.get'
     | 'worker.filesystem.roots.list'
@@ -1526,6 +1528,7 @@ describe('universal Canopy query registry', () => {
     });
     expect(Object.keys(WORKER_QUERY_DEFINITIONS)).toEqual([
       'worker.agent.provider.list',
+      'worker.agent.provider.platform.get',
       'worker.agent.usageLimits.get',
       'worker.filesystem.roots.list',
       'worker.filesystem.directory.list',

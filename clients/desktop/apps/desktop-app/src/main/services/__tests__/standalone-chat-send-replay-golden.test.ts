@@ -350,3 +350,32 @@ test('a Portal pairing revoked while the prompt write waits saves and starts not
   expect(mockQueue.submit).not.toHaveBeenCalled();
   expect(release).toHaveBeenCalled();
 });
+
+test('a send into a busy chat carries its steer request to the queue (CAN-7350)', async () => {
+  mockQueue.isTurnActive.mockReturnValue(true);
+
+  await sendStandaloneChatMessage({
+    ...request,
+    model: 'claude-sonnet-4-5',
+    sendWhileRunning: 'steer',
+    steerTurnId: 'turn-1',
+  });
+
+  expect(mockQueue.submit).toHaveBeenCalledTimes(1);
+  expect(mockQueue.submit.mock.calls[0]?.[0]).toMatchObject({
+    userMessageId: 'message-1',
+    sendWhileRunning: 'steer',
+    steerTurnId: 'turn-1',
+  });
+});
+
+test('a send into a busy chat that asked for nothing queues without a steer request', async () => {
+  mockQueue.isTurnActive.mockReturnValue(true);
+
+  await sendStandaloneChatMessage({ ...request, model: 'claude-sonnet-4-5' });
+
+  expect(mockQueue.submit).toHaveBeenCalledTimes(1);
+  const queued = mockQueue.submit.mock.calls[0]?.[0];
+  expect(queued).not.toHaveProperty('sendWhileRunning');
+  expect(queued).not.toHaveProperty('steerTurnId');
+});

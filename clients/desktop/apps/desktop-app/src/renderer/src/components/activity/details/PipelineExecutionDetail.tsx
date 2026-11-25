@@ -511,6 +511,16 @@ export function PipelineExecutionDetail({
     viewStack.length > 0
       ? viewStack[viewStack.length - 1].executionId
       : executionId;
+  const activeExecutionRef = useRef(activeExecutionId);
+  activeExecutionRef.current = activeExecutionId;
+  const notifyActionNavigation = useCallback(
+    (destination: PipelineDetailDestination): void => {
+      if (activeExecutionRef.current === activeExecutionId) {
+        onNavigatedAway?.(destination);
+      }
+    },
+    [activeExecutionId, onNavigatedAway],
+  );
 
   const {
     summary,
@@ -874,6 +884,10 @@ export function PipelineExecutionDetail({
       data-active-execution-id={activeExecutionId}
     >
       {renderHeader?.({ title, activeExecutionId, state, summary })}
+      {!archived &&
+        actions.renderActionError(activeExecutionId, (): void => {
+          notifyActionNavigation('chat');
+        })}
       {(viewStack.length > 0 || state?.rerun_source_id) && (
         <Surface variant="section" boundary="bottom" className="shrink-0">
           <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2 text-xs">
@@ -928,7 +942,7 @@ export function PipelineExecutionDetail({
               summary={summary}
               actions={actions}
               watchers={pipelineWatchers}
-              onNavigatedAway={onNavigatedAway}
+              onNavigatedAway={notifyActionNavigation}
               onViewReport={viewReportInline ? showReportInline : undefined}
               leading={
                 navigation === undefined ? undefined : (

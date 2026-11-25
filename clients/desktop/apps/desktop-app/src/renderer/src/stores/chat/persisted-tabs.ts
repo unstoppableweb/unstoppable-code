@@ -675,6 +675,9 @@ export function fromPersistedTab(
     thinkingLevel: modelConfig.thinkingLevel,
     modelConfig,
     fastModeExplicit,
+    ...(pt.claudeConnectorAvailability
+      ? { claudeConnectorAvailability: pt.claudeConnectorAvailability }
+      : {}),
     ...(pt.kind !== 'file' && providerType === 'codex'
       ? { codexFastModeEnabled: modelConfig.fastMode }
       : {}),

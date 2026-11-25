@@ -1,4 +1,5 @@
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
+import { toAppError, type AppErrorCode } from '@canopy/protocol/app-errors';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
@@ -10,6 +11,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import {
   type CliPathStatus,
@@ -25,6 +27,8 @@ import {
   Stack,
   BusyLabel,
   Button,
+  CodeBlock,
+  CopyButton,
   ConfirmDialog,
   DialogModal,
   ErrorBanner,
@@ -34,6 +38,7 @@ import {
   StatusLabel,
   Surface,
   ToggleSwitch,
+  Tooltip,
   WindowPage,
   InlineCode,
 } from '@canopy/ui-shared/components';
@@ -72,6 +77,16 @@ import { isLocalOnlyBuild } from '@/lib/local-only-build';
 import { pt } from '@/lib/platform-text';
 import { uiText } from '@/lib/ui-text';
 import { brand, brandText } from '@/lib/brand';
+import {
+  openLinuxUpdateTerminal,
+  getLinuxUpdateTerminalError,
+  subscribeLinuxUpdateTerminalError,
+  clearLinuxUpdateTerminalError,
+} from '@/lib/linux-update-terminal';
+import { isWebCoreScope } from '@/lib/chat-authority';
+import { extractIpcErrorMessage } from '@/lib/errors';
+import { useChatStore } from '@/stores/chatStore';
+import { useGitHubStore } from '@/stores/githubStore';
 import { openImportProjectsModal } from '@/stores/importProjectsModalStore';
 import { openRepoRulesModal } from '@/stores/repoRulesModalStore';
 import {
@@ -91,7 +106,7 @@ function getManualUpdateStatus(
   updateState: UpdateState,
   hasManualCheck: boolean,
 ): { text: string | null; tone: string } {
-  if (!hasManualCheck) {
+  if (!hasManualCheck && !updateState.info?.installedByPackageManager) {
     return { text: null, tone: 'fg-secondary' };
   }
 
@@ -104,13 +119,24 @@ function getManualUpdateStatus(
         tone: 'fg-secondary',
       };
     case 'available':
+      if (
+        window.platform === 'linux' &&
+        updateState.info?.manualDownload &&
+        linuxUpdateCopy(brand, __CANOPY_RELEASE_FLAVOR__).apt
+      ) {
+        return { text: null, tone: 'fg-secondary' };
+      }
       return {
         text: `Version ${updateState.info?.version ?? 'latest'} is available.`,
         tone: 'fg-primary',
       };
     case 'downloaded':
       return {
-        text: `Version ${updateState.info?.version ?? 'latest'} is ready to install.`,
+        text: updateState.info?.installedByPackageManager
+          ? linuxUpdateCopy(brand, __CANOPY_RELEASE_FLAVOR__).installed.status(
+              formatVersionLabel(updateState.info.version),
+            )
+          : `Version ${updateState.info?.version ?? 'latest'} is ready to install.`,
         tone: 'fg-primary',
       };
     case 'error':
@@ -308,6 +334,28 @@ function ImportProjectsRow(): JSX.Element {
 
 export function CanopyTab(): JSX.Element {
   const linuxCopy = linuxUpdateCopy(brand, __CANOPY_RELEASE_FLAVOR__);
+  const terminalError = useSyncExternalStore(
+    subscribeLinuxUpdateTerminalError,
+    getLinuxUpdateTerminalError,
+  );
+  const selectedWorktree = useChatStore((state) => state.selectedWorktree);
+  const splitLocked = useGitHubStore((state) =>
+    selectedWorktree
+      ? state.splitLockedWorktrees.has(
+          `${selectedWorktree.projectId}/${selectedWorktree.worktreeId}`,
+        )
+      : false,
+  );
+  const localContext = window.api.remoteControl.getContext().mode === 'local';
+  const terminalAvailable =
+    localContext &&
+    selectedWorktree !== null &&
+    !isWebCoreScope(selectedWorktree.worktreeId) &&
+    !splitLocked;
+  const [updateActionError, setUpdateActionError] = useState<{
+    message: string;
+    code?: AppErrorCode;
+  } | null>(null);
   // A local-only build (docs/local-only-build.md) has no update feed, so the
   // update controls are hidden and the Version row says why.
   const localOnlyBuild = isLocalOnlyBuild();
@@ -321,6 +369,9 @@ export function CanopyTab(): JSX.Element {
     dependencyVersions,
     state: updateState,
   } = useUpdateState();
+  useEffect(() => {
+    setUpdateActionError(null);
+  }, [updateState]);
   const releaseNotesEnabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopySharedReleaseNotesEnabled.key),
   );
@@ -1069,12 +1120,48 @@ export function CanopyTab(): JSX.Element {
                   linuxCopy.apt && (
                     <Stack gap="inline">
                       <p>{linuxCopy.apt.introduction}</p>
-                      <code
-                        className={`block font-mono ${POSTHOG_REPLAY_BLOCK_CLASS}`}
+                      <CodeBlock
+                        variant="snippet"
+                        selectable
+                        data-testid="settings-linux-update-command"
                       >
                         {linuxCopy.apt.command}
-                      </code>
-                      <p>{linuxCopy.apt.bootstrap}</p>
+                      </CodeBlock>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <CopyButton
+                          value={linuxCopy.apt.command}
+                          size="compact"
+                          dataTestId="settings-linux-update-copy"
+                        />
+                        <Tooltip
+                          label={
+                            terminalAvailable
+                              ? null
+                              : !localContext
+                                ? 'For remote computers, copy the command instead.'
+                                : linuxCopy.openInTerminalUnavailable
+                          }
+                        >
+                          <Button
+                            size="compact"
+                            disabled={!terminalAvailable}
+                            data-testid="settings-linux-update-open-terminal"
+                            onClick={(): void => {
+                              void openLinuxUpdateTerminal();
+                            }}
+                          >
+                            {linuxCopy.openInTerminal}
+                          </Button>
+                        </Tooltip>
+                      </div>
+                      <ErrorBanner
+                        errorSource="settings-linux-update-terminal"
+                        error={terminalError?.message}
+                        details={terminalError?.details}
+                        displayErrorCode={terminalError?.code}
+                        onDismiss={clearLinuxUpdateTerminalError}
+                        testId="settings-linux-update-terminal-error"
+                      />
                     </Stack>
                   )}
                 <p>
@@ -1120,51 +1207,92 @@ export function CanopyTab(): JSX.Element {
             )}
           </SettingsRow>
           {updateState.phase === 'downloaded' &&
-            window.platform !== 'linux' && (
+            (window.platform !== 'linux' ||
+              updateState.info?.installedByPackageManager) && (
               <SettingsRow
-                label="Update ready"
+                label={pt({
+                  default: 'Update ready',
+                  linux: linuxCopy.installed.label,
+                })}
                 dataTestId="settings-update-ready"
                 description={
                   updateState.installPending
-                    ? 'This update will install when all agents are idle.'
-                    : 'Restart now or install the update when all agents are idle.'
+                    ? pt({
+                        default:
+                          'This update will install when all agents are idle.',
+                        linux: linuxCopy.installed.queued,
+                      })
+                    : pt({
+                        default:
+                          'Restart now or install the update when all agents are idle.',
+                        linux: linuxCopy.installed.title,
+                      })
                 }
                 control={
                   <>
                     <Button
                       size="compact"
                       onClick={() => {
+                        setUpdateActionError(null);
                         const action = updateState.installPending
                           ? window.api.update.cancelScheduledUpdate()
                           : window.api.update.scheduleUpdate();
-                        void action.catch(() => {
-                          // Scheduling failures are surfaced through the updater state.
+                        void action.catch((error: unknown) => {
+                          const classified = toAppError(error);
+                          setUpdateActionError({
+                            message: extractIpcErrorMessage(error),
+                            code: classified?.code,
+                          });
                         });
                       }}
                       data-testid="settings-update-schedule-action"
                     >
                       {updateState.installPending
                         ? 'Cancel scheduled update'
-                        : 'Install when idle'}
+                        : pt({
+                            default: 'Install when idle',
+                            linux: linuxCopy.installed.relaunchWhenIdle,
+                          })}
                     </Button>
                     <Button
                       size="compact"
                       variant="primary"
                       onClick={() => {
-                        void window.api.update.installUpdate().catch(() => {
-                          // Install failures are surfaced through the updater state.
-                        });
+                        setUpdateActionError(null);
+                        void window.api.update
+                          .installUpdate()
+                          .catch((error: unknown) => {
+                            const classified = toAppError(error);
+                            setUpdateActionError({
+                              message: extractIpcErrorMessage(error),
+                              code: classified?.code,
+                            });
+                          });
                       }}
                       data-testid="settings-update-install-now"
                     >
-                      {updateState.installPending
-                        ? 'Restart now'
-                        : 'Restart to update'}
+                      {pt({
+                        default: updateState.installPending
+                          ? 'Restart now'
+                          : 'Restart to update',
+                        linux: linuxCopy.installed.relaunchNow,
+                      })}
                     </Button>
                   </>
                 }
               />
             )}
+          <ErrorBanner
+            errorSource="settings-update-action"
+            error={
+              updateActionError?.message ??
+              (updateState.info?.installedByPackageManager
+                ? updateState.message
+                : undefined)
+            }
+            displayErrorCode={updateActionError?.code}
+            testId="settings-update-action-error"
+          />
           {releaseNotesEnabled && whatsNewEntry && (
             <SettingsRow
               label="What's new"

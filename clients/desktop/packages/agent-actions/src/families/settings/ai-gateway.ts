@@ -37,6 +37,8 @@ const patchSchema = z
     enabled: z.boolean().optional(),
     onlyThisGateway: z.boolean().optional(),
     promptCachePassthrough: z.boolean().optional(),
+    useInCloudChats: z.boolean().optional(),
+    useOnThisComputer: z.boolean().optional(),
     addDiscovered: z.literal(true).optional(),
   })
   .refine(
@@ -65,6 +67,13 @@ export const aiGatewayActionSchema = z.discriminatedUnion('type', [
       (action) =>
         action.patch.addDiscovered !== true || action.discoveryId !== undefined,
       'Discovery ID is required.',
+    )
+    .refine(
+      (action) =>
+        action.scope.kind === 'personal' ||
+        (action.patch.useInCloudChats === undefined &&
+          action.patch.useOnThisComputer === undefined),
+      'Choosing where the gateway is used applies to the Personal gateway only.',
     ),
 ]);
 export type AiGatewayAction = z.output<typeof aiGatewayActionSchema>;
@@ -111,7 +120,7 @@ export const aiGatewayActionCatalog: readonly AgentActionCatalogEntry[] =
               type: 'object',
               required: true,
               description:
-                'Gateway fields only. Use models or addDiscovered:true with discoveryId.',
+                'Gateway fields only. Use models or addDiscovered:true with discoveryId. Personal only: useInCloudChats (saved on the account) and useOnThisComputer (saved on this desktop only) choose where the gateway is used; both default to true, and onlyThisGateway keeps both on.',
             },
             {
               name: 'discoveryId',
@@ -147,6 +156,7 @@ export const aiGatewayActionCatalog: readonly AgentActionCatalogEntry[] =
     notes: [
       'API keys are collected through the secure approval prompt, never chat or action payloads.',
       'Cloud chats read gateways but cannot connect or update one: a change needs a confirmation in the Settings UI, so it is refused with missing_capability. Give the user the settings.open link to the AI gateway page instead.',
+      'A Personal get returns useInCloudChats beside gateway, and on desktop also useOnThisComputer for that computer.',
     ],
   }));
 export const aiGatewayDispatchJsonSchema: AgentActionFamilyJsonSchema = {
@@ -221,6 +231,8 @@ export const aiGatewayDispatchJsonSchema: AgentActionFamilyJsonSchema = {
         enabled: { type: 'boolean' },
         onlyThisGateway: { type: 'boolean' },
         promptCachePassthrough: { type: 'boolean' },
+        useInCloudChats: { type: 'boolean' },
+        useOnThisComputer: { type: 'boolean' },
         addDiscovered: { const: true },
       },
       additionalProperties: false,

@@ -322,17 +322,21 @@ class HttpConnection implements CanopyFramedConnection {
    */
   send(
     message: CanopyJsonRpcMessage,
-    options?: { readonly headers?: Readonly<Record<string, string>> },
+    options?: {
+      readonly headers?: Readonly<Record<string, string>>;
+      readonly background?: boolean;
+    },
   ): Promise<void> {
     if (this.signal.aborted)
       return Promise.reject(new CanopyTransportError(this.reason));
-    void this.post(message, options?.headers);
+    void this.post(message, options?.headers, options?.background === true);
     return Promise.resolve();
   }
 
   private async post(
     message: CanopyJsonRpcMessage,
     headers?: Readonly<Record<string, string>>,
+    background = false,
   ): Promise<void> {
     const response = await this.options
       .fetch(this.path, {
@@ -348,14 +352,16 @@ class HttpConnection implements CanopyFramedConnection {
       // failed, retryably, as for a gateway error. Twice in a row, or with
       // the push leg unable to reach the server either, the network is down
       // and the connection ends, so its owner goes offline and reconnects.
-      if (this.pushUnreachable || this.lastPostLost)
-        return this.finish(UNREACHABLE);
-      this.lastPostLost = true;
+      if (!background) {
+        if (this.pushUnreachable || this.lastPostLost)
+          return this.finish(UNREACHABLE);
+        this.lastPostLost = true;
+      }
       if ('id' in message && 'method' in message)
         this.deliver(canopyLostReply(message.id, NO_RESPONSE));
       return;
     }
-    this.lastPostLost = false;
+    if (!background) this.lastPostLost = false;
     if (!response.ok && failsOnlyTheRequest(response.status)) {
       // This POST alone failed: on staging the load balancer answers 503
       // when a deploy closes the pod's connection mid-request (CAN-6394),
@@ -363,15 +369,14 @@ class HttpConnection implements CanopyFramedConnection {
       // still stands; only this request failed, retryably, and a
       // notification is dropped as a lost one would be.
       void response.body?.cancel().catch(() => undefined);
-      this.failedInRow += 1;
-      if (this.failedInRow >= MAX_FAILED_IN_ROW)
+      if (!background && (this.failedInRow += 1) >= MAX_FAILED_IN_ROW)
         return this.finish(gatewayError(response));
       if ('id' in message && 'method' in message)
         this.deliver(canopyLostReply(message.id, gatewayError(response)));
       return;
     }
     if (!response.ok) return this.finish(statusError(response.status));
-    this.failedInRow = 0;
+    if (!background) this.failedInRow = 0;
     // 202: a notification or response the server accepted with no reply.
     if (response.status === 202) return;
     const read = await readJson(response, this.signal);

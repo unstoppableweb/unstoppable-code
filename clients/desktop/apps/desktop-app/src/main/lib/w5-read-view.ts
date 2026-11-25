@@ -8,6 +8,7 @@ import { relative, resolve, sep } from 'node:path';
 import type {
   W5CaptureFile,
   W5CaptureResult,
+  W5FileImage,
 } from '../w5-commit-log/commit-log-worker-contract';
 import type { W5FileRead } from './w5-file-store';
 import { logMainProcessWarn } from './main-process-logging';
@@ -92,6 +93,7 @@ export class W5ReadViewWriteRefusedError extends Error {
 interface ActiveReadView {
   /** Undefined while reads pass through to the store (uncaptured, not failed). */
   read?: (path: string) => W5FileRead;
+  image?: (path: string) => W5FileImage | undefined;
   closed: boolean;
   deferred: (() => Promise<unknown>)[];
 }
@@ -112,6 +114,11 @@ export function readFromW5ReadView(
   path: string,
 ): W5FileRead | Promise<W5FileRead> | undefined {
   return readW5FallbackFile(path) ?? currentView()?.read?.(path);
+}
+
+/** Inside an open view or a projection-only one, where writes are refused. */
+export function isInsideW5ReadView(): boolean {
+  return currentView() !== undefined || isW5ProjectionOnlyView();
 }
 
 export function assertOutsideW5ReadView(): void {
@@ -167,6 +174,45 @@ function notCaptured(): W5FileRead {
   };
 }
 
+// Frozen images are immutable; the read cache serves the same ones again.
+const decodedImages = new WeakMap<object, string>();
+
+/**
+ * Memoize a pure file projection in a cache-served view only. Fresh captures,
+ * mutation scopes and fallback reads keep their original ownership and cost.
+ * Every consumer of a memoized value owns a deep copy:
+ * legacy results, normalizers and mutation callbacks may edit nested fields.
+ * Overlays, RR1 filtering, locks and registry effects stay outside the memo.
+ */
+export function createW5ImageReadCache<T>(): (
+  path: string,
+  read: () => Promise<T>,
+) => Promise<T> {
+  const values = new WeakMap<W5FileImage, Promise<T>>();
+  return async (path, read) => {
+    const image = currentView()?.image?.(path);
+    if (!image || !Object.isFrozen(image)) return read();
+    let value = values.get(image);
+    if (!value) {
+      value = read();
+      values.set(image, value);
+      void value.catch(() => values.delete(image));
+    }
+    return structuredClone(await value);
+  };
+}
+
+function decoded(image: { readonly base64: string }): string {
+  const known = decodedImages.get(image);
+  if (known !== undefined) return known;
+  const bytes = Buffer.from(image.base64, 'base64');
+  recordW5Work(W5_AGGREGATE_KEYS.viewDecodedBytes, bytes.byteLength);
+  // The store's own `utf8` decoding, so normalization sees the same text.
+  const text = bytes.toString('utf8');
+  if (Object.isFrozen(image)) decodedImages.set(image, text);
+  return text;
+}
+
 /**
  * Serves `work`'s W5 reads from `capture` under `root`, refusing writes.
  * `work` receives the outcome, whose uncaptured reads grow as it reads.
@@ -175,27 +221,29 @@ export function runInW5CapturedView<T>(
   capture: W5CaptureResult,
   root: string,
   work: (view: W5ReadViewOutcome) => Promise<T>,
+  options?: { cacheParsedReads?: true },
 ): Promise<T> {
   const uncapturedReads: W5CaptureFile[] = [];
+  const imageForPath = (path: string): W5FileImage | undefined => {
+    const file = captureFileForPath(root, path);
+    return file
+      ? capture.files.find((entry) => sameFile(entry, file))
+      : undefined;
+  };
   const view: ActiveReadView = {
     closed: false,
     deferred: [],
+    ...(options?.cacheParsedReads ? { image: imageForPath } : {}),
     read: (path): W5FileRead => {
       const file = captureFileForPath(root, path);
-      const image = file
-        ? capture.files.find((entry) => sameFile(entry, file))
-        : undefined;
+      const image = imageForPath(path);
       if (!file || !image) {
         if (file && !uncapturedReads.some((entry) => sameFile(entry, file)))
           uncapturedReads.push(file);
         return notCaptured();
       }
-      if (image.state === 'present') {
-        const bytes = Buffer.from(image.base64, 'base64');
-        recordW5Work(W5_AGGREGATE_KEYS.viewDecodedBytes, bytes.byteLength);
-        // The store's own `utf8` decoding, so normalization sees the same text.
-        return { state: 'present', raw: bytes.toString('utf8') };
-      }
+      if (image.state === 'present')
+        return { state: 'present', raw: decoded(image) };
       return image.state === 'absent'
         ? { state: 'absent' }
         : {

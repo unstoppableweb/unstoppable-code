@@ -41,6 +41,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import {
+  type FileHandle,
+  chmod,
   link,
   lstat,
   mkdir,
@@ -107,20 +109,38 @@ export async function syncTreeDurably(root: string): Promise<void> {
       }
       await flushDirectory(target);
     } else if (info.isFile()) {
-      // Windows flushes only through a handle opened for writing.
-      const handle = await open(
-        target,
-        hostOperatingSystem() === 'win32' ? 'r+' : 'r',
-      );
-      try {
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
+      await flushFile(target, info.mode);
     }
   };
   await flushTree(root);
   await flushDirectory(dirname(resolve(root)));
+}
+
+async function flushFile(target: string, mode: number): Promise<void> {
+  const windows = hostOperatingSystem() === 'win32';
+  // Windows flushes only through a handle opened for writing, which a
+  // read-only file refuses: lift the attribute just for the open. The open
+  // handle keeps its write access, so the mode goes back before the flush.
+  // shortcut: a crash between the two chmods, or a failed restoring chmod,
+  // leaves the file writable (Windows only; the attribute, never data), and a
+  // retry can't tell. Closing it needs each caller's recovery record to keep
+  // the mode.
+  const readOnly = windows && (mode & 0o200) === 0;
+  const original = mode & 0o7777;
+  if (readOnly) await chmod(target, original | 0o200);
+  let handle: FileHandle;
+  try {
+    handle = await open(target, windows ? 'r+' : 'r');
+  } catch (error) {
+    if (readOnly) await chmod(target, original);
+    throw error;
+  }
+  try {
+    if (readOnly) await chmod(target, original);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 /** Folders this process confirmed durable (`ensureFolderChainDurable`). */

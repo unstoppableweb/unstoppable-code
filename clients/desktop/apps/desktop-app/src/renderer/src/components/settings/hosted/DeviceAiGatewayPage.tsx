@@ -58,7 +58,7 @@ function DeviceAiGatewayEditor({
       <div data-testid="device-ai-gateway-page">
         <AiGatewayEditor
           adapter={adapter}
-          initial={personalGatewayEditorConfig(device.gateway)}
+          initial={personalGatewayEditorConfig(device.gateway, true)}
         />
       </div>
     </SettingsHostProvider>

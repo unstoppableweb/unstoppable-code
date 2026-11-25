@@ -14,6 +14,7 @@ import {
 } from '@canopy/protocol/app-errors';
 import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { formatWorktreePrepareFailure } from '@canopy/ui-shared';
+import { stableStringify } from '@canopy/desktop-shared/lib/stable-hash';
 import { isRetiredTemporaryWorkspace } from '@canopy/desktop-shared/lib/workspace-visibility';
 import { offerLifecycleJournalQuarantine } from '@canopy/app-state';
 import { create } from 'zustand';
@@ -4718,6 +4719,16 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       ) {
         return;
       }
+      // The same request again (a selection asks, then the page that shows it
+      // asks) changes nothing for its readers, which compare the ids; a new
+      // object only re-rendered the whole sidebar a second time.
+      if (
+        current?.projectId === projectId &&
+        current.worktreeId === worktreeId &&
+        current.reason === reason
+      ) {
+        return;
+      }
       set({
         pendingScrollToWorktree: { projectId, worktreeId, reason },
       });
@@ -5097,6 +5108,23 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       );
       if (!read) return false;
       if (Object.keys(read).length === 0) return true;
+      // Every worktree open reads these again, and the answer is nearly always
+      // what the store already holds. Writing it back anyway replaced the
+      // project list and re-rendered the sidebar and the open chat for nothing.
+      const known = get().projects.find((project) => project.id === projectId);
+      const knownEffective =
+        known && known.type !== 'cowork' ? known.worktreeEffective : undefined;
+      if (
+        knownEffective &&
+        Object.entries(read).every(
+          ([worktreeId, effective]) =>
+            knownEffective[worktreeId] !== undefined &&
+            stableStringify(knownEffective[worktreeId]) ===
+              stableStringify(effective),
+        )
+      ) {
+        return true;
+      }
       set({
         projects: get().projects.map((project) =>
           project.id !== projectId || project.type === 'cowork'

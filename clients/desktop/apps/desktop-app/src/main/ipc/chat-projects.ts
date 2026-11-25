@@ -79,6 +79,9 @@ import { validateId } from '../lib/validation';
 import { assertStartPageFeatureEnabled } from '../lib/start-page-feature-flag';
 import { recordStandaloneProjectCrudTelemetry } from '../lib/desktop-telemetry';
 import { registerIpcHandler } from './register';
+import { getObservabilityService } from '../observability';
+import { describeErrorForAppDiagnostic } from '../observability/app-diagnostic-privacy';
+import { readAllSidebarItemsSnapshot } from '../lib/sidebar-items';
 import {
   ensureOrgDefaultCoworkWorkspace,
   getOrgDefaultCoworkEligibility,
@@ -137,8 +140,52 @@ function isRemoteNotFound(error: unknown): boolean {
   );
 }
 
+type ChatProjectListStep = 'sidebar_read' | 'default_provision';
+
+/** Keys already recorded; capped so a varied failure cannot grow it. */
+const recordedChatProjectListFailures = new Set<string>();
+const MAX_RECORDED_CHAT_PROJECT_LIST_FAILURES = 20;
+
+/**
+ * Records a failed list once per process for each step and error, since the
+ * renderer retries the list (CAN-7316). Best effort; the message is dropped.
+ */
+function recordChatProjectListFailed(
+  step: ChatProjectListStep,
+  thrown: unknown,
+): void {
+  try {
+    const error = describeErrorForAppDiagnostic(thrown);
+    const key = `${step}\n${error.split('\n', 1)[0]}`;
+    if (
+      recordedChatProjectListFailures.has(key) ||
+      recordedChatProjectListFailures.size >=
+        MAX_RECORDED_CHAT_PROJECT_LIST_FAILURES
+    )
+      return;
+    recordedChatProjectListFailures.add(key);
+    getObservabilityService().recordAppDiagnostic({
+      version: 1,
+      timestamp: new Date().toISOString(),
+      kind: 'chat_project_list_failed',
+      reason: step,
+      error,
+    });
+  } catch {
+    // Diagnostics are best effort; the caller still gets the original error.
+  }
+}
+
 export async function listChatProjects(): Promise<ChatProjectListResponse> {
-  return { projects: await listCoworkWorkspacesAsChatProjects() };
+  let step: ChatProjectListStep = 'sidebar_read';
+  try {
+    const snapshot = await readAllSidebarItemsSnapshot();
+    step = 'default_provision';
+    return { projects: await listCoworkWorkspacesAsChatProjects(snapshot) };
+  } catch (error) {
+    recordChatProjectListFailed(step, error);
+    throw error;
+  }
 }
 
 async function requireChatProject(

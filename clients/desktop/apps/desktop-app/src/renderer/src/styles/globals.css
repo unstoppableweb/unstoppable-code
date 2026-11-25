@@ -382,13 +382,22 @@ body[data-app-advisor-docked] {
 
 /* The account footer's divider spans the sidebar's content column instead of
  * its full width: 16px in from each edge, where the rows' icons and labels
- * start (the footer's 8px inset plus the rows' own 8px). */
-[data-window-layout='inset'] [data-sidebar-footer-banners] + div {
+ * start (the footer's 8px inset plus the rows' own 8px).
+ *
+ * The footer is named by its own attribute. Written as `+ div`, the rule had
+ * to be tried on every div in the app, and Chromium then restyled a whole
+ * list whenever a div was inserted before its siblings: each part of a
+ * transcript that mounted restyled all the parts already there. */
+[data-window-layout='inset']
+  [data-sidebar-footer-banners]
+  + [data-sidebar-account-footer] {
   position: relative;
   border-top-color: transparent;
 }
 
-[data-window-layout='inset'] [data-sidebar-footer-banners] + div::before {
+[data-window-layout='inset']
+  [data-sidebar-footer-banners]
+  + [data-sidebar-account-footer]::before {
   content: '';
   position: absolute;
   top: calc(-1 * var(--default-border-width));
@@ -436,25 +445,74 @@ body[data-app-advisor-docked] {
  * `InsetWindowCards.styles.test.ts` holds every card rule to that. */
 [data-window-layout='inset'] {
   --inset-card-shadow: var(--shadow-2xs);
-  /* Room for that outside line on the one side with no gap: a card's left
-   * edge meets the sidebar, and on a worktree page it is also the edge of
-   * the scrolling area the cards sit in, which clipped the line there. Every
-   * card starts one hairline in, so its edge is whole on all four sides and
-   * sits at the same place on every page. */
+}
+
+/* Room for that outside line on the one side with no gap: a card's left
+ * edge meets the sidebar, and on a worktree page it is also the edge of
+ * the scrolling area the cards sit in, which clipped the line there. Every
+ * card starts one hairline in, so its edge is whole on all four sides and
+ * sits at the same place on every page.
+ *
+ * Not inherited, and set on the elements that use it instead of on the
+ * window. It changes when the sidebar is hidden or shown; as an inherited
+ * property on the window, that restyled every element in the app (about
+ * 5,000 on a worktree page) in the frame the sidebar starts to move. A new
+ * user of the value joins the first list below, and the next three when the
+ * hidden sidebar changes it. */
+@property --inset-card-edge-room {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+[data-window-layout='inset']
+  :where(
+    main[data-main-frame],
+    [data-panel-grid-loading],
+    [data-testid='panel-grid-root'],
+    [data-testid='pr-status-bar'].pl-1,
+    [data-testid='cowork-top-bar'] > .pl-1
+  ) {
   --inset-card-edge-room: var(--border-hairline);
 }
 
 /* With the sidebar hidden nothing sits beside the cards, so their left edge
  * keeps the window's gap, as the right and bottom edges do. (The sidebar's
- * hover preview floats over the page and changes nothing here.) */
-[data-window-layout='inset'][data-sidebar-hidden='true'] {
+ * hover preview floats over the page and changes nothing here.) The top
+ * bars are not listed: their `pl-1` exists only while the sidebar shows.
+ * The grid is named by its class so that toggling the sidebar restyles
+ * these few elements, not every element with a test id. */
+[data-window-layout='inset'][data-sidebar-hidden='true']
+  :is(
+    main[data-main-frame],
+    [data-panel-grid-loading],
+    .canopy-panel-grid-host
+  ) {
   --inset-card-edge-room: var(--inset-card-gap);
+}
+
+/* A layout nested in the window (the docked Orchestrator page) follows its
+ * own sidebar, as it did while the value was inherited from the nearest
+ * layout element. */
+[data-window-layout='inset']
+  [data-window-layout='inset']:not([data-sidebar-hidden='true'])
+  :is(
+    main[data-main-frame],
+    [data-panel-grid-loading],
+    .canopy-panel-grid-host
+  ) {
+  --inset-card-edge-room: var(--border-hairline);
 }
 
 /* Settings brings its own sidebar, which is never hidden: its card always
  * sits against it. */
 [data-window-layout='inset'][data-sidebar-hidden='true']
-  .settings-page-overlay {
+  .settings-page-overlay
+  :is(
+    main[data-main-frame],
+    [data-panel-grid-loading],
+    .canopy-panel-grid-host
+  ) {
   --inset-card-edge-room: var(--border-hairline);
 }
 
@@ -537,15 +595,26 @@ body[data-app-advisor-docked] {
  * clip with a margin instead, so the cards' edge lines and shadows show on
  * their left and top like on their other sides. Nothing scrolls here;
  * the panels lay out inside the grid. Kanban keeps scrolling: its board and
- * chat stack in a narrow window and need the room. */
+ * chat stack in a narrow window and need the room.
+ *
+ * Each `:has()` here is on the element the rule styles. Asking `main`
+ * whether it holds a kanban board in order to style something inside it
+ * made Chromium restyle the page on every element added or removed under
+ * `main`, on each screen update, so the worktree part says which view it
+ * shows instead. The chat and Orchestrator pages never share the screen
+ * with the board. */
 [data-window-layout='inset']
   main[data-main-frame='split']:has([data-testid='panel-grid-root']):not(
     :has([data-testid='worktree-kanban-board'])
   ),
 [data-window-layout='inset']
-  main[data-main-frame='split']:not(:has([data-testid='worktree-kanban-board']))
+  main[data-main-frame='split']
+  [data-testid='worktree-part']:not([data-view-mode='kanban']):has(
+    [data-testid='panel-grid-root']
+  ),
+[data-window-layout='inset']
+  main[data-main-frame='split']
   :is(
-    [data-testid='worktree-part'],
     [data-testid='page-chat'] > section,
     [data-testid='app-advisor-content']
   ):has([data-testid='panel-grid-root']) {
@@ -766,10 +835,16 @@ body[data-app-advisor-docked] {
   box-shadow: none;
 }
 
+/* The cards take over the page's left edge, so they take its edge room.
+ * `--inset-card-edge-room` is not inherited; the page hands its own down. */
+[data-window-layout='inset'] main[data-main-frame='card'] {
+  --inset-workflow-edge-room: var(--inset-card-edge-room);
+}
+
 [data-window-layout='inset'] [data-testid='workflow-edit-cards'] {
   gap: var(--inset-card-gap);
   margin: 0 var(--inset-card-gap) var(--inset-card-gap)
-    var(--inset-card-edge-room);
+    var(--inset-workflow-edge-room, var(--border-hairline));
 }
 
 [data-window-layout='inset'] [data-workflow-edit-card] {
@@ -1153,10 +1228,12 @@ tr:has(td[data-review-selected]) td:first-child {
  * tooltips, no cursor changes; the pointer belongs to the menu. Disabling
  * pointer events on the surface suppresses every hover effect at once. The
  * menus themselves are body portals, so they stay interactive, and dismissal
- * presses still reach the document listeners. Scoped off the body attribute
- * set by useSuspendSidebarHovers. */
-body[data-sidebar-menu-open] .sidebar-resizable-surface,
-body[data-sidebar-menu-open] .sidebar-resizable-surface * {
+ * presses still reach the document listeners. Keyed on `data-menu-open`,
+ * which the menu-open flag sets on each surface together with the body
+ * attribute: under the body attribute this rule made every menu open and
+ * close restyle the whole document, not only the sidebar. */
+.sidebar-resizable-surface[data-menu-open],
+.sidebar-resizable-surface[data-menu-open] * {
   /* !important + `*`: row internals opt back in with `pointer-events-auto`
    * utilities (diff spans, dot hover targets, drag overlays), which would
    * re-enable hit-testing and light the hover chain straight through the
@@ -1831,21 +1908,29 @@ body[data-sidebar-menu-open] .sidebar-resizable-surface * {
   --page-fade-ease: cubic-bezier(0.22, 1, 0.36, 1);
   opacity: 1;
   transform: translate3d(0, 0, 0);
+  /* `content-visibility` switches at the end of the fade out and at the start
+   * of the fade in (a discrete transition), so a page stops rendering only
+   * once it is no longer seen. */
   transition:
     opacity var(--page-fade-dur) var(--page-fade-ease),
-    transform var(--page-slide-dur) var(--page-slide-ease);
+    transform var(--page-slide-dur) var(--page-slide-ease),
+    content-visibility var(--page-fade-dur) allow-discrete;
   /* These content layers live inside `.sidebar-instant-interactions`, whose
    * descendant rule disables transitions for immediate hover feedback. Restore
    * only this coordinated page handoff without animating sidebar controls. */
-  transition-duration: var(--page-fade-dur), var(--page-slide-dur) !important;
-  transition-delay: var(--page-stagger), var(--page-stagger) !important;
+  transition-duration:
+    var(--page-fade-dur), var(--page-slide-dur), var(--page-fade-dur) !important;
+  transition-delay:
+    var(--page-stagger), var(--page-stagger), var(--page-stagger) !important;
   backface-visibility: hidden;
   will-change: opacity, transform;
 }
 
+/* No `pointer-events: none` here: Settings, the one page that sets this,
+ * covers the whole window from its first frame, and the inherited property
+ * restyled every element of the sidebar (about 9 ms) on open and close. */
 .app-sidebar-content[data-page-active='false'] {
   opacity: 0;
-  pointer-events: none;
   transform: translate3d(
     calc(var(--page-slide-distance) * -1 * var(--page-exit-enabled)),
     0,
@@ -1882,6 +1967,19 @@ body[data-sidebar-menu-open] .sidebar-resizable-surface * {
     0,
     0
   );
+}
+
+/* A covering page (Settings, project settings) hides what is under it
+ * without restyling it: `content-visibility: hidden` skips rendering the
+ * subtree, takes it out of focus and the accessibility tree, and leaves every
+ * element's style as it was, so opening and closing restyle one element
+ * instead of thousands. The sidebar's content switches after its fade (see
+ * the transition above); the page behind switches at once. Both boxes are
+ * sized by their containers, so the size containment it brings changes
+ * nothing. */
+.app-sidebar-page[aria-hidden='true'] .app-sidebar-content,
+[data-app-main-shell][aria-hidden='true'] {
+  content-visibility: hidden;
 }
 
 @media (prefers-reduced-motion: reduce) {

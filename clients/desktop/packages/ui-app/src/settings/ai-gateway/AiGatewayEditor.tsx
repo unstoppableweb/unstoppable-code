@@ -33,8 +33,9 @@ import { AiGatewayRefreshDialog } from './AiGatewayRefreshDialog';
 import { EditGatewayModelDialog } from './EditGatewayModelDialog';
 import {
   CloudChatsKeySection,
-  useCloudChatsKeysAvailable,
+  useCloudChatsKeyState,
 } from './CloudChatsKeySection';
+import { AiGatewaySurfaceStatus } from './AiGatewaySurfaceStatus';
 import {
   aiGatewayLabel,
   CLEARED_GATEWAY_PATCH,
@@ -126,7 +127,12 @@ function ConfiguredAiGateway({
   const [refreshOpen, setRefreshOpen] = useState(false);
   const [editing, setEditing] = useState<ModelGatewayModel | null>(null);
   // Known even while the gateway is off, when the section below isn't shown.
-  const cloudKeys = useCloudChatsKeysAvailable(adapter.organizationId);
+  const [cloudKey, setCloudKey] = useCloudChatsKeyState(
+    adapter.organizationId,
+    config.baseUrl,
+    keyRevision,
+  );
+  const cloudKeys = cloudKey === null ? null : cloudKey !== 'off';
   const [removeOpen, setRemoveOpen] = useState(false);
 
   // Every patch is built from the server's last answer, and one runs at a
@@ -285,11 +291,34 @@ function ConfiguredAiGateway({
         </div>
       </section>
 
+      <AiGatewaySurfaceStatus
+        organizationId={adapter.organizationId}
+        baseUrl={config.baseUrl}
+        enabled={config.enabled}
+        // "Use only my AI gateway" applies everywhere, cloud chats included.
+        cloudEnabled={
+          config.useInCloudChats !== false || config.onlyThisGateway
+        }
+        revision={keyRevision}
+        cloudKey={cloudKey}
+        useOn={
+          personal
+            ? {
+                locked: config.onlyThisGateway,
+                disabled: saving || !config.enabled,
+                onUseInCloudChatsChange: (next) =>
+                  void apply({ useInCloudChats: next }),
+              }
+            : undefined
+        }
+      />
+
       {config.enabled ? (
         <CloudChatsKeySection
           organizationId={adapter.organizationId}
           baseUrl={config.baseUrl}
           revision={keyRevision}
+          onStatusChange={setCloudKey}
         />
       ) : null}
 
@@ -310,7 +339,9 @@ function ConfiguredAiGateway({
           </Button>
         </div>
         <p className="text-s fg-secondary" data-testid="ai-gateway-models-use">
-          {cloudKeys === true && config.enabled
+          {cloudKeys === true &&
+          config.enabled &&
+          config.useInCloudChats !== false
             ? 'Used by the desktop app, and by cloud chats once a key is saved.'
             : 'Used by the desktop app.'}
         </p>

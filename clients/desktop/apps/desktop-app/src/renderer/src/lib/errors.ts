@@ -18,7 +18,10 @@
  * `@canopy/protocol/app-errors/ipc-rejection`, shared with the portable
  * CanopyClient adapter.
  */
-import { extractIpcErrorMessage } from '@canopy/protocol/app-errors/ipc-rejection';
+import {
+  extractIpcErrorMessage,
+  extractIpcErrorName,
+} from '@canopy/protocol/app-errors/ipc-rejection';
 
 export {
   extractIpcErrorMessage,
@@ -50,4 +53,14 @@ export function detailsFor(
   failure: FailureDetails | null,
 ): string | undefined {
   return shown && failure?.shown === shown ? failure.details : undefined;
+}
+
+/**
+ * Whether a caught rejection is a cancellation: an `AbortError` thrown
+ * locally, or one an IPC handler rejected with (Electron keeps the name in
+ * front of the wrapped message). Cancelled work shows nothing to the user.
+ */
+export function isIpcCancellation(error: unknown): boolean {
+  if (error instanceof Error && error.name === 'AbortError') return true;
+  return extractIpcErrorName(error) === 'AbortError';
 }

@@ -460,6 +460,15 @@ export class DaemonPipelineExecutionHandle implements ExecutionHandle {
       const snapshotStep = snapshotJob?.steps.find(
         (step) => step.id === item.stepId,
       );
+      // The daemon's output item carries no recovery number, so a resumed
+      // attempt takes the step's current one, as the in-process runner
+      // reports it. Observability keys each resumed attempt's audit entry by
+      // it (CAN-7305); without it the attempt's output is dropped. The stream
+      // is ordered and replays no output, so the paused attempt's output
+      // arrives before its paused state, ahead of the resume that raises the
+      // count. Output delivered after that resume is labelled with the new
+      // count.
+      const recovery = job?.steps[item.stepId]?.recovery_count ?? 0;
       const event: StepOutputEvent = {
         executionId: this.id,
         jobId: item.jobId,
@@ -470,6 +479,7 @@ export class DaemonPipelineExecutionHandle implements ExecutionHandle {
         // job's current ones.
         attempt: item.attempt ?? job?.retry_count ?? 0,
         iteration: item.iteration ?? job?.iteration_count ?? 1,
+        ...(recovery > 0 ? { recovery } : {}),
         stream: item.stream,
         data: item.text,
       };

@@ -190,7 +190,8 @@ export async function installAntigravityRuntime(
     return {
       ...status,
       phase: 'failed',
-      error: 'The managed Antigravity CLI is available on macOS only.',
+      error:
+        'The managed Antigravity CLI is available on macOS and Linux (x64 and arm64).',
     };
   }
   if (running) return join(running, operationId, progress);

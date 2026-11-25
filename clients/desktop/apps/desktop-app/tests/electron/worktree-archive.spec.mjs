@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -24,6 +25,11 @@ import { seedWorktreeChat } from './seeders/index.mjs';
 // Seed: a demo workspace with a default `demo-main` worktree. The deletion
 // fence tests use an E2E-only cleanup checkpoint to place a real renderer
 // flush or reload inside cleanup.
+
+// Linux tolerates device-only drift only with a real birth time; the fixtures live under tmpdir.
+const toleratesDeviceDrift =
+  process.platform === 'darwin' ||
+  (process.platform === 'linux' && statSync(os.tmpdir()).birthtimeMs !== 0);
 
 const WORKTREE_BRANCH = 'demo-main';
 const WORKSPACE_ID = 'demo-ts-pnpm-vite';
@@ -111,8 +117,7 @@ test('Finish qualifies historical nonempty metadata after device renumbering', a
       const entry = list.entries[0];
       expect(entry?.diagnosis).toBeDefined();
       const accepted =
-        change === 'exact' ||
-        (change === 'device' && process.platform === 'darwin');
+        change === 'exact' || (change === 'device' && toleratesDeviceDrift);
       const verdict = {
         verdict: entry.diagnosis.verdict,
         check: entry.diagnosis.check,
@@ -190,7 +195,7 @@ for (const action of ['keep', 'discard', 'aside-discard', 'retained-discard']) {
         const accepted =
           identityChange === 'exact' ||
           (identityChange === 'device' &&
-            process.platform === 'darwin' &&
+            toleratesDeviceDrift &&
             !unverifiableCheckout);
         if (action === 'keep') {
           const list = await window.evaluate(

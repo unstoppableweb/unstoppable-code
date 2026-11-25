@@ -1116,8 +1116,8 @@ export function createRecordedWorkerGitHosts(
       const entry = await files.lstat(path).catch(() => null);
       return entry?.isDirectory() === true ? path : null;
     },
-    // `diff.get` does not accept `_execution`, so the environment is the
-    // daemon's own (recorded debt, CAN-4729).
+    // Git runs with the request's forwarded environment (CAN-4729); the
+    // untracked-size estimate reads the filesystem, not Git.
     reads: (path, context) => {
       const invocation = invocationOf(context);
       return {

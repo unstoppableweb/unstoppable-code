@@ -1,0 +1,256 @@
+// Jest Snapshot v1, https://jestjs.io/docs/snapshot-testing
+
+exports[`core.sharedContainer reads on desktop (CAN-6501 PR 7 golden) answers capability_unavailable for every read while shared containers are off 1`] = `
+{
+  "acceptanceList": {
+    "rejected": {
+      "kind": "capability_unavailable",
+      "message": "Shared containers are disabled.",
+      "retry": "never",
+    },
+  },
+  "forkProvenanceGet": {
+    "rejected": {
+      "kind": "capability_unavailable",
+      "message": "Shared containers are disabled.",
+      "retry": "never",
+    },
+  },
+  "runGet": {
+    "rejected": {
+      "kind": "capability_unavailable",
+      "message": "Shared containers are disabled.",
+      "retry": "never",
+    },
+  },
+}
+`;
+
+exports[`core.sharedContainer reads on desktop (CAN-6501 PR 7 golden) answers run.get with stored-secret references, never a run-environment value 1`] = `
+{
+  "allowed": {
+    "resolved": {
+      "allowed": true,
+      "allowedAt": "2026-11-01T12:00:00.000Z",
+      "hasRunningProcesses": false,
+      "publisherUserId": "00000000-0000-4000-8000-00000000b001",
+      "run": {
+        "commands": [
+          {
+            "command": "pnpm dev",
+            "name": "dev",
+            "repoId": "app",
+          },
+        ],
+        "requiredEnv": [
+          "API_TOKEN",
+          "REGION",
+        ],
+      },
+      "runCopyNeedsRefresh": false,
+      "runCopySizeBytes": "0",
+      "unsetRequiredEnv": [],
+      "values": [
+        {
+          "key": "API_TOKEN",
+          "secret": true,
+          "value": {
+            "kind": "stored-secret",
+            "ref": "ssr1_YlAzKBJbiNgvIrzZuo2PqyxmiEYOvRKvKDuNJcvX1fU",
+          },
+        },
+        {
+          "key": "REGION",
+          "value": {
+            "kind": "stored-secret",
+            "ref": "ssr1_qowlxNVt75w9oEBfNO6yixM_WwPGnXSh3lC0iw87p8g",
+          },
+        },
+      ],
+    },
+  },
+  "crossRevision": {
+    "rejected": {
+      "code": "core.sharedContainer.revisionUnavailable",
+      "kind": "failed_precondition",
+      "message": "Shared-container revision is not available",
+      "retry": "after_refresh",
+    },
+  },
+  "notAccepted": {
+    "rejected": {
+      "code": "core.sharedContainer.notAccepted",
+      "kind": "failed_precondition",
+      "message": "Shared container has not been accepted on this device.",
+      "retry": "after_refresh",
+    },
+  },
+  "offMac": {
+    "rejected": {
+      "kind": "capability_unavailable",
+      "message": "Shared-container run is disabled.",
+      "retry": "never",
+    },
+  },
+  "other": {
+    "resolved": {
+      "allowed": false,
+      "hasRunningProcesses": false,
+      "run": {
+        "commands": [
+          {
+            "command": "pnpm start",
+            "name": "dev",
+            "repoId": "app",
+          },
+        ],
+        "requiredEnv": [
+          "API_TOKEN",
+          "REGION",
+        ],
+      },
+      "runCopyNeedsRefresh": false,
+      "runCopySizeBytes": "0",
+      "unsetRequiredEnv": [
+        "API_TOKEN",
+        "REGION",
+      ],
+      "values": [],
+    },
+  },
+  "staleRevision": {
+    "rejected": {
+      "code": "core.sharedContainer.revisionUnavailable",
+      "kind": "failed_precondition",
+      "message": "Shared-container revision is not available",
+      "retry": "after_refresh",
+    },
+  },
+}
+`;
+
+exports[`core.sharedContainer reads on desktop (CAN-6501 PR 7 golden) lists accepted containers with their identity and no run consent 1`] = `
+{
+  "empty": {
+    "resolved": {
+      "containerIds": [],
+      "records": {},
+    },
+  },
+  "listed": {
+    "resolved": {
+      "containerIds": [
+        "00000000-0000-4000-8000-00000000c001",
+        "00000000-0000-4000-8000-00000000c002",
+      ],
+      "records": {
+        "00000000-0000-4000-8000-00000000c001": {
+          "acceptedAt": "2026-11-01T12:00:00.000Z",
+          "access": "organization",
+          "organizationId": "00000000-0000-4000-8000-00000000a001",
+        },
+        "00000000-0000-4000-8000-00000000c002": {
+          "acceptedAt": "2026-11-01T12:00:00.000Z",
+          "access": "direct",
+        },
+      },
+    },
+  },
+}
+`;
+
+exports[`core.sharedContainer reads on desktop (CAN-6501 PR 7 golden) reads fork provenance only from the requested worktree 1`] = `
+{
+  "absent": {
+    "resolved": {
+      "provenance": null,
+    },
+  },
+  "invalidRecord": {
+    "rejected": {
+      "kind": "internal",
+      "message": "The operation failed.",
+      "retry": "never",
+    },
+  },
+  "otherWorktree": {
+    "resolved": {
+      "provenance": null,
+    },
+  },
+  "present": {
+    "resolved": {
+      "provenance": {
+        "forkedAt": "2026-11-01T12:00:00.000Z",
+        "organizationId": "00000000-0000-4000-8000-00000000a001",
+        "sourceContainerId": "00000000-0000-4000-8000-00000000c001",
+        "sourceOwnerDisplayName": "Example Publisher",
+        "sourceRevisionCreatedAt": "2026-11-01T12:00:00.000Z",
+        "sourceRevisionId": "00000000-0000-4000-8000-00000000e001",
+      },
+    },
+  },
+  "unknownProject": {
+    "resolved": {
+      "provenance": null,
+    },
+  },
+  "unreadableRecord": {
+    "rejected": {
+      "kind": "internal",
+      "message": "The operation failed.",
+      "retry": "never",
+    },
+  },
+}
+`;
+
+exports[`core.sharedContainer reads on desktop (CAN-6501 PR 7 golden) refuses each read without its grants 1`] = `
+{
+  "acceptanceListWithoutPublicationRead": {
+    "rejected": {
+      "kind": "permission_denied",
+      "message": "The caller is not permitted to perform this operation.",
+      "retry": "never",
+    },
+  },
+  "forkProvenanceWithoutPublicationRead": {
+    "rejected": {
+      "kind": "permission_denied",
+      "message": "The caller is not permitted to perform this operation.",
+      "retry": "never",
+    },
+  },
+  "forkProvenanceWithoutWorkspaceRead": {
+    "rejected": {
+      "kind": "permission_denied",
+      "message": "The caller is not permitted to perform this operation.",
+      "retry": "never",
+    },
+  },
+  "runGetWithoutPublicationRead": {
+    "rejected": {
+      "kind": "permission_denied",
+      "message": "The caller is not permitted to perform this operation.",
+      "retry": "never",
+    },
+  },
+  "runGetWithoutWorkspaceRead": {
+    "rejected": {
+      "kind": "permission_denied",
+      "message": "The caller is not permitted to perform this operation.",
+      "retry": "never",
+    },
+  },
+}
+`;
+
+exports[`core.sharedContainer reads on desktop (CAN-6501 PR 7 golden) stops the run-copy walk when run.get is cancelled 1`] = `
+{
+  "rejected": {
+    "kind": "cancelled",
+    "message": "The operation was cancelled.",
+    "retry": "never",
+  },
+}
+`;

@@ -117,6 +117,7 @@
     "tailwindcss": "^4.0.0",
     "vite": "^6.4.2",
     "ws": "^8.20.0",
+    "jest-environment-node": "^30.4.1",
     "jest": "^30.2.0",
     "@swc/jest": "0.2.39",
     "@typescript/native": "npm:typescript@7.0.2",
@@ -728,6 +729,18 @@
         "executableSha256": "82a185e0e52cb40f6f7a168e49ab78c829219c92e04a91c0892f221bd39a03f2",
         "archiveBytes": 104996703
       },
+      "linux-arm64": {
+        "url": "https://registry.npmjs.org/@github/copilot-linux-arm64/-/copilot-linux-arm64-1.0.89.tgz",
+        "integrity": "sha512-RQu275/pQFVmuAm+HRMUW0E2b9sIZsZ7jHtxWFRkdG5s5EdfySAxPVLKVpjqw/ZK/w3eWciMqvzJZ0QipJ2bcg==",
+        "executableSha256": "8f96495cbacfc9ebfe23d5922f264c1e34818e68928d3b30d731759631e54f56",
+        "archiveBytes": 108110268
+      },
+      "linux-x64": {
+        "url": "https://registry.npmjs.org/@github/copilot-linux-x64/-/copilot-linux-x64-1.0.89.tgz",
+        "integrity": "sha512-wkF+uILxEncP3HI6+ZhK4draB7UVuk043Emx3MGOtdbuS9Ug29w2wKCVdKafIAnc/wj27x32uItBPgv3K5WUug==",
+        "executableSha256": "4aeb1afad709a44b4e201e1b228c01418d01ab88b13aaad61ea8123a8beca017",
+        "archiveBytes": 105865886
+      },
       "win32-x64": {
         "url": "https://registry.npmjs.org/@github/copilot-win32-x64/-/copilot-win32-x64-1.0.89.tgz",
         "integrity": "sha512-m8j6ItUYVkikFPJ3TxoHl1hI6mGydynDGuqkdXXfr/Pmutj0LavlFpWhUYFR+6utjbYN5q6gpPdGxZLs6K84KA==",
@@ -756,6 +769,18 @@
         "sha256": "a783b4d5f938b3ac7a92f65054c66422d8947138897029fdc9c2e8164397bc17",
         "archiveBytes": 181395360,
         "filesSha256": "6ffd46c1ae30a801cfcad3e5d9f0970846a9de7c18114cacccd8ffa4a4df0501"
+      },
+      "linux-arm64": {
+        "url": "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/linux/arm64/agent-cli-package.tar.gz",
+        "sha256": "153ae182db90814748d544f2a26abc073e4e4e5df0b867abfd69def0ff77aa71",
+        "archiveBytes": 177646468,
+        "filesSha256": "6a7794c29cac758a19bf01f119ba11b54e7242106c5bb5bf6c15b38da35a97d6"
+      },
+      "linux-x64": {
+        "url": "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/linux/x64/agent-cli-package.tar.gz",
+        "sha256": "0d7a11dd01b652b8b92d05cc14f769fbc5a3442b786cd8b636041f189ab81f1e",
+        "archiveBytes": 179677372,
+        "filesSha256": "288eb3f4d529728a07d88de016f1173ddeae3a5ecf0c8d1bb225c575054d5069"
       },
       "win32-x64": {
         "url": "https://downloads.cursor.com/lab/2026.09.08-6caf4ff/windows/x64/agent-cli-package.zip",
@@ -786,6 +811,18 @@
         "archiveBytes": 90111649,
         "executableSha256": "5de9ff73d2e46934371dd96c9f012be58b98fc0084f966e643fa89d3b6e69070"
       },
+      "linux-arm64": {
+        "url": "https://registry.npmjs.org/@opencode/cli-linux-arm64/-/cli-linux-arm64-2.0.32.tgz",
+        "integrity": "sha512-YR5O03irvmot/G0f8W49ehvhn5uqCFN3vf9JTsChvf47W6ldjKCNvsaCSXS2SP26dPOUMQBn7WqbKnyHzrNR5w==",
+        "archiveBytes": 96915721,
+        "executableSha256": "4199ae2d2c96ad2a140d32cabe6a1d9280b4cd1d9d8ed533a5431f54c422693c"
+      },
+      "linux-x64": {
+        "url": "https://registry.npmjs.org/@opencode/cli-linux-x64-baseline/-/cli-linux-x64-baseline-2.0.32.tgz",
+        "integrity": "sha512-NrB4iglJb7vGZWJ6B0qVH1EMHhWBZ4ADsAG9W0xLanzgxJ6eLEEsGBvxRX0cm/KPag5E/N0yZGsDVDZYcnz/OQ==",
+        "archiveBytes": 98152394,
+        "executableSha256": "cab7393462b4fb9f4a6bcb8b9d69b7c306aeba54092d81320273151b9a3323ba"
+      },
       "win32-arm64": {
         "url": "https://registry.npmjs.org/@opencode/cli-windows-arm64/-/cli-windows-arm64-2.0.32.tgz",
         "integrity": "sha512-T1UGNtrcgDoovpRD3nLqpfZoUh8+pDPlEewALD3QIUOLvuHyy4kUAFra6lLl5kitzqHN5Lm+2iQKX5F81A5hGw==",
@@ -814,6 +851,18 @@
         "integrity": "sha512-c2oPEhC0LtxuwpLh+EOGlvYWv2kGrV6HjUFbGKpTrMxZpnggXDMuWvVk+rjTLKWsW0HJuq2M7Qp7wiSgzPzDtQ==",
         "archiveBytes": 69355865,
         "executableSha256": "1f72c9a1c29b768fedd6d33150ebe5baa0f0692242c6286bd1669a1d183ec2d9"
+      },
+      "linux-arm64": {
+        "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.1/agy_cli_linux_arm64.tar.gz",
+        "integrity": "sha512-/fikY+W/Ts2KAbaKU+AG564CVueuNRo545xm4E4nXG0ItLk/QjzFctI0hx97+FLEUj4BcVak756n3qGq/7Cixg==",
+        "archiveBytes": 68424392,
+        "executableSha256": "d2b02615f4d0f8619966653a74b8f89160d12996ce763752ccc5e27a58029565"
+      },
+      "linux-x64": {
+        "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.1/agy_cli_linux_x64.tar.gz",
+        "integrity": "sha512-9wQGZU69lm8hFCQzglni040JnEhzTpAdwGl1Bj5aATfVW265Nmt1mDxpCLvCCukqJhdla7GR2O1v5CnWVLyk9Q==",
+        "archiveBytes": 72209583,
+        "executableSha256": "72738cf0445918483956a5f0da33abdfcfb21a12dd9a421fd57d063782826669"
       }
     }
   }

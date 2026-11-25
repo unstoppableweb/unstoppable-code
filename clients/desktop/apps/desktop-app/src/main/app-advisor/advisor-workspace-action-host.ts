@@ -13,20 +13,17 @@ import { sendToAllWindows } from '../lib/window-send';
 import { isStartPageFeatureEnabled } from '../lib/start-page-feature-flag';
 import { getWorkspaceContextService } from '../lib/workspace-context-service';
 import { computeWorkspaceReadinessAudit } from '../lib/workspace-readiness';
-import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { readWorkspaceSettingsData } from '../lib/workspace-source';
 import { getOrgProjectCatalogService } from '../services/org-project-catalog-service';
-import {
-  listTrackedPlanData,
-  readTrackedPlanData,
-} from '../services/plans-service';
+import { getTrackedPlanForIpc, listTrackedPlansForIpc } from '../ipc/plans';
 import { sidebarItemGroupsService } from '../services/sidebar-item-groups-service';
 import type { AdvisorWorkspaceActionHost } from './advisor-workspace-actions';
 
 /**
  * App Advisor's identity for the core reads its moved workspace actions
- * make. It carries no grant itself: getWorkspaceInstructions adds only
- * core.workspace.instructions.read to its one call.
+ * make. It carries no grant itself: each read adds only the one its
+ * operation requires, such as core.workspace.instructions.read or
+ * core.plan.read.
  */
 export function advisorWorkspaceCaller(chatId: string): CanopyCallerDescriptor {
   return {
@@ -76,10 +73,21 @@ export function mainAdvisorWorkspaceActionHost(options: {
         disabledOrgProjectCatalog(context) ??
           getOrgProjectCatalogService().list(context),
       ),
-    // A Cowork project has no tracked plans, as the window's list shows.
+    // The window's own projections, so a Cowork project lists no plans here too.
     listTrackedPlans: async (request) =>
-      isCoworkWorkspace(request.projectId) ? [] : listTrackedPlanData(request),
-    readTrackedPlan: readTrackedPlanData,
+      (
+        await listTrackedPlansForIpc(
+          getActiveDesktopRuntime(),
+          advisorWorkspaceCaller(options.chatId),
+          request,
+        )
+      ).plans,
+    readTrackedPlan: (request) =>
+      getTrackedPlanForIpc(
+        getActiveDesktopRuntime(),
+        advisorWorkspaceCaller(options.chatId),
+        request,
+      ),
     sidebarGroups: {
       describe: (scope) => sidebarItemGroupsService.describe(scope),
       list: (scope) => sidebarItemGroupsService.list(scope),

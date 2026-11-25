@@ -182,6 +182,15 @@ const BUNDLED_BINARY_OVERRIDE_ENV: Record<
   rtk: { brandSuffix: 'RTK_BINARY_PATH', executableEnv: 'RTK_EXECUTABLE' },
 };
 
+export function getBundledBinaryOverride(
+  member: OverridableBundledBinaryMember,
+): string | undefined {
+  const { brandSuffix, executableEnv } = BUNDLED_BINARY_OVERRIDE_ENV[member];
+  return (
+    getBrandEnv(process.env, brandSuffix) ?? getTrimmedEnvVar(executableEnv)
+  );
+}
+
 /**
  * Dev worktrees on macOS and Windows can resolve `.cache/bin` before host
  * binaries are staged, so a missing staged provider falls back to a PATH
@@ -193,6 +202,7 @@ const BUNDLED_BINARY_OVERRIDE_ENV: Record<
 function findDevHostProviderFallback(
   executableName: string,
   bundledPath: string,
+  probeOnly: boolean,
 ): string | undefined {
   if (
     !isDevRuntime() ||
@@ -201,23 +211,28 @@ function findDevHostProviderFallback(
   ) {
     return undefined;
   }
-  return findExecutableOnPath(executableName, getLoginShellPath()) ?? undefined;
+  return (
+    findExecutableOnPath(
+      executableName,
+      probeOnly ? getLoginShellPathSnapshot() : getLoginShellPath(),
+      { rejectInvalid: probeOnly },
+    ) ?? undefined
+  );
 }
 
 function locateBundledBinary(
   member: BundledBinaryMember,
+  probeOnly = false,
 ): BundledBinaryLocation {
   if (member === 'codex-code-mode-host') {
-    const codex = locateBundledBinary('codex');
+    const codex = locateBundledBinary('codex', probeOnly);
     return {
       source: codex.source,
       path: path.join(path.dirname(codex.path), withExeOnWindows(member)),
     };
   }
 
-  const { brandSuffix, executableEnv } = BUNDLED_BINARY_OVERRIDE_ENV[member];
-  const override =
-    getBrandEnv(process.env, brandSuffix) ?? getTrimmedEnvVar(executableEnv);
+  const override = getBundledBinaryOverride(member);
   if (override) {
     return { source: 'override', path: override };
   }
@@ -231,7 +246,7 @@ function locateBundledBinary(
   const bundledPath = path.join(binDir, executableName);
   const hostFallback =
     member === 'claude' || member === 'codex'
-      ? findDevHostProviderFallback(executableName, bundledPath)
+      ? findDevHostProviderFallback(executableName, bundledPath, probeOnly)
       : undefined;
   return hostFallback
     ? { source: 'host-fallback', path: hostFallback }
@@ -241,8 +256,9 @@ function locateBundledBinary(
 /** Resolves a promised bundle member and reports where the path came from. */
 export function resolveBundledBinary(
   member: BundledBinaryMember,
+  options?: { probeOnly: boolean },
 ): BundledBinaryResolution {
-  const location = locateBundledBinary(member);
+  const location = locateBundledBinary(member, options?.probeOnly);
   if (location.source !== 'bundle') {
     return { member, status: location.source, path: location.path };
   }
@@ -534,6 +550,13 @@ export function getLoginShellPath(): string {
     Date.now() - cachedLoginShellPathAt >= LOGIN_SHELL_PATH_TTL_MS;
   if (expired) {
     void startLoginShellPathRefresh();
+  }
+  return getLoginShellPathSnapshot();
+}
+
+export function getLoginShellPathSnapshot(): string {
+  if (hostOperatingSystem() !== 'darwin' && !isLinuxLoginShellPathSupported()) {
+    return process.env.PATH ?? '';
   }
   return cachedLoginShellPath ?? getLoginShellPathFallback();
 }

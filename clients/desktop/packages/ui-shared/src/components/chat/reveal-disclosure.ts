@@ -6,9 +6,10 @@ export function revealDisclosure(
   const view = trigger.ownerDocument.defaultView;
   if (!view || view.matchMedia('(prefers-reduced-motion: reduce)').matches)
     return;
-  const root = trigger.closest(
-    scope === 'turn' ? '.group\\/turn' : '[data-chat-disclosure]',
-  );
+  const root =
+    scope === 'turn'
+      ? turnRoot(trigger)
+      : trigger.closest('[data-chat-disclosure]');
   if (!root) return;
   const selector =
     scope === 'turn'
@@ -58,4 +59,23 @@ export function revealDisclosure(
       );
     }
   });
+}
+
+/**
+ * The turn a header belongs to: its `group/turn` wrapper (web) or its
+ * `data-chat-turn-group` wrapper (desktop). A header the desktop transcript
+ * pins in its section head sits outside that wrapper; the head names the
+ * turn by its user message, and the turn is a sibling in the same section.
+ */
+function turnRoot(trigger: HTMLElement): Element | null {
+  const own = trigger.closest('.group\\/turn, [data-chat-turn-group]');
+  if (own) return own;
+  const head = trigger.closest<HTMLElement>('[data-sticky-user-message-id]');
+  const id = head?.dataset.stickyUserMessageId;
+  if (!head || id === undefined) return null;
+  return (
+    head.parentElement?.querySelector(
+      `[data-chat-turn-group="${CSS.escape(id)}"]`,
+    ) ?? null
+  );
 }

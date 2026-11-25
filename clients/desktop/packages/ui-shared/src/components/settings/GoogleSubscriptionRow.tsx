@@ -51,7 +51,7 @@ export function GoogleSubscriptionRow({
           ? `Disconnected from ${appName}. Your Google sign-in is unchanged. ${SHARED_SIGN_IN}`
           : connected
             ? // Discovery confirms account access, not a paid subscription tier.
-              'Google account connected'
+              'Antigravity connected'
             : `Install Antigravity CLI 1.5.1 from this card if it is not installed, then sign in with your personal Google account. ${SHARED_SIGN_IN}`
       }
       dataTestId="google-subscription-connection"
@@ -81,7 +81,7 @@ export function GoogleSubscriptionRow({
               disabled={busy}
               onClick={onDisconnect}
             >
-              {`Disconnect from ${appName}`}
+              Disconnect Antigravity
             </Button>
           ) : null}
         </div>

@@ -1,3 +1,4 @@
+import { CatalogCollectionRevisionSchema } from '@canopy/protocol/canopy-core';
 import { parseCollectionIndexSharedSource } from '@canopy/protocol/collections';
 import {
   normalizeInstalledAt,
@@ -1250,6 +1251,100 @@ export function deleteCollectionConfig(
       return deleteCollectionConfigUnlocked(id);
     });
   return withCollectionStoreLock(() => deleteCollectionConfigUnlocked(id));
+}
+
+export type CollectionStoredBytesState =
+  | { status: 'missing' }
+  | { status: 'readable' }
+  | { status: 'corrupt'; storedBytesHash: string }
+  | { status: 'unreadable' };
+
+/**
+ * Whether a stored config can be read, and the SHA-256 of its bytes when it
+ * can't (CAN-4170 PR 3b-2a). `unreadable` when the bytes themselves can't be.
+ */
+async function collectionStoredBytesState(
+  id: string,
+): Promise<CollectionStoredBytesState> {
+  if (!id || !SAFE_ID_RE.test(id)) {
+    throw new Error(`Invalid Collection id: ${id}`);
+  }
+  let raw: Buffer;
+  try {
+    raw = await readFile(getCollectionConfigFilePath(id));
+  } catch (error) {
+    return isErrnoException(error) && error.code === 'ENOENT'
+      ? { status: 'missing' }
+      : { status: 'unreadable' };
+  }
+  let revision: unknown;
+  try {
+    const file = await readCollectionConfigUnfiltered(id, false);
+    if (!file) return { status: 'missing' };
+    revision = file.collection.revision;
+  } catch (error) {
+    // Only a failure to parse or validate the bytes makes them corrupt; a
+    // read error, or anything else, never unlocks the hash delete.
+    if (isErrnoException(error))
+      return error.code === 'ENOENT'
+        ? { status: 'missing' }
+        : { status: 'unreadable' };
+    if (!isConfigParseFailure(error, id)) return { status: 'unreadable' };
+  }
+  // The host's readability test, so a config is never readable to one and
+  // corrupt to the other.
+  return CatalogCollectionRevisionSchema.safeParse(revision).success
+    ? { status: 'readable' }
+    : {
+        status: 'corrupt',
+        storedBytesHash: createHash('sha256').update(raw).digest('hex'),
+      };
+}
+
+/** What readCollectionConfigUnfiltered throws for bytes it can't parse or validate. */
+const isConfigParseFailure = (error: unknown, id: string): boolean =>
+  error instanceof SyntaxError ||
+  error instanceof TypeError ||
+  (error instanceof Error &&
+    error.message === `Invalid Collection config for ${id}`);
+
+/**
+ * The local management read of a config's bytes. With resource context
+ * enforcement on it answers `unreadable` before reading anything: the hash
+ * delete is refused there, and a failed source authorization must not answer
+ * a digest.
+ */
+export async function readCollectionStoredBytesState(
+  id: string,
+): Promise<CollectionStoredBytesState> {
+  if (resourceContextEnabled()) return { status: 'unreadable' };
+  return collectionStoredBytesState(id);
+}
+
+/**
+ * Deletes a config that cannot be read, only while its bytes still have
+ * `storedBytesHash`. With resource context enforcement on, every delete reads
+ * the local snapshot first, which these bytes fail, so this one is `refused`
+ * as the others are.
+ */
+export function deleteCorruptCollectionConfig(
+  id: string,
+  storedBytesHash: string,
+): Promise<
+  'deleted' | 'missing' | 'readable' | 'unreadable' | 'changed' | 'refused'
+> {
+  return withCollectionStoreLock(async () => {
+    // Before any read, so a refused caller learns nothing about the bytes.
+    if (resourceContextEnabled()) return 'refused';
+    // Recovery first: a missing index can convert a legacy bundle onto this
+    // config, which the checks below must then see.
+    await readCollectionIndexUnfiltered();
+    const state = await collectionStoredBytesState(id);
+    if (state.status !== 'corrupt') return state.status;
+    if (state.storedBytesHash !== storedBytesHash) return 'changed';
+    await deleteCollectionConfigUnlocked(id);
+    return 'deleted';
+  });
 }
 
 export function rollbackNewCollectionInstall(

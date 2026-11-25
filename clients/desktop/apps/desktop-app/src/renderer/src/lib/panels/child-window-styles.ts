@@ -23,6 +23,7 @@
  */
 
 import { toDisposable, type IDisposable } from '@canopy/ui-shared/panels';
+import { watchViewportQueryAttributesIn } from '@/styles/viewport-query-attributes';
 
 /**
  * The `<html>` attributes Canopy's theme system writes (doc 05 §4;
@@ -190,6 +191,9 @@ function copyHtmlAttributes(child: Document): void {
  * spike (zero margin, `var(--bg-base)`/`var(--fg-primary)`) so the child
  * paints themed immediately once stylesheets resolve.
  *
+ * Also sets the child's own `data-vq-N` viewport attributes (see
+ * `styles/viewport-query-attributes.ts`).
+ *
  * Disposing disconnects the observer and stops propagation.
  */
 export function mirrorHtmlAttributesInto(child: Document): IDisposable {
@@ -207,8 +211,12 @@ export function mirrorHtmlAttributesInto(child: Document): IDisposable {
     attributes: true,
     attributeFilter: [...MIRRORED_HTML_ATTRIBUTES],
   });
+  // The responsive rules read `data-vq-N`, which follows each window's own
+  // size, so the child gets its own watcher instead of the opener's values.
+  const stopViewportQueries = watchViewportQueryAttributesIn(child);
 
   return toDisposable(() => {
     observer.disconnect();
+    stopViewportQueries();
   });
 }

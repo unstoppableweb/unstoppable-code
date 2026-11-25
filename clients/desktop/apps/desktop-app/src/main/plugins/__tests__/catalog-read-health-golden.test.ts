@@ -131,6 +131,9 @@ jest.mock('../codex-marketplace-service', () => ({
   listCodexPlugins: jest.fn(),
   refreshCuratedCodexPlugins: jest.fn(),
 }));
+jest.mock('../../codex/codex-executable-availability', () => ({
+  withOptionalCodex: (read: () => Promise<unknown>): Promise<unknown> => read(),
+}));
 jest.mock('../../lib/preferences-store', () => ({
   readPreferencesFile: jest.fn(),
   updatePreferencesFile: jest.fn(),

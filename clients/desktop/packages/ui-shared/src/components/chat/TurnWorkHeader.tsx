@@ -49,6 +49,11 @@ export interface TurnWorkHeaderProps {
   /** Count hook shared with classic summaries, without changing the wording. */
   stepCount?: number;
   /**
+   * The header renders in a sticky head under its prompt. It ends at its
+   * hairline; the head keeps the space below it, outside its backdrop.
+   */
+  pinned?: boolean;
+  /**
    * Controls at the row's end: the running turn's watch, fork and
    * auto-archive actions, in view (and pinned with the header) while it runs.
    */
@@ -222,6 +227,7 @@ export const TurnWorkHeader = forwardRef<
     outcome,
     stepCount,
     trailing,
+    pinned = false,
     dataTestId,
     starting = false,
     setup,
@@ -266,7 +272,9 @@ export const TurnWorkHeader = forwardRef<
   // sits apart from the prompt (24px of ink gap) and close to its hairline
   // (12px), with 20px from the hairline to the reply, whether the prompt is
   // in the turn or pinned above it (padding, not margin, so a pinned
-  // header's backdrop covers it). A starting turn has no steps for the
+  // header's backdrop covers it). A `pinned` header ends at its hairline: its
+  // head supplies the space below, outside the backdrop, so content scrolling
+  // under it is cut at the line. A starting turn has no steps for the
   // hairline to close yet, so it shows the working spinner and no hairline.
   // Its words are one polite status node whether they read setup or
   // "Starting…", so the hand-off is announced once; the setup clock sits
@@ -275,7 +283,7 @@ export const TurnWorkHeader = forwardRef<
   const foldable = !starting && expandable;
   return (
     <div
-      className={`px-3 pt-2 pb-1${foldable ? ' relative' : ''}`}
+      className={`px-3 pt-2${pinned ? '' : ' pb-1'}${foldable ? ' relative' : ''}`}
       data-testid={dataTestId}
       data-turn-header={state}
     >

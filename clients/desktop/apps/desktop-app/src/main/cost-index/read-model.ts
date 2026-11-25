@@ -101,6 +101,7 @@ interface AggregateAccumulator {
   bySourceUsd: Record<CostSource, number>;
   byBillingUsd: Record<CostBillingBasis, number>;
   notPricedCount: number;
+  notPricedByBilling: Partial<Record<CostBillingBasis, number>>;
   hasEstimate: boolean;
   hasCodexEstimate: boolean;
   chatUsd: number;
@@ -265,6 +266,7 @@ function emptyAccumulator(): AggregateAccumulator {
       unknown: 0,
     },
     notPricedCount: 0,
+    notPricedByBilling: {},
     hasEstimate: false,
     hasCodexEstimate: false,
     chatUsd: 0,
@@ -321,7 +323,11 @@ function addWorkContribution(
     amount === undefined &&
     contribution.countNotPriced &&
     hasTokens(contribution.tokens);
-  if (isNotPriced) accumulator.notPricedCount += 1;
+  if (isNotPriced) {
+    accumulator.notPricedCount += 1;
+    accumulator.notPricedByBilling[contribution.billingBasis] =
+      (accumulator.notPricedByBilling[contribution.billingBasis] ?? 0) + 1;
+  }
   // Every priced Codex amount is an estimate, including a partly priced one.
   const isEstimate =
     contribution.costStatus === 'estimated' ||
@@ -374,6 +380,32 @@ function addProxyAccountContribution(
     if (notPriced) current.notPricedCount += 1;
     target.set(key, current);
   }
+}
+
+/**
+ * The per-basis unpriced counts of one or more totals, summed. Sparse: holds
+ * only bases above zero, and is omitted when none is, so no empty object
+ * reaches a view or a sealed file.
+ */
+function notPricedByBillingField(
+  ...counts: readonly (
+    | Readonly<Partial<Record<CostBillingBasis, number>>>
+    | undefined
+  )[]
+): Pick<CostTotals, 'notPricedByBilling'> {
+  const summed: Partial<Record<CostBillingBasis, number>> = {};
+  let any = false;
+  for (const basis of COST_BILLING_BASES) {
+    const count = counts.reduce(
+      (total, value) => total + (value?.[basis] ?? 0),
+      0,
+    );
+    if (count > 0) {
+      summed[basis] = count;
+      any = true;
+    }
+  }
+  return any ? { notPricedByBilling: summed } : {};
 }
 
 function roundShare(value: number): number {
@@ -904,6 +936,7 @@ function accumulatorToAggregate(
       byBilling: roundedByBilling,
       tokens: accumulator.tokens,
       notPricedCount: accumulator.notPricedCount,
+      ...notPricedByBillingField(accumulator.notPricedByBilling),
       hasEstimate: accumulator.hasEstimate,
     },
     turnCount,
@@ -984,6 +1017,10 @@ function mergeCostTotals(left: CostTotals, right: CostTotals): CostTotals {
     byBilling,
     tokens: sumTokens(left.tokens, right.tokens),
     notPricedCount: left.notPricedCount + right.notPricedCount,
+    ...notPricedByBillingField(
+      left.notPricedByBilling,
+      right.notPricedByBilling,
+    ),
     hasEstimate: left.hasEstimate || right.hasEstimate,
   };
 }
@@ -1757,11 +1794,14 @@ function stepKey(record: CostTurnRecord): string | undefined {
 }
 
 function stepAttemptCount(records: readonly CostTurnRecord[]): number {
+  // A resumed attempt of a paused step is an attempt of its own (CAN-7305).
   const attempts = new Set<string>();
   for (const record of records) {
     const attempt = record.pipeline?.attempt;
     attempts.add(
-      attempt === undefined ? `entry:${record.entryId}` : `attempt:${attempt}`,
+      attempt === undefined
+        ? `entry:${record.entryId}`
+        : `attempt:${String(attempt)}/r${String(record.pipeline?.recovery ?? 0)}`,
     );
   }
   return attempts.size;

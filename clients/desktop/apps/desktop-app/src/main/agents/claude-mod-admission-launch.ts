@@ -246,9 +246,10 @@ export async function resolveClaudeModAdmissionContext(
       }
       // Enabled in some settings file, but Claude's layering or install
       // records leave it out; only an unreadable record is a skipped Mod.
-      return enabledPluginsRead && !autoLoadedIds.has(pluginId)
+      if (autoLoadedIds.has(pluginId)) return [{ pluginId, installPath: null }];
+      return enabledPluginsRead
         ? [{ pluginId, installPath: null, notLoaded: true }]
-        : [{ pluginId, installPath: null }];
+        : [{ pluginId, installPath: null, installListUnreadable: true }];
     });
   return {
     enabled: true,

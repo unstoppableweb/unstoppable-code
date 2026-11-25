@@ -338,6 +338,7 @@ it('the runtime serves worker.agent.provider.list from the worker.agent owner', 
     authorityId: 'local-desktop',
     targetId: 'in_process_worker',
     list: jest.fn(() => Promise.resolve(inventory)),
+    platformSupport: jest.fn(() => Promise.resolve(['claude' as const])),
   };
   runtime = createDesktopRuntime({
     operationAdapter: operations,

@@ -414,6 +414,11 @@ export interface SidebarRowSelection {
  */
 export function useSidebarRowSelection(
   rows: SidebarSelectionRows,
+  /**
+   * The latest reported rows, when `rows` may hold a stale open row: gestures
+   * read which row is open from them.
+   */
+  readLiveRows?: () => SidebarSelectionRows,
 ): SidebarRowSelection {
   const [state, dispatch] = useReducer(
     sidebarRowSelectionReducer,
@@ -449,6 +454,16 @@ export function useSidebarRowSelection(
     (listId: string): readonly SidebarSelectionRow[] => rows.get(listId) ?? [],
     [rows],
   );
+  const readOpenKeys = useCallback((): ReadonlySet<string> => {
+    if (readLiveRows === undefined) return openKeys;
+    const open = new Set<string>();
+    for (const listRows of readLiveRows().values()) {
+      for (const row of listRows) {
+        if (row.open === true && kindByKey.has(row.key)) open.add(row.key);
+      }
+    }
+    return open;
+  }, [readLiveRows, openKeys, kindByKey]);
   const keysRef = useRef(state.keys);
   keysRef.current = state.keys;
   const seedOpenRangeAnchor = useCallback(
@@ -457,23 +472,31 @@ export function useSidebarRowSelection(
       if (current.anchor !== undefined || current.keys.size > 0) return;
       // An already-open row may come from restored navigation rather than a
       // rail click. The first Shift gesture still starts from that visible row.
+      const openKeysNow = readOpenKeys();
       const open = rowsFor(listId).find(
-        (row) => row.open === true && row.selectable && row.kind === kind,
+        (row) =>
+          openKeysNow.has(row.key) && row.selectable && row.kind === kind,
       );
       if (open !== undefined) {
         dispatch({ type: 'anchor', listId, key: open.key, kind });
       }
     },
-    [rowsFor],
+    [rowsFor, readOpenKeys],
   );
   const toggle = useCallback(
     (listId: string, key: string): void => {
       if (!keysRef.current.has(key) && !visibleKeys.has(key)) return;
       const kind = kindByKey.get(key);
       if (kind === undefined) return;
-      dispatch({ type: 'toggle', listId, key, kind, openKeys });
+      dispatch({
+        type: 'toggle',
+        listId,
+        key,
+        kind,
+        openKeys: readOpenKeys(),
+      });
     },
-    [visibleKeys, kindByKey, openKeys],
+    [visibleKeys, kindByKey, readOpenKeys],
   );
   const selectRange = useCallback(
     (listId: string, key: string): void => {

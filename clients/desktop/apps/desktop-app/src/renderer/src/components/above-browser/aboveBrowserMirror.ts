@@ -240,6 +240,24 @@ export class AboveBrowserMirror {
     this.evaluate();
   };
 
+  /**
+   * The pointer entering or leaving a marked element can show or hide it
+   * (`"hover"` mode). Moving between any other two elements changes nothing
+   * here, and re-evaluating for each of those ran the whole pass on most
+   * frames the pointer moved.
+   */
+  private readonly onPointer = (event: PointerEvent): void => {
+    const marks = (target: EventTarget | null): boolean =>
+      target instanceof Element && target.closest(MARKED_SELECTOR) !== null;
+    if (
+      this.entries.size > 0 ||
+      marks(event.target) ||
+      marks(event.relatedTarget)
+    ) {
+      this.schedule();
+    }
+  };
+
   private readonly schedule = (): void => {
     if (this.disposed || this.evaluationFrame !== null) return;
     this.evaluationFrame = this.window.requestAnimationFrame(() => {
@@ -258,10 +276,14 @@ export class AboveBrowserMirror {
 
   start(): void {
     setAboveBrowserMirrorActive(isOverlayLayerAvailable(SLOT));
-    this.topologyUnsubscribe = subscribeBrowserOverlayTopology(this.schedule);
+    // While a copy is drawn over a page it follows its original through any
+    // reflow, so it hears every change; otherwise only overlay changes.
+    this.topologyUnsubscribe = subscribeBrowserOverlayTopology(this.schedule, {
+      everyChange: () => this.entries.size > 0,
+    });
     const options = { capture: true, passive: true };
-    this.document.addEventListener('pointerover', this.schedule, options);
-    this.document.addEventListener('pointerout', this.schedule, options);
+    this.document.addEventListener('pointerover', this.onPointer, options);
+    this.document.addEventListener('pointerout', this.onPointer, options);
     this.window.addEventListener('resize', this.schedule);
     this.window.addEventListener('scroll', this.schedule, true);
     this.window.addEventListener(
@@ -287,8 +309,8 @@ export class AboveBrowserMirror {
     this.topologyUnsubscribe?.();
     this.topologyUnsubscribe = null;
     const options = { capture: true };
-    this.document.removeEventListener('pointerover', this.schedule, options);
-    this.document.removeEventListener('pointerout', this.schedule, options);
+    this.document.removeEventListener('pointerover', this.onPointer, options);
+    this.document.removeEventListener('pointerout', this.onPointer, options);
     this.window.removeEventListener('resize', this.schedule);
     this.window.removeEventListener('scroll', this.schedule, true);
     this.window.removeEventListener(

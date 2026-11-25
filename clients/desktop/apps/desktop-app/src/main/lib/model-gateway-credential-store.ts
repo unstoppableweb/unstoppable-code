@@ -18,6 +18,10 @@ import {
 import { migrateSecureStorageFile } from './secure-storage-migration';
 import { accountUsesDeviceModelGateway } from '@canopy/desktop-shared/lib/org-model-gateway';
 import {
+  gatewayUrlFingerprint,
+  reportedGatewayFingerprint,
+} from './model-gateway-stale-key-cleanup';
+import {
   clearLocalModelGatewayCredentials,
   isLocalModelGatewayOrganizationId,
   LOCAL_MODEL_GATEWAY_ACCOUNT_ID,
@@ -423,9 +427,23 @@ export async function loadModelGatewayCredential(
 }
 
 /**
+ * Whether this computer can send through the organization's gateway: a
+ * non-empty key saved for `baseUrl`, or for the URL the account reports when
+ * it is omitted.
+ */
+export async function hasUsableModelGatewayCredential(
+  organizationId: string,
+  baseUrl?: string,
+): Promise<boolean> {
+  const credential = await loadModelGatewayCredential(organizationId, baseUrl);
+  return credential !== null && credential.apiKey.trim() !== '';
+}
+
+/**
  * Whether this account has a non-empty key for the organization, saved for any
- * endpoint. A key for an older endpoint still means the gateway is set up here
- * and only needs its key saved again.
+ * endpoint. Only status reads it: a key for an older endpoint means the
+ * gateway was set up here and needs its key saved again, never that it can
+ * send.
  */
 export async function hasModelGatewayCredential(
   organizationId: string,
@@ -593,6 +611,69 @@ export async function clearModelGatewayCredential(
   return deleted ? 'cleared' : 'nothing-to-clear';
 }
 
+/**
+ * Delete the account's keys (active and staged) for an organization that were
+ * saved for the URL with `baseUrlFingerprint`, once its gateway has moved off
+ * that URL or been removed. Ownership is the account alone: a removed gateway
+ * no longer authorizes the organization, and deleting this account's own record
+ * is always safe. Keys for any other URL, such as one staged for a gateway
+ * being set up, stay; the newest of them takes over an emptied active slot.
+ */
+export async function clearModelGatewayCredentialsForEndpoint(input: {
+  accountId: string;
+  organizationId: string;
+  baseUrlFingerprint: string;
+}): Promise<boolean> {
+  const activeKey = credentialKey(input.accountId, input.organizationId);
+  let deleted = false;
+  await queueMutation(async (file) => {
+    const read = await readCanopyCloudAccountWithStatus();
+    // An unreadable account says nothing about the gateway: fail, so the
+    // caller tries again, rather than report the clear as done.
+    if (read.status === 'error') throw read.error;
+    if (read.status !== 'ok')
+      throw new GatewayCredentialStorageUnavailableError(
+        read.secureStorageFailure,
+      );
+    if (!read.entry || read.entry.account?.id.trim() !== input.accountId)
+      return 'unchanged';
+    // While the clear waited, the gateway may have come back to this URL, or
+    // a newer account may no longer say where it is: either keeps the key.
+    const reported = reportedGatewayFingerprint(
+      read.entry,
+      input.organizationId,
+    );
+    if (reported === undefined || reported === input.baseUrlFingerprint)
+      return 'unchanged';
+    const owned = Object.entries(file.records).filter(
+      ([, record]) =>
+        record.accountId === input.accountId &&
+        record.organizationId === input.organizationId,
+    );
+    owned.forEach(([key, record]) => {
+      if (
+        gatewayUrlFingerprint(record.baseUrlAtSave) === input.baseUrlFingerprint
+      ) {
+        delete file.records[key];
+        deleted = true;
+      }
+    });
+    if (!deleted) return 'unchanged';
+    if (file.records[activeKey]) return;
+    const [newestKey, newest] =
+      owned
+        .filter(([key]) => file.records[key] !== undefined)
+        .sort(
+          ([, left], [, right]) =>
+            Date.parse(right.updatedAt) - Date.parse(left.updatedAt),
+        )[0] ?? [];
+    if (newestKey === undefined || newest === undefined) return;
+    delete file.records[newestKey];
+    file.records[activeKey] = newest;
+  });
+  return deleted;
+}
+
 /** Persist a gateway-issued runtime rejection without exposing or replacing the key. */
 export async function markModelGatewayCredentialRejected(
   organizationId: string,
@@ -664,8 +745,8 @@ export async function authorizeModelGatewayCredential(
 /**
  * Move the device gateway's key for `baseUrl` into the signed-in account's
  * slot for its Personal organization, re-keying the ciphertext without
- * decrypting it. Never replaces a key the account already holds for that
- * endpoint.
+ * decrypting it. When the account already holds a key for that endpoint, the
+ * more recently saved of the two wins.
  */
 export async function adoptLocalModelGatewayCredential(input: {
   accountId: string;
@@ -687,17 +768,24 @@ export async function adoptLocalModelGatewayCredential(input: {
       );
       if (current?.accountId !== owner.accountId)
         throw new Error('Gateway account or authorization changed');
-      const held = Object.values(file.records).some(
-        (record) =>
-          record.accountId === owner.accountId &&
-          record.organizationId === input.organizationId &&
-          normalizeModelGatewayBaseUrl(record.baseUrlAtSave) === baseUrl,
-      );
-      if (held) return 'unchanged';
-      const existing = file.records[owner.key];
-      const key = existing
-        ? JSON.stringify([owner.accountId, input.organizationId, baseUrl])
-        : owner.key;
+      // The newest key the account holds for this endpoint, active or staged.
+      const held = Object.entries(file.records)
+        .filter(
+          ([, record]) =>
+            record.accountId === owner.accountId &&
+            record.organizationId === input.organizationId &&
+            normalizeModelGatewayBaseUrl(record.baseUrlAtSave) === baseUrl,
+        )
+        .sort(
+          ([, a], [, b]) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt),
+        )[0];
+      if (held && Date.parse(held[1].updatedAt) >= Date.parse(local.updatedAt))
+        return 'unchanged';
+      const key =
+        held?.[0] ??
+        (file.records[owner.key]
+          ? JSON.stringify([owner.accountId, input.organizationId, baseUrl])
+          : owner.key);
       file.records[key] = {
         accountId: owner.accountId,
         organizationId: input.organizationId,

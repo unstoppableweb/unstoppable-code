@@ -71,6 +71,15 @@ export const personalAiGatewayConfigSchema = z.strictObject({
 export type PersonalAiGatewayConfig = z.output<
   typeof personalAiGatewayConfigSchema
 >;
+/**
+ * Whether cloud chats use the Personal gateway. Responses carry it beside
+ * `gateway`, never inside it: shipped desktops parse `gateway` strictly. An
+ * older server omits it, which means on.
+ */
+export const personalAiGatewayUseInCloudChatsSchema = z
+  .boolean()
+  .optional()
+  .transform((value) => value ?? true);
 export const personalAiGatewayUpdateSchema = z.strictObject({
   expectedOrganizationId: z.uuid(),
   expectedRevision: z.string().max(128),
@@ -80,6 +89,8 @@ export const personalAiGatewayUpdateSchema = z.strictObject({
   enabled: z.boolean().optional(),
   onlyThisGateway: z.boolean().optional(),
   promptCachePassthrough: z.boolean().optional(),
+  /** Whether cloud chats use this gateway. Only-mode keeps it on. */
+  useInCloudChats: z.boolean().optional(),
 });
 export type PersonalAiGatewayUpdate = z.output<
   typeof personalAiGatewayUpdateSchema

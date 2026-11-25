@@ -104,7 +104,24 @@ function isCostTotals(value: unknown): value is CostTotals {
     ) &&
     isTokenTotals(value.tokens) &&
     isNonnegativeFinite(value.notPricedCount) &&
+    isOptionalNotPricedByBilling(value.notPricedByBilling) &&
     typeof value.hasEstimate === 'boolean'
+  );
+}
+
+/**
+ * The per-basis unpriced split (CAN-7305). Files sealed before it omit the
+ * field; when present it holds only known bases with positive counts.
+ */
+function isOptionalNotPricedByBilling(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!isRecord(value)) return false;
+  return Object.entries(value).every(
+    ([basis, count]) =>
+      COST_BILLING_BASES.some((known) => known === basis) &&
+      typeof count === 'number' &&
+      Number.isSafeInteger(count) &&
+      count > 0,
   );
 }
 
@@ -190,7 +207,9 @@ function isCostTurnRecord(value: unknown): value is CostTurnRecord {
       isOptionalString(value.pipeline.jobId) &&
       isOptionalString(value.pipeline.stepId) &&
       (value.pipeline.attempt === undefined ||
-        isNonnegativeFinite(value.pipeline.attempt)));
+        isNonnegativeFinite(value.pipeline.attempt)) &&
+      (value.pipeline.recovery === undefined ||
+        isNonnegativeFinite(value.pipeline.recovery)));
   const isToolCounts =
     value.toolCounts === undefined ||
     (isRecord(value.toolCounts) &&

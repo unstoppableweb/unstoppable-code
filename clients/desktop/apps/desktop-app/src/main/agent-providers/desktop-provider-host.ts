@@ -1,5 +1,4 @@
 import { isAntigravityHarnessEnabled } from '../antigravity/feature-flag';
-import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { WorkerAgentProviderHost } from '@canopy/core-runtime/node/agent/providers';
 import {
@@ -31,7 +30,16 @@ export const PROVIDER_STATUS_DEADLINE_MS = 25_000;
 /** Where the host reads; production values lazy-import their modules on first use. */
 export interface DesktopProviderSources {
   buildRegistry(): ModelRegistrySnapshot | Promise<ModelRegistrySnapshot>;
+  /** Platform support (platformSupported) narrowed by the rollout flags. */
   supported():
+    | Readonly<Record<WorkerAgentProviderId, boolean>>
+    | Promise<Readonly<Record<WorkerAgentProviderId, boolean>>>;
+  /**
+   * Which providers this platform can run, from pinned runtime artifacts and
+   * platform checks alone: no executable lookup, hashing, status read or
+   * rollout flag.
+   */
+  platformSupported():
     | Readonly<Record<WorkerAgentProviderId, boolean>>
     | Promise<Readonly<Record<WorkerAgentProviderId, boolean>>>;
   readAuthState(
@@ -69,34 +77,43 @@ async function readNativeAuthState(
   return nativeAuthState(status, userSupplied);
 }
 
+/** Pinned runtime artifacts and platform checks only. */
+async function readPlatformSupport(): Promise<
+  Readonly<Record<WorkerAgentProviderId, boolean>>
+> {
+  const [antigravity, cursor, copilot, opencode] = await Promise.all([
+    import('@canopy/desktop-shared/node/antigravity/runtime-artifacts'),
+    import('@canopy/desktop-shared/node/cursor/runtime-metadata'),
+    import('@canopy/desktop-shared/node/copilot/runtime-metadata'),
+    import('@canopy/desktop-shared/node/opencode/runtime-metadata'),
+  ]);
+  return {
+    // macOS and Linux, where a pinned CLI exists; Windows stays refused.
+    antigravity: antigravity.getAntigravityRuntimeArtifact() !== undefined,
+    claude: true,
+    codex: true,
+    ollama: isOllamaSupportedOnPlatform(),
+    cursor: cursor.getCursorRuntimeArtifact() !== undefined,
+    copilot: copilot.getCopilotRuntimeArtifact() !== undefined,
+    opencode: opencode.getOpenCodeRuntimeArtifact() !== undefined,
+  };
+}
+
 const productionSources = {
   async buildRegistry(): Promise<ModelRegistrySnapshot> {
     return (
       await import('../models/model-registry')
     ).buildModelRegistrySnapshot();
   },
+  platformSupported: readPlatformSupport,
   async supported(): Promise<Readonly<Record<WorkerAgentProviderId, boolean>>> {
-    const [cursor, copilot, opencode] = await Promise.all([
-      import('@canopy/desktop-shared/node/cursor/runtime-metadata'),
-      import('@canopy/desktop-shared/node/copilot/runtime-metadata'),
-      import('@canopy/desktop-shared/node/opencode/runtime-metadata'),
-    ]);
+    const platform = await readPlatformSupport();
     return {
-      antigravity:
-        isAntigravityHarnessEnabled() &&
-        hostPlatformOperatingSystem() === 'darwin',
-      claude: true,
-      codex: true,
-      ollama: isOllamaSupportedOnPlatform(),
-      cursor:
-        isCursorHarnessEnabled() &&
-        cursor.getCursorRuntimeArtifact() !== undefined,
-      copilot:
-        isCopilotHarnessEnabled() &&
-        copilot.getCopilotRuntimeArtifact() !== undefined,
-      opencode:
-        isOpenCodeHarnessEnabled() &&
-        opencode.getOpenCodeRuntimeArtifact() !== undefined,
+      ...platform,
+      antigravity: isAntigravityHarnessEnabled() && platform.antigravity,
+      cursor: isCursorHarnessEnabled() && platform.cursor,
+      copilot: isCopilotHarnessEnabled() && platform.copilot,
+      opencode: isOpenCodeHarnessEnabled() && platform.opencode,
     };
   },
   async readAuthState(
@@ -223,6 +240,10 @@ export function createDesktopProviderHost(
   return {
     authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
     targetId: CANOPY_IN_PROCESS_WORKER_TARGET_ID,
+    async platformSupport() {
+      const platform = await sources.platformSupported();
+      return WORKER_AGENT_PROVIDER_IDS.filter((provider) => platform[provider]);
+    },
     async list({ scope, probe }) {
       const supported = await sources.supported();
 

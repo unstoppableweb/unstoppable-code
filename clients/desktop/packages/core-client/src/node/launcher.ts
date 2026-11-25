@@ -9,6 +9,7 @@ import {
   canopyDaemonRefusalError,
   canopyEndpointRepairRequiredError,
   canopyLaunchDetails,
+  canopyLaunchStepDetails,
 } from './daemon-refusal';
 import { classifyCanopyDescriptor } from './descriptor';
 import {
@@ -251,7 +252,7 @@ export async function attachOrStartCanopyDaemon<T>(
   ): Promise<CanopyDaemonLaunchResult<T> | null> => {
     const secret = await deadline.run(
       (signal) => source.readToken(descriptor.tokenRef, signal),
-      fixed('Core token read failed.'),
+      fixed('Core token read failed.', canopyLaunchStepDetails('read_token')),
     );
     const { kind, path } = descriptor.endpoint;
     const auth = { secret, dataRootHash: options.dataRootHash };

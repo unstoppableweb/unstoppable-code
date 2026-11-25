@@ -2,7 +2,7 @@
 
 import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
 import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
-import { useState, type JSX, type ReactNode } from 'react';
+import { memo, useEffect, useState, type JSX, type ReactNode } from 'react';
 import {
   Button,
   DataTableBody,
@@ -93,6 +93,24 @@ const RUN_MENU_ROWS: Readonly<
 };
 
 export const WORKFLOWS_RUNS_RENDER_BATCH = 100;
+
+/**
+ * Rows drawn in the frame the table mounts, enough to fill a tall window, and
+ * the rows each later step adds until the batch is drawn. Drawing all 100 rows
+ * at once held the page switch for well over 100 ms.
+ */
+const WORKFLOWS_RUNS_FIRST_FRAME_ROWS = 30;
+const WORKFLOWS_RUNS_STEP_ROWS = 35;
+
+/** Runs `run` once the browser has drawn and is idle, or soon after anyway. */
+function afterNextDraw(run: () => void): () => void {
+  if (typeof window.requestIdleCallback === 'function') {
+    const idle = window.requestIdleCallback(run, { timeout: 200 });
+    return (): void => window.cancelIdleCallback(idle);
+  }
+  const timer = window.setTimeout(run, 32);
+  return (): void => window.clearTimeout(timer);
+}
 
 /**
  * The status mark at the head of a run row: the shared status glyph, named
@@ -296,7 +314,7 @@ export interface WorkflowsRunsTableProps {
  * watcher. Rows are focusable; Enter or a click opens the result, and a row
  * without a result expands to show the output it recorded.
  */
-export function WorkflowsRunsTable({
+export const WorkflowsRunsTable = memo(function WorkflowsRunsTable({
   rows,
   now,
   locale,
@@ -312,13 +330,28 @@ export function WorkflowsRunsTable({
 }: WorkflowsRunsTableProps): JSX.Element {
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [renderLimit, setRenderLimit] = useState(WORKFLOWS_RUNS_RENDER_BATCH);
+  // How many rows are drawn so far; it climbs to the batch in steps.
+  const [drawnLimit, setDrawnLimit] = useState(WORKFLOWS_RUNS_FIRST_FRAME_ROWS);
   // An explicit selection must be rendered before the host can focus it.
   const highlightedIndex =
     highlightKey === null
       ? -1
       : rows.findIndex((row) => row.key === highlightKey);
-  const shown = rows.slice(0, Math.max(renderLimit, highlightedIndex + 1));
-  const hiddenLoaded = rows.length - shown.length;
+  const limit = Math.max(renderLimit, highlightedIndex + 1);
+  const shown = rows.slice(
+    0,
+    Math.max(Math.min(limit, drawnLimit), highlightedIndex + 1),
+  );
+  const drawnAll = shown.length >= Math.min(rows.length, limit);
+  useEffect(() => {
+    if (drawnAll) return undefined;
+    return afterNextDraw(() => {
+      setDrawnLimit((drawn) => drawn + WORKFLOWS_RUNS_STEP_ROWS);
+    });
+  }, [drawnAll, drawnLimit]);
+  // Counted against the batch, not the rows drawn so far, so Load more does
+  // not show while the rest of a batch is still on its way.
+  const hiddenLoaded = rows.length - Math.min(rows.length, limit);
 
   const activate = (row: WorkflowRunRow): void => {
     if (row.result.available) {
@@ -537,7 +570,7 @@ export function WorkflowsRunsTable({
       ) : null}
     </div>
   );
-}
+});
 
 /** Library workflows the empty Runs page points at (CAN-4311). */
 export interface WorkflowsRunsLibraryPreview {

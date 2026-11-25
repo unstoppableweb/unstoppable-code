@@ -1,8 +1,12 @@
 import { assertLegacyWorktreeBaseRequest } from '../worktree-base-capability';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
+import { REMOTE_IPC_CHANNELS } from '@canopy/protocol/remote-control/channels';
+import { readInstalledItemPushCorrelation } from '../../installed-items/installed-item-push';
 import type { RemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import type { BrowserWindow } from 'electron';
 import type { DeviceKind } from '@canopy/protocol/device-relay';
+import type { HostedInvocationProfile } from '@canopy/protocol/remote-control/channels';
+import { APP_ADVISOR_PROJECT_ID } from '@canopy/protocol/chat-targets';
 import { ChatEventInterestFilter } from '../../ipc/chat-event-interest';
 import { shouldDropObservabilityEvent } from '../../ipc/observability-event-interest';
 import { getObservabilityService } from '../../observability';
@@ -18,6 +22,8 @@ import {
   HelloParamsSchema,
   FileReadParamsSchema,
   InvokeParamsSchema,
+  InvokeRequestParamsSchema,
+  type PluginInstallRefreshNotice,
   PairRevokeParamsSchema,
   REMOTE_EVENTS,
   REMOTE_TRANSPORT_RESUME_VERSION,
@@ -73,6 +79,7 @@ import { createPushForwarder, type PushForwarder } from './push-forwarder';
 import { RemotePushSummaryAccumulator } from './push-summary';
 import type { RemoteCoreAccess } from './remote-core-access';
 import type { RemoteUploadStore } from './uploads';
+import { TunnelStreamMux, type TunnelOpenHandler } from '../tunnel/stream-mux';
 
 export interface HostSessionOptions {
   session: SecureSession;
@@ -112,6 +119,25 @@ export interface HostSessionOptions {
    * session (CAN-5985). A hosted session without it is refused the channel.
    */
   hostedChat?: (request: unknown) => Promise<unknown>;
+  /**
+   * What a hosted session's verified delegation says it is (CAN-7604): a
+   * Slack session may reach the Orchestrator's reviewed calls, which every
+   * other hosted session is refused.
+   */
+  hostedProfile?: HostedInvocationProfile;
+  /**
+   * A Slack session's Orchestrator reads, served on this computer (CAN-7604).
+   * Without it a hosted session's Orchestrator reads are refused.
+   */
+  hostedOrchestrator?: {
+    /**
+     * Whether a transcript read may name this chat in this Orchestrator Work
+     * Entry: a Slack conversations entry, and a chat Slack sent to.
+     */
+    readsChat(entryId: string, chatId: string): Promise<boolean>;
+    /** `app-advisor:slack-turn-status`, already admitted by the policy. */
+    turnStatus(request: unknown): Promise<unknown>;
+  };
   /** This computer's version; a controller on another protocol is refused. */
   version: RemoteVersion;
   hello: () => Pick<HelloResult, 'name' | 'platform'>;
@@ -145,6 +171,17 @@ export interface HostSessionOptions {
    * controller's start page URL is refused.
    */
   storedStartPages?: StoredStartPages;
+  /**
+   * Dials each tunnel stream a desktop controller opens. Without it every
+   * `tunnel.open` is refused as unavailable.
+   */
+  tunnelOpen?: TunnelOpenHandler;
+  /**
+   * Streams this session keeps open at once; defaults to
+   * `TUNNEL_MAX_STREAMS`. A host that advertises `features.webPreview`
+   * advertises the same number.
+   */
+  tunnelMaxStreams?: number;
 }
 
 /** The local form's settlement, which this session reaches for a person. */
@@ -242,12 +279,16 @@ export class RemoteHostSession {
   );
   private compatible = false;
   private exactWorktreeBaseBranch = false;
+  /** The controller parses `reason` in a secret-request.settle result. */
+  private secretSettleReason = false;
   /** The controller sent a valid hello, whatever its protocol. */
   private greeted = false;
   /** Each open core stream's close, by key, including ones still opening. */
   private readonly coreSubscriptions = new Map<string, () => void>();
   private readonly closedListeners = new Set<() => void>();
   private readonly urlWritebacks: ControllerUrlWritebacks;
+  /** Made on the first `tunnel.open`; desktop controllers only. */
+  private tunnels: TunnelStreamMux | null = null;
 
   constructor(private readonly options: HostSessionOptions) {
     this.urlWritebacks = new ControllerUrlWritebacks(options.storedStartPages);
@@ -290,6 +331,7 @@ export class RemoteHostSession {
       channel,
       args,
       this.options.disposition,
+      this.options.hostedProfile,
     );
   }
 
@@ -402,6 +444,10 @@ export class RemoteHostSession {
     args: unknown[],
     surface?: RemoteSurface,
   ): void {
+    // A first-party session (the Slack worker, CAN-7604) polls its turn
+    // status and reads its own transcripts; it never hears this computer's
+    // pushes, which would carry every chat's events.
+    if (this.options.hostedProfile?.firstPartyClient !== undefined) return;
     if (
       (channel === IPC_CHANNELS.chatEvent ||
         channel === IPC_CHANNELS.observabilityEvent) &&
@@ -427,7 +473,27 @@ export class RemoteHostSession {
     )
       return;
     let bytes = 0;
-    const urlArgs = projectControllerPush(channel, args);
+    // Dedup happens before projection, on the identity shared by the main
+    // mirror and the bridge copies. Only the originating browser session
+    // gets the token; all other controllers still get the legacy notice.
+    let projectedArgs = args;
+    if (channel === REMOTE_IPC_CHANNELS.installedItemsChanged) {
+      projectedArgs = [];
+      const correlation = readInstalledItemPushCorrelation(args[0]);
+      if (
+        this.options.kind === 'browser' &&
+        correlation !== undefined &&
+        Array.from(this.startedBridges.values()).some(
+          (started) => started.window?.webContents.id === correlation.senderId,
+        )
+      ) {
+        const notice: PluginInstallRefreshNotice = {
+          installRefreshToken: correlation.installRefreshToken,
+        };
+        projectedArgs = [notice];
+      }
+    }
+    const urlArgs = projectControllerPush(channel, projectedArgs);
     const controllerArgs =
       this.options.kind === 'browser'
         ? projectBrowserPush(channel, urlArgs)
@@ -442,8 +508,10 @@ export class RemoteHostSession {
       surface === undefined
         ? { channel, args: wireArgs }
         : { channel, args: wireArgs, surface },
-      (serializedBytes) => {
-        bytes = serializedBytes;
+      {
+        onSerialized: (serializedBytes) => {
+          bytes = serializedBytes;
+        },
       },
     );
     if (sent)
@@ -515,12 +583,21 @@ export class RemoteHostSession {
         'This computer no longer allows remote control.',
       );
     }
+    // A first-party session (Slack) only negotiates and invokes its
+    // Orchestrator calls; it never revokes the hosted pairing it rides on.
+    if (
+      this.options.hostedProfile?.firstPartyClient !== undefined &&
+      method !== REMOTE_METHODS.hello &&
+      method !== REMOTE_METHODS.invoke
+    )
+      throw new UnknownRemoteMethodError(method);
     switch (method) {
       case REMOTE_METHODS.hello:
         return this.handleHello(params);
       case REMOTE_METHODS.invoke: {
         if (!this.compatible) throw this.mismatchError();
-        const { channel, args, surface } = InvokeParamsSchema.parse(params);
+        const { channel, args, surface, installRefreshToken } =
+          InvokeRequestParamsSchema.parse(params);
         if (!this.allowsInvoke(channel, args)) {
           throw new RemoteChannelUnavailableError(channel);
         }
@@ -530,16 +607,36 @@ export class RemoteHostSession {
         if (this.servesHostedChat(channel)) {
           return this.dispatchHostedChat(channel, args[0]);
         }
+        if (this.servesSlackTurnStatus(channel)) {
+          const orchestrator =
+            this.options.kind === 'hosted'
+              ? this.options.hostedOrchestrator
+              : undefined;
+          if (!orchestrator) throw new RemoteChannelUnavailableError(channel);
+          return orchestrator.turnStatus(args[0]);
+        }
+        if (await this.refusesOrchestratorRead(channel, args))
+          throw new RemoteChannelUnavailableError(channel);
         if (!this.exactWorktreeBaseBranch)
           assertLegacyWorktreeBaseRequest(channel, args[0]);
         const bridge = await this.bridgeFor(surface ?? 'main');
+        // The browser still sends exactly three IPC arguments. A fourth
+        // value exists only on this host's private Electron bridge hop and
+        // can only be set from the admitted browser invoke envelope.
+        const bridgeArgs =
+          channel !== REMOTE_IPC_CHANNELS.pluginsInstallPlugin
+            ? args
+            : this.options.kind === 'browser' &&
+                installRefreshToken !== undefined
+              ? [...args, installRefreshToken]
+              : args.slice(0, 3);
         const urlResult = projectControllerResult(
           channel,
           await this.invokeWithStoredUrls(
             bridge,
             surface ?? 'main',
             channel,
-            args,
+            bridgeArgs,
           ),
         );
         const result =
@@ -609,6 +706,10 @@ export class RemoteHostSession {
       }
       case REMOTE_METHODS.secretRequestSettle:
         return this.settleSecretRequest(method, params);
+      case REMOTE_METHODS.tunnelOpen:
+        if (!this.compatible) throw this.mismatchError();
+        this.assertDesktopProfile(method);
+        return this.tunnelMux().serveOpen(params);
       default:
         throw new UnknownRemoteMethodError(method);
     }
@@ -651,9 +752,13 @@ export class RemoteHostSession {
             kind,
           )
         : await port.decline(answer.requestId, kind);
-    return result.error === undefined
-      ? { accepted: result.accepted }
-      : { accepted: result.accepted, error: result.error };
+    return {
+      accepted: result.accepted,
+      ...(result.error === undefined ? {} : { error: result.error }),
+      ...(result.reason !== undefined && this.secretSettleReason
+        ? { reason: result.reason }
+        : {}),
+    };
   }
 
   /**
@@ -803,6 +908,7 @@ export class RemoteHostSession {
         (this.options.kind === 'desktop' || this.options.kind === 'browser') &&
         parsed.data.exactWorktreeBaseBranch === true;
     }
+    this.secretSettleReason = parsed.data.secretRequestSettleReason === true;
     this.compatible = true;
     if (this.exactWorktreeBaseBranch && hello.features)
       hello.features.exactWorktreeBaseBranch = true;
@@ -834,6 +940,50 @@ export class RemoteHostSession {
   private servesHostedChat(channel: string): boolean {
     return (
       this.options.kind === 'hosted' && channel === IPC_CHANNELS.chatCommand
+    );
+  }
+
+  /**
+   * A Slack session's turn status, which this computer serves itself. It
+   * never reaches the bridge, so every other controller is refused it.
+   */
+  private servesSlackTurnStatus(channel: string): boolean {
+    return channel === IPC_CHANNELS.appAdvisorSlackTurnStatus;
+  }
+
+  /** A hosted transcript read in the Orchestrator project. */
+  private namesOrchestrator(
+    channel: string,
+    args: readonly unknown[],
+  ): boolean {
+    const request = args[0];
+    return (
+      this.options.kind === 'hosted' &&
+      channel === IPC_CHANNELS.chatGetTranscriptPage &&
+      typeof request === 'object' &&
+      request !== null &&
+      Reflect.get(request, 'projectId') === APP_ADVISOR_PROJECT_ID
+    );
+  }
+
+  /**
+   * A Slack session reads only the transcripts of chats Slack sent to, in the
+   * Slack conversations entries (CAN-7604); the policy already refused every
+   * other hosted session and every other Orchestrator channel.
+   */
+  private async refusesOrchestratorRead(
+    channel: string,
+    args: readonly unknown[],
+  ): Promise<boolean> {
+    if (!this.namesOrchestrator(channel, args)) return false;
+    const orchestrator = this.options.hostedOrchestrator;
+    const entryId: unknown = Reflect.get(Object(args[0]), 'worktreeId');
+    const chatId: unknown = Reflect.get(Object(args[0]), 'chatId');
+    return (
+      orchestrator === undefined ||
+      typeof entryId !== 'string' ||
+      typeof chatId !== 'string' ||
+      !(await orchestrator.readsChat(entryId, chatId))
     );
   }
 
@@ -884,9 +1034,39 @@ export class RemoteHostSession {
     );
   }
 
+  /** The session's tunnel streams, made when the first one opens. */
+  private tunnelMux(): TunnelStreamMux {
+    const session = this.options.session;
+    this.tunnels ??= new TunnelStreamMux({
+      role: 'host',
+      transport: {
+        notify: (name, payload, options): boolean =>
+          this.rpc.notify(name, payload, options),
+        request: (method, params, options): Promise<unknown> =>
+          this.rpc.request(method, params, options),
+        heldBytes: (): number => session.heldBytes,
+        onHeldBytesReleased: (listener): (() => void) =>
+          session.onHeldBytesReleased(listener),
+      },
+      ...(this.options.tunnelOpen ? { open: this.options.tunnelOpen } : {}),
+      ...(this.options.tunnelMaxStreams === undefined
+        ? {}
+        : { maxStreams: this.options.tunnelMaxStreams }),
+    });
+    // An open answered after the session closed dials nothing.
+    if (this.closed) this.tunnels.close();
+    return this.tunnels;
+  }
+
   private handleEvent(name: string, payload: unknown): void {
     if (!this.compatible) return;
     if (!this.ensureAuthorized()) return;
+    if (
+      this.options.hostedProfile?.firstPartyClient !== undefined &&
+      name !== REMOTE_EVENTS.ipcSend
+    )
+      return;
+    if (this.tunnels?.handleEvent(name, payload)) return;
     if (name === REMOTE_EVENTS.appAdvisorWindowState) {
       const state = AppAdvisorWindowStateParamsSchema.safeParse(payload);
       if (state.success) this.options.onAppAdvisorWindowState?.(state.data);
@@ -902,6 +1082,12 @@ export class RemoteHostSession {
       this.dispatchHostedChat(channel, args[0]).catch(() => undefined);
       return;
     }
+    // Reads have no effect as sends; an Orchestrator one never reaches the bridge.
+    if (
+      this.servesSlackTurnStatus(channel) ||
+      this.namesOrchestrator(channel, args)
+    )
+      return;
     void this.bridgeFor(surface ?? 'main').then(
       (bridge) => bridge.post(channel, args),
       () => undefined,
@@ -915,6 +1101,7 @@ export class RemoteHostSession {
     this.pushSummary.close();
     for (const close of Array.from(this.coreSubscriptions.values())) close();
     this.coreSubscriptions.clear();
+    this.tunnels?.close();
     for (const unsubscribe of this.unsubscribers) unsubscribe();
     this.unsubscribers.length = 0;
     for (const webContentsId of Array.from(this.leasedWebContents.values()))

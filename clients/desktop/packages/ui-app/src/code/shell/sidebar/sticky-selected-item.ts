@@ -250,6 +250,22 @@ export function findSelectedPinHosts(
   };
 }
 
+/** The same six hosts (or both none), so a re-find can keep its state. */
+export function sameSelectedPinHosts(
+  a: SelectedPinHosts | null,
+  b: SelectedPinHosts | null,
+): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    a.topHeader === b.topHeader &&
+    a.topRow === b.topRow &&
+    a.bottomHeader === b.bottomHeader &&
+    a.bottomRow === b.bottomRow &&
+    a.topGroupHeader === b.topGroupHeader &&
+    a.bottomGroupHeader === b.bottomGroupHeader
+  );
+}
+
 /**
  * Pin-state decision for a selected Chats row. The Chats header sits above
  * the Projects band and stays stuck under the More row, so the row's top seat

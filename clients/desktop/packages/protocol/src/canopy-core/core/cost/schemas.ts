@@ -88,6 +88,18 @@ export const CostTotalsSchema = z.strictObject({
   }),
   tokens: CostTokenTotalsSchema,
   notPricedCount: count,
+  /** Sparse per-basis split of `notPricedCount` (CAN-7305). */
+  notPricedByBilling: z
+    .strictObject({
+      subscription: positiveCount.optional(),
+      ai_credits: positiveCount.optional(),
+      account_proxy: positiveCount.optional(),
+      api_key: positiveCount.optional(),
+      org_gateway: positiveCount.optional(),
+      local: positiveCount.optional(),
+      unknown: positiveCount.optional(),
+    })
+    .optional(),
   hasEstimate: z.boolean(),
 });
 

@@ -1035,6 +1035,8 @@ export const createMessagingSlice: StateCreator<
         ) ?? createdTab;
     }
 
+    options?.onTargetResolved?.({ ...sel, chatId });
+
     // A mode downgrade on a newly materializing tab may itself be queued
     // behind canonical creation. Do not let any send path observe the old,
     // more permissive mode while that transition is still in flight.
@@ -2562,19 +2564,21 @@ export const createMessagingSlice: StateCreator<
           );
           // The toast can appear while another chat is in view, so its header
           // names the chat's workspace and worktree and a click opens the chat.
-          const { meta, onClick } = getChatToastAttribution({
-            projectId: sel.projectId,
-            worktreeId: sel.worktreeId,
-            chatId,
-          });
-          useGitHubStore
-            .getState()
-            .addToast(
-              "Couldn't send your message. Try again.",
-              'error',
-              onClick,
-              { ...meta, caught: error },
-            );
+          if (!options?.suppressDispatchErrorToast) {
+            const { meta, onClick } = getChatToastAttribution({
+              projectId: sel.projectId,
+              worktreeId: sel.worktreeId,
+              chatId,
+            });
+            useGitHubStore
+              .getState()
+              .addToast(
+                "Couldn't send your message. Try again.",
+                'error',
+                onClick,
+                { ...meta, caught: error },
+              );
+          }
           options?.onDispatchRejected?.();
           if (options?.throwOnDispatchFailure === true) {
             throw error;

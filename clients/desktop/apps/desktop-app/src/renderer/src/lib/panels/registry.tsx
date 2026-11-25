@@ -138,6 +138,7 @@ import { PIPELINE_EXECUTION_PANEL_TITLE } from './pipeline-execution-panel-ident
 import { requestFilePanelPlacementAsSibling } from './chat-panel-sync';
 import { ActivitySectionChromeContext } from '@/components/shared/panel-section';
 import { FilesTreeTab } from '@/components/activity/FilesTreeTab';
+import { useHiddenRailContentMounted } from '@/components/activity/useHiddenRailContentMounted';
 import { BrowserPanelSurface } from '@/components/browser/BrowserPanelSurface';
 import { UsagePanel } from '@/components/panels/usage/UsagePanel';
 import { usePanelWorktreeSelection } from './panel-worktree-context';
@@ -1244,16 +1245,30 @@ const PanelFileExplorerContent = memo(function PanelFileExplorerContent(
 ): JSX.Element {
   const selectedWorktree = useSelectedWorktree();
   const hostVisible = usePanelHostState().visible !== false;
+  const shown = props.isVisible && hostVisible;
+  // A tree behind another tab mounts once the switch to its worktree has been
+  // drawn, like the hidden activity rail: built in the same commit, it was
+  // about a third of the components a worktree switch mounted (some 600 for a
+  // mid-size repository), none of them on screen. A tree on screen mounts at
+  // once, and a mounted tree stays mounted.
+  const treeMounted = useHiddenRailContentMounted(
+    shown,
+    selectedWorktree
+      ? `${selectedWorktree.projectId}/${selectedWorktree.worktreeId}`
+      : null,
+  );
   return (
     <PanelContentFrame kind="file-explorer" panelId={props.panelId}>
       {selectedWorktree ? (
-        <FilesTreeTab
-          key={`${selectedWorktree.projectId}/${selectedWorktree.worktreeId}`}
-          projectId={selectedWorktree.projectId}
-          worktreeId={selectedWorktree.worktreeId}
-          searchShortcutActive={props.isActive}
-          isVisible={props.isVisible && hostVisible}
-        />
+        treeMounted ? (
+          <FilesTreeTab
+            key={`${selectedWorktree.projectId}/${selectedWorktree.worktreeId}`}
+            projectId={selectedWorktree.projectId}
+            worktreeId={selectedWorktree.worktreeId}
+            searchShortcutActive={props.isActive}
+            isVisible={shown}
+          />
+        ) : null
       ) : (
         <PanelEmptyState />
       )}

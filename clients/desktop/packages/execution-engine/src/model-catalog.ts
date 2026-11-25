@@ -897,6 +897,10 @@ function getCursorEntryLabels(): ReadonlyMap<string, string> {
   return labels;
 }
 
+/** `<id>@<organizationId>`: how an organization gateway names its models. */
+export const ORG_GATEWAY_MODEL_ID_PATTERN =
+  /^(.+)@([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
 /** Return the human-readable label for a model, using a display-only ID fallback. */
 export function getModelDisplayName(model: string): string {
   if (isOpenCodeModel(model))
@@ -940,7 +944,10 @@ export function getModelDisplayName(model: string): string {
   const resolved = resolveModelAlias(model);
   return (
     _displayNames[resolved] ??
-    (isOllamaModel(resolved) ? stripOllamaModelPrefix(resolved) : resolved)
+    (isOllamaModel(resolved)
+      ? stripOllamaModelPrefix(resolved)
+      : // A gateway row that is gone names its model, not its organization.
+        (ORG_GATEWAY_MODEL_ID_PATTERN.exec(resolved)?.[1] ?? resolved))
   );
 }
 

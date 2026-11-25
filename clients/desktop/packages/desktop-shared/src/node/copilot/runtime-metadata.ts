@@ -54,12 +54,17 @@ function config(): CopilotRuntimeConfig {
 const metadata = config();
 export const COPILOT_RUNTIME_VERSION = metadata.version;
 
+/**
+ * The pinned artifact for a host, or undefined when none is pinned. Linux pins
+ * are GitHub's glibc builds; like every platform, the launch check is the
+ * pinned executable digest.
+ */
 export function getCopilotRuntimeArtifact(
   platform: string = process.platform,
   arch: string = process.arch,
 ): CopilotRuntimeArtifact | undefined {
   if (
-    !['darwin', 'win32'].includes(platform) ||
+    !['darwin', 'linux', 'win32'].includes(platform) ||
     !['arm64', 'x64'].includes(arch)
   )
     return undefined;

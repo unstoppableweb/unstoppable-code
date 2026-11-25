@@ -79,6 +79,7 @@ export interface ActiveTranscriptView {
 }
 
 export interface ActiveComposerView {
+  claudeConnectorAvailability?: ChatTab['claudeConnectorAvailability'];
   /** Keep drafting while the first send awaits preparation or acknowledgement. */
   firstSendPreparing?: boolean;
   /**
@@ -320,6 +321,7 @@ export function toActiveComposerView(
   const interruptedTurnResume = presentableInterruptedTurnResume(tab);
 
   return {
+    claudeConnectorAvailability: tab.claudeConnectorAvailability,
     id: tab.id,
     ...(tab.queuedHookPlaceholder === true
       ? { queuedHookPlaceholder: true }

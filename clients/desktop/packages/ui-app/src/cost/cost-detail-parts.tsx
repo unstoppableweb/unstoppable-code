@@ -83,7 +83,7 @@ export function CostEstimateNote({
 
 type CostBillingSectionProps =
   | {
-      readonly totals: Pick<CostTotals, 'byBilling'>;
+      readonly totals: Pick<CostTotals, 'byBilling' | 'notPricedByBilling'>;
       readonly label: string;
     }
   | {
@@ -97,7 +97,11 @@ export function CostBillingSection(
 ): JSX.Element {
   const byBilling =
     'totals' in props ? props.totals.byBilling : props.byBilling;
-  const segments = costBillingSegments(byBilling);
+  // A basis paid with no dollars (an organization gateway) still gets a row.
+  const segments = costBillingSegments(
+    byBilling,
+    'totals' in props ? props.totals.notPricedByBilling : undefined,
+  );
 
   return (
     <CostDetailSection title="How it was paid">

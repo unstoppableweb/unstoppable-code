@@ -14,6 +14,8 @@ import {
 } from '@canopy/desktop-shared/lib/account-proxy';
 import type { AccountProxyStatus } from '@canopy/desktop-shared/types/account-proxy';
 import { useAiCreditsUsage } from '@/hooks/useAiCreditsUsage';
+import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
 
 /** How often an open accounts list asks the server for fresh limits. */
 export const ACCOUNT_PROXY_REFRESH_INTERVAL_MS = 60_000;
@@ -109,6 +111,16 @@ export function useAccountProxyStatus(): AccountProxyStatus | null {
     ensureSubscription();
   }, []);
   return status;
+}
+
+/**
+ * Whether Settings > Multi-account proxy is offered: whenever the flag is on,
+ * including while the user has the proxy turned off.
+ */
+export function useAccountProxyPageAvailable(): boolean {
+  return useFeatureFlagsStore((state) =>
+    state.isEnabled(CLIENT_FEATURE_FLAGS.canopyDesktopAccountProxy.key),
+  );
 }
 
 /**

@@ -7,6 +7,7 @@
 // `pnpm test <this file> -u` and review the snapshot diff.
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -19,6 +20,7 @@ import { join } from 'node:path';
 import {
   IPC_CHANNELS,
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
+  WORKSPACE_ROOT_REPO_ID,
   type TrackedPlanData,
   type TrackedPlansUpdatedEvent,
 } from '@canopy/desktop-shared/types';
@@ -107,7 +109,15 @@ let persistence: typeof PlanPersistence;
 let dispatcher: DesktopCanopyDispatcher;
 // The dispatcher's calls since the case began, without their spies' types.
 let dispatcherCalls: { calls(): unknown[][]; clear(): void };
-const originalDataDir = process.env.CANOPY_DATA_DIR;
+// Every state root this run could reach, so it never writes outside its temp root.
+const STATE_DIR_VARS = [
+  'CANOPY_DATA_DIR',
+  'CANOPY_SECURE_DATA_DIR',
+  'CANOPY_OUTPUT_DIR',
+] as const;
+const originalStateDirs = STATE_DIR_VARS.map(
+  (name) => [name, process.env[name]] as const,
+);
 
 const RENDERER: CanopyCallerDescriptor = {
   principalId: 'local-desktop-user',
@@ -129,6 +139,8 @@ beforeAll(async () => {
   root = realpathSync(mkdtempSync(join(tmpdir(), 'plan-lifecycle-golden-')));
   dataDir = join(root, 'data');
   process.env.CANOPY_DATA_DIR = dataDir;
+  process.env.CANOPY_SECURE_DATA_DIR = join(root, 'secure');
+  process.env.CANOPY_OUTPUT_DIR = join(root, 'output');
   const repo = join(root, 'repo');
   mkdirSync(repo, { recursive: true });
   worktreePath = join(
@@ -210,14 +222,19 @@ beforeAll(async () => {
   );
   const { registerDetectedPlansHandlers } =
     await import('../ipc/detected-plans');
-  registerDetectedPlansHandlers(() => null);
+  registerDetectedPlansHandlers(
+    () => null,
+    dispatcher,
+    () => ipcCaller,
+  );
   persistence = await import('../lib/plan-persistence');
 });
 
 afterAll(async () => {
   await dispatcher.shutdown();
-  if (originalDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
-  else process.env.CANOPY_DATA_DIR = originalDataDir;
+  for (const [name, value] of originalStateDirs)
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -1932,5 +1949,1096 @@ describe('Remote Control access to tracked plans (CAN-4165 equivalence)', () => 
         IPC_CHANNELS.trackedPlansDelete,
       ])
         expect(allowed(kind)).not.toContain(channel);
+  });
+});
+
+// CAN-4165 PR 5a: the import channel's worktree-file branch projects
+// core.plan.import, which the desktop dispatcher serves over plan-import.
+// The import case above pins the channel's answers; these pin the operation
+// it dispatches, the operation's grant, its typed refusals, and that the
+// scope is checked before the file is read.
+describe('plan import on core.plan (CAN-4165 PR 5a)', () => {
+  const imports = { projectId: WORKSPACE_ID, worktreeId: 'golden-wt-import' };
+  const params = {
+    scope: imports,
+    repoId: WORKSPACE_ROOT_REPO_ID,
+    path: 'docs/CORE.md',
+  };
+  const caller = (
+    key: string,
+    grants: CanopyCallerDescriptor['grants'] = ['core.plan.write'],
+  ): {
+    caller: CanopyCallerDescriptor;
+    metadata: { idempotencyKey: string };
+  } => ({
+    caller: { ...RENDERER, grants },
+    metadata: { idempotencyKey: key },
+  });
+  let importRoot: string;
+
+  async function storedIds(): Promise<string[]> {
+    return (
+      await persistence.listTrackedPlans(imports.projectId, imports.worktreeId)
+    ).map((plan) => plan.id);
+  }
+
+  beforeAll(async () => {
+    const { resolveWorktreeCwd } = await import('../lib/resolve-worktree');
+    importRoot = resolveWorktreeCwd(imports.projectId, imports.worktreeId);
+    mkdirSync(join(importRoot, 'docs'), { recursive: true });
+    writeFileSync(
+      join(importRoot, 'docs', 'CORE.md'),
+      '# Core import\n\nFrom the dispatcher.',
+    );
+    writeFileSync(join(importRoot, 'notes.json'), '{}');
+  });
+
+  it('serves the import channel through core.plan.import with only core.plan.write, and answers as before', async () => {
+    const response = await invoke<{
+      plan: TrackedPlanData | null;
+      trackedPlanFilePath: string;
+    }>(IPC_CHANNELS.trackedPlansImport, {
+      ...imports,
+      filePath: 'docs/CORE.md',
+      repoId: WORKSPACE_ID,
+    });
+    expect(dispatched()).toEqual([
+      {
+        name: 'core.plan.import',
+        caller: { ...RENDERER, grants: ['core.plan.write'] },
+      },
+    ]);
+    const plan = must(response.plan);
+    expect(plan).toMatchObject({
+      ...imports,
+      source: 'imported',
+      title: 'Core import',
+      content: '# Core import\n\nFrom the dispatcher.',
+      sourceFilePath: 'docs/CORE.md',
+      sourceRepoId: WORKSPACE_ROOT_REPO_ID,
+      latestRevisionNumber: 1,
+    });
+    await expect(
+      persistence.getTrackedPlan(
+        imports.projectId,
+        imports.worktreeId,
+        plan.id,
+      ),
+    ).resolves.toEqual(plan);
+    expect(response.trackedPlanFilePath).toBe(
+      join(
+        dataDir,
+        'workspaces',
+        WORKSPACE_ID,
+        'plans',
+        'golden-wt-import.json',
+      ),
+    );
+    // The window that asked hears of it as it always did; no other does.
+    expect(windowSends).toEqual([
+      {
+        channel: IPC_CHANNELS.trackedPlansUpdated,
+        payload: { ...imports, plan },
+      },
+    ]);
+    expect(broadcasts).toEqual([]);
+    // Refusals keep the messages the channel always gave.
+    for (const [filePath, message] of [
+      [
+        'notes.json',
+        'Only Markdown (.md) and plain text (.txt) plan documents can be imported.',
+      ],
+      ['missing.md', 'Could not read the selected file'],
+      [
+        join(importRoot, 'docs', 'CORE.md'),
+        'Plan import paths must be relative to the worktree.',
+      ],
+    ])
+      await expect(
+        invoke(IPC_CHANNELS.trackedPlansImport, {
+          ...imports,
+          filePath,
+          repoId: WORKSPACE_ID,
+        }),
+      ).rejects.toThrow(message);
+  });
+
+  it('imports a worktree file through core.plan.import once per key, and announces each import to every window', async () => {
+    const before = await storedIds();
+    const first = await dispatcher.instruction(
+      'core.plan.import',
+      params,
+      caller('import-1'),
+    );
+    const repeat = await dispatcher.instruction(
+      'core.plan.import',
+      params,
+      caller('import-1'),
+    );
+    expect(repeat).toEqual(first);
+    expect(first.plan).toMatchObject({
+      ...imports,
+      source: 'imported',
+      title: 'Core import',
+      content: '# Core import\n\nFrom the dispatcher.',
+      sourceFilePath: 'docs/CORE.md',
+      sourceRepoId: WORKSPACE_ROOT_REPO_ID,
+      latestRevisionNumber: 1,
+    });
+    await expect(
+      dispatcher.instruction(
+        'core.plan.import',
+        { ...params, path: 'docs/OTHER.md' },
+        caller('import-1'),
+      ),
+    ).rejects.toMatchObject({ payload: { kind: 'conflict' } });
+    // Another key imports the same file again, as the channel always has.
+    const again = await dispatcher.instruction(
+      'core.plan.import',
+      params,
+      caller('import-2'),
+    );
+    expect(again.plan.id).not.toBe(first.plan.id);
+    expect((await storedIds()).sort()).toEqual(
+      [...before, first.plan.id, again.plan.id].sort(),
+    );
+    const stored = must(
+      await persistence.getTrackedPlan(
+        imports.projectId,
+        imports.worktreeId,
+        first.plan.id,
+      ),
+    );
+    expect(broadcasts.map(({ channel }) => channel)).toEqual([
+      IPC_CHANNELS.trackedPlansUpdated,
+      IPC_CHANNELS.trackedPlansUpdated,
+    ]);
+    expect(broadcasts[0].payload).toEqual({
+      ...imports,
+      plan: stored,
+      change: 'upsert',
+    });
+  });
+
+  it('keeps only the 16 most recent import outcomes for replay', async () => {
+    const oldest = await dispatcher.instruction(
+      'core.plan.import',
+      params,
+      caller('evict-0'),
+    );
+    let newest = oldest;
+    for (let index = 1; index <= 16; index += 1)
+      newest = await dispatcher.instruction(
+        'core.plan.import',
+        params,
+        caller(`evict-${index}`),
+      );
+    // The newest key still replays; the oldest, now 17th, runs again.
+    expect(
+      await dispatcher.instruction(
+        'core.plan.import',
+        params,
+        caller('evict-16'),
+      ),
+    ).toEqual(newest);
+    const rerun = await dispatcher.instruction(
+      'core.plan.import',
+      params,
+      caller('evict-0'),
+    );
+    expect(rerun.plan.id).not.toBe(oldest.plan.id);
+  });
+
+  it('refuses core.plan.import without core.plan.write and writes nothing', async () => {
+    const before = await storedIds();
+    const ungranted: CanopyCallerDescriptor['grants'][] = [
+      [],
+      ['core.plan.read'],
+    ];
+    for (const grants of ungranted)
+      await expect(
+        dispatcher.instruction(
+          'core.plan.import',
+          params,
+          caller(`ungranted-${grants.length}`, grants),
+        ),
+      ).rejects.toMatchObject({ payload: { kind: 'permission_denied' } });
+    expect(await storedIds()).toEqual(before);
+    expect(broadcasts).toEqual([]);
+  });
+
+  it('refuses a path that is not a plan document in the worktree as typed errors, with no host path', async () => {
+    const before = await storedIds();
+    for (const [repoId, path] of [
+      [WORKSPACE_ROOT_REPO_ID, 'notes.json'],
+      [WORKSPACE_ROOT_REPO_ID, 'missing.md'],
+      ['no-such-repo', 'docs/CORE.md'],
+    ]) {
+      const refusal: unknown = await dispatcher
+        .instruction(
+          'core.plan.import',
+          { scope: imports, repoId, path },
+          caller(`import-path-${repoId}-${path}`),
+        )
+        .then(
+          () => null,
+          (error: unknown) => error,
+        );
+      expect(refusal).toMatchObject({
+        payload: {
+          kind: 'invalid_argument',
+          code: 'core.plan.importPath',
+          details: { reason: 'IMPORT_PATH' },
+        },
+      });
+      expect(
+        JSON.stringify(
+          refusal && typeof refusal === 'object' && 'payload' in refusal
+            ? refusal.payload
+            : null,
+        ),
+      ).not.toContain(root);
+    }
+    // A path that leaves the worktree never reaches the handler.
+    await expect(
+      dispatcher.instruction(
+        'core.plan.import',
+        { ...params, path: '../outside.md' },
+        caller('import-path-escape'),
+      ),
+    ).rejects.toMatchObject({ payload: { kind: 'invalid_argument' } });
+    expect(await storedIds()).toEqual(before);
+    expect(broadcasts).toEqual([]);
+  });
+
+  it('checks the scope before it reads the import file', async () => {
+    const { resolveWorktreeCwd } = await import('../lib/resolve-worktree');
+    const viewer = {
+      projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
+      worktreeId: WORKTREE_ID,
+    };
+    const cowork = { projectId: COWORK_ID, worktreeId: WORKTREE_ID };
+    // A directory where the file would be: reading it fails as importPath,
+    // so only a scope check that runs first answers the scope's refusal.
+    for (const scoped of [viewer, cowork])
+      mkdirSync(
+        join(
+          resolveWorktreeCwd(scoped.projectId, scoped.worktreeId),
+          'SCOPE-FIRST.md',
+        ),
+        { recursive: true },
+      );
+    await expect(
+      dispatcher.instruction(
+        'core.plan.import',
+        {
+          scope: viewer,
+          repoId: WORKSPACE_ROOT_REPO_ID,
+          path: 'SCOPE-FIRST.md',
+        },
+        caller('import-viewer'),
+      ),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'permission_denied',
+        code: 'core.plan.readOnlyScope',
+      },
+    });
+    await expect(
+      dispatcher.instruction(
+        'core.plan.import',
+        {
+          scope: cowork,
+          repoId: WORKSPACE_ROOT_REPO_ID,
+          path: 'SCOPE-FIRST.md',
+        },
+        caller('import-cowork'),
+      ),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'failed_precondition',
+        code: 'core.plan.unsupportedScope',
+      },
+    });
+    expect(broadcasts).toEqual([]);
+  });
+
+  // Behaviour changes of PR 5a on the import channel, pinned deliberately.
+  it('refuses an import path that leaves the worktree and comes back (PR 5a change)', async () => {
+    const before = await storedIds();
+    await expect(
+      invoke(IPC_CHANNELS.trackedPlansImport, {
+        ...imports,
+        filePath: `../${imports.worktreeId}/docs/CORE.md`,
+        repoId: WORKSPACE_ID,
+      }),
+    ).rejects.toThrow('Plan import path must stay inside the worktree.');
+    expect(await storedIds()).toEqual(before);
+  });
+
+  it('refuses an import file name with a backslash before dispatch (PR 5a change)', async () => {
+    const before = await storedIds();
+    await expect(
+      invoke(IPC_CHANNELS.trackedPlansImport, {
+        ...imports,
+        filePath: 'docs/Q1\\Review.md',
+        repoId: WORKSPACE_ID,
+      }),
+    ).rejects.toThrow("Plan import paths can't contain a backslash.");
+    expect(dispatched()).toEqual([]);
+    expect(await storedIds()).toEqual(before);
+  });
+
+  it('refuses an import file name with a drive-like prefix before dispatch (PR 5a change)', async () => {
+    const before = await storedIds();
+    await expect(
+      invoke(IPC_CHANNELS.trackedPlansImport, {
+        ...imports,
+        filePath: 'A: Plan.md',
+        repoId: WORKSPACE_ID,
+      }),
+    ).rejects.toThrow(
+      'Plan import paths must be plain relative paths inside the worktree.',
+    );
+    expect(dispatched()).toEqual([]);
+    expect(await storedIds()).toEqual(before);
+  });
+
+  it('still imports a nested file name with spaces, which the portable path allows', async () => {
+    mkdirSync(join(importRoot, 'docs', 'My Plans'), { recursive: true });
+    writeFileSync(
+      join(importRoot, 'docs', 'My Plans', 'Q1 review.md'),
+      '# Q1 review',
+    );
+    const before = await storedIds();
+    const response = await invoke<{ plan: TrackedPlanData | null }>(
+      IPC_CHANNELS.trackedPlansImport,
+      {
+        ...imports,
+        filePath: 'docs/My Plans/Q1 review.md',
+        repoId: WORKSPACE_ID,
+      },
+    );
+    expect(dispatched().map(({ name }) => name)).toEqual(['core.plan.import']);
+    const plan = must(response.plan);
+    expect(plan).toMatchObject({
+      title: 'Q1 review',
+      sourceFilePath: 'docs/My Plans/Q1 review.md',
+    });
+    expect((await storedIds()).sort()).toEqual([...before, plan.id].sort());
+  });
+
+  it('answers a missing import file in a recipient or cowork scope with the scope refusal (PR 5a change)', async () => {
+    for (const [projectId, message] of [
+      [
+        SHARED_CONTAINER_VIEWER_PROJECT_ID,
+        'Shared-container recipient workspaces are read-only',
+      ],
+      [
+        COWORK_ID,
+        `Tracked plans are not available for cowork project ${COWORK_ID}`,
+      ],
+    ])
+      await expect(
+        invoke(IPC_CHANNELS.trackedPlansImport, {
+          projectId,
+          worktreeId: WORKTREE_ID,
+          filePath: 'MISSING-SCOPE.md',
+          repoId: WORKSPACE_ROOT_REPO_ID,
+        }),
+      ).rejects.toThrow(message);
+  });
+});
+
+// CAN-4165 PR 5b: the detected-plans channels project core.plan.detected.*,
+// which the desktop dispatcher serves over the existing detected-plans
+// writer. The detection case above pins the channels' answers; these pin the
+// operations they dispatch, their grants, typed refusals, replay, that the
+// scope is checked before anything is read, and the channel changes the move
+// makes on purpose.
+describe('detected plans on core.plan (CAN-4165 PR 5b)', () => {
+  type DetectedEntry = { id: string; sourceFilePath: string; status: string };
+  const VIEWER = {
+    projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
+    worktreeId: WORKTREE_ID,
+  };
+  const COWORK = { projectId: COWORK_ID, worktreeId: WORKTREE_ID };
+  const at = (
+    worktreeId: string,
+  ): { projectId: string; worktreeId: string } => ({
+    projectId: WORKSPACE_ID,
+    worktreeId,
+  });
+  const caller = (
+    key: string,
+    grants: CanopyCallerDescriptor['grants'] = ['core.plan.write'],
+  ): {
+    caller: CanopyCallerDescriptor;
+    metadata: { idempotencyKey: string };
+  } => ({
+    caller: { ...RENDERER, grants },
+    metadata: { idempotencyKey: key },
+  });
+  const reader = (
+    grants: CanopyCallerDescriptor['grants'] = ['core.plan.read'],
+  ): { caller: CanopyCallerDescriptor } => ({
+    caller: { ...RENDERER, grants },
+  });
+  // Parses, but no reader supports it: every mutation refuses it.
+  const DAMAGED = '{"version":99,"entries":[]}';
+  let detectedFile: (scoped: {
+    projectId: string;
+    worktreeId: string;
+  }) => string;
+
+  function writeDetected(
+    scoped: { projectId: string; worktreeId: string },
+    raw: string,
+  ): string {
+    const file = detectedFile(scoped);
+    mkdirSync(join(file, '..'), { recursive: true });
+    writeFileSync(file, raw);
+    return file;
+  }
+
+  function refusal(promise: Promise<unknown>): Promise<unknown> {
+    return promise.then(
+      () => null,
+      (error: unknown) => error,
+    );
+  }
+
+  beforeAll(async () => {
+    const { resolveDetectedPlansFilePath } =
+      await import('../lib/resolve-worktree');
+    detectedFile = (scoped): string =>
+      resolveDetectedPlansFilePath(scoped.projectId, scoped.worktreeId);
+  });
+
+  it('serves each detected-plans channel through core.plan.detected with only the grant it needs, and answers as before', async () => {
+    const scoped = at('golden-wt-detected-ipc');
+    const scanned = await invoke<{
+      entries: DetectedEntry[];
+      newlyDetected: DetectedEntry[];
+    }>(IPC_CHANNELS.detectedPlansScan, {
+      ...scoped,
+      chatId: 'golden-chat-5b',
+      candidatePaths: ['plan.md', 'src/index.ts'],
+    });
+    const entryId = must(scanned.newlyDetected[0]).id;
+    const listed = await invoke<DetectedEntry[]>(
+      IPC_CHANNELS.detectedPlansList,
+      scoped,
+    );
+    const updated = await invoke<DetectedEntry[]>(
+      IPC_CHANNELS.detectedPlansUpdate,
+      { ...scoped, entryId, status: 'dismissed' },
+    );
+    expect(dispatched().sort((a, b) => a.name.localeCompare(b.name))).toEqual(
+      [
+        ['core.plan.detected.list', 'core.plan.read'],
+        ['core.plan.detected.scan', 'core.plan.write'],
+        ['core.plan.detected.update', 'core.plan.write'],
+      ].map(([name, grant]) => ({
+        name,
+        caller: { ...RENDERER, grants: [grant] },
+      })),
+    );
+    expect(scanned.newlyDetected.map((entry) => entry.sourceFilePath)).toEqual([
+      'plan.md',
+    ]);
+    expect(scanned.entries).toEqual(scanned.newlyDetected);
+    expect(listed).toEqual(scanned.entries);
+    expect(updated.map((entry) => entry.status)).toEqual(['dismissed']);
+    // The main window hears of the scan's additions and of the update, as it
+    // always did; no other window does.
+    expect(windowSends).toEqual([
+      {
+        channel: IPC_CHANNELS.detectedPlansUpdated,
+        payload: { ...scoped, entries: scanned.entries },
+      },
+      {
+        channel: IPC_CHANNELS.detectedPlansUpdated,
+        payload: { ...scoped, entries: updated },
+      },
+    ]);
+    expect(broadcasts).toEqual([]);
+  });
+
+  it('scans and updates once per key, refuses a reused key with other parameters, and finds nothing new under another key', async () => {
+    const scope = at('golden-wt-detected-keyed');
+    const params = {
+      scope,
+      chatId: 'golden-chat-5b',
+      candidatePaths: ['docs/plan.md'],
+    };
+    const first = await dispatcher.instruction(
+      'core.plan.detected.scan',
+      params,
+      caller('detected-scan-1'),
+    );
+    const repeat = await dispatcher.instruction(
+      'core.plan.detected.scan',
+      params,
+      caller('detected-scan-1'),
+    );
+    expect(repeat).toEqual(first);
+    expect(first.newlyDetected.map((entry) => entry.sourceFilePath)).toEqual([
+      'docs/plan.md',
+    ]);
+    await expect(
+      dispatcher.instruction(
+        'core.plan.detected.scan',
+        { ...params, candidatePaths: ['other/plan.md'] },
+        caller('detected-scan-1'),
+      ),
+    ).rejects.toMatchObject({ payload: { kind: 'conflict' } });
+    const again = await dispatcher.instruction(
+      'core.plan.detected.scan',
+      params,
+      caller('detected-scan-2'),
+    );
+    expect(again).toEqual({ detected: first.detected, newlyDetected: [] });
+    const update = {
+      scope,
+      entryId: must(first.newlyDetected[0]).id,
+      bannerSeen: true,
+    };
+    const updated = await dispatcher.instruction(
+      'core.plan.detected.update',
+      update,
+      caller('detected-update-1'),
+    );
+    await expect(
+      dispatcher.instruction(
+        'core.plan.detected.update',
+        update,
+        caller('detected-update-1'),
+      ),
+    ).resolves.toEqual(updated);
+    await expect(
+      dispatcher.instruction(
+        'core.plan.detected.update',
+        { ...update, bannerSeen: false },
+        caller('detected-update-1'),
+      ),
+    ).rejects.toMatchObject({ payload: { kind: 'conflict' } });
+    await expect(
+      dispatcher.query('core.plan.detected.list', { scope }, reader()),
+    ).resolves.toEqual(updated);
+    // A write from another binding reaches every window (CAN-4165 PR 7c):
+    // the scan that stored an entry and the first update, never a replay or
+    // a scan that stored nothing.
+    expect(broadcasts).toEqual([
+      {
+        channel: IPC_CHANNELS.detectedPlansUpdated,
+        payload: { ...scope, entries: first.detected },
+      },
+      {
+        channel: IPC_CHANNELS.detectedPlansUpdated,
+        payload: { ...scope, entries: updated.detected },
+      },
+    ]);
+  });
+
+  it('keeps only the 16 most recent scan and update outcomes for replay', async () => {
+    const scope = at('golden-wt-detected-evict');
+    const scan = {
+      scope,
+      chatId: 'golden-chat-5b',
+      candidatePaths: ['docs/plan.md'],
+    };
+    const first = await dispatcher.instruction(
+      'core.plan.detected.scan',
+      scan,
+      caller('detected-evict-scan-0'),
+    );
+    const update = {
+      scope,
+      entryId: must(first.newlyDetected[0]).id,
+      bannerSeen: true,
+    };
+    for (let index = 0; index <= 16; index += 1) {
+      if (index > 0)
+        await dispatcher.instruction(
+          'core.plan.detected.scan',
+          scan,
+          caller(`detected-evict-scan-${index}`),
+        );
+      await dispatcher.instruction(
+        'core.plan.detected.update',
+        update,
+        caller(`detected-evict-update-${index}`),
+      );
+    }
+    // The newest keys still refuse other parameters; the oldest, now 17th,
+    // are forgotten and run again.
+    await expect(
+      dispatcher.instruction(
+        'core.plan.detected.scan',
+        { ...scan, candidatePaths: ['other/plan.md'] },
+        caller('detected-evict-scan-16'),
+      ),
+    ).rejects.toMatchObject({ payload: { kind: 'conflict' } });
+    await expect(
+      dispatcher.instruction(
+        'core.plan.detected.scan',
+        { ...scan, candidatePaths: ['other/plan.md'] },
+        caller('detected-evict-scan-0'),
+      ),
+    ).resolves.toHaveProperty('newlyDetected');
+    await expect(
+      dispatcher.instruction(
+        'core.plan.detected.update',
+        { ...update, bannerSeen: false },
+        caller('detected-evict-update-0'),
+      ),
+    ).resolves.toHaveProperty('detected');
+  });
+
+  it('does not detect a file the portable path cannot name, and still detects one beside it (PR 5b change)', async () => {
+    const scope = at('golden-wt-detected-unportable');
+    const scanned = await dispatcher.instruction(
+      'core.plan.detected.scan',
+      {
+        scope,
+        chatId: 'golden-chat-5b',
+        candidatePaths: [
+          'docs/superpowers/specs/Q1\\Review.md',
+          'C:notes/plan.md',
+        ],
+      },
+      caller('detected-unportable-1'),
+    );
+    expect(scanned).toEqual({ detected: [], newlyDetected: [] });
+    expect(existsSync(detectedFile(scope))).toBe(false);
+    const beside = await dispatcher.instruction(
+      'core.plan.detected.scan',
+      {
+        scope,
+        chatId: 'golden-chat-5b',
+        candidatePaths: [
+          'docs/superpowers/specs/Q1 Review.md',
+          'notes/plan.md',
+        ],
+      },
+      caller('detected-unportable-2'),
+    );
+    expect(
+      beside.newlyDetected.map((entry) => entry.sourceFilePath).sort(),
+    ).toEqual(['docs/superpowers/specs/Q1 Review.md', 'notes/plan.md']);
+  });
+
+  it('refuses a detected-plans file it cannot read as damaged state, and leaves it as it is', async () => {
+    const scope = at('golden-wt-detected-unreadable');
+    // A missing file is still an empty list, not damaged.
+    await expect(
+      dispatcher.instruction(
+        'core.plan.detected.update',
+        { scope, entryId: 'entry-1', status: 'dismissed' },
+        caller('detected-unreadable-missing'),
+      ),
+    ).resolves.toEqual({ detected: [] });
+    const scanned = await dispatcher.instruction(
+      'core.plan.detected.scan',
+      { scope, chatId: 'golden-chat-5b', candidatePaths: ['docs/plan.md'] },
+      caller('detected-unreadable-scan-1'),
+    );
+    const entryId = must(scanned.newlyDetected[0]).id;
+    const file = detectedFile(scope);
+    const before = readFileSync(file, 'utf8');
+    chmodSync(file, 0o000);
+    try {
+      for (const call of [
+        dispatcher.instruction(
+          'core.plan.detected.scan',
+          { scope, chatId: 'golden-chat-5b', candidatePaths: ['x/plan.md'] },
+          caller('detected-unreadable-scan-2'),
+        ),
+        dispatcher.instruction(
+          'core.plan.detected.update',
+          { scope, entryId, status: 'dismissed' },
+          caller('detected-unreadable-update'),
+        ),
+      ])
+        await expect(call).rejects.toMatchObject({
+          payload: {
+            kind: 'failed_precondition',
+            code: 'core.plan.damagedState',
+          },
+        });
+      // The channel keeps the writer's own error, as before.
+      await expect(
+        invoke(IPC_CHANNELS.detectedPlansUpdate, {
+          ...scope,
+          entryId,
+          status: 'dismissed',
+        }),
+      ).rejects.toThrow('EACCES');
+    } finally {
+      chmodSync(file, 0o600);
+    }
+    expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('answers a save the writer cannot make as internal, not damaged state, and leaves the file as it is', async () => {
+    const scope = at('golden-wt-detected-unwritable');
+    const scanned = await dispatcher.instruction(
+      'core.plan.detected.scan',
+      { scope, chatId: 'golden-chat-5b', candidatePaths: ['docs/plan.md'] },
+      caller('detected-unwritable-scan'),
+    );
+    const entryId = must(scanned.newlyDetected[0]).id;
+    const file = detectedFile(scope);
+    const before = readFileSync(file, 'utf8');
+    // Readable but not writable: the save fails, which is not damaged state.
+    chmodSync(file, 0o444);
+    try {
+      await expect(
+        dispatcher.instruction(
+          'core.plan.detected.update',
+          { scope, entryId, status: 'dismissed' },
+          caller('detected-unwritable-update'),
+        ),
+      ).rejects.toMatchObject({ payload: { kind: 'internal' } });
+    } finally {
+      chmodSync(file, 0o600);
+    }
+    expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('refuses a directory where the detected-plans file belongs as damaged state', async () => {
+    const blocked = at('golden-wt-detected-directory');
+    mkdirSync(detectedFile(blocked), { recursive: true });
+    await expect(
+      dispatcher.instruction(
+        'core.plan.detected.scan',
+        {
+          scope: blocked,
+          chatId: 'golden-chat-5b',
+          candidatePaths: ['docs/plan.md'],
+        },
+        caller('detected-directory-scan'),
+      ),
+    ).rejects.toMatchObject({
+      payload: { kind: 'failed_precondition', code: 'core.plan.damagedState' },
+    });
+  });
+
+  it('answers a detection rule the matcher cannot compile as internal, not damaged state', async () => {
+    const scope = at('golden-wt-detected-bad-rule');
+    await dispatcher.instruction(
+      'core.plan.detected.scan',
+      { scope, chatId: 'golden-chat-5b', candidatePaths: ['docs/plan.md'] },
+      caller('detected-bad-rule-1'),
+    );
+    const file = detectedFile(scope);
+    const before = readFileSync(file, 'utf8');
+    const { resolveWorktreeCwd } = await import('../lib/resolve-worktree');
+    const { getPrimaryProjectConfigFilePath } =
+      await import('../lib/canopy-json');
+    const config = getPrimaryProjectConfigFilePath(
+      resolveWorktreeCwd(scope.projectId, scope.worktreeId),
+    );
+    mkdirSync(join(config, '..'), { recursive: true });
+    // Longer than the matcher compiles, which it refuses with a SyntaxError.
+    writeFileSync(
+      config,
+      JSON.stringify({
+        version: 1,
+        planDetection: {
+          rules: [
+            {
+              id: 'too-long',
+              kind: 'include',
+              pattern: `docs/${'x'.repeat(70_000)}.md`,
+            },
+          ],
+        },
+      }),
+    );
+    try {
+      await expect(
+        dispatcher.instruction(
+          'core.plan.detected.scan',
+          { scope, chatId: 'golden-chat-5b', candidatePaths: ['x/plan.md'] },
+          caller('detected-bad-rule-2'),
+        ),
+      ).rejects.toMatchObject({ payload: { kind: 'internal' } });
+    } finally {
+      rmSync(config, { force: true });
+    }
+    expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it('answers only the detections it stored when two scans race', async () => {
+    const scope = at('golden-wt-detected-race');
+    const scan = {
+      scope,
+      chatId: 'golden-chat-5b',
+      candidatePaths: ['docs/plan.md'],
+    };
+    const scans = await Promise.all([
+      dispatcher.instruction(
+        'core.plan.detected.scan',
+        scan,
+        caller('detected-race-1'),
+      ),
+      dispatcher.instruction(
+        'core.plan.detected.scan',
+        scan,
+        caller('detected-race-2'),
+      ),
+    ]);
+    const stored = (
+      await dispatcher.query('core.plan.detected.list', { scope }, reader())
+    ).detected.map((entry) => entry.id);
+    expect(stored).toHaveLength(1);
+    expect(
+      scans.flatMap((answer) => answer.newlyDetected.map((entry) => entry.id)),
+    ).toEqual(stored);
+  });
+
+  it('refuses the detected-plan operations without their grants and writes nothing', async () => {
+    const scope = at('golden-wt-detected-grants');
+    const { newlyDetected } = await dispatcher.instruction(
+      'core.plan.detected.scan',
+      { scope, chatId: 'golden-chat-5b', candidatePaths: ['plan.md'] },
+      caller('detected-grants-seed'),
+    );
+    const before = readFileSync(detectedFile(scope), 'utf8');
+    await expect(
+      dispatcher.query('core.plan.detected.list', { scope }, reader([])),
+    ).rejects.toMatchObject({ payload: { kind: 'permission_denied' } });
+    for (const grants of [
+      [],
+      ['core.plan.read'],
+    ] satisfies CanopyCallerDescriptor['grants'][]) {
+      await expect(
+        dispatcher.instruction(
+          'core.plan.detected.scan',
+          { scope, chatId: 'golden-chat-5b', candidatePaths: ['docs/plan.md'] },
+          caller(`detected-grants-scan-${grants.length}`, grants),
+        ),
+      ).rejects.toMatchObject({ payload: { kind: 'permission_denied' } });
+      await expect(
+        dispatcher.instruction(
+          'core.plan.detected.update',
+          { scope, entryId: must(newlyDetected[0]).id, status: 'dismissed' },
+          caller(`detected-grants-update-${grants.length}`, grants),
+        ),
+      ).rejects.toMatchObject({ payload: { kind: 'permission_denied' } });
+    }
+    expect(readFileSync(detectedFile(scope), 'utf8')).toBe(before);
+  });
+
+  it('refuses a recipient scope, a cowork scope and a damaged file as typed errors, and lists none for them', async () => {
+    const damaged = at('golden-wt-detected-damaged');
+    const file = writeDetected(damaged, DAMAGED);
+    const scan = (scope: {
+      projectId: string;
+      worktreeId: string;
+    }): Promise<unknown> =>
+      refusal(
+        dispatcher.instruction(
+          'core.plan.detected.scan',
+          { scope, chatId: 'golden-chat-5b', candidatePaths: ['plan.md'] },
+          caller(`detected-typed-scan-${scope.projectId}-${scope.worktreeId}`),
+        ),
+      );
+    const update = (scope: {
+      projectId: string;
+      worktreeId: string;
+    }): Promise<unknown> =>
+      refusal(
+        dispatcher.instruction(
+          'core.plan.detected.update',
+          { scope, entryId: 'entry-1', status: 'dismissed' },
+          caller(
+            `detected-typed-update-${scope.projectId}-${scope.worktreeId}`,
+          ),
+        ),
+      );
+    for (const call of [scan, update]) {
+      await expect(call(VIEWER)).resolves.toMatchObject({
+        payload: {
+          kind: 'permission_denied',
+          code: 'core.plan.readOnlyScope',
+        },
+      });
+      await expect(call(COWORK)).resolves.toMatchObject({
+        payload: {
+          kind: 'failed_precondition',
+          code: 'core.plan.unsupportedScope',
+        },
+      });
+      await expect(call(damaged)).resolves.toMatchObject({
+        payload: {
+          kind: 'failed_precondition',
+          code: 'core.plan.damagedState',
+          details: { reason: 'DAMAGED_STATE' },
+        },
+      });
+    }
+    expect(readFileSync(file, 'utf8')).toBe(DAMAGED);
+    for (const scope of [COWORK, damaged])
+      await expect(
+        dispatcher.query('core.plan.detected.list', { scope }, reader()),
+      ).resolves.toEqual({ detected: [] });
+    // Through the channel a damaged scan keeps the refusal it always had.
+    await expect(
+      invoke(IPC_CHANNELS.detectedPlansScan, {
+        ...damaged,
+        chatId: 'golden-chat-5b',
+        candidatePaths: ['plan.md'],
+      }),
+    ).rejects.toThrow('Invalid or unsupported detected-plan state');
+    expect(readFileSync(file, 'utf8')).toBe(DAMAGED);
+    expect(windowSends).toEqual([]);
+  });
+
+  it('checks the scope before it reads the rules or the detected plans', async () => {
+    // A damaged file where the recipient's detected plans would be: reading
+    // it first answers damagedState, so only a scope check that runs first
+    // answers the recipient's refusal.
+    const file = writeDetected(VIEWER, DAMAGED);
+    // The rules and the display read swallow failures, so only a spy shows
+    // they never run for a refused scope.
+    const rules = jest.spyOn(
+      await import('../lib/plan-detection-config'),
+      'resolveWorktreePlanDetectionRules',
+    );
+    const persistence = await import('../lib/detected-plan-persistence');
+    const reads = jest.spyOn(persistence, 'readDetectedPlans');
+    const updates = jest.spyOn(persistence, 'updateDetectedPlan');
+    try {
+      await expect(
+        dispatcher.instruction(
+          'core.plan.detected.scan',
+          {
+            scope: VIEWER,
+            chatId: 'golden-chat-5b',
+            candidatePaths: ['plan.md'],
+          },
+          caller('detected-scope-first-scan'),
+        ),
+      ).rejects.toMatchObject({
+        payload: {
+          kind: 'permission_denied',
+          code: 'core.plan.readOnlyScope',
+        },
+      });
+      await expect(
+        dispatcher.instruction(
+          'core.plan.detected.update',
+          { scope: VIEWER, entryId: 'entry-1', status: 'dismissed' },
+          caller('detected-scope-first-update'),
+        ),
+      ).rejects.toMatchObject({
+        payload: {
+          kind: 'permission_denied',
+          code: 'core.plan.readOnlyScope',
+        },
+      });
+      expect(rules).not.toHaveBeenCalled();
+      expect(reads).not.toHaveBeenCalled();
+      expect(updates).not.toHaveBeenCalled();
+    } finally {
+      rules.mockRestore();
+      reads.mockRestore();
+      updates.mockRestore();
+    }
+    expect(readFileSync(file, 'utf8')).toBe(DAMAGED);
+    rmSync(file, { force: true });
+  });
+
+  it('answers an update for an entry the scope does not have with its unchanged list', async () => {
+    const scope = at('golden-wt-detected-absent');
+    const { detected } = await dispatcher.instruction(
+      'core.plan.detected.scan',
+      { scope, chatId: 'golden-chat-5b', candidatePaths: ['plan.md'] },
+      caller('detected-absent-seed'),
+    );
+    await expect(
+      dispatcher.instruction(
+        'core.plan.detected.update',
+        { scope, entryId: 'no-such-entry', status: 'dismissed' },
+        caller('detected-absent-update'),
+      ),
+    ).resolves.toEqual({ detected });
+  });
+
+  // Channel changes of PR 5b, pinned deliberately.
+  it('refuses a recipient scan, and the banner update of a recipient entry, with the read-only message (PR 5b change)', async () => {
+    const entry = {
+      id: 'recipient-entry',
+      sourceRepoId: WORKSPACE_ROOT_REPO_ID,
+      sourceFilePath: 'plan.md',
+      status: 'detected',
+      bannerSeen: false,
+      detectedInChatId: 'golden-chat-5b',
+      detectedAt: '2026-11-23T00:00:00.000Z',
+    };
+    const raw = JSON.stringify({ version: 1, entries: [entry] }, null, 2);
+    const file = writeDetected(VIEWER, raw);
+    // The banner's import and dismiss both update the entry's status.
+    for (const status of ['imported', 'dismissed'])
+      await expect(
+        invoke(IPC_CHANNELS.detectedPlansUpdate, {
+          ...VIEWER,
+          entryId: entry.id,
+          status,
+          ...(status === 'imported' ? { importedPlanId: 'plan-1' } : {}),
+        }),
+      ).rejects.toThrow('Shared-container recipient workspaces are read-only');
+    await expect(
+      invoke(IPC_CHANNELS.detectedPlansScan, {
+        ...VIEWER,
+        chatId: 'golden-chat-5b',
+        candidatePaths: ['docs/plan.md'],
+      }),
+    ).rejects.toThrow('Shared-container recipient workspaces are read-only');
+    expect(readFileSync(file, 'utf8')).toBe(raw);
+    expect(windowSends).toEqual([]);
+    rmSync(file, { force: true });
+  });
+
+  it('answers a cowork scan with nothing before dispatching it (PR 5b change)', async () => {
+    await expect(
+      invoke(IPC_CHANNELS.detectedPlansScan, {
+        ...COWORK,
+        chatId: 'golden-chat-5b',
+        candidatePaths: ['plan.md'],
+      }),
+    ).resolves.toEqual({ entries: [], newlyDetected: [] });
+    expect(dispatched()).toEqual([]);
+    expect(windowSends).toEqual([]);
+  });
+
+  it('drops candidate paths that cannot match before dispatch, and lets the operation refuse too many (PR 5b change)', async () => {
+    const scoped = at('golden-wt-detected-paths');
+    const scanned = await invoke<{ newlyDetected: DetectedEntry[] }>(
+      IPC_CHANNELS.detectedPlansScan,
+      {
+        ...scoped,
+        chatId: 'golden-chat-5b',
+        candidatePaths: ['', `${'x'.repeat(4_090)}/plan.md`, 'plan.md'],
+      },
+    );
+    expect(scanned.newlyDetected.map((entry) => entry.sourceFilePath)).toEqual([
+      'plan.md',
+    ]);
+    const scans = dispatcherCalls
+      .calls()
+      .filter(([name]) => name === 'core.plan.detected.scan');
+    expect(scans).toHaveLength(1);
+    expect(must(scans[0])[1]).toMatchObject({ candidatePaths: ['plan.md'] });
+    await expect(
+      invoke(IPC_CHANNELS.detectedPlansScan, {
+        ...scoped,
+        chatId: 'golden-chat-5b',
+        candidatePaths: Array.from({ length: 10_001 }, () => 'src/index.ts'),
+      }),
+    ).rejects.toThrow('Invalid operation parameters.');
   });
 });

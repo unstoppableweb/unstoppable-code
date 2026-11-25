@@ -322,5 +322,22 @@ describe('waitForCanopyDaemonRelease', () => {
     });
     const error = 'error' in malformed ? malformed.error : undefined;
     expect(canopyDaemonRefusal(error)).toBeNull();
+    // A failing read keeps its step and errno, never its text (CAN-7137).
+    world.gates.set('read', () =>
+      Promise.reject(
+        Object.assign(new Error('/private secret'), { code: 'EBUSY' }),
+      ),
+    );
+    const failed = await settle(waitOut(world), 0);
+    expect(failed).toMatchObject({
+      error: {
+        payload: {
+          kind: 'unavailable',
+          message: 'Core discovery failed.',
+          details: { errno: 'EBUSY', operation: 'read_descriptor' },
+        },
+      },
+    });
+    expect(JSON.stringify(failed)).not.toContain('/private');
   });
 });

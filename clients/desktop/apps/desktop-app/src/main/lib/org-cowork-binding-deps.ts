@@ -25,6 +25,10 @@ import { readCanopyCloudAccountWithStatus } from './canopy-cloud-account-store';
 import { readInstallationGeneration } from './installation-generation';
 import { isOrganizationTeamsLapsed } from './org-billing-state';
 import { readAllSidebarItemsSnapshot } from './sidebar-items';
+import {
+  isCoworkW5WriteRefusal,
+  refuseCoworkProvisionWhileW5Degraded,
+} from './cowork-w5-write-refusal';
 import { getSidebarItemsPreserveWorkspaceIds } from './sidebar-items-preservation';
 import { getWorkspaceContextService } from './workspace-context-service';
 import { readWorkspaceOwnership } from './workspace-persistence';
@@ -198,6 +202,10 @@ export async function ensureOrgDefaultCoworkWorkspace(
     throw new Error('Organization Chats is not available');
   }
   try {
+    // The hosted ensure runs before the local records: refuse first while W5
+    // writes are refused, after an index read settles the handoff (CAN-7316).
+    await readAllSidebarItemsSnapshot();
+    refuseCoworkProvisionWhileW5Degraded();
     const localWorkspaceId = orgDefaultCoworkWorkspaceId(organizationId);
     let repairedIndexedWorkspace = false;
     const ensureLocal = async (
@@ -245,7 +253,9 @@ export async function ensureOrgDefaultCoworkWorkspace(
     if (permanentRejection(error)) {
       permanentlyIneligibleOrganizations.add(organizationId);
     }
-    recordFailure(error);
+    // A degraded handoff refuses every attempt until restart and records its
+    // own w5_handoff_degraded diagnostic; don't add one per refused attempt.
+    if (!isCoworkW5WriteRefusal(error)) recordFailure(error);
     throw error;
   }
 }

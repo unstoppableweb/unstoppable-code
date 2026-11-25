@@ -12,7 +12,8 @@
  *
  * Effects the hosted profile must never reach: terminals, approval answers
  * (tool approval, permission, plan review, secret input), and destructive work
- * (delete, archive, discard, remove, force push, merge). Generic or
+ * (delete, archive, discard, remove, force push, merge). No hosted call may
+ * name a Bot project such as the Orchestrator (CAN-7604). Generic or
  * argument-sensitive channels also have an argument policy on the host
  * ({@link hostedInvocationAllowed}): `chat:command` may only start chats,
  * send messages, answer ordinary questions, set a chat's model, change the
@@ -23,6 +24,8 @@
  * its reviewed argument shape.
  */
 import { SIDEBAR_ITEM_GROUP_COLORS } from '../canopy-core/sidebar-values';
+import { APP_ADVISOR_PROJECT_ID, isBotProjectId } from '../chat-targets';
+import type { HostedFirstPartyClient } from './security';
 import type {
   RemoteCapabilityValues,
   RemoteOperationSelection,
@@ -97,6 +100,14 @@ export const HOSTED_WORK_ENTRY_CREATE_CHANNEL = 'work-entries:create';
 export const HOSTED_FILE_READ_CHANNEL = 'file:read-content';
 
 /**
+ * A Slack session's read of one Orchestrator message's turn (CAN-7604),
+ * served by the computer itself for Slack sessions only: whether the turn
+ * started by `userMessageId` is queued, running, waiting on the person, or
+ * settled. Takes exactly `{ chatId, userMessageId }`.
+ */
+export const HOSTED_SLACK_TURN_STATUS_CHANNEL = 'app-advisor:slack-turn-status';
+
+/**
  * Channels the hosted Tasks tools reach for CAN-7445, each with an exact
  * argument policy in {@link hostedInvocationAllowed}. `workEntriesUpdate` and
  * `worktreeSetTrackedBaseBranch` are not in the protocol's
@@ -165,6 +176,10 @@ export const HOSTED_TASK_CHANNELS = {
  *
  * The group channels check the item ID's shape only, not that it names a
  * task in the scope; the web sends the authorized task's own item.
+ *
+ * CAN-7604: `app-advisor:slack-turn-status` reads where one Slack message's
+ * Orchestrator turn stands. Only a Slack session may use it; the computer
+ * serves it itself, never through the bridge.
  */
 export const HOSTED_DIRECT_CHANNELS: readonly string[] = [
   'activity:changed-files',
@@ -177,6 +192,7 @@ export const HOSTED_DIRECT_CHANNELS: readonly string[] = [
   'tracked-plans:list',
   HOSTED_WORK_ENTRY_CREATE_CHANNEL,
   ...Object.values(HOSTED_TASK_CHANNELS),
+  HOSTED_SLACK_TURN_STATUS_CHANNEL,
 ];
 
 /** `chat:command` envelope fields a hosted controller may set. */
@@ -596,6 +612,15 @@ function hostedFileReadAllowed(value: unknown): boolean {
   );
 }
 
+/**
+ * The one-worktree file read every restricted controller is held to. Browser
+ * and mobile reads use it directly; they are not held to the hosted Bot
+ * project refusal, since the browser's Orchestrator panel reads its own files.
+ */
+export function scopedFileReadAllowed(args: readonly unknown[]): boolean {
+  return args.length === 1 && hostedFileReadAllowed(args[0]);
+}
+
 /** `{projectId, worktreeId, chatId, entryId}`: one queued message. */
 function hostedQueueEntryAllowed(
   value: unknown,
@@ -767,9 +792,196 @@ function hostedTaskChannelAllowed(
   }
 }
 
+/** Argument keys a hosted call names a project or workspace with. */
+const PROJECT_ARGUMENT_KEYS: ReadonlySet<string> = new Set([
+  'projectId',
+  'workspaceId',
+  'workspaceLocalId',
+]);
+
+/**
+ * Deeper than any reviewed hosted argument (a plugin reference on a new chat
+ * sits at depth 5). Anything nested further counts as naming a Bot project.
+ */
+const MAX_PROJECT_SCAN_DEPTH = 8;
+
+/**
+ * Whether a hosted call names a Bot project (the Orchestrator or another Bot)
+ * anywhere in its arguments, at the top level or in a nested scope such as a
+ * file read's `workspaceTarget` or a group's `scope` (CAN-7604). Fails
+ * closed: a value too deep to scan counts as naming one.
+ *
+ * It reads only the `PROJECT_ARGUMENT_KEYS` names. Every reviewed hosted channel names
+ * its project under one of them; a channel that takes a project under
+ * another key or as a bare positional argument must add that key here, or
+ * its Bot refusal is lost.
+ */
+function namesBotProject(value: unknown, depth: number): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  if (depth > MAX_PROJECT_SCAN_DEPTH) return true;
+  const entries = Array.isArray(value)
+    ? value.map((item): [string, unknown] => ['', item])
+    : Object.entries(value);
+  return entries.some(
+    ([key, item]) =>
+      (PROJECT_ARGUMENT_KEYS.has(key) &&
+        typeof item === 'string' &&
+        isBotProjectId(item)) ||
+      namesBotProject(item, depth + 1),
+  );
+}
+
+/** The transcript read a hosted session's `chat.history` sends. */
+export const HOSTED_TRANSCRIPT_PAGE_CHANNEL = 'chat:get-transcript-page';
+
+/**
+ * The reserved `worktreeId` a Slack session's Orchestrator send names
+ * (CAN-7604). It is not a Work Entry ID: the computer resolves it to its own
+ * Slack conversations entry, creating or recreating that entry as needed, so
+ * the caller never names one.
+ */
+export const HOSTED_SLACK_CONVERSATIONS_TARGET = 'slack-conversations';
+
+/** Where the turn a Slack message started stands. */
+export const HOSTED_SLACK_TURN_STATES = [
+  'not_found',
+  'queued',
+  'running',
+  'waiting_on_user',
+  'completed',
+  'failed',
+  'cancelled',
+] as const;
+export type HostedSlackTurnState = (typeof HOSTED_SLACK_TURN_STATES)[number];
+
+export interface HostedSlackTurnStatus {
+  readonly state: HostedSlackTurnState;
+  /** The Work Entry holding the message's tab, when there is one. */
+  readonly worktreeId?: string;
+  /** The tab has closed; its transcript stays readable. */
+  readonly closed?: true;
+}
+
+/** Parses the computer's turn status reply, or null when unreadable. */
+export function parseHostedSlackTurnStatus(
+  value: unknown,
+): HostedSlackTurnStatus | null {
+  if (!isPlainRecord(value)) return null;
+  const state = HOSTED_SLACK_TURN_STATES.find(
+    (candidate) => candidate === value.state,
+  );
+  if (state === undefined) return null;
+  if (value.worktreeId !== undefined && !isId(value.worktreeId)) return null;
+  if (value.closed !== undefined && value.closed !== true) return null;
+  return {
+    state,
+    ...(typeof value.worktreeId === 'string'
+      ? { worktreeId: value.worktreeId }
+      : {}),
+    ...(value.closed === true ? { closed: true } : {}),
+  };
+}
+
+/**
+ * What the session is, beyond its hosted kind. Only a session whose verified
+ * delegation names a first-party client carries one; the hosted MCP tools
+ * never do.
+ */
+export interface HostedInvocationProfile {
+  readonly firstPartyClient?: HostedFirstPartyClient;
+}
+
+/**
+ * Everything a Slack session may do (CAN-7604): a plain message to the
+ * Orchestrator through the reserved Slack conversations target (no model,
+ * plan mode, approval mode or attachment, so the computer's own Orchestrator
+ * settings apply), a transcript read in the Orchestrator project, and one
+ * message's turn status. The computer also holds those reads to its Slack
+ * conversations entries and refuses the send while its Slack gate is off.
+ */
+function slackOrchestratorCallAllowed(
+  channel: string,
+  args: readonly unknown[],
+): boolean {
+  if (args.length !== 1) return false;
+  const value = args[0];
+  switch (channel) {
+    case HOSTED_CHAT_COMMAND_CHANNEL: {
+      if (
+        !hasShape(value, [
+          'schemaVersion',
+          'commandId',
+          'projectId',
+          'worktreeId',
+          'command',
+        ]) ||
+        value.schemaVersion !== 1 ||
+        !isId(value.commandId) ||
+        value.projectId !== APP_ADVISOR_PROJECT_ID ||
+        value.worktreeId !== HOSTED_SLACK_CONVERSATIONS_TARGET
+      )
+        return false;
+      const command = value.command;
+      return (
+        hasShape(command, ['type', 'chatId', 'userMessageId', 'text']) &&
+        command.type === 'chat.send_message' &&
+        isId(command.chatId) &&
+        isId(command.userMessageId) &&
+        isBoundedText(command.text, 1)
+      );
+    }
+    case HOSTED_TRANSCRIPT_PAGE_CHANNEL:
+      return (
+        hasShape(
+          value,
+          ['projectId', 'worktreeId', 'chatId'],
+          ['before', 'transcriptRevision'],
+        ) &&
+        value.projectId === APP_ADVISOR_PROJECT_ID &&
+        value.worktreeId !== HOSTED_SLACK_CONVERSATIONS_TARGET &&
+        isId(value.worktreeId) &&
+        isId(value.chatId) &&
+        (value.before === undefined || isNonNegativeInteger(value.before)) &&
+        (value.transcriptRevision === undefined ||
+          isNonNegativeInteger(value.transcriptRevision))
+      );
+    case HOSTED_SLACK_TURN_STATUS_CHANNEL:
+      return (
+        hasShape(value, ['chatId', 'userMessageId']) &&
+        isId(value.chatId) &&
+        isId(value.userMessageId)
+      );
+    default:
+      return false;
+  }
+}
+
+/** The calls one first-party client's session may make. */
+function firstPartyCallAllowed(
+  client: HostedFirstPartyClient,
+  channel: string,
+  args: readonly unknown[],
+): boolean {
+  switch (client) {
+    case 'slack':
+      return slackOrchestratorCallAllowed(channel, args);
+    default: {
+      // A new client fails to compile here until it has a reviewed profile,
+      // and makes no calls if one ever arrives unchecked.
+      const unreviewed: never = client;
+      void unreviewed;
+      return false;
+    }
+  }
+}
+
 /**
  * Argument-level policy for a hosted controller's invoke or send on a channel
- * its allowlist already admits. Generic or argument-sensitive channels have
+ * its allowlist already admits. No hosted call may name a Bot project: the
+ * Orchestrator and other Bots are never an ordinary hosted target (CAN-7604).
+ * A first-party session is held to its client's reviewed calls alone
+ * ({@link slackOrchestratorCallAllowed} for Slack); any other client gets none.
+ * Generic or argument-sensitive channels have
  * one: `chat:command` (new chats, messages, ordinary answers, a chat's model,
  * the reviewed settings patch keys and steering a queued message),
  * `chat:cancel` (one exact turn), `work-entries:create` (its project only),
@@ -780,8 +992,16 @@ function hostedTaskChannelAllowed(
 export function hostedInvocationAllowed(
   channel: string,
   args: readonly unknown[],
+  profile: HostedInvocationProfile = {},
 ): boolean {
+  // A first-party session makes only its own reviewed calls, nothing else; a
+  // client without a reviewed profile makes none.
+  if (profile.firstPartyClient !== undefined)
+    return firstPartyCallAllowed(profile.firstPartyClient, channel, args);
+  if (namesBotProject(args, 0)) return false;
   switch (channel) {
+    case HOSTED_SLACK_TURN_STATUS_CHANNEL:
+      return false;
     case HOSTED_IPC_CHANNELS.providerUsageLimitsGet:
       return (
         args.length === 1 &&

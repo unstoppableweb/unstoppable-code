@@ -1,6 +1,8 @@
 // Explicit commit-log modules only: the commit-log index loads node:sqlite.
+import { TextDecoder } from 'node:util';
 import {
   freezeW5Capture,
+  isW5CaptureWorkspaceId,
   W5_CAPTURE_LIMITS,
   type W5CaptureFile,
   type W5CaptureRequest,
@@ -18,16 +20,21 @@ import {
   type W5ProjectionCompleteness,
   type W5RevisionEligibility,
 } from './commit-log/eligibility';
+import { isRecord } from './commit-log/is-record';
 import { classifyW5CommitFile } from './commit-events';
 import type { W5StoreDecision } from './commit-log-file-store';
+import {
+  isW5CaptureLimitRefusal,
+  validateW5RecordCaptureResult,
+} from './record-port/capture-result';
 
 /*
  * The per-workspace read cache's host-neutral projection (CAN-7155, W5
  * readers S-9): the W5 files (index, manifests, worktree lists) as their last
  * capture or this process's own commit left them, each current as of a commit
  * id. TRANSITIONAL compatibility path, in-process only: W10 (CAN-7153)
- * replaces it with a core-owned read model. Until a reader is switched onto it
- * (CAN-7155 PRs 3-4) it is never consulted.
+ * replaces it with a core-owned read model. `serve` answers the dispatcher's
+ * workspace reads (CAN-7155 PR 3, Seam A); direct readers follow in PR 4.
  *
  * Classification reuses `eligibility.ts` unchanged: each entry keeps its file's
  * slice of the capture it came from as a frozen one-file capture, so a cached
@@ -102,6 +109,79 @@ export interface W5CommittedProjection {
   refill(
     capture: (request: W5CaptureRequest) => Promise<W5CaptureResult>,
   ): Promise<void>;
+  /**
+   * The capture of `request` the host would return, assembled from current
+   * entries without a capture; frozen and reused until the projection changes.
+   */
+  serve(request: W5CaptureRequest): W5ProjectionServe;
+}
+
+/**
+ * - `not-current`: a file it names has no current entry, or its pending
+ *   evidence predates a log-wide recovery.
+ * - `lagging`: a manifest's revisions predate the index image they combine
+ *   with (as `eligibility` answers undefined).
+ * - `invalid-index`: discovery would not be `complete` from a present index.
+ * - `limit-exceeded`: a capture of it would be refused as too large.
+ */
+export type W5ProjectionUnservedReason =
+  | 'not-current'
+  | 'lagging'
+  | 'invalid-index'
+  | 'limit-exceeded';
+
+export type W5ProjectionServe =
+  | { readonly status: 'served'; readonly capture: W5CaptureResult }
+  | {
+      readonly status: 'unserved';
+      readonly reason: W5ProjectionUnservedReason;
+      /**
+       * Files no refill owes that one capture would settle: those without an
+       * entry under a workspace the current index lists, lagging manifests,
+       * and entries whose pending evidence predates recovery.
+       */
+      readonly refresh: readonly W5CaptureFile[];
+    };
+
+/** Distinct request shapes one projection version keeps served captures for. */
+const SERVED_MEMO_LIMIT = 256;
+
+/** The workspace ids discovery follows from an index image, as `capture.ts` does. */
+type IndexDiscovery =
+  | { readonly status: 'complete'; readonly workspaceIds: readonly string[] }
+  | { readonly status: 'unavailable' | 'invalid-index' };
+
+const discoveryMemo = new WeakMap<W5FileImage, IndexDiscovery>();
+
+function indexDiscovery(image: W5FileImage): IndexDiscovery {
+  const known = discoveryMemo.get(image);
+  if (known) return known;
+  const result = readIndexDiscovery(image);
+  if (Object.isFrozen(image)) discoveryMemo.set(image, result);
+  return result;
+}
+
+function readIndexDiscovery(image: W5FileImage): IndexDiscovery {
+  if (image.state !== 'present') return { status: 'unavailable' };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(
+      new TextDecoder('utf-8', { fatal: true }).decode(
+        Buffer.from(image.base64, 'base64'),
+      ),
+    );
+  } catch {
+    return { status: 'invalid-index' };
+  }
+  if (!isRecord(parsed) || !Array.isArray(parsed.workspaces))
+    return { status: 'invalid-index' };
+  const workspaceIds: string[] = [];
+  for (const entry of parsed.workspaces) {
+    if (!isRecord(entry) || !isW5CaptureWorkspaceId(entry.id))
+      return { status: 'invalid-index' };
+    workspaceIds.push(entry.id);
+  }
+  return { status: 'complete', workspaceIds };
 }
 
 interface Entry {
@@ -114,7 +194,7 @@ interface Entry {
   readonly state: W5ProjectionEntryState;
   /** A marked entry settles only from a capture at or after this commit id. */
   readonly required: number;
-  /** A marked entry settles only from a capture requested at or after this generation. */
+  /** A capture must be requested at or after this mark, even after settlement. */
   readonly markedAt: number;
 }
 
@@ -233,6 +313,10 @@ export function createW5CommittedProjection(): W5CommittedProjection {
     W5CaptureResult,
     WeakMap<W5CaptureResult, W5CaptureResult>
   >();
+  // Bumped by every mutator; served captures are reused only within one.
+  let version = 0;
+  let servedVersion = 0;
+  const served = new Map<string, W5CaptureResult>();
 
   /** Whether a captured image at `commitId` may replace `entry`. */
   const admits = (
@@ -245,10 +329,10 @@ export function createW5CommittedProjection(): W5CommittedProjection {
     // Unabandoned evidence after an abandonment predates it.
     if (abandoned && !isAbandoned(capture)) return false;
     if (!entry) return true;
-    if (commitId < entry.commitId) return false;
+    if (commitId < entry.commitId || options.ticket < entry.markedAt)
+      return false;
     if (entry.state !== 'current') {
-      if (commitId < entry.required || options.ticket < entry.markedAt)
-        return false;
+      if (commitId < entry.required) return false;
       if (commitId > entry.commitId || entry.state === 'dirty') return true;
     } else if (commitId > entry.commitId) return true;
     // Equal commit ids: the same bytes take the newer evidence, which only
@@ -266,6 +350,7 @@ export function createW5CommittedProjection(): W5CommittedProjection {
     capture,
     options,
   ) => {
+    version += 1;
     const { log } = capture;
     noteLog(log.commitId, log.unresolvedCommits);
     if (isAbandoned(capture)) learnAbandoned();
@@ -316,7 +401,9 @@ export function createW5CommittedProjection(): W5CommittedProjection {
         evidence,
         state: 'current',
         required: log.commitId,
-        markedAt: 0,
+        // Keep the fence after settlement: a slower pre-mark capture at
+        // this same commit id must not undo a newer authoritative refill.
+        markedAt: entry?.markedAt ?? 0,
       });
     });
   };
@@ -358,6 +445,7 @@ export function createW5CommittedProjection(): W5CommittedProjection {
     root,
     { files, advance, outcome },
   ) => {
+    version += 1;
     generation += 1;
     const written: { file: W5CaptureFile; contents: string | null }[] = [];
     for (const { path, contents } of files) {
@@ -517,11 +605,153 @@ export function createW5CommittedProjection(): W5CommittedProjection {
     return files.length ? { files, discoverWorkspaces: false } : null;
   };
 
+  const serveUncached = (request: W5CaptureRequest): W5ProjectionServe => {
+    // As `capture.ts` orders them: the index, the request, then discovery.
+    const ordered = new Map<string, W5CaptureFile>();
+    const add = (file: W5CaptureFile): void => {
+      const key = w5ProjectionFileKey(file);
+      if (!ordered.has(key)) ordered.set(key, copyFile(file));
+    };
+    if (request.discoverWorkspaces) add({ kind: 'index' });
+    for (const file of request.files) add(file);
+    const index = current({ kind: 'index' });
+    const listing = index?.image ? indexDiscovery(index.image) : undefined;
+    const listed = new Set(
+      listing?.status === 'complete' ? listing.workspaceIds : [],
+    );
+    const unserved = (
+      reason: W5ProjectionUnservedReason,
+      refresh: readonly W5CaptureFile[] = [],
+    ): W5ProjectionServe => ({ status: 'unserved', reason, refresh });
+    let discovery: W5CaptureResult['discovery'] = 'not-requested';
+    if (request.discoverWorkspaces) {
+      if (!index || !listing)
+        return unserved(
+          'not-current',
+          entries.has('index') ? [] : [{ kind: 'index' }],
+        );
+      if (listing.status === 'invalid-index') return unserved('invalid-index');
+      discovery = listing.status;
+      if (listing.status === 'complete')
+        for (const workspaceId of listing.workspaceIds) {
+          add({ kind: 'manifest', workspaceId });
+          add({ kind: 'worktrees', workspaceId });
+        }
+    }
+    // Without a selected file there is no captured log schema to assemble.
+    if (!ordered.size) return unserved('not-current');
+    if (ordered.size > W5_CAPTURE_LIMITS.files)
+      return unserved('limit-exceeded');
+    const servedEntries: Entry[] = [];
+    const missing: W5CaptureFile[] = [];
+    let notCurrent = false;
+    for (const [key, file] of ordered) {
+      const entry = current(file);
+      if (entry) {
+        servedEntries.push(entry);
+        continue;
+      }
+      notCurrent = true;
+      // A held entry is already owed; a file outside the index stays unheld.
+      if (
+        !entries.has(key) &&
+        (file.kind === 'index' ||
+          ('workspaceId' in file && listed.has(file.workspaceId)))
+      )
+        missing.push(file);
+    }
+    if (notCurrent) return unserved('not-current', missing);
+    // A manifest's workspace revision may miss an index commit after its
+    // capture, so it is captured again before it is served. Narrower than
+    // `eligibility`, which compares capture positions: only a logged index
+    // decision can advance it, and the current index's evidence lists its
+    // latest, so a manifest write alone never makes the others lag.
+    const indexWritten = index?.evidence
+      ? Math.max(0, ...index.evidence.log.files.map((row) => row.commitId))
+      : 0;
+    const lagging = ordered.has('index')
+      ? servedEntries.flatMap((entry) =>
+          entry.file.kind === 'manifest' && indexWritten > entry.commitId
+            ? [copyFile(entry.file)]
+            : [],
+        )
+      : [];
+    if (lagging.length) return unserved('lagging', lagging);
+    // The counter is log-global, but recovery may also have applied a
+    // selected file's pending bytes. Recapture it rather than either keeping
+    // the stale count or granting a revision to its pre-recovery image.
+    const recovered = servedEntries.flatMap((entry) =>
+      entry.evidence && entry.evidence.log.unresolvedCommits > newest.unresolved
+        ? [copyFile(entry.file)]
+        : [],
+    );
+    if (recovered.length) return unserved('not-current', recovered);
+    let commitId = 0;
+    const unresolved = newest.unresolved;
+    let abandonedEvidence = false;
+    let schemaVersion = 0;
+    const revisions: Record<string, number> = {};
+    for (const { evidence, commitId: entryCommitId } of servedEntries) {
+      if (!evidence) return unserved('not-current');
+      Object.assign(revisions, evidence.log.revisions);
+      if (entryCommitId >= commitId) {
+        commitId = entryCommitId;
+        schemaVersion = evidence.log.schemaVersion;
+      }
+      abandonedEvidence ||= isAbandoned(evidence);
+    }
+    // Any later commit to a served file would have unsettled it, so every
+    // one stands at the newest position a capture showed, as a fresh one does.
+    commitId = Math.max(commitId, newest.commitId);
+    const retainedCommits = abandonedEvidence ? commitId - 1 : commitId;
+    try {
+      const capture = validateW5RecordCaptureResult({
+        files: servedEntries.flatMap(({ evidence }) => evidence?.files ?? []),
+        discovery,
+        log: {
+          commitId,
+          retainedCommits,
+          unresolvedCommits: Math.min(unresolved, retainedCommits),
+          schemaVersion,
+          revisions,
+          files: servedEntries.flatMap(
+            ({ evidence }) => evidence?.log.files ?? [],
+          ),
+          chains: servedEntries.flatMap(
+            ({ evidence }) => evidence?.log.chains ?? [],
+          ),
+          resourceRevisionEligibility: 'unproven',
+        },
+      });
+      return { status: 'served', capture };
+    } catch (error) {
+      // q-28: a refused assembly takes today's capture/fallback path.
+      if (isW5CaptureLimitRefusal(error)) return unserved('limit-exceeded');
+      throw error;
+    }
+  };
+
+  const serve = (request: W5CaptureRequest): W5ProjectionServe => {
+    if (servedVersion !== version || served.size >= SERVED_MEMO_LIMIT) {
+      served.clear();
+      servedVersion = version;
+    }
+    const key = `${request.discoverWorkspaces ? 'discover' : 'files'}|${request.files
+      .map(w5ProjectionFileKey)
+      .join('|')}`;
+    const known = served.get(key);
+    if (known) return { status: 'served', capture: known };
+    const result = serveUncached(request);
+    if (result.status === 'served') served.set(key, result.capture);
+    return result;
+  };
+
   return {
     ticket: () => generation,
     installCapture,
     noteOwnDecision,
     markDirty(files, options): void {
+      version += 1;
       generation += 1;
       for (const file of files)
         mark(file, 'dirty', undefined, options?.hold === true);
@@ -548,6 +778,7 @@ export function createW5CommittedProjection(): W5CommittedProjection {
     },
     eligibility,
     refillPlan,
+    serve,
     refill(capture): Promise<void> {
       if (!inFlight) return runRefill(capture);
       const running = inFlight;

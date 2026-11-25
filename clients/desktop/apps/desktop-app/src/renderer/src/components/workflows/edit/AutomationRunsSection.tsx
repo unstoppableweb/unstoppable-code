@@ -104,6 +104,7 @@ export function AutomationRunsSection({
           be out of date.
         </Notice>
       )}
+      {rowActions.actionFeedback}
       <WorkflowRunsList
         rows={rows}
         // Until its history is read, an empty list says nothing yet.

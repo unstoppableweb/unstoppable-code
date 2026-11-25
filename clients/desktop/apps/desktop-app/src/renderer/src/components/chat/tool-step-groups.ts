@@ -5,6 +5,7 @@
  */
 import {
   describeCleanRun,
+  settledCleanRunSteps,
   getToolFamilyFromName,
   groupCleanSteps,
   stepKindOfToolCall,
@@ -282,6 +283,8 @@ export function describeCleanSteps(
   scope?: ToolDisplayScope,
   evidence?: TurnOutcomeEvidence,
   deniedToolUseIds?: ReadonlySet<string>,
+  /** Count only the steps already done (a running turn's Compact line). */
+  settledOnly = false,
 ): {
   label: string;
   failed: number;
@@ -328,7 +331,9 @@ export function describeCleanSteps(
       }
     }
   }
-  const { label, failed, blocked, interrupted, kind } = describeCleanRun(steps);
+  const { label, failed, blocked, interrupted, kind } = describeCleanRun(
+    settledOnly ? settledCleanRunSteps(steps) : steps,
+  );
   return { label, failed, blocked, interrupted, firstKind: kind };
 }
 

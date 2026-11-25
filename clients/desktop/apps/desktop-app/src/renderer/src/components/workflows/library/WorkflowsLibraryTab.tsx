@@ -1,5 +1,6 @@
 import {
   pipelineShareLinkItemId,
+  scheduledUserPipeline,
   workflowCallerCount,
   workflowDeleteMessage,
   workflowDeletePlan,
@@ -328,8 +329,12 @@ export function WorkflowsLibraryTab({
     () =>
       revealedPipelineId === null
         ? null
-        : revealedPipelineRowKey(targets, revealedPipelineId),
-    [revealedPipelineId, targets],
+        : revealedPipelineRowKey(
+            targets,
+            revealedPipelineId,
+            new Set(rows.map((row) => row.key)),
+          ),
+    [revealedPipelineId, rows, targets],
   );
 
   // A finished install points at its row: filters that would hide it are
@@ -442,6 +447,19 @@ export function WorkflowsLibraryTab({
         case 'edit':
           openRow(row);
           return;
+        case 'open-workflow': {
+          if (target.kind !== 'automation') return;
+          const pipeline = scheduledUserPipeline(
+            target.activity,
+            Array.from(targets.values()).flatMap((entry) =>
+              entry.kind === 'pipeline' ? [entry.pipeline] : [],
+            ),
+          );
+          if (!pipeline) return;
+          automations.endReveal();
+          pipelines.edit(pipeline);
+          return;
+        }
         case 'add':
           if (target.kind === 'shared-automation') {
             openShareInMarketplace(target.share.name);

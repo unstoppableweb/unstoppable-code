@@ -572,10 +572,9 @@ export function ComposerWorkDrawer({
                   if (node) pillRefs.current.set(key, node);
                   else pillRefs.current.delete(key);
                 }}
-                // At rest a pill takes the faint `tinted` fill; the open one
-                // the raised `secondary` fill, so it stands out. Neither
-                // draws a border, so opening one moves nothing.
-                variant={isOpen ? 'secondary' : 'ghost'}
+                // Keep every work kind visibly pill-shaped at rest. The
+                // secondary button's aria-expanded fill marks the open kind.
+                variant="secondary"
                 size="compact"
                 leadingIcon={glyph !== undefined}
                 aria-expanded={isOpen}

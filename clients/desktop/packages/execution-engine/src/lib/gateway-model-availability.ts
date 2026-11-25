@@ -2,6 +2,10 @@
 // initialized from the unified package.json model configuration.
 
 import type { GatewayModelEntry } from '@canopy/protocol';
+import {
+  AGENT_ROUTE_SEPARATOR,
+  parseAgentRouteModelId,
+} from '@canopy/protocol/agents';
 import type { WorkOwner } from '@canopy/protocol/llm-gateway';
 import type {
   AiGatewayHarness,
@@ -13,6 +17,7 @@ import {
   getRemovedGatewayOnlyModelHarness,
   isAgentModel,
   getModelSource,
+  ORG_GATEWAY_MODEL_ID_PATTERN,
   resolveKnownModel,
   resolveRuntimeModel,
   stripOllamaModelPrefix,
@@ -40,6 +45,27 @@ export function initOrgGatewayModelAliases(
   );
 }
 
+/**
+ * An organization gateway model's id: always `<id>@<organizationId>`, so it
+ * never depends on which other gateways or hosted models are active.
+ */
+export function orgGatewayModelId(
+  modelId: string,
+  organizationId: string,
+): string {
+  return `${modelId}@${organizationId}`;
+}
+
+/** Split an organization gateway model id, even when its gateway is gone. */
+export function parseOrgGatewayModelId(
+  modelId: string | undefined,
+): { modelId: string; organizationId: string } | undefined {
+  const match = modelId ? ORG_GATEWAY_MODEL_ID_PATTERN.exec(modelId) : null;
+  return match?.[1] && match[2]
+    ? { modelId: match[1], organizationId: match[2] }
+    : undefined;
+}
+
 export function resolveOwnerScopedModelId(
   modelId: string,
   owner?: WorkOwner,
@@ -52,6 +78,53 @@ export function resolveOwnerScopedModelId(
   return organizationId
     ? (orgGatewayModelAliases[modelId]?.[organizationId] ?? modelId)
     : modelId;
+}
+
+/**
+ * The model a saved selection runs on for `owner`. A registered id (hosted,
+ * package or a gateway's `<id>@<orgId>` row) is kept. A bare gateway id saved
+ * before ids were namespaced resolves through the owner's own gateway first,
+ * then the catalog's unambiguous alias, and otherwise stays unresolved so the
+ * caller fails closed. An Agent route's base model resolves the same way.
+ */
+export function resolveOwnerGatewayModelId(
+  modelId: string,
+  owner: WorkOwner | undefined,
+): string {
+  const route = parseAgentRouteModelId(modelId);
+  if (route) {
+    const baseModel = resolveOwnerGatewayModelId(route.baseModel, owner);
+    return baseModel === route.baseModel
+      ? modelId
+      : `${route.agentId}${AGENT_ROUTE_SEPARATOR}${baseModel}`;
+  }
+  const known = resolveKnownModel(modelId);
+  // A hosted or package model, or a package alias of one, is never rewritten.
+  if (known !== undefined && parseOrgGatewayModelId(known) === undefined)
+    return modelId;
+  const scoped = resolveOwnerScopedModelId(modelId, owner);
+  if (
+    parseOrgGatewayModelId(scoped) &&
+    resolveGatewayModelEntry(scoped) !== undefined
+  )
+    return scoped;
+  return known ?? modelId;
+}
+
+/**
+ * Whether {@link resolveOwnerGatewayModelId} could change `modelId`, so a
+ * caller can skip reading the owner for an ordinary registered id.
+ */
+export function needsOwnerGatewayModelId(modelId: string | undefined): boolean {
+  if (!modelId) return false;
+  const route = parseAgentRouteModelId(modelId);
+  const model = route ? route.baseModel : modelId;
+  const known = resolveKnownModel(model);
+  return (
+    known !== model &&
+    (known === undefined || parseOrgGatewayModelId(known) !== undefined) &&
+    orgGatewayModelAliases[model] !== undefined
+  );
 }
 
 /**

@@ -6,7 +6,7 @@ import {
 } from './w5-backup-bootstrap';
 import type { Dirent } from 'node:fs';
 import { readFile, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import {
   publishW5RootEvidence,
   readW5RootEvidence,
@@ -27,7 +27,11 @@ import {
   shutdownW5CommitLogHost,
 } from '../w5-commit-log/commit-log-host';
 import { syncDirectory, writeFileAtomically } from './atomic-file';
-import { getDataDir, getW5FlipBackupMarkerPath } from './paths';
+import {
+  getDataDir,
+  getW5FlipBackupMarkerPath,
+  w5RecordReadPaths,
+} from './paths';
 import { isErrnoException, isRecord } from './type-guards';
 import {
   captureW5Backup,
@@ -308,26 +312,68 @@ export function w5FlipStepFailure(
     : { failure };
 }
 
-/** A fresh root: no index, no index backup, no workspace folder, no commit. */
+/**
+ * A fresh root: no index, no index backup, no workspace records, no commit.
+ * A workspace directory without record files is admitted: a backup keeps only
+ * the index, manifests and worktree lists, so it has nothing to keep, and the
+ * `empty-root` marker removes nothing. This unsticks a root a degraded
+ * handoff left with only a Cowork scaffold (CAN-7316).
+ */
 async function isEmptyRoot(context: W5BackupReadContext): Promise<boolean> {
+  const workspacesRoot = join(context.dataRoot, 'workspaces');
   let entries: Dirent[] = [];
   try {
-    entries = await readdir(join(context.dataRoot, 'workspaces'), {
-      withFileTypes: true,
-    });
+    entries = await readdir(workspacesRoot, { withFileTypes: true });
   } catch (error) {
     if (!isErrnoException(error) || error.code !== 'ENOENT') return false;
   }
   if (
     entries.some(
-      (entry) =>
-        entry.isDirectory() ||
-        entry.isSymbolicLink() ||
-        entry.name === 'index.json.bak',
+      (entry) => entry.isSymbolicLink() || entry.name === 'index.json.bak',
     )
   )
     return false;
+  for (const entry of entries) {
+    if (
+      entry.isDirectory() &&
+      !(await holdsNoW5Records(join(workspacesRoot, entry.name), entry.name))
+    )
+      return false;
+  }
   return (await context.host.snapshot()).commitId === 0;
+}
+
+/**
+ * Whether one workspace directory holds no W5 record file, read one level
+ * deep: records sit directly under it, so `home/` is never entered. A record
+ * name anywhere in a child's name counts, catching the atomic writer's
+ * `.<record>.<pid>.<id>.tmp` siblings; so does any direct symlink. An
+ * unreadable directory or an id the path helpers reject is not empty.
+ */
+async function holdsNoW5Records(
+  directory: string,
+  workspaceId: string,
+): Promise<boolean> {
+  let recordNames: readonly string[];
+  try {
+    recordNames = [
+      basename(w5RecordReadPaths.manifest(workspaceId)),
+      basename(w5RecordReadPaths.worktrees(workspaceId)),
+    ];
+  } catch {
+    return false;
+  }
+  let children: Dirent[];
+  try {
+    children = await readdir(directory, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  return !children.some(
+    (child) =>
+      child.isSymbolicLink() ||
+      recordNames.some((record) => child.name.includes(record)),
+  );
 }
 
 const writerHeld = (error: unknown): boolean =>

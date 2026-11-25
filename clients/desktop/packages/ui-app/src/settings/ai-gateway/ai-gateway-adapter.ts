@@ -22,6 +22,8 @@ export interface AiGatewayEditorConfig {
   /** Personal only mode, or the team's members requirement. */
   readonly onlyThisGateway: boolean;
   readonly revision: string;
+  /** Personal: whether cloud chats use the gateway, as stored. */
+  readonly useInCloudChats?: boolean;
 }
 
 export interface AiGatewayEditorPatch {
@@ -30,6 +32,8 @@ export interface AiGatewayEditorPatch {
   readonly models?: readonly ModelGatewayModel[];
   readonly enabled?: boolean;
   readonly onlyThisGateway?: boolean;
+  /** Personal only. */
+  readonly useInCloudChats?: boolean;
 }
 
 export interface AiGatewayConnectInput {
@@ -103,10 +107,10 @@ export function aiGatewayLabel(
   return config.baseUrl ? gatewayHostname(config.baseUrl) : '';
 }
 
-export function personalGatewayEditorConfig(
-  gateway: PersonalAiGatewayConfig | null,
-): AiGatewayEditorConfig | null {
-  if (gateway === null) return null;
+function personalEditorConfig(
+  gateway: PersonalAiGatewayConfig,
+  useInCloudChats: boolean,
+): AiGatewayEditorConfig {
   return {
     displayName: gateway.displayName,
     baseUrl: gateway.baseUrl,
@@ -114,7 +118,18 @@ export function personalGatewayEditorConfig(
     enabled: gateway.enabled,
     onlyThisGateway: gateway.onlyThisGateway,
     revision: gateway.revision,
+    useInCloudChats,
   };
+}
+
+/** `useInCloudChats` is the stored value; a host without cloud chats omits it. */
+export function personalGatewayEditorConfig(
+  gateway: PersonalAiGatewayConfig | null,
+  useInCloudChats = true,
+): AiGatewayEditorConfig | null {
+  return gateway === null
+    ? null
+    : personalEditorConfig(gateway, useInCloudChats);
 }
 
 export function organizationGatewayEditorConfig(
@@ -145,7 +160,7 @@ export function usePersonalAiGatewayAdapter(
           expectedOrganizationId: organizationId,
         }),
       save: async ({ models, ...fields }, expectedRevision) => {
-        const { gateway } = await client.write(
+        const { gateway, useInCloudChats } = await client.write(
           'account.settings.ai-gateway.update',
           {
             expectedOrganizationId: organizationId,
@@ -161,14 +176,7 @@ export function usePersonalAiGatewayAdapter(
                 }),
           },
         );
-        return {
-          displayName: gateway.displayName,
-          baseUrl: gateway.baseUrl,
-          models: gateway.models,
-          enabled: gateway.enabled,
-          onlyThisGateway: gateway.onlyThisGateway,
-          revision: gateway.revision,
-        };
+        return personalEditorConfig(gateway, useInCloudChats);
       },
     }),
     [client, organizationId],

@@ -59,12 +59,33 @@ export class W5DaemonHandoffError extends Error {
   }
 }
 
+/**
+ * The handoff failure each store refuses its writes with, read synchronously
+ * (CAN-7316). A degraded store registers its error; a handoff store registers
+ * its settled degraded delegate's error. Unregistered stores refuse nothing.
+ */
+const handoffFailures = new WeakMap<
+  object,
+  () => W5DaemonHandoffError | undefined
+>();
+
+/**
+ * The handoff error `store` refuses writes with, or `undefined` while its
+ * handoff is pending, after it succeeded, or for an unregistered store. Never
+ * waits: read it after an awaited read through the same store has settled.
+ */
+export function w5HandoffStoreFailure(
+  store: object,
+): W5DaemonHandoffError | undefined {
+  return handoffFailures.get(store)?.();
+}
+
 /** Direct reads, as the legacy store reads; every write and keyed call refuses `error`. */
 export function createW5DegradedStore(
   error: W5DaemonHandoffError,
 ): W5CommitLogFileStore {
   const refuse = (): Promise<never> => Promise.reject(error);
-  return {
+  const store: W5CommitLogFileStore = {
     read: (path) => nodeW5FileStore.read(path),
     replace: refuse,
     remove: refuse,
@@ -80,6 +101,8 @@ export function createW5DegradedStore(
     capture: refuse,
     captureForPreparation: refuse,
   };
+  handoffFailures.set(store, () => error);
+  return store;
 }
 
 /**
@@ -91,19 +114,23 @@ export function createW5HandoffStore(
   outcome: Promise<W5CommitLogFileStore>,
 ): W5CommitLogFileStore {
   let settled: W5CommitLogFileStore | undefined;
+  // Set in the same continuation that installs the degraded delegate, so a
+  // read that waited on the handoff sees the failure once it resolves.
+  let failure: W5DaemonHandoffError | undefined;
   const ready = outcome.then(
     (store) => (settled = store),
-    (error: unknown) =>
-      (settled = createW5DegradedStore(
+    (error: unknown) => {
+      failure =
         error instanceof W5DaemonHandoffError
           ? error
-          : new W5DaemonHandoffError('daemon_unavailable', undefined, error),
-      )),
+          : new W5DaemonHandoffError('daemon_unavailable', undefined, error);
+      return (settled = createW5DegradedStore(failure));
+    },
   );
   const use = <T>(
     call: (store: W5CommitLogFileStore) => Promise<T>,
   ): Promise<T> => (settled ? call(settled) : ready.then(call));
-  return {
+  const store: W5CommitLogFileStore = {
     read: (path) => use((s) => s.read(path)),
     remove: (path, storage, removal) =>
       use((s) => s.remove(path, storage, removal)),
@@ -134,4 +161,6 @@ export function createW5HandoffStore(
             ),
       ),
   };
+  handoffFailures.set(store, () => failure);
+  return store;
 }

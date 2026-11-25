@@ -244,26 +244,40 @@ export function useTooltipHandoff({
   }, [stacking, open, close, triggerRef, surfaceRef]);
 
   // Slide in from the previous surface, then remember where this one sits
-  // so the next tooltip can slide from it.
-  useLayoutEffect((): void => {
+  // so the next tooltip can slide from it. Measured once it is positioned
+  // and again when its size changes, never on each render: an open tooltip
+  // renders with its parent (a control under a streaming reply), and each
+  // measurement there made the browser lay the page out.
+  useLayoutEffect((): (() => void) | undefined => {
     const surface = surfaceRef.current;
     const entry = entryRef.current;
-    if (!open || !positioned || !surface || !entry) return;
+    if (!open || !positioned || !surface || !entry) return undefined;
     const rect = measure(surface);
     entry.rect = rect;
+    const resized =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver((): void => {
+            entry.rect = measure(surface);
+          });
+    resized?.observe(surface);
+    const stop = (): void => resized?.disconnect();
     const from = slideFromRef.current;
     slideFromRef.current = null;
-    if (!slide || !from || typeof surface.animate !== 'function') return;
+    if (!slide || !from || typeof surface.animate !== 'function') return stop;
     const view = surface.ownerDocument.defaultView;
-    if (view?.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    if (view?.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      return stop;
+    }
     const dx = from.centerX - rect.centerX;
     const dy = from.top - rect.top;
-    if (dx === 0 && dy === 0) return;
+    if (dx === 0 && dy === 0) return stop;
     surface.animate([{ translate: `${dx}px ${dy}px` }, { translate: '0 0' }], {
       duration: HANDOFF_SLIDE_MS,
       easing: 'ease-out',
     });
-  });
+    return stop;
+  }, [open, positioned, slide, surfaceRef]);
 
   const pointerOpenDelay = useCallback(
     (requested: number): number => {

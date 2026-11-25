@@ -26,9 +26,8 @@ import { PublicationRepositoryRefSchema } from './plan-sharing';
 /*
  * A shared container's publisher side (CAN-6501 PR 5): the file scope a
  * worktree shares and the share preview, as desktop's shared-containers
- * save-file-scope and preview channels answer them. Spec-first: no registry
- * composes them, so every runtime answers `capability_unavailable` until a
- * later CAN-6501 PR adds the handler.
+ * save-file-scope and preview channels answer them. Served by the desktop
+ * dispatcher (CAN-6501 PR 6); other runtimes answer `capability_unavailable`.
  */
 
 /** The workspace and worktree id charset (`validateId`). */
@@ -44,13 +43,14 @@ const MAX_SCOPE_PATH_LENGTH = 1_024;
 const MAX_SCOPE_ITEM_IDS = 1_000;
 
 const ScopePathSchema = z.string().min(1).max(MAX_SCOPE_PATH_LENGTH);
-// No length cap: ids mirror the desktop store, which keeps any id in this
-// charset (`normalizeIds`); the transport frame limit (8 MiB) still bounds them.
+// Ids mirror the desktop store (`normalizeIds`): its charset, and at most 255
+// characters, the file stem a note or prompt id names.
 const ScopeItemIdSchema = z
   .string()
+  .max(255)
   .regex(/^[A-Za-z0-9_-]+$/)
   .describe(
-    'A selected note or prompt id. Unbounded in length, as the desktop store keeps it; the transport frame limit applies.',
+    'A selected note or prompt id: a file stem of at most 255 characters. The desktop store drops a longer one.',
   );
 // A picker row's id is Cowork's raw Markdown filename stem.
 const PickerItemIdSchema = z
@@ -135,16 +135,21 @@ const WorktreeParamsSchema = z.strictObject({
 // and drops entries that are not valid paths, ids or script names.
 const RequestPathsSchema = z.array(z.string()).max(MAX_SCOPE_PATHS);
 const RequestIdsSchema = z.array(z.string()).max(MAX_SCOPE_ITEM_IDS);
+// A selected note or prompt id is a file stem, so a request id is at most 255
+// characters, as a stored one is.
+const RequestItemIdsSchema = z
+  .array(z.string().max(255))
+  .max(MAX_SCOPE_ITEM_IDS);
 
 export const PublicationFileScopeUpdateParamsSchema =
   WorktreeParamsSchema.extend({
     includedPaths: RequestPathsSchema,
     excludedPaths: RequestPathsSchema.optional(),
     legacyAllowlist: z.boolean().optional(),
-    includedNoteIds: RequestIdsSchema.optional(),
-    excludedNoteIds: RequestIdsSchema.optional(),
-    includedPromptIds: RequestIdsSchema.optional(),
-    excludedPromptIds: RequestIdsSchema.optional(),
+    includedNoteIds: RequestItemIdsSchema.optional(),
+    excludedNoteIds: RequestItemIdsSchema.optional(),
+    includedPromptIds: RequestItemIdsSchema.optional(),
+    excludedPromptIds: RequestItemIdsSchema.optional(),
     runSharingEnabled: z.boolean().optional(),
     runSharingDisabled: z.boolean().optional(),
     includedRunScripts: z
@@ -176,8 +181,11 @@ const ItemSchema = z.strictObject({
   id: PickerItemIdSchema,
   title: z.string(),
 });
+// The preview lists git paths as the builder finds them, with no saved-scope
+// cap; 32,767 is Windows' extended-length path limit, the longest desktop runs on.
+const PreviewPathSchema = z.string().min(1).max(32_767);
 const PathListSchema = z
-  .array(ScopePathSchema)
+  .array(PreviewPathSchema)
   .max(MAX_SHARED_CONTAINER_ARTIFACTS_PER_REVISION);
 
 export const PublicationPreviewSchema = z.strictObject({
@@ -259,7 +267,8 @@ export const CORE_PUBLICATION_SHARED_CONTAINER_QUERY_DEFINITIONS =
       result: FileScopeResultSchema,
       error: QueryErrorSchema,
       idempotency: 'inherent',
-      requiredGrants: [PUBLICATION_GRANTS.read],
+      // A local worktree's scope: publication.read plus workspace.read.
+      requiredGrants: [PUBLICATION_GRANTS.read, 'core.workspace.read'],
     }),
     'core.publication.preview.get': defineCanopyQuery({
       ...publication,
@@ -267,7 +276,9 @@ export const CORE_PUBLICATION_SHARED_CONTAINER_QUERY_DEFINITIONS =
       result: PublicationPreviewSchema,
       error: QueryErrorSchema,
       idempotency: 'inherent',
-      requiredGrants: [PUBLICATION_GRANTS.read],
+      // Untracked and withheld paths, remote URLs and commit SHAs of a local
+      // worktree: publication.read plus workspace.read.
+      requiredGrants: [PUBLICATION_GRANTS.read, 'core.workspace.read'],
     }),
   });
 
@@ -281,6 +292,7 @@ export const CORE_PUBLICATION_SHARED_CONTAINER_INSTRUCTION_DEFINITIONS =
         retry: CanopyKeyedRetryDirectiveSchema,
       }),
       idempotency: 'keyed',
-      requiredGrants: [PUBLICATION_GRANTS.write],
+      // It changes a local worktree's share config: plus workspace.write.
+      requiredGrants: [PUBLICATION_GRANTS.write, 'core.workspace.write'],
     }),
   });

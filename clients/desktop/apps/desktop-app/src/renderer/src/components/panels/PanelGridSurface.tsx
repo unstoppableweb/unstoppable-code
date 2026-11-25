@@ -5,11 +5,8 @@ import { useTerminalRename } from '@canopy/ui-app/terminal-core';
 import { PanelAddTabMenu } from '@/components/panels/PanelAddTabMenu';
 import { ExportSessionConfirmationModal } from '@/components/shared/ExportSessionConfirmationModal';
 import { ShareRunModal } from '@/components/shared/ShareRunModal';
-import {
-  CenteredLoadingSpinner,
-  ConfirmDialog,
-  DelayedLoadingPlaceholder,
-} from '@canopy/ui-shared/components';
+import { PanelGridLoadingCard } from '@canopy/ui-shared/components/panels';
+import { ConfirmDialog } from '@canopy/ui-shared/components';
 import {
   archiveCloudTask,
   cloudTaskArchiveFailure,
@@ -111,7 +108,10 @@ import {
 import { usePanelWindowsStore } from '@/stores/panelWindowsStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useStartPageStore } from '@/stores/startPageStore';
-import { useWorkspaceLayoutModeStore } from '@/stores/workspaceLayoutModeStore';
+import {
+  useShownWorkspaceLayoutMode,
+  useWorkspaceLayoutModeStore,
+} from '@/stores/workspaceLayoutModeStore';
 import type { FileTreeRoot } from '@canopy/desktop-shared/types';
 import { CHAT_UNIT_LABEL, isPanelKind, type PanelKind } from '@canopy/protocol';
 import type { ProjectStartPage } from '@canopy/protocol/start-page';
@@ -129,6 +129,7 @@ import type {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -162,6 +163,12 @@ export interface PanelGridSurfaceProps {
    * the default grouped `addChatPanelToGroup` placement.
    */
   onNewChatTab?: (groupId: string) => void;
+  /**
+   * Names what loads in the card shown until the grid mounts. A host that
+   * shows the same card for its own wait first (the chat page, for an
+   * entry's tabs) passes its label, so the card reads the same throughout.
+   */
+  loadingLabel?: string;
 }
 
 /**
@@ -171,6 +178,35 @@ export interface PanelGridSurfaceProps {
  * with + is not listed and stays.
  */
 const seededSidePanelNewTabIds = new Set<string>();
+
+/**
+ * Each worktree's file tree roots as last read, kept while its grid is away.
+ * A grid mounts again on every switch to its worktree; starting from the
+ * roots it already had, a read that confirms them changes nothing, where
+ * starting empty rebuilt every tab service and rendered the whole grid chrome
+ * a second time once the read answered.
+ */
+const EMPTY_START_PAGE_ROOTS: FileTreeRoot[] = [];
+const REMEMBERED_START_PAGE_ROOTS_LIMIT = 64;
+const startPageRootsByWorktree = new Map<string, FileTreeRoot[]>();
+
+function rememberedStartPageRoots(worktreeKey: string): FileTreeRoot[] {
+  return startPageRootsByWorktree.get(worktreeKey) ?? EMPTY_START_PAGE_ROOTS;
+}
+
+function rememberStartPageRoots(
+  worktreeKey: string,
+  roots: FileTreeRoot[],
+): void {
+  startPageRootsByWorktree.delete(worktreeKey);
+  startPageRootsByWorktree.set(worktreeKey, roots);
+  if (startPageRootsByWorktree.size > REMEMBERED_START_PAGE_ROOTS_LIMIT) {
+    for (const oldest of startPageRootsByWorktree.keys()) {
+      startPageRootsByWorktree.delete(oldest);
+      break;
+    }
+  }
+}
 
 function canDesktopPanelPopOut(kind: string): boolean {
   return isPanelKind(kind) && getPanelDefinition(kind).canPopOut;
@@ -263,6 +299,7 @@ export function PanelGridSurface({
   includeAuxWindowContent = true,
   addMenuExcludeKinds,
   onNewChatTab,
+  loadingLabel,
 }: PanelGridSurfaceProps): JSX.Element {
   const worktreeKey = makeWorktreePanelKey(projectId, worktreeId);
   const access = useWorkspaceAccess();
@@ -277,7 +314,16 @@ export function PanelGridSurface({
   const resolvedStartPage = useStartPageStore(
     (state) => state.resolved[`${projectId}:${worktreeId}`],
   );
-  const [startPageRoots, setStartPageRoots] = useState<FileTreeRoot[]>([]);
+  const [startPageRootsState, setStartPageRootsState] = useState(() => ({
+    worktreeKey,
+    roots: rememberedStartPageRoots(worktreeKey),
+  }));
+  // A grid moved to another worktree reads that worktree's roots, never the
+  // previous one's.
+  const startPageRoots =
+    startPageRootsState.worktreeKey === worktreeKey
+      ? startPageRootsState.roots
+      : rememberedStartPageRoots(worktreeKey);
   const scopeCapabilities = useScopeCapabilities({ projectId });
   // Start pages are files and URLs in a local project's own folder; a cloud
   // chat's files are in its sandbox.
@@ -335,13 +381,33 @@ export function PanelGridSurface({
       useStartPageStore.getState().refresh(projectId, worktreeId),
     ])
       .then(([response]) => {
-        if (!canceled) setStartPageRoots(response.roots);
+        // Roots that did not change keep their array: a new one rebuilds
+        // every tab service and renders the whole grid chrome again.
+        const known = rememberedStartPageRoots(worktreeKey);
+        const roots =
+          JSON.stringify(known) === JSON.stringify(response.roots)
+            ? known
+            : response.roots;
+        rememberStartPageRoots(worktreeKey, roots);
+        if (canceled) return;
+        setStartPageRootsState((current) =>
+          current.worktreeKey === worktreeKey && current.roots === roots
+            ? current
+            : { worktreeKey, roots },
+        );
       })
       .catch(() => undefined);
     return (): void => {
       canceled = true;
     };
-  }, [projectId, readOnly, scopeHasLocalFiles, startPageEnabled, worktreeId]);
+  }, [
+    projectId,
+    readOnly,
+    scopeHasLocalFiles,
+    startPageEnabled,
+    worktreeId,
+    worktreeKey,
+  ]);
 
   const startPageForTab = useCallback(
     (tab: PanelTabModel): ProjectStartPage | null => {
@@ -398,12 +464,18 @@ export function PanelGridSurface({
     readOnlyRunAllowed,
     unavailableForScope,
   ]);
-  const modeEntry = useWorkspaceLayoutModeStore(
-    useShallow((state) => state.entries[worktreeKey]),
+  // Known from the first render for a worktree shown before, so switching to
+  // it mounts its grid in the same commit that takes the previous one down.
+  const layoutMode = useShownWorkspaceLayoutMode(worktreeKey);
+  const modeHydrated = layoutMode !== null;
+  const minimal = layoutMode === 'minimal';
+  // The grid itself mounts once the worktree's layout is in memory, which on
+  // a first visit is a second read after the mode's. The same store answers
+  // the grid below, so this turns in the commit that mounts it.
+  const layoutInMemory = usePanelLayoutStore(
+    (state) => state.layouts[worktreeKey] !== undefined,
   );
-  const modeHydrated =
-    modeEntry?.status === 'ready' || modeEntry?.status === 'error';
-  const minimal = modeHydrated && modeEntry.mode === 'minimal';
+  const gridLoading = !modeHydrated || !layoutInMemory;
 
   // Early access: the Side Panel can be emptied (it then lists what to
   // open), so its Activity and File explorer tabs close like any other.
@@ -493,11 +565,16 @@ export function PanelGridSurface({
       store.closeTab(worktreeKey, DEFAULT_EXTRAS_GROUP_ID, panelId);
     }
   }, [seededNewTabsToClose, worktreeKey]);
-  useEffect(() => {
+  // Before paint: a grid shown in its remembered mode takes that mode's
+  // locked arrangement in the same frame, never one frame later.
+  useLayoutEffect(() => {
     ensureEarlyAccessPanelRulesSync();
     void useWorkspaceLayoutModeStore.getState().load(worktreeKey);
-    return (): void => disposeWorktreePanelHydration(worktreeKey);
   }, [worktreeKey]);
+  useEffect(
+    () => (): void => disposeWorktreePanelHydration(worktreeKey),
+    [worktreeKey],
+  );
   // Busy chats keep their panel: the tab × is withheld and the context menu's
   // Close is disabled, instead of removing the panel for a chat the store
   // then refuses to close. The id set changes identity only when a chat's
@@ -571,6 +648,10 @@ export function PanelGridSurface({
     [openShare, projectId, worktreeId],
   );
 
+  // Only the callback, never the controller: `share` is a new object on
+  // every render, and depending on it rebuilt `services` below each time,
+  // which rendered every panel group, tab bar and tab again.
+  const shareEntryVisible = share.entryVisible;
   const canShareSession = useCallback(
     (chatTabId: string): boolean => {
       const tab = useChatStore
@@ -578,9 +659,9 @@ export function PanelGridSurface({
         .worktreeChats[
           `${projectId}/${worktreeId}`
         ]?.tabs.find((candidate) => candidate.id === chatTabId);
-      return share.entryVisible(tab?.sharedRun);
+      return shareEntryVisible(tab?.sharedRun);
     },
-    [projectId, share, worktreeId],
+    [projectId, shareEntryVisible, worktreeId],
   );
 
   const handleExportSession = useCallback(
@@ -918,23 +999,21 @@ export function PanelGridSurface({
     ],
   );
 
+  // The inset layout keeps the panel card on screen while the layout loads.
+  // One element for the whole wait, the mode's read and then the layout's:
+  // taking it down between the two left the space under the top bar empty,
+  // with no card, until the grid mounted.
+  const loadingCard = gridLoading ? (
+    <PanelGridLoadingCard label={loadingLabel} />
+  ) : null;
+
   if (!modeHydrated) {
-    // The inset layout keeps the panel card on screen while the layout loads.
-    return (
-      <div
-        className="flex min-h-0 min-w-0 flex-1"
-        data-panel-grid-loading
-        data-testid="panel-grid-loading"
-      >
-        <DelayedLoadingPlaceholder className="flex-1">
-          <CenteredLoadingSpinner />
-        </DelayedLoadingPlaceholder>
-      </div>
-    );
+    return <>{loadingCard}</>;
   }
 
   return (
     <>
+      {loadingCard}
       <SharedPanelGridSurface
         projectId={projectId}
         worktreeId={worktreeId}
@@ -947,6 +1026,8 @@ export function PanelGridSurface({
         fixedTopologyChromeForGroup={
           minimal ? minimalChromeForGroup : undefined
         }
+        // The card above covers this wait too, as one element.
+        loadingFallback={null}
       />
       {share.target && (
         <ShareRunModal

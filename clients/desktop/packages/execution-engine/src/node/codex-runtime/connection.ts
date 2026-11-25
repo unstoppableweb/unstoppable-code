@@ -67,7 +67,7 @@ export type {
 } from './owner-admission-lanes';
 export { DEFAULT_INGESTION_LAG_THRESHOLD_MS } from './owner-admission-lanes';
 import { RequestDeadline } from './request-deadline';
-import { isJsonValue } from './rollout-seed';
+import { isJsonValue, normalizeCodexHistoryCallIds } from './rollout-seed';
 import type { CodexMcpToolCallContext } from './thread-handle';
 import type { CodexResolvedSpawnProfile } from './profile';
 import { CODEX_LIFECYCLE } from '../harness-contract/codex-lifecycle';
@@ -432,7 +432,7 @@ const THREAD_CLOSING_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000] as const;
 const THREAD_CLOSING_RETRY_BUDGET_MS = 30_000;
 // Thread requests whose deadline passed, kept so a response that still arrives
 // can be cleaned up instead of leaving a thread loaded with no owner.
-const MAX_TIMED_OUT_THREAD_REQUESTS = 64;
+const MAX_ABANDONED_THREAD_REQUESTS = 64;
 const LATE_THREAD_CLEANUP_TIMEOUT_MS = 10_000;
 const UNRESPONSIVE_PROCESS_RECYCLE_ERROR =
   'Codex app-server was restarted because it stopped responding. Please retry this message.';
@@ -1011,7 +1011,7 @@ export class CodexAppServerConnection {
   private readonly loadedThreadProviderRoutes = new Map<string, string>();
   private readonly closedProviderRouteThreads = new Set<string>();
   /** Thread request ids that timed out on the current worker, by method. */
-  private readonly timedOutThreadRequests = new Map<JsonRpcId, string>();
+  private readonly abandonedThreadRequests = new Map<JsonRpcId, string>();
   private unroutedWarningWindowStartedAt = 0;
   private suppressedUnroutedWarningCount = 0;
   private readonly pendingServerRequestsByOwner = new Map<
@@ -1348,8 +1348,14 @@ export class CodexAppServerConnection {
     );
   }
 
-  unsubscribeThreadBestEffort(threadId: string): void {
-    if (!this.initialized) {
+  unsubscribeThreadBestEffort(
+    threadId: string,
+    options?: { onlyIfUnowned?: boolean },
+  ): void {
+    if (
+      !this.initialized ||
+      (options?.onlyIfUnowned && this.isThreadClaimed(threadId))
+    ) {
       return;
     }
 
@@ -1368,6 +1374,15 @@ export class CodexAppServerConnection {
         }
       })
       .catch(() => {});
+  }
+
+  private isThreadClaimed(threadId: string): boolean {
+    return (
+      this.threadOwners.has(threadId) ||
+      Array.from(this.pendingResponses.values()).some(
+        (pending) => pending.resumeThreadId === threadId,
+      )
+    );
   }
 
   /**
@@ -1555,6 +1570,7 @@ export class CodexAppServerConnection {
       timeoutMs?: number;
       rejectOnOwnerFailure?: boolean;
       signal?: AbortSignal;
+      cancelInFlight?: boolean;
       softTimeout?: SoftRequestTimeout;
     },
   ): Promise<AppServerRequestResponse<TMethod>>;
@@ -1566,6 +1582,7 @@ export class CodexAppServerConnection {
       timeoutMs?: number;
       rejectOnOwnerFailure?: boolean;
       signal?: AbortSignal;
+      cancelInFlight?: boolean;
       softTimeout?: SoftRequestTimeout;
     } = {},
   ): Promise<unknown> {
@@ -1766,6 +1783,7 @@ export class CodexAppServerConnection {
       timeoutMs?: number;
       rejectOnOwnerFailure?: boolean;
       signal?: AbortSignal;
+      cancelInFlight?: boolean;
     },
   ): Promise<unknown> {
     if (opts.signal?.aborted) {
@@ -1819,6 +1837,8 @@ export class CodexAppServerConnection {
       timeoutMs?: number;
       rejectOnOwnerFailure?: boolean;
       softTimeout?: SoftRequestTimeout;
+      signal?: AbortSignal;
+      cancelInFlight?: boolean;
     },
   ): Promise<unknown> {
     this.markActivity();
@@ -1826,13 +1846,34 @@ export class CodexAppServerConnection {
     const id = this.nextId;
     this.nextId += 1;
     const timeoutMs = opts.timeoutMs ?? defaultRequestTimeoutMs(method);
+    const inFlightSignal =
+      opts.cancelInFlight &&
+      (method === 'thread/start' || method === 'thread/inject_items')
+        ? opts.signal
+        : undefined;
     return new Promise((resolve, reject) => {
+      const onAbort = (): void => {
+        if (
+          !inFlightSignal ||
+          pending.responseReceived ||
+          this.pendingResponses.get(id) !== pending
+        ) {
+          return;
+        }
+        if (method === 'thread/start') {
+          this.rememberAbandonedThreadRequest(id, method);
+        }
+        this.pendingResponses.delete(id);
+        pending.reject(abortSignalError(inFlightSignal));
+      };
       const pending: PendingResponse = {
         resolve: (value: unknown): void => {
+          inFlightSignal?.removeEventListener('abort', onAbort);
           pending.deadline?.cancel();
           resolve(value);
         },
         reject: (error: Error): void => {
+          inFlightSignal?.removeEventListener('abort', onAbort);
           pending.deadline?.cancel();
           reject(error);
         },
@@ -1849,9 +1890,18 @@ export class CodexAppServerConnection {
         const resumeThreadId = readString(params, 'threadId');
         if (resumeThreadId) pending.resumeThreadId = resumeThreadId;
       }
+      if (inFlightSignal?.aborted) {
+        pending.reject(abortSignalError(inFlightSignal));
+        return;
+      }
       this.pendingResponses.set(id, pending);
+      inFlightSignal?.addEventListener('abort', onAbort, { once: true });
       try {
-        this.send({ id, method, params });
+        const outgoingParams: unknown =
+          method === 'thread/inject_items' && params && 'items' in params
+            ? { ...params, items: normalizeCodexHistoryCallIds(params.items) }
+            : params;
+        this.send({ id, method, params: outgoingParams });
         if (method === 'turn/start') {
           this.dispatchedTurnCount += 1;
         }
@@ -1867,7 +1917,7 @@ export class CodexAppServerConnection {
               return;
             }
             if (isThreadMutationMethod(method)) {
-              this.rememberTimedOutThreadRequest(id, method);
+              this.rememberAbandonedThreadRequest(id, method);
             }
             this.retainTimedOutResponse(
               id,
@@ -1959,11 +2009,11 @@ export class CodexAppServerConnection {
     }
   }
 
-  private rememberTimedOutThreadRequest(id: JsonRpcId, method: string): void {
-    this.timedOutThreadRequests.set(id, method);
-    if (this.timedOutThreadRequests.size > MAX_TIMED_OUT_THREAD_REQUESTS) {
-      const oldest = this.timedOutThreadRequests.keys().next().value;
-      if (oldest !== undefined) this.timedOutThreadRequests.delete(oldest);
+  private rememberAbandonedThreadRequest(id: JsonRpcId, method: string): void {
+    this.abandonedThreadRequests.set(id, method);
+    if (this.abandonedThreadRequests.size > MAX_ABANDONED_THREAD_REQUESTS) {
+      const oldest = this.abandonedThreadRequests.keys().next().value;
+      if (oldest !== undefined) this.abandonedThreadRequests.delete(oldest);
     }
   }
 
@@ -2000,23 +2050,16 @@ export class CodexAppServerConnection {
     responseId: JsonRpcId,
     response: Record<string, unknown>,
   ): void {
-    const method = this.timedOutThreadRequests.get(responseId);
+    const method = this.abandonedThreadRequests.get(responseId);
     if (method === undefined) return;
-    this.timedOutThreadRequests.delete(responseId);
+    this.abandonedThreadRequests.delete(responseId);
     if (readRecord(response, 'error')) return;
     const result = readRecord(response, 'result');
     const thread = result ? readRecord(result, 'thread') : null;
     const threadId = thread ? readString(thread, 'id') : undefined;
-    if (!threadId || this.threadOwners.has(threadId)) return;
     // A newer resume of the same thread will claim this subscription;
     // unsubscribing now would drop that resume's notifications.
-    if (
-      Array.from(this.pendingResponses.values()).some(
-        (pending) => pending.resumeThreadId === threadId,
-      )
-    ) {
-      return;
-    }
+    if (!threadId || this.isThreadClaimed(threadId)) return;
 
     // Its notifications must not fall through to the sole-owner fallback.
     this.disposedThreadTombstones.add(threadId);
@@ -2294,6 +2337,9 @@ export class CodexAppServerConnection {
   ): void {
     for (const [id, pending] of Array.from(this.pendingResponses.entries())) {
       if (pending.owner === owner && pending.rejectOnOwnerFailure) {
+        if (pending.method === 'thread/start' && !pending.responseReceived) {
+          this.rememberAbandonedThreadRequest(id, pending.method);
+        }
         pending.reject(error);
         this.pendingResponses.delete(id);
       }
@@ -2594,7 +2640,7 @@ export class CodexAppServerConnection {
         ).message,
       ),
     );
-    this.timedOutThreadRequests.clear();
+    this.abandonedThreadRequests.clear();
     this.idleRetainedThreads.clear();
     // Frames retained for held owners belong to the worker being suspended;
     // like the unread pipe bytes they replace, they are dropped with it.
@@ -2632,6 +2678,20 @@ export class CodexAppServerConnection {
         ? { codexAppServerProcessId: proc.pid }
         : {}),
       stoppedCodexAppServerCount: 1,
+    });
+  }
+
+  private recordProcessTerminationFailed(
+    proc: ChildProcessWithoutNullStreams,
+  ): void {
+    getCodexRuntimeHostHooks().recordDiagnostic({
+      version: 1,
+      timestamp: new Date().toISOString(),
+      kind: 'codex_app_server_termination_failed',
+      appProcessId: process.pid,
+      ...(typeof proc.pid === 'number'
+        ? { codexAppServerProcessId: proc.pid }
+        : {}),
     });
   }
 
@@ -3200,14 +3260,24 @@ export class CodexAppServerConnection {
     proc.stderr.setEncoding('utf8');
     proc.stderr.on('data', (chunk: unknown) => {
       const rawText = String(chunk);
-      this.stderrTail = appendCapturedStderr(this.stderrTail, rawText);
+      // A forgotten process can outlive its replacement; its output must not
+      // enter the replacement's failure messages.
+      if (this.process === proc) {
+        this.stderrTail = appendCapturedStderr(this.stderrTail, rawText);
+      }
       const text = rawText.trim();
       if (!text) return;
       // eslint-disable-next-line no-console
       console.warn('[codex-app-server]', text);
     });
     const handleProcessError = (error: Error, transport = 'process'): void => {
-      getCodexRuntimeHostHooks().unregisterProcessOwner(proc);
+      // A failed kill also emits 'error'. A process that is still running
+      // stays in the PID registry until its `exit`, so the quit and launch
+      // sweeps can still kill it. A process that never spawned has no pid
+      // and never exits, so unregister it here.
+      if (typeof proc.pid !== 'number' || !this.isProcessAlive(proc)) {
+        getCodexRuntimeHostHooks().unregisterProcessOwner(proc);
+      }
       if (this.process !== proc) {
         return;
       }
@@ -4854,7 +4924,7 @@ export class CodexAppServerConnection {
     this.itemOwners.clear();
     this.mcpToolCalls.clear();
     this.pendingMcpStartupNotifications.clear();
-    this.timedOutThreadRequests.clear();
+    this.abandonedThreadRequests.clear();
     this.idleRetainedThreads.clear();
     this.loadedThreadProviderRoutes.clear();
     this.closedProviderRouteThreads.clear();
@@ -4952,19 +5022,82 @@ export class CodexAppServerConnection {
     if (existing) {
       return existing;
     }
-    const tracked = this.terminateProcessAndWait(proc).then(() => {
-      this.processTerminations.delete(proc);
-    });
+    // Both handlers run before any waiter of `tracked` resumes, so a start
+    // waiting on this termination observes the entry gone and, after a
+    // failure, the stuck process already forgotten.
+    const forget = (): void => {
+      if (this.processTerminations.get(proc) === tracked) {
+        this.processTerminations.delete(proc);
+      }
+    };
+    const tracked: Promise<void> = this.terminateProcessAndWait(proc).then(
+      forget,
+      (error: unknown) => {
+        forget();
+        try {
+          this.recordProcessTerminationFailed(proc);
+        } catch {
+          // A diagnostic failure must not replace the termination error.
+        }
+        try {
+          this.abandonStuckProcess(proc);
+        } catch (abandonError) {
+          // The termination error below is what callers need, but a failed
+          // abandon can leave the stuck process current, so say why.
+          // eslint-disable-next-line no-console
+          console.warn(
+            '[codex-app-server] could not forget a stuck process',
+            abandonError,
+          );
+        }
+        throw error;
+      },
+    );
     this.processTerminations.set(proc, tracked);
     void tracked.catch(() => {});
     return tracked;
   }
 
+  /**
+   * A start only needs earlier terminations settled before it spawns. A failed
+   * termination is reported to its initiator and recorded as a diagnostic, and
+   * the stuck process has been forgotten, so the start proceeds.
+   */
   private async waitForPendingProcessTerminations(): Promise<void> {
-    await awaitAllTerminations(
-      Array.from(this.processTerminations.values()),
-      'Codex app-server process cleanup encountered multiple failures',
+    await Promise.allSettled(Array.from(this.processTerminations.values()));
+  }
+
+  /**
+   * Forgets a process that survived termination while it was still the
+   * current process (an initialize timeout or an output stream close), the
+   * way its `exit` would have, so the next request spawns a replacement. The
+   * process stays in the PID registry until it exits or a sweep kills it.
+   * Unexpected-exit recovery does not run, because the stuck process may
+   * still hold thread writers. A pending shared restart still settles its
+   * peers, as the `exit` handler does. No process-exit callback fires, since
+   * the process has not exited; `codex_app_server_termination_failed` marks
+   * the end of its use.
+   */
+  private abandonStuckProcess(proc: ChildProcessWithoutNullStreams): void {
+    if (this.process !== proc || this.closing) {
+      return;
+    }
+    this.unregisterResource();
+    const sharedRestartOwner = this.pendingSharedRestartOwner;
+    if (sharedRestartOwner) {
+      this.failAllForSharedRestart(
+        sharedRestartOwner,
+        this.pendingSharedRestartOwnerError ?? new Error('turn_cancelled'),
+      );
+      return;
+    }
+    const processFailureError =
+      this.pendingProcessFailureError ??
+      this.buildProcessFailureError('Codex app-server did not terminate');
+    this.settleAllRetainedResponses(
+      new CodexRecoverableProcessExitError(processFailureError.message),
     );
+    this.failAll(processFailureError);
   }
 
   private async terminateProcessAndWait(
@@ -5196,10 +5329,21 @@ export class CodexAppServerPool {
     );
   }
 
+  /**
+   * Tracks a final release until it settles. A failure stays on the tracked
+   * promise, so a sign-in or shutdown that gathered it reports it once, but it
+   * leaves the set: later sign-ins are not blocked by an old failure.
+   */
   private trackTermination(termination: Promise<void>): void {
-    const tracked = termination.then(() => {
-      this.pendingTerminations.delete(tracked);
-    });
+    const tracked: Promise<void> = termination.then(
+      () => {
+        this.pendingTerminations.delete(tracked);
+      },
+      (error: unknown) => {
+        this.pendingTerminations.delete(tracked);
+        throw error;
+      },
+    );
     this.pendingTerminations.add(tracked);
     void tracked.catch(() => {});
   }

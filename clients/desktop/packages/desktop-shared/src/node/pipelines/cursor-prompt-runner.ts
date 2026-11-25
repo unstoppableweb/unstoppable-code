@@ -28,7 +28,7 @@ import {
   extractProposedPlan,
 } from '../cursor/headless-policy';
 import {
-  prepareCursorRuntimeEnvironment,
+  prepareCursorStepEnvironment,
   withheldCursorEnvironmentNames,
 } from '../cursor/runtime-environment';
 import type { CursorLaunch } from '../cursor/runtime-launch';
@@ -64,34 +64,6 @@ export interface CursorPromptDriverOptions {
   reinstallGuidance?: string;
   /** How this host starts Cursor children (CAN-4118). */
   spawner: ProviderProcessSpawner;
-}
-
-/** Canonical-home environment keys a pipeline-declared environment must never override. */
-const CANONICAL_HOME_ENVIRONMENT_KEYS = new Set([
-  'HOME',
-  'USERPROFILE',
-  'HOMEDRIVE',
-  'HOMEPATH',
-  'HOMESHARE',
-]);
-
-/**
- * Strips canonical-home overrides from a pipeline-declared environment before
- * it is merged into the Cursor spawn environment. prepareCursorRuntimeEnvironment
- * (below) is the sole authority for Cursor's private home directory overlay and
- * separately deletes every CURSOR_*-prefixed key from the merged object, so a
- * pipeline-declared CURSOR_API_KEY never reaches the spawned child either. This
- * is Cursor's own sanitizer (not a reused Codex helper) so Cursor spawn-state
- * scoping stays independent of Codex's runtime boundary.
- */
-export function sanitizeCursorSpawnEnvironment(
-  environment: Record<string, string>,
-): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(environment).filter(
-      ([key]) => !CANONICAL_HOME_ENVIRONMENT_KEYS.has(key.toUpperCase()),
-    ),
-  );
 }
 
 function usageToHelperUsage(
@@ -582,15 +554,11 @@ export async function runCursorPromptWithDriver(
       );
 
     const env = await withinSetup(
-      prepareCursorRuntimeEnvironment(getCursorRuntimeStateDir(), {
-        ...driver.baseEnvironment,
-        // sanitizeCursorSpawnEnvironment only blocks canonical-home
-        // overrides; prepareCursorRuntimeEnvironment (below) separately
-        // deletes every CURSOR_*-prefixed key from this merged object, so a
-        // pipeline-declared CURSOR_API_KEY never reaches the spawned child.
-        ...sanitizeCursorSpawnEnvironment(request.environment),
-        NO_OPEN_BROWSER: '1',
-      }),
+      prepareCursorStepEnvironment(
+        getCursorRuntimeStateDir(),
+        driver.baseEnvironment,
+        request.environment,
+      ),
     );
     const providerProcess: CursorProviderProcess = {
       spawner: driver.spawner,

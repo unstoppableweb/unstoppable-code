@@ -1,7 +1,10 @@
 import { OPERATION_UNSUPPORTED_CODE, type Unsubscribe } from '@canopy/app-core';
 import { restoreIpcRejection } from '@canopy/protocol/app-errors/ipc-rejection';
-import type { RemoteIpcChannel } from '@canopy/protocol/remote-control/channels';
-import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
+import type {
+  REMOTE_IPC_CHANNELS,
+  RemoteIpcChannel,
+} from '@canopy/protocol/remote-control/channels';
+import type { BrowserRemoteIpcTransport } from '@canopy/protocol/remote-control';
 
 /** Accepts a reply or push payload of the expected shape. */
 export type Decoder<T> = (value: unknown) => value is T;
@@ -46,7 +49,7 @@ export class UnsupportedOperationError extends Error {
   }
 }
 
-/** Typed channel calls over a {@link RemoteIpcTransport}. */
+/** Typed channel calls over a {@link BrowserRemoteIpcTransport}. */
 export interface ChannelClient {
   /** Invoke and decode the reply; a wrong shape rejects. */
   invoke<T>(
@@ -54,6 +57,12 @@ export interface ChannelClient {
     decode: Decoder<T>,
     ...args: unknown[]
   ): Promise<T>;
+  /** Invoke a catalog Add with optional transport metadata, not IPC args. */
+  invokeWithInstallRefreshToken(
+    channel: typeof REMOTE_IPC_CHANNELS.pluginsInstallPlugin,
+    args: readonly unknown[],
+    installRefreshToken: string,
+  ): Promise<unknown>;
   /** Invoke for its effect; the reply is ignored. */
   invokeVoid(channel: RemoteIpcChannel, ...args: unknown[]): Promise<void>;
   /**
@@ -85,7 +94,7 @@ export interface ChannelClientOptions {
  * transport that already restored composes with it.
  */
 export function createChannelClient(
-  transport: RemoteIpcTransport,
+  transport: BrowserRemoteIpcTransport,
   options: ChannelClientOptions = {},
 ): ChannelClient {
   const authorize = (channel: string): void => {
@@ -99,9 +108,19 @@ export function createChannelClient(
   const call = async (
     channel: RemoteIpcChannel,
     args: readonly unknown[],
+    installRefreshToken?: string,
   ): Promise<unknown> => {
     authorize(channel);
     try {
+      if (
+        installRefreshToken !== undefined &&
+        transport.invokeWithInstallRefreshToken !== undefined
+      )
+        return await transport.invokeWithInstallRefreshToken(
+          channel,
+          args,
+          installRefreshToken,
+        );
       return await transport.invoke(channel, ...args);
     } catch (error) {
       return restoreIpcRejection(error);
@@ -117,6 +136,8 @@ export function createChannelClient(
       if (!decode(reply)) throw new RemoteIpcMalformedReplyError(channel);
       return reply;
     },
+    invokeWithInstallRefreshToken: (channel, args, installRefreshToken) =>
+      call(channel, args, installRefreshToken),
     async invokeVoid(
       channel: RemoteIpcChannel,
       ...args: unknown[]

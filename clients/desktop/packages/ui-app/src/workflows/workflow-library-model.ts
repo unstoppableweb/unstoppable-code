@@ -89,13 +89,16 @@ export const WORKFLOW_LIBRARY_SOURCE_LABELS: Readonly<
 /**
  * Row actions. `run` is the row's Run button, `toggle` its switch and `add`
  * the install button of a shared item not yet added; the rest are the More
- * menu. A host lists only what applies and what it can perform.
+ * menu. `open-workflow` opens the workflow a schedule row runs, when that
+ * workflow has no row of its own. A host lists only what applies and what it
+ * can perform.
  */
 export type WorkflowLibraryAction =
   | 'toggle'
   | 'run'
   | 'add'
   | 'edit'
+  | 'open-workflow'
   | 'view-runs'
   | 'duplicate'
   | 'share'
@@ -109,6 +112,7 @@ export const WORKFLOW_LIBRARY_ACTION_LABELS: Readonly<
   run: 'Run',
   add: 'Add',
   edit: 'Edit',
+  'open-workflow': 'Open workflow',
   'view-runs': 'View runs',
   duplicate: 'Duplicate',
   share: 'Share…',
@@ -141,6 +145,7 @@ export const WORKFLOW_RUN_STARTED_TOAST = 'Pipeline started.';
 
 const LIBRARY_MENU_ORDER: readonly WorkflowLibraryAction[] = [
   'edit',
+  'open-workflow',
   'view-runs',
   'duplicate',
   'share',

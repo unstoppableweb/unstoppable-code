@@ -23,16 +23,31 @@ const DARWIN_EXECUTABLES: readonly string[] = [
   'crepectl',
   'cursor-askpass',
 ];
+// The Linux archive has the macOS layout and `cursor-agent` bash launcher,
+// minus the macOS-only `spawn-helper`. Its native helpers and addons are
+// glibc builds (`*.linux-<arch>-gnu.node`).
+const LINUX_EXECUTABLES: readonly string[] = [
+  'cursor-agent',
+  'node',
+  'cursor-agent-sea',
+  'cursor-agent-worker-sea',
+  'cursorsandbox',
+  'rg',
+  'crepectl',
+  'cursor-askpass',
+];
 export type CursorRuntimeTargetKey =
   | 'darwin-arm64'
   | 'darwin-x64'
+  | 'linux-arm64'
+  | 'linux-x64'
   | 'win32-x64'
   | 'win32-arm64';
 
 export interface CursorRuntimeTarget {
   readonly key: CursorRuntimeTargetKey;
   /** Vendor download path segment: `win32` is published as `windows`. */
-  readonly os: 'darwin' | 'windows';
+  readonly os: 'darwin' | 'linux' | 'windows';
   readonly arch: 'arm64' | 'x64';
   readonly archive: 'tar.gz' | 'zip';
   /**
@@ -74,6 +89,26 @@ export const CURSOR_RUNTIME_TARGETS: readonly CursorRuntimeTarget[] = [
     launch: ['cursor-agent'],
     hookRuntime: 'node',
     executables: DARWIN_EXECUTABLES,
+    required: ['cursor-agent'],
+  },
+  {
+    key: 'linux-arm64',
+    os: 'linux',
+    arch: 'arm64',
+    archive: 'tar.gz',
+    launch: ['cursor-agent'],
+    hookRuntime: 'node',
+    executables: LINUX_EXECUTABLES,
+    required: ['cursor-agent'],
+  },
+  {
+    key: 'linux-x64',
+    os: 'linux',
+    arch: 'x64',
+    archive: 'tar.gz',
+    launch: ['cursor-agent'],
+    hookRuntime: 'node',
+    executables: LINUX_EXECUTABLES,
     required: ['cursor-agent'],
   },
   {

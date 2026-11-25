@@ -1,4 +1,7 @@
-import type { OverlayLayerRect } from '@canopy/desktop-shared/types';
+import type {
+  OverlayLayerFollow,
+  OverlayLayerRect,
+} from '@canopy/desktop-shared/types';
 import type { InAppNotificationPlacement } from '@canopy/ui-shared';
 
 const SHADOW_MARGIN = 12;
@@ -52,4 +55,27 @@ export function calculateOverlayLayerBounds(
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
+}
+
+/**
+ * Which window edge each edge of the layer from
+ * {@link calculateOverlayLayerBounds} keeps its distance to, so the main
+ * process can move the layer with the window while it resizes. A corner
+ * stack sits a fixed distance from its corner; an edge the bounds stretch to
+ * (the spread's far edge, the swipe's room) is the window's own edge.
+ */
+export function overlayLayerEdges(
+  placement: InAppNotificationPlacement,
+  expanded: boolean,
+  swiping: boolean,
+): OverlayLayerFollow['edges'] {
+  const growsRight = placement.endsWith('right');
+  const growsDown = placement.startsWith('top');
+  const side = growsRight ? 'end' : 'start';
+  return {
+    left: side,
+    right: side,
+    top: growsDown || expanded ? 'start' : 'end',
+    bottom: growsDown && !(swiping || expanded) ? 'start' : 'end',
+  };
 }

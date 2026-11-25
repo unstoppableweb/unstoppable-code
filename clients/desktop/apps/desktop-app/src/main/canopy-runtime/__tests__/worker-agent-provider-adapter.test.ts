@@ -110,6 +110,7 @@ function fakeSources(
   const defaults: DesktopProviderSources = {
     buildRegistry: () => fixtureRegistry(),
     supported: () => allSupported,
+    platformSupported: () => allSupported,
     readAuthState: (): Promise<WorkerAgentProviderAuthState> =>
       Promise.resolve('ready'),
     readUsage: () => Promise.resolve(usage),
@@ -122,6 +123,7 @@ function fakeSources(
   return {
     buildRegistry: jest.fn(merged.buildRegistry),
     supported: jest.fn(merged.supported),
+    platformSupported: jest.fn(merged.platformSupported),
     readAuthState: jest.fn(merged.readAuthState),
     readUsage: jest.fn(merged.readUsage),
     resolveOwner: jest.fn(merged.resolveOwner),
@@ -550,6 +552,54 @@ it('refuses a remote target', async () => {
   await expect(
     list(dispatcher, { scope: { targetId: 'in_process_worker' } }),
   ).resolves.toMatchObject({ targetId: 'in_process_worker' });
+});
+
+it('platform support reads only the platform source through the real dispatcher', async () => {
+  const sources = fakeSources({
+    // Flags may hide a provider from the list; platform support ignores them.
+    supported: () => ({ ...allSupported, antigravity: false }),
+    platformSupported: () => ({
+      ...allSupported,
+      ollama: false,
+      copilot: false,
+    }),
+  });
+  const dispatcher = runtimeFor(sources);
+  await expect(
+    dispatcher.query(
+      'worker.agent.provider.platform.get',
+      { scope: {} },
+      { caller },
+    ),
+  ).resolves.toEqual({
+    authorityId: 'local-desktop',
+    targetId: 'in_process_worker',
+    providerIds: ['claude', 'codex', 'cursor', 'antigravity', 'opencode'],
+  });
+  // No registry build, status or sign-in read, usage or policy read.
+  for (const read of [
+    sources.buildRegistry,
+    sources.supported,
+    sources.readAuthState,
+    sources.readUsage,
+    sources.resolveOwner,
+  ])
+    expect(read).not.toHaveBeenCalled();
+  await expect(
+    dispatcher.query(
+      'worker.agent.provider.platform.get',
+      { scope: {} },
+      { caller: { ...caller, grants: [] } },
+    ),
+  ).rejects.toMatchObject({ payload: { kind: 'permission_denied' } });
+  await expect(
+    dispatcher.query(
+      'worker.agent.provider.platform.get',
+      { scope: { targetId: 'remote-1' } },
+      { caller },
+    ),
+  ).rejects.toMatchObject({ payload: { kind: 'capability_unavailable' } });
+  expect(sources.platformSupported).toHaveBeenCalledTimes(1);
 });
 
 it('an org-gateway API-only model is not reported as hosted AI credits', async () => {

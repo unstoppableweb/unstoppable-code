@@ -4,7 +4,7 @@
  * `executable` is.
  */
 export interface AntigravityRuntimeStatus {
-  /** True only on darwin arm64 and x64, the platforms the manifest pins. */
+  /** True only on darwin and linux, arm64 and x64: the platforms the manifest pins. */
   supported: boolean;
   installed: boolean;
   managed: boolean;
@@ -16,6 +16,12 @@ export interface AntigravityRuntimeStatus {
 
 export interface AntigravityRuntimeApi {
   status(): Promise<AntigravityRuntimeStatus>;
+  /**
+   * Whether this host has a pinned Antigravity CLI artifact: the manifest
+   * alone, with no executable lookup or hashing. Pickers and Settings rows
+   * use it; the setup card reads `status`.
+   */
+  hostSupported(): Promise<boolean>;
   install(operationId: string): Promise<AntigravityRuntimeStatus>;
   cancel(operationId: string): Promise<void>;
   onProgress(callback: (status: AntigravityRuntimeStatus) => void): () => void;

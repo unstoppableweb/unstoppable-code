@@ -61,14 +61,35 @@ function config(): AntigravityRuntimeConfig {
 
 const metadata = config();
 
+/**
+ * The pinned artifact for a host, or undefined where none is qualified. Linux
+ * pins Google's glibc builds; the desktop app needs glibc, and the musl builds
+ * are not pinned. Windows has no pinned artifact, which keeps it refused.
+ */
 export function getAntigravityRuntimeArtifact(
   platform: string = hostPlatformOperatingSystem(),
   arch: string = hostPlatformArchitecture(),
 ): AntigravityRuntimeArtifact | undefined {
-  if (platform !== 'darwin' || !['arm64', 'x64'].includes(arch))
+  if (
+    !['darwin', 'linux'].includes(platform) ||
+    !['arm64', 'x64'].includes(arch)
+  )
     return undefined;
   const artifact = metadata.artifacts[`${platform}-${arch}`];
   return artifact ? { version: metadata.version, ...artifact } : undefined;
+}
+
+/**
+ * Whether Google subscription chats can run on this host: a pinned artifact
+ * exists for it. Every launch also verifies the file it runs, by Google's
+ * Developer ID signature on macOS and by the pinned executable digest on
+ * Linux.
+ */
+export function isAntigravityPlatformSupported(
+  platform: string = hostPlatformOperatingSystem(),
+  arch: string = hostPlatformArchitecture(),
+): boolean {
+  return getAntigravityRuntimeArtifact(platform, arch) !== undefined;
 }
 
 export function managedAntigravityExecutable(

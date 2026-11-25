@@ -37,7 +37,8 @@ export type DesktopAiGatewayEntry = AiGatewayEntry;
 
 /**
  * The gateway entry this account can use, or `null` while the account is
- * unread, without a scope, or with AI gateway settings turned off.
+ * unread, without a scope, or with AI gateway settings turned off and no
+ * gateway already configured.
  */
 export function useDesktopAiGatewayEntry(): DesktopAiGatewayEntry | null {
   const hostedClient = useHostedSettingsClient();
@@ -67,7 +68,12 @@ export function useDesktopAiGatewayEntry(): DesktopAiGatewayEntry | null {
     setSaved(null);
   }, [organizationId, accountId]);
 
-  if (!enabled || account === null || !scope) return null;
+  // The flag gates first setup; a gateway that is already routing (the
+  // account's projected one, or this device's) stays reachable without it.
+  const configured = signedIn
+    ? projected !== null && projected.organizationId === scope?.organizationId
+    : Boolean(device?.gateway?.baseUrl);
+  if ((!enabled && !configured) || account === null || !scope) return null;
 
   const summary: DesktopAiGatewaySummary | null =
     saved?.baseUrl && saved.models.length > 0

@@ -1,7 +1,10 @@
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { execFile } from 'node:child_process';
 import { realpath, stat } from 'node:fs/promises';
 import type { BigIntStats } from 'node:fs';
 import { promisify } from 'node:util';
+import { verifyManagedExecutable } from '../managed-runtime/verification';
+import { getAntigravityRuntimeArtifact } from './runtime-artifacts';
 import { ANTIGRAVITY_RUNTIME_VERSION } from './runtime-metadata';
 
 /**
@@ -22,6 +25,12 @@ const CODESIGN = '/usr/bin/codesign';
 const VERIFY_TIMEOUT_MS = 60_000;
 
 const ANTIGRAVITY_UNVERIFIED_EXECUTABLE_MESSAGE = `This Antigravity CLI isn't Google's signed release. Reinstall Antigravity CLI ${ANTIGRAVITY_RUNTIME_VERSION} from Google.`;
+/**
+ * Linux has no OS signature, so only the pinned build is accepted. Google's
+ * installer now installs a newer release, so the copy points at Settings,
+ * which installs the pinned one.
+ */
+const ANTIGRAVITY_UNPINNED_EXECUTABLE_MESSAGE = `This Antigravity CLI isn't Google's ${ANTIGRAVITY_RUNTIME_VERSION} release. Install Antigravity CLI ${ANTIGRAVITY_RUNTIME_VERSION} from Settings.`;
 /** An identity change can be a genuine reinstall, so it asks for a retry. */
 const ANTIGRAVITY_CHANGED_EXECUTABLE_MESSAGE =
   'The Antigravity CLI changed during launch. Try again.';
@@ -43,7 +52,7 @@ function fileIdentity(info: BigIntStats): string {
 }
 
 const verified = new Map<string, string>();
-/** One codesign run per file identity, shared by launches that start together. */
+/** One check per file identity, shared by launches that start together. */
 const pending = new Map<string, Promise<void>>();
 
 const execFileAsync = promisify(execFile);
@@ -65,10 +74,48 @@ async function identityNow(file: string): Promise<string | undefined> {
 
 function refusal(cause?: unknown): Error {
   // The copy stays generic; the cause keeps codesign's exit, stderr or
-  // timeout for logs, so a slow host is distinguishable from a bad file.
-  return Object.assign(new Error(ANTIGRAVITY_UNVERIFIED_EXECUTABLE_MESSAGE), {
-    cause,
-  });
+  // timeout, or the digest failure, for logs, so a slow host is
+  // distinguishable from a bad file.
+  return Object.assign(
+    new Error(
+      hostPlatformOperatingSystem() === 'linux'
+        ? ANTIGRAVITY_UNPINNED_EXECUTABLE_MESSAGE
+        : ANTIGRAVITY_UNVERIFIED_EXECUTABLE_MESSAGE,
+    ),
+    { cause },
+  );
+}
+
+/**
+ * The Linux check of the exact file about to run (CAN-6718). Linux has no OS
+ * signature, so the file's SHA-256 must equal the pinned executableSha256 for
+ * this host: managed, ANTIGRAVITY_EXECUTABLE and PATH copies alike. Any other
+ * non-macOS host, or a Linux host without a pinned artifact, fails closed.
+ *
+ * The bytes are hashed through one handle that must be the inode identified
+ * before the check (`before`), so swapping a parent directory while the hash
+ * runs cannot get one file hashed and another cached. Two accepted residuals
+ * remain (docs/planning/2026-11-13-antigravity-followups/
+ * platform-performance.md, Residual risk): the spawn still opens the path
+ * after the pre-spawn re-check, and a FUSE file system the user mounts can
+ * serve different bytes under an unchanged identity.
+ */
+async function verifyPinnedDigest(
+  file: string,
+  before: BigIntStats,
+): Promise<void> {
+  const platform = hostPlatformOperatingSystem();
+  const artifact =
+    platform === 'linux' ? getAntigravityRuntimeArtifact() : undefined;
+  if (!artifact)
+    throw new Error(`no Antigravity executable check for ${platform}`);
+  await verifyManagedExecutable(
+    file,
+    artifact.executableSha256,
+    AbortSignal.timeout(VERIFY_TIMEOUT_MS),
+    'Antigravity',
+    before,
+  );
 }
 
 async function currentIdentity(file: string): Promise<BigIntStats> {
@@ -80,21 +127,25 @@ async function currentIdentity(file: string): Promise<BigIntStats> {
 }
 
 /**
- * Runs codesign once for this identity and records the verdict only when the
- * file still has that identity afterward: bytes replaced while codesign was
- * reading them are not the bytes verified.
+ * Runs the platform check once for this identity and records the verdict
+ * only when the file still has that identity afterward: bytes replaced while
+ * the check was reading them are not the bytes verified.
  */
-function verifyIdentity(file: string, identity: string): Promise<void> {
+function verifyIdentity(file: string, before: BigIntStats): Promise<void> {
+  const identity = fileIdentity(before);
   const key = `${file}\0${identity}`;
   const existing = pending.get(key);
   if (existing) return existing;
   const verification = (async (): Promise<void> => {
     try {
-      await execFileAsync(
-        CODESIGN,
-        ['--verify', '--strict', `-R=${ANTIGRAVITY_CODE_REQUIREMENT}`, file],
-        { timeout: VERIFY_TIMEOUT_MS, env: {} },
-      );
+      // macOS requires Google's Developer ID signature; Linux the pinned digest.
+      if (hostPlatformOperatingSystem() === 'darwin')
+        await execFileAsync(
+          CODESIGN,
+          ['--verify', '--strict', `-R=${ANTIGRAVITY_CODE_REQUIREMENT}`, file],
+          { timeout: VERIFY_TIMEOUT_MS, env: {} },
+        );
+      else await verifyPinnedDigest(file, before);
     } catch (error) {
       // A reinstall caught mid-read is a change, not an unsigned file.
       if ((await identityNow(file)) !== identity)
@@ -117,7 +168,8 @@ function verifyIdentity(file: string, identity: string): Promise<void> {
 /**
  * Verifies the resolved native executable before it is spawned and returns the
  * real path to launch, so a later symlink retarget cannot redirect the spawn.
- * Only macOS reaches this; other hosts are refused before resolution.
+ * Only macOS and Linux reach this; other hosts are refused before resolution,
+ * and refused again by checkExecutable.
  */
 export async function verifyAntigravityExecutable(
   executable: string,
@@ -131,7 +183,7 @@ export async function verifyAntigravityExecutable(
     throw refusal(error);
   }
   const before = await currentIdentity(file);
-  // A launch cancelled while its path resolved stops here, before codesign.
+  // A launch cancelled while its path resolved stops here, before the check.
   signal?.throwIfAborted();
   if (!before.isFile()) throw refusal(new Error('not a regular file'));
   const identity = fileIdentity(before);
@@ -143,7 +195,7 @@ export async function verifyAntigravityExecutable(
     signal?.addEventListener('abort', stopWaiting, { once: true });
   });
   try {
-    await Promise.race([verifyIdentity(file, identity), aborted]);
+    await Promise.race([verifyIdentity(file, before), aborted]);
   } catch (error) {
     // A cancelled launch keeps its own reason, even when the run refused.
     signal?.throwIfAborted();

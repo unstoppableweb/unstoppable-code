@@ -521,6 +521,7 @@ const results = memoized(() => {
     jobId: z.string().optional(),
     stepId: z.string().optional(),
     attempt: optionalCount,
+    recovery: optionalCount,
     chatMode: z.enum(['canopy', 'terminal']).optional(),
     hasTranscript: z.boolean(),
     linkTarget: LinkTargetSchema.optional(),

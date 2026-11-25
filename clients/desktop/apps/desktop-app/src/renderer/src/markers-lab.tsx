@@ -1,4 +1,4 @@
-import './styles/globals.css';
+import './styles/app-styles';
 import { createRoot } from 'react-dom/client';
 import { brand } from '@/lib/brand';
 import { applyBrandDocumentHead } from '@/lib/brandDocumentHead';

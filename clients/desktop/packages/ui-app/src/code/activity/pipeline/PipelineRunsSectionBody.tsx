@@ -1,6 +1,6 @@
 'use client';
 
-import { type JSX } from 'react';
+import { type JSX, type ReactNode } from 'react';
 import { OverlayScrollArea } from '@canopy/ui-shared';
 import { Disclosure } from '@canopy/ui-shared/components';
 import {
@@ -36,6 +36,7 @@ function noop(): void {
  */
 export interface PipelineRunsSectionBodyProps {
   readonly layout: 'card' | 'frameless';
+  readonly actionFeedback?: ReactNode;
   readonly queuedExecutions?: readonly QueuedPipelineCardEntry[];
   readonly failedQueuedExecutions?: readonly FailedQueuedPipelineCardEntry[];
   readonly pendingExecutions?: readonly PendingExecutionCardEntry[];
@@ -53,6 +54,7 @@ export interface PipelineRunsSectionBodyProps {
 
 export function PipelineRunsSectionBody({
   layout,
+  actionFeedback,
   queuedExecutions = NO_QUEUE_ENTRIES,
   failedQueuedExecutions = NO_QUEUE_ENTRIES,
   pendingExecutions = NO_QUEUE_ENTRIES,
@@ -75,7 +77,7 @@ export function PipelineRunsSectionBody({
     failedPendingExecutions.length +
     visibleRoots.length;
 
-  if (primaryRowCount === 0 && hiddenRoots.length === 0) {
+  if (primaryRowCount === 0 && hiddenRoots.length === 0 && !actionFeedback) {
     return null;
   }
 
@@ -85,6 +87,7 @@ export function PipelineRunsSectionBody({
         frameless ? 'flex min-h-0 flex-1 flex-col gap-2' : 'flex flex-col gap-2'
       }
     >
+      {actionFeedback}
       {primaryRowCount > 0 && (
         <div
           data-testid="pipeline-runs-primary-list"

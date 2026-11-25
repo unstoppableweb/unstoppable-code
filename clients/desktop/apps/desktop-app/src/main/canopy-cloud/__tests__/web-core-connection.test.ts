@@ -7,6 +7,7 @@ import { join, relative, sep } from 'node:path';
 import { CLOUD_SESSION_WAKE_HEADER } from '@canopy/protocol/cloud-session';
 import type { CanopyFramedConnection } from '@canopy/core-transport/types';
 import type { RelayBindingConnection } from '../../canopy-runtime/renderer-relay/definitions';
+import { withCloudChatSendHookProvider } from '../cloud-chat-send-hook';
 import {
   WEB_CORE_CONNECTIONS_PATH,
   createWebCoreBindingProvider,
@@ -64,7 +65,16 @@ class StubWebCore {
   dropAfter: number | null = null;
   initializeAs: string | null = 'account-a';
   issueToken = true;
+  /** The request methods a gateway answers 503, as during a blip. */
+  failing: (method: unknown) => boolean = () => false;
   private nextConnection = 0;
+  private readonly wakers: (() => void)[] = [];
+
+  /** A push a live events stream delivers after it opened. */
+  addPush(entry: Push): void {
+    this.pushes.push(entry);
+    this.wakers.splice(0).forEach((wake) => wake());
+  }
 
   readonly fetch = (
     input: URL | RequestInfo,
@@ -102,6 +112,10 @@ class StubWebCore {
       typeof message === 'object' && message !== null
         ? Reflect.get(message, 'method')
         : null;
+    if (this.failing(method_))
+      return Promise.resolve(
+        new Response('upstream connect error', { status: 503 }),
+      );
     if (method_ === 'core.runtime.initialize')
       return Promise.resolve(
         Response.json({
@@ -134,7 +148,8 @@ class StubWebCore {
     const replay = this.pushes.filter((entry) => entry.id > after);
     const drop = this.dropAfter;
     this.dropAfter = null;
-    const sent = drop === null ? replay : replay.slice(0, drop);
+    // A live stream also sends what arrives after it opened.
+    const sent = drop === null ? null : replay.slice(0, drop);
     let next = 0;
     // Pull-driven, so the drop lands after the client read what was sent.
     const body = new ReadableStream<Uint8Array>({
@@ -147,13 +162,19 @@ class StubWebCore {
           }
         });
       },
-      pull(controller): Promise<void> | void {
-        const entry = sent[next];
-        next += 1;
-        if (entry !== undefined) return controller.enqueue(frame(entry));
-        if (drop !== null) return controller.error(new Error('stream dropped'));
-        // A live stream stays open with nothing more to say.
-        return new Promise<void>(() => undefined);
+      pull: async (controller): Promise<void> => {
+        for (;;) {
+          const entry = (sent ??
+            this.pushes.filter((later) => later.id > after))[next];
+          if (entry !== undefined) {
+            next += 1;
+            return controller.enqueue(frame(entry));
+          }
+          if (drop !== null)
+            return controller.error(new Error('stream dropped'));
+          // A live stream stays open until it has more to say.
+          await new Promise<void>((resolve) => this.wakers.push(resolve));
+        }
       },
     });
     return new Response(body, {
@@ -502,6 +523,57 @@ describe('web core connection with the desktop key (CAN-4185, CAN-5989)', () => 
       `${WEB_CORE_CONNECTIONS_PATH}/connection-1`,
     ]);
     for (const call of posts) expect(call.headers.origin).toBe(BASE_URL);
+  });
+
+  it('keeps the connection and its push stream when background cleanup keeps failing 503 through both relay wrappers, while five failed app requests in a row still end it (CAN-6558)', async () => {
+    const server = new StubWebCore();
+    server.failing = (method): boolean => method === 'core.events.unsubscribe';
+    const unused = (): Promise<never> =>
+      Promise.reject(new Error('No cloud chat send here.'));
+    // The relay's own composition: the send hook over the desktop binding.
+    const provider = withCloudChatSendHookProvider(
+      createWebCoreBindingProvider(binding(server)),
+      {
+        accountId: () => Promise.resolve('account-a'),
+        hasKeepInStepSkills: () => Promise.resolve(false),
+        selectedItemIds: unused,
+        keepInStep: unused,
+        recordNotices: () => undefined,
+        pruneNotices: () => undefined,
+      },
+    );
+    const connection = await open(provider);
+    opened.push(connection);
+    // A rollover's burst of cleanup unsubscribes, each failing alone.
+    for (let id = 1; id <= 6; id += 1)
+      await connection.send(
+        {
+          jsonrpc: '2.0',
+          id,
+          method: 'core.events.unsubscribe',
+          params: { subscriptionId: `ended-${String(id)}` },
+        },
+        { background: true },
+      );
+    for (let id = 1; id <= 6; id += 1)
+      expect(Object.keys(await connection.receive())).toEqual(
+        expect.arrayContaining(['id', 'error']),
+      );
+    expect(connection.signal.aborted).toBe(false);
+    // The push stream still delivers.
+    server.addPush(push(1));
+    await expect(connection.receive()).resolves.toEqual(push(1).message);
+
+    // The app's own requests still count: the fifth 503 in a row ends it.
+    server.failing = (): boolean => true;
+    for (let id = 11; id <= 15; id += 1)
+      await connection.send({
+        jsonrpc: '2.0',
+        id,
+        method: 'core.workspace.list',
+        params: {},
+      });
+    await eventually(() => connection.signal.aborted);
   });
 
   it('a dropped events stream reopens with Last-Event-ID and delivers no push twice', async () => {

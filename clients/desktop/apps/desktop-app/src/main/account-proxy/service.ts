@@ -373,7 +373,7 @@ function errorOf(error: unknown): AccountProxyError {
 
 interface Settings {
   readonly available: boolean;
-  /** The user's Labs opt-in. */
+  /** The proxy is turned on: on unless the user turned it off. */
   readonly optedIn: boolean;
   /**
    * LaunchDarkly served the flag off. A fallback while it starts, changes

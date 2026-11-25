@@ -48,7 +48,10 @@ jest.mock('../../pipelines/pipeline-local-metadata-store', () => ({
 
 import { CanopyClientError } from '@canopy/core-client';
 import type * as OutcomeModule from '@canopy/core-client/outcome';
-import type { PipelineDefinition } from '@canopy/protocol/canopy-core';
+import type {
+  PipelineDefinition,
+  PipelineDefinitionImportResult,
+} from '@canopy/protocol/canopy-core';
 import type { Pipeline } from '@canopy/execution-engine/types/pipeline';
 import type * as DispatchModule from '../pipeline-definition-dispatch';
 import type {
@@ -61,6 +64,7 @@ type Dispatch = typeof DispatchModule;
 // dispatch module instead of resetting it.
 let deleteUserPipeline: Dispatch['deleteUserPipeline'];
 let duplicatePipelineDefinition: Dispatch['duplicatePipelineDefinition'];
+let importRemotePipeline: Dispatch['importRemotePipeline'];
 let saveUserPipeline: Dispatch['saveUserPipeline'];
 let setPipelineDefinitionEnabled: Dispatch['setPipelineDefinitionEnabled'];
 let setPipelineDefinitionRouteProvider: Dispatch['setPipelineDefinitionRouteProvider'];
@@ -117,6 +121,7 @@ interface FakeRoute extends PipelineDefinitionWriteRoute {
   delete: jest.MockedFunction<PipelineDefinitionWriteRoute['delete']>;
   duplicate: jest.MockedFunction<PipelineDefinitionWriteRoute['duplicate']>;
   setEnabled: jest.MockedFunction<PipelineDefinitionWriteRoute['setEnabled']>;
+  import: jest.MockedFunction<PipelineDefinitionWriteRoute['import']>;
 }
 
 function fakeRoute(
@@ -128,8 +133,38 @@ function fakeRoute(
     delete: jest.fn(),
     duplicate: jest.fn(),
     setEnabled: jest.fn(),
+    import: jest.fn(),
   };
 }
+
+const IMPORTED_DOCUMENT = [
+  'pipeline:',
+  '  name: Release',
+  '  on: dispatch',
+  '  jobs:',
+  '    main:',
+  '      steps:',
+  '        - id: note',
+  '          run: echo release',
+  '',
+].join('\n');
+
+function imported(id: string): PipelineDefinitionImportResult {
+  return {
+    definition: {
+      ...definition(id),
+      document: IMPORTED_DOCUMENT,
+    },
+    remoteDefinitionId: 'curated:release',
+    remoteVersion: 'sha256:release',
+  };
+}
+
+const CURATED_IMPORT = {
+  remoteDefinitionId: 'curated:release',
+  expectedRemoteVersion: null,
+  nameOverride: null,
+};
 
 function keyOf(params: KeyedParams): string {
   const key = params._meta?.idempotencyKey;
@@ -145,6 +180,7 @@ beforeEach(async () => {
   ({
     deleteUserPipeline,
     duplicatePipelineDefinition,
+    importRemotePipeline,
     saveUserPipeline,
     setPipelineDefinitionEnabled,
     setPipelineDefinitionRouteProvider,
@@ -593,5 +629,80 @@ describe('pipeline definition writes over the daemon route (CAN-7507)', () => {
     expect(keyOf(route.upsert.mock.calls[1][0])).not.toBe(
       keyOf(route.upsert.mock.calls[0][0]),
     );
+  });
+
+  it('sends a served import to the route with its key, never in process', async () => {
+    const route = fakeRoute(['import']);
+    route.import.mockResolvedValue(imported('i'));
+    setPipelineDefinitionRouteProvider(() => route);
+    await expect(importRemotePipeline(CURATED_IMPORT)).resolves.toMatchObject({
+      id: 'i',
+      revision: 2,
+      source: 'user',
+    });
+    expect(mockRuntime.instruction).not.toHaveBeenCalled();
+    expect(route.import).toHaveBeenCalledTimes(1);
+    const [params, options] = route.import.mock.calls[0];
+    expect(params).toMatchObject({
+      remoteDefinitionId: 'curated:release',
+      targetScope: {},
+      expectedRemoteVersion: null,
+      nameOverride: null,
+    });
+    expect(options?.metadata?.idempotencyKey).toBe(keyOf(params));
+  });
+
+  it('keeps an import in process when no route serves it', async () => {
+    mockRuntime.instruction.mockResolvedValue(imported('j'));
+    await expect(importRemotePipeline(CURATED_IMPORT)).resolves.toMatchObject({
+      id: 'j',
+    });
+    const route = fakeRoute(['upsert', 'delete', 'duplicate', 'setEnabled']);
+    setPipelineDefinitionRouteProvider(() => route);
+    await expect(importRemotePipeline(CURATED_IMPORT)).resolves.toMatchObject({
+      id: 'j',
+    });
+    expect(route.import).not.toHaveBeenCalled();
+    expect(mockRuntime.instruction.mock.calls.map(([name]) => name)).toEqual([
+      'core.pipeline.definition.import',
+      'core.pipeline.definition.import',
+    ]);
+    for (const [, params, options] of mockRuntime.instruction.mock.calls)
+      expect(options?.metadata?.idempotencyKey).toBe(keyOf(params));
+  });
+
+  it('resends a lost import reply with the same key, and never re-keys an unknown one', async () => {
+    const route = fakeRoute(['import']);
+    route.import
+      .mockRejectedValueOnce(lostReply())
+      .mockResolvedValueOnce(imported('k'))
+      .mockRejectedValueOnce(lostNeverResent());
+    setPipelineDefinitionRouteProvider(() => route);
+    await expect(importRemotePipeline(CURATED_IMPORT)).resolves.toMatchObject({
+      id: 'k',
+    });
+    const [[first, firstOptions], [second, secondOptions]] =
+      route.import.mock.calls;
+    expect(keyOf(second)).toBe(keyOf(first));
+    expect(secondOptions?.metadata?.idempotencyKey).toBe(
+      firstOptions?.metadata?.idempotencyKey,
+    );
+    await expect(importRemotePipeline(CURATED_IMPORT)).rejects.toBeInstanceOf(
+      CanopyOutcomeUnknownError,
+    );
+    expect(route.import).toHaveBeenCalledTimes(3);
+    expect(keyOf(route.import.mock.calls[2][0])).not.toBe(keyOf(first));
+    expect(mockRuntime.instruction).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a definite routed import refusal as typed and never falls back in process', async () => {
+    const route = fakeRoute(['import']);
+    route.import.mockRejectedValue(sessionDown());
+    setPipelineDefinitionRouteProvider(() => route);
+    const refusal = importRemotePipeline(CURATED_IMPORT);
+    await expect(refusal).rejects.toThrow('No daemon session is open.');
+    await expect(refusal).rejects.not.toBeInstanceOf(CanopyOutcomeUnknownError);
+    expect(route.import).toHaveBeenCalledTimes(1);
+    expect(mockRuntime.instruction).not.toHaveBeenCalled();
   });
 });

@@ -12,7 +12,6 @@ import {
   Notice,
   NoticeButton,
 } from '@canopy/ui-shared/components';
-import { subscriptionUsageLimits } from '@canopy/desktop-shared/lib/subscription-usage';
 import { resolveAiCreditsFundingSource } from '@canopy/desktop-shared/lib/ai-credits-funding';
 import type {
   AgentUsageOverview,
@@ -28,7 +27,11 @@ import {
   selectRoutedAiCreditsArrivalForChat,
   useAiCreditsArrivalStore,
 } from '@/lib/aiCreditsArrivalConfirmation';
-import { selectProviderUsageLimitResumeAt } from '@/lib/claudeUsageLimitResume';
+import {
+  classifyProviderUsageSnapshot,
+  type ProviderLimitLookup,
+  type SettledProviderLimit,
+} from '@/lib/providerLimitSnapshot';
 import { scheduleAt } from '@/lib/scheduleAt';
 import { formatUsageLimitTimeLabel } from '@/lib/usage-limit-time-label';
 import {
@@ -88,6 +91,18 @@ interface AiCreditsRoutingStatusBannerProps {
    * hides "Switch to subscription" so it keeps a single accent action.
    */
   continueInterruptedTurn?: ContinueInterruptedTurn;
+  /**
+   * Set while "just this chat" routing is in effect (CAN-7484). The card then
+   * states when the chat returns to the subscription: at `resetsAt` (epoch
+   * ms) when known, otherwise only when the user switches back. Omitted for
+   * global routing and a persistent choice, which keep the reset line.
+   */
+  sessionRouting?: SessionRoutingEnd;
+}
+
+/** When "just this chat" routing ends (CAN-7484). */
+export interface SessionRoutingEnd {
+  resetsAt?: number;
 }
 
 /** The card's Continue action for an interrupted turn (CAN-4756). */
@@ -102,19 +117,6 @@ export interface ContinueInterruptedTurn {
 const PROVIDER_LIMIT_LOOKUP_TIMEOUT_MS = 10_000;
 
 /**
- * What the latest usage snapshot says about switching back to the provider
- * subscription (CAN-4759). `unknown` covers a failed or timed-out lookup and an
- * exhausted window with no usable reset time: neither proves availability.
- */
-export type ProviderLimitLookup =
-  | { kind: 'checking' }
-  | { kind: 'limited'; resetAt: number }
-  | { kind: 'available' }
-  | { kind: 'unknown' };
-
-type SettledProviderLimit = Exclude<ProviderLimitLookup, { kind: 'checking' }>;
-
-/**
  * What the user accepted when switching back to the subscription. `limited`
  * carries the reset the user confirmed, so the usage-limit banner can be
  * restored with exactly that time.
@@ -124,81 +126,6 @@ export type SubscriptionSwitchOutcome = { targetKey: string } & (
   | { kind: 'unknown'; provider: NativeAccountProvider }
   | { kind: 'available'; provider?: NativeAccountProvider }
 );
-
-function hasParsableReset(value: unknown): boolean {
-  if (typeof value === 'string') return Number.isFinite(Date.parse(value));
-  if (typeof value !== 'number' || !Number.isFinite(value)) return false;
-  const epochMs = value < 1_000_000_000_000 ? value * 1000 : value;
-  return Number.isFinite(new Date(epochMs).getTime());
-}
-
-function classifyProviderUsageSnapshot(
-  snapshot: AgentUsageOverview,
-  provider: NativeAccountProvider,
-  now: number,
-  model?: string,
-): SettledProviderLimit {
-  const summary = snapshot.providers.find(
-    (candidate) => candidate.provider === provider,
-  );
-  if (!summary) return { kind: 'unknown' };
-  const rateLimits = subscriptionUsageLimits({
-    provider,
-    rateLimits: summary.rateLimits,
-    model,
-    surface: 'claude-code',
-  });
-  const subscriptionSnapshot = {
-    ...snapshot,
-    providers: snapshot.providers.map((entry) =>
-      entry === summary ? { ...entry, rateLimits: [...rateLimits] } : entry,
-    ),
-  };
-
-  // Reject epoch values outside Date's range before the shared selector tries
-  // to turn them into ISO timestamps.
-  if (
-    rateLimits.some((limits) =>
-      [limits.primary, limits.secondary].some(
-        (window) =>
-          typeof window?.usedPercent === 'number' &&
-          window.usedPercent >= 100 &&
-          typeof window.resetsAt === 'number' &&
-          !hasParsableReset(window.resetsAt),
-      ),
-    )
-  )
-    return { kind: 'unknown' };
-  // The farthest exhausted window decides, as for Schedule Resume.
-  const resumeAt = selectProviderUsageLimitResumeAt(
-    subscriptionSnapshot,
-    provider,
-    new Date(now),
-  );
-  const resetAt = resumeAt ? Date.parse(resumeAt) : Number.NaN;
-  if (Number.isFinite(resetAt) && resetAt > now) {
-    return { kind: 'limited', resetAt };
-  }
-  // Usage fetches can succeed at the IPC layer while reporting a provider
-  // error with retained windows. Only a future exhausted window above remains
-  // trustworthy in that case; old headroom is not proof of availability.
-  if (summary.error || summary.errorInfo) return { kind: 'unknown' };
-  const hasReadableWindow = rateLimits.some((limits) =>
-    [limits.primary, limits.secondary].some((window) =>
-      Number.isFinite(window?.usedPercent),
-    ),
-  );
-  if (!hasReadableWindow) return { kind: 'unknown' };
-  const exhaustedWithoutReset = rateLimits.some((limits) =>
-    [limits.primary, limits.secondary].some(
-      (window) =>
-        typeof window?.usedPercent === 'number' &&
-        window.usedPercent >= 100 &&
-        !hasParsableReset(window.resetsAt),
-    ),
-  );
-  return exhaustedWithoutReset ? { kind: 'unknown' } : { kind: 'available' };
-}
 
 /**
  * Whether the provider's current account is limited, and until when, for the
@@ -365,6 +292,7 @@ export function AiCreditsRoutingStatusBanner({
   accountChangedAt,
   continueInterruptedTurn,
   persistedRefusal,
+  sessionRouting,
 }: AiCreditsRoutingStatusBannerProps): JSX.Element | null {
   const visible = target !== null && active;
   const scope = useChatTargetAiCreditsScope(target);
@@ -399,6 +327,17 @@ export function AiCreditsRoutingStatusBanner({
     model,
   );
   const resetAt = lookup?.kind === 'limited' ? lookup.resetAt : null;
+  // The plan the chat returns to when session routing ends. Reduced to the
+  // label inside the selector so usage refreshes don't re-render the card.
+  const subscriptionPlanLabel = useObservabilityStore((s) => {
+    if (!provider || sessionRouting === undefined) return undefined;
+    const summary = s.usage.providers.find(
+      (candidate) => candidate.provider === provider,
+    );
+    return summary?.authState === 'authenticated' && summary.subscriptionLabel
+      ? summary.subscriptionLabel
+      : undefined;
+  });
 
   // Credits bought from this chat's usage-limit or No billing source banner
   // (CAN-5159, CAN-5160). The card confirms them until the first credits turn
@@ -642,8 +581,14 @@ export function AiCreditsRoutingStatusBanner({
   // limit again, so it sits beside the button it explains rather than
   // stacking a second line under the message. It stays beside Continue too,
   // while the switch is hidden.
+  // Session routing states when billing actually changes instead. Two times on
+  // one card would contradict each other, so the lookup's line stays hidden
+  // there; the lookup still feeds the switch confirmation.
   const resetNote =
-    switchAvailable && provider !== undefined && resetLabel !== null ? (
+    sessionRouting === undefined &&
+    switchAvailable &&
+    provider !== undefined &&
+    resetLabel !== null ? (
       <span
         data-testid="chat-input-ai-credits-limit-resets"
         className="pr-1 shrink-0 whitespace-nowrap tabular-nums fg-tertiary"
@@ -651,6 +596,37 @@ export function AiCreditsRoutingStatusBanner({
         {providerLabel} resets {resetLabel}
       </span>
     ) : null;
+  const sessionEndLabel =
+    sessionRouting !== undefined && switchAvailable
+      ? formatUsageLimitTimeLabel(sessionRouting.resetsAt)
+      : null;
+  // The subscription plan's own name ("Claude Pro"), since that is what the
+  // chat returns to at this time; the provider name when the plan is unknown.
+  const sessionEndPlan =
+    subscriptionPlanLabel ?? (provider ? providerLabel : 'your subscription');
+  const sessionEndNote =
+    sessionEndLabel !== null ? (
+      <span
+        data-testid="chat-input-ai-credits-back-to-subscription"
+        className="pr-1 shrink-0 whitespace-nowrap tabular-nums fg-tertiary"
+      >
+        Back to {sessionEndPlan} at {sessionEndLabel}
+      </span>
+    ) : null;
+  // With no reset time, nothing ends this chat's routing but the user, so the
+  // card says so in place of a time (CAN-7484). A future reset known from a
+  // later usage read replaces it with the note above.
+  const staysUntilSwitch =
+    sessionRouting !== undefined &&
+    sessionRouting.resetsAt === undefined &&
+    switchAvailable &&
+    arrivalTitle === null;
+  const staysUntilSwitchSentence = staysUntilSwitch ? (
+    <span data-testid="chat-input-ai-credits-stays-until-switch">
+      This chat stays on AI Credits until you switch back.
+    </span>
+  ) : null;
+  const trailingNote = resetNote ?? sessionEndNote;
   return (
     <Notice
       intent={arrivalTitle !== null ? 'positive' : 'neutral'}
@@ -676,10 +652,10 @@ export function AiCreditsRoutingStatusBanner({
       // from the edge (`pr-3` on top of the slot's 8px), which is what reads
       // as settled for bare text. The switch button comes last.
       actions={
-        coveredByChip || resetNote || switchButton || continueButton ? (
+        coveredByChip || trailingNote || switchButton || continueButton ? (
           <>
             {coveredByChip}
-            {resetNote}
+            {trailingNote}
             {switchButton}
             {continueButton}
           </>
@@ -698,9 +674,15 @@ export function AiCreditsRoutingStatusBanner({
       {arrivalTitle !== null ? (
         'Ready to use in this chat.'
       ) : funding.kind === 'org-pool' ? (
-        `${funding.orgName}'s shared credit pool is covering this session.`
+        <>
+          {staysUntilSwitchSentence}
+          {staysUntilSwitchSentence ? ' ' : null}
+          {`${funding.orgName}'s shared credit pool is covering this session.`}
+        </>
       ) : funding.kind === 'personal' ? (
         <>
+          {staysUntilSwitchSentence}
+          {staysUntilSwitchSentence ? ' ' : null}
           <span
             data-testid="chat-input-ai-credits-balance"
             className="tabular-nums"
@@ -710,7 +692,9 @@ export function AiCreditsRoutingStatusBanner({
           .
         </>
       ) : (
-        'This session is paid with AI Credits.'
+        // The stay sentence already says the chat bills to AI Credits, so it
+        // replaces the generic payer line rather than repeating it.
+        (staysUntilSwitchSentence ?? 'This session is paid with AI Credits.')
       )}
     </Notice>
   );

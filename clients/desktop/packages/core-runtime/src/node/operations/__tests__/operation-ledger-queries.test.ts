@@ -118,8 +118,10 @@ describe('operation ledger typed queries (CAN-6986 L1)', () => {
     });
     await service.ready();
 
-    const closure = <T>(read: (handle: OperationLedger) => T): Promise<T> =>
-      service.write((handle) => ({ value: read(handle), events: [] }));
+    // The handle a domain's closure ran on; L2 (CAN-6986) removed write().
+    const closure = async <T>(
+      read: (handle: OperationLedger) => T,
+    ): Promise<T> => read(await service.ready());
 
     const lookups = [
       receipt,

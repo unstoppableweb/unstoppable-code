@@ -130,6 +130,19 @@ export interface CodexRuntimeWriterHandoffDiagnostic extends CodexRuntimeDiagnos
   writerHandoffDurationMs: number;
 }
 
+/**
+ * An app-server process survived the bounded `SIGTERM` and `SIGKILL`
+ * escalation. The connection forgot the process, which stays in the PID
+ * registry until it exits or a sweep kills it, and starts a replacement on the
+ * next request. Content-free: process IDs only. Find the trigger by joining
+ * `codexAppServerProcessId` with `resource_codex_app_server_stopped` or
+ * `codex_app_server_shared_restart`; with neither record, a failure path
+ * (initialize timeout, closed output, process or pipe error) started it.
+ */
+export interface CodexRuntimeTerminationFailedDiagnostic extends CodexRuntimeDiagnosticBase {
+  kind: 'codex_app_server_termination_failed';
+}
+
 export type CodexRuntimeDiagnostic =
   | CodexRuntimeStoppedDiagnostic
   | CodexRuntimeSuspendSkippedDiagnostic
@@ -137,7 +150,8 @@ export type CodexRuntimeDiagnostic =
   | CodexRuntimeThreadCloseWaitDiagnostic
   | CodexRuntimeRequestTimeoutDiagnostic
   | CodexRuntimeSharedRestartDiagnostic
-  | CodexRuntimeWriterHandoffDiagnostic;
+  | CodexRuntimeWriterHandoffDiagnostic
+  | CodexRuntimeTerminationFailedDiagnostic;
 
 export interface CodexRuntimeHostHooks {
   clientInfo(): ClientInfo;

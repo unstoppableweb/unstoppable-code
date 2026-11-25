@@ -1,9 +1,11 @@
 'use client';
 
-import type { JSX } from 'react';
+import { useState, type JSX } from 'react';
+import type { PersonalAiGatewayConfig } from '@canopy/protocol/model-gateway';
 import type { SettingsPageProps } from '../pages/page-props';
 import { useSettingsClient } from '../host';
 import { AiGatewayEditor } from './AiGatewayEditor';
+import { DeviceAiGatewayChoiceNotice } from './DeviceAiGatewayChoiceNotice';
 import {
   personalGatewayEditorConfig,
   usePersonalAiGatewayAdapter,
@@ -19,11 +21,36 @@ export function AccountAiGatewayPage({
 }: SettingsPageProps<'account.ai-gateway'>): JSX.Element {
   const client = useSettingsClient();
   const adapter = usePersonalAiGatewayAdapter(client, page.data.organizationId);
+  // This computer's gateway replaced the account's: the editor restarts on it.
+  const [replaced, setReplaced] = useState<{
+    gateway: PersonalAiGatewayConfig | null;
+    useInCloudChats: boolean;
+  } | null>(null);
+  const reloadGateway = (): void => {
+    void client.read('account.settings.ai-gateway.read', {}).then(
+      ({ gateway, useInCloudChats }) =>
+        setReplaced({ gateway, useInCloudChats }),
+      () => setReplaced(null),
+    );
+  };
   return (
-    <AiGatewayEditor
-      key={page.data.organizationId}
-      adapter={adapter}
-      initial={personalGatewayEditorConfig(page.data.gateway)}
-    />
+    <>
+      <DeviceAiGatewayChoiceNotice onAccountGatewayReplaced={reloadGateway} />
+      <AiGatewayEditor
+        key={`${page.data.organizationId}/${replaced?.gateway?.revision ?? ''}`}
+        adapter={adapter}
+        initial={
+          replaced
+            ? personalGatewayEditorConfig(
+                replaced.gateway,
+                replaced.useInCloudChats,
+              )
+            : personalGatewayEditorConfig(
+                page.data.gateway,
+                page.data.useInCloudChats,
+              )
+        }
+      />
+    </>
   );
 }

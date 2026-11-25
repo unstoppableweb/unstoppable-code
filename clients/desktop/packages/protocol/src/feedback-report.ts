@@ -52,6 +52,10 @@ export const FeedbackReportErrorSchema = z
     occurredAt: AppErrorTimestampSchema,
     copy: AppErrorCopySchema,
     detail: AppErrorDetailSchema,
+    // The boundary that recorded the error, for example `ipc:<channel>`.
+    // Older hosts parse strictly, so clients send it only to hosts that
+    // report the `errorSource` diagnostics capability.
+    source: AppErrorIdentifierSchema.optional(),
   })
   .strict();
 export type FeedbackReportError = z.infer<typeof FeedbackReportErrorSchema>;
@@ -193,8 +197,8 @@ export interface FeedbackReportClient {
 }
 
 export function toFeedbackReportError(error: AppError): FeedbackReportError {
-  const { referenceId, code, kind, occurredAt, copy, detail } = error;
-  return FeedbackReportErrorSchema.parse({
+  const { referenceId, code, kind, occurredAt, copy, detail, source } = error;
+  const report = FeedbackReportErrorSchema.parse({
     referenceId,
     code,
     kind,
@@ -202,6 +206,13 @@ export function toFeedbackReportError(error: AppError): FeedbackReportError {
     copy,
     detail,
   });
+  // A malformed source is dropped; it must never fail the report.
+  if (
+    source === undefined ||
+    !AppErrorIdentifierSchema.safeParse(source).success
+  )
+    return report;
+  return { ...report, source };
 }
 
 function encodeBytes(bytes: Uint8Array): string {

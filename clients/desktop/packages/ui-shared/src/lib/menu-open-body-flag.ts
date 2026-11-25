@@ -36,9 +36,34 @@ export function registerMenuDismissalClickGuard(
   };
 }
 
+/**
+ * The surfaces whose hover feedback is suppressed while a menu is open, and
+ * the attribute that says so on each of them. The style rule keys on this
+ * attribute, not on the body flag: a rule under a body attribute that
+ * reaches every descendant of a surface made the browser restyle the whole
+ * document on each menu open and close.
+ */
+const HOVER_SUPPRESSED_SURFACE_SELECTOR = '.sidebar-resizable-surface';
+const SURFACE_MENU_OPEN_ATTRIBUTE = 'data-menu-open';
+
+function markHoverSuppressedSurfaces(doc: Document, open: boolean): void {
+  for (const surface of Array.from(
+    doc.querySelectorAll(
+      open
+        ? HOVER_SUPPRESSED_SURFACE_SELECTOR
+        : `[${SURFACE_MENU_OPEN_ATTRIBUTE}]`,
+    ),
+  )) {
+    if (open) surface.setAttribute(SURFACE_MENU_OPEN_ATTRIBUTE, '');
+    else surface.removeAttribute(SURFACE_MENU_OPEN_ATTRIBUTE);
+  }
+}
+
 export function pushMenuOpenBodyFlag(doc: Document): () => void {
   countsByDocument.set(doc, (countsByDocument.get(doc) ?? 0) + 1);
   doc.body.dataset.sidebarMenuOpen = 'true';
+  // Each push marks again, so a surface mounted since the last one joins.
+  markHoverSuppressedSurfaces(doc, true);
   let released = false;
   return (): void => {
     if (released) {
@@ -49,6 +74,7 @@ export function pushMenuOpenBodyFlag(doc: Document): () => void {
     countsByDocument.set(doc, next);
     if (next === 0) {
       delete doc.body.dataset.sidebarMenuOpen;
+      markHoverSuppressedSurfaces(doc, false);
     }
   };
 }

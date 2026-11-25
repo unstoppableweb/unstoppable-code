@@ -2,9 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type {
   CreateTrackedPlanRequest,
-  DataModelDiffDiagram,
-  LogicDiffDiagram,
-  ParsedPlanGraph,
   PlanComment,
   PlanCommentThread,
   PlanDiagramArtifact,
@@ -26,9 +23,6 @@ import type {
   UsageMetricProvider,
 } from '@canopy/desktop-shared/types';
 import {
-  isDataModelDiffDiagram,
-  isLogicDiffDiagram,
-  isParsedPlanGraph,
   isPlanDiagramArtifacts,
   isPlanCommentThreadArray,
 } from '@canopy/desktop-shared/types';
@@ -41,6 +35,8 @@ import {
   type PlanScopeIds,
   type StoredPlan,
 } from '@canopy/core-runtime/node/plans';
+import { CanopyOperationError } from '@canopy/core-runtime';
+import { PLAN_ERROR_CODES } from '@canopy/protocol/canopy-core';
 import { isUsageInitiationSource } from '@canopy/desktop-shared/lib/turn-utils';
 import { resolveTrackedPlansFilePath } from './resolve-worktree';
 import { getPlanExplorePlanFilePath } from './paths';
@@ -686,7 +682,45 @@ function recordPlanUsageEvent(
 
 /** A stored plan desktop can type; any other plan is left out of reads. */
 function toTrackedPlan(plan: StoredPlan | null): TrackedPlanData | null {
-  return plan && isTrackedPlanData(plan) ? plan : null;
+  return plan && isTrackedPlanData(plan) ? withReadableDiagrams(plan) : null;
+}
+
+/**
+ * A diagram's `generatedAt` and `error` as their readers show them: the store
+ * never checks either, so a value that isn't a string is left out rather than
+ * handed to a view as something else (CAN-4167).
+ */
+function withReadableDiagrams(plan: TrackedPlanData): TrackedPlanData {
+  const diagrams = plan.diagrams;
+  if (!diagrams) return plan;
+  let changed = false;
+  const next: PlanDiagramArtifacts = { ...diagrams };
+  for (const key of ['sequence', 'logicDiff', 'dataModelDiff'] as const) {
+    const artifact = next[key];
+    if (!artifact) continue;
+    const { generatedAt, error, ...rest } = artifact;
+    if (
+      (generatedAt === undefined || typeof generatedAt === 'string') &&
+      (error === undefined || typeof error === 'string')
+    )
+      continue;
+    changed = true;
+    Object.assign(next, {
+      [key]: {
+        ...rest,
+        ...(typeof generatedAt === 'string' ? { generatedAt } : {}),
+        ...(typeof error === 'string' ? { error } : {}),
+      },
+    });
+  }
+  return changed ? { ...plan, diagrams: next } : plan;
+}
+
+function readablePlans(plans: readonly StoredPlan[]): TrackedPlanData[] {
+  return plans.flatMap((plan) => {
+    const tracked = toTrackedPlan(plan);
+    return tracked ? [tracked] : [];
+  });
 }
 
 function usageRequest(
@@ -714,6 +748,11 @@ function announceTrackedPlanCommit(
     version: 1,
     plans: plans.filter((plan) => isTrackedPlanData(plan)),
   });
+  if (commit.kind === 'diagram') {
+    const plan = toTrackedPlan(commit.plan);
+    if (plan) emitPlanDiagramArtifactChange(plan);
+    return;
+  }
   const request = usageRequest(input);
   if (commit.kind === 'created') {
     const plan = toTrackedPlan(commit.plan);
@@ -810,7 +849,7 @@ export async function listTrackedPlansWithSkipped(
     projectId,
     worktreeId,
   });
-  const plans = read.plans.filter((plan) => isTrackedPlanData(plan));
+  const plans = readablePlans(read.plans);
   const skipped = read.skipped + read.plans.length - plans.length;
   return skipped > 0 ? { plans, skipped } : { plans };
 }
@@ -1382,123 +1421,52 @@ export async function setPlanDiagramArtifact(
   worktreeId: string,
   planId: string,
   key: 'sequence' | 'logicDiff' | 'dataModelDiff',
-  artifact: AnyPlanDiagramArtifact,
+  artifact: PlanDiagramArtifact<unknown>,
 ): Promise<TrackedPlanData | null> {
-  const filePath = resolveTrackedPlansFilePath(projectId, worktreeId);
-  return withFileLock(filePath, async () => {
-    const file = await readTrackedPlansFile(projectId, worktreeId);
-    const existing = file.plans.find((plan) => plan.id === planId);
-    if (!existing) {
+  return diagramWrite(() =>
+    trackedPlanEngine.writeDiagram(
+      { projectId, worktreeId },
+      planId,
+      key,
+      artifact,
+    ),
+  );
+}
+
+/**
+ * A diagram write over a plans file that can't be read writes nothing and
+ * answers null, as diagram writes always have; every other failure throws.
+ */
+async function diagramWrite(
+  write: () => Promise<StoredPlan | null>,
+): Promise<TrackedPlanData | null> {
+  try {
+    return toTrackedPlan(await write());
+  } catch (error) {
+    if (
+      error instanceof CanopyOperationError &&
+      error.payload.code === PLAN_ERROR_CODES.DAMAGED_STATE
+    )
       return null;
-    }
-
-    const lagsCurrentRevision =
-      (artifact.status === 'ready' || artifact.status === 'error') &&
-      artifact.derivedFromRevision < existing.latestRevisionNumber;
-    const nextArtifact = lagsCurrentRevision
-      ? { ...artifact, status: 'stale' as const }
-      : artifact;
-    const nextDiagrams: PlanDiagramArtifacts = { ...existing.diagrams };
-    if (key === 'sequence' && isSequenceArtifact(nextArtifact)) {
-      nextDiagrams.sequence = nextArtifact;
-    } else if (key === 'logicDiff' && isLogicDiffArtifact(nextArtifact)) {
-      nextDiagrams.logicDiff = nextArtifact;
-    } else if (
-      key === 'dataModelDiff' &&
-      isDataModelDiffArtifact(nextArtifact)
-    ) {
-      const existingDataModelArtifact = existing.diagrams?.dataModelDiff;
-      if (
-        lagsCurrentRevision &&
-        (existingDataModelArtifact === undefined ||
-          existingDataModelArtifact.derivedFromRevision >
-            artifact.derivedFromRevision)
-      ) {
-        return existing;
-      }
-      nextDiagrams.dataModelDiff = nextArtifact;
-    } else {
-      return existing;
-    }
-
-    const updated: TrackedPlanData = {
-      ...existing,
-      diagrams: nextDiagrams,
-    };
-    file.plans = file.plans.map((plan) =>
-      plan.id === planId ? updated : plan,
-    );
-    await writeTrackedPlansFile(projectId, worktreeId, file);
-    emitPlanDiagramArtifactChange(updated);
-    return updated;
-  });
-}
-
-type AnyPlanDiagramArtifact =
-  | PlanDiagramArtifact<ParsedPlanGraph>
-  | PlanDiagramArtifact<LogicDiffDiagram>
-  | PlanDiagramArtifact<DataModelDiffDiagram>;
-
-function isSequenceArtifact(
-  artifact: AnyPlanDiagramArtifact,
-): artifact is PlanDiagramArtifact<ParsedPlanGraph> {
-  const data = artifact.data;
-  return data === null || isParsedPlanGraph(data);
-}
-
-function isLogicDiffArtifact(
-  artifact: AnyPlanDiagramArtifact,
-): artifact is PlanDiagramArtifact<LogicDiffDiagram> {
-  const data = artifact.data;
-  return data === null || isLogicDiffDiagram(data);
-}
-
-function isDataModelDiffArtifact(
-  artifact: AnyPlanDiagramArtifact,
-): artifact is PlanDiagramArtifact<DataModelDiffDiagram> {
-  const data = artifact.data;
-  return data === null || isDataModelDiffDiagram(data);
+    throw error;
+  }
 }
 
 export async function removePlanDiagramArtifact(
   projectId: string,
   worktreeId: string,
   planId: string,
-  key: 'dataModelDiff',
   expectedRevision: number,
 ): Promise<TrackedPlanData | null> {
-  const filePath = resolveTrackedPlansFilePath(projectId, worktreeId);
-  return withFileLock(filePath, async () => {
-    const file = await readTrackedPlansFile(projectId, worktreeId);
-    const existing = file.plans.find((plan) => plan.id === planId);
-    if (!existing) {
-      return null;
-    }
-
-    if (expectedRevision < existing.latestRevisionNumber) {
-      return existing;
-    }
-
-    if (!existing.diagrams?.dataModelDiff) {
-      return existing;
-    }
-
-    const nextDiagrams: PlanDiagramArtifacts = { ...existing.diagrams };
-    delete nextDiagrams.dataModelDiff;
-    const updated: TrackedPlanData = {
-      ...existing,
-      diagrams: nextDiagrams,
-    };
-    file.plans = file.plans.map((plan) =>
-      plan.id === planId ? updated : plan,
-    );
-    await writeTrackedPlansFile(projectId, worktreeId, file);
-    emitPlanDiagramArtifactChange(updated);
-    return updated;
-  });
+  return diagramWrite(() =>
+    trackedPlanEngine.removeDataModelDiagram(
+      { projectId, worktreeId },
+      planId,
+      expectedRevision,
+    ),
+  );
 }
 
-/** False when the worktree did not have the plan. */
 export async function deleteTrackedPlan(
   projectId: string,
   worktreeId: string,

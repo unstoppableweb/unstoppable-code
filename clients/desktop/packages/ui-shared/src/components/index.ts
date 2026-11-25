@@ -229,6 +229,7 @@ export * from './FileRevertButton';
 export * from './SourceInfoButton';
 export * from '../icons/PauseResumeIcon';
 export * from './ExecutionActionButton';
+export * from './MorphLabel';
 export * from './SkillUpdateNotice';
 export * from './DetailHeader';
 export * from './CapabilityDetailLayout';

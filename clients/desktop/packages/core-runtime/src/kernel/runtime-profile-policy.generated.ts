@@ -7,6 +7,7 @@ export const RUNTIME_PROFILE_ACCESS_MODES = {
   replica: ['owning-core', 'delegating-primary'],
   'delegated-execution': ['owning-core', 'delegating-primary'],
   'read-only': ['interface', 'owning-core', 'delegating-primary'],
+  owner: ['owning-core'],
 } as const;
 
 export const RUNTIME_PROFILE_AUTHORITY_ONLY = [
@@ -46,7 +47,7 @@ export const RUNTIME_PROFILE_DOMAINS = {
     "core.observability": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.operation": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.pipeline": {"installed":["*"],"principals":["interface"],"modes":{"authority":["core.pipeline.definition.delete","core.pipeline.definition.duplicate","core.pipeline.definition.get","core.pipeline.definition.list","core.pipeline.definition.setEnabled","core.pipeline.definition.upsert","core.pipeline.definition.validate"],"read-only":["core.pipeline.definition.get","core.pipeline.definition.list","core.pipeline.definition.validate"]}},
-    "core.plan": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
+    "core.plan": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*","!core.plan.diagram.generate"],"read-only":["reads"]}},
     "core.publication": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.pullRequest": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.review": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
@@ -105,9 +106,9 @@ export const RUNTIME_PROFILE_DOMAINS = {
     "core.mutationFence": {"installed":["*"],"principals":["owning-core"],"modes":{"authority":["*"]}},
     "core.observability": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.operation": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
-    "core.pipeline": {"installed":["*"],"principals":["interface"],"modes":{"authority":["core.pipeline.definition.delete","core.pipeline.definition.duplicate","core.pipeline.definition.get","core.pipeline.definition.list","core.pipeline.definition.setEnabled","core.pipeline.definition.upsert","core.pipeline.definition.validate"],"read-only":["core.pipeline.definition.get","core.pipeline.definition.list","core.pipeline.definition.validate"]}},
-    "core.plan": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
-    "core.publication": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
+    "core.pipeline": {"installed":["*"],"principals":["interface","owning-core"],"modes":{"authority":["core.pipeline.definition.delete","core.pipeline.definition.duplicate","core.pipeline.definition.get","core.pipeline.definition.list","core.pipeline.definition.setEnabled","core.pipeline.definition.upsert","core.pipeline.definition.validate"],"read-only":["core.pipeline.definition.get","core.pipeline.definition.list","core.pipeline.definition.validate"],"owner":["core.pipeline.definition.import"]}},
+    "core.plan": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*","!core.plan.diagram.generate"],"read-only":["reads"]}},
+    "core.publication": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads","!core.publication.preview.get"]}},
     "core.pullRequest": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.review": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},
     "core.runtime": {"installed":["*"],"principals":["interface"],"modes":{"authority":["*"],"read-only":["reads"]}},

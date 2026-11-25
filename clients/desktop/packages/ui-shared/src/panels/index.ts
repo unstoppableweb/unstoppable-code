@@ -14,6 +14,7 @@
  */
 
 export * from './grid';
+export * from './animate-layout-change';
 
 export * from './collapse-eligibility';
 export * from './grid-leaf-adapter';

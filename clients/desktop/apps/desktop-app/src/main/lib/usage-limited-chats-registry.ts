@@ -324,6 +324,33 @@ export async function recordInterruptedChats(
   }, true);
 }
 
+/**
+ * Whether a quit recorded this chat's turn as still running (CAN-7612): an
+ * `app_shutdown` entry for the chat that names the turn, or names no turn.
+ * Restart cleanup treats it as evidence the turn was cut off, whatever its
+ * transcript suggests. An unreadable registry is reported as a record, since
+ * absence cannot be established. Matching on the chat alone is deliberate:
+ * migration knows only the chat, and a false match keeps the safe default.
+ */
+export async function hasShutdownRecordForTurn(
+  chatId: string,
+  userMessageId: string,
+): Promise<boolean> {
+  let entries: UsageLimitedChatEntry[];
+  try {
+    entries = await readUsageLimitedChats(true);
+  } catch {
+    return true;
+  }
+  return entries.some(
+    (entry) =>
+      entry.resumeReason === 'app_shutdown' &&
+      entry.chatId === chatId &&
+      (entry.interruptedUserMessageId === undefined ||
+        entry.interruptedUserMessageId === userMessageId),
+  );
+}
+
 /** Dismissing queue history must not revive an explicitly stopped auto-resume. */
 export async function suppressDismissedAccountProxyRecovery(
   attempts: ResumeQueueEntry[],

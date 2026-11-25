@@ -87,6 +87,7 @@ import {
   type PanelRootDropEdge,
   type PanelSplitDirection,
   type PanelTabModel,
+  animatePanelLayoutChange,
 } from '@canopy/ui-shared/panels';
 import {
   clampPanelTitle,
@@ -797,6 +798,115 @@ const FIXED_OPTIONAL_GROUP_IDS: ReadonlySet<string> = new Set([
   'group-extras',
   'group-terminal',
 ]);
+
+/** The fixed layout's Side Panel, the one a narrow window gives up first. */
+const FIXED_SIDE_PANEL_GROUP_ID = 'group-extras';
+
+/**
+ * Side Panels collapsed because the window became too narrow for every panel
+ * at its minimum width, with the grid width at which they all fit again.
+ * Without this the panels kept their minimums and ran past the window's edge,
+ * which cut off the Side Panel (and a website in it) with square corners. It
+ * is kept in memory only: a narrow window is a passing state, not a choice,
+ * and opening or closing the Side Panel by hand forgets it.
+ */
+const narrowCollapsedSidePanels = new Map<
+  string,
+  {
+    /** The grid width at which every panel fits again. */
+    readonly fitsAt: number;
+    /** Whether it opens then: no when the selected chat had it closed. */
+    reopen: boolean;
+  }
+>();
+/** True while the layout itself collapses or expands a Side Panel to fit. */
+let fittingSidePanelToWidth = false;
+/**
+ * The grid width each layout was last fitted at. The Side Panel folds only as
+ * the window narrows past the point the panels fit, so one opened in a narrow
+ * window (by hand, or by a page opened into it) stays open. A maximized
+ * layout keeps the width from before, so restoring it fits what changed.
+ */
+const lastFittedWidths = new Map<string, number>();
+
+/**
+ * Collapses the Side Panel when the panels no longer fit `width` at their
+ * minimum widths, and opens it again once the window is back to a width they
+ * all fit in.
+ */
+function fitSidePanelToWidth(worktreeKey: string, width: number): void {
+  const store = usePanelLayoutStore.getState();
+  const layout = store.layouts[worktreeKey];
+  const sidePanel = layout?.groups[FIXED_SIDE_PANEL_GROUP_ID];
+  if (!layout || sidePanel === undefined || layout.maximizedGroupId !== null) {
+    return;
+  }
+  const previousWidth = lastFittedWidths.get(worktreeKey);
+  lastFittedWidths.set(worktreeKey, width);
+  const narrowed = previousWidth === undefined || width < previousWidth - 0.5;
+  const fold = narrowCollapsedSidePanels.get(worktreeKey);
+  fittingSidePanelToWidth = true;
+  try {
+    if (sidePanel.collapsed === undefined) {
+      // Open again, whatever opened it: no longer folded for the width.
+      narrowCollapsedSidePanels.delete(worktreeKey);
+      const minimum = layout.grid.minimumWidth;
+      if (narrowed && width < minimum - 0.5) {
+        // Marked first: the store tells its subscribers (per-chat memory)
+        // inside the collapse, and they must already see why it closed.
+        narrowCollapsedSidePanels.set(worktreeKey, {
+          fitsAt: minimum,
+          reopen: true,
+        });
+        if (!store.collapseGroup(worktreeKey, FIXED_SIDE_PANEL_GROUP_ID)) {
+          narrowCollapsedSidePanels.delete(worktreeKey);
+        }
+      }
+    } else if (fold !== undefined && width >= fold.fitsAt) {
+      narrowCollapsedSidePanels.delete(worktreeKey);
+      if (fold.reopen) {
+        store.expandGroup(worktreeKey, FIXED_SIDE_PANEL_GROUP_ID, {
+          focus: false,
+        });
+      }
+    }
+  } finally {
+    fittingSidePanelToWidth = false;
+  }
+}
+
+/**
+ * Whether `worktreeKey`'s Side Panel is shut only because the window is too
+ * narrow for it, so per-chat memory neither records nor replays it.
+ */
+export function isSidePanelFoldedForWidth(worktreeKey: string): boolean {
+  // Something else (a page opened into it, a reveal) may have reopened it.
+  return (
+    narrowCollapsedSidePanels.has(worktreeKey) &&
+    usePanelLayoutStore.getState().layouts[worktreeKey]?.groups[
+      FIXED_SIDE_PANEL_GROUP_ID
+    ]?.collapsed !== undefined
+  );
+}
+
+/**
+ * Whether a Side Panel folded for a narrow window opens again once the window
+ * widens: the selected chat's own choice, so a chat that had it closed keeps
+ * it closed. The fold itself stays until the window is wide enough.
+ */
+export function setSidePanelReopenWhenWide(
+  worktreeKey: string,
+  reopen: boolean,
+): void {
+  const fold = narrowCollapsedSidePanels.get(worktreeKey);
+  if (fold) fold.reopen = reopen;
+}
+
+function forgetNarrowCollapse(worktreeKey: string, groupId: string): void {
+  if (!fittingSidePanelToWidth && groupId === FIXED_SIDE_PANEL_GROUP_ID) {
+    narrowCollapsedSidePanels.delete(worktreeKey);
+  }
+}
 
 export function setFixedSidePanelTabsClosable(closable: boolean): void {
   fixedSidePanelTabsClosable = closable;
@@ -3539,114 +3649,134 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
       commitWork(worktreeKey, work);
     },
 
-    collapseGroup: (worktreeKey, groupId, options): boolean => {
-      const layout = get().layouts[worktreeKey];
-      const view = layout?.leafViews.get(groupId);
-      const group = layout?.groups[groupId];
-      if (!layout || !view || group === undefined) {
-        return false;
-      }
-      if (layout.maximizedGroupId !== null || group.collapsed !== undefined) {
-        return false;
-      }
-      const snapshot = buildLayoutCollapseSnapshot(layout.grid, layout.groups);
-      if (snapshot === null) {
-        return false;
-      }
-      const affordance = getCollapseAffordance(snapshot, groupId);
-      if (affordance.state !== 'enabled') {
-        return false;
-      }
-      const edge = affordance.edge;
-      const axis = collapseEdgeAxis(edge);
-      const current = layout.grid.getViewSize(view);
-      const expandedSize =
-        axis === 'horizontal' ? current.width : current.height;
-      const work = startWork(layout);
-      work.groups[groupId] = {
-        ...group,
-        collapsed: {
-          edge,
-          expandedSize,
-          ...(options?.auto === true ? { auto: true } : {}),
-        },
-      };
-      if (!hasFixedTopology(worktreeKey))
-        // Capture the containing splits before any leaf gives its space away.
-        syncCollapsedBranches(
-          layout.grid,
-          work.groups,
-          work.leafViews,
-          affordance.branchEdge !== undefined,
-          true,
-        );
-      const siblingId = getInnerCollapseSibling(snapshot, groupId, edge);
-      const sibling =
-        siblingId === null ? undefined : layout.leafViews.get(siblingId);
-      if (affordance.branchEdge !== undefined) {
-        // The containing branch now owns sizing; keep the descendant state only.
-      } else if (sibling !== undefined) {
-        resizeInnerCollapsedGroup(
-          layout.grid,
-          view,
-          sibling,
-          edge,
-          PANEL_COLLAPSED_BAR_SIZE,
-          true,
-        );
-      } else {
-        if (axis === 'horizontal') {
-          view.setConstraints({
-            minimumWidth: PANEL_COLLAPSED_BAR_SIZE,
-            maximumWidth: PANEL_COLLAPSED_BAR_SIZE,
-          });
-        } else {
-          view.setConstraints({
-            minimumHeight: PANEL_COLLAPSED_BAR_SIZE,
-            maximumHeight: PANEL_COLLAPSED_BAR_SIZE,
-          });
-        }
-        layout.grid.resizeView(view, {
-          width:
-            axis === 'horizontal' ? PANEL_COLLAPSED_BAR_SIZE : current.width,
-          height:
-            axis === 'vertical' ? PANEL_COLLAPSED_BAR_SIZE : current.height,
-        });
-      }
-      if (hasFixedTopology(worktreeKey)) {
-        layout.grid.setViewVisible(view, false);
-      }
-      work.revision += 1;
-      commitWork(worktreeKey, work);
-      return true;
-    },
-
-    expandGroup: (worktreeKey, groupId, options): boolean => {
-      const layout = get().layouts[worktreeKey];
-      if (!layout || layout.groups[groupId]?.collapsed === undefined) {
-        return false;
-      }
-      const work = startWork(layout);
-      if (!expandGroupInWork(work.grid, work, groupId)) {
-        return false;
-      }
-      const activatePanelId = options?.activatePanelId;
-      if (activatePanelId !== undefined) {
-        const group = work.groups[groupId];
-        if (group.tabs.some((tab) => tab.panelId === activatePanelId)) {
+    // Opening and closing a group slides the panels to their new places
+    // rather than jumping (`animatePanelLayoutChange`).
+    collapseGroup: (worktreeKey, groupId, options): boolean =>
+      animatePanelLayoutChange(
+        get().layouts[worktreeKey]?.grid.element,
+        (): boolean => {
+          forgetNarrowCollapse(worktreeKey, groupId);
+          const layout = get().layouts[worktreeKey];
+          const view = layout?.leafViews.get(groupId);
+          const group = layout?.groups[groupId];
+          if (!layout || !view || group === undefined) {
+            return false;
+          }
+          if (
+            layout.maximizedGroupId !== null ||
+            group.collapsed !== undefined
+          ) {
+            return false;
+          }
+          const snapshot = buildLayoutCollapseSnapshot(
+            layout.grid,
+            layout.groups,
+          );
+          if (snapshot === null) {
+            return false;
+          }
+          const affordance = getCollapseAffordance(snapshot, groupId);
+          if (affordance.state !== 'enabled') {
+            return false;
+          }
+          const edge = affordance.edge;
+          const axis = collapseEdgeAxis(edge);
+          const current = layout.grid.getViewSize(view);
+          const expandedSize =
+            axis === 'horizontal' ? current.width : current.height;
+          const work = startWork(layout);
           work.groups[groupId] = {
-            ...adoptIntoSelectedChat(layout, group, activatePanelId),
-            activePanelId: activatePanelId,
+            ...group,
+            collapsed: {
+              edge,
+              expandedSize,
+              ...(options?.auto === true ? { auto: true } : {}),
+            },
           };
-        }
-      }
-      work.revision += 1;
-      if (options?.focus !== false) {
-        workFocusGroup(work, groupId);
-      }
-      commitWork(worktreeKey, work);
-      return true;
-    },
+          if (!hasFixedTopology(worktreeKey))
+            // Capture the containing splits before any leaf gives its space away.
+            syncCollapsedBranches(
+              layout.grid,
+              work.groups,
+              work.leafViews,
+              affordance.branchEdge !== undefined,
+              true,
+            );
+          const siblingId = getInnerCollapseSibling(snapshot, groupId, edge);
+          const sibling =
+            siblingId === null ? undefined : layout.leafViews.get(siblingId);
+          if (affordance.branchEdge !== undefined) {
+            // The containing branch now owns sizing; keep the descendant state only.
+          } else if (sibling !== undefined) {
+            resizeInnerCollapsedGroup(
+              layout.grid,
+              view,
+              sibling,
+              edge,
+              PANEL_COLLAPSED_BAR_SIZE,
+              true,
+            );
+          } else {
+            if (axis === 'horizontal') {
+              view.setConstraints({
+                minimumWidth: PANEL_COLLAPSED_BAR_SIZE,
+                maximumWidth: PANEL_COLLAPSED_BAR_SIZE,
+              });
+            } else {
+              view.setConstraints({
+                minimumHeight: PANEL_COLLAPSED_BAR_SIZE,
+                maximumHeight: PANEL_COLLAPSED_BAR_SIZE,
+              });
+            }
+            layout.grid.resizeView(view, {
+              width:
+                axis === 'horizontal'
+                  ? PANEL_COLLAPSED_BAR_SIZE
+                  : current.width,
+              height:
+                axis === 'vertical' ? PANEL_COLLAPSED_BAR_SIZE : current.height,
+            });
+          }
+          if (hasFixedTopology(worktreeKey)) {
+            layout.grid.setViewVisible(view, false);
+          }
+          work.revision += 1;
+          commitWork(worktreeKey, work);
+          return true;
+        },
+      ),
+
+    expandGroup: (worktreeKey, groupId, options): boolean =>
+      animatePanelLayoutChange(
+        get().layouts[worktreeKey]?.grid.element,
+        (): boolean => {
+          forgetNarrowCollapse(worktreeKey, groupId);
+          const layout = get().layouts[worktreeKey];
+          if (!layout || layout.groups[groupId]?.collapsed === undefined) {
+            return false;
+          }
+          const work = startWork(layout);
+          if (!expandGroupInWork(work.grid, work, groupId)) {
+            return false;
+          }
+          const activatePanelId = options?.activatePanelId;
+          if (activatePanelId !== undefined) {
+            const group = work.groups[groupId];
+            if (group.tabs.some((tab) => tab.panelId === activatePanelId)) {
+              work.groups[groupId] = {
+                ...adoptIntoSelectedChat(layout, group, activatePanelId),
+                activePanelId: activatePanelId,
+              };
+            }
+          }
+          work.revision += 1;
+          if (options?.focus !== false) {
+            workFocusGroup(work, groupId);
+          }
+          commitWork(worktreeKey, work);
+          return true;
+        },
+      ),
 
     ensureGroupExpanded: (worktreeKey, groupId, options): void => {
       const layout = get().layouts[worktreeKey];
@@ -3733,6 +3863,7 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
           };
         });
       }
+      fitSidePanelToWidth(worktreeKey, width);
     },
 
     resizeGroup: (worktreeKey, groupId, size): void => {

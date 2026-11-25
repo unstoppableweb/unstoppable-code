@@ -2366,6 +2366,7 @@ export function WorktreeManager(): JSX.Element {
                   sharedContainerPastSharesOpen,
                   sharedContainerViewerOpen,
                 })}
+                pageShown={activePage === 'main' || activePage === 'kanban'}
                 onOpenSettingsTab={handleOpenSettingsTab}
               />
             </div>

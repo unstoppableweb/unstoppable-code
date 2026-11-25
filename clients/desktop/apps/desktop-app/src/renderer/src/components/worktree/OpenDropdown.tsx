@@ -1,4 +1,4 @@
-import { ControlButton } from '@canopy/ui-shared/components';
+import { ControlButton, MorphLabel } from '@canopy/ui-shared/components';
 import { OpenAppSplitSurface } from '@canopy/ui-shared/components';
 import {
   type JSX,
@@ -132,7 +132,9 @@ export function OpenDropdown({
               >
                 {/* Compact mode: below a 560px status region the label drops and
                   the control is just [app icon] | [chevron]. */}
-                <span className="hidden @[560px]/prbar:inline">Open in</span>
+                <MorphLabel at="prbar-560" gap="end">
+                  Open in
+                </MorphLabel>
                 <img
                   src={splitApp.icon}
                   alt=""

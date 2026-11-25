@@ -475,6 +475,11 @@ export function getModelGatewayMarkerFilePath(): string {
   return join(getDataDir(), 'model-gateway-marker.json');
 }
 
+/** Personal AI gateways this computer opts out of (CAN-7657). */
+export function getModelGatewayDeviceUseFilePath(): string {
+  return join(getDataDir(), 'model-gateway-device-use.json');
+}
+
 /** Per-account Personal/organization context selection (CAN-2952). */
 export function getWorkspaceContextFilePath(): string {
   return join(getDataDir(), 'workspace-context.json');
@@ -1665,6 +1670,18 @@ export function getArchivedContainerTrackedPlansPath(
  */
 export function getAppAdvisorHomeDir(): string {
   return join(getAppManagedChatWorkspaceDir(APP_ADVISOR_PROJECT_ID), 'home');
+}
+
+/**
+ * The Orchestrator's Slack conversations entry: the entry Slack sends land in
+ * now and every entry ID it has had (CAN-7604). App-managed metadata, kept out
+ * of the Orchestrator's home directory.
+ */
+export function getAppAdvisorSlackConversationsFilePath(): string {
+  return join(
+    getAppManagedChatWorkspaceDir(APP_ADVISOR_PROJECT_ID),
+    'slack-conversations.json',
+  );
 }
 
 export function getAppAdvisorSettingsFilePath(): string {

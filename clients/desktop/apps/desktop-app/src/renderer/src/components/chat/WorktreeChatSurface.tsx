@@ -33,7 +33,10 @@ import {
   INSERT_CHAT_TEXT_EVENT,
   type InsertChatTextDetail,
 } from '@/lib/editorSelectionContext';
-import { SuggestedPromptChips } from '@/components/suggestions/SuggestedPromptChips';
+import {
+  SuggestedPromptChips,
+  SuggestedPromptsPlaceholder,
+} from '@/components/suggestions/SuggestedPromptChips';
 import { useSuggestedPrompts } from '@/components/suggestions/useSuggestedPrompts';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import { isWebCoreScope } from '@/lib/chat-authority';
@@ -265,11 +268,16 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
     visible;
   // `null` is reserved for excluded/hidden surfaces; enabled chats without
   // any configured selections still get the generic fallback prompts.
-  const { prompts: suggestedPrompts } = useSuggestedPrompts(
+  const {
+    prompts: suggestedPrompts,
+    reservedCount: suggestedPromptsReservedCount,
+  } = useSuggestedPrompts(
     suggestionsEnabled ? (resolvedSelections ?? createEmptySelections()) : null,
     {
       surface: coworkProjectId === null ? 'chat' : 'cowork',
       seedKey: chatTabId,
+      // A revisit shows the chat's own prompts from its first frame.
+      keepWhileAppRuns: true,
       // A cloud chat's MCP servers are its cloud account's, not this
       // computer's: it takes the cowork pool (CAN-6175 R5).
       localInventory: !isWebCoreScope(selectedWorktree?.projectId ?? ''),
@@ -501,6 +509,13 @@ export const WorktreeChatSurface = memo(function WorktreeChatSurface({
                             );
                             markSuggestedPromptInserted(chatTabId);
                           }}
+                        />
+                      ) : suggestionsEnabled ? (
+                        // Their room is kept while they are picked, so the
+                        // hint above does not move when they arrive.
+                        <SuggestedPromptsPlaceholder
+                          count={suggestedPromptsReservedCount}
+                          surface={coworkProjectId === null ? 'chat' : 'cowork'}
                         />
                       ) : undefined
                     }

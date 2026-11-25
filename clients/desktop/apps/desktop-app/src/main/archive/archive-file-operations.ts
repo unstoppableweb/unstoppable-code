@@ -21,6 +21,7 @@ import {
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { WINDOWS_ARCHIVE_QUARANTINE_RETRY_DELAYS_MS } from '../lib/archive-quarantine';
 import { isErrnoException } from '../lib/type-guards';
+import { archiveRemovalError } from './archive-removal-error';
 import type { ArchivePayloadCopyEntry } from './archive-io-protocol';
 
 function assertContained(root: string, path: string, label: string): void {
@@ -351,8 +352,9 @@ export async function removeArchiveTree(
   path: string,
   permissionRoot: string,
   assertUnchanged: () => Promise<void>,
-  options: { maxRetries: number },
+  options: { maxRetries: number; diagnosticRoot?: string },
 ): Promise<void> {
+  const diagnosticRoot = options.diagnosticRoot ?? permissionRoot;
   const repaired = new Set<string>();
   let retries = 0;
   for (;;) {
@@ -391,7 +393,7 @@ export async function removeArchiveTree(
                 isErrnoException(rereadError) &&
                 rereadError.code === 'EACCES');
             if (!pendingDelete || retries >= options.maxRetries) {
-              throw rereadError;
+              throw archiveRemovalError(rereadError, diagnosticRoot);
             }
           }
         }
@@ -405,7 +407,7 @@ export async function removeArchiveTree(
         (error.syscall !== 'unlink' && error.syscall !== 'rmdir') ||
         typeof error.path !== 'string'
       ) {
-        throw error;
+        throw archiveRemovalError(error, diagnosticRoot);
       }
       await assertUnchanged();
       assertContained(path, error.path, 'Archive permission recovery target');
@@ -583,6 +585,8 @@ async function removeBoundArchiveDirectory(args: {
             error.code !== 'EACCES')
         ) {
           // Never an in-place fallback: that walk is the race this closes.
+          if (isErrnoException(error) && error.code === 'EPERM')
+            throw archiveRemovalError(error, canonicalRoot);
           const code =
             isErrnoException(error) && error.code ? ` (${error.code})` : '';
           throw new Error(
@@ -693,6 +697,8 @@ export async function removeArchiveDirectory(args: {
   }
   await removeArchiveTree(canonicalPath, canonicalPath, assertUnchanged, {
     maxRetries: process.platform === 'win32' ? 50 : 2,
+    // Name unbound targets (including reset entries) without widening recovery.
+    diagnosticRoot: dirname(canonicalPath),
   });
 }
 

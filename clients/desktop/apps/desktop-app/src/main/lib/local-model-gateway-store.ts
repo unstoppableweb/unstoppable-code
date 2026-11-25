@@ -58,6 +58,7 @@ const storedFileSchema = z.object({
   config: z.unknown().optional(),
   credentials: z.record(z.string(), z.unknown()).optional(),
   conflictNotices: z.record(z.string(), z.string()).optional(),
+  keptAccountGateway: z.record(z.string(), z.string()).optional(),
 });
 
 interface LocalGatewayFile {
@@ -68,6 +69,8 @@ interface LocalGatewayFile {
   credentials: Record<string, StoredCredential>;
   /** Device-config revision last reported per account (migration conflict). */
   conflictNotices: Record<string, string>;
+  /** Device-config revision per account whose own gateway the user kept. */
+  keptAccountGateway: Record<string, string>;
 }
 
 export type LocalModelGatewayErrorCode =
@@ -97,6 +100,7 @@ function emptyFile(organizationId?: string): LocalGatewayFile {
     organizationId: organizationId ?? randomUUID(),
     credentials: {},
     conflictNotices: {},
+    keptAccountGateway: {},
   };
 }
 
@@ -126,6 +130,7 @@ function parseFile(raw: string): LocalGatewayFile | null {
     ...(config.success ? { config: config.data } : {}),
     credentials,
     conflictNotices: file.data.conflictNotices ?? {},
+    keptAccountGateway: file.data.keptAccountGateway ?? {},
   };
 }
 
@@ -338,6 +343,7 @@ export async function clearLocalModelGateway(
     delete file.config;
     file.credentials = {};
     file.conflictNotices = {};
+    file.keptAccountGateway = {};
     return true;
   });
 }
@@ -354,6 +360,28 @@ export async function recordLocalModelGatewayConflictNotice(
     draft.conflictNotices[accountId] = revision;
     return true;
   });
+}
+
+/** The device-config revision for which `accountId` kept its own gateway. */
+export async function readLocalModelGatewayKeptAccountChoice(
+  accountId: string,
+): Promise<string | null> {
+  return (await readStore()).keptAccountGateway[accountId] ?? null;
+}
+
+/** Record that `accountId` kept its own gateway over this device revision. */
+export async function recordLocalModelGatewayKeptAccountChoice(
+  accountId: string,
+  revision: string,
+): Promise<void> {
+  await queueMutation((draft) => {
+    draft.keptAccountGateway[accountId] = revision;
+  });
+}
+
+/** Whether a device gateway with a URL is saved, from the in-memory store only. */
+export function hasCachedLocalModelGatewayConfig(): boolean {
+  return Boolean(cache?.config?.baseUrl);
 }
 
 /**

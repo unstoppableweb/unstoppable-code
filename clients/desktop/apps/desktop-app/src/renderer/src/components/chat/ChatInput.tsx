@@ -66,6 +66,7 @@ import {
   type ClaudeModComposerAnswerer,
 } from '@canopy/ui-app';
 import { deriveChatWorkflowCapabilities } from '@canopy/app-core';
+import { ClaudeConnectorNotice } from '@canopy/ui-app/chat-panel';
 import {
   ComposerTipArbiterProvider,
   UnresolvedCapabilitySelection,
@@ -110,6 +111,7 @@ import {
 } from '@canopy/ui-shared/components/chat/question-prompt-progress';
 import { isTypingOutside } from './ComposerPrompt';
 import {
+  selectComposerQuestion,
   useComposerQuestionPrompt,
   type ComposerPendingQuestion,
   type ComposerQuestionDelivery,
@@ -365,9 +367,11 @@ import { SkillSuggestionBannerHost } from './SkillSuggestionBannerHost';
 import {
   AiCreditsRoutingStatusBanner,
   SubscriptionAvailabilityNotice,
+  type SessionRoutingEnd,
 } from './AiCreditsRoutingStatusBanner';
 import { useSubscriptionSwitch } from './useSubscriptionSwitch';
 import { useEffectiveAiCreditsRouting } from '@/hooks/useEffectiveAiCreditsRouting';
+import { useSessionCreditsRoutingResetLookup } from '@/hooks/useSessionCreditsRoutingResetLookup';
 import { useAiCreditsUsage } from '@/hooks/useAiCreditsUsage';
 import { useResumeInterruptedTurnOnAiCredits } from '@/hooks/useResumeInterruptedTurnOnAiCredits';
 import { ModelUnlockConfirmedBanner } from './ModelUnlockConfirmedBanner';
@@ -386,6 +390,10 @@ import {
 } from '@/lib/usage-limit-time-label';
 import { NoBillingSourceBanner } from './NoBillingSourceBanner';
 import { useUnbillableModelSwitch } from '@/lib/unbillableModel';
+import {
+  strandedSwitchTarget,
+  useStrandedGatewayModel,
+} from '@/lib/strandedGatewayModel';
 import { FirstSendFailedSlot } from './FirstSendFailedSlot';
 import { usePanelHostState } from '@/lib/panels/panel-host-context';
 import { TransientRetryBanner } from './TransientRetryBanner';
@@ -421,6 +429,7 @@ import {
   isGatewayOnlyModel,
   isOrgGatewayRoute,
   resolveGatewayModelEntry,
+  parseOrgGatewayModelId,
   resolveOrgGatewayOrganizationId,
 } from '@canopy/execution-engine/lib/gateway-model-availability';
 import {
@@ -642,7 +651,6 @@ import { chatAiCreditsScope } from '@/lib/aiCreditsScope';
 import { useAutomationsStore } from '@/stores/automationsStore';
 import { captureActivePlanContext } from '@/stores/activePlanStore';
 import { useObservabilityStore } from '@/stores/observabilityStore';
-import { selectProviderUsageLimitResumeAt } from '@/lib/claudeUsageLimitResume';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
 import { ScheduleMessageModal } from './ScheduleMessageModal';
 import {
@@ -698,6 +706,22 @@ const DEFAULT_TERMINAL_SPAWN_ROWS = 24;
 // Stable empty list so tabs without staged editor selections do not re-render
 // the composer on unrelated store updates.
 const NO_PENDING_SELECTIONS: readonly EditorSelectionContext[] = [];
+
+// Writes that only repeat what the composer already holds return the held
+// value, so mounting it on a switch does not render it a second time in the
+// switch's first frame.
+const NO_COLLECTION_REFS: CollectionEnabledRefs = {
+  skillRefs: [],
+  pluginRefs: [],
+};
+const NO_ATTACHMENT_PROBLEMS: readonly string[] = [];
+
+function keepSameEditorValue(
+  next: Descendant[],
+): (previous: Descendant[]) => Descendant[] {
+  return (previous) =>
+    JSON.stringify(previous) !== JSON.stringify(next) ? next : previous;
+}
 
 // Lazy-loaded so the Linear ticket picker (and its debounced-search UI) only
 // enters the chat chunk once a user actually opens the `+` menu's Linear row,
@@ -1099,7 +1123,7 @@ function ChatInputContent({
       // Edit-mode editor is seeded from `editingState.initialText`; drafts
       // are intentionally untouched so the live composer below keeps its own.
       restoreEditorContent(editor, initialEditorValue);
-      setValue(structuredClone(editor.children));
+      setValue(keepSameEditorValue(structuredClone(editor.children)));
       prevTabIdRef.current = tab?.id ?? null;
       return;
     }
@@ -1125,7 +1149,7 @@ function ChatInputContent({
       const draft = state.getTabDraft(currentTabId);
       if (draft && draft.length > 0) {
         restoreEditorContent(editor, draft);
-        setValue(structuredClone(editor.children));
+        setValue(keepSameEditorValue(structuredClone(editor.children)));
       } else if (
         prevTabIdRef.current !== null &&
         prevTabIdRef.current !== currentTabId
@@ -1292,9 +1316,6 @@ function ChatInputContent({
   const addToast = useGitHubStore((s) => s.addToast);
   const enableAiCreditsRouting = useChatStore((s) => s.enableAiCreditsRouting);
   const selectBillingFramework = useChatStore((s) => s.selectBillingFramework);
-  const setAiCreditsRoutingResetsAt = useChatStore(
-    (s) => s.setAiCreditsRoutingResetsAt,
-  );
   const setScheduledSendDraft = useChatStore((s) => s.setScheduledSendDraft);
   const automationsActivities = useAutomationsStore((s) => s.activities);
   const createAutomationActivity = useAutomationsStore((s) => s.createActivity);
@@ -1687,9 +1708,11 @@ function ChatInputContent({
       return resolved.model ?? DEFAULT_MODEL;
     }),
   );
-  const selectedGatewayOrganizationId = resolveOrgGatewayOrganizationId(
-    model ?? fallbackModel,
-  );
+  // A gateway row that is gone still names its organization, so the key
+  // banner can speak for it.
+  const selectedGatewayOrganizationId =
+    resolveOrgGatewayOrganizationId(model ?? fallbackModel) ??
+    parseOrgGatewayModelId(model ?? fallbackModel)?.organizationId;
   const providerType = tab?.providerType;
   const readOnly = tab?.readOnly ?? false;
   const filesGuestGate = useDesktopFilesGuestGate(
@@ -2613,6 +2636,26 @@ function ChatInputContent({
         lockedHarness)
       ? unbillableModelCandidate
       : null;
+  // A chat whose AI gateway is off or removed keeps its model and says so,
+  // offering the default a new chat would start on. It never moves on its
+  // own, so it can't start billing a hosted model behind the user's back.
+  const strandedGatewayModel = useStrandedGatewayModel(
+    webCoreProjectId === undefined ? model : undefined,
+  );
+  const strandedSwitchModel = useChatStore((s) =>
+    strandedGatewayModel
+      ? chatDefaultModel(
+          (targetOverride ?? s.selectedWorktree)?.projectId,
+          s.modelDefaults,
+        )
+      : undefined,
+  );
+  // The default can itself be unavailable, or out of this chat's harness;
+  // the notice still explains why.
+  const strandedGatewaySwitchModel = strandedSwitchTarget(
+    tab ?? undefined,
+    strandedSwitchModel,
+  );
   // Why the web core refused this cloud chat's last send (CAN-6364).
   const sendRefusalTarget = useMemo(
     () =>
@@ -2976,21 +3019,29 @@ function ChatInputContent({
         : undefined,
     [appAdvisorQuestion],
   );
-  const appAdvisorDelivery = useMemo(
-    (): ComposerQuestionDelivery | undefined =>
-      isAppAdvisorComposer ? APP_ADVISOR_QUESTION_DELIVERY : undefined,
-    [isAppAdvisorComposer],
-  );
-  const activeQuestion: ComposerPendingQuestion | undefined =
-    appAdvisorPending ?? composerQuestions[0];
+  const { pending: activeQuestion, delivery: activeQuestionDelivery } =
+    selectComposerQuestion(
+      appAdvisorPending,
+      APP_ADVISOR_QUESTION_DELIVERY,
+      composerQuestions[0],
+    );
   // A RequestSecrets call: its own form, never the question's answers.
   const activeSecretRequest = appAdvisorPending
     ? undefined
     : composerQuestions[0]?.questions[0]?.secretRequest;
+  const liveQuestionIds = useMemo(
+    (): ReadonlySet<string> =>
+      new Set([
+        ...composerQuestions.map((entry) => entry.requestId),
+        ...(appAdvisorPending ? [appAdvisorPending.requestId] : []),
+      ]),
+    [appAdvisorPending, composerQuestions],
+  );
   const questionPrompt = useComposerQuestionPrompt(
     activeQuestion,
     onDeliveryChange,
-    appAdvisorDelivery,
+    activeQuestionDelivery,
+    liveQuestionIds,
   );
   const questionPromptClosed = useQuestionPromptClosed(
     activeQuestion?.requestId,
@@ -3324,11 +3375,11 @@ function ChatInputContent({
     effectivePluginSelections?.collectionIds ?? []
   ).join('\n');
   const [collectionEnabledRefs, setCollectionEnabledRefs] =
-    useState<CollectionEnabledRefs>({ skillRefs: [], pluginRefs: [] });
+    useState<CollectionEnabledRefs>(NO_COLLECTION_REFS);
   useEffect(() => {
     const ids = collectionIdsKey ? collectionIdsKey.split('\n') : [];
     if (ids.length === 0) {
-      setCollectionEnabledRefs({ skillRefs: [], pluginRefs: [] });
+      setCollectionEnabledRefs(NO_COLLECTION_REFS);
       return;
     }
     let cancelled = false;
@@ -3343,7 +3394,7 @@ function ChatInputContent({
         setCollectionEnabledRefs(flattenCollectionRefs(configs));
       } catch {
         if (!cancelled) {
-          setCollectionEnabledRefs({ skillRefs: [], pluginRefs: [] });
+          setCollectionEnabledRefs(NO_COLLECTION_REFS);
         }
       }
     })();
@@ -4177,6 +4228,34 @@ function ChatInputContent({
         bannerTarget.worktreeId,
       ),
   );
+  // "Just this chat" routing that started without a reset time keeps looking
+  // one up, after the provider's Retry-After, so the auto-revert can end it
+  // when the plan resets (CAN-7484). It runs only while a subscription could
+  // pay; a locked toggle (e.g. a confirmed sign-out) leaves no switch back.
+  const { rememberLimitProvider } = useSessionCreditsRoutingResetLookup({
+    routing: tab?.aiCreditsRouting,
+    inEffect: aiCreditsRoutingInEffect,
+    subscriptionUsable: handleSwitchToSubscription !== undefined,
+    bannerProvider: tab?.llmProviderUsageLimitBanner?.provider,
+    billedProvider:
+      billingProvider === 'claude' || billingProvider === 'codex'
+        ? billingProvider
+        : undefined,
+    model: modelForBilling,
+    target: bannerTarget,
+    live: usesCommittedChatState,
+  });
+  // The routing card states when "just this chat" routing ends (CAN-7484).
+  // Memoized on the reset time so the card does not re-render with ChatInput.
+  const sessionRoutingActive =
+    aiCreditsRoutingInEffect && tab?.aiCreditsRouting?.scope === 'session';
+  const sessionRoutingResetsAt = tab?.aiCreditsRouting?.resetsAt;
+  const sessionRoutingEnd = useMemo<SessionRoutingEnd | undefined>(() => {
+    if (!sessionRoutingActive) return undefined;
+    return sessionRoutingResetsAt !== undefined
+      ? { resetsAt: normalizeEpochMs(sessionRoutingResetsAt) }
+      : {};
+  }, [sessionRoutingActive, sessionRoutingResetsAt]);
   const creditRefusal =
     tab?.aiCreditsNoBillingSource ??
     (usesCommittedChatState ? null : undefined);
@@ -4445,35 +4524,23 @@ function ChatInputContent({
         },
         target,
       );
-      // Without a reset time the routing would only end on an account switch, so
-      // look one up from the provider's usage snapshot. The click never waits on
-      // it, and the store ignores the result if the routing has since changed
-      // (CAN-4200).
-      const provider = usageLimitBanner?.provider;
-      if (
-        typeof resetsAt === 'number' ||
-        activatedAt === undefined ||
-        !provider
-      ) {
-        return activatedAt !== undefined;
+      if (activatedAt === undefined) return false;
+      // Without a reset time the routing would only end on an account switch or
+      // restored allowance, so the reset lookup hook keeps reading the limited
+      // provider's usage until one appears (CAN-4200, CAN-7484). Remember that
+      // provider now: the banner clears on the next message.
+      if (typeof resetsAt !== 'number') {
+        rememberLimitProvider(
+          target.chatId,
+          activatedAt,
+          usageLimitBanner?.provider,
+        );
       }
-      void refreshProviderUsageSnapshot(provider)
-        .then((snapshot) => {
-          const resumeAt = selectProviderUsageLimitResumeAt(snapshot, provider);
-          const resumeAtMs = resumeAt ? Date.parse(resumeAt) : Number.NaN;
-          if (!Number.isFinite(resumeAtMs) || resumeAtMs <= Date.now()) return;
-          setAiCreditsRoutingResetsAt(
-            { resetsAt: resumeAtMs, activatedAt },
-            target,
-          );
-        })
-        .catch(() => {});
       return true;
     },
     [
       enableAiCreditsRouting,
-      refreshProviderUsageSnapshot,
-      setAiCreditsRoutingResetsAt,
+      rememberLimitProvider,
       usageLimitBanner?.provider,
       usageLimitBanner?.resetsAt,
     ],
@@ -6783,9 +6850,9 @@ function ChatInputContent({
   // beside the composer, as the web composer does.
   const [attachmentProblems, setAttachmentProblems] = useState<
     readonly string[]
-  >([]);
+  >(NO_ATTACHMENT_PROBLEMS);
   useEffect(() => {
-    setAttachmentProblems([]);
+    setAttachmentProblems(NO_ATTACHMENT_PROBLEMS);
   }, [tabId]);
   const attachWebCoreFiles = useCallback(
     (
@@ -8498,6 +8565,27 @@ function ChatInputContent({
             }
           />
         ) : null}
+        {!unbillableModelSwitch && strandedGatewayModel ? (
+          strandedGatewaySwitchModel ? (
+            <ModelUnavailableNotice
+              testId="chat-input-gateway-model-unavailable"
+              modelLabel={strandedGatewayModel.modelLabel}
+              reason={strandedGatewayModel.reason}
+              switchModelLabel={getModelDisplayName(strandedGatewaySwitchModel)}
+              onSwitch={(): void =>
+                handleModelChange(strandedGatewaySwitchModel)
+              }
+            />
+          ) : (
+            <Notice
+              intent="attention"
+              title={`Can’t use ${strandedGatewayModel.modelLabel}`}
+              data-testid="chat-input-gateway-model-unavailable"
+            >
+              {`${strandedGatewayModel.reason} Start a new chat to use another model.`}
+            </Notice>
+          )
+        ) : null}
         {/* A cloud task the web core refused to create says why first, with
             Try again (CAN-6098). */}
         {webCoreProjectId !== undefined && composerWorktreeId !== undefined ? (
@@ -8857,6 +8945,24 @@ function ChatInputContent({
                 : {})}
             />
             <TransientRetryBanner target={bannerTarget} />
+            {sessionChatTarget !== null &&
+              effectiveProviderType === 'claude' &&
+              !isEditingQueued && (
+                <ClaudeConnectorNotice
+                  chatKey={JSON.stringify([
+                    sessionChatTarget.projectId,
+                    sessionChatTarget.worktreeId,
+                    sessionChatTarget.chatId,
+                  ])}
+                  availability={tab?.claudeConnectorAvailability}
+                  appName={brandText.appName}
+                  onManageConnections={(): void =>
+                    useNavigationStore
+                      .getState()
+                      .navigate('mcp-account-connections')
+                  }
+                />
+              )}
             <AiCreditsRoutingStatusBanner
               persistedRefusal={creditRefusal}
               target={bannerTarget}
@@ -8871,6 +8977,9 @@ function ChatInputContent({
                 : {})}
               {...(billingAccountChangedAt !== undefined
                 ? { accountChangedAt: billingAccountChangedAt }
+                : {})}
+              {...(sessionRoutingEnd !== undefined
+                ? { sessionRouting: sessionRoutingEnd }
                 : {})}
               {...(aiCreditsCardVisible &&
               interruptedTurnPending &&
@@ -9233,6 +9342,8 @@ function ChatInputContent({
         activeQuestion !== undefined &&
         activeSecretRequest !== undefined ? (
           <SecretRequestComposerPrompt
+            // Its send state belongs to one request: a new one starts clean.
+            key={activeQuestion.requestId}
             requestId={activeQuestion.requestId}
             request={activeSecretRequest}
             chatId={composerQuestions[0]?.chatId ?? ''}

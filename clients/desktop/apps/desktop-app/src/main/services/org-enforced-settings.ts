@@ -33,6 +33,7 @@ import {
   refreshPersonalGatewayKey,
   setCurrentModelGatewayAccount,
 } from '../lib/model-gateway-state';
+import { reconcileModelGatewayDeviceOptOuts } from '../lib/model-gateway-device-use';
 import {
   readCanopyCloudAccountWithStatus,
   toPublicCanopyCloudAccountState,
@@ -86,6 +87,7 @@ const modelGatewayApplier: OrgEnforcedPolicyApplier = {
     const result = setCurrentModelGatewayAccount(
       account,
       local.ok ? local.projection : null,
+      await reconcileModelGatewayDeviceOptOuts(account),
     );
     const keyChanged = await refreshPersonalGatewayKey();
     if (result.changed || result.catalogChanged || keyChanged)
@@ -220,19 +222,47 @@ export async function refreshLocalModelGatewayPolicy(): Promise<boolean> {
  */
 const REPROBE_INTERVAL_MS = 20 * 60_000;
 
+/**
+ * Minimum spacing between re-probes started by window focus, resume or unlock.
+ * Settings written on the web (an AI gateway toggle, for one) have no push
+ * channel to the desktop, so these triggers are how a member returning to the
+ * app sees them. A trigger inside the window is deferred to its end rather
+ * than dropped, so a quick round trip to the web still lands.
+ */
+const TRIGGER_THROTTLE_MS = 30_000;
+
+interface TriggerEventSource {
+  on(event: string, listener: () => void): unknown;
+  removeListener(event: string, listener: () => void): unknown;
+}
+
+export interface OrgEnforcedSettingsSyncTriggers {
+  /** Electron `app`: `browser-window-focus`. */
+  app: TriggerEventSource;
+  /** Electron `powerMonitor`: `resume` and `unlock-screen`. */
+  powerMonitor: TriggerEventSource;
+}
+
 let reprobeTimer: ReturnType<typeof setInterval> | null = null;
+let deferredTriggerTimer: ReturnType<typeof setTimeout> | null = null;
+let uninstallTriggers: (() => void) | null = null;
 
 /**
  * Start the periodic org-enforced-settings sync: applies once immediately
  * (re-enforcing even if prefs were edited offline) then re-probes on an unref'd
- * interval. The injected `reprobe` callback self-gates to a signed-in account,
- * so the loop safely no-ops when signed out — no connect/disconnect plumbing
- * needed. Idempotent: a second call does not stack timers.
+ * interval, and on window focus, resume and unlock at most once per
+ * {@link TRIGGER_THROTTLE_MS}. The injected `reprobe` callback self-gates to a
+ * signed-in account, so the sync safely no-ops when signed out — no
+ * connect/disconnect plumbing needed. Idempotent: a second call does not stack
+ * timers or listeners.
  */
 export function startOrgEnforcedSettingsSync(
   reprobe: () => Promise<void>,
+  triggers?: OrgEnforcedSettingsSyncTriggers,
 ): void {
+  let lastRunAt = 0;
   const run = (): void => {
+    lastRunAt = Date.now();
     void reprobe().catch((error: unknown): void => {
       // eslint-disable-next-line no-console
       console.warn('[org-enforced-settings] re-probe failed:', error);
@@ -249,12 +279,41 @@ export function startOrgEnforcedSettingsSync(
 
   reprobeTimer = setInterval(run, REPROBE_INTERVAL_MS);
   reprobeTimer.unref?.();
+
+  if (!triggers) return;
+  const onTrigger = (): void => {
+    if (deferredTriggerTimer) return;
+    const wait = lastRunAt + TRIGGER_THROTTLE_MS - Date.now();
+    if (wait <= 0) {
+      run();
+      return;
+    }
+    deferredTriggerTimer = setTimeout(() => {
+      deferredTriggerTimer = null;
+      run();
+    }, wait);
+    deferredTriggerTimer.unref?.();
+  };
+  triggers.app.on('browser-window-focus', onTrigger);
+  triggers.powerMonitor.on('resume', onTrigger);
+  triggers.powerMonitor.on('unlock-screen', onTrigger);
+  uninstallTriggers = (): void => {
+    triggers.app.removeListener('browser-window-focus', onTrigger);
+    triggers.powerMonitor.removeListener('resume', onTrigger);
+    triggers.powerMonitor.removeListener('unlock-screen', onTrigger);
+  };
 }
 
-/** Stop the periodic sync. Called from app shutdown. */
+/** Stop the periodic sync and its triggers. Called from app shutdown. */
 export function stopOrgEnforcedSettingsSync(): void {
   if (reprobeTimer) {
     clearInterval(reprobeTimer);
     reprobeTimer = null;
   }
+  if (deferredTriggerTimer) {
+    clearTimeout(deferredTriggerTimer);
+    deferredTriggerTimer = null;
+  }
+  uninstallTriggers?.();
+  uninstallTriggers = null;
 }

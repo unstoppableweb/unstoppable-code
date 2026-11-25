@@ -156,6 +156,7 @@ function stripForkLifecycleState(
   delete tab.customTitle;
   delete tab.automaticTitleState;
   delete tab.mcpActivation;
+  delete tab.claudeConnectorAvailability;
   delete tab.newChatStartedWatcherFiredAt;
   delete tab.adhocMigrationSource;
   delete tab.sharedRun;

@@ -19,13 +19,17 @@ import { join } from 'node:path';
 import { BrowserWindow } from 'electron';
 import {
   IPC_CHANNELS,
+  PLAN_DIAGRAM_SCHEMA_VERSION,
   type TrackedPlanData,
   type TrackedPlansUpdatedEvent,
 } from '@canopy/desktop-shared/types';
 import { getRemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import type { RemoteSurface } from '@canopy/desktop-shared/remote-control/surfaces';
 import type { DeviceKind } from '@canopy/protocol/device-relay';
-import type { WorkerPipelineHostRequest } from '@canopy/protocol/canopy-core';
+import type {
+  CanopyCallerDescriptor,
+  WorkerPipelineHostRequest,
+} from '@canopy/protocol/canopy-core';
 import type { ExecutionPlanPersistenceHooks } from '@canopy/execution-engine/node/pipelines/executor/types';
 // The proposal-mode writer reads its chat through chat state; one plan-mode
 // tab stands in for it.
@@ -39,6 +43,40 @@ jest.mock('../../services/chat-state-service', () => ({
     retirePlanReview: (): Promise<boolean> => Promise.resolve(true),
     commitPlanExit: (): Promise<boolean> => Promise.resolve(true),
   }),
+}));
+// Plan diagrams (CAN-4167): the generators answer at once, and the main
+// window is this computer's app window while it is open.
+jest.mock('../../lib/plan-diagram-generator', () => ({
+  generateSequenceDiagram: (): Promise<unknown> =>
+    Promise.resolve({
+      value: {
+        schemaVersion: PLAN_DIAGRAM_SCHEMA_VERSION,
+        nodes: [],
+        edges: [],
+      },
+    }),
+  generateLogicDiffDiagram: (): Promise<unknown> =>
+    Promise.resolve({
+      value: {
+        schemaVersion: PLAN_DIAGRAM_SCHEMA_VERSION,
+        current: { nodes: [], edges: [] },
+        planned: { nodes: [], edges: [] },
+        changes: [],
+      },
+    }),
+  generateDataModelDiffDiagram: (): Promise<unknown> =>
+    Promise.resolve({ value: { applicable: false } }),
+}));
+const mockFinishedDiagramTasks: string[] = [];
+jest.mock('../../lib/helper-observed-task', () => ({
+  startObservedHelperTask: (): void => undefined,
+  finalizeObservedHelperTask: (taskKey: string): void => {
+    mockFinishedDiagramTasks.push(taskKey);
+  },
+}));
+jest.mock('../../lib/main-window-focus', () => ({
+  ...jest.requireActual<typeof MainWindowFocus>('../../lib/main-window-focus'),
+  getMainWindow: (): unknown => mockCurrentMainWindow(),
 }));
 import type { HostBridge } from '../host/bridge-window';
 import { RemoteHostSession } from '../host/host-session';
@@ -61,6 +99,7 @@ import type * as PlanMode from '../../agents/plan-mode-tracked-plan';
 import type * as PlanExit from '../../services/chat-state-plan-exit';
 import type * as InterfacePort from '../../agents/agent-interface-port';
 import type * as HostWriters from '../../canopy-runtime/plan-host-writers';
+import type * as MainWindowFocus from '../../lib/main-window-focus';
 import { flushRelay, InMemoryRelayHub } from './in-memory-relay';
 import {
   createTestDevice,
@@ -112,6 +151,9 @@ function fakeWindow(): FakeWindow {
 /** Every window main can reach: this computer's app window, then bridges. */
 const appWindow = fakeWindow();
 let appWindowOpen = true;
+function mockCurrentMainWindow(): FakeWindow | null {
+  return appWindowOpen ? appWindow : null;
+}
 const bridgeWindows: FakeWindow[] = [];
 function liveWindows(): FakeWindow[] {
   return appWindowOpen ? [appWindow, ...bridgeWindows] : [...bridgeWindows];
@@ -229,6 +271,8 @@ beforeAll(async () => {
     join(dataDir, 'workspaces', WORKSPACE_ID, 'worktrees', WORKTREE_ID),
     { recursive: true },
   );
+  const { initClaudeModels } = await import('@canopy/desktop-shared/types');
+  initClaudeModels([{ id: 'haiku', label: 'Haiku' }]);
   const registry = await import('../../lib/workspace-registry');
   registry.registerWorkspaceTypes(new Map([[WORKSPACE_ID, 'single-repo']]));
   const { createDesktopRuntime } =
@@ -772,6 +816,76 @@ describe('agent and pipeline plans reach Remote Control (CAN-7295)', () => {
       expect(event.change === 'upsert' ? event.plan.id : null).toBe(
         written[index],
       );
+    });
+  });
+
+  // CAN-4167 PR 3b: a diagram generation pushes each artifact change to the
+  // main window, as the Electron scheduler always did, so every entitled
+  // controller window gets each one and a hosted client none.
+  it('a plan diagram generation reaches each entitled controller window as the main window gets it', async () => {
+    const desktop = await connect('Laptop', 'desktop', ['main', 'app-advisor']);
+    const browser = await connect('Browser', 'browser');
+    const hosted = await connect('Hosted', 'hosted');
+    const person: CanopyCallerDescriptor = {
+      principalId: 'local-desktop-user',
+      clientInstanceId: 'push-golden',
+      authorityId: 'local-desktop',
+      interfaceKind: 'desktop',
+      grants: ['core.plan.write'],
+    };
+    const { plan: created } = await dispatcher.instruction(
+      'core.plan.create',
+      { scope, source: 'claude', content: '# Diagrams' },
+      { caller: person, metadata: { idempotencyKey: 'push-diagram-plan' } },
+    );
+    if (!created) throw new Error('expected the plan to be created');
+    const plan = created;
+    await settle();
+    const seen: Record<string, unknown> = {};
+    for (const open of [true, false]) {
+      appWindowOpen = open;
+      for (const controller of [desktop, browser, hosted])
+        controller.pushes.length = 0;
+      appWindow.webContents.sent.length = 0;
+      mockFinishedDiagramTasks.length = 0;
+      await dispatcher.instruction(
+        'core.plan.diagram.generate',
+        { scope, planId: plan.id },
+        {
+          caller: person,
+          metadata: { idempotencyKey: `push-diagram-${String(open)}` },
+        },
+      );
+      for (let i = 0; i < 500 && mockFinishedDiagramTasks.length < 2; i += 1)
+        await settle();
+      await settle();
+      const sent = appWindow.webContents.sent.filter(
+        ({ channel }) => channel === IPC_CHANNELS.trackedPlansUpdated,
+      );
+      if (open)
+        for (const push of desktop.pushes)
+          expect(sent.map(({ args }) => args)).toContainEqual(push.args);
+      seen[open ? 'open' : 'closed'] = {
+        appWindow: sent.length,
+        desktop: perWindow(desktop),
+        browser: perWindow(browser),
+        hosted: hosted.pushes.length,
+      };
+    }
+    // Generating, then ready, for the sequence and logic diagrams.
+    expect(seen).toEqual({
+      open: {
+        appWindow: 4,
+        desktop: { main: 4, 'app-advisor': 4 },
+        browser: { main: 4 },
+        hosted: 0,
+      },
+      closed: {
+        appWindow: 0,
+        desktop: { main: 4, 'app-advisor': 4 },
+        browser: { main: 4 },
+        hosted: 0,
+      },
     });
   });
 });

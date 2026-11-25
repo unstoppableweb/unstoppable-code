@@ -1032,6 +1032,7 @@ function accountPageData(state, kind, route) {
             data: {
               organizationId: HOSTED_SETTINGS_ORG_IDS.personal,
               gateway: clone(state.personalGateway),
+              useInCloudChats: state.personalUseInCloudChats !== false,
             },
           }
         : notFound();

@@ -935,6 +935,32 @@ describe('a cloud copy withholds a supporting file and refuses a SKILL.md or plu
     expectNoSentinel(copy);
   });
 
+  // A name that is a secret only as written (its percent escapes read as
+  // spaces hide it) or only when spaced is never shown either (CAN-7627).
+  it.each([
+    ['only as written', 'pwd=%53%65%63%72%65%74'],
+    ['only when spaced', `done%0Agh${'p'}_${'V'.repeat(30)}`],
+  ])(
+    'a skill copy never shows a withheld file whose own name is a secret %s',
+    async (_which, name) => {
+      const root = folder({
+        'helper/SKILL.md': CLEAN_SKILL('helper'),
+        'helper/guide.md': 'Steps.\n',
+        [`helper/${name}.txt`]: SHARED_ONLY[0][1],
+      });
+      const copy = await analyseSkill(root, 'helper', true);
+      expect(withheld(copy)).toEqual(['[redacted path]:suspected_secret']);
+      expect(packaged(copy)).toContain('helper/guide.md');
+      expect(JSON.stringify(copy.summary)).not.toContain(name);
+      const { consentFactsOf } =
+        await import('../../pipelines/pipeline-package-service');
+      expect(JSON.stringify(consentFactsOf(copy.summary, []))).not.toContain(
+        name,
+      );
+      expectNoSentinel(copy);
+    },
+  );
+
   it('a skill copy still packages a supporting file that only names a placeholder', async () => {
     const root = folder({
       'helper/SKILL.md': CLEAN_SKILL('helper'),
@@ -2975,6 +3001,40 @@ describe('a workflow share reads asset, child pipeline, action and pipeline file
       expect(uploaded(analysis)).not.toContain(token);
     }
   });
+
+  // The same check reads an escape written as text as a boundary
+  // (CAN-7627). JSON keeps `\n` as two characters, and the generated
+  // manifest writes a decoded line break back as `\n`, so on develop the
+  // token reached the uploaded files.
+  it.each([
+    ['an escaped line break', '\\n'],
+    ['a unicode-escaped line break', '\\u000a'],
+  ])(
+    'blocks a child pipeline whose plugin.json holds a token after %s, in a share and a cloud copy alike, uploading no file that holds it (CAN-7627)',
+    async (_label, escape) => {
+      const token = `gh${'p'}_${'E'.repeat(30)}`;
+      const root = folder({
+        'pipelines/notes.yml': PIPELINE_YAML,
+        '.claude-plugin/plugin.json': `{"name":"notes","description":"Deploys when done${escape}${token}"}\n`,
+      });
+      for (const cloudCopy of [undefined, NOT_IGNORED]) {
+        const analysis = await analyse({
+          ...(cloudCopy === undefined ? {} : { cloudCopy }),
+          portableResources: [childPipeline(root)],
+        });
+        expect(secretBlockers(analysis)).toEqual([
+          {
+            code: 'SUSPECTED_SECRET',
+            message: 'A dependency file may contain a credential.',
+            subject: '.claude-plugin/plugin.json',
+            relativePath: '.claude-plugin/plugin.json',
+            occurrences: [],
+          },
+        ]);
+        expect(uploaded(analysis)).not.toContain(token);
+      }
+    },
+  );
 
   it.each(FIXTURES)(
     'blocks an automation pipeline whose YAML holds %s',

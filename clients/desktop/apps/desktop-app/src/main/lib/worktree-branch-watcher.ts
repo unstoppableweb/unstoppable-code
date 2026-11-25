@@ -13,6 +13,7 @@ import { CanopyOperationError } from '@canopy/core-runtime';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
 import { isRetiredTemporaryWorkspace } from '@canopy/desktop-shared/lib/workspace-visibility';
 import { runWithGitRequestContext } from '@canopy/desktop-shared/node/git-request-context';
+import { runWithW5Caller } from '@canopy/desktop-shared/node/work-counters';
 import {
   IPC_CHANNELS,
   WORKSPACE_ROOT_REPO_ID,
@@ -157,9 +158,8 @@ async function listCheckouts(
   const offer = takeLoadedProjection();
   const { legacyResult, legacyAuthority } = offer
     ? { legacyResult: offer.file, legacyAuthority: offer.authority }
-    : await dispatcher.queryWorktreeListForLegacyIpc(
-        {},
-        { caller: LIST_CALLER },
+    : await runWithW5Caller('background:branch-observer', () =>
+        dispatcher.queryWorktreeListForLegacyIpc({}, { caller: LIST_CALLER }),
       );
   // Per-workspace faults use preservedWorkspaceIds without blocking healthy enrollment.
   if (legacyAuthority?.indexAuthority === 'unreadable') {

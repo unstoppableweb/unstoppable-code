@@ -87,6 +87,9 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     // installing a CLI is this computer's own download: install, cancel and
     // their progress stay local.
     antigravityRuntimeStatus: 'tunnel',
+    // Whether the controlled computer pins a CLI, so the controller's picker
+    // and Settings rows follow that computer.
+    antigravityRuntimeHostSupport: 'tunnel',
     antigravityRuntimeInstall: 'local',
     antigravityRuntimeCancel: 'local',
     antigravityRuntimeProgress: 'local',
@@ -721,6 +724,13 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     localModelGatewayConnect: 'blocked',
     localModelGatewayChanged: 'blocked',
     localModelGatewayMigrationConflict: 'blocked',
+    localModelGatewayMigrationChoiceRead: 'blocked',
+    localModelGatewayMigrationChoose: 'blocked',
+    // "Use on this computer" is the host's own choice (CAN-7644); a controller
+    // has no device row for it, so it never reads or changes it.
+    modelGatewayDeviceUseRead: 'blocked',
+    modelGatewayDeviceUseSet: 'blocked',
+    modelGatewayDeviceUseChanged: 'blocked',
     modelGatewaySaveCredential: 'tunnel',
     modelGatewayValidateCredential: 'tunnel',
     modelGatewayCredentialChanged: 'tunnel',
@@ -1409,6 +1419,9 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     // The controlled computer's stable install identifier; controllers
     // (hosted MCP pairing) read it after authorization.
     remoteControlInstallId: 'tunnel',
+    // Served by the host session itself to a Slack session (CAN-7604), never
+    // through the bridge window; every other controller is refused it.
+    appAdvisorSlackTurnStatus: 'tunnel',
   };
 
 export const PIPELINE_REMOTE_DISPOSITIONS: RemoteDispositions<

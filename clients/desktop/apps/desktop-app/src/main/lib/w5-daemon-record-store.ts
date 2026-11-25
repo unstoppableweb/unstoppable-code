@@ -4,6 +4,7 @@ import {
   type W5CommitLogFileStore,
 } from '@canopy/core-runtime/node/w5/commit-log-file-store';
 import type { W5CommittedProjection } from '@canopy/core-runtime/node/w5/committed-projection';
+import type { W5CommitRefusedError } from '@canopy/core-runtime/node/w5/commit-log/errors';
 import {
   createW5RecordHostPort,
   type W5RecordPortTransport,
@@ -182,7 +183,9 @@ export function createW5DaemonRecordStore(options: {
    * The read cache (CAN-7155) this store's own decisions feed; the flip
    * handoff passes Electron main's where the cache is selected.
    */
-  readonly projection?: Pick<W5CommittedProjection, 'noteOwnDecision'>;
+  readonly projection?: Pick<W5CommittedProjection, 'noteOwnDecision'> & {
+    noteCaptureRefused?(error: W5CommitRefusedError): void;
+  };
 }): W5CommitLogFileStore {
   const root = options.root ?? getWorkspacesRootDir();
   const { projection } = options;
@@ -194,6 +197,7 @@ export function createW5DaemonRecordStore(options: {
       recordW5RecordUnserved(operation, reason),
     onRecordDecoded: (bytes) =>
       recordW5Work(W5_AGGREGATE_KEYS.recordDecodedBytes, bytes),
+    onCaptureRefused: (error) => projection?.noteCaptureRefused?.(error),
   });
   return createW5CommitLogFileStore({
     getHost: () => port,

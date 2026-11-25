@@ -99,7 +99,11 @@ export function PipelineAssistantTabStrip(): JSX.Element {
   );
 
   return (
-    <div className="canopy-panel-group-title" data-testid="pipeline-chat-tabs">
+    <div
+      className="canopy-panel-group-title"
+      data-testid="pipeline-chat-tabs"
+      data-fill-tabs=""
+    >
       <PanelTabBar
         groupId={ASSISTANT_GROUP_ID}
         tabs={tabs}

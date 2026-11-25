@@ -1,4 +1,8 @@
 import {
+  settingsPageDataInputSchema,
+  type SettingsOperationName,
+} from '@canopy/protocol/settings';
+import {
   acquireSettingsBridgeSession,
   peekSettingsBridgeSession,
   settingsBridgeCredentials,
@@ -29,6 +33,32 @@ import { createInvitationSettingsWriteObserver } from './invitation-settings-tel
 
 let service: AccountOrganizationSettingsService | undefined;
 
+function isAiGatewaySettingsPageRead(
+  name: SettingsOperationName,
+  input: unknown,
+): boolean {
+  if (name !== 'settings.pageData') return false;
+  const parsed = settingsPageDataInputSchema.safeParse(input);
+  if (!parsed.success) return false;
+  const { route } = parsed.data;
+  return route.scope === 'account'
+    ? route.page === 'ai-gateway'
+    : route.scope === 'organization' && route.subtab === 'ai-gateway';
+}
+
+/**
+ * The web can change a gateway with no push to this desktop, so opening its
+ * settings re-reads the account. Detached: the page's own data comes from the
+ * server and must not wait on this refresh.
+ */
+function refreshAccountInBackground(): void {
+  void import('../ipc/settings')
+    .then(({ reprobeAndApplyCanopyCloudEnforcedSettings }) =>
+      reprobeAndApplyCanopyCloudEnforcedSettings(),
+    )
+    .catch(() => undefined);
+}
+
 async function currentAccountId(): Promise<string | null> {
   try {
     return (await getCanopyCloudCredentials()).account?.id ?? null;
@@ -42,19 +72,21 @@ export function getAccountOrganizationSettingsService(): AccountOrganizationSett
   service ??= createAccountOrganizationSettingsService<SettingsBridgeSession>({
     acquireSession: acquireSettingsBridgeSession,
     execute: async (session, name, input, options) => {
+      if (isAiGatewaySettingsPageRead(name, input))
+        refreshAccountInBackground();
+      // Gateway settings are gated by the web, which keeps a saved gateway
+      // reachable with the flag off; connect asks it before probing.
       if (
-        name.startsWith('account.settings.ai-gateway.') ||
+        name === 'account.settings.ai-gateway.connect' ||
         name === 'organization.settings.ai-gateway.connect'
       ) {
         const gateway = await import('./ai-gateway-settings');
-        gateway.requireAiGatewaySettings();
-        if (name.endsWith('.connect'))
-          return gateway.connectDesktopGateway(
-            session,
-            name,
-            input,
-            options?.signal,
-          );
+        return gateway.connectDesktopGateway(
+          session,
+          name,
+          input,
+          options?.signal,
+        );
       }
       return executeSettingsOperation(session, name, input, options);
     },

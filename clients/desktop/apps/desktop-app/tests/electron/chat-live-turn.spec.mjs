@@ -277,10 +277,7 @@ test('a Claude chat uses the account proxy over its default proxy and records th
     const app = new CanopyAppDriver(window);
     await app.waitForShell({ timeout: 30_000 });
 
-    // Opt in and connect, as Settings does.
-    await window.evaluate(() =>
-      window.api.savePreferences({ accountProxyEnabled: true }),
-    );
+    // Connect through account-proxy:connect, as Settings does.
     const connected = await window.evaluate(
       ({ url, key }) =>
         window.api.accountProxy.connect({ url, managementKey: key }),

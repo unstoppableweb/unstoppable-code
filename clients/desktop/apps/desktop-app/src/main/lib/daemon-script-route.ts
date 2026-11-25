@@ -161,6 +161,13 @@ async function onSession<T>(
   }
 }
 
+/** As `onSession`, for the script reads and writes main routes (CAN-7663). */
+export function onDaemonScriptSession<T>(
+  call: (session: ElectronDaemonClient) => Promise<T>,
+): Promise<T> {
+  return onSession(call);
+}
+
 function transportFor(worker: ScriptExecutionWorker): RemoteScriptTransport {
   return {
     openOutput: async (params, onFrame) => {
@@ -238,6 +245,24 @@ async function canonical(path: string): Promise<string | null> {
   }
 }
 
+/** D9's run-log half: the worktree's run logs are where the daemon keeps them. */
+export function isDaemonScriptRunLogPlace(scope: {
+  readonly workspaceId: string;
+  readonly worktreeId: string;
+}): boolean {
+  try {
+    return (
+      relative(
+        getResolvedCanopyDataDir().path,
+        resolveScriptRunDir(scope.workspaceId, scope.worktreeId),
+      ) ===
+      join('workspaces', scope.workspaceId, 'script-runs', scope.worktreeId)
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** D9: the run logs and starts where it would in process, or it stays in process. */
 async function samePlace(
   params: WorkerScriptExecuteParams,
@@ -245,14 +270,7 @@ async function samePlace(
   cwd: string,
 ): Promise<boolean> {
   try {
-    if (
-      relative(
-        getResolvedCanopyDataDir().path,
-        resolveScriptRunDir(scope.workspaceId, scope.worktreeId),
-      ) !==
-      join('workspaces', scope.workspaceId, 'script-runs', scope.worktreeId)
-    )
-      return false;
+    if (!isDaemonScriptRunLogPlace(scope)) return false;
     const catalog = await readFilesystemScope(
       scope,
       await (

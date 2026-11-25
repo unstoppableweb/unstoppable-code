@@ -997,6 +997,263 @@ body {
   height: var(--canopy-scrollbar-rail-size);
 }
 
+/* A native scrollbar usually runs down the inside edge of a rounded card
+   (the main page, a panel), so its ends stop clear of the card's 10px
+   corners: 8px of track plus the thumb's own 2px inset, the same 8px the
+   menus give their overlay thumbs. `:where()` keeps the rule at the track's
+   own specificity, so a page that moves its track below a pinned bar
+   (the Marketplace) still sets its own top. */
+:root {
+  --canopy-scrollbar-track-end-inset: 8px;
+}
+
+:where(:not([data-native-scrollbar-probe]))::-webkit-scrollbar-track:vertical {
+  margin-block: var(--canopy-scrollbar-track-end-inset);
+}
+
+:where(
+    :not([data-native-scrollbar-probe])
+  )::-webkit-scrollbar-track:horizontal {
+  margin-inline: var(--canopy-scrollbar-track-end-inset);
+}
+
+/*
+ * A control or label the top bar sheds as it narrows (the header's priority
+ * tiers, a button's label dropping to its icon) eases its width and opacity
+ * down to nothing and back instead of popping in and out. It stays in the
+ * layout at zero width, since `display: none` cannot animate, with a negative
+ * start or end margin cancelling the gap beside it, and clips its content
+ * while it is shut (`overflow-clip` on the item's shut state, so a control's
+ * own popover is never cut off while it shows). `interpolate-size` lets
+ * `width: auto` animate; it is set only here and on the top bar, so no other
+ * transition to or from an automatic size starts animating. Hover feedback
+ * stays instant (docs/design/motion.md), so no colour is in the list.
+ */
+/* The top bar's scope: a shed control's own button eases its width through
+   Button's `easesWidth`, since the shared button takes no custom class. */
+.canopy-shed-scope,
+.canopy-shed {
+  interpolate-size: allow-keywords;
+  /* Long and even enough to read as a morph: a short, front-loaded curve
+     finished in a frame or two and looked like a jump. */
+  --canopy-shed-duration: 260ms;
+  --canopy-shed-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.canopy-shed {
+  transition-property:
+    width, margin-inline, padding-inline, opacity, visibility;
+  transition-duration: var(--canopy-shed-duration);
+  transition-timing-function: var(--canopy-shed-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canopy-shed {
+    transition-duration: 0s;
+  }
+}
+
+/*
+ * MorphLabel: a header button's label (or icon) folding away as the top bar
+ * narrows, and back. A one-column grid eases its track between 0fr and 1fr,
+ * which animates in every browser (a width to or from `auto` animates only
+ * in Chromium). The shape morphs on a strong ease-in-out; the ink, which
+ * enters and leaves, rides a strong ease-out with a light scale and blur.
+ * Exits (220ms) are quicker than entrances (280ms), and the text arrives a
+ * beat after the width so it is never cut mid-letter. Transitions, not
+ * keyframes, so a resize that reverses mid-way retargets smoothly.
+ *
+ * A gap beside the label never animates: with `data-morph-gap`, a fixed
+ * -6px margin cancels the parent's 6px gap and the ink pads it back inside
+ * the clip, so it folds away with the label.
+ */
+.canopy-morph,
+.canopy-morph-pad {
+  --canopy-morph-shape: cubic-bezier(0.65, 0, 0.35, 1);
+  --canopy-morph-ink: cubic-bezier(0.23, 1, 0.32, 1);
+  --canopy-morph-in: 280ms;
+  --canopy-morph-out: 220ms;
+}
+
+.canopy-morph {
+  display: inline-grid;
+  white-space: nowrap;
+}
+
+.canopy-morph[data-morph-gap='start'] {
+  margin-inline-start: -6px;
+}
+
+.canopy-morph[data-morph-gap='end'] {
+  margin-inline-end: -6px;
+}
+
+/* The clip's cut edge always feathers. The fade sits on 12px of padding the
+   negative margin keeps out of the layout, so an open label shows every
+   letter at full ink. */
+.canopy-morph-clip {
+  display: inline-flex;
+  min-width: 0;
+  overflow: clip;
+  padding-inline-end: 12px;
+  margin-inline-end: -12px;
+  mask-image: linear-gradient(to right, #000 calc(100% - 12px), transparent);
+}
+
+.canopy-morph-ink {
+  display: inline-flex;
+  align-items: center;
+  transform-origin: left center;
+}
+
+.canopy-morph[data-morph-gap='start'] .canopy-morph-ink {
+  padding-inline-start: 6px;
+}
+
+.canopy-morph[data-morph-gap='end'] .canopy-morph-ink {
+  padding-inline-end: 6px;
+}
+
+/* Closed (the default for a label shown when wide). */
+.canopy-morph {
+  grid-template-columns: 0fr;
+  visibility: hidden;
+  transition:
+    grid-template-columns var(--canopy-morph-out) var(--canopy-morph-shape),
+    visibility var(--canopy-morph-out);
+}
+
+.canopy-morph .canopy-morph-ink {
+  opacity: 0;
+  scale: 0.92;
+  filter: blur(2px);
+  transition:
+    opacity calc(var(--canopy-morph-out) * 0.6) var(--canopy-morph-ink),
+    scale calc(var(--canopy-morph-out) * 0.6) var(--canopy-morph-ink),
+    filter calc(var(--canopy-morph-out) * 0.6) var(--canopy-morph-ink);
+}
+
+/* Open (the default for a part shown when narrow). */
+.canopy-morph[data-morph-show='narrow'] {
+  grid-template-columns: 1fr;
+  visibility: visible;
+  transition:
+    grid-template-columns var(--canopy-morph-in) var(--canopy-morph-shape),
+    visibility 0s;
+}
+
+.canopy-morph[data-morph-show='narrow'] .canopy-morph-ink {
+  opacity: 1;
+  scale: 1;
+  filter: none;
+  transition:
+    opacity calc(var(--canopy-morph-in) * 0.8) var(--canopy-morph-ink)
+      calc(var(--canopy-morph-in) * 0.2),
+    scale calc(var(--canopy-morph-in) * 0.8) var(--canopy-morph-ink)
+      calc(var(--canopy-morph-in) * 0.2),
+    filter calc(var(--canopy-morph-in) * 0.8) var(--canopy-morph-ink)
+      calc(var(--canopy-morph-in) * 0.2);
+}
+
+/* The inset a content-width button (Button's `contentWidth`) takes from
+   MorphLabel content: the 28px circle's 7px narrow, the capsule's 12px wide,
+   on the same timing as the label. */
+.canopy-morph-pad {
+  display: inline-flex;
+  align-items: center;
+  padding-inline: 7px;
+  transition: padding-inline var(--canopy-morph-out) var(--canopy-morph-shape);
+}
+
+@container topbar (width >= 640px) {
+  .canopy-morph[data-morph-at='topbar-640'][data-morph-show='wide'] {
+    grid-template-columns: 1fr;
+    visibility: visible;
+    transition:
+      grid-template-columns var(--canopy-morph-in) var(--canopy-morph-shape),
+      visibility 0s;
+  }
+
+  .canopy-morph[data-morph-at='topbar-640'][data-morph-show='wide']
+    .canopy-morph-ink {
+    opacity: 1;
+    scale: 1;
+    filter: none;
+    transition:
+      opacity calc(var(--canopy-morph-in) * 0.8) var(--canopy-morph-ink)
+        calc(var(--canopy-morph-in) * 0.2),
+      scale calc(var(--canopy-morph-in) * 0.8) var(--canopy-morph-ink)
+        calc(var(--canopy-morph-in) * 0.2),
+      filter calc(var(--canopy-morph-in) * 0.8) var(--canopy-morph-ink)
+        calc(var(--canopy-morph-in) * 0.2);
+  }
+
+  .canopy-morph[data-morph-at='topbar-640'][data-morph-show='narrow'] {
+    grid-template-columns: 0fr;
+    visibility: hidden;
+    transition:
+      grid-template-columns var(--canopy-morph-out) var(--canopy-morph-shape),
+      visibility var(--canopy-morph-out);
+  }
+
+  .canopy-morph[data-morph-at='topbar-640'][data-morph-show='narrow']
+    .canopy-morph-ink {
+    opacity: 0;
+    scale: 0.92;
+    filter: blur(2px);
+    transition:
+      opacity calc(var(--canopy-morph-out) * 0.6) var(--canopy-morph-ink),
+      scale calc(var(--canopy-morph-out) * 0.6) var(--canopy-morph-ink),
+      filter calc(var(--canopy-morph-out) * 0.6) var(--canopy-morph-ink);
+  }
+
+  .canopy-morph-pad[data-morph-at='topbar-640'] {
+    padding-inline: 12px;
+    transition: padding-inline var(--canopy-morph-in) var(--canopy-morph-shape);
+  }
+}
+
+@container prbar (width >= 560px) {
+  .canopy-morph[data-morph-at='prbar-560'][data-morph-show='wide'] {
+    grid-template-columns: 1fr;
+    visibility: visible;
+    transition:
+      grid-template-columns var(--canopy-morph-in) var(--canopy-morph-shape),
+      visibility 0s;
+  }
+
+  .canopy-morph[data-morph-at='prbar-560'][data-morph-show='wide']
+    .canopy-morph-ink {
+    opacity: 1;
+    scale: 1;
+    filter: none;
+    transition:
+      opacity calc(var(--canopy-morph-in) * 0.8) var(--canopy-morph-ink)
+        calc(var(--canopy-morph-in) * 0.2),
+      scale calc(var(--canopy-morph-in) * 0.8) var(--canopy-morph-ink)
+        calc(var(--canopy-morph-in) * 0.2),
+      filter calc(var(--canopy-morph-in) * 0.8) var(--canopy-morph-ink)
+        calc(var(--canopy-morph-in) * 0.2);
+  }
+}
+
+/* Reduced motion: gentler, not none. Sizes snap; the text still fades. */
+@media (prefers-reduced-motion: reduce) {
+  .canopy-morph,
+  .canopy-morph[data-morph-show],
+  .canopy-morph-pad,
+  .canopy-morph-pad[data-morph-at] {
+    transition: none;
+  }
+
+  .canopy-morph .canopy-morph-ink,
+  .canopy-morph[data-morph-show] .canopy-morph-ink {
+    scale: 1;
+    filter: none;
+    transition: opacity 120ms ease-out;
+  }
+}
+
 /* "Never" hides the visual affordance without disabling wheel, touch,
    keyboard, or programmatic scrolling on native-scrollbar holdouts. */
 :root[data-scrollbar-behavior='never']

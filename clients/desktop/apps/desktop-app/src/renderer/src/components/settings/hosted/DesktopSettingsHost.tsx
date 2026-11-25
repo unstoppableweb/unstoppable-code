@@ -68,6 +68,9 @@ import { useNavigationStore } from '@/stores/navigationStore';
 import { useWorkspaceContext } from '@/stores/workspaceContextStore';
 import { DesktopDataSharingOptIn } from '../DesktopDataSharingOptIn';
 import { DesktopAiGatewayConnectionKey } from './DesktopAiGatewayConnectionKey';
+import { desktopDeviceAiGatewayChoice } from '@/client/device-ai-gateway-choice';
+import { useDesktopAiGatewayDeviceKey } from './useDesktopAiGatewayDeviceKey';
+import { useDesktopAiGatewayDeviceUse } from './useDesktopAiGatewayDeviceUse';
 import { createDesktopOrgProjectSetupSlot } from './desktopOrgProjectSetupSlot';
 import { createDesktopProjectLocalSetupSlot } from '@/lib/projectLocalSetup';
 import {
@@ -632,6 +635,9 @@ function createDesktopSettingsHost(
     useWorkspaceContext: useDesktopSettingsWorkspaceContext,
     // Gateway keys live in this computer's secure storage.
     AiGatewayConnectionKey: DesktopAiGatewayConnectionKey,
+    deviceAiGatewayChoice: desktopDeviceAiGatewayChoice,
+    useAiGatewayDeviceKey: useDesktopAiGatewayDeviceKey,
+    useAiGatewayDeviceUse: useDesktopAiGatewayDeviceUse,
   };
 }
 

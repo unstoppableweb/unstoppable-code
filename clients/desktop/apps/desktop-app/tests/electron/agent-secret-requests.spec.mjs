@@ -408,7 +408,9 @@ test.describe('agent secret requests', () => {
 
       const form = window.getByTestId('chat-secret-request-prompt');
       await expect(form).toBeVisible({ timeout: 90_000 });
-      await expect(form).toContainText('Available to the agent');
+      await expect(form).toContainText(
+        "In Full access, the agent's commands can print this value.",
+      );
       await window
         .getByTestId('chat-secret-request-input-STRIPE_SECRET_KEY')
         .fill(CANARY);
@@ -425,7 +427,7 @@ test.describe('agent secret requests', () => {
       const popover = window.getByTestId('chat-secrets-popover');
       await expect(popover).toContainText('STRIPE_SECRET_KEY');
       await expect(window.getByTestId('chat-secrets-ambient')).toContainText(
-        "also set in the agent's own commands",
+        "In Full access, the agent's commands can print these.",
       );
       await popover
         .getByRole('button', { name: 'Revoke STRIPE_SECRET_KEY' })
@@ -814,7 +816,7 @@ test.describe('agent secret use', () => {
       ).toHaveText('exit 0 · 3 values redacted');
       await expect(
         panel.getByTestId('write-secrets-file-row').first(),
-      ).toContainText('0600 · git-excluded');
+      ).toContainText('0600 · kept out of git');
       await expect(panel).not.toContainText(CANARY);
       await expect(panel).not.toContainText(SHORT_CANARY);
 

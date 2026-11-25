@@ -74,7 +74,15 @@ export function useChatAgentSecrets(
       void chat
         .listAgentSecrets(target)
         .then((next) => {
-          if (!cancelled && current === generation) setState(next);
+          if (!cancelled && current === generation) {
+            // An answer equal to the held one keeps it, so the composer does
+            // not render again when its chat opens.
+            setState((previous) =>
+              JSON.stringify(previous) === JSON.stringify(next)
+                ? previous
+                : next,
+            );
+          }
         })
         .catch((error: unknown) => {
           // A list that can't be read for now keeps what shows; the next

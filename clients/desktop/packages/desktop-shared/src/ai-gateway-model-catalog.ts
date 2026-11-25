@@ -10,7 +10,10 @@ import type {
   GatewayRouteEntry,
   ThinkingLevel,
 } from './types';
-import type { OrgGatewayModelAliases } from '@canopy/execution-engine/lib/gateway-model-availability';
+import {
+  orgGatewayModelId,
+  type OrgGatewayModelAliases,
+} from '@canopy/execution-engine/lib/gateway-model-availability';
 
 export interface OrgGatewayCatalogInput {
   personal?: boolean;
@@ -221,6 +224,10 @@ export function mergeAiGatewayModelCatalog(input: {
     }
   }
   const orgGatewayModelAliases: Record<string, Record<string, string>> = {};
+  // Gateway rows are always `<id>@<orgId>`. A bare id saved before that rule
+  // keeps resolving while exactly one gateway lists it and no hosted or
+  // package model owns it; otherwise it is ambiguous and resolves to nothing.
+  const bareGatewayAliases: Record<string, string> = {};
   const orgSources: Array<{
     model: AiGatewayModelCatalogResponse['models'][number];
     route: Pick<
@@ -231,11 +238,10 @@ export function mergeAiGatewayModelCatalog(input: {
   for (const gateway of sortedOrgGateways) {
     for (const orgModel of gateway.models) {
       if (orgModel.id.startsWith('ollama-')) continue;
-      const collides =
-        (orgIdCounts.get(orgModel.id) ?? 0) > 1 || reservedIds.has(orgModel.id);
-      const modelId = collides
-        ? `${orgModel.id}@${gateway.organizationId}`
-        : orgModel.id;
+      const modelId = orgGatewayModelId(orgModel.id, gateway.organizationId);
+      if (orgIdCounts.get(orgModel.id) === 1 && !reservedIds.has(orgModel.id)) {
+        bareGatewayAliases[orgModel.id] = modelId;
+      }
       reservedIds.add(modelId);
       const aliasesForModel = orgGatewayModelAliases[orgModel.id] ?? {};
       aliasesForModel[gateway.organizationId] = modelId;
@@ -288,11 +294,14 @@ export function mergeAiGatewayModelCatalog(input: {
     ...claudeModels.map((entry) => entry.id),
     ...codexModels.map((entry) => entry.id),
   ]);
-  const modelAliases = Object.fromEntries(
-    Object.entries(input.packageConfig.modelAliases).filter(([, canonical]) =>
-      enabledIds.has(canonical),
+  const modelAliases = {
+    ...Object.fromEntries(
+      Object.entries(input.packageConfig.modelAliases).filter(([, canonical]) =>
+        enabledIds.has(canonical),
+      ),
     ),
-  );
+    ...bareGatewayAliases,
+  };
 
   const gatewayRoutes: GatewayRouteEntry[] = [
     ...claudeModels,

@@ -4,7 +4,6 @@ import {
   type W5CaptureResult,
   type W5CaptureRequest,
 } from '../commit-log/capture-contract';
-import { W5CommitRefusedError } from '../commit-log/errors';
 import {
   W5RecordOverloadedError,
   W5RecordUnservedError,
@@ -16,17 +15,11 @@ import {
   w5RecordTargetFor,
   w5UnnameableRecordFor,
 } from './contract';
+import { isW5CaptureLimitRefusal } from './capture-result';
+export { isW5CaptureLimitRefusal } from './capture-result';
 
 export const W5_RECORD_READ_CONCURRENCY = 4;
 const OVERLOAD_RETRIES = 2;
-
-export function isW5CaptureLimitRefusal(error: unknown): boolean {
-  return (
-    error instanceof W5CommitRefusedError &&
-    error.reason === 'invalid-state' &&
-    error.details.capture === 'limit-exceeded'
-  );
-}
 
 /** Retry only explicit, safe same-request overloads; no authority-loss retry. */
 export async function retryW5RecordCapture(

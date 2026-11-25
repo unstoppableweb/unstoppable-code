@@ -144,10 +144,13 @@ export interface CloneJobsChangedEvent extends DomainEventBase {
 
 /**
  * The host's installed plugins, skills, collections or MCP servers changed
- * (CAN-7442). It carries nothing to apply: read `installedItems.listStatus`
- * again.
+ * (CAN-7442). It carries no snapshot to apply: use `installedItems.listStatus`
+ * to read the committed state.
  */
-export type InstalledItemsChangedEvent = DomainEventBase;
+export interface InstalledItemsChangedEvent extends DomainEventBase {
+  /** Present on a correlated catalog Add notice to the invoking browser session. */
+  readonly installRefreshToken?: string;
+}
 
 /** Durable script-action state changed for this project/worktree. Refetch the list. */
 export interface ScriptActionsChangedEvent extends DomainEventBase {

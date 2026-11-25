@@ -255,6 +255,7 @@ export interface PipelineTriggerModalProps {
    */
   settingsLocked?: boolean;
   runError?: string | null;
+  runErrorRecorded?: boolean;
   onClearError?: () => void;
   runLabel?: string;
   /**
@@ -625,6 +626,7 @@ export function PipelineTriggerModal({
   isRunning = false,
   settingsLocked = false,
   runError = null,
+  runErrorRecorded = false,
   onClearError,
   runLabel = 'Run',
   runLoadingLabel = 'Running…',
@@ -2450,6 +2452,7 @@ export function PipelineTriggerModal({
           errorSource="pipeline-trigger-modal-run"
           className=""
           error={runError}
+          errorRecordingDisabled={runErrorRecorded}
         />
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">

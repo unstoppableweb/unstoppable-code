@@ -839,7 +839,7 @@ function worktreeResource(
 }
 
 // Client reads never persist removal cleanup (RR1); list writes do.
-function defaultCoreWorkspaceReadServices(): CoreWorkspaceReadServices {
+export function defaultCoreWorkspaceReadServices(): CoreWorkspaceReadServices {
   return {
     readAllSidebarItems: () =>
       readAllSidebarItems({ persistRemovalCleanup: false }),

@@ -1498,7 +1498,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       requiredFeatureFlag: CLIENT_FEATURE_FLAGS.canopyDesktopAccountProxy.key,
       category: 'settings',
       summary:
-        "Read the account proxy (CLIProxyAPI): whether the user opted in, the connected server, its version, every account it shares with status, cooldown, and 5-hour and weekly limits, and its routing. Read-only. To connect, turn off, or remove an account, open Settings > Multi-account proxy with navigation.open_settings section 'account-proxy' and let the user act.",
+        "Read the account proxy (CLIProxyAPI): whether it is turned on, the connected server, its version, every account it shares with status, cooldown, and 5-hour and weekly limits, and its routing. Read-only. To connect, turn off, or remove an account, open Settings > Multi-account proxy with navigation.open_settings section 'account-proxy' and let the user act.",
       fields: [
         field(
           'refresh',

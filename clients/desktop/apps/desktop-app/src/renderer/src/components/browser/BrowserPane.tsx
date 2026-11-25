@@ -1,5 +1,9 @@
 import { Surface } from '@canopy/ui-shared/components';
 import { Button } from '@canopy/ui-shared';
+import {
+  PANEL_LAYOUT_ANIMATION_EVENT,
+  PANEL_LAYOUT_ANIMATION_MS,
+} from '@canopy/ui-shared/panels';
 import { LoadingSpinner } from '@/components/shared/loading';
 import {
   BROWSER_NATIVE_VIEW_COVER_CHANGED_EVENT,
@@ -36,6 +40,7 @@ import { BrowserInspector } from './BrowserInspector';
 import { BrowserJavaScriptDialogModal } from './BrowserJavaScriptDialogModal';
 import { RefreshIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { recordBrowserTabPreview } from '@/lib/panels/browser-tab-preview';
+import { useHiddenRailContentMounted } from '@/components/activity/useHiddenRailContentMounted';
 
 interface BrowserPaneProps {
   projectId: string;
@@ -108,6 +113,61 @@ function freezeFrameFits(
   );
 }
 
+/** How long after the last window resize event a pane reports once more. */
+const RESIZE_SETTLED_REPORT_MS = 160;
+
+/**
+ * Panes waiting for a window resize's frame to be laid out. Until it is,
+ * the page area's rectangle is still the one for the window's last size.
+ */
+let resizeFramesPending = 0;
+
+/**
+ * Calls `callback` after each frame a window resize produced, once that
+ * frame is laid out, and only while the window still has that frame's size
+ * (otherwise the next resize calls again).
+ */
+function afterWindowResizeFrame(callback: () => void): () => void {
+  let resizedTo: { width: number; height: number } | null = null;
+  const settle = (): void => {
+    const seen = resizedTo;
+    resizedTo = null;
+    if (seen !== null) resizeFramesPending -= 1;
+    if (
+      seen !== null &&
+      seen.width === window.innerWidth &&
+      seen.height === window.innerHeight
+    ) {
+      callback();
+    }
+  };
+  // A message is the first task after the frame; a timer where there is no
+  // channel (tests).
+  const channel =
+    typeof MessageChannel === 'undefined' ? null : new MessageChannel();
+  if (channel) channel.port1.onmessage = settle;
+  let timer: number | null = null;
+  const onResize = (): void => {
+    const pending = resizedTo !== null;
+    resizedTo = { width: window.innerWidth, height: window.innerHeight };
+    if (pending) return;
+    resizeFramesPending += 1;
+    if (channel) {
+      channel.port2.postMessage(null);
+    } else {
+      timer = window.setTimeout(settle, 0);
+    }
+  };
+  window.addEventListener('resize', onResize);
+  return (): void => {
+    window.removeEventListener('resize', onResize);
+    channel?.port1.close();
+    if (timer !== null) window.clearTimeout(timer);
+    if (resizedTo !== null) resizeFramesPending -= 1;
+    resizedTo = null;
+  };
+}
+
 /** Runs after two more frames, once a DOM change has reached the screen. */
 function afterNextPaint(callback: () => void): () => void {
   let second: number | null = null;
@@ -158,6 +218,9 @@ function useBrowserNativeViewBlocked(
   useEffect(() => {
     let frameId: number | null = null;
 
+    // While an overlay covers the page, any reflow can move it off again,
+    // so every change is heard; otherwise only overlay changes.
+    let coveredNow = false;
     const update = (): void => {
       frameId = null;
       const target = targetRef.current;
@@ -165,6 +228,7 @@ function useBrowserNativeViewBlocked(
         document,
         target?.getBoundingClientRect() ?? null,
       );
+      coveredNow = covered;
       setBlocked(covered);
       // Published at once (not through React), so the above-browser mirror
       // draws the overlay over the live page in this same frame, until a
@@ -190,7 +254,10 @@ function useBrowserNativeViewBlocked(
 
     update();
 
-    const unsubscribeTopology = subscribeBrowserOverlayTopology(scheduleUpdate);
+    const unsubscribeTopology = subscribeBrowserOverlayTopology(
+      scheduleUpdate,
+      { everyChange: () => coveredNow },
+    );
 
     window.addEventListener('resize', scheduleUpdate);
     window.addEventListener('scroll', scheduleUpdate, true);
@@ -301,6 +368,9 @@ export function BrowserPane({
     done: Promise<void>;
   } | null>(null);
   const lastCaptureAtRef = useRef<number | null>(null);
+  // When the page area last changed size, for holding the standing frame
+  // back until a window or panel resize has finished.
+  const lastAreaResizeAtRef = useRef<number | null>(null);
   // When the pointer last pressed something in the app: an overlay opened
   // by that press covers the page with the frame taken while pointing.
   const lastPointerPressAtRef = useRef<number | null>(null);
@@ -319,6 +389,41 @@ export function BrowserPane({
   const [paintedFreezeFrame, setPaintedFreezeFrame] =
     useState<BrowserFreezeFrame | null>(null);
   const [freezeCaptureFailed, setFreezeCaptureFailed] = useState(false);
+  // From a window resize, or a panel group opening or closing, until the
+  // layout has settled.
+  const [windowResizing, setWindowResizing] = useState(false);
+  // Whether the standing frame is on screen under the live view, for the
+  // resize listener, which runs before this component renders again.
+  const freezeFramePaintedRef = useRef(false);
+  useEffect(() => {
+    let settleTimer: number | null = null;
+    const hold = (settleMs: number): void => {
+      // The page area's observer runs later in this same frame and drops a
+      // frame that no longer fits; holding it here keeps it to stand in for
+      // the page while the window resizes.
+      if (freezeFramePaintedRef.current) freezeHoldRef.current = true;
+      setWindowResizing(true);
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(() => {
+        settleTimer = null;
+        setWindowResizing(false);
+      }, settleMs);
+    };
+    const onResize = (): void => hold(RESIZE_SETTLED_REPORT_MS);
+    // The panels slide to their places; the live view returns once there.
+    const onLayoutAnimation = (): void =>
+      hold(PANEL_LAYOUT_ANIMATION_MS + RESIZE_SETTLED_REPORT_MS / 2);
+    window.addEventListener('resize', onResize);
+    window.addEventListener(PANEL_LAYOUT_ANIMATION_EVENT, onLayoutAnimation);
+    return (): void => {
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener(
+        PANEL_LAYOUT_ANIMATION_EVENT,
+        onLayoutAnimation,
+      );
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
+    };
+  }, []);
   // The overlay currently over the page, and whether it is waiting for a
   // newer frame before covering it.
   const [freezeBlock, setFreezeBlock] = useState<{
@@ -385,12 +490,25 @@ export function BrowserPane({
   } else if (!blockedWhileAvailable && freezeBlock !== null) {
     setFreezeBlock(null);
   }
+  // While the window resizes, the page shows its standing frame instead of
+  // the live view. The live view is a separate native view: it reaches each
+  // new size a frame or more apart from the app around it, so during a drag
+  // it slid over its neighbours or trailed them. The frame is part of the
+  // app's own picture and moves with it; the live view comes back, laid out
+  // for the final size, once the resize has settled.
+  const windowResizeFrozen =
+    windowResizing &&
+    activeFreezeFrame !== null &&
+    paintedFreezeFrame === activeFreezeFrame;
+  freezeFramePaintedRef.current =
+    activeFreezeFrame !== null && paintedFreezeFrame === activeFreezeFrame;
   const nativeViewSuppressed =
-    nativeViewBlocked &&
-    ((activeFreezeFrame !== null &&
-      paintedFreezeFrame === activeFreezeFrame &&
-      !awaitingFreshFrame) ||
-      freezeCaptureFailed);
+    windowResizeFrozen ||
+    (nativeViewBlocked &&
+      ((activeFreezeFrame !== null &&
+        paintedFreezeFrame === activeFreezeFrame &&
+        !awaitingFreshFrame) ||
+        freezeCaptureFailed));
   if (nativeViewSuppressed) {
     freezeHoldRef.current = true;
   }
@@ -607,9 +725,27 @@ export function BrowserPane({
     if (!viewVisible || !pageReady || hasActiveFreezeFrame) {
       return undefined;
     }
-    const timeoutId = window.setTimeout(() => {
+    // A resize drops the frame, since it no longer fits the area. Taking
+    // the next one while the area is still changing would capture, encode
+    // and decode a whole page every half second of the drag, each one
+    // dropped at the next size, so it waits for the area to hold still.
+    let timeoutId = 0;
+    const captureOnceStill = (): void => {
+      const resizedAt = lastAreaResizeAtRef.current;
+      const stillFor =
+        resizedAt === null
+          ? FREEZE_FRAME_AFTER_LOAD_MS
+          : performance.now() - resizedAt;
+      if (stillFor < FREEZE_FRAME_AFTER_LOAD_MS) {
+        timeoutId = window.setTimeout(
+          captureOnceStill,
+          FREEZE_FRAME_AFTER_LOAD_MS - stillFor,
+        );
+        return;
+      }
       void captureFreezeFrame();
-    }, FREEZE_FRAME_AFTER_LOAD_MS);
+    };
+    timeoutId = window.setTimeout(captureOnceStill, FREEZE_FRAME_AFTER_LOAD_MS);
     return (): void => {
       window.clearTimeout(timeoutId);
     };
@@ -776,6 +912,9 @@ export function BrowserPane({
         // The page area's rounding (its card's bottom corners), which the
         // native view copies.
         cornerRadii: readCornerRadii(el),
+        // What this measurement was laid out for: main follows a window
+        // resize from it without waiting for the next report.
+        viewport: { width: window.innerWidth, height: window.innerHeight },
       })
       .then(() => nativeViewShownRef.current())
       .catch(() => nativeViewShownRef.current());
@@ -823,15 +962,39 @@ export function BrowserPane({
       return undefined;
     }
     const el = contentRef.current;
-    const observer = new ResizeObserver(() => sendBounds());
+    let observedSize = false;
+    const observer = new ResizeObserver(() => {
+      // The first report is the size the area already had.
+      if (observedSize) lastAreaResizeAtRef.current = performance.now();
+      observedSize = true;
+      sendBounds();
+    });
     if (el) {
       observer.observe(el);
     }
-    const handleWindowResize = (): void => sendBounds();
-    window.addEventListener('resize', handleWindowResize);
+    // A window resize can move the area without resizing it, which the
+    // observer does not see. The panel grid lays itself out later in the
+    // same frame, so the area is read once that frame is done: reading it
+    // in the event forced a layout of the old grid at the new window size,
+    // and reported a rectangle that was never drawn.
+    const stopAfterFrame = afterWindowResizeFrame(sendBounds);
+    // Once a resize has stopped, report once more. Main moves the page ahead
+    // of these reports while the window resizes, so a report lost along the
+    // way would otherwise leave the page where main guessed it would be.
+    let settleTimer: number | null = null;
+    const reportWhenSettled = (): void => {
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(() => {
+        settleTimer = null;
+        sendBounds();
+      }, RESIZE_SETTLED_REPORT_MS);
+    };
+    window.addEventListener('resize', reportWhenSettled);
     return (): void => {
       observer.disconnect();
-      window.removeEventListener('resize', handleWindowResize);
+      stopAfterFrame();
+      window.removeEventListener('resize', reportWhenSettled);
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
     };
   }, [sendBounds, viewVisible, inspectorOpen]);
 
@@ -904,6 +1067,9 @@ export function BrowserPane({
       }
       frameId = requestAnimationFrame(() => {
         frameId = null;
+        // Mid-resize the grid has not laid out for this frame yet; the
+        // report after the frame covers this move too.
+        if (resizeFramesPending > 0) return;
         sendBounds();
       });
     };
@@ -936,6 +1102,11 @@ export function BrowserPane({
     };
   }, [browserId]);
 
+  // A hidden tab's address bar mounts once the thread is idle after the
+  // switch that mounted it, and at once when the tab is shown: a worktree with
+  // several Browser tabs built every tab's bar in its first frame.
+  const barMounted = useHiddenRailContentMounted(visible, browserId);
+
   if (!snapshot) {
     return <div className="min-h-0 flex-1" />;
   }
@@ -957,22 +1128,24 @@ export function BrowserPane({
       onMouseDownCapture={handleActivate}
       onFocusCapture={handleActivate}
     >
-      <Bar
-        browserId={browserId}
-        snapshot={snapshot}
-        inspectorOpen={inspectorOpen}
-        errorCount={errorCount}
-        onToggleInspector={(): void => {
-          if (!inspectorOpen) {
-            if (unreadConsoleErrorCount > 0) {
-              setInspectorTab(browserId, 'console');
-            } else if (unreadFailedRequestCount > 0) {
-              setInspectorTab(browserId, 'network');
+      {barMounted ? (
+        <Bar
+          browserId={browserId}
+          snapshot={snapshot}
+          inspectorOpen={inspectorOpen}
+          errorCount={errorCount}
+          onToggleInspector={(): void => {
+            if (!inspectorOpen) {
+              if (unreadConsoleErrorCount > 0) {
+                setInspectorTab(browserId, 'console');
+              } else if (unreadFailedRequestCount > 0) {
+                setInspectorTab(browserId, 'network');
+              }
             }
-          }
-          toggleInspector(browserId);
-        }}
-      />
+            toggleInspector(browserId);
+          }}
+        />
+      ) : null}
       <BrowserFileChooserNotice browserId={browserId} />
       <BrowserPrintRequestNotice browserId={browserId} />
       <BrowserAuthRequestNotice

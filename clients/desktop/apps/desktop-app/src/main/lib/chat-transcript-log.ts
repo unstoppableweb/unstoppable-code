@@ -901,6 +901,125 @@ class BoundedLogicalCommittedRows {
 
 const logicalCommittedRows = new BoundedLogicalCommittedRows();
 
+/** The committed rows one turn page read from the file, pending its identity check. */
+interface TurnPageRowRead {
+  path: string;
+  /** Absent when the committed file could not be identified: nothing is reused or kept. */
+  identity?: string;
+  stamp?: string;
+  rows: Map<number, Buffer>;
+  spans: [number, number][];
+  bytes: number;
+}
+
+const MAX_TURN_PAGE_ROW_BYTES = 16 * 1024 * 1024;
+
+/**
+ * The exact committed row bytes a turns-view page selected, by committed
+ * identity (index digest and counts, plus the file's inode, size, mtime and
+ * ctime), so reopening an unchanged chat does not rescan the sparse strides
+ * around every selected row. A hit decodes and validates the retained bytes
+ * the way the file read does, so each page still gets its own row objects.
+ * `spans` are the ordinal ranges a file read parsed completely: a run is served
+ * from here only when the range it would scan was already parsed under this
+ * identity, so it cannot skip a row the file read would have rejected. One
+ * chat may retain at most 16 MiB and all chats together at most 32 MiB; a page
+ * above that is read from the file every time. Any change to the committed
+ * file changes its identity, so the first page after a commit reads the file.
+ */
+class BoundedTurnPageRowBytes {
+  private readonly entries = new Map<
+    string,
+    {
+      identity: string;
+      rows: Map<number, Buffer>;
+      spans: [number, number][];
+      bytes: number;
+    }
+  >();
+  private retainedBytes = 0;
+
+  public get(
+    path: string,
+    identity: string,
+  ):
+    | {
+        rows: ReadonlyMap<number, Buffer>;
+        spans: readonly (readonly [number, number])[];
+      }
+    | undefined {
+    const entry = this.entries.get(path);
+    if (!entry) return undefined;
+    if (entry.identity !== identity) {
+      this.delete(path);
+      return undefined;
+    }
+    this.entries.delete(path);
+    this.entries.set(path, entry);
+    return entry;
+  }
+
+  public add(
+    path: string,
+    identity: string,
+    rows: ReadonlyMap<number, Buffer>,
+    spans: readonly (readonly [number, number])[],
+  ): void {
+    let entry = this.entries.get(path);
+    if (entry?.identity !== identity) {
+      this.delete(path);
+      entry = undefined;
+    }
+    let added = 0;
+    rows.forEach((bytes, ordinal): void => {
+      if (!entry?.rows.has(ordinal)) added += bytes.length;
+    });
+    if (entry && entry.bytes + added > MAX_TURN_PAGE_ROW_BYTES) {
+      // Keep the page just read instead of an older one for the same file.
+      this.delete(path);
+      entry = undefined;
+      added = 0;
+      rows.forEach((bytes): void => {
+        added += bytes.length;
+      });
+    }
+    if (added > MAX_TURN_PAGE_ROW_BYTES) return;
+    if (!entry) {
+      entry = { identity, rows: new Map(), spans: [], bytes: 0 };
+      this.entries.set(path, entry);
+    }
+    const retained = entry.rows;
+    rows.forEach((bytes, ordinal): void => {
+      if (!retained.has(ordinal)) retained.set(ordinal, bytes);
+    });
+    const parsed = entry.spans;
+    for (const [from, to] of spans)
+      if (!parsed.some(([start, end]) => start <= from && to <= end))
+        parsed.push([from, to]);
+    entry.bytes += added;
+    this.retainedBytes += added;
+    this.entries.delete(path);
+    this.entries.set(path, entry);
+    while (
+      this.entries.size > MAX_LOGICAL_SNAPSHOT_CHATS ||
+      this.retainedBytes > 32 * 1024 * 1024
+    ) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest === undefined) break;
+      this.delete(oldest);
+    }
+  }
+
+  public delete(path: string): void {
+    const entry = this.entries.get(path);
+    if (!entry) return;
+    this.entries.delete(path);
+    this.retainedBytes -= entry.bytes;
+  }
+}
+
+const turnPageRowBytes = new BoundedTurnPageRowBytes();
+
 function fileStatStamp(info: {
   dev: bigint;
   ino: bigint;
@@ -1933,6 +2052,17 @@ async function* lines(
   yield* linesFromChunks(createReadStream(path, { start }), start);
 }
 
+/** One complete committed row: strict UTF-8, JSON, and the persisted message shape. */
+function decodeTranscriptRow(
+  bytes: Buffer,
+  decoder: TextDecoder,
+): PersistedChatMessage {
+  const parsed: unknown = JSON.parse(decoder.decode(bytes));
+  if (!isPersistedChatMessage(parsed))
+    throw new Error('Invalid complete transcript message');
+  return parsed;
+}
+
 async function* linesFromChunks(
   chunks: AsyncIterable<Buffer>,
   start = 0,
@@ -1964,11 +2094,9 @@ async function* linesFromChunks(
       const bytes = pending.length
         ? Buffer.concat([...pending, segment], length + segment.length)
         : segment;
-      const parsed: unknown = JSON.parse(decoder.decode(bytes));
-      if (!isPersistedChatMessage(parsed))
-        throw new Error('Invalid complete transcript message');
+      const message = decodeTranscriptRow(bytes, decoder);
       const end = offset + bytes.length + 1;
-      yield { message: parsed, offset, end, bytes };
+      yield { message, offset, end, bytes };
       offset = end;
       begin = i + 1;
       pending = [];
@@ -4179,6 +4307,7 @@ export class TranscriptStreamStore {
       this.loaded.delete(chatId);
       activeSnapshots.delete(this.path(chatId, 'active.json'));
       recentCommittedPages.delete(this.path(chatId, 'jsonl'));
+      turnPageRowBytes.delete(this.path(chatId, 'jsonl'));
       throw error;
     } finally {
       if (this.tails.get(chatId) === pending) this.tails.delete(chatId);
@@ -4929,6 +5058,7 @@ export class TranscriptStreamStore {
     await this.serial(chatId, async () => {
       activeSnapshots.delete(this.path(chatId, 'active.json'));
       recentCommittedPages.delete(this.path(chatId, 'jsonl'));
+      turnPageRowBytes.delete(this.path(chatId, 'jsonl'));
       await mkdir(this.paths.directory(chatId), { recursive: true });
       const handle = await open(this.path(chatId, 'jsonl'), 'ax', 0o600);
       try {
@@ -5659,6 +5789,7 @@ export class TranscriptStreamStore {
       this.loaded.delete(chatId);
       activeSnapshots.delete(this.path(chatId, 'active.json'));
       recentCommittedPages.delete(this.path(chatId, 'jsonl'));
+      turnPageRowBytes.delete(this.path(chatId, 'jsonl'));
       await fsyncDirectory(this.paths.directory(chatId));
     });
   }
@@ -7008,6 +7139,112 @@ export class TranscriptStreamStore {
     }
   }
 
+  /** Identify the committed file a turn page is about to read rows from. */
+  private async beginTurnPageRowRead(
+    chatId: string,
+    index: SparseIndex,
+  ): Promise<TurnPageRowRead> {
+    const path = this.path(chatId, 'jsonl');
+    const read: TurnPageRowRead = {
+      path,
+      rows: new Map(),
+      spans: [],
+      bytes: 0,
+    };
+    if (index.committedMessageCount === 0) return read;
+    try {
+      const { stamp } = await fileIdentity(path);
+      read.stamp = stamp;
+      read.identity = `${index.committedDigest}:${index.committedMessageCount}:${index.committedByteLength}:${stamp}`;
+    } catch {
+      // The read below reports a missing or unreadable file as it always has.
+    }
+    return read;
+  }
+
+  /**
+   * The rows of `[start, end)` that `wanted` selects (all of them when it is
+   * absent), in order: `range` with the rows a turn page discards left out.
+   * Rows this page or an earlier one already parsed from the same committed
+   * identity are decoded from their retained bytes instead of the file.
+   */
+  private async turnPageRows(
+    index: SparseIndex,
+    read: TurnPageRowRead,
+    start: number,
+    end: number,
+    wanted?: ReadonlySet<number>,
+  ): Promise<PersistedChatMessage[]> {
+    const messages: PersistedChatMessage[] = [];
+    if (start >= end) return messages;
+    const checkpoint = [...index.offsets]
+      .reverse()
+      .find((entry) => entry.ordinal <= start);
+    if (!checkpoint) return messages;
+    const retained = read.identity
+      ? turnPageRowBytes.get(read.path, read.identity)
+      : undefined;
+    if (
+      retained?.spans.some(
+        ([from, to]) => from <= checkpoint.ordinal && end <= to,
+      )
+    ) {
+      const selected: Buffer[] = [];
+      let complete = true;
+      for (let ordinal = start; ordinal < end; ordinal += 1) {
+        if (wanted && !wanted.has(ordinal)) continue;
+        const bytes = retained.rows.get(ordinal);
+        if (!bytes) {
+          complete = false;
+          break;
+        }
+        selected.push(bytes);
+      }
+      if (complete) {
+        const decoder = new TextDecoder('utf-8', { fatal: true });
+        for (const bytes of selected)
+          messages.push(decodeTranscriptRow(bytes, decoder));
+        return messages;
+      }
+    }
+    let ordinal = checkpoint.ordinal;
+    for await (const row of lines(read.path, checkpoint.offset)) {
+      if (
+        ordinal >= start &&
+        ordinal < end &&
+        (!wanted || wanted.has(ordinal))
+      ) {
+        messages.push(row.message);
+        if (read.identity) {
+          read.bytes += row.bytes.length;
+          // A page too large to retain is read from the file every time.
+          if (read.bytes > MAX_TURN_PAGE_ROW_BYTES) {
+            read.identity = undefined;
+            read.rows.clear();
+          } else {
+            // The row is a view of its stream chunk; keep only its own bytes.
+            read.rows.set(ordinal, Buffer.from(row.bytes));
+          }
+        }
+      }
+      ordinal += 1;
+      if (ordinal >= end) break;
+    }
+    read.spans.push([checkpoint.ordinal, ordinal]);
+    return messages;
+  }
+
+  /** Keep what this page read only if the committed file did not change meanwhile. */
+  private async finishTurnPageRowRead(read: TurnPageRowRead): Promise<void> {
+    if (!read.identity || read.rows.size === 0) return;
+    try {
+      if ((await fileIdentity(read.path)).stamp !== read.stamp) return;
+    } catch {
+      return;
+    }
+    turnPageRowBytes.add(read.path, read.identity, read.rows, read.spans);
+  }
+
   private async turnPage(
     chatId: string,
     index: SparseIndex,
@@ -7017,6 +7254,7 @@ export class TranscriptStreamStore {
     transcriptRevision: number = index.transcriptRevision,
   ): Promise<TranscriptPage> {
     const cached = await this.turnIndex(chatId, index);
+    const rowRead = await this.beginTurnPageRowRead(chatId, index);
     let records = cached.turns;
     // Active messages are already a provider-side projection. Fold only the
     // current committed turn with its active suffix. A receipt can also name
@@ -7040,14 +7278,12 @@ export class TranscriptStreamStore {
     }
     const activeStart = records[activeTurn]?.start ?? 0;
     if (active.length > 0) {
-      activeTail = [];
-      for await (const row of this.range(
-        chatId,
+      activeTail = await this.turnPageRows(
         index,
+        rowRead,
         activeStart,
         index.committedMessageCount,
-      ))
-        activeTail.push(row);
+      );
       activeTail.push(...active);
       records = [
         ...records.slice(0, activeTurn),
@@ -7142,16 +7378,14 @@ export class TranscriptStreamStore {
           if (ordinals.has(ordinal))
             messages.push(activeTail[ordinal - activeStart]);
       } else {
-        let ordinal = start;
-        for await (const row of this.range(
-          chatId,
+        for (const row of await this.turnPageRows(
           index,
+          rowRead,
           start,
           Math.min(end, index.committedMessageCount),
-        )) {
-          if (ordinals.has(ordinal)) messages.push(row);
-          ordinal += 1;
-        }
+          ordinals,
+        ))
+          messages.push(row);
         for (
           let ordinal = Math.max(start, index.committedMessageCount);
           ordinal < end;
@@ -7161,6 +7395,7 @@ export class TranscriptStreamStore {
             messages.push(active[ordinal - index.committedMessageCount]);
       }
     }
+    await this.finishTurnPageRowRead(rowRead);
     const messageOrdinals = Object.fromEntries(
       messages.map((message, i) => [message.id, ordered[i]]),
     );

@@ -306,6 +306,13 @@ export interface SendMessageDispatchOptions {
   /** One-shot revert summary claimed by the composer before async dispatch. */
   reservedRevertAttachmentPath?: string;
   throwOnDispatchFailure?: boolean;
+  /** The immediate caller owns error feedback and recording for this send. */
+  suppressDispatchErrorToast?: boolean;
+  /**
+   * The actual recipient selected or created by this send, before admission.
+   * Immediate caller only: queued re-dispatches must not retarget its UI.
+   */
+  onTargetResolved?: (target: ChatActionTarget & { chatId: string }) => void;
   onDispatchAccepted?: () => void;
   onDispatchRejected?: () => void;
   /**
@@ -342,6 +349,8 @@ export type QueuedChatDispatchOptions = Omit<
   | 'composerAttachmentsReserved'
   | 'reservedRevertAttachmentPath'
   | 'throwOnDispatchFailure'
+  | 'suppressDispatchErrorToast'
+  | 'onTargetResolved'
   | 'onPreDispatchRejected'
   | 'onQueuedWithoutDispatch'
 >;

@@ -1,10 +1,11 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { constants, lstat, open, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { CanopyClientError } from '../errors';
 import type { DaemonOwnerCredential } from './daemon-owner';
 import type { CanopyRuntimeDescriptorSource } from './daemon-ports';
-import { canopyLaunchDetails } from './daemon-refusal';
+import { canopyLaunchDetails, canopyLaunchStepDetails } from './daemon-refusal';
 import { canopyConnectError } from './endpoint';
 import type {
   CanopyDaemonBeforeSpawn,
@@ -88,6 +89,8 @@ export interface CanopyDaemonHostLaunchOptions {
     filePath: string,
     signal: AbortSignal,
   ) => Promise<void>;
+  /** Waits between Windows file-lock retries; rejects on abort. Defaults to a timer. */
+  readonly lockRetryDelay?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
 export type CanopyDaemonHostLaunch = Omit<
@@ -105,6 +108,14 @@ export const CANOPY_DAEMON_OWNER_HANDOFF = 'stdin-owner-v1';
 const MAX_HANDOFF_BYTES = 4096;
 const MAX_FILE_BYTES = 64 * 1024;
 const MAX_FILE_OBSERVATIONS = 3;
+/**
+ * Windows sharing violations (antivirus, indexers, a writer's open handle)
+ * surface as these codes. Mirrors core-platform's secure-files rename retry
+ * without importing it: 5 tries, 50 ms × attempt, about 500 ms in total.
+ */
+const LOCK_CODES: ReadonlySet<unknown> = new Set(['EPERM', 'EBUSY', 'EACCES']);
+const LOCK_ATTEMPTS = 5;
+const LOCK_DELAY_MS = 50;
 const FORCED_STOP_MS = 2_000;
 const TOKEN_NAME =
   /^core-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.token$/;
@@ -118,6 +129,29 @@ const field = (value: unknown, key: string): unknown =>
     : undefined;
 
 const absent = (error: unknown): boolean => field(error, 'code') === 'ENOENT';
+
+const timerDelay = async (ms: number, signal?: AbortSignal): Promise<void> => {
+  try {
+    await sleep(ms, undefined, signal ? { signal } : undefined);
+  } catch (error) {
+    signal?.throwIfAborted();
+    throw error;
+  }
+};
+
+/**
+ * The Windows file-lock backoff shared by every private-file check on a
+ * discovery path: waits 50 ms times the 1-based attempt; rejects on abort.
+ * Host permission checks reuse it so both layers keep one schedule.
+ */
+export const waitForCanopyFileLockRetry = (
+  attempt: number,
+  signal?: AbortSignal,
+): Promise<void> => timerDelay(LOCK_DELAY_MS * attempt, signal);
+
+type PrivateObservation =
+  | { readonly kind: 'read'; readonly text: string | null }
+  | { readonly kind: 'changed' };
 
 /** Composes launcher inputs; the caller adds attach, dispose, and its signal. */
 export function createCanopyDaemonHostLaunch(
@@ -158,60 +192,109 @@ export function createCanopyDaemonHostLaunch(
     } catch (error) {
       signal.throwIfAborted();
       if (error instanceof CanopyClientError) throw error;
-      throw failure('Core runtime directory validation failed.');
+      throw canopyConnectError(
+        'failed_precondition',
+        'Core runtime directory validation failed.',
+        canopyLaunchStepDetails('prepare_runtime')(error),
+      );
     }
   }
 
-  /** A private, non-symlink, bounded regular file, or `null` when absent. Never unlinks. */
+  const lockRetryDelay = options.lockRetryDelay ?? timerDelay;
+  const locked = (error: unknown): boolean =>
+    platform === 'win32' && LOCK_CODES.has(field(error, 'code'));
+
+  /**
+   * One whole observation: lstat, permission check, open, identity, read.
+   * `changed` means the path was replaced or vanished mid-read.
+   */
+  async function observePrivate(
+    file: string,
+    signal: AbortSignal,
+  ): Promise<PrivateObservation> {
+    const before = await lstat(file, { bigint: true }).catch((error) => {
+      if (absent(error)) return null;
+      throw error;
+    });
+    if (before === null) return { kind: 'read', text: null };
+    if (before.isSymbolicLink())
+      throw failure('Core runtime file is a symbolic link.');
+    try {
+      try {
+        await options.verifyPrivateFile(file, signal);
+      } catch (verifyError) {
+        signal.throwIfAborted();
+        const current = await lstat(file, { bigint: true }).catch((error) => {
+          if (absent(error)) return null;
+          throw error;
+        });
+        // Publication can unlink the verifier's open inode. Revalidate the new path.
+        if (
+          current === null ||
+          current.dev !== before.dev ||
+          current.ino !== before.ino
+        )
+          return { kind: 'changed' };
+        throw canopyConnectError(
+          'failed_precondition',
+          'Core runtime file is exposed.',
+          canopyLaunchStepDetails('verify_private_file')(verifyError),
+        );
+      }
+      signal.throwIfAborted();
+      const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
+      const handle = await open(file, flags);
+      try {
+        const stat = await handle.stat({ bigint: true });
+        // Never read a replacement that the permission check did not validate.
+        if (stat.dev !== before.dev || stat.ino !== before.ino)
+          return { kind: 'changed' };
+        if (!stat.isFile() || stat.size > MAX_FILE_BYTES)
+          throw failure('Core runtime file is not a bounded regular file.');
+        return {
+          kind: 'read',
+          text: await handle.readFile({ encoding: 'utf8', signal }),
+        };
+      } finally {
+        // Closed before any lock retry waits: an open handle can hold the lock.
+        await handle.close();
+      }
+    } catch (error) {
+      signal.throwIfAborted();
+      if (absent(error)) return { kind: 'changed' };
+      throw error;
+    }
+  }
+
+  /**
+   * A private, non-symlink, bounded regular file, or `null` when absent. Never
+   * unlinks. On Windows a lock error re-runs the whole observation so the
+   * identity and privacy checks hold for the read that succeeds; lock retries
+   * have their own budget and never consume a file observation. A verifier
+   * failure is not retried here: the host's `verifyPrivateFile` retries its
+   * own lock reasons (Electron's `privatePath`).
+   */
   async function readPrivate(
     file: string,
     signal: AbortSignal,
   ): Promise<string | null> {
-    for (let attempt = 0; attempt < MAX_FILE_OBSERVATIONS; attempt++) {
+    let lockAttempts = 1;
+    let observations = 0;
+    while (observations < MAX_FILE_OBSERVATIONS) {
       signal.throwIfAborted();
-      const before = await lstat(file, { bigint: true }).catch((error) => {
-        if (absent(error)) return null;
-        throw error;
-      });
-      if (before === null) return null;
-      if (before.isSymbolicLink())
-        throw failure('Core runtime file is a symbolic link.');
+      let observed: PrivateObservation;
       try {
-        try {
-          await options.verifyPrivateFile(file, signal);
-        } catch {
-          signal.throwIfAborted();
-          const current = await lstat(file, { bigint: true }).catch((error) => {
-            if (absent(error)) return null;
-            throw error;
-          });
-          // Publication can unlink the verifier's open inode. Revalidate the new path.
-          if (
-            current === null ||
-            current.dev !== before.dev ||
-            current.ino !== before.ino
-          )
-            continue;
-          throw failure('Core runtime file is exposed.');
-        }
-        signal.throwIfAborted();
-        const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
-        const handle = await open(file, flags);
-        try {
-          const stat = await handle.stat({ bigint: true });
-          // Never read a replacement that the permission check did not validate.
-          if (stat.dev !== before.dev || stat.ino !== before.ino) continue;
-          if (!stat.isFile() || stat.size > MAX_FILE_BYTES)
-            throw failure('Core runtime file is not a bounded regular file.');
-          return await handle.readFile({ encoding: 'utf8', signal });
-        } finally {
-          await handle.close();
-        }
+        observed = await observePrivate(file, signal);
       } catch (error) {
         signal.throwIfAborted();
-        if (absent(error)) continue;
-        throw error;
+        // Out of attempts: the raw error crosses so its errno reaches the details.
+        if (!locked(error) || lockAttempts >= LOCK_ATTEMPTS) throw error;
+        await lockRetryDelay(LOCK_DELAY_MS * lockAttempts, signal);
+        lockAttempts += 1;
+        continue;
       }
+      if (observed.kind === 'read') return observed.text;
+      observations += 1;
     }
     // Churn is not absence: neither spawn from it nor call a live token missing.
     signal.throwIfAborted();

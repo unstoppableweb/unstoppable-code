@@ -1,4 +1,7 @@
-import { personalAiGatewayConfigSchema } from '../model-gateway';
+import {
+  personalAiGatewayConfigSchema,
+  personalAiGatewayUseInCloudChatsSchema,
+} from '../model-gateway';
 import { CoreIntegrationProviderKeyListResultSchema } from '../canopy-core/core/integration/provider-key';
 import { z } from 'zod';
 import type { SettingsRoute } from './routes';
@@ -311,6 +314,7 @@ export const accountAiGatewayPageDataSchema = z.looseObject({
   data: z.looseObject({
     organizationId: z.uuid(),
     gateway: personalAiGatewayConfigSchema.nullable(),
+    useInCloudChats: personalAiGatewayUseInCloudChatsSchema,
   }),
 });
 export type AccountAiGatewayPageData = z.infer<

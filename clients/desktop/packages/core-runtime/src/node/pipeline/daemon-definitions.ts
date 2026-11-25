@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  PIPELINE_DEFINITION_IMPORT_GRANTS,
   PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS,
   PIPELINE_DEFINITION_QUERY_DEFINITIONS,
   PIPELINE_GRANTS,
@@ -462,15 +463,27 @@ export const CORE_PIPELINE_DEFINITION_CALLER_GRANTS = [
   PIPELINE_GRANTS.write,
 ] as const;
 
+/**
+ * What only the daemon's proven owner holds for the definitions (CAN-7523).
+ * Owner proof alone grants the import: a deliberate, approved exception to the
+ * rule that owner proof does not establish trust, until E1 (CAN-4729)
+ * designates trusted connections and this grant moves to that designation. Sent
+ * only over Electron main's owner connection; Portal and remote installs go
+ * through main.
+ */
+export const CORE_PIPELINE_DEFINITION_OWNER_GRANTS =
+  PIPELINE_DEFINITION_IMPORT_GRANTS;
+
 const I = PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS;
 
 /**
  * The definitions a daemon serves: the interface authority's operations,
- * without import, which no interface may call.
+ * and the import, which only its owner may call.
  */
 export const DAEMON_PIPELINE_DEFINITION_DEFINITIONS = {
   queries: PIPELINE_DEFINITION_QUERY_DEFINITIONS,
   instructions: {
+    'core.pipeline.definition.import': I['core.pipeline.definition.import'],
     'core.pipeline.definition.upsert': I['core.pipeline.definition.upsert'],
     'core.pipeline.definition.delete': I['core.pipeline.definition.delete'],
     'core.pipeline.definition.duplicate':
@@ -498,6 +511,8 @@ export function createCorePipelineDefinitionModule(
     handlers: {
       queries: handlers.queries,
       instructions: {
+        'core.pipeline.definition.import':
+          served['core.pipeline.definition.import'],
         'core.pipeline.definition.upsert':
           served['core.pipeline.definition.upsert'],
         'core.pipeline.definition.delete':

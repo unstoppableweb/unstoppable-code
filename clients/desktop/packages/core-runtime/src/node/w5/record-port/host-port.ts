@@ -21,10 +21,8 @@ import {
   type StorageWriteRefusalReason,
 } from '../../../storage';
 import {
-  freezeW5Capture,
   isW5CaptureFile,
   isW5CaptureRequest,
-  isW5CaptureResult,
   isW5CaptureWorkspaceId,
   type W5CaptureFile,
   type W5CaptureResult,
@@ -62,6 +60,7 @@ import {
   w5RecordTargetFor,
   type W5RecordPortTransport,
 } from './contract';
+import { validateW5RecordCaptureResult } from './capture-result';
 
 /*
  * The host side of the W5 record port (W6g, CAN-5498): a `W5CommitLogHostPort`
@@ -100,6 +99,8 @@ export interface W5RecordHostPortOptions {
   }) => void;
   /** Bytes each served record read decoded from its captured image. */
   readonly onRecordDecoded?: (bytes: number) => void;
+  /** Typed capture refusals, after wire reconstruction, from every capture consumer. */
+  readonly onCaptureRefused?: (error: W5CommitRefusedError) => void;
 }
 
 const CAPTURE_OPERATION = 'core.workspaceRecords.capture';
@@ -367,11 +368,21 @@ export function createW5RecordHostPort(
     try {
       result = await transport.capture(request);
     } catch (error) {
-      throw fromWire(error);
+      const refused = fromWire(error);
+      if (
+        refused instanceof W5CommitRefusedError &&
+        refused.reason === 'invalid-state' &&
+        typeof refused.details.capture === 'string'
+      ) {
+        try {
+          options.onCaptureRefused?.(refused);
+        } catch {
+          // Observing must preserve the original typed refusal.
+        }
+      }
+      throw refused;
     }
-    if (!isW5CaptureResult(result))
-      throw canopyInternalError('The W5 record port returned a bad capture.');
-    return freezeW5Capture(result);
+    return validateW5RecordCaptureResult(result);
   }
 
   const reader = createW5RecordBatchingReader({

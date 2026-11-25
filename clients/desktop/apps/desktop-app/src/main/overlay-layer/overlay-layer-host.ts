@@ -1,6 +1,5 @@
 import {
   WebContentsView,
-  webContents,
   type BrowserWindow,
   type HandlerDetails,
   type WebContents,
@@ -8,6 +7,7 @@ import {
 import { parseOverlayLayerFrameName } from '@canopy/desktop-shared/lib/overlay-layer';
 import type {
   OverlayLayerFocusRequest,
+  OverlayLayerFollow,
   OverlayLayerRect,
   OverlayLayerSetBoundsRequest,
   OverlayLayerSlot,
@@ -15,6 +15,7 @@ import type {
 import { attachInputGuardsToContents } from '../menu';
 import { cssRectToWindowDips, registerUiZoomContents } from '../lib/ui-zoom';
 import { openExternalGuarded } from '../lib/open-external';
+import { isElectronWebContents } from '../lib/electron-web-contents';
 import { registerIpcSurface } from '../lib/web-contents-send';
 
 const SAFE_EXTERNAL_SCHEMES = new Set(['http:', 'https:', 'mailto:']);
@@ -46,15 +47,47 @@ interface LayerRecord {
   ) => void;
   unregisterZoom: () => void;
   bounds: OverlayLayerRect | null;
+  /** How the bounds move with the window; `null` keeps them where they are. */
+  follow: OverlayLayerFollow | null;
   zoomFactor: number;
   disposed: boolean;
 }
 
-function isElectronWebContents(value: unknown): value is WebContents {
-  if (typeof value !== 'object' || value === null) return false;
-  const id: unknown = Reflect.get(value, 'id');
-  if (typeof id !== 'number' || !Number.isSafeInteger(id)) return false;
-  return webContents.fromId(id) === value;
+/** A window is still resizing this long after its last `resize` event. */
+const WINDOW_RESIZE_ACTIVE_MS = 400;
+
+interface WindowFollowState {
+  resizedAt: number;
+  /**
+   * Whether the opener's viewport was the window's content size when last
+   * seen at rest. With developer tools docked it is not, and a layer moved
+   * by the window's size would land where the page never draws it.
+   */
+  viewportTracksWindow: boolean;
+}
+
+/** Shifts each edge anchored to the window's end by how much that end moved. */
+export function followedOverlayBounds(
+  bounds: OverlayLayerRect,
+  follow: OverlayLayerFollow,
+  viewport: { width: number; height: number },
+): OverlayLayerRect {
+  const dx = viewport.width - follow.viewport.width;
+  const dy = viewport.height - follow.viewport.height;
+  if (dx === 0 && dy === 0) return bounds;
+  const { edges } = follow;
+  const left = bounds.x + (edges.left === 'end' ? dx : 0);
+  const right = bounds.x + bounds.width + (edges.right === 'end' ? dx : 0);
+  const top = bounds.y + (edges.top === 'end' ? dy : 0);
+  const bottom = bounds.y + bounds.height + (edges.bottom === 'end' ? dy : 0);
+  const x = Math.max(0, left);
+  const y = Math.max(0, top);
+  return {
+    x,
+    y,
+    width: Math.max(0, right - x),
+    height: Math.max(0, bottom - y),
+  };
 }
 
 function isAllowedOverlayNavigation(url: string): boolean {
@@ -109,6 +142,10 @@ export class OverlayLayerHost {
     Map<OverlayLayerSlot, LayerRecord>
   >();
   private readonly records = new Set<LayerRecord>();
+  private readonly followedWindows = new WeakMap<
+    BrowserWindow,
+    WindowFollowState
+  >();
   private readonly observedWindows = new WeakSet<BrowserWindow>();
   private readonly observedOpeners = new WeakSet<WebContents>();
 
@@ -194,11 +231,13 @@ export class OverlayLayerHost {
     if (!record || record.disposed) return;
 
     record.bounds = request.bounds;
+    record.follow = request.bounds === null ? null : (request.follow ?? null);
     if (request.bounds === null) {
       record.view.setVisible(false);
       return;
     }
     record.zoomFactor = opener.getZoomFactor();
+    if (record.follow) this.followWindowResize(record);
     this.fitRecord(record);
     record.view.setVisible(true);
   }
@@ -207,6 +246,9 @@ export class OverlayLayerHost {
   focus(opener: WebContents, request: OverlayLayerFocusRequest): void {
     const record = this.layersByOpener.get(opener)?.get(request.slot);
     if (!record || record.disposed) return;
+    // Focusing either page also focuses the window, which would bring the
+    // app in front of the one the person is working in.
+    if (record.window.isDestroyed() || !record.window.isFocused()) return;
 
     if (request.target === 'layer') {
       if (!record.contents.isDestroyed()) record.contents.focus();
@@ -286,6 +328,7 @@ export class OverlayLayerHost {
       },
       unregisterZoom: (): void => undefined,
       bounds: null,
+      follow: null,
       zoomFactor: opener.getZoomFactor(),
       disposed: false,
     };
@@ -307,8 +350,77 @@ export class OverlayLayerHost {
     if (record.disposed || record.bounds === null) return;
     if (record.contents.isDestroyed() || record.window.isDestroyed()) return;
     record.view.setBounds(
-      cssRectToWindowDips(record.bounds, record.zoomFactor),
+      cssRectToWindowDips(
+        this.placedBounds(record, record.bounds),
+        record.zoomFactor,
+      ),
     );
+  }
+
+  /**
+   * Where a layer sits now. The renderer measures a frame or more after the
+   * window resized, so its bounds can be for a size the window has already
+   * left; a layer pinned to a window edge is moved by how far that edge has
+   * moved since.
+   */
+  private placedBounds(
+    record: LayerRecord,
+    bounds: OverlayLayerRect,
+  ): OverlayLayerRect {
+    const follow = record.follow;
+    if (!follow) return bounds;
+    const state = this.followedWindows.get(record.window);
+    const content = record.window.getContentBounds();
+    const zoom = record.zoomFactor > 0 ? record.zoomFactor : 1;
+    const viewport = {
+      width: Math.round(content.width / zoom),
+      height: Math.round(content.height / zoom),
+    };
+    // A px of rounding apart at a fractional zoom is the same viewport.
+    const same =
+      Math.abs(viewport.width - follow.viewport.width) <= 1 &&
+      Math.abs(viewport.height - follow.viewport.height) <= 1;
+    const resizing =
+      state !== undefined &&
+      Date.now() - state.resizedAt <= WINDOW_RESIZE_ACTIVE_MS;
+    if (!resizing) {
+      if (state) state.viewportTracksWindow = same;
+      return bounds;
+    }
+    if (same || state?.viewportTracksWindow !== true) return bounds;
+    return followedOverlayBounds(bounds, follow, viewport);
+  }
+
+  /** Moves this window's pinned layers in its own `resize` event. */
+  private followWindowResize(record: LayerRecord): void {
+    const window = record.window;
+    if (window.isDestroyed() || this.followedWindows.has(window)) return;
+    const content = window.getContentBounds();
+    const zoom = record.zoomFactor > 0 ? record.zoomFactor : 1;
+    const follow = record.follow;
+    this.followedWindows.set(window, {
+      resizedAt: 0,
+      viewportTracksWindow:
+        follow !== null &&
+        Math.abs(Math.round(content.width / zoom) - follow.viewport.width) <=
+          1 &&
+        Math.abs(Math.round(content.height / zoom) - follow.viewport.height) <=
+          1,
+    });
+    window.on('resize', () => {
+      const state = this.followedWindows.get(window);
+      if (!state || window.isDestroyed()) return;
+      state.resizedAt = Date.now();
+      for (const candidate of Array.from(this.records)) {
+        if (
+          candidate.window === window &&
+          candidate.follow !== null &&
+          candidate.bounds !== null
+        ) {
+          this.fitRecord(candidate);
+        }
+      }
+    });
   }
 
   private layersForOpener(

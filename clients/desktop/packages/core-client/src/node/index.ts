@@ -9,6 +9,7 @@ export {
   CANOPY_DAEMON_CLAIM_HANDOFF_ENV,
   CANOPY_DAEMON_OWNER_HANDOFF,
   createCanopyDaemonHostLaunch,
+  waitForCanopyFileLockRetry,
   type CanopyDaemonHostLaunch,
   type CanopyDaemonHostLaunchOptions,
   type CanopyDaemonHostSupervision,

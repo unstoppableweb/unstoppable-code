@@ -174,6 +174,26 @@ export function buildInvocableMentionIndex(
   };
 }
 
+const indexByEntries = new WeakMap<
+  readonly InvocableInventoryEntry[],
+  InvocableMentionIndex
+>();
+
+/**
+ * The index for one inventory list, built once per list. Every transcript reads
+ * the same cached list, so a chat that mounts (a chat or worktree switch) reuses
+ * the index instead of sorting and compiling it again.
+ */
+export function invocableMentionIndexFor(
+  entries: readonly InvocableInventoryEntry[],
+): InvocableMentionIndex {
+  const cached = indexByEntries.get(entries);
+  if (cached) return cached;
+  const built = buildInvocableMentionIndex(entries);
+  indexByEntries.set(entries, built);
+  return built;
+}
+
 /**
  * Resolves a bare skill or command name (as a `Skill` tool call reports it)
  * to its inventory target: the supplied alias first, then `/name`, then

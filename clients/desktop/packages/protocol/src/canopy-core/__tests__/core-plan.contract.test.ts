@@ -167,13 +167,19 @@ describe('core.plan contract (CAN-4165)', () => {
   });
 
   it('attributes a write to who started it, and counts the records a list left out', () => {
-    for (const name of ['core.plan.create', 'core.plan.update'] as const) {
+    for (const name of [
+      'core.plan.create',
+      'core.plan.update',
+      'core.plan.import',
+    ] as const) {
       const { params } = CORE_PLAN_INSTRUCTION_DEFINITIONS[name];
       const write = {
         scope,
         ...(name === 'core.plan.create'
           ? { source: 'claude', content: 'x' }
-          : { planId: 'plan-1' }),
+          : name === 'core.plan.import'
+            ? { repoId: 'repo-1', path: 'plan.md' }
+            : { planId: 'plan-1' }),
       };
       expect(
         params.safeParse({ ...write, initiationSource: 'user' }).success,

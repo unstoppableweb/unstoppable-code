@@ -210,6 +210,7 @@ export function PipelineRunsSection({
           Workflow runs could not be loaded. Automation runs are still listed.
         </Notice>
       )}
+      {rowActions.actionFeedback}
       <WorkflowRunsList
         rows={rows}
         loading={feed.loading}

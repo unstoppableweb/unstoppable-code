@@ -108,7 +108,8 @@ function normalizeIds(value: unknown): string[] {
     new Set(
       value
         .map((item) => (typeof item === 'string' ? item.trim() : ''))
-        .filter((item) => /^[A-Za-z0-9_-]+$/.test(item)),
+        // A note or prompt id is a file stem, so a longer one names nothing.
+        .filter((item) => item.length <= 255 && /^[A-Za-z0-9_-]+$/.test(item)),
     ),
   )
     .sort()
@@ -301,6 +302,14 @@ function normalizeState(value: unknown): PersistedSharedContainerFileScope {
  */
 const scopeFileWriteTails = new Map<string, Promise<void>>();
 
+/** A scope write whose caller abandoned it before it took the write lock. */
+export class SharedContainerScopeWriteAbandonedError extends Error {
+  constructor() {
+    super('The scope save was abandoned before it wrote.');
+    this.name = 'SharedContainerScopeWriteAbandonedError';
+  }
+}
+
 async function withScopeFileWriteLock<T>(
   filePath: string,
   operation: () => Promise<T>,
@@ -351,7 +360,13 @@ async function readSharedContainerFileScopeFile(
   projectId: string,
   worktreeId: string,
 ): Promise<SharedContainerFileScope> {
-  const state = await readPersistedState(projectId, worktreeId);
+  return projectFileScope(await readPersistedState(projectId, worktreeId));
+}
+
+/** A persisted scope as the public read answers it; null is no stored scope. */
+function projectFileScope(
+  state: PersistedSharedContainerFileScope | null,
+): SharedContainerFileScope {
   if (!state) {
     const empty = createEmptyState();
     return {
@@ -436,32 +451,54 @@ async function pinPreferredLayout(
   projectId: string,
   worktreeId: string,
   replaceExisting: boolean,
-): Promise<boolean> {
+): Promise<{ pinned: boolean; fileScope: SharedContainerFileScope }> {
   const filePath = getWorktreeShareFileScopePath(projectId, worktreeId);
-  return withScopeFileWriteLock(filePath, async () => {
-    const state =
-      (await readPersistedState(projectId, worktreeId)) ?? createEmptyState();
-    if (!replaceExisting) {
-      if (state.preferredLayout?.enabled === false) return false;
-      if (state.preferredLayout?.snapshot) return false;
-    }
-    const snapshot = captureCurrentLayoutSnapshot(projectId, worktreeId);
-    if (!snapshot) {
-      // Nothing to capture. An existing pin stays in place; only an off scope
-      // is written, to turn it back on and not pinned.
-      if (state.preferredLayout?.enabled !== false) return false;
+  return withScopeFileWriteLock(filePath, () =>
+    pinPreferredLayoutLocked(projectId, worktreeId, filePath, replaceExisting),
+  );
+}
+
+/** The pin itself, for a caller that holds the scope file's write lock. */
+async function pinPreferredLayoutLocked(
+  projectId: string,
+  worktreeId: string,
+  filePath: string,
+  replaceExisting: boolean,
+): Promise<{ pinned: boolean; fileScope: SharedContainerFileScope }> {
+  const persisted = await readPersistedState(projectId, worktreeId);
+  const state = persisted ?? createEmptyState();
+  const unchanged = {
+    pinned: false,
+    fileScope: projectFileScope(persisted),
+  };
+  if (!replaceExisting) {
+    if (state.preferredLayout?.enabled === false) return unchanged;
+    if (state.preferredLayout?.snapshot) return unchanged;
+  }
+  const snapshot = captureCurrentLayoutSnapshot(projectId, worktreeId);
+  if (!snapshot) {
+    // Nothing to capture. An existing pin stays in place; only an off scope
+    // is written, to turn it back on and not pinned.
+    if (state.preferredLayout?.enabled !== false) return unchanged;
+    return {
+      pinned: false,
+      fileScope: projectFileScope(
+        await writePersistedState(filePath, {
+          ...state,
+          preferredLayout: undefined,
+        }),
+      ),
+    };
+  }
+  return {
+    pinned: true,
+    fileScope: projectFileScope(
       await writePersistedState(filePath, {
         ...state,
-        preferredLayout: undefined,
-      });
-      return false;
-    }
-    await writePersistedState(filePath, {
-      ...state,
-      preferredLayout: { enabled: true, snapshot },
-    });
-    return true;
-  });
+        preferredLayout: { enabled: true, snapshot },
+      }),
+    ),
+  };
 }
 
 /**
@@ -476,20 +513,9 @@ export function pinSharedContainerPreferredLayoutIfMissing(
   projectId: string,
   worktreeId: string,
 ): Promise<boolean> {
-  return pinPreferredLayout(projectId, worktreeId, false);
-}
-
-/**
- * Turns the preferred layout on and pins the publisher's current layout,
- * replacing any earlier pin. With no local layout file there is nothing to
- * capture: an earlier pin is kept, and a scope with none is left on and not
- * pinned. Returns whether it pinned.
- */
-export function pinSharedContainerPreferredLayout(
-  projectId: string,
-  worktreeId: string,
-): Promise<boolean> {
-  return pinPreferredLayout(projectId, worktreeId, true);
+  return pinPreferredLayout(projectId, worktreeId, false).then(
+    ({ pinned }) => pinned,
+  );
 }
 
 /**
@@ -497,14 +523,23 @@ export function pinSharedContainerPreferredLayout(
  * that only holds the public shape cannot destroy a pin by accident:
  * absent leaves the persisted value unchanged, `enabled: false` turns it off
  * and drops the pin, and `enabled: true` keeps an existing pin (or turns an
- * off scope back on, not pinned).
+ * off scope back on, not pinned). `pinCurrentLayout` then pins the
+ * publisher's current layout under the same lock, replacing any earlier pin;
+ * with no local layout file an earlier pin is kept. `onWritten` runs once the
+ * scope write has persisted, before the pin.
  */
 export function writeSharedContainerFileScope(
   projectId: string,
   worktreeId: string,
   scope: SharedContainerFileScope,
-): Promise<void> {
-  return writeSharedContainerFileScopeFile(projectId, worktreeId, scope);
+  options: ScopeWriteOptions = {},
+): Promise<SharedContainerFileScope> {
+  return writeSharedContainerFileScopeFile(
+    projectId,
+    worktreeId,
+    scope,
+    options,
+  );
 }
 
 /**
@@ -621,13 +656,23 @@ export async function removeSharedContainerScopeItemId(
   );
 }
 
+interface ScopeWriteOptions {
+  signal?: AbortSignal;
+  pinCurrentLayout?: boolean;
+  onWritten?: () => void;
+}
+
 async function writeSharedContainerFileScopeFile(
   projectId: string,
   worktreeId: string,
   scope: SharedContainerFileScope,
-): Promise<void> {
+  { signal, pinCurrentLayout = false, onWritten }: ScopeWriteOptions,
+): Promise<SharedContainerFileScope> {
   const filePath = getWorktreeShareFileScopePath(projectId, worktreeId);
-  await withScopeFileWriteLock(filePath, async () => {
+  return withScopeFileWriteLock(filePath, async () => {
+    // A save its caller abandoned never writes, so it cannot overwrite a
+    // newer save that took the lock first; once it writes, it finishes.
+    if (signal?.aborted) throw new SharedContainerScopeWriteAbandonedError();
     const { preferredLayout: requested, ...rest } = scope;
     // A malformed scope file is replaced by this write, as it always was,
     // which drops its pin. A file that could not be read at all is not
@@ -652,18 +697,34 @@ async function writeSharedContainerFileScopeFile(
             persisted?.preferredLayout?.enabled === false
           ? undefined
           : persisted?.preferredLayout;
-    await writePersistedState(filePath, {
-      version: 1,
-      ...rest,
-      ...(preferredLayout ? { preferredLayout } : {}),
-    });
+    // Answered from what this write and its pin persisted, under one lock,
+    // so a save that commits next cannot change this one's answer or undo it.
+    const written = projectFileScope(
+      await writePersistedState(
+        filePath,
+        {
+          version: 1,
+          ...rest,
+          ...(preferredLayout ? { preferredLayout } : {}),
+        },
+        signal,
+      ),
+    );
+    onWritten?.();
+    if (!pinCurrentLayout) return written;
+    return (
+      await pinPreferredLayoutLocked(projectId, worktreeId, filePath, true)
+    ).fileScope;
   });
 }
 
+// A save abandoned before its atomic rename or removal writes nothing; the
+// pins, which follow a committed write, pass no signal.
 async function writePersistedState(
   filePath: string,
   state: unknown,
-): Promise<void> {
+  signal?: AbortSignal,
+): Promise<PersistedSharedContainerFileScope | null> {
   const normalized = normalizeState(state);
   if (
     normalized.includedPaths.length === 0 &&
@@ -677,8 +738,9 @@ async function writePersistedState(
     // the next publish pin a different layout, or turn the layout back on.
     normalized.preferredLayout === undefined
   ) {
+    if (signal?.aborted) throw new SharedContainerScopeWriteAbandonedError();
     await rm(filePath, { force: true });
-    return;
+    return null;
   }
   await mkdir(dirname(filePath), { recursive: true });
   // Renamed into place: the file can hold a whole layout snapshot, and the
@@ -687,9 +749,11 @@ async function writePersistedState(
   const temporary = `${filePath}.${randomUUID()}.tmp`;
   try {
     await writeFile(temporary, JSON.stringify(normalized, null, 2), 'utf8');
+    if (signal?.aborted) throw new SharedContainerScopeWriteAbandonedError();
     await rename(temporary, filePath);
   } catch (error) {
     await rm(temporary, { force: true }).catch(() => undefined);
     throw error;
   }
+  return normalized;
 }

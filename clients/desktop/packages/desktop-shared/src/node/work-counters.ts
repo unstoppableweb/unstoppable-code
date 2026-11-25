@@ -341,6 +341,43 @@ export function recordStaleWork(key: string, delta = 1): void {
   counters.stale.add(key, delta);
 }
 
+/** A `worker.script.execution` read Electron main routes (CAN-7663). */
+export type ScriptReadRouteOperation = 'get' | 'list' | 'groupMembers';
+
+/**
+ * Where one routed script run read ran, counted once per read (CAN-7663):
+ * `daemon.served` when the daemon answered, `daemon.refused` when a reached
+ * daemon refused it, `daemon.fallback` when an unreachable daemon left it to
+ * Electron main, and `direct` when the host or scope never selects the daemon.
+ */
+export function recordScriptReadRoute(
+  operation: ScriptReadRouteOperation,
+  outcome: 'daemon.served' | 'daemon.refused' | 'daemon.fallback' | 'direct',
+): void {
+  counters.route.add(`scripts.${operation}.${outcome}`, 1);
+}
+
+/** Electron main's agent code-graph reads the daemon route observes (CAN-5093). */
+export type CodeGraphReadRouteOperation = 'status' | 'languages';
+
+/**
+ * Where one agent code-graph read ran, counted once per read: `daemon.served`
+ * when the daemon answered, `daemon.refused` for a refusal from a reached
+ * daemon, `daemon.fallback` when it couldn't be reached and the read ran in
+ * process, or `in_process.<reason>` when the route excluded the read.
+ */
+export function recordCodeGraphReadRoute(
+  operation: CodeGraphReadRouteOperation,
+  outcome:
+    | 'daemon.served'
+    | 'daemon.refused'
+    | 'daemon.fallback'
+    | 'daemon.not_dispatched'
+    | `in_process.${'platform' | 'latched' | 'workspace' | 'unavailable'}`,
+): void {
+  counters.route.add(`codeGraph.${operation}.${outcome}`, 1);
+}
+
 /** The W5 work an IPC handler's caller is charged with (CAN-6944). */
 type W5CallerWork = 'capture' | 'storeRead';
 

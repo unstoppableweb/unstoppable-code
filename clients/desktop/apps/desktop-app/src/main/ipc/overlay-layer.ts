@@ -2,6 +2,8 @@ import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import {
   IPC_CHANNELS,
   type OverlayLayerFocusRequest,
+  type OverlayLayerEdgeAnchor,
+  type OverlayLayerFollow,
   type OverlayLayerSetBoundsRequest,
 } from '@canopy/desktop-shared/types';
 import { isOverlayLayerSlot } from '@canopy/desktop-shared/lib/overlay-layer';
@@ -44,8 +46,48 @@ function isFiniteNonNegative(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
+function isEdgeAnchor(value: unknown): value is OverlayLayerEdgeAnchor {
+  return value === 'start' || value === 'end';
+}
+
+function parseFollow(follow: unknown): OverlayLayerFollow {
+  if (!isPlainObject(follow) || !hasExactlyKeys(follow, ['viewport', 'edges']))
+    throw new Error(INVALID_REQUEST);
+  const { viewport, edges } = follow;
+  if (
+    !isPlainObject(viewport) ||
+    !hasExactlyKeys(viewport, ['width', 'height']) ||
+    !isFiniteNonNegative(viewport.width) ||
+    !isFiniteNonNegative(viewport.height)
+  )
+    throw new Error(INVALID_REQUEST);
+  if (
+    !isPlainObject(edges) ||
+    !hasExactlyKeys(edges, ['left', 'right', 'top', 'bottom'])
+  )
+    throw new Error(INVALID_REQUEST);
+  const { left, right, top, bottom } = edges;
+  if (
+    !isEdgeAnchor(left) ||
+    !isEdgeAnchor(right) ||
+    !isEdgeAnchor(top) ||
+    !isEdgeAnchor(bottom)
+  )
+    throw new Error(INVALID_REQUEST);
+  return {
+    viewport: { width: viewport.width, height: viewport.height },
+    edges: { left, right, top, bottom },
+  };
+}
+
 function parseSetBoundsRequest(request: unknown): OverlayLayerSetBoundsRequest {
-  if (!isPlainObject(request) || !hasExactlyKeys(request, ['slot', 'bounds']))
+  if (
+    !isPlainObject(request) ||
+    !(
+      hasExactlyKeys(request, ['slot', 'bounds']) ||
+      hasExactlyKeys(request, ['slot', 'bounds', 'follow'])
+    )
+  )
     throw new Error(INVALID_REQUEST);
 
   const slot = request.slot;
@@ -68,7 +110,13 @@ function parseSetBoundsRequest(request: unknown): OverlayLayerSetBoundsRequest {
   )
     throw new Error(INVALID_REQUEST);
 
-  return { slot, bounds: { x, y, width, height } };
+  return {
+    slot,
+    bounds: { x, y, width, height },
+    ...(request.follow === undefined
+      ? {}
+      : { follow: parseFollow(request.follow) }),
+  };
 }
 
 function parseFocusRequest(request: unknown): OverlayLayerFocusRequest {

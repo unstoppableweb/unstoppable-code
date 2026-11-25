@@ -74,6 +74,44 @@ function scheduleWidthSave(width: number): void {
   }, WIDTH_SAVE_DEBOUNCE_MS);
 }
 
+/**
+ * Past the sidebar's 200 ms collapse animation. Saving at once made main
+ * broadcast the new preferences about 40 ms into the animation, and that
+ * broadcast re-renders much of the app while the sidebar is still moving.
+ */
+const HIDDEN_SAVE_DELAY_MS = 300;
+let hiddenSaveTimer: ReturnType<typeof setTimeout> | null = null;
+/** The hidden state chosen here and not saved yet; `null` once it is. */
+let unsavedHidden: boolean | null = null;
+
+function scheduleHiddenSave(hidden: boolean): void {
+  unsavedHidden = hidden;
+  if (hiddenSaveTimer !== null) {
+    clearTimeout(hiddenSaveTimer);
+  }
+  hiddenSaveTimer = setTimeout(() => {
+    hiddenSaveTimer = null;
+    unsavedHidden = null;
+    persistPreferences({ sidebarCollapsed: hidden });
+  }, HIDDEN_SAVE_DELAY_MS);
+}
+
+/**
+ * Every preference broadcast carries a new layout object, and any preference
+ * saving (a worktree switch saves one) re-rendered the whole sidebar for it.
+ * Keeps the object the store already holds when nothing in it changed.
+ */
+function keepSameNavLayout(
+  current: SidebarNavLayout,
+  next: SidebarNavLayout,
+): SidebarNavLayout {
+  return current.moreStartIndex === next.moreStartIndex &&
+    current.order.length === next.order.length &&
+    current.order.every((key, index) => key === next.order[index])
+    ? current
+    : next;
+}
+
 interface SidebarStore {
   /** True when the unified sidebar is fully hidden. */
   hidden: boolean;
@@ -226,25 +264,29 @@ export const useSidebarStore = create<SidebarStore>((set, get) => ({
     // refresh the persisted mirror; otherwise `hidden` follows the broadcast.
     const { hidden, persistedHidden, previewing } = get();
     const transientOverrideActive = hidden !== persistedHidden;
-    const nextHidden = transientOverrideActive
-      ? hidden
-      : prefs.sidebarCollapsed;
+    // A broadcast that lands before this window's own choice is saved (any
+    // other preference changing meanwhile) still carries the old value.
+    const savedHidden = unsavedHidden ?? prefs.sidebarCollapsed;
+    const nextHidden = transientOverrideActive ? hidden : savedHidden;
     set({
       hidden: nextHidden,
-      persistedHidden: prefs.sidebarCollapsed,
+      persistedHidden: savedHidden,
       previewing: nextHidden ? previewing : false,
       width: clampWidth(prefs.sidebarWidth),
       codeSectionCollapsed: prefs.sidebarCodeSectionCollapsed,
       chatsSectionCollapsed: prefs.sidebarCoworkSectionCollapsed,
       orchestratorCollapsed: prefs.sidebarOrchestratorCollapsed,
-      sidebarNavLayout: reconcileSidebarNavLayout(prefs.sidebarNavLayout),
+      sidebarNavLayout: keepSameNavLayout(
+        get().sidebarNavLayout,
+        reconcileSidebarNavLayout(prefs.sidebarNavLayout),
+      ),
       projectSortMode: resolveSidebarSortMode(prefs.sidebarProjectSortMode),
     });
   },
 
   setHidden: (hidden): void => {
     set({ hidden, persistedHidden: hidden, previewing: false });
-    persistPreferences({ sidebarCollapsed: hidden });
+    scheduleHiddenSave(hidden);
   },
 
   toggleHidden: (): void => {

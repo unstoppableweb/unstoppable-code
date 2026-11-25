@@ -23,6 +23,7 @@ import {
   worktreesSelfWritesStarted,
 } from './workspace-persistence';
 import { sendToWindow } from './window-send';
+import { markDesktopW5ReadCacheDirty } from '../canopy-runtime/w5-cached-workspace-services';
 
 interface WorktreesFileWatcherEntry {
   watcher: WorktreeWatch | null;
@@ -104,13 +105,16 @@ function scheduleChange(
       const writesStarted = worktreesSelfWritesStarted(workspaceId);
       const content = await readContent(entry, workspaceId, true);
       if (worktreesFileWatchers.get(workspaceId) !== entry) return;
-      if (content !== null) entry.lastContent = content;
+      entry.lastContent = content;
       if (worktreesSelfWritesStarted(workspaceId) !== writesStarted) {
         scheduleChange(workspaceId, getWindow, onExternalSnapshot);
         return;
       }
       if (content !== null && isWorktreesSelfWriteContent(workspaceId, content))
         return;
+      // Even malformed or missing files invalidate before reconciliation or
+      // the renderer reload can read the old cached rows.
+      markDesktopW5ReadCacheDirty([{ kind: 'worktrees', workspaceId }]);
       recordObservedWorktreesContent(workspaceId, content);
       if (content !== null) {
         const worktrees = parseWorktreesFileReconciliationSnapshot(content);
@@ -152,14 +156,14 @@ function startWatcher(
       },
       poll: async () => {
         const content = await readContent(entry, workspaceId);
-        if (
-          worktreesFileWatchers.get(workspaceId) !== entry ||
-          content === null
-        )
-          return;
+        if (worktreesFileWatchers.get(workspaceId) !== entry) return;
         if (content === entry.lastContent) return;
         entry.lastContent = content;
-        if (isWorktreesSelfWriteContent(workspaceId, content)) return;
+        if (
+          content !== null &&
+          isWorktreesSelfWriteContent(workspaceId, content)
+        )
+          return;
         scheduleChange(workspaceId, getWindow, onExternalSnapshot);
       },
       onFatal: () => {

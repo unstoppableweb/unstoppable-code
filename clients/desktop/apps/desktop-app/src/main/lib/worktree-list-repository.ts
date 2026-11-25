@@ -6,6 +6,8 @@ import {
 } from '@canopy/core-runtime/node/w5/worktree-list-repository';
 import type { WorktreeData } from '@canopy/desktop-shared/types';
 import { afterW5Apply } from './w5-commit-scope';
+import { createW5ImageReadCache } from './w5-read-view';
+import { w5RecordReadPaths } from './paths';
 import {
   forgetWorktreeDiscovery,
   storeWorktreeDiscovery,
@@ -37,12 +39,17 @@ export function withWorktreeDiscovery(
   list: CoreWorktreeListRepository<WorktreeData>,
   discoveryFilePath: WorktreeDiscoveryPath,
 ): WorktreeListRepository {
+  const cachedRead = createW5ImageReadCache<WorktreeListRead>();
+  const readCommitted = (workspaceId: string): Promise<WorktreeListRead> =>
+    cachedRead(w5RecordReadPaths.worktrees(workspaceId), () =>
+      list.read(workspaceId),
+    );
   const ids = (read: WorktreeListRead): string[] =>
     read.authority === 'ok' ? read.worktrees.map((row) => row.id) : [];
   return {
-    readCommitted: (workspaceId) => list.read(workspaceId),
+    readCommitted,
     async read(workspaceId): Promise<WorktreeListRead> {
-      const read = await list.read(workspaceId);
+      const read = await readCommitted(workspaceId);
       return read.authority === 'ok'
         ? {
             ...read,

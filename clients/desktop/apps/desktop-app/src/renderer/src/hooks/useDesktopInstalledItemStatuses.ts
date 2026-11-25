@@ -25,7 +25,10 @@ function desktopInstalledItemSource(): InstalledItemStatusSource | null {
     // keeps as the outcome's `cause`, so the removal confirmation does not
     // record it again.
     uninstall: (request) => withIpcErrorMessage(() => api.uninstall(request)),
-    subscribe: (onChange) => {
+    subscribe: (refresh) => {
+      const onChange = (): void => {
+        void refresh();
+      };
       const unsubscribe = api.onChanged(onChange);
       const unsubscribePreferences =
         window.api?.onPreferencesChanged?.(onChange);

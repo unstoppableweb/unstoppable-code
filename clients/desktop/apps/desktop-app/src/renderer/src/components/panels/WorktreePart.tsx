@@ -53,6 +53,13 @@ export interface WorktreePartProps {
   viewModeReady: boolean;
   /** Whether the page-level worktree surface is actually on screen. */
   visible?: boolean;
+  /**
+   * Whether the page this part belongs to is the one showing. The part stays
+   * mounted under other pages; its Home empty state mounts only while its
+   * own page shows. Unlike `visible`, an overlay over the page (Settings, an
+   * archive view) leaves this on, so the draft composer under it stays put.
+   */
+  pageShown?: boolean;
   /** Opens the workspace settings modal (threaded to the activity panel). */
   onOpenSettingsTab?: (tab: 'scripts' | 'hooks') => void;
 }
@@ -63,6 +70,7 @@ export function WorktreePart({
   viewMode,
   viewModeReady,
   visible = true,
+  pageShown = true,
   onOpenSettingsTab,
 }: WorktreePartProps): JSX.Element {
   // The one script-shortcut dispatcher and pin source for the selected
@@ -102,14 +110,22 @@ export function WorktreePart({
     return (
       <section
         data-testid="worktree-part"
+        data-view-mode={viewMode}
         className="relative flex min-h-55 min-w-0 flex-1 flex-col overflow-hidden"
       >
         {needsPageTitlebarDragRegion(localPlatform()) && (
           <div className="electron-drag absolute inset-x-0 top-0 h-10" />
         )}
-        <Suspense fallback={null}>
-          <HomeSurface variant="embedded" />
-        </Suspense>
+        {/* Selecting a Cowork entry clears the worktree selection while
+            another page shows. Mounting Home here then, unseen, rendered a
+            whole composer on every such switch and re-rendered it as its
+            data arrived. Its draft lives in the Home composer store, so it
+            is the same draft when this page shows again. */}
+        {pageShown && (
+          <Suspense fallback={null}>
+            <HomeSurface variant="embedded" />
+          </Suspense>
+        )}
         <PanelContentRoot worktreeKey={null} hostState={hostState} />
         {auxWindowHosts}
       </section>
@@ -119,6 +135,7 @@ export function WorktreePart({
   return (
     <Surface
       data-testid="worktree-part"
+      data-view-mode={viewMode}
       as="section"
       variant="workspace-panel"
       className="relative flex min-w-0 flex-1 flex-col overflow-hidden"

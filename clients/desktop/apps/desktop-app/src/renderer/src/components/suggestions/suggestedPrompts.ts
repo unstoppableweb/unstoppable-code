@@ -86,6 +86,50 @@ export function starterPromptsAsSuggestions(
   }));
 }
 
+/**
+ * The prompts {@link pickSuggestedPrompts} tops up from: the project's own
+ * starter prompts, else a seeding Blueprint's, else the surface's generic
+ * pool. `undefined`/`null` means "never set"; an explicit `[]` is a
+ * deliberate "show no starters".
+ */
+function topUpPool(
+  surface: GenericPromptSurface,
+  starterPrompts: readonly WorkspaceTemplateStarterPrompt[] | null | undefined,
+  seedingBlueprintStarterPrompts:
+    | readonly WorkspaceTemplateStarterPrompt[]
+    | null
+    | undefined,
+): readonly SuggestedPrompt[] {
+  if (starterPrompts !== undefined && starterPrompts !== null) {
+    return starterPromptsAsSuggestions(starterPrompts);
+  }
+  if (
+    seedingBlueprintStarterPrompts !== undefined &&
+    seedingBlueprintStarterPrompts !== null
+  ) {
+    return starterPromptsAsSuggestions(seedingBlueprintStarterPrompts);
+  }
+  return GENERIC_FALLBACK_PROMPTS[surface];
+}
+
+/**
+ * How many prompts a pick holds at least, whatever the MCP inventory turns
+ * out to be: the top-up pool alone fills this many. Known before the
+ * inventory is, so an empty state can keep their room from its first frame.
+ */
+export function minimumSuggestedPromptCount(
+  surface: GenericPromptSurface,
+  starterPrompts?: readonly WorkspaceTemplateStarterPrompt[] | null,
+  seedingBlueprintStarterPrompts?:
+    | readonly WorkspaceTemplateStarterPrompt[]
+    | null,
+): number {
+  return Math.min(
+    MAX_SUGGESTED_PROMPTS,
+    topUpPool(surface, starterPrompts, seedingBlueprintStarterPrompts).length,
+  );
+}
+
 function shuffled<T>(items: readonly T[], random: () => number): T[] {
   const result = [...items];
   for (let i = result.length - 1; i > 0; i -= 1) {
@@ -149,16 +193,11 @@ export function pickSuggestedPrompts(
   // `undefined`/`null` (never edited, never seeded) falls back to the generic
   // pool; an explicit `[]` is a deliberate "show no starters" and must NOT
   // collapse into the fallback.
-  const projectOwnsStarters =
-    starterPrompts !== undefined && starterPrompts !== null;
-  const blueprintOwnsStarters =
-    seedingBlueprintStarterPrompts !== undefined &&
-    seedingBlueprintStarterPrompts !== null;
-  const topUp = projectOwnsStarters
-    ? starterPromptsAsSuggestions(starterPrompts)
-    : blueprintOwnsStarters
-      ? starterPromptsAsSuggestions(seedingBlueprintStarterPrompts)
-      : GENERIC_FALLBACK_PROMPTS[surface];
+  const topUp = topUpPool(
+    surface,
+    starterPrompts,
+    seedingBlueprintStarterPrompts,
+  );
   for (const prompt of shuffled(topUp, random)) {
     if (picked.length >= MAX_SUGGESTED_PROMPTS) break;
     picked.push(prompt);

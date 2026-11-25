@@ -53,6 +53,7 @@
 //     brandDisplayName: 'Canopy',
 //     cloudGatewayKeys: { '<organizationId>': 'none' | 'saved' | ... },
 //                                  // cloud chat key statuses; absent: 404
+//     personalUseInCloudChats: true, // false: cloud chats don't use it
 //     operationErrors: { '<operation>': { status, body? } },
 //     operationDelaysMs: { '<operation>': ms },
 //     feed: {
@@ -312,6 +313,7 @@ function initialState(config, scenario) {
       maxConcurrent: config.delegation?.maxConcurrent ?? 5,
     },
     personalGateway: clone(config.personalGateway ?? null),
+    personalUseInCloudChats: config.personalUseInCloudChats !== false,
     cloudGatewayKeys: clone(config.cloudGatewayKeys ?? null),
     gatewayRevision: 0,
     viewer,
@@ -691,7 +693,10 @@ const OPERATION_ROUTES = [
     handle(ctx) {
       if (!ctx.state.aiGatewayEnabled)
         return respond(ctx, 404, { error: 'Not found' });
-      respond(ctx, 200, { gateway: clone(ctx.state.personalGateway) });
+      respond(ctx, 200, {
+        gateway: clone(ctx.state.personalGateway),
+        useInCloudChats: ctx.state.personalUseInCloudChats !== false,
+      });
     },
   },
   {
@@ -725,8 +730,12 @@ const OPERATION_ROUTES = [
       if (!ctx.state.aiGatewayEnabled)
         return respond(ctx, 404, { error: 'Not found' });
       const cloud = getScenario(ctx.key).cloud;
-      const { expectedOrganizationId, expectedRevision, ...patch } =
-        ctx.body ?? {};
+      const {
+        expectedOrganizationId,
+        expectedRevision,
+        useInCloudChats,
+        ...patch
+      } = ctx.body ?? {};
       if (expectedOrganizationId !== cloud?.personalOrganizationId)
         return respond(ctx, 409, {
           code: 'stale_scope',
@@ -752,6 +761,14 @@ const OPERATION_ROUTES = [
       };
       if (gateway.enabled && (!gateway.baseUrl || gateway.models.length === 0))
         return respond(ctx, 400, { error: 'Add a URL and model' });
+      // As the hosted service: the cloud chats choice sits beside the
+      // gateway, and "Use only my AI gateway" keeps it on (CAN-7657).
+      if (gateway.onlyThisGateway && useInCloudChats === false)
+        return respond(ctx, 400, { error: 'AI gateway update is invalid.' });
+      ctx.state.personalUseInCloudChats =
+        gateway.onlyThisGateway ||
+        gateway.baseUrl === null ||
+        (useInCloudChats ?? ctx.state.personalUseInCloudChats !== false);
       gateway.revision = `gateway-${++ctx.state.gatewayRevision}`;
       ctx.state.personalGateway = gateway;
       if (gateway.enabled)
@@ -765,7 +782,15 @@ const OPERATION_ROUTES = [
           ...(gateway.displayName ? { displayName: gateway.displayName } : {}),
         };
       else delete cloud.personalModelGateway;
-      respond(ctx, 200, { gateway: clone(gateway) });
+      cloud.personalModelGatewayConfig = {
+        organizationId: gateway.organizationId,
+        enabled: gateway.baseUrl !== null && gateway.enabled,
+        baseUrl: gateway.baseUrl,
+      };
+      respond(ctx, 200, {
+        gateway: clone(gateway),
+        useInCloudChats: ctx.state.personalUseInCloudChats,
+      });
     },
   },
   {

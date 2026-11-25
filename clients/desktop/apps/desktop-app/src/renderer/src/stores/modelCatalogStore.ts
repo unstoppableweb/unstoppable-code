@@ -42,6 +42,7 @@ import { getSidebarScopingContext } from '@/components/sidebar/useSidebarScoping
 import { findOrganizationName } from '@/lib/organizationName';
 import { replaceModelFamilyMetadata } from '@canopy/desktop-shared/model-config';
 import { useChatStore } from './chatStore';
+import type { WorktreeChatState } from './chat/types';
 import { useAppAdvisorStore } from './appAdvisorStore';
 import { useFeatureFlagsStore } from './featureFlagsStore';
 import { useWorkspaceContextStore } from './workspaceContextStore';
@@ -358,6 +359,31 @@ let isTabInOwnerScope: (
 let policyRefreshSeq = 0;
 
 /** The gateway part of a registry snapshot, to tell whether it changed. */
+/**
+ * Whether a worktree now holds a tab it did not, as when its tabs finish
+ * loading. Runs on every chat store update, so it compares in place.
+ */
+function gainedChatTabs(
+  next: Record<string, WorktreeChatState>,
+  previous: Record<string, WorktreeChatState>,
+): boolean {
+  for (const key in next) {
+    const chat = next[key];
+    const before = previous[key];
+    if (!chat || chat === before || chat.tabs === before?.tabs) continue;
+    if (!before) {
+      if (chat.tabs.length > 0) return true;
+      continue;
+    }
+    // One in-order pass; a reorder only replays an idempotent reconcile.
+    if (chat.tabs.length > before.tabs.length) return true;
+    for (let index = 0; index < chat.tabs.length; index += 1) {
+      if (chat.tabs[index]?.id !== before.tabs[index]?.id) return true;
+    }
+  }
+  return false;
+}
+
 function gatewaySignature(snapshot: ModelRegistrySnapshot | null): string {
   return JSON.stringify([
     snapshot?.aiGatewayModels ?? [],
@@ -761,12 +787,20 @@ export const useModelCatalogStore = create<ModelCatalogState>((set, get) => ({
     const unsubDeviceGateway = window.api.localModelGateway.onChanged(() => {
       void get().refreshPolicy();
     });
+    // A worktree's tabs often load after the catalog settled; they meet the
+    // registry when they arrive, not at the next catalog change.
+    const unsubLoadedChats = useChatStore.subscribe((state, previous) => {
+      if (state.worktreeChats === previous.worktreeChats) return;
+      if (gainedChatTabs(state.worktreeChats, previous.worktreeChats))
+        state.reconcileLoadedTabsWithModelRegistry();
+    });
     return (): void => {
       unsubContext();
       unsubFlags();
       unsubRegistry();
       unsubPolicy();
       unsubDeviceGateway();
+      unsubLoadedChats();
     };
   },
 

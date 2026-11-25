@@ -88,6 +88,18 @@ function type(
   });
 }
 
+/** Pastes `text` into `element`; returns whether the default was prevented. */
+function paste(element: HTMLElement, text: string): boolean {
+  const event = new Event('paste', { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'clipboardData', {
+    value: { getData: (): string => text },
+  });
+  act(() => {
+    element.dispatchEvent(event);
+  });
+  return event.defaultPrevented;
+}
+
 function pageTextWithoutFields(): string {
   return document.body.textContent ?? '';
 }
@@ -123,12 +135,12 @@ describe('SecretRequestPrompt', () => {
     expect(pageTextWithoutFields()).toContain('STRIPE_SECRET_KEY');
     expect(pageTextWithoutFields()).toContain('Optional');
     expect(harness.byTestId('chat-secret-request-footer').textContent).toBe(
-      'Hidden from the agent. It can use the value in commands; output is redacted.',
+      'Hidden from the agent and command output.',
     );
-    // A held name defaults to the chat's value, so it has no field.
-    expect(
-      harness.queryTestId('chat-secret-request-input-DATABASE_URL'),
-    ).toBeNull();
+    // A held name's field starts empty and reuses the chat's value; the
+    // value itself never reaches the form.
+    expect(input('DATABASE_URL').value).toBe('');
+    expect(input('DATABASE_URL').placeholder).toBe('Using your saved value');
     // One required field is empty; the held one counts.
     expect(harness.byTestId('chat-secret-request-provide').textContent).toBe(
       'Provide',
@@ -162,9 +174,7 @@ describe('SecretRequestPrompt', () => {
     expect(
       harness.byTestId('chat-secret-request-field-STRIPE_SECRET_KEY-error')
         .textContent,
-    ).toBe(
-      "This doesn't look like the value asked for. It usually starts with sk_test_. Never enter an account sign-in password here.",
-    );
+    ).toBe('These values usually start with sk_test_.');
     type(input('SENTRY_DSN'), SHORT);
     expect(pageTextWithoutFields()).toContain(
       'Short values may not be redacted',
@@ -215,7 +225,7 @@ describe('SecretRequestPrompt', () => {
     );
     expect(pageTextWithoutFields()).toContain('Codex needs a secret');
     expect(harness.byTestId('chat-secret-request-footer').textContent).toBe(
-      "Available to the agent's commands. The agent could print it, so redaction is best effort.",
+      "In Full access, the agent's commands can print this value.",
     );
     expect(
       harness.queryTestId('chat-secret-request-session-storage'),
@@ -228,33 +238,38 @@ describe('SecretRequestPrompt', () => {
 
   it('clears values on Decline and fills fields from pasted .env text', () => {
     render();
-    harness.click(harness.byTestId('chat-secret-request-paste-toggle'));
-    const paste = harness.byTestId('chat-secret-request-paste');
-    if (!(paste instanceof HTMLTextAreaElement)) throw new Error('no textarea');
-    type(paste, `STRIPE_SECRET_KEY="sk_test_${CANARY}"\nUNKNOWN=${CANARY}`);
-    harness.click(harness.byTestId('chat-secret-request-paste-apply'));
+    paste(
+      input('SENTRY_DSN'),
+      `STRIPE_SECRET_KEY="sk_test_${CANARY}"\nUNKNOWN=${CANARY}`,
+    );
     expect(input('STRIPE_SECRET_KEY').value).toBe(`sk_test_${CANARY}`);
-    expect(pageTextWithoutFields()).toContain('Filled 1 of 3.');
+    expect(input('SENTRY_DSN').value).toBe('');
+    expect(pageTextWithoutFields()).toContain(
+      'Filled 1 of 3 fields from the pasted text.',
+    );
     harness.click(harness.byTestId('chat-secret-request-decline'));
     expect(declined).toBe(1);
     expect(fieldValues().some((value) => value.includes(CANARY))).toBe(false);
   });
 
-  it('clears unapplied pasted text when the form submits', () => {
+  it('never takes a pasted .env as one value, and pastes plain values as usual', () => {
     render();
-    harness.click(harness.byTestId('chat-secret-request-paste-toggle'));
-    const paste = harness.byTestId('chat-secret-request-paste');
-    if (!(paste instanceof HTMLTextAreaElement)) throw new Error('no textarea');
-    type(paste, `OTHER_KEY=${CANARY}`);
-    type(input('STRIPE_SECRET_KEY'), 'sk_test_fake_value');
+    // A whole .env pasted into one field fills only requested names; the
+    // rest of the file, other secrets included, goes nowhere.
+    expect(
+      paste(
+        input('STRIPE_SECRET_KEY'),
+        `OTHER_KEY=${CANARY}\nSTRIPE_SECRET_KEY=sk_test_fake_value`,
+      ),
+    ).toBe(true);
+    expect(fieldValues().some((value) => value.includes(CANARY))).toBe(false);
+    expect(input('STRIPE_SECRET_KEY').value).toBe('sk_test_fake_value');
+    expect(paste(input('SENTRY_DSN'), 'https://plain@sentry.example/1')).toBe(
+      false,
+    );
     harness.click(harness.byTestId('chat-secret-request-provide'));
     expect(submitted).toHaveLength(1);
-    expect(fieldValues().some((value) => value.includes(CANARY))).toBe(false);
-    harness.click(harness.byTestId('chat-secret-request-paste-toggle'));
-    const reopened = harness.byTestId('chat-secret-request-paste');
-    if (!(reopened instanceof HTMLTextAreaElement))
-      throw new Error('no textarea');
-    expect(reopened.value).toBe('');
+    expect(JSON.stringify(submitted)).not.toContain(CANARY);
   });
 
   it('locks while sending or disconnected and explains a failed send', () => {
@@ -271,12 +286,59 @@ describe('SecretRequestPrompt', () => {
     render({ errorKind: null, disconnected: true });
     expect(
       harness.byTestId('chat-secret-request-notice').textContent,
-    ).toContain('Reconnect to provide secrets.');
+    ).toContain('Reconnect to continue.');
+  });
+
+  // A request that ended or was already answered can't take any answer: the
+  // form locks with a neutral notice, never the red "enter them again".
+  it.each([
+    ['ended', 'This request has ended. Nothing was sent.'],
+    ['answered', 'This request was already answered. Nothing was sent.'],
+  ] as const)(
+    'locks a request that %s, whatever the refusal said',
+    (settled, notice) => {
+      render({
+        errorKind: 'submit',
+        errorMessage: 'This request is no longer waiting.',
+        settled,
+      });
+      const shown = harness.byTestId('chat-secret-request-notice');
+      expect(shown.textContent).toBe(notice);
+      expect(shown.getAttribute('role')).not.toBe('alert');
+      expect(input('STRIPE_SECRET_KEY').disabled).toBe(true);
+      harness.click(harness.byTestId('chat-secret-request-provide'));
+      harness.click(harness.byTestId('chat-secret-request-decline'));
+      expect(submitted).toEqual([]);
+      expect(declined).toBe(0);
+    },
+  );
+
+  it('reuses a saved value until something other than spaces replaces it', () => {
+    render();
+    type(input('STRIPE_SECRET_KEY'), `sk_test_${CANARY}`);
+    type(input('DATABASE_URL'), '   ');
+    harness.click(harness.byTestId('chat-secret-request-provide'));
+    expect(submitted).toEqual([
+      {
+        values: { STRIPE_SECRET_KEY: `sk_test_${CANARY}` },
+        useHeld: ['DATABASE_URL'],
+      },
+    ]);
+    type(input('STRIPE_SECRET_KEY'), `sk_test_${CANARY}`);
+    type(input('DATABASE_URL'), 'postgres://replaced');
+    harness.click(harness.byTestId('chat-secret-request-provide'));
+    expect(submitted[1]).toEqual({
+      values: {
+        STRIPE_SECRET_KEY: `sk_test_${CANARY}`,
+        DATABASE_URL: 'postgres://replaced',
+      },
+      useHeld: [],
+    });
   });
 
   // U7: a paired browser or phone never queues values for an offline
   // computer, so the form locks and says why.
-  it('locks while the paired computer is offline and says values are never queued', () => {
+  it('locks while the paired computer is offline and says values go only to it', () => {
     render({ computerOffline: true });
     expect(input('STRIPE_SECRET_KEY').disabled).toBe(true);
     expect(input('STRIPE_SECRET_KEY').placeholder).toBe(
@@ -285,37 +347,23 @@ describe('SecretRequestPrompt', () => {
     expect(
       harness.byTestId('chat-secret-request-notice').textContent,
     ).toContain(
-      "Your computer is offline. Secrets go straight to it and are never queued, so you can provide them once it's back online.",
+      "Your computer is offline. Secrets go straight to it, so provide them once it's back online.",
     );
     harness.click(harness.byTestId('chat-secret-request-provide'));
     expect(submitted).toEqual([]);
   });
 
-  it('locking forgets what was revealed and the Paste .env text, also after it unlocks', () => {
+  it('locking forgets what was revealed, also after it unlocks', () => {
     render({});
-    harness.click(harness.byTestId('chat-secret-request-paste-toggle'));
-    const paste = harness.byTestId('chat-secret-request-paste');
-    if (!(paste instanceof HTMLTextAreaElement)) throw new Error('no paste');
-    type(paste, `STRIPE_SECRET_KEY=${'sk_test_canary'}`);
     harness.click(
       harness.byTestId('chat-secret-request-toggle-STRIPE_SECRET_KEY'),
     );
     expect(input('STRIPE_SECRET_KEY').type).toBe('text');
     render({ computerOffline: true });
     expect(input('STRIPE_SECRET_KEY').type).toBe('password');
-    expect(
-      document.querySelector('[data-testid="chat-secret-request-paste"]'),
-    ).toBeNull();
-    // Back online: nothing shows in the clear until revealed or pasted again.
+    // Back online: nothing shows in the clear until revealed again.
     render({ computerOffline: false });
     expect(input('STRIPE_SECRET_KEY').type).toBe('password');
-    expect(
-      document.querySelector('[data-testid="chat-secret-request-paste"]'),
-    ).toBeNull();
-    harness.click(harness.byTestId('chat-secret-request-paste-toggle'));
-    const reopened = harness.byTestId('chat-secret-request-paste');
-    if (!(reopened instanceof HTMLTextAreaElement)) throw new Error('no paste');
-    expect(reopened.value).toBe('');
   });
 
   it("says a cloud chat's values go to its cloud workspace", () => {
@@ -492,7 +540,7 @@ describe('RequestSecrets transcript row', () => {
     const row = harness.byTestId('request-secrets-row').textContent ?? '';
     expect(row).toContain('Provided 2 of 3');
     expect(row).toContain('DATABASE_URL');
-    expect(row).toContain('already held');
+    expect(row).toContain('saved');
     expect(row).toContain('skipped');
     expect(parseRequestSecretsResult('not json')).toBeNull();
     expect(
@@ -524,11 +572,11 @@ describe('RequestSecrets transcript row', () => {
     );
     harness.click(harness.byTestId('chat-secrets-restart'));
     expect(restarts).toBe(1);
-    expect(chatSecretsAmbientLine('live', 'Claude')).toContain(
-      "also set in the agent's own commands",
+    expect(chatSecretsAmbientLine('live', 'Claude')).toBe(
+      "In Full access, the agent's commands can print these.",
     );
     expect(chatSecretsAmbientLine('none', 'Claude')).toBe(
-      'The agent uses these by name in commands. It never sees the values.',
+      'Hidden from the agent and command output.',
     );
     expect(chatSecretsAmbientLine('restart-pending', 'Codex')).toBe(
       "Codex restarts when it's idle, or at your next message.",

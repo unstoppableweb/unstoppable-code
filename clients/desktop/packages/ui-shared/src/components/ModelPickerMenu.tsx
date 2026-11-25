@@ -3075,7 +3075,9 @@ export function ModelPickerMenu({
         />
       ) : null}
       {renderMenuSurface(
-        harnessTabs ? (
+        // A closed menu draws nothing, so its rows are not built: the picker
+        // renders with the composer, on every streamed update and resize.
+        !open ? null : harnessTabs ? (
           <div
             className={`flex min-h-0 w-full ${pickerChrome ? 'flex-1' : 'h-full'}`}
           >

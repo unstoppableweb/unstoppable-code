@@ -12,6 +12,7 @@ import { ProviderAuthPanel } from '@/components/auth/ProviderAuthPanel';
 import { brandText } from '@/lib/brand';
 import { CanopyCloudAccountSection } from '../CanopyCloudAccountSection';
 import { LinearKeyRow } from '../LinearKeyRow';
+import { SlackMentionsSection } from '../SlackMentionsRow';
 import {
   CategoryRows,
   InAppNotificationRows,
@@ -27,7 +28,8 @@ import { SettingsRow } from '../SettingsLayout';
  * Desktop-only "On this computer" sections under a hosted account page
  * (rendered through the shared frame's `after` region). They hold what the
  * hosted page cannot: this computer's cloud sign-in, notification
- * preferences, GitHub sign-in, Linear key and personal-catalog choice.
+ * preferences, GitHub sign-in, Linear key, Slack mentions switch and
+ * personal-catalog choice.
  *
  * The sections read and write through `window.api` only, never the hosted
  * settings client or store, so they work signed out and while hosted data
@@ -244,6 +246,7 @@ function IntegrationsPageDeviceSettings(): JSX.Element {
             <LinearKeyRow />
           </DeviceCardRows>
         </div>
+        <SlackMentionsSection />
       </SettingsCard>
     </DeviceSettingsRegion>
   );

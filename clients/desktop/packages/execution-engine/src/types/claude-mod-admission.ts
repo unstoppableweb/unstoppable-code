@@ -16,6 +16,7 @@ export interface SkippedClaudeMod {
     | 'kill-switch'
     | 'authority-unreadable'
     | 'inspection-failed'
+    | 'install-list-unreadable'
     | 'projection-failed';
 }
 
@@ -66,6 +67,7 @@ export function isSkippedClaudeMod(value: unknown): value is SkippedClaudeMod {
     value.reason === 'kill-switch' ||
     value.reason === 'authority-unreadable' ||
     value.reason === 'inspection-failed' ||
+    value.reason === 'install-list-unreadable' ||
     value.reason === 'projection-failed';
   return (
     (isClaudeModPluginId(value.pluginId) ||

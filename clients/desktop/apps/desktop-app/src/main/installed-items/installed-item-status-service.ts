@@ -43,7 +43,10 @@ export interface InstalledItemStatusPort {
       current: PreferencesData,
     ) => Partial<PreferencesData> | Promise<Partial<PreferencesData>>,
   ): Promise<PreferencesData>;
-  list(this: void): Promise<InstalledItemRecord[]>;
+  list(
+    this: void,
+    pluginMutationTarget?: InstalledItemRef,
+  ): Promise<InstalledItemRecord[]>;
   deviceServerIds?(this: void): readonly string[];
   canonical(this: void, ref: InstalledItemRef): Promise<InstalledItemRef>;
   serialize<T>(this: void, operation: () => Promise<T>): Promise<T>;
@@ -806,7 +809,9 @@ export function createInstalledItemStatusService(
           return result(undefined, removed, errors, deviceTarget);
         }
       }
-      const inventory = await port.list();
+      const inventory = await port.list(
+        deviceTarget.kind === 'plugin' ? deviceTarget : undefined,
+      );
       await snapshot(inventory);
       const target = UninstallInstalledItemRequestSchema.shape.target.parse(
         request.target.kind === 'mcp-server'
@@ -918,7 +923,9 @@ export function createInstalledItemStatusService(
     setStatus(raw): Promise<InstalledItemMutationResult> {
       const request = SetInstalledItemStatusRequestSchema.parse(raw);
       return port.serialize(async () => {
-        const records = await port.list();
+        const records = await port.list(
+          request.target.kind === 'plugin' ? request.target : undefined,
+        );
         await snapshot(records);
         const target =
           request.target.kind === 'mcp-server'
