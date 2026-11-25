@@ -21,6 +21,10 @@ import {
   type CustomizeRowMenuItem,
 } from '@canopy/ui-shared/components';
 import { accountMcpAccountName } from './accountMcpRows';
+import {
+  mcpConnectActionButtonLabel,
+  type McpConnectAction,
+} from './McpConnectActionButton';
 
 /**
  * What a host does for the account controls (CAN-6226). Each call answers
@@ -41,6 +45,15 @@ export interface McpAccountActionsPort {
    * refuse a submit made under another.
    */
   readonly beginAddAccount?: () => void;
+  /**
+   * Starts the sign-in of an account that isn't connected, from its own row:
+   * one still waiting on its first sign-in (opening the page again when it
+   * was missed), one that needs reconnecting, or one signed out. The host
+   * owns the sign-in as for Connect. Absent where the host can't start one.
+   */
+  readonly signInAccount?: (
+    connection: AccountMcpConnection,
+  ) => Promise<string | null>;
   /** Renames an account; `null` clears the name. */
   readonly renameAccount: (
     connectionId: string,
@@ -112,6 +125,25 @@ function accountStatus(connection: AccountMcpConnection): string {
       return 'Waiting for sign-in';
     case 'DISCONNECTED':
       return 'Not connected';
+  }
+}
+
+/**
+ * The row's own sign-in action, for an account that is on but not connected;
+ * `undefined` for one that is connected or turned off.
+ */
+function accountSignInAction(
+  connection: AccountMcpConnection,
+): McpConnectAction | undefined {
+  if (connection.enabled === false) return undefined;
+  switch (connection.status) {
+    case 'CONNECTED':
+      return undefined;
+    case 'REAUTH_REQUIRED':
+      return 'reconnect';
+    case 'PENDING':
+    case 'DISCONNECTED':
+      return 'connect';
   }
 }
 
@@ -335,6 +367,7 @@ export function McpAccountControls({
   };
   const locked = disabled || busy;
   const addAccount = actions?.addAccount;
+  const signInAccount = actions?.signInAccount;
   const removing =
     dialog?.kind === 'remove'
       ? connections.find((connection) => connection.id === dialog.connectionId)
@@ -384,7 +417,9 @@ export function McpAccountControls({
         label="Accounts"
         description={
           addPending
-            ? 'Finish signing in to the new account in your browser, or remove it to cancel.'
+            ? signInAccount
+              ? "Finish signing in to the new account in your browser. If the page didn't open, choose Sign in on its row, or remove the account to cancel."
+              : 'Finish signing in to the new account in your browser, or remove it to cancel.'
             : several
               ? 'New chats use the default account unless a project or chat picks another.'
               : firstBesideDevice
@@ -441,17 +476,43 @@ export function McpAccountControls({
             collapsible={collapsible}
             disabled={locked}
             note={deviceEffectNote(deviceEffects?.[connection.id], serverName)}
-            menu={(nameId): ReactNode => (
+            menu={(nameId): ReactNode => {
               // The trigger reads the replay-blocked name by reference, so
               // the account's label never sits in its own attribute.
-              <CustomizeRowMenu
-                entryName={name}
-                entryNameId={nameId}
-                idPrefix={`mcp-account-${connection.id}`}
-                items={menuItems(connection, isDefault)}
-                testId={`mcp-account-menu-${connection.id}`}
-              />
-            )}
+              const menu = (
+                <CustomizeRowMenu
+                  entryName={name}
+                  entryNameId={nameId}
+                  idPrefix={`mcp-account-${connection.id}`}
+                  items={menuItems(connection, isDefault)}
+                  testId={`mcp-account-menu-${connection.id}`}
+                />
+              );
+              const signInAction = signInAccount
+                ? accountSignInAction(connection)
+                : undefined;
+              if (!signInAccount || !signInAction) return menu;
+              // A waiting or signed-out account signs in from its own row,
+              // so a sign-in page that never opened, or was closed, is one
+              // click away without leaving the list.
+              return (
+                <span className="inline-flex items-center gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={locked}
+                    aria-describedby={nameId}
+                    data-testid={`mcp-account-sign-in-${connection.id}`}
+                    onClick={(): void => {
+                      void run(() => signInAccount(connection), false);
+                    }}
+                  >
+                    {mcpConnectActionButtonLabel(signInAction, 'idle')}
+                  </Button>
+                  {menu}
+                </span>
+              );
+            }}
             details={details}
             onOpen={(): void =>
               onSelect?.({ kind: 'account', id: connection.id })

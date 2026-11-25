@@ -40,6 +40,10 @@ import {
 const repeat = (text: string, count: number): string => text.repeat(count);
 const SAMPLES: readonly (readonly [SecretMaterialRule, string])[] = [
   ['private_key', `-----BEGIN RSA ${'PRIVATE'} KEY-----`],
+  ['private_key', `-----BEGIN PGP ${'PRIVATE'} KEY BLOCK-----`],
+  ['private_key', `---- BEGIN SSH2 ENCRYPTED ${'PRIVATE'} KEY ----`],
+  ['private_key', `PuTTY-User-${'Key'}-File-2: ssh-rsa`],
+  ['private_key', `PuTTY-User-${'Key'}-File-3: ssh-ed25519`],
   ['jwt', `ey${'J'}${repeat('a', 12)}.${repeat('b', 12)}.${repeat('c', 12)}`],
   ['github_token', `github_${'pat'}_${repeat('A', 24)}`],
   ['github_token', `gh${'p'}_${repeat('B', 30)}`],
@@ -324,13 +328,28 @@ const REFERENCE_PLACEHOLDER = new RegExp(
   `\\b(?:${SECRET_ASSIGNMENT_KEYS_SOURCE})\\s*(?:=|:)\\s*(?:<[^>\\r\\n]+>|\\{\\{?[^}\\r\\n]+\\}?\\}|\\$[A-Za-z_][A-Za-z0-9_]*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})`,
   'gi',
 );
-function referenceWithoutExpressions(text: string): string {
-  const stripped = Array.from(text, (character) => {
-    const code = character.charCodeAt(0);
-    return code <= 0x1f || code === 0x7f ? '' : character;
-  }).join('');
-  return stripped.replace(REFERENCE_EXPRESSION, (expression, inner: string) =>
-    containsSecretMaterial(inner) ? expression : '""',
+const isControl = (character: string): boolean => {
+  const code = character.charCodeAt(0);
+  return code <= 0x1f || code === 0x7f;
+};
+const stripControls = (text: string): string =>
+  Array.from(text, (character) => (isControl(character) ? '' : character)).join(
+    '',
+  );
+// CAN-7626's second reading: line breaks and tabs stay, and every other
+// control character becomes a space.
+const keepLineBoundaries = (text: string): string =>
+  Array.from(text, (character) =>
+    isControl(character) && !'\t\n\r'.includes(character) ? ' ' : character,
+  ).join('');
+function referenceWithoutExpressions(
+  text: string,
+  read: (text: string) => string = stripControls,
+): string {
+  return read(text).replace(
+    REFERENCE_EXPRESSION,
+    (expression, inner: string) =>
+      containsSecretMaterial(inner) ? expression : '""',
   );
 }
 function referencePackageCheck(text: string): boolean {
@@ -345,9 +364,12 @@ function referencePackageCheck(text: string): boolean {
 // whose own contents trip SECRET_RULES is not neutralized, so the real value
 // inside it is scanned. Everything else is develop's, unbounded patterns
 // included, so the bound (pinned separately) never shows up here.
-function intendedPackageCheck(text: string): boolean {
+function r2Check(
+  text: string,
+  read: (text: string) => string = stripControls,
+): boolean {
   return containsSecretMaterial(
-    referenceWithoutExpressions(text).replace(
+    referenceWithoutExpressions(text, read).replace(
       REFERENCE_PLACEHOLDER,
       (assignment) =>
         containsSecretMaterial(assignment.slice(assignment.search(/[=:]/) + 1))
@@ -356,6 +378,17 @@ function intendedPackageCheck(text: string): boolean {
     ),
   );
 }
+// develop plus R2 plus CAN-7626: develop's stripped reading, or a reading
+// that keeps line boundaries. Either one tripping refuses, so this only
+// ever refuses more than develop plus R2.
+function intendedPackageCheck(text: string): boolean {
+  return r2Check(text) || r2Check(text, keepLineBoundaries);
+}
+// The two intended changes against develop, by which reading explains them.
+const placeholderValueChange = (text: string): boolean =>
+  r2Check(text) !== referencePackageCheck(text);
+const lineBoundaryChange = (text: string): boolean =>
+  !r2Check(text) && r2Check(text, keepLineBoundaries);
 
 describe('package text check matches the desktop analysis (CAN-7226)', () => {
   const token = `gh${'p'}_${'R'.repeat(30)}`;
@@ -411,24 +444,60 @@ describe('package text check matches the desktop analysis (CAN-7226)', () => {
     'token: <YOUR_API_KEY>',
     'token: {{ secrets.NAME }}',
     'token: ${{ secrets.TOKEN }}',
+    // Every rule's sample at a line start, after a line ending in a word
+    // character (CAN-7626), and placeholders a line break splits.
+    ...SAMPLES.flatMap(([, sample]) => [
+      `echo done\n${sample}`,
+      `echo done\r\n${sample}`,
+      `echo done\t${sample}`,
+      `echo done\u0001${sample}`,
+    ]),
+    'token: <your\nkey>',
+    'token: {{ your\nkey }}',
+    'token: ${{ secrets.\nNAME }}',
   ];
-  it.each(CORPUS)('agrees with develop plus R2 on %j', (text) => {
+  it.each(CORPUS)('agrees with develop plus R2 and CAN-7626 on %j', (text) => {
     expect(findPackageTextCredentialRule(text) !== null).toBe(
       intendedPackageCheck(text),
     );
   });
 
-  it('differs from develop on the corpus only where a placeholder holds a real value', () => {
+  it('differs from develop on the corpus only where a placeholder holds a real value, a secret starts a line, or a line break splits a placeholder', () => {
     const changed = CORPUS.filter(
       (text) =>
         (findPackageTextCredentialRule(text) !== null) !==
         referencePackageCheck(text),
     );
-    const placeholderValues = CORPUS.filter(
-      (text) => intendedPackageCheck(text) !== referencePackageCheck(text),
+    expect(changed).toEqual(
+      CORPUS.filter(
+        (text) => placeholderValueChange(text) || lineBoundaryChange(text),
+      ),
     );
-    expect(changed).toEqual(placeholderValues);
-    expect(changed.length).toBeGreaterThan(0);
+    const atLineStart = (text: string): boolean =>
+      SAMPLES.some(
+        ([, sample]) =>
+          text.endsWith(sample) &&
+          ['\t', '\n', '\r', '\u0001'].includes(
+            text.at(-sample.length - 1) ?? '',
+          ),
+      );
+    const lineBoundaries = CORPUS.filter(lineBoundaryChange);
+    // Three named categories: a placeholder holding a real value, a secret
+    // at the start of a line, and a bracketed placeholder a line break
+    // splits, which the shared check and the raw text check refuse too.
+    expect(CORPUS.filter(placeholderValueChange).length).toBeGreaterThan(0);
+    expect(lineBoundaries.filter(atLineStart).length).toBeGreaterThan(0);
+    const splitPlaceholders = lineBoundaries.filter(
+      (text) => !atLineStart(text),
+    );
+    expect(splitPlaceholders).toEqual([
+      'token: <your\nkey>',
+      'token: {{ your\nkey }}',
+    ]);
+    for (const text of splitPlaceholders) {
+      expect(findSharedTextCredentialRule(text)).not.toBeNull();
+      expect(findSecretMaterialRule(text)).not.toBeNull();
+    }
     // Each change refuses more: develop let it through, the check refuses it.
     for (const text of changed) {
       expect(referencePackageCheck(text)).toBe(false);
@@ -436,35 +505,36 @@ describe('package text check matches the desktop analysis (CAN-7226)', () => {
     }
   });
 
-  it('agrees on 20,000 generated mixes of keys, placeholders, expressions and secrets', () => {
-    const fragments = [
-      ...KEYS,
-      ...PLACEHOLDERS,
-      ...SAMPLES.map(([, sample]) => sample),
-      ': ',
-      '=',
-      ' ',
-      '<',
-      '>',
-      '{',
-      '}',
-      '{{',
-      '}}',
-      '${{',
-      '$',
-      '\n',
-      '"',
-      'value-one',
-      'secrets.NAME',
-      'export ',
-    ];
-    let seed = 7226;
-    const next = (bound: number): number => {
-      seed = (seed * 1103515245 + 12345) % 2147483648;
-      return seed % bound;
-    };
+  const MIX_FRAGMENTS = [
+    ...KEYS,
+    ...PLACEHOLDERS,
+    ...SAMPLES.map(([, sample]) => sample),
+    ': ',
+    '=',
+    ' ',
+    '<',
+    '>',
+    '{',
+    '}',
+    '{{',
+    '}}',
+    '${{',
+    '$',
+    '\n',
+    '"',
+    'value-one',
+    'secrets.NAME',
+    'export ',
+  ];
+  // Each mix's verdict against develop plus R2 and CAN-7626, and any change
+  // against develop that neither intended change explains.
+  function checkMixes(
+    fragments: readonly string[],
+    next: (bound: number) => number,
+  ): { disagreements: string[]; unexplained: string[]; changed: number } {
     const disagreements: string[] = [];
     const unexplained: string[] = [];
+    let changed = 0;
     for (let index = 0; index < 20_000; index += 1) {
       let text = '';
       const parts = 1 + next(8);
@@ -472,15 +542,46 @@ describe('package text check matches the desktop analysis (CAN-7226)', () => {
         text += fragments[next(fragments.length)];
       const verdict = findPackageTextCredentialRule(text) !== null;
       if (verdict !== intendedPackageCheck(text)) disagreements.push(text);
-      // A change against develop must be a placeholder holding a real value.
+      if (verdict !== referencePackageCheck(text)) changed += 1;
+      // A change against develop must be a placeholder holding a real value,
+      // or a reading that keeps line boundaries tripping.
       if (
         verdict !== referencePackageCheck(text) &&
-        intendedPackageCheck(text) === referencePackageCheck(text)
+        !placeholderValueChange(text) &&
+        !lineBoundaryChange(text)
       )
         unexplained.push(text);
     }
+    return { disagreements, unexplained, changed };
+  }
+
+  it('agrees on 20,000 generated mixes of keys, placeholders, expressions and secrets', () => {
+    let seed = 7226;
+    const next = (bound: number): number => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed % bound;
+    };
+    const { disagreements, unexplained } = checkMixes(MIX_FRAGMENTS, next);
     expect(disagreements).toEqual([]);
     expect(unexplained).toEqual([]);
+  });
+
+  // The generator above draws from the low bits, which never put a fragment
+  // ending in a word character before a line break. This one draws from the
+  // high bits and adds a carriage return, a tab and a control character.
+  it('agrees on 20,000 generated mixes across line boundaries', () => {
+    let seed = 7626;
+    const next = (bound: number): number => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return Math.floor(seed / 65536) % bound;
+    };
+    const { disagreements, unexplained, changed } = checkMixes(
+      [...MIX_FRAGMENTS, '\r\n', '\t', '\u0001'],
+      next,
+    );
+    expect(disagreements).toEqual([]);
+    expect(unexplained).toEqual([]);
+    expect(changed).toBeGreaterThan(0);
   });
 
   // A file's bytes, as develop's desktop analysis read them before CAN-7226:
@@ -502,7 +603,7 @@ describe('package text check matches the desktop analysis (CAN-7226)', () => {
       new Uint8Array([0, 1, 2, 0x7f, ...body, 0, 0x80, 0]),
     ];
   };
-  it("reads a file's bytes as develop's desktop analysis did (plus R2), on every corpus text as UTF-8, Latin-1 and binary", () => {
+  it("reads a file's bytes as develop's desktop analysis did (plus R2 and CAN-7626), on every corpus text as UTF-8, Latin-1 and binary", () => {
     const disagreements: string[] = [];
     for (const text of CORPUS) {
       for (const bytes of asFileBytes(text)) {
@@ -936,6 +1037,1421 @@ describe('package definition documents are checked as the desktop checks them (C
   });
 });
 
+// CAN-7614: env_assignment fails closed. A value is code only when a shape on
+// the assignment's own physical line proves it; anything else reads as a
+// literal. Every row runs through the shared text check and the shared member
+// file check. The rows port every set the rule was reviewed against: the
+// ticket's code shapes, the 68 probe shapes, the probe axes, the backquote
+// rows, review rounds 1 to 4, the rows that must stay null, the quoted-key
+// rows and the probe files. Each row's label names the set it came from or,
+// for a stated limit or false positive, its class.
+describe('env_assignment reads a value as code only when its own line proves it (CAN-7614)', () => {
+  const memberFileRule = (text: string): string | null =>
+    findSharedMemberFileCredentialRule(new TextEncoder().encode(text));
+  type Row = readonly [string, string, string | null];
+  const E = 'env_assignment';
+  const C = 'credential_assignment';
+  const S = 'Zq7xK9mPw2Lr';
+  const L = 'Zq7xxxxxxxxx';
+  const pad = (length: number): string => `A${S}`.repeat(20).slice(0, length);
+
+  // Code shapes develop flags: each is proven code on its own line, so
+  // each is red on develop.
+  const CODE: readonly Row[] = [
+    ['68 shapes', 'spring.datasource.password = null', null],
+    ['68 shapes', 'DB_PASSWORD = None', null],
+    ['68 shapes', 'options.apiKey = getKey()', null],
+    ['68 shapes', 'const apiKey = getKey();', null],
+    ['68 shapes', 'API_KEY = os.environ["API_KEY"]', null],
+    ['68 shapes', 'API_KEY = os.getenv("API_KEY")', null],
+    ['68 shapes', 'token = None', null],
+    ['68 shapes', 'password = await prompt()', null],
+    ['F4 ctl', 'const token = `Bearer ${t}`;', null],
+    ['F4 ctl', 'apiKey = `${prefix}-${id}`', null],
+    ['axes ctl', 'const token = `x${y}`;', null],
+    ['(ii)', 'token = get_key()', null],
+    ['(ii)', 'token = f(a, b)', null],
+    ['(ii)', "token = env('SECRET')", null],
+    ['(ii)', 'token = config.get(x)', null],
+    ['(ii)', 'token = self.keys[0]', null],
+    ['(ii)', 'token = await fetchToken(x)', null],
+    ['(ii)', 'token = new Token(x)', null],
+    ['R1', 'Object? token = null,}', null],
+    ['R1', 'DB_PASSWORD=None,}', null],
+    ['R2', 'MY_TOKEN = []', null],
+    ['R2', 'MY_TOKEN = {}', null],
+    ['R2', 'MY_TOKEN = ()', null],
+    ['R3', 'const MAIN: MigrationProcessToken = Object.freeze({', null],
+    ['R4', 'token = createClaim({', null],
+    ['R4', 'loadingTask.onPassword = (', null],
+    [
+      'round 1 I1 ctl',
+      'const msg = "${a}"; const DB_PASSWORD = `x${y}`;',
+      null,
+    ],
+    ['round 2 A1 ctl', 'MY_TOKEN = abc || d', null],
+    ['round 2 A4 ctl', '.some(token => tokens.has(token));', null],
+    ['round 3 B3 FP', 'private readonly secret = randomBytes(32);', null],
+    ['LEAD probe-r', 'token = null)', null],
+    ['LEAD probe-r', 'DB_PASSWORD = []', null],
+    ['LEAD probe-r', 'DB_PASSWORD = {}', null],
+    ['LEAD probe-r', 'token = createX({', null],
+    ['LEAD probe-r2', 'token => tokens.has(token)', null],
+    ['LEAD probe-r2', 'password => password.length > 8', null],
+    [
+      '#10489 golden',
+      "const authToken = randomBytes(32).toString('base64url');",
+      null,
+    ],
+    [
+      '#10489 golden',
+      'const packageScriptToken = packageManagerCommandPattern.test(command);',
+      null,
+    ],
+    ['#10489 golden', 'let accessToken = await refresh(session);', null],
+    ['#10489 golden', 'final token = prefs.getString("t");', null],
+    ['#10489 golden', 'private readonly secret = createSecret();', null],
+    ['#10489 golden', 'const TOKEN = /^[A-Za-z]+$/;', null],
+    ['#10489 golden', 'const token = ++attempt;', null],
+    ['#10489 golden', 'owner.token = undefined;', null],
+    ['#10489 golden', 'this.apiKey = options.apiKey ?? null;', null],
+    ['#10489 golden', 'secret = true;', null],
+    [
+      '#10489 golden',
+      'export type MemoryExportToken = z.output<typeof MemoryExportTokenSchema>;',
+      null,
+    ],
+    ['#10489 golden', 'MY_PASSWORD=null', null],
+    ['#10489 golden', 'MY_TOKEN = (a, b)', null],
+    ['#10489 golden', 'MY_TOKEN = [a, b]', null],
+    ['#10489 golden', 'MY_TOKEN = { a: 1 }', null],
+    ['#10489 golden', "MY_TOKEN = ['a']", null],
+    ['#10489 golden', 'const token = !value;', null],
+    ['#10489 golden', 'let token = --count;', null],
+    ['#10489 golden', 'MY_TOKEN = abc ? d : e', null],
+    ['#10489 golden', 'MY_TOKEN = abc < d', null],
+    ['#10489 golden', 'MY_TOKEN = abc > d', null],
+    ['#10489 golden', 'MY_TOKEN = abc && d', null],
+    ['#10489 golden', 'MY_TOKEN = abc ?? d', null],
+    ['guard (code)', 'token = function (a) { return a; }', null],
+    ['guard (code)', 'token = cached ?? fetchToken(x)', null],
+    ['#10499 round 3', 'token = (await resolveGitHubToken()).trim();', null],
+    ['#10499 round 3', 'token = async (): Promise<T> =>', null],
+    ['#10499 round 3', 'token = (a, b) => c', null],
+    ['#10499 round 3', 'token = f(x).y;', null],
+    ['#10499 round 3', 'privateKey = await subtleCrypto().importKey(', null],
+    ['#10499 round 3', 'token = getKey() || fallback', null],
+    ['#10499 round 3', "secret = (result.stdout ?? '').trim();", null],
+    ['#10499 round 3', 'token = (deps.read ?? read)(', null],
+    ['#10499 round 3', 'token = f()[0];', null],
+    ['#10499 round 3', "token = cfg.get('a') ?? b;", null],
+    ['LEAD probe-a2', 'DB_PASSWORD=None;', null],
+    ['LEAD probe-a2', 'DB_PASSWORD=true,', null],
+    ['LEAD probe-a2', 'DB_PASSWORD=null)', null],
+    ['LEAD probe-a2', 'DB_PASSWORD = null', null],
+    ['LEAD probe-a6', 'onPassword = (', null],
+    ['LEAD probe-a6', 'SECRET = Object.freeze({', null],
+    ['LEAD probe-a6', "const token = signAttributionToken('x', {", null],
+    ['LEAD probe-r6', 'DB_PASSWORD = a || b || c;', null],
+    ['LEAD probe-r6', 'token = cached ?? null;', null],
+    ['LEAD probe-r6', 'token = abc ? d : e', null],
+    ['guard (code)', 'token = getKey() ? a : b', null],
+    ['#10499 round 3 review', 'token = a || b || c;', null],
+    ['#10499 round 3 review', 'token = a ?? b ?? c', null],
+    ['#10499 round 3 review', 'token = x ? y : z;', null],
+    ['#10499 round 3 review', 'token = a ? b : c || d;', null],
+    ['guard (code)', 'token = retries < 10;', null],
+    ['guard (code)', 'token = x < 9.5;', null],
+  ];
+  it.each(CODE)('reads a %s row as code: %j', (_label, text, rule) => {
+    expect(findSharedTextCredentialRule(text)).toBe(rule);
+    expect(memberFileRule(text)).toBe(rule);
+  });
+
+  // The stated limits: one example of every allowlist class that can
+  // exempt an identifier-shaped value. Each reads as code although a
+  // literal is possible, as the rule states.
+  const LIMITS: readonly Row[] = [
+    [
+      'a template with an unescaped ${',
+      `const DB_PASSWORD = \`${S}\${x}\`;`,
+      null,
+    ],
+    ['an open bracket at the line end', `DB_PASSWORD = ${L}(`, null],
+    ['an open bracket at the line end', `DB_PASSWORD = ${S}(`, null],
+    ['an open bracket at the line end', `DB_PASSWORD = ${S} (`, null],
+    ['a closed call with arguments', 'DB_PASSWORD = Pa55(word, x)', null],
+    ['a closed call holding a space', `DB_PASSWORD = ${S}(a b)`, null],
+    ['a spaced operator', `DB_PASSWORD = ${S} || x`, null],
+    ['a spaced ternary', `DB_PASSWORD = ${S} ? a : b`, null],
+    ['a closed bracket with content', `DB_PASSWORD = [${S}, 2]`, null],
+    ['a closed bracket with content', `DB_PASSWORD = {${S}: 1}`, null],
+    ['a closed bracket with content', `DB_PASSWORD = (${S} + 1)`, null],
+    ['a method chain', `DB_PASSWORD = ${S}.trim()`, null],
+    ['an open bracket at the line end', `DB_PASSWORD = ${S}{`, null],
+    ['a declared name with a member chain', `const DB_PASSWORD = ${S}.x`, null],
+    [
+      'a declared name with a generic call',
+      `const DB_PASSWORD = ${S}<T>()`,
+      null,
+    ],
+    [
+      'a declared name with an arrow function',
+      `const DB_PASSWORD = () => ${S}`,
+      null,
+    ],
+    ['a keyword value with a terminator', 'DB_PASSWORD = None;', null],
+    ['a keyword value with a terminator', 'DB_PASSWORD = true,', null],
+    ['a keyword value with a terminator', 'DB_PASSWORD = null)', null],
+    ['a closed call after =>', `:password => ${S}(x, y)`, null],
+    ['a spaced operator after =>', `password => ${S} || x`, null],
+    ['an empty closed call', `DB_PASSWORD = ${S}()`, null],
+    ['a closed call holding a quote', `DB_PASSWORD = ${S}('x')`, null],
+    ['a closed call on a dotted callee', `DB_PASSWORD = a.${S}(x)`, null],
+    ['a declared name with a call opener', `const DB_PASSWORD = ${S}(x`, null],
+    [
+      'a declared name with an index opener',
+      `const DB_PASSWORD = ${S}[x`,
+      null,
+    ],
+    [
+      'a declared name with a generic opener',
+      `const DB_PASSWORD = ${S}<9kL`,
+      null,
+    ],
+    ['a declared name with a starter', `const DB_PASSWORD = !${S}`, null],
+    ['a declared name with a starter', `const DB_PASSWORD = ++${S}`, null],
+    ['a declared name with a starter', `const DB_PASSWORD = --${S}`, null],
+    [
+      'a declared name with a regex literal',
+      `const DB_PASSWORD = /${S}/;`,
+      null,
+    ],
+    [
+      'a declared name with an arrow function',
+      `const DB_PASSWORD = ${S} => x`,
+      null,
+    ],
+    [
+      'a declared name with a member chain',
+      `const DB_PASSWORD = ${S}?.x;`,
+      null,
+    ],
+    ['a typed name with a member chain', `String password = ${S}.x;`, null],
+    ['a closed bracket holding a space', `DB_PASSWORD = (${S} x)`, null],
+    [
+      'a member chain before an open bracket at the line end',
+      'DB_PASSWORD = Zq7x.K9mPw2Lr (',
+      null,
+    ],
+    [
+      'a closed call before an open bracket at the line end',
+      `DB_PASSWORD = ${S}(x) {`,
+      null,
+    ],
+    ['a spaced operator before a number', `DB_PASSWORD = ${S} < 9`, null],
+    [
+      'a spaced operator before a closed call',
+      `DB_PASSWORD = ${S} ?? f(x)`,
+      null,
+    ],
+    ['a keyword expression on a call', `DB_PASSWORD = await ${S}()`, null],
+    ['a keyword expression on a call', `DB_PASSWORD = new ${S}(x)`, null],
+    ['a keyword value with a terminator', 'DB_PASSWORD = null,}', null],
+    ['an index after a closed bracket', `DB_PASSWORD = (a, b)[${S}]`, null],
+    [
+      'an arrow function returning an identifier',
+      `DB_PASSWORD = () => ${S}`,
+      null,
+    ],
+    ['a spaced operator before an identifier', `DB_PASSWORD = ${S} > x`, null],
+    [
+      'a spaced operator before an identifier',
+      `DB_PASSWORD = ${S} > note`,
+      null,
+    ],
+    [
+      'a spaced operator before an identifier',
+      `DB_PASSWORD = ${S} > ${S}`,
+      null,
+    ],
+    ['an open bracket at the line end', `DB_PASSWORD = ${S} [`, null],
+    [
+      'a closed call on a dotted callee before an open bracket',
+      `DB_PASSWORD = ${S}.x(a) {`,
+      null,
+    ],
+    [
+      'a closed call on a dotted callee before an open bracket',
+      `DB_PASSWORD = ${S}.x(a).y(b) {`,
+      null,
+    ],
+    [
+      'a closed call holding a space',
+      `DB_PASSWORD = ${S}(internal note)`,
+      null,
+    ],
+  ];
+  it.each(LIMITS)(
+    'reads %s as code, a stated limit: %j',
+    (_label, text, rule) => {
+      expect(findSharedTextCredentialRule(text)).toBe(rule);
+      expect(memberFileRule(text)).toBe(rule);
+    },
+  );
+
+  // Credential variables, as develop reads them. A literal never reads
+  // as code: a value with no proven shape on its own line, after a
+  // line end of any kind, past the window, or starting with a quote.
+  // A bare single-token index followed by a member (`X[0].x`) stays
+  // flagged. A former limit is a literal the earlier rule read as
+  // code.
+  const CREDENTIALS: readonly Row[] = [
+    ['68 shapes', `readonly API_TOKEN=${L}`, E],
+    ['68 shapes', `declare API_TOKEN=${L}`, E],
+    ['68 shapes', `local API_TOKEN=${L}`, E],
+    ['68 shapes', `export API_TOKEN=${L}`, E],
+    ['68 shapes', `set API_KEY=${L}`, C],
+    ['68 shapes', `API_TOKEN=${L} npm publish`, E],
+    ['68 shapes', `DB_PASSWORD=${L}!`, E],
+    ['68 shapes', 'DB_PASSWORD=Pa55(word)', E],
+    ['68 shapes', `DB_PASSWORD=${L},x`, E],
+    ['68 shapes', `DB_PASSWORD=None,${L}`, E],
+    ['68 shapes', `DB_PASSWORD=true${L}`, E],
+    ['68 shapes', `password = ${L}`, E],
+    ['68 shapes', `DB_PASSWORD = ${L}`, E],
+    ['68 shapes', `DB_PASSWORD = !${L}`, E],
+    ['68 shapes', `DB_PASSWORD = ${L}<9kL`, E],
+    ['68 shapes', `DB_PASSWORD = ${L}>9kL`, E],
+    ['68 shapes', `DB_PASSWORD = ${L}?x`, E],
+    ['68 shapes', `DB_PASSWORD = ${L}||x`, E],
+    ['68 shapes', `DB_PASSWORD = ${L}&&x`, E],
+    ['68 shapes', `DB_PASSWORD = ${L}(x)`, E],
+    ['68 shapes', `DB_PASSWORD = ${L}[0]`, E],
+    ['68 shapes', `DB_PASSWORD = (${L})`, E],
+    ['68 shapes', `DB_PASSWORD = {${L}}`, E],
+    ['68 shapes', `DB_PASSWORD = --${L}`, E],
+    ['68 shapes', `DB_PASSWORD = ${L};`, E],
+    ['68 shapes', `DB_PASSWORD = ${L},`, E],
+    [
+      'former limit, a camelCase name with a bare value',
+      `storePassword = ${L}`,
+      E,
+    ],
+    [
+      'former limit, a camelCase name with a bare value',
+      `keyPassword = ${L}`,
+      E,
+    ],
+    ['former limit, a camelCase name with a bare value', `apiKey = ${L}`, E],
+    ['former limit, an unspaced camelCase value', `storePassword=${L};`, E],
+    [
+      'former limit, an unspaced camelCase value',
+      `storePassword={cipher}${L}`,
+      E,
+    ],
+    ['68 shapes', `spring.datasource.password = ${L}`, E],
+    [
+      'former limit, a dotted target with a bare value',
+      `spring.datasource.password = ${L};`,
+      E,
+    ],
+    ['68 shapes', `spring.datasource.password = ${L}(x`, E],
+    ['68 shapes', `spring.datasource.password = ${L}<x`, E],
+    ['68 shapes', 'db.password = Pa55(word)', E],
+    ['68 shapes', `db.password = ${L}?x`, E],
+    ['68 shapes', `spring.datasource.password={cipher}${L}`, C],
+    ['68 shapes', `app.api_key=${L}`, C],
+    ['68 shapes', `spring.datasource.password = None${L}`, E],
+    ['68 shapes', `DB_PASSWORD = NULL${L}`, E],
+    ['68 shapes', 'MY_API_KEY=dGVzdEtleQ==', E],
+    ['68 shapes', 'MY_API_KEY = dGVzdEtleQ==', E],
+    ['68 shapes', 'MY_API_KEY = dGVz==dEtleQ', E],
+    ['68 shapes', 'MY_API_KEY = abc==def', E],
+    ['68 shapes', `MY_API_KEY = ${L}!=abc`, E],
+    ['68 shapes', `- POSTGRES_PASSWORD=${L}`, E],
+    ['68 shapes', `  - "MYSQL_ROOT_PASSWORD=${L}"`, E],
+    ['68 shapes', `ENV API_TOKEN=${L}`, E],
+    ['68 shapes', `--build-arg NPM_TOKEN=${L}`, E],
+    ['68 shapes', `docker run -e AWS_SECRET_ACCESS_KEY=${L} img`, E],
+    ['68 shapes', `curl -H x https://x?api_key=${L}&y=1`, C],
+    ['F4', `const DB_PASSWORD = \`${S}\`;`, E],
+    ['F4', `apiKey = \`${S}\``, E],
+    ['F4', `export const API_KEY = \`${S}\`;`, E],
+    ['F4 unclosed', `const DB_PASSWORD = \`${S}`, E],
+    ['F4 escaped', 'const DB_PASSWORD = `Zq7\\`xK9`', E],
+    ['axes', 'const DB_PASSWORD = "Pa$$w0rd";', E],
+    ['axes', "const DB_PASSWORD = 'Pa$$w0rd';", E],
+    ['axes', 'DB_PASSWORD = "pa\\"ss123"', E],
+    ['axes', "DB_PASSWORD = 'pa\\'ss123'", E],
+    ['axes', `apiKey = "a\`b${S}"`, E],
+    ['axes', `const token = "${S}\\n";`, E],
+    ['axes', `password = "it's ${S}"`, E],
+    ['axes', `password = '${S}' # note`, E],
+    ['axes', `password = "${S}" // note`, E],
+    ['axes', `const DB_PASSWORD = '${pad(158)}';`, E],
+    ['axes', `const DB_PASSWORD = '${pad(159)}';`, E],
+    ['axes', `const DB_PASSWORD = '${pad(160)}';`, E],
+    ['axes', `const DB_PASSWORD = '${pad(161)}';`, E],
+    ['axes', `const DB_PASSWORD = '${pad(260)}';`, E],
+    ['axes', `apiKey = "${pad(260)}"`, E],
+    ['axes', `${repeat('x', 200)} DB_PASSWORD=${S}`, E],
+    [
+      'former limit, a declared name with a bare value',
+      `${repeat('const ', 30)}DB_PASSWORD = ${S}`,
+      E,
+    ],
+    ['axes', `${repeat('a', 140)}_PASSWORD=${S}`, E],
+    ['axes', `Our private deploy key is DEPLOY_TOKEN=${S}`, E],
+    ['axes', `Set it like: const DB_PASSWORD=${S}`, E],
+    ['axes', `export const API_TOKEN=${S}`, E],
+    [
+      'former limit, a declared name with a bare value',
+      `the type DB_PASSWORD = ${S} here`,
+      E,
+    ],
+    ['axes', `let me know, my API_KEY=${S} thanks`, C],
+    ['axes', `public API_KEY=${S}`, C],
+    ['axes', `def API_KEY=${S}`, C],
+    ['axes', `client.secret = ${S}\r\n`, E],
+    ['axes', `DB_PASSWORD = ${S}\r`, E],
+    ['axes', `DB_PASSWORD = ${S}\n;`, E],
+    ['axes', `DB_PASSWORD = ${S}\n)`, E],
+    ['axes', `spring.datasource.password = ${S}\n,`, E],
+    ['axes', `DB_PASSWORD =\t${S}`, E],
+    ['axes', `DB_PASSWORD\t=\t${S}`, E],
+    ['axes', `\tDB_PASSWORD=${S}`, E],
+    ['axes', `DB_PASSWORD = \\\n  ${S}`, E],
+    ['axes', 'password = value.pass\r\n; c', E],
+    ['axes', 'token = self.session\r\n.token', E],
+    ['axes joined limit', `const DB_PASSWORD = "${S}" + suffix;`, E],
+    ['axes joined limit', `const DB_PASSWORD = "${S}"+suffix;`, E],
+    ['axes joined limit', `DB_PASSWORD="${S}"+x`, E],
+    ['axes', `DB_PASSWORD = '${S}' . "x"`, E],
+    ['bt F4', `DB_PASSWORD = \`${S}\``, E],
+    ['bt F4', `DB_PASSWORD=\`${S}\``, E],
+    [
+      'former limit, a declared name with a bare value',
+      `const DB_PASSWORD = ${S}`,
+      E,
+    ],
+    [
+      'former limit, a declared name with a bare value',
+      `let API_KEY = ${S}`,
+      E,
+    ],
+    [
+      'former limit, a declared name with a bare value',
+      `then let API_KEY = ${S} in your shell`,
+      E,
+    ],
+    [
+      'former limit, a declared name with a bare value',
+      `type API_KEY = ${S}`,
+      E,
+    ],
+    [
+      'former limit, a declared name with a bare value',
+      `val API_KEY = ${S}`,
+      E,
+    ],
+    [
+      'former limit, a declared name with a bare value',
+      `static API_KEY = ${S}`,
+      E,
+    ],
+    [
+      'former limit, a declared name with a bare value',
+      `private API_KEY = ${S}`,
+      E,
+    ],
+    ['bt', `const API_KEY = sk_live_${S}`, E],
+    ['bt', "let SECRET = 'x'", E],
+    ['R3 guard', `const MAIN: ProcessToken = "${L}";`, E],
+    ['R3 guard', `const API_KEY: string = "${L}";`, C],
+    ['R4 guard', `DB_PASSWORD = ${L}(x`, E],
+    ['R4 guard', `DB_PASSWORD = ${L}, `, E],
+    ['R4 guard', `DB_PASSWORD = ${repeat('a', 158)}(${repeat('b', 20)}`, E],
+    ['round 1 I1', 'String password = "hunter$2";', E],
+    ['round 1 I1', 'private readonly API_SECRET = "abc`def";', E],
+    ['round 1 I1', 'apiKey = "s3cr$t"', E],
+    ['round 1 I1 ctl', 'const DB_PASSWORD = "Pa55w0rd";', E],
+    ['round 1 I2', `const DB_PASSWORD = '${L}${repeat('x', 161)}';`, E],
+    ['round 1 I2', `const DB_PASSWORD = "${L}${repeat('x', 161)}";`, E],
+    ['round 1 I2', `apiKey = '${L}${repeat('x', 161)}'`, E],
+    ['round 1 I3', 'Our private deploy key is DEPLOY_TOKEN=abcdef123', E],
+    ['round 1 I3', 'Then type DEPLOY_TOKEN=abc123 in the shell', E],
+    ['round 1 I3', 'Use a string DEPLOY_TOKEN=abc123 here', E],
+    ['round 1 M1', 'client.secret = hunter2\n; comment', E],
+    ['round 1 M1', 'password = hunter2\n; comment', E],
+    ['round 1 M1 ctl', 'client.secret = hunter2', E],
+    ['round 1 edge CRLF', 'client.secret = hunter2\r\n', E],
+    ['round 1 edge single $', "password = 'Pa$$w0rd'", E],
+    ['round 1 edge tab quoted', `apiKey = \t"${S}"`, E],
+    [
+      'round 1 edge window 158',
+      `const DB_PASSWORD = "${L}${repeat('x', 144)}";`,
+      E,
+    ],
+    [
+      'round 1 edge window 159',
+      `const DB_PASSWORD = "${L}${repeat('x', 145)}";`,
+      E,
+    ],
+    [
+      'round 1 edge window 160',
+      `const DB_PASSWORD = "${L}${repeat('x', 146)}";`,
+      E,
+    ],
+    [
+      'round 1 edge window 161',
+      `const DB_PASSWORD = "${L}${repeat('x', 147)}";`,
+      E,
+    ],
+    ['round 1 edge window 160 camel', `apiKey = "${L}${repeat('x', 146)}"`, E],
+    ['round 1 edge window 161 camel', `apiKey = "${L}${repeat('x', 147)}"`, E],
+    ['round 2 A1', `DB_PASSWORD = ${S}\n> rotate monthly`, E],
+    ['round 2 A1', `DB_PASSWORD = ${S}\n===`, E],
+    ['round 2 A1', `DB_PASSWORD = ${S}\n|| fallback`, E],
+    ['round 2 A1', `DB_PASSWORD = ${S}\n? a : b`, E],
+    ['round 2 A2', `const DB_PASSWORD = "abc\\"+${S}";`, E],
+    ['round 2 A2', 'DB_PASSWORD = "Pa\\"+w0rd"', E],
+    ['round 2 A2', "DB_PASSWORD = 'Pa\\'+w0rd'", E],
+    ['round 2 A3', 'const authToken = password = "hunter2";', E],
+    ['round 2 A3', `const outputToken = password = "${S}";`, E],
+    ['round 2 A4', ':password => "hunter2"', E],
+    ['round 2 A4', "password => 'hunter2'", E],
+    ['round 2 A4', `{ :api_key => "${S}" }`, E],
+    ['round 3 B1', `DB_PASSWORD = "ab\\"${repeat('x', 170)}"`, E],
+    ['round 3 B1', `const DB_PASSWORD = "ab\\"${repeat('x', 170)}";`, E],
+    ['round 3 B1', `DB_PASSWORD = 'ab\\'${repeat('x', 170)}'`, E],
+    ['round 3 B2', `:password => "${L}${repeat('x', 161)}"`, E],
+    ['round 3 B2', `password => '${L}${repeat('x', 161)}'`, E],
+    ['round 3 B3 guard', `readonly API_TOKEN=${S}`, E],
+    ['D1 B2', `:password => "${S}${repeat('x', 170)}"`, E],
+    ['D1 B2', `password => '${S}${repeat('x', 170)}'`, E],
+    ['D1 B3 guard', `  export readonly API_TOKEN=${S}`, E],
+    ['D1 B3 guard', `declare API_TOKEN=${S}`, E],
+    ['round 4 C1', `:password =>\n  "${S}"`, E],
+    ['round 4 C2', `const DB_PASSWORD =${repeat(' ', 161)}"${S}"`, E],
+    ['round 4 C3', `DB_PASSWORD = ${S}\r# documentation(`, E],
+    ['round 4 C4', `const DB_PASSWORD = \`${S}\\\${literal}\`;`, E],
+    ['round 4 U+2028', `DB_PASSWORD = ${S}\u2028(`, E],
+    ['round 4 U+2029', `DB_PASSWORD = ${S}\u2029|| y`, E],
+    ['round 4 CRLF (', `DB_PASSWORD = ${S}\r\n(x)`, E],
+    ['round 4 => CR', `:password =>\r"${S}"`, E],
+    ['round 4 tab=>', `:password =>\t"${S}"`, E],
+    ['round 4 ctl', `:password => "${S}"`, E],
+    ['round 4 ctl', `DB_PASSWORD = ${S}\n# documentation(`, E],
+    ['LEAD probe', `local API_TOKEN=${S}`, E],
+    ['LEAD probe', `export API_TOKEN=${S}`, E],
+    ['LEAD probe', `set API_KEY=${S}`, C],
+    ['LEAD probe', `API_TOKEN=${S} npm publish`, E],
+    ['LEAD probe', `DB_PASSWORD=${S}!`, E],
+    ['LEAD probe', `DB_PASSWORD=${S},x`, E],
+    ['LEAD probe', `DB_PASSWORD=None,${S}`, E],
+    ['LEAD probe', `DB_PASSWORD=true${S}`, E],
+    ['LEAD probe', `password = ${S}`, E],
+    ['LEAD probe', `DB_PASSWORD = ${S}`, E],
+    ['LEAD probe', `DB_PASSWORD = !${S}`, E],
+    ['LEAD probe', `DB_PASSWORD = ${S}<9kL`, E],
+    ['LEAD probe', `DB_PASSWORD = ${S}>9kL`, E],
+    ['LEAD probe', `DB_PASSWORD = ${S}?x`, E],
+    ['LEAD probe', `DB_PASSWORD = ${S}||x`, E],
+    ['LEAD probe', `DB_PASSWORD = ${S}&&x`, E],
+    ['LEAD probe', `DB_PASSWORD = ${S}(x)`, E],
+    ['LEAD probe', `DB_PASSWORD = ${S}[0]`, E],
+    ['LEAD probe', `DB_PASSWORD = (${S})`, E],
+    ['LEAD probe', `DB_PASSWORD = {${S}}`, E],
+    ['LEAD probe', `DB_PASSWORD = --${S}`, E],
+    ['LEAD probe', `DB_PASSWORD = ${S};`, E],
+    ['LEAD probe', `DB_PASSWORD = ${S},`, E],
+    ['LEAD probe', `storePassword = ${S}`, E],
+    ['LEAD probe', `keyPassword = ${S}`, E],
+    ['LEAD probe', `apiKey = ${S}`, E],
+    ['LEAD probe', `storePassword=${S};`, E],
+    ['LEAD probe', `storePassword={cipher}${S}`, E],
+    ['LEAD probe', `spring.datasource.password = ${S}`, E],
+    ['LEAD probe', `spring.datasource.password = ${S};`, E],
+    ['LEAD probe', `spring.datasource.password = ${S}(x`, E],
+    ['LEAD probe', `spring.datasource.password = ${S}<x`, E],
+    ['LEAD probe', `db.password = ${S}?x`, E],
+    ['LEAD probe', `spring.datasource.password={cipher}${S}`, C],
+    ['LEAD probe', `app.api_key=${S}`, C],
+    ['LEAD probe', `spring.datasource.password = None${S}`, E],
+    ['LEAD probe', `DB_PASSWORD = NULL${S}`, E],
+    ['LEAD probe', `MY_API_KEY = ${S}!=abc`, E],
+    ['LEAD probe', `- POSTGRES_PASSWORD=${S}`, E],
+    ['LEAD probe', `  - "MYSQL_ROOT_PASSWORD=${S}"`, E],
+    ['LEAD probe', `ENV API_TOKEN=${S}`, E],
+    ['LEAD probe', `--build-arg NPM_TOKEN=${S}`, E],
+    ['LEAD probe', `docker run -e AWS_SECRET_ACCESS_KEY=${S} img`, E],
+    ['LEAD probe', `curl -H x https://x?api_key=${S}&y=1`, C],
+    ['LEAD probe-f', `const DB_PASSWORD = '${S.repeat(15)}';`, E],
+    ['LEAD probe-f', `apiKey = "${S.repeat(15)}"`, E],
+    ['LEAD probe-f', 'const DB_PASSWORD = "Pa$$w0rd" + suffix;', E],
+    ['LEAD probe-f', 'password = "it\'s"', E],
+    ['LEAD probe-f', 'const token = "abc"; // `', E],
+    ['LEAD probe-qk', '{"password": "hunter2"}', C],
+    ['LEAD probe-qk', `{"password": "${S}"}`, C],
+    ['LEAD probe-qk', `DB_PASSWORD = "${S}"\n|| y`, E],
+    ['LEAD probe-qk', 'DB_PASSWORD = "X"\n|| y', E],
+    ['LEAD probe-r', `const API_KEY: string = "${S}";`, C],
+    ['LEAD probe-r2', `DB_PASSWORD = ${S}\r\n&& x`, E],
+    ['LEAD probe-r2', `const DB_PASSWORD = \`a\\\`+${S}\`;`, E],
+    ['LEAD probe-r2', `a = b = DB_PASSWORD = ${S}`, E],
+    ['LEAD probe-r2', `token=password=${S}`, C],
+    ['LEAD probe-r2', `$password => "${S}"`, E],
+    ['LEAD probe-r2', `API_KEY => ${S}`, E],
+    ['LEAD probe-r3', `const DB_PASSWORD = "ab\\"${S.repeat(15)}"`, E],
+    ['LEAD probe-r3', `:password => "${S.repeat(15)}"`, E],
+    ['LEAD probe-r3', `:password => '${S.repeat(15)}'`, E],
+    ['LEAD probe-r3', `const token = \`${S}\`;`, E],
+    ['LEAD probe-r4', `const DB_PASSWORD =${repeat(' ', 171)}"${S}"`, E],
+    ['LEAD probe-r4', `DB_PASSWORD = \\\n"${S}"`, E],
+    ['LEAD probe-r4', `DB_PASSWORD=${repeat(' ', 170)}${S}`, E],
+    [
+      'former limit, a spaced operator before a non-number',
+      `DB_PASSWORD = ${S} < 9kL`,
+      E,
+    ],
+    [
+      'former limit, a keyword expression on a bare value',
+      `DB_PASSWORD = new ${S}`,
+      E,
+    ],
+    [
+      'former limit, a keyword expression on a bare value',
+      `DB_PASSWORD = await ${S}`,
+      E,
+    ],
+    [
+      'former limit, a keyword expression on a bare value',
+      `DB_PASSWORD = typeof ${S}`,
+      E,
+    ],
+    ['LEAD probe-d2', `DB_PASSWORD = ${S}[0].x`, E],
+    ['LEAD probe-d2', `password = "${S}"`, E],
+    ['LEAD probe-d2', `password = \`${S}\``, E],
+    ['#10489 golden', `NPM_TOKEN=npm_${repeat('x', 8)}`, E],
+    ['#10489 golden', `export GITHUB_TOKEN="${repeat('a', 12)}"`, E],
+    ['#10489 golden', `GITHUB_TOKEN = '${repeat('b', 12)}'`, E],
+    ['#10489 golden', `$env:API_TOKEN = "${repeat('c', 8)}"`, E],
+    [
+      '#10489 golden',
+      `docker run -e DB_PASSWORD=${repeat('d', 8)} postgres`,
+      E,
+    ],
+    ['#10489 golden', `DB_PASSWORD=${repeat('e', 6)}.pass`, E],
+    ['#10489 golden', `password = ${repeat('f', 8)}`, E],
+    ['#10489 golden', `storePassword=${repeat('g', 8)}`, E],
+    ['#10489 golden', `run: DEPLOY_TOKEN=${repeat('h', 6)} ./deploy.sh`, E],
+    [
+      '#10489 golden',
+      `const authToken = randomBytes(32).toString('base64url');\nNPM_TOKEN=npm_${repeat('x', 8)}`,
+      E,
+    ],
+    ['#10489 golden', `const DB_PASSWORD = "${repeat('i', 8)}"`, E],
+    ['#10489 golden', `process.env.DB_PASSWORD = "${repeat('j', 8)}"`, E],
+    ['#10489 golden', 'signing.storePassword=abc123xyz', E],
+    ['#10489 golden', 'DB_PASSWORD=!Pa55word', E],
+    ['#10489 golden', 'spring.datasource.dbPassword=hunter2Value', E],
+    ['#10489 golden', 'db.DB_PASSWORD=s3cr3tValue', E],
+    ['#10489 golden', 'DEPLOY_API_KEY=[abc123]', E],
+    ['#10489 golden', 'APP_SECRET={abcdef}', E],
+    ['#10489 golden', 'MY_TOKEN=(abc)def', E],
+    ['#10489 golden', `spring.datasource.dbPassword = ${L}`, E],
+    ['#10489 golden', `app.github.apiToken = ${L}`, E],
+    ['#10489 golden', `app.SERVICE_TOKEN = ${L}`, E],
+    ['#10489 golden', `client.secret = ${L}`, E],
+    ['#10489 golden', `config.password = ${L}`, E],
+    ['#10489 golden', 'MY_TOKEN=++abc', E],
+    ['#10489 golden', 'MY_TOKEN=--abc', E],
+    ['#10489 golden', 'MY_TOKEN=$(abc', E],
+    ['#10489 golden', 'MY_TOKEN=`abc${x}`', E],
+    ['#10489 golden', 'MY_PASSWORD=Pa(ss', E],
+    ['#10489 golden', 'MY_API_KEY=abc[1]', E],
+    ['#10489 golden', 'MY_TOKEN=abc?def', E],
+    ['#10489 golden', 'MY_TOKEN=abc?.def', E],
+    ['#10489 golden', 'MY_TOKEN=abc??def', E],
+    ['#10489 golden', 'MY_PASSWORD=ab||cd', E],
+    ['#10489 golden', 'MY_PASSWORD=ab&&cd', E],
+    ['#10489 golden', 'MY_TOKEN=abc!=def', E],
+    ['#10489 golden', 'MY_PASSWORD=abc<def', E],
+    ['#10489 golden', 'MY_PASSWORD=abc>def', E],
+    ['#10489 golden', 'MY_TOKEN=abc.def(x', E],
+    ['#10489 golden', 'MY_PASSWORD=null-pass', E],
+    ['#10489 golden', 'api_key = dGVzdEtleQ==', E],
+    ['#10489 golden', 'MY_PASSWORD = null-pass', E],
+    ['#10489 golden', 'spring.datasource.password=hunter2Value', C],
+    ['#10489 golden', 'db.password=s3cr3tValue', C],
+    ['#10489 golden', 'API_KEY=[abc123]', C],
+    ['#10489 golden', 'SECRET={abcdef}', C],
+    ['#10489 golden', 'TOKEN=(abc)def', C],
+    ['#10489 golden', `spring.datasource.password=${L}`, C],
+    ['#10489 golden', `app.github.apiToken=${L}`, E],
+    ['#10489 golden', `spring.datasource.password: ${L}`, C],
+    ['#10489 golden', `aws_secret_access_key = ${L}`, E],
+    ['#10489 golden', `//registry.example.org/:_authToken=${L}`, E],
+    ['#10489 golden', `token = "${L}"`, E],
+    ['#10489 golden', `$password = "${L}";`, E],
+    ['#10489 golden', `config.password = ${L};`, E],
+    ['#10489 golden', `password = ${L}.pass`, E],
+    ['#10489 golden', `  - POSTGRES_PASSWORD=${L}`, E],
+    ['#10489 golden', `set API_TOKEN=${L}`, E],
+    ['#10489 golden', `https://x.example/cb?token=${L}&u=1`, C],
+    ['#10489 golden', `X-Api-Key: ${L}`, 'auth_header'],
+    ['#10489 golden', `{"password":"${L}"}`, C],
+    ['#10489 golden', `app.SERVICE_TOKEN = ${L};`, E],
+    ['#10489 golden', `password = ${L};`, E],
+    ['#10489 golden', `DB_PASSWORD=${L};`, E],
+    ['#10489 golden', `config.password = '${L}';`, E],
+    ['#10489 golden', 'password = value.pass\n; comment', E],
+    ['#10489 golden', `readonly API_TOKEN = ${L}`, E],
+    ['#10489 golden', `  export readonly API_TOKEN = ${S}`, E],
+    ['#10489 golden', 'MY_TOKEN=!abc', E],
+    ['#10489 golden', 'MY_TOKEN=(abc', E],
+    ['#10489 golden', 'MY_TOKEN=[abc', E],
+    ['#10489 golden', 'MY_TOKEN={abc', E],
+    ['#10489 golden', 'MY_TOKEN=-abc', E],
+    ['#10489 golden', 'MY_TOKEN=+abc', E],
+    ['#10489 golden', 'MY_TOKEN=/abc', E],
+    ['#10489 golden', 'MY_TOKEN=@abc', E],
+    ['#10489 golden', 'MY_TOKEN=#abc', E],
+    ['#10489 golden', 'MY_TOKEN=%abc', E],
+    ['#10489 golden', 'MY_TOKEN=*abc', E],
+    ['#10489 golden', 'MY_TOKEN=&abc', E],
+    ['#10489 golden', 'MY_TOKEN=~abc', E],
+    ['#10489 golden', 'MY_TOKEN=^abc', E],
+    ['#10489 golden', 'MY_TOKEN=:abc', E],
+    ['#10489 golden', 'MY_TOKEN=`abc', E],
+    ['#10489 golden', 'MY_TOKEN=7abc', E],
+    ['#10489 golden', 'MY_TOKEN = !abc', E],
+    ['#10489 golden', 'MY_TOKEN = (abc', E],
+    ['#10489 golden', 'MY_TOKEN = [abc', E],
+    ['#10489 golden', 'MY_TOKEN = {abc', E],
+    ['#10489 golden', 'MY_TOKEN = -abc', E],
+    ['#10489 golden', 'MY_TOKEN = +abc', E],
+    ['#10489 golden', 'MY_TOKEN = /abc', E],
+    ['#10489 golden', 'MY_TOKEN = @abc', E],
+    ['#10489 golden', 'MY_TOKEN = #abc', E],
+    ['#10489 golden', 'MY_TOKEN = %abc', E],
+    ['#10489 golden', 'MY_TOKEN = *abc', E],
+    ['#10489 golden', 'MY_TOKEN = &abc', E],
+    ['#10489 golden', 'MY_TOKEN = ~abc', E],
+    ['#10489 golden', 'MY_TOKEN = ^abc', E],
+    ['#10489 golden', 'MY_TOKEN = :abc', E],
+    ['#10489 golden', 'MY_TOKEN = `abc', E],
+    ['#10489 golden', 'MY_TOKEN = 7abc', E],
+    ['#10489 golden', 'MY_TOKEN = (abc)', E],
+    ['#10489 golden', 'MY_TOKEN = [abc]', E],
+    ['#10489 golden', 'MY_TOKEN = {abc}', E],
+    ['#10489 golden', 'MY_TOKEN = (a, b', E],
+    ['a keyword joined to more text', 'MY_PASSWORD=None, other', E],
+    ['#10489 golden', 'MY_TOKEN=abc!def', E],
+    ['#10489 golden', 'MY_TOKEN = abc!', E],
+    ['#10489 golden', 'MY_TOKEN = abc?.d', E],
+    ['#10489 golden', 'MY_TOKEN = abc<d', E],
+    ['#10489 golden', 'MY_TOKEN = abc ?d', E],
+    [
+      'former limit, a bare property after a call at the line end',
+      `DB_PASSWORD = ${S}(x).y`,
+      E,
+    ],
+    ['D2-A sub-shapes', `DB_PASSWORD = ${S}(x)[0]`, E],
+    ['D2-A sub-shapes', `DB_PASSWORD = ${S}[0](x)`, E],
+    ['guard (value on the next line after =>)', `:password =>\n${S} (`, E],
+    [
+      'guard (value past the window)',
+      `DB_PASSWORD =${repeat(' ', 171)}${S} (`,
+      E,
+    ],
+    ['guard (open bracket after U+2029)', `DB_PASSWORD = ${S}\u2029(`, E],
+    [
+      'guard (open bracket at the window edge)',
+      `DB_PASSWORD = ${repeat('a', 159)}(${repeat('b', 20)}`,
+      E,
+    ],
+    [
+      'guard (double-quoted value before an open bracket)',
+      `const DB_PASSWORD = "${S}" + build(`,
+      E,
+    ],
+    [
+      'guard (single-quoted value before an open bracket)',
+      `const DB_PASSWORD = '${S}' + build(`,
+      E,
+    ],
+    [
+      'guard (backquoted value joined to a template)',
+      `DB_PASSWORD = \`${S}\` + \`\${x}\``,
+      E,
+    ],
+    [
+      'guard (shell readonly with a dotted value)',
+      `readonly API_TOKEN = ${S}.pass`,
+      E,
+    ],
+    ['guard (declaration before a CR)', `const\rDB_PASSWORD = ${S}.pass`, E],
+    ['guard (declaration before U+2028)', `let\u2028API_KEY = ${S}.pass`, E],
+    ['guard (declaration before U+2029)', `let\u2029API_KEY = ${S}.pass`, E],
+    [
+      'guard (arrow candidate inside a code value)',
+      `const getToken = password => ${S}`,
+      E,
+    ],
+    ['guard (no space before =)', `DB_PASSWORD= ${S}(a, b)`, E],
+    [
+      '#10499 round 1, text before a line-end bracket',
+      `DB_PASSWORD = ${S} # internal note (`,
+      E,
+    ],
+    [
+      '#10499 round 1, text before a line-end bracket',
+      `DB_PASSWORD = ${S} # note {`,
+      E,
+    ],
+    [
+      '#10499 round 1, text before a line-end bracket',
+      `DB_PASSWORD = ${S} // see (`,
+      E,
+    ],
+    [
+      '#10499 round 1, text before a line-end bracket',
+      `DB_PASSWORD = ${S} ; see [`,
+      E,
+    ],
+    [
+      '#10499 round 1, text before a line-end bracket',
+      `DB_PASSWORD = ${S} -- note (`,
+      E,
+    ],
+    [
+      '#10499 round 1, text before a line-end bracket',
+      `DB_PASSWORD = ${S} #(`,
+      E,
+    ],
+    [
+      '#10499 round 1, text before a line-end bracket',
+      `DB_PASSWORD = ${S} REM x (`,
+      E,
+    ],
+    [
+      '#10499 round 1, text before a line-end bracket',
+      `DB_PASSWORD = ${S} <!-- x (`,
+      E,
+    ],
+    [
+      '#10499 round 1, text before a line-end bracket',
+      `DB_PASSWORD = ${S} & echo (`,
+      E,
+    ],
+    [
+      '#10499 round 1, text before a line-end bracket',
+      `DB_PASSWORD = ${S} /* x (`,
+      E,
+    ],
+    [
+      '#10499 round 1, text before a line-end bracket',
+      `DB_PASSWORD = ${S} x (`,
+      E,
+    ],
+    [
+      '#10499 round 1, text before a line-end bracket',
+      `DB_PASSWORD = ${S}, (`,
+      E,
+    ],
+    [
+      '#10499 round 1, text before a line-end bracket',
+      `DB_PASSWORD = ${S} | (`,
+      E,
+    ],
+    [
+      '#10499 round 1, text before a line-end bracket',
+      `DB_PASSWORD = ${S} ) (`,
+      E,
+    ],
+    [
+      'former limit, a spaced operator before a bracket',
+      `DB_PASSWORD = ${S} > (`,
+      E,
+    ],
+    [
+      'guard (only spaces before a line-end bracket)',
+      `DB_PASSWORD =${repeat(' ', 171)}(`,
+      E,
+    ],
+    ['guard (call closed past LF)', `DB_PASSWORD = ${S}(x\n, y)`, E],
+    ['guard (call closed past CR)', `DB_PASSWORD = ${S}(x\r, y)`, E],
+    ['guard (call closed past U+2028)', `DB_PASSWORD = ${S}(x\u2028, y)`, E],
+    ['guard (call closed past U+2029)', `DB_PASSWORD = ${S}(x\u2029, y)`, E],
+    [
+      '#10499 round 2, a keyword then a terminator, then a literal',
+      `DB_PASSWORD=null)${S}`,
+      E,
+    ],
+    [
+      '#10499 round 2, a keyword then a terminator, then a literal',
+      `DB_PASSWORD=null;${S}`,
+      E,
+    ],
+    [
+      '#10499 round 2, a keyword then a terminator, then a literal',
+      `DB_PASSWORD=None ${S}`,
+      E,
+    ],
+    [
+      '#10499 round 2, a keyword then a terminator, then a literal',
+      `DB_PASSWORD=true, ${S}`,
+      E,
+    ],
+    [
+      '#10499 round 2, a keyword then a terminator, then a literal',
+      `DB_PASSWORD=true,}${S}`,
+      E,
+    ],
+    [
+      '#10499 round 2, a keyword then a terminator, then a literal',
+      `DB_PASSWORD=false\t${S}`,
+      E,
+    ],
+    [
+      '#10499 round 2, a keyword then a terminator, then a literal',
+      `DB_PASSWORD=undefined) ${S}`,
+      E,
+    ],
+    [
+      '#10499 round 2, a keyword then a terminator, then a literal',
+      `DB_PASSWORD=nil;x${S}`,
+      E,
+    ],
+    [
+      '#10499 round 2, a keyword then a terminator, then a literal',
+      `DB_PASSWORD=NULL ${S}`,
+      E,
+    ],
+    [
+      '#10499 round 2, a keyword then a terminator, then a literal',
+      `DB_PASSWORD = null)${S}`,
+      E,
+    ],
+    [
+      '#10499 round 2, a keyword then spaces past the window',
+      `DB_PASSWORD = null${repeat(' ', 170)}${S}`,
+      E,
+    ],
+    [
+      '#10499 round 2, a keyword joined to more text',
+      'DB_PASSWORD=None, other',
+      E,
+    ],
+    [
+      '#10499 round 2, a keyword expression before a comment',
+      `DB_PASSWORD = new ${S} # note`,
+      E,
+    ],
+    [
+      '#10499 round 2, a spaced operator before punctuation',
+      `DB_PASSWORD = ${S} > /dev/null`,
+      E,
+    ],
+    [
+      '#10499 round 2, a spaced operator before punctuation',
+      `DB_PASSWORD = ${S} || (`,
+      E,
+    ],
+    ['#10499 round 2, probe-pfx', `DB_PASSWORD = function ${S}`, E],
+    ['#10499 round 2, probe-pfx', `const DB_PASSWORD = -${S}`, E],
+    ['#10499 round 2, probe-pfx', `export DB_PASSWORD = !${S}`, E],
+    ['#10499 round 2, probe-pfx', `DB_PASSWORD = ${S} + x`, E],
+    [
+      'guard (unspaced keyword then spaces past the window)',
+      `DB_PASSWORD=null${repeat(' ', 170)}${S}`,
+      E,
+    ],
+    [
+      'guard (keyword call cut by the window)',
+      `DB_PASSWORD = await ${S}(x)${repeat(' ', 170)}tail`,
+      E,
+    ],
+    [
+      'guard (keyword call before a comment)',
+      `DB_PASSWORD = new ${S}(x) # note`,
+      E,
+    ],
+    [
+      'guard (spaced operator before an unclosed call)',
+      `DB_PASSWORD = ${S} || x(`,
+      E,
+    ],
+    [
+      'former limit, a quoted operand after a comparison',
+      `DB_PASSWORD = typeof ${S} === 'x'`,
+      E,
+    ],
+    [
+      '#10499 round 3, text after a closed bracket',
+      `DB_PASSWORD = (a, b) ${S}`,
+      E,
+    ],
+    ['#10499 round 3, text after a closed bracket', `DB_PASSWORD = () ${S}`, E],
+    ['#10499 round 3, text after a closed bracket', `DB_PASSWORD = {} ${S}`, E],
+    [
+      '#10499 round 3, a call then a bare property at the line end',
+      `DB_PASSWORD = f(x).${S}`,
+      E,
+    ],
+    ['#10499 round 3, text after a call', `DB_PASSWORD = await f() ${S}`, E],
+    ['#10499 round 3, text after a call', `DB_PASSWORD = getKey() ${S}`, E],
+    [
+      '#10499 round 3, a quoted literal after an operator',
+      `DB_PASSWORD = os.environ.get("X") or "${S}T4vB"`,
+      E,
+    ],
+    [
+      '#10499 round 3, a quoted literal after an operator',
+      `API_TOKEN = ENV["T"] || "${S}T4vB"`,
+      E,
+    ],
+    [
+      '#10499 round 3, a quoted literal after an operator',
+      `DB_PASSWORD = fallback || "${S}"`,
+      E,
+    ],
+    [
+      '#10499 round 3, a quoted literal after an operator',
+      `DB_PASSWORD = getKey() || "${S}"`,
+      E,
+    ],
+    [
+      '#10499 round 3, a quoted literal in a ternary',
+      `DB_PASSWORD = cond ? "${S}" : x`,
+      E,
+    ],
+    [
+      '#10499 round 3, a quoted literal in a ternary',
+      `DB_PASSWORD = cond ? x : '${S}'`,
+      E,
+    ],
+    ['LEAD probe-a2', `DB_PASSWORD=null#${S}`, E],
+    ['LEAD probe-a2', `DB_PASSWORD=True ${S}`, E],
+    ['LEAD probe-a2', `DB_PASSWORD=nullable${S}`, E],
+    ['LEAD probe-a2', `DB_PASSWORD=null.${S}`, E],
+    ['LEAD probe-a2', `DB_PASSWORD=null]${S}`, E],
+    ['LEAD probe-a4', `DB_PASSWORD = ${S} > #`, E],
+    ['LEAD probe-a4', `DB_PASSWORD = ${S} + (`, E],
+    ['LEAD probe-a4', `DB_PASSWORD = ${S} ? (`, E],
+    ['LEAD probe-a4', `DB_PASSWORD = ${S} == (`, E],
+    ['LEAD probe-a4', `DB_PASSWORD = ${S} && (`, E],
+    ['LEAD probe-a4', `DB_PASSWORD = ${S} - (`, E],
+    ['LEAD probe-a4', `DB_PASSWORD = ${S} | x`, E],
+    ['LEAD probe-a4', `DB_PASSWORD = ${S} # note > x`, E],
+    ['LEAD probe-a4', `DB_PASSWORD = ${S} -> x`, E],
+    ['LEAD probe-a4', `DB_PASSWORD = ${S} >> log.txt`, E],
+    ['LEAD probe-a4', `DB_PASSWORD = ${S} 2> err.log`, E],
+    ['LEAD probe-a6', `DB_PASSWORD=${S} # note (`, E],
+    ['LEAD probe-a6', `DB_PASSWORD = "${S}" # note (`, E],
+    ['LEAD probe-a6', `DB_PASSWORD = ${S} # note`, E],
+    ['LEAD probe-a6', 'let token = match x {', E],
+    ['LEAD probe-a6b', 'DB_PASSWORD = Zq7x.K9mPw2Lr', E],
+    ['LEAD probe-a6b', 'DB_PASSWORD = Zq7x.K9mPw2Lr;', E],
+    ['LEAD probe-r2', `DB_PASSWORD = [x] ${S}`, E],
+    ['LEAD probe-r2', `DB_PASSWORD = f(x) ${S}`, E],
+    ['LEAD probe-r3', `DB_PASSWORD = (x).${S}`, E],
+    ['LEAD probe-r3', `DB_PASSWORD = (x)(${S}`, E],
+    ['LEAD probe-r3', `DB_PASSWORD = (a): T => ${S}`, E],
+    ['LEAD probe-r3', `DB_PASSWORD = c ? "${S}" : x`, E],
+    ['LEAD probe-r5', `DB_PASSWORD = os.environ.get("X") or "${S}"`, E],
+    ['LEAD probe-r5', `API_TOKEN = ENV["T"] || "${S}"`, E],
+    ['LEAD probe-r5', `DB_PASSWORD = ${S} || x y`, E],
+    ['LEAD probe-r6', `DB_PASSWORD = cached || fallback || "${S}";`, E],
+    ['LEAD probe-r6', `DB_PASSWORD = a || b || '${S}'`, E],
+    ['LEAD probe-r6', `DB_PASSWORD = a && b ?? "${S}"`, E],
+    ['LEAD probe-r6', `DB_PASSWORD = a || b ${S}`, E],
+    ['LEAD probe-r6', `DB_PASSWORD = a || b || c ${S}`, E],
+    ['LEAD probe-r6', `DB_PASSWORD = cond ?  "${S}" : x`, E],
+    ['LEAD probe-r6', `DB_PASSWORD = cond ? a :  "${S}"`, E],
+    ['LEAD probe-r6', `DB_PASSWORD = cond ?\t"${S}" : x`, E],
+    [
+      'quoted fallback after an operator',
+      "const secret = options.secret ?? 'in-memory-secret';",
+      E,
+    ],
+    [
+      'quoted fallback after an operator',
+      "const apiKey = environment.CANOPY_MOCK_API_KEY ?? 'mock';",
+      E,
+    ],
+    ['guard (index then a method)', `DB_PASSWORD = ${S}[0].trim()`, E],
+    [
+      'guard (open bracket after a call at the window edge)',
+      `DB_PASSWORD = getKey()${repeat(' ', 151)}(${repeat('x', 20)}`,
+      E,
+    ],
+    [
+      'guard (spaces after a call past the window)',
+      `DB_PASSWORD = getKey()${repeat(' ', 160)}${S}`,
+      E,
+    ],
+    [
+      'guard (text after an operand after a call)',
+      `DB_PASSWORD = getKey() || x ${S}`,
+      E,
+    ],
+    [
+      'guard (text after a ternary after a call)',
+      `DB_PASSWORD = getKey() ? a : b ${S}`,
+      E,
+    ],
+    ['guard (text after an arrow body)', `DB_PASSWORD = (a, b) => ${S} x`, E],
+    [
+      'guard (empty arrow body past the window)',
+      `DB_PASSWORD = (a, b) =>${repeat(' ', 170)}${S}`,
+      E,
+    ],
+    [
+      '#10499 round 3 review, extra spaces before a quoted ternary branch',
+      `DB_PASSWORD = cond ?  "${S}" : fallback`,
+      E,
+    ],
+    [
+      '#10499 round 3 review, a tab before a quoted ternary branch',
+      `DB_PASSWORD = cond ?\t"${S}" : fallback`,
+      E,
+    ],
+    [
+      '#10499 round 3 review, a tab before a quoted ternary branch',
+      `DB_PASSWORD = cond ? a :\t'${S}'`,
+      E,
+    ],
+    [
+      '#10499 round 3 review, text after a ternary',
+      `DB_PASSWORD = cond ? a : b ${S}`,
+      E,
+    ],
+  ];
+  it.each(
+    CREDENTIALS.map(([label, text, rule]) => [label, rule, text] as const),
+  )('reads a %s row as %j: %j', (_label, rule, text) => {
+    expect(findSharedTextCredentialRule(text)).toBe(rule);
+    expect(memberFileRule(text)).toBe(rule);
+  });
+
+  // The stated false positives: code that no shape on its own line
+  // proves, so it reads as a credential variable, as on develop.
+  const FALSE_POSITIVES: readonly Row[] = [
+    ['a member write from a bare identifier', 'this.token = value;', E],
+    ['a JSX attribute', 'reloadToken={reloadToken}', E],
+    ['a member chain at the line end', 'token = self.session.token', E],
+    ['a member chain at the line end', 'password = input.value', E],
+    ['a call with one bare argument', 'TOKEN = getToken(ctx)', E],
+    ['an index with one bare token', 'TOKEN = keys[0]', E],
+    ['a call with one bare argument', 'token = decodeURIComponent(raw);', E],
+    [
+      'text after a closed bracket or call',
+      '{ secret = [], public: visible = [] } = {},',
+      E,
+    ],
+    [
+      'a declared name with a bare identifier',
+      'const MAIN: ProcessToken = makeToken;',
+      E,
+    ],
+    ['an unspaced call', 'const API_TOKEN=getToken();', E],
+    [
+      'an arrow returning a bare identifier',
+      'String? get currentToken => _cached;',
+      E,
+    ],
+    [
+      'a declared name with a bare identifier',
+      'private readonly API_KEY = DEFAULT_API_KEY;',
+      E,
+    ],
+    ['a quoted string joined to code', 'const token = "Bearer " + t;', E],
+    ['a quoted string joined to code', "const SECRET = '0123'.repeat(4);", E],
+    [
+      'a quoted string joined to code',
+      "$pilotPassword='Aa1!'+[Convert]::ToBase64String($pilotBytes)",
+      E,
+    ],
+    ['an arrow returning a bare identifier', 'token => fallbackToken', E],
+    ['a call with one bare argument', 'secret = randomBytes(32);', E],
+    ['an arrow returning a bare identifier', 'get currentToken => _cached', E],
+    ['an arrow returning a quoted string', 'items.map(token => "x")', E],
+    ['an escaped ${ in backquotes', `password = \`${S}\\\${x}\``, E],
+    ['a camelCase default', 'reloadToken = 0,', E],
+    ['a camelCase variable', 'orphanToken = sessionCookie', E],
+    ['an arrow returning a quoted string', '.map(token => "x")', E],
+    [
+      'other text before an open bracket at the line end',
+      "@pragma('vm:prefer-inline') $Res call({Object? token = null,Object? chat = freezed,Object? online = null,}) {",
+      E,
+    ],
+    [
+      'other text before an open bracket at the line end',
+      "@pragma('vm:prefer-inline') $Res call({Object? token = null,Object? chat = null,Object? online = null,Object? ready = null,}) {",
+      E,
+    ],
+    [
+      'other text before an open bracket at the line end',
+      "@pragma('vm:prefer-inline') $Res call({Object? token = null,Object? itemId = null,Object? action = null,Object? notifySubscriber = null,}) {",
+      E,
+    ],
+    [
+      'other text before an open bracket at the line end',
+      "token = signAttributionToken('page-visit-signup-state-v1', {",
+      E,
+    ],
+    [
+      'other text before an open bracket at the line end',
+      "await db.query('SELECT token FROM sessions WHERE token = $1', [",
+      E,
+    ],
+    [
+      'other text before an open bracket at the line end',
+      'let token = match self.auth.relay_token(&identity.device_id).await {',
+      E,
+    ],
+    [
+      'a keyword expression on a value not proven code',
+      'secret = await host',
+      E,
+    ],
+    [
+      'a keyword expression on a value not proven code',
+      "const secret = await request('chat:command', [",
+      E,
+    ],
+    [
+      'a spaced operator before a parenthesised expression',
+      'const token = cachedGitHubToken ?? (await resolveGitHubToken());',
+      E,
+    ],
+    [
+      'a keyword expression on a value not proven code',
+      'const token = await gitHubPatWriteQueue.then(() =>',
+      E,
+    ],
+    [
+      'a keyword expression on a value not proven code',
+      'const token = await linearTokenWriteQueue.then(() =>',
+      E,
+    ],
+    [
+      'a keyword value followed by more code',
+      "@pragma('vm:prefer-inline') $Res call({Object? chat = null,Object? token = null,}) {",
+      E,
+    ],
+    [
+      'a keyword value followed by more code',
+      "@pragma('vm:prefer-inline') $Res call({Object? token = null,}) {",
+      E,
+    ],
+    [
+      'a keyword value followed by more code',
+      "@pragma('vm:prefer-inline') $Res call({Object? target = null,Object? token = null,}) {",
+      E,
+    ],
+    [
+      'a keyword value followed by more code',
+      '{ accessTokenExpiresAt = null, refreshToken = null } = {},',
+      E,
+    ],
+    [
+      'a keyword value followed by more code',
+      'refresh_token = NULL, updated_at = ${UTC_NOW}',
+      E,
+    ],
+    [
+      'a keyword value followed by more code',
+      'HANDLE token = NULL, process = NULL;',
+      E,
+    ],
+    [
+      'a keyword expression on a value not proven code',
+      'private readonly byToken = new Map<',
+      E,
+    ],
+    [
+      'a keyword expression on a value not proven code',
+      'const colorMetadataByToken = new Map<',
+      E,
+    ],
+    [
+      'a keyword expression on a value not proven code',
+      'const secret = await pending;',
+      E,
+    ],
+    [
+      'a keyword expression on a value not proven code',
+      'const secret = await attachment.within(() =>',
+      E,
+    ],
+    ['a quoted operand after a comparison', "token = typeof x === 'string'", E],
+    ['a quoted operand after a comparison', "token = mode === 'secret'", E],
+    [
+      'a quoted operand after a comparison',
+      "DB_PASSWORD = typeof x === 'string'",
+      E,
+    ],
+    [
+      'a quoted operand after a comparison',
+      "DB_PASSWORD = mode === 'secret'",
+      E,
+    ],
+    [
+      'a quoted operand after an operator',
+      "lastResolutionHadToken = token !== '';",
+      E,
+    ],
+    [
+      'a quoted operand after an operator',
+      "let token = stored.status === 'ok' ? (stored.value ?? '') : '';",
+      E,
+    ],
+    [
+      'a quoted operand after an operator',
+      "const token = result.value ?? '';",
+      E,
+    ],
+    [
+      'text after a closed bracket or call',
+      'const readToken = async (): Promise<{',
+      E,
+    ],
+    [
+      'a quoted operand after an operator',
+      "const runConditionMaySecret = firstRunConditionWarning === 'possible_secret';",
+      E,
+    ],
+    [
+      'a quoted operand after an operator',
+      "const clientSecret = setup.clientSecretAccepted ? row.oauthClientSecret : '';",
+      E,
+    ],
+    [
+      'a quoted operand after an operator',
+      "lastToken = property ? 'identifier' : word;",
+      E,
+    ],
+    [
+      'a quoted operand after an operator',
+      "lastToken = c === '=' && next === '>' ? '=>' : c;",
+      E,
+    ],
+    [
+      'text after a closed bracket or call',
+      'function stageVerified(item, token = randomUUID()) {',
+      E,
+    ],
+    [
+      'text after a closed bracket or call',
+      "'apps/web/src/lib/api-keys.ts': 'export type ApiKey = {};\\n',",
+      E,
+    ],
+    [
+      'an optional-chained operand after an operator',
+      'const apiKey = parsed.apiKey ?? saved?.apiKey;',
+      E,
+    ],
+  ];
+  it.each(
+    FALSE_POSITIVES.map(([label, text, rule]) => [label, rule, text] as const),
+  )('reads %s as %j, a stated false positive: %j', (_label, rule, text) => {
+    expect(findSharedTextCredentialRule(text)).toBe(rule);
+    expect(memberFileRule(text)).toBe(rule);
+  });
+
+  // Rows with no credential that stay null, as on develop: placeholders,
+  // empty values, comparisons and environment reads.
+  const MUST_STAY_NULL: readonly Row[] = [
+    ['68 shapes', 'const API_TOKEN = process.env.API_TOKEN;', null],
+    ['68 shapes', 'if (newPassword == oldPassword)', null],
+    ['68 shapes', 'SECRET_KEY = env("SECRET_KEY")', null],
+    ['68 shapes', 'apiKey ??= fallback', null],
+    ['axes', 'const token = "${S}";', null],
+    ['round 1 edge ctl $OTHER_VAR', 'export API_KEY="$OTHER_VAR"', null],
+    ['round 1 edge ctl empty', 'let password = "";', null],
+    ['round 2 A3 ctl', 'const a = b = c;', null],
+    ['D1 null', 'let password = ""', null],
+    ['D1 null', 'password = "${VAR}"', null],
+    ['D1 null', 'TOKEN=""', null],
+    ['D1 null+', 'DB_PASSWORD="${DB_PASSWORD}"', null],
+    ['D1 null+', "password = '$PASS'", null],
+    ['D1 null+', 'API_TOKEN="$(cat token.txt)"', null],
+    ['D1 null+', 'password = "{{ secret }}"', null],
+    ['D1 null+', "TOKEN=''", null],
+    ['LEAD probe-f', 'const apiKey = process.env.API_KEY ?? "";', null],
+    ['LEAD probe-r2', 'const f = (token) => token.trim()', null],
+    ['LEAD probe-r2', 'abc || d', null],
+    ['LEAD probe-r2', 'x = a\n> b', null],
+    ['LEAD probe-r2', 'if (a == b)', null],
+    ['LEAD probe-r2', 'a === b', null],
+    ['#10489 golden', 'spring.datasource.password=${DB_PASS}', null],
+    ['#10489 golden', 'MY_TOKEN=$abc', null],
+    ['#10489 golden', 'MY_TOKEN = $abc', null],
+    [
+      'LEAD probe-fb',
+      `const DB_PASSWORD = process.env.DB_PASSWORD || "${S}T4vB";`,
+      null,
+    ],
+    [
+      'LEAD probe-fb',
+      `const API_KEY = process.env.API_KEY ?? '${S}T4vB';`,
+      null,
+    ],
+    ['LEAD probe-fb', `API_TOKEN = ENV.fetch("T", "${S}T4vB")`, null],
+    ['LEAD probe-fb', 'const SECRET_KEY = cfg.key || "changeme"', null],
+    ['LEAD probe-r2', 'None;', null],
+    ['LEAD probe-r2', "typeof x === 'string'", null],
+    ['LEAD probe-r2', "mode === 'secret'", null],
+    ['LEAD probe-r3', 'f(x).y;', null],
+    ['LEAD probe-r3', '(a, b) => c', null],
+  ];
+  it.each(MUST_STAY_NULL)(
+    'leaves a %s row unflagged: %j',
+    (_label, text, rule) => {
+      expect(findSharedTextCredentialRule(text)).toBe(rule);
+      expect(memberFileRule(text)).toBe(rule);
+    },
+  );
+
+  // Credentials develop misses too, pinned to develop's null and
+  // tracked separately: a quoted hash key, a value on the next line,
+  // a key name outside the pattern and a literal after a proven-code
+  // value.
+  const DEVELOP_GAPS: readonly Row[] = [
+    ['a quoted hash key', "'password' => 'hunter2'", null],
+    ['a quoted hash key', `"api_key" => "${S}"`, null],
+    ['a quoted hash key', '{ \'token\' => "X" }', null],
+    ['a quoted hash key', `{ 'token' => "${S}" }`, null],
+    ['a quoted hash key', `'api_key' => '${S}',`, null],
+    ['a quoted hash key', `"secret" => "${S}"`, null],
+    ['a value on the next line', `DB_PASSWORD =\n${S}`, null],
+    ['a value on the next line', `apiKey =\n  "${S}"`, null],
+    ['a key name outside the pattern', `SECRET_KEY = '${L}'`, null],
+    ['a key name outside the pattern', `config.secret_key = '${L}'`, null],
+    [
+      'a literal after a proven-code value',
+      `const API_KEY = process.env.API_KEY || "${L}";`,
+      null,
+    ],
+    [
+      'a literal after an environment read',
+      `const DB_PASSWORD = process.env.X || "${S}"`,
+      null,
+    ],
+  ];
+  it.each(DEVELOP_GAPS)(
+    'leaves %s unflagged, as develop does: %j',
+    (_label, text, rule) => {
+      expect(findSharedTextCredentialRule(text)).toBe(rule);
+      expect(memberFileRule(text)).toBe(rule);
+    },
+  );
+});
+
 // Every regex in both profiles, on adversarial near-misses at the largest
 // file a package may carry. Each input repeats the start of a match without
 // completing it, so a pattern with overlapping quantifiers would rescan from
@@ -950,7 +2466,10 @@ describe('package definition documents are checked as the desktop checks them (C
 // - Shared placeholder neutralization (SECRET_PLACEHOLDER_ASSIGNMENT_PATTERN
 //   and NAMED_PLACEHOLDER_PATTERN): every arm, <…>, ${{…}}, {{…}}, $(…),
 //   nested $($(…)), $VAR, ${VAR}, env.VAR.
-// - SECRET_ENV_ASSIGNMENT_PATTERN (shared): keyword then spaces or tabs.
+// - SECRET_ENV_ASSIGNMENT_PATTERN (shared): keyword then spaces or tabs,
+//   and code assignments, where every candidate reads as code and so runs
+//   the whole line check; and a literal call, flagged at the first candidate
+//   (CAN-7614).
 // - URL_USER_INFO_PATTERN and USER_FLAG_PATTERN (shared): ://, ://user:,
 //   -u and --user= runs.
 // - PACKAGE_PLACEHOLDER_ASSIGNMENT_PATTERN (package): <…>, {…}, {{…}}, $VAR,
@@ -958,10 +2477,18 @@ describe('package definition documents are checked as the desktop checks them (C
 // - The SECRET_RULES check on placeholder contents (both profiles): runs of
 //   placeholders holding jwt, sk- and gh*_ prefixes, and a URL password
 //   placeholder.
+// - Both package readings, stripped and keeping line boundaries (package):
+//   runs of line breaks, control characters, and token prefixes at line
+//   starts.
 // - findPackageFileCredentialRule (the bytes helper): every input above,
 //   encoded. The definition-document path has its own block below.
 const ADVERSARIAL_UNITS: readonly (readonly [string, string])[] = [
   ['private key header', '-----BEGIN A A A A '],
+  ['pgp private key header', '-----BEGIN PGP PRIVATE KEY '],
+  ['ssh2 private key header', '---- BEGIN SSH2 '],
+  ['ssh2 encrypted private key header', '---- BEGIN SSH2 ENCRYPTED PRIVATE '],
+  ['putty key file header', 'PuTTY-User-Key-File-'],
+  ['putty key file version', 'PuTTY-User-Key-File-2'],
   ['jwt prefix', 'eyJa'],
   ['jwt dots', 'eyJa.'],
   ['github pat', 'github_pat_'],
@@ -976,6 +2503,16 @@ const ADVERSARIAL_UNITS: readonly (readonly [string, string])[] = [
   ['credential equals', 'api_key'],
   ['env assignment spaces', 'API_KEY '],
   ['env assignment tabs', 'TOKEN\t'],
+  ['env code call', 'TOKEN = f();'],
+  ['env literal call', 'TOKEN = f('],
+  ['env code operator', 'TOKEN = a || b;'],
+  ['env code declaration', ' const TOKEN = a.b;'],
+  ['env code arrow', 'TOKEN => f(a, b);'],
+  ['env code template', 'TOKEN = `${a}`;'],
+  ['env code keyword chain', 'TOKEN = new new new f().g(x)[0] '],
+  ['env code operator operand', 'TOKEN = a ?? b.c(d) '],
+  ['env code bracket continuation', 'TOKEN = (a, b).c(d)[0] || e ? f : g;\n'],
+  ['env code operator chain', 'TOKEN = f() || a || b || c || d;\n'],
   ['url scheme', 'a://b'],
   ['url user', 'a://b:'],
   ['user flag', ' -u a'],
@@ -996,6 +2533,12 @@ const ADVERSARIAL_UNITS: readonly (readonly [string, string])[] = [
   ['expression placeholder holding a key prefix', 'token: ${{ sk-'],
   ['brace placeholder holding a token prefix', 'password={{ghp_'],
   ['url placeholder password', 'a://b:<eyJa'],
+  ['line feeds', '\n'],
+  ['lines ending in a word character', 'a\n'],
+  ['carriage returns and line feeds', '\r\n'],
+  ['control characters', '\u0001'],
+  ['words split by a control character', 'a\u0001b'],
+  ['token prefixes at line starts', 'done\nghp_'],
 ];
 
 // Growth, not wall time (CAN-7592): a loaded runner slows both timings
@@ -1663,5 +3206,300 @@ describe('one member file check for a shared skill or plugin, on desktop and hos
       'bad \\U00110000 and p',
     );
     expect(escapeDecodedCopy('only \\U00110000')).toBeNull();
+  });
+});
+
+// CAN-7625: PGP, SSH2 and PuTTY private keys, built at run time. Each is
+// refused from its header alone, so a block cut off before its end line, or
+// carrying no body at all, is refused just as a whole one is.
+describe('every private key format is refused by the shared checks (CAN-7625)', () => {
+  const PRIVATE = 'PRIVATE';
+  const BODY = [
+    'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC',
+    'b3BlbnNzaC1rZXktdjEAAAAABG5vbmU=',
+  ];
+  const FORMATS: readonly (readonly [
+    string,
+    string,
+    readonly string[],
+    string,
+  ])[] = [
+    [
+      'PEM',
+      `-----BEGIN ${PRIVATE} KEY-----`,
+      BODY,
+      `-----END ${PRIVATE} KEY-----`,
+    ],
+    [
+      'PEM RSA',
+      `-----BEGIN RSA ${PRIVATE} KEY-----`,
+      BODY,
+      `-----END RSA ${PRIVATE} KEY-----`,
+    ],
+    [
+      'PEM EC',
+      `-----BEGIN EC ${PRIVATE} KEY-----`,
+      BODY,
+      `-----END EC ${PRIVATE} KEY-----`,
+    ],
+    [
+      'PEM OpenSSH',
+      `-----BEGIN OPENSSH ${PRIVATE} KEY-----`,
+      BODY,
+      `-----END OPENSSH ${PRIVATE} KEY-----`,
+    ],
+    [
+      'PEM encrypted',
+      `-----BEGIN ENCRYPTED ${PRIVATE} KEY-----`,
+      BODY,
+      `-----END ENCRYPTED ${PRIVATE} KEY-----`,
+    ],
+    [
+      'PGP',
+      `-----BEGIN PGP ${PRIVATE} KEY BLOCK-----`,
+      ['', ...BODY, '=Ab3x'],
+      `-----END PGP ${PRIVATE} KEY BLOCK-----`,
+    ],
+    [
+      'SSH2 encrypted',
+      `---- BEGIN SSH2 ENCRYPTED ${PRIVATE} KEY ----`,
+      ['Comment: "key"', ...BODY],
+      `---- END SSH2 ENCRYPTED ${PRIVATE} KEY ----`,
+    ],
+    [
+      'SSH2',
+      `---- BEGIN SSH2 ${PRIVATE} KEY ----`,
+      BODY,
+      `---- END SSH2 ${PRIVATE} KEY ----`,
+    ],
+    [
+      'PuTTY v2',
+      `PuTTY-User-${'Key'}-File-2: ssh-rsa`,
+      [
+        'Encryption: none',
+        'Comment: key',
+        'Public-Lines: 1',
+        BODY[0],
+        'Private-Lines: 1',
+        BODY[1],
+      ],
+      'Private-MAC: 0a1b2c3d',
+    ],
+    [
+      'PuTTY v3',
+      `PuTTY-User-${'Key'}-File-3: ssh-ed25519`,
+      [
+        'Encryption: none',
+        'Comment: key',
+        'Public-Lines: 1',
+        BODY[0],
+        'Private-Lines: 1',
+        BODY[1],
+      ],
+      'Private-MAC: 0a1b2c3d',
+    ],
+  ];
+  const encoder = new TextEncoder();
+  const CHECKS = [
+    [
+      'secret material',
+      (text: string): SecretMaterialRule | null => findSecretMaterialRule(text),
+    ],
+    ['shared text', findSharedTextCredentialRule],
+    ['package text', findPackageTextCredentialRule],
+    [
+      'package file bytes',
+      (text: string): SecretMaterialRule | null =>
+        findPackageFileCredentialRule(encoder.encode(text)),
+    ],
+    [
+      'shared member file bytes',
+      (text: string): string | null =>
+        findSharedMemberFileCredentialRule(encoder.encode(text)),
+    ],
+  ] as const;
+  const SHAPES = [
+    ['the header alone', (header: string): string => header],
+    [
+      'a whole block',
+      (header: string, body: readonly string[], end: string): string =>
+        [header, ...body, end].join('\n'),
+    ],
+    [
+      'a block cut off before its end line',
+      (header: string, body: readonly string[]): string =>
+        [header, ...body].join('\n'),
+    ],
+    [
+      'a block inside other text',
+      (header: string, body: readonly string[], end: string): string =>
+        ['setup output', header, ...body, end, 'done'].join('\n'),
+    ],
+  ] as const;
+
+  it.each(
+    FORMATS.flatMap(([format, header, body, end]) =>
+      SHAPES.flatMap(([shape, build]) =>
+        CHECKS.map(
+          ([check, run]) =>
+            [format, shape, check, build(header, body, end), run] as const,
+        ),
+      ),
+    ),
+  )(
+    '%s as %s is refused by the %s check',
+    (_format, _shape, _check, text, run) => {
+      expect(run(text)).toBe('private_key');
+    },
+  );
+
+  // The package profile drops line breaks before it checks, so a PuTTY header
+  // right after a line ending in a word character must still be found.
+  it('finds a PuTTY header that follows a line ending in a word character, in the package profile', () => {
+    const text = `echo done\nPuTTY-User-${'Key'}-File-3: ssh-ed25519`;
+    expect(findPackageTextCredentialRule(text)).toBe('private_key');
+    expect(findPackageFileCredentialRule(encoder.encode(text))).toBe(
+      'private_key',
+    );
+    expect(findSecretMaterialRule(text)).toBe('private_key');
+  });
+
+  it.each([
+    [
+      'a PGP public key',
+      `-----BEGIN PGP PUBLIC KEY BLOCK-----\n${BODY[0]}\n-----END PGP PUBLIC KEY BLOCK-----`,
+    ],
+    [
+      'a PGP signature',
+      `-----BEGIN PGP SIGNATURE-----\n${BODY[0]}\n-----END PGP SIGNATURE-----`,
+    ],
+    [
+      'an SSH2 public key',
+      `---- BEGIN SSH2 PUBLIC KEY ----\n${BODY[0]}\n---- END SSH2 PUBLIC KEY ----`,
+    ],
+    [
+      'a PEM public key',
+      `-----BEGIN PUBLIC KEY-----\n${BODY[0]}\n-----END PUBLIC KEY-----`,
+    ],
+    [
+      'a certificate',
+      `-----BEGIN CERTIFICATE-----\n${BODY[0]}\n-----END CERTIFICATE-----`,
+    ],
+    [
+      'prose naming the PuTTY format',
+      'Convert the key to the PuTTY-User-Key-File-3 format with puttygen.',
+    ],
+    [
+      'prose naming a .ppk file',
+      'Load the PuTTY key file (key.ppk) in Pageant.',
+    ],
+  ])('%s is not a private key', (_label, text) => {
+    expect(findSecretMaterialRule(text)).toBeNull();
+    expect(findSharedTextCredentialRule(text)).toBeNull();
+  });
+});
+
+// CAN-7626: the package profile read text with every control character
+// dropped, line breaks and tabs included, so a line ending in a letter or
+// digit ran into the next and a token at the start of that line lost the
+// boundary its rule needs. It now also reads a copy that keeps line breaks
+// and tabs, with every other control character as a space, and refuses when
+// either reading trips: develop's stripped reading first, so a rule name it
+// gives doesn't change.
+describe('the package profile keeps line boundaries (CAN-7626)', () => {
+  const encoder = new TextEncoder();
+  const SEPARATORS = [
+    ['a line feed', '\n'],
+    ['a carriage return and line feed', '\r\n'],
+    ['a tab', '\t'],
+    ['another control character', '\u0001'],
+  ] as const;
+
+  it.each(
+    SAMPLES.flatMap(([rule, sample]) =>
+      SEPARATORS.map(([label, separator]) => [rule, label, separator, sample]),
+    ),
+  )(
+    'finds %s after %s that follows a word character',
+    (rule, _label, separator, sample) => {
+      const text = `echo done${separator}${sample}`;
+      expect(findSecretMaterialRule(sample)).toBe(rule);
+      expect(findPackageTextCredentialRule(text)).toBe(rule);
+      expect(findPackageFileCredentialRule(encoder.encode(text))).toBe(rule);
+    },
+  );
+
+  // develop's stripped reading joins these into a token or key, so they
+  // stay refused; reading control characters as spaces alone would lose them.
+  it.each([
+    [
+      'a token a control character splits',
+      `gh\u0001${'p'}_${repeat('S', 30)}`,
+      'github_token',
+    ],
+    [
+      'a token a line break splits',
+      `gh\n${'p'}_${repeat('S', 30)}`,
+      'github_token',
+    ],
+    [
+      'a credential key a control character splits',
+      `api\u0007_${'key'}=value-one`,
+      'credential_assignment',
+    ],
+  ])('still finds %s, as develop does', (_label, text, rule) => {
+    expect(referencePackageCheck(text)).toBe(true);
+    expect(findPackageTextCredentialRule(text)).toBe(rule);
+    expect(findPackageFileCredentialRule(encoder.encode(text))).toBe(rule);
+  });
+
+  it('refuses a member file of a hosted package commit holding a token at a line start', () => {
+    const token = `gh${'p'}_${repeat('H', 30)}`;
+    expect(
+      findPackageEntryCredential({
+        definitionDocument: false,
+        bytes: encoder.encode(`echo done\n${token}\n`),
+      }),
+    ).toEqual({ rule: 'github_token' });
+  });
+
+  // A bracketed placeholder a line break splits isn't neutralized in the
+  // reading that keeps line boundaries, since the placeholder patterns stop
+  // at a line break; the shared check and the raw text check refuse it too.
+  it.each([
+    ['an angle placeholder', 'token: <your\nkey>'],
+    ['a brace placeholder', 'token: {{ your\nkey }}'],
+  ])('refuses %s a line break splits, which develop passed', (_label, text) => {
+    expect(referencePackageCheck(text)).toBe(false);
+    expect(findPackageTextCredentialRule(text)).toBe('credential_assignment');
+    expect(findPackageFileCredentialRule(encoder.encode(text))).toBe(
+      'credential_assignment',
+    );
+    expect(findSecretMaterialRule(text)).toBe('credential_assignment');
+  });
+
+  // develop reads a placeholder at a line start after a word character as
+  // part of the word before it, so it isn't neutralized; the stripped
+  // reading still runs first, so this stays as it was.
+  it('still refuses a placeholder at a line start after a word character, as develop does', () => {
+    const text = 'echo done\ntoken: <your key>';
+    expect(referencePackageCheck(text)).toBe(true);
+    expect(findPackageTextCredentialRule(text)).toBe('credential_assignment');
+  });
+
+  it.each([
+    ['multi-line steps', 'steps:\n  - run: deploy\n  - run: notify\n'],
+    [
+      'a placeholder after a line ending in punctuation',
+      'echo done.\ntoken: <your key>\n',
+    ],
+    ['an indented variable placeholder', 'run: deploy\n  api_key=$API_KEY\n'],
+    ['an expression over a line break', 'token: ${{ secrets.\nNAME }}'],
+    ['a placeholder after a control character', 'token:\u0001<your key>'],
+    ['tab-indented prose', 'Notes:\n\tKeep the release notes short.\n'],
+    ['a short token-like word at a line start', 'echo done\nghp is a prefix'],
+  ])('passes %s', (_label, text) => {
+    expect(findPackageTextCredentialRule(text)).toBeNull();
+    expect(findPackageFileCredentialRule(encoder.encode(text))).toBeNull();
   });
 });

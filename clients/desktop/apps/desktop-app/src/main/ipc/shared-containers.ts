@@ -90,6 +90,7 @@ import { getFeatureFlagService } from '../feature-flags';
 import { validateId } from '../lib/validation';
 import { isUuid } from '@canopy/protocol/uuid';
 import { logMainProcessWarn } from '../lib/main-process-logging';
+import { logSafeError } from '../shared-containers/capability-package/log-safe';
 import { addTrackedPlansWriteListener } from '../lib/plan-persistence';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import {
@@ -653,7 +654,7 @@ export function registerSharedContainerHandlers(runtime: {
   void recoverForkCapabilityInstalls().catch((error: unknown) =>
     logMainProcessWarn(
       '[shared-containers] failed to recover fork capability installs',
-      error,
+      logSafeError(error),
     ),
   );
   const reconciliation = getSharedContainerReconciliationService();

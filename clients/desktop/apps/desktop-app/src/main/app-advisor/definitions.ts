@@ -557,6 +557,9 @@ const sourceRepoAddSchema = z.object({
   hooks: hookOverridesSchema.optional(),
 });
 const skillExtraMetadataSchema = z.record(z.string(), z.string());
+const skillActionFilesSchema = z.array(
+  z.object({ path: z.string().min(1), content: z.string() }),
+);
 
 const panelAddTabActionSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -1246,6 +1249,7 @@ const nonPanelAppAdvisorActionSchema = z.discriminatedUnion('type', [
     description: z.string(),
     body: z.string(),
     extraMetadata: skillExtraMetadataSchema.optional(),
+    files: skillActionFilesSchema.optional(),
   }),
   z
     .object({
@@ -1255,13 +1259,17 @@ const nonPanelAppAdvisorActionSchema = z.discriminatedUnion('type', [
       description: z.string().optional(),
       body: z.string().optional(),
       extraMetadata: skillExtraMetadataSchema.optional(),
+      files: skillActionFilesSchema.optional(),
+      removeFiles: z.array(z.string().min(1)).optional(),
     })
     .refine(
       (action) =>
         action.name !== undefined ||
         action.description !== undefined ||
         action.body !== undefined ||
-        action.extraMetadata !== undefined,
+        action.extraMetadata !== undefined ||
+        action.files !== undefined ||
+        action.removeFiles !== undefined,
       {
         message: 'skills.update_custom requires at least one update field.',
       },

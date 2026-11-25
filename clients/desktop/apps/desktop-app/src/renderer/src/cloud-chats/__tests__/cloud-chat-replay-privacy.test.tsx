@@ -85,10 +85,28 @@ import { SettingsReplayPrivacyContext } from '@/components/settings/settings-rep
 import { SETTINGS_SECTION_REPLAY_PRIVACY } from '@canopy/desktop-instrumentation/posthog-replay-surfaces';
 import { SharedContainerForkModal } from '@/components/shared-containers/SharedContainerForkModal';
 import { useProjectsStore } from '@/stores/projectsStore';
+import { useGitHubStore } from '@/stores/githubStore';
+import type { SharedContainerForkResponse } from '@canopy/desktop-shared/types';
+import { SharedContainerForkResult } from '@canopy/ui-shared/sharing';
+// The pin below reads a shared module's source, as the subagent parity golden does.
+// eslint-disable-next-line no-restricted-imports
+import { readFileSync } from 'node:fs';
+// eslint-disable-next-line no-restricted-imports
+import path from 'node:path';
 import {
   MAX_RENDERER_STYLESHEET_LENGTH,
   rendererStylesheetCredentialPlugin,
 } from '../../../../main/build/renderer-stylesheet-credentials';
+
+const mockOpenForkedContainer = jest.fn<
+  Promise<{ switchedTo: null }>,
+  [SharedContainerForkResponse]
+>();
+jest.mock('@/lib/shared-containers/open-forked-container', () => ({
+  openForkedContainer: (
+    response: SharedContainerForkResponse,
+  ): Promise<{ switchedTo: null }> => mockOpenForkedContainer(response),
+}));
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -2555,5 +2573,322 @@ describe('Filter values and team names stay out of session replay in search filt
     expect(
       byTestId(`team-feed-member-filter-option-${MEMBER_ID}`).textContent,
     ).toContain(MEMBER_NAME);
+  });
+});
+
+describe("A copy's warnings show in the fork dialog, out of session replay (CAN-7585)", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  type AddToast = ReturnType<typeof useGitHubStore.getState>['addToast'];
+  let addToast: jest.Mock<ReturnType<AddToast>, Parameters<AddToast>>;
+  let previousAddToast: AddToast;
+  type LoadProjects = ReturnType<
+    typeof useProjectsStore.getState
+  >['loadProjects'];
+  let loadProjects: jest.Mock<
+    ReturnType<LoadProjects>,
+    Parameters<LoadProjects>
+  >;
+  let previousLoadProjects: LoadProjects;
+  let previousApi: unknown;
+
+  beforeAll(async () => {
+    record = await loadRecorder();
+  });
+
+  beforeEach(() => {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    previousAddToast = useGitHubStore.getState().addToast;
+    previousApi = Reflect.get(window, 'api');
+    addToast = jest.fn<ReturnType<AddToast>, Parameters<AddToast>>();
+    useGitHubStore.setState({ addToast });
+    previousLoadProjects = useProjectsStore.getState().loadProjects;
+    loadProjects = jest.fn<ReturnType<LoadProjects>, Parameters<LoadProjects>>(
+      () => Promise.resolve(),
+    );
+    useProjectsStore.setState({ loadProjects });
+    mockOpenForkedContainer.mockReset();
+    mockOpenForkedContainer.mockResolvedValue({ switchedTo: null });
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    useGitHubStore.setState({ addToast: previousAddToast });
+    useProjectsStore.setState({ loadProjects: previousLoadProjects });
+    Reflect.set(window, 'api', previousApi);
+  });
+
+  const AGENT = 'Harbor helper';
+  const PIPELINE = 'Ledger sync';
+  const FIELD = 'agent.instructions';
+  const WARNINGS = [
+    `Agent "${AGENT}" wasn't added because its ${FIELD} may contain a credential. Ask the person who shared it to remove the credential and share again.`,
+    `Pipeline "${PIPELINE}" wasn't added because a pipeline or action it runs uses an Agent that copies can't include yet.`,
+  ];
+  const GENERIC_NOTE = 'could not bring everything across';
+
+  const forkResponse = (
+    warnings: readonly string[],
+  ): SharedContainerForkResponse => ({
+    containerType: 'CODE_WORKTREE',
+    projectId: 'copy-project',
+    worktreeId: 'copy-worktree',
+    warnings: [...warnings],
+    provenance: {
+      sourceContainerId: 'container-1',
+      sourceRevisionId: 'revision-1',
+      sourceOwnerDisplayName: 'a teammate',
+      forkedAt: '2026-11-22T00:00:00.000Z',
+    },
+  });
+
+  const settle = async (): Promise<void> => {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  };
+
+  const byTestId = (testId: string): HTMLElement => {
+    const element = document.querySelector(`[data-testid="${testId}"]`);
+    if (!(element instanceof HTMLElement)) throw new Error(`No ${testId}`);
+    return element;
+  };
+
+  const click = (element: HTMLElement): void => {
+    act(() => element.click());
+  };
+
+  /** Every attribute value on every element now in the page. */
+  const domAttributeValues = (): string[] =>
+    [...document.body.querySelectorAll('*')].flatMap((element) =>
+      [...element.attributes].map((attribute) => attribute.value),
+    );
+
+  const expectInNoAttribute = (values: readonly string[]): void => {
+    const attributes = domAttributeValues().map((each) => each.toLowerCase());
+    expect(attributes.length).toBeGreaterThan(0);
+    for (const value of values)
+      expect(
+        attributes.filter((each) => each.includes(value.toLowerCase())),
+      ).toEqual([]);
+  };
+
+  /**
+   * Opens the dialog on a readable revision, makes a new copy, and waits for
+   * main's answer. Returns the dialog's `onClose`.
+   */
+  const makeCopy = async (warnings: readonly string[]): Promise<jest.Mock> => {
+    const onClose = jest.fn();
+    Reflect.set(window, 'api', {
+      getDefaultCloneDirectory: () => Promise.resolve('/clones'),
+      sharedContainers: {
+        getReplicaState: () =>
+          Promise.resolve({
+            containerId: 'container-1',
+            status: 'available',
+            revisionId: 'revision-1',
+            revision: 1,
+            revisionCreatedAt: '2026-11-20T00:00:00.000Z',
+          }),
+        onReplicaChanged: () => (): void => {},
+        fork: () => Promise.resolve(forkResponse(warnings)),
+      },
+    });
+    act(() =>
+      root.render(
+        <SharedContainerForkModal
+          containerId="container-1"
+          access="direct"
+          revision={{
+            status: 'available',
+            revisionId: 'revision-1',
+            revisionCreatedAt: '2026-11-20T00:00:00.000Z',
+          }}
+          containerType="CODE_WORKTREE"
+          title="Shared notes"
+          onClose={onClose}
+        />,
+      ),
+    );
+    await settle();
+    click(byTestId('shared-container-fork-continue'));
+    click(byTestId('shared-container-fork-confirm'));
+    await settle();
+    await settle();
+    return onClose;
+  };
+
+  /** The one toast raised, read as its message, type and meta. */
+  const onlyToast = (): Parameters<AddToast> => {
+    expect(addToast).toHaveBeenCalledTimes(1);
+    return addToast.mock.calls[0];
+  };
+
+  const resultWarnings = (): string[] =>
+    [...byTestId('shared-container-fork-result').querySelectorAll('li')].map(
+      (item) => item.textContent ?? '',
+    );
+
+  it('stays open after a copy with warnings and lists every warning', async () => {
+    const onClose = await makeCopy(WARNINGS);
+    expect(resultWarnings()).toEqual(WARNINGS);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(mockOpenForkedContainer).not.toHaveBeenCalled();
+    expect(addToast).not.toHaveBeenCalled();
+  });
+
+  it('keeps every warning out of all attributes and the recording, with its controls recorded', async () => {
+    await makeCopy(WARNINGS);
+    const shown = [AGENT, PIPELINE, FIELD];
+    for (const value of shown)
+      expect(document.body.textContent).toContain(value);
+    expectInNoAttribute([...shown, ...WARNINGS]);
+    expectNowhereInRecording([...shown, ...WARNINGS]);
+    const recorded = recording();
+    expect(recorded).toContain('Open copy');
+    expect(recorded).toContain('Done');
+  });
+
+  it('Open copy opens the copy once and raises a plain success toast', async () => {
+    const onClose = await makeCopy(WARNINGS);
+    click(byTestId('shared-container-fork-result-open'));
+    await settle();
+    expect(mockOpenForkedContainer).toHaveBeenCalledTimes(1);
+    expect(mockOpenForkedContainer).toHaveBeenCalledWith(
+      forkResponse(WARNINGS),
+    );
+    const [message, type, , meta] = onlyToast();
+    expect(message).toBe('Copy made.');
+    expect(type).toBe('success');
+    expect(meta?.action?.label).toBe('Open copy');
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Done leaves the copy where it is, but the sidebar still has to list it:
+   * main made it after the renderer's last projects read.
+   */
+  const expectClosedLikeDone = (onClose: jest.Mock): void => {
+    expect(mockOpenForkedContainer).not.toHaveBeenCalled();
+    expect(loadProjects).toHaveBeenCalledTimes(1);
+    expect(loadProjects).toHaveBeenCalledWith({ silent: true });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    const [message, type] = onlyToast();
+    expect(message).toBe('Copy made.');
+    expect(type).toBe('success');
+  };
+
+  it('Done closes without opening and leaves Open copy on a plain success toast', async () => {
+    const onClose = await makeCopy(WARNINGS);
+    click(byTestId('shared-container-fork-result-done'));
+    await settle();
+    expectClosedLikeDone(onClose);
+    const [message, type, , meta] = onlyToast();
+    expect(message).toBe('Copy made.');
+    expect(type).toBe('success');
+    expect(meta?.action?.label).toBe('Open copy');
+    act(() => {
+      void meta?.action?.onClick();
+    });
+    await settle();
+    expect(mockOpenForkedContainer).toHaveBeenCalledTimes(1);
+  });
+
+  it('Escape on the result step closes like Done', async () => {
+    const onClose = await makeCopy(WARNINGS);
+    act(() => {
+      document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
+    });
+    await settle();
+    expectClosedLikeDone(onClose);
+  });
+
+  it('a backdrop click on the result step closes like Done', async () => {
+    const onClose = await makeCopy(WARNINGS);
+    const backdrop = document.querySelector(
+      '[data-canopy-overlay-root="modal"]',
+    );
+    if (!(backdrop instanceof HTMLElement)) throw new Error('No backdrop');
+    act(() => {
+      backdrop.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+      backdrop.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await settle();
+    expectClosedLikeDone(onClose);
+  });
+
+  it('opens a copy without warnings at once, as before (green before and after)', async () => {
+    const onClose = await makeCopy([]);
+    expect(
+      document.querySelector('[data-testid="shared-container-fork-result"]'),
+    ).toBeNull();
+    expect(mockOpenForkedContainer).toHaveBeenCalledTimes(1);
+    const [message, type] = onlyToast();
+    expect(message).toBe('Copy made.');
+    expect(type).toBe('success');
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('raises a plain open-failed toast once the warnings were shown', async () => {
+    const failure = new Error('copy is gone');
+    mockOpenForkedContainer.mockRejectedValue(failure);
+    const onClose = await makeCopy(WARNINGS);
+    click(byTestId('shared-container-fork-result-open'));
+    await settle();
+    const [message, type, , meta] = onlyToast();
+    expect(message).toBe("Copy made, but it couldn't be opened.");
+    expect(message).not.toContain(GENERIC_NOTE);
+    expect(type).toBe('error');
+    expect(meta?.caught).toBe(failure);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('the shared result view alone keeps the warnings out of every attribute and the recording', () => {
+    const noop = (): void => {};
+    act(() =>
+      root.render(
+        <SharedContainerForkResult
+          warnings={WARNINGS}
+          onOpenCopy={noop}
+          onDone={noop}
+        />,
+      ),
+    );
+    const shown = [AGENT, PIPELINE, FIELD];
+    for (const value of shown)
+      expect(document.body.textContent).toContain(value);
+    expectInNoAttribute([...shown, ...WARNINGS]);
+    expectNowhereInRecording([...shown, ...WARNINGS]);
+    expect(recording()).toContain('Open copy');
+  });
+
+  it('the shared result view imports nothing from a desktop host', () => {
+    const packageSource = path.resolve(
+      __dirname,
+      '../../../../../../../packages/ui-shared/src',
+    );
+    const file = path.join(
+      packageSource,
+      'sharing/SharedContainerForkResult.tsx',
+    );
+    const specifiers = [
+      ...readFileSync(file, 'utf8').matchAll(/\bfrom\s+'([^']+)'/g),
+    ].map((match) => match[1]);
+    expect(specifiers.length).toBeGreaterThan(0);
+    // Only React and modules inside @canopy/ui-shared itself.
+    expect(
+      specifiers.filter((specifier) =>
+        specifier.startsWith('.')
+          ? !path
+              .resolve(path.dirname(file), specifier)
+              .startsWith(`${packageSource}${path.sep}`)
+          : specifier !== 'react',
+      ),
+    ).toEqual([]);
   });
 });

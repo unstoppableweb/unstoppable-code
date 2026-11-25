@@ -302,13 +302,366 @@ export interface SharedCredentialCheckOptions {
 
 /**
  * Environment-style assignments with any prefix, such as `NPM_TOKEN=npm_x`
- * or `DATABASE_PASSWORD=hunter2`. Comparisons (`==`) and empty quoted values
- * are not assignments of a credential. The search is unanchored, so the
- * keyword alone already matches with any prefix; a leading identifier run
- * would only rescan long words from every position.
+ * or `DATABASE_PASSWORD=hunter2`, as candidates for
+ * {@link containsEnvSecretAssignment}. Comparisons (`==`) and empty quoted
+ * values are not assignments of a credential; an arrow (`=>`) is decided
+ * there. The match ends before the value, so a chained assignment's next name
+ * is still a candidate. The search is unanchored, so the keyword alone
+ * already matches with any prefix; a leading identifier run would only
+ * rescan long words from every position.
  */
 const SECRET_ENV_ASSIGNMENT_PATTERN =
-  /(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY)[ \t]*=(?!=)[ \t]*["']?[^\s"']/i;
+  /(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY)[ \t]*=(?!=)[ \t]*(?=["']?[^\s"'])/gi;
+
+/** How far either side of a candidate the code checks read. */
+const ENV_ASSIGNMENT_CONTEXT = 160;
+/** The longest name run walked back from a candidate's keyword. */
+const ENV_ASSIGNMENT_NAME_LIMIT = 128;
+/** The ends of a physical line: LF, CR (so CRLF too), U+2028 and U+2029. */
+const LINE_END = /[\n\r\u2028\u2029]/;
+/**
+ * A declaration keyword, with up to four modifier, type or `NAME:` words,
+ * before the name, as in `const MAIN: ProcessToken`.
+ */
+const CODE_DECLARATION_BEFORE =
+  /(?:^|[\s(;{,])(?:const|let|var|val|final|late|readonly|static|private|public|protected|internal|mut|def|auto|declare|type|interface|export\s+const|export\s+let|export\s+type)\s+(?:[\w$<>[\]?,]+:?\s+){0,4}$/;
+/** A type before the name, as in `String token` or `char *password`. */
+const TYPED_BEFORE =
+  /(?:^|[\s(;{,])(?:String\??|string|int|bool|boolean|char(?:\s*\*)?|number|byte|Uint8Array|Buffer|Option<[\w<>]+>)\s*$/;
+/**
+ * `readonly` or `declare` at the start of the line, after optional `export`:
+ * a shell declaration, as `export` and `local` are. `private readonly` is a
+ * class field.
+ */
+const SHELL_DECLARATION_BEFORE =
+  /^[ \t]*(?:export[ \t]+)?(?:readonly|declare)[ \t]+$/;
+/** A keyword that starts an expression, as `await` does in `await prompt()`. */
+const KEYWORD_PREFIX = /^(?:new|await|typeof|yield|async)[ \t]+(?=\S)/;
+/** A function expression, such as `function (x) {`. */
+const FUNCTION_START = /^function\b[ \t\w$]*\(/;
+/**
+ * An identifier or member chain with one or more closed calls or indexes,
+ * and only terminators after it to the end of the line, as in
+ * `fetchToken(x);`.
+ */
+const CALL_TO_LINE_END =
+  /^[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*(?:\([^()]*\)|\[[^[\]]*\])+(?:\??\.[A-Za-z_$][\w$]*(?:\([^()]*\)|\[[^[\]]*\])*)*[ \t]*(?:[;,)\]}][ \t]*)*$/;
+/**
+ * A keyword value standing alone, with only terminators after it to the end
+ * of the line, as in `MY_PASSWORD=null` or `token = null,}`. Any other text
+ * after it, as in `null)value` or `None, other`, is not alone (CAN-7614).
+ */
+const KEYWORD_VALUE =
+  /^(?:true|false|null|undefined|None|nil|NULL)[ \t]*(?:[;,)\]}][ \t]*)*$/;
+/** An identifier or member chain at the start of a value. */
+const OPERAND_CHAIN = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*/;
+/**
+ * One or more brackets left open as the last characters of the line, after
+ * nothing or an identifier or member chain with at most one closed call:
+ * code continues, as in `createClaim({`. Any other text before the bracket,
+ * such as a trailing comment, does not count (CAN-7614).
+ */
+const OPEN_AT_LINE_END =
+  /^(?:[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:\([^()]*\))?)?[ \t]*(?:[([{][ \t]*)+$/;
+/** What a call's arguments hold and a single bracketed token does not. */
+const CALL_ARGUMENTS_INSIDE = /[ \t,'"`]/;
+/** What a bracketed expression holds and a bracketed literal does not. */
+const BRACKETED_EXPRESSION_INSIDE = /[ \t,'"`+\-*/%<>=!&|?:]/;
+const CLOSING_BRACKET: ReadonlyMap<string, string> = new Map([
+  ['(', ')'],
+  ['[', ']'],
+  ['{', '}'],
+]);
+/** Only terminators and spaces up to the end of the line. */
+const TERMINATORS_TO_LINE_END = /^[ \t]*(?:[;,)\]}][ \t]*)*$/;
+/** A terminator, as after a statement: `;`, `,` or a closing bracket. */
+const TERMINATOR_START = /^[ \t]*[;,)\]}]/;
+/**
+ * Member accesses, calls and indexes after a closed call or bracket, as in
+ * `.toString('hex')` or `(x)[0]`.
+ */
+const CALL_CONTINUATION = /^(?:\??\.[A-Za-z_$][\w$]*|\([^()]*\)|\[[^[\]]*\])+/;
+/** The parameters' optional return type, then `=>`, after a closed bracket. */
+const ARROW_AFTER_PARAMETERS = /^[ \t]*(?::[^=]*)?=>[ \t]*/;
+/**
+ * An operand after an operator or in a ternary: an identifier or member chain
+ * with at most one closed call, or a number. A quoted value is not one.
+ */
+const OPERAND =
+  /^(?:[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:\([^()]*\))?|\d+(?:\.\d+)?)/;
+/** A binary operator with spaces or tabs on both sides. */
+const SPACED_OPERATOR_START = /^[ \t]+(?:\|\||&&|\?\?|===?|!==?|<=?|>=?)[ \t]+/;
+/** The `?` of a ternary, with spaces or tabs on both sides. */
+const TERNARY_START = /^[ \t]+\?[ \t]+/;
+/** The `:` of a ternary, with spaces or tabs on both sides. */
+const TERNARY_ELSE = /^[ \t]+:[ \t]+/;
+/** After a declaration: `!x`, `++x`, `--x`, or a regex literal closed on the line. */
+const DECLARED_STARTER =
+  /^(?:!+[A-Za-z_$(]|\+\+[A-Za-z_$]|--[A-Za-z_$]|\/(?:[^/\\]|\\.)+\/[a-z]*[ \t]*(?:[;,)]|$))/;
+/**
+ * After a declaration: a member chain (with `.` or `?.`), a call or index on
+ * an identifier, a generic type such as `z.output<typeof X>`, or an arrow
+ * function. A bare identifier is not enough on its own.
+ */
+const DECLARED_VALUE =
+  /^(?:[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)+(?:[ \t]*[;,)(\[]|[ \t]*$)|[A-Za-z_$][\w$]*\??\.?[([]|[A-Za-z_$][\w$.]*<|\([^)]*\)[ \t]*(?::[^=]*)?=>|[A-Za-z_$][\w$]*[ \t]*=>)/;
+const NAME_CHARACTER = /[\w$]/;
+
+/** Where the bracket opened at `open` in `segment` closes, or -1. */
+function closingBracket(segment: string, open: number): number {
+  const opener = segment.charAt(open);
+  const closer = CLOSING_BRACKET.get(opener);
+  if (closer === undefined) return -1;
+  let depth = 0;
+  for (let index = open; index < segment.length; index += 1) {
+    const character = segment.charAt(index);
+    if (character === opener) depth += 1;
+    else if (character === closer) {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Whether a value that starts with a backquote is a template: an unescaped
+ * `${` before the backquote closes. `\${` is literal text.
+ */
+function isTemplateValue(segment: string): boolean {
+  for (let index = 1; index < segment.length; index += 1) {
+    const character = segment.charAt(index);
+    if (character === '\\') index += 1;
+    else if (character === '`') return false;
+    else if (character === '$' && segment.charAt(index + 1) === '{')
+      return true;
+  }
+  return false;
+}
+
+/** A candidate's value on its own physical line. */
+interface AssignmentValue {
+  /** From the first value character to the line end or the window end. */
+  readonly segment: string;
+  /** Whether `segment` reaches the real end of the line. */
+  readonly lineInView: boolean;
+}
+
+/**
+ * The value starting at `from`, after spaces and tabs only, or null when no
+ * value character is in the window or the line ends first.
+ */
+function assignmentValueAt(text: string, from: number): AssignmentValue | null {
+  const limit = Math.min(text.length, from + ENV_ASSIGNMENT_CONTEXT);
+  let index = from;
+  while (
+    index < limit &&
+    (text.charAt(index) === ' ' || text.charAt(index) === '\t')
+  )
+    index += 1;
+  if (index >= limit) return null;
+  const window = text.slice(index, index + ENV_ASSIGNMENT_CONTEXT);
+  const end = window.search(LINE_END);
+  if (end === 0) return null;
+  if (end > 0) return { segment: window.slice(0, end), lineInView: true };
+  return {
+    segment: window,
+    lineInView: index + ENV_ASSIGNMENT_CONTEXT >= text.length,
+  };
+}
+
+/**
+ * Whether a value starts with a keyword expression that is code: a function
+ * expression, or `new`, `await`, `typeof`, `yield` or `async` followed by a
+ * value that is itself code or by a call that runs to the end of the line.
+ * `new value` and `await value # note` could hide a literal.
+ */
+function isKeywordExpression(segment: string, lineInView: boolean): boolean {
+  if (FUNCTION_START.test(segment)) return true;
+  const prefix = KEYWORD_PREFIX.exec(segment);
+  if (!prefix) return false;
+  const rest = segment.slice(prefix[0].length);
+  return (
+    isProvenCodeValue(rest, lineInView) ||
+    (lineInView && CALL_TO_LINE_END.test(rest))
+  );
+}
+
+/**
+ * Whether what follows a closed call or bracket keeps it code: a member,
+ * call or index continuation (a trailing property needs a terminator, as
+ * `f(x).y;` has), then a bracket left open at the end of the line or
+ * {@link isCodeToLineEnd}. Any other text after it could hide a literal, as
+ * in `(a, b) value` or `getKey() value` (CAN-7614).
+ */
+function isCodeAfterBracket(after: string, lineInView: boolean): boolean {
+  const chain = CALL_CONTINUATION.exec(after)?.[0] ?? '';
+  const tail = after.slice(chain.length);
+  if (lineInView && OPEN_AT_LINE_END.test(tail)) return true;
+  if (chain !== '' && !/[)\]]$/.test(chain) && !TERMINATOR_START.test(tail))
+    return false;
+  return isCodeToLineEnd(tail, lineInView);
+}
+
+/**
+ * Whether the rest of a line after a proven shape is code: only terminators
+ * to the end of a line in view, or an {@link isCodeContinuation}.
+ */
+function isCodeToLineEnd(rest: string, lineInView: boolean): boolean {
+  if (lineInView && TERMINATORS_TO_LINE_END.test(rest)) return true;
+  return isCodeContinuation(rest, lineInView);
+}
+
+/**
+ * Whether text starts with a spaced operator or ternary whose operands (each
+ * an {@link OPERAND}, never a quoted value) run on to the end of the line the
+ * same way, as in `|| fallback;` or `? a : b`. A prefix is not enough:
+ * `|| fallback || "x"`, `|| fallback value` and `?  "x" : y` are not code
+ * (CAN-7614).
+ */
+function isCodeContinuation(rest: string, lineInView: boolean): boolean {
+  const operator = SPACED_OPERATOR_START.exec(rest);
+  if (operator)
+    return isOperandToLineEnd(rest.slice(operator[0].length), lineInView);
+  const ternary = TERNARY_START.exec(rest);
+  if (!ternary) return false;
+  const then = OPERAND.exec(rest.slice(ternary[0].length));
+  if (!then) return false;
+  const afterThen = rest.slice(ternary[0].length + then[0].length);
+  const otherwise = TERNARY_ELSE.exec(afterThen);
+  return (
+    otherwise !== null &&
+    isOperandToLineEnd(afterThen.slice(otherwise[0].length), lineInView)
+  );
+}
+
+/** An {@link OPERAND}, then the rest of the line as code. */
+function isOperandToLineEnd(segment: string, lineInView: boolean): boolean {
+  const operand = OPERAND.exec(segment);
+  return (
+    operand !== null &&
+    isCodeToLineEnd(segment.slice(operand[0].length), lineInView)
+  );
+}
+
+/**
+ * Whether a value is code whatever the names around it: a keyword expression
+ * ({@link isKeywordExpression}), a keyword value standing alone on a line in
+ * view, a template, an {@link OPEN_AT_LINE_END} on a line in view, a closed
+ * bracket that is empty or holds a space, comma, operator or quote, or a
+ * closed call or index that is empty, holds a space, comma or quote, has a
+ * dotted callee or is followed by a method, each followed by code
+ * ({@link isCodeAfterBracket}), a closed bracket as an arrow function's
+ * parameters, or an identifier or member chain followed by an
+ * {@link isCodeContinuation}. `Pa55(word)`, `value[0]`, `value[0].x` and
+ * `f(x).value` could be literals.
+ */
+function isProvenCodeValue(segment: string, lineInView: boolean): boolean {
+  if (lineInView && KEYWORD_VALUE.test(segment)) return true;
+  if (isKeywordExpression(segment, lineInView)) return true;
+  if (segment.charAt(0) === '`') return isTemplateValue(segment);
+  if (lineInView && OPEN_AT_LINE_END.test(segment)) return true;
+  if (CLOSING_BRACKET.has(segment.charAt(0))) {
+    const close = closingBracket(segment, 0);
+    if (
+      close !== 1 &&
+      !(close > 0 && BRACKETED_EXPRESSION_INSIDE.test(segment.slice(1, close)))
+    )
+      return false;
+    const after = segment.slice(close + 1);
+    const arrow = ARROW_AFTER_PARAMETERS.exec(after);
+    if (arrow) {
+      const body = after.slice(arrow[0].length);
+      return (
+        (lineInView && body === '') ||
+        isProvenCodeValue(body, lineInView) ||
+        isOperandToLineEnd(body, lineInView)
+      );
+    }
+    return isCodeAfterBracket(after, lineInView);
+  }
+  const operand = OPERAND_CHAIN.exec(segment);
+  if (!operand) return false;
+  const rest = segment.slice(operand[0].length);
+  if (rest.startsWith('(') || rest.startsWith('[')) {
+    const close = closingBracket(rest, 0);
+    if (close <= 0) return false;
+    const inside = rest.slice(1, close);
+    const after = rest.slice(close + 1);
+    const proven =
+      inside === '' ||
+      CALL_ARGUMENTS_INSIDE.test(inside) ||
+      operand[0].includes('.') ||
+      (rest.startsWith('(') && /^\??\.[A-Za-z_$]/.test(after));
+    return proven && isCodeAfterBracket(after, lineInView);
+  }
+  return isCodeContinuation(rest, lineInView);
+}
+
+/**
+ * Whether the candidate at `at` is a code assignment rather than a literal
+ * `NAME=value`. This is a credential check on shared content, so it fails
+ * closed: a value is code only when a shape on the assignment's own physical
+ * line proves it (CAN-7614).
+ *
+ * - Only spaces and tabs are skipped before the value. No value character in
+ *   the window, or a line end first, reads as a literal.
+ * - A value that starts with `"` or `'` is a literal. One that starts with a
+ *   backquote is code only after a spaced `=` or `=>`, as a template.
+ * - After `=>`, or after a spaced `=`, a value proven by
+ *   {@link isProvenCodeValue} is code.
+ * - After a spaced `=` with a declaration keyword or type before the name
+ *   (not a shell `readonly` or `declare`), a {@link DECLARED_STARTER} or a
+ *   {@link DECLARED_VALUE} is code too.
+ * - After an unspaced `=`, only a keyword value standing alone is code.
+ *
+ * Each check reads at most {@link ENV_ASSIGNMENT_CONTEXT} characters either
+ * side, so the work per candidate is bounded.
+ */
+function isCodeAssignment(text: string, at: number): boolean {
+  let start = at;
+  const nameLimit = Math.max(0, at - ENV_ASSIGNMENT_NAME_LIMIT);
+  while (start > nameLimit && NAME_CHARACTER.test(text.charAt(start - 1)))
+    start -= 1;
+  const equals = text.indexOf('=', at);
+  const arrow = text.charAt(equals + 1) === '>';
+  const value = assignmentValueAt(text, equals + (arrow ? 2 : 1));
+  if (value === null) return false;
+  const { segment, lineInView } = value;
+  const first = segment.charAt(0);
+  if (first === '"' || first === "'") return false;
+  const spaced =
+    /[ \t]/.test(text.charAt(equals - 1)) &&
+    /[ \t]/.test(text.charAt(equals + 1));
+  if (first === '`') return (arrow || spaced) && isTemplateValue(segment);
+  if (arrow) return isProvenCodeValue(segment, lineInView);
+  if (!spaced) return lineInView && KEYWORD_VALUE.test(segment);
+  if (isProvenCodeValue(segment, lineInView)) return true;
+  const window = text.slice(Math.max(0, start - ENV_ASSIGNMENT_CONTEXT), start);
+  const lineStart = Math.max(
+    window.lastIndexOf('\n'),
+    window.lastIndexOf('\r'),
+    window.lastIndexOf('\u2028'),
+    window.lastIndexOf('\u2029'),
+  );
+  const before = window.slice(lineStart + 1);
+  const declared =
+    !SHELL_DECLARATION_BEFORE.test(before) &&
+    (CODE_DECLARATION_BEFORE.test(before) || TYPED_BEFORE.test(before));
+  return (
+    declared && (DECLARED_STARTER.test(segment) || DECLARED_VALUE.test(segment))
+  );
+}
+
+/**
+ * Whether any environment-style assignment candidate in `text` assigns a
+ * literal value rather than being code (CAN-7614).
+ */
+function containsEnvSecretAssignment(text: string): boolean {
+  for (const match of text.matchAll(SECRET_ENV_ASSIGNMENT_PATTERN))
+    if (!isCodeAssignment(text, match.index)) return true;
+  return false;
+}
 
 /**
  * URL user-info carrying a password, such as `postgres://admin:pw@db`. A
@@ -418,7 +771,7 @@ export function findSharedTextCredentialRule(
   );
   const material = findSecretMaterialRule(neutralized);
   if (material !== null) return material;
-  if (SECRET_ENV_ASSIGNMENT_PATTERN.test(neutralized)) return 'env_assignment';
+  if (containsEnvSecretAssignment(neutralized)) return 'env_assignment';
   if (containsUserInfoCredential(text, checkContents)) return 'url_credentials';
   return null;
 }

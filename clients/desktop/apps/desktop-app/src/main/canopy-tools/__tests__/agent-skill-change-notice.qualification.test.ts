@@ -28,9 +28,12 @@ const mockSaveCustomSkill = jest.fn();
 const mockRemoveSkillForContext = jest.fn();
 const mockWriteRawSkillForContext = jest.fn();
 const mockReadSkillContent = jest.fn();
-jest.mock('../../skills/skill-service', () => ({
-  saveCustomSkill: (...args: unknown[]): unknown =>
+// Agent saves take the Skills editor's core save (CAN-7498).
+jest.mock('../../canopy-runtime/skill-catalog-dispatch', () => ({
+  saveCustomSkillThroughCore: (...args: unknown[]): unknown =>
     mockSaveCustomSkill(...args),
+}));
+jest.mock('../../skills/skill-service', () => ({
   removeSkillForContext: (...args: unknown[]): unknown =>
     mockRemoveSkillForContext(...args),
   writeRawSkillForContext: (...args: unknown[]): unknown =>

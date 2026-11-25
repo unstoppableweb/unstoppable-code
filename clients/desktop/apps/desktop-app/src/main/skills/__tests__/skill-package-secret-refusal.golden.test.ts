@@ -100,6 +100,10 @@ const NPM_TOKEN = `np${'m'}_${'T'.repeat(36)}`;
 const NPM_SKILL = `---\nname: deploy-npm\ndescription: Publishes.\n---\nPublish with ${NPM_TOKEN}.\n`;
 const NPM_CONFIG_SKILL =
   '---\nname: deploy-npm-config\ndescription: Publishes.\n---\nSet npm_config_registry, run npm publish, then print npm_package_version.\n';
+// Code that assigns identifiers ending in Token, as a skill's script does: no
+// credential, so its share goes ahead (CAN-7614).
+const CODE_SKILL =
+  "---\nname: deploy-code\ndescription: Deploys.\n---\n```js\nconst authToken = randomBytes(32).toString('base64url');\nconst packageScriptToken = packageManagerCommandPattern.test(command);\n```\n";
 const KEEP_STEP_SKILL =
   '---\nname: keep-step\ndescription: Keeps notes.\n---\nRead notes.md.\n';
 // A share over Remote Control (CAN-7476): a clean file named after a token
@@ -114,6 +118,7 @@ const SKILLS: Record<string, string> = {
   'deploy-placeholder': PLACEHOLDER_SKILL,
   'deploy-npm': NPM_SKILL,
   'deploy-npm-config': NPM_CONFIG_SKILL,
+  'deploy-code': CODE_SKILL,
   'keep-step': KEEP_STEP_SKILL,
 };
 
@@ -238,6 +243,18 @@ describe('committing a skill package refuses a secret-looking SKILL.md before an
     expect(requests.length).toBeGreaterThan(0);
     expect(result).toMatchObject({ ok: false });
     expect(result).not.toMatchObject({ failure: { kind: 'unavailable' } });
+  });
+});
+
+describe('committing a skill package lets code that names a token through (CAN-7614)', () => {
+  it('commits a SKILL.md whose script assigns identifiers ending in Token', async () => {
+    const result = await analyzeAndCommit('deploy-code', CODE_SKILL);
+    // Past the check the upload starts; this cloud refuses it.
+    expect(requests.length).toBeGreaterThan(0);
+    expect(result).toMatchObject({ ok: false });
+    expect(result).not.toMatchObject({
+      failure: { kind: 'dependency-review' },
+    });
   });
 });
 
@@ -2931,6 +2948,33 @@ describe('a workflow share reads asset, child pipeline, action and pipeline file
       }
     },
   );
+
+  // A child pipeline's plugin.json is read with the package check alone, so
+  // that check must keep line boundaries (CAN-7626). This row pins a:
+  // raw line break in plugin.json source; develop accepted it, though no blob carried it
+  it('blocks a child pipeline whose plugin.json holds a token at the start of a line, in a share and a cloud copy alike (CAN-7626)', async () => {
+    const token = `gh${'p'}_${'N'.repeat(30)}`;
+    const root = folder({
+      'pipelines/notes.yml': PIPELINE_YAML,
+      '.claude-plugin/plugin.json': `{"name":"notes","description":"Deploys when done\n${token}"}\n`,
+    });
+    for (const cloudCopy of [undefined, NOT_IGNORED]) {
+      const analysis = await analyse({
+        ...(cloudCopy === undefined ? {} : { cloudCopy }),
+        portableResources: [childPipeline(root)],
+      });
+      expect(secretBlockers(analysis)).toEqual([
+        {
+          code: 'SUSPECTED_SECRET',
+          message: 'A dependency file may contain a credential.',
+          subject: '.claude-plugin/plugin.json',
+          relativePath: '.claude-plugin/plugin.json',
+          occurrences: [],
+        },
+      ]);
+      expect(uploaded(analysis)).not.toContain(token);
+    }
+  });
 
   it.each(FIXTURES)(
     'blocks an automation pipeline whose YAML holds %s',

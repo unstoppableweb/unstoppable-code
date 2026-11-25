@@ -484,6 +484,9 @@ const pipelineExecutionStatusSchema = z.enum([
 ]);
 
 const skillExtraMetadataSchema = z.record(z.string(), z.string());
+const skillActionFilesSchema = z.array(
+  z.object({ path: z.string().min(1), content: z.string() }),
+);
 const resourceShareScopeSchema = z.enum(['team', 'organization']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -627,6 +630,7 @@ const scopedWorktreeActionBaseSchema = z.discriminatedUnion('type', [
     description: z.string(),
     body: z.string(),
     extraMetadata: skillExtraMetadataSchema.optional(),
+    files: skillActionFilesSchema.optional(),
   }),
   z
     .object({
@@ -636,13 +640,17 @@ const scopedWorktreeActionBaseSchema = z.discriminatedUnion('type', [
       description: z.string().optional(),
       body: z.string().optional(),
       extraMetadata: skillExtraMetadataSchema.optional(),
+      files: skillActionFilesSchema.optional(),
+      removeFiles: z.array(z.string().min(1)).optional(),
     })
     .refine(
       (action) =>
         action.name !== undefined ||
         action.description !== undefined ||
         action.body !== undefined ||
-        action.extraMetadata !== undefined,
+        action.extraMetadata !== undefined ||
+        action.files !== undefined ||
+        action.removeFiles !== undefined,
       { message: 'skills.update_custom requires an update field.' },
     ),
   z.object({
@@ -1824,6 +1832,28 @@ export const DESKTOP_LEGACY_ACTION_JSON_ENUM_ORDER = [
 
 /** Advertised payload properties of the legacy desktop actions. */
 export const DESKTOP_LEGACY_DISPATCH_JSON_PROPERTIES: AgentJsonSchema = {
+  // CAN-7498: advertised so a schema-checking client accepts skill files
+  // beside the browser actions' own files shape.
+  files: {
+    type: 'array',
+    description:
+      'For skills.create_custom and skills.update_custom, supporting files to write beside SKILL.md: each { path, content } with a skill-relative path such as references/api.md.',
+    items: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        path: { type: 'string', minLength: 1 },
+        content: { type: 'string' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+  removeFiles: {
+    type: 'array',
+    description:
+      'For skills.update_custom, skill-relative paths of supporting files to delete.',
+    items: { type: 'string', minLength: 1 },
+  },
   groupId: {
     type: ['string', 'null'],
     description:

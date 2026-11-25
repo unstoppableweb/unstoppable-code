@@ -393,6 +393,10 @@ const EXECUTION_FIELD: AppAdvisorActionField = {
   description: 'Pipeline execution id.',
 };
 
+/** How agents send a custom skill's supporting files (CAN-7498). */
+const SKILL_SUPPORTING_FILES_DESCRIPTION =
+  'Supporting text files saved beside SKILL.md. Each path is skill-relative with forward slashes, such as references/api.md or scripts/run.sh: no absolute paths, no "..", and not SKILL.md. Content is the full UTF-8 text. The Skills editor limits apply: up to 100 files, 2,000,000 characters each. skills.share_custom and skills.update_shared share these files with the skill.';
+
 function field(
   name: string,
   type: string,
@@ -2976,7 +2980,8 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
     {
       type: 'skills.create_custom',
       category: 'skills',
-      summary: 'Create a user-authored custom skill.',
+      summary:
+        'Create a user-authored custom skill, optionally with supporting files such as references/*.md or scripts/*.',
       fields: [
         field('name', 'string', true, 'Kebab-case custom skill name.'),
         field('description', 'string', true, 'One-line skill description.'),
@@ -2987,12 +2992,24 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
           false,
           'Optional additional frontmatter metadata.',
         ),
+        field(
+          'files',
+          '{ path: string; content: string }[]',
+          false,
+          SKILL_SUPPORTING_FILES_DESCRIPTION,
+        ),
       ],
       example: {
         type: 'skills.create_custom',
         name: 'review-checklist',
         description: 'Use for code review checklist generation.',
-        body: '# Review Checklist\n\nFocus on correctness and tests.',
+        body: '# Review Checklist\n\nFocus on correctness and tests. See references/checks.md.',
+        files: [
+          {
+            path: 'references/checks.md',
+            content: '# Checks\n\n- Tests cover the change.',
+          },
+        ],
       },
       keywords: [
         'skills',
@@ -3002,13 +3019,16 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         'author',
         'write',
         'skill',
+        'supporting file',
+        'references',
+        'scripts',
       ],
     },
     {
       type: 'skills.update_custom',
       category: 'skills',
       summary:
-        'Update or rename a user-authored custom skill while preserving omitted fields.',
+        'Update or rename a user-authored custom skill, or add, replace and remove its supporting files, while preserving omitted fields and files.',
       fields: [
         field('originalName', 'string', true, 'Existing custom skill name.'),
         field('name', 'string', false, 'New custom skill name.'),
@@ -3020,11 +3040,29 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
           false,
           'Replacement additional frontmatter metadata.',
         ),
+        field(
+          'files',
+          '{ path: string; content: string }[]',
+          false,
+          `${SKILL_SUPPORTING_FILES_DESCRIPTION} Each file is added, or replaces the file at that path; supporting files not listed stay unchanged.`,
+        ),
+        field(
+          'removeFiles',
+          'string[]',
+          false,
+          'Skill-relative paths of supporting files to delete, as skills.read lists them. SKILL.md cannot be removed, and a path cannot also be in files.',
+        ),
       ],
       example: {
         type: 'skills.update_custom',
         originalName: 'review-checklist',
-        body: '# Review Checklist\n\nCheck correctness, tests, and regressions.',
+        files: [
+          {
+            path: 'scripts/check.sh',
+            content: '#!/bin/sh\npnpm test\n',
+          },
+        ],
+        removeFiles: ['references/old-checks.md'],
       },
       keywords: [
         'skills',
@@ -3034,6 +3072,11 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
         'rename',
         'modify',
         'save',
+        'supporting file',
+        'add file',
+        'remove file',
+        'references',
+        'scripts',
       ],
     },
     {

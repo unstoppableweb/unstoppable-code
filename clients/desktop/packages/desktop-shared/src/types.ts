@@ -5,6 +5,7 @@ import type { CopilotHostSelection } from '@canopy/protocol/copilot-selection';
 import type { ProjectDeletionPendingRecovery } from '@canopy/protocol/remote-control/shell/project-deletion-discard';
 import type { AntigravityModelEntry } from '@canopy/execution-engine/lib/antigravity-models';
 import type { OrganizationLayerView } from './lib/organization-capabilities';
+import type { CustomSkillActionFile } from './lib/custom-skill-action-files';
 import type { AssistantMode } from '@canopy/execution-engine/types/assistant-mode';
 import type { WorkspaceType } from '@canopy/execution-engine/types/workspace-type';
 import type {
@@ -24102,6 +24103,8 @@ export type AppAdvisorAction =
       description: string;
       body: string;
       extraMetadata?: Record<string, string>;
+      /** Supporting files to write beside SKILL.md (CAN-7498). */
+      files?: CustomSkillActionFile[];
     }
   | {
       type: 'skills.update_custom';
@@ -24110,6 +24113,10 @@ export type AppAdvisorAction =
       description?: string;
       body?: string;
       extraMetadata?: Record<string, string>;
+      /** Supporting files to add or replace; others are kept (CAN-7498). */
+      files?: CustomSkillActionFile[];
+      /** Supporting file paths to remove (CAN-7498). */
+      removeFiles?: string[];
     }
   | {
       type: 'skills.delete_custom';

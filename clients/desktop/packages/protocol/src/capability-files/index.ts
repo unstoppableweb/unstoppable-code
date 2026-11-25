@@ -104,10 +104,19 @@ const SECRET_RULES: readonly {
   readonly rule: SecretMaterialRule;
   readonly pattern: RegExp;
 }[] = [
+  // PEM forms, and PGP's armored block, whose header ends in KEY BLOCK.
   {
     rule: 'private_key',
-    pattern: /-----BEGIN (?:[A-Z0-9]+ ){0,4}PRIVATE KEY-----/,
+    pattern: /-----BEGIN (?:[A-Z0-9]+ ){0,4}PRIVATE KEY(?: BLOCK)?-----/,
   },
+  // The SSH2 (SSH.com) key file, and PuTTY's .ppk, which opens with its
+  // format and version: neither has a PEM header. A header alone is enough.
+  // No word boundary before PuTTY: the package profile drops line breaks.
+  {
+    rule: 'private_key',
+    pattern: /---- BEGIN SSH2 (?:ENCRYPTED )?PRIVATE KEY ----/,
+  },
+  { rule: 'private_key', pattern: /PuTTY-User-Key-File-[0-9]+:/ },
   {
     rule: 'jwt',
     pattern:

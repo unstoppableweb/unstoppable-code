@@ -33,7 +33,7 @@ import {
   createShareLinkResolver,
   resolveSharedSkillUrl,
 } from '@/lib/share-links';
-import { skillPackageHasContent } from '@/lib/skillPackageContent';
+import { skillPackageHasContent } from '@canopy/desktop-shared/lib/skill-package-content';
 import {
   missingRemoteShareCanBeRecreated,
   readSharedResourceErrorStatus,

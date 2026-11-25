@@ -423,10 +423,11 @@ export function DesktopMcpManagementSections({
               : undefined,
           account: accountAction
             ? {
+                // The Placement fact beside it already says "Cloud account".
                 label:
                   connection?.status === 'CONNECTED' ||
                   connection?.status === 'REAUTH_REQUIRED'
-                    ? 'Disconnect cloud account'
+                    ? 'Disconnect'
                     : connection?.status === 'PENDING'
                       ? 'Cancel connection'
                       : 'Connect cloud account',

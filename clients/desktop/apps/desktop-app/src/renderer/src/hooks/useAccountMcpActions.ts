@@ -25,6 +25,9 @@ import type {
 } from '@canopy/execution-engine/types/mcp-servers';
 import type { SecretValueInput } from '@canopy/execution-engine/types/stored-secrets';
 
+const REOPEN_ENDED = 'That sign-in has ended. Sign in again.';
+const REOPEN_FAILED = "Couldn't open the sign-in page. Try again.";
+
 interface PendingConnection {
   /** Settles after cancellation rollback and owned-key release. */
   readonly done: Promise<void>;
@@ -43,6 +46,15 @@ interface PendingConnection {
   accountId?: string;
   /** Shared cleanup barrier for both cancellation paths. */
   releasePromise?: Promise<void>;
+  /** The OAuth app and endpoint the start sent, so a reopen sends them too. */
+  readonly oauthClient?: AccountMcpOAuthClientCredentials;
+  readonly endpointUrl?: string;
+  /** Successful reopens so far; a poll covers those made before it began. */
+  reopens: number;
+  /** A reopen whose start hasn't answered yet; a timed-out poll waits for it. */
+  reopening?: Promise<void>;
+  /** Settles once the start has answered and any rollback of it is done. */
+  readonly written: Promise<void>;
   /** Failures its discard reported, so a canceller can tell it did. */
   discardReports: number;
 }
@@ -140,6 +152,25 @@ export interface AccountMcpActions {
       'id' | 'serverKey' | 'configId'
     >,
   ) => string | undefined;
+  /**
+   * Opens a waiting sign-in's page again: the same account start, sent once
+   * more, so the cloud replaces its state and main opens a fresh page in the
+   * browser. The flow already waiting on the connection keeps its poll and
+   * cleanup. `null` once the page is opened, else the sentence to show.
+   */
+  reopen: (
+    connection: Pick<
+      AccountMcpConnectionSummary,
+      'id' | 'serverKey' | 'configId'
+    >,
+  ) => Promise<string | null>;
+  /** Settles once the flow under `targetKey` has ended and released. */
+  /**
+   * Settles once the start of the flow under `targetKey` has answered and any
+   * rollback of it is done, so nothing it sends can write the row back. It
+   * doesn't wait for the browser sign-in itself.
+   */
+  written: (targetKey: string) => Promise<void>;
   /** Matches the bound id, or its server/configuration while start is pending. */
   isConnectingConnection: (
     connection: Pick<
@@ -360,6 +391,10 @@ export function useAccountMcpActions(
       return undefined;
     }
     let finish: () => void = (): void => undefined;
+    let wrote: () => void = (): void => undefined;
+    const written = new Promise<void>((resolve) => {
+      wrote = resolve;
+    });
     const done = new Promise<void>((resolve) => {
       finish = resolve;
     });
@@ -372,6 +407,10 @@ export function useAccountMcpActions(
       configId: configId ?? 'default',
       discard: options.discardOnAbandon === true,
       discardNamedRowOnly: options.discardNamedRowOnly === true,
+      ...(options.oauthClient ? { oauthClient: options.oauthClient } : {}),
+      ...(options.endpointUrl ? { endpointUrl: options.endpointUrl } : {}),
+      reopens: 0,
+      written,
     };
     // Every key this flow is registered under; a row can change key mid-flow.
     const keys = [key];
@@ -493,6 +532,9 @@ export function useAccountMcpActions(
       if ('authorizationUrl' in result && !flow.cancelled)
         options.onAuthorizing?.(result.embeddedUrl);
       flow.id = connection.id;
+      // A cancelled start settles only after its rollback (in `finally`); a
+      // cancel from here on awaits its own release, as `cancel` does.
+      if (!flow.cancelled) wrote();
       // Keep the initiating surface and the bound connection as aliases of
       // this one flow, never of every configuration belonging to the server.
       const connectionKey = accountMcpConnectionKey(connection);
@@ -518,10 +560,47 @@ export function useAccountMcpActions(
       await refresh();
       if (!flow.observing) return undefined;
       if (flow.cancelled) return await rollBack();
-      const settled =
-        connection.status === 'PENDING'
-          ? await window.mcpServers.awaitAccountConnection(connection.id)
-          : connection;
+      // A poll that throws is held as a result too, so it waits for a reopen
+      // like any other ending before its error is reported.
+      let thrown: { readonly error: unknown } | undefined;
+      // The reopens the latest poll already covers: one made before it began
+      // is waited out by that poll's own deadline.
+      let covered = flow.reopens;
+      const poll = async (): Promise<
+        | Awaited<ReturnType<typeof window.mcpServers.awaitAccountConnection>>
+        | undefined
+      > => {
+        thrown = undefined;
+        covered = flow.reopens;
+        try {
+          return await window.mcpServers.awaitAccountConnection(connection.id);
+        } catch (error) {
+          // Recorded here, and rethrown below unless a reopen takes over.
+          reportClientAppError(error);
+          thrown = { error };
+          return undefined;
+        }
+      };
+      let settled = connection.status === 'PENDING' ? await poll() : connection;
+      // A page reopened (or being reopened) while this poll ran gets its own
+      // wait: whatever the first page's poll ended with (its deadline, a
+      // refusal it recorded before the reopen replaced it, or a failed read)
+      // never ends or cleans up the reopened one.
+      while (
+        flow.observing &&
+        !flow.cancelled &&
+        (settled === undefined ||
+          'error' in settled ||
+          settled.status !== 'CONNECTED')
+      ) {
+        await flow.reopening;
+        if (flow.reopens === covered) break;
+        settled = await poll();
+      }
+      if (settled === undefined) {
+        if (!flow.observing) return undefined;
+        throw thrown?.error;
+      }
       if (!flow.observing) return undefined;
       if (flow.cancelled) return await rollBack();
       if ('error' in settled)
@@ -628,6 +707,7 @@ export function useAccountMcpActions(
         if (flows.current.get(registered) === flow)
           flows.current.delete(registered);
       if (flow.observing) updatePending();
+      wrote();
       finish();
       if (flow.observing) await refresh();
     }
@@ -655,19 +735,77 @@ export function useAccountMcpActions(
     updatePending();
     setError(null);
   };
+  const flowOfConnection = (
+    flow: PendingConnection,
+    connection: Pick<
+      AccountMcpConnectionSummary,
+      'id' | 'serverKey' | 'configId'
+    >,
+  ): boolean =>
+    flow.id !== undefined
+      ? flow.id === connection.id
+      : flow.serverKey === connection.serverKey &&
+        flow.configId === connection.configId;
   const pendingKeyForConnection: AccountMcpActions['pendingKeyForConnection'] =
     (connection) =>
       Array.from(flows.current).find(([, flow]): boolean =>
-        flow.id !== undefined
-          ? flow.id === connection.id
-          : flow.serverKey === connection.serverKey &&
-            flow.configId === connection.configId,
+        flowOfConnection(flow, connection),
       )?.[0];
+  const reopen: AccountMcpActions['reopen'] = async (connection) => {
+    const flow = Array.from(flows.current.values()).find((candidate): boolean =>
+      flowOfConnection(candidate, connection),
+    );
+    // A flow that is ending (cancelled, or taking down its row) would undo
+    // what a new start writes, so only a live wait is reopened.
+    if (
+      !flow?.serverKey ||
+      !flow.observing ||
+      flow.cancelled ||
+      flow.releasePromise !== undefined
+    )
+      return REOPEN_ENDED;
+    // Its own start hasn't answered yet, and opens the page when it does.
+    if (flow.id === undefined || flow.reopening) return null;
+    // Recorded before the start is sent, so a poll timing out meanwhile
+    // waits for this reopen instead of cleaning up its fresh sign-in.
+    let failure: string | null = null;
+    const owned = flow;
+    const request: StartAccountMcpConnectionRequest = {
+      serverKey: flow.serverKey,
+      configId: flow.configId,
+      ...(flow.endpointUrl ? { endpointUrl: flow.endpointUrl } : {}),
+      ...(flow.oauthClient ? { oauthClient: flow.oauthClient } : {}),
+      ...(flow.accountId ? { expectedAccountId: flow.accountId } : {}),
+    };
+    const reopening = (async (): Promise<void> => {
+      try {
+        const result = await window.mcpServers.startAccountConnection(request);
+        if ('error' in result)
+          failure = new AccountMcpConnectionError(
+            result.error.code,
+            result.error.header,
+          ).message;
+        else owned.reopens += 1;
+      } catch (error) {
+        reportClientAppError(error);
+        failure = REOPEN_FAILED;
+      }
+    })();
+    flow.reopening = reopening;
+    await reopening;
+    if (flow.reopening === reopening) flow.reopening = undefined;
+    return failure;
+  };
+  const written: AccountMcpActions['written'] = async (targetKey) => {
+    await flows.current.get(targetKey)?.written;
+  };
   return {
     stopObserving,
     pending,
     pendingCount: new Set(flows.current.values()).size,
     pendingKeyForConnection,
+    reopen,
+    written,
     isConnectingConnection: (connection): boolean =>
       pendingKeyForConnection(connection) !== undefined,
     error: failure?.message ?? null,

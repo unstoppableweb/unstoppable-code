@@ -223,6 +223,18 @@ export async function saveCustomSkillThroughCore(
     (payload.preservedMetadata !== undefined && preservedMetadata === null) ||
     !isPlainJsonValue(extraMetadata)
   ) {
+    // Metadata the wire can't carry, such as a YAML date, saves in process;
+    // the rest of the save keeps the wire's limits (CAN-7498).
+    const limited = CustomSaveRequestSchema.safeParse({
+      ...request,
+      extraMetadata: null,
+      preservedMetadata: null,
+    });
+    if (!limited.success)
+      return {
+        success: false,
+        error: customSaveRefusal(request, limited.error.issues[0]?.path ?? []),
+      };
     const result = await (
       await import('../skills/skill-service')
     ).saveCustomSkill(payload);

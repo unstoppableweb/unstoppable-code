@@ -277,12 +277,32 @@ export const PACKAGE_PLACEHOLDER_ASSIGNMENT_PATTERN = new RegExp(
   'gi',
 );
 
+function isControlCharacter(character: string): boolean {
+  const code = character.charCodeAt(0);
+  return code <= 0x1f || code === 0x7f;
+}
+
 function stripControlCharacters(value: string): string {
   let result = '';
-  for (const character of value) {
-    const code = character.charCodeAt(0);
-    if (code > 0x1f && code !== 0x7f) result += character;
-  }
+  for (const character of value)
+    if (!isControlCharacter(character)) result += character;
+  return result;
+}
+
+// Stripping every control character joins a line that ends in a letter or
+// digit to the next, so a token at the start of that line loses the word
+// boundary its rule needs (CAN-7626). This copy keeps line breaks and tabs
+// and reads every other control character as a space.
+function keepLineBoundaries(value: string): string {
+  let result = '';
+  for (const character of value)
+    result +=
+      isControlCharacter(character) &&
+      character !== '\t' &&
+      character !== '\n' &&
+      character !== '\r'
+        ? ' '
+        : character;
   return result;
 }
 
@@ -310,20 +330,32 @@ function blankPlainPipelineExpressions(text: string): string {
   return result + text.slice(position);
 }
 
+function packageReadingRule(reading: string): SecretMaterialRule | null {
+  return findSecretMaterialRule(
+    blankPlainPipelineExpressions(reading).replace(
+      PACKAGE_PLACEHOLDER_ASSIGNMENT_PATTERN,
+      neutralizePlaceholderAssignment,
+    ),
+  );
+}
+
 /**
  * The secret rule a package file's text trips, read as the desktop package
  * analysis reads it, or null. The desktop analysis before an upload
  * and the hosted check at commit both call this, so a package the desktop
  * lets a person share is never refused on upload. Pure (CAN-7226).
+ *
+ * It reads the text twice: with control characters stripped, so a token they
+ * split is still found, and with line boundaries kept (CAN-7626). Either
+ * reading tripping refuses, and the stripped one runs first, so it only ever
+ * refuses more than the stripped reading alone and names the same rule.
  */
 export function findPackageTextCredentialRule(
   text: string,
 ): SecretMaterialRule | null {
-  return findSecretMaterialRule(
-    blankPlainPipelineExpressions(stripControlCharacters(text)).replace(
-      PACKAGE_PLACEHOLDER_ASSIGNMENT_PATTERN,
-      neutralizePlaceholderAssignment,
-    ),
+  return (
+    packageReadingRule(stripControlCharacters(text)) ??
+    packageReadingRule(keepLineBoundaries(text))
   );
 }
 

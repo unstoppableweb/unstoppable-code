@@ -1,7 +1,17 @@
-import { portablePipelineTriggerTypes } from '@canopy/protocol/pipelines';
+import { createHash } from 'node:crypto';
+import {
+  portablePipelineTriggerTypes,
+  type PipelinePackageManifestV1,
+  type PipelinePackageRef,
+} from '@canopy/protocol/pipelines';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type { AgentArtifactChangedField } from '@canopy/protocol/agent-artifacts';
-import { updateSharedPipelinePreservingPackage } from '../pipelines/pipeline-package-service';
+import {
+  analyzeSkillCapabilityPackage,
+  cancelPackageAnalysis,
+  createSubjectCapabilityPackage,
+  updateSharedPipelinePreservingPackage,
+} from '../pipelines/pipeline-package-service';
 import { skillResourceContextEnabled } from '../skills/resource-lanes';
 import {
   assertStoredSkillContext,
@@ -16,7 +26,7 @@ import {
   authorizeProjectPipelineRequest,
   readStoredPipelineContext,
 } from '../pipelines/pipeline-install-context';
-import { readFile, realpath } from 'node:fs/promises';
+import { readdir, readFile, realpath } from 'node:fs/promises';
 import * as path from 'node:path';
 import * as yaml from 'js-yaml';
 import type { BrowserWindow } from 'electron';
@@ -139,6 +149,16 @@ import {
   validatePipelineOwnerTargetsOnSave,
 } from '../pipelines/pipeline-owner-policy';
 import * as skillService from '../skills/skill-service';
+import {
+  listSkillFilesThroughCore,
+  saveCustomSkillThroughCore,
+} from '../canopy-runtime/skill-catalog-dispatch';
+import {
+  customSkillCreateFiles,
+  mergeCustomSkillActionFiles,
+} from '@canopy/desktop-shared/lib/custom-skill-action-files';
+import { skillPackageHasContent } from '@canopy/desktop-shared/lib/skill-package-content';
+import type { SkillEditableFile } from '@canopy/desktop-shared/types/skills';
 import { notifyRenderersSkillsChanged } from '../skills/skill-change-events';
 import {
   createSharedSkill,
@@ -147,7 +167,11 @@ import {
   listSharedSkills,
   updateSharedSkill,
 } from '../skills/canopy-server-client';
-import { CUSTOM_SOURCE_ID, isCustomSourceId } from '../skills/paths';
+import {
+  CUSTOM_SOURCE_ID,
+  getSkillDir,
+  isCustomSourceId,
+} from '../skills/paths';
 
 const RESOURCE_ACTION_TYPE_LIST = [
   'skills.list',
@@ -600,7 +624,19 @@ async function skillAction(
         : ipcFailure(result.error ?? 'Failed to read skill file.');
     }
     case 'skills.create_custom': {
-      const result = await skillService.saveCustomSkill(action);
+      // The Skills editor's save (CAN-7498): the same core operation, so its
+      // path, size and count checks apply to the agent's files too.
+      const result = await saveCustomSkillThroughCore({
+        name: action.name,
+        description: action.description,
+        body: action.body,
+        ...(action.extraMetadata
+          ? { extraMetadata: action.extraMetadata }
+          : {}),
+        ...(action.files
+          ? { files: customSkillCreateFiles(action.files) }
+          : {}),
+      });
       if (!result.success || !result.data)
         return ipcFailure(result.error ?? 'Failed to create skill.');
       refreshInvocableInventoryAfterMutation('agent:skills:create-custom');
@@ -620,32 +656,82 @@ async function skillAction(
       await assertStoredSkillContext(
         `${CUSTOM_SOURCE_ID}/${action.originalName}`,
       );
-      const current = skillService.readSkillContent(
-        CUSTOM_SOURCE_ID,
-        action.originalName,
-      );
-      if (!current.success || !current.data)
-        return ipcFailure(current.error ?? 'Custom skill not found.');
-      const frontmatter = current.data.frontmatter;
-      const nextName = action.name ?? action.originalName;
-      const payload = {
-        originalName: action.originalName,
-        name: nextName,
-        description:
-          action.description ??
-          (typeof frontmatter.description === 'string'
-            ? frontmatter.description
-            : ''),
-        body: action.body ?? current.data.body,
-        ...(action.extraMetadata
-          ? { extraMetadata: action.extraMetadata }
-          : {}),
-      };
-      const result = action.extraMetadata
-        ? await skillService.saveCustomSkill(payload)
-        : await skillService.saveCustomSkill(payload, {
-            preservedMetadata: frontmatter,
+      // Agent updates run one at a time (CAN-7498): each reads the skill and
+      // builds its full file set, so two overlapping updates would otherwise
+      // each drop the files the other added.
+      const saved = await serializeAgentSkillUpdate(
+        async (): Promise<
+          | { response: AppAdvisorActionResponse }
+          | {
+              result: Awaited<ReturnType<typeof saveCustomSkillThroughCore>>;
+              frontmatter: Record<string, unknown>;
+            }
+        > => {
+          const current = skillService.readSkillContent(
+            CUSTOM_SOURCE_ID,
+            action.originalName,
+          );
+          if (!current.success || !current.data)
+            return {
+              response: ipcFailure(current.error ?? 'Custom skill not found.'),
+            };
+          const frontmatter = current.data.frontmatter;
+          let files: SkillEditableFile[] | undefined;
+          if (action.files !== undefined || action.removeFiles !== undefined) {
+            const listed = await listSkillFilesThroughCore(
+              CUSTOM_SOURCE_ID,
+              action.originalName,
+            );
+            if (!listed.success || !listed.data)
+              return {
+                response: ipcFailure(listed.error ?? 'Custom skill not found.'),
+              };
+            const merged = mergeCustomSkillActionFiles({
+              existingFiles: listed.data.files,
+              truncated: listed.data.truncated,
+              ...(action.files ? { files: action.files } : {}),
+              ...(action.removeFiles
+                ? { removeFiles: action.removeFiles }
+                : {}),
+            });
+            if ('error' in merged)
+              return { response: ipcFailure(merged.error) };
+            // The save keeps exactly the listed files, and the listing leaves
+            // hidden entries, symlinks and special files out, so they would
+            // be deleted unasked.
+            const uncarried = await findUncarriedSkillEntry(
+              action.originalName,
+            );
+            if (uncarried)
+              return {
+                response: failure(
+                  'validation_failed',
+                  `Skill ${action.originalName} has ${uncarried}, a hidden file, symlink or special file that changing its files would delete. Remove or replace it first.`,
+                ),
+              };
+            files = merged.files;
+          }
+          // The Skills editor's save (CAN-7498); files left out keep the
+          // skill's supporting files as they are.
+          const result = await saveCustomSkillThroughCore({
+            originalName: action.originalName,
+            name: action.name ?? action.originalName,
+            description:
+              action.description ??
+              (typeof frontmatter.description === 'string'
+                ? frontmatter.description
+                : ''),
+            body: action.body ?? current.data.body,
+            ...(action.extraMetadata
+              ? { extraMetadata: action.extraMetadata }
+              : { preservedMetadata: frontmatter }),
+            ...(files ? { files } : {}),
           });
+          return { result, frontmatter };
+        },
+      );
+      if ('response' in saved) return saved.response;
+      const { result, frontmatter } = saved;
       if (!result.success || !result.data)
         return ipcFailure(result.error ?? 'Failed to update skill.');
       refreshInvocableInventoryAfterMutation('agent:skills:update-custom');
@@ -728,11 +814,21 @@ async function skillAction(
           'not_found',
           `Custom skill ${action.name} was not found.`,
         );
+      const rawSkill = await skillService.readRawSkill(action.name);
+      const packaged = await packageCustomSkillForAgentShare(
+        action.name,
+        rawSkill,
+      );
+      if (!packaged.ok) return packaged.response;
       const shared = await createSharedSkill({
         ...(skillResourceContextEnabled()
           ? { sourceSkillId: `${CUSTOM_SOURCE_ID}/${action.name}` }
           : {}),
-        rawSkill: await skillService.readRawSkill(action.name),
+        rawSkill,
+        ...packaged.fields,
+        // The bytes the package analysis read; a SKILL.md edited since is
+        // refused instead of shared unscanned (CAN-7498).
+        expectedSourceSha256: sha256Hex(rawSkill),
         shareScope: action.shareScope,
         teamId: action.teamId,
         organizationId: shareOrganization.organizationId,
@@ -801,12 +897,22 @@ async function skillAction(
         `${CUSTOM_SOURCE_ID}/${action.name}`,
         current.owner,
       );
+      const rawSkill = await skillService.readRawSkill(action.name);
+      const packaged = await packageCustomSkillForAgentShare(
+        action.name,
+        rawSkill,
+      );
+      if (!packaged.ok) return packaged.response;
       const shared = await updateSharedSkill({
         ...(skillResourceContextEnabled()
           ? { sourceSkillId: `${CUSTOM_SOURCE_ID}/${action.name}` }
           : {}),
         skillId: action.skillId,
-        rawSkill: await skillService.readRawSkill(action.name),
+        rawSkill,
+        ...packaged.fields,
+        // The bytes the package analysis read; a SKILL.md edited since is
+        // refused instead of shared unscanned (CAN-7498).
+        expectedSourceSha256: sha256Hex(rawSkill),
         expectedContentHash: current.contentHash,
       });
       return withAgentArtifacts(ok({ skill: shared }), [
@@ -834,6 +940,178 @@ async function skillAction(
     }
     default:
       return null;
+  }
+}
+
+function sha256Hex(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
+}
+
+let agentSkillUpdates: Promise<unknown> = Promise.resolve();
+
+/** Runs agent custom skill updates one after another. */
+function serializeAgentSkillUpdate<T>(run: () => Promise<T>): Promise<T> {
+  const next = agentSkillUpdates.then(run, run);
+  agentSkillUpdates = next.catch(() => undefined);
+  return next;
+}
+
+type AgentSkillSharePackage =
+  | {
+      ok: true;
+      fields: {
+        capabilityPackage?: PipelinePackageRef;
+        committedPackageUploadId?: string;
+      };
+    }
+  | { ok: false; response: AppAdvisorActionResponse };
+
+const MAX_UNCARRIED_ENTRY_SCAN = 2_000;
+
+/**
+ * The first entry in a custom skill's folder, at any depth, that its file
+ * listing leaves out and a save with a file set would therefore delete: a
+ * hidden entry, a symlink, or anything that is neither a file nor a folder.
+ * Returned as a skill-relative path, or null. macOS's .DS_Store is OS
+ * metadata and is ignored. Symlinks are not followed.
+ */
+async function findUncarriedSkillEntry(
+  skillName: string,
+): Promise<string | null> {
+  const pending: Array<{ absolute: string; relative: string }> = [
+    { absolute: getSkillDir(CUSTOM_SOURCE_ID, skillName), relative: '' },
+  ];
+  let visited = 0;
+  while (pending.length > 0 && visited < MAX_UNCARRIED_ENTRY_SCAN) {
+    const current = pending.pop();
+    if (!current) break;
+    const entries = await readdir(current.absolute, { withFileTypes: true });
+    for (const entry of entries) {
+      visited += 1;
+      const relative = current.relative
+        ? `${current.relative}/${entry.name}`
+        : entry.name;
+      if (entry.name === '.DS_Store') continue;
+      if (
+        entry.name.startsWith('.') ||
+        entry.isSymbolicLink() ||
+        (!entry.isFile() && !entry.isDirectory())
+      )
+        return relative;
+      if (entry.isDirectory())
+        pending.push({
+          absolute: path.join(current.absolute, entry.name),
+          relative,
+        });
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether a custom skill's folder holds anything besides SKILL.md, hidden
+ * entries included. An unreadable folder counts as having some, so the share
+ * still goes through the package analysis.
+ */
+async function hasSupportingEntries(skillName: string): Promise<boolean> {
+  try {
+    const entries = await readdir(getSkillDir(CUSTOM_SOURCE_ID, skillName));
+    return entries.some((entry) => entry !== 'SKILL.md');
+  } catch {
+    return true;
+  }
+}
+
+function agentShareRefusal(
+  skillName: string,
+  reason: string,
+): AgentSkillSharePackage {
+  return {
+    ok: false,
+    response: failure(
+      'validation_failed',
+      `Skill ${skillName} needs a person's review before it can be shared. ${reason} Use sharing.open_dialog to open the share dialog.`,
+    ),
+  };
+}
+
+/**
+ * Whether a package carries only the shared skill itself: each resource is a
+ * copy of the skill, recognized by its SKILL.md as the install recognizes it,
+ * with no dependencies on other skills or tools.
+ */
+function packagesOnlyTheSkill(manifest: PipelinePackageManifestV1): boolean {
+  return manifest.resources.every(
+    (resource) =>
+      resource.kind === 'standalone_skill' &&
+      resource.dependencyResourceIds.length === 0 &&
+      resource.trees.length > 0 &&
+      resource.trees.every((tree) =>
+        tree.entries.some(
+          (entry) =>
+            entry.path === 'SKILL.md' &&
+            entry.sha256 === manifest.pipelineContentHash,
+        ),
+      ),
+  );
+}
+
+/**
+ * The package a direct agent share sends with a custom skill (CAN-7498), made
+ * as the share dialog makes it: the same analysis, secret checks and upload.
+ * It carries only the skill's own files; a skill whose analysis is blocked,
+ * or that would bring other skills or tools, is refused, since only the
+ * share dialog can take a person's review of those. A skill with nothing
+ * beyond its SKILL.md shares with no package.
+ */
+async function packageCustomSkillForAgentShare(
+  skillName: string,
+  rawSkill: string,
+): Promise<AgentSkillSharePackage> {
+  // A skill that is only its SKILL.md has nothing to package, so it shares
+  // with no package and no analysis, as before. The analysis can't find a
+  // skill the invocable inventory leaves out (user-invocable: false).
+  if (!(await hasSupportingEntries(skillName))) return { ok: true, fields: {} };
+  const summary = await analyzeSkillCapabilityPackage(
+    { sourceId: CUSTOM_SOURCE_ID, skillName, rawSkill },
+    { persistDismissals: false },
+  );
+  const manifest = summary.manifest;
+  // Any blocker refuses, whatever the manifest holds: a blocked file, hidden
+  // ones included, is left out of it, so an empty manifest can't tell "no
+  // files" from "files withheld".
+  if (summary.state !== 'ready') {
+    cancelPackageAnalysis(summary.analysisId);
+    return agentShareRefusal(
+      skillName,
+      summary.blockers
+        .slice(0, 5)
+        .map((blocker) => blocker.message)
+        .join(' '),
+    );
+  }
+  const hasContent = skillPackageHasContent(manifest);
+  if (!hasContent || !manifest) {
+    cancelPackageAnalysis(summary.analysisId);
+    return { ok: true, fields: {} };
+  }
+  if (!packagesOnlyTheSkill(manifest)) {
+    cancelPackageAnalysis(summary.analysisId);
+    return agentShareRefusal(
+      skillName,
+      'It uses other skills or tools that would be shared with it.',
+    );
+  }
+  // Released after the commit so it doesn't hold a place in the analysis
+  // cache that the share dialog also uses.
+  try {
+    const committed = await createSubjectCapabilityPackage({
+      analysisId: summary.analysisId,
+      selectedOptionalResourceIds: [],
+    });
+    return { ok: true, fields: committed };
+  } finally {
+    cancelPackageAnalysis(summary.analysisId);
   }
 }
 

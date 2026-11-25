@@ -6,6 +6,7 @@ import {
   safeLstat,
 } from './feedback-archive';
 export { MAX_FILE_BYTES } from './feedback-archive';
+import { withheldIfCredential } from './feedback-scrub';
 import { FeedbackReportErrorSchema } from '@canopy/protocol/feedback-report';
 import {
   createReadStream,
@@ -602,17 +603,17 @@ async function includeCoreDiagnostics(
   await builder.addDirectoryIfSafe(
     getAgentObservabilityDiagnosticsDir(),
     dataRelativeZipPath(getAgentObservabilityDiagnosticsDir()),
-    { sourceRoot: dataDir },
+    { sourceRoot: dataDir, scrub: 'jsonl-records' },
   );
   await builder.addDirectoryIfSafe(
     getAgentObservabilityAuditDir(),
     dataRelativeZipPath(getAgentObservabilityAuditDir()),
-    { sourceRoot: dataDir },
+    { sourceRoot: dataDir, scrub: 'jsonl-records' },
   );
   await builder.addFileIfSafe(
     getAgentObservabilitySnapshotPath(),
     dataRelativeZipPath(getAgentObservabilitySnapshotPath()),
-    { sourceRoot: dataDir },
+    { sourceRoot: dataDir, scrub: 'json-document' },
   );
   await builder.addFileIfSafe(
     getPreferencesFilePath(),
@@ -684,8 +685,16 @@ async function includeAppLogs(builder: FeedbackBundleBuilder): Promise<void> {
   // The sidecar records that the pending tail was not qualified.
   await builder.addFileIfSafe(appUiLog, zipPath, {
     sourceRoot: dirname(appUiLog),
+    scrub: 'log-entries',
   });
 }
+
+/** The log and diagnostics collectors, for goldens that read what a bundle copies. */
+export const feedbackLogsForTests = {
+  includeAppLogs,
+  includeCoreDiagnostics,
+  addSanitizedPipelineExecutionState,
+};
 
 async function includeMacDiagnosticReports(
   builder: FeedbackBundleBuilder,
@@ -1622,7 +1631,11 @@ function sanitizePipelineExecutionState(
     'plan_id',
     readStringField(value, 'planId') ?? readStringField(value, 'plan_id'),
   );
-  setRecordValue(sanitized, 'error', readStringField(value, 'error'));
+  setRecordValue(
+    sanitized,
+    'error',
+    withheldIfCredential(readStringField(value, 'error')),
+  );
   setRecordValue(
     sanitized,
     'rerun_source_id',
@@ -1758,7 +1771,11 @@ function sanitizePipelineStep(
     readStringField(value, 'completed_at'),
   );
   setRecordValue(sanitized, 'exit_code', readNumberField(value, 'exit_code'));
-  setRecordValue(sanitized, 'error', readStringField(value, 'error'));
+  setRecordValue(
+    sanitized,
+    'error',
+    withheldIfCredential(readStringField(value, 'error')),
+  );
   setRecordValue(
     sanitized,
     'log_file',

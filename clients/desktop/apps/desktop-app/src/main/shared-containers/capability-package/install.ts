@@ -116,6 +116,12 @@ import {
   type RefusedDefinition,
   type RefusedDefinitionRef,
 } from './install-plan';
+import {
+  loggableError,
+  logSafeError,
+  logSafeText,
+  nameForMessage,
+} from './log-safe';
 
 // ---------------------------------------------------------------------------
 // Warnings: plain sentences appended to the fork response's `warnings`.
@@ -633,9 +639,10 @@ export async function installForkCapabilityPackage(
   try {
     return await installDisclosedPackage(input, deps);
   } catch (error) {
-    deps.log('[shared-container-capabilities] install failed', {
-      error: error instanceof Error ? error.message : String(error),
-    });
+    deps.log(
+      '[shared-container-capabilities] install failed',
+      logSafeError(error),
+    );
     return [FAILED_PACKAGE_WARNING];
   }
 }
@@ -973,7 +980,7 @@ async function runAttempt(
     deps.log('[shared-container-capabilities] package not installed', {
       containerId: request.containerId,
       revisionId: request.revisionId,
-      error: error instanceof Error ? error.message : String(error),
+      ...logSafeError(error),
     });
     const warnings = [warningForFailure(error, signal)];
     const residual = [...earlierResidual];
@@ -1092,7 +1099,9 @@ function uniqueName(
     const candidate = suffix <= 1 ? base : `${base} (${suffix})`;
     if (!taken.has(candidate.trim().toLowerCase())) return candidate;
   }
-  throw new Error(`Could not name "${base}" without replacing local work`);
+  throw new Error(
+    `Could not name "${nameForMessage(base)}" without replacing local work`,
+  );
 }
 
 async function installDefinitions(
@@ -1234,7 +1243,8 @@ async function installDefinitions(
         const localId = localAgentByResource.get(resourceId);
         if (!agent || !localId)
           throw new ForkCapabilityPackageInvalidError(
-            `${planned.document.name} uses an Agent the package does not install`,
+            `${nameForMessage(planned.document.name)} uses an Agent the package does not install`,
+            'pipeline_definition',
           );
         agentIds.set(agent.document.agent.id, localId);
       }
@@ -1245,9 +1255,10 @@ async function installDefinitions(
         installedPipeline = parsePipelineText(rawPipeline);
       } catch (error) {
         throw new ForkCapabilityPackageInvalidError(
-          `${planned.document.name}: ${
-            error instanceof Error ? error.message : 'invalid pipeline YAML'
-          }`,
+          `${nameForMessage(planned.document.name)}: ${loggableError(
+            error instanceof Error ? error.message : 'invalid pipeline YAML',
+          )}`,
+          'pipeline_definition',
         );
       }
       const contentHash = hashPipelinePackageYaml(rawPipeline);
@@ -1321,7 +1332,7 @@ async function installDefinitions(
     if (!built.ok) {
       deps.log('[shared-container-capabilities] automation skipped', {
         resourceId: planned.resourceId,
-        reason: built.error,
+        reason: logSafeText(built.error),
       });
       input.warnings.push(
         automationSkippedWarning(
@@ -1346,7 +1357,9 @@ async function installDefinitions(
       await touchJournal(deps, journal);
       deps.log('[shared-container-capabilities] automation not saved', {
         resourceId: planned.resourceId,
-        reason: created.ok ? 'no activity returned' : created.error,
+        reason: logSafeText(
+          created.ok ? 'no activity returned' : created.error,
+        ),
       });
       input.warnings.push(
         automationSkippedWarning(

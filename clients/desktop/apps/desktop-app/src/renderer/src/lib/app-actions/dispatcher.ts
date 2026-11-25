@@ -417,7 +417,12 @@ import type {
   SaveCustomSkillRequest,
   SharedSkillDetail,
   SkillContentResponse,
+  SkillEditableFile,
 } from '@canopy/desktop-shared/types/skills';
+import {
+  customSkillCreateFiles,
+  mergeCustomSkillActionFiles,
+} from '@canopy/desktop-shared/lib/custom-skill-action-files';
 import { importSharedSkill } from '@/lib/sharedSkillImport';
 import { resolveSharedResourceErrorMessage } from '@/lib/sharedResourceErrors';
 import { requestBrowserPanel } from '@/lib/browserPanelActivation';
@@ -2040,6 +2045,7 @@ function validateAppAdvisorAction(action: unknown): ActionValidationResult {
       return (
         requireStrings(action, ['name', 'description', 'body']) ??
         validateOptionalStringRecord(action, 'extraMetadata') ??
+        validateOptionalSkillActionFiles(action) ??
         valid()
       );
     case 'skills.update_custom':
@@ -2047,12 +2053,18 @@ function validateAppAdvisorAction(action: unknown): ActionValidationResult {
         requireStrings(action, ['originalName']) ??
         optionalStrings(action, ['name', 'description', 'body']) ??
         validateOptionalStringRecord(action, 'extraMetadata') ??
+        validateOptionalSkillActionFiles(action) ??
+        validateOptionalStringArray(action, 'removeFiles') ??
         (action.name !== undefined ||
         action.description !== undefined ||
         action.body !== undefined ||
-        action.extraMetadata !== undefined
+        action.extraMetadata !== undefined ||
+        action.files !== undefined ||
+        action.removeFiles !== undefined
           ? valid()
-          : missing('name, description, body, or extraMetadata'))
+          : missing(
+              'name, description, body, extraMetadata, files, or removeFiles',
+            ))
       );
     case 'skills.delete_custom':
       return requireStrings(action, ['name']) ?? valid();
@@ -3715,6 +3727,23 @@ function validateAppAdvisorAction(action: unknown): ActionValidationResult {
     return record[field] === undefined || Array.isArray(record[field])
       ? null
       : invalid(field);
+  }
+
+  function validateOptionalSkillActionFiles(
+    record: Record<string, unknown>,
+  ): ActionValidationResult | null {
+    const files = record.files;
+    if (files === undefined) return null;
+    return Array.isArray(files) &&
+      files.every(
+        (file) =>
+          isRecord(file) &&
+          typeof file.path === 'string' &&
+          file.path.length > 0 &&
+          typeof file.content === 'string',
+      )
+      ? null
+      : invalid('files');
   }
 
   function validateOptionalStringArray(
@@ -6313,6 +6342,37 @@ async function updateCustomSkillResult(
       ? existing.data.frontmatter.description
       : '';
 
+  let files: SkillEditableFile[] | undefined;
+  if (action.files !== undefined || action.removeFiles !== undefined) {
+    const listed = await window.skills.listFiles(
+      'custom:app',
+      action.originalName,
+    );
+    if (!listed.success || !listed.data) {
+      return {
+        ok: false,
+        error: {
+          code: 'not_found',
+          message:
+            listed.error ?? `Custom skill "${action.originalName}" not found.`,
+        },
+      };
+    }
+    const merged = mergeCustomSkillActionFiles({
+      existingFiles: listed.data.files,
+      truncated: listed.data.truncated,
+      ...(action.files ? { files: action.files } : {}),
+      ...(action.removeFiles ? { removeFiles: action.removeFiles } : {}),
+    });
+    if ('error' in merged) {
+      return {
+        ok: false,
+        error: { code: 'validation_failed', message: merged.error },
+      };
+    }
+    files = merged.files;
+  }
+
   return saveCustomSkillResult(
     {
       originalName: action.originalName,
@@ -6320,6 +6380,7 @@ async function updateCustomSkillResult(
       description: action.description ?? currentDescription,
       body: action.body ?? existing.data.body,
       extraMetadata: action.extraMetadata ?? customSkillExtras(existing.data),
+      ...(files ? { files } : {}),
     },
     action.type,
   );
@@ -10423,6 +10484,9 @@ async function routeAction(
           body: action.body,
           ...(action.extraMetadata
             ? { extraMetadata: action.extraMetadata }
+            : {}),
+          ...(action.files
+            ? { files: customSkillCreateFiles(action.files) }
             : {}),
         },
         action.type,

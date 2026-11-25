@@ -54,10 +54,15 @@ import {
 import { assignStepIds } from '@canopy/execution-engine/pipelines/normalize-pipeline';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type { Pipeline, Step } from '@canopy/execution-engine/types/pipeline';
+import { loggableError, nameForMessage } from './log-safe';
 
 /** The package cannot be installed as a whole; nothing is changed. */
 export class ForkCapabilityPackageInvalidError extends Error {
-  constructor(readonly detail: string) {
+  constructor(
+    readonly detail: string,
+    /** The kind of the definition at fault, for the log; never its name. */
+    readonly definitionKind?: string,
+  ) {
     super(`Invalid shared-container capability package: ${detail}`);
     this.name = 'ForkCapabilityPackageInvalidError';
   }
@@ -436,7 +441,8 @@ async function overlayReferencesAgentModel(
           sha256Hex(bytes) !== entry.sha256
         ) {
           throw new ForkCapabilityPackageInvalidError(
-            `${resource.displayName} failed verification`,
+            `${nameForMessage(resource.displayName)} failed verification`,
+            resource.kind,
           );
         }
         if (textReferencesAgentModel(new TextDecoder().decode(bytes)))
@@ -491,7 +497,8 @@ async function readOverlayChildPipelines(
     const bytes = await readDocument(entry.sha256);
     if (bytes.byteLength !== entry.size || sha256Hex(bytes) !== entry.sha256) {
       throw new ForkCapabilityPackageInvalidError(
-        `${resource.displayName} failed verification`,
+        `${nameForMessage(resource.displayName)} failed verification`,
+        resource.kind,
       );
     }
     try {
@@ -518,7 +525,8 @@ function definitionDocumentEntry(resource: PipelinePackageResource): {
     entry.mode !== 'read'
   ) {
     throw new ForkCapabilityPackageInvalidError(
-      `${resource.displayName} has no single read-only definition document`,
+      `${nameForMessage(resource.displayName)} has no single read-only definition document`,
+      resource.kind,
     );
   }
   return { sha256: entry.sha256, size: entry.size };
@@ -529,7 +537,7 @@ function requireKind(
   owner: PipelinePackageResource,
   referenceId: string,
   kind: SharedContainerDefinitionKind,
-  ownerName = owner.displayName,
+  ownerName = nameForMessage(owner.displayName),
 ): void {
   const target = byId.get(referenceId);
   if (
@@ -539,6 +547,7 @@ function requireKind(
   ) {
     throw new ForkCapabilityPackageInvalidError(
       `${ownerName} references a ${kind} that is not one of its packaged dependencies`,
+      owner.kind,
     );
   }
 }
@@ -572,7 +581,8 @@ export async function planForkCapabilityInstall(
     const bytes = await readDocument(entry.sha256);
     if (bytes.byteLength !== entry.size || sha256Hex(bytes) !== entry.sha256) {
       throw new ForkCapabilityPackageInvalidError(
-        `${resource.displayName} failed verification`,
+        `${nameForMessage(resource.displayName)} failed verification`,
+        resource.kind,
       );
     }
     // Every check applies; a credential finding is set aside, and refuses
@@ -581,22 +591,25 @@ export async function planForkCapabilityInstall(
       parseSharedContainerDefinitionDocumentApartFromCredentials(bytes);
     const fields = credentialFindings.map(sharedContainerCredentialErrorField);
     const holdsCredential = fields.length > 0;
-    const name = holdsCredential ? shownName(resource) : resource.displayName;
+    const name = nameForMessage(resource.displayName);
     if (!parsed.ok) {
       throw new ForkCapabilityPackageInvalidError(
-        `${name}: ${parsed.errors.join('; ')}`,
+        `${name}: ${parsed.errors.map(loggableError).join('; ')}`,
+        resource.kind,
       );
     }
     const document = parsed.value;
     if (document.kind !== resource.kind) {
       throw new ForkCapabilityPackageInvalidError(
         `${name} carries a ${document.kind} document`,
+        resource.kind,
       );
     }
     for (const reference of document.references) {
       if (!resource.dependencyResourceIds.includes(reference)) {
         throw new ForkCapabilityPackageInvalidError(
           `${name} references a resource that is not one of its packaged dependencies`,
+          resource.kind,
         );
       }
     }
@@ -605,6 +618,7 @@ export async function planForkCapabilityInstall(
       if (typeof field !== 'string')
         throw new ForkCapabilityPackageInvalidError(
           `${name} has a credential finding without a field`,
+          resource.kind,
         );
       validateDefinition(byId, resource, document, true);
       const prefix = `${resource.kind}.`;
@@ -770,15 +784,6 @@ export async function planForkCapabilityInstall(
   return plan;
 }
 
-const UNNAMED_DEFINITION = 'A definition from this share';
-
-/** A definition's name for a refusal, unless the name itself looks like a secret. */
-function shownName(resource: PipelinePackageResource): string {
-  return findSharedTextCredentialRule(resource.displayName) === null
-    ? resource.displayName
-    : UNNAMED_DEFINITION;
-}
-
 /**
  * The checks every definition passes, planned or refused. A refused one is
  * named without a secret-shaped name, and its YAML error never quotes the
@@ -790,7 +795,7 @@ function validateDefinition(
   definition: SharedContainerDefinitionDocument,
   refused: boolean,
 ): void {
-  const name = refused ? shownName(resource) : resource.displayName;
+  const name = nameForMessage(resource.displayName);
   switch (definition.kind) {
     case 'agent_definition':
       return;
@@ -801,9 +806,12 @@ function validateDefinition(
         throw new ForkCapabilityPackageInvalidError(
           refused
             ? `${name}: invalid pipeline YAML`
-            : `${name}: ${
-                error instanceof Error ? error.message : 'invalid pipeline YAML'
-              }`,
+            : `${name}: ${loggableError(
+                error instanceof Error
+                  ? error.message
+                  : 'invalid pipeline YAML',
+              )}`,
+          resource.kind,
         );
       }
       for (const reference of definition.references)

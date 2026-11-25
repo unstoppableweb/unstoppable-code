@@ -6,6 +6,7 @@ import type {
   BrowserTransferStatus,
 } from '@canopy/execution-engine/types/browser';
 import type { BrowserPostDispatchUnknown } from '@canopy/desktop-shared/types';
+import type { CustomSkillActionFile } from '@canopy/desktop-shared/lib/custom-skill-action-files';
 import { openShareDialog } from './sharing-runtime';
 import { filterProjectPipelineContexts } from '../pipelines/pipeline-install-context';
 import { BrowserProfileError } from '@canopy/desktop-shared/browser-profile-error';
@@ -264,6 +265,7 @@ type ScopedAction =
       description: string;
       body: string;
       extraMetadata?: Record<string, string>;
+      files?: CustomSkillActionFile[];
     }
   | {
       type: 'skills.update_custom';
@@ -272,6 +274,8 @@ type ScopedAction =
       description?: string;
       body?: string;
       extraMetadata?: Record<string, string>;
+      files?: CustomSkillActionFile[];
+      removeFiles?: string[];
     }
   | { type: 'skills.delete_custom'; name: string }
   | {

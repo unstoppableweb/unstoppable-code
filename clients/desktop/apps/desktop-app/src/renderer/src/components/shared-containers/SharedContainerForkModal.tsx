@@ -23,6 +23,8 @@ import { Stack } from '@canopy/ui-shared/components';
  * puts the copy in front: the share viewer closes, the sidebar enters the
  * copy's owning context, and focus moves to the copy (CAN-4782). The success
  * toast names that context when it changed and offers Open copy to return.
+ * A copy that came with warnings stays in the dialog first and lists every
+ * one, until the person picks Open copy or Done (CAN-7585).
  *
  * Compatibility is main's call, not this dialog's. There is no
  * "list compatible workspaces" query, and inventing a renderer-side remote-URL
@@ -57,11 +59,13 @@ import type {
 } from '@canopy/protocol/shared-containers';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import { workspaceOwnerMatchesContext } from '@canopy/execution-engine/lib/workspace-owner';
-import { formatCapabilityPackageForkDisclosure } from '@canopy/ui-shared/sharing';
+import {
+  formatCapabilityPackageForkDisclosure,
+  SharedContainerForkResult,
+} from '@canopy/ui-shared/sharing';
 import { workspaceContextDisplayLabel } from '@canopy/execution-engine/lib/automation-context-copy';
 import { Button } from '@/components/shared/Button';
 import { DialogModal } from '@/components/shared/DialogModal';
-import { brandText } from '@/lib/brand';
 import { openForkedContainer } from '@/lib/shared-containers/open-forked-container';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useProjectsStore } from '@/stores/projectsStore';
@@ -116,10 +120,21 @@ type DestinationKind = 'new' | 'existing';
 
 const OPEN_COPY_LABEL = 'Open copy';
 
-function partialCopyNote(response: SharedContainerForkResponse): string {
-  return response.warnings.length > 0
-    ? ` ${brandText.appName} could not bring everything across.`
-    : '';
+/** The success toast for a made copy, with Open copy to bring it forward. */
+function announceCopyMade(
+  message: string,
+  response: SharedContainerForkResponse,
+): void {
+  useGitHubStore.getState().addToast(message, 'success', undefined, {
+    projectId: response.projectId,
+    worktreeId: response.worktreeId,
+    action: {
+      label: OPEN_COPY_LABEL,
+      onClick: (): void => reopenCopy(response),
+    },
+    forceInApp: true,
+    suppressOsNotification: true,
+  });
 }
 
 /**
@@ -169,32 +184,16 @@ async function revealNewCopy(
             switchedTo,
             useWorkspaceContextStore.getState().state.organizations,
           )}`;
-    useGitHubStore
-      .getState()
-      .addToast(
-        `Copy made${destination}.${partialCopyNote(response)}`,
-        response.warnings.length > 0 ? 'warning' : 'success',
-        undefined,
-        {
-          projectId: response.projectId,
-          worktreeId: response.worktreeId,
-          action: {
-            label: OPEN_COPY_LABEL,
-            onClick: (): void => reopenCopy(response),
-          },
-          forceInApp: true,
-          suppressOsNotification: true,
-        },
-      );
+    announceCopyMade(`Copy made${destination}.`, response);
   } catch (error) {
     addOpenFailedToast(
-      `Copy made, but it couldn't be opened.${partialCopyNote(response)}`,
+      "Copy made, but it couldn't be opened.",
       response,
       error,
     );
   }
 }
-type Step = 'destination' | 'confirm';
+type Step = 'destination' | 'confirm' | 'result';
 
 interface ReviewedRevision {
   revisionId: string;
@@ -299,6 +298,11 @@ function SharedContainerForkReview({
   } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
+  // A made copy whose warnings are on screen, waiting for Open copy or Done.
+  const [madeCopy, setMadeCopy] = useState<SharedContainerForkResponse | null>(
+    null,
+  );
+  const [opening, setOpening] = useState(false);
   const active = useRef(true);
   const basis = revisionBasis(revision);
   const hostGeneration = useRef(0);
@@ -465,6 +469,13 @@ function SharedContainerForkReview({
           setStep('destination');
           return;
         }
+        if (outcome.response.warnings.length > 0) {
+          // The copy exists. Its warnings stay on screen until the person
+          // opens it or is done, instead of being cut down to a toast.
+          setMadeCopy(outcome.response);
+          setStep('result');
+          return;
+        }
         openCopy(outcome.response);
       })
       .finally(() => {
@@ -492,19 +503,37 @@ function SharedContainerForkReview({
       .finally(() => onClose());
   };
 
+  const handleOpenMadeCopy = (): void => {
+    if (madeCopy === null || opening) return;
+    setOpening(true);
+    openCopy(madeCopy);
+  };
+
+  const handleDone = (): void => {
+    if (madeCopy === null || opening) return;
+    // Main made the copy after the renderer's last projects read, and only
+    // opening it reloads them; the sidebar has to list it either way.
+    void useProjectsStore.getState().loadProjects({ silent: true });
+    announceCopyMade('Copy made.', madeCopy);
+    onClose();
+  };
+
+  const handleClose =
+    busy || opening ? (): void => {} : step === 'result' ? handleDone : onClose;
+
   return (
     <DialogModal
-      onClose={busy ? (): void => {} : onClose}
+      onClose={handleClose}
       title="Make a copy of this share"
       maxWidth="md"
       headerBorder={false}
-      closeOnBackdrop={!busy}
+      closeOnBackdrop={!busy && !opening}
       dataTestId="shared-container-fork-modal"
     >
       <div className="flex flex-col gap-4">
         {/* Polite live region: announced on either step, focus stays put. */}
         <div role="status" aria-live="polite">
-          {updated !== null && (
+          {step !== 'result' && updated !== null && (
             <Surface
               variant="outline"
               size="small"
@@ -533,7 +562,7 @@ function SharedContainerForkReview({
               </div>
             </Surface>
           )}
-          {unavailable && (
+          {step !== 'result' && unavailable && (
             <ErrorBanner
               errorSource="shared-container-fork-revision-unavailable"
               className=""
@@ -780,6 +809,15 @@ function SharedContainerForkReview({
               </ul>
             </Disclosure>
           </div>
+        )}
+
+        {step === 'result' && madeCopy !== null && (
+          <SharedContainerForkResult
+            warnings={madeCopy.warnings}
+            onOpenCopy={handleOpenMadeCopy}
+            onDone={handleDone}
+            busy={opening}
+          />
         )}
 
         {/* Main's refusals can name the share's owner. */}

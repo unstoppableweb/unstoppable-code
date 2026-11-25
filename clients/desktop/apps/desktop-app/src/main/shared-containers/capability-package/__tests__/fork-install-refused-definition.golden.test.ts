@@ -297,6 +297,70 @@ describe('Shared container install skips a definition that fails its credential 
     expect(JSON.stringify(result.refusedDefinitions)).not.toContain(TOKEN);
   });
 
+  // A name that is code naming a token, proven on its own line by a call on a
+  // dotted callee, is shown; a quoted literal after `const` still reads as a
+  // credential (CAN-7614).
+  const CODE_NAME =
+    'const packageScriptToken = packageManagerCommandPattern.test(command)';
+  const LITERAL_NAME = `const DB_PASSWORD = "${'L'.repeat(8)}"`;
+
+  it('names a refused definition whose name is code, and still hides a name holding a literal (CAN-7614)', async () => {
+    const result = await plan([
+      pipeline('pipeline-digest', 'Digest'),
+      {
+        ...pipeline('pipeline-code-name', 'Code name', [], TOKEN),
+        displayName: CODE_NAME,
+      },
+      {
+        ...pipeline('pipeline-literal-name', 'Literal name', [], TOKEN),
+        displayName: LITERAL_NAME,
+      },
+    ]);
+    expect(result.refusedDefinitions).toEqual([
+      {
+        resourceId: 'pipeline-code-name',
+        kind: 'pipeline_definition',
+        displayName: CODE_NAME,
+        reason: 'credential',
+        field: 'description',
+      },
+      {
+        resourceId: 'pipeline-literal-name',
+        kind: 'pipeline_definition',
+        displayName: null,
+        reason: 'credential',
+        field: 'description',
+      },
+    ]);
+  });
+
+  it('names a refused definition in a package refusal when its name is code, and still hides a name holding a literal (CAN-7614)', async () => {
+    const refusalFor = async (displayName: string): Promise<unknown> => {
+      const { manifest, readDocument } = shareOf([
+        pipeline('pipeline-digest', 'Digest'),
+        { ...agent('agent-leaky', 'Leaky helper', TOKEN), displayName },
+      ]);
+      manifest.resources[1].kind = 'pipeline_definition';
+      return planForkCapabilityInstall(manifest, readDocument, {
+        containerType: 'CODE_WORKTREE',
+      }).then(
+        () => null,
+        (error: unknown) => error,
+      );
+    };
+    const code = await refusalFor(CODE_NAME);
+    expect(code).toBeInstanceOf(ForkCapabilityPackageInvalidError);
+    expect(code).toHaveProperty(
+      'message',
+      `Invalid shared-container capability package: ${CODE_NAME} carries a agent_definition document`,
+    );
+    const literal = await refusalFor(LITERAL_NAME);
+    expect(literal).toHaveProperty(
+      'message',
+      'Invalid shared-container capability package: A definition from this share carries a agent_definition document',
+    );
+  });
+
   it('installs the rest of a share and names the refused definition, never its value', async () => {
     const { manifest, readDocument } = shareOf([
       agent('agent-writer', 'Writer'),
@@ -732,5 +796,270 @@ describe('Shared container install skips a definition that fails its credential 
       result: parseSharedContainerDefinitionDocument(clean),
       credentialFindings: [],
     });
+  });
+});
+
+describe('Install errors keep secret-shaped names, keys and values out of the log (CAN-7615)', () => {
+  const UNNAMED = 'A definition from this share';
+  const FIELD_WITHHELD = 'a field holds text that looks like a credential';
+  type LogEntry = readonly [string, unknown];
+
+  const forkRequest = (digest: string): SharedContainerForkRequest => ({
+    containerId: 'container-1',
+    revisionId: 'revision-1',
+    sourceOwnerDisplayName: 'Sam',
+    destination: { kind: 'existing-workspace', workspaceId: 'project-1' },
+    expectedPackageDigest: digest,
+  });
+  const forkResponse: SharedContainerForkResponse = {
+    containerType: 'CODE_WORKTREE',
+    projectId: 'project-1',
+    worktreeId: 'worktree-1',
+    warnings: [],
+    provenance: {
+      sourceContainerId: 'container-1',
+      sourceRevisionId: 'revision-1',
+      sourceOwnerDisplayName: 'Sam',
+      forkedAt: '2026-11-22T00:00:00.000Z',
+    },
+  };
+
+  /** Installs a share with in-memory dependencies, capturing every log call. */
+  const install = async (
+    manifest: PipelinePackageManifestV1,
+    readDocument: (hash: string) => Promise<Uint8Array>,
+    overrides: Partial<ForkCapabilityInstallDependencies> = {},
+    tweak?: (deps: ForkCapabilityInstallDependencies) => void,
+  ): Promise<{ warnings: string[]; logs: LogEntry[] }> => {
+    const digest = computePipelinePackageDigestSync(manifest);
+    const journals = new Map<string, ForkCapabilityInstallJournal>();
+    const logs: LogEntry[] = [];
+    const unexpected = (): Promise<never> =>
+      Promise.reject(new Error('not used by this share'));
+    const deps: ForkCapabilityInstallDependencies = {
+      timeoutMs: 60_000,
+      now: () => new Date('2026-11-22T00:00:00.000Z'),
+      randomId: () => 'random-1',
+      log: (message, detail) => {
+        logs.push([message, detail]);
+      },
+      readReplicaPackage: () => Promise.resolve(undefined),
+      getPackage: () => Promise.resolve({ digest, manifest }),
+      getBlob: (_request, hash) => readDocument(hash),
+      installSubjectPackage: async (request) => {
+        const result = {
+          supportingFileCount: 0,
+          installedSkills: [],
+          uninstalledResourceLabels: [],
+          keptLocalFiles: [],
+        };
+        await request.finalizeInstall?.(result);
+        return result;
+      },
+      findLedgerInstall: () => Promise.resolve(null),
+      resolvePortablePlugins: () =>
+        Promise.resolve({
+          selections: { collectionIds: [], skillRefs: [], pluginRefs: [] },
+          unmatched: [],
+        }),
+      listAgents: () => Promise.resolve([]),
+      createAgent: unexpected,
+      removeAgent: unexpected,
+      listPipelineNames: () => Promise.resolve([]),
+      readBundledPipelineScopes: unexpected,
+      createPipeline: unexpected,
+      removePipeline: unexpected,
+      listAutomations: () => Promise.resolve([]),
+      createAutomation: unexpected,
+      deleteAutomation: unexpected,
+      readDestination: () =>
+        Promise.resolve({ repoIds: [], defaultSkills: [] }),
+      addDefaultSkills: () => Promise.resolve(),
+      removeDefaultSkills: () => Promise.resolve(),
+      removeSkillFolder: unexpected,
+      readJournal: (key) => Promise.resolve(journals.get(key) ?? null),
+      writeJournal: (journal) => {
+        journals.set(journal.key, journal);
+        return Promise.resolve();
+      },
+      deleteJournal: (key) => {
+        journals.delete(key);
+        return Promise.resolve();
+      },
+      listJournals: () => Promise.resolve([...journals.values()]),
+      ...overrides,
+    };
+    tweak?.(deps);
+    const warnings = await installForkCapabilityPackage(
+      { request: forkRequest(digest), response: forkResponse },
+      deps,
+    );
+    return { warnings, logs };
+  };
+
+  /** The one failure log at `site`, after checking nothing logged holds the token. */
+  const failureLog = (
+    logs: readonly LogEntry[],
+    site: string,
+  ): Record<string, unknown> => {
+    expect(JSON.stringify(logs)).not.toContain(TOKEN);
+    const entries = logs.filter(([message]) => message.endsWith(site));
+    expect(entries).toHaveLength(1);
+    const [, detail] = entries[0];
+    if (typeof detail !== 'object' || detail === null)
+      throw new Error(`no detail on ${site}`);
+    // A string or number per key: never an error object, a stack or a cause.
+    for (const value of Object.values(detail))
+      expect(['string', 'number']).toContain(typeof value);
+    return { ...detail };
+  };
+
+  const notInstalled = (logs: readonly LogEntry[]): Record<string, unknown> =>
+    failureLog(logs, ' package not installed');
+
+  it('names a definition whose manifest name looks like a secret neutrally when it fails verification', async () => {
+    const { manifest, readDocument } = shareOf([
+      { ...agent('agent-writer', 'Writer'), displayName: TOKEN },
+    ]);
+    manifest.resources[0].trees[0].entries[0].size += 1;
+    const { warnings, logs } = await install(manifest, readDocument);
+    expect(warnings).toEqual([INVALID_PACKAGE_WARNING]);
+    const detail = notInstalled(logs);
+    expect(detail.error).toContain(`${UNNAMED} failed verification`);
+    expect(detail.errorType).toBe('ForkCapabilityPackageInvalidError');
+    expect(detail.definitionKind).toBe('agent_definition');
+  });
+
+  it('names an installable definition neutrally when its reference has the wrong kind', async () => {
+    const { manifest, readDocument } = shareOf([
+      pipeline('pipeline-other', 'Other'),
+      {
+        ...pipeline('pipeline-digest', 'Digest', ['pipeline-other']),
+        displayName: TOKEN,
+      },
+    ]);
+    const { warnings, logs } = await install(manifest, readDocument);
+    expect(warnings).toEqual([INVALID_PACKAGE_WARNING]);
+    expect(notInstalled(logs).error).toContain(
+      `${UNNAMED} references a agent_definition`,
+    );
+  });
+
+  it('names an installable pipeline neutrally when its YAML is invalid', async () => {
+    const { manifest, readDocument } = shareOf([
+      {
+        ...pipeline('pipeline-digest', 'Digest', [], undefined, 'name: [open'),
+        displayName: TOKEN,
+      },
+    ]);
+    const { warnings, logs } = await install(manifest, readDocument);
+    expect(warnings).toEqual([INVALID_PACKAGE_WARNING]);
+    expect(notInstalled(logs).error).toContain(`${UNNAMED}: `);
+  });
+
+  it('withholds an unknown field whose key looks like a secret', async () => {
+    const { manifest, readDocument } = shareOf([
+      {
+        ...agent('agent-writer', 'Writer'),
+        rewrite: (text): string =>
+          text.replace(
+            '"kind":"agent_definition"',
+            `"${TOKEN}":1,"kind":"agent_definition"`,
+          ),
+      },
+    ]);
+    const { warnings, logs } = await install(manifest, readDocument);
+    expect(warnings).toEqual([INVALID_PACKAGE_WARNING]);
+    expect(notInstalled(logs).error).toContain(`Writer: ${FIELD_WITHHELD}`);
+  });
+
+  it("withholds an automation document's unexpected field whose key looks like a secret", async () => {
+    const { manifest, readDocument } = shareOf([
+      pipeline('pipeline-digest', 'Digest'),
+      {
+        ...automation('automation-weekly', 'Weekly digest', 'pipeline-digest'),
+        rewrite: (text): string =>
+          text.replace(
+            '"hasRunCondition":false',
+            `"${TOKEN}":1,"hasRunCondition":false`,
+          ),
+      },
+    ]);
+    const { warnings, logs } = await install(manifest, readDocument);
+    expect(warnings).toEqual([INVALID_PACKAGE_WARNING]);
+    expect(notInstalled(logs).error).toContain(
+      `Weekly digest: ${FIELD_WITHHELD}`,
+    );
+  });
+
+  it('withholds a validator error that quotes the credential a refused definition holds', async () => {
+    const { manifest, readDocument } = shareOf([
+      pipeline('pipeline-digest', 'Digest'),
+      {
+        ...automation('automation-weekly', 'Weekly digest', 'pipeline-digest'),
+        rewrite: (text): string =>
+          text.replace('"0 9 * * 1"', `"${TOKEN} 9 * * 1"`),
+      },
+    ]);
+    const { warnings, logs } = await install(manifest, readDocument);
+    expect(warnings).toEqual([INVALID_PACKAGE_WARNING]);
+    expect(notInstalled(logs).error).toContain(FIELD_WITHHELD);
+  });
+
+  it('withholds the whole message of any error that carries a secret into the log, whatever its type', async () => {
+    const { manifest, readDocument } = shareOf([
+      agent('agent-writer', 'Writer'),
+    ]);
+    const { logs } = await install(manifest, readDocument, {
+      installSubjectPackage: () =>
+        Promise.reject(
+          new Error(
+            `Pipeline "${TOKEN}" failed; rollback was incomplete: folder busy`,
+          ),
+        ),
+    });
+    const detail = notInstalled(logs);
+    expect(detail.error).toBe(
+      'Capability install error withheld because it looks like it holds a credential',
+    );
+    expect(detail.errorType).toBe('Error');
+  });
+
+  it('withholds a secret in an error that escapes the attempt, on the outer log too', async () => {
+    const { manifest, readDocument } = shareOf([
+      agent('agent-writer', 'Writer'),
+    ]);
+    const { warnings, logs } = await install(
+      manifest,
+      readDocument,
+      {},
+      (deps) => {
+        // Read before the attempt's own try, so the throw escapes to the outer log.
+        Object.defineProperty(deps, 'timeoutMs', {
+          get: (): number => {
+            throw new Error(`Unexpected setting ${TOKEN}`);
+          },
+        });
+      },
+    );
+    expect(JSON.stringify(warnings)).not.toContain(TOKEN);
+    const detail = failureLog(logs, ' install failed');
+    expect(detail.error).toBe(
+      'Capability install error withheld because it looks like it holds a credential',
+    );
+    expect(detail.errorType).toBe('Error');
+  });
+
+  it('keeps ordinary names and errors in the log as they are (green before and after)', async () => {
+    const { manifest, readDocument } = shareOf([
+      agent('agent-writer', 'Writer'),
+    ]);
+    manifest.resources[0].trees[0].entries[0].size += 1;
+    const { warnings, logs } = await install(manifest, readDocument);
+    expect(warnings).toEqual([INVALID_PACKAGE_WARNING]);
+    const entries = logs.filter(([message]) =>
+      message.endsWith(' package not installed'),
+    );
+    expect(JSON.stringify(entries)).toContain('Writer failed verification');
   });
 });
