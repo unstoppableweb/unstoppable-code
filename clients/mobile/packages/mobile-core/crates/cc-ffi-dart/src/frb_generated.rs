@@ -56,7 +56,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 283082097;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -606356536;
 
 // Section: executor
 
@@ -4662,6 +4662,68 @@ fn wire__crate__api__home__HomeService_bind_chats_impl(
         },
     )
 }
+fn wire__crate__api__home__HomeService_bind_overview_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "HomeService_bind_overview",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_that = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<HomeService>,
+            >>::sse_decode(&mut deserializer);
+            let api_overview = <RustOpaqueMoi<
+                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<OverviewService>,
+            >>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let mut api_that_guard = None;
+                let mut api_overview_guard = None;
+                let decode_indices_ =
+                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
+                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                            &api_that, 0, false,
+                        ),
+                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
+                            &api_overview,
+                            1,
+                            false,
+                        ),
+                    ]);
+                for i in decode_indices_ {
+                    match i {
+                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
+                        1 => api_overview_guard = Some(api_overview.lockable_decode_sync_ref()),
+                        _ => unreachable!(),
+                    }
+                }
+                let api_that_guard = api_that_guard.unwrap();
+                let api_overview_guard = api_overview_guard.unwrap();
+                let output_ok = Ok::<_, ()>({
+                    crate::api::home::HomeService::bind_overview(
+                        &*api_that_guard,
+                        &*api_overview_guard,
+                    );
+                })?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
 fn wire__crate__api__home__HomeService_bind_worktrees_impl(
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
@@ -5981,58 +6043,6 @@ fn wire__crate__api__overview__OverviewService_watch_overview_impl(
                     .await,
                 )
             }
-        },
-    )
-}
-fn wire__crate__api__pipelines__PipelinesService_content_chunks_impl(
-    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
-    rust_vec_len_: i32,
-    data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
-        flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "PipelinesService_content_chunks",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
-        },
-        move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            let api_that = <RustOpaqueMoi<
-                flutter_rust_bridge::for_generated::RustAutoOpaqueInner<PipelinesService>,
-            >>::sse_decode(&mut deserializer);
-            let api_document =
-                <crate::api::pipelines::PipelineDocumentView>::sse_decode(&mut deserializer);
-            deserializer.end();
-            transform_result_sse::<_, ()>((move || {
-                let mut api_that_guard = None;
-                let decode_indices_ =
-                    flutter_rust_bridge::for_generated::lockable_compute_decode_order(vec![
-                        flutter_rust_bridge::for_generated::LockableOrderInfo::new(
-                            &api_that, 0, false,
-                        ),
-                    ]);
-                for i in decode_indices_ {
-                    match i {
-                        0 => api_that_guard = Some(api_that.lockable_decode_sync_ref()),
-                        _ => unreachable!(),
-                    }
-                }
-                let api_that_guard = api_that_guard.unwrap();
-                let output_ok =
-                    Ok::<_, ()>(crate::api::pipelines::PipelinesService::content_chunks(
-                        &*api_that_guard,
-                        api_document,
-                    ))?;
-                std::result::Result::Ok(output_ok)
-            })())
         },
     )
 }
@@ -9617,6 +9627,7 @@ impl SseDecode for crate::api::chats::ChatFrame {
         let mut var_revision = <u64>::sse_decode(deserializer);
         let mut var_generation = <u64>::sse_decode(deserializer);
         let mut var_connected = <bool>::sse_decode(deserializer);
+        let mut var_activityConnected = <bool>::sse_decode(deserializer);
         let mut var_loading = <bool>::sse_decode(deserializer);
         let mut var_loadingOlder = <bool>::sse_decode(deserializer);
         let mut var_hydrating = <bool>::sse_decode(deserializer);
@@ -9630,6 +9641,7 @@ impl SseDecode for crate::api::chats::ChatFrame {
             <Option<crate::api::chats::PendingSendView>>::sse_decode(deserializer);
         let mut var_confirmedSend =
             <Option<crate::api::chats::PendingSendView>>::sse_decode(deserializer);
+        let mut var_successfulTurns = <Vec<String>>::sse_decode(deserializer);
         let mut var_drafts = <Vec<crate::api::chats::DraftView>>::sse_decode(deserializer);
         let mut var_draftSeq = <u64>::sse_decode(deserializer);
         let mut var_composer =
@@ -9638,6 +9650,7 @@ impl SseDecode for crate::api::chats::ChatFrame {
             revision: var_revision,
             generation: var_generation,
             connected: var_connected,
+            activity_connected: var_activityConnected,
             loading: var_loading,
             loading_older: var_loadingOlder,
             hydrating: var_hydrating,
@@ -9648,6 +9661,7 @@ impl SseDecode for crate::api::chats::ChatFrame {
             sending: var_sending,
             pending_send: var_pendingSend,
             confirmed_send: var_confirmedSend,
+            successful_turns: var_successfulTurns,
             drafts: var_drafts,
             draft_seq: var_draftSeq,
             composer: var_composer,
@@ -9672,6 +9686,17 @@ impl SseDecode for crate::api::chats::ChatHeaderView {
         let mut var_totalMessages = <i64>::sse_decode(deserializer);
         let mut var_tabs = <Vec<crate::api::chats::ChatTabView>>::sse_decode(deserializer);
         let mut var_fileTabs = <Vec<crate::api::files::FileTabView>>::sse_decode(deserializer);
+        let mut var_hasMessages = <bool>::sse_decode(deserializer);
+        let mut var_model = <Option<String>>::sse_decode(deserializer);
+        let mut var_executionHarness = <Option<String>>::sse_decode(deserializer);
+        let mut var_providerType = <Option<String>>::sse_decode(deserializer);
+        let mut var_terminalMode = <bool>::sse_decode(deserializer);
+        let mut var_pluginSelectionsRevision = <u64>::sse_decode(deserializer);
+        let mut var_pluginSelectionCount = <Option<u32>>::sse_decode(deserializer);
+        let mut var_feedbackTurns =
+            <Vec<crate::api::chats::FeedbackTurnView>>::sse_decode(deserializer);
+        let mut var_feedbackSeeds =
+            <Vec<crate::api::chats::FeedbackSeedView>>::sse_decode(deserializer);
         let mut var_questions = <Vec<crate::api::composer::QuestionView>>::sse_decode(deserializer);
         return crate::api::chats::ChatHeaderView {
             revision: var_revision,
@@ -9688,6 +9713,15 @@ impl SseDecode for crate::api::chats::ChatHeaderView {
             total_messages: var_totalMessages,
             tabs: var_tabs,
             file_tabs: var_fileTabs,
+            has_messages: var_hasMessages,
+            model: var_model,
+            execution_harness: var_executionHarness,
+            provider_type: var_providerType,
+            terminal_mode: var_terminalMode,
+            plugin_selections_revision: var_pluginSelectionsRevision,
+            plugin_selection_count: var_pluginSelectionCount,
+            feedback_turns: var_feedbackTurns,
+            feedback_seeds: var_feedbackSeeds,
             questions: var_questions,
         };
     }
@@ -9746,13 +9780,33 @@ impl SseDecode for crate::api::chats::ChatIntent {
                 return crate::api::chats::ChatIntent::RetryReadReceipts;
             }
             9 => {
-                let mut var_chat = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
-                return crate::api::chats::ChatIntent::Archive { chat: var_chat };
+                let mut var_id = <String>::sse_decode(deserializer);
+                return crate::api::chats::ChatIntent::CloseTab { id: var_id };
             }
             10 => {
-                return crate::api::chats::ChatIntent::Close;
+                let mut var_chat = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
+                let mut var_generation = <u64>::sse_decode(deserializer);
+                return crate::api::chats::ChatIntent::Refresh {
+                    chat: var_chat,
+                    generation: var_generation,
+                };
             }
             11 => {
+                let mut var_catalogLoaded = <bool>::sse_decode(deserializer);
+                return crate::api::chats::ChatIntent::RestoreConnection {
+                    catalog_loaded: var_catalogLoaded,
+                };
+            }
+            12 => {
+                let mut var_enabled = <bool>::sse_decode(deserializer);
+                return crate::api::chats::ChatIntent::TrackTurns {
+                    enabled: var_enabled,
+                };
+            }
+            13 => {
+                return crate::api::chats::ChatIntent::Close;
+            }
+            14 => {
                 let mut var_chat =
                     <Option<crate::api::overview::ChatRefView>>::sse_decode(deserializer);
                 let mut var_text = <String>::sse_decode(deserializer);
@@ -9767,10 +9821,11 @@ impl SseDecode for crate::api::chats::ChatIntent {
                     attachment_paths: var_attachmentPaths,
                 };
             }
-            12 => {
-                return crate::api::chats::ChatIntent::Stop;
+            15 => {
+                let mut var_chat = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
+                return crate::api::chats::ChatIntent::Stop { chat: var_chat };
             }
-            13 => {
+            16 => {
                 let mut var_workspaceId = <String>::sse_decode(deserializer);
                 let mut var_title = <Option<String>>::sse_decode(deserializer);
                 return crate::api::chats::ChatIntent::CreateChat {
@@ -9778,7 +9833,7 @@ impl SseDecode for crate::api::chats::ChatIntent {
                     title: var_title,
                 };
             }
-            14 => {
+            17 => {
                 let mut var_projectId = <String>::sse_decode(deserializer);
                 let mut var_worktreeId = <String>::sse_decode(deserializer);
                 return crate::api::chats::ChatIntent::CreateTab {
@@ -9786,11 +9841,11 @@ impl SseDecode for crate::api::chats::ChatIntent {
                     worktree_id: var_worktreeId,
                 };
             }
-            15 => {
+            18 => {
                 let mut var_ids = <Vec<String>>::sse_decode(deserializer);
                 return crate::api::chats::ChatIntent::SetWorkspaces { ids: var_ids };
             }
-            16 => {
+            19 => {
                 let mut var_chat = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
                 let mut var_text = <String>::sse_decode(deserializer);
                 let mut var_seq = <u64>::sse_decode(deserializer);
@@ -9800,7 +9855,7 @@ impl SseDecode for crate::api::chats::ChatIntent {
                     seq: var_seq,
                 };
             }
-            17 => {
+            20 => {
                 let mut var_chat = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
                 let mut var_text = <String>::sse_decode(deserializer);
                 return crate::api::chats::ChatIntent::ClearSentDraft {
@@ -9808,7 +9863,7 @@ impl SseDecode for crate::api::chats::ChatIntent {
                     text: var_text,
                 };
             }
-            18 => {
+            21 => {
                 let mut var_scope = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
                 let mut var_filename = <String>::sse_decode(deserializer);
                 let mut var_bytes = <Vec<u8>>::sse_decode(deserializer);
@@ -9818,7 +9873,7 @@ impl SseDecode for crate::api::chats::ChatIntent {
                     bytes: var_bytes,
                 };
             }
-            19 => {
+            22 => {
                 let mut var_scope = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
                 let mut var_filename = <String>::sse_decode(deserializer);
                 return crate::api::chats::ChatIntent::DeleteAttachment {
@@ -9826,14 +9881,14 @@ impl SseDecode for crate::api::chats::ChatIntent {
                     filename: var_filename,
                 };
             }
-            20 => {
+            23 => {
                 return crate::api::chats::ChatIntent::EnableComposer;
             }
-            21 => {
+            24 => {
                 let mut var_report = <bool>::sse_decode(deserializer);
                 return crate::api::chats::ChatIntent::LoadSettings { report: var_report };
             }
-            22 => {
+            25 => {
                 let mut var_chat = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
                 let mut var_modelJson = <String>::sse_decode(deserializer);
                 let mut var_harnessJson = <String>::sse_decode(deserializer);
@@ -9845,13 +9900,10 @@ impl SseDecode for crate::api::chats::ChatIntent {
                     running: var_running,
                 };
             }
-            23 => {
-                return crate::api::chats::ChatIntent::RestoreSettings;
-            }
-            24 => {
+            26 => {
                 return crate::api::chats::ChatIntent::InvalidateSettings;
             }
-            25 => {
+            27 => {
                 let mut var_chat = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
                 let mut var_pick = <crate::api::composer::SettingsPick>::sse_decode(deserializer);
                 return crate::api::chats::ChatIntent::ChangeSetting {
@@ -9859,10 +9911,10 @@ impl SseDecode for crate::api::chats::ChatIntent {
                     pick: var_pick,
                 };
             }
-            26 => {
+            28 => {
                 return crate::api::chats::ChatIntent::InvalidatePicks;
             }
-            27 => {
+            29 => {
                 let mut var_chat = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
                 let mut var_id = <String>::sse_decode(deserializer);
                 let mut var_provider = <String>::sse_decode(deserializer);
@@ -9874,7 +9926,7 @@ impl SseDecode for crate::api::chats::ChatIntent {
                     harness: var_harness,
                 };
             }
-            28 => {
+            30 => {
                 let mut var_chat = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
                 let mut var_patchJson = <String>::sse_decode(deserializer);
                 return crate::api::chats::ChatIntent::PatchSettings {
@@ -9882,7 +9934,7 @@ impl SseDecode for crate::api::chats::ChatIntent {
                     patch_json: var_patchJson,
                 };
             }
-            29 => {
+            31 => {
                 let mut var_chat = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
                 let mut var_requestId = <String>::sse_decode(deserializer);
                 let mut var_answersJson = <String>::sse_decode(deserializer);
@@ -9892,7 +9944,7 @@ impl SseDecode for crate::api::chats::ChatIntent {
                     answers_json: var_answersJson,
                 };
             }
-            30 => {
+            32 => {
                 let mut var_chat = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
                 let mut var_requestId = <String>::sse_decode(deserializer);
                 return crate::api::chats::ChatIntent::DismissQuestion {
@@ -9900,7 +9952,7 @@ impl SseDecode for crate::api::chats::ChatIntent {
                     request_id: var_requestId,
                 };
             }
-            31 => {
+            33 => {
                 let mut var_chat = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
                 let mut var_atMessageId = <String>::sse_decode(deserializer);
                 return crate::api::chats::ChatIntent::Fork {
@@ -9908,7 +9960,7 @@ impl SseDecode for crate::api::chats::ChatIntent {
                     at_message_id: var_atMessageId,
                 };
             }
-            32 => {
+            34 => {
                 let mut var_chat = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
                 let mut var_atMessageId = <String>::sse_decode(deserializer);
                 return crate::api::chats::ChatIntent::ForkOpened {
@@ -9916,7 +9968,7 @@ impl SseDecode for crate::api::chats::ChatIntent {
                     at_message_id: var_atMessageId,
                 };
             }
-            33 => {
+            35 => {
                 let mut var_source =
                     <crate::api::composer::ComposerSource>::sse_decode(deserializer);
                 let mut var_scope =
@@ -9940,8 +9992,10 @@ impl SseDecode for crate::api::chats::ChatOutcome {
         match tag_ {
             0 => {
                 let mut var_selected = <bool>::sse_decode(deserializer);
+                let mut var_generation = <u64>::sse_decode(deserializer);
                 return crate::api::chats::ChatOutcome::Opened {
                     selected: var_selected,
+                    generation: var_generation,
                 };
             }
             1 => {
@@ -9955,12 +10009,6 @@ impl SseDecode for crate::api::chats::ChatOutcome {
                 return crate::api::chats::ChatOutcome::Created { chat: var_chat };
             }
             3 => {
-                let mut var_refresh = <bool>::sse_decode(deserializer);
-                return crate::api::chats::ChatOutcome::Stopped {
-                    refresh: var_refresh,
-                };
-            }
-            4 => {
                 let mut var_filename = <String>::sse_decode(deserializer);
                 let mut var_path = <String>::sse_decode(deserializer);
                 let mut var_size = <i64>::sse_decode(deserializer);
@@ -9970,23 +10018,23 @@ impl SseDecode for crate::api::chats::ChatOutcome {
                     size: var_size,
                 };
             }
-            5 => {
+            4 => {
                 let mut var_applied = <bool>::sse_decode(deserializer);
                 return crate::api::chats::ChatOutcome::Changed {
                     applied: var_applied,
                 };
             }
-            6 => {
+            5 => {
                 let mut var_revision = <i64>::sse_decode(deserializer);
                 return crate::api::chats::ChatOutcome::Saved {
                     revision: var_revision,
                 };
             }
-            7 => {
+            6 => {
                 let mut var_chat = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
                 return crate::api::chats::ChatOutcome::Forked { chat: var_chat };
             }
-            8 => {
+            7 => {
                 let mut var_commands =
                     <Vec<crate::api::composer::CommandRowView>>::sse_decode(deserializer);
                 let mut var_unsettled = <bool>::sse_decode(deserializer);
@@ -9995,11 +10043,11 @@ impl SseDecode for crate::api::chats::ChatOutcome {
                     unsettled: var_unsettled,
                 };
             }
-            9 => {
+            8 => {
                 let mut var_json = <String>::sse_decode(deserializer);
                 return crate::api::chats::ChatOutcome::PluginCatalog { json: var_json };
             }
-            10 => {
+            9 => {
                 let mut var_json = <Option<String>>::sse_decode(deserializer);
                 return crate::api::chats::ChatOutcome::Selections { json: var_json };
             }
@@ -10049,34 +10097,6 @@ impl SseDecode for crate::api::chats::ChatSettled {
             revision: var_revision,
             failure: var_failure,
             outcome: var_outcome,
-        };
-    }
-}
-
-impl SseDecode for crate::api::chats::ChatStateFrame {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_revision = <i64>::sse_decode(deserializer);
-        let mut var_transcriptRevision = <i64>::sse_decode(deserializer);
-        let mut var_before = <Option<i64>>::sse_decode(deserializer);
-        let mut var_totalMessages = <i64>::sse_decode(deserializer);
-        let mut var_closed = <bool>::sse_decode(deserializer);
-        let mut var_tabJson = <Option<String>>::sse_decode(deserializer);
-        let mut var_runtimeJson = <Option<String>>::sse_decode(deserializer);
-        let mut var_scopeJson = <Option<String>>::sse_decode(deserializer);
-        let mut var_messages = <Vec<crate::api::chats::RawMessageView>>::sse_decode(deserializer);
-        let mut var_order = <Option<Vec<u64>>>::sse_decode(deserializer);
-        return crate::api::chats::ChatStateFrame {
-            revision: var_revision,
-            transcript_revision: var_transcriptRevision,
-            before: var_before,
-            total_messages: var_totalMessages,
-            closed: var_closed,
-            tab_json: var_tabJson,
-            runtime_json: var_runtimeJson,
-            scope_json: var_scopeJson,
-            messages: var_messages,
-            order: var_order,
         };
     }
 }
@@ -10239,7 +10259,6 @@ impl SseDecode for crate::api::composer::ComposerView {
         let mut var_modelLabel = <Option<String>>::sse_decode(deserializer);
         let mut var_routingSupported = <bool>::sse_decode(deserializer);
         let mut var_harnessLocked = <Option<bool>>::sse_decode(deserializer);
-        let mut var_tabJson = <String>::sse_decode(deserializer);
         let mut var_saving = <bool>::sse_decode(deserializer);
         let mut var_refreshing = <bool>::sse_decode(deserializer);
         let mut var_failure =
@@ -10259,7 +10278,6 @@ impl SseDecode for crate::api::composer::ComposerView {
             model_label: var_modelLabel,
             routing_supported: var_routingSupported,
             harness_locked: var_harnessLocked,
-            tab_json: var_tabJson,
             saving: var_saving,
             refreshing: var_refreshing,
             failure: var_failure,
@@ -10711,6 +10729,36 @@ impl SseDecode for crate::api::chats::FeedRow {
                 unimplemented!("");
             }
         }
+    }
+}
+
+impl SseDecode for crate::api::chats::FeedbackSeedView {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_turn = <String>::sse_decode(deserializer);
+        let mut var_rating = <String>::sse_decode(deserializer);
+        let mut var_syncState = <Option<String>>::sse_decode(deserializer);
+        let mut var_feedbackId = <Option<String>>::sse_decode(deserializer);
+        let mut var_reason = <Option<String>>::sse_decode(deserializer);
+        return crate::api::chats::FeedbackSeedView {
+            turn: var_turn,
+            rating: var_rating,
+            sync_state: var_syncState,
+            feedback_id: var_feedbackId,
+            reason: var_reason,
+        };
+    }
+}
+
+impl SseDecode for crate::api::chats::FeedbackTurnView {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_footer = <String>::sse_decode(deserializer);
+        let mut var_turn = <String>::sse_decode(deserializer);
+        return crate::api::chats::FeedbackTurnView {
+            footer: var_footer,
+            turn: var_turn,
+        };
     }
 }
 
@@ -11594,18 +11642,6 @@ impl SseDecode for crate::api::computers::LinkPhase {
     }
 }
 
-impl SseDecode for Vec<u64> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut len_ = <i32>::sse_decode(deserializer);
-        let mut ans_ = Vec::with_capacity(len_ as usize);
-        for idx_ in 0..len_ {
-            ans_.push(<u64>::sse_decode(deserializer));
-        }
-        return ans_;
-    }
-}
-
 impl SseDecode for Vec<String> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -11873,6 +11909,34 @@ impl SseDecode for Vec<crate::api::chats::FeedOp> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<crate::api::chats::FeedOp>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::chats::FeedbackSeedView> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::chats::FeedbackSeedView>::sse_decode(
+                deserializer,
+            ));
+        }
+        return ans_;
+    }
+}
+
+impl SseDecode for Vec<crate::api::chats::FeedbackTurnView> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::chats::FeedbackTurnView>::sse_decode(
+                deserializer,
+            ));
         }
         return ans_;
     }
@@ -12673,20 +12737,6 @@ impl SseDecode for Vec<crate::api::composer::QuestionView> {
         let mut ans_ = Vec::with_capacity(len_ as usize);
         for idx_ in 0..len_ {
             ans_.push(<crate::api::composer::QuestionView>::sse_decode(
-                deserializer,
-            ));
-        }
-        return ans_;
-    }
-}
-
-impl SseDecode for Vec<crate::api::chats::RawMessageView> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut len_ = <i32>::sse_decode(deserializer);
-        let mut ans_ = Vec::with_capacity(len_ as usize);
-        for idx_ in 0..len_ {
-            ans_.push(<crate::api::chats::RawMessageView>::sse_decode(
                 deserializer,
             ));
         }
@@ -14130,17 +14180,6 @@ impl SseDecode for Option<crate::api::worktrees::WriteFailure> {
     }
 }
 
-impl SseDecode for Option<Vec<u64>> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        if (<bool>::sse_decode(deserializer)) {
-            return Some(<Vec<u64>>::sse_decode(deserializer));
-        } else {
-            return None;
-        }
-    }
-}
-
 impl SseDecode for Option<Vec<String>> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -14294,17 +14333,9 @@ impl SseDecode for crate::api::orchestrator::OrchestratorIntent {
                 };
             }
             6 => {
-                let mut var_generation = <u64>::sse_decode(deserializer);
-                let mut var_opened = <bool>::sse_decode(deserializer);
-                return crate::api::orchestrator::OrchestratorIntent::Entered {
-                    generation: var_generation,
-                    opened: var_opened,
-                };
-            }
-            7 => {
                 return crate::api::orchestrator::OrchestratorIntent::Leave;
             }
-            8 => {
+            7 => {
                 let mut var_chatId = <String>::sse_decode(deserializer);
                 let mut var_requestId = <String>::sse_decode(deserializer);
                 let mut var_answers =
@@ -14315,7 +14346,7 @@ impl SseDecode for crate::api::orchestrator::OrchestratorIntent {
                     answers: var_answers,
                 };
             }
-            9 => {
+            8 => {
                 let mut var_chatId = <String>::sse_decode(deserializer);
                 let mut var_requestId = <String>::sse_decode(deserializer);
                 return crate::api::orchestrator::OrchestratorIntent::Dismiss {
@@ -14323,7 +14354,7 @@ impl SseDecode for crate::api::orchestrator::OrchestratorIntent {
                     request_id: var_requestId,
                 };
             }
-            10 => {
+            9 => {
                 return crate::api::orchestrator::OrchestratorIntent::Close;
             }
             _ => {
@@ -14351,57 +14382,20 @@ impl SseDecode for crate::api::orchestrator::OrchestratorOutcome {
                 };
             }
             2 => {
-                return crate::api::orchestrator::OrchestratorOutcome::Busy;
+                let mut var_chatRevision = <u64>::sse_decode(deserializer);
+                let mut var_chatGeneration = <u64>::sse_decode(deserializer);
+                return crate::api::orchestrator::OrchestratorOutcome::Opened {
+                    chat_revision: var_chatRevision,
+                    chat_generation: var_chatGeneration,
+                };
             }
             3 => {
-                let mut var_chat = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
-                let mut var_generation = <u64>::sse_decode(deserializer);
-                return crate::api::orchestrator::OrchestratorOutcome::Open {
-                    chat: var_chat,
-                    generation: var_generation,
-                };
-            }
-            4 => {
-                let mut var_workspace =
-                    <crate::api::overview::CatalogWorkspaceView>::sse_decode(deserializer);
-                let mut var_generation = <u64>::sse_decode(deserializer);
-                return crate::api::orchestrator::OrchestratorOutcome::NewChat {
-                    workspace: var_workspace,
-                    generation: var_generation,
-                };
-            }
-            5 => {
-                let mut var_entryId = <String>::sse_decode(deserializer);
-                let mut var_generation = <u64>::sse_decode(deserializer);
-                let mut var_failure = <String>::sse_decode(deserializer);
-                return crate::api::orchestrator::OrchestratorOutcome::NewTab {
-                    entry_id: var_entryId,
-                    generation: var_generation,
-                    failure: var_failure,
-                };
-            }
-            6 => {
-                let mut var_message = <String>::sse_decode(deserializer);
-                return crate::api::orchestrator::OrchestratorOutcome::LoadFailed {
-                    message: var_message,
-                };
-            }
-            7 => {
-                return crate::api::orchestrator::OrchestratorOutcome::Stale;
-            }
-            8 => {
-                let mut var_opened = <bool>::sse_decode(deserializer);
-                return crate::api::orchestrator::OrchestratorOutcome::Entered {
-                    opened: var_opened,
-                };
-            }
-            9 => {
                 let mut var_failure = <crate::api::chats::ChatFailure>::sse_decode(deserializer);
                 return crate::api::orchestrator::OrchestratorOutcome::Failed {
                     failure: var_failure,
                 };
             }
-            10 => {
+            4 => {
                 return crate::api::orchestrator::OrchestratorOutcome::Done;
             }
             _ => {
@@ -14448,7 +14442,8 @@ impl SseDecode for crate::api::overview::OverviewView {
         let mut var_revision = <u64>::sse_decode(deserializer);
         let mut var_loading = <bool>::sse_decode(deserializer);
         let mut var_scopePending = <bool>::sse_decode(deserializer);
-        let mut var_online = <bool>::sse_decode(deserializer);
+        let mut var_session = <Option<u64>>::sse_decode(deserializer);
+        let mut var_catalogCurrent = <bool>::sse_decode(deserializer);
         let mut var_error = <Option<String>>::sse_decode(deserializer);
         let mut var_hasInventory = <bool>::sse_decode(deserializer);
         let mut var_refreshes = <u64>::sse_decode(deserializer);
@@ -14471,7 +14466,8 @@ impl SseDecode for crate::api::overview::OverviewView {
             revision: var_revision,
             loading: var_loading,
             scope_pending: var_scopePending,
-            online: var_online,
+            session: var_session,
+            catalog_current: var_catalogCurrent,
             error: var_error,
             has_inventory: var_hasInventory,
             refreshes: var_refreshes,
@@ -14716,18 +14712,6 @@ impl SseDecode for crate::api::pipelines::PipelineDescriptorView {
             origin: var_origin,
             trigger_types: var_triggerTypes,
             scopes: var_scopes,
-        };
-    }
-}
-
-impl SseDecode for crate::api::pipelines::PipelineDocumentView {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_markdown = <bool>::sse_decode(deserializer);
-        let mut var_text = <String>::sse_decode(deserializer);
-        return crate::api::pipelines::PipelineDocumentView {
-            markdown: var_markdown,
-            text: var_text,
         };
     }
 }
@@ -15377,11 +15361,11 @@ impl SseDecode for crate::api::pipelines::PipelinesOutcome {
                 return crate::api::pipelines::PipelinesOutcome::Started { id: var_id };
             }
             3 => {
-                let mut var_document =
-                    <crate::api::pipelines::PipelineDocumentView>::sse_decode(deserializer);
-                return crate::api::pipelines::PipelinesOutcome::Content {
-                    document: var_document,
-                };
+                let mut var_chunks =
+                    <Vec<crate::api::pipelines::PipelineContentChunkView>>::sse_decode(
+                        deserializer,
+                    );
+                return crate::api::pipelines::PipelinesOutcome::Content { chunks: var_chunks };
             }
             _ => {
                 unimplemented!("");
@@ -15977,18 +15961,6 @@ impl SseDecode for crate::api::composer::QuestionView {
     }
 }
 
-impl SseDecode for crate::api::chats::RawMessageView {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_uid = <u64>::sse_decode(deserializer);
-        let mut var_json = <String>::sse_decode(deserializer);
-        return crate::api::chats::RawMessageView {
-            uid: var_uid,
-            json: var_json,
-        };
-    }
-}
-
 impl SseDecode for crate::api::overview::RecentAttention {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -16137,13 +16109,11 @@ impl SseDecode for crate::api::chats::SelectionFrame {
         let mut var_chat = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
         let mut var_reset = <bool>::sse_decode(deserializer);
         let mut var_header = <crate::api::chats::ChatHeaderView>::sse_decode(deserializer);
-        let mut var_state = <crate::api::chats::ChatStateFrame>::sse_decode(deserializer);
         let mut var_feed = <crate::api::chats::FeedFrame>::sse_decode(deserializer);
         return crate::api::chats::SelectionFrame {
             chat: var_chat,
             reset: var_reset,
             header: var_header,
-            state: var_state,
             feed: var_feed,
         };
     }
@@ -16509,46 +16479,11 @@ impl SseDecode for crate::api::home::TaskStep {
         let mut tag_ = <i32>::sse_decode(deserializer);
         match tag_ {
             0 => {
-                let mut var_chat = <crate::api::overview::ChatRefView>::sse_decode(deserializer);
-                return crate::api::home::TaskStep::Open { chat: var_chat };
-            }
-            1 => {
-                let mut var_projectId = <String>::sse_decode(deserializer);
-                let mut var_worktreeId = <String>::sse_decode(deserializer);
-                return crate::api::home::TaskStep::CreateTab {
-                    project_id: var_projectId,
-                    worktree_id: var_worktreeId,
-                };
-            }
-            2 => {
-                let mut var_projectId = <String>::sse_decode(deserializer);
-                return crate::api::home::TaskStep::CreateChat {
-                    project_id: var_projectId,
-                };
-            }
-            3 => {
-                let mut var_projectId = <String>::sse_decode(deserializer);
-                let mut var_worktreeId = <String>::sse_decode(deserializer);
-                let mut var_name = <String>::sse_decode(deserializer);
-                return crate::api::home::TaskStep::LoadWorktree {
-                    project_id: var_projectId,
-                    worktree_id: var_worktreeId,
-                    name: var_name,
-                };
-            }
-            4 => {
-                return crate::api::home::TaskStep::Refresh;
-            }
-            5 => {
                 let mut var_chat =
                     <Option<crate::api::overview::ChatRefView>>::sse_decode(deserializer);
-                let mut var_text = <Option<String>>::sse_decode(deserializer);
-                return crate::api::home::TaskStep::SetDraft {
-                    chat: var_chat,
-                    text: var_text,
-                };
+                return crate::api::home::TaskStep::SetDraft { chat: var_chat };
             }
-            6 => {
+            1 => {
                 let mut var_projectId = <String>::sse_decode(deserializer);
                 let mut var_kind = <String>::sse_decode(deserializer);
                 return crate::api::home::TaskStep::SetWorkspaceKind {
@@ -16556,7 +16491,7 @@ impl SseDecode for crate::api::home::TaskStep {
                     kind: var_kind,
                 };
             }
-            7 => {
+            2 => {
                 let mut var_attachments =
                     <Vec<crate::api::home::SentAttachmentView>>::sse_decode(deserializer);
                 return crate::api::home::TaskStep::Sent {
@@ -16574,17 +16509,9 @@ impl SseDecode for crate::api::home::TaskStepResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_failure = <Option<crate::api::home::TaskFailure>>::sse_decode(deserializer);
-        let mut var_created = <Option<crate::api::overview::ChatRefView>>::sse_decode(deserializer);
-        let mut var_unavailable = <bool>::sse_decode(deserializer);
-        let mut var_chats = <Vec<crate::api::overview::ChatRefView>>::sse_decode(deserializer);
-        let mut var_activeChatId = <Option<String>>::sse_decode(deserializer);
         let mut var_online = <bool>::sse_decode(deserializer);
         return crate::api::home::TaskStepResult {
             failure: var_failure,
-            created: var_created,
-            unavailable: var_unavailable,
-            chats: var_chats,
-            active_chat_id: var_activeChatId,
             online: var_online,
         };
     }
@@ -17138,6 +17065,7 @@ impl SseDecode for crate::api::pipelines::WorkTone {
 impl SseDecode for crate::api::overview::WorktreeChatsView {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_sequence = <u64>::sse_decode(deserializer);
         let mut var_chats = <Vec<crate::api::overview::ChatRefView>>::sse_decode(deserializer);
         let mut var_activeChatId = <Option<String>>::sse_decode(deserializer);
         let mut var_status = <crate::api::overview::WorktreeStatus>::sse_decode(deserializer);
@@ -17147,6 +17075,7 @@ impl SseDecode for crate::api::overview::WorktreeChatsView {
         let mut var_isStreaming = <bool>::sse_decode(deserializer);
         let mut var_workingChats = <Vec<String>>::sse_decode(deserializer);
         return crate::api::overview::WorktreeChatsView {
+            sequence: var_sequence,
             chats: var_chats,
             active_chat_id: var_activeChatId,
             status: var_status,
@@ -17174,6 +17103,9 @@ impl SseDecode for crate::api::overview::WorktreeLoad {
             }
             2 => {
                 return crate::api::overview::WorktreeLoad::Stale;
+            }
+            3 => {
+                return crate::api::overview::WorktreeLoad::SessionLost;
             }
             _ => {
                 unimplemented!("");
@@ -17640,78 +17572,78 @@ fn pde_ffi_dispatcher_primary_impl(
         }
         80 => wire__crate__api__files__FileReader_read_text_impl(port, ptr, rust_vec_len, data_len),
         82 => wire__crate__api__files__FilesService_locate_impl(port, ptr, rust_vec_len, data_len),
-        89 => wire__crate__api__home__HomeService_settled_impl(port, ptr, rust_vec_len, data_len),
-        91 => wire__crate__api__home__HomeService_watch_impl(port, ptr, rust_vec_len, data_len),
-        92 => {
+        90 => wire__crate__api__home__HomeService_settled_impl(port, ptr, rust_vec_len, data_len),
+        92 => wire__crate__api__home__HomeService_watch_impl(port, ptr, rust_vec_len, data_len),
+        93 => {
             wire__crate__api__home__HomeService_watch_task_impl(port, ptr, rust_vec_len, data_len)
         }
-        96 => wire__crate__api__orchestrator__OrchestratorService_settled_impl(
+        97 => wire__crate__api__orchestrator__OrchestratorService_settled_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        97 => wire__crate__api__orchestrator__OrchestratorService_watch_impl(
+        98 => wire__crate__api__orchestrator__OrchestratorService_watch_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        98 => wire__crate__api__overview__OverviewService_close_impl(
+        99 => wire__crate__api__overview__OverviewService_close_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        99 => wire__crate__api__overview__OverviewService_enter_chat_impl(
+        100 => wire__crate__api__overview__OverviewService_enter_chat_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        100 => wire__crate__api__overview__OverviewService_load_worktree_impl(
+        101 => wire__crate__api__overview__OverviewService_load_worktree_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        101 => wire__crate__api__overview__OverviewService_read_catalog_impl(
+        102 => wire__crate__api__overview__OverviewService_read_catalog_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        103 => wire__crate__api__overview__OverviewService_refresh_impl(
+        104 => wire__crate__api__overview__OverviewService_refresh_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        104 => wire__crate__api__overview__OverviewService_refresh_soon_impl(
+        105 => wire__crate__api__overview__OverviewService_refresh_soon_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        105 => wire__crate__api__overview__OverviewService_reload_worktrees_impl(
+        106 => wire__crate__api__overview__OverviewService_reload_worktrees_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        106 => wire__crate__api__overview__OverviewService_set_locale_impl(
+        107 => wire__crate__api__overview__OverviewService_set_locale_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        107 => wire__crate__api__overview__OverviewService_watch_impl(
+        108 => wire__crate__api__overview__OverviewService_watch_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        108 => wire__crate__api__overview__OverviewService_watch_overview_impl(
+        109 => wire__crate__api__overview__OverviewService_watch_overview_impl(
             port,
             ptr,
             rust_vec_len,
@@ -17940,32 +17872,28 @@ fn pde_ffi_dispatcher_sync_impl(
         81 => wire__crate__api__files__FilesService_clear_impl(ptr, rust_vec_len, data_len),
         83 => wire__crate__api__files__FilesService_reader_impl(ptr, rust_vec_len, data_len),
         84 => wire__crate__api__home__HomeService_bind_chats_impl(ptr, rust_vec_len, data_len),
-        85 => wire__crate__api__home__HomeService_bind_worktrees_impl(ptr, rust_vec_len, data_len),
-        86 => wire__crate__api__home__HomeService_model_impl(ptr, rust_vec_len, data_len),
-        87 => wire__crate__api__home__HomeService_request_impl(ptr, rust_vec_len, data_len),
-        88 => wire__crate__api__home__HomeService_send_impl(ptr, rust_vec_len, data_len),
-        90 => wire__crate__api__home__HomeService_task_impl(ptr, rust_vec_len, data_len),
-        93 => wire__crate__api__orchestrator__OrchestratorService_chats_impl(
+        85 => wire__crate__api__home__HomeService_bind_overview_impl(ptr, rust_vec_len, data_len),
+        86 => wire__crate__api__home__HomeService_bind_worktrees_impl(ptr, rust_vec_len, data_len),
+        87 => wire__crate__api__home__HomeService_model_impl(ptr, rust_vec_len, data_len),
+        88 => wire__crate__api__home__HomeService_request_impl(ptr, rust_vec_len, data_len),
+        89 => wire__crate__api__home__HomeService_send_impl(ptr, rust_vec_len, data_len),
+        91 => wire__crate__api__home__HomeService_task_impl(ptr, rust_vec_len, data_len),
+        94 => wire__crate__api__orchestrator__OrchestratorService_chats_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        94 => wire__crate__api__orchestrator__OrchestratorService_request_impl(
+        95 => wire__crate__api__orchestrator__OrchestratorService_request_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        95 => wire__crate__api__orchestrator__OrchestratorService_send_impl(
+        96 => wire__crate__api__orchestrator__OrchestratorService_send_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        102 => wire__crate__api__overview__OverviewService_recent_order_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        109 => wire__crate__api__pipelines__PipelinesService_content_chunks_impl(
+        103 => wire__crate__api__overview__OverviewService_recent_order_impl(
             ptr,
             rust_vec_len,
             data_len,
@@ -19104,6 +19032,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::chats::ChatFrame {
             self.revision.into_into_dart().into_dart(),
             self.generation.into_into_dart().into_dart(),
             self.connected.into_into_dart().into_dart(),
+            self.activity_connected.into_into_dart().into_dart(),
             self.loading.into_into_dart().into_dart(),
             self.loading_older.into_into_dart().into_dart(),
             self.hydrating.into_into_dart().into_dart(),
@@ -19114,6 +19043,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::chats::ChatFrame {
             self.sending.into_into_dart().into_dart(),
             self.pending_send.into_into_dart().into_dart(),
             self.confirmed_send.into_into_dart().into_dart(),
+            self.successful_turns.into_into_dart().into_dart(),
             self.drafts.into_into_dart().into_dart(),
             self.draft_seq.into_into_dart().into_dart(),
             self.composer.into_into_dart().into_dart(),
@@ -19147,6 +19077,15 @@ impl flutter_rust_bridge::IntoDart for crate::api::chats::ChatHeaderView {
             self.total_messages.into_into_dart().into_dart(),
             self.tabs.into_into_dart().into_dart(),
             self.file_tabs.into_into_dart().into_dart(),
+            self.has_messages.into_into_dart().into_dart(),
+            self.model.into_into_dart().into_dart(),
+            self.execution_harness.into_into_dart().into_dart(),
+            self.provider_type.into_into_dart().into_dart(),
+            self.terminal_mode.into_into_dart().into_dart(),
+            self.plugin_selections_revision.into_into_dart().into_dart(),
+            self.plugin_selection_count.into_into_dart().into_dart(),
+            self.feedback_turns.into_into_dart().into_dart(),
+            self.feedback_seeds.into_into_dart().into_dart(),
             self.questions.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -19203,10 +19142,22 @@ impl flutter_rust_bridge::IntoDart for crate::api::chats::ChatIntent {
             }
             crate::api::chats::ChatIntent::InvalidateReadReceipts => [7.into_dart()].into_dart(),
             crate::api::chats::ChatIntent::RetryReadReceipts => [8.into_dart()].into_dart(),
-            crate::api::chats::ChatIntent::Archive { chat } => {
-                [9.into_dart(), chat.into_into_dart().into_dart()].into_dart()
+            crate::api::chats::ChatIntent::CloseTab { id } => {
+                [9.into_dart(), id.into_into_dart().into_dart()].into_dart()
             }
-            crate::api::chats::ChatIntent::Close => [10.into_dart()].into_dart(),
+            crate::api::chats::ChatIntent::Refresh { chat, generation } => [
+                10.into_dart(),
+                chat.into_into_dart().into_dart(),
+                generation.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            crate::api::chats::ChatIntent::RestoreConnection { catalog_loaded } => {
+                [11.into_dart(), catalog_loaded.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::chats::ChatIntent::TrackTurns { enabled } => {
+                [12.into_dart(), enabled.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::chats::ChatIntent::Close => [13.into_dart()].into_dart(),
             crate::api::chats::ChatIntent::Send {
                 chat,
                 text,
@@ -19214,7 +19165,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::chats::ChatIntent {
                 dictated,
                 attachment_paths,
             } => [
-                11.into_dart(),
+                14.into_dart(),
                 chat.into_into_dart().into_dart(),
                 text.into_into_dart().into_dart(),
                 retry.into_into_dart().into_dart(),
@@ -19222,12 +19173,14 @@ impl flutter_rust_bridge::IntoDart for crate::api::chats::ChatIntent {
                 attachment_paths.into_into_dart().into_dart(),
             ]
             .into_dart(),
-            crate::api::chats::ChatIntent::Stop => [12.into_dart()].into_dart(),
+            crate::api::chats::ChatIntent::Stop { chat } => {
+                [15.into_dart(), chat.into_into_dart().into_dart()].into_dart()
+            }
             crate::api::chats::ChatIntent::CreateChat {
                 workspace_id,
                 title,
             } => [
-                13.into_dart(),
+                16.into_dart(),
                 workspace_id.into_into_dart().into_dart(),
                 title.into_into_dart().into_dart(),
             ]
@@ -19236,23 +19189,23 @@ impl flutter_rust_bridge::IntoDart for crate::api::chats::ChatIntent {
                 project_id,
                 worktree_id,
             } => [
-                14.into_dart(),
+                17.into_dart(),
                 project_id.into_into_dart().into_dart(),
                 worktree_id.into_into_dart().into_dart(),
             ]
             .into_dart(),
             crate::api::chats::ChatIntent::SetWorkspaces { ids } => {
-                [15.into_dart(), ids.into_into_dart().into_dart()].into_dart()
+                [18.into_dart(), ids.into_into_dart().into_dart()].into_dart()
             }
             crate::api::chats::ChatIntent::SetDraft { chat, text, seq } => [
-                16.into_dart(),
+                19.into_dart(),
                 chat.into_into_dart().into_dart(),
                 text.into_into_dart().into_dart(),
                 seq.into_into_dart().into_dart(),
             ]
             .into_dart(),
             crate::api::chats::ChatIntent::ClearSentDraft { chat, text } => [
-                17.into_dart(),
+                20.into_dart(),
                 chat.into_into_dart().into_dart(),
                 text.into_into_dart().into_dart(),
             ]
@@ -19262,21 +19215,21 @@ impl flutter_rust_bridge::IntoDart for crate::api::chats::ChatIntent {
                 filename,
                 bytes,
             } => [
-                18.into_dart(),
+                21.into_dart(),
                 scope.into_into_dart().into_dart(),
                 filename.into_into_dart().into_dart(),
                 bytes.into_into_dart().into_dart(),
             ]
             .into_dart(),
             crate::api::chats::ChatIntent::DeleteAttachment { scope, filename } => [
-                19.into_dart(),
+                22.into_dart(),
                 scope.into_into_dart().into_dart(),
                 filename.into_into_dart().into_dart(),
             ]
             .into_dart(),
-            crate::api::chats::ChatIntent::EnableComposer => [20.into_dart()].into_dart(),
+            crate::api::chats::ChatIntent::EnableComposer => [23.into_dart()].into_dart(),
             crate::api::chats::ChatIntent::LoadSettings { report } => {
-                [21.into_dart(), report.into_into_dart().into_dart()].into_dart()
+                [24.into_dart(), report.into_into_dart().into_dart()].into_dart()
             }
             crate::api::chats::ChatIntent::SyncSettings {
                 chat,
@@ -19284,29 +19237,28 @@ impl flutter_rust_bridge::IntoDart for crate::api::chats::ChatIntent {
                 harness_json,
                 running,
             } => [
-                22.into_dart(),
+                25.into_dart(),
                 chat.into_into_dart().into_dart(),
                 model_json.into_into_dart().into_dart(),
                 harness_json.into_into_dart().into_dart(),
                 running.into_into_dart().into_dart(),
             ]
             .into_dart(),
-            crate::api::chats::ChatIntent::RestoreSettings => [23.into_dart()].into_dart(),
-            crate::api::chats::ChatIntent::InvalidateSettings => [24.into_dart()].into_dart(),
+            crate::api::chats::ChatIntent::InvalidateSettings => [26.into_dart()].into_dart(),
             crate::api::chats::ChatIntent::ChangeSetting { chat, pick } => [
-                25.into_dart(),
+                27.into_dart(),
                 chat.into_into_dart().into_dart(),
                 pick.into_into_dart().into_dart(),
             ]
             .into_dart(),
-            crate::api::chats::ChatIntent::InvalidatePicks => [26.into_dart()].into_dart(),
+            crate::api::chats::ChatIntent::InvalidatePicks => [28.into_dart()].into_dart(),
             crate::api::chats::ChatIntent::SelectModel {
                 chat,
                 id,
                 provider,
                 harness,
             } => [
-                27.into_dart(),
+                29.into_dart(),
                 chat.into_into_dart().into_dart(),
                 id.into_into_dart().into_dart(),
                 provider.into_into_dart().into_dart(),
@@ -19314,7 +19266,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::chats::ChatIntent {
             ]
             .into_dart(),
             crate::api::chats::ChatIntent::PatchSettings { chat, patch_json } => [
-                28.into_dart(),
+                30.into_dart(),
                 chat.into_into_dart().into_dart(),
                 patch_json.into_into_dart().into_dart(),
             ]
@@ -19324,14 +19276,14 @@ impl flutter_rust_bridge::IntoDart for crate::api::chats::ChatIntent {
                 request_id,
                 answers_json,
             } => [
-                29.into_dart(),
+                31.into_dart(),
                 chat.into_into_dart().into_dart(),
                 request_id.into_into_dart().into_dart(),
                 answers_json.into_into_dart().into_dart(),
             ]
             .into_dart(),
             crate::api::chats::ChatIntent::DismissQuestion { chat, request_id } => [
-                30.into_dart(),
+                32.into_dart(),
                 chat.into_into_dart().into_dart(),
                 request_id.into_into_dart().into_dart(),
             ]
@@ -19340,7 +19292,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::chats::ChatIntent {
                 chat,
                 at_message_id,
             } => [
-                31.into_dart(),
+                33.into_dart(),
                 chat.into_into_dart().into_dart(),
                 at_message_id.into_into_dart().into_dart(),
             ]
@@ -19349,13 +19301,13 @@ impl flutter_rust_bridge::IntoDart for crate::api::chats::ChatIntent {
                 chat,
                 at_message_id,
             } => [
-                32.into_dart(),
+                34.into_dart(),
                 chat.into_into_dart().into_dart(),
                 at_message_id.into_into_dart().into_dart(),
             ]
             .into_dart(),
             crate::api::chats::ChatIntent::LoadComposerSource { source, scope } => [
-                33.into_dart(),
+                35.into_dart(),
                 source.into_into_dart().into_dart(),
                 scope.into_into_dart().into_dart(),
             ]
@@ -19378,52 +19330,55 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::chats::ChatIntent>
 impl flutter_rust_bridge::IntoDart for crate::api::chats::ChatOutcome {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
-            crate::api::chats::ChatOutcome::Opened { selected } => {
-                [0.into_dart(), selected.into_into_dart().into_dart()].into_dart()
-            }
+            crate::api::chats::ChatOutcome::Opened {
+                selected,
+                generation,
+            } => [
+                0.into_dart(),
+                selected.into_into_dart().into_dart(),
+                generation.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
             crate::api::chats::ChatOutcome::Sent { accepted } => {
                 [1.into_dart(), accepted.into_into_dart().into_dart()].into_dart()
             }
             crate::api::chats::ChatOutcome::Created { chat } => {
                 [2.into_dart(), chat.into_into_dart().into_dart()].into_dart()
             }
-            crate::api::chats::ChatOutcome::Stopped { refresh } => {
-                [3.into_dart(), refresh.into_into_dart().into_dart()].into_dart()
-            }
             crate::api::chats::ChatOutcome::Stored {
                 filename,
                 path,
                 size,
             } => [
-                4.into_dart(),
+                3.into_dart(),
                 filename.into_into_dart().into_dart(),
                 path.into_into_dart().into_dart(),
                 size.into_into_dart().into_dart(),
             ]
             .into_dart(),
             crate::api::chats::ChatOutcome::Changed { applied } => {
-                [5.into_dart(), applied.into_into_dart().into_dart()].into_dart()
+                [4.into_dart(), applied.into_into_dart().into_dart()].into_dart()
             }
             crate::api::chats::ChatOutcome::Saved { revision } => {
-                [6.into_dart(), revision.into_into_dart().into_dart()].into_dart()
+                [5.into_dart(), revision.into_into_dart().into_dart()].into_dart()
             }
             crate::api::chats::ChatOutcome::Forked { chat } => {
-                [7.into_dart(), chat.into_into_dart().into_dart()].into_dart()
+                [6.into_dart(), chat.into_into_dart().into_dart()].into_dart()
             }
             crate::api::chats::ChatOutcome::Inventory {
                 commands,
                 unsettled,
             } => [
-                8.into_dart(),
+                7.into_dart(),
                 commands.into_into_dart().into_dart(),
                 unsettled.into_into_dart().into_dart(),
             ]
             .into_dart(),
             crate::api::chats::ChatOutcome::PluginCatalog { json } => {
-                [9.into_dart(), json.into_into_dart().into_dart()].into_dart()
+                [8.into_dart(), json.into_into_dart().into_dart()].into_dart()
             }
             crate::api::chats::ChatOutcome::Selections { json } => {
-                [10.into_dart(), json.into_into_dart().into_dart()].into_dart()
+                [9.into_dart(), json.into_into_dart().into_dart()].into_dart()
             }
             _ => {
                 unimplemented!("");
@@ -19503,35 +19458,6 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::chats::ChatSettled>
     for crate::api::chats::ChatSettled
 {
     fn into_into_dart(self) -> crate::api::chats::ChatSettled {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::chats::ChatStateFrame {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.revision.into_into_dart().into_dart(),
-            self.transcript_revision.into_into_dart().into_dart(),
-            self.before.into_into_dart().into_dart(),
-            self.total_messages.into_into_dart().into_dart(),
-            self.closed.into_into_dart().into_dart(),
-            self.tab_json.into_into_dart().into_dart(),
-            self.runtime_json.into_into_dart().into_dart(),
-            self.scope_json.into_into_dart().into_dart(),
-            self.messages.into_into_dart().into_dart(),
-            self.order.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::chats::ChatStateFrame
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::chats::ChatStateFrame>
-    for crate::api::chats::ChatStateFrame
-{
-    fn into_into_dart(self) -> crate::api::chats::ChatStateFrame {
         self
     }
 }
@@ -19758,7 +19684,6 @@ impl flutter_rust_bridge::IntoDart for crate::api::composer::ComposerView {
             self.model_label.into_into_dart().into_dart(),
             self.routing_supported.into_into_dart().into_dart(),
             self.harness_locked.into_into_dart().into_dart(),
-            self.tab_json.into_into_dart().into_dart(),
             self.saving.into_into_dart().into_dart(),
             self.refreshing.into_into_dart().into_dart(),
             self.failure.into_into_dart().into_dart(),
@@ -20297,6 +20222,51 @@ impl flutter_rust_bridge::IntoDart for crate::api::chats::FeedRow {
 impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::chats::FeedRow {}
 impl flutter_rust_bridge::IntoIntoDart<crate::api::chats::FeedRow> for crate::api::chats::FeedRow {
     fn into_into_dart(self) -> crate::api::chats::FeedRow {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::chats::FeedbackSeedView {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.turn.into_into_dart().into_dart(),
+            self.rating.into_into_dart().into_dart(),
+            self.sync_state.into_into_dart().into_dart(),
+            self.feedback_id.into_into_dart().into_dart(),
+            self.reason.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::chats::FeedbackSeedView
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::chats::FeedbackSeedView>
+    for crate::api::chats::FeedbackSeedView
+{
+    fn into_into_dart(self) -> crate::api::chats::FeedbackSeedView {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::chats::FeedbackTurnView {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.footer.into_into_dart().into_dart(),
+            self.turn.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::chats::FeedbackTurnView
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::chats::FeedbackTurnView>
+    for crate::api::chats::FeedbackTurnView
+{
+    fn into_into_dart(self) -> crate::api::chats::FeedbackTurnView {
         self
     }
 }
@@ -21778,19 +21748,13 @@ impl flutter_rust_bridge::IntoDart for crate::api::orchestrator::OrchestratorInt
             crate::api::orchestrator::OrchestratorIntent::Enter { entry_id } => {
                 [5.into_dart(), entry_id.into_into_dart().into_dart()].into_dart()
             }
-            crate::api::orchestrator::OrchestratorIntent::Entered { generation, opened } => [
-                6.into_dart(),
-                generation.into_into_dart().into_dart(),
-                opened.into_into_dart().into_dart(),
-            ]
-            .into_dart(),
-            crate::api::orchestrator::OrchestratorIntent::Leave => [7.into_dart()].into_dart(),
+            crate::api::orchestrator::OrchestratorIntent::Leave => [6.into_dart()].into_dart(),
             crate::api::orchestrator::OrchestratorIntent::Answer {
                 chat_id,
                 request_id,
                 answers,
             } => [
-                8.into_dart(),
+                7.into_dart(),
                 chat_id.into_into_dart().into_dart(),
                 request_id.into_into_dart().into_dart(),
                 answers.into_into_dart().into_dart(),
@@ -21800,12 +21764,12 @@ impl flutter_rust_bridge::IntoDart for crate::api::orchestrator::OrchestratorInt
                 chat_id,
                 request_id,
             } => [
-                9.into_dart(),
+                8.into_dart(),
                 chat_id.into_into_dart().into_dart(),
                 request_id.into_into_dart().into_dart(),
             ]
             .into_dart(),
-            crate::api::orchestrator::OrchestratorIntent::Close => [10.into_dart()].into_dart(),
+            crate::api::orchestrator::OrchestratorIntent::Close => [9.into_dart()].into_dart(),
             _ => {
                 unimplemented!("");
             }
@@ -21833,44 +21797,19 @@ impl flutter_rust_bridge::IntoDart for crate::api::orchestrator::OrchestratorOut
             crate::api::orchestrator::OrchestratorOutcome::Catalog { catalog } => {
                 [1.into_dart(), catalog.into_into_dart().into_dart()].into_dart()
             }
-            crate::api::orchestrator::OrchestratorOutcome::Busy => [2.into_dart()].into_dart(),
-            crate::api::orchestrator::OrchestratorOutcome::Open { chat, generation } => [
-                3.into_dart(),
-                chat.into_into_dart().into_dart(),
-                generation.into_into_dart().into_dart(),
-            ]
-            .into_dart(),
-            crate::api::orchestrator::OrchestratorOutcome::NewChat {
-                workspace,
-                generation,
+            crate::api::orchestrator::OrchestratorOutcome::Opened {
+                chat_revision,
+                chat_generation,
             } => [
-                4.into_dart(),
-                workspace.into_into_dart().into_dart(),
-                generation.into_into_dart().into_dart(),
+                2.into_dart(),
+                chat_revision.into_into_dart().into_dart(),
+                chat_generation.into_into_dart().into_dart(),
             ]
             .into_dart(),
-            crate::api::orchestrator::OrchestratorOutcome::NewTab {
-                entry_id,
-                generation,
-                failure,
-            } => [
-                5.into_dart(),
-                entry_id.into_into_dart().into_dart(),
-                generation.into_into_dart().into_dart(),
-                failure.into_into_dart().into_dart(),
-            ]
-            .into_dart(),
-            crate::api::orchestrator::OrchestratorOutcome::LoadFailed { message } => {
-                [6.into_dart(), message.into_into_dart().into_dart()].into_dart()
-            }
-            crate::api::orchestrator::OrchestratorOutcome::Stale => [7.into_dart()].into_dart(),
-            crate::api::orchestrator::OrchestratorOutcome::Entered { opened } => {
-                [8.into_dart(), opened.into_into_dart().into_dart()].into_dart()
-            }
             crate::api::orchestrator::OrchestratorOutcome::Failed { failure } => {
-                [9.into_dart(), failure.into_into_dart().into_dart()].into_dart()
+                [3.into_dart(), failure.into_into_dart().into_dart()].into_dart()
             }
-            crate::api::orchestrator::OrchestratorOutcome::Done => [10.into_dart()].into_dart(),
+            crate::api::orchestrator::OrchestratorOutcome::Done => [4.into_dart()].into_dart(),
             _ => {
                 unimplemented!("");
             }
@@ -21939,7 +21878,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::overview::OverviewView {
             self.revision.into_into_dart().into_dart(),
             self.loading.into_into_dart().into_dart(),
             self.scope_pending.into_into_dart().into_dart(),
-            self.online.into_into_dart().into_dart(),
+            self.session.into_into_dart().into_dart(),
+            self.catalog_current.into_into_dart().into_dart(),
             self.error.into_into_dart().into_dart(),
             self.has_inventory.into_into_dart().into_dart(),
             self.refreshes.into_into_dart().into_dart(),
@@ -22299,27 +22239,6 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::pipelines::PipelineDescriptor
     for crate::api::pipelines::PipelineDescriptorView
 {
     fn into_into_dart(self) -> crate::api::pipelines::PipelineDescriptorView {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::pipelines::PipelineDocumentView {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.markdown.into_into_dart().into_dart(),
-            self.text.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::pipelines::PipelineDocumentView
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::pipelines::PipelineDocumentView>
-    for crate::api::pipelines::PipelineDocumentView
-{
-    fn into_into_dart(self) -> crate::api::pipelines::PipelineDocumentView {
         self
     }
 }
@@ -23085,8 +23004,8 @@ impl flutter_rust_bridge::IntoDart for crate::api::pipelines::PipelinesOutcome {
             crate::api::pipelines::PipelinesOutcome::Started { id } => {
                 [2.into_dart(), id.into_into_dart().into_dart()].into_dart()
             }
-            crate::api::pipelines::PipelinesOutcome::Content { document } => {
-                [3.into_dart(), document.into_into_dart().into_dart()].into_dart()
+            crate::api::pipelines::PipelinesOutcome::Content { chunks } => {
+                [3.into_dart(), chunks.into_into_dart().into_dart()].into_dart()
             }
             _ => {
                 unimplemented!("");
@@ -23832,27 +23751,6 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::composer::QuestionView>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart for crate::api::chats::RawMessageView {
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.uid.into_into_dart().into_dart(),
-            self.json.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::chats::RawMessageView
-{
-}
-impl flutter_rust_bridge::IntoIntoDart<crate::api::chats::RawMessageView>
-    for crate::api::chats::RawMessageView
-{
-    fn into_into_dart(self) -> crate::api::chats::RawMessageView {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::overview::RecentAttention {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
@@ -24070,7 +23968,6 @@ impl flutter_rust_bridge::IntoDart for crate::api::chats::SelectionFrame {
             self.chat.into_into_dart().into_dart(),
             self.reset.into_into_dart().into_dart(),
             self.header.into_into_dart().into_dart(),
-            self.state.into_into_dart().into_dart(),
             self.feed.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -24568,47 +24465,17 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::home::TaskModelView>
 impl flutter_rust_bridge::IntoDart for crate::api::home::TaskStep {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         match self {
-            crate::api::home::TaskStep::Open { chat } => {
+            crate::api::home::TaskStep::SetDraft { chat } => {
                 [0.into_dart(), chat.into_into_dart().into_dart()].into_dart()
             }
-            crate::api::home::TaskStep::CreateTab {
-                project_id,
-                worktree_id,
-            } => [
-                1.into_dart(),
-                project_id.into_into_dart().into_dart(),
-                worktree_id.into_into_dart().into_dart(),
-            ]
-            .into_dart(),
-            crate::api::home::TaskStep::CreateChat { project_id } => {
-                [2.into_dart(), project_id.into_into_dart().into_dart()].into_dart()
-            }
-            crate::api::home::TaskStep::LoadWorktree {
-                project_id,
-                worktree_id,
-                name,
-            } => [
-                3.into_dart(),
-                project_id.into_into_dart().into_dart(),
-                worktree_id.into_into_dart().into_dart(),
-                name.into_into_dart().into_dart(),
-            ]
-            .into_dart(),
-            crate::api::home::TaskStep::Refresh => [4.into_dart()].into_dart(),
-            crate::api::home::TaskStep::SetDraft { chat, text } => [
-                5.into_dart(),
-                chat.into_into_dart().into_dart(),
-                text.into_into_dart().into_dart(),
-            ]
-            .into_dart(),
             crate::api::home::TaskStep::SetWorkspaceKind { project_id, kind } => [
-                6.into_dart(),
+                1.into_dart(),
                 project_id.into_into_dart().into_dart(),
                 kind.into_into_dart().into_dart(),
             ]
             .into_dart(),
             crate::api::home::TaskStep::Sent { attachments } => {
-                [7.into_dart(), attachments.into_into_dart().into_dart()].into_dart()
+                [2.into_dart(), attachments.into_into_dart().into_dart()].into_dart()
             }
             _ => {
                 unimplemented!("");
@@ -24627,10 +24494,6 @@ impl flutter_rust_bridge::IntoDart for crate::api::home::TaskStepResult {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.failure.into_into_dart().into_dart(),
-            self.created.into_into_dart().into_dart(),
-            self.unavailable.into_into_dart().into_dart(),
-            self.chats.into_into_dart().into_dart(),
-            self.active_chat_id.into_into_dart().into_dart(),
             self.online.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -25355,6 +25218,7 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::pipelines::WorkTone>
 impl flutter_rust_bridge::IntoDart for crate::api::overview::WorktreeChatsView {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
+            self.sequence.into_into_dart().into_dart(),
             self.chats.into_into_dart().into_dart(),
             self.active_chat_id.into_into_dart().into_dart(),
             self.status.into_into_dart().into_dart(),
@@ -25387,6 +25251,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::overview::WorktreeLoad {
             }
             crate::api::overview::WorktreeLoad::Unavailable => [1.into_dart()].into_dart(),
             crate::api::overview::WorktreeLoad::Stale => [2.into_dart()].into_dart(),
+            crate::api::overview::WorktreeLoad::SessionLost => [3.into_dart()].into_dart(),
             _ => {
                 unimplemented!("");
             }
@@ -26680,6 +26545,7 @@ impl SseEncode for crate::api::chats::ChatFrame {
         <u64>::sse_encode(self.revision, serializer);
         <u64>::sse_encode(self.generation, serializer);
         <bool>::sse_encode(self.connected, serializer);
+        <bool>::sse_encode(self.activity_connected, serializer);
         <bool>::sse_encode(self.loading, serializer);
         <bool>::sse_encode(self.loading_older, serializer);
         <bool>::sse_encode(self.hydrating, serializer);
@@ -26690,6 +26556,7 @@ impl SseEncode for crate::api::chats::ChatFrame {
         <bool>::sse_encode(self.sending, serializer);
         <Option<crate::api::chats::PendingSendView>>::sse_encode(self.pending_send, serializer);
         <Option<crate::api::chats::PendingSendView>>::sse_encode(self.confirmed_send, serializer);
+        <Vec<String>>::sse_encode(self.successful_turns, serializer);
         <Vec<crate::api::chats::DraftView>>::sse_encode(self.drafts, serializer);
         <u64>::sse_encode(self.draft_seq, serializer);
         <Option<crate::api::composer::ComposerView>>::sse_encode(self.composer, serializer);
@@ -26713,6 +26580,15 @@ impl SseEncode for crate::api::chats::ChatHeaderView {
         <i64>::sse_encode(self.total_messages, serializer);
         <Vec<crate::api::chats::ChatTabView>>::sse_encode(self.tabs, serializer);
         <Vec<crate::api::files::FileTabView>>::sse_encode(self.file_tabs, serializer);
+        <bool>::sse_encode(self.has_messages, serializer);
+        <Option<String>>::sse_encode(self.model, serializer);
+        <Option<String>>::sse_encode(self.execution_harness, serializer);
+        <Option<String>>::sse_encode(self.provider_type, serializer);
+        <bool>::sse_encode(self.terminal_mode, serializer);
+        <u64>::sse_encode(self.plugin_selections_revision, serializer);
+        <Option<u32>>::sse_encode(self.plugin_selection_count, serializer);
+        <Vec<crate::api::chats::FeedbackTurnView>>::sse_encode(self.feedback_turns, serializer);
+        <Vec<crate::api::chats::FeedbackSeedView>>::sse_encode(self.feedback_seeds, serializer);
         <Vec<crate::api::composer::QuestionView>>::sse_encode(self.questions, serializer);
     }
 }
@@ -26763,12 +26639,25 @@ impl SseEncode for crate::api::chats::ChatIntent {
             crate::api::chats::ChatIntent::RetryReadReceipts => {
                 <i32>::sse_encode(8, serializer);
             }
-            crate::api::chats::ChatIntent::Archive { chat } => {
+            crate::api::chats::ChatIntent::CloseTab { id } => {
                 <i32>::sse_encode(9, serializer);
+                <String>::sse_encode(id, serializer);
+            }
+            crate::api::chats::ChatIntent::Refresh { chat, generation } => {
+                <i32>::sse_encode(10, serializer);
                 <crate::api::overview::ChatRefView>::sse_encode(chat, serializer);
+                <u64>::sse_encode(generation, serializer);
+            }
+            crate::api::chats::ChatIntent::RestoreConnection { catalog_loaded } => {
+                <i32>::sse_encode(11, serializer);
+                <bool>::sse_encode(catalog_loaded, serializer);
+            }
+            crate::api::chats::ChatIntent::TrackTurns { enabled } => {
+                <i32>::sse_encode(12, serializer);
+                <bool>::sse_encode(enabled, serializer);
             }
             crate::api::chats::ChatIntent::Close => {
-                <i32>::sse_encode(10, serializer);
+                <i32>::sse_encode(13, serializer);
             }
             crate::api::chats::ChatIntent::Send {
                 chat,
@@ -26777,21 +26666,22 @@ impl SseEncode for crate::api::chats::ChatIntent {
                 dictated,
                 attachment_paths,
             } => {
-                <i32>::sse_encode(11, serializer);
+                <i32>::sse_encode(14, serializer);
                 <Option<crate::api::overview::ChatRefView>>::sse_encode(chat, serializer);
                 <String>::sse_encode(text, serializer);
                 <bool>::sse_encode(retry, serializer);
                 <bool>::sse_encode(dictated, serializer);
                 <Vec<String>>::sse_encode(attachment_paths, serializer);
             }
-            crate::api::chats::ChatIntent::Stop => {
-                <i32>::sse_encode(12, serializer);
+            crate::api::chats::ChatIntent::Stop { chat } => {
+                <i32>::sse_encode(15, serializer);
+                <crate::api::overview::ChatRefView>::sse_encode(chat, serializer);
             }
             crate::api::chats::ChatIntent::CreateChat {
                 workspace_id,
                 title,
             } => {
-                <i32>::sse_encode(13, serializer);
+                <i32>::sse_encode(16, serializer);
                 <String>::sse_encode(workspace_id, serializer);
                 <Option<String>>::sse_encode(title, serializer);
             }
@@ -26799,22 +26689,22 @@ impl SseEncode for crate::api::chats::ChatIntent {
                 project_id,
                 worktree_id,
             } => {
-                <i32>::sse_encode(14, serializer);
+                <i32>::sse_encode(17, serializer);
                 <String>::sse_encode(project_id, serializer);
                 <String>::sse_encode(worktree_id, serializer);
             }
             crate::api::chats::ChatIntent::SetWorkspaces { ids } => {
-                <i32>::sse_encode(15, serializer);
+                <i32>::sse_encode(18, serializer);
                 <Vec<String>>::sse_encode(ids, serializer);
             }
             crate::api::chats::ChatIntent::SetDraft { chat, text, seq } => {
-                <i32>::sse_encode(16, serializer);
+                <i32>::sse_encode(19, serializer);
                 <crate::api::overview::ChatRefView>::sse_encode(chat, serializer);
                 <String>::sse_encode(text, serializer);
                 <u64>::sse_encode(seq, serializer);
             }
             crate::api::chats::ChatIntent::ClearSentDraft { chat, text } => {
-                <i32>::sse_encode(17, serializer);
+                <i32>::sse_encode(20, serializer);
                 <crate::api::overview::ChatRefView>::sse_encode(chat, serializer);
                 <String>::sse_encode(text, serializer);
             }
@@ -26823,21 +26713,21 @@ impl SseEncode for crate::api::chats::ChatIntent {
                 filename,
                 bytes,
             } => {
-                <i32>::sse_encode(18, serializer);
+                <i32>::sse_encode(21, serializer);
                 <crate::api::overview::ChatRefView>::sse_encode(scope, serializer);
                 <String>::sse_encode(filename, serializer);
                 <Vec<u8>>::sse_encode(bytes, serializer);
             }
             crate::api::chats::ChatIntent::DeleteAttachment { scope, filename } => {
-                <i32>::sse_encode(19, serializer);
+                <i32>::sse_encode(22, serializer);
                 <crate::api::overview::ChatRefView>::sse_encode(scope, serializer);
                 <String>::sse_encode(filename, serializer);
             }
             crate::api::chats::ChatIntent::EnableComposer => {
-                <i32>::sse_encode(20, serializer);
+                <i32>::sse_encode(23, serializer);
             }
             crate::api::chats::ChatIntent::LoadSettings { report } => {
-                <i32>::sse_encode(21, serializer);
+                <i32>::sse_encode(24, serializer);
                 <bool>::sse_encode(report, serializer);
             }
             crate::api::chats::ChatIntent::SyncSettings {
@@ -26846,25 +26736,22 @@ impl SseEncode for crate::api::chats::ChatIntent {
                 harness_json,
                 running,
             } => {
-                <i32>::sse_encode(22, serializer);
+                <i32>::sse_encode(25, serializer);
                 <crate::api::overview::ChatRefView>::sse_encode(chat, serializer);
                 <String>::sse_encode(model_json, serializer);
                 <String>::sse_encode(harness_json, serializer);
                 <bool>::sse_encode(running, serializer);
             }
-            crate::api::chats::ChatIntent::RestoreSettings => {
-                <i32>::sse_encode(23, serializer);
-            }
             crate::api::chats::ChatIntent::InvalidateSettings => {
-                <i32>::sse_encode(24, serializer);
+                <i32>::sse_encode(26, serializer);
             }
             crate::api::chats::ChatIntent::ChangeSetting { chat, pick } => {
-                <i32>::sse_encode(25, serializer);
+                <i32>::sse_encode(27, serializer);
                 <crate::api::overview::ChatRefView>::sse_encode(chat, serializer);
                 <crate::api::composer::SettingsPick>::sse_encode(pick, serializer);
             }
             crate::api::chats::ChatIntent::InvalidatePicks => {
-                <i32>::sse_encode(26, serializer);
+                <i32>::sse_encode(28, serializer);
             }
             crate::api::chats::ChatIntent::SelectModel {
                 chat,
@@ -26872,14 +26759,14 @@ impl SseEncode for crate::api::chats::ChatIntent {
                 provider,
                 harness,
             } => {
-                <i32>::sse_encode(27, serializer);
+                <i32>::sse_encode(29, serializer);
                 <crate::api::overview::ChatRefView>::sse_encode(chat, serializer);
                 <String>::sse_encode(id, serializer);
                 <String>::sse_encode(provider, serializer);
                 <Option<String>>::sse_encode(harness, serializer);
             }
             crate::api::chats::ChatIntent::PatchSettings { chat, patch_json } => {
-                <i32>::sse_encode(28, serializer);
+                <i32>::sse_encode(30, serializer);
                 <crate::api::overview::ChatRefView>::sse_encode(chat, serializer);
                 <String>::sse_encode(patch_json, serializer);
             }
@@ -26888,13 +26775,13 @@ impl SseEncode for crate::api::chats::ChatIntent {
                 request_id,
                 answers_json,
             } => {
-                <i32>::sse_encode(29, serializer);
+                <i32>::sse_encode(31, serializer);
                 <crate::api::overview::ChatRefView>::sse_encode(chat, serializer);
                 <String>::sse_encode(request_id, serializer);
                 <String>::sse_encode(answers_json, serializer);
             }
             crate::api::chats::ChatIntent::DismissQuestion { chat, request_id } => {
-                <i32>::sse_encode(30, serializer);
+                <i32>::sse_encode(32, serializer);
                 <crate::api::overview::ChatRefView>::sse_encode(chat, serializer);
                 <String>::sse_encode(request_id, serializer);
             }
@@ -26902,7 +26789,7 @@ impl SseEncode for crate::api::chats::ChatIntent {
                 chat,
                 at_message_id,
             } => {
-                <i32>::sse_encode(31, serializer);
+                <i32>::sse_encode(33, serializer);
                 <crate::api::overview::ChatRefView>::sse_encode(chat, serializer);
                 <String>::sse_encode(at_message_id, serializer);
             }
@@ -26910,12 +26797,12 @@ impl SseEncode for crate::api::chats::ChatIntent {
                 chat,
                 at_message_id,
             } => {
-                <i32>::sse_encode(32, serializer);
+                <i32>::sse_encode(34, serializer);
                 <crate::api::overview::ChatRefView>::sse_encode(chat, serializer);
                 <String>::sse_encode(at_message_id, serializer);
             }
             crate::api::chats::ChatIntent::LoadComposerSource { source, scope } => {
-                <i32>::sse_encode(33, serializer);
+                <i32>::sse_encode(35, serializer);
                 <crate::api::composer::ComposerSource>::sse_encode(source, serializer);
                 <crate::api::composer::SourceScopeView>::sse_encode(scope, serializer);
             }
@@ -26930,9 +26817,13 @@ impl SseEncode for crate::api::chats::ChatOutcome {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         match self {
-            crate::api::chats::ChatOutcome::Opened { selected } => {
+            crate::api::chats::ChatOutcome::Opened {
+                selected,
+                generation,
+            } => {
                 <i32>::sse_encode(0, serializer);
                 <bool>::sse_encode(selected, serializer);
+                <u64>::sse_encode(generation, serializer);
             }
             crate::api::chats::ChatOutcome::Sent { accepted } => {
                 <i32>::sse_encode(1, serializer);
@@ -26942,46 +26833,42 @@ impl SseEncode for crate::api::chats::ChatOutcome {
                 <i32>::sse_encode(2, serializer);
                 <crate::api::overview::ChatRefView>::sse_encode(chat, serializer);
             }
-            crate::api::chats::ChatOutcome::Stopped { refresh } => {
-                <i32>::sse_encode(3, serializer);
-                <bool>::sse_encode(refresh, serializer);
-            }
             crate::api::chats::ChatOutcome::Stored {
                 filename,
                 path,
                 size,
             } => {
-                <i32>::sse_encode(4, serializer);
+                <i32>::sse_encode(3, serializer);
                 <String>::sse_encode(filename, serializer);
                 <String>::sse_encode(path, serializer);
                 <i64>::sse_encode(size, serializer);
             }
             crate::api::chats::ChatOutcome::Changed { applied } => {
-                <i32>::sse_encode(5, serializer);
+                <i32>::sse_encode(4, serializer);
                 <bool>::sse_encode(applied, serializer);
             }
             crate::api::chats::ChatOutcome::Saved { revision } => {
-                <i32>::sse_encode(6, serializer);
+                <i32>::sse_encode(5, serializer);
                 <i64>::sse_encode(revision, serializer);
             }
             crate::api::chats::ChatOutcome::Forked { chat } => {
-                <i32>::sse_encode(7, serializer);
+                <i32>::sse_encode(6, serializer);
                 <crate::api::overview::ChatRefView>::sse_encode(chat, serializer);
             }
             crate::api::chats::ChatOutcome::Inventory {
                 commands,
                 unsettled,
             } => {
-                <i32>::sse_encode(8, serializer);
+                <i32>::sse_encode(7, serializer);
                 <Vec<crate::api::composer::CommandRowView>>::sse_encode(commands, serializer);
                 <bool>::sse_encode(unsettled, serializer);
             }
             crate::api::chats::ChatOutcome::PluginCatalog { json } => {
-                <i32>::sse_encode(9, serializer);
+                <i32>::sse_encode(8, serializer);
                 <String>::sse_encode(json, serializer);
             }
             crate::api::chats::ChatOutcome::Selections { json } => {
-                <i32>::sse_encode(10, serializer);
+                <i32>::sse_encode(9, serializer);
                 <Option<String>>::sse_encode(json, serializer);
             }
             _ => {
@@ -27024,22 +26911,6 @@ impl SseEncode for crate::api::chats::ChatSettled {
         <u64>::sse_encode(self.revision, serializer);
         <Option<crate::api::chats::ChatFailure>>::sse_encode(self.failure, serializer);
         <Option<crate::api::chats::ChatOutcome>>::sse_encode(self.outcome, serializer);
-    }
-}
-
-impl SseEncode for crate::api::chats::ChatStateFrame {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <i64>::sse_encode(self.revision, serializer);
-        <i64>::sse_encode(self.transcript_revision, serializer);
-        <Option<i64>>::sse_encode(self.before, serializer);
-        <i64>::sse_encode(self.total_messages, serializer);
-        <bool>::sse_encode(self.closed, serializer);
-        <Option<String>>::sse_encode(self.tab_json, serializer);
-        <Option<String>>::sse_encode(self.runtime_json, serializer);
-        <Option<String>>::sse_encode(self.scope_json, serializer);
-        <Vec<crate::api::chats::RawMessageView>>::sse_encode(self.messages, serializer);
-        <Option<Vec<u64>>>::sse_encode(self.order, serializer);
     }
 }
 
@@ -27167,7 +27038,6 @@ impl SseEncode for crate::api::composer::ComposerView {
         <Option<String>>::sse_encode(self.model_label, serializer);
         <bool>::sse_encode(self.routing_supported, serializer);
         <Option<bool>>::sse_encode(self.harness_locked, serializer);
-        <String>::sse_encode(self.tab_json, serializer);
         <bool>::sse_encode(self.saving, serializer);
         <bool>::sse_encode(self.refreshing, serializer);
         <Option<crate::api::composer::SettingsFailureView>>::sse_encode(self.failure, serializer);
@@ -27509,6 +27379,25 @@ impl SseEncode for crate::api::chats::FeedRow {
                 unimplemented!("");
             }
         }
+    }
+}
+
+impl SseEncode for crate::api::chats::FeedbackSeedView {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.turn, serializer);
+        <String>::sse_encode(self.rating, serializer);
+        <Option<String>>::sse_encode(self.sync_state, serializer);
+        <Option<String>>::sse_encode(self.feedback_id, serializer);
+        <Option<String>>::sse_encode(self.reason, serializer);
+    }
+}
+
+impl SseEncode for crate::api::chats::FeedbackTurnView {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.footer, serializer);
+        <String>::sse_encode(self.turn, serializer);
     }
 }
 
@@ -28153,16 +28042,6 @@ impl SseEncode for crate::api::computers::LinkPhase {
     }
 }
 
-impl SseEncode for Vec<u64> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <i32>::sse_encode(self.len() as _, serializer);
-        for item in self {
-            <u64>::sse_encode(item, serializer);
-        }
-    }
-}
-
 impl SseEncode for Vec<String> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -28359,6 +28238,26 @@ impl SseEncode for Vec<crate::api::chats::FeedOp> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::api::chats::FeedOp>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::chats::FeedbackSeedView> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::chats::FeedbackSeedView>::sse_encode(item, serializer);
+        }
+    }
+}
+
+impl SseEncode for Vec<crate::api::chats::FeedbackTurnView> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::chats::FeedbackTurnView>::sse_encode(item, serializer);
         }
     }
 }
@@ -28959,16 +28858,6 @@ impl SseEncode for Vec<crate::api::composer::QuestionView> {
         <i32>::sse_encode(self.len() as _, serializer);
         for item in self {
             <crate::api::composer::QuestionView>::sse_encode(item, serializer);
-        }
-    }
-}
-
-impl SseEncode for Vec<crate::api::chats::RawMessageView> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <i32>::sse_encode(self.len() as _, serializer);
-        for item in self {
-            <crate::api::chats::RawMessageView>::sse_encode(item, serializer);
         }
     }
 }
@@ -30077,16 +29966,6 @@ impl SseEncode for Option<crate::api::worktrees::WriteFailure> {
     }
 }
 
-impl SseEncode for Option<Vec<u64>> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <bool>::sse_encode(self.is_some(), serializer);
-        if let Some(value) = self {
-            <Vec<u64>>::sse_encode(value, serializer);
-        }
-    }
-}
-
 impl SseEncode for Option<Vec<String>> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -30203,20 +30082,15 @@ impl SseEncode for crate::api::orchestrator::OrchestratorIntent {
                 <i32>::sse_encode(5, serializer);
                 <Option<String>>::sse_encode(entry_id, serializer);
             }
-            crate::api::orchestrator::OrchestratorIntent::Entered { generation, opened } => {
-                <i32>::sse_encode(6, serializer);
-                <u64>::sse_encode(generation, serializer);
-                <bool>::sse_encode(opened, serializer);
-            }
             crate::api::orchestrator::OrchestratorIntent::Leave => {
-                <i32>::sse_encode(7, serializer);
+                <i32>::sse_encode(6, serializer);
             }
             crate::api::orchestrator::OrchestratorIntent::Answer {
                 chat_id,
                 request_id,
                 answers,
             } => {
-                <i32>::sse_encode(8, serializer);
+                <i32>::sse_encode(7, serializer);
                 <String>::sse_encode(chat_id, serializer);
                 <String>::sse_encode(request_id, serializer);
                 <Vec<crate::api::composer::QuestionAnswerView>>::sse_encode(answers, serializer);
@@ -30225,12 +30099,12 @@ impl SseEncode for crate::api::orchestrator::OrchestratorIntent {
                 chat_id,
                 request_id,
             } => {
-                <i32>::sse_encode(9, serializer);
+                <i32>::sse_encode(8, serializer);
                 <String>::sse_encode(chat_id, serializer);
                 <String>::sse_encode(request_id, serializer);
             }
             crate::api::orchestrator::OrchestratorIntent::Close => {
-                <i32>::sse_encode(10, serializer);
+                <i32>::sse_encode(9, serializer);
             }
             _ => {
                 unimplemented!("");
@@ -30251,49 +30125,20 @@ impl SseEncode for crate::api::orchestrator::OrchestratorOutcome {
                 <i32>::sse_encode(1, serializer);
                 <crate::api::overview::CatalogView>::sse_encode(catalog, serializer);
             }
-            crate::api::orchestrator::OrchestratorOutcome::Busy => {
+            crate::api::orchestrator::OrchestratorOutcome::Opened {
+                chat_revision,
+                chat_generation,
+            } => {
                 <i32>::sse_encode(2, serializer);
-            }
-            crate::api::orchestrator::OrchestratorOutcome::Open { chat, generation } => {
-                <i32>::sse_encode(3, serializer);
-                <crate::api::overview::ChatRefView>::sse_encode(chat, serializer);
-                <u64>::sse_encode(generation, serializer);
-            }
-            crate::api::orchestrator::OrchestratorOutcome::NewChat {
-                workspace,
-                generation,
-            } => {
-                <i32>::sse_encode(4, serializer);
-                <crate::api::overview::CatalogWorkspaceView>::sse_encode(workspace, serializer);
-                <u64>::sse_encode(generation, serializer);
-            }
-            crate::api::orchestrator::OrchestratorOutcome::NewTab {
-                entry_id,
-                generation,
-                failure,
-            } => {
-                <i32>::sse_encode(5, serializer);
-                <String>::sse_encode(entry_id, serializer);
-                <u64>::sse_encode(generation, serializer);
-                <String>::sse_encode(failure, serializer);
-            }
-            crate::api::orchestrator::OrchestratorOutcome::LoadFailed { message } => {
-                <i32>::sse_encode(6, serializer);
-                <String>::sse_encode(message, serializer);
-            }
-            crate::api::orchestrator::OrchestratorOutcome::Stale => {
-                <i32>::sse_encode(7, serializer);
-            }
-            crate::api::orchestrator::OrchestratorOutcome::Entered { opened } => {
-                <i32>::sse_encode(8, serializer);
-                <bool>::sse_encode(opened, serializer);
+                <u64>::sse_encode(chat_revision, serializer);
+                <u64>::sse_encode(chat_generation, serializer);
             }
             crate::api::orchestrator::OrchestratorOutcome::Failed { failure } => {
-                <i32>::sse_encode(9, serializer);
+                <i32>::sse_encode(3, serializer);
                 <crate::api::chats::ChatFailure>::sse_encode(failure, serializer);
             }
             crate::api::orchestrator::OrchestratorOutcome::Done => {
-                <i32>::sse_encode(10, serializer);
+                <i32>::sse_encode(4, serializer);
             }
             _ => {
                 unimplemented!("");
@@ -30329,7 +30174,8 @@ impl SseEncode for crate::api::overview::OverviewView {
         <u64>::sse_encode(self.revision, serializer);
         <bool>::sse_encode(self.loading, serializer);
         <bool>::sse_encode(self.scope_pending, serializer);
-        <bool>::sse_encode(self.online, serializer);
+        <Option<u64>>::sse_encode(self.session, serializer);
+        <bool>::sse_encode(self.catalog_current, serializer);
         <Option<String>>::sse_encode(self.error, serializer);
         <bool>::sse_encode(self.has_inventory, serializer);
         <u64>::sse_encode(self.refreshes, serializer);
@@ -30519,14 +30365,6 @@ impl SseEncode for crate::api::pipelines::PipelineDescriptorView {
         <crate::api::pipelines::PipelineOrigin>::sse_encode(self.origin, serializer);
         <Vec<String>>::sse_encode(self.trigger_types, serializer);
         <Vec<String>>::sse_encode(self.scopes, serializer);
-    }
-}
-
-impl SseEncode for crate::api::pipelines::PipelineDocumentView {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <bool>::sse_encode(self.markdown, serializer);
-        <String>::sse_encode(self.text, serializer);
     }
 }
 
@@ -31012,9 +30850,11 @@ impl SseEncode for crate::api::pipelines::PipelinesOutcome {
                 <i32>::sse_encode(2, serializer);
                 <String>::sse_encode(id, serializer);
             }
-            crate::api::pipelines::PipelinesOutcome::Content { document } => {
+            crate::api::pipelines::PipelinesOutcome::Content { chunks } => {
                 <i32>::sse_encode(3, serializer);
-                <crate::api::pipelines::PipelineDocumentView>::sse_encode(document, serializer);
+                <Vec<crate::api::pipelines::PipelineContentChunkView>>::sse_encode(
+                    chunks, serializer,
+                );
             }
             _ => {
                 unimplemented!("");
@@ -31447,14 +31287,6 @@ impl SseEncode for crate::api::composer::QuestionView {
     }
 }
 
-impl SseEncode for crate::api::chats::RawMessageView {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <u64>::sse_encode(self.uid, serializer);
-        <String>::sse_encode(self.json, serializer);
-    }
-}
-
 impl SseEncode for crate::api::overview::RecentAttention {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -31564,7 +31396,6 @@ impl SseEncode for crate::api::chats::SelectionFrame {
         <crate::api::overview::ChatRefView>::sse_encode(self.chat, serializer);
         <bool>::sse_encode(self.reset, serializer);
         <crate::api::chats::ChatHeaderView>::sse_encode(self.header, serializer);
-        <crate::api::chats::ChatStateFrame>::sse_encode(self.state, serializer);
         <crate::api::chats::FeedFrame>::sse_encode(self.feed, serializer);
     }
 }
@@ -31876,47 +31707,17 @@ impl SseEncode for crate::api::home::TaskStep {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         match self {
-            crate::api::home::TaskStep::Open { chat } => {
+            crate::api::home::TaskStep::SetDraft { chat } => {
                 <i32>::sse_encode(0, serializer);
-                <crate::api::overview::ChatRefView>::sse_encode(chat, serializer);
-            }
-            crate::api::home::TaskStep::CreateTab {
-                project_id,
-                worktree_id,
-            } => {
-                <i32>::sse_encode(1, serializer);
-                <String>::sse_encode(project_id, serializer);
-                <String>::sse_encode(worktree_id, serializer);
-            }
-            crate::api::home::TaskStep::CreateChat { project_id } => {
-                <i32>::sse_encode(2, serializer);
-                <String>::sse_encode(project_id, serializer);
-            }
-            crate::api::home::TaskStep::LoadWorktree {
-                project_id,
-                worktree_id,
-                name,
-            } => {
-                <i32>::sse_encode(3, serializer);
-                <String>::sse_encode(project_id, serializer);
-                <String>::sse_encode(worktree_id, serializer);
-                <String>::sse_encode(name, serializer);
-            }
-            crate::api::home::TaskStep::Refresh => {
-                <i32>::sse_encode(4, serializer);
-            }
-            crate::api::home::TaskStep::SetDraft { chat, text } => {
-                <i32>::sse_encode(5, serializer);
                 <Option<crate::api::overview::ChatRefView>>::sse_encode(chat, serializer);
-                <Option<String>>::sse_encode(text, serializer);
             }
             crate::api::home::TaskStep::SetWorkspaceKind { project_id, kind } => {
-                <i32>::sse_encode(6, serializer);
+                <i32>::sse_encode(1, serializer);
                 <String>::sse_encode(project_id, serializer);
                 <String>::sse_encode(kind, serializer);
             }
             crate::api::home::TaskStep::Sent { attachments } => {
-                <i32>::sse_encode(7, serializer);
+                <i32>::sse_encode(2, serializer);
                 <Vec<crate::api::home::SentAttachmentView>>::sse_encode(attachments, serializer);
             }
             _ => {
@@ -31930,10 +31731,6 @@ impl SseEncode for crate::api::home::TaskStepResult {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <Option<crate::api::home::TaskFailure>>::sse_encode(self.failure, serializer);
-        <Option<crate::api::overview::ChatRefView>>::sse_encode(self.created, serializer);
-        <bool>::sse_encode(self.unavailable, serializer);
-        <Vec<crate::api::overview::ChatRefView>>::sse_encode(self.chats, serializer);
-        <Option<String>>::sse_encode(self.active_chat_id, serializer);
         <bool>::sse_encode(self.online, serializer);
     }
 }
@@ -32394,6 +32191,7 @@ impl SseEncode for crate::api::pipelines::WorkTone {
 impl SseEncode for crate::api::overview::WorktreeChatsView {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u64>::sse_encode(self.sequence, serializer);
         <Vec<crate::api::overview::ChatRefView>>::sse_encode(self.chats, serializer);
         <Option<String>>::sse_encode(self.active_chat_id, serializer);
         <crate::api::overview::WorktreeStatus>::sse_encode(self.status, serializer);
@@ -32418,6 +32216,9 @@ impl SseEncode for crate::api::overview::WorktreeLoad {
             }
             crate::api::overview::WorktreeLoad::Stale => {
                 <i32>::sse_encode(2, serializer);
+            }
+            crate::api::overview::WorktreeLoad::SessionLost => {
+                <i32>::sse_encode(3, serializer);
             }
             _ => {
                 unimplemented!("");

@@ -39,10 +39,10 @@ final class RustComputerOverview extends ChangeNotifier
   @override
   VoidCallback? onRefreshStarted;
 
+  var _catalog = const <DeviceChatRef>[];
   var _projects = const <DeviceProject>[];
   var _worktrees = const <DeviceWorktree>[];
   var _codeProjectIds = const <String>{};
-  final _instances = Expando<int>();
   var _rows = const <String, RemoteWorktree>{};
   var _building = const <String>{};
   var _scopes = const <String?, ContextScopeView>{};
@@ -81,8 +81,9 @@ final class RustComputerOverview extends ChangeNotifier
     };
     if (previous == null || view.catalogRevision != previous.catalogRevision) {
       if (view.catalogRevision > 0) {
+        _catalog = [for (final c in view.catalog) _chat(c)];
         chats.chats.applyCatalog((
-          chats: [for (final c in view.catalog) _chat(c)],
+          chats: _catalog,
           workspaces: [
             for (final w in view.catalogWorkspaces)
               DeviceChatWorkspace(w.id, w.name),
@@ -138,6 +139,7 @@ final class RustComputerOverview extends ChangeNotifier
 
   static void _applyChats(DeviceWorktree worktree, WorktreeChatsView chats) {
     worktree
+      ..chatReadSequence = chats.sequence
       ..chats = [for (final c in chats.chats) _chat(c)]
       ..activeChatId = chats.activeChatId
       ..status = _status(chats.status)
@@ -162,7 +164,7 @@ final class RustComputerOverview extends ChangeNotifier
       hidden: w.hidden,
     );
     _applyChats(worktree, w.chats);
-    _instances[worktree] = w.instance.toInt();
+    worktree.inventoryInstance = w.instance.toInt();
     return worktree;
   }
 
@@ -231,16 +233,13 @@ final class RustComputerOverview extends ChangeNotifier
   @override
   bool get loading => _view?.loading ?? false;
 
-  /// Pending, too, while the core's view was computed for another
-  /// connection than [chats] shows: Dart's overview turned pending in the
-  /// same turn as the connection, so no reader saw a new connection with
-  /// the old scope (Home restored its choices against it).
+  bool get _matchesSession =>
+      _view?.session == chats.connection.connectedSession;
+
   @override
-  bool get scopePending =>
-      (_view?.scopePending ?? false) ||
-      (_view?.online ?? false) != chats.online;
+  bool get scopePending => !_matchesSession || (_view?.scopePending ?? false);
   @override
-  String? get error => _view?.error;
+  String? get error => _matchesSession ? _view?.error : null;
   @override
   bool get hasInventory => _view?.hasInventory ?? false;
   @override
@@ -270,6 +269,9 @@ final class RustComputerOverview extends ChangeNotifier
   );
   @override
   List<DeviceChatRef> get catalog => chats.chats.catalog;
+  @override
+  List<DeviceChatRef>? get currentCatalog =>
+      _matchesSession && _view?.catalogCurrent == true ? _catalog : null;
   @override
   List<DeviceChatWorkspace> get catalogWorkspaces => chats.chats.workspaces;
   @override
@@ -313,28 +315,32 @@ final class RustComputerOverview extends ChangeNotifier
   void enterChat() => unawaited(_intent((s) => s.enterChat()));
 
   @override
-  Future<void> loadWorktree(DeviceWorktree worktree) async {
+  Future<WorktreeRead> loadWorktree(DeviceWorktree worktree) async {
     final service = this.service;
-    if (service == null || _disposed) return;
+    if (service == null || _disposed) return WorktreeRead.unavailable;
     final WorktreeLoad outcome;
     try {
       outcome = await service.loadWorktree(
         projectId: worktree.projectId,
         worktreeId: worktree.id,
         savedStatus: worktree.savedStatus,
-        instance: _instances[worktree] ?? 0,
+        instance: worktree.inventoryInstance ?? 0,
       );
     } on CoreFailure catch (error) {
       debugPrint('Computer overview read failed: ${error.code}');
-      return;
+      return WorktreeRead.unavailable;
     }
     switch (outcome) {
       case WorktreeLoad_Loaded(:final field0):
         _applyChats(worktree, field0);
+        return WorktreeRead.loaded;
       case WorktreeLoad_Unavailable():
         worktree.status = 'Unavailable';
+        return WorktreeRead.unavailable;
       case WorktreeLoad_Stale():
-        break;
+        return WorktreeRead.stale;
+      case WorktreeLoad_SessionLost():
+        return WorktreeRead.sessionLost;
     }
   }
 

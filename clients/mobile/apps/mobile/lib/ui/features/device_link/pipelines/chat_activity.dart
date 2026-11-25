@@ -12,13 +12,11 @@ class DevicePipelineChatActivity extends StatefulWidget {
     super.key,
     required this.repository,
     required this.ref,
-    required this.messages,
     required this.online,
     required this.builder,
   });
   final ComputerPipelines repository;
   final DeviceChatRef? ref;
-  final List<DeviceChatMessage> messages;
   final bool online;
   final Widget Function(Map<String, Widget>) builder;
 
@@ -50,11 +48,7 @@ class _DevicePipelineChatActivityState
     _sync();
   }
 
-  void _sync() => _controller.update(
-    ref: widget.ref,
-    messages: widget.messages,
-    online: widget.online,
-  );
+  void _sync() => _controller.update(ref: widget.ref, online: widget.online);
 
   @override
   void dispose() {
@@ -68,7 +62,7 @@ class _DevicePipelineChatActivityState
     builder: (context, _) {
       final ref = widget.ref, repository = widget.repository;
       if (ref == null) return widget.builder(const {});
-      final panels = _controller.panels(ref, widget.messages);
+      final panels = _controller.panels(ref);
       final latest = panels.latest;
       return widget.builder({
         for (final entry in panels.turns.entries)

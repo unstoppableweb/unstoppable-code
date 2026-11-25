@@ -70,6 +70,18 @@ final class RustChatReader implements DeviceChatReader {
   final core.ChatsService service;
   late final StreamSubscription<core.ChatFrame> _frames;
   final _updates = StreamController<void>.broadcast();
+  late final _successfulTurns = StreamController<String>.broadcast(
+    onListen: () => _trackTurns(true),
+    onCancel: () => _trackTurns(false),
+  );
+  @override
+  Stream<String> get successfulTurns => _successfulTurns.stream;
+  void _trackTurns(bool enabled) {
+    if (!_disposed) {
+      service.send(intent: core.ChatIntent.trackTurns(enabled: enabled));
+    }
+  }
+
   @override
   Stream<void> get updates => _updates.stream;
 
@@ -100,12 +112,11 @@ final class RustChatReader implements DeviceChatReader {
   /// [state]'s composer as the core last sent it (P5c), as [header].
   core.ComposerView? get composer =>
       _framed ? _composer : _seen[state?.ref.key]?.composer;
-  final _raw = <int, DeviceChatMessage>{};
-  List<int> _order = const [];
 
   @override
   bool connected = false;
   int _generation = 0;
+  int _disconnectedAt = 0;
   @override
   int get selectionGeneration => _generation;
   String? _error;
@@ -131,6 +142,10 @@ final class RustChatReader implements DeviceChatReader {
   bool get loadingOlder => !_behind && (_frame?.loadingOlder ?? false);
   @override
   bool get ready => connected && !_behind && (_frame?.ready ?? false);
+  bool get activityConnected =>
+      connected &&
+      (_frame?.generation ?? -1) >= _disconnectedAt &&
+      _frame?.activityConnected == true;
   @override
   String? get error => _error;
   @override
@@ -181,7 +196,7 @@ final class RustChatReader implements DeviceChatReader {
   Future<void> setConnected(bool value) async {
     connected = value;
     if (!value) {
-      _generation++;
+      _disconnectedAt = ++_generation;
       _ahead = (state: state, loading: false, hydrating: false);
       _notify();
     }
@@ -213,9 +228,12 @@ final class RustChatReader implements DeviceChatReader {
       core.ChatIntent.open(chat: _ref(ref), generation: generation),
     );
     return !_disposed &&
-        generation == _generation &&
         switch (settled.outcome) {
-          core.ChatOutcome_Opened(selected: true) => true,
+          core.ChatOutcome_Opened(
+            selected: true,
+            generation: final openedGeneration,
+          ) =>
+            openedGeneration == _generation,
           _ => false,
         };
   }
@@ -223,13 +241,19 @@ final class RustChatReader implements DeviceChatReader {
   @override
   Future<void> refresh() async {
     final ref = state?.ref;
-    if (ref != null) await open(ref);
+    if (ref == null) return;
+    await settle(
+      core.ChatIntent.refresh(chat: _ref(ref), generation: _generation),
+    );
   }
 
   @override
   Future<void> loadOlder() async {
     final current = state;
-    if (current == null || current.before == null || !ready || loadingOlder) {
+    if (current == null ||
+        current.header?.hasOlder != true ||
+        !ready ||
+        loadingOlder) {
       return;
     }
     await _request(const core.ChatIntent.loadOlder());
@@ -250,11 +274,21 @@ final class RustChatReader implements DeviceChatReader {
   }
 
   @override
-  Future<void> archive(DeviceChatRef ref) =>
-      _request(core.ChatIntent.archive(chat: _ref(ref)));
+  Future<void> closeTab(String id) =>
+      _request(core.ChatIntent.closeTab(id: id));
+
+  @override
+  Future<void> restoreConnection({required bool catalogLoaded}) =>
+      _request(core.ChatIntent.restoreConnection(catalogLoaded: catalogLoaded));
+
+  Future<void> waitForRevision(int revision) => _revisions.wait(revision);
 
   void _apply(core.ChatFrame frame) {
     if (_disposed) return;
+    final previousTurns = _frame?.successfulTurns.toSet() ?? const <String>{};
+    for (final turn in frame.successfulTurns) {
+      if (!previousTurns.contains(turn)) _successfulTurns.add(turn);
+    }
     _frame = frame;
     if (frame.generation > _generation) _generation = frame.generation;
     if (!_behind) _ahead = null;
@@ -274,8 +308,6 @@ final class RustChatReader implements DeviceChatReader {
     final selected = frame.selected;
     if (selected == null) {
       _state = null;
-      _raw.clear();
-      _order = const [];
       feed._clear();
     } else {
       _applySelection(selected);
@@ -295,28 +327,8 @@ final class RustChatReader implements DeviceChatReader {
     var current = _state;
     if (selected.reset || current == null || current.ref.key != ref.key) {
       current = _state = DeviceChatState(ref);
-      _raw.clear();
-      _order = const [];
     }
-    final s = selected.state;
-    current
-      ..header = selected.header
-      ..before = s.before
-      ..closed = s.closed;
-    if (s.tabJson case final json?) current.tab = _object(json);
-    for (final message in s.messages) {
-      _raw[message.uid] = DeviceChatMessage(_object(message.json));
-    }
-    if (s.order case final order?) {
-      _order = order;
-      final kept = order.toSet();
-      _raw.removeWhere((uid, _) => !kept.contains(uid));
-    }
-    if (s.order != null || s.messages.isNotEmpty) {
-      current.messages
-        ..clear()
-        ..addAll([for (final uid in _order) ?_raw[uid]]);
-    }
+    current.header = selected.header;
     feed._apply(selected.feed, ref);
     _seen
       ..remove(ref.key)
@@ -331,6 +343,7 @@ final class RustChatReader implements DeviceChatReader {
     _revisions.fail(StateError('Chat reader disposed.'));
     await _frames.cancel();
     await _updates.close();
+    await _successfulTurns.close();
   }
 }
 
@@ -361,13 +374,9 @@ final class RustReadMarker implements DeviceChatReadMarker {
 }
 
 /// What the feed shows of one chat.
-typedef _FeedView = ({
-  List<ChatMessage> messages,
-  List<FeedMessageOutline> outline,
-  List<TranscriptRow> rows,
-});
+typedef _FeedView = ({List<ChatMessage> messages, List<TranscriptRow> rows});
 
-const _FeedView _noFeed = (messages: [], outline: [], rows: []);
+const _FeedView _noFeed = (messages: [], rows: []);
 
 /// The Rust-grouped feed: applies the core's keyed feed ops to an immutable
 /// row list, keeping each unchanged row (and message) the same object so
@@ -383,7 +392,6 @@ final class RustChatFeed implements ComputerChatFeed {
 
   final _messages = <int, ChatMessage>{};
   List<ChatMessage> _order = const [];
-  List<FeedMessageOutline> _outline = const [];
   final _items = <core.FeedItem>[];
   final _built = <String, (core.FeedItem, TranscriptRow)>{};
   final _results = <int, (int, Map<String, ToolCallResult>)>{};
@@ -399,18 +407,12 @@ final class RustChatFeed implements ComputerChatFeed {
 
   _FeedView get _view => switch (_selected()) {
     null => _noFeed,
-    final key when key == _key => (
-      messages: _order,
-      outline: _outline,
-      rows: _rows,
-    ),
+    final key when key == _key => (messages: _order, rows: _rows),
     final key => _shown[key] ?? _noFeed,
   };
 
   @override
   List<ChatMessage> get messages => _view.messages;
-  @override
-  List<FeedMessageOutline> get outline => _view.outline;
   @override
   void toggleTurn(String key) =>
       service.send(intent: core.ChatIntent.toggleTurn(key: key));
@@ -435,7 +437,6 @@ final class RustChatFeed implements ComputerChatFeed {
     _key = null;
     _messages.clear();
     _order = const [];
-    _outline = const [];
     _items.clear();
     _built.clear();
     _results.clear();
@@ -449,7 +450,7 @@ final class RustChatFeed implements ComputerChatFeed {
     _build(frame, chat.id);
     _shown
       ..remove(chat.key)
-      ..[chat.key] = (messages: _order, outline: _outline, rows: _rows);
+      ..[chat.key] = (messages: _order, rows: _rows);
     if (_shown.length > _cachedChats) _shown.remove(_shown.keys.first);
   }
 
@@ -471,15 +472,6 @@ final class RustChatFeed implements ComputerChatFeed {
       _messages.removeWhere((uid, _) => !uids.contains(uid));
       _order = List.unmodifiable([
         for (final m in order) _messages[m.uid] ?? _placeholder(m, chatId),
-      ]);
-      _outline = List.unmodifiable([
-        for (final m in order)
-          (
-            messageId: m.id,
-            user: m.role == core.ChatRole.user,
-            continuesTurn: m.continuesTurn,
-            renderable: m.renderable,
-          ),
       ]);
     }
     if (frame.ops.isEmpty && frame.messages.isEmpty && frame.order == null) {

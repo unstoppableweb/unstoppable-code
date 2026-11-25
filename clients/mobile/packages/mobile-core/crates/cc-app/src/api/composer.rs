@@ -263,9 +263,6 @@ pub struct ComposerView {
     pub routing_supported: bool,
     /// `None` when the host omits it (the captured harness stays locked).
     pub harness_locked: Option<bool>,
-    /// The selected tab with the queued picks applied, in bridge-form
-    /// JSON.
-    pub tab_json: String,
     pub saving: bool,
     pub refreshing: bool,
     pub failure: Option<SettingsFailureView>,
@@ -688,7 +685,6 @@ pub(crate) fn composer_view(shown: &ComposerShown, state: Option<&ChatState>) ->
         model_label: catalog.model_label.clone(),
         routing_supported: catalog.routing_supported,
         harness_locked: catalog.harness_locked,
-        tab_json: dto::bridge_map(&shown.tab).to_string(),
         saving: shown.saving,
         refreshing: shown.refreshing,
         failure: shown.failure.as_ref().map(failure_view),

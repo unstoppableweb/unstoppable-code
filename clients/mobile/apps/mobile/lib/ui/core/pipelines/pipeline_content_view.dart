@@ -5,7 +5,6 @@ import 'pipeline_unavailable.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/ui/core/typography.dart';
 import 'package:mobile/ui/core/widgets/message_markdown.dart';
-import 'pipeline_content_chunks.dart';
 
 /// Loads a pipeline document once and shows its loading, unavailable, error
 /// and empty states, handing a loaded document with content to [builder].
@@ -20,7 +19,7 @@ class PipelineContentLoader extends StatefulWidget {
 
   /// Whether the desktop can serve the complete content at all.
   final bool supported;
-  final Future<RemotePipelineContentDocument> Function() load;
+  final Future<List<PipelineContentChunk>> Function() load;
   final String emptyMessage;
   final Widget Function(BuildContext context, List<PipelineContentChunk> chunks)
   builder;
@@ -30,7 +29,7 @@ class PipelineContentLoader extends StatefulWidget {
 }
 
 class _PipelineContentLoaderState extends State<PipelineContentLoader> {
-  Future<RemotePipelineContentDocument>? _document;
+  Future<List<PipelineContentChunk>>? _document;
 
   @override
   void initState() {
@@ -54,7 +53,7 @@ class _PipelineContentLoaderState extends State<PipelineContentLoader> {
         message: kRemotePipelineContentUnsupported,
       );
     }
-    return FutureBuilder<RemotePipelineContentDocument>(
+    return FutureBuilder<List<PipelineContentChunk>>(
       future: document,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
@@ -75,13 +74,13 @@ class _PipelineContentLoaderState extends State<PipelineContentLoader> {
           );
         }
         final loaded = snapshot.requireData;
-        if (loaded.text.trim().isEmpty) {
+        if (loaded.isEmpty) {
           return _ContentNotice(
             key: const ValueKey('pipeline-content-empty'),
             message: widget.emptyMessage,
           );
         }
-        return widget.builder(context, pipelineContentChunks(loaded));
+        return widget.builder(context, loaded);
       },
     );
   }

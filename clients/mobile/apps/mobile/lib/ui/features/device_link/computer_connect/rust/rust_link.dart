@@ -55,6 +55,9 @@ final class RustComputerLink extends ChangeNotifier
       ? LinkPhase.reconnecting
       : _view?.phase ?? LinkPhase.disconnected;
   @override
+  int? get connectedSession =>
+      phase == LinkPhase.connected ? _view?.session : null;
+  @override
   String? get hostName => _view?.hostName;
   @override
   bool get reconnecting => phase == DesktopLinkPhase.reconnecting;

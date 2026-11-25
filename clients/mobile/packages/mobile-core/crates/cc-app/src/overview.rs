@@ -108,9 +108,26 @@ pub(crate) enum Intent {
 
 /// How an explicit worktree read ended.
 pub(crate) enum LoadOutcome {
-    Loaded(WorktreeChats),
+    Loaded(WorktreeChats, u64),
     Unavailable,
     Stale,
+    SessionLost,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct WorktreeReadVersion {
+    connection: u64,
+    generation: u64,
+    instance: u64,
+    sequence: Option<u64>,
+    explicit: bool,
+}
+
+#[derive(Default)]
+struct WorktreeReads {
+    latest: u64,
+    latest_explicit: u64,
+    last_success: u64,
 }
 
 #[derive(Clone)]
@@ -139,6 +156,17 @@ impl From<Unreadable> for ReadError {
         Self::Unreadable(e)
     }
 }
+/// The account stream publishes connection loss independently of RPC replies.
+fn session_lost(error: &ReadError) -> bool {
+    matches!(error, ReadError::Rpc(error) if rpc_session_lost(error))
+}
+
+fn rpc_session_lost(error: &Error) -> bool {
+    error.kind == FailureKind::Ended
+        || (error.kind == FailureKind::NotSent
+            && matches!(error.code.as_str(), "session_ended" | "not_connected"))
+}
+
 /// `_describe`: a transport failure reads as its Dart message; anything
 /// else is generic.
 fn describe(error: &ReadError) -> String {
@@ -174,11 +202,10 @@ pub(crate) enum Msg {
         executions: Option<Value>,
     },
     Loaded {
-        generation: u64,
+        version: WorktreeReadVersion,
         project_id: String,
         worktree_id: String,
         saved_status: Option<String>,
-        instance: u64,
         purpose: LoadPurpose,
         reply: Option<oneshot::Sender<LoadOutcome>>,
         result: Result<Value>,
@@ -416,6 +443,7 @@ enum WorktreesFor {
     Reload(Vec<Waiter>),
 }
 struct WorktreesFlow {
+    connection: u64,
     purpose: WorktreesFor,
     /// The rows the batches read, from this flow's roster.
     batch: Vec<(String, String, Option<String>, u64)>,
@@ -435,9 +463,17 @@ struct CoworkFlow {
 struct Full {
     worktrees: Option<()>,
     catalog: Option<()>,
-    /// The first failure, in completion order (`Future.wait`).
-    error: Option<String>,
+    /// The first ordinary failure, in completion order.
+    error: Option<ReadError>,
     waiters: Vec<Waiter>,
+}
+
+impl Full {
+    fn record_failure(&mut self, error: ReadError) {
+        if !session_lost(&error) {
+            self.error.get_or_insert(error);
+        }
+    }
 }
 
 struct Actor {
@@ -459,6 +495,8 @@ struct Actor {
     /// Bumped whenever `online` changes: a claim of an earlier connection
     /// answers for a session that has ended.
     connections: u64,
+    /// An RPC can report session loss before the account stream catches up.
+    session_ended: bool,
     // The controller.
     watching: bool,
     refresh_generation: u64,
@@ -475,6 +513,8 @@ struct Actor {
     fulls: HashMap<u64, Full>,
     // The worktrees repository.
     worktrees_generation: u64,
+    worktree_read_sequence: u64,
+    worktree_reads: HashMap<(String, u64), WorktreeReads>,
     instances: u64,
     has_inventory: bool,
     projects: Vec<Project>,
@@ -492,6 +532,7 @@ struct Actor {
     // The catalog (the chats repository's `catalog`).
     catalog: Catalog,
     catalog_revision: u64,
+    catalog_current: bool,
     // Recents.
     recents: Option<RecentSnapshot>,
     recents_generation: Arc<AtomicU64>,
@@ -514,6 +555,7 @@ impl Actor {
             reconnecting: false,
             connection: None,
             connections: 0,
+            session_ended: false,
             watching: true,
             refresh_generation: 0,
             loading: false,
@@ -527,6 +569,8 @@ impl Actor {
             scope_generation: 0,
             fulls: HashMap::new(),
             worktrees_generation: 0,
+            worktree_read_sequence: 0,
+            worktree_reads: HashMap::new(),
             instances: 0,
             has_inventory: false,
             projects: Vec::new(),
@@ -541,6 +585,7 @@ impl Actor {
             cowork_flows: HashMap::new(),
             catalog: Catalog::default(),
             catalog_revision: 0,
+            catalog_current: false,
             recents: None,
             recents_generation: Arc::new(AtomicU64::new(0)),
             recents_refreshing: false,
@@ -662,28 +707,38 @@ impl Actor {
                 executions,
             } => self.inventory(flow, projects, snapshot, executions, &mut done),
             Msg::Loaded {
-                generation,
+                version,
                 project_id,
                 worktree_id,
                 saved_status,
-                instance,
                 purpose,
                 reply,
                 result,
             } => {
+                if let Err(error) = &result
+                    && rpc_session_lost(error)
+                {
+                    if version.connection == self.connections && self.online {
+                        self.session_ended = true;
+                    }
+                    if let LoadPurpose::Batch { flow } = purpose
+                        && flow == self.worktrees_generation
+                    {
+                        self.worktrees_ended(flow, Err(ReadError::Rpc(error.clone())), &mut done);
+                    }
+                }
                 let outcome = self.loaded(
-                    generation,
+                    version,
                     &project_id,
                     &worktree_id,
                     saved_status.as_deref(),
-                    instance,
                     result,
                 );
                 match purpose {
                     LoadPurpose::Batch { flow } => self.batch_loaded(flow, &mut done),
                     LoadPurpose::Scope => self.scope_read(
                         &format!("{project_id}/{worktree_id}"),
-                        Some(instance),
+                        Some(version.instance),
                         &mut done,
                     ),
                     LoadPurpose::Explicit => {}
@@ -698,6 +753,12 @@ impl Actor {
                 flow,
                 result,
             } => {
+                if generation == self.cowork_generation
+                    && self.online
+                    && result.as_ref().is_err_and(rpc_session_lost)
+                {
+                    self.session_ended = true;
+                }
                 self.cowork_loaded(generation, &chat, result);
                 match flow {
                     Some(flow) => self.cowork_batch_loaded(flow, &mut done),
@@ -705,6 +766,12 @@ impl Actor {
                 }
             }
             Msg::Catalog { flow, result } => {
+                if self.online
+                    && flow == self.refresh_generation
+                    && result.as_ref().is_err_and(session_lost)
+                {
+                    self.session_ended = true;
+                }
                 let result = match result {
                     Ok(catalog) => {
                         // `refreshCatalog`: kept only while connected, and
@@ -713,15 +780,16 @@ impl Actor {
                         if self.online && flow == self.refresh_generation {
                             self.catalog = catalog;
                             self.catalog_revision += 1;
+                            self.catalog_current = true;
                         }
                         Ok(())
                     }
-                    Err(error) => Err(describe(&error)),
+                    Err(error) => Err(error),
                 };
                 if let Some(full) = self.fulls.get_mut(&flow) {
                     full.catalog = Some(());
                     if let Err(error) = result {
-                        full.error.get_or_insert(error);
+                        full.record_failure(error);
                     }
                 }
                 self.full_joined(flow, &mut done);
@@ -747,8 +815,9 @@ impl Actor {
                         if let Some(inner) = self.inner() {
                             inner.interest_unsent(&self.computer, SCOPES);
                         }
-                        if current {
-                            self.error = Some(describe(&ReadError::Rpc(error)));
+                        let error = ReadError::Rpc(error);
+                        if current && !session_lost(&error) {
+                            self.error = Some(describe(&error));
                         }
                     }
                 }
@@ -813,9 +882,20 @@ impl Actor {
         if connection == self.connection {
             return;
         }
+        let replaced = self.online
+            && connection.as_ref().is_some_and(|next| {
+                next.phase == LinkPhase::Connected
+                    && self
+                        .connection
+                        .as_ref()
+                        .is_some_and(|previous| previous.session != next.session)
+            });
         self.connection = connection;
         let phase = self.connection.as_ref().map(|c| c.phase);
         let mut done = Vec::new();
+        if replaced {
+            self.connection_changed(false, true, &mut done);
+        }
         self.connection_changed(
             phase == Some(LinkPhase::Connected),
             phase == Some(LinkPhase::Reconnecting),
@@ -840,7 +920,11 @@ impl Actor {
         }
         self.online = online;
         self.connections += 1;
+        self.session_ended = false;
         self.refresh_generation += 1;
+        // The new session's interest claim can be pending before refresh().
+        self.error = None;
+        self.catalog_current = false;
         if online {
             // Reads sent while offline may have been answered by the
             // session that was ending.
@@ -885,6 +969,7 @@ impl Actor {
         self.has_inventory = false;
         self.projects.clear();
         self.worktrees.clear();
+        self.worktree_reads.clear();
         self.code_project_ids.clear();
     }
 
@@ -927,7 +1012,10 @@ impl Actor {
                 });
             }
             Err(error) => {
-                self.error = Some(describe(&ReadError::Rpc(error)));
+                let error = ReadError::Rpc(error);
+                if !session_lost(&error) {
+                    self.error = Some(describe(&error));
+                }
                 done.extend(waiter);
             }
         }
@@ -939,6 +1027,7 @@ impl Actor {
     /// re-read at once; a failed re-read must not keep filtering Recents by
     /// the old owner.
     fn ownership_changed(&mut self, done: &mut Vec<Waiter>) {
+        self.catalog_current = false;
         self.refresh_generation += 1;
         self.loading = false;
         self.scope_pending = true;
@@ -1011,7 +1100,12 @@ impl Actor {
     /// The loop body: starts the next pending scope's read, or ends.
     fn next_scope(&mut self, done: &mut Vec<Waiter>) {
         let _ = done;
-        while !self.disposed && self.watching && self.online && !self.pending_scopes.is_empty() {
+        while !self.disposed
+            && self.watching
+            && self.online
+            && !self.session_ended
+            && !self.pending_scopes.is_empty()
+        {
             let key = self.pending_scopes.remove(0);
             let worktree = self.worktrees.iter().find(|w| w.key() == key).map(|w| {
                 (
@@ -1071,7 +1165,7 @@ impl Actor {
     // ---- Refresh (`refresh`) ----
 
     fn refresh(&mut self, waiter: Option<Waiter>, done: &mut Vec<Waiter>) {
-        if !self.online || self.loading || self.disposed {
+        if !self.online || self.session_ended || self.loading || self.disposed {
             done.extend(waiter);
             return;
         }
@@ -1107,14 +1201,12 @@ impl Actor {
         if full.worktrees.is_none() || full.catalog.is_none() {
             return;
         }
-        if let Some(error) = full.error.clone() {
-            if flow == self.refresh_generation {
-                self.error = Some(error);
-            }
+        if flow != self.refresh_generation || self.session_ended {
             self.finish(flow, done);
             return;
         }
-        if flow != self.refresh_generation {
+        if let Some(error) = &full.error {
+            self.error = Some(describe(error));
             self.finish(flow, done);
             return;
         }
@@ -1172,6 +1264,7 @@ impl Actor {
         self.worktree_flows.insert(
             flow,
             WorktreesFlow {
+                connection: self.connections,
                 purpose,
                 batch: Vec::new(),
                 offset: 0,
@@ -1183,7 +1276,7 @@ impl Actor {
             let optional = |channel: &'static str| {
                 let inner = inner.clone();
                 let computer = computer.clone();
-                async move { call(&inner, &computer, channel, vec![]).await.ok() }
+                async move { call(&inner, &computer, channel, vec![]).await }
             };
             let (projects, snapshot, executions) = join3(
                 call(&inner, &computer, "projects:load", vec![]),
@@ -1191,11 +1284,15 @@ impl Actor {
                 optional("pipelines:list-executions"),
             )
             .await;
+            let lost_session = [&snapshot, &executions]
+                .into_iter()
+                .filter_map(|result| result.as_ref().err())
+                .find(|error| rpc_session_lost(error));
             Msg::Inventory {
                 flow,
-                projects,
-                snapshot,
-                executions,
+                projects: lost_session.map_or(projects, |error| Err(error.clone())),
+                snapshot: snapshot.ok(),
+                executions: executions.ok(),
             }
         });
     }
@@ -1203,7 +1300,7 @@ impl Actor {
     fn worktrees_ended(
         &mut self,
         flow: u64,
-        result: std::result::Result<(), String>,
+        result: std::result::Result<(), ReadError>,
         done: &mut Vec<Waiter>,
     ) {
         let Some(ended) = self.worktree_flows.remove(&flow) else {
@@ -1214,7 +1311,7 @@ impl Actor {
                 if let Some(state) = self.fulls.get_mut(&full) {
                     state.worktrees = Some(());
                     if let Err(error) = result {
-                        state.error.get_or_insert(error);
+                        state.record_failure(error);
                     }
                 }
                 self.full_joined(full, done);
@@ -1234,7 +1331,16 @@ impl Actor {
         let projects = match projects {
             Ok(projects) => projects,
             Err(error) => {
-                self.worktrees_ended(flow, Err(describe(&ReadError::Rpc(error))), done);
+                if self.online
+                    && rpc_session_lost(&error)
+                    && self
+                        .worktree_flows
+                        .get(&flow)
+                        .is_some_and(|state| state.connection == self.connections)
+                {
+                    self.session_ended = true;
+                }
+                self.worktrees_ended(flow, Err(ReadError::Rpc(error)), done);
                 return;
             }
         };
@@ -1254,7 +1360,7 @@ impl Actor {
         let mut inventory = match read {
             Ok(inventory) => inventory,
             Err(error) => {
-                self.worktrees_ended(flow, Err(describe(&ReadError::Unreadable(error))), done);
+                self.worktrees_ended(flow, Err(ReadError::Unreadable(error)), done);
                 return;
             }
         };
@@ -1264,6 +1370,11 @@ impl Actor {
         // roster; chat details can take many round trips.
         self.projects = inventory.projects;
         self.worktrees = inventory.worktrees;
+        self.worktree_reads = self
+            .worktrees
+            .iter()
+            .map(|row| ((row.key(), row.instance), WorktreeReads::default()))
+            .collect();
         self.code_project_ids = inventory.code_project_ids;
         self.has_inventory = true;
         self.cached = self
@@ -1348,16 +1459,31 @@ impl Actor {
         purpose: LoadPurpose,
         reply: Option<oneshot::Sender<LoadOutcome>>,
     ) {
-        let generation = self.worktrees_generation;
+        self.worktree_read_sequence += 1;
+        let key = (format!("{project_id}/{worktree_id}"), instance);
+        let explicit = matches!(purpose, LoadPurpose::Explicit);
+        let sequence = self.worktree_reads.get_mut(&key).map(|reads| {
+            reads.latest = self.worktree_read_sequence;
+            if explicit {
+                reads.latest_explicit = reads.latest;
+            }
+            reads.latest
+        });
+        let version = WorktreeReadVersion {
+            connection: self.connections,
+            generation: self.worktrees_generation,
+            instance,
+            sequence,
+            explicit,
+        };
         self.spawn(move |inner, computer| async move {
             let scope = json!({"projectId": project_id, "worktreeId": worktree_id});
             let result = call(&inner, &computer, "chat:get-state", vec![scope]).await;
             Msg::Loaded {
-                generation,
+                version,
                 project_id,
                 worktree_id,
                 saved_status,
-                instance,
                 purpose,
                 reply,
                 result,
@@ -1367,14 +1493,31 @@ impl Actor {
 
     fn loaded(
         &mut self,
-        generation: u64,
+        version: WorktreeReadVersion,
         project_id: &str,
         worktree_id: &str,
         saved_status: Option<&str>,
-        instance: u64,
         result: Result<Value>,
     ) -> LoadOutcome {
-        if generation != self.worktrees_generation {
+        if result.as_ref().is_err_and(rpc_session_lost)
+            || (version.explicit && version.connection == self.connections && self.session_ended)
+        {
+            return LoadOutcome::SessionLost;
+        }
+        let key = (format!("{project_id}/{worktree_id}"), version.instance);
+        let latest = self.worktree_reads.get_mut(&key);
+        let relevant_sequence = latest.as_deref().map(|reads| {
+            if version.explicit {
+                reads.latest_explicit
+            } else {
+                reads.latest
+            }
+        });
+        if version.generation != self.worktrees_generation
+            || version
+                .sequence
+                .is_some_and(|sequence| relevant_sequence != Some(sequence))
+        {
             return LoadOutcome::Stale;
         }
         let chats = result
@@ -1383,20 +1526,34 @@ impl Actor {
             .and_then(|snapshot| {
                 domain::worktree_chats(project_id, worktree_id, saved_status, &snapshot)
             });
-        let key = format!("{project_id}/{worktree_id}");
-        if let Some(row) = self
-            .worktrees
-            .iter_mut()
-            .find(|w| w.instance == instance && w.key() == key)
+        if version.explicit
+            && chats.is_some()
+            && let (Some(sequence), Some(reads)) = (version.sequence, latest.as_deref())
+            && reads.last_success > sequence
+            && let Some(row) = self
+                .worktrees
+                .iter()
+                .find(|w| w.instance == version.instance && w.key() == key.0)
         {
-            match &chats {
-                Some(chats) => row.chats = chats.clone(),
-                None => row.chats.status = ChatStatus::Unavailable,
+            return LoadOutcome::Loaded(row.chats.clone(), reads.last_success);
+        }
+        if let (Some(sequence), Some(reads)) = (version.sequence, latest)
+            && reads.latest == sequence
+            && let Some(row) = self
+                .worktrees
+                .iter_mut()
+                .find(|w| w.instance == version.instance && w.key() == key.0)
+        {
+            if let Some(chats) = &chats {
+                row.chats = chats.clone();
+                reads.last_success = sequence;
+            } else {
+                row.chats.status = ChatStatus::Unavailable;
             }
-            self.cached.insert(key, row.chats.clone());
+            self.cached.insert(key.0, row.chats.clone());
         }
         match chats {
-            Some(chats) => LoadOutcome::Loaded(chats),
+            Some(chats) => LoadOutcome::Loaded(chats, version.sequence.unwrap_or_default()),
             None => LoadOutcome::Unavailable,
         }
     }
@@ -1581,16 +1738,32 @@ impl Actor {
         OverviewView {
             revision: self.revision,
             loading: self.loading,
-            scope_pending: self.scope_pending,
-            online: self.online,
-            error: self.error.clone(),
+            scope_pending: self.scope_pending || self.session_ended,
+            session: self
+                .connection
+                .as_ref()
+                .filter(|_| self.online)
+                .map(|connection| connection.session),
+            catalog_current: self.catalog_current && !self.session_ended,
+            error: if self.session_ended {
+                None
+            } else {
+                self.error.clone()
+            },
             has_inventory: self.has_inventory,
             refreshes: self.refreshes,
             projects: self.projects.iter().map(project_view).collect(),
             worktrees: self
                 .worktrees
                 .iter()
-                .map(|w| worktree_view(w, building.contains(w.key().as_str())))
+                .map(|w| {
+                    let key = w.key();
+                    let sequence = self
+                        .worktree_reads
+                        .get(&(key.clone(), w.instance))
+                        .map_or(0, |reads| reads.last_success);
+                    worktree_view(w, building.contains(key.as_str()), sequence)
+                })
                 .collect(),
             code_project_ids: self.code_project_ids.clone(),
             has_unknown_owners: self.projects.iter().any(|p| p.owner.is_none()),
@@ -1716,8 +1889,9 @@ fn chat_view(c: &ChatRef) -> ChatRefView {
     }
 }
 
-pub(crate) fn chats_view(c: &WorktreeChats) -> WorktreeChatsView {
+pub(crate) fn chats_view(c: &WorktreeChats, sequence: u64) -> WorktreeChatsView {
     WorktreeChatsView {
+        sequence,
         chats: c.chats.iter().map(chat_view).collect(),
         active_chat_id: c.active_chat_id.clone(),
         status: match c.status {
@@ -1737,7 +1911,7 @@ pub(crate) fn chats_view(c: &WorktreeChats) -> WorktreeChatsView {
     }
 }
 
-fn worktree_view(w: &Worktree, building: bool) -> WorktreeView {
+fn worktree_view(w: &Worktree, building: bool, sequence: u64) -> WorktreeView {
     let row = domain::worktree_row(w);
     WorktreeView {
         key: w.key(),
@@ -1750,7 +1924,7 @@ fn worktree_view(w: &Worktree, building: bool) -> WorktreeView {
         hidden: w.hidden,
         pipeline_status: w.pipeline_status.clone(),
         instance: w.instance,
-        chats: chats_view(&w.chats),
+        chats: chats_view(&w.chats, sequence),
         code_graph_building: building,
         row: WorktreeRowView {
             local_id: row.local_id,

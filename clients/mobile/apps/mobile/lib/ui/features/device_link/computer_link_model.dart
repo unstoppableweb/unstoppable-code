@@ -7,6 +7,7 @@ typedef DesktopLinkPhase = LinkPhase;
 /// The connection state and reconnect action for one computer.
 abstract interface class ComputerLinkModel implements Listenable {
   DesktopLinkPhase get phase;
+  int? get connectedSession;
 
   /// The computer's name from its hello, while one is known.
   String? get hostName;

@@ -13,6 +13,7 @@ import 'package:mobile/device_link/rust_core/failures.dart';
 import 'package:mobile/ui/core/pipelines/pipeline_input_form.dart';
 
 import '../pipelines_model.dart';
+import 'rust_chats.dart';
 import 'same_name.dart';
 
 core.ChatRefView _ref(DeviceChatRef ref) => core.ChatRefView(
@@ -211,21 +212,28 @@ final class _Scope {
 /// and the work drawers; this model maps each view into the types the
 /// shared run screens draw, once per view.
 final class RustComputerPipelines implements ComputerPipelines {
-  RustComputerPipelines(this.service);
+  RustComputerPipelines(this.service, this._reader) {
+    _connection = _reader.updates
+        .map((_) => connected)
+        .distinct()
+        .listen((_) => _changed());
+  }
 
   final core.PipelinesService service;
+  final RustChatReader _reader;
+  late final StreamSubscription<bool> _connection;
   final _forms = Expando<core.DispatchFormView>();
   final _updates = StreamController<void>.broadcast();
   final _scopes = <String, _Scope>{};
   final _watches = <String, StreamSubscription<core.PipelineScopeView>>{};
   final _held = <String, (core.PipelineRunView, RemotePipelineRun)>{};
-  bool _connected = false, _disposed = false;
+  bool _disposed = false;
   int _tokens = 0;
 
   @override
   Stream<void> get updates => _updates.stream;
   @override
-  bool get connected => _connected;
+  bool get connected => _reader.activityConnected;
 
   void _changed() {
     if (!_disposed) _updates.add(null);
@@ -325,13 +333,6 @@ final class RustComputerPipelines implements ComputerPipelines {
     _PipelineFailure(:final message) => message,
     _ => '$error',
   };
-
-  @override
-  void setConnected(bool value) {
-    _connected = value;
-    service.send(intent: core.PipelinesIntent.setConnected(connected: value));
-    _changed();
-  }
 
   @override
   void Function() watch(DeviceChatRef ref) {
@@ -464,7 +465,7 @@ final class RustComputerPipelines implements ComputerPipelines {
   }
 
   @override
-  Future<RemotePipelineContentDocument> content(
+  Future<List<PipelineContentChunk>> content(
     DeviceChatRef ref,
     String id,
     RemotePipelineContentSource source,
@@ -482,13 +483,10 @@ final class RustComputerPipelines implements ComputerPipelines {
       ),
     );
     return switch (settled.outcome) {
-      core.PipelinesOutcome_Content(:final document) =>
-        RemotePipelineContentDocument(
-          format: document.markdown
-              ? RemotePipelineContentFormat.markdown
-              : RemotePipelineContentFormat.text,
-          text: document.text,
-        ),
+      core.PipelinesOutcome_Content(:final chunks) => [
+        for (final chunk in chunks)
+          (markdown: chunk.markdown, text: chunk.text),
+      ],
       _ => throw StateError('The core sent no document.'),
     };
   }
@@ -503,6 +501,7 @@ final class RustComputerPipelines implements ComputerPipelines {
   @override
   Future<void> dispose() async {
     _disposed = true;
+    await _connection.cancel();
     service.send(intent: const core.PipelinesIntent.close());
     for (final watch in _watches.values) {
       await watch.cancel();
@@ -532,11 +531,7 @@ final class RustPipelineChatActivity implements ComputerPipelineChatActivity {
 
   /// The core reads the chat's messages from its own read path.
   @override
-  void update({
-    required DeviceChatRef? ref,
-    required List<DeviceChatMessage> messages,
-    required bool online,
-  }) {
+  void update({required DeviceChatRef? ref, required bool online}) {
     if (ref != null) pipelines._scope(ref);
     final next = (key: ref?.key, online: online);
     if (next == _sent) return;
@@ -551,10 +546,7 @@ final class RustPipelineChatActivity implements ComputerPipelineChatActivity {
   }
 
   @override
-  ComputerRunPanels panels(
-    DeviceChatRef? ref,
-    List<DeviceChatMessage> messages,
-  ) {
+  ComputerRunPanels panels(DeviceChatRef? ref) {
     final view = _view;
     if (ref == null || view == null) return (turns: const {}, latest: null);
     return (

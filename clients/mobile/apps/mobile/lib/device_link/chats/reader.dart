@@ -9,9 +9,9 @@ import 'state.dart';
 abstract interface class DeviceChatReader {
   /// Fires after every change of the members below.
   Stream<void> get updates;
+  Stream<String> get successfulTurns;
 
-  /// The selected chat, or null. Unported Dart features (sends, settings,
-  /// activity, pipelines) read it; treat it as read-only.
+  /// The selected chat's typed header and identity.
   DeviceChatState? get state;
   bool get connected;
   bool get loading;
@@ -30,9 +30,10 @@ abstract interface class DeviceChatReader {
   String? get error;
   set error(String? value);
 
-  /// Disconnecting stops reads; connecting only marks the session usable
-  /// (the repository reads the catalog, then [refresh]es).
+  /// Disconnecting stops reads. After reading the catalog, the host asks
+  /// [restoreConnection] to restore the selection and its dependent services.
   Future<void> setConnected(bool value);
+  Future<void> restoreConnection({required bool catalogLoaded});
 
   /// Selects [ref] and reads its state and newest transcript page.
   /// Returns false if another selection displaced this open.
@@ -46,8 +47,7 @@ abstract interface class DeviceChatReader {
   /// Acknowledges reads of the visible chat.
   DeviceChatReadMarker get readReceipts;
 
-  /// Archives [ref]'s tab on the computer.
-  Future<void> archive(DeviceChatRef ref);
+  Future<void> closeTab(String id);
   Future<void> dispose();
 }
 

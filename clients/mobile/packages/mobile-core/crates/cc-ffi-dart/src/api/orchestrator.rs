@@ -9,7 +9,7 @@ use super::{
     composer::{QuestionAnswerView, QuestionView},
     core::CoreFailure,
     handler,
-    overview::{CatalogView, CatalogWorkspaceView, ChatRefView},
+    overview::{CatalogView, ChatRefView},
 };
 use crate::frb_generated::StreamSink;
 use flutter_rust_bridge::frb;
@@ -73,15 +73,8 @@ pub enum OrchestratorIntent {
     ///
     /// Resolves when settled: the write finished.
     WatchEntries,
-    /// Starts opening `entry_id` (`None`: a new chat). Reads the entry's
-    /// active tab first.
-    ///
-    /// Resolves when settled: what the host opens next.
+    /// Opens the entry's active tab or creates one. With no entry, starts a new chat.
     Enter { entry_id: Option<String> },
-    /// The host's open of `generation` finished.
-    ///
-    /// Resolves when applied: `Entered{opened}`, whether the chat stays.
-    Entered { generation: u64, opened: bool },
     /// The chat was left.
     ///
     /// Resolves when applied.
@@ -113,33 +106,9 @@ pub enum OrchestratorOutcome {
     Catalog {
         catalog: CatalogView,
     },
-    /// Already in a chat.
-    Busy,
-    /// Open `chat`, the entry's active tab.
-    Open {
-        chat: ChatRefView,
-        generation: u64,
-    },
-    /// Create a chat in `workspace`.
-    NewChat {
-        workspace: CatalogWorkspaceView,
-        generation: u64,
-    },
-    /// Create a tab in entry `entry_id`; `failure` is what a failed
-    /// creation shows.
-    NewTab {
-        entry_id: String,
-        generation: u64,
-        failure: String,
-    },
-    /// The entry could not be read; show `message`.
-    LoadFailed {
-        message: String,
-    },
-    /// The connection changed meanwhile.
-    Stale,
-    Entered {
-        opened: bool,
+    Opened {
+        chat_revision: u64,
+        chat_generation: u64,
     },
     Failed {
         failure: ChatFailure,
@@ -195,7 +164,6 @@ impl From<OrchestratorIntent> for cc_core::OrchestratorIntent {
             I::CatalogShown => Self::CatalogShown,
             I::WatchEntries => Self::WatchEntries,
             I::Enter { entry_id } => Self::Enter { entry_id },
-            I::Entered { generation, opened } => Self::Entered { generation, opened },
             I::Leave => Self::Leave,
             I::Answer {
                 chat_id,
@@ -226,30 +194,13 @@ impl From<cc_core::OrchestratorOutcome> for OrchestratorOutcome {
             O::Catalog { catalog } => Self::Catalog {
                 catalog: catalog.into(),
             },
-            O::Busy => Self::Busy,
-            O::Open { chat, generation } => Self::Open {
-                chat: chat.into(),
-                generation,
+            O::Opened {
+                chat_revision,
+                chat_generation,
+            } => Self::Opened {
+                chat_revision,
+                chat_generation,
             },
-            O::NewChat {
-                workspace,
-                generation,
-            } => Self::NewChat {
-                workspace: workspace.into(),
-                generation,
-            },
-            O::NewTab {
-                entry_id,
-                generation,
-                failure,
-            } => Self::NewTab {
-                entry_id,
-                generation,
-                failure,
-            },
-            O::LoadFailed { message } => Self::LoadFailed { message },
-            O::Stale => Self::Stale,
-            O::Entered { opened } => Self::Entered { opened },
             O::Failed { failure } => Self::Failed {
                 failure: failure.into(),
             },

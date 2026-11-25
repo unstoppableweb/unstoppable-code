@@ -1930,13 +1930,13 @@ return content(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( PipelineRunView? run)?  run,TResult Function( DispatchFormView form)?  form,TResult Function( String id)?  started,TResult Function( PipelineDocumentView document)?  content,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( PipelineRunView? run)?  run,TResult Function( DispatchFormView form)?  form,TResult Function( String id)?  started,TResult Function( List<PipelineContentChunkView> chunks)?  content,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case PipelinesOutcome_Run() when run != null:
 return run(_that.run);case PipelinesOutcome_Form() when form != null:
 return form(_that.form);case PipelinesOutcome_Started() when started != null:
 return started(_that.id);case PipelinesOutcome_Content() when content != null:
-return content(_that.document);case _:
+return content(_that.chunks);case _:
   return orElse();
 
 }
@@ -1954,13 +1954,13 @@ return content(_that.document);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( PipelineRunView? run)  run,required TResult Function( DispatchFormView form)  form,required TResult Function( String id)  started,required TResult Function( PipelineDocumentView document)  content,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( PipelineRunView? run)  run,required TResult Function( DispatchFormView form)  form,required TResult Function( String id)  started,required TResult Function( List<PipelineContentChunkView> chunks)  content,}) {final _that = this;
 switch (_that) {
 case PipelinesOutcome_Run():
 return run(_that.run);case PipelinesOutcome_Form():
 return form(_that.form);case PipelinesOutcome_Started():
 return started(_that.id);case PipelinesOutcome_Content():
-return content(_that.document);}
+return content(_that.chunks);}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -1974,13 +1974,13 @@ return content(_that.document);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( PipelineRunView? run)?  run,TResult? Function( DispatchFormView form)?  form,TResult? Function( String id)?  started,TResult? Function( PipelineDocumentView document)?  content,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( PipelineRunView? run)?  run,TResult? Function( DispatchFormView form)?  form,TResult? Function( String id)?  started,TResult? Function( List<PipelineContentChunkView> chunks)?  content,}) {final _that = this;
 switch (_that) {
 case PipelinesOutcome_Run() when run != null:
 return run(_that.run);case PipelinesOutcome_Form() when form != null:
 return form(_that.form);case PipelinesOutcome_Started() when started != null:
 return started(_that.id);case PipelinesOutcome_Content() when content != null:
-return content(_that.document);case _:
+return content(_that.chunks);case _:
   return null;
 
 }
@@ -2190,10 +2190,16 @@ as String,
 
 
 class PipelinesOutcome_Content extends PipelinesOutcome {
-  const PipelinesOutcome_Content({required this.document}): super._();
+  const PipelinesOutcome_Content({required final  List<PipelineContentChunkView> chunks}): _chunks = chunks,super._();
   
 
- final  PipelineDocumentView document;
+ final  List<PipelineContentChunkView> _chunks;
+ List<PipelineContentChunkView> get chunks {
+  if (_chunks is EqualUnmodifiableListView) return _chunks;
+  // ignore: implicit_dynamic_type
+  return EqualUnmodifiableListView(_chunks);
+}
+
 
 /// Create a copy of PipelinesOutcome
 /// with the given fields replaced by the non-null parameter values.
@@ -2205,16 +2211,16 @@ $PipelinesOutcome_ContentCopyWith<PipelinesOutcome_Content> get copyWith => _$Pi
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is PipelinesOutcome_Content&&(identical(other.document, document) || other.document == document));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is PipelinesOutcome_Content&&const DeepCollectionEquality().equals(other._chunks, _chunks));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,document);
+int get hashCode => Object.hash(runtimeType,const DeepCollectionEquality().hash(_chunks));
 
 @override
 String toString() {
-  return 'PipelinesOutcome.content(document: $document)';
+  return 'PipelinesOutcome.content(chunks: $chunks)';
 }
 
 
@@ -2225,7 +2231,7 @@ abstract mixin class $PipelinesOutcome_ContentCopyWith<$Res> implements $Pipelin
   factory $PipelinesOutcome_ContentCopyWith(PipelinesOutcome_Content value, $Res Function(PipelinesOutcome_Content) _then) = _$PipelinesOutcome_ContentCopyWithImpl;
 @useResult
 $Res call({
- PipelineDocumentView document
+ List<PipelineContentChunkView> chunks
 });
 
 
@@ -2242,10 +2248,10 @@ class _$PipelinesOutcome_ContentCopyWithImpl<$Res>
 
 /// Create a copy of PipelinesOutcome
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? document = null,}) {
+@pragma('vm:prefer-inline') $Res call({Object? chunks = null,}) {
   return _then(PipelinesOutcome_Content(
-document: null == document ? _self.document : document // ignore: cast_nullable_to_non_nullable
-as PipelineDocumentView,
+chunks: null == chunks ? _self._chunks : chunks // ignore: cast_nullable_to_non_nullable
+as List<PipelineContentChunkView>,
   ));
 }
 

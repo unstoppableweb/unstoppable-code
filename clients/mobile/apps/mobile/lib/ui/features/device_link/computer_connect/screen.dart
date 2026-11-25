@@ -1,4 +1,5 @@
 import 'package:mobile/device_link/protocol.dart';
+import 'package:mobile/ui/core/navigation/app_route_scope.dart';
 import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 import 'package:mobile/core/design-system/icon/canopy_icon.dart';
@@ -14,6 +15,8 @@ import 'account_model.dart';
 import 'connection_view.dart';
 import 'computer_switcher.dart';
 import 'overview.dart';
+import 'overview_model.dart';
+import 'project_open_queue.dart';
 import 'new_task_screen.dart';
 import 'search_screen.dart';
 import '../chats_screen.dart';
@@ -33,60 +36,203 @@ class ComputerConnectScreen extends StatefulWidget {
   State<ComputerConnectScreen> createState() => _ComputerConnectScreenState();
 }
 
-class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
-  bool _opening = false;
-  String? _openError;
+enum _Opening { chat, newTask }
 
-  Future<void> _open(DeviceWorktree worktree) async {
-    if (_opening || !widget.controller!.chats.online || !_includes(worktree)) {
-      _explainPendingScope();
+class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
+  _Opening? _opening;
+  bool get _busy =>
+      _opening != null || _openQueue.openingChat || _openQueue.readingWorktree;
+  String? _openError;
+  final _openQueue = ProjectOpenQueue();
+  WorkspaceContext? _workspace;
+  Completer<void>? _switcherDismissed;
+  int _switcherGeneration = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller?.addListener(_checkQueuedOpen);
+    widget.account.addListener(_checkQueuedOpen);
+  }
+
+  @override
+  void didUpdateWidget(ComputerConnectScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != widget.controller) {
+      oldWidget.controller?.removeListener(_checkQueuedOpen);
+      widget.controller?.addListener(_checkQueuedOpen);
+      _openQueue.invalidate();
+    }
+    if (oldWidget.account != widget.account) {
+      oldWidget.account.removeListener(_checkQueuedOpen);
+      widget.account.addListener(_checkQueuedOpen);
+      _openQueue.invalidate();
+    }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final workspace = context.watch<WorkspaceContext?>();
+    if (!_projectDestinationCurrent || _workspace != workspace) {
+      _openQueue.invalidate();
+    }
+    _workspace = workspace;
+  }
+
+  @override
+  void dispose() {
+    widget.controller?.removeListener(_checkQueuedOpen);
+    widget.account.removeListener(_checkQueuedOpen);
+    _switcherDismissed?.complete();
+    super.dispose();
+  }
+
+  bool get _projectDestinationCurrent =>
+      widget.controller?.active == true &&
+      AppRouteScope.isCurrentOf(
+        context,
+        requireLocalRoute: _switcherDismissed == null,
+      );
+
+  bool get _canOpenFromHere =>
+      _switcherDismissed == null && _projectDestinationCurrent;
+
+  void _switcherVisibilityChanged(bool visible) {
+    if (!mounted) return;
+    if (visible) {
+      _switcherGeneration++;
+      _switcherDismissed = Completer<void>();
       return;
     }
+    final dismissed = _switcherDismissed;
+    _switcherDismissed = null;
+    dismissed?.complete();
+    _checkQueuedOpen();
+  }
+
+  Future<void> _waitForDestination() async {
+    if (!mounted) return;
+    // Home publishes destination visibility when the shell rebuilds.
+    await WidgetsBinding.instance.endOfFrame;
+    while (mounted && _switcherDismissed != null) {
+      await _switcherDismissed!.future;
+      if (mounted) await WidgetsBinding.instance.endOfFrame;
+    }
+  }
+
+  bool _queueWhileRefreshing(
+    ComputerConnectController controller,
+    ProjectOpenKind kind,
+    String key,
+  ) {
+    final ProjectOpenRequest request = (
+      workspace: context.read<WorkspaceContext?>(),
+      kind: kind,
+      key: key,
+      lostSession: _openQueue.pending?.lostSession,
+    );
+    if (!_openQueue.waiting(controller, request)) return false;
     setState(() {
-      _opening = true;
       _openError = null;
+      _openQueue.invalidate();
+      _openQueue.pending = request;
     });
+    return true;
+  }
+
+  void _checkQueuedOpen() {
+    _openQueue.checkPending(
+      controller: widget.controller,
+      afterFrame: (run) {
+        // Let the shell apply destination and workspace changes first.
+        WidgetsBinding.instance.addPostFrameCallback((_) => run());
+        WidgetsBinding.instance.ensureVisualUpdate();
+      },
+      isMounted: () => mounted,
+      paused: () => _switcherDismissed != null,
+      canOpen: (workspace) =>
+          _projectDestinationCurrent &&
+          context.read<WorkspaceContext?>() == workspace,
+      onSettled: _replayQueuedOpen,
+    );
+  }
+
+  void _replayQueuedOpen(ProjectOpenRequest? request) {
+    setState(() {});
+    if (request == null) return;
+    switch (request.kind) {
+      case ProjectOpenKind.worktree:
+        unawaited(_openWorktree(request.key));
+      case ProjectOpenKind.chat:
+        if (_openQueue.resolveChat(widget.controller!, request)
+            case final ref?) {
+          unawaited(_openChat(ref));
+        }
+    }
+  }
+
+  Future<void> _openWorktree(String key) async {
     final controller = widget.controller!;
-    controller.enterChat();
-    var generation = controller.chats.chats.selectionGeneration;
+    if (_opening != null || _openQueue.openingChat || !_canOpenFromHere) return;
+    if (_queueWhileRefreshing(controller, ProjectOpenKind.worktree, key)) {
+      return;
+    }
+    if (!controller.chats.online) return;
+    final worktree = controller
+        .scopeFor(context.read<WorkspaceContext?>())
+        .worktrees
+        .where((worktree) => worktree.key == key)
+        .firstOrNull;
+    if (worktree == null) return;
+    final workspace = context.read<WorkspaceContext?>();
+    final session = controller.chats.connection.connectedSession;
+    final navigation = _openQueue.beginWorktreeRead();
+    setState(() => _openError = null);
+    final selection = controller.chats.chats.selectionGeneration;
+    final switcherGeneration = _switcherGeneration;
     try {
-      await controller.loadWorktree(worktree);
-      if (!_includes(worktree)) {
-        _explainPendingScope();
+      final result = await controller.loadWorktree(worktree);
+      await _waitForDestination();
+      if (!mounted ||
+          !_canOpenFromHere ||
+          context.read<WorkspaceContext?>() != workspace) {
         return;
       }
-      if (worktree.status == 'Unavailable') {
+      final read = _openQueue.completeWorktreeRead(
+        controller,
+        token: navigation,
+        read: result,
+        workspace: workspace,
+        key: key,
+        session: session,
+        switcherInterrupted: switcherGeneration != _switcherGeneration,
+        worktree: worktree,
+      );
+      setState(() {});
+      if (read == null) {
+        _checkQueuedOpen();
+        return;
+      }
+      if (!_includes(worktree)) return;
+      if (read == WorktreeRead.unavailable) {
         throw const DeviceLinkException(
           'Could not load this worktree. Refresh and try again.',
         );
       }
-      final ref =
-          worktree.chats
-              .where((c) => c.id == worktree.activeChatId)
-              .firstOrNull ??
-          worktree.chats.firstOrNull;
-      if (ref != null) {
-        // The repository establishes the target before its first await. Open
-        // the shared chat shell now, so loading and failures are visible.
-        final opening = controller.chats.open(ref);
-        generation = controller.chats.chats.selectionGeneration;
-        if (mounted) await _showChat(worktree);
-        generation = controller.chats.chats.selectionGeneration;
-        await opening;
-        return;
-      } else {
-        await controller.chats.chats.createTab(
-          worktree.projectId,
-          worktree.id,
-          onCreated: (_) =>
-              generation = controller.chats.chats.selectionGeneration,
-        );
-        if (generation != controller.chats.chats.selectionGeneration) return;
-      }
-      if (mounted) await _showChat(worktree);
-      generation = controller.chats.chats.selectionGeneration;
+      if (selection != controller.chats.chats.selectionGeneration) return;
+      await _openQueue.openWorktreeChat(
+        controller,
+        worktree,
+        token: navigation,
+        waitForDestination: _waitForDestination,
+        showChat: () => mounted ? _showChat(worktree) : Future.value(),
+        onChanged: () {
+          if (mounted) setState(() {});
+        },
+      );
     } catch (cause) {
-      if (mounted) {
+      if (mounted && _openQueue.generation == navigation) {
         setState(
           () => _openError = cause is DeviceLinkException
               ? cause.message
@@ -94,21 +240,21 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
         );
       }
     } finally {
-      if (mounted) setState(() => _opening = false);
-      await controller.restoreOverview(generation);
+      if (_openQueue.finishWorktreeRead(navigation) && mounted) setState(() {});
     }
   }
 
   Future<void> _newTask(DeviceProject project) async {
-    if (_opening ||
+    if (_busy ||
         !widget.controller!.chats.online ||
         !_includesProject(project)) {
       _explainPendingScope();
       return;
     }
     setState(() {
-      _opening = true;
+      _opening = _Opening.newTask;
       _openError = null;
+      _openQueue.invalidate();
     });
     final controller = widget.controller!;
     controller.enterChat();
@@ -128,21 +274,23 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
         _explainPendingScope();
       }
     } finally {
-      if (mounted) setState(() => _opening = false);
+      if (mounted) setState(() => _opening = null);
       await controller.restoreOverview(generation);
     }
   }
 
   Future<void> _openChat(DeviceChatRef ref) async {
-    if (_opening || !widget.controller!.chats.online || !_includesChat(ref)) {
-      _explainPendingScope();
+    final controller = widget.controller!;
+    if (_opening != null || _openQueue.openingChat || !_canOpenFromHere) return;
+    if (_queueWhileRefreshing(controller, ProjectOpenKind.chat, ref.key)) {
       return;
     }
+    if (!controller.chats.online || !_includesChat(ref)) return;
     setState(() {
-      _opening = true;
+      _opening = _Opening.chat;
       _openError = null;
+      _openQueue.invalidate();
     });
-    final controller = widget.controller!;
     controller.enterChat();
     var generation = controller.chats.chats.selectionGeneration;
     try {
@@ -152,7 +300,7 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
       generation = controller.chats.chats.selectionGeneration;
       await opening;
     } finally {
-      if (mounted) setState(() => _opening = false);
+      if (mounted) setState(() => _opening = null);
       await controller.restoreOverview(generation);
     }
   }
@@ -172,6 +320,7 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
   );
 
   Future<void> _showChat([DeviceWorktree? worktree]) {
+    if (!_canOpenFromHere) return Future.value();
     final controller = widget.controller!;
     final ref = controller.chats.state?.ref;
     final included = worktree == null
@@ -237,7 +386,16 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
               account.hasSelectedComputer);
       final hostName = retainingComputer ? connection?.hostName : null;
       final title = hostName ?? account.selectedName ?? 'Computer connect';
-      final status = online ? 'Connected' : '';
+      // A tap waiting on the roster gets feedback without shifting the rows.
+      final status =
+          _openQueue.pending != null ||
+              _openQueue.readingWorktree ||
+              _openQueue.openingChat ||
+              _opening == _Opening.chat
+          ? 'Opening chat…'
+          : online
+          ? 'Connected'
+          : '';
       return CanopyScaffold(
         appBar: CanopyAppBar(
           // Hosted in the home shell, the drawer is the way out, as on
@@ -257,6 +415,7 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
                   title: title,
                   label: status,
                   onManage: () => _manageComputers(account),
+                  onMenuVisibilityChanged: _switcherVisibilityChanged,
                 )
               : const Text('Computer connect'),
           trailing: retainingComputer
@@ -300,9 +459,10 @@ class _ComputerConnectScreenState extends State<ComputerConnectScreen> {
           builder: (context) => retainingComputer
               ? DeviceProjectsOverview(
                   controller: controller,
-                  opening: _opening,
+                  opening: _busy,
                   openError: _openError,
-                  onOpenWorktree: _open,
+                  onOpenWorktree: (worktree) =>
+                      unawaited(_openWorktree(worktree.key)),
                   onCreateTask: (project) => unawaited(_newTask(project)),
                   onOpenChat: _openChat,
                 )

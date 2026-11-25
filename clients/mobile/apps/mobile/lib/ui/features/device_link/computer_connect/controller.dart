@@ -85,7 +85,7 @@ class ComputerConnectController extends ChangeNotifier {
   Future<void> refresh() => overview.refresh();
 
   /// Re-reads [worktree]'s chats into it.
-  Future<void> loadWorktree(DeviceWorktree worktree) =>
+  Future<WorktreeRead> loadWorktree(DeviceWorktree worktree) =>
       overview.loadWorktree(worktree);
 
   bool canArchiveWorktree(DeviceWorktree worktree) =>

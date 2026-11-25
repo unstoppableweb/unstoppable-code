@@ -22,6 +22,8 @@ abstract class HomeService implements RustOpaqueInterface {
   /// unconfirmed send, and runs the new tasks' chat steps on it.
   void bindChats({required ChatsService chats});
 
+  void bindOverview({required OverviewService overview});
+
   /// Runs the new tasks' worktree creations on `worktrees`.
   void bindWorktrees({required WorktreesService worktrees});
 
@@ -1008,33 +1010,8 @@ class TaskModelView {
 sealed class TaskStep with _$TaskStep {
   const TaskStep._();
 
-  /// Open `chat` in the chat model.
-  const factory TaskStep.open({required ChatRefView chat}) = TaskStep_Open;
-
-  /// Create a new tab in a worktree and open it.
-  const factory TaskStep.createTab({
-    required String projectId,
-    required String worktreeId,
-  }) = TaskStep_CreateTab;
-
-  /// Create a Cowork chat and open it.
-  const factory TaskStep.createChat({required String projectId}) =
-      TaskStep_CreateChat;
-
-  /// Re-read the created worktree's chats into its overview row.
-  const factory TaskStep.loadWorktree({
-    required String projectId,
-    required String worktreeId,
-    required String name,
-  }) = TaskStep_LoadWorktree;
-
-  /// Re-read the open chat.
-  const factory TaskStep.refresh() = TaskStep_Refresh;
-
-  /// Put the screen composer's text (`None`) or `text` into `chat`'s
-  /// draft, or the selected chat's without one.
-  const factory TaskStep.setDraft({ChatRefView? chat, String? text}) =
-      TaskStep_SetDraft;
+  /// Copies the latest text from the screen composer into the chat's draft.
+  const factory TaskStep.setDraft({ChatRefView? chat}) = TaskStep_SetDraft;
 
   /// Tell the chat's activity the project's kind.
   const factory TaskStep.setWorkspaceKind({
@@ -1050,38 +1027,15 @@ sealed class TaskStep with _$TaskStep {
 /// How a host step went.
 class TaskStepResult {
   final TaskFailure? failure;
-
-  /// The chat a creation made (reported even when its open failed).
-  final ChatRefView? created;
-
-  /// `LoadWorktree`: the row's status is `Unavailable`.
-  final bool unavailable;
-
-  /// `LoadWorktree`: the row's chats and its active one.
-  final List<ChatRefView> chats;
-  final String? activeChatId;
   final bool online;
 
-  const TaskStepResult({
-    this.failure,
-    this.created,
-    required this.unavailable,
-    required this.chats,
-    this.activeChatId,
-    required this.online,
-  });
+  const TaskStepResult({this.failure, required this.online});
 
   static Future<TaskStepResult> default_() =>
       CoreBridge.instance.api.crateApiHomeTaskStepResultDefault();
 
   @override
-  int get hashCode =>
-      failure.hashCode ^
-      created.hashCode ^
-      unavailable.hashCode ^
-      const DeepCollectionEquality().hash(chats) ^
-      activeChatId.hashCode ^
-      online.hashCode;
+  int get hashCode => failure.hashCode ^ online.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1089,9 +1043,5 @@ class TaskStepResult {
       other is TaskStepResult &&
           runtimeType == other.runtimeType &&
           failure == other.failure &&
-          created == other.created &&
-          unavailable == other.unavailable &&
-          const DeepCollectionEquality().equals(chats, other.chats) &&
-          activeChatId == other.activeChatId &&
           online == other.online;
 }

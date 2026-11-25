@@ -35,7 +35,7 @@ use std::{
 /// `DeviceChatAttachments.uploadTimeout`: a whole file is one request.
 const UPLOAD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
-/// Serializes cancellation of a Home task with its first-message dispatch.
+/// Serializes Home task cancellation with queued chat work and first-message dispatch.
 #[derive(Clone, Default)]
 pub(crate) struct SendGate(Arc<Mutex<bool>>);
 
@@ -339,22 +339,23 @@ impl Actor {
 
     // ---- Stop (`stop`) ----
 
-    pub(super) fn stop(&mut self, waiter: Option<Waiter>, done: &mut Done) {
-        let chat = self.state().map(|s| s.chat.clone());
-        let Some(chat) = chat.filter(|_| self.connected) else {
+    pub(super) fn stop(&mut self, chat: ChatRef, waiter: Option<Waiter>, done: &mut Done) {
+        if !self.connected {
+            return settle(done, waiter, None, None);
+        }
+        if self.selected.as_deref() != Some(chat.key().as_str()) {
             return settle(
                 done,
                 waiter,
+                Some(Failure::link(CopyKey::ChatChanged)),
                 None,
-                Some(Outcome::Stopped { refresh: false }),
             );
-        };
-        let generation = self.generation;
+        }
+        let epoch = self.selection_epoch;
         self.spawn(move |inner, peer| async move {
             let result = call(&inner, &peer, "chat:cancel", vec![target_of(&chat)]).await;
             Msg::Cancelled {
-                chat,
-                generation,
+                epoch,
                 result,
                 waiter,
             }
@@ -365,8 +366,7 @@ impl Actor {
     /// the selection moved on (never retarget a late reply).
     pub(super) fn cancelled(
         &mut self,
-        chat: &ChatRef,
-        generation: u64,
+        epoch: u64,
         result: Result<Value>,
         waiter: Option<Waiter>,
         done: &mut Done,
@@ -374,11 +374,11 @@ impl Actor {
         if let Err(error) = result {
             return settle(done, waiter, Some(transport(&error)), None);
         }
-        let refresh = self.connected
-            && !self.disposed
-            && generation == self.generation
-            && self.selected.as_deref() == Some(chat.key().as_str());
-        settle(done, waiter, None, Some(Outcome::Stopped { refresh }));
+        if self.connected && !self.disposed && epoch == self.selection_epoch {
+            self.refresh(waiter, done);
+        } else {
+            settle(done, waiter, None, None);
+        }
     }
 
     // ---- Creation (`createChat`, `createTab`) ----
@@ -387,6 +387,7 @@ impl Actor {
         &mut self,
         project_id: String,
         worktree_id: String,
+        select: bool,
         waiter: Option<Waiter>,
         done: &mut Done,
     ) {
@@ -400,6 +401,9 @@ impl Actor {
         }
         let tab_id = uuid();
         let generation = self.generation;
+        if select {
+            self.closing_tab = self.selected.clone().map(|key| (generation, key));
+        }
         let title = copy::text(CopyKey::NewChat).to_owned();
         self.spawn(move |inner, peer| async move {
             let command = json!({"type": "chat.create_tab", "tabId": tab_id, "title": title});
@@ -415,6 +419,7 @@ impl Actor {
                 });
             Msg::Created {
                 generation,
+                select,
                 result,
                 waiter,
             }
@@ -446,6 +451,7 @@ impl Actor {
             let result = new_chat(&inner, &peer, workspace, requested).await;
             Msg::Created {
                 generation,
+                select: false,
                 result,
                 waiter,
             }
@@ -455,15 +461,35 @@ impl Actor {
     pub(super) fn created(
         &mut self,
         generation: u64,
+        select: bool,
         result: std::result::Result<Creation, Failure>,
         waiter: Option<Waiter>,
         done: &mut Done,
     ) {
+        let replacing = select
+            && self
+                .closing_tab
+                .as_ref()
+                .is_some_and(|(route, _)| *route == generation);
+        if replacing {
+            self.closing_tab = None;
+        }
+        let current = !self.disposed && self.connected && generation == self.generation;
+        if replacing
+            && current
+            && !result
+                .as_ref()
+                .is_ok_and(|creation| matches!(creation.entity, Dv::Str(_) | Dv::Null))
+            && self.state().is_some_and(|state| !state.closed)
+        {
+            // The archive succeeded even if its push has yet to arrive.
+            self.refresh(None, done);
+        }
         let creation = match result {
             Ok(creation) => creation,
             Err(failure) => return settle(done, waiter, Some(failure), None),
         };
-        if self.disposed || !self.connected || generation != self.generation {
+        if !current {
             // `createTab` returns quietly; `createChat` throws.
             let failure = creation
                 .starter
@@ -489,7 +515,11 @@ impl Actor {
             id,
             title: creation.title,
         };
-        settle(done, waiter, None, Some(Outcome::Created(chat)));
+        if select {
+            self.select_chat(chat, waiter, done);
+        } else {
+            settle(done, waiter, None, Some(Outcome::Created(chat)));
+        }
     }
 
     // ---- Attachments (`DeviceChatAttachments`) ----

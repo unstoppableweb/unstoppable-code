@@ -39,15 +39,9 @@ abstract interface class ComputerChatComposer {
   /// Reads the shown chat's catalog and records its failure.
   Future<void> load();
 
-  /// Reads the catalog until the shown chat stays the same over a read,
-  /// while [current] holds.
-  Future<void> restore(bool Function() current);
-
   /// The connection ended: forget the catalog.
   void invalidate();
 
-  /// The shown tab with the queued picks applied.
-  Map<String, dynamic> get tab;
   ComputerSettingsFailure? get failure;
   bool get saving;
   bool get refreshing;
@@ -75,11 +69,9 @@ abstract interface class ComputerChatComposer {
   );
   Future<void> dismiss(DeviceChatRef ref, String requestId);
 
-  /// Forks [source] at [atMessageId]; the destination to open.
-  Future<DeviceChatRef> fork(DeviceChatRef source, String atMessageId);
-
-  /// The fork opened: the next fork at that message is a new one.
-  void forkOpened(DeviceChatRef source, String atMessageId);
+  /// Forks [source] at [atMessageId]. Returns true if it was still current
+  /// and the core opened the fork.
+  Future<bool> fork(DeviceChatRef source, String atMessageId);
 
   /// The composer catalogs for one chat screen.
   ComputerComposerSources createSources(DeviceChatsViewModel model);

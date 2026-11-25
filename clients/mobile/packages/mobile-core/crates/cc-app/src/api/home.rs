@@ -241,29 +241,8 @@ pub struct NewTaskRequest {
 /// A step that needs the host's chat model, overview, or composer UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskStep {
-    /// Open `chat` in the chat model.
-    Open { chat: ChatRefView },
-    /// Create a new tab in a worktree and open it.
-    CreateTab {
-        project_id: String,
-        worktree_id: String,
-    },
-    /// Create a Cowork chat and open it.
-    CreateChat { project_id: String },
-    /// Re-read the created worktree's chats into its overview row.
-    LoadWorktree {
-        project_id: String,
-        worktree_id: String,
-        name: String,
-    },
-    /// Re-read the open chat.
-    Refresh,
-    /// Put the screen composer's text (`None`) or `text` into `chat`'s
-    /// draft, or the selected chat's without one.
-    SetDraft {
-        chat: Option<ChatRefView>,
-        text: Option<String>,
-    },
+    /// Copies the latest text from the screen composer into the chat's draft.
+    SetDraft { chat: Option<ChatRefView> },
     /// Tell the chat's activity the project's kind.
     SetWorkspaceKind { project_id: String, kind: String },
     /// The first message named these Home files.
@@ -295,13 +274,6 @@ pub struct TaskFailure {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TaskStepResult {
     pub failure: Option<TaskFailure>,
-    /// The chat a creation made (reported even when its open failed).
-    pub created: Option<ChatRefView>,
-    /// `LoadWorktree`: the row's status is `Unavailable`.
-    pub unavailable: bool,
-    /// `LoadWorktree`: the row's chats and its active one.
-    pub chats: Vec<ChatRefView>,
-    pub active_chat_id: Option<String>,
     pub online: bool,
 }
 
@@ -551,6 +523,11 @@ impl HomeService {
         let _ = self
             .handle
             .send(Intent::BindWorktrees(worktrees.clone()), None);
+    }
+    pub fn bind_overview(&self, overview: &super::OverviewService) {
+        let _ = self
+            .handle
+            .send(Intent::BindOverview(overview.clone()), None);
     }
     /// A new choice model for `context` (`personal` or
     /// `organization:<id>`), with the inventory its controller shows now.

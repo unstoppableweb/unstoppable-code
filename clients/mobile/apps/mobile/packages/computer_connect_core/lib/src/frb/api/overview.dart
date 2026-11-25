@@ -365,12 +365,11 @@ class OverviewView {
   /// Ownership is being re-read; actions must wait.
   final bool scopePending;
 
-  /// The connection this view was computed for (`online` as the
-  /// overview last applied it). The host shows the scope pending while
-  /// its own connection says otherwise: Dart's overview turned pending in
-  /// the same turn as the connection, so no reader saw a new connection
-  /// with the old scope.
-  final bool online;
+  /// The connected account session this view was computed for.
+  final int? session;
+
+  /// The catalog completed a successful read in this session.
+  final bool catalogCurrent;
   final String? error;
   final bool hasInventory;
 
@@ -401,7 +400,8 @@ class OverviewView {
     required this.revision,
     required this.loading,
     required this.scopePending,
-    required this.online,
+    this.session,
+    required this.catalogCurrent,
     this.error,
     required this.hasInventory,
     required this.refreshes,
@@ -424,7 +424,8 @@ class OverviewView {
       revision.hashCode ^
       loading.hashCode ^
       scopePending.hashCode ^
-      online.hashCode ^
+      session.hashCode ^
+      catalogCurrent.hashCode ^
       error.hashCode ^
       hasInventory.hashCode ^
       refreshes.hashCode ^
@@ -449,7 +450,8 @@ class OverviewView {
           revision == other.revision &&
           loading == other.loading &&
           scopePending == other.scopePending &&
-          online == other.online &&
+          session == other.session &&
+          catalogCurrent == other.catalogCurrent &&
           error == other.error &&
           hasInventory == other.hasInventory &&
           refreshes == other.refreshes &&
@@ -664,6 +666,7 @@ class RecentsView {
 }
 
 class WorktreeChatsView {
+  final int sequence;
   final List<ChatRefView> chats;
   final String? activeChatId;
   final WorktreeStatus status;
@@ -674,6 +677,7 @@ class WorktreeChatsView {
   final List<String> workingChats;
 
   const WorktreeChatsView({
+    required this.sequence,
     required this.chats,
     this.activeChatId,
     required this.status,
@@ -686,6 +690,7 @@ class WorktreeChatsView {
 
   @override
   int get hashCode =>
+      sequence.hashCode ^
       const DeepCollectionEquality().hash(chats) ^
       activeChatId.hashCode ^
       status.hashCode ^
@@ -700,6 +705,7 @@ class WorktreeChatsView {
       identical(this, other) ||
       other is WorktreeChatsView &&
           runtimeType == other.runtimeType &&
+          sequence == other.sequence &&
           const DeepCollectionEquality().equals(chats, other.chats) &&
           activeChatId == other.activeChatId &&
           status == other.status &&
@@ -725,6 +731,7 @@ sealed class WorktreeLoad with _$WorktreeLoad {
 
   /// A newer roster or a reconnect superseded the read: nothing changes.
   const factory WorktreeLoad.stale() = WorktreeLoad_Stale;
+  const factory WorktreeLoad.sessionLost() = WorktreeLoad_SessionLost;
 }
 
 class WorktreeRowView {

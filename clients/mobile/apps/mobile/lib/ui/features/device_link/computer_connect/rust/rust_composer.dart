@@ -23,13 +23,6 @@ import 'rust_chats.dart';
 Object? _decode(String json) =>
     deviceChatDto(decodeRustValue(jsonDecode(json)));
 
-DeviceChatRef _chat(core.ChatRefView v) => DeviceChatRef(
-  projectId: v.projectId,
-  worktreeId: v.worktreeId,
-  id: v.id,
-  title: v.title,
-);
-
 /// No cached invocation text is safe without the host's chat-aware resolver.
 /// See the CAN-5792 audit for the missing effective-selection boundary.
 const _invocableUnavailable =
@@ -246,8 +239,8 @@ final class RustComputerChatComposer implements ComputerChatComposer {
     if (!online || state == null) return;
     final input = (
       state.ref.key,
-      jsonEncode(state.tab['model']),
-      jsonEncode(state.tab['executionHarness']),
+      jsonEncode(state.header?.model),
+      jsonEncode(state.header?.executionHarness),
       state.running,
     );
     if (input == _synced) return;
@@ -268,24 +261,10 @@ final class RustComputerChatComposer implements ComputerChatComposer {
   }
 
   @override
-  Future<void> restore(bool Function() current) async {
-    await reader.settle(const core.ChatIntent.restoreSettings());
-  }
-
-  @override
   void invalidate() {
     _synced = null;
     service.send(intent: const core.ChatIntent.invalidateSettings());
   }
-
-  final _tabs = Expando<Map<String, dynamic>>('tab');
-  @override
-  Map<String, dynamic> get tab => switch (_view) {
-    final view? => _tabs[view] ??= Map.unmodifiable(
-      deviceLinkObject(_decode(view.tabJson)),
-    ),
-    null => const {},
-  };
 
   @override
   ComputerSettingsFailure? get failure => switch (_view?.failure) {
@@ -363,28 +342,31 @@ final class RustComputerChatComposer implements ComputerChatComposer {
   );
 
   @override
-  Future<DeviceChatRef> fork(DeviceChatRef source, String atMessageId) async {
+  Future<bool> fork(DeviceChatRef source, String atMessageId) async {
     final settled = await reader.settle(
       core.ChatIntent.fork(
         chat: RustChatReader.chatRefView(source),
         atMessageId: atMessageId,
       ),
     );
-    return switch (settled.outcome) {
-      core.ChatOutcome_Forked(:final chat) => _chat(chat),
-      _ => throw const DeviceLinkException(
-        'The computer did not confirm the fork.',
-      ),
-    };
+    switch (settled.outcome) {
+      case core.ChatOutcome_Opened(selected: true):
+        service.send(
+          intent: core.ChatIntent.forkOpened(
+            chat: RustChatReader.chatRefView(source),
+            atMessageId: atMessageId,
+          ),
+        );
+        return true;
+      case core.ChatOutcome_Forked():
+      case core.ChatOutcome_Opened(selected: false):
+        return false;
+      default:
+        throw const DeviceLinkException(
+          'The computer did not confirm the fork.',
+        );
+    }
   }
-
-  @override
-  void forkOpened(DeviceChatRef source, String atMessageId) => service.send(
-    intent: core.ChatIntent.forkOpened(
-      chat: RustChatReader.chatRefView(source),
-      atMessageId: atMessageId,
-    ),
-  );
 
   @override
   ComputerComposerSources createSources(DeviceChatsViewModel model) =>
@@ -438,8 +420,8 @@ final class RustComposerSources extends ChangeNotifier
     final ref = state.ref;
     final generation = model.chats.selectionGeneration;
     final harness = _harness;
-    final modelId = state.tab['model'];
-    final tabHarness = state.tab['executionHarness'];
+    final modelId = state.header?.model;
+    final tabHarness = state.header?.executionHarness;
     final scope = (ref.key, generation, harness, modelId, tabHarness);
     final captured = core.SourceScopeView(
       chat: RustChatReader.chatRefView(ref),
@@ -454,13 +436,13 @@ final class RustComposerSources extends ChangeNotifier
         model.chats.selectionGeneration == generation &&
         model.state?.ref.key == ref.key &&
         model.state?.closed == false &&
-        model.state?.tab['model'] == modelId &&
-        model.state?.tab['executionHarness'] == tabHarness;
+        model.state?.header?.model == modelId &&
+        model.state?.header?.executionHarness == tabHarness;
     return (
       commands: ComposerCommandSource(
         scope: scope,
         revision: () =>
-            (_revision, jsonEncode(model.state?.tab['pluginSelections'])),
+            (_revision, model.state?.header?.pluginSelectionsRevision),
         load: () => _read(core.ComposerSource.inventory, captured, (outcome) {
           final (rows, unsettled) = switch (outcome) {
             core.ChatOutcome_Inventory(:final commands, :final unsettled) => (
@@ -519,11 +501,7 @@ final class RustComposerSources extends ChangeNotifier
         },
         selectedCount: () {
           if (!current()) return null;
-          final selections = model.state?.tab['pluginSelections'];
-          if (selections == null) return 0;
-          return selections is Map<String, Object?>
-              ? countPluginSelections(selections)
-              : null;
+          return model.state?.header?.pluginSelectionCount;
         },
       ),
     );

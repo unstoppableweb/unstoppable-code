@@ -1,15 +1,25 @@
 import 'package:computer_connect_core/computer_connect_core.dart' as core;
 import 'dart:async';
 import 'package:mobile/data/models/effort_speed.dart';
+import 'package:mobile/device_link/chats/models.dart';
 import 'package:mobile/ui/core/chat/widgets/composer_controls.dart';
 import '../chats_view_model.dart';
 import 'rust/rust_composer.dart';
 import 'rust/same_name.dart';
 
 /// The same model picker, effort panel, Plan action and Stop as Remote Control.
-ComposerControlsData deviceComposerControls(DeviceChatsViewModel model) {
+ComposerControlsData deviceComposerControls(
+  DeviceChatsViewModel model,
+  DeviceChatRef? displayedChat,
+) {
+  void stop() {
+    if (displayedChat != null && model.online) {
+      unawaited(model.stop(displayedChat));
+    }
+  }
+
   if (model.composer.controls case final controls?) {
-    return _coreControls(model, controls);
+    return _coreControls(model, controls, stop);
   }
   return ComposerControlsData(
     providerType: null,
@@ -24,9 +34,7 @@ ComposerControlsData deviceComposerControls(DeviceChatsViewModel model) {
     onSelectModel: null,
     onToggleFast: () {},
     catalogStatus: ModelCatalogStatus.absent,
-    onStop: () {
-      if (model.online) unawaited(model.stop());
-    },
+    onStop: stop,
     onRetryCatalog: model.loadSettings,
   );
 }
@@ -35,6 +43,7 @@ ComposerControlsData deviceComposerControls(DeviceChatsViewModel model) {
 ComposerControlsData _coreControls(
   DeviceChatsViewModel model,
   core.ControlsView c,
+  void Function() stop,
 ) {
   final ref = model.state?.ref;
   final enabled = model.canChangeSettings;
@@ -111,9 +120,7 @@ ComposerControlsData _coreControls(
         );
       }
     },
-    onStop: () {
-      if (model.online) unawaited(model.stop());
-    },
+    onStop: stop,
     catalogStatus: sameName(ModelCatalogStatus.values, c.catalogStatus),
     onRetryCatalog: model.loadSettings,
     lockedHarness: c.lockedHarness,

@@ -100,6 +100,7 @@ pub enum WorktreeStatus {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorktreeChatsView {
+    pub sequence: u64,
     pub chats: Vec<ChatRefView>,
     pub active_chat_id: Option<String>,
     pub status: WorktreeStatus,
@@ -211,12 +212,10 @@ pub struct OverviewView {
     pub loading: bool,
     /// Ownership is being re-read; actions must wait.
     pub scope_pending: bool,
-    /// The connection this view was computed for (`online` as the
-    /// overview last applied it). The host shows the scope pending while
-    /// its own connection says otherwise: Dart's overview turned pending in
-    /// the same turn as the connection, so no reader saw a new connection
-    /// with the old scope.
-    pub online: bool,
+    /// The connected account session this view was computed for.
+    pub session: Option<u64>,
+    /// The catalog completed a successful read in this session.
+    pub catalog_current: bool,
     pub error: Option<String>,
     pub has_inventory: bool,
     /// How many refreshes started: hosts that read beside the overview
@@ -253,6 +252,7 @@ pub enum WorktreeLoad {
     Unavailable,
     /// A newer roster or a reconnect superseded the read: nothing changes.
     Stale,
+    SessionLost,
 }
 
 impl From<cc_core::OwnerView> for OwnerView {
@@ -368,6 +368,7 @@ impl From<cc_core::WorktreeStatus> for WorktreeStatus {
 impl From<cc_core::WorktreeChatsView> for WorktreeChatsView {
     fn from(v: cc_core::WorktreeChatsView) -> Self {
         Self {
+            sequence: v.sequence,
             chats: v.chats.into_iter().map(Into::into).collect(),
             active_chat_id: v.active_chat_id,
             status: v.status.into(),
@@ -499,7 +500,8 @@ impl From<cc_core::OverviewView> for OverviewView {
             revision: v.revision,
             loading: v.loading,
             scope_pending: v.scope_pending,
-            online: v.online,
+            session: v.session,
+            catalog_current: v.catalog_current,
             error: v.error,
             has_inventory: v.has_inventory,
             refreshes: v.refreshes,
@@ -541,6 +543,7 @@ impl From<cc_core::WorktreeLoad> for WorktreeLoad {
             cc_core::WorktreeLoad::Loaded(x) => Self::Loaded(x.into()),
             cc_core::WorktreeLoad::Unavailable => Self::Unavailable,
             cc_core::WorktreeLoad::Stale => Self::Stale,
+            cc_core::WorktreeLoad::SessionLost => Self::SessionLost,
         }
     }
 }
@@ -554,7 +557,7 @@ fn overviewed(r: Result<cc_core::OverviewView, cc_core::CoreFailure>) -> Overvie
 #[frb(opaque)]
 #[derive(Clone)]
 pub struct OverviewService {
-    inner: cc_core::OverviewService,
+    pub(super) inner: cc_core::OverviewService,
 }
 
 impl OverviewService {

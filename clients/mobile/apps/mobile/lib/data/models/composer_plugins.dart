@@ -238,19 +238,3 @@ Map<String, Object?> withPluginSelection(
   }
   return next;
 }
-
-/// The explicit choices in [selections], counted the way the web picker's
-/// `countRemoteControlPluginSelections` counts them; null when a list is malformed,
-/// so a bad projection shows no count instead of failing.
-int? countPluginSelections(Map<String, Object?> selections) {
-  final Map<String, Object?> normalized;
-  try {
-    normalized = normalizePluginSelections(selections);
-  } on FormatException {
-    return null;
-  }
-  return [
-    for (final kind in ComposerPluginKind.values)
-      (normalized[kind.selectionKey] as List<Object?>? ?? const []).length,
-  ].fold<int>(0, (sum, count) => sum + count);
-}

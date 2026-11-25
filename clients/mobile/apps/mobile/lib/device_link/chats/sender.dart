@@ -77,7 +77,7 @@ abstract interface class DeviceChatSender {
     List<String> attachmentPaths = const [],
   });
 
-  /// Cancels the selected chat's turn, then re-reads it.
-  Future<void> stop();
+  /// Cancels [chat]'s turn and re-reads it while it stays selected.
+  Future<void> stop(DeviceChatRef chat);
   Future<void> dispose();
 }

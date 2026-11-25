@@ -205,22 +205,22 @@ pub struct PipelineFailure {
     pub kind: PipelineFailureKind,
 }
 
-/// A read document.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PipelineDocumentView {
-    /// Markdown (agent output, reports); else plain text.
-    pub markdown: bool,
-    pub text: String,
-}
-
 /// What a settled intent produced.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)] // Crosses the binding by value.
 pub enum PipelinesOutcome {
-    Run { run: Option<PipelineRunView> },
-    Form { form: DispatchFormView },
-    Started { id: String },
-    Content { document: PipelineDocumentView },
+    Run {
+        run: Option<PipelineRunView>,
+    },
+    Form {
+        form: DispatchFormView,
+    },
+    Started {
+        id: String,
+    },
+    Content {
+        chunks: Vec<PipelineContentChunkView>,
+    },
 }
 
 /// How a requested intent ended.
@@ -960,24 +960,6 @@ impl From<PipelineFailure> for cc_core::PipelineFailure {
     }
 }
 
-impl From<cc_core::PipelineDocumentView> for PipelineDocumentView {
-    fn from(v: cc_core::PipelineDocumentView) -> Self {
-        Self {
-            markdown: v.markdown,
-            text: v.text,
-        }
-    }
-}
-
-impl From<PipelineDocumentView> for cc_core::PipelineDocumentView {
-    fn from(v: PipelineDocumentView) -> Self {
-        Self {
-            markdown: v.markdown,
-            text: v.text,
-        }
-    }
-}
-
 impl From<cc_core::PipelinesOutcome> for PipelinesOutcome {
     fn from(v: cc_core::PipelinesOutcome) -> Self {
         match v {
@@ -986,8 +968,8 @@ impl From<cc_core::PipelinesOutcome> for PipelinesOutcome {
             },
             cc_core::PipelinesOutcome::Form { form } => Self::Form { form: form.into() },
             cc_core::PipelinesOutcome::Started { id } => Self::Started { id },
-            cc_core::PipelinesOutcome::Content { document } => Self::Content {
-                document: document.into(),
+            cc_core::PipelinesOutcome::Content { chunks } => Self::Content {
+                chunks: chunks.into_iter().map(Into::into).collect(),
             },
         }
     }
@@ -1001,8 +983,8 @@ impl From<PipelinesOutcome> for cc_core::PipelinesOutcome {
             },
             PipelinesOutcome::Form { form } => Self::Form { form: form.into() },
             PipelinesOutcome::Started { id } => Self::Started { id },
-            PipelinesOutcome::Content { document } => Self::Content {
-                document: document.into(),
+            PipelinesOutcome::Content { chunks } => Self::Content {
+                chunks: chunks.into_iter().map(Into::into).collect(),
             },
         }
     }
@@ -1994,15 +1976,5 @@ impl PipelinesService {
         self.inner
             .form_rules(form.into(), values.into_iter().map(Into::into).collect())
             .into()
-    }
-    /// A document as it is laid out: Markdown whole, text in 200-line
-    /// chunks.
-    #[frb(sync)]
-    pub fn content_chunks(&self, document: PipelineDocumentView) -> Vec<PipelineContentChunkView> {
-        self.inner
-            .content_chunks(document.into())
-            .into_iter()
-            .map(Into::into)
-            .collect()
     }
 }

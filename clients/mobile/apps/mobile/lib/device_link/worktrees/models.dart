@@ -59,6 +59,8 @@ final class DeviceWorktree {
   /// Sidebar pipeline status wire value from `devicePipelineStatuses`.
   final String? pipelineStatus;
   List<DeviceChatRef> chats = [];
+  int? inventoryInstance;
+  int chatReadSequence = 0;
   String status = 'Loading';
   String? activeChatId;
   bool unread = false, pendingQuestion = false, pendingApproval = false;

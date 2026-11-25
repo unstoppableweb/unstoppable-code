@@ -22,8 +22,7 @@ import 'rust_sends.dart';
 /// state, the renderer handshake, the entries' chat interest and the
 /// bounded refresh after pushes; the Orchestrator chat runs on the core's
 /// chats over the `app-advisor` surface. This model only tells the core
-/// what its chat model does, in the order its listeners see it, and opens
-/// what the core says to open.
+/// when its chat model or route is visible and renders the core's views.
 final class RustComputerOrchestrator extends ChangeNotifier
     implements ComputerOrchestrator {
   factory RustComputerOrchestrator({
@@ -46,18 +45,28 @@ final class RustComputerOrchestrator extends ChangeNotifier
       drafts: RustChatDrafts(reader),
       createActivity: () => RustComputerActivity(
         reader.service.activity(),
-        pipelines: RustComputerPipelines(reader.service.pipelines()),
+        pipelines: RustComputerPipelines(reader.service.pipelines(), reader),
       ),
       createFiles: () => RustComputerFiles(reader.service.files(), reader),
       composer: RustComputerChatComposer(reader),
     );
-    return model = RustComputerOrchestrator._(chats, service, questions);
+    return model = RustComputerOrchestrator._(
+      chats,
+      service,
+      questions,
+      reader,
+    );
   }
 
   /// An ended session's questions go when the connection goes offline
   /// ([_connectionChanged]): the computer's bound connection forwards no
   /// `closed`.
-  RustComputerOrchestrator._(this.chats, this.service, this.questions) {
+  RustComputerOrchestrator._(
+    this.chats,
+    this.service,
+    this.questions,
+    this._reader,
+  ) {
     chats.addListener(_changed);
     chats.connection.addListener(_connectionChanged);
     _views = service.watch().listen(_apply);
@@ -167,6 +176,8 @@ final class RustComputerOrchestrator extends ChangeNotifier
     } catch (_) {}
   }
 
+  final RustChatReader _reader;
+
   @override
   Future<bool> open(OrchestratorEntry? entry) async {
     if (_disposed || !chats.online || chats.creating || chats.catalogLoading) {
@@ -176,64 +187,30 @@ final class RustComputerOrchestrator extends ChangeNotifier
       core.OrchestratorIntent.enter(entryId: entry?.id),
     );
     if (_disposed) return false;
-    final (int generation, Future<bool> Function() opening) = switch (outcome) {
-      core.OrchestratorOutcome_Open(:final chat, :final generation) => (
-        generation,
-        () => chats.open(
-          DeviceChatRef(
-            projectId: chat.projectId,
-            worktreeId: chat.worktreeId,
-            id: chat.id,
-            title: chat.title,
-          ),
-        ),
-      ),
-      core.OrchestratorOutcome_NewChat(:final workspace, :final generation) => (
-        generation,
-        () => chats.create(DeviceChatWorkspace(workspace.id, workspace.name)),
-      ),
-      core.OrchestratorOutcome_NewTab(
-        :final entryId,
-        :final generation,
-        :final failure,
-      ) =>
-        (generation, () => _createTab(entryId, failure)),
-      core.OrchestratorOutcome_LoadFailed(:final message) => (
-        -1,
-        () async {
-          chats.error = message;
-          _changed();
+    switch (outcome) {
+      case core.OrchestratorOutcome_Opened(
+        :final chatRevision,
+        :final chatGeneration,
+      ):
+        try {
+          await _reader.waitForRevision(chatRevision);
+        } catch (_) {
+          if (_disposed) return false;
+          rethrow;
+        }
+        if (_disposed ||
+            !chats.online ||
+            _reader.selectionGeneration != chatGeneration) {
           return false;
-        },
-      ),
-      _ => (-1, () async => false),
-    };
-    final opened = await opening();
-    if (_disposed || generation < 0) return false;
-    final entered = await _settle(
-      core.OrchestratorIntent.entered(generation: generation, opened: opened),
-    );
-    return !_disposed &&
-        entered is core.OrchestratorOutcome_Entered &&
-        entered.opened;
-  }
-
-  Future<bool> _createTab(String entryId, String failure) async {
-    DeviceChatRef? created;
-    try {
-      await chats.chats.createTab(
-        'app-advisor',
-        entryId,
-        onCreated: (ref) => created = ref,
-      );
-      // A chat opened while the tab was created is not this entry's.
-      return created != null && chats.state?.ref.key == created?.key;
-    } catch (_) {
-      if (!_disposed) {
-        chats.error = failure;
+        }
+        chats.error = null;
+        return true;
+      case core.OrchestratorOutcome_Failed(:final failure):
+        chats.error = failure.message;
         _changed();
-      }
-      return false;
+        return false;
+      default:
+        return false;
     }
   }
 

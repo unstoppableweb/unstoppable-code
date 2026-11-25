@@ -19,8 +19,11 @@
 //! keeps the catalog; it drives `set_connected` and the selection
 //! generations, so its own checks keep their order.
 mod composer;
+mod connection;
 mod drafts;
 mod sends;
+mod tabs;
+mod turns;
 
 use crate::{
     account::{Flusher, Inbox, Scope, View, Writes},
@@ -81,6 +84,10 @@ pub(crate) enum Intent {
         chat: ChatRef,
         generation: u64,
     },
+    OpenCurrent {
+        chat: ChatRef,
+        expected: u64,
+    },
     LoadOlder,
     Leave {
         expected: Option<u64>,
@@ -91,18 +98,30 @@ pub(crate) enum Intent {
     SetReadReceipts(bool),
     InvalidateReadReceipts,
     RetryReadReceipts,
-    Archive(ChatRef),
+    CloseTab(String),
+    Refresh {
+        chat: ChatRef,
+        generation: u64,
+    },
+    RestoreConnection {
+        catalog_loaded: bool,
+    },
+    BindActivity(crate::activity::Handle),
+    BindPipelines(crate::pipelines::Handle),
+    TrackTurns(bool),
     Close,
     // Writes (P5b).
     /// Stores the drafts now instead of after the debounce.
     FlushDrafts,
     Send(SendIntent),
-    Stop,
+    Stop(ChatRef),
     CreateChat {
+        expected: Option<u64>,
         workspace: String,
         title: Option<String>,
     },
     CreateTab {
+        expected: Option<u64>,
         project_id: String,
         worktree_id: String,
     },
@@ -176,13 +195,11 @@ pub(crate) fn transport_failure(error: &Error) -> Failure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Outcome {
     /// The requested selection survived its reads.
-    Opened { selected: bool },
+    Opened { selected: bool, generation: u64 },
     /// A send was made: the computer accepted it, or it may have.
     Sent { accepted: bool },
     /// A chat or tab was created; the host opens it.
     Created(ChatRef),
-    /// The turn was cancelled; `refresh` re-reads the chat.
-    Stopped { refresh: bool },
     /// A file was stored on the computer.
     Stored {
         filename: String,
@@ -300,6 +317,11 @@ enum Msg {
         result: std::result::Result<Option<(Dv, Dv)>, OpenError>,
         waiter: Option<Waiter>,
     },
+    ConnectionRestored {
+        connection: u64,
+        failure: Option<Failure>,
+        waiter: Option<Waiter>,
+    },
     Recover(u64),
     Older {
         read: u64,
@@ -325,13 +347,19 @@ enum Msg {
         waiter: Option<Waiter>,
     },
     Cancelled {
-        chat: ChatRef,
-        generation: u64,
+        epoch: u64,
         result: Result<Value>,
         waiter: Option<Waiter>,
     },
+    Archived {
+        chat: ChatRef,
+        generation: u64,
+        waiter: Option<Waiter>,
+        failure: Option<Failure>,
+    },
     Created {
         generation: u64,
+        select: bool,
         result: std::result::Result<sends::Creation, Failure>,
         waiter: Option<Waiter>,
     },
@@ -360,6 +388,8 @@ pub(crate) struct FeedSnapshot {
     /// Rows with their feed keys; `keyed` is false for a row Dart drew
     /// without a key (a synthetic key stands in).
     pub(crate) rows: Vec<FeedEntry>,
+    pub(crate) feedback_turns: Vec<(String, String)>,
+    latest_timer: Option<turns::LatestTimer>,
     /// Each turn's tool results by its first row's uid, with their
     /// revision.
     pub(crate) results: HashMap<u64, (u64, Arc<Vec<ToolResult>>)>,
@@ -404,6 +434,7 @@ pub(crate) struct Published {
     pub(crate) revision: u64,
     pub(crate) generation: u64,
     pub(crate) connected: bool,
+    pub(crate) activity_connected: bool,
     pub(crate) loading: bool,
     pub(crate) loading_older: bool,
     pub(crate) hydrating: bool,
@@ -416,6 +447,7 @@ pub(crate) struct Published {
     pub(crate) sending: bool,
     pub(crate) pending: Option<PendingSend>,
     pub(crate) confirmed: Option<PendingSend>,
+    pub(crate) successful_turns: Vec<String>,
     pub(crate) drafts: Arc<DraftsShown>,
     pub(crate) drafts_rev: u64,
     /// The host's last applied draft write.
@@ -776,6 +808,11 @@ struct Actor {
     disposed: bool,
     // `DeviceChatReader`.
     connected: bool,
+    completions: turns::Completions,
+    closing_tab: Option<(u64, String)>,
+    refresh_after_open: bool,
+    deferred_composer_read: Option<u64>,
+    restoration: connection::Restoration,
     synchronized: bool,
     loading: bool,
     loading_older: bool,
@@ -784,6 +821,8 @@ struct Actor {
     /// The host's selection generation, published; only host intents
     /// advance it.
     generation: u64,
+    /// Tracks selection changes made inside the actor as well as host intents.
+    selection_epoch: u64,
     /// Bumped whenever the reads in flight go stale, the internal
     /// re-reads included.
     reads: u64,
@@ -828,12 +867,18 @@ impl Actor {
             revision: 0,
             disposed: false,
             connected: false,
+            completions: turns::Completions::default(),
+            closing_tab: None,
+            refresh_after_open: false,
+            deferred_composer_read: None,
+            restoration: connection::Restoration::default(),
             synchronized: false,
             loading: false,
             loading_older: false,
             hydrating: false,
             overflow: false,
             generation: 0,
+            selection_epoch: 0,
             reads: 0,
             error: None,
             error_revision: 0,
@@ -927,7 +972,16 @@ impl Actor {
     }
 
     fn ready(&self) -> bool {
-        self.connected && self.synchronized && !self.loading
+        self.connected
+            && self.synchronized
+            && !self.loading
+            && !self
+                .closing_tab_key()
+                .is_some_and(|key| self.selected.as_deref() == Some(key))
+    }
+
+    fn closing_tab_key(&self) -> Option<&str> {
+        self.closing_tab.as_ref().map(|(_, key)| key.as_str())
     }
     fn state(&self) -> Option<&ChatState> {
         self.cache.peek(self.selected.as_deref()?)
@@ -939,11 +993,13 @@ impl Actor {
     /// Bumps the selection generation; `given` is the host's own count.
     fn bump(&mut self, given: u64) {
         self.generation = (self.generation + 1).max(given);
+        self.selection_epoch += 1;
         self.retire_reads();
     }
     /// Makes the reads in flight stale without moving the host's
     /// generation.
     fn retire_reads(&mut self) {
+        self.refresh_after_open = false;
         self.reads += 1;
         self.shared.reads.store(self.reads, Ordering::SeqCst);
     }
@@ -989,11 +1045,49 @@ impl Actor {
                 let selected =
                     !self.disposed && read == self.reads && matches!(&result, Ok(Some(_)));
                 let failure = self.opened(read, chat, result);
-                self.composer_opened(read, failure.as_ref(), done);
-                if let Some(waiter) = waiter {
-                    let outcome = failure.is_none().then_some(Outcome::Opened { selected });
+                if failure.is_none() && selected && self.recovery.is_some() {
+                    self.deferred_composer_read = Some(read);
+                } else {
+                    let refresh = match &failure {
+                        Some(failure) => composer::RefreshResult::Failed(failure),
+                        None if selected && self.synchronized => composer::RefreshResult::Hydrated,
+                        None => composer::RefreshResult::Incomplete,
+                    };
+                    self.composer_opened(read, refresh, done);
+                }
+                let restoring = self.restoration.read == Some(read);
+                if restoring {
+                    self.restoration.read = None;
+                }
+                let failed = failure.is_some();
+                if restoring && failure.is_none() {
+                    self.composer_intent(ComposerIntent::Restore, waiter, done);
+                } else if let Some(waiter) = waiter {
+                    let outcome = failure.is_none().then_some(Outcome::Opened {
+                        selected,
+                        generation: self.generation,
+                    });
                     done.push((waiter, failure, outcome));
                 }
+                if read == self.reads
+                    && std::mem::take(&mut self.refresh_after_open)
+                    && self.connected
+                    && !self.disposed
+                    && self.recovery.is_none()
+                {
+                    if failed {
+                        self.schedule_recovery();
+                    } else if selected && self.synchronized {
+                        self.refresh(None, done);
+                    }
+                }
+            }
+            Msg::ConnectionRestored {
+                connection,
+                failure,
+                waiter,
+            } => {
+                self.finish_restoring(connection, failure, waiter, done);
             }
             Msg::Recover(token) => {
                 if self.recovery != Some(token) {
@@ -1040,16 +1134,26 @@ impl Actor {
                 waiter,
             } => self.sent(attempt, result, waiter, done),
             Msg::Cancelled {
+                epoch,
+                result,
+                waiter,
+            } => self.cancelled(epoch, result, waiter, done),
+            Msg::Archived {
                 chat,
                 generation,
-                result,
                 waiter,
-            } => self.cancelled(&chat, generation, result, waiter, done),
+                failure,
+            } => {
+                self.archived(chat, generation, waiter, failure, done);
+            }
             Msg::Created {
                 generation,
+                select,
                 result,
                 waiter,
-            } => self.created(generation, result, waiter, done),
+            } => {
+                self.created(generation, select, result, waiter, done);
+            }
             Msg::DraftsFlush(token) => {
                 if self.drafts.timer == Some(token) {
                     self.write_drafts(false);
@@ -1070,6 +1174,14 @@ impl Actor {
                 }
             }
         }
+        // A recovery open takes over matching continuations. Any still on
+        // the completed read need to settle if recovery was superseded.
+        if let Some(read) = self.deferred_composer_read
+            && (read != self.reads || self.recovery.is_none())
+        {
+            self.deferred_composer_read = None;
+            self.composer_opened(read, composer::RefreshResult::Incomplete, done);
+        }
     }
 
     fn intent(&mut self, intent: Intent, waiter: Option<Waiter>, done: &mut Done) {
@@ -1085,6 +1197,7 @@ impl Actor {
             } => {
                 if self.connected != connected {
                     self.composer_connection();
+                    self.restoration.connection += 1;
                 }
                 self.receipts.held = false;
                 if !connected {
@@ -1094,6 +1207,8 @@ impl Actor {
                 self.connected = connected;
                 self.shared.connected.store(connected, Ordering::SeqCst);
                 if !connected {
+                    self.restoration.read = None;
+                    self.restoration.set_activity(false, None);
                     self.synchronized = false;
                     self.bump(generation);
                     self.hydrating = false;
@@ -1107,6 +1222,13 @@ impl Actor {
             Intent::Open { chat, generation } => {
                 self.receipts.held = false;
                 self.open(chat, Some(generation), waiter, done);
+            }
+            Intent::OpenCurrent { chat, expected } => {
+                if self.generation == expected {
+                    self.select_chat(chat, waiter, done);
+                } else {
+                    settle(None, waiter);
+                }
             }
             Intent::LoadOlder => self.load_older(waiter, done),
             Intent::Leave {
@@ -1145,21 +1267,33 @@ impl Actor {
                 self.flush_receipts();
                 settle(None, waiter);
             }
-            Intent::Archive(chat) => {
-                let command =
-                    json!({"type": "chat.close_tab", "tabId": chat.id, "mode": "archive"});
-                self.spawn(move |inner, peer| async move {
-                    let failure = command_call(&inner, &peer, &chat, command)
-                        .await
-                        .err()
-                        .map(|e| e.failure());
-                    Msg::Done {
-                        waiter,
-                        failure,
-                        outcome: None,
-                    }
-                });
+            Intent::CloseTab(id) => self.close_tab(id, waiter, done),
+            Intent::Refresh { chat, generation } => {
+                if self.generation == generation
+                    && self.selected.as_deref() == Some(chat.key().as_str())
+                {
+                    self.refresh(waiter, done);
+                } else {
+                    settle(None, waiter);
+                }
             }
+            Intent::RestoreConnection { catalog_loaded } => {
+                self.restore_connection(catalog_loaded, waiter, done);
+            }
+            Intent::BindActivity(activity) => {
+                self.restoration.activity = Some(activity);
+                settle(None, waiter);
+            }
+            Intent::BindPipelines(pipelines) => {
+                self.restoration.pipelines = Some(pipelines);
+                settle(None, waiter);
+            }
+            Intent::TrackTurns(enabled) => {
+                self.completions.tracking = enabled;
+                self.completions.stop();
+                settle(None, waiter);
+            }
+
             Intent::Close => {
                 self.disposed = true;
                 self.retire_reads();
@@ -1173,14 +1307,29 @@ impl Actor {
                 settle(None, waiter);
             }
             Intent::Send(send) => self.send(send, waiter, done),
-            Intent::Stop => self.stop(waiter, done),
-            Intent::CreateChat { workspace, title } => {
-                self.create_chat(workspace, title, waiter, done);
+            Intent::Stop(chat) => self.stop(chat, waiter, done),
+            Intent::CreateChat {
+                expected,
+                workspace,
+                title,
+            } => {
+                if expected.is_none_or(|generation| generation == self.generation) {
+                    self.create_chat(workspace, title, waiter, done);
+                } else {
+                    settle(None, waiter);
+                }
             }
             Intent::CreateTab {
+                expected,
                 project_id,
                 worktree_id,
-            } => self.create_tab(project_id, worktree_id, waiter, done),
+            } => {
+                if expected.is_none_or(|generation| generation == self.generation) {
+                    self.create_tab(project_id, worktree_id, false, waiter, done);
+                } else {
+                    settle(None, waiter);
+                }
+            }
             Intent::SetWorkspaces(ids) => {
                 self.workspaces = ids;
                 settle(None, waiter);
@@ -1207,8 +1356,8 @@ impl Actor {
 
     // ---- Open, hydrate and recovery (`open`, `_scheduleRecovery`) ----
 
-    /// Opens `chat`; `host` is the host's generation for its own open,
-    /// `None` for a re-read of the selection.
+    /// Opens `chat`. When `host` is absent, keep the route's generation
+    /// and invalidate only outstanding reads.
     fn open(&mut self, chat: ChatRef, host: Option<u64>, waiter: Option<Waiter>, done: &mut Done) {
         if !self.connected {
             if let Some(waiter) = waiter {
@@ -1216,14 +1365,24 @@ impl Actor {
             }
             return;
         }
+        let key = chat.key();
         match host {
             Some(given) => self.bump(given),
-            None => self.retire_reads(),
+            None => {
+                let same_chat = self.selected.as_deref() == Some(key.as_str());
+                let previous_read = self.reads;
+                if !same_chat {
+                    self.selection_epoch += 1;
+                }
+                self.retire_reads();
+                if same_chat {
+                    self.replace_composer_read(previous_read);
+                }
+            }
         }
         let read = self.reads;
         self.recovery = None;
         self.synchronized = false;
-        let key = chat.key();
         self.selected = Some(key.clone());
         if !self.cache.read(&key) {
             self.cache
@@ -1259,11 +1418,13 @@ impl Actor {
         chat: ChatRef,
         result: std::result::Result<Option<(Dv, Dv)>, OpenError>,
     ) -> Option<Failure> {
-        let current = read == self.reads && !self.disposed;
+        if read != self.reads || self.disposed {
+            return None;
+        }
         let (snapshot, page) = match result {
-            Ok(Some(read)) if current => read,
-            Ok(_) => return None,
-            Err(error) => return Some(self.open_failed(current, &error)),
+            Ok(Some(read)) => read,
+            Ok(None) => return None,
+            Err(error) => return Some(self.open_failed(&error)),
         };
         match self.hydrate(chat, &snapshot, &page) {
             Ok(recover) => {
@@ -1276,18 +1437,16 @@ impl Actor {
                 }
                 None
             }
-            Err(thrown) => Some(self.open_failed(true, &OpenError::Thrown(thrown))),
+            Err(thrown) => Some(self.open_failed(&OpenError::Thrown(thrown))),
         }
     }
 
-    fn open_failed(&mut self, current: bool, error: &OpenError) -> Failure {
+    fn open_failed(&mut self, error: &OpenError) -> Failure {
         let failure = describe(error);
-        if current {
-            self.hydrating = false;
-            self.loading = false;
-            self.buffer.clear();
-            self.set_error(Some(failure.message.clone()));
-        }
+        self.hydrating = false;
+        self.loading = false;
+        self.buffer.clear();
+        self.set_error(Some(failure.message.clone()));
         failure
     }
 
@@ -1639,10 +1798,21 @@ impl Actor {
 
     fn published(&mut self) -> Published {
         let selected = self.selected_view();
+        if self.connected && self.completions.tracking {
+            self.completions.observe(
+                selected
+                    .as_ref()
+                    .map(|s| (&s.state, s.feed.latest_timer.as_ref())),
+                self.synchronized,
+            );
+        } else {
+            self.completions.stop();
+        }
         Published {
             revision: self.revision,
             generation: self.generation,
             connected: self.connected,
+            activity_connected: self.restoration.activity_connected,
             loading: self.loading,
             loading_older: self.loading_older,
             hydrating: self.hydrating,
@@ -1653,6 +1823,7 @@ impl Actor {
             sending: self.sending,
             pending: self.pending.clone(),
             confirmed: self.confirmed.clone(),
+            successful_turns: self.completions.recent.iter().cloned().collect(),
             drafts: self.drafts.shown.clone(),
             drafts_rev: self.drafts.rev,
             draft_seq: self.drafts.seq,
@@ -1779,6 +1950,8 @@ impl Actor {
             .collect();
         self.inputs = inputs;
         self.feed = Arc::new(FeedSnapshot {
+            feedback_turns: turns::feedback_footers(&order, state.running()),
+            latest_timer: turns::latest_timer(state),
             order,
             rows,
             results,

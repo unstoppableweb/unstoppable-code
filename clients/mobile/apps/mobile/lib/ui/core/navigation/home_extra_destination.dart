@@ -11,6 +11,7 @@ class HomeExtraDestination extends InheritedWidget {
     required super.child,
   });
   final String label, subtitle;
+
   final WidgetBuilder pageBuilder;
 
   /// Claims an optional startup selection once, before the shell's first frame.

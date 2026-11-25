@@ -228,22 +228,22 @@ pub struct PipelineFailure {
     pub kind: PipelineFailureKind,
 }
 
-/// A read document.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PipelineDocumentView {
-    /// Markdown (agent output, reports); else plain text.
-    pub markdown: bool,
-    pub text: String,
-}
-
 /// What a settled intent produced.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(clippy::large_enum_variant)] // Crosses the binding by value.
 pub enum PipelinesOutcome {
-    Run { run: Option<PipelineRunView> },
-    Form { form: DispatchFormView },
-    Started { id: String },
-    Content { document: PipelineDocumentView },
+    Run {
+        run: Option<PipelineRunView>,
+    },
+    Form {
+        form: DispatchFormView,
+    },
+    Started {
+        id: String,
+    },
+    Content {
+        chunks: Vec<PipelineContentChunkView>,
+    },
 }
 
 /// How a requested intent ended.
@@ -1273,7 +1273,14 @@ impl PipelinesService {
             }),
             Outcome::Started(id) => settled(PipelinesOutcome::Started { id }),
             Outcome::Content(Document { markdown, text }) => settled(PipelinesOutcome::Content {
-                document: PipelineDocumentView { markdown, text },
+                chunks: if cc_domain::chat::trim(&text).is_empty() {
+                    Vec::new()
+                } else {
+                    presentation::content_chunks(markdown, &text)
+                        .into_iter()
+                        .map(|(markdown, text)| PipelineContentChunkView { markdown, text })
+                        .collect()
+                },
             }),
         })
     }
@@ -1304,14 +1311,6 @@ impl PipelinesService {
                 .collect(),
             payload: payload(&displayed, &values).into_iter().map(pair).collect(),
         }
-    }
-    /// A document as it is laid out: Markdown whole, text in 200-line
-    /// chunks.
-    pub fn content_chunks(&self, document: PipelineDocumentView) -> Vec<PipelineContentChunkView> {
-        presentation::content_chunks(document.markdown, &document.text)
-            .into_iter()
-            .map(|(markdown, text)| PipelineContentChunkView { markdown, text })
-            .collect()
     }
 }
 

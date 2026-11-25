@@ -19,8 +19,8 @@ use crate::{
     account::View,
     api::{
         ChatRefView, CreatedWorktreeView, HomeAttachmentView, HomeOutcome, NewTaskRequest,
-        NewTaskView, SentAttachmentView, TaskFailureKind, TaskModelView, TaskStep, TaskStepResult,
-        WorktreesService, WorktreesView,
+        NewTaskView, OverviewService, SentAttachmentView, TaskFailureKind, TaskModelView, TaskStep,
+        TaskStepResult, WorktreeLoad, WorktreesService, WorktreesView,
     },
     chats::{
         self, ComposerIntent, FailKind as ChatFailKind, Intent as ChatIntent,
@@ -154,6 +154,7 @@ pub(crate) struct Deps {
     pub(crate) publish: watch::Sender<Arc<NewTaskView>>,
     pub(crate) chats: Option<chats::Handle>,
     pub(crate) worktrees: Option<WorktreesService>,
+    pub(crate) overview: Option<OverviewService>,
     pub(crate) delivery: u64,
     pub(crate) send_gate: chats::SendGate,
 }
@@ -193,6 +194,7 @@ pub(crate) fn start(deps: Deps, request: NewTaskRequest) -> Handle {
         chats: deps.chats,
         chats_view,
         worktrees: deps.worktrees,
+        overview: deps.overview,
         wt_view,
         attempt,
         delivery: deps.delivery,
@@ -241,6 +243,7 @@ struct Task {
     chats: Option<chats::Handle>,
     chats_view: Option<View<ChatsPublished>>,
     worktrees: Option<WorktreesService>,
+    overview: Option<OverviewService>,
     wt_view: Option<View<WorktreesView>>,
     attempt: Option<u64>,
     delivery: u64,
@@ -610,7 +613,6 @@ impl Task {
             Err(Unanswered::Unasked) => TaskStepResult {
                 failure,
                 online: self.inv.online,
-                ..TaskStepResult::default()
             },
             Err(Unanswered::Dropped) => TaskStepResult {
                 failure,
@@ -638,8 +640,10 @@ impl Task {
             return Err(Thrown::other().into());
         };
         let (tx, rx) = oneshot::channel();
-        if chats.send(intent, Some(tx)).is_err() {
-            return Err(Thrown::other().into());
+        match self.send_gate.dispatch(|| chats.send(intent, Some(tx))) {
+            Some(Ok(())) => {}
+            Some(Err(_)) => return Err(Thrown::other().into()),
+            None => return Err(Stop::Quiet),
         }
         let settled = self
             .wait(rx)
@@ -742,23 +746,15 @@ impl Task {
         if self.target.is_none() && self.published().is_some_and(|p| p.pending.is_some()) {
             return Err(Thrown::link(CopyKey::CheckDelivery).into());
         }
+        let expected = self.selection_generation()?;
         if let Some(target) = self.target.clone() {
-            self.host_ok(TaskStep::Open {
-                chat: chat_view(&target),
-            })
-            .await?;
+            self.open(target, expected).await?;
         } else if let Some(tree) = self.worktree_id.clone() {
-            self.create_tab(self.project.id.clone(), tree).await?;
+            self.create_chat(Some(tree), expected).await?;
         } else if self.flat() {
-            let result = self
-                .host(TaskStep::CreateChat {
-                    project_id: self.project.id.clone(),
-                })
-                .await;
-            self.created_target(&result);
-            self.thrown(result)?;
+            self.create_chat(None, expected).await?;
         } else {
-            self.create_worktree().await?;
+            self.create_worktree(expected).await?;
         }
         self.live()?;
         self.require_scope()?;
@@ -844,7 +840,9 @@ impl Task {
         self.live()?;
         self.require_scope()?;
         if settings {
-            self.host_ok(TaskStep::Refresh).await?;
+            let chat = self.state_ref()?;
+            let generation = self.selection_generation()?;
+            self.chat(ChatIntent::Refresh { chat, generation }).await?;
         }
         self.live()?;
         self.require_scope()?;
@@ -857,7 +855,6 @@ impl Task {
         self.require_scope()?;
         self.host_ok(TaskStep::SetDraft {
             chat: self.target.as_ref().map(chat_view),
-            text: None,
         })
         .await?;
         self.host_ok(TaskStep::SetWorkspaceKind {
@@ -870,37 +867,51 @@ impl Task {
         Ok(())
     }
 
-    fn created_target(&mut self, result: &TaskStepResult) {
-        if let Some(created) = &result.created {
-            self.target = Some(chat_ref(created));
-        }
+    fn selection_generation(&self) -> Flow<u64> {
+        self.published()
+            .map(|view| view.generation)
+            .ok_or_else(|| Thrown::other().into())
     }
 
-    fn thrown(&self, result: TaskStepResult) -> Flow<TaskStepResult> {
-        match &result.failure {
-            Some(f) => Err(Thrown {
-                kind: f.kind,
-                message: f.message.clone(),
-            }
-            .into()),
-            None => Ok(result),
+    async fn open(&mut self, chat: ChatRef, expected: u64) -> Flow {
+        let opened = self
+            .chat(ChatIntent::OpenCurrent { chat, expected })
+            .await?;
+        if !matches!(opened, Some(ChatOutcome::Opened { selected: true, .. })) {
+            return Err(Thrown::link(CopyKey::ChatNotOpen).into());
         }
+        Ok(())
     }
 
-    async fn create_tab(&mut self, project_id: String, worktree_id: String) -> Flow {
-        let result = self
-            .host(TaskStep::CreateTab {
-                project_id,
+    async fn create_chat(&mut self, worktree: Option<String>, expected: u64) -> Flow {
+        self.live()?;
+        self.require_scope()?;
+        let project = self.project.id.clone();
+        let intent = match worktree {
+            Some(worktree_id) => ChatIntent::CreateTab {
+                expected: Some(expected),
+                project_id: project,
                 worktree_id,
-            })
-            .await;
-        self.created_target(&result);
-        self.thrown(result).map(|_| ())
+            },
+            None => ChatIntent::CreateChat {
+                expected: Some(expected),
+                workspace: project,
+                title: None,
+            },
+        };
+        let Some(ChatOutcome::Created(chat)) = self.chat(intent).await? else {
+            return Err(Thrown::link(CopyKey::ChatNotOpen).into());
+        };
+        self.target = Some(chat.clone());
+        self.publish();
+        self.live()?;
+        self.require_scope()?;
+        self.open(chat, expected).await
     }
 
     /// The code project branch: create the worktree, load it, open its
     /// active chat or a new tab.
-    async fn create_worktree(&mut self) -> Flow {
+    async fn create_worktree(&mut self, expected: u64) -> Flow {
         let (Some(worktrees), Some(attempt)) = (self.worktrees.clone(), self.attempt) else {
             return Err(Thrown::other().into());
         };
@@ -932,28 +943,34 @@ impl Task {
         };
         self.live()?;
         self.created = Some(created.clone());
+        let overview = self.overview.clone().ok_or_else(Thrown::other)?;
         let loaded = self
-            .host_ok(TaskStep::LoadWorktree {
-                project_id: created.project_id.clone(),
-                worktree_id: created.id.clone(),
-                name: created.name.clone(),
-            })
-            .await?;
+            .wait(overview.load_worktree(
+                created.project_id.clone(),
+                created.id.clone(),
+                Some("active".into()),
+                0,
+            ))
+            .await;
         self.live()?;
-        if loaded.unavailable {
-            return Err(Thrown::link(CopyKey::CreatedUnavailable).into());
-        }
-        let chat = loaded
-            .chats
-            .iter()
-            .find(|c| Some(&c.id) == loaded.active_chat_id.as_ref())
-            .or_else(|| loaded.chats.first())
-            .cloned();
+        self.require_scope()?;
+        let chat = match loaded {
+            Ok(WorktreeLoad::Loaded(chats)) => chats
+                .chats
+                .iter()
+                .find(|c| Some(&c.id) == chats.active_chat_id.as_ref())
+                .or_else(|| chats.chats.first())
+                .map(chat_ref),
+            Ok(WorktreeLoad::Unavailable | WorktreeLoad::SessionLost) => {
+                return Err(Thrown::link(CopyKey::CreatedUnavailable).into());
+            }
+            Ok(WorktreeLoad::Stale) | Err(_) => None,
+        };
         match chat {
-            None => self.create_tab(created.project_id, created.id).await,
+            None => self.create_chat(Some(created.id), expected).await,
             Some(chat) => {
-                self.target = Some(chat_ref(&chat));
-                self.host_ok(TaskStep::Open { chat }).await.map(|_| ())
+                self.target = Some(chat.clone());
+                self.open(chat, expected).await
             }
         }
     }
@@ -1111,11 +1128,11 @@ impl Task {
                     })
             })
             .collect();
-        let chat = chat_view(&target);
         let result: Flow = async {
-            self.host_ok(TaskStep::SetDraft {
-                chat: Some(chat.clone()),
-                text: Some(text.clone()),
+            self.chat(ChatIntent::SetDraft {
+                chat: target.clone(),
+                text: text.clone(),
+                seq: 0,
             })
             .await?;
             if !self

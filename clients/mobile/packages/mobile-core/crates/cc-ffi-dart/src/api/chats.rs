@@ -55,10 +55,15 @@ pub enum ChatIntent {
     ///
     /// Resolves when applied.
     RetryReadReceipts,
-    /// Archives `chat`'s tab on the computer.
-    ///
-    /// Resolves when settled: the desktop answered (or the call failed).
-    Archive { chat: ChatRefView },
+    /// Archives an open tab and reconciles the selected chat.
+    CloseTab { id: String },
+    /// Re-reads the chat if it is still selected in this generation.
+    Refresh { chat: ChatRefView, generation: u64 },
+    /// Rehydrates a retained selection after a successful catalog read,
+    /// then restores the composer and resumes activity and pipelines.
+    RestoreConnection { catalog_loaded: bool },
+    /// Tracks successful turns while the host observes this chat.
+    TrackTurns { enabled: bool },
     /// Stops this read path (the drafts are written first).
     ///
     /// Resolves when applied.
@@ -82,11 +87,9 @@ pub enum ChatIntent {
         dictated: bool,
         attachment_paths: Vec<String>,
     },
-    /// Cancels the selected chat's turn (`chat:cancel`, once).
-    ///
-    /// Resolves when settled: the desktop answered (`Stopped`, with whether
-    /// the host should re-read the chat) or the call failed.
-    Stop,
+    /// Cancels the supplied chat’s turn if it is still selected.
+    /// The actor refreshes the selection after acknowledgement.
+    Stop { chat: ChatRefView },
     /// Creates a work entry in `workspace_id` (a catalog workspace) and its
     /// starter chat, each sent once.
     ///
@@ -170,11 +173,6 @@ pub enum ChatIntent {
         harness_json: String,
         running: bool,
     },
-    /// Reads the catalog until the selected chat's model, harness and
-    /// running state stay the same over a read (`_restore`).
-    ///
-    /// Resolves when settled: the loop ended (or the connection changed).
-    RestoreSettings,
     /// Forgets the catalog (offline).
     ///
     /// Resolves when applied.
@@ -283,13 +281,11 @@ pub struct PendingSendView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatOutcome {
     /// The requested selection survived its reads.
-    Opened { selected: bool },
+    Opened { selected: bool, generation: u64 },
     /// The computer accepted the send, or may have (`accepted: false`).
     Sent { accepted: bool },
     /// A chat or tab was created; the host opens it.
     Created { chat: ChatRefView },
-    /// The turn was cancelled; with `refresh` the host re-reads the chat.
-    Stopped { refresh: bool },
     /// The computer stored the file at `path`.
     Stored {
         filename: String,
@@ -367,34 +363,32 @@ pub struct ChatHeaderView {
     pub tabs: Vec<ChatTabView>,
     /// The worktree's open file tabs, in tab order (P6).
     pub file_tabs: Vec<super::files::FileTabView>,
+    pub has_messages: bool,
+    pub model: Option<String>,
+    pub execution_harness: Option<String>,
+    pub provider_type: Option<String>,
+    pub terminal_mode: bool,
+    pub plugin_selections_revision: u64,
+    pub plugin_selection_count: Option<u32>,
+    pub feedback_turns: Vec<FeedbackTurnView>,
+    pub feedback_seeds: Vec<FeedbackSeedView>,
     /// The chat's pending questions (P5c).
     pub questions: Vec<super::composer::QuestionView>,
 }
 
-/// One desktop message entry, in bridge form.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RawMessageView {
-    pub uid: u64,
-    pub json: String,
+pub struct FeedbackTurnView {
+    pub footer: String,
+    pub turn: String,
 }
 
-/// The selected chat's desktop state (`DeviceChatState`), for the Dart
-/// features not yet ported. Bridge-form JSON fields are sent when they
-/// changed; `order` when the message list changed.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ChatStateFrame {
-    pub revision: i64,
-    pub transcript_revision: i64,
-    pub before: Option<i64>,
-    pub total_messages: i64,
-    pub closed: bool,
-    pub tab_json: Option<String>,
-    pub runtime_json: Option<String>,
-    /// `{tabsFile: {tabs, pendingQuestions, pendingApprovals},
-    /// runtimeByChatId}`.
-    pub scope_json: Option<String>,
-    pub messages: Vec<RawMessageView>,
-    pub order: Option<Vec<u64>>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeedbackSeedView {
+    pub turn: String,
+    pub rating: String,
+    pub sync_state: Option<String>,
+    pub feedback_id: Option<String>,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -619,7 +613,6 @@ pub struct SelectionFrame {
     /// A new selection: drop what was held.
     pub reset: bool,
     pub header: ChatHeaderView,
-    pub state: ChatStateFrame,
     pub feed: FeedFrame,
 }
 
@@ -630,6 +623,7 @@ pub struct ChatFrame {
     pub revision: u64,
     pub generation: u64,
     pub connected: bool,
+    pub activity_connected: bool,
     pub loading: bool,
     pub loading_older: bool,
     pub hydrating: bool,
@@ -644,6 +638,7 @@ pub struct ChatFrame {
     pub pending_send: Option<PendingSendView>,
     /// The last send accepted or confirmed.
     pub confirmed_send: Option<PendingSendView>,
+    pub successful_turns: Vec<String>,
     /// Drafts changed since this subscriber's previous frame (all on the
     /// first frame).
     pub drafts: Vec<DraftView>,
@@ -685,10 +680,15 @@ impl From<cc_core::PendingSendView> for PendingSendView {
 impl From<cc_core::ChatOutcome> for ChatOutcome {
     fn from(v: cc_core::ChatOutcome) -> Self {
         match v {
-            cc_core::ChatOutcome::Opened { selected } => Self::Opened { selected },
+            cc_core::ChatOutcome::Opened {
+                selected,
+                generation,
+            } => Self::Opened {
+                selected,
+                generation,
+            },
             cc_core::ChatOutcome::Sent { accepted } => Self::Sent { accepted },
             cc_core::ChatOutcome::Created { chat } => Self::Created { chat: chat.into() },
-            cc_core::ChatOutcome::Stopped { refresh } => Self::Stopped { refresh },
             cc_core::ChatOutcome::Stored {
                 filename,
                 path,
@@ -762,33 +762,33 @@ impl From<cc_core::ChatHeaderView> for ChatHeaderView {
             total_messages: v.total_messages,
             tabs: v.tabs.into_iter().map(|x| x.into()).collect(),
             file_tabs: v.file_tabs.into_iter().map(Into::into).collect(),
+            has_messages: v.has_messages,
+            model: v.model,
+            execution_harness: v.execution_harness,
+            provider_type: v.provider_type,
+            terminal_mode: v.terminal_mode,
+            plugin_selections_revision: v.plugin_selections_revision,
+            plugin_selection_count: v.plugin_selection_count,
+            feedback_turns: v
+                .feedback_turns
+                .into_iter()
+                .map(|turn| FeedbackTurnView {
+                    footer: turn.footer,
+                    turn: turn.turn,
+                })
+                .collect(),
+            feedback_seeds: v
+                .feedback_seeds
+                .into_iter()
+                .map(|seed| FeedbackSeedView {
+                    turn: seed.turn,
+                    rating: seed.rating,
+                    sync_state: seed.sync_state,
+                    feedback_id: seed.feedback_id,
+                    reason: seed.reason,
+                })
+                .collect(),
             questions: v.questions.into_iter().map(Into::into).collect(),
-        }
-    }
-}
-
-impl From<cc_core::RawMessageView> for RawMessageView {
-    fn from(v: cc_core::RawMessageView) -> Self {
-        Self {
-            uid: v.uid,
-            json: v.json,
-        }
-    }
-}
-
-impl From<cc_core::ChatStateFrame> for ChatStateFrame {
-    fn from(v: cc_core::ChatStateFrame) -> Self {
-        Self {
-            revision: v.revision,
-            transcript_revision: v.transcript_revision,
-            before: v.before,
-            total_messages: v.total_messages,
-            closed: v.closed,
-            tab_json: v.tab_json,
-            runtime_json: v.runtime_json,
-            scope_json: v.scope_json,
-            messages: v.messages.into_iter().map(|x| x.into()).collect(),
-            order: v.order,
         }
     }
 }
@@ -950,7 +950,6 @@ impl From<cc_core::SelectionFrame> for SelectionFrame {
             chat: v.chat.into(),
             reset: v.reset,
             header: v.header.into(),
-            state: v.state.into(),
             feed: v.feed.into(),
         }
     }
@@ -962,6 +961,7 @@ impl From<cc_core::ChatFrame> for ChatFrame {
             revision: v.revision,
             generation: v.generation,
             connected: v.connected,
+            activity_connected: v.activity_connected,
             loading: v.loading,
             loading_older: v.loading_older,
             hydrating: v.hydrating,
@@ -972,6 +972,7 @@ impl From<cc_core::ChatFrame> for ChatFrame {
             sending: v.sending,
             pending_send: v.pending_send.map(|x| x.into()),
             confirmed_send: v.confirmed_send.map(|x| x.into()),
+            successful_turns: v.successful_turns,
             drafts: v.drafts.into_iter().map(|x| x.into()).collect(),
             draft_seq: v.draft_seq,
             composer: v.composer.map(Into::into),
@@ -1006,7 +1007,15 @@ impl From<ChatIntent> for cc_core::ChatIntent {
             ChatIntent::SetReadReceipts { enabled } => Self::SetReadReceipts { enabled },
             ChatIntent::InvalidateReadReceipts => Self::InvalidateReadReceipts,
             ChatIntent::RetryReadReceipts => Self::RetryReadReceipts,
-            ChatIntent::Archive { chat } => Self::Archive { chat: chat.into() },
+            ChatIntent::CloseTab { id } => Self::CloseTab { id },
+            ChatIntent::Refresh { chat, generation } => Self::Refresh {
+                chat: chat.into(),
+                generation,
+            },
+            ChatIntent::RestoreConnection { catalog_loaded } => {
+                Self::RestoreConnection { catalog_loaded }
+            }
+            ChatIntent::TrackTurns { enabled } => Self::TrackTurns { enabled },
             ChatIntent::Close => Self::Close,
             ChatIntent::Send {
                 chat,
@@ -1021,7 +1030,7 @@ impl From<ChatIntent> for cc_core::ChatIntent {
                 dictated,
                 attachment_paths,
             },
-            ChatIntent::Stop => Self::Stop,
+            ChatIntent::Stop { chat } => Self::Stop { chat: chat.into() },
             ChatIntent::CreateChat {
                 workspace_id,
                 title,
@@ -1072,7 +1081,6 @@ impl From<ChatIntent> for cc_core::ChatIntent {
                 harness_json,
                 running,
             },
-            ChatIntent::RestoreSettings => Self::RestoreSettings,
             ChatIntent::InvalidateSettings => Self::InvalidateSettings,
             ChatIntent::ChangeSetting { chat, pick } => Self::ChangeSetting {
                 chat: chat.into(),

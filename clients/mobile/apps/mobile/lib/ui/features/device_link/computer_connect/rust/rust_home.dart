@@ -7,9 +7,6 @@ import 'package:mobile/data/models/chat_message.dart';
 import 'package:mobile/data/models/workspace_context.dart';
 import 'package:mobile/device_link/chats/delivery.dart';
 import 'package:mobile/device_link/chats/models.dart';
-import 'package:mobile/device_link/chats/sender.dart'
-    show DeviceChatCreationNotSent;
-import 'package:mobile/device_link/desktop/ipc.dart';
 import 'package:mobile/device_link/protocol.dart';
 import 'package:mobile/device_link/rust_core/failures.dart';
 import 'package:mobile/device_link/worktrees/models.dart';
@@ -47,13 +44,6 @@ core.HomeInventoryView homeInventory(
     ],
   );
 }
-
-core.ChatRefView _chatView(DeviceChatRef ref) => core.ChatRefView(
-  projectId: ref.projectId,
-  worktreeId: ref.worktreeId,
-  id: ref.id,
-  title: ref.title,
-);
 
 DeviceChatRef _chatRef(core.ChatRefView v) => DeviceChatRef(
   projectId: v.projectId,
@@ -539,6 +529,10 @@ final class RustDeviceNewTaskModel extends ChangeNotifier
       return;
     }
     _view = next;
+    final target = next.target;
+    if (flat && target != null && target != previous?.target) {
+      controller.chats.chats.rememberCreatedChat(_chatRef(target));
+    }
     if (next.confirmed && !(previous?.confirmed ?? false)) onSent?.call();
     notifyListeners();
   }
@@ -608,7 +602,7 @@ final class RustDeviceNewTaskModel extends ChangeNotifier
         case core.HomeOutcome_Step(:final step):
           final result = _disposed && !_settlesSend(step)
               ? _notTaken()
-              : await _run(step);
+              : _run(step);
           next = core.HomeIntent.stepDone(task: id, result: result);
         case core.HomeOutcome_Task(:final view?):
           _apply(view);
@@ -629,55 +623,18 @@ final class RustDeviceNewTaskModel extends ChangeNotifier
       kind: core.TaskFailureKind.other,
       message: '',
     ),
-    unavailable: false,
-    chats: const [],
     online: controller.chats.online,
   );
 
-  Future<core.TaskStepResult> _run(core.TaskStep step) async {
+  core.TaskStepResult _run(core.TaskStep step) {
     final model = controller.chats;
-    DeviceChatRef? created;
-    var unavailable = false;
-    var chats = const <core.ChatRefView>[];
-    String? activeChatId;
     core.TaskFailure? failure;
     try {
       switch (step) {
-        case core.TaskStep_Open(:final chat):
-          await model.open(_chatRef(chat));
-        case core.TaskStep_CreateTab(:final projectId, :final worktreeId):
-          await model.chats.createTab(
-            projectId,
-            worktreeId,
-            onCreated: (ref) => created = ref,
-          );
-        case core.TaskStep_CreateChat(:final projectId):
-          await model.chats.createChat(
-            projectId,
-            onCreated: (ref) => created = ref,
-          );
-        case core.TaskStep_LoadWorktree(
-          :final projectId,
-          :final worktreeId,
-          :final name,
-        ):
-          final tree = DeviceWorktree(
-            projectId: projectId,
-            projectName: project.name,
-            id: worktreeId,
-            name: name,
-            savedStatus: 'active',
-          );
-          await controller.loadWorktree(tree);
-          unavailable = tree.status == 'Unavailable';
-          chats = [for (final ref in tree.chats) _chatView(ref)];
-          activeChatId = tree.activeChatId;
-        case core.TaskStep_Refresh():
-          await model.chats.refresh();
-        case core.TaskStep_SetDraft(:final chat?, :final text):
-          model.drafts.setDraft(_chatRef(chat), text ?? draft);
-        case core.TaskStep_SetDraft(:final text):
-          model.setDraft(text ?? draft);
+        case core.TaskStep_SetDraft(:final chat?):
+          model.drafts.setDraft(_chatRef(chat), draft);
+        case core.TaskStep_SetDraft():
+          model.setDraft(draft);
         case core.TaskStep_SetWorkspaceKind(:final projectId, :final kind):
           model.activity.setWorkspaceKind(projectId, kind);
         case core.TaskStep_Sent(attachments: final sent):
@@ -699,22 +656,13 @@ final class RustDeviceNewTaskModel extends ChangeNotifier
     } catch (error) {
       failure = core.TaskFailure(
         kind: switch (error) {
-          DeviceChatCreationNotSent() => core.TaskFailureKind.creationNotSent,
-          DesktopIpcNotSent() => core.TaskFailureKind.notSent,
           DeviceLinkException() => core.TaskFailureKind.link,
           _ => core.TaskFailureKind.other,
         },
         message: error is DeviceLinkException ? error.message : '',
       );
     }
-    return core.TaskStepResult(
-      failure: failure,
-      created: created == null ? null : _chatView(created!),
-      unavailable: unavailable,
-      chats: chats,
-      activeChatId: activeChatId,
-      online: model.online,
-    );
+    return core.TaskStepResult(failure: failure, online: model.online);
   }
 
   @override

@@ -399,12 +399,6 @@ final class RustComputerActivity implements ComputerActivity {
   String? workspaceKind(String id) => _kinds[id];
 
   @override
-  Future<void> setConnected(bool connected) async {
-    pipelines.setConnected(connected);
-    await _request(core.ActivityIntent.setConnected(connected: connected));
-  }
-
-  @override
   Future<void> dispose() async {
     _disposed = true;
     service.send(intent: const core.ActivityIntent.close());

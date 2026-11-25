@@ -81,7 +81,7 @@ class CoreBridge
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => 283082097;
+  int get rustContentHash => -606356536;
 
   static const kDefaultExternalLibraryLoaderConfig = ExternalLibraryLoaderConfig(
     stem: 'cc_ffi_dart',
@@ -475,6 +475,11 @@ abstract class CoreBridgeApi extends BaseApi {
     required ChatsService chats,
   });
 
+  void crateApiHomeHomeServiceBindOverview({
+    required HomeService that,
+    required OverviewService overview,
+  });
+
   void crateApiHomeHomeServiceBindWorktrees({
     required HomeService that,
     required WorktreesService worktrees,
@@ -584,12 +589,6 @@ abstract class CoreBridgeApi extends BaseApi {
 
   Future<OverviewView> crateApiOverviewOverviewServiceWatchOverview({
     required OverviewService that,
-  });
-
-  List<PipelineContentChunkView>
-  crateApiPipelinesPipelinesServiceContentChunks({
-    required PipelinesService that,
-    required PipelineDocumentView document,
   });
 
   FormRulesView crateApiPipelinesPipelinesServiceFormRules({
@@ -3952,6 +3951,42 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       );
 
   @override
+  void crateApiHomeHomeServiceBindOverview({
+    required HomeService that,
+    required OverviewService overview,
+  }) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerHomeService(
+            that,
+            serializer,
+          );
+          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerOverviewService(
+            overview,
+            serializer,
+          );
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 85)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiHomeHomeServiceBindOverviewConstMeta,
+        argValues: [that, overview],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiHomeHomeServiceBindOverviewConstMeta =>
+      const TaskConstMeta(
+        debugName: "HomeService_bind_overview",
+        argNames: ["that", "overview"],
+      );
+
+  @override
   void crateApiHomeHomeServiceBindWorktrees({
     required HomeService that,
     required WorktreesService worktrees,
@@ -3968,7 +4003,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
             worktrees,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 85)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 86)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_unit,
@@ -4003,7 +4038,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           );
           sse_encode_String(context, serializer);
           sse_encode_box_autoadd_home_inventory_view(inventory, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 86)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 87)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_CastedPrimitive_u_64,
@@ -4036,7 +4071,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
             serializer,
           );
           sse_encode_box_autoadd_home_intent(intent, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 87)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 88)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_CastedPrimitive_u_64,
@@ -4069,7 +4104,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
             serializer,
           );
           sse_encode_box_autoadd_home_intent(intent, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 88)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 89)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_unit,
@@ -4105,7 +4140,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 89,
+            funcId: 90,
             port: port_,
           );
         },
@@ -4140,7 +4175,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
             serializer,
           );
           sse_encode_box_autoadd_new_task_request(request, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 90)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 91)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_CastedPrimitive_u_64,
@@ -4175,7 +4210,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 91,
+              funcId: 92,
               port: port_,
             );
           },
@@ -4218,7 +4253,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 92,
+              funcId: 93,
               port: port_,
             );
           },
@@ -4253,7 +4288,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
             that,
             serializer,
           );
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 93)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 94)!;
         },
         codec: SseCodec(
           decodeSuccessData:
@@ -4287,7 +4322,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
             serializer,
           );
           sse_encode_box_autoadd_orchestrator_intent(intent, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 94)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 95)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_CastedPrimitive_u_64,
@@ -4320,7 +4355,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
             serializer,
           );
           sse_encode_box_autoadd_orchestrator_intent(intent, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 95)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 96)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_unit,
@@ -4356,7 +4391,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 96,
+            funcId: 97,
             port: port_,
           );
         },
@@ -4395,7 +4430,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 97,
+              funcId: 98,
               port: port_,
             );
           },
@@ -4433,7 +4468,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 98,
+            funcId: 99,
             port: port_,
           );
         },
@@ -4469,7 +4504,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 99,
+            funcId: 100,
             port: port_,
           );
         },
@@ -4513,7 +4548,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 100,
+            funcId: 101,
             port: port_,
           );
         },
@@ -4555,7 +4590,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 101,
+            funcId: 102,
             port: port_,
           );
         },
@@ -4590,7 +4625,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           return pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 102,
+            funcId: 103,
           )!;
         },
         codec: SseCodec(
@@ -4625,7 +4660,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 103,
+            funcId: 104,
             port: port_,
           );
         },
@@ -4661,7 +4696,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 104,
+            funcId: 105,
             port: port_,
           );
         },
@@ -4697,7 +4732,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 105,
+            funcId: 106,
             port: port_,
           );
         },
@@ -4735,7 +4770,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 106,
+            funcId: 107,
             port: port_,
           );
         },
@@ -4774,7 +4809,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 107,
+              funcId: 108,
               port: port_,
             );
           },
@@ -4812,7 +4847,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 108,
+            funcId: 109,
             port: port_,
           );
         },
@@ -4831,44 +4866,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       const TaskConstMeta(
         debugName: "OverviewService_watch_overview",
         argNames: ["that"],
-      );
-
-  @override
-  List<PipelineContentChunkView>
-  crateApiPipelinesPipelinesServiceContentChunks({
-    required PipelinesService that,
-    required PipelineDocumentView document,
-  }) {
-    return handler.executeSync(
-      SyncTask(
-        callFfi: () {
-          final serializer = SseSerializer(generalizedFrbRustBinding);
-          sse_encode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerPipelinesService(
-            that,
-            serializer,
-          );
-          sse_encode_box_autoadd_pipeline_document_view(document, serializer);
-          return pdeCallFfi(
-            generalizedFrbRustBinding,
-            serializer,
-            funcId: 109,
-          )!;
-        },
-        codec: SseCodec(
-          decodeSuccessData: sse_decode_list_pipeline_content_chunk_view,
-          decodeErrorData: null,
-        ),
-        constMeta: kCrateApiPipelinesPipelinesServiceContentChunksConstMeta,
-        argValues: [that, document],
-        apiImpl: this,
-      ),
-    );
-  }
-
-  TaskConstMeta get kCrateApiPipelinesPipelinesServiceContentChunksConstMeta =>
-      const TaskConstMeta(
-        debugName: "PipelinesService_content_chunks",
-        argNames: ["that", "document"],
       );
 
   @override
@@ -7723,14 +7720,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   }
 
   @protected
-  CatalogWorkspaceView dco_decode_box_autoadd_catalog_workspace_view(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_catalog_workspace_view(raw);
-  }
-
-  @protected
   ChatFailure dco_decode_box_autoadd_chat_failure(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_chat_failure(raw);
@@ -7950,14 +7939,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return dco_decode_pipeline_content_source(raw);
-  }
-
-  @protected
-  PipelineDocumentView dco_decode_box_autoadd_pipeline_document_view(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_pipeline_document_view(raw);
   }
 
   @protected
@@ -8367,25 +8348,27 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   ChatFrame dco_decode_chat_frame(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 16)
-      throw Exception('unexpected arr length: expect 16 but see ${arr.length}');
+    if (arr.length != 18)
+      throw Exception('unexpected arr length: expect 18 but see ${arr.length}');
     return ChatFrame(
       revision: dco_decode_CastedPrimitive_u_64(arr[0]),
       generation: dco_decode_CastedPrimitive_u_64(arr[1]),
       connected: dco_decode_bool(arr[2]),
-      loading: dco_decode_bool(arr[3]),
-      loadingOlder: dco_decode_bool(arr[4]),
-      hydrating: dco_decode_bool(arr[5]),
-      ready: dco_decode_bool(arr[6]),
-      error: dco_decode_opt_String(arr[7]),
-      errorRevision: dco_decode_CastedPrimitive_u_64(arr[8]),
-      selected: dco_decode_opt_box_autoadd_selection_frame(arr[9]),
-      sending: dco_decode_bool(arr[10]),
-      pendingSend: dco_decode_opt_box_autoadd_pending_send_view(arr[11]),
-      confirmedSend: dco_decode_opt_box_autoadd_pending_send_view(arr[12]),
-      drafts: dco_decode_list_draft_view(arr[13]),
-      draftSeq: dco_decode_CastedPrimitive_u_64(arr[14]),
-      composer: dco_decode_opt_box_autoadd_composer_view(arr[15]),
+      activityConnected: dco_decode_bool(arr[3]),
+      loading: dco_decode_bool(arr[4]),
+      loadingOlder: dco_decode_bool(arr[5]),
+      hydrating: dco_decode_bool(arr[6]),
+      ready: dco_decode_bool(arr[7]),
+      error: dco_decode_opt_String(arr[8]),
+      errorRevision: dco_decode_CastedPrimitive_u_64(arr[9]),
+      selected: dco_decode_opt_box_autoadd_selection_frame(arr[10]),
+      sending: dco_decode_bool(arr[11]),
+      pendingSend: dco_decode_opt_box_autoadd_pending_send_view(arr[12]),
+      confirmedSend: dco_decode_opt_box_autoadd_pending_send_view(arr[13]),
+      successfulTurns: dco_decode_list_String(arr[14]),
+      drafts: dco_decode_list_draft_view(arr[15]),
+      draftSeq: dco_decode_CastedPrimitive_u_64(arr[16]),
+      composer: dco_decode_opt_box_autoadd_composer_view(arr[17]),
     );
   }
 
@@ -8393,8 +8376,8 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   ChatHeaderView dco_decode_chat_header_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 15)
-      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
+    if (arr.length != 24)
+      throw Exception('unexpected arr length: expect 24 but see ${arr.length}');
     return ChatHeaderView(
       revision: dco_decode_CastedPrimitive_i_64(arr[0]),
       transcriptRevision: dco_decode_CastedPrimitive_i_64(arr[1]),
@@ -8410,7 +8393,16 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       totalMessages: dco_decode_CastedPrimitive_i_64(arr[11]),
       tabs: dco_decode_list_chat_tab_view(arr[12]),
       fileTabs: dco_decode_list_file_tab_view(arr[13]),
-      questions: dco_decode_list_question_view(arr[14]),
+      hasMessages: dco_decode_bool(arr[14]),
+      model: dco_decode_opt_String(arr[15]),
+      executionHarness: dco_decode_opt_String(arr[16]),
+      providerType: dco_decode_opt_String(arr[17]),
+      terminalMode: dco_decode_bool(arr[18]),
+      pluginSelectionsRevision: dco_decode_CastedPrimitive_u_64(arr[19]),
+      pluginSelectionCount: dco_decode_opt_box_autoadd_u_32(arr[20]),
+      feedbackTurns: dco_decode_list_feedback_turn_view(arr[21]),
+      feedbackSeeds: dco_decode_list_feedback_seed_view(arr[22]),
+      questions: dco_decode_list_question_view(arr[23]),
     );
   }
 
@@ -8446,12 +8438,21 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       case 8:
         return ChatIntent_RetryReadReceipts();
       case 9:
-        return ChatIntent_Archive(
-          chat: dco_decode_box_autoadd_chat_ref_view(raw[1]),
-        );
+        return ChatIntent_CloseTab(id: dco_decode_String(raw[1]));
       case 10:
-        return ChatIntent_Close();
+        return ChatIntent_Refresh(
+          chat: dco_decode_box_autoadd_chat_ref_view(raw[1]),
+          generation: dco_decode_CastedPrimitive_u_64(raw[2]),
+        );
       case 11:
+        return ChatIntent_RestoreConnection(
+          catalogLoaded: dco_decode_bool(raw[1]),
+        );
+      case 12:
+        return ChatIntent_TrackTurns(enabled: dco_decode_bool(raw[1]));
+      case 13:
+        return ChatIntent_Close();
+      case 14:
         return ChatIntent_Send(
           chat: dco_decode_opt_box_autoadd_chat_ref_view(raw[1]),
           text: dco_decode_String(raw[2]),
@@ -8459,98 +8460,98 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           dictated: dco_decode_bool(raw[4]),
           attachmentPaths: dco_decode_list_String(raw[5]),
         );
-      case 12:
-        return ChatIntent_Stop();
-      case 13:
+      case 15:
+        return ChatIntent_Stop(
+          chat: dco_decode_box_autoadd_chat_ref_view(raw[1]),
+        );
+      case 16:
         return ChatIntent_CreateChat(
           workspaceId: dco_decode_String(raw[1]),
           title: dco_decode_opt_String(raw[2]),
         );
-      case 14:
+      case 17:
         return ChatIntent_CreateTab(
           projectId: dco_decode_String(raw[1]),
           worktreeId: dco_decode_String(raw[2]),
         );
-      case 15:
+      case 18:
         return ChatIntent_SetWorkspaces(ids: dco_decode_list_String(raw[1]));
-      case 16:
+      case 19:
         return ChatIntent_SetDraft(
           chat: dco_decode_box_autoadd_chat_ref_view(raw[1]),
           text: dco_decode_String(raw[2]),
           seq: dco_decode_CastedPrimitive_u_64(raw[3]),
         );
-      case 17:
+      case 20:
         return ChatIntent_ClearSentDraft(
           chat: dco_decode_box_autoadd_chat_ref_view(raw[1]),
           text: dco_decode_String(raw[2]),
         );
-      case 18:
+      case 21:
         return ChatIntent_ImportAttachment(
           scope: dco_decode_box_autoadd_chat_ref_view(raw[1]),
           filename: dco_decode_String(raw[2]),
           bytes: dco_decode_list_prim_u_8_strict(raw[3]),
         );
-      case 19:
+      case 22:
         return ChatIntent_DeleteAttachment(
           scope: dco_decode_box_autoadd_chat_ref_view(raw[1]),
           filename: dco_decode_String(raw[2]),
         );
-      case 20:
+      case 23:
         return ChatIntent_EnableComposer();
-      case 21:
+      case 24:
         return ChatIntent_LoadSettings(report: dco_decode_bool(raw[1]));
-      case 22:
+      case 25:
         return ChatIntent_SyncSettings(
           chat: dco_decode_box_autoadd_chat_ref_view(raw[1]),
           modelJson: dco_decode_String(raw[2]),
           harnessJson: dco_decode_String(raw[3]),
           running: dco_decode_bool(raw[4]),
         );
-      case 23:
-        return ChatIntent_RestoreSettings();
-      case 24:
+      case 26:
         return ChatIntent_InvalidateSettings();
-      case 25:
+      case 27:
         return ChatIntent_ChangeSetting(
           chat: dco_decode_box_autoadd_chat_ref_view(raw[1]),
           pick: dco_decode_box_autoadd_settings_pick(raw[2]),
         );
-      case 26:
+      case 28:
         return ChatIntent_InvalidatePicks();
-      case 27:
+      case 29:
         return ChatIntent_SelectModel(
           chat: dco_decode_box_autoadd_chat_ref_view(raw[1]),
           id: dco_decode_String(raw[2]),
           provider: dco_decode_String(raw[3]),
           harness: dco_decode_opt_String(raw[4]),
         );
-      case 28:
+      case 30:
         return ChatIntent_PatchSettings(
           chat: dco_decode_box_autoadd_chat_ref_view(raw[1]),
           patchJson: dco_decode_String(raw[2]),
         );
-      case 29:
+      case 31:
         return ChatIntent_Answer(
           chat: dco_decode_box_autoadd_chat_ref_view(raw[1]),
           requestId: dco_decode_String(raw[2]),
           answersJson: dco_decode_String(raw[3]),
         );
-      case 30:
+      case 32:
         return ChatIntent_DismissQuestion(
           chat: dco_decode_box_autoadd_chat_ref_view(raw[1]),
           requestId: dco_decode_String(raw[2]),
         );
-      case 31:
+      case 33:
         return ChatIntent_Fork(
           chat: dco_decode_box_autoadd_chat_ref_view(raw[1]),
           atMessageId: dco_decode_String(raw[2]),
         );
-      case 32:
+      case 34:
         return ChatIntent_ForkOpened(
           chat: dco_decode_box_autoadd_chat_ref_view(raw[1]),
           atMessageId: dco_decode_String(raw[2]),
         );
-      case 33:
+      case 35:
         return ChatIntent_LoadComposerSource(
           source: dco_decode_composer_source(raw[1]),
           scope: dco_decode_box_autoadd_source_scope_view(raw[2]),
@@ -8565,7 +8566,10 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     // Codec=Dco (DartCObject based), see doc to use other codecs
     switch (raw[0]) {
       case 0:
-        return ChatOutcome_Opened(selected: dco_decode_bool(raw[1]));
+        return ChatOutcome_Opened(
+          selected: dco_decode_bool(raw[1]),
+          generation: dco_decode_CastedPrimitive_u_64(raw[2]),
+        );
       case 1:
         return ChatOutcome_Sent(accepted: dco_decode_bool(raw[1]));
       case 2:
@@ -8573,31 +8577,29 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           chat: dco_decode_box_autoadd_chat_ref_view(raw[1]),
         );
       case 3:
-        return ChatOutcome_Stopped(refresh: dco_decode_bool(raw[1]));
-      case 4:
         return ChatOutcome_Stored(
           filename: dco_decode_String(raw[1]),
           path: dco_decode_String(raw[2]),
           size: dco_decode_CastedPrimitive_i_64(raw[3]),
         );
-      case 5:
+      case 4:
         return ChatOutcome_Changed(applied: dco_decode_bool(raw[1]));
-      case 6:
+      case 5:
         return ChatOutcome_Saved(
           revision: dco_decode_CastedPrimitive_i_64(raw[1]),
         );
-      case 7:
+      case 6:
         return ChatOutcome_Forked(
           chat: dco_decode_box_autoadd_chat_ref_view(raw[1]),
         );
-      case 8:
+      case 7:
         return ChatOutcome_Inventory(
           commands: dco_decode_list_command_row_view(raw[1]),
           unsettled: dco_decode_bool(raw[2]),
         );
-      case 9:
+      case 8:
         return ChatOutcome_PluginCatalog(json: dco_decode_String(raw[1]));
-      case 10:
+      case 9:
         return ChatOutcome_Selections(json: dco_decode_opt_String(raw[1]));
       default:
         throw Exception("unreachable");
@@ -8634,26 +8636,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       revision: dco_decode_CastedPrimitive_u_64(arr[0]),
       failure: dco_decode_opt_box_autoadd_chat_failure(arr[1]),
       outcome: dco_decode_opt_box_autoadd_chat_outcome(arr[2]),
-    );
-  }
-
-  @protected
-  ChatStateFrame dco_decode_chat_state_frame(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 10)
-      throw Exception('unexpected arr length: expect 10 but see ${arr.length}');
-    return ChatStateFrame(
-      revision: dco_decode_CastedPrimitive_i_64(arr[0]),
-      transcriptRevision: dco_decode_CastedPrimitive_i_64(arr[1]),
-      before: dco_decode_opt_CastedPrimitive_i_64(arr[2]),
-      totalMessages: dco_decode_CastedPrimitive_i_64(arr[3]),
-      closed: dco_decode_bool(arr[4]),
-      tabJson: dco_decode_opt_String(arr[5]),
-      runtimeJson: dco_decode_opt_String(arr[6]),
-      scopeJson: dco_decode_opt_String(arr[7]),
-      messages: dco_decode_list_raw_message_view(arr[8]),
-      order: dco_decode_opt_list_CastedPrimitive_u_64(arr[9]),
     );
   }
 
@@ -8772,8 +8754,8 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   ComposerView dco_decode_composer_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 18)
-      throw Exception('unexpected arr length: expect 18 but see ${arr.length}');
+    if (arr.length != 17)
+      throw Exception('unexpected arr length: expect 17 but see ${arr.length}');
     return ComposerView(
       catalogKey: dco_decode_opt_String(arr[0]),
       catalogLoading: dco_decode_bool(arr[1]),
@@ -8789,12 +8771,11 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       modelLabel: dco_decode_opt_String(arr[9]),
       routingSupported: dco_decode_bool(arr[10]),
       harnessLocked: dco_decode_opt_box_autoadd_bool(arr[11]),
-      tabJson: dco_decode_String(arr[12]),
-      saving: dco_decode_bool(arr[13]),
-      refreshing: dco_decode_bool(arr[14]),
-      failure: dco_decode_opt_box_autoadd_settings_failure_view(arr[15]),
-      inventoryRevision: dco_decode_CastedPrimitive_u_64(arr[16]),
-      controls: dco_decode_controls_view(arr[17]),
+      saving: dco_decode_bool(arr[12]),
+      refreshing: dco_decode_bool(arr[13]),
+      failure: dco_decode_opt_box_autoadd_settings_failure_view(arr[14]),
+      inventoryRevision: dco_decode_CastedPrimitive_u_64(arr[15]),
+      controls: dco_decode_controls_view(arr[16]),
     );
   }
 
@@ -9114,6 +9095,33 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       default:
         throw Exception("unreachable");
     }
+  }
+
+  @protected
+  FeedbackSeedView dco_decode_feedback_seed_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 5)
+      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    return FeedbackSeedView(
+      turn: dco_decode_String(arr[0]),
+      rating: dco_decode_String(arr[1]),
+      syncState: dco_decode_opt_String(arr[2]),
+      feedbackId: dco_decode_opt_String(arr[3]),
+      reason: dco_decode_opt_String(arr[4]),
+    );
+  }
+
+  @protected
+  FeedbackTurnView dco_decode_feedback_turn_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return FeedbackTurnView(
+      footer: dco_decode_String(arr[0]),
+      turn: dco_decode_String(arr[1]),
+    );
   }
 
   @protected
@@ -9776,12 +9784,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   }
 
   @protected
-  List<int> dco_decode_list_CastedPrimitive_u_64(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>).map(dco_decode_CastedPrimitive_u_64).toList();
-  }
-
-  @protected
   List<String> dco_decode_list_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_String).toList();
@@ -9903,6 +9905,18 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   List<FeedOp> dco_decode_list_feed_op(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_feed_op).toList();
+  }
+
+  @protected
+  List<FeedbackSeedView> dco_decode_list_feedback_seed_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_feedback_seed_view).toList();
+  }
+
+  @protected
+  List<FeedbackTurnView> dco_decode_list_feedback_turn_view(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_feedback_turn_view).toList();
   }
 
   @protected
@@ -10313,12 +10327,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   List<QuestionView> dco_decode_list_question_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_question_view).toList();
-  }
-
-  @protected
-  List<RawMessageView> dco_decode_list_raw_message_view(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return (raw as List<dynamic>).map(dco_decode_raw_message_view).toList();
   }
 
   @protected
@@ -11138,12 +11146,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   }
 
   @protected
-  List<int>? dco_decode_opt_list_CastedPrimitive_u_64(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return raw == null ? null : dco_decode_list_CastedPrimitive_u_64(raw);
-  }
-
-  @protected
   List<String>? dco_decode_opt_list_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_list_String(raw);
@@ -11227,24 +11229,19 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       case 5:
         return OrchestratorIntent_Enter(entryId: dco_decode_opt_String(raw[1]));
       case 6:
-        return OrchestratorIntent_Entered(
-          generation: dco_decode_CastedPrimitive_u_64(raw[1]),
-          opened: dco_decode_bool(raw[2]),
-        );
-      case 7:
         return OrchestratorIntent_Leave();
-      case 8:
+      case 7:
         return OrchestratorIntent_Answer(
           chatId: dco_decode_String(raw[1]),
           requestId: dco_decode_String(raw[2]),
           answers: dco_decode_list_question_answer_view(raw[3]),
         );
-      case 9:
+      case 8:
         return OrchestratorIntent_Dismiss(
           chatId: dco_decode_String(raw[1]),
           requestId: dco_decode_String(raw[2]),
         );
-      case 10:
+      case 9:
         return OrchestratorIntent_Close();
       default:
         throw Exception("unreachable");
@@ -11262,36 +11259,15 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           catalog: dco_decode_box_autoadd_catalog_view(raw[1]),
         );
       case 2:
-        return OrchestratorOutcome_Busy();
+        return OrchestratorOutcome_Opened(
+          chatRevision: dco_decode_CastedPrimitive_u_64(raw[1]),
+          chatGeneration: dco_decode_CastedPrimitive_u_64(raw[2]),
+        );
       case 3:
-        return OrchestratorOutcome_Open(
-          chat: dco_decode_box_autoadd_chat_ref_view(raw[1]),
-          generation: dco_decode_CastedPrimitive_u_64(raw[2]),
-        );
-      case 4:
-        return OrchestratorOutcome_NewChat(
-          workspace: dco_decode_box_autoadd_catalog_workspace_view(raw[1]),
-          generation: dco_decode_CastedPrimitive_u_64(raw[2]),
-        );
-      case 5:
-        return OrchestratorOutcome_NewTab(
-          entryId: dco_decode_String(raw[1]),
-          generation: dco_decode_CastedPrimitive_u_64(raw[2]),
-          failure: dco_decode_String(raw[3]),
-        );
-      case 6:
-        return OrchestratorOutcome_LoadFailed(
-          message: dco_decode_String(raw[1]),
-        );
-      case 7:
-        return OrchestratorOutcome_Stale();
-      case 8:
-        return OrchestratorOutcome_Entered(opened: dco_decode_bool(raw[1]));
-      case 9:
         return OrchestratorOutcome_Failed(
           failure: dco_decode_box_autoadd_chat_failure(raw[1]),
         );
-      case 10:
+      case 4:
         return OrchestratorOutcome_Done();
       default:
         throw Exception("unreachable");
@@ -11328,28 +11304,29 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   OverviewView dco_decode_overview_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 19)
-      throw Exception('unexpected arr length: expect 19 but see ${arr.length}');
+    if (arr.length != 20)
+      throw Exception('unexpected arr length: expect 20 but see ${arr.length}');
     return OverviewView(
       revision: dco_decode_CastedPrimitive_u_64(arr[0]),
       loading: dco_decode_bool(arr[1]),
       scopePending: dco_decode_bool(arr[2]),
-      online: dco_decode_bool(arr[3]),
-      error: dco_decode_opt_String(arr[4]),
-      hasInventory: dco_decode_bool(arr[5]),
-      refreshes: dco_decode_CastedPrimitive_u_64(arr[6]),
-      projects: dco_decode_list_project_view(arr[7]),
-      worktrees: dco_decode_list_worktree_view(arr[8]),
-      codeProjectIds: dco_decode_list_String(arr[9]),
-      hasUnknownOwners: dco_decode_bool(arr[10]),
-      scopes: dco_decode_list_context_scope_view(arr[11]),
-      catalogRevision: dco_decode_CastedPrimitive_u_64(arr[12]),
-      catalog: dco_decode_list_chat_ref_view(arr[13]),
-      catalogWorkspaces: dco_decode_list_catalog_workspace_view(arr[14]),
-      cowork: dco_decode_list_cowork_scope_view(arr[15]),
-      hasRecents: dco_decode_bool(arr[16]),
-      recents: dco_decode_list_recents_view(arr[17]),
-      notificationSpaces: dco_decode_list_notification_space_view(arr[18]),
+      session: dco_decode_opt_CastedPrimitive_u_64(arr[3]),
+      catalogCurrent: dco_decode_bool(arr[4]),
+      error: dco_decode_opt_String(arr[5]),
+      hasInventory: dco_decode_bool(arr[6]),
+      refreshes: dco_decode_CastedPrimitive_u_64(arr[7]),
+      projects: dco_decode_list_project_view(arr[8]),
+      worktrees: dco_decode_list_worktree_view(arr[9]),
+      codeProjectIds: dco_decode_list_String(arr[10]),
+      hasUnknownOwners: dco_decode_bool(arr[11]),
+      scopes: dco_decode_list_context_scope_view(arr[12]),
+      catalogRevision: dco_decode_CastedPrimitive_u_64(arr[13]),
+      catalog: dco_decode_list_chat_ref_view(arr[14]),
+      catalogWorkspaces: dco_decode_list_catalog_workspace_view(arr[15]),
+      cowork: dco_decode_list_cowork_scope_view(arr[16]),
+      hasRecents: dco_decode_bool(arr[17]),
+      recents: dco_decode_list_recents_view(arr[18]),
+      notificationSpaces: dco_decode_list_notification_space_view(arr[19]),
     );
   }
 
@@ -11536,18 +11513,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       origin: dco_decode_pipeline_origin(arr[3]),
       triggerTypes: dco_decode_list_String(arr[4]),
       scopes: dco_decode_list_String(arr[5]),
-    );
-  }
-
-  @protected
-  PipelineDocumentView dco_decode_pipeline_document_view(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
-    return PipelineDocumentView(
-      markdown: dco_decode_bool(arr[0]),
-      text: dco_decode_String(arr[1]),
     );
   }
 
@@ -12010,7 +11975,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         return PipelinesOutcome_Started(id: dco_decode_String(raw[1]));
       case 3:
         return PipelinesOutcome_Content(
-          document: dco_decode_box_autoadd_pipeline_document_view(raw[1]),
+          chunks: dco_decode_list_pipeline_content_chunk_view(raw[1]),
         );
       default:
         throw Exception("unreachable");
@@ -12431,18 +12396,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   }
 
   @protected
-  RawMessageView dco_decode_raw_message_view(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
-    return RawMessageView(
-      uid: dco_decode_CastedPrimitive_u_64(arr[0]),
-      json: dco_decode_String(arr[1]),
-    );
-  }
-
-  @protected
   RecentAttention dco_decode_recent_attention(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return RecentAttention.values[raw as int];
@@ -12576,14 +12529,13 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   SelectionFrame dco_decode_selection_frame(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
     return SelectionFrame(
       chat: dco_decode_chat_ref_view(arr[0]),
       reset: dco_decode_bool(arr[1]),
       header: dco_decode_chat_header_view(arr[2]),
-      state: dco_decode_chat_state_frame(arr[3]),
-      feed: dco_decode_feed_frame(arr[4]),
+      feed: dco_decode_feed_frame(arr[3]),
     );
   }
 
@@ -12835,35 +12787,15 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     // Codec=Dco (DartCObject based), see doc to use other codecs
     switch (raw[0]) {
       case 0:
-        return TaskStep_Open(
-          chat: dco_decode_box_autoadd_chat_ref_view(raw[1]),
-        );
-      case 1:
-        return TaskStep_CreateTab(
-          projectId: dco_decode_String(raw[1]),
-          worktreeId: dco_decode_String(raw[2]),
-        );
-      case 2:
-        return TaskStep_CreateChat(projectId: dco_decode_String(raw[1]));
-      case 3:
-        return TaskStep_LoadWorktree(
-          projectId: dco_decode_String(raw[1]),
-          worktreeId: dco_decode_String(raw[2]),
-          name: dco_decode_String(raw[3]),
-        );
-      case 4:
-        return TaskStep_Refresh();
-      case 5:
         return TaskStep_SetDraft(
           chat: dco_decode_opt_box_autoadd_chat_ref_view(raw[1]),
-          text: dco_decode_opt_String(raw[2]),
         );
-      case 6:
+      case 1:
         return TaskStep_SetWorkspaceKind(
           projectId: dco_decode_String(raw[1]),
           kind: dco_decode_String(raw[2]),
         );
-      case 7:
+      case 2:
         return TaskStep_Sent(
           attachments: dco_decode_list_sent_attachment_view(raw[1]),
         );
@@ -12876,15 +12808,11 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   TaskStepResult dco_decode_task_step_result(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 6)
-      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
     return TaskStepResult(
       failure: dco_decode_opt_box_autoadd_task_failure(arr[0]),
-      created: dco_decode_opt_box_autoadd_chat_ref_view(arr[1]),
-      unavailable: dco_decode_bool(arr[2]),
-      chats: dco_decode_list_chat_ref_view(arr[3]),
-      activeChatId: dco_decode_opt_String(arr[4]),
-      online: dco_decode_bool(arr[5]),
+      online: dco_decode_bool(arr[1]),
     );
   }
 
@@ -13281,17 +13209,18 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   WorktreeChatsView dco_decode_worktree_chats_view(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 8)
-      throw Exception('unexpected arr length: expect 8 but see ${arr.length}');
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
     return WorktreeChatsView(
-      chats: dco_decode_list_chat_ref_view(arr[0]),
-      activeChatId: dco_decode_opt_String(arr[1]),
-      status: dco_decode_worktree_status(arr[2]),
-      unread: dco_decode_bool(arr[3]),
-      pendingQuestion: dco_decode_bool(arr[4]),
-      pendingApproval: dco_decode_bool(arr[5]),
-      isStreaming: dco_decode_bool(arr[6]),
-      workingChats: dco_decode_list_String(arr[7]),
+      sequence: dco_decode_CastedPrimitive_u_64(arr[0]),
+      chats: dco_decode_list_chat_ref_view(arr[1]),
+      activeChatId: dco_decode_opt_String(arr[2]),
+      status: dco_decode_worktree_status(arr[3]),
+      unread: dco_decode_bool(arr[4]),
+      pendingQuestion: dco_decode_bool(arr[5]),
+      pendingApproval: dco_decode_bool(arr[6]),
+      isStreaming: dco_decode_bool(arr[7]),
+      workingChats: dco_decode_list_String(arr[8]),
     );
   }
 
@@ -13307,6 +13236,8 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         return WorktreeLoad_Unavailable();
       case 2:
         return WorktreeLoad_Stale();
+      case 3:
+        return WorktreeLoad_SessionLost();
       default:
         throw Exception("unreachable");
     }
@@ -14802,14 +14733,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   }
 
   @protected
-  CatalogWorkspaceView sse_decode_box_autoadd_catalog_workspace_view(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_catalog_workspace_view(deserializer));
-  }
-
-  @protected
   ChatFailure sse_decode_box_autoadd_chat_failure(
     SseDeserializer deserializer,
   ) {
@@ -15077,14 +15000,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_pipeline_content_source(deserializer));
-  }
-
-  @protected
-  PipelineDocumentView sse_decode_box_autoadd_pipeline_document_view(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_pipeline_document_view(deserializer));
   }
 
   @protected
@@ -15565,6 +15480,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     var var_revision = sse_decode_CastedPrimitive_u_64(deserializer);
     var var_generation = sse_decode_CastedPrimitive_u_64(deserializer);
     var var_connected = sse_decode_bool(deserializer);
+    var var_activityConnected = sse_decode_bool(deserializer);
     var var_loading = sse_decode_bool(deserializer);
     var var_loadingOlder = sse_decode_bool(deserializer);
     var var_hydrating = sse_decode_bool(deserializer);
@@ -15579,6 +15495,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     var var_confirmedSend = sse_decode_opt_box_autoadd_pending_send_view(
       deserializer,
     );
+    var var_successfulTurns = sse_decode_list_String(deserializer);
     var var_drafts = sse_decode_list_draft_view(deserializer);
     var var_draftSeq = sse_decode_CastedPrimitive_u_64(deserializer);
     var var_composer = sse_decode_opt_box_autoadd_composer_view(deserializer);
@@ -15586,6 +15503,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       revision: var_revision,
       generation: var_generation,
       connected: var_connected,
+      activityConnected: var_activityConnected,
       loading: var_loading,
       loadingOlder: var_loadingOlder,
       hydrating: var_hydrating,
@@ -15596,6 +15514,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       sending: var_sending,
       pendingSend: var_pendingSend,
       confirmedSend: var_confirmedSend,
+      successfulTurns: var_successfulTurns,
       drafts: var_drafts,
       draftSeq: var_draftSeq,
       composer: var_composer,
@@ -15619,6 +15538,19 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     var var_totalMessages = sse_decode_CastedPrimitive_i_64(deserializer);
     var var_tabs = sse_decode_list_chat_tab_view(deserializer);
     var var_fileTabs = sse_decode_list_file_tab_view(deserializer);
+    var var_hasMessages = sse_decode_bool(deserializer);
+    var var_model = sse_decode_opt_String(deserializer);
+    var var_executionHarness = sse_decode_opt_String(deserializer);
+    var var_providerType = sse_decode_opt_String(deserializer);
+    var var_terminalMode = sse_decode_bool(deserializer);
+    var var_pluginSelectionsRevision = sse_decode_CastedPrimitive_u_64(
+      deserializer,
+    );
+    var var_pluginSelectionCount = sse_decode_opt_box_autoadd_u_32(
+      deserializer,
+    );
+    var var_feedbackTurns = sse_decode_list_feedback_turn_view(deserializer);
+    var var_feedbackSeeds = sse_decode_list_feedback_seed_view(deserializer);
     var var_questions = sse_decode_list_question_view(deserializer);
     return ChatHeaderView(
       revision: var_revision,
@@ -15635,6 +15567,15 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       totalMessages: var_totalMessages,
       tabs: var_tabs,
       fileTabs: var_fileTabs,
+      hasMessages: var_hasMessages,
+      model: var_model,
+      executionHarness: var_executionHarness,
+      providerType: var_providerType,
+      terminalMode: var_terminalMode,
+      pluginSelectionsRevision: var_pluginSelectionsRevision,
+      pluginSelectionCount: var_pluginSelectionCount,
+      feedbackTurns: var_feedbackTurns,
+      feedbackSeeds: var_feedbackSeeds,
       questions: var_questions,
     );
   }
@@ -15679,11 +15620,21 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       case 8:
         return ChatIntent_RetryReadReceipts();
       case 9:
-        var var_chat = sse_decode_box_autoadd_chat_ref_view(deserializer);
-        return ChatIntent_Archive(chat: var_chat);
+        var var_id = sse_decode_String(deserializer);
+        return ChatIntent_CloseTab(id: var_id);
       case 10:
-        return ChatIntent_Close();
+        var var_chat = sse_decode_box_autoadd_chat_ref_view(deserializer);
+        var var_generation = sse_decode_CastedPrimitive_u_64(deserializer);
+        return ChatIntent_Refresh(chat: var_chat, generation: var_generation);
       case 11:
+        var var_catalogLoaded = sse_decode_bool(deserializer);
+        return ChatIntent_RestoreConnection(catalogLoaded: var_catalogLoaded);
+      case 12:
+        var var_enabled = sse_decode_bool(deserializer);
+        return ChatIntent_TrackTurns(enabled: var_enabled);
+      case 13:
+        return ChatIntent_Close();
+      case 14:
         var var_chat = sse_decode_opt_box_autoadd_chat_ref_view(deserializer);
         var var_text = sse_decode_String(deserializer);
         var var_retry = sse_decode_bool(deserializer);
@@ -15696,26 +15647,27 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           dictated: var_dictated,
           attachmentPaths: var_attachmentPaths,
         );
-      case 12:
-        return ChatIntent_Stop();
-      case 13:
+      case 15:
+        var var_chat = sse_decode_box_autoadd_chat_ref_view(deserializer);
+        return ChatIntent_Stop(chat: var_chat);
+      case 16:
         var var_workspaceId = sse_decode_String(deserializer);
         var var_title = sse_decode_opt_String(deserializer);
         return ChatIntent_CreateChat(
           workspaceId: var_workspaceId,
           title: var_title,
         );
-      case 14:
+      case 17:
         var var_projectId = sse_decode_String(deserializer);
         var var_worktreeId = sse_decode_String(deserializer);
         return ChatIntent_CreateTab(
           projectId: var_projectId,
           worktreeId: var_worktreeId,
         );
-      case 15:
+      case 18:
         var var_ids = sse_decode_list_String(deserializer);
         return ChatIntent_SetWorkspaces(ids: var_ids);
-      case 16:
+      case 19:
         var var_chat = sse_decode_box_autoadd_chat_ref_view(deserializer);
         var var_text = sse_decode_String(deserializer);
         var var_seq = sse_decode_CastedPrimitive_u_64(deserializer);
@@ -15724,11 +15676,11 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           text: var_text,
           seq: var_seq,
         );
-      case 17:
+      case 20:
         var var_chat = sse_decode_box_autoadd_chat_ref_view(deserializer);
         var var_text = sse_decode_String(deserializer);
         return ChatIntent_ClearSentDraft(chat: var_chat, text: var_text);
-      case 18:
+      case 21:
         var var_scope = sse_decode_box_autoadd_chat_ref_view(deserializer);
         var var_filename = sse_decode_String(deserializer);
         var var_bytes = sse_decode_list_prim_u_8_strict(deserializer);
@@ -15737,19 +15689,19 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           filename: var_filename,
           bytes: var_bytes,
         );
-      case 19:
+      case 22:
         var var_scope = sse_decode_box_autoadd_chat_ref_view(deserializer);
         var var_filename = sse_decode_String(deserializer);
         return ChatIntent_DeleteAttachment(
           scope: var_scope,
           filename: var_filename,
         );
-      case 20:
+      case 23:
         return ChatIntent_EnableComposer();
-      case 21:
+      case 24:
         var var_report = sse_decode_bool(deserializer);
         return ChatIntent_LoadSettings(report: var_report);
-      case 22:
+      case 25:
         var var_chat = sse_decode_box_autoadd_chat_ref_view(deserializer);
         var var_modelJson = sse_decode_String(deserializer);
         var var_harnessJson = sse_decode_String(deserializer);
@@ -15760,17 +15712,15 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           harnessJson: var_harnessJson,
           running: var_running,
         );
-      case 23:
-        return ChatIntent_RestoreSettings();
-      case 24:
+      case 26:
         return ChatIntent_InvalidateSettings();
-      case 25:
+      case 27:
         var var_chat = sse_decode_box_autoadd_chat_ref_view(deserializer);
         var var_pick = sse_decode_box_autoadd_settings_pick(deserializer);
         return ChatIntent_ChangeSetting(chat: var_chat, pick: var_pick);
-      case 26:
+      case 28:
         return ChatIntent_InvalidatePicks();
-      case 27:
+      case 29:
         var var_chat = sse_decode_box_autoadd_chat_ref_view(deserializer);
         var var_id = sse_decode_String(deserializer);
         var var_provider = sse_decode_String(deserializer);
@@ -15781,14 +15731,14 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           provider: var_provider,
           harness: var_harness,
         );
-      case 28:
+      case 30:
         var var_chat = sse_decode_box_autoadd_chat_ref_view(deserializer);
         var var_patchJson = sse_decode_String(deserializer);
         return ChatIntent_PatchSettings(
           chat: var_chat,
           patchJson: var_patchJson,
         );
-      case 29:
+      case 31:
         var var_chat = sse_decode_box_autoadd_chat_ref_view(deserializer);
         var var_requestId = sse_decode_String(deserializer);
         var var_answersJson = sse_decode_String(deserializer);
@@ -15797,25 +15747,25 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           requestId: var_requestId,
           answersJson: var_answersJson,
         );
-      case 30:
+      case 32:
         var var_chat = sse_decode_box_autoadd_chat_ref_view(deserializer);
         var var_requestId = sse_decode_String(deserializer);
         return ChatIntent_DismissQuestion(
           chat: var_chat,
           requestId: var_requestId,
         );
-      case 31:
+      case 33:
         var var_chat = sse_decode_box_autoadd_chat_ref_view(deserializer);
         var var_atMessageId = sse_decode_String(deserializer);
         return ChatIntent_Fork(chat: var_chat, atMessageId: var_atMessageId);
-      case 32:
+      case 34:
         var var_chat = sse_decode_box_autoadd_chat_ref_view(deserializer);
         var var_atMessageId = sse_decode_String(deserializer);
         return ChatIntent_ForkOpened(
           chat: var_chat,
           atMessageId: var_atMessageId,
         );
-      case 33:
+      case 35:
         var var_source = sse_decode_composer_source(deserializer);
         var var_scope = sse_decode_box_autoadd_source_scope_view(deserializer);
         return ChatIntent_LoadComposerSource(
@@ -15835,7 +15785,11 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     switch (tag_) {
       case 0:
         var var_selected = sse_decode_bool(deserializer);
-        return ChatOutcome_Opened(selected: var_selected);
+        var var_generation = sse_decode_CastedPrimitive_u_64(deserializer);
+        return ChatOutcome_Opened(
+          selected: var_selected,
+          generation: var_generation,
+        );
       case 1:
         var var_accepted = sse_decode_bool(deserializer);
         return ChatOutcome_Sent(accepted: var_accepted);
@@ -15843,9 +15797,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         var var_chat = sse_decode_box_autoadd_chat_ref_view(deserializer);
         return ChatOutcome_Created(chat: var_chat);
       case 3:
-        var var_refresh = sse_decode_bool(deserializer);
-        return ChatOutcome_Stopped(refresh: var_refresh);
-      case 4:
         var var_filename = sse_decode_String(deserializer);
         var var_path = sse_decode_String(deserializer);
         var var_size = sse_decode_CastedPrimitive_i_64(deserializer);
@@ -15854,26 +15805,26 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           path: var_path,
           size: var_size,
         );
-      case 5:
+      case 4:
         var var_applied = sse_decode_bool(deserializer);
         return ChatOutcome_Changed(applied: var_applied);
-      case 6:
+      case 5:
         var var_revision = sse_decode_CastedPrimitive_i_64(deserializer);
         return ChatOutcome_Saved(revision: var_revision);
-      case 7:
+      case 6:
         var var_chat = sse_decode_box_autoadd_chat_ref_view(deserializer);
         return ChatOutcome_Forked(chat: var_chat);
-      case 8:
+      case 7:
         var var_commands = sse_decode_list_command_row_view(deserializer);
         var var_unsettled = sse_decode_bool(deserializer);
         return ChatOutcome_Inventory(
           commands: var_commands,
           unsettled: var_unsettled,
         );
-      case 9:
+      case 8:
         var var_json = sse_decode_String(deserializer);
         return ChatOutcome_PluginCatalog(json: var_json);
-      case 10:
+      case 9:
         var var_json = sse_decode_opt_String(deserializer);
         return ChatOutcome_Selections(json: var_json);
       default:
@@ -15913,33 +15864,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       revision: var_revision,
       failure: var_failure,
       outcome: var_outcome,
-    );
-  }
-
-  @protected
-  ChatStateFrame sse_decode_chat_state_frame(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_revision = sse_decode_CastedPrimitive_i_64(deserializer);
-    var var_transcriptRevision = sse_decode_CastedPrimitive_i_64(deserializer);
-    var var_before = sse_decode_opt_CastedPrimitive_i_64(deserializer);
-    var var_totalMessages = sse_decode_CastedPrimitive_i_64(deserializer);
-    var var_closed = sse_decode_bool(deserializer);
-    var var_tabJson = sse_decode_opt_String(deserializer);
-    var var_runtimeJson = sse_decode_opt_String(deserializer);
-    var var_scopeJson = sse_decode_opt_String(deserializer);
-    var var_messages = sse_decode_list_raw_message_view(deserializer);
-    var var_order = sse_decode_opt_list_CastedPrimitive_u_64(deserializer);
-    return ChatStateFrame(
-      revision: var_revision,
-      transcriptRevision: var_transcriptRevision,
-      before: var_before,
-      totalMessages: var_totalMessages,
-      closed: var_closed,
-      tabJson: var_tabJson,
-      runtimeJson: var_runtimeJson,
-      scopeJson: var_scopeJson,
-      messages: var_messages,
-      order: var_order,
     );
   }
 
@@ -16080,7 +16004,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     var var_modelLabel = sse_decode_opt_String(deserializer);
     var var_routingSupported = sse_decode_bool(deserializer);
     var var_harnessLocked = sse_decode_opt_box_autoadd_bool(deserializer);
-    var var_tabJson = sse_decode_String(deserializer);
     var var_saving = sse_decode_bool(deserializer);
     var var_refreshing = sse_decode_bool(deserializer);
     var var_failure = sse_decode_opt_box_autoadd_settings_failure_view(
@@ -16101,7 +16024,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       modelLabel: var_modelLabel,
       routingSupported: var_routingSupported,
       harnessLocked: var_harnessLocked,
-      tabJson: var_tabJson,
       saving: var_saving,
       refreshing: var_refreshing,
       failure: var_failure,
@@ -16476,6 +16398,31 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       default:
         throw UnimplementedError('');
     }
+  }
+
+  @protected
+  FeedbackSeedView sse_decode_feedback_seed_view(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_turn = sse_decode_String(deserializer);
+    var var_rating = sse_decode_String(deserializer);
+    var var_syncState = sse_decode_opt_String(deserializer);
+    var var_feedbackId = sse_decode_opt_String(deserializer);
+    var var_reason = sse_decode_opt_String(deserializer);
+    return FeedbackSeedView(
+      turn: var_turn,
+      rating: var_rating,
+      syncState: var_syncState,
+      feedbackId: var_feedbackId,
+      reason: var_reason,
+    );
+  }
+
+  @protected
+  FeedbackTurnView sse_decode_feedback_turn_view(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_footer = sse_decode_String(deserializer);
+    var var_turn = sse_decode_String(deserializer);
+    return FeedbackTurnView(footer: var_footer, turn: var_turn);
   }
 
   @protected
@@ -17197,18 +17144,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   }
 
   @protected
-  List<int> sse_decode_list_CastedPrimitive_u_64(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <int>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_CastedPrimitive_u_64(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -17476,6 +17411,34 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     var ans_ = <FeedOp>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_feed_op(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<FeedbackSeedView> sse_decode_list_feedback_seed_view(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <FeedbackSeedView>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_feedback_seed_view(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<FeedbackTurnView> sse_decode_list_feedback_turn_view(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <FeedbackTurnView>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_feedback_turn_view(deserializer));
     }
     return ans_;
   }
@@ -18284,20 +18247,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     var ans_ = <QuestionView>[];
     for (var idx_ = 0; idx_ < len_; ++idx_) {
       ans_.add(sse_decode_question_view(deserializer));
-    }
-    return ans_;
-  }
-
-  @protected
-  List<RawMessageView> sse_decode_list_raw_message_view(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var len_ = sse_decode_i_32(deserializer);
-    var ans_ = <RawMessageView>[];
-    for (var idx_ = 0; idx_ < len_; ++idx_) {
-      ans_.add(sse_decode_raw_message_view(deserializer));
     }
     return ans_;
   }
@@ -19716,19 +19665,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   }
 
   @protected
-  List<int>? sse_decode_opt_list_CastedPrimitive_u_64(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    if (sse_decode_bool(deserializer)) {
-      return (sse_decode_list_CastedPrimitive_u_64(deserializer));
-    } else {
-      return null;
-    }
-  }
-
-  @protected
   List<String>? sse_decode_opt_list_String(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -19873,15 +19809,8 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         var var_entryId = sse_decode_opt_String(deserializer);
         return OrchestratorIntent_Enter(entryId: var_entryId);
       case 6:
-        var var_generation = sse_decode_CastedPrimitive_u_64(deserializer);
-        var var_opened = sse_decode_bool(deserializer);
-        return OrchestratorIntent_Entered(
-          generation: var_generation,
-          opened: var_opened,
-        );
-      case 7:
         return OrchestratorIntent_Leave();
-      case 8:
+      case 7:
         var var_chatId = sse_decode_String(deserializer);
         var var_requestId = sse_decode_String(deserializer);
         var var_answers = sse_decode_list_question_answer_view(deserializer);
@@ -19890,14 +19819,14 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
           requestId: var_requestId,
           answers: var_answers,
         );
-      case 9:
+      case 8:
         var var_chatId = sse_decode_String(deserializer);
         var var_requestId = sse_decode_String(deserializer);
         return OrchestratorIntent_Dismiss(
           chatId: var_chatId,
           requestId: var_requestId,
         );
-      case 10:
+      case 9:
         return OrchestratorIntent_Close();
       default:
         throw UnimplementedError('');
@@ -19919,44 +19848,16 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         var var_catalog = sse_decode_box_autoadd_catalog_view(deserializer);
         return OrchestratorOutcome_Catalog(catalog: var_catalog);
       case 2:
-        return OrchestratorOutcome_Busy();
+        var var_chatRevision = sse_decode_CastedPrimitive_u_64(deserializer);
+        var var_chatGeneration = sse_decode_CastedPrimitive_u_64(deserializer);
+        return OrchestratorOutcome_Opened(
+          chatRevision: var_chatRevision,
+          chatGeneration: var_chatGeneration,
+        );
       case 3:
-        var var_chat = sse_decode_box_autoadd_chat_ref_view(deserializer);
-        var var_generation = sse_decode_CastedPrimitive_u_64(deserializer);
-        return OrchestratorOutcome_Open(
-          chat: var_chat,
-          generation: var_generation,
-        );
-      case 4:
-        var var_workspace = sse_decode_box_autoadd_catalog_workspace_view(
-          deserializer,
-        );
-        var var_generation = sse_decode_CastedPrimitive_u_64(deserializer);
-        return OrchestratorOutcome_NewChat(
-          workspace: var_workspace,
-          generation: var_generation,
-        );
-      case 5:
-        var var_entryId = sse_decode_String(deserializer);
-        var var_generation = sse_decode_CastedPrimitive_u_64(deserializer);
-        var var_failure = sse_decode_String(deserializer);
-        return OrchestratorOutcome_NewTab(
-          entryId: var_entryId,
-          generation: var_generation,
-          failure: var_failure,
-        );
-      case 6:
-        var var_message = sse_decode_String(deserializer);
-        return OrchestratorOutcome_LoadFailed(message: var_message);
-      case 7:
-        return OrchestratorOutcome_Stale();
-      case 8:
-        var var_opened = sse_decode_bool(deserializer);
-        return OrchestratorOutcome_Entered(opened: var_opened);
-      case 9:
         var var_failure = sse_decode_box_autoadd_chat_failure(deserializer);
         return OrchestratorOutcome_Failed(failure: var_failure);
-      case 10:
+      case 4:
         return OrchestratorOutcome_Done();
       default:
         throw UnimplementedError('');
@@ -19994,7 +19895,8 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     var var_revision = sse_decode_CastedPrimitive_u_64(deserializer);
     var var_loading = sse_decode_bool(deserializer);
     var var_scopePending = sse_decode_bool(deserializer);
-    var var_online = sse_decode_bool(deserializer);
+    var var_session = sse_decode_opt_CastedPrimitive_u_64(deserializer);
+    var var_catalogCurrent = sse_decode_bool(deserializer);
     var var_error = sse_decode_opt_String(deserializer);
     var var_hasInventory = sse_decode_bool(deserializer);
     var var_refreshes = sse_decode_CastedPrimitive_u_64(deserializer);
@@ -20018,7 +19920,8 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       revision: var_revision,
       loading: var_loading,
       scopePending: var_scopePending,
-      online: var_online,
+      session: var_session,
+      catalogCurrent: var_catalogCurrent,
       error: var_error,
       hasInventory: var_hasInventory,
       refreshes: var_refreshes,
@@ -20230,16 +20133,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       triggerTypes: var_triggerTypes,
       scopes: var_scopes,
     );
-  }
-
-  @protected
-  PipelineDocumentView sse_decode_pipeline_document_view(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_markdown = sse_decode_bool(deserializer);
-    var var_text = sse_decode_String(deserializer);
-    return PipelineDocumentView(markdown: var_markdown, text: var_text);
   }
 
   @protected
@@ -20798,10 +20691,10 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         var var_id = sse_decode_String(deserializer);
         return PipelinesOutcome_Started(id: var_id);
       case 3:
-        var var_document = sse_decode_box_autoadd_pipeline_document_view(
+        var var_chunks = sse_decode_list_pipeline_content_chunk_view(
           deserializer,
         );
-        return PipelinesOutcome_Content(document: var_document);
+        return PipelinesOutcome_Content(chunks: var_chunks);
       default:
         throw UnimplementedError('');
     }
@@ -21290,14 +21183,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   }
 
   @protected
-  RawMessageView sse_decode_raw_message_view(SseDeserializer deserializer) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_uid = sse_decode_CastedPrimitive_u_64(deserializer);
-    var var_json = sse_decode_String(deserializer);
-    return RawMessageView(uid: var_uid, json: var_json);
-  }
-
-  @protected
   RecentAttention sse_decode_recent_attention(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var inner = sse_decode_i_32(deserializer);
@@ -21418,13 +21303,11 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     var var_chat = sse_decode_chat_ref_view(deserializer);
     var var_reset = sse_decode_bool(deserializer);
     var var_header = sse_decode_chat_header_view(deserializer);
-    var var_state = sse_decode_chat_state_frame(deserializer);
     var var_feed = sse_decode_feed_frame(deserializer);
     return SelectionFrame(
       chat: var_chat,
       reset: var_reset,
       header: var_header,
-      state: var_state,
       feed: var_feed,
     );
   }
@@ -21698,41 +21581,16 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     var tag_ = sse_decode_i_32(deserializer);
     switch (tag_) {
       case 0:
-        var var_chat = sse_decode_box_autoadd_chat_ref_view(deserializer);
-        return TaskStep_Open(chat: var_chat);
-      case 1:
-        var var_projectId = sse_decode_String(deserializer);
-        var var_worktreeId = sse_decode_String(deserializer);
-        return TaskStep_CreateTab(
-          projectId: var_projectId,
-          worktreeId: var_worktreeId,
-        );
-      case 2:
-        var var_projectId = sse_decode_String(deserializer);
-        return TaskStep_CreateChat(projectId: var_projectId);
-      case 3:
-        var var_projectId = sse_decode_String(deserializer);
-        var var_worktreeId = sse_decode_String(deserializer);
-        var var_name = sse_decode_String(deserializer);
-        return TaskStep_LoadWorktree(
-          projectId: var_projectId,
-          worktreeId: var_worktreeId,
-          name: var_name,
-        );
-      case 4:
-        return TaskStep_Refresh();
-      case 5:
         var var_chat = sse_decode_opt_box_autoadd_chat_ref_view(deserializer);
-        var var_text = sse_decode_opt_String(deserializer);
-        return TaskStep_SetDraft(chat: var_chat, text: var_text);
-      case 6:
+        return TaskStep_SetDraft(chat: var_chat);
+      case 1:
         var var_projectId = sse_decode_String(deserializer);
         var var_kind = sse_decode_String(deserializer);
         return TaskStep_SetWorkspaceKind(
           projectId: var_projectId,
           kind: var_kind,
         );
-      case 7:
+      case 2:
         var var_attachments = sse_decode_list_sent_attachment_view(
           deserializer,
         );
@@ -21746,19 +21604,8 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   TaskStepResult sse_decode_task_step_result(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_failure = sse_decode_opt_box_autoadd_task_failure(deserializer);
-    var var_created = sse_decode_opt_box_autoadd_chat_ref_view(deserializer);
-    var var_unavailable = sse_decode_bool(deserializer);
-    var var_chats = sse_decode_list_chat_ref_view(deserializer);
-    var var_activeChatId = sse_decode_opt_String(deserializer);
     var var_online = sse_decode_bool(deserializer);
-    return TaskStepResult(
-      failure: var_failure,
-      created: var_created,
-      unavailable: var_unavailable,
-      chats: var_chats,
-      activeChatId: var_activeChatId,
-      online: var_online,
-    );
+    return TaskStepResult(failure: var_failure, online: var_online);
   }
 
   @protected
@@ -22181,6 +22028,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_sequence = sse_decode_CastedPrimitive_u_64(deserializer);
     var var_chats = sse_decode_list_chat_ref_view(deserializer);
     var var_activeChatId = sse_decode_opt_String(deserializer);
     var var_status = sse_decode_worktree_status(deserializer);
@@ -22190,6 +22038,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     var var_isStreaming = sse_decode_bool(deserializer);
     var var_workingChats = sse_decode_list_String(deserializer);
     return WorktreeChatsView(
+      sequence: var_sequence,
       chats: var_chats,
       activeChatId: var_activeChatId,
       status: var_status,
@@ -22216,6 +22065,8 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         return WorktreeLoad_Unavailable();
       case 2:
         return WorktreeLoad_Stale();
+      case 3:
+        return WorktreeLoad_SessionLost();
       default:
         throw UnimplementedError('');
     }
@@ -23873,15 +23724,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   }
 
   @protected
-  void sse_encode_box_autoadd_catalog_workspace_view(
-    CatalogWorkspaceView self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_catalog_workspace_view(self, serializer);
-  }
-
-  @protected
   void sse_encode_box_autoadd_chat_failure(
     ChatFailure self,
     SseSerializer serializer,
@@ -24197,15 +24039,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_pipeline_content_source(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_pipeline_document_view(
-    PipelineDocumentView self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_pipeline_document_view(self, serializer);
   }
 
   @protected
@@ -24716,6 +24549,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     sse_encode_CastedPrimitive_u_64(self.revision, serializer);
     sse_encode_CastedPrimitive_u_64(self.generation, serializer);
     sse_encode_bool(self.connected, serializer);
+    sse_encode_bool(self.activityConnected, serializer);
     sse_encode_bool(self.loading, serializer);
     sse_encode_bool(self.loadingOlder, serializer);
     sse_encode_bool(self.hydrating, serializer);
@@ -24729,6 +24563,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       self.confirmedSend,
       serializer,
     );
+    sse_encode_list_String(self.successfulTurns, serializer);
     sse_encode_list_draft_view(self.drafts, serializer);
     sse_encode_CastedPrimitive_u_64(self.draftSeq, serializer);
     sse_encode_opt_box_autoadd_composer_view(self.composer, serializer);
@@ -24754,6 +24589,15 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     sse_encode_CastedPrimitive_i_64(self.totalMessages, serializer);
     sse_encode_list_chat_tab_view(self.tabs, serializer);
     sse_encode_list_file_tab_view(self.fileTabs, serializer);
+    sse_encode_bool(self.hasMessages, serializer);
+    sse_encode_opt_String(self.model, serializer);
+    sse_encode_opt_String(self.executionHarness, serializer);
+    sse_encode_opt_String(self.providerType, serializer);
+    sse_encode_bool(self.terminalMode, serializer);
+    sse_encode_CastedPrimitive_u_64(self.pluginSelectionsRevision, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.pluginSelectionCount, serializer);
+    sse_encode_list_feedback_turn_view(self.feedbackTurns, serializer);
+    sse_encode_list_feedback_seed_view(self.feedbackSeeds, serializer);
     sse_encode_list_question_view(self.questions, serializer);
   }
 
@@ -24794,11 +24638,21 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         sse_encode_i_32(7, serializer);
       case ChatIntent_RetryReadReceipts():
         sse_encode_i_32(8, serializer);
-      case ChatIntent_Archive(chat: final chat):
+      case ChatIntent_CloseTab(id: final id):
         sse_encode_i_32(9, serializer);
-        sse_encode_box_autoadd_chat_ref_view(chat, serializer);
-      case ChatIntent_Close():
+        sse_encode_String(id, serializer);
+      case ChatIntent_Refresh(chat: final chat, generation: final generation):
         sse_encode_i_32(10, serializer);
+        sse_encode_box_autoadd_chat_ref_view(chat, serializer);
+        sse_encode_CastedPrimitive_u_64(generation, serializer);
+      case ChatIntent_RestoreConnection(catalogLoaded: final catalogLoaded):
+        sse_encode_i_32(11, serializer);
+        sse_encode_bool(catalogLoaded, serializer);
+      case ChatIntent_TrackTurns(enabled: final enabled):
+        sse_encode_i_32(12, serializer);
+        sse_encode_bool(enabled, serializer);
+      case ChatIntent_Close():
+        sse_encode_i_32(13, serializer);
       case ChatIntent_Send(
         chat: final chat,
         text: final text,
@@ -24806,42 +24660,43 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         dictated: final dictated,
         attachmentPaths: final attachmentPaths,
       ):
-        sse_encode_i_32(11, serializer);
+        sse_encode_i_32(14, serializer);
         sse_encode_opt_box_autoadd_chat_ref_view(chat, serializer);
         sse_encode_String(text, serializer);
         sse_encode_bool(retry, serializer);
         sse_encode_bool(dictated, serializer);
         sse_encode_list_String(attachmentPaths, serializer);
-      case ChatIntent_Stop():
-        sse_encode_i_32(12, serializer);
+      case ChatIntent_Stop(chat: final chat):
+        sse_encode_i_32(15, serializer);
+        sse_encode_box_autoadd_chat_ref_view(chat, serializer);
       case ChatIntent_CreateChat(
         workspaceId: final workspaceId,
         title: final title,
       ):
-        sse_encode_i_32(13, serializer);
+        sse_encode_i_32(16, serializer);
         sse_encode_String(workspaceId, serializer);
         sse_encode_opt_String(title, serializer);
       case ChatIntent_CreateTab(
         projectId: final projectId,
         worktreeId: final worktreeId,
       ):
-        sse_encode_i_32(14, serializer);
+        sse_encode_i_32(17, serializer);
         sse_encode_String(projectId, serializer);
         sse_encode_String(worktreeId, serializer);
       case ChatIntent_SetWorkspaces(ids: final ids):
-        sse_encode_i_32(15, serializer);
+        sse_encode_i_32(18, serializer);
         sse_encode_list_String(ids, serializer);
       case ChatIntent_SetDraft(
         chat: final chat,
         text: final text,
         seq: final seq,
       ):
-        sse_encode_i_32(16, serializer);
+        sse_encode_i_32(19, serializer);
         sse_encode_box_autoadd_chat_ref_view(chat, serializer);
         sse_encode_String(text, serializer);
         sse_encode_CastedPrimitive_u_64(seq, serializer);
       case ChatIntent_ClearSentDraft(chat: final chat, text: final text):
-        sse_encode_i_32(17, serializer);
+        sse_encode_i_32(20, serializer);
         sse_encode_box_autoadd_chat_ref_view(chat, serializer);
         sse_encode_String(text, serializer);
       case ChatIntent_ImportAttachment(
@@ -24849,7 +24704,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         filename: final filename,
         bytes: final bytes,
       ):
-        sse_encode_i_32(18, serializer);
+        sse_encode_i_32(21, serializer);
         sse_encode_box_autoadd_chat_ref_view(scope, serializer);
         sse_encode_String(filename, serializer);
         sse_encode_list_prim_u_8_strict(bytes, serializer);
@@ -24857,13 +24712,13 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         scope: final scope,
         filename: final filename,
       ):
-        sse_encode_i_32(19, serializer);
+        sse_encode_i_32(22, serializer);
         sse_encode_box_autoadd_chat_ref_view(scope, serializer);
         sse_encode_String(filename, serializer);
       case ChatIntent_EnableComposer():
-        sse_encode_i_32(20, serializer);
+        sse_encode_i_32(23, serializer);
       case ChatIntent_LoadSettings(report: final report):
-        sse_encode_i_32(21, serializer);
+        sse_encode_i_32(24, serializer);
         sse_encode_bool(report, serializer);
       case ChatIntent_SyncSettings(
         chat: final chat,
@@ -24871,28 +24726,26 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         harnessJson: final harnessJson,
         running: final running,
       ):
-        sse_encode_i_32(22, serializer);
+        sse_encode_i_32(25, serializer);
         sse_encode_box_autoadd_chat_ref_view(chat, serializer);
         sse_encode_String(modelJson, serializer);
         sse_encode_String(harnessJson, serializer);
         sse_encode_bool(running, serializer);
-      case ChatIntent_RestoreSettings():
-        sse_encode_i_32(23, serializer);
       case ChatIntent_InvalidateSettings():
-        sse_encode_i_32(24, serializer);
+        sse_encode_i_32(26, serializer);
       case ChatIntent_ChangeSetting(chat: final chat, pick: final pick):
-        sse_encode_i_32(25, serializer);
+        sse_encode_i_32(27, serializer);
         sse_encode_box_autoadd_chat_ref_view(chat, serializer);
         sse_encode_box_autoadd_settings_pick(pick, serializer);
       case ChatIntent_InvalidatePicks():
-        sse_encode_i_32(26, serializer);
+        sse_encode_i_32(28, serializer);
       case ChatIntent_SelectModel(
         chat: final chat,
         id: final id,
         provider: final provider,
         harness: final harness,
       ):
-        sse_encode_i_32(27, serializer);
+        sse_encode_i_32(29, serializer);
         sse_encode_box_autoadd_chat_ref_view(chat, serializer);
         sse_encode_String(id, serializer);
         sse_encode_String(provider, serializer);
@@ -24901,7 +24754,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         chat: final chat,
         patchJson: final patchJson,
       ):
-        sse_encode_i_32(28, serializer);
+        sse_encode_i_32(30, serializer);
         sse_encode_box_autoadd_chat_ref_view(chat, serializer);
         sse_encode_String(patchJson, serializer);
       case ChatIntent_Answer(
@@ -24909,7 +24762,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         requestId: final requestId,
         answersJson: final answersJson,
       ):
-        sse_encode_i_32(29, serializer);
+        sse_encode_i_32(31, serializer);
         sse_encode_box_autoadd_chat_ref_view(chat, serializer);
         sse_encode_String(requestId, serializer);
         sse_encode_String(answersJson, serializer);
@@ -24917,25 +24770,25 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         chat: final chat,
         requestId: final requestId,
       ):
-        sse_encode_i_32(30, serializer);
+        sse_encode_i_32(32, serializer);
         sse_encode_box_autoadd_chat_ref_view(chat, serializer);
         sse_encode_String(requestId, serializer);
       case ChatIntent_Fork(chat: final chat, atMessageId: final atMessageId):
-        sse_encode_i_32(31, serializer);
+        sse_encode_i_32(33, serializer);
         sse_encode_box_autoadd_chat_ref_view(chat, serializer);
         sse_encode_String(atMessageId, serializer);
       case ChatIntent_ForkOpened(
         chat: final chat,
         atMessageId: final atMessageId,
       ):
-        sse_encode_i_32(32, serializer);
+        sse_encode_i_32(34, serializer);
         sse_encode_box_autoadd_chat_ref_view(chat, serializer);
         sse_encode_String(atMessageId, serializer);
       case ChatIntent_LoadComposerSource(
         source: final source,
         scope: final scope,
       ):
-        sse_encode_i_32(33, serializer);
+        sse_encode_i_32(35, serializer);
         sse_encode_composer_source(source, serializer);
         sse_encode_box_autoadd_source_scope_view(scope, serializer);
     }
@@ -24945,48 +24798,49 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   void sse_encode_chat_outcome(ChatOutcome self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     switch (self) {
-      case ChatOutcome_Opened(selected: final selected):
+      case ChatOutcome_Opened(
+        selected: final selected,
+        generation: final generation,
+      ):
         sse_encode_i_32(0, serializer);
         sse_encode_bool(selected, serializer);
+        sse_encode_CastedPrimitive_u_64(generation, serializer);
       case ChatOutcome_Sent(accepted: final accepted):
         sse_encode_i_32(1, serializer);
         sse_encode_bool(accepted, serializer);
       case ChatOutcome_Created(chat: final chat):
         sse_encode_i_32(2, serializer);
         sse_encode_box_autoadd_chat_ref_view(chat, serializer);
-      case ChatOutcome_Stopped(refresh: final refresh):
-        sse_encode_i_32(3, serializer);
-        sse_encode_bool(refresh, serializer);
       case ChatOutcome_Stored(
         filename: final filename,
         path: final path,
         size: final size,
       ):
-        sse_encode_i_32(4, serializer);
+        sse_encode_i_32(3, serializer);
         sse_encode_String(filename, serializer);
         sse_encode_String(path, serializer);
         sse_encode_CastedPrimitive_i_64(size, serializer);
       case ChatOutcome_Changed(applied: final applied):
-        sse_encode_i_32(5, serializer);
+        sse_encode_i_32(4, serializer);
         sse_encode_bool(applied, serializer);
       case ChatOutcome_Saved(revision: final revision):
-        sse_encode_i_32(6, serializer);
+        sse_encode_i_32(5, serializer);
         sse_encode_CastedPrimitive_i_64(revision, serializer);
       case ChatOutcome_Forked(chat: final chat):
-        sse_encode_i_32(7, serializer);
+        sse_encode_i_32(6, serializer);
         sse_encode_box_autoadd_chat_ref_view(chat, serializer);
       case ChatOutcome_Inventory(
         commands: final commands,
         unsettled: final unsettled,
       ):
-        sse_encode_i_32(8, serializer);
+        sse_encode_i_32(7, serializer);
         sse_encode_list_command_row_view(commands, serializer);
         sse_encode_bool(unsettled, serializer);
       case ChatOutcome_PluginCatalog(json: final json):
-        sse_encode_i_32(9, serializer);
+        sse_encode_i_32(8, serializer);
         sse_encode_String(json, serializer);
       case ChatOutcome_Selections(json: final json):
-        sse_encode_i_32(10, serializer);
+        sse_encode_i_32(9, serializer);
         sse_encode_opt_String(json, serializer);
     }
   }
@@ -25012,24 +24866,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     sse_encode_CastedPrimitive_u_64(self.revision, serializer);
     sse_encode_opt_box_autoadd_chat_failure(self.failure, serializer);
     sse_encode_opt_box_autoadd_chat_outcome(self.outcome, serializer);
-  }
-
-  @protected
-  void sse_encode_chat_state_frame(
-    ChatStateFrame self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_CastedPrimitive_i_64(self.revision, serializer);
-    sse_encode_CastedPrimitive_i_64(self.transcriptRevision, serializer);
-    sse_encode_opt_CastedPrimitive_i_64(self.before, serializer);
-    sse_encode_CastedPrimitive_i_64(self.totalMessages, serializer);
-    sse_encode_bool(self.closed, serializer);
-    sse_encode_opt_String(self.tabJson, serializer);
-    sse_encode_opt_String(self.runtimeJson, serializer);
-    sse_encode_opt_String(self.scopeJson, serializer);
-    sse_encode_list_raw_message_view(self.messages, serializer);
-    sse_encode_opt_list_CastedPrimitive_u_64(self.order, serializer);
   }
 
   @protected
@@ -25144,7 +24980,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     sse_encode_opt_String(self.modelLabel, serializer);
     sse_encode_bool(self.routingSupported, serializer);
     sse_encode_opt_box_autoadd_bool(self.harnessLocked, serializer);
-    sse_encode_String(self.tabJson, serializer);
     sse_encode_bool(self.saving, serializer);
     sse_encode_bool(self.refreshing, serializer);
     sse_encode_opt_box_autoadd_settings_failure_view(self.failure, serializer);
@@ -25432,6 +25267,29 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         sse_encode_String(turnKey, serializer);
         sse_encode_String(atMessageId, serializer);
     }
+  }
+
+  @protected
+  void sse_encode_feedback_seed_view(
+    FeedbackSeedView self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.turn, serializer);
+    sse_encode_String(self.rating, serializer);
+    sse_encode_opt_String(self.syncState, serializer);
+    sse_encode_opt_String(self.feedbackId, serializer);
+    sse_encode_opt_String(self.reason, serializer);
+  }
+
+  @protected
+  void sse_encode_feedback_turn_view(
+    FeedbackTurnView self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.footer, serializer);
+    sse_encode_String(self.turn, serializer);
   }
 
   @protected
@@ -26008,18 +25866,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   }
 
   @protected
-  void sse_encode_list_CastedPrimitive_u_64(
-    List<int> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_CastedPrimitive_u_64(item, serializer);
-    }
-  }
-
-  @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_i_32(self.length, serializer);
@@ -26250,6 +26096,30 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_feed_op(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_feedback_seed_view(
+    List<FeedbackSeedView> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_feedback_seed_view(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_feedback_turn_view(
+    List<FeedbackTurnView> self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_feedback_turn_view(item, serializer);
     }
   }
 
@@ -26963,18 +26833,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     sse_encode_i_32(self.length, serializer);
     for (final item in self) {
       sse_encode_question_view(item, serializer);
-    }
-  }
-
-  @protected
-  void sse_encode_list_raw_message_view(
-    List<RawMessageView> self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_i_32(self.length, serializer);
-    for (final item in self) {
-      sse_encode_raw_message_view(item, serializer);
     }
   }
 
@@ -28256,19 +28114,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   }
 
   @protected
-  void sse_encode_opt_list_CastedPrimitive_u_64(
-    List<int>? self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    sse_encode_bool(self != null, serializer);
-    if (self != null) {
-      sse_encode_list_CastedPrimitive_u_64(self, serializer);
-    }
-  }
-
-  @protected
   void sse_encode_opt_list_String(
     List<String>? self,
     SseSerializer serializer,
@@ -28407,21 +28252,14 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       case OrchestratorIntent_Enter(entryId: final entryId):
         sse_encode_i_32(5, serializer);
         sse_encode_opt_String(entryId, serializer);
-      case OrchestratorIntent_Entered(
-        generation: final generation,
-        opened: final opened,
-      ):
-        sse_encode_i_32(6, serializer);
-        sse_encode_CastedPrimitive_u_64(generation, serializer);
-        sse_encode_bool(opened, serializer);
       case OrchestratorIntent_Leave():
-        sse_encode_i_32(7, serializer);
+        sse_encode_i_32(6, serializer);
       case OrchestratorIntent_Answer(
         chatId: final chatId,
         requestId: final requestId,
         answers: final answers,
       ):
-        sse_encode_i_32(8, serializer);
+        sse_encode_i_32(7, serializer);
         sse_encode_String(chatId, serializer);
         sse_encode_String(requestId, serializer);
         sse_encode_list_question_answer_view(answers, serializer);
@@ -28429,11 +28267,11 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         chatId: final chatId,
         requestId: final requestId,
       ):
-        sse_encode_i_32(9, serializer);
+        sse_encode_i_32(8, serializer);
         sse_encode_String(chatId, serializer);
         sse_encode_String(requestId, serializer);
       case OrchestratorIntent_Close():
-        sse_encode_i_32(10, serializer);
+        sse_encode_i_32(9, serializer);
     }
   }
 
@@ -28450,44 +28288,18 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       case OrchestratorOutcome_Catalog(catalog: final catalog):
         sse_encode_i_32(1, serializer);
         sse_encode_box_autoadd_catalog_view(catalog, serializer);
-      case OrchestratorOutcome_Busy():
+      case OrchestratorOutcome_Opened(
+        chatRevision: final chatRevision,
+        chatGeneration: final chatGeneration,
+      ):
         sse_encode_i_32(2, serializer);
-      case OrchestratorOutcome_Open(
-        chat: final chat,
-        generation: final generation,
-      ):
-        sse_encode_i_32(3, serializer);
-        sse_encode_box_autoadd_chat_ref_view(chat, serializer);
-        sse_encode_CastedPrimitive_u_64(generation, serializer);
-      case OrchestratorOutcome_NewChat(
-        workspace: final workspace,
-        generation: final generation,
-      ):
-        sse_encode_i_32(4, serializer);
-        sse_encode_box_autoadd_catalog_workspace_view(workspace, serializer);
-        sse_encode_CastedPrimitive_u_64(generation, serializer);
-      case OrchestratorOutcome_NewTab(
-        entryId: final entryId,
-        generation: final generation,
-        failure: final failure,
-      ):
-        sse_encode_i_32(5, serializer);
-        sse_encode_String(entryId, serializer);
-        sse_encode_CastedPrimitive_u_64(generation, serializer);
-        sse_encode_String(failure, serializer);
-      case OrchestratorOutcome_LoadFailed(message: final message):
-        sse_encode_i_32(6, serializer);
-        sse_encode_String(message, serializer);
-      case OrchestratorOutcome_Stale():
-        sse_encode_i_32(7, serializer);
-      case OrchestratorOutcome_Entered(opened: final opened):
-        sse_encode_i_32(8, serializer);
-        sse_encode_bool(opened, serializer);
+        sse_encode_CastedPrimitive_u_64(chatRevision, serializer);
+        sse_encode_CastedPrimitive_u_64(chatGeneration, serializer);
       case OrchestratorOutcome_Failed(failure: final failure):
-        sse_encode_i_32(9, serializer);
+        sse_encode_i_32(3, serializer);
         sse_encode_box_autoadd_chat_failure(failure, serializer);
       case OrchestratorOutcome_Done():
-        sse_encode_i_32(10, serializer);
+        sse_encode_i_32(4, serializer);
     }
   }
 
@@ -28519,7 +28331,8 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     sse_encode_CastedPrimitive_u_64(self.revision, serializer);
     sse_encode_bool(self.loading, serializer);
     sse_encode_bool(self.scopePending, serializer);
-    sse_encode_bool(self.online, serializer);
+    sse_encode_opt_CastedPrimitive_u_64(self.session, serializer);
+    sse_encode_bool(self.catalogCurrent, serializer);
     sse_encode_opt_String(self.error, serializer);
     sse_encode_bool(self.hasInventory, serializer);
     sse_encode_CastedPrimitive_u_64(self.refreshes, serializer);
@@ -28699,16 +28512,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     sse_encode_pipeline_origin(self.origin, serializer);
     sse_encode_list_String(self.triggerTypes, serializer);
     sse_encode_list_String(self.scopes, serializer);
-  }
-
-  @protected
-  void sse_encode_pipeline_document_view(
-    PipelineDocumentView self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_bool(self.markdown, serializer);
-    sse_encode_String(self.text, serializer);
   }
 
   @protected
@@ -29169,9 +28972,9 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
       case PipelinesOutcome_Started(id: final id):
         sse_encode_i_32(2, serializer);
         sse_encode_String(id, serializer);
-      case PipelinesOutcome_Content(document: final document):
+      case PipelinesOutcome_Content(chunks: final chunks):
         sse_encode_i_32(3, serializer);
-        sse_encode_box_autoadd_pipeline_document_view(document, serializer);
+        sse_encode_list_pipeline_content_chunk_view(chunks, serializer);
     }
   }
 
@@ -29533,16 +29336,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   }
 
   @protected
-  void sse_encode_raw_message_view(
-    RawMessageView self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_CastedPrimitive_u_64(self.uid, serializer);
-    sse_encode_String(self.json, serializer);
-  }
-
-  @protected
   void sse_encode_recent_attention(
     RecentAttention self,
     SseSerializer serializer,
@@ -29651,7 +29444,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     sse_encode_chat_ref_view(self.chat, serializer);
     sse_encode_bool(self.reset, serializer);
     sse_encode_chat_header_view(self.header, serializer);
-    sse_encode_chat_state_frame(self.state, serializer);
     sse_encode_feed_frame(self.feed, serializer);
   }
 
@@ -29876,43 +29668,18 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   void sse_encode_task_step(TaskStep self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     switch (self) {
-      case TaskStep_Open(chat: final chat):
+      case TaskStep_SetDraft(chat: final chat):
         sse_encode_i_32(0, serializer);
-        sse_encode_box_autoadd_chat_ref_view(chat, serializer);
-      case TaskStep_CreateTab(
-        projectId: final projectId,
-        worktreeId: final worktreeId,
-      ):
-        sse_encode_i_32(1, serializer);
-        sse_encode_String(projectId, serializer);
-        sse_encode_String(worktreeId, serializer);
-      case TaskStep_CreateChat(projectId: final projectId):
-        sse_encode_i_32(2, serializer);
-        sse_encode_String(projectId, serializer);
-      case TaskStep_LoadWorktree(
-        projectId: final projectId,
-        worktreeId: final worktreeId,
-        name: final name,
-      ):
-        sse_encode_i_32(3, serializer);
-        sse_encode_String(projectId, serializer);
-        sse_encode_String(worktreeId, serializer);
-        sse_encode_String(name, serializer);
-      case TaskStep_Refresh():
-        sse_encode_i_32(4, serializer);
-      case TaskStep_SetDraft(chat: final chat, text: final text):
-        sse_encode_i_32(5, serializer);
         sse_encode_opt_box_autoadd_chat_ref_view(chat, serializer);
-        sse_encode_opt_String(text, serializer);
       case TaskStep_SetWorkspaceKind(
         projectId: final projectId,
         kind: final kind,
       ):
-        sse_encode_i_32(6, serializer);
+        sse_encode_i_32(1, serializer);
         sse_encode_String(projectId, serializer);
         sse_encode_String(kind, serializer);
       case TaskStep_Sent(attachments: final attachments):
-        sse_encode_i_32(7, serializer);
+        sse_encode_i_32(2, serializer);
         sse_encode_list_sent_attachment_view(attachments, serializer);
     }
   }
@@ -29924,10 +29691,6 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_opt_box_autoadd_task_failure(self.failure, serializer);
-    sse_encode_opt_box_autoadd_chat_ref_view(self.created, serializer);
-    sse_encode_bool(self.unavailable, serializer);
-    sse_encode_list_chat_ref_view(self.chats, serializer);
-    sse_encode_opt_String(self.activeChatId, serializer);
     sse_encode_bool(self.online, serializer);
   }
 
@@ -30276,6 +30039,7 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_CastedPrimitive_u_64(self.sequence, serializer);
     sse_encode_list_chat_ref_view(self.chats, serializer);
     sse_encode_opt_String(self.activeChatId, serializer);
     sse_encode_worktree_status(self.status, serializer);
@@ -30297,6 +30061,8 @@ class CoreBridgeApiImpl extends CoreBridgeApiImplPlatform
         sse_encode_i_32(1, serializer);
       case WorktreeLoad_Stale():
         sse_encode_i_32(2, serializer);
+      case WorktreeLoad_SessionLost():
+        sse_encode_i_32(3, serializer);
     }
   }
 
@@ -31217,6 +30983,11 @@ class HomeServiceImpl extends RustOpaque implements HomeService {
   void bindChats({required ChatsService chats}) => CoreBridge.instance.api
       .crateApiHomeHomeServiceBindChats(that: this, chats: chats);
 
+  void bindOverview({required OverviewService overview}) => CoreBridge
+      .instance
+      .api
+      .crateApiHomeHomeServiceBindOverview(that: this, overview: overview);
+
   /// Runs the new tasks' worktree creations on `worktrees`.
   void bindWorktrees({required WorktreesService worktrees}) => CoreBridge
       .instance
@@ -31446,15 +31217,6 @@ class PipelinesServiceImpl extends RustOpaque implements PipelinesService {
         .instance
         .api
         .rust_arc_decrement_strong_count_PipelinesServicePtr,
-  );
-
-  /// A document as it is laid out: Markdown whole, text in 200-line
-  /// chunks.
-  List<PipelineContentChunkView> contentChunks({
-    required PipelineDocumentView document,
-  }) => CoreBridge.instance.api.crateApiPipelinesPipelinesServiceContentChunks(
-    that: this,
-    document: document,
   );
 
   /// The dispatch form's rules over `values`: the inputs shown, the

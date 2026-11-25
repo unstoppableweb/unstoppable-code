@@ -16,6 +16,7 @@ import 'package:mobile/core/design-system/icon-button/canopy_icon_button.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
 import 'package:mobile/core/design-system/overlay-action/canopy_overlay_action.dart';
 import 'computer_connect/files_model.dart';
+import 'package:mobile/device_link/chats/models.dart';
 import 'package:mobile/device_link/protocol.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_body.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_input.dart';
@@ -142,10 +143,11 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
       ..showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> _send({required bool dictated}) async {
-    final attachments = _attachments;
+  Future<void> _send(DeviceChatRef chat, {required bool dictated}) async {
+    final attachments = _attachmentsKey == chat.key ? _attachments : null;
     final drafts = attachments?.takeForSend() ?? const [];
     final sent = await widget.model.send(
+      chat: chat,
       dictated: dictated,
       attachments: drafts,
     );
@@ -340,7 +342,7 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
       // loading; refreshes behind an existing transcript stay silent.
       final transcriptLoading =
           model.chats.loading &&
-          (state == null || (state.messages.isEmpty && questions.isEmpty));
+          (state == null || (!state.hasMessages && questions.isEmpty));
       final notices = <Widget>[
         if (!model.online &&
             (!model.connection.reconnecting || _reconnectNotice.visible))
@@ -360,8 +362,8 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
           if ((model.error ?? model.chats.error) case final String error)
             _notice(error),
         if (!model.chats.sending &&
-            model.chats.pendingSend?.ref.key == state?.ref.key &&
-            model.chats.pendingSend != null)
+            state != null &&
+            model.chats.pendingSend?.ref.key == state.ref.key)
           _notice(
             model.chats.error ??
                 'Delivery is not confirmed. Check before sending again.',
@@ -377,7 +379,7 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
                 CanopyButton(
                   label: 'Retry same message',
                   onPressed: model.online && !model.chats.sending
-                      ? () => model.send(retry: true)
+                      ? () => model.send(chat: state.ref, retry: true)
                       : null,
                   variant: CanopyButtonVariant.inline,
                 ),
@@ -494,13 +496,10 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
                                   ref: widget.worktree == null
                                       ? null
                                       : state.ref,
-                                  messages: state.messages,
                                   online: model.online && model.chats.ready,
                                   builder: (footers) => DeviceTurnFeedbackFooters(
                                     ref: state.ref,
-                                    messages: model.feed.outline,
-                                    running: state.running,
-                                    tab: state.tab,
+                                    header: state.header,
                                     workspaceKind: model.activity.workspaceKind(
                                       state.ref.projectId,
                                     ),
@@ -529,7 +528,8 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
                                       feed: model.feed,
                                       onToggleTurn: model.toggleTurn,
                                       onLoadOlder:
-                                          state.before != null && model.online
+                                          state.header?.hasOlder == true &&
+                                              model.online
                                           ? () => unawaited(
                                               model.chats.loadOlder(),
                                             )
@@ -602,11 +602,15 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
                       voice: voice,
                       voiceEnabled: model.online && state?.closed != true,
                       onSend: () {
+                        if (state == null ||
+                            model.state?.ref.key != state.ref.key) {
+                          return;
+                        }
                         final dictated = voice.dictated;
                         unawaited(voice.abandon());
-                        unawaited(_send(dictated: dictated));
+                        unawaited(_send(state.ref, dictated: dictated));
                       },
-                      controls: deviceComposerControls(model),
+                      controls: deviceComposerControls(model, state?.ref),
                       commands: sources?.commands,
                       plugins: sources?.plugins,
                       actionsEnabled: model.online,

@@ -16,12 +16,15 @@ class AppRouteScope extends InheritedWidget {
   static RouteObserver<ModalRoute<Object?>> of(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<AppRouteScope>()?.observer ??
       appRouteObserver;
-  static bool isCurrentOf(BuildContext context) =>
+  static bool isCurrentOf(
+    BuildContext context, {
+    bool requireLocalRoute = true,
+  }) =>
       (context
               .dependOnInheritedWidgetOfExactType<AppRouteScope>()
               ?.parentIsCurrent ??
           true) &&
-      (ModalRoute.isCurrentOf(context) ?? true) &&
+      (!requireLocalRoute || (ModalRoute.isCurrentOf(context) ?? true)) &&
       HomeDetailVisibility.of(context) &&
       (HomeNavigationScope.maybeOf(context)?.contentVisible ?? true);
   @override

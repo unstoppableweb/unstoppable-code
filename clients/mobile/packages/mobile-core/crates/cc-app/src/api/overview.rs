@@ -110,6 +110,8 @@ pub enum WorktreeStatus {
 /// A worktree's chats as its last `chat:get-state` read showed them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorktreeChatsView {
+    /// Sequence of the successful read within this overview.
+    pub sequence: u64,
     pub chats: Vec<ChatRefView>,
     pub active_chat_id: Option<String>,
     pub status: WorktreeStatus,
@@ -227,12 +229,10 @@ pub struct OverviewView {
     pub loading: bool,
     /// Ownership is being re-read; actions must wait.
     pub scope_pending: bool,
-    /// The connection this view was computed for (`online` as the
-    /// overview last applied it). The host shows the scope pending while
-    /// its own connection says otherwise: Dart's overview turned pending in
-    /// the same turn as the connection, so no reader saw a new connection
-    /// with the old scope.
-    pub online: bool,
+    /// The connected account session this view was computed for.
+    pub session: Option<u64>,
+    /// The catalog completed a successful read in this session.
+    pub catalog_current: bool,
     pub error: Option<String>,
     pub has_inventory: bool,
     /// How many refreshes started: hosts that read beside the overview
@@ -271,6 +271,7 @@ pub enum WorktreeLoad {
     Unavailable,
     /// A newer roster or a reconnect superseded the read: nothing changes.
     Stale,
+    SessionLost,
 }
 
 /// One computer's overview. Built by [`super::AccountService::overview`].
@@ -367,9 +368,12 @@ impl OverviewService {
             })
             .await?;
         Ok(match outcome {
-            LoadOutcome::Loaded(chats) => WorktreeLoad::Loaded(crate::overview::chats_view(&chats)),
+            LoadOutcome::Loaded(chats, sequence) => {
+                WorktreeLoad::Loaded(crate::overview::chats_view(&chats, sequence))
+            }
             LoadOutcome::Unavailable => WorktreeLoad::Unavailable,
             LoadOutcome::Stale => WorktreeLoad::Stale,
+            LoadOutcome::SessionLost => WorktreeLoad::SessionLost,
         })
     }
     /// Reads the search catalog once, for the chats feature's own list,

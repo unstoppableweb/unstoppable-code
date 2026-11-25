@@ -359,7 +359,8 @@ impl AccountService {
         let handle = crate::orchestrator::Handle::start(
             &self.core.app,
             self.core.handle(),
-            computer_id.clone(),
+            computer_id,
+            chats.clone(),
         );
         Ok(super::OrchestratorService::new(
             self.core.clone(),

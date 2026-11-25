@@ -30,8 +30,8 @@ use crate::{
     api::{
         ChatRefView, HomeChoicesView, HomeDraftClearView, HomeIntent, HomeInventoryView,
         HomeLaunchView, HomeModelView, HomeOptionsView, HomeOutcome, HomePick, HomeView,
-        LauncherView, NewTaskRequest, NewTaskView, ProviderAvailabilityView, WorktreesService,
-        model_row,
+        LauncherView, NewTaskRequest, NewTaskView, OverviewService, ProviderAvailabilityView,
+        WorktreesService, model_row,
     },
     bridge::{Inner, shutdown_failure},
     chats::{self, Peer, Published as ChatsPublished},
@@ -107,6 +107,7 @@ pub(crate) enum Intent {
     },
     BindChats(chats::Handle),
     BindWorktrees(WorktreesService),
+    BindOverview(OverviewService),
 }
 
 pub(crate) enum Outcome {
@@ -213,6 +214,7 @@ impl Handle {
             chats: None,
             published: None,
             worktrees: None,
+            overview: None,
             launcher: Launcher::default(),
             deliveries: BTreeMap::new(),
             deliveries_issued: 0,
@@ -273,6 +275,7 @@ struct Actor {
     /// The chats actor's last published selection.
     published: Option<Arc<ChatsPublished>>,
     worktrees: Option<WorktreesService>,
+    overview: Option<OverviewService>,
     launcher: Launcher,
     deliveries: BTreeMap<u64, Delivery>,
     deliveries_issued: u64,
@@ -568,6 +571,10 @@ impl Actor {
                 self.worktrees = Some(worktrees);
                 Outcome::Done
             }
+            Intent::BindOverview(overview) => {
+                self.overview = Some(overview);
+                Outcome::Done
+            }
             Intent::StartTask {
                 task,
                 request,
@@ -585,6 +592,7 @@ impl Actor {
                         publish,
                         chats: self.chats.clone(),
                         worktrees: self.worktrees.clone(),
+                        overview: self.overview.clone(),
                         delivery,
                         send_gate,
                     },

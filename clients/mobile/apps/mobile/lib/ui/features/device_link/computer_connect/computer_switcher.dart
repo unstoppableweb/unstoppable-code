@@ -19,10 +19,12 @@ class ComputerSwitcher extends StatelessWidget {
     required this.title,
     required this.label,
     required this.onManage,
+    this.onMenuVisibilityChanged,
   });
   final ComputerAccountModel account;
   final String title, label;
   final VoidCallback onManage;
+  final ValueChanged<bool>? onMenuVisibilityChanged;
 
   /// The menu's preferred width; narrow screens keep a side margin.
   static const double _menuWidth = 280;
@@ -32,6 +34,15 @@ class ComputerSwitcher extends StatelessWidget {
 
   /// Space between the checkmark slot and the computer name.
   static const double _labelGap = 12;
+
+  Future<void> _onTap(BuildContext context) async {
+    onMenuVisibilityChanged?.call(true);
+    try {
+      await _open(context);
+    } finally {
+      onMenuVisibilityChanged?.call(false);
+    }
+  }
 
   /// Opens the menu as a route under the title. A route keeps each option in
   /// one semantics parent; the pinned iOS bridge misplaces overlay-portal
@@ -174,7 +185,7 @@ class ComputerSwitcher extends StatelessWidget {
       child: InkWell(
         key: const ValueKey('computer-switcher'),
         borderRadius: BorderRadius.circular(AppRadii.lg),
-        onTap: () => unawaited(_open(context)),
+        onTap: () => unawaited(_onTap(context)),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: AppDimens.padding8),
           child: ComputerConnectionTitle(

@@ -47,11 +47,11 @@ pub use bridge::{
 };
 pub use chats::{
     AttachmentView, ChatFailure, ChatFailureKind, ChatFrame, ChatFrames, ChatHeaderView,
-    ChatIntent, ChatOutcome, ChatRole, ChatSettled, ChatStateFrame, ChatTabView, ChatsService,
-    DraftView, FeedFrame, FeedItem, FeedOp, FeedRow, MessageRef, MessageStatus, MessageView,
-    PartView, PendingSendView, RawMessageView, ResultsRef, SelectionFrame, StepCategoryView,
-    StepCountView, StepRef, TimerView, ToolResultView, ToolResultsView, WatcherEntryView,
-    WatcherFiredView,
+    ChatIntent, ChatOutcome, ChatRole, ChatSettled, ChatTabView, ChatsService, DraftView,
+    FeedFrame, FeedItem, FeedOp, FeedRow, FeedbackSeedView, FeedbackTurnView, MessageRef,
+    MessageStatus, MessageView, PartView, PendingSendView, ResultsRef, SelectionFrame,
+    StepCategoryView, StepCountView, StepRef, TimerView, ToolResultView, ToolResultsView,
+    WatcherEntryView, WatcherFiredView,
 };
 pub use composer::{
     AgentModelView, AgentSelectionView, AutoRowView, AvailabilityView, CatalogStatusView,
@@ -94,16 +94,15 @@ pub use overview::{
 pub use pipelines::{
     ChatActivityView, ChatActivityViews, DispatchFormView, FormRulesView, PipelineAction,
     PipelineChatTurnView, PipelineContentChunkView, PipelineContentSource, PipelineControlView,
-    PipelineDescriptorView, PipelineDocumentView, PipelineDotStatus, PipelineDotView,
-    PipelineFailure, PipelineFailureKind, PipelineFollowUpView, PipelineGroupStepView,
-    PipelineGroupView, PipelineInputErrorView, PipelineInputType, PipelineInputValue,
-    PipelineInputView, PipelineJobView, PipelineNumberView, PipelineOrigin, PipelinePauseView,
-    PipelineProgressView, PipelineRunDisplayView, PipelineRunNoteView, PipelineRunView,
-    PipelineScopeView, PipelineScopeViews, PipelineStatusReasonView, PipelineStepView,
-    PipelineTierView, PipelineTurnView, PipelineVariantView, PipelinesIntent, PipelinesOutcome,
-    PipelinesService, PipelinesSettled, WorkAction, WorkActionLabelView, WorkDetailView,
-    WorkDrawerView, WorkDrawerViews, WorkGroup, WorkGroupCountView, WorkItemView, WorkKind,
-    WorkTone,
+    PipelineDescriptorView, PipelineDotStatus, PipelineDotView, PipelineFailure,
+    PipelineFailureKind, PipelineFollowUpView, PipelineGroupStepView, PipelineGroupView,
+    PipelineInputErrorView, PipelineInputType, PipelineInputValue, PipelineInputView,
+    PipelineJobView, PipelineNumberView, PipelineOrigin, PipelinePauseView, PipelineProgressView,
+    PipelineRunDisplayView, PipelineRunNoteView, PipelineRunView, PipelineScopeView,
+    PipelineScopeViews, PipelineStatusReasonView, PipelineStepView, PipelineTierView,
+    PipelineTurnView, PipelineVariantView, PipelinesIntent, PipelinesOutcome, PipelinesService,
+    PipelinesSettled, WorkAction, WorkActionLabelView, WorkDetailView, WorkDrawerView,
+    WorkDrawerViews, WorkGroup, WorkGroupCountView, WorkItemView, WorkKind, WorkTone,
 };
 pub use projects::{
     ClonePhaseView, CloneRowView, ClonesView, ClonesViews, ProjectsIntent, ProjectsOutcome,

@@ -7,7 +7,6 @@ import 'package:mobile/ui/features/satisfaction/views/satisfaction_prompt_host.d
 import 'package:provider/provider.dart';
 
 import 'chats_view_model.dart';
-import 'turn_completion_watcher.dart';
 
 /// True when nothing on a computer chat competes with a prompt: connected,
 /// with a transcript, idle, nothing being sent, nothing awaiting the user, and
@@ -16,7 +15,7 @@ bool deviceChatIsQuiet(DeviceChatsViewModel model) {
   final state = model.state;
   return state != null &&
       model.online &&
-      state.messages.isNotEmpty &&
+      state.hasMessages &&
       !state.closed &&
       !state.running &&
       !state.awaitingInput &&
@@ -51,7 +50,7 @@ class DeviceChatSatisfactionHost extends StatefulWidget {
 class _DeviceChatSatisfactionHostState
     extends State<DeviceChatSatisfactionHost> {
   SatisfactionPromptController? _controller;
-  TurnCompletionWatcher? _watcher;
+  StreamSubscription<String>? _turns;
 
   @override
   void didChangeDependencies() {
@@ -73,25 +72,23 @@ class _DeviceChatSatisfactionHostState
   }
 
   void _watch() {
-    _watcher?.dispose();
+    _stopWatching();
     final controller = _controller;
+    if (controller == null) return;
     final model = widget.model;
-    _watcher = controller == null
-        ? null
-        : TurnCompletionWatcher(
-            source: model,
-            read: () => deviceTurnCompletionSample(
-              online: model.online,
-              state: model.state,
-            ),
-            onSuccessfulTurn: (key) =>
-                unawaited(controller.recordSuccessfulTurn(key)),
-          );
+    _turns = model.chats.reader.successfulTurns.listen(
+      (turn) => unawaited(controller.recordSuccessfulTurn(turn)),
+    );
+  }
+
+  void _stopWatching() {
+    unawaited(_turns?.cancel());
+    _turns = null;
   }
 
   @override
   void dispose() {
-    _watcher?.dispose();
+    _stopWatching();
     super.dispose();
   }
 

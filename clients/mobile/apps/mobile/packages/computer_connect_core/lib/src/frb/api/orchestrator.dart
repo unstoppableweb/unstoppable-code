@@ -115,20 +115,9 @@ sealed class OrchestratorIntent with _$OrchestratorIntent {
   const factory OrchestratorIntent.watchEntries() =
       OrchestratorIntent_WatchEntries;
 
-  /// Starts opening `entry_id` (`None`: a new chat). Reads the entry's
-  /// active tab first.
-  ///
-  /// Resolves when settled: what the host opens next.
+  /// Opens the entry's active tab or creates one. With no entry, starts a new chat.
   const factory OrchestratorIntent.enter({String? entryId}) =
       OrchestratorIntent_Enter;
-
-  /// The host's open of `generation` finished.
-  ///
-  /// Resolves when applied: `Entered{opened}`, whether the chat stays.
-  const factory OrchestratorIntent.entered({
-    required int generation,
-    required bool opened,
-  }) = OrchestratorIntent_Entered;
 
   /// The chat was left.
   ///
@@ -166,38 +155,10 @@ sealed class OrchestratorOutcome with _$OrchestratorOutcome {
       OrchestratorOutcome_Visible;
   const factory OrchestratorOutcome.catalog({required CatalogView catalog}) =
       OrchestratorOutcome_Catalog;
-
-  /// Already in a chat.
-  const factory OrchestratorOutcome.busy() = OrchestratorOutcome_Busy;
-
-  /// Open `chat`, the entry's active tab.
-  const factory OrchestratorOutcome.open({
-    required ChatRefView chat,
-    required int generation,
-  }) = OrchestratorOutcome_Open;
-
-  /// Create a chat in `workspace`.
-  const factory OrchestratorOutcome.newChat({
-    required CatalogWorkspaceView workspace,
-    required int generation,
-  }) = OrchestratorOutcome_NewChat;
-
-  /// Create a tab in entry `entry_id`; `failure` is what a failed
-  /// creation shows.
-  const factory OrchestratorOutcome.newTab({
-    required String entryId,
-    required int generation,
-    required String failure,
-  }) = OrchestratorOutcome_NewTab;
-
-  /// The entry could not be read; show `message`.
-  const factory OrchestratorOutcome.loadFailed({required String message}) =
-      OrchestratorOutcome_LoadFailed;
-
-  /// The connection changed meanwhile.
-  const factory OrchestratorOutcome.stale() = OrchestratorOutcome_Stale;
-  const factory OrchestratorOutcome.entered({required bool opened}) =
-      OrchestratorOutcome_Entered;
+  const factory OrchestratorOutcome.opened({
+    required int chatRevision,
+    required int chatGeneration,
+  }) = OrchestratorOutcome_Opened;
   const factory OrchestratorOutcome.failed({required ChatFailure failure}) =
       OrchestratorOutcome_Failed;
   const factory OrchestratorOutcome.done() = OrchestratorOutcome_Done;

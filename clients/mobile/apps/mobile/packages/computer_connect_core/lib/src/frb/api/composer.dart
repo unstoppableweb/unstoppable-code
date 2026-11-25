@@ -300,10 +300,6 @@ class ComposerView {
 
   /// `None` when the host omits it (the captured harness stays locked).
   final bool? harnessLocked;
-
-  /// The selected tab with the queued picks applied, in bridge-form
-  /// JSON.
-  final String tabJson;
   final bool saving;
   final bool refreshing;
   final SettingsFailureView? failure;
@@ -325,7 +321,6 @@ class ComposerView {
     this.modelLabel,
     required this.routingSupported,
     this.harnessLocked,
-    required this.tabJson,
     required this.saving,
     required this.refreshing,
     this.failure,
@@ -347,7 +342,6 @@ class ComposerView {
       modelLabel.hashCode ^
       routingSupported.hashCode ^
       harnessLocked.hashCode ^
-      tabJson.hashCode ^
       saving.hashCode ^
       refreshing.hashCode ^
       failure.hashCode ^
@@ -371,7 +365,6 @@ class ComposerView {
           modelLabel == other.modelLabel &&
           routingSupported == other.routingSupported &&
           harnessLocked == other.harnessLocked &&
-          tabJson == other.tabJson &&
           saving == other.saving &&
           refreshing == other.refreshing &&
           failure == other.failure &&

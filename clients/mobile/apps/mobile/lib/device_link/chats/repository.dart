@@ -53,9 +53,6 @@ final class DeviceChatsRepository {
 
   Future<void> setConnected(bool value) async {
     await reader.setConnected(value);
-    if (!value) return;
-    await refreshCatalog();
-    await reader.refresh();
   }
 
   Future<void> refreshCatalog() async {
@@ -88,9 +85,15 @@ final class DeviceChatsRepository {
     title: title,
     onCreated: (ref) {
       onCreated?.call(ref);
-      catalog = [ref, ...catalog.where((c) => c.key != ref.key)];
+      rememberCreatedChat(ref);
     },
   );
+
+  void rememberCreatedChat(DeviceChatRef ref) {
+    if (_disposed) return;
+    catalog = [ref, ...catalog.where((c) => c.key != ref.key)];
+    _notify();
+  }
 
   Future<void> createTab(
     String projectId,
@@ -112,7 +115,7 @@ final class DeviceChatsRepository {
     attachmentPaths: attachmentPaths,
   );
 
-  Future<void> stop() => sender.stop();
+  Future<void> stop(DeviceChatRef chat) => sender.stop(chat);
 
   Future<void> clearSelection({int? expectedGeneration}) =>
       reader.clearSelection(expectedGeneration: expectedGeneration);

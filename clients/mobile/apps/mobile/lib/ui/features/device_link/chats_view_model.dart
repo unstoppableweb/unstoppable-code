@@ -20,6 +20,8 @@ import 'package:mobile/device_link/chats/settings_catalog.dart';
 import 'computer_connect/composer_model.dart';
 import 'computer_connect/chat_feed_model.dart';
 
+typedef _ChatSelection = ({String? key, int generation});
+
 final class DeviceChatsViewModel extends ChangeNotifier {
   DeviceChatsViewModel({
     required this.connection,
@@ -28,10 +30,10 @@ final class DeviceChatsViewModel extends ChangeNotifier {
     this.questionSource,
     required this.feed,
     required this.drafts,
-    required this.createActivity,
+    required ComputerActivity Function() createActivity,
     required this.createFiles,
     required this.composer,
-  }) {
+  }) : activity = createActivity() {
     _questionSubscription = questionSource?.updates.listen((_) {
       if (!_disposed) notifyListeners();
     });
@@ -69,10 +71,9 @@ final class DeviceChatsViewModel extends ChangeNotifier {
   final ComputerLinkModel connection;
   final DeviceChatsRepository chats;
 
-  final ComputerActivity Function() createActivity;
   final ComputerFiles Function() createFiles;
 
-  late final ComputerActivity activity = createActivity();
+  final ComputerActivity activity;
   final ComputerChatComposer composer;
 
   /// The settings catalog (Home's new task reads it too).
@@ -139,17 +140,16 @@ final class DeviceChatsViewModel extends ChangeNotifier {
       return;
     }
     _answering.add(id);
+    final selection = _chatSelection;
     error = null;
     notifyListeners();
     try {
       await action(current.ref);
-      if (!_disposed && online && state?.ref.key == current.ref.key) {
+      if (!_disposed && online && selection == _chatSelection) {
         await chats.refresh();
       }
     } catch (cause) {
-      if (!_disposed && state?.ref.key == current.ref.key) {
-        error = _describe(cause);
-      }
+      _setChatError(selection, cause);
     } finally {
       _answering.remove(id);
       if (!_disposed) notifyListeners();
@@ -157,52 +157,25 @@ final class DeviceChatsViewModel extends ChangeNotifier {
   }
 
   Future<void> closeTab(String id) async {
-    final ref = tabs.where((t) => t.id == id).firstOrNull;
-    final current = state;
-    if (!online ||
-        !chats.ready ||
-        ref == null ||
-        current == null ||
-        chats.pendingSend?.ref.key == ref.key ||
-        current.openTabs.any((tab) => tab.id == id && tab.running)) {
-      return;
-    }
-    final selection = chats.selectionGeneration;
-    if (id == current.ref.id) composer.invalidatePicks();
+    final selection = _chatSelection;
     try {
-      await chats.reader.archive(ref);
-      if (_disposed ||
-          !online ||
-          chats.selectionGeneration != selection ||
-          state?.ref.key != current.ref.key) {
-        return;
-      }
-      final next = tabs.where((t) => t.id != id).firstOrNull;
-      if (id != current.ref.id) {
-        await chats.refresh();
-      } else if (next != null) {
-        await open(next);
-      } else {
-        await chats.createTab(ref.projectId, ref.worktreeId);
-      }
+      await chats.reader.closeTab(id);
     } catch (cause) {
-      if (!_disposed) {
-        error = _describe(cause);
-        notifyListeners();
-      }
+      if (_setChatError(selection, cause)) notifyListeners();
     }
   }
 
   Future<void> newTab() async {
     final ref = state?.ref;
     if (!online || ref == null || creating) return;
+    final selection = _chatSelection;
     composer.invalidatePicks();
     creating = true;
     notifyListeners();
     try {
       await chats.createTab(ref.projectId, ref.worktreeId);
     } catch (cause) {
-      if (!_disposed) error = _describe(cause);
+      _setChatError(selection, cause);
     } finally {
       creating = false;
       if (!_disposed) notifyListeners();
@@ -222,7 +195,29 @@ final class DeviceChatsViewModel extends ChangeNotifier {
   int _connectionRevision = 0;
   Future<void>? _restoration;
   bool catalogLoading = false, creating = false;
-  String? error;
+  String? _error;
+  int _errorRevision = 0;
+  _ChatSelection? _errorSelection;
+  _ChatSelection get _chatSelection =>
+      (key: state?.ref.key, generation: chats.selectionGeneration);
+
+  String? get error =>
+      _errorSelection == null || _errorSelection == _chatSelection
+      ? _error
+      : null;
+
+  set error(String? value) {
+    _errorRevision++;
+    _errorSelection = null;
+    _error = value;
+  }
+
+  bool _setChatError(_ChatSelection selection, Object cause) {
+    if (_disposed || selection != _chatSelection) return false;
+    error = _describe(cause);
+    _errorSelection = selection;
+    return true;
+  }
 
   /// The composer drafts of this computer's chats.
   final DeviceChatDrafts drafts;
@@ -265,7 +260,6 @@ final class DeviceChatsViewModel extends ChangeNotifier {
       _restoring = current;
       catalogLoading = current;
       if (!current) {
-        unawaited(activity.setConnected(false));
         composer.invalidate();
         readReceipts.invalidate();
         files.clear();
@@ -283,16 +277,16 @@ final class DeviceChatsViewModel extends ChangeNotifier {
 
   Future<void> _restore(int revision) async {
     try {
+      await chats.setConnected(true);
+      var catalogLoaded = false;
       try {
-        // Rehydrate the retained selection before starting drawer refreshes.
-        await chats.setConnected(true);
-        await composer.restore(() => _currentConnection(revision));
-        if (!_currentConnection(revision)) return;
+        await chats.refreshCatalog();
+        catalogLoaded = true;
       } catch (cause) {
         if (_currentConnection(revision)) error = _describe(cause);
       }
       if (!_currentConnection(revision)) return;
-      await activity.setConnected(true);
+      await chats.reader.restoreConnection(catalogLoaded: catalogLoaded);
     } catch (cause) {
       if (_currentConnection(revision)) error = _describe(cause);
     } finally {
@@ -327,14 +321,11 @@ final class DeviceChatsViewModel extends ChangeNotifier {
     readReceipts.invalidate();
     error = null;
     final pending = chats.open(ref);
-    final generation = chats.selectionGeneration;
+    final selection = _chatSelection;
     try {
       return await pending && !_disposed;
     } catch (cause) {
-      if (!_disposed && generation == chats.selectionGeneration) {
-        error = _describe(cause);
-        notifyListeners();
-      }
+      if (_setChatError(selection, cause)) notifyListeners();
       return false;
     }
   }
@@ -349,21 +340,10 @@ final class DeviceChatsViewModel extends ChangeNotifier {
         current.ref.id != target.chatId) {
       throw const DeviceLinkException('Reconnect to your computer first.');
     }
-    final generation = chats.selectionGeneration;
-    final connectionRevision = _connectionRevision;
-    final destination = await composer.fork(current.ref, target.atMessageId);
-    if (_disposed ||
-        !online ||
-        connectionRevision != _connectionRevision ||
-        generation != chats.selectionGeneration) {
-      return;
+    if (await composer.fork(current.ref, target.atMessageId) && !_disposed) {
+      error = null;
+      notifyListeners();
     }
-    if (!await open(destination)) {
-      throw const DeviceLinkException(
-        'The fork was created. Open it from the chat list.',
-      );
-    }
-    composer.forkOpened(current.ref, target.atMessageId);
   }
 
   Future<bool> create(DeviceChatWorkspace workspace, {String? title}) async {
@@ -390,19 +370,22 @@ final class DeviceChatsViewModel extends ChangeNotifier {
   /// whether the computer has or may have the message: its files are then
   /// spent, and a retry resends their paths.
   Future<bool> send({
+    required DeviceChatRef chat,
     bool retry = false,
     bool dictated = false,
     List<ChatAttachmentDraft> attachments = const [],
   }) async {
     if (!retry && !canSend) return false;
-    final ref = state?.ref;
+    if (state?.ref.key != chat.key) return false;
     final text = retry ? chats.pendingSend?.text : draft;
-    if (ref == null || text == null) return false;
+    if (text == null) return false;
+    final selection = _chatSelection;
     error = null;
     var sent = false;
     try {
       final result = await chats.send(
         text,
+        chat: chat,
         retry: retry,
         dictated: dictated,
         attachmentPaths: [
@@ -422,9 +405,9 @@ final class DeviceChatsViewModel extends ChangeNotifier {
           );
         }
       }
-      if (result == DeviceChatSendOutcome.accepted) drafts.sent(ref, text);
+      if (result == DeviceChatSendOutcome.accepted) drafts.sent(chat, text);
     } catch (cause) {
-      if (!_disposed) error = _describe(cause);
+      _setChatError(selection, cause);
     }
     if (!_disposed) notifyListeners();
     return sent;
@@ -432,6 +415,8 @@ final class DeviceChatsViewModel extends ChangeNotifier {
 
   Future<void> refreshChat() async {
     final pending = chats.pendingSend;
+    final selection = _chatSelection;
+    final errorRevision = _errorRevision;
     try {
       await chats.refresh();
       _observeReadReceipts();
@@ -439,9 +424,13 @@ final class DeviceChatsViewModel extends ChangeNotifier {
       if (pending != null && chats.confirmedSend?.id == pending.id) {
         drafts.sent(pending.ref, pending.text);
       }
-      error = null;
+      if (!_disposed &&
+          selection == _chatSelection &&
+          errorRevision == _errorRevision) {
+        error = null;
+      }
     } catch (cause) {
-      if (!_disposed) error = _describe(cause);
+      if (errorRevision == _errorRevision) _setChatError(selection, cause);
     }
     if (!_disposed) notifyListeners();
   }
@@ -453,14 +442,13 @@ final class DeviceChatsViewModel extends ChangeNotifier {
   Future<bool> changeSetting(DeviceChatRef ref, core.SettingsPick pick) =>
       canChangeSettings ? composer.change(ref, pick) : Future.value(false);
 
-  Future<void> stop() async {
+  Future<void> stop(DeviceChatRef chat) async {
+    final selection = _chatSelection;
+    if (selection.key != chat.key) return;
     try {
-      await chats.stop();
+      await chats.stop(chat);
     } catch (cause) {
-      if (!_disposed) {
-        error = _describe(cause);
-        notifyListeners();
-      }
+      if (_setChatError(selection, cause)) notifyListeners();
     }
   }
 

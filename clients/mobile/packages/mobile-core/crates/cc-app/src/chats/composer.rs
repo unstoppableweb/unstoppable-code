@@ -132,7 +132,7 @@ pub(crate) enum Event {
         waiter: Option<Waiter>,
     },
     Forked {
-        source: ChatRef,
+        source: (ChatRef, u64),
         at: String,
         tab_id: String,
         result: Result<Value>,
@@ -216,6 +216,13 @@ enum After {
         id: u64,
         waiter: Option<Waiter>,
     },
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum RefreshResult<'a> {
+    Hydrated,
+    Incomplete,
+    Failed(&'a Failure),
 }
 
 /// The selected chat's composer state.
@@ -1073,26 +1080,40 @@ impl Actor {
             }
             None => {
                 let failure = Failure::link(ChatCopy::ReconnectFirst);
-                self.after_refresh(after, Some(failure), done);
+                self.after_refresh(after, RefreshResult::Failed(&failure), done);
             }
         }
     }
 
-    /// An open finished; continues a refresh waiting for it.
+    pub(super) fn replace_composer_read(&mut self, previous: u64) {
+        let current_scope = self.picks_scope();
+        for (read, after) in &mut self.composer.refreshes {
+            let scope = match after {
+                After::Change { scope, .. }
+                | After::CatchUp { scope }
+                | After::Uncertain { scope, .. } => scope,
+            };
+            if *read == previous && scope.as_ref() == Some(&current_scope) {
+                *read = self.reads;
+            }
+        }
+    }
+
+    /// An open finished; continues refreshes waiting for it.
     pub(super) fn composer_opened(
         &mut self,
         read: u64,
-        failure: Option<&Failure>,
+        result: RefreshResult<'_>,
         done: &mut Done,
     ) {
-        let Some(index) = self.composer.refreshes.iter().position(|(r, _)| *r == read) else {
-            return;
-        };
-        let (_, after) = self.composer.refreshes.remove(index);
-        self.after_refresh(after, failure.cloned(), done);
+        while let Some(index) = self.composer.refreshes.iter().position(|(r, _)| *r == read) {
+            let (_, after) = self.composer.refreshes.remove(index);
+            self.after_refresh(after, result, done);
+        }
     }
 
-    fn after_refresh(&mut self, after: After, failure: Option<Failure>, done: &mut Done) {
+    fn after_refresh(&mut self, after: After, result: RefreshResult<'_>, done: &mut Done) {
+        let hydrated = matches!(result, RefreshResult::Hydrated);
         match after {
             After::Change {
                 chat,
@@ -1100,21 +1121,26 @@ impl Actor {
                 waiter,
                 scope,
             } => {
-                if failure.is_some() || self.disposed || scope != Some(self.picks_scope()) {
+                if !hydrated || self.disposed || scope != Some(self.picks_scope()) {
                     return settle(done, waiter, None, Some(changed_outcome(false)));
                 }
                 self.composer.requires_refresh = false;
                 self.queue(chat, pick, waiter, done);
             }
             After::CatchUp { scope } => {
-                self.composer.refresh_scope = None;
-                if let Some(failure) = failure {
+                if self.composer.refresh_scope == scope {
+                    self.composer.refresh_scope = None;
+                }
+                if !hydrated {
                     if !self.disposed && scope != Some(self.picks_scope()) {
-                        return self.drain(done);
+                        return self.resume(done);
                     }
                     if !self.disposed {
-                        self.composer.failure =
-                            Some(pick_failure(None, Some(&failure), &DvMap::new()));
+                        self.composer.requires_refresh = true;
+                        if let RefreshResult::Failed(failure) = result {
+                            self.composer.failure =
+                                Some(pick_failure(None, Some(failure), &DvMap::new()));
+                        }
                         for selection in self.composer.selections.drain(..) {
                             if let Some(waiter) = selection.waiter {
                                 let _ = waiter.send(changed(false));
@@ -1135,7 +1161,7 @@ impl Actor {
                 self.stop_draining();
             }
             After::Uncertain { scope, id, waiter } => {
-                if failure.is_none() && scope == Some(self.picks_scope()) {
+                if hydrated && scope == Some(self.picks_scope()) {
                     self.composer.requires_refresh = false;
                 }
                 let _ = id;
@@ -1192,7 +1218,7 @@ impl Actor {
     }
 
     fn resume(&mut self, done: &mut Done) {
-        if !self.composer.draining || self.composer.saving.is_some() {
+        if !self.composer.draining || self.composer.saving.is_some() || self.picks_refreshing() {
             return;
         }
         self.sync_picks();
@@ -1325,8 +1351,9 @@ impl Actor {
                 "atMessageId": at,
             },
         });
+        let epoch = self.selection_epoch;
         self.composer_call("chat:command", vec![args], move |result| Event::Forked {
-            source,
+            source: (source, epoch),
             at,
             tab_id,
             result,
@@ -1336,7 +1363,7 @@ impl Actor {
 
     fn forked(
         &mut self,
-        source: ChatRef,
+        (source, epoch): (ChatRef, u64),
         at: String,
         tab_id: String,
         result: Result<Value>,
@@ -1374,13 +1401,24 @@ impl Actor {
                 None,
             );
         }
+        let still_selected = !self.disposed
+            && self.connected
+            && self.selection_epoch == epoch
+            && self.closing_tab_key() != Some(source.key().as_str())
+            && self
+                .state()
+                .is_some_and(|state| state.chat.key() == source.key() && !state.closed);
         let chat = ChatRef {
             project_id: source.project_id,
             worktree_id: source.worktree_id,
             id: tab_id,
             title: source.title,
         };
-        settle(done, waiter, None, Some(Outcome::Forked(chat)));
+        if still_selected {
+            self.select_chat(chat, waiter, done);
+        } else {
+            settle(done, waiter, None, Some(Outcome::Forked(chat)));
+        }
     }
 
     // ---- Composer sources (`DeviceComposerSources`) ----

@@ -6,12 +6,10 @@ import 'models.dart';
 final class DeviceChatState {
   DeviceChatState(this.ref);
   final DeviceChatRef ref;
-  Map<String, dynamic> tab = {};
-  final messages = <DeviceChatMessage>[];
-  int? before;
-  bool closed = false;
   core.ChatHeaderView? header;
 
+  bool get closed => header?.closed ?? false;
+  bool get hasMessages => header?.hasMessages ?? false;
   bool get readOnly => header?.readOnly ?? false;
   bool get hasUnreadTabs => header?.hasUnreadTabs ?? false;
   bool get hasPendingDecision => header?.hasPendingDecision ?? false;

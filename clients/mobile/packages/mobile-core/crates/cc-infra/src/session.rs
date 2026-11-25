@@ -528,7 +528,10 @@ pub(crate) async fn run(
                     }
                     Err(SendError::Encode) => next.reply.unwritten(),
                     Err(SendError::End(end)) => {
-                        next.reply.unwritten();
+                        match next.reply {
+                            Reply::Call(_) => next.reply.unsent(),
+                            Reply::HostInfo(_) => next.reply.unwritten(),
+                        }
                         session.end = Some(end.clone());
                         break 'session (end, false);
                     }

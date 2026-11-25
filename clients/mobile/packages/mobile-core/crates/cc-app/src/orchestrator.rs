@@ -19,7 +19,7 @@ use crate::{
     account::{Inbox, Scope, View},
     api::{QuestionAnswerView, QuestionView},
     bridge::{APP_ADVISOR, Inner, MAIN, shutdown_failure},
-    chats::{FailKind, Failure, Peer, transport_failure},
+    chats::{self, FailKind, Failure, Peer, transport_failure},
     copy::{
         chats as chat_copy,
         orchestrator::{self as copy, CopyKey},
@@ -29,7 +29,10 @@ use crate::{
     ports::Responder,
     push::{self, Delivery, Filter},
 };
-use cc_domain::dart::{Dv, DvMap};
+use cc_domain::{
+    chat::ChatRef,
+    dart::{Dv, DvMap},
+};
 use cc_protocol::{
     desktop::{self, Fallbacks, WorkEntry},
     dto,
@@ -113,10 +116,6 @@ pub(crate) enum Intent {
     Shown,
     Watch,
     Enter(Option<String>),
-    Entered {
-        generation: u64,
-        opened: bool,
-    },
     Leave,
     Answer {
         chat: String,
@@ -130,29 +129,17 @@ pub(crate) enum Intent {
     Close,
 }
 
-/// How `open` goes on in the host.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Entering {
-    /// Already in a chat: nothing happens.
-    Busy,
-    /// Open this chat (the entry's active tab).
-    Open {
-        chat: cc_domain::overview::ChatRef,
-        generation: u64,
-    },
-    /// Create a chat in the Orchestrator workspace.
-    NewChat { generation: u64 },
-    /// The entry has no open tab: create one; `failure` is what a failed
-    /// creation shows.
-    NewTab {
-        entry: String,
-        generation: u64,
-        failure: String,
-    },
-    /// The active chat could not be read; the host shows `message`.
-    Failed { message: String },
-    /// The connection or the controller changed meanwhile.
-    Stale,
+#[derive(Clone, Copy)]
+struct OpenAttempt {
+    id: u64,
+    connection: u64,
+    selection: u64,
+}
+
+#[derive(Clone, Copy)]
+enum OpenStage {
+    Create { tab: bool },
+    Read,
 }
 
 #[derive(Debug, Clone)]
@@ -164,8 +151,10 @@ pub(crate) enum Outcome {
         chats: Vec<cc_domain::overview::ChatRef>,
         workspace: (String, String),
     },
-    Entering(Entering),
-    Entered(bool),
+    Opened {
+        revision: u64,
+        generation: u64,
+    },
     Failed(Failure),
     Done,
 }
@@ -194,10 +183,15 @@ enum Msg {
     },
     /// The active-chat read of the open `enter`.
     Active {
-        enter: u64,
-        generation: u64,
+        attempt: OpenAttempt,
         entry: String,
         result: std::result::Result<Option<(String, String)>, ()>,
+        waiter: Option<Waiter>,
+    },
+    ChatStep {
+        attempt: OpenAttempt,
+        stage: OpenStage,
+        result: Option<chats::Settled>,
         waiter: Option<Waiter>,
     },
     Responded {
@@ -218,7 +212,12 @@ pub(crate) struct Handle {
 }
 
 impl Handle {
-    pub(crate) fn start(inner: &Arc<Inner>, runtime: &Runtime, computer: String) -> Self {
+    pub(crate) fn start(
+        inner: &Arc<Inner>,
+        runtime: &Runtime,
+        computer: String,
+        chats: chats::Handle,
+    ) -> Self {
         let scope = inner.scope();
         let (inbox, rx) = mpsc::unbounded_channel();
         let pushes = inbox.clone();
@@ -241,13 +240,13 @@ impl Handle {
             inbox: inbox.clone(),
             computer: Peer::orchestrator(computer, scope.clone()),
             _pushes: subscription,
+            chats,
             disposed: false,
             online: false,
             visible: false,
             in_chat: false,
             enters: 0,
             entering: None,
-            awaiting_open: None,
             generation: 0,
             entries: Arc::default(),
             entries_rev: 0,
@@ -289,17 +288,15 @@ struct Actor {
     /// its requests reach only a session of that scope.
     computer: Peer,
     _pushes: push::Subscription,
+    chats: chats::Handle,
     disposed: bool,
     // `ComputerOrchestratorController`.
     online: bool,
     visible: bool,
     in_chat: bool,
     enters: u64,
-    /// The open whose active-chat read is running; a leave ends it, so a
-    /// later open owns `in_chat` alone.
+    /// The open that owns the route until the chat has hydrated.
     entering: Option<u64>,
-    /// The open handed to the host, identified by attempt and connection.
-    awaiting_open: Option<(u64, u64)>,
     generation: u64,
     // `OrchestratorCatalog`.
     entries: Arc<Vec<Entry>>,
@@ -404,56 +401,91 @@ impl Actor {
                 settle(done, waiter, outcome);
             }
             Msg::Active {
-                enter,
-                generation,
+                attempt,
                 entry,
                 result,
                 waiter,
             } => {
-                // The read of an open the user left, or of an earlier
-                // connection, failed or not, only ends that open: a newer
-                // open keeps `in_chat`.
-                let owner = self.entering == Some(enter);
-                if owner {
-                    self.entering = None;
+                if !self.current_open(attempt) {
+                    return self.finish_open(attempt, waiter, None, None, done);
                 }
-                let current =
-                    owner && !self.disposed && generation == self.generation && self.online;
-                let entering = match result {
-                    _ if !current => {
-                        if owner {
-                            self.in_chat = false;
-                        }
-                        Entering::Stale
+                match result {
+                    Err(()) => self.finish_open(
+                        attempt,
+                        waiter,
+                        Some(Failure::link_text(copy::text(CopyKey::LoadFailed))),
+                        None,
+                        done,
+                    ),
+                    Ok(Some((id, title))) => self.open_chat(
+                        attempt,
+                        ChatRef {
+                            project_id: PROJECT.into(),
+                            worktree_id: entry,
+                            id,
+                            title,
+                        },
+                        waiter,
+                    ),
+                    Ok(None) => self.chat_step(
+                        attempt,
+                        OpenStage::Create { tab: true },
+                        chats::Intent::CreateTab {
+                            expected: Some(attempt.selection),
+                            project_id: PROJECT.into(),
+                            worktree_id: entry,
+                        },
+                        waiter,
+                    ),
+                }
+            }
+            Msg::ChatStep {
+                attempt,
+                stage,
+                result,
+                waiter,
+            } => {
+                if !self.current_open(attempt) {
+                    return self.finish_open(attempt, waiter, None, None, done);
+                }
+                match (stage, result) {
+                    (
+                        OpenStage::Create { .. },
+                        Some(chats::Settled {
+                            outcome: Some(chats::Outcome::Created(chat)),
+                            ..
+                        }),
+                    ) => self.open_chat(attempt, chat, waiter),
+                    (
+                        OpenStage::Read,
+                        Some(chats::Settled {
+                            revision,
+                            outcome:
+                                Some(chats::Outcome::Opened {
+                                    selected: true,
+                                    generation,
+                                }),
+                            ..
+                        }),
+                    ) if self
+                        .chats
+                        .view()
+                        .current()
+                        .is_some_and(|view| view.generation == generation) =>
+                    {
+                        self.finish_open(attempt, waiter, None, Some((revision, generation)), done);
                     }
-                    Err(()) => {
-                        self.in_chat = false;
-                        Entering::Failed {
-                            message: copy::text(CopyKey::LoadFailed).into(),
-                        }
+                    (stage, result) => {
+                        let failure = result.and_then(|result| result.failure).map(|failure| {
+                            if matches!(stage, OpenStage::Create { tab: true }) {
+                                Failure::link_text(copy::text(CopyKey::CreateFailed))
+                            } else {
+                                failure
+                            }
+                        });
+                        self.finish_open(attempt, waiter, failure, None, done);
                     }
-                    Ok(Some((id, title))) => {
-                        self.awaiting_open = Some((enter, generation));
-                        Entering::Open {
-                            chat: cc_domain::overview::ChatRef {
-                                project_id: PROJECT.into(),
-                                worktree_id: entry,
-                                id,
-                                title,
-                            },
-                            generation: enter,
-                        }
-                    }
-                    Ok(None) => {
-                        self.awaiting_open = Some((enter, generation));
-                        Entering::NewTab {
-                            entry,
-                            generation: enter,
-                            failure: copy::text(CopyKey::CreateFailed).into(),
-                        }
-                    }
-                };
-                settle(done, waiter, Outcome::Entering(entering));
+                }
             }
             Msg::Responded {
                 key,
@@ -505,23 +537,9 @@ impl Actor {
             }
             Intent::Watch => self.watch(waiter),
             Intent::Enter(entry) => self.enter(entry, waiter, done),
-            Intent::Entered { generation, opened } => {
-                let Some((_, connection)) =
-                    self.awaiting_open.filter(|&(enter, _)| enter == generation)
-                else {
-                    return settle(done, waiter, Outcome::Entered(false));
-                };
-                self.awaiting_open = None;
-                let stays = !self.disposed && connection == self.generation && opened;
-                if !stays {
-                    self.in_chat = false;
-                }
-                settle(done, waiter, Outcome::Entered(stays));
-            }
             Intent::Leave => {
                 self.in_chat = false;
                 self.entering = None;
-                self.awaiting_open = None;
                 settle(done, waiter, Outcome::Done);
             }
             Intent::Answer {
@@ -659,35 +677,111 @@ impl Actor {
 
     // ---- Opening (`open`, `activeChat`) ----
 
+    fn current_open(&self, attempt: OpenAttempt) -> bool {
+        !self.disposed
+            && self.online
+            && self.entering == Some(attempt.id)
+            && self.generation == attempt.connection
+    }
+
+    fn finish_open(
+        &mut self,
+        attempt: OpenAttempt,
+        waiter: Option<Waiter>,
+        failure: Option<Failure>,
+        opened: Option<(u64, u64)>,
+        done: &mut Done,
+    ) {
+        if self.entering == Some(attempt.id) {
+            self.entering = None;
+            self.in_chat = opened.is_some();
+        }
+        settle(
+            done,
+            waiter,
+            if let Some(failure) = failure {
+                Outcome::Failed(failure)
+            } else if let Some((revision, generation)) = opened {
+                Outcome::Opened {
+                    revision,
+                    generation,
+                }
+            } else {
+                Outcome::Done
+            },
+        );
+    }
+
+    fn chat_step(
+        &self,
+        attempt: OpenAttempt,
+        stage: OpenStage,
+        intent: chats::Intent,
+        waiter: Option<Waiter>,
+    ) {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.chats.send(intent, Some(tx));
+        let inbox = self.inbox.clone();
+        tokio::spawn(async move {
+            let result = rx.await.ok();
+            let _ = inbox.send(Msg::ChatStep {
+                attempt,
+                stage,
+                result,
+                waiter,
+            });
+        });
+    }
+
+    fn open_chat(&self, attempt: OpenAttempt, chat: ChatRef, waiter: Option<Waiter>) {
+        self.chat_step(
+            attempt,
+            OpenStage::Read,
+            chats::Intent::OpenCurrent {
+                chat,
+                expected: attempt.selection,
+            },
+            waiter,
+        );
+    }
+
     fn enter(&mut self, entry: Option<String>, waiter: Option<Waiter>, done: &mut Done) {
-        if self.in_chat {
-            return settle(done, waiter, Outcome::Entering(Entering::Busy));
+        let Some(chat) = self.chats.view().current().filter(|chat| chat.connected) else {
+            return settle(done, waiter, Outcome::Done);
+        };
+        if !self.online || self.in_chat {
+            return settle(done, waiter, Outcome::Done);
         }
         self.in_chat = true;
         self.timer = None;
-        let generation = self.generation;
         self.enters += 1;
-        let enter = self.enters;
-        let Some(entry) = entry else {
-            self.awaiting_open = Some((enter, generation));
-            return settle(
-                done,
-                waiter,
-                Outcome::Entering(Entering::NewChat { generation: enter }),
-            );
+        let attempt = OpenAttempt {
+            id: self.enters,
+            connection: self.generation,
+            selection: chat.generation,
         };
-        self.entering = Some(enter);
+        self.entering = Some(attempt.id);
+        let Some(entry) = entry else {
+            self.chat_step(
+                attempt,
+                OpenStage::Create { tab: false },
+                chats::Intent::CreateChat {
+                    expected: Some(attempt.selection),
+                    workspace: PROJECT.into(),
+                    title: None,
+                },
+                waiter,
+            );
+            return;
+        };
         let (Some(inner), inbox, computer) = (
             self.inner.upgrade(),
             self.inbox.clone(),
             self.computer.clone(),
         ) else {
-            return;
+            return self.finish_open(attempt, waiter, None, None, done);
         };
         tokio::spawn(async move {
-            // Resolve the actual active tab immediately before opening: a
-            // cold or stale search index must never turn an existing task
-            // into an empty one.
             let reply = call(
                 &inner,
                 &computer,
@@ -700,8 +794,7 @@ impl Actor {
                 .and_then(|reply| desktop::active_tab(&reply, &fallbacks()).ok())
                 .ok_or(());
             let _ = inbox.send(Msg::Active {
-                enter,
-                generation,
+                attempt,
                 entry,
                 result,
                 waiter,

@@ -233,29 +233,8 @@ pub struct NewTaskRequest {
 /// A step that needs the host's chat model, overview, or composer UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskStep {
-    /// Open `chat` in the chat model.
-    Open { chat: ChatRefView },
-    /// Create a new tab in a worktree and open it.
-    CreateTab {
-        project_id: String,
-        worktree_id: String,
-    },
-    /// Create a Cowork chat and open it.
-    CreateChat { project_id: String },
-    /// Re-read the created worktree's chats into its overview row.
-    LoadWorktree {
-        project_id: String,
-        worktree_id: String,
-        name: String,
-    },
-    /// Re-read the open chat.
-    Refresh,
-    /// Put the screen composer's text (`None`) or `text` into `chat`'s
-    /// draft, or the selected chat's without one.
-    SetDraft {
-        chat: Option<ChatRefView>,
-        text: Option<String>,
-    },
+    /// Copies the latest text from the screen composer into the chat's draft.
+    SetDraft { chat: Option<ChatRefView> },
     /// Tell the chat's activity the project's kind.
     SetWorkspaceKind { project_id: String, kind: String },
     /// The first message named these Home files.
@@ -287,13 +266,6 @@ pub struct TaskFailure {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TaskStepResult {
     pub failure: Option<TaskFailure>,
-    /// The chat a creation made (reported even when its open failed).
-    pub created: Option<ChatRefView>,
-    /// `LoadWorktree`: the row's status is `Unavailable`.
-    pub unavailable: bool,
-    /// `LoadWorktree`: the row's chats and its active one.
-    pub chats: Vec<ChatRefView>,
-    pub active_chat_id: Option<String>,
     pub online: bool,
 }
 
@@ -924,28 +896,8 @@ impl From<NewTaskRequest> for cc_core::NewTaskRequest {
 impl From<cc_core::TaskStep> for TaskStep {
     fn from(v: cc_core::TaskStep) -> Self {
         match v {
-            cc_core::TaskStep::Open { chat } => Self::Open { chat: chat.into() },
-            cc_core::TaskStep::CreateTab {
-                project_id,
-                worktree_id,
-            } => Self::CreateTab {
-                project_id,
-                worktree_id,
-            },
-            cc_core::TaskStep::CreateChat { project_id } => Self::CreateChat { project_id },
-            cc_core::TaskStep::LoadWorktree {
-                project_id,
-                worktree_id,
-                name,
-            } => Self::LoadWorktree {
-                project_id,
-                worktree_id,
-                name,
-            },
-            cc_core::TaskStep::Refresh => Self::Refresh,
-            cc_core::TaskStep::SetDraft { chat, text } => Self::SetDraft {
+            cc_core::TaskStep::SetDraft { chat } => Self::SetDraft {
                 chat: chat.map(Into::into),
-                text,
             },
             cc_core::TaskStep::SetWorkspaceKind { project_id, kind } => {
                 Self::SetWorkspaceKind { project_id, kind }
@@ -960,28 +912,8 @@ impl From<cc_core::TaskStep> for TaskStep {
 impl From<TaskStep> for cc_core::TaskStep {
     fn from(v: TaskStep) -> Self {
         match v {
-            TaskStep::Open { chat } => Self::Open { chat: chat.into() },
-            TaskStep::CreateTab {
-                project_id,
-                worktree_id,
-            } => Self::CreateTab {
-                project_id,
-                worktree_id,
-            },
-            TaskStep::CreateChat { project_id } => Self::CreateChat { project_id },
-            TaskStep::LoadWorktree {
-                project_id,
-                worktree_id,
-                name,
-            } => Self::LoadWorktree {
-                project_id,
-                worktree_id,
-                name,
-            },
-            TaskStep::Refresh => Self::Refresh,
-            TaskStep::SetDraft { chat, text } => Self::SetDraft {
+            TaskStep::SetDraft { chat } => Self::SetDraft {
                 chat: chat.map(Into::into),
-                text,
             },
             TaskStep::SetWorkspaceKind { project_id, kind } => {
                 Self::SetWorkspaceKind { project_id, kind }
@@ -1037,10 +969,6 @@ impl From<cc_core::TaskStepResult> for TaskStepResult {
     fn from(v: cc_core::TaskStepResult) -> Self {
         Self {
             failure: v.failure.map(Into::into),
-            created: v.created.map(Into::into),
-            unavailable: v.unavailable,
-            chats: v.chats.into_iter().map(Into::into).collect(),
-            active_chat_id: v.active_chat_id,
             online: v.online,
         }
     }
@@ -1050,10 +978,6 @@ impl From<TaskStepResult> for cc_core::TaskStepResult {
     fn from(v: TaskStepResult) -> Self {
         Self {
             failure: v.failure.map(Into::into),
-            created: v.created.map(Into::into),
-            unavailable: v.unavailable,
-            chats: v.chats.into_iter().map(Into::into).collect(),
-            active_chat_id: v.active_chat_id,
             online: v.online,
         }
     }
@@ -1328,6 +1252,10 @@ impl HomeService {
     #[frb(sync)]
     pub fn bind_worktrees(&self, worktrees: &WorktreesService) {
         self.inner.bind_worktrees(&worktrees.inner);
+    }
+    #[frb(sync)]
+    pub fn bind_overview(&self, overview: &super::overview::OverviewService) {
+        self.inner.bind_overview(&overview.inner);
     }
     /// A new choice model for `context` (`personal` or
     /// `organization:<id>`), with the inventory its controller shows now,

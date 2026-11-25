@@ -55,7 +55,7 @@ extension OrchestratorIntentPatterns on OrchestratorIntent {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( OrchestratorIntent_SetOnline value)?  setOnline,TResult Function( OrchestratorIntent_SetVisible value)?  setVisible,TResult Function( OrchestratorIntent_ReadCatalog value)?  readCatalog,TResult Function( OrchestratorIntent_CatalogShown value)?  catalogShown,TResult Function( OrchestratorIntent_WatchEntries value)?  watchEntries,TResult Function( OrchestratorIntent_Enter value)?  enter,TResult Function( OrchestratorIntent_Entered value)?  entered,TResult Function( OrchestratorIntent_Leave value)?  leave,TResult Function( OrchestratorIntent_Answer value)?  answer,TResult Function( OrchestratorIntent_Dismiss value)?  dismiss,TResult Function( OrchestratorIntent_Close value)?  close,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( OrchestratorIntent_SetOnline value)?  setOnline,TResult Function( OrchestratorIntent_SetVisible value)?  setVisible,TResult Function( OrchestratorIntent_ReadCatalog value)?  readCatalog,TResult Function( OrchestratorIntent_CatalogShown value)?  catalogShown,TResult Function( OrchestratorIntent_WatchEntries value)?  watchEntries,TResult Function( OrchestratorIntent_Enter value)?  enter,TResult Function( OrchestratorIntent_Leave value)?  leave,TResult Function( OrchestratorIntent_Answer value)?  answer,TResult Function( OrchestratorIntent_Dismiss value)?  dismiss,TResult Function( OrchestratorIntent_Close value)?  close,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case OrchestratorIntent_SetOnline() when setOnline != null:
@@ -64,8 +64,7 @@ return setVisible(_that);case OrchestratorIntent_ReadCatalog() when readCatalog 
 return readCatalog(_that);case OrchestratorIntent_CatalogShown() when catalogShown != null:
 return catalogShown(_that);case OrchestratorIntent_WatchEntries() when watchEntries != null:
 return watchEntries(_that);case OrchestratorIntent_Enter() when enter != null:
-return enter(_that);case OrchestratorIntent_Entered() when entered != null:
-return entered(_that);case OrchestratorIntent_Leave() when leave != null:
+return enter(_that);case OrchestratorIntent_Leave() when leave != null:
 return leave(_that);case OrchestratorIntent_Answer() when answer != null:
 return answer(_that);case OrchestratorIntent_Dismiss() when dismiss != null:
 return dismiss(_that);case OrchestratorIntent_Close() when close != null:
@@ -87,7 +86,7 @@ return close(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( OrchestratorIntent_SetOnline value)  setOnline,required TResult Function( OrchestratorIntent_SetVisible value)  setVisible,required TResult Function( OrchestratorIntent_ReadCatalog value)  readCatalog,required TResult Function( OrchestratorIntent_CatalogShown value)  catalogShown,required TResult Function( OrchestratorIntent_WatchEntries value)  watchEntries,required TResult Function( OrchestratorIntent_Enter value)  enter,required TResult Function( OrchestratorIntent_Entered value)  entered,required TResult Function( OrchestratorIntent_Leave value)  leave,required TResult Function( OrchestratorIntent_Answer value)  answer,required TResult Function( OrchestratorIntent_Dismiss value)  dismiss,required TResult Function( OrchestratorIntent_Close value)  close,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( OrchestratorIntent_SetOnline value)  setOnline,required TResult Function( OrchestratorIntent_SetVisible value)  setVisible,required TResult Function( OrchestratorIntent_ReadCatalog value)  readCatalog,required TResult Function( OrchestratorIntent_CatalogShown value)  catalogShown,required TResult Function( OrchestratorIntent_WatchEntries value)  watchEntries,required TResult Function( OrchestratorIntent_Enter value)  enter,required TResult Function( OrchestratorIntent_Leave value)  leave,required TResult Function( OrchestratorIntent_Answer value)  answer,required TResult Function( OrchestratorIntent_Dismiss value)  dismiss,required TResult Function( OrchestratorIntent_Close value)  close,}){
 final _that = this;
 switch (_that) {
 case OrchestratorIntent_SetOnline():
@@ -96,8 +95,7 @@ return setVisible(_that);case OrchestratorIntent_ReadCatalog():
 return readCatalog(_that);case OrchestratorIntent_CatalogShown():
 return catalogShown(_that);case OrchestratorIntent_WatchEntries():
 return watchEntries(_that);case OrchestratorIntent_Enter():
-return enter(_that);case OrchestratorIntent_Entered():
-return entered(_that);case OrchestratorIntent_Leave():
+return enter(_that);case OrchestratorIntent_Leave():
 return leave(_that);case OrchestratorIntent_Answer():
 return answer(_that);case OrchestratorIntent_Dismiss():
 return dismiss(_that);case OrchestratorIntent_Close():
@@ -115,7 +113,7 @@ return close(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( OrchestratorIntent_SetOnline value)?  setOnline,TResult? Function( OrchestratorIntent_SetVisible value)?  setVisible,TResult? Function( OrchestratorIntent_ReadCatalog value)?  readCatalog,TResult? Function( OrchestratorIntent_CatalogShown value)?  catalogShown,TResult? Function( OrchestratorIntent_WatchEntries value)?  watchEntries,TResult? Function( OrchestratorIntent_Enter value)?  enter,TResult? Function( OrchestratorIntent_Entered value)?  entered,TResult? Function( OrchestratorIntent_Leave value)?  leave,TResult? Function( OrchestratorIntent_Answer value)?  answer,TResult? Function( OrchestratorIntent_Dismiss value)?  dismiss,TResult? Function( OrchestratorIntent_Close value)?  close,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( OrchestratorIntent_SetOnline value)?  setOnline,TResult? Function( OrchestratorIntent_SetVisible value)?  setVisible,TResult? Function( OrchestratorIntent_ReadCatalog value)?  readCatalog,TResult? Function( OrchestratorIntent_CatalogShown value)?  catalogShown,TResult? Function( OrchestratorIntent_WatchEntries value)?  watchEntries,TResult? Function( OrchestratorIntent_Enter value)?  enter,TResult? Function( OrchestratorIntent_Leave value)?  leave,TResult? Function( OrchestratorIntent_Answer value)?  answer,TResult? Function( OrchestratorIntent_Dismiss value)?  dismiss,TResult? Function( OrchestratorIntent_Close value)?  close,}){
 final _that = this;
 switch (_that) {
 case OrchestratorIntent_SetOnline() when setOnline != null:
@@ -124,8 +122,7 @@ return setVisible(_that);case OrchestratorIntent_ReadCatalog() when readCatalog 
 return readCatalog(_that);case OrchestratorIntent_CatalogShown() when catalogShown != null:
 return catalogShown(_that);case OrchestratorIntent_WatchEntries() when watchEntries != null:
 return watchEntries(_that);case OrchestratorIntent_Enter() when enter != null:
-return enter(_that);case OrchestratorIntent_Entered() when entered != null:
-return entered(_that);case OrchestratorIntent_Leave() when leave != null:
+return enter(_that);case OrchestratorIntent_Leave() when leave != null:
 return leave(_that);case OrchestratorIntent_Answer() when answer != null:
 return answer(_that);case OrchestratorIntent_Dismiss() when dismiss != null:
 return dismiss(_that);case OrchestratorIntent_Close() when close != null:
@@ -146,7 +143,7 @@ return close(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( bool online)?  setOnline,TResult Function( bool visible)?  setVisible,TResult Function()?  readCatalog,TResult Function()?  catalogShown,TResult Function()?  watchEntries,TResult Function( String? entryId)?  enter,TResult Function( int generation,  bool opened)?  entered,TResult Function()?  leave,TResult Function( String chatId,  String requestId,  List<QuestionAnswerView> answers)?  answer,TResult Function( String chatId,  String requestId)?  dismiss,TResult Function()?  close,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( bool online)?  setOnline,TResult Function( bool visible)?  setVisible,TResult Function()?  readCatalog,TResult Function()?  catalogShown,TResult Function()?  watchEntries,TResult Function( String? entryId)?  enter,TResult Function()?  leave,TResult Function( String chatId,  String requestId,  List<QuestionAnswerView> answers)?  answer,TResult Function( String chatId,  String requestId)?  dismiss,TResult Function()?  close,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case OrchestratorIntent_SetOnline() when setOnline != null:
 return setOnline(_that.online);case OrchestratorIntent_SetVisible() when setVisible != null:
@@ -154,8 +151,7 @@ return setVisible(_that.visible);case OrchestratorIntent_ReadCatalog() when read
 return readCatalog();case OrchestratorIntent_CatalogShown() when catalogShown != null:
 return catalogShown();case OrchestratorIntent_WatchEntries() when watchEntries != null:
 return watchEntries();case OrchestratorIntent_Enter() when enter != null:
-return enter(_that.entryId);case OrchestratorIntent_Entered() when entered != null:
-return entered(_that.generation,_that.opened);case OrchestratorIntent_Leave() when leave != null:
+return enter(_that.entryId);case OrchestratorIntent_Leave() when leave != null:
 return leave();case OrchestratorIntent_Answer() when answer != null:
 return answer(_that.chatId,_that.requestId,_that.answers);case OrchestratorIntent_Dismiss() when dismiss != null:
 return dismiss(_that.chatId,_that.requestId);case OrchestratorIntent_Close() when close != null:
@@ -177,7 +173,7 @@ return close();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( bool online)  setOnline,required TResult Function( bool visible)  setVisible,required TResult Function()  readCatalog,required TResult Function()  catalogShown,required TResult Function()  watchEntries,required TResult Function( String? entryId)  enter,required TResult Function( int generation,  bool opened)  entered,required TResult Function()  leave,required TResult Function( String chatId,  String requestId,  List<QuestionAnswerView> answers)  answer,required TResult Function( String chatId,  String requestId)  dismiss,required TResult Function()  close,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( bool online)  setOnline,required TResult Function( bool visible)  setVisible,required TResult Function()  readCatalog,required TResult Function()  catalogShown,required TResult Function()  watchEntries,required TResult Function( String? entryId)  enter,required TResult Function()  leave,required TResult Function( String chatId,  String requestId,  List<QuestionAnswerView> answers)  answer,required TResult Function( String chatId,  String requestId)  dismiss,required TResult Function()  close,}) {final _that = this;
 switch (_that) {
 case OrchestratorIntent_SetOnline():
 return setOnline(_that.online);case OrchestratorIntent_SetVisible():
@@ -185,8 +181,7 @@ return setVisible(_that.visible);case OrchestratorIntent_ReadCatalog():
 return readCatalog();case OrchestratorIntent_CatalogShown():
 return catalogShown();case OrchestratorIntent_WatchEntries():
 return watchEntries();case OrchestratorIntent_Enter():
-return enter(_that.entryId);case OrchestratorIntent_Entered():
-return entered(_that.generation,_that.opened);case OrchestratorIntent_Leave():
+return enter(_that.entryId);case OrchestratorIntent_Leave():
 return leave();case OrchestratorIntent_Answer():
 return answer(_that.chatId,_that.requestId,_that.answers);case OrchestratorIntent_Dismiss():
 return dismiss(_that.chatId,_that.requestId);case OrchestratorIntent_Close():
@@ -204,7 +199,7 @@ return close();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( bool online)?  setOnline,TResult? Function( bool visible)?  setVisible,TResult? Function()?  readCatalog,TResult? Function()?  catalogShown,TResult? Function()?  watchEntries,TResult? Function( String? entryId)?  enter,TResult? Function( int generation,  bool opened)?  entered,TResult? Function()?  leave,TResult? Function( String chatId,  String requestId,  List<QuestionAnswerView> answers)?  answer,TResult? Function( String chatId,  String requestId)?  dismiss,TResult? Function()?  close,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( bool online)?  setOnline,TResult? Function( bool visible)?  setVisible,TResult? Function()?  readCatalog,TResult? Function()?  catalogShown,TResult? Function()?  watchEntries,TResult? Function( String? entryId)?  enter,TResult? Function()?  leave,TResult? Function( String chatId,  String requestId,  List<QuestionAnswerView> answers)?  answer,TResult? Function( String chatId,  String requestId)?  dismiss,TResult? Function()?  close,}) {final _that = this;
 switch (_that) {
 case OrchestratorIntent_SetOnline() when setOnline != null:
 return setOnline(_that.online);case OrchestratorIntent_SetVisible() when setVisible != null:
@@ -212,8 +207,7 @@ return setVisible(_that.visible);case OrchestratorIntent_ReadCatalog() when read
 return readCatalog();case OrchestratorIntent_CatalogShown() when catalogShown != null:
 return catalogShown();case OrchestratorIntent_WatchEntries() when watchEntries != null:
 return watchEntries();case OrchestratorIntent_Enter() when enter != null:
-return enter(_that.entryId);case OrchestratorIntent_Entered() when entered != null:
-return entered(_that.generation,_that.opened);case OrchestratorIntent_Leave() when leave != null:
+return enter(_that.entryId);case OrchestratorIntent_Leave() when leave != null:
 return leave();case OrchestratorIntent_Answer() when answer != null:
 return answer(_that.chatId,_that.requestId,_that.answers);case OrchestratorIntent_Dismiss() when dismiss != null:
 return dismiss(_that.chatId,_that.requestId);case OrchestratorIntent_Close() when close != null:
@@ -522,74 +516,6 @@ as String?,
 /// @nodoc
 
 
-class OrchestratorIntent_Entered extends OrchestratorIntent {
-  const OrchestratorIntent_Entered({required this.generation, required this.opened}): super._();
-  
-
- final  int generation;
- final  bool opened;
-
-/// Create a copy of OrchestratorIntent
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$OrchestratorIntent_EnteredCopyWith<OrchestratorIntent_Entered> get copyWith => _$OrchestratorIntent_EnteredCopyWithImpl<OrchestratorIntent_Entered>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is OrchestratorIntent_Entered&&(identical(other.generation, generation) || other.generation == generation)&&(identical(other.opened, opened) || other.opened == opened));
-}
-
-
-@override
-int get hashCode => Object.hash(runtimeType,generation,opened);
-
-@override
-String toString() {
-  return 'OrchestratorIntent.entered(generation: $generation, opened: $opened)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $OrchestratorIntent_EnteredCopyWith<$Res> implements $OrchestratorIntentCopyWith<$Res> {
-  factory $OrchestratorIntent_EnteredCopyWith(OrchestratorIntent_Entered value, $Res Function(OrchestratorIntent_Entered) _then) = _$OrchestratorIntent_EnteredCopyWithImpl;
-@useResult
-$Res call({
- int generation, bool opened
-});
-
-
-
-
-}
-/// @nodoc
-class _$OrchestratorIntent_EnteredCopyWithImpl<$Res>
-    implements $OrchestratorIntent_EnteredCopyWith<$Res> {
-  _$OrchestratorIntent_EnteredCopyWithImpl(this._self, this._then);
-
-  final OrchestratorIntent_Entered _self;
-  final $Res Function(OrchestratorIntent_Entered) _then;
-
-/// Create a copy of OrchestratorIntent
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? generation = null,Object? opened = null,}) {
-  return _then(OrchestratorIntent_Entered(
-generation: null == generation ? _self.generation : generation // ignore: cast_nullable_to_non_nullable
-as int,opened: null == opened ? _self.opened : opened // ignore: cast_nullable_to_non_nullable
-as bool,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
 class OrchestratorIntent_Leave extends OrchestratorIntent {
   const OrchestratorIntent_Leave(): super._();
   
@@ -839,19 +765,13 @@ extension OrchestratorOutcomePatterns on OrchestratorOutcome {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( OrchestratorOutcome_Visible value)?  visible,TResult Function( OrchestratorOutcome_Catalog value)?  catalog,TResult Function( OrchestratorOutcome_Busy value)?  busy,TResult Function( OrchestratorOutcome_Open value)?  open,TResult Function( OrchestratorOutcome_NewChat value)?  newChat,TResult Function( OrchestratorOutcome_NewTab value)?  newTab,TResult Function( OrchestratorOutcome_LoadFailed value)?  loadFailed,TResult Function( OrchestratorOutcome_Stale value)?  stale,TResult Function( OrchestratorOutcome_Entered value)?  entered,TResult Function( OrchestratorOutcome_Failed value)?  failed,TResult Function( OrchestratorOutcome_Done value)?  done,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( OrchestratorOutcome_Visible value)?  visible,TResult Function( OrchestratorOutcome_Catalog value)?  catalog,TResult Function( OrchestratorOutcome_Opened value)?  opened,TResult Function( OrchestratorOutcome_Failed value)?  failed,TResult Function( OrchestratorOutcome_Done value)?  done,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case OrchestratorOutcome_Visible() when visible != null:
 return visible(_that);case OrchestratorOutcome_Catalog() when catalog != null:
-return catalog(_that);case OrchestratorOutcome_Busy() when busy != null:
-return busy(_that);case OrchestratorOutcome_Open() when open != null:
-return open(_that);case OrchestratorOutcome_NewChat() when newChat != null:
-return newChat(_that);case OrchestratorOutcome_NewTab() when newTab != null:
-return newTab(_that);case OrchestratorOutcome_LoadFailed() when loadFailed != null:
-return loadFailed(_that);case OrchestratorOutcome_Stale() when stale != null:
-return stale(_that);case OrchestratorOutcome_Entered() when entered != null:
-return entered(_that);case OrchestratorOutcome_Failed() when failed != null:
+return catalog(_that);case OrchestratorOutcome_Opened() when opened != null:
+return opened(_that);case OrchestratorOutcome_Failed() when failed != null:
 return failed(_that);case OrchestratorOutcome_Done() when done != null:
 return done(_that);case _:
   return orElse();
@@ -871,19 +791,13 @@ return done(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( OrchestratorOutcome_Visible value)  visible,required TResult Function( OrchestratorOutcome_Catalog value)  catalog,required TResult Function( OrchestratorOutcome_Busy value)  busy,required TResult Function( OrchestratorOutcome_Open value)  open,required TResult Function( OrchestratorOutcome_NewChat value)  newChat,required TResult Function( OrchestratorOutcome_NewTab value)  newTab,required TResult Function( OrchestratorOutcome_LoadFailed value)  loadFailed,required TResult Function( OrchestratorOutcome_Stale value)  stale,required TResult Function( OrchestratorOutcome_Entered value)  entered,required TResult Function( OrchestratorOutcome_Failed value)  failed,required TResult Function( OrchestratorOutcome_Done value)  done,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( OrchestratorOutcome_Visible value)  visible,required TResult Function( OrchestratorOutcome_Catalog value)  catalog,required TResult Function( OrchestratorOutcome_Opened value)  opened,required TResult Function( OrchestratorOutcome_Failed value)  failed,required TResult Function( OrchestratorOutcome_Done value)  done,}){
 final _that = this;
 switch (_that) {
 case OrchestratorOutcome_Visible():
 return visible(_that);case OrchestratorOutcome_Catalog():
-return catalog(_that);case OrchestratorOutcome_Busy():
-return busy(_that);case OrchestratorOutcome_Open():
-return open(_that);case OrchestratorOutcome_NewChat():
-return newChat(_that);case OrchestratorOutcome_NewTab():
-return newTab(_that);case OrchestratorOutcome_LoadFailed():
-return loadFailed(_that);case OrchestratorOutcome_Stale():
-return stale(_that);case OrchestratorOutcome_Entered():
-return entered(_that);case OrchestratorOutcome_Failed():
+return catalog(_that);case OrchestratorOutcome_Opened():
+return opened(_that);case OrchestratorOutcome_Failed():
 return failed(_that);case OrchestratorOutcome_Done():
 return done(_that);}
 }
@@ -899,19 +813,13 @@ return done(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( OrchestratorOutcome_Visible value)?  visible,TResult? Function( OrchestratorOutcome_Catalog value)?  catalog,TResult? Function( OrchestratorOutcome_Busy value)?  busy,TResult? Function( OrchestratorOutcome_Open value)?  open,TResult? Function( OrchestratorOutcome_NewChat value)?  newChat,TResult? Function( OrchestratorOutcome_NewTab value)?  newTab,TResult? Function( OrchestratorOutcome_LoadFailed value)?  loadFailed,TResult? Function( OrchestratorOutcome_Stale value)?  stale,TResult? Function( OrchestratorOutcome_Entered value)?  entered,TResult? Function( OrchestratorOutcome_Failed value)?  failed,TResult? Function( OrchestratorOutcome_Done value)?  done,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( OrchestratorOutcome_Visible value)?  visible,TResult? Function( OrchestratorOutcome_Catalog value)?  catalog,TResult? Function( OrchestratorOutcome_Opened value)?  opened,TResult? Function( OrchestratorOutcome_Failed value)?  failed,TResult? Function( OrchestratorOutcome_Done value)?  done,}){
 final _that = this;
 switch (_that) {
 case OrchestratorOutcome_Visible() when visible != null:
 return visible(_that);case OrchestratorOutcome_Catalog() when catalog != null:
-return catalog(_that);case OrchestratorOutcome_Busy() when busy != null:
-return busy(_that);case OrchestratorOutcome_Open() when open != null:
-return open(_that);case OrchestratorOutcome_NewChat() when newChat != null:
-return newChat(_that);case OrchestratorOutcome_NewTab() when newTab != null:
-return newTab(_that);case OrchestratorOutcome_LoadFailed() when loadFailed != null:
-return loadFailed(_that);case OrchestratorOutcome_Stale() when stale != null:
-return stale(_that);case OrchestratorOutcome_Entered() when entered != null:
-return entered(_that);case OrchestratorOutcome_Failed() when failed != null:
+return catalog(_that);case OrchestratorOutcome_Opened() when opened != null:
+return opened(_that);case OrchestratorOutcome_Failed() when failed != null:
 return failed(_that);case OrchestratorOutcome_Done() when done != null:
 return done(_that);case _:
   return null;
@@ -930,18 +838,12 @@ return done(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( bool refresh)?  visible,TResult Function( CatalogView catalog)?  catalog,TResult Function()?  busy,TResult Function( ChatRefView chat,  int generation)?  open,TResult Function( CatalogWorkspaceView workspace,  int generation)?  newChat,TResult Function( String entryId,  int generation,  String failure)?  newTab,TResult Function( String message)?  loadFailed,TResult Function()?  stale,TResult Function( bool opened)?  entered,TResult Function( ChatFailure failure)?  failed,TResult Function()?  done,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( bool refresh)?  visible,TResult Function( CatalogView catalog)?  catalog,TResult Function( int chatRevision,  int chatGeneration)?  opened,TResult Function( ChatFailure failure)?  failed,TResult Function()?  done,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case OrchestratorOutcome_Visible() when visible != null:
 return visible(_that.refresh);case OrchestratorOutcome_Catalog() when catalog != null:
-return catalog(_that.catalog);case OrchestratorOutcome_Busy() when busy != null:
-return busy();case OrchestratorOutcome_Open() when open != null:
-return open(_that.chat,_that.generation);case OrchestratorOutcome_NewChat() when newChat != null:
-return newChat(_that.workspace,_that.generation);case OrchestratorOutcome_NewTab() when newTab != null:
-return newTab(_that.entryId,_that.generation,_that.failure);case OrchestratorOutcome_LoadFailed() when loadFailed != null:
-return loadFailed(_that.message);case OrchestratorOutcome_Stale() when stale != null:
-return stale();case OrchestratorOutcome_Entered() when entered != null:
-return entered(_that.opened);case OrchestratorOutcome_Failed() when failed != null:
+return catalog(_that.catalog);case OrchestratorOutcome_Opened() when opened != null:
+return opened(_that.chatRevision,_that.chatGeneration);case OrchestratorOutcome_Failed() when failed != null:
 return failed(_that.failure);case OrchestratorOutcome_Done() when done != null:
 return done();case _:
   return orElse();
@@ -961,18 +863,12 @@ return done();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( bool refresh)  visible,required TResult Function( CatalogView catalog)  catalog,required TResult Function()  busy,required TResult Function( ChatRefView chat,  int generation)  open,required TResult Function( CatalogWorkspaceView workspace,  int generation)  newChat,required TResult Function( String entryId,  int generation,  String failure)  newTab,required TResult Function( String message)  loadFailed,required TResult Function()  stale,required TResult Function( bool opened)  entered,required TResult Function( ChatFailure failure)  failed,required TResult Function()  done,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( bool refresh)  visible,required TResult Function( CatalogView catalog)  catalog,required TResult Function( int chatRevision,  int chatGeneration)  opened,required TResult Function( ChatFailure failure)  failed,required TResult Function()  done,}) {final _that = this;
 switch (_that) {
 case OrchestratorOutcome_Visible():
 return visible(_that.refresh);case OrchestratorOutcome_Catalog():
-return catalog(_that.catalog);case OrchestratorOutcome_Busy():
-return busy();case OrchestratorOutcome_Open():
-return open(_that.chat,_that.generation);case OrchestratorOutcome_NewChat():
-return newChat(_that.workspace,_that.generation);case OrchestratorOutcome_NewTab():
-return newTab(_that.entryId,_that.generation,_that.failure);case OrchestratorOutcome_LoadFailed():
-return loadFailed(_that.message);case OrchestratorOutcome_Stale():
-return stale();case OrchestratorOutcome_Entered():
-return entered(_that.opened);case OrchestratorOutcome_Failed():
+return catalog(_that.catalog);case OrchestratorOutcome_Opened():
+return opened(_that.chatRevision,_that.chatGeneration);case OrchestratorOutcome_Failed():
 return failed(_that.failure);case OrchestratorOutcome_Done():
 return done();}
 }
@@ -988,18 +884,12 @@ return done();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( bool refresh)?  visible,TResult? Function( CatalogView catalog)?  catalog,TResult? Function()?  busy,TResult? Function( ChatRefView chat,  int generation)?  open,TResult? Function( CatalogWorkspaceView workspace,  int generation)?  newChat,TResult? Function( String entryId,  int generation,  String failure)?  newTab,TResult? Function( String message)?  loadFailed,TResult? Function()?  stale,TResult? Function( bool opened)?  entered,TResult? Function( ChatFailure failure)?  failed,TResult? Function()?  done,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( bool refresh)?  visible,TResult? Function( CatalogView catalog)?  catalog,TResult? Function( int chatRevision,  int chatGeneration)?  opened,TResult? Function( ChatFailure failure)?  failed,TResult? Function()?  done,}) {final _that = this;
 switch (_that) {
 case OrchestratorOutcome_Visible() when visible != null:
 return visible(_that.refresh);case OrchestratorOutcome_Catalog() when catalog != null:
-return catalog(_that.catalog);case OrchestratorOutcome_Busy() when busy != null:
-return busy();case OrchestratorOutcome_Open() when open != null:
-return open(_that.chat,_that.generation);case OrchestratorOutcome_NewChat() when newChat != null:
-return newChat(_that.workspace,_that.generation);case OrchestratorOutcome_NewTab() when newTab != null:
-return newTab(_that.entryId,_that.generation,_that.failure);case OrchestratorOutcome_LoadFailed() when loadFailed != null:
-return loadFailed(_that.message);case OrchestratorOutcome_Stale() when stale != null:
-return stale();case OrchestratorOutcome_Entered() when entered != null:
-return entered(_that.opened);case OrchestratorOutcome_Failed() when failed != null:
+return catalog(_that.catalog);case OrchestratorOutcome_Opened() when opened != null:
+return opened(_that.chatRevision,_that.chatGeneration);case OrchestratorOutcome_Failed() when failed != null:
 return failed(_that.failure);case OrchestratorOutcome_Done() when done != null:
 return done();case _:
   return null;
@@ -1144,76 +1034,44 @@ as CatalogView,
 /// @nodoc
 
 
-class OrchestratorOutcome_Busy extends OrchestratorOutcome {
-  const OrchestratorOutcome_Busy(): super._();
+class OrchestratorOutcome_Opened extends OrchestratorOutcome {
+  const OrchestratorOutcome_Opened({required this.chatRevision, required this.chatGeneration}): super._();
   
 
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is OrchestratorOutcome_Busy);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-  return 'OrchestratorOutcome.busy()';
-}
-
-
-}
-
-
-
-
-/// @nodoc
-
-
-class OrchestratorOutcome_Open extends OrchestratorOutcome {
-  const OrchestratorOutcome_Open({required this.chat, required this.generation}): super._();
-  
-
- final  ChatRefView chat;
- final  int generation;
+ final  int chatRevision;
+ final  int chatGeneration;
 
 /// Create a copy of OrchestratorOutcome
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
 @pragma('vm:prefer-inline')
-$OrchestratorOutcome_OpenCopyWith<OrchestratorOutcome_Open> get copyWith => _$OrchestratorOutcome_OpenCopyWithImpl<OrchestratorOutcome_Open>(this, _$identity);
+$OrchestratorOutcome_OpenedCopyWith<OrchestratorOutcome_Opened> get copyWith => _$OrchestratorOutcome_OpenedCopyWithImpl<OrchestratorOutcome_Opened>(this, _$identity);
 
 
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is OrchestratorOutcome_Open&&(identical(other.chat, chat) || other.chat == chat)&&(identical(other.generation, generation) || other.generation == generation));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is OrchestratorOutcome_Opened&&(identical(other.chatRevision, chatRevision) || other.chatRevision == chatRevision)&&(identical(other.chatGeneration, chatGeneration) || other.chatGeneration == chatGeneration));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,chat,generation);
+int get hashCode => Object.hash(runtimeType,chatRevision,chatGeneration);
 
 @override
 String toString() {
-  return 'OrchestratorOutcome.open(chat: $chat, generation: $generation)';
+  return 'OrchestratorOutcome.opened(chatRevision: $chatRevision, chatGeneration: $chatGeneration)';
 }
 
 
 }
 
 /// @nodoc
-abstract mixin class $OrchestratorOutcome_OpenCopyWith<$Res> implements $OrchestratorOutcomeCopyWith<$Res> {
-  factory $OrchestratorOutcome_OpenCopyWith(OrchestratorOutcome_Open value, $Res Function(OrchestratorOutcome_Open) _then) = _$OrchestratorOutcome_OpenCopyWithImpl;
+abstract mixin class $OrchestratorOutcome_OpenedCopyWith<$Res> implements $OrchestratorOutcomeCopyWith<$Res> {
+  factory $OrchestratorOutcome_OpenedCopyWith(OrchestratorOutcome_Opened value, $Res Function(OrchestratorOutcome_Opened) _then) = _$OrchestratorOutcome_OpenedCopyWithImpl;
 @useResult
 $Res call({
- ChatRefView chat, int generation
+ int chatRevision, int chatGeneration
 });
 
 
@@ -1221,322 +1079,20 @@ $Res call({
 
 }
 /// @nodoc
-class _$OrchestratorOutcome_OpenCopyWithImpl<$Res>
-    implements $OrchestratorOutcome_OpenCopyWith<$Res> {
-  _$OrchestratorOutcome_OpenCopyWithImpl(this._self, this._then);
+class _$OrchestratorOutcome_OpenedCopyWithImpl<$Res>
+    implements $OrchestratorOutcome_OpenedCopyWith<$Res> {
+  _$OrchestratorOutcome_OpenedCopyWithImpl(this._self, this._then);
 
-  final OrchestratorOutcome_Open _self;
-  final $Res Function(OrchestratorOutcome_Open) _then;
+  final OrchestratorOutcome_Opened _self;
+  final $Res Function(OrchestratorOutcome_Opened) _then;
 
 /// Create a copy of OrchestratorOutcome
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? chat = null,Object? generation = null,}) {
-  return _then(OrchestratorOutcome_Open(
-chat: null == chat ? _self.chat : chat // ignore: cast_nullable_to_non_nullable
-as ChatRefView,generation: null == generation ? _self.generation : generation // ignore: cast_nullable_to_non_nullable
+@pragma('vm:prefer-inline') $Res call({Object? chatRevision = null,Object? chatGeneration = null,}) {
+  return _then(OrchestratorOutcome_Opened(
+chatRevision: null == chatRevision ? _self.chatRevision : chatRevision // ignore: cast_nullable_to_non_nullable
+as int,chatGeneration: null == chatGeneration ? _self.chatGeneration : chatGeneration // ignore: cast_nullable_to_non_nullable
 as int,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class OrchestratorOutcome_NewChat extends OrchestratorOutcome {
-  const OrchestratorOutcome_NewChat({required this.workspace, required this.generation}): super._();
-  
-
- final  CatalogWorkspaceView workspace;
- final  int generation;
-
-/// Create a copy of OrchestratorOutcome
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$OrchestratorOutcome_NewChatCopyWith<OrchestratorOutcome_NewChat> get copyWith => _$OrchestratorOutcome_NewChatCopyWithImpl<OrchestratorOutcome_NewChat>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is OrchestratorOutcome_NewChat&&(identical(other.workspace, workspace) || other.workspace == workspace)&&(identical(other.generation, generation) || other.generation == generation));
-}
-
-
-@override
-int get hashCode => Object.hash(runtimeType,workspace,generation);
-
-@override
-String toString() {
-  return 'OrchestratorOutcome.newChat(workspace: $workspace, generation: $generation)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $OrchestratorOutcome_NewChatCopyWith<$Res> implements $OrchestratorOutcomeCopyWith<$Res> {
-  factory $OrchestratorOutcome_NewChatCopyWith(OrchestratorOutcome_NewChat value, $Res Function(OrchestratorOutcome_NewChat) _then) = _$OrchestratorOutcome_NewChatCopyWithImpl;
-@useResult
-$Res call({
- CatalogWorkspaceView workspace, int generation
-});
-
-
-
-
-}
-/// @nodoc
-class _$OrchestratorOutcome_NewChatCopyWithImpl<$Res>
-    implements $OrchestratorOutcome_NewChatCopyWith<$Res> {
-  _$OrchestratorOutcome_NewChatCopyWithImpl(this._self, this._then);
-
-  final OrchestratorOutcome_NewChat _self;
-  final $Res Function(OrchestratorOutcome_NewChat) _then;
-
-/// Create a copy of OrchestratorOutcome
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? workspace = null,Object? generation = null,}) {
-  return _then(OrchestratorOutcome_NewChat(
-workspace: null == workspace ? _self.workspace : workspace // ignore: cast_nullable_to_non_nullable
-as CatalogWorkspaceView,generation: null == generation ? _self.generation : generation // ignore: cast_nullable_to_non_nullable
-as int,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class OrchestratorOutcome_NewTab extends OrchestratorOutcome {
-  const OrchestratorOutcome_NewTab({required this.entryId, required this.generation, required this.failure}): super._();
-  
-
- final  String entryId;
- final  int generation;
- final  String failure;
-
-/// Create a copy of OrchestratorOutcome
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$OrchestratorOutcome_NewTabCopyWith<OrchestratorOutcome_NewTab> get copyWith => _$OrchestratorOutcome_NewTabCopyWithImpl<OrchestratorOutcome_NewTab>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is OrchestratorOutcome_NewTab&&(identical(other.entryId, entryId) || other.entryId == entryId)&&(identical(other.generation, generation) || other.generation == generation)&&(identical(other.failure, failure) || other.failure == failure));
-}
-
-
-@override
-int get hashCode => Object.hash(runtimeType,entryId,generation,failure);
-
-@override
-String toString() {
-  return 'OrchestratorOutcome.newTab(entryId: $entryId, generation: $generation, failure: $failure)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $OrchestratorOutcome_NewTabCopyWith<$Res> implements $OrchestratorOutcomeCopyWith<$Res> {
-  factory $OrchestratorOutcome_NewTabCopyWith(OrchestratorOutcome_NewTab value, $Res Function(OrchestratorOutcome_NewTab) _then) = _$OrchestratorOutcome_NewTabCopyWithImpl;
-@useResult
-$Res call({
- String entryId, int generation, String failure
-});
-
-
-
-
-}
-/// @nodoc
-class _$OrchestratorOutcome_NewTabCopyWithImpl<$Res>
-    implements $OrchestratorOutcome_NewTabCopyWith<$Res> {
-  _$OrchestratorOutcome_NewTabCopyWithImpl(this._self, this._then);
-
-  final OrchestratorOutcome_NewTab _self;
-  final $Res Function(OrchestratorOutcome_NewTab) _then;
-
-/// Create a copy of OrchestratorOutcome
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? entryId = null,Object? generation = null,Object? failure = null,}) {
-  return _then(OrchestratorOutcome_NewTab(
-entryId: null == entryId ? _self.entryId : entryId // ignore: cast_nullable_to_non_nullable
-as String,generation: null == generation ? _self.generation : generation // ignore: cast_nullable_to_non_nullable
-as int,failure: null == failure ? _self.failure : failure // ignore: cast_nullable_to_non_nullable
-as String,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class OrchestratorOutcome_LoadFailed extends OrchestratorOutcome {
-  const OrchestratorOutcome_LoadFailed({required this.message}): super._();
-  
-
- final  String message;
-
-/// Create a copy of OrchestratorOutcome
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$OrchestratorOutcome_LoadFailedCopyWith<OrchestratorOutcome_LoadFailed> get copyWith => _$OrchestratorOutcome_LoadFailedCopyWithImpl<OrchestratorOutcome_LoadFailed>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is OrchestratorOutcome_LoadFailed&&(identical(other.message, message) || other.message == message));
-}
-
-
-@override
-int get hashCode => Object.hash(runtimeType,message);
-
-@override
-String toString() {
-  return 'OrchestratorOutcome.loadFailed(message: $message)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $OrchestratorOutcome_LoadFailedCopyWith<$Res> implements $OrchestratorOutcomeCopyWith<$Res> {
-  factory $OrchestratorOutcome_LoadFailedCopyWith(OrchestratorOutcome_LoadFailed value, $Res Function(OrchestratorOutcome_LoadFailed) _then) = _$OrchestratorOutcome_LoadFailedCopyWithImpl;
-@useResult
-$Res call({
- String message
-});
-
-
-
-
-}
-/// @nodoc
-class _$OrchestratorOutcome_LoadFailedCopyWithImpl<$Res>
-    implements $OrchestratorOutcome_LoadFailedCopyWith<$Res> {
-  _$OrchestratorOutcome_LoadFailedCopyWithImpl(this._self, this._then);
-
-  final OrchestratorOutcome_LoadFailed _self;
-  final $Res Function(OrchestratorOutcome_LoadFailed) _then;
-
-/// Create a copy of OrchestratorOutcome
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? message = null,}) {
-  return _then(OrchestratorOutcome_LoadFailed(
-message: null == message ? _self.message : message // ignore: cast_nullable_to_non_nullable
-as String,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class OrchestratorOutcome_Stale extends OrchestratorOutcome {
-  const OrchestratorOutcome_Stale(): super._();
-  
-
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is OrchestratorOutcome_Stale);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-  return 'OrchestratorOutcome.stale()';
-}
-
-
-}
-
-
-
-
-/// @nodoc
-
-
-class OrchestratorOutcome_Entered extends OrchestratorOutcome {
-  const OrchestratorOutcome_Entered({required this.opened}): super._();
-  
-
- final  bool opened;
-
-/// Create a copy of OrchestratorOutcome
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$OrchestratorOutcome_EnteredCopyWith<OrchestratorOutcome_Entered> get copyWith => _$OrchestratorOutcome_EnteredCopyWithImpl<OrchestratorOutcome_Entered>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is OrchestratorOutcome_Entered&&(identical(other.opened, opened) || other.opened == opened));
-}
-
-
-@override
-int get hashCode => Object.hash(runtimeType,opened);
-
-@override
-String toString() {
-  return 'OrchestratorOutcome.entered(opened: $opened)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $OrchestratorOutcome_EnteredCopyWith<$Res> implements $OrchestratorOutcomeCopyWith<$Res> {
-  factory $OrchestratorOutcome_EnteredCopyWith(OrchestratorOutcome_Entered value, $Res Function(OrchestratorOutcome_Entered) _then) = _$OrchestratorOutcome_EnteredCopyWithImpl;
-@useResult
-$Res call({
- bool opened
-});
-
-
-
-
-}
-/// @nodoc
-class _$OrchestratorOutcome_EnteredCopyWithImpl<$Res>
-    implements $OrchestratorOutcome_EnteredCopyWith<$Res> {
-  _$OrchestratorOutcome_EnteredCopyWithImpl(this._self, this._then);
-
-  final OrchestratorOutcome_Entered _self;
-  final $Res Function(OrchestratorOutcome_Entered) _then;
-
-/// Create a copy of OrchestratorOutcome
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? opened = null,}) {
-  return _then(OrchestratorOutcome_Entered(
-opened: null == opened ? _self.opened : opened // ignore: cast_nullable_to_non_nullable
-as bool,
   ));
 }
 

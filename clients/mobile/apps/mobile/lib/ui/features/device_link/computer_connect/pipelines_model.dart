@@ -33,9 +33,6 @@ abstract interface class ComputerPipelines {
   /// What a screen shows for a failed [form] or [start].
   String errorMessage(Object error);
 
-  /// The session became usable or ended.
-  void setConnected(bool value);
-
   /// Shows [ref]'s worktree and loads it; the returned function ends it.
   void Function() watch(DeviceChatRef ref);
   Future<void> load(DeviceChatRef ref);
@@ -65,7 +62,7 @@ abstract interface class ComputerPipelines {
     Map<String, String> inputs, {
     required RemotePipelineOrigin origin,
   });
-  Future<RemotePipelineContentDocument> content(
+  Future<List<PipelineContentChunk>> content(
     DeviceChatRef ref,
     String id,
     RemotePipelineContentSource source,
@@ -89,17 +86,10 @@ typedef ComputerRunPanels = ({
 /// One feed's run panels: follows the chat it shows and reads the runs its
 /// turns link (without replaying controls).
 abstract interface class ComputerPipelineChatActivity {
-  void update({
-    required DeviceChatRef? ref,
-    required List<DeviceChatMessage> messages,
-    required bool online,
-  });
+  void update({required DeviceChatRef? ref, required bool online});
 
   /// What the panels show for [ref] now (none without a ref).
-  ComputerRunPanels panels(
-    DeviceChatRef? ref,
-    List<DeviceChatMessage> messages,
-  );
+  ComputerRunPanels panels(DeviceChatRef? ref);
   void dispose();
 }
 

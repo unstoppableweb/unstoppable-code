@@ -72,7 +72,7 @@ final class RustComputerSessions extends ChangeNotifier
       drafts: RustChatDrafts(reader),
       createActivity: () => RustComputerActivity(
         reader.service.activity(),
-        pipelines: RustComputerPipelines(reader.service.pipelines()),
+        pipelines: RustComputerPipelines(reader.service.pipelines(), reader),
       ),
       createFiles: () =>
           RustComputerFiles(service.files(computerId: id), reader),
@@ -80,16 +80,16 @@ final class RustComputerSessions extends ChangeNotifier
     );
     final home = _home(id);
     home.service.bindChats(chats: reader.service);
+    final overviewService = service.overview(
+      computerId: id,
+      locale: PlatformDispatcher.instance.locale.toLanguageTag(),
+    );
+    home.service.bindOverview(overview: overviewService);
+    overview = RustComputerOverview(service: overviewService, chats: chats);
     final controller = ComputerConnectController(
       chats,
       writes: rustComputerWrites(service, id, home),
-      overview: overview = RustComputerOverview(
-        service: service.overview(
-          computerId: id,
-          locale: PlatformDispatcher.instance.locale.toLanguageTag(),
-        ),
-        chats: chats,
-      ),
+      overview: overview,
     );
     _links[controller] = connection;
     return controller

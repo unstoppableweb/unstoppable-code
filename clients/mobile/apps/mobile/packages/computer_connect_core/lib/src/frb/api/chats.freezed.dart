@@ -55,7 +55,7 @@ extension ChatIntentPatterns on ChatIntent {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( ChatIntent_SetConnected value)?  setConnected,TResult Function( ChatIntent_Open value)?  open,TResult Function( ChatIntent_LoadOlder value)?  loadOlder,TResult Function( ChatIntent_Leave value)?  leave,TResult Function( ChatIntent_ToggleTurn value)?  toggleTurn,TResult Function( ChatIntent_SetFooterTurns value)?  setFooterTurns,TResult Function( ChatIntent_SetReadReceipts value)?  setReadReceipts,TResult Function( ChatIntent_InvalidateReadReceipts value)?  invalidateReadReceipts,TResult Function( ChatIntent_RetryReadReceipts value)?  retryReadReceipts,TResult Function( ChatIntent_Archive value)?  archive,TResult Function( ChatIntent_Close value)?  close,TResult Function( ChatIntent_Send value)?  send,TResult Function( ChatIntent_Stop value)?  stop,TResult Function( ChatIntent_CreateChat value)?  createChat,TResult Function( ChatIntent_CreateTab value)?  createTab,TResult Function( ChatIntent_SetWorkspaces value)?  setWorkspaces,TResult Function( ChatIntent_SetDraft value)?  setDraft,TResult Function( ChatIntent_ClearSentDraft value)?  clearSentDraft,TResult Function( ChatIntent_ImportAttachment value)?  importAttachment,TResult Function( ChatIntent_DeleteAttachment value)?  deleteAttachment,TResult Function( ChatIntent_EnableComposer value)?  enableComposer,TResult Function( ChatIntent_LoadSettings value)?  loadSettings,TResult Function( ChatIntent_SyncSettings value)?  syncSettings,TResult Function( ChatIntent_RestoreSettings value)?  restoreSettings,TResult Function( ChatIntent_InvalidateSettings value)?  invalidateSettings,TResult Function( ChatIntent_ChangeSetting value)?  changeSetting,TResult Function( ChatIntent_InvalidatePicks value)?  invalidatePicks,TResult Function( ChatIntent_SelectModel value)?  selectModel,TResult Function( ChatIntent_PatchSettings value)?  patchSettings,TResult Function( ChatIntent_Answer value)?  answer,TResult Function( ChatIntent_DismissQuestion value)?  dismissQuestion,TResult Function( ChatIntent_Fork value)?  fork,TResult Function( ChatIntent_ForkOpened value)?  forkOpened,TResult Function( ChatIntent_LoadComposerSource value)?  loadComposerSource,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( ChatIntent_SetConnected value)?  setConnected,TResult Function( ChatIntent_Open value)?  open,TResult Function( ChatIntent_LoadOlder value)?  loadOlder,TResult Function( ChatIntent_Leave value)?  leave,TResult Function( ChatIntent_ToggleTurn value)?  toggleTurn,TResult Function( ChatIntent_SetFooterTurns value)?  setFooterTurns,TResult Function( ChatIntent_SetReadReceipts value)?  setReadReceipts,TResult Function( ChatIntent_InvalidateReadReceipts value)?  invalidateReadReceipts,TResult Function( ChatIntent_RetryReadReceipts value)?  retryReadReceipts,TResult Function( ChatIntent_CloseTab value)?  closeTab,TResult Function( ChatIntent_Refresh value)?  refresh,TResult Function( ChatIntent_RestoreConnection value)?  restoreConnection,TResult Function( ChatIntent_TrackTurns value)?  trackTurns,TResult Function( ChatIntent_Close value)?  close,TResult Function( ChatIntent_Send value)?  send,TResult Function( ChatIntent_Stop value)?  stop,TResult Function( ChatIntent_CreateChat value)?  createChat,TResult Function( ChatIntent_CreateTab value)?  createTab,TResult Function( ChatIntent_SetWorkspaces value)?  setWorkspaces,TResult Function( ChatIntent_SetDraft value)?  setDraft,TResult Function( ChatIntent_ClearSentDraft value)?  clearSentDraft,TResult Function( ChatIntent_ImportAttachment value)?  importAttachment,TResult Function( ChatIntent_DeleteAttachment value)?  deleteAttachment,TResult Function( ChatIntent_EnableComposer value)?  enableComposer,TResult Function( ChatIntent_LoadSettings value)?  loadSettings,TResult Function( ChatIntent_SyncSettings value)?  syncSettings,TResult Function( ChatIntent_InvalidateSettings value)?  invalidateSettings,TResult Function( ChatIntent_ChangeSetting value)?  changeSetting,TResult Function( ChatIntent_InvalidatePicks value)?  invalidatePicks,TResult Function( ChatIntent_SelectModel value)?  selectModel,TResult Function( ChatIntent_PatchSettings value)?  patchSettings,TResult Function( ChatIntent_Answer value)?  answer,TResult Function( ChatIntent_DismissQuestion value)?  dismissQuestion,TResult Function( ChatIntent_Fork value)?  fork,TResult Function( ChatIntent_ForkOpened value)?  forkOpened,TResult Function( ChatIntent_LoadComposerSource value)?  loadComposerSource,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case ChatIntent_SetConnected() when setConnected != null:
@@ -67,8 +67,11 @@ return toggleTurn(_that);case ChatIntent_SetFooterTurns() when setFooterTurns !=
 return setFooterTurns(_that);case ChatIntent_SetReadReceipts() when setReadReceipts != null:
 return setReadReceipts(_that);case ChatIntent_InvalidateReadReceipts() when invalidateReadReceipts != null:
 return invalidateReadReceipts(_that);case ChatIntent_RetryReadReceipts() when retryReadReceipts != null:
-return retryReadReceipts(_that);case ChatIntent_Archive() when archive != null:
-return archive(_that);case ChatIntent_Close() when close != null:
+return retryReadReceipts(_that);case ChatIntent_CloseTab() when closeTab != null:
+return closeTab(_that);case ChatIntent_Refresh() when refresh != null:
+return refresh(_that);case ChatIntent_RestoreConnection() when restoreConnection != null:
+return restoreConnection(_that);case ChatIntent_TrackTurns() when trackTurns != null:
+return trackTurns(_that);case ChatIntent_Close() when close != null:
 return close(_that);case ChatIntent_Send() when send != null:
 return send(_that);case ChatIntent_Stop() when stop != null:
 return stop(_that);case ChatIntent_CreateChat() when createChat != null:
@@ -81,8 +84,7 @@ return importAttachment(_that);case ChatIntent_DeleteAttachment() when deleteAtt
 return deleteAttachment(_that);case ChatIntent_EnableComposer() when enableComposer != null:
 return enableComposer(_that);case ChatIntent_LoadSettings() when loadSettings != null:
 return loadSettings(_that);case ChatIntent_SyncSettings() when syncSettings != null:
-return syncSettings(_that);case ChatIntent_RestoreSettings() when restoreSettings != null:
-return restoreSettings(_that);case ChatIntent_InvalidateSettings() when invalidateSettings != null:
+return syncSettings(_that);case ChatIntent_InvalidateSettings() when invalidateSettings != null:
 return invalidateSettings(_that);case ChatIntent_ChangeSetting() when changeSetting != null:
 return changeSetting(_that);case ChatIntent_InvalidatePicks() when invalidatePicks != null:
 return invalidatePicks(_that);case ChatIntent_SelectModel() when selectModel != null:
@@ -110,7 +112,7 @@ return loadComposerSource(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( ChatIntent_SetConnected value)  setConnected,required TResult Function( ChatIntent_Open value)  open,required TResult Function( ChatIntent_LoadOlder value)  loadOlder,required TResult Function( ChatIntent_Leave value)  leave,required TResult Function( ChatIntent_ToggleTurn value)  toggleTurn,required TResult Function( ChatIntent_SetFooterTurns value)  setFooterTurns,required TResult Function( ChatIntent_SetReadReceipts value)  setReadReceipts,required TResult Function( ChatIntent_InvalidateReadReceipts value)  invalidateReadReceipts,required TResult Function( ChatIntent_RetryReadReceipts value)  retryReadReceipts,required TResult Function( ChatIntent_Archive value)  archive,required TResult Function( ChatIntent_Close value)  close,required TResult Function( ChatIntent_Send value)  send,required TResult Function( ChatIntent_Stop value)  stop,required TResult Function( ChatIntent_CreateChat value)  createChat,required TResult Function( ChatIntent_CreateTab value)  createTab,required TResult Function( ChatIntent_SetWorkspaces value)  setWorkspaces,required TResult Function( ChatIntent_SetDraft value)  setDraft,required TResult Function( ChatIntent_ClearSentDraft value)  clearSentDraft,required TResult Function( ChatIntent_ImportAttachment value)  importAttachment,required TResult Function( ChatIntent_DeleteAttachment value)  deleteAttachment,required TResult Function( ChatIntent_EnableComposer value)  enableComposer,required TResult Function( ChatIntent_LoadSettings value)  loadSettings,required TResult Function( ChatIntent_SyncSettings value)  syncSettings,required TResult Function( ChatIntent_RestoreSettings value)  restoreSettings,required TResult Function( ChatIntent_InvalidateSettings value)  invalidateSettings,required TResult Function( ChatIntent_ChangeSetting value)  changeSetting,required TResult Function( ChatIntent_InvalidatePicks value)  invalidatePicks,required TResult Function( ChatIntent_SelectModel value)  selectModel,required TResult Function( ChatIntent_PatchSettings value)  patchSettings,required TResult Function( ChatIntent_Answer value)  answer,required TResult Function( ChatIntent_DismissQuestion value)  dismissQuestion,required TResult Function( ChatIntent_Fork value)  fork,required TResult Function( ChatIntent_ForkOpened value)  forkOpened,required TResult Function( ChatIntent_LoadComposerSource value)  loadComposerSource,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( ChatIntent_SetConnected value)  setConnected,required TResult Function( ChatIntent_Open value)  open,required TResult Function( ChatIntent_LoadOlder value)  loadOlder,required TResult Function( ChatIntent_Leave value)  leave,required TResult Function( ChatIntent_ToggleTurn value)  toggleTurn,required TResult Function( ChatIntent_SetFooterTurns value)  setFooterTurns,required TResult Function( ChatIntent_SetReadReceipts value)  setReadReceipts,required TResult Function( ChatIntent_InvalidateReadReceipts value)  invalidateReadReceipts,required TResult Function( ChatIntent_RetryReadReceipts value)  retryReadReceipts,required TResult Function( ChatIntent_CloseTab value)  closeTab,required TResult Function( ChatIntent_Refresh value)  refresh,required TResult Function( ChatIntent_RestoreConnection value)  restoreConnection,required TResult Function( ChatIntent_TrackTurns value)  trackTurns,required TResult Function( ChatIntent_Close value)  close,required TResult Function( ChatIntent_Send value)  send,required TResult Function( ChatIntent_Stop value)  stop,required TResult Function( ChatIntent_CreateChat value)  createChat,required TResult Function( ChatIntent_CreateTab value)  createTab,required TResult Function( ChatIntent_SetWorkspaces value)  setWorkspaces,required TResult Function( ChatIntent_SetDraft value)  setDraft,required TResult Function( ChatIntent_ClearSentDraft value)  clearSentDraft,required TResult Function( ChatIntent_ImportAttachment value)  importAttachment,required TResult Function( ChatIntent_DeleteAttachment value)  deleteAttachment,required TResult Function( ChatIntent_EnableComposer value)  enableComposer,required TResult Function( ChatIntent_LoadSettings value)  loadSettings,required TResult Function( ChatIntent_SyncSettings value)  syncSettings,required TResult Function( ChatIntent_InvalidateSettings value)  invalidateSettings,required TResult Function( ChatIntent_ChangeSetting value)  changeSetting,required TResult Function( ChatIntent_InvalidatePicks value)  invalidatePicks,required TResult Function( ChatIntent_SelectModel value)  selectModel,required TResult Function( ChatIntent_PatchSettings value)  patchSettings,required TResult Function( ChatIntent_Answer value)  answer,required TResult Function( ChatIntent_DismissQuestion value)  dismissQuestion,required TResult Function( ChatIntent_Fork value)  fork,required TResult Function( ChatIntent_ForkOpened value)  forkOpened,required TResult Function( ChatIntent_LoadComposerSource value)  loadComposerSource,}){
 final _that = this;
 switch (_that) {
 case ChatIntent_SetConnected():
@@ -122,8 +124,11 @@ return toggleTurn(_that);case ChatIntent_SetFooterTurns():
 return setFooterTurns(_that);case ChatIntent_SetReadReceipts():
 return setReadReceipts(_that);case ChatIntent_InvalidateReadReceipts():
 return invalidateReadReceipts(_that);case ChatIntent_RetryReadReceipts():
-return retryReadReceipts(_that);case ChatIntent_Archive():
-return archive(_that);case ChatIntent_Close():
+return retryReadReceipts(_that);case ChatIntent_CloseTab():
+return closeTab(_that);case ChatIntent_Refresh():
+return refresh(_that);case ChatIntent_RestoreConnection():
+return restoreConnection(_that);case ChatIntent_TrackTurns():
+return trackTurns(_that);case ChatIntent_Close():
 return close(_that);case ChatIntent_Send():
 return send(_that);case ChatIntent_Stop():
 return stop(_that);case ChatIntent_CreateChat():
@@ -136,8 +141,7 @@ return importAttachment(_that);case ChatIntent_DeleteAttachment():
 return deleteAttachment(_that);case ChatIntent_EnableComposer():
 return enableComposer(_that);case ChatIntent_LoadSettings():
 return loadSettings(_that);case ChatIntent_SyncSettings():
-return syncSettings(_that);case ChatIntent_RestoreSettings():
-return restoreSettings(_that);case ChatIntent_InvalidateSettings():
+return syncSettings(_that);case ChatIntent_InvalidateSettings():
 return invalidateSettings(_that);case ChatIntent_ChangeSetting():
 return changeSetting(_that);case ChatIntent_InvalidatePicks():
 return invalidatePicks(_that);case ChatIntent_SelectModel():
@@ -161,7 +165,7 @@ return loadComposerSource(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( ChatIntent_SetConnected value)?  setConnected,TResult? Function( ChatIntent_Open value)?  open,TResult? Function( ChatIntent_LoadOlder value)?  loadOlder,TResult? Function( ChatIntent_Leave value)?  leave,TResult? Function( ChatIntent_ToggleTurn value)?  toggleTurn,TResult? Function( ChatIntent_SetFooterTurns value)?  setFooterTurns,TResult? Function( ChatIntent_SetReadReceipts value)?  setReadReceipts,TResult? Function( ChatIntent_InvalidateReadReceipts value)?  invalidateReadReceipts,TResult? Function( ChatIntent_RetryReadReceipts value)?  retryReadReceipts,TResult? Function( ChatIntent_Archive value)?  archive,TResult? Function( ChatIntent_Close value)?  close,TResult? Function( ChatIntent_Send value)?  send,TResult? Function( ChatIntent_Stop value)?  stop,TResult? Function( ChatIntent_CreateChat value)?  createChat,TResult? Function( ChatIntent_CreateTab value)?  createTab,TResult? Function( ChatIntent_SetWorkspaces value)?  setWorkspaces,TResult? Function( ChatIntent_SetDraft value)?  setDraft,TResult? Function( ChatIntent_ClearSentDraft value)?  clearSentDraft,TResult? Function( ChatIntent_ImportAttachment value)?  importAttachment,TResult? Function( ChatIntent_DeleteAttachment value)?  deleteAttachment,TResult? Function( ChatIntent_EnableComposer value)?  enableComposer,TResult? Function( ChatIntent_LoadSettings value)?  loadSettings,TResult? Function( ChatIntent_SyncSettings value)?  syncSettings,TResult? Function( ChatIntent_RestoreSettings value)?  restoreSettings,TResult? Function( ChatIntent_InvalidateSettings value)?  invalidateSettings,TResult? Function( ChatIntent_ChangeSetting value)?  changeSetting,TResult? Function( ChatIntent_InvalidatePicks value)?  invalidatePicks,TResult? Function( ChatIntent_SelectModel value)?  selectModel,TResult? Function( ChatIntent_PatchSettings value)?  patchSettings,TResult? Function( ChatIntent_Answer value)?  answer,TResult? Function( ChatIntent_DismissQuestion value)?  dismissQuestion,TResult? Function( ChatIntent_Fork value)?  fork,TResult? Function( ChatIntent_ForkOpened value)?  forkOpened,TResult? Function( ChatIntent_LoadComposerSource value)?  loadComposerSource,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( ChatIntent_SetConnected value)?  setConnected,TResult? Function( ChatIntent_Open value)?  open,TResult? Function( ChatIntent_LoadOlder value)?  loadOlder,TResult? Function( ChatIntent_Leave value)?  leave,TResult? Function( ChatIntent_ToggleTurn value)?  toggleTurn,TResult? Function( ChatIntent_SetFooterTurns value)?  setFooterTurns,TResult? Function( ChatIntent_SetReadReceipts value)?  setReadReceipts,TResult? Function( ChatIntent_InvalidateReadReceipts value)?  invalidateReadReceipts,TResult? Function( ChatIntent_RetryReadReceipts value)?  retryReadReceipts,TResult? Function( ChatIntent_CloseTab value)?  closeTab,TResult? Function( ChatIntent_Refresh value)?  refresh,TResult? Function( ChatIntent_RestoreConnection value)?  restoreConnection,TResult? Function( ChatIntent_TrackTurns value)?  trackTurns,TResult? Function( ChatIntent_Close value)?  close,TResult? Function( ChatIntent_Send value)?  send,TResult? Function( ChatIntent_Stop value)?  stop,TResult? Function( ChatIntent_CreateChat value)?  createChat,TResult? Function( ChatIntent_CreateTab value)?  createTab,TResult? Function( ChatIntent_SetWorkspaces value)?  setWorkspaces,TResult? Function( ChatIntent_SetDraft value)?  setDraft,TResult? Function( ChatIntent_ClearSentDraft value)?  clearSentDraft,TResult? Function( ChatIntent_ImportAttachment value)?  importAttachment,TResult? Function( ChatIntent_DeleteAttachment value)?  deleteAttachment,TResult? Function( ChatIntent_EnableComposer value)?  enableComposer,TResult? Function( ChatIntent_LoadSettings value)?  loadSettings,TResult? Function( ChatIntent_SyncSettings value)?  syncSettings,TResult? Function( ChatIntent_InvalidateSettings value)?  invalidateSettings,TResult? Function( ChatIntent_ChangeSetting value)?  changeSetting,TResult? Function( ChatIntent_InvalidatePicks value)?  invalidatePicks,TResult? Function( ChatIntent_SelectModel value)?  selectModel,TResult? Function( ChatIntent_PatchSettings value)?  patchSettings,TResult? Function( ChatIntent_Answer value)?  answer,TResult? Function( ChatIntent_DismissQuestion value)?  dismissQuestion,TResult? Function( ChatIntent_Fork value)?  fork,TResult? Function( ChatIntent_ForkOpened value)?  forkOpened,TResult? Function( ChatIntent_LoadComposerSource value)?  loadComposerSource,}){
 final _that = this;
 switch (_that) {
 case ChatIntent_SetConnected() when setConnected != null:
@@ -173,8 +177,11 @@ return toggleTurn(_that);case ChatIntent_SetFooterTurns() when setFooterTurns !=
 return setFooterTurns(_that);case ChatIntent_SetReadReceipts() when setReadReceipts != null:
 return setReadReceipts(_that);case ChatIntent_InvalidateReadReceipts() when invalidateReadReceipts != null:
 return invalidateReadReceipts(_that);case ChatIntent_RetryReadReceipts() when retryReadReceipts != null:
-return retryReadReceipts(_that);case ChatIntent_Archive() when archive != null:
-return archive(_that);case ChatIntent_Close() when close != null:
+return retryReadReceipts(_that);case ChatIntent_CloseTab() when closeTab != null:
+return closeTab(_that);case ChatIntent_Refresh() when refresh != null:
+return refresh(_that);case ChatIntent_RestoreConnection() when restoreConnection != null:
+return restoreConnection(_that);case ChatIntent_TrackTurns() when trackTurns != null:
+return trackTurns(_that);case ChatIntent_Close() when close != null:
 return close(_that);case ChatIntent_Send() when send != null:
 return send(_that);case ChatIntent_Stop() when stop != null:
 return stop(_that);case ChatIntent_CreateChat() when createChat != null:
@@ -187,8 +194,7 @@ return importAttachment(_that);case ChatIntent_DeleteAttachment() when deleteAtt
 return deleteAttachment(_that);case ChatIntent_EnableComposer() when enableComposer != null:
 return enableComposer(_that);case ChatIntent_LoadSettings() when loadSettings != null:
 return loadSettings(_that);case ChatIntent_SyncSettings() when syncSettings != null:
-return syncSettings(_that);case ChatIntent_RestoreSettings() when restoreSettings != null:
-return restoreSettings(_that);case ChatIntent_InvalidateSettings() when invalidateSettings != null:
+return syncSettings(_that);case ChatIntent_InvalidateSettings() when invalidateSettings != null:
 return invalidateSettings(_that);case ChatIntent_ChangeSetting() when changeSetting != null:
 return changeSetting(_that);case ChatIntent_InvalidatePicks() when invalidatePicks != null:
 return invalidatePicks(_that);case ChatIntent_SelectModel() when selectModel != null:
@@ -215,7 +221,7 @@ return loadComposerSource(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( bool connected,  int generation)?  setConnected,TResult Function( ChatRefView chat,  int generation)?  open,TResult Function()?  loadOlder,TResult Function( int? expected,  int generation)?  leave,TResult Function( String key)?  toggleTurn,TResult Function( List<String> keys)?  setFooterTurns,TResult Function( bool enabled)?  setReadReceipts,TResult Function()?  invalidateReadReceipts,TResult Function()?  retryReadReceipts,TResult Function( ChatRefView chat)?  archive,TResult Function()?  close,TResult Function( ChatRefView? chat,  String text,  bool retry,  bool dictated,  List<String> attachmentPaths)?  send,TResult Function()?  stop,TResult Function( String workspaceId,  String? title)?  createChat,TResult Function( String projectId,  String worktreeId)?  createTab,TResult Function( List<String> ids)?  setWorkspaces,TResult Function( ChatRefView chat,  String text,  int seq)?  setDraft,TResult Function( ChatRefView chat,  String text)?  clearSentDraft,TResult Function( ChatRefView scope,  String filename,  Uint8List bytes)?  importAttachment,TResult Function( ChatRefView scope,  String filename)?  deleteAttachment,TResult Function()?  enableComposer,TResult Function( bool report)?  loadSettings,TResult Function( ChatRefView chat,  String modelJson,  String harnessJson,  bool running)?  syncSettings,TResult Function()?  restoreSettings,TResult Function()?  invalidateSettings,TResult Function( ChatRefView chat,  SettingsPick pick)?  changeSetting,TResult Function()?  invalidatePicks,TResult Function( ChatRefView chat,  String id,  String provider,  String? harness)?  selectModel,TResult Function( ChatRefView chat,  String patchJson)?  patchSettings,TResult Function( ChatRefView chat,  String requestId,  String answersJson)?  answer,TResult Function( ChatRefView chat,  String requestId)?  dismissQuestion,TResult Function( ChatRefView chat,  String atMessageId)?  fork,TResult Function( ChatRefView chat,  String atMessageId)?  forkOpened,TResult Function( ComposerSource source,  SourceScopeView scope)?  loadComposerSource,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( bool connected,  int generation)?  setConnected,TResult Function( ChatRefView chat,  int generation)?  open,TResult Function()?  loadOlder,TResult Function( int? expected,  int generation)?  leave,TResult Function( String key)?  toggleTurn,TResult Function( List<String> keys)?  setFooterTurns,TResult Function( bool enabled)?  setReadReceipts,TResult Function()?  invalidateReadReceipts,TResult Function()?  retryReadReceipts,TResult Function( String id)?  closeTab,TResult Function( ChatRefView chat,  int generation)?  refresh,TResult Function( bool catalogLoaded)?  restoreConnection,TResult Function( bool enabled)?  trackTurns,TResult Function()?  close,TResult Function( ChatRefView? chat,  String text,  bool retry,  bool dictated,  List<String> attachmentPaths)?  send,TResult Function( ChatRefView chat)?  stop,TResult Function( String workspaceId,  String? title)?  createChat,TResult Function( String projectId,  String worktreeId)?  createTab,TResult Function( List<String> ids)?  setWorkspaces,TResult Function( ChatRefView chat,  String text,  int seq)?  setDraft,TResult Function( ChatRefView chat,  String text)?  clearSentDraft,TResult Function( ChatRefView scope,  String filename,  Uint8List bytes)?  importAttachment,TResult Function( ChatRefView scope,  String filename)?  deleteAttachment,TResult Function()?  enableComposer,TResult Function( bool report)?  loadSettings,TResult Function( ChatRefView chat,  String modelJson,  String harnessJson,  bool running)?  syncSettings,TResult Function()?  invalidateSettings,TResult Function( ChatRefView chat,  SettingsPick pick)?  changeSetting,TResult Function()?  invalidatePicks,TResult Function( ChatRefView chat,  String id,  String provider,  String? harness)?  selectModel,TResult Function( ChatRefView chat,  String patchJson)?  patchSettings,TResult Function( ChatRefView chat,  String requestId,  String answersJson)?  answer,TResult Function( ChatRefView chat,  String requestId)?  dismissQuestion,TResult Function( ChatRefView chat,  String atMessageId)?  fork,TResult Function( ChatRefView chat,  String atMessageId)?  forkOpened,TResult Function( ComposerSource source,  SourceScopeView scope)?  loadComposerSource,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case ChatIntent_SetConnected() when setConnected != null:
 return setConnected(_that.connected,_that.generation);case ChatIntent_Open() when open != null:
@@ -226,11 +232,14 @@ return toggleTurn(_that.key);case ChatIntent_SetFooterTurns() when setFooterTurn
 return setFooterTurns(_that.keys);case ChatIntent_SetReadReceipts() when setReadReceipts != null:
 return setReadReceipts(_that.enabled);case ChatIntent_InvalidateReadReceipts() when invalidateReadReceipts != null:
 return invalidateReadReceipts();case ChatIntent_RetryReadReceipts() when retryReadReceipts != null:
-return retryReadReceipts();case ChatIntent_Archive() when archive != null:
-return archive(_that.chat);case ChatIntent_Close() when close != null:
+return retryReadReceipts();case ChatIntent_CloseTab() when closeTab != null:
+return closeTab(_that.id);case ChatIntent_Refresh() when refresh != null:
+return refresh(_that.chat,_that.generation);case ChatIntent_RestoreConnection() when restoreConnection != null:
+return restoreConnection(_that.catalogLoaded);case ChatIntent_TrackTurns() when trackTurns != null:
+return trackTurns(_that.enabled);case ChatIntent_Close() when close != null:
 return close();case ChatIntent_Send() when send != null:
 return send(_that.chat,_that.text,_that.retry,_that.dictated,_that.attachmentPaths);case ChatIntent_Stop() when stop != null:
-return stop();case ChatIntent_CreateChat() when createChat != null:
+return stop(_that.chat);case ChatIntent_CreateChat() when createChat != null:
 return createChat(_that.workspaceId,_that.title);case ChatIntent_CreateTab() when createTab != null:
 return createTab(_that.projectId,_that.worktreeId);case ChatIntent_SetWorkspaces() when setWorkspaces != null:
 return setWorkspaces(_that.ids);case ChatIntent_SetDraft() when setDraft != null:
@@ -240,8 +249,7 @@ return importAttachment(_that.scope,_that.filename,_that.bytes);case ChatIntent_
 return deleteAttachment(_that.scope,_that.filename);case ChatIntent_EnableComposer() when enableComposer != null:
 return enableComposer();case ChatIntent_LoadSettings() when loadSettings != null:
 return loadSettings(_that.report);case ChatIntent_SyncSettings() when syncSettings != null:
-return syncSettings(_that.chat,_that.modelJson,_that.harnessJson,_that.running);case ChatIntent_RestoreSettings() when restoreSettings != null:
-return restoreSettings();case ChatIntent_InvalidateSettings() when invalidateSettings != null:
+return syncSettings(_that.chat,_that.modelJson,_that.harnessJson,_that.running);case ChatIntent_InvalidateSettings() when invalidateSettings != null:
 return invalidateSettings();case ChatIntent_ChangeSetting() when changeSetting != null:
 return changeSetting(_that.chat,_that.pick);case ChatIntent_InvalidatePicks() when invalidatePicks != null:
 return invalidatePicks();case ChatIntent_SelectModel() when selectModel != null:
@@ -269,7 +277,7 @@ return loadComposerSource(_that.source,_that.scope);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( bool connected,  int generation)  setConnected,required TResult Function( ChatRefView chat,  int generation)  open,required TResult Function()  loadOlder,required TResult Function( int? expected,  int generation)  leave,required TResult Function( String key)  toggleTurn,required TResult Function( List<String> keys)  setFooterTurns,required TResult Function( bool enabled)  setReadReceipts,required TResult Function()  invalidateReadReceipts,required TResult Function()  retryReadReceipts,required TResult Function( ChatRefView chat)  archive,required TResult Function()  close,required TResult Function( ChatRefView? chat,  String text,  bool retry,  bool dictated,  List<String> attachmentPaths)  send,required TResult Function()  stop,required TResult Function( String workspaceId,  String? title)  createChat,required TResult Function( String projectId,  String worktreeId)  createTab,required TResult Function( List<String> ids)  setWorkspaces,required TResult Function( ChatRefView chat,  String text,  int seq)  setDraft,required TResult Function( ChatRefView chat,  String text)  clearSentDraft,required TResult Function( ChatRefView scope,  String filename,  Uint8List bytes)  importAttachment,required TResult Function( ChatRefView scope,  String filename)  deleteAttachment,required TResult Function()  enableComposer,required TResult Function( bool report)  loadSettings,required TResult Function( ChatRefView chat,  String modelJson,  String harnessJson,  bool running)  syncSettings,required TResult Function()  restoreSettings,required TResult Function()  invalidateSettings,required TResult Function( ChatRefView chat,  SettingsPick pick)  changeSetting,required TResult Function()  invalidatePicks,required TResult Function( ChatRefView chat,  String id,  String provider,  String? harness)  selectModel,required TResult Function( ChatRefView chat,  String patchJson)  patchSettings,required TResult Function( ChatRefView chat,  String requestId,  String answersJson)  answer,required TResult Function( ChatRefView chat,  String requestId)  dismissQuestion,required TResult Function( ChatRefView chat,  String atMessageId)  fork,required TResult Function( ChatRefView chat,  String atMessageId)  forkOpened,required TResult Function( ComposerSource source,  SourceScopeView scope)  loadComposerSource,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( bool connected,  int generation)  setConnected,required TResult Function( ChatRefView chat,  int generation)  open,required TResult Function()  loadOlder,required TResult Function( int? expected,  int generation)  leave,required TResult Function( String key)  toggleTurn,required TResult Function( List<String> keys)  setFooterTurns,required TResult Function( bool enabled)  setReadReceipts,required TResult Function()  invalidateReadReceipts,required TResult Function()  retryReadReceipts,required TResult Function( String id)  closeTab,required TResult Function( ChatRefView chat,  int generation)  refresh,required TResult Function( bool catalogLoaded)  restoreConnection,required TResult Function( bool enabled)  trackTurns,required TResult Function()  close,required TResult Function( ChatRefView? chat,  String text,  bool retry,  bool dictated,  List<String> attachmentPaths)  send,required TResult Function( ChatRefView chat)  stop,required TResult Function( String workspaceId,  String? title)  createChat,required TResult Function( String projectId,  String worktreeId)  createTab,required TResult Function( List<String> ids)  setWorkspaces,required TResult Function( ChatRefView chat,  String text,  int seq)  setDraft,required TResult Function( ChatRefView chat,  String text)  clearSentDraft,required TResult Function( ChatRefView scope,  String filename,  Uint8List bytes)  importAttachment,required TResult Function( ChatRefView scope,  String filename)  deleteAttachment,required TResult Function()  enableComposer,required TResult Function( bool report)  loadSettings,required TResult Function( ChatRefView chat,  String modelJson,  String harnessJson,  bool running)  syncSettings,required TResult Function()  invalidateSettings,required TResult Function( ChatRefView chat,  SettingsPick pick)  changeSetting,required TResult Function()  invalidatePicks,required TResult Function( ChatRefView chat,  String id,  String provider,  String? harness)  selectModel,required TResult Function( ChatRefView chat,  String patchJson)  patchSettings,required TResult Function( ChatRefView chat,  String requestId,  String answersJson)  answer,required TResult Function( ChatRefView chat,  String requestId)  dismissQuestion,required TResult Function( ChatRefView chat,  String atMessageId)  fork,required TResult Function( ChatRefView chat,  String atMessageId)  forkOpened,required TResult Function( ComposerSource source,  SourceScopeView scope)  loadComposerSource,}) {final _that = this;
 switch (_that) {
 case ChatIntent_SetConnected():
 return setConnected(_that.connected,_that.generation);case ChatIntent_Open():
@@ -280,11 +288,14 @@ return toggleTurn(_that.key);case ChatIntent_SetFooterTurns():
 return setFooterTurns(_that.keys);case ChatIntent_SetReadReceipts():
 return setReadReceipts(_that.enabled);case ChatIntent_InvalidateReadReceipts():
 return invalidateReadReceipts();case ChatIntent_RetryReadReceipts():
-return retryReadReceipts();case ChatIntent_Archive():
-return archive(_that.chat);case ChatIntent_Close():
+return retryReadReceipts();case ChatIntent_CloseTab():
+return closeTab(_that.id);case ChatIntent_Refresh():
+return refresh(_that.chat,_that.generation);case ChatIntent_RestoreConnection():
+return restoreConnection(_that.catalogLoaded);case ChatIntent_TrackTurns():
+return trackTurns(_that.enabled);case ChatIntent_Close():
 return close();case ChatIntent_Send():
 return send(_that.chat,_that.text,_that.retry,_that.dictated,_that.attachmentPaths);case ChatIntent_Stop():
-return stop();case ChatIntent_CreateChat():
+return stop(_that.chat);case ChatIntent_CreateChat():
 return createChat(_that.workspaceId,_that.title);case ChatIntent_CreateTab():
 return createTab(_that.projectId,_that.worktreeId);case ChatIntent_SetWorkspaces():
 return setWorkspaces(_that.ids);case ChatIntent_SetDraft():
@@ -294,8 +305,7 @@ return importAttachment(_that.scope,_that.filename,_that.bytes);case ChatIntent_
 return deleteAttachment(_that.scope,_that.filename);case ChatIntent_EnableComposer():
 return enableComposer();case ChatIntent_LoadSettings():
 return loadSettings(_that.report);case ChatIntent_SyncSettings():
-return syncSettings(_that.chat,_that.modelJson,_that.harnessJson,_that.running);case ChatIntent_RestoreSettings():
-return restoreSettings();case ChatIntent_InvalidateSettings():
+return syncSettings(_that.chat,_that.modelJson,_that.harnessJson,_that.running);case ChatIntent_InvalidateSettings():
 return invalidateSettings();case ChatIntent_ChangeSetting():
 return changeSetting(_that.chat,_that.pick);case ChatIntent_InvalidatePicks():
 return invalidatePicks();case ChatIntent_SelectModel():
@@ -319,7 +329,7 @@ return loadComposerSource(_that.source,_that.scope);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( bool connected,  int generation)?  setConnected,TResult? Function( ChatRefView chat,  int generation)?  open,TResult? Function()?  loadOlder,TResult? Function( int? expected,  int generation)?  leave,TResult? Function( String key)?  toggleTurn,TResult? Function( List<String> keys)?  setFooterTurns,TResult? Function( bool enabled)?  setReadReceipts,TResult? Function()?  invalidateReadReceipts,TResult? Function()?  retryReadReceipts,TResult? Function( ChatRefView chat)?  archive,TResult? Function()?  close,TResult? Function( ChatRefView? chat,  String text,  bool retry,  bool dictated,  List<String> attachmentPaths)?  send,TResult? Function()?  stop,TResult? Function( String workspaceId,  String? title)?  createChat,TResult? Function( String projectId,  String worktreeId)?  createTab,TResult? Function( List<String> ids)?  setWorkspaces,TResult? Function( ChatRefView chat,  String text,  int seq)?  setDraft,TResult? Function( ChatRefView chat,  String text)?  clearSentDraft,TResult? Function( ChatRefView scope,  String filename,  Uint8List bytes)?  importAttachment,TResult? Function( ChatRefView scope,  String filename)?  deleteAttachment,TResult? Function()?  enableComposer,TResult? Function( bool report)?  loadSettings,TResult? Function( ChatRefView chat,  String modelJson,  String harnessJson,  bool running)?  syncSettings,TResult? Function()?  restoreSettings,TResult? Function()?  invalidateSettings,TResult? Function( ChatRefView chat,  SettingsPick pick)?  changeSetting,TResult? Function()?  invalidatePicks,TResult? Function( ChatRefView chat,  String id,  String provider,  String? harness)?  selectModel,TResult? Function( ChatRefView chat,  String patchJson)?  patchSettings,TResult? Function( ChatRefView chat,  String requestId,  String answersJson)?  answer,TResult? Function( ChatRefView chat,  String requestId)?  dismissQuestion,TResult? Function( ChatRefView chat,  String atMessageId)?  fork,TResult? Function( ChatRefView chat,  String atMessageId)?  forkOpened,TResult? Function( ComposerSource source,  SourceScopeView scope)?  loadComposerSource,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( bool connected,  int generation)?  setConnected,TResult? Function( ChatRefView chat,  int generation)?  open,TResult? Function()?  loadOlder,TResult? Function( int? expected,  int generation)?  leave,TResult? Function( String key)?  toggleTurn,TResult? Function( List<String> keys)?  setFooterTurns,TResult? Function( bool enabled)?  setReadReceipts,TResult? Function()?  invalidateReadReceipts,TResult? Function()?  retryReadReceipts,TResult? Function( String id)?  closeTab,TResult? Function( ChatRefView chat,  int generation)?  refresh,TResult? Function( bool catalogLoaded)?  restoreConnection,TResult? Function( bool enabled)?  trackTurns,TResult? Function()?  close,TResult? Function( ChatRefView? chat,  String text,  bool retry,  bool dictated,  List<String> attachmentPaths)?  send,TResult? Function( ChatRefView chat)?  stop,TResult? Function( String workspaceId,  String? title)?  createChat,TResult? Function( String projectId,  String worktreeId)?  createTab,TResult? Function( List<String> ids)?  setWorkspaces,TResult? Function( ChatRefView chat,  String text,  int seq)?  setDraft,TResult? Function( ChatRefView chat,  String text)?  clearSentDraft,TResult? Function( ChatRefView scope,  String filename,  Uint8List bytes)?  importAttachment,TResult? Function( ChatRefView scope,  String filename)?  deleteAttachment,TResult? Function()?  enableComposer,TResult? Function( bool report)?  loadSettings,TResult? Function( ChatRefView chat,  String modelJson,  String harnessJson,  bool running)?  syncSettings,TResult? Function()?  invalidateSettings,TResult? Function( ChatRefView chat,  SettingsPick pick)?  changeSetting,TResult? Function()?  invalidatePicks,TResult? Function( ChatRefView chat,  String id,  String provider,  String? harness)?  selectModel,TResult? Function( ChatRefView chat,  String patchJson)?  patchSettings,TResult? Function( ChatRefView chat,  String requestId,  String answersJson)?  answer,TResult? Function( ChatRefView chat,  String requestId)?  dismissQuestion,TResult? Function( ChatRefView chat,  String atMessageId)?  fork,TResult? Function( ChatRefView chat,  String atMessageId)?  forkOpened,TResult? Function( ComposerSource source,  SourceScopeView scope)?  loadComposerSource,}) {final _that = this;
 switch (_that) {
 case ChatIntent_SetConnected() when setConnected != null:
 return setConnected(_that.connected,_that.generation);case ChatIntent_Open() when open != null:
@@ -330,11 +340,14 @@ return toggleTurn(_that.key);case ChatIntent_SetFooterTurns() when setFooterTurn
 return setFooterTurns(_that.keys);case ChatIntent_SetReadReceipts() when setReadReceipts != null:
 return setReadReceipts(_that.enabled);case ChatIntent_InvalidateReadReceipts() when invalidateReadReceipts != null:
 return invalidateReadReceipts();case ChatIntent_RetryReadReceipts() when retryReadReceipts != null:
-return retryReadReceipts();case ChatIntent_Archive() when archive != null:
-return archive(_that.chat);case ChatIntent_Close() when close != null:
+return retryReadReceipts();case ChatIntent_CloseTab() when closeTab != null:
+return closeTab(_that.id);case ChatIntent_Refresh() when refresh != null:
+return refresh(_that.chat,_that.generation);case ChatIntent_RestoreConnection() when restoreConnection != null:
+return restoreConnection(_that.catalogLoaded);case ChatIntent_TrackTurns() when trackTurns != null:
+return trackTurns(_that.enabled);case ChatIntent_Close() when close != null:
 return close();case ChatIntent_Send() when send != null:
 return send(_that.chat,_that.text,_that.retry,_that.dictated,_that.attachmentPaths);case ChatIntent_Stop() when stop != null:
-return stop();case ChatIntent_CreateChat() when createChat != null:
+return stop(_that.chat);case ChatIntent_CreateChat() when createChat != null:
 return createChat(_that.workspaceId,_that.title);case ChatIntent_CreateTab() when createTab != null:
 return createTab(_that.projectId,_that.worktreeId);case ChatIntent_SetWorkspaces() when setWorkspaces != null:
 return setWorkspaces(_that.ids);case ChatIntent_SetDraft() when setDraft != null:
@@ -344,8 +357,7 @@ return importAttachment(_that.scope,_that.filename,_that.bytes);case ChatIntent_
 return deleteAttachment(_that.scope,_that.filename);case ChatIntent_EnableComposer() when enableComposer != null:
 return enableComposer();case ChatIntent_LoadSettings() when loadSettings != null:
 return loadSettings(_that.report);case ChatIntent_SyncSettings() when syncSettings != null:
-return syncSettings(_that.chat,_that.modelJson,_that.harnessJson,_that.running);case ChatIntent_RestoreSettings() when restoreSettings != null:
-return restoreSettings();case ChatIntent_InvalidateSettings() when invalidateSettings != null:
+return syncSettings(_that.chat,_that.modelJson,_that.harnessJson,_that.running);case ChatIntent_InvalidateSettings() when invalidateSettings != null:
 return invalidateSettings();case ChatIntent_ChangeSetting() when changeSetting != null:
 return changeSetting(_that.chat,_that.pick);case ChatIntent_InvalidatePicks() when invalidatePicks != null:
 return invalidatePicks();case ChatIntent_SelectModel() when selectModel != null:
@@ -870,43 +882,43 @@ String toString() {
 /// @nodoc
 
 
-class ChatIntent_Archive extends ChatIntent {
-  const ChatIntent_Archive({required this.chat}): super._();
+class ChatIntent_CloseTab extends ChatIntent {
+  const ChatIntent_CloseTab({required this.id}): super._();
   
 
- final  ChatRefView chat;
+ final  String id;
 
 /// Create a copy of ChatIntent
 /// with the given fields replaced by the non-null parameter values.
 @JsonKey(includeFromJson: false, includeToJson: false)
 @pragma('vm:prefer-inline')
-$ChatIntent_ArchiveCopyWith<ChatIntent_Archive> get copyWith => _$ChatIntent_ArchiveCopyWithImpl<ChatIntent_Archive>(this, _$identity);
+$ChatIntent_CloseTabCopyWith<ChatIntent_CloseTab> get copyWith => _$ChatIntent_CloseTabCopyWithImpl<ChatIntent_CloseTab>(this, _$identity);
 
 
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is ChatIntent_Archive&&(identical(other.chat, chat) || other.chat == chat));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is ChatIntent_CloseTab&&(identical(other.id, id) || other.id == id));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,chat);
+int get hashCode => Object.hash(runtimeType,id);
 
 @override
 String toString() {
-  return 'ChatIntent.archive(chat: $chat)';
+  return 'ChatIntent.closeTab(id: $id)';
 }
 
 
 }
 
 /// @nodoc
-abstract mixin class $ChatIntent_ArchiveCopyWith<$Res> implements $ChatIntentCopyWith<$Res> {
-  factory $ChatIntent_ArchiveCopyWith(ChatIntent_Archive value, $Res Function(ChatIntent_Archive) _then) = _$ChatIntent_ArchiveCopyWithImpl;
+abstract mixin class $ChatIntent_CloseTabCopyWith<$Res> implements $ChatIntentCopyWith<$Res> {
+  factory $ChatIntent_CloseTabCopyWith(ChatIntent_CloseTab value, $Res Function(ChatIntent_CloseTab) _then) = _$ChatIntent_CloseTabCopyWithImpl;
 @useResult
 $Res call({
- ChatRefView chat
+ String id
 });
 
 
@@ -914,19 +926,219 @@ $Res call({
 
 }
 /// @nodoc
-class _$ChatIntent_ArchiveCopyWithImpl<$Res>
-    implements $ChatIntent_ArchiveCopyWith<$Res> {
-  _$ChatIntent_ArchiveCopyWithImpl(this._self, this._then);
+class _$ChatIntent_CloseTabCopyWithImpl<$Res>
+    implements $ChatIntent_CloseTabCopyWith<$Res> {
+  _$ChatIntent_CloseTabCopyWithImpl(this._self, this._then);
 
-  final ChatIntent_Archive _self;
-  final $Res Function(ChatIntent_Archive) _then;
+  final ChatIntent_CloseTab _self;
+  final $Res Function(ChatIntent_CloseTab) _then;
 
 /// Create a copy of ChatIntent
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? chat = null,}) {
-  return _then(ChatIntent_Archive(
+@pragma('vm:prefer-inline') $Res call({Object? id = null,}) {
+  return _then(ChatIntent_CloseTab(
+id: null == id ? _self.id : id // ignore: cast_nullable_to_non_nullable
+as String,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class ChatIntent_Refresh extends ChatIntent {
+  const ChatIntent_Refresh({required this.chat, required this.generation}): super._();
+
+
+ final  ChatRefView chat;
+ final  int generation;
+
+/// Create a copy of ChatIntent
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$ChatIntent_RefreshCopyWith<ChatIntent_Refresh> get copyWith => _$ChatIntent_RefreshCopyWithImpl<ChatIntent_Refresh>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is ChatIntent_Refresh&&(identical(other.chat, chat) || other.chat == chat)&&(identical(other.generation, generation) || other.generation == generation));
+}
+
+
+@override
+int get hashCode => Object.hash(runtimeType,chat,generation);
+
+@override
+String toString() {
+  return 'ChatIntent.refresh(chat: $chat, generation: $generation)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $ChatIntent_RefreshCopyWith<$Res> implements $ChatIntentCopyWith<$Res> {
+  factory $ChatIntent_RefreshCopyWith(ChatIntent_Refresh value, $Res Function(ChatIntent_Refresh) _then) = _$ChatIntent_RefreshCopyWithImpl;
+@useResult
+$Res call({
+ ChatRefView chat, int generation
+});
+
+
+
+
+}
+/// @nodoc
+class _$ChatIntent_RefreshCopyWithImpl<$Res>
+    implements $ChatIntent_RefreshCopyWith<$Res> {
+  _$ChatIntent_RefreshCopyWithImpl(this._self, this._then);
+
+  final ChatIntent_Refresh _self;
+  final $Res Function(ChatIntent_Refresh) _then;
+
+/// Create a copy of ChatIntent
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? chat = null,Object? generation = null,}) {
+  return _then(ChatIntent_Refresh(
 chat: null == chat ? _self.chat : chat // ignore: cast_nullable_to_non_nullable
-as ChatRefView,
+as ChatRefView,generation: null == generation ? _self.generation : generation // ignore: cast_nullable_to_non_nullable
+as int,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class ChatIntent_RestoreConnection extends ChatIntent {
+  const ChatIntent_RestoreConnection({required this.catalogLoaded}): super._();
+
+
+ final  bool catalogLoaded;
+
+/// Create a copy of ChatIntent
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$ChatIntent_RestoreConnectionCopyWith<ChatIntent_RestoreConnection> get copyWith => _$ChatIntent_RestoreConnectionCopyWithImpl<ChatIntent_RestoreConnection>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is ChatIntent_RestoreConnection&&(identical(other.catalogLoaded, catalogLoaded) || other.catalogLoaded == catalogLoaded));
+}
+
+
+@override
+int get hashCode => Object.hash(runtimeType,catalogLoaded);
+
+@override
+String toString() {
+  return 'ChatIntent.restoreConnection(catalogLoaded: $catalogLoaded)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $ChatIntent_RestoreConnectionCopyWith<$Res> implements $ChatIntentCopyWith<$Res> {
+  factory $ChatIntent_RestoreConnectionCopyWith(ChatIntent_RestoreConnection value, $Res Function(ChatIntent_RestoreConnection) _then) = _$ChatIntent_RestoreConnectionCopyWithImpl;
+@useResult
+$Res call({
+ bool catalogLoaded
+});
+
+
+
+
+}
+/// @nodoc
+class _$ChatIntent_RestoreConnectionCopyWithImpl<$Res>
+    implements $ChatIntent_RestoreConnectionCopyWith<$Res> {
+  _$ChatIntent_RestoreConnectionCopyWithImpl(this._self, this._then);
+
+  final ChatIntent_RestoreConnection _self;
+  final $Res Function(ChatIntent_RestoreConnection) _then;
+
+/// Create a copy of ChatIntent
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? catalogLoaded = null,}) {
+  return _then(ChatIntent_RestoreConnection(
+catalogLoaded: null == catalogLoaded ? _self.catalogLoaded : catalogLoaded // ignore: cast_nullable_to_non_nullable
+as bool,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class ChatIntent_TrackTurns extends ChatIntent {
+  const ChatIntent_TrackTurns({required this.enabled}): super._();
+
+
+ final  bool enabled;
+
+/// Create a copy of ChatIntent
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$ChatIntent_TrackTurnsCopyWith<ChatIntent_TrackTurns> get copyWith => _$ChatIntent_TrackTurnsCopyWithImpl<ChatIntent_TrackTurns>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is ChatIntent_TrackTurns&&(identical(other.enabled, enabled) || other.enabled == enabled));
+}
+
+
+@override
+int get hashCode => Object.hash(runtimeType,enabled);
+
+@override
+String toString() {
+  return 'ChatIntent.trackTurns(enabled: $enabled)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $ChatIntent_TrackTurnsCopyWith<$Res> implements $ChatIntentCopyWith<$Res> {
+  factory $ChatIntent_TrackTurnsCopyWith(ChatIntent_TrackTurns value, $Res Function(ChatIntent_TrackTurns) _then) = _$ChatIntent_TrackTurnsCopyWithImpl;
+@useResult
+$Res call({
+ bool enabled
+});
+
+
+
+
+}
+/// @nodoc
+class _$ChatIntent_TrackTurnsCopyWithImpl<$Res>
+    implements $ChatIntent_TrackTurnsCopyWith<$Res> {
+  _$ChatIntent_TrackTurnsCopyWithImpl(this._self, this._then);
+
+  final ChatIntent_TrackTurns _self;
+  final $Res Function(ChatIntent_TrackTurns) _then;
+
+/// Create a copy of ChatIntent
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? enabled = null,}) {
+  return _then(ChatIntent_TrackTurns(
+enabled: null == enabled ? _self.enabled : enabled // ignore: cast_nullable_to_non_nullable
+as bool,
   ));
 }
 
@@ -1050,33 +1262,67 @@ as List<String>,
 
 
 class ChatIntent_Stop extends ChatIntent {
-  const ChatIntent_Stop(): super._();
+  const ChatIntent_Stop({required this.chat}): super._();
   
 
+ final  ChatRefView chat;
 
-
+/// Create a copy of ChatIntent
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$ChatIntent_StopCopyWith<ChatIntent_Stop> get copyWith => _$ChatIntent_StopCopyWithImpl<ChatIntent_Stop>(this, _$identity);
 
 
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is ChatIntent_Stop);
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is ChatIntent_Stop&&(identical(other.chat, chat) || other.chat == chat));
 }
 
 
 @override
-int get hashCode => runtimeType.hashCode;
+int get hashCode => Object.hash(runtimeType,chat);
 
 @override
 String toString() {
-  return 'ChatIntent.stop()';
+  return 'ChatIntent.stop(chat: $chat)';
 }
 
 
 }
 
+/// @nodoc
+abstract mixin class $ChatIntent_StopCopyWith<$Res> implements $ChatIntentCopyWith<$Res> {
+  factory $ChatIntent_StopCopyWith(ChatIntent_Stop value, $Res Function(ChatIntent_Stop) _then) = _$ChatIntent_StopCopyWithImpl;
+@useResult
+$Res call({
+ ChatRefView chat
+});
 
 
+
+
+}
+/// @nodoc
+class _$ChatIntent_StopCopyWithImpl<$Res>
+    implements $ChatIntent_StopCopyWith<$Res> {
+  _$ChatIntent_StopCopyWithImpl(this._self, this._then);
+
+  final ChatIntent_Stop _self;
+  final $Res Function(ChatIntent_Stop) _then;
+
+/// Create a copy of ChatIntent
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? chat = null,}) {
+  return _then(ChatIntent_Stop(
+chat: null == chat ? _self.chat : chat // ignore: cast_nullable_to_non_nullable
+as ChatRefView,
+  ));
+}
+
+
+}
 
 /// @nodoc
 
@@ -1731,38 +1977,6 @@ as bool,
 
 
 }
-
-/// @nodoc
-
-
-class ChatIntent_RestoreSettings extends ChatIntent {
-  const ChatIntent_RestoreSettings(): super._();
-  
-
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is ChatIntent_RestoreSettings);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-  return 'ChatIntent.restoreSettings()';
-}
-
-
-}
-
-
-
 
 /// @nodoc
 
@@ -2431,14 +2645,13 @@ extension ChatOutcomePatterns on ChatOutcome {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( ChatOutcome_Opened value)?  opened,TResult Function( ChatOutcome_Sent value)?  sent,TResult Function( ChatOutcome_Created value)?  created,TResult Function( ChatOutcome_Stopped value)?  stopped,TResult Function( ChatOutcome_Stored value)?  stored,TResult Function( ChatOutcome_Changed value)?  changed,TResult Function( ChatOutcome_Saved value)?  saved,TResult Function( ChatOutcome_Forked value)?  forked,TResult Function( ChatOutcome_Inventory value)?  inventory,TResult Function( ChatOutcome_PluginCatalog value)?  pluginCatalog,TResult Function( ChatOutcome_Selections value)?  selections,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( ChatOutcome_Opened value)?  opened,TResult Function( ChatOutcome_Sent value)?  sent,TResult Function( ChatOutcome_Created value)?  created,TResult Function( ChatOutcome_Stored value)?  stored,TResult Function( ChatOutcome_Changed value)?  changed,TResult Function( ChatOutcome_Saved value)?  saved,TResult Function( ChatOutcome_Forked value)?  forked,TResult Function( ChatOutcome_Inventory value)?  inventory,TResult Function( ChatOutcome_PluginCatalog value)?  pluginCatalog,TResult Function( ChatOutcome_Selections value)?  selections,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case ChatOutcome_Opened() when opened != null:
 return opened(_that);case ChatOutcome_Sent() when sent != null:
 return sent(_that);case ChatOutcome_Created() when created != null:
-return created(_that);case ChatOutcome_Stopped() when stopped != null:
-return stopped(_that);case ChatOutcome_Stored() when stored != null:
+return created(_that);case ChatOutcome_Stored() when stored != null:
 return stored(_that);case ChatOutcome_Changed() when changed != null:
 return changed(_that);case ChatOutcome_Saved() when saved != null:
 return saved(_that);case ChatOutcome_Forked() when forked != null:
@@ -2463,14 +2676,13 @@ return selections(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( ChatOutcome_Opened value)  opened,required TResult Function( ChatOutcome_Sent value)  sent,required TResult Function( ChatOutcome_Created value)  created,required TResult Function( ChatOutcome_Stopped value)  stopped,required TResult Function( ChatOutcome_Stored value)  stored,required TResult Function( ChatOutcome_Changed value)  changed,required TResult Function( ChatOutcome_Saved value)  saved,required TResult Function( ChatOutcome_Forked value)  forked,required TResult Function( ChatOutcome_Inventory value)  inventory,required TResult Function( ChatOutcome_PluginCatalog value)  pluginCatalog,required TResult Function( ChatOutcome_Selections value)  selections,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( ChatOutcome_Opened value)  opened,required TResult Function( ChatOutcome_Sent value)  sent,required TResult Function( ChatOutcome_Created value)  created,required TResult Function( ChatOutcome_Stored value)  stored,required TResult Function( ChatOutcome_Changed value)  changed,required TResult Function( ChatOutcome_Saved value)  saved,required TResult Function( ChatOutcome_Forked value)  forked,required TResult Function( ChatOutcome_Inventory value)  inventory,required TResult Function( ChatOutcome_PluginCatalog value)  pluginCatalog,required TResult Function( ChatOutcome_Selections value)  selections,}){
 final _that = this;
 switch (_that) {
 case ChatOutcome_Opened():
 return opened(_that);case ChatOutcome_Sent():
 return sent(_that);case ChatOutcome_Created():
-return created(_that);case ChatOutcome_Stopped():
-return stopped(_that);case ChatOutcome_Stored():
+return created(_that);case ChatOutcome_Stored():
 return stored(_that);case ChatOutcome_Changed():
 return changed(_that);case ChatOutcome_Saved():
 return saved(_that);case ChatOutcome_Forked():
@@ -2491,14 +2703,13 @@ return selections(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( ChatOutcome_Opened value)?  opened,TResult? Function( ChatOutcome_Sent value)?  sent,TResult? Function( ChatOutcome_Created value)?  created,TResult? Function( ChatOutcome_Stopped value)?  stopped,TResult? Function( ChatOutcome_Stored value)?  stored,TResult? Function( ChatOutcome_Changed value)?  changed,TResult? Function( ChatOutcome_Saved value)?  saved,TResult? Function( ChatOutcome_Forked value)?  forked,TResult? Function( ChatOutcome_Inventory value)?  inventory,TResult? Function( ChatOutcome_PluginCatalog value)?  pluginCatalog,TResult? Function( ChatOutcome_Selections value)?  selections,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( ChatOutcome_Opened value)?  opened,TResult? Function( ChatOutcome_Sent value)?  sent,TResult? Function( ChatOutcome_Created value)?  created,TResult? Function( ChatOutcome_Stored value)?  stored,TResult? Function( ChatOutcome_Changed value)?  changed,TResult? Function( ChatOutcome_Saved value)?  saved,TResult? Function( ChatOutcome_Forked value)?  forked,TResult? Function( ChatOutcome_Inventory value)?  inventory,TResult? Function( ChatOutcome_PluginCatalog value)?  pluginCatalog,TResult? Function( ChatOutcome_Selections value)?  selections,}){
 final _that = this;
 switch (_that) {
 case ChatOutcome_Opened() when opened != null:
 return opened(_that);case ChatOutcome_Sent() when sent != null:
 return sent(_that);case ChatOutcome_Created() when created != null:
-return created(_that);case ChatOutcome_Stopped() when stopped != null:
-return stopped(_that);case ChatOutcome_Stored() when stored != null:
+return created(_that);case ChatOutcome_Stored() when stored != null:
 return stored(_that);case ChatOutcome_Changed() when changed != null:
 return changed(_that);case ChatOutcome_Saved() when saved != null:
 return saved(_that);case ChatOutcome_Forked() when forked != null:
@@ -2522,13 +2733,12 @@ return selections(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( bool selected)?  opened,TResult Function( bool accepted)?  sent,TResult Function( ChatRefView chat)?  created,TResult Function( bool refresh)?  stopped,TResult Function( String filename,  String path,  int size)?  stored,TResult Function( bool applied)?  changed,TResult Function( int revision)?  saved,TResult Function( ChatRefView chat)?  forked,TResult Function( List<CommandRowView> commands,  bool unsettled)?  inventory,TResult Function( String json)?  pluginCatalog,TResult Function( String? json)?  selections,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( bool selected,  int generation)?  opened,TResult Function( bool accepted)?  sent,TResult Function( ChatRefView chat)?  created,TResult Function( String filename,  String path,  int size)?  stored,TResult Function( bool applied)?  changed,TResult Function( int revision)?  saved,TResult Function( ChatRefView chat)?  forked,TResult Function( List<CommandRowView> commands,  bool unsettled)?  inventory,TResult Function( String json)?  pluginCatalog,TResult Function( String? json)?  selections,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case ChatOutcome_Opened() when opened != null:
-return opened(_that.selected);case ChatOutcome_Sent() when sent != null:
+return opened(_that.selected,_that.generation);case ChatOutcome_Sent() when sent != null:
 return sent(_that.accepted);case ChatOutcome_Created() when created != null:
-return created(_that.chat);case ChatOutcome_Stopped() when stopped != null:
-return stopped(_that.refresh);case ChatOutcome_Stored() when stored != null:
+return created(_that.chat);case ChatOutcome_Stored() when stored != null:
 return stored(_that.filename,_that.path,_that.size);case ChatOutcome_Changed() when changed != null:
 return changed(_that.applied);case ChatOutcome_Saved() when saved != null:
 return saved(_that.revision);case ChatOutcome_Forked() when forked != null:
@@ -2553,13 +2763,12 @@ return selections(_that.json);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( bool selected)  opened,required TResult Function( bool accepted)  sent,required TResult Function( ChatRefView chat)  created,required TResult Function( bool refresh)  stopped,required TResult Function( String filename,  String path,  int size)  stored,required TResult Function( bool applied)  changed,required TResult Function( int revision)  saved,required TResult Function( ChatRefView chat)  forked,required TResult Function( List<CommandRowView> commands,  bool unsettled)  inventory,required TResult Function( String json)  pluginCatalog,required TResult Function( String? json)  selections,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( bool selected,  int generation)  opened,required TResult Function( bool accepted)  sent,required TResult Function( ChatRefView chat)  created,required TResult Function( String filename,  String path,  int size)  stored,required TResult Function( bool applied)  changed,required TResult Function( int revision)  saved,required TResult Function( ChatRefView chat)  forked,required TResult Function( List<CommandRowView> commands,  bool unsettled)  inventory,required TResult Function( String json)  pluginCatalog,required TResult Function( String? json)  selections,}) {final _that = this;
 switch (_that) {
 case ChatOutcome_Opened():
-return opened(_that.selected);case ChatOutcome_Sent():
+return opened(_that.selected,_that.generation);case ChatOutcome_Sent():
 return sent(_that.accepted);case ChatOutcome_Created():
-return created(_that.chat);case ChatOutcome_Stopped():
-return stopped(_that.refresh);case ChatOutcome_Stored():
+return created(_that.chat);case ChatOutcome_Stored():
 return stored(_that.filename,_that.path,_that.size);case ChatOutcome_Changed():
 return changed(_that.applied);case ChatOutcome_Saved():
 return saved(_that.revision);case ChatOutcome_Forked():
@@ -2580,13 +2789,12 @@ return selections(_that.json);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( bool selected)?  opened,TResult? Function( bool accepted)?  sent,TResult? Function( ChatRefView chat)?  created,TResult? Function( bool refresh)?  stopped,TResult? Function( String filename,  String path,  int size)?  stored,TResult? Function( bool applied)?  changed,TResult? Function( int revision)?  saved,TResult? Function( ChatRefView chat)?  forked,TResult? Function( List<CommandRowView> commands,  bool unsettled)?  inventory,TResult? Function( String json)?  pluginCatalog,TResult? Function( String? json)?  selections,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( bool selected,  int generation)?  opened,TResult? Function( bool accepted)?  sent,TResult? Function( ChatRefView chat)?  created,TResult? Function( String filename,  String path,  int size)?  stored,TResult? Function( bool applied)?  changed,TResult? Function( int revision)?  saved,TResult? Function( ChatRefView chat)?  forked,TResult? Function( List<CommandRowView> commands,  bool unsettled)?  inventory,TResult? Function( String json)?  pluginCatalog,TResult? Function( String? json)?  selections,}) {final _that = this;
 switch (_that) {
 case ChatOutcome_Opened() when opened != null:
-return opened(_that.selected);case ChatOutcome_Sent() when sent != null:
+return opened(_that.selected,_that.generation);case ChatOutcome_Sent() when sent != null:
 return sent(_that.accepted);case ChatOutcome_Created() when created != null:
-return created(_that.chat);case ChatOutcome_Stopped() when stopped != null:
-return stopped(_that.refresh);case ChatOutcome_Stored() when stored != null:
+return created(_that.chat);case ChatOutcome_Stored() when stored != null:
 return stored(_that.filename,_that.path,_that.size);case ChatOutcome_Changed() when changed != null:
 return changed(_that.applied);case ChatOutcome_Saved() when saved != null:
 return saved(_that.revision);case ChatOutcome_Forked() when forked != null:
@@ -2605,10 +2813,11 @@ return selections(_that.json);case _:
 
 
 class ChatOutcome_Opened extends ChatOutcome {
-  const ChatOutcome_Opened({required this.selected}): super._();
+  const ChatOutcome_Opened({required this.selected, required this.generation}): super._();
 
 
  final  bool selected;
+ final  int generation;
 
 /// Create a copy of ChatOutcome
 /// with the given fields replaced by the non-null parameter values.
@@ -2620,16 +2829,16 @@ $ChatOutcome_OpenedCopyWith<ChatOutcome_Opened> get copyWith => _$ChatOutcome_Op
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is ChatOutcome_Opened&&(identical(other.selected, selected) || other.selected == selected));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is ChatOutcome_Opened&&(identical(other.selected, selected) || other.selected == selected)&&(identical(other.generation, generation) || other.generation == generation));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,selected);
+int get hashCode => Object.hash(runtimeType,selected,generation);
 
 @override
 String toString() {
-  return 'ChatOutcome.opened(selected: $selected)';
+  return 'ChatOutcome.opened(selected: $selected, generation: $generation)';
 }
 
 
@@ -2640,7 +2849,7 @@ abstract mixin class $ChatOutcome_OpenedCopyWith<$Res> implements $ChatOutcomeCo
   factory $ChatOutcome_OpenedCopyWith(ChatOutcome_Opened value, $Res Function(ChatOutcome_Opened) _then) = _$ChatOutcome_OpenedCopyWithImpl;
 @useResult
 $Res call({
- bool selected
+ bool selected, int generation
 });
 
 
@@ -2657,10 +2866,11 @@ class _$ChatOutcome_OpenedCopyWithImpl<$Res>
 
 /// Create a copy of ChatOutcome
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? selected = null,}) {
+@pragma('vm:prefer-inline') $Res call({Object? selected = null,Object? generation = null,}) {
   return _then(ChatOutcome_Opened(
 selected: null == selected ? _self.selected : selected // ignore: cast_nullable_to_non_nullable
-as bool,
+as bool,generation: null == generation ? _self.generation : generation // ignore: cast_nullable_to_non_nullable
+as int,
   ));
 }
 
@@ -2793,72 +3003,6 @@ class _$ChatOutcome_CreatedCopyWithImpl<$Res>
   return _then(ChatOutcome_Created(
 chat: null == chat ? _self.chat : chat // ignore: cast_nullable_to_non_nullable
 as ChatRefView,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class ChatOutcome_Stopped extends ChatOutcome {
-  const ChatOutcome_Stopped({required this.refresh}): super._();
-  
-
- final  bool refresh;
-
-/// Create a copy of ChatOutcome
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$ChatOutcome_StoppedCopyWith<ChatOutcome_Stopped> get copyWith => _$ChatOutcome_StoppedCopyWithImpl<ChatOutcome_Stopped>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is ChatOutcome_Stopped&&(identical(other.refresh, refresh) || other.refresh == refresh));
-}
-
-
-@override
-int get hashCode => Object.hash(runtimeType,refresh);
-
-@override
-String toString() {
-  return 'ChatOutcome.stopped(refresh: $refresh)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $ChatOutcome_StoppedCopyWith<$Res> implements $ChatOutcomeCopyWith<$Res> {
-  factory $ChatOutcome_StoppedCopyWith(ChatOutcome_Stopped value, $Res Function(ChatOutcome_Stopped) _then) = _$ChatOutcome_StoppedCopyWithImpl;
-@useResult
-$Res call({
- bool refresh
-});
-
-
-
-
-}
-/// @nodoc
-class _$ChatOutcome_StoppedCopyWithImpl<$Res>
-    implements $ChatOutcome_StoppedCopyWith<$Res> {
-  _$ChatOutcome_StoppedCopyWithImpl(this._self, this._then);
-
-  final ChatOutcome_Stopped _self;
-  final $Res Function(ChatOutcome_Stopped) _then;
-
-/// Create a copy of ChatOutcome
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? refresh = null,}) {
-  return _then(ChatOutcome_Stopped(
-refresh: null == refresh ? _self.refresh : refresh // ignore: cast_nullable_to_non_nullable
-as bool,
   ));
 }
 

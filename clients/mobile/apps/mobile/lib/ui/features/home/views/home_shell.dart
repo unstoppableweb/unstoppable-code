@@ -20,6 +20,7 @@ import 'package:mobile/ui/features/home/home_tab.dart';
 import 'package:mobile/ui/features/home/home_tab_controller.dart';
 import 'package:mobile/ui/features/home/views/organization_context_gate.dart';
 import 'package:mobile/ui/features/home/views/widgets/home_navigation_drawer.dart';
+import 'package:mobile/ui/core/navigation/app_route_scope.dart';
 import 'package:mobile/ui/core/navigation/home_extra_destination.dart';
 import 'package:mobile/ui/core/navigation/home_navigation_scope.dart';
 import 'package:mobile/core/design-system/icon/canopy_glyph.dart';
@@ -370,7 +371,10 @@ class _HomeShellState extends State<HomeShell>
                 if (extra != null && _extraMounted)
                   Builder(
                     key: const ValueKey('home-extra-destination'),
-                    builder: extra.pageBuilder,
+                    builder: (context) => HomeDetailVisibility(
+                      visible: showsExtra && HomeDetailVisibility.of(context),
+                      child: Builder(builder: extra.pageBuilder),
+                    ),
                   ),
                 if (_recentChat.page case final page?)
                   KeyedSubtree(key: ObjectKey(page), child: page),

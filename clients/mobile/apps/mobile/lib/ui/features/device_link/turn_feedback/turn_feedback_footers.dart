@@ -1,55 +1,14 @@
+import 'package:computer_connect_core/computer_connect_core.dart' as core;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:mobile/data/models/turn_feedback.dart';
 import 'package:mobile/data/repositories/turn_feedback_repository.dart';
 import 'package:mobile/device_link/chats/models.dart';
-import 'package:mobile/ui/features/device_link/computer_connect/chat_feed_model.dart';
 import 'package:mobile/ui/core/chat/view_models/turn_feedback_controller.dart';
 import 'package:mobile/ui/core/chat/widgets/turn_feedback_row.dart';
 import 'package:mobile/ui/core/chat/widgets/turn_feedback_sheet.dart';
 import 'package:provider/provider.dart';
-
-/// Turns that get thumbs, as feed footer key to feedback turn key.
-///
-/// The feedback key is the turn's opening user message id, the
-/// `clientUserMessageId` desktop rates. The footer key is the feed's key for
-/// the turn's last segment: the feed starts a segment at every user row,
-/// including tool results and steering that continue a turn, so the thumbs
-/// sit at the end of the whole turn.
-///
-/// A turn qualifies when it has assistant content (a failed or cancelled turn
-/// counts, as on desktop) and is not the in-flight turn.
-Map<String, String> completedTurnKeys(
-  List<FeedMessageOutline> messages,
-  bool running,
-) {
-  final result = <String, String>{};
-  String? opener, footer;
-  var content = false;
-  void close({required bool last}) {
-    if (opener case final opener? when content && !(last && running)) {
-      result[footer ?? opener] = opener;
-    }
-  }
-
-  for (final message in messages) {
-    if (message.user) {
-      if (!message.continuesTurn) {
-        close(last: false);
-        opener = message.messageId;
-        footer = message.messageId;
-        content = false;
-      } else if (opener != null) {
-        footer = message.messageId;
-      }
-      continue;
-    }
-    if (opener != null && message.renderable) content = true;
-  }
-  close(last: true);
-  return result;
-}
 
 /// The `eventType` desktop sends for a chat's scope (`eventTypeForTarget` in
 /// the desktop turn-feedback slice), or null when this phone cannot tell.
@@ -92,9 +51,7 @@ class DeviceTurnFeedbackFooters extends StatefulWidget {
   const DeviceTurnFeedbackFooters({
     super.key,
     required this.ref,
-    required this.messages,
-    required this.running,
-    required this.tab,
+    required this.header,
     required this.workspaceKind,
     required this.footers,
     required this.builder,
@@ -102,14 +59,7 @@ class DeviceTurnFeedbackFooters extends StatefulWidget {
 
   final DeviceChatRef ref;
 
-  /// The transcript as the feed presents it, so turns key the same way.
-  final List<FeedMessageOutline> messages;
-  final bool running;
-
-  /// The desktop tab: its `turnFeedback` seeds ratings, `readOnly` hides the
-  /// thumbs, and `providerType`, `model` and `interfaceMode` describe a
-  /// rating the way desktop does.
-  final Map<String, dynamic> tab;
+  final core.ChatHeaderView? header;
   final String? workspaceKind;
   final Map<String, Widget> footers;
   final Widget Function(Map<String, Widget>) builder;
@@ -151,12 +101,12 @@ class _DeviceTurnFeedbackFootersState extends State<DeviceTurnFeedbackFooters> {
   }
 
   TurnFeedbackContext get _context {
-    final tab = widget.tab;
-    final provider = tab['providerType'], model = tab['model'];
+    final header = widget.header;
+    final provider = header?.providerType, model = header?.model;
     return TurnFeedbackContext(
-      provider: provider is String && provider.isNotEmpty ? provider : null,
-      model: model is String && model.isNotEmpty ? model : null,
-      chatMode: tab['interfaceMode'] == 'claude-code' ? 'terminal' : 'canopy',
+      provider: provider != null && provider.isNotEmpty ? provider : null,
+      model: model != null && model.isNotEmpty ? model : null,
+      chatMode: header?.terminalMode == true ? 'terminal' : 'canopy',
       eventType: deviceTurnFeedbackEventType(
         widget.ref.projectId,
         widget.workspaceKind,
@@ -200,16 +150,32 @@ class _DeviceTurnFeedbackFootersState extends State<DeviceTurnFeedbackFooters> {
   @override
   Widget build(BuildContext context) {
     final controller = context.watch<TurnFeedbackController?>();
-    if (controller == null || widget.tab['readOnly'] == true) {
+    final header = widget.header;
+    if (controller == null ||
+        header == null ||
+        header.readOnly ||
+        header.feedbackTurns.isEmpty) {
       return widget.builder(widget.footers);
     }
-    final turns = completedTurnKeys(widget.messages, widget.running);
-    if (turns.isEmpty) return widget.builder(widget.footers);
-    final seed = turnFeedbackTabSeed(widget.tab['turnFeedback']);
+    final seed = <String, TurnFeedbackEntry>{
+      for (final row in header.feedbackSeeds)
+        if (turnFeedbackRatingFromWire(row.rating) case final rating?)
+          row.turn: TurnFeedbackEntry(
+            rating: rating,
+            syncState: switch (row.syncState) {
+              'synced' => TurnFeedbackSyncState.synced,
+              'failed' => TurnFeedbackSyncState.failed,
+              _ => TurnFeedbackSyncState.pending,
+            },
+            feedbackId: row.feedbackId,
+            reason: turnFeedbackReasonFromWire(row.reason),
+          ),
+    };
     final chatId = widget.ref.id;
     return widget.builder(
       mergeTurnFooters(widget.footers, {
-        for (final MapEntry(key: footer, value: turn) in turns.entries)
+        for (final core.FeedbackTurnView(:footer, :turn)
+            in header.feedbackTurns)
           footer: Align(
             key: ValueKey('turn-feedback:$turn'),
             alignment: AlignmentDirectional.centerStart,

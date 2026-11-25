@@ -6,12 +6,6 @@ abstract interface class ComputerChatFeed {
   /// The presented messages, oldest first.
   List<ChatMessage> get messages;
 
-  /// Every presented message's [FeedMessageOutline], oldest first, whether
-  /// or not [messages] holds it in full.
-  List<FeedMessageOutline> get outline;
-
-  /// The rows [ChatFeed] draws; null lets it group [messages] itself.
-
   /// Open turns and step runs, by key. Cleared when the chat is left.
   void toggleTurn(String key);
 
@@ -19,13 +13,3 @@ abstract interface class ComputerChatFeed {
   List<TranscriptRow> project({Set<String> footerTurns = const {}});
   void dispose();
 }
-
-/// What turn grouping reads of a presented message: its id, whether it is
-/// a user message, whether that continues the turn, and
-/// [hasRenderableContent].
-typedef FeedMessageOutline = ({
-  String messageId,
-  bool user,
-  bool continuesTurn,
-  bool renderable,
-});

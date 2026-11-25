@@ -251,6 +251,7 @@ enum CanopyGlyph {
   sidebarHiddenLeftWide('assets/icons/canopy/sidebar-hidden-left-wide.svg'),
   sidebarHiddenRightWide('assets/icons/canopy/sidebar-hidden-right-wide.svg'),
   singleSignOn('assets/icons/canopy/single-sign-on.svg'),
+  slack('assets/icons/canopy/slack.svg', isBrandMark: true),
   sparkle('assets/icons/canopy/sparkle.svg'),
   split('assets/icons/canopy/split.svg'),
   squareArrowTopRight('assets/icons/canopy/square-arrow-top-right.svg'),

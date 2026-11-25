@@ -147,17 +147,10 @@ final class RustChatSender implements DeviceChatSender {
   }
 
   @override
-  Future<void> stop() async {
-    final key = reader.state?.ref.key;
-    final generation = reader.selectionGeneration;
-    final settled = await reader.settle(const core.ChatIntent.stop());
-    // As in Dart: never retarget a late reply to a chat opened since.
-    if (settled.outcome case core.ChatOutcome_Stopped(refresh: true)
-        when reader.connected &&
-            generation == reader.selectionGeneration &&
-            reader.state?.ref.key == key) {
-      await reader.refresh();
-    }
+  Future<void> stop(DeviceChatRef chat) async {
+    await reader.settle(
+      core.ChatIntent.stop(chat: RustChatReader.chatRefView(chat)),
+    );
   }
 
   @override

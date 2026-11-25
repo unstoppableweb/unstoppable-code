@@ -655,11 +655,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
   CatalogView dco_decode_box_autoadd_catalog_view(dynamic raw);
 
   @protected
-  CatalogWorkspaceView dco_decode_box_autoadd_catalog_workspace_view(
-    dynamic raw,
-  );
-
-  @protected
   ChatFailure dco_decode_box_autoadd_chat_failure(dynamic raw);
 
   @protected
@@ -768,11 +763,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
 
   @protected
   PipelineContentSource dco_decode_box_autoadd_pipeline_content_source(
-    dynamic raw,
-  );
-
-  @protected
-  PipelineDocumentView dco_decode_box_autoadd_pipeline_document_view(
     dynamic raw,
   );
 
@@ -957,9 +947,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
   ChatSettled dco_decode_chat_settled(dynamic raw);
 
   @protected
-  ChatStateFrame dco_decode_chat_state_frame(dynamic raw);
-
-  @protected
   ChatTabView dco_decode_chat_tab_view(dynamic raw);
 
   @protected
@@ -1051,6 +1038,12 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
 
   @protected
   FeedRow dco_decode_feed_row(dynamic raw);
+
+  @protected
+  FeedbackSeedView dco_decode_feedback_seed_view(dynamic raw);
+
+  @protected
+  FeedbackTurnView dco_decode_feedback_turn_view(dynamic raw);
 
   @protected
   FileBytesOutcome dco_decode_file_bytes_outcome(dynamic raw);
@@ -1170,9 +1163,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
   LinkPhase dco_decode_link_phase(dynamic raw);
 
   @protected
-  List<int> dco_decode_list_CastedPrimitive_u_64(dynamic raw);
-
-  @protected
   List<String> dco_decode_list_String(dynamic raw);
 
   @protected
@@ -1233,6 +1223,12 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
 
   @protected
   List<FeedOp> dco_decode_list_feed_op(dynamic raw);
+
+  @protected
+  List<FeedbackSeedView> dco_decode_list_feedback_seed_view(dynamic raw);
+
+  @protected
+  List<FeedbackTurnView> dco_decode_list_feedback_turn_view(dynamic raw);
 
   @protected
   List<FileEntryView> dco_decode_list_file_entry_view(dynamic raw);
@@ -1429,9 +1425,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
 
   @protected
   List<QuestionView> dco_decode_list_question_view(dynamic raw);
-
-  @protected
-  List<RawMessageView> dco_decode_list_raw_message_view(dynamic raw);
 
   @protected
   List<RecentChatView> dco_decode_list_recent_chat_view(dynamic raw);
@@ -1762,9 +1755,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
   WriteFailure? dco_decode_opt_box_autoadd_write_failure(dynamic raw);
 
   @protected
-  List<int>? dco_decode_opt_list_CastedPrimitive_u_64(dynamic raw);
-
-  @protected
   List<String>? dco_decode_opt_list_String(dynamic raw);
 
   @protected
@@ -1854,9 +1844,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
 
   @protected
   PipelineDescriptorView dco_decode_pipeline_descriptor_view(dynamic raw);
-
-  @protected
-  PipelineDocumentView dco_decode_pipeline_document_view(dynamic raw);
 
   @protected
   PipelineDotStatus dco_decode_pipeline_dot_status(dynamic raw);
@@ -2022,9 +2009,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
 
   @protected
   QuestionView dco_decode_question_view(dynamic raw);
-
-  @protected
-  RawMessageView dco_decode_raw_message_view(dynamic raw);
 
   @protected
   RecentAttention dco_decode_recent_attention(dynamic raw);
@@ -2824,11 +2808,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
   CatalogView sse_decode_box_autoadd_catalog_view(SseDeserializer deserializer);
 
   @protected
-  CatalogWorkspaceView sse_decode_box_autoadd_catalog_workspace_view(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   ChatFailure sse_decode_box_autoadd_chat_failure(SseDeserializer deserializer);
 
   @protected
@@ -2979,11 +2958,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
 
   @protected
   PipelineContentSource sse_decode_box_autoadd_pipeline_content_source(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  PipelineDocumentView sse_decode_box_autoadd_pipeline_document_view(
     SseDeserializer deserializer,
   );
 
@@ -3224,9 +3198,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
   ChatSettled sse_decode_chat_settled(SseDeserializer deserializer);
 
   @protected
-  ChatStateFrame sse_decode_chat_state_frame(SseDeserializer deserializer);
-
-  @protected
   ChatTabView sse_decode_chat_tab_view(SseDeserializer deserializer);
 
   @protected
@@ -3320,6 +3291,12 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
 
   @protected
   FeedRow sse_decode_feed_row(SseDeserializer deserializer);
+
+  @protected
+  FeedbackSeedView sse_decode_feedback_seed_view(SseDeserializer deserializer);
+
+  @protected
+  FeedbackTurnView sse_decode_feedback_turn_view(SseDeserializer deserializer);
 
   @protected
   FileBytesOutcome sse_decode_file_bytes_outcome(SseDeserializer deserializer);
@@ -3447,9 +3424,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
   LinkPhase sse_decode_link_phase(SseDeserializer deserializer);
 
   @protected
-  List<int> sse_decode_list_CastedPrimitive_u_64(SseDeserializer deserializer);
-
-  @protected
   List<String> sse_decode_list_String(SseDeserializer deserializer);
 
   @protected
@@ -3536,6 +3510,16 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
 
   @protected
   List<FeedOp> sse_decode_list_feed_op(SseDeserializer deserializer);
+
+  @protected
+  List<FeedbackSeedView> sse_decode_list_feedback_seed_view(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  List<FeedbackTurnView> sse_decode_list_feedback_turn_view(
+    SseDeserializer deserializer,
+  );
 
   @protected
   List<FileEntryView> sse_decode_list_file_entry_view(
@@ -3806,11 +3790,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
 
   @protected
   List<QuestionView> sse_decode_list_question_view(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  List<RawMessageView> sse_decode_list_raw_message_view(
     SseDeserializer deserializer,
   );
 
@@ -4265,11 +4244,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
   );
 
   @protected
-  List<int>? sse_decode_opt_list_CastedPrimitive_u_64(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   List<String>? sse_decode_opt_list_String(SseDeserializer deserializer);
 
   @protected
@@ -4387,11 +4361,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
 
   @protected
   PipelineDescriptorView sse_decode_pipeline_descriptor_view(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  PipelineDocumentView sse_decode_pipeline_document_view(
     SseDeserializer deserializer,
   );
 
@@ -4599,9 +4568,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
 
   @protected
   QuestionView sse_decode_question_view(SseDeserializer deserializer);
-
-  @protected
-  RawMessageView sse_decode_raw_message_view(SseDeserializer deserializer);
 
   @protected
   RecentAttention sse_decode_recent_attention(SseDeserializer deserializer);
@@ -5549,12 +5515,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_catalog_workspace_view(
-    CatalogWorkspaceView self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_box_autoadd_chat_failure(
     ChatFailure self,
     SseSerializer serializer,
@@ -5761,12 +5721,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
   @protected
   void sse_encode_box_autoadd_pipeline_content_source(
     PipelineContentSource self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_pipeline_document_view(
-    PipelineDocumentView self,
     SseSerializer serializer,
   );
 
@@ -6077,12 +6031,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
   void sse_encode_chat_settled(ChatSettled self, SseSerializer serializer);
 
   @protected
-  void sse_encode_chat_state_frame(
-    ChatStateFrame self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_chat_tab_view(ChatTabView self, SseSerializer serializer);
 
   @protected
@@ -6213,6 +6161,18 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
 
   @protected
   void sse_encode_feed_row(FeedRow self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_feedback_seed_view(
+    FeedbackSeedView self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_feedback_turn_view(
+    FeedbackTurnView self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_file_bytes_outcome(
@@ -6377,12 +6337,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
   void sse_encode_link_phase(LinkPhase self, SseSerializer serializer);
 
   @protected
-  void sse_encode_list_CastedPrimitive_u_64(
-    List<int> self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_list_String(List<String> self, SseSerializer serializer);
 
   @protected
@@ -6495,6 +6449,18 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
 
   @protected
   void sse_encode_list_feed_op(List<FeedOp> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_feedback_seed_view(
+    List<FeedbackSeedView> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_feedback_turn_view(
+    List<FeedbackTurnView> self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_list_file_entry_view(
@@ -6841,12 +6807,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
   @protected
   void sse_encode_list_question_view(
     List<QuestionView> self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_list_raw_message_view(
-    List<RawMessageView> self,
     SseSerializer serializer,
   );
 
@@ -7412,12 +7372,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
   );
 
   @protected
-  void sse_encode_opt_list_CastedPrimitive_u_64(
-    List<int>? self,
-    SseSerializer serializer,
-  );
-
-  @protected
   void sse_encode_opt_list_String(List<String>? self, SseSerializer serializer);
 
   @protected
@@ -7561,12 +7515,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
   @protected
   void sse_encode_pipeline_descriptor_view(
     PipelineDescriptorView self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_pipeline_document_view(
-    PipelineDocumentView self,
     SseSerializer serializer,
   );
 
@@ -7857,12 +7805,6 @@ abstract class CoreBridgeApiImplPlatform extends BaseApiImpl<CoreBridgeWire> {
 
   @protected
   void sse_encode_question_view(QuestionView self, SseSerializer serializer);
-
-  @protected
-  void sse_encode_raw_message_view(
-    RawMessageView self,
-    SseSerializer serializer,
-  );
 
   @protected
   void sse_encode_recent_attention(

@@ -3263,15 +3263,10 @@ extension TaskStepPatterns on TaskStep {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( TaskStep_Open value)?  open,TResult Function( TaskStep_CreateTab value)?  createTab,TResult Function( TaskStep_CreateChat value)?  createChat,TResult Function( TaskStep_LoadWorktree value)?  loadWorktree,TResult Function( TaskStep_Refresh value)?  refresh,TResult Function( TaskStep_SetDraft value)?  setDraft,TResult Function( TaskStep_SetWorkspaceKind value)?  setWorkspaceKind,TResult Function( TaskStep_Sent value)?  sent,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( TaskStep_SetDraft value)?  setDraft,TResult Function( TaskStep_SetWorkspaceKind value)?  setWorkspaceKind,TResult Function( TaskStep_Sent value)?  sent,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
-case TaskStep_Open() when open != null:
-return open(_that);case TaskStep_CreateTab() when createTab != null:
-return createTab(_that);case TaskStep_CreateChat() when createChat != null:
-return createChat(_that);case TaskStep_LoadWorktree() when loadWorktree != null:
-return loadWorktree(_that);case TaskStep_Refresh() when refresh != null:
-return refresh(_that);case TaskStep_SetDraft() when setDraft != null:
+case TaskStep_SetDraft() when setDraft != null:
 return setDraft(_that);case TaskStep_SetWorkspaceKind() when setWorkspaceKind != null:
 return setWorkspaceKind(_that);case TaskStep_Sent() when sent != null:
 return sent(_that);case _:
@@ -3292,15 +3287,10 @@ return sent(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( TaskStep_Open value)  open,required TResult Function( TaskStep_CreateTab value)  createTab,required TResult Function( TaskStep_CreateChat value)  createChat,required TResult Function( TaskStep_LoadWorktree value)  loadWorktree,required TResult Function( TaskStep_Refresh value)  refresh,required TResult Function( TaskStep_SetDraft value)  setDraft,required TResult Function( TaskStep_SetWorkspaceKind value)  setWorkspaceKind,required TResult Function( TaskStep_Sent value)  sent,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( TaskStep_SetDraft value)  setDraft,required TResult Function( TaskStep_SetWorkspaceKind value)  setWorkspaceKind,required TResult Function( TaskStep_Sent value)  sent,}){
 final _that = this;
 switch (_that) {
-case TaskStep_Open():
-return open(_that);case TaskStep_CreateTab():
-return createTab(_that);case TaskStep_CreateChat():
-return createChat(_that);case TaskStep_LoadWorktree():
-return loadWorktree(_that);case TaskStep_Refresh():
-return refresh(_that);case TaskStep_SetDraft():
+case TaskStep_SetDraft():
 return setDraft(_that);case TaskStep_SetWorkspaceKind():
 return setWorkspaceKind(_that);case TaskStep_Sent():
 return sent(_that);}
@@ -3317,15 +3307,10 @@ return sent(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( TaskStep_Open value)?  open,TResult? Function( TaskStep_CreateTab value)?  createTab,TResult? Function( TaskStep_CreateChat value)?  createChat,TResult? Function( TaskStep_LoadWorktree value)?  loadWorktree,TResult? Function( TaskStep_Refresh value)?  refresh,TResult? Function( TaskStep_SetDraft value)?  setDraft,TResult? Function( TaskStep_SetWorkspaceKind value)?  setWorkspaceKind,TResult? Function( TaskStep_Sent value)?  sent,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( TaskStep_SetDraft value)?  setDraft,TResult? Function( TaskStep_SetWorkspaceKind value)?  setWorkspaceKind,TResult? Function( TaskStep_Sent value)?  sent,}){
 final _that = this;
 switch (_that) {
-case TaskStep_Open() when open != null:
-return open(_that);case TaskStep_CreateTab() when createTab != null:
-return createTab(_that);case TaskStep_CreateChat() when createChat != null:
-return createChat(_that);case TaskStep_LoadWorktree() when loadWorktree != null:
-return loadWorktree(_that);case TaskStep_Refresh() when refresh != null:
-return refresh(_that);case TaskStep_SetDraft() when setDraft != null:
+case TaskStep_SetDraft() when setDraft != null:
 return setDraft(_that);case TaskStep_SetWorkspaceKind() when setWorkspaceKind != null:
 return setWorkspaceKind(_that);case TaskStep_Sent() when sent != null:
 return sent(_that);case _:
@@ -3345,15 +3330,10 @@ return sent(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( ChatRefView chat)?  open,TResult Function( String projectId,  String worktreeId)?  createTab,TResult Function( String projectId)?  createChat,TResult Function( String projectId,  String worktreeId,  String name)?  loadWorktree,TResult Function()?  refresh,TResult Function( ChatRefView? chat,  String? text)?  setDraft,TResult Function( String projectId,  String kind)?  setWorkspaceKind,TResult Function( List<SentAttachmentView> attachments)?  sent,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( ChatRefView? chat)?  setDraft,TResult Function( String projectId,  String kind)?  setWorkspaceKind,TResult Function( List<SentAttachmentView> attachments)?  sent,required TResult orElse(),}) {final _that = this;
 switch (_that) {
-case TaskStep_Open() when open != null:
-return open(_that.chat);case TaskStep_CreateTab() when createTab != null:
-return createTab(_that.projectId,_that.worktreeId);case TaskStep_CreateChat() when createChat != null:
-return createChat(_that.projectId);case TaskStep_LoadWorktree() when loadWorktree != null:
-return loadWorktree(_that.projectId,_that.worktreeId,_that.name);case TaskStep_Refresh() when refresh != null:
-return refresh();case TaskStep_SetDraft() when setDraft != null:
-return setDraft(_that.chat,_that.text);case TaskStep_SetWorkspaceKind() when setWorkspaceKind != null:
+case TaskStep_SetDraft() when setDraft != null:
+return setDraft(_that.chat);case TaskStep_SetWorkspaceKind() when setWorkspaceKind != null:
 return setWorkspaceKind(_that.projectId,_that.kind);case TaskStep_Sent() when sent != null:
 return sent(_that.attachments);case _:
   return orElse();
@@ -3373,15 +3353,10 @@ return sent(_that.attachments);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( ChatRefView chat)  open,required TResult Function( String projectId,  String worktreeId)  createTab,required TResult Function( String projectId)  createChat,required TResult Function( String projectId,  String worktreeId,  String name)  loadWorktree,required TResult Function()  refresh,required TResult Function( ChatRefView? chat,  String? text)  setDraft,required TResult Function( String projectId,  String kind)  setWorkspaceKind,required TResult Function( List<SentAttachmentView> attachments)  sent,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( ChatRefView? chat)  setDraft,required TResult Function( String projectId,  String kind)  setWorkspaceKind,required TResult Function( List<SentAttachmentView> attachments)  sent,}) {final _that = this;
 switch (_that) {
-case TaskStep_Open():
-return open(_that.chat);case TaskStep_CreateTab():
-return createTab(_that.projectId,_that.worktreeId);case TaskStep_CreateChat():
-return createChat(_that.projectId);case TaskStep_LoadWorktree():
-return loadWorktree(_that.projectId,_that.worktreeId,_that.name);case TaskStep_Refresh():
-return refresh();case TaskStep_SetDraft():
-return setDraft(_that.chat,_that.text);case TaskStep_SetWorkspaceKind():
+case TaskStep_SetDraft():
+return setDraft(_that.chat);case TaskStep_SetWorkspaceKind():
 return setWorkspaceKind(_that.projectId,_that.kind);case TaskStep_Sent():
 return sent(_that.attachments);}
 }
@@ -3397,15 +3372,10 @@ return sent(_that.attachments);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( ChatRefView chat)?  open,TResult? Function( String projectId,  String worktreeId)?  createTab,TResult? Function( String projectId)?  createChat,TResult? Function( String projectId,  String worktreeId,  String name)?  loadWorktree,TResult? Function()?  refresh,TResult? Function( ChatRefView? chat,  String? text)?  setDraft,TResult? Function( String projectId,  String kind)?  setWorkspaceKind,TResult? Function( List<SentAttachmentView> attachments)?  sent,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( ChatRefView? chat)?  setDraft,TResult? Function( String projectId,  String kind)?  setWorkspaceKind,TResult? Function( List<SentAttachmentView> attachments)?  sent,}) {final _that = this;
 switch (_that) {
-case TaskStep_Open() when open != null:
-return open(_that.chat);case TaskStep_CreateTab() when createTab != null:
-return createTab(_that.projectId,_that.worktreeId);case TaskStep_CreateChat() when createChat != null:
-return createChat(_that.projectId);case TaskStep_LoadWorktree() when loadWorktree != null:
-return loadWorktree(_that.projectId,_that.worktreeId,_that.name);case TaskStep_Refresh() when refresh != null:
-return refresh();case TaskStep_SetDraft() when setDraft != null:
-return setDraft(_that.chat,_that.text);case TaskStep_SetWorkspaceKind() when setWorkspaceKind != null:
+case TaskStep_SetDraft() when setDraft != null:
+return setDraft(_that.chat);case TaskStep_SetWorkspaceKind() when setWorkspaceKind != null:
 return setWorkspaceKind(_that.projectId,_that.kind);case TaskStep_Sent() when sent != null:
 return sent(_that.attachments);case _:
   return null;
@@ -3418,314 +3388,11 @@ return sent(_that.attachments);case _:
 /// @nodoc
 
 
-class TaskStep_Open extends TaskStep {
-  const TaskStep_Open({required this.chat}): super._();
-  
-
- final  ChatRefView chat;
-
-/// Create a copy of TaskStep
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$TaskStep_OpenCopyWith<TaskStep_Open> get copyWith => _$TaskStep_OpenCopyWithImpl<TaskStep_Open>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is TaskStep_Open&&(identical(other.chat, chat) || other.chat == chat));
-}
-
-
-@override
-int get hashCode => Object.hash(runtimeType,chat);
-
-@override
-String toString() {
-  return 'TaskStep.open(chat: $chat)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $TaskStep_OpenCopyWith<$Res> implements $TaskStepCopyWith<$Res> {
-  factory $TaskStep_OpenCopyWith(TaskStep_Open value, $Res Function(TaskStep_Open) _then) = _$TaskStep_OpenCopyWithImpl;
-@useResult
-$Res call({
- ChatRefView chat
-});
-
-
-
-
-}
-/// @nodoc
-class _$TaskStep_OpenCopyWithImpl<$Res>
-    implements $TaskStep_OpenCopyWith<$Res> {
-  _$TaskStep_OpenCopyWithImpl(this._self, this._then);
-
-  final TaskStep_Open _self;
-  final $Res Function(TaskStep_Open) _then;
-
-/// Create a copy of TaskStep
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? chat = null,}) {
-  return _then(TaskStep_Open(
-chat: null == chat ? _self.chat : chat // ignore: cast_nullable_to_non_nullable
-as ChatRefView,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class TaskStep_CreateTab extends TaskStep {
-  const TaskStep_CreateTab({required this.projectId, required this.worktreeId}): super._();
-  
-
- final  String projectId;
- final  String worktreeId;
-
-/// Create a copy of TaskStep
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$TaskStep_CreateTabCopyWith<TaskStep_CreateTab> get copyWith => _$TaskStep_CreateTabCopyWithImpl<TaskStep_CreateTab>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is TaskStep_CreateTab&&(identical(other.projectId, projectId) || other.projectId == projectId)&&(identical(other.worktreeId, worktreeId) || other.worktreeId == worktreeId));
-}
-
-
-@override
-int get hashCode => Object.hash(runtimeType,projectId,worktreeId);
-
-@override
-String toString() {
-  return 'TaskStep.createTab(projectId: $projectId, worktreeId: $worktreeId)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $TaskStep_CreateTabCopyWith<$Res> implements $TaskStepCopyWith<$Res> {
-  factory $TaskStep_CreateTabCopyWith(TaskStep_CreateTab value, $Res Function(TaskStep_CreateTab) _then) = _$TaskStep_CreateTabCopyWithImpl;
-@useResult
-$Res call({
- String projectId, String worktreeId
-});
-
-
-
-
-}
-/// @nodoc
-class _$TaskStep_CreateTabCopyWithImpl<$Res>
-    implements $TaskStep_CreateTabCopyWith<$Res> {
-  _$TaskStep_CreateTabCopyWithImpl(this._self, this._then);
-
-  final TaskStep_CreateTab _self;
-  final $Res Function(TaskStep_CreateTab) _then;
-
-/// Create a copy of TaskStep
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? projectId = null,Object? worktreeId = null,}) {
-  return _then(TaskStep_CreateTab(
-projectId: null == projectId ? _self.projectId : projectId // ignore: cast_nullable_to_non_nullable
-as String,worktreeId: null == worktreeId ? _self.worktreeId : worktreeId // ignore: cast_nullable_to_non_nullable
-as String,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class TaskStep_CreateChat extends TaskStep {
-  const TaskStep_CreateChat({required this.projectId}): super._();
-  
-
- final  String projectId;
-
-/// Create a copy of TaskStep
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$TaskStep_CreateChatCopyWith<TaskStep_CreateChat> get copyWith => _$TaskStep_CreateChatCopyWithImpl<TaskStep_CreateChat>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is TaskStep_CreateChat&&(identical(other.projectId, projectId) || other.projectId == projectId));
-}
-
-
-@override
-int get hashCode => Object.hash(runtimeType,projectId);
-
-@override
-String toString() {
-  return 'TaskStep.createChat(projectId: $projectId)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $TaskStep_CreateChatCopyWith<$Res> implements $TaskStepCopyWith<$Res> {
-  factory $TaskStep_CreateChatCopyWith(TaskStep_CreateChat value, $Res Function(TaskStep_CreateChat) _then) = _$TaskStep_CreateChatCopyWithImpl;
-@useResult
-$Res call({
- String projectId
-});
-
-
-
-
-}
-/// @nodoc
-class _$TaskStep_CreateChatCopyWithImpl<$Res>
-    implements $TaskStep_CreateChatCopyWith<$Res> {
-  _$TaskStep_CreateChatCopyWithImpl(this._self, this._then);
-
-  final TaskStep_CreateChat _self;
-  final $Res Function(TaskStep_CreateChat) _then;
-
-/// Create a copy of TaskStep
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? projectId = null,}) {
-  return _then(TaskStep_CreateChat(
-projectId: null == projectId ? _self.projectId : projectId // ignore: cast_nullable_to_non_nullable
-as String,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class TaskStep_LoadWorktree extends TaskStep {
-  const TaskStep_LoadWorktree({required this.projectId, required this.worktreeId, required this.name}): super._();
-  
-
- final  String projectId;
- final  String worktreeId;
- final  String name;
-
-/// Create a copy of TaskStep
-/// with the given fields replaced by the non-null parameter values.
-@JsonKey(includeFromJson: false, includeToJson: false)
-@pragma('vm:prefer-inline')
-$TaskStep_LoadWorktreeCopyWith<TaskStep_LoadWorktree> get copyWith => _$TaskStep_LoadWorktreeCopyWithImpl<TaskStep_LoadWorktree>(this, _$identity);
-
-
-
-@override
-bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is TaskStep_LoadWorktree&&(identical(other.projectId, projectId) || other.projectId == projectId)&&(identical(other.worktreeId, worktreeId) || other.worktreeId == worktreeId)&&(identical(other.name, name) || other.name == name));
-}
-
-
-@override
-int get hashCode => Object.hash(runtimeType,projectId,worktreeId,name);
-
-@override
-String toString() {
-  return 'TaskStep.loadWorktree(projectId: $projectId, worktreeId: $worktreeId, name: $name)';
-}
-
-
-}
-
-/// @nodoc
-abstract mixin class $TaskStep_LoadWorktreeCopyWith<$Res> implements $TaskStepCopyWith<$Res> {
-  factory $TaskStep_LoadWorktreeCopyWith(TaskStep_LoadWorktree value, $Res Function(TaskStep_LoadWorktree) _then) = _$TaskStep_LoadWorktreeCopyWithImpl;
-@useResult
-$Res call({
- String projectId, String worktreeId, String name
-});
-
-
-
-
-}
-/// @nodoc
-class _$TaskStep_LoadWorktreeCopyWithImpl<$Res>
-    implements $TaskStep_LoadWorktreeCopyWith<$Res> {
-  _$TaskStep_LoadWorktreeCopyWithImpl(this._self, this._then);
-
-  final TaskStep_LoadWorktree _self;
-  final $Res Function(TaskStep_LoadWorktree) _then;
-
-/// Create a copy of TaskStep
-/// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? projectId = null,Object? worktreeId = null,Object? name = null,}) {
-  return _then(TaskStep_LoadWorktree(
-projectId: null == projectId ? _self.projectId : projectId // ignore: cast_nullable_to_non_nullable
-as String,worktreeId: null == worktreeId ? _self.worktreeId : worktreeId // ignore: cast_nullable_to_non_nullable
-as String,name: null == name ? _self.name : name // ignore: cast_nullable_to_non_nullable
-as String,
-  ));
-}
-
-
-}
-
-/// @nodoc
-
-
-class TaskStep_Refresh extends TaskStep {
-  const TaskStep_Refresh(): super._();
-  
-
-
-
-
-
-
-@override
-bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is TaskStep_Refresh);
-}
-
-
-@override
-int get hashCode => runtimeType.hashCode;
-
-@override
-String toString() {
-  return 'TaskStep.refresh()';
-}
-
-
-}
-
-
-
-
-/// @nodoc
-
-
 class TaskStep_SetDraft extends TaskStep {
-  const TaskStep_SetDraft({this.chat, this.text}): super._();
+  const TaskStep_SetDraft({this.chat}): super._();
   
 
  final  ChatRefView? chat;
- final  String? text;
 
 /// Create a copy of TaskStep
 /// with the given fields replaced by the non-null parameter values.
@@ -3737,16 +3404,16 @@ $TaskStep_SetDraftCopyWith<TaskStep_SetDraft> get copyWith => _$TaskStep_SetDraf
 
 @override
 bool operator ==(Object other) {
-  return identical(this, other) || (other.runtimeType == runtimeType&&other is TaskStep_SetDraft&&(identical(other.chat, chat) || other.chat == chat)&&(identical(other.text, text) || other.text == text));
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is TaskStep_SetDraft&&(identical(other.chat, chat) || other.chat == chat));
 }
 
 
 @override
-int get hashCode => Object.hash(runtimeType,chat,text);
+int get hashCode => Object.hash(runtimeType,chat);
 
 @override
 String toString() {
-  return 'TaskStep.setDraft(chat: $chat, text: $text)';
+  return 'TaskStep.setDraft(chat: $chat)';
 }
 
 
@@ -3757,7 +3424,7 @@ abstract mixin class $TaskStep_SetDraftCopyWith<$Res> implements $TaskStepCopyWi
   factory $TaskStep_SetDraftCopyWith(TaskStep_SetDraft value, $Res Function(TaskStep_SetDraft) _then) = _$TaskStep_SetDraftCopyWithImpl;
 @useResult
 $Res call({
- ChatRefView? chat, String? text
+ ChatRefView? chat
 });
 
 
@@ -3774,11 +3441,10 @@ class _$TaskStep_SetDraftCopyWithImpl<$Res>
 
 /// Create a copy of TaskStep
 /// with the given fields replaced by the non-null parameter values.
-@pragma('vm:prefer-inline') $Res call({Object? chat = freezed,Object? text = freezed,}) {
+@pragma('vm:prefer-inline') $Res call({Object? chat = freezed,}) {
   return _then(TaskStep_SetDraft(
 chat: freezed == chat ? _self.chat : chat // ignore: cast_nullable_to_non_nullable
-as ChatRefView?,text: freezed == text ? _self.text : text // ignore: cast_nullable_to_non_nullable
-as String?,
+as ChatRefView?,
   ));
 }
 

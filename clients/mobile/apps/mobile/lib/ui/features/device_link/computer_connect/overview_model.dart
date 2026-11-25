@@ -8,6 +8,8 @@ import 'package:mobile/device_link/worktrees/overview_scope.dart';
 
 export 'package:mobile/device_link/worktrees/overview_scope.dart';
 
+enum WorktreeRead { loaded, unavailable, stale, sessionLost }
+
 /// One computer's project and worktree inventory.
 abstract interface class ComputerOverviewModel implements Listenable {
   bool get loading;
@@ -31,6 +33,9 @@ abstract interface class ComputerOverviewModel implements Listenable {
 
   /// The search catalog and its workspaces.
   List<DeviceChatRef> get catalog;
+
+  /// The catalog from a successful overview read on the active session.
+  List<DeviceChatRef>? get currentCatalog;
   List<DeviceChatWorkspace> get catalogWorkspaces;
 
   /// A Cowork chat's states, from its scope's desktop state.
@@ -60,7 +65,7 @@ abstract interface class ComputerOverviewModel implements Listenable {
 
   /// Re-reads [worktree]'s chats into it, as the desktop has them now. A
   /// read from before a reconnect or a newer roster leaves it unchanged.
-  Future<void> loadWorktree(DeviceWorktree worktree);
+  Future<WorktreeRead> loadWorktree(DeviceWorktree worktree);
 
   /// Shows the overview: claims every chat scope and refreshes.
   Future<void> watch();

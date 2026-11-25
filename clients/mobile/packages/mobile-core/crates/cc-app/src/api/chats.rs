@@ -88,10 +88,15 @@ pub enum ChatIntent {
     ///
     /// Resolves when applied.
     RetryReadReceipts,
-    /// Archives `chat`'s tab on the computer.
-    ///
-    /// Resolves when settled: the desktop answered (or the call failed).
-    Archive { chat: ChatRefView },
+    /// Archives an open tab and reconciles the selected chat.
+    CloseTab { id: String },
+    /// Re-reads the chat if it is still selected in this generation.
+    Refresh { chat: ChatRefView, generation: u64 },
+    /// Rehydrates a retained selection after a successful catalog read,
+    /// then restores the composer and resumes activity and pipelines.
+    RestoreConnection { catalog_loaded: bool },
+    /// Tracks successful turns while the host observes this chat.
+    TrackTurns { enabled: bool },
     /// Stops this read path (the drafts are written first).
     ///
     /// Resolves when applied.
@@ -115,11 +120,9 @@ pub enum ChatIntent {
         dictated: bool,
         attachment_paths: Vec<String>,
     },
-    /// Cancels the selected chat's turn (`chat:cancel`, once).
-    ///
-    /// Resolves when settled: the desktop answered (`Stopped`, with whether
-    /// the host should re-read the chat) or the call failed.
-    Stop,
+    /// Cancels the supplied chat’s turn if it is still selected.
+    /// The actor refreshes the selection after acknowledgement.
+    Stop { chat: ChatRefView },
     /// Creates a work entry in `workspace_id` (a catalog workspace) and its
     /// starter chat, each sent once.
     ///
@@ -203,11 +206,6 @@ pub enum ChatIntent {
         harness_json: String,
         running: bool,
     },
-    /// Reads the catalog until the selected chat's model, harness and
-    /// running state stay the same over a read (`_restore`).
-    ///
-    /// Resolves when settled: the loop ended (or the connection changed).
-    RestoreSettings,
     /// Forgets the catalog (offline).
     ///
     /// Resolves when applied.
@@ -316,13 +314,11 @@ pub struct PendingSendView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatOutcome {
     /// The requested selection survived its reads.
-    Opened { selected: bool },
+    Opened { selected: bool, generation: u64 },
     /// The computer accepted the send, or may have (`accepted: false`).
     Sent { accepted: bool },
     /// A chat or tab was created; the host opens it.
     Created { chat: ChatRefView },
-    /// The turn was cancelled; with `refresh` the host re-reads the chat.
-    Stopped { refresh: bool },
     /// The computer stored the file at `path`.
     Stored {
         filename: String,
@@ -400,34 +396,32 @@ pub struct ChatHeaderView {
     pub tabs: Vec<ChatTabView>,
     /// The worktree's open file tabs, in tab order (P6).
     pub file_tabs: Vec<super::FileTabView>,
+    pub has_messages: bool,
+    pub model: Option<String>,
+    pub execution_harness: Option<String>,
+    pub provider_type: Option<String>,
+    pub terminal_mode: bool,
+    pub plugin_selections_revision: u64,
+    pub plugin_selection_count: Option<u32>,
+    pub feedback_turns: Vec<FeedbackTurnView>,
+    pub feedback_seeds: Vec<FeedbackSeedView>,
     /// The chat's pending questions (P5c).
     pub questions: Vec<super::QuestionView>,
 }
 
-/// One desktop message entry, in bridge form.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RawMessageView {
-    pub uid: u64,
-    pub json: String,
+pub struct FeedbackTurnView {
+    pub footer: String,
+    pub turn: String,
 }
 
-/// The selected chat's desktop state (`DeviceChatState`), for the Dart
-/// features not yet ported. Bridge-form JSON fields are sent when they
-/// changed; `order` when the message list changed.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ChatStateFrame {
-    pub revision: i64,
-    pub transcript_revision: i64,
-    pub before: Option<i64>,
-    pub total_messages: i64,
-    pub closed: bool,
-    pub tab_json: Option<String>,
-    pub runtime_json: Option<String>,
-    /// `{tabsFile: {tabs, pendingQuestions, pendingApprovals},
-    /// runtimeByChatId}`.
-    pub scope_json: Option<String>,
-    pub messages: Vec<RawMessageView>,
-    pub order: Option<Vec<u64>>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeedbackSeedView {
+    pub turn: String,
+    pub rating: String,
+    pub sync_state: Option<String>,
+    pub feedback_id: Option<String>,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -652,7 +646,6 @@ pub struct SelectionFrame {
     /// A new selection: drop what was held.
     pub reset: bool,
     pub header: ChatHeaderView,
-    pub state: ChatStateFrame,
     pub feed: FeedFrame,
 }
 
@@ -663,6 +656,7 @@ pub struct ChatFrame {
     pub revision: u64,
     pub generation: u64,
     pub connected: bool,
+    pub activity_connected: bool,
     pub loading: bool,
     pub loading_older: bool,
     pub hydrating: bool,
@@ -677,6 +671,7 @@ pub struct ChatFrame {
     pub pending_send: Option<PendingSendView>,
     /// The last send accepted or confirmed.
     pub confirmed_send: Option<PendingSendView>,
+    pub successful_turns: Vec<String>,
     /// Drafts changed since this subscriber's previous frame (all on the
     /// first frame).
     pub drafts: Vec<DraftView>,
@@ -735,7 +730,13 @@ fn intent(i: ChatIntent) -> chats::Intent {
         ChatIntent::SetReadReceipts { enabled } => I::SetReadReceipts(enabled),
         ChatIntent::InvalidateReadReceipts => I::InvalidateReadReceipts,
         ChatIntent::RetryReadReceipts => I::RetryReadReceipts,
-        ChatIntent::Archive { chat } => I::Archive(chat_ref(chat)),
+        ChatIntent::CloseTab { id } => I::CloseTab(id),
+        ChatIntent::Refresh { chat, generation } => I::Refresh {
+            chat: chat_ref(chat),
+            generation,
+        },
+        ChatIntent::RestoreConnection { catalog_loaded } => I::RestoreConnection { catalog_loaded },
+        ChatIntent::TrackTurns { enabled } => I::TrackTurns(enabled),
         ChatIntent::Close => I::Close,
         ChatIntent::Send {
             chat,
@@ -752,11 +753,12 @@ fn intent(i: ChatIntent) -> chats::Intent {
             dictated,
             attachment_paths,
         }),
-        ChatIntent::Stop => I::Stop,
+        ChatIntent::Stop { chat } => I::Stop(chat_ref(chat)),
         ChatIntent::CreateChat {
             workspace_id,
             title,
         } => I::CreateChat {
+            expected: None,
             workspace: workspace_id,
             title,
         },
@@ -764,6 +766,7 @@ fn intent(i: ChatIntent) -> chats::Intent {
             project_id,
             worktree_id,
         } => I::CreateTab {
+            expected: None,
             project_id,
             worktree_id,
         },
@@ -803,7 +806,6 @@ fn intent(i: ChatIntent) -> chats::Intent {
             harness: super::composer::host_value(&harness_json),
             running,
         }),
-        ChatIntent::RestoreSettings => I::Composer(C::Restore),
         ChatIntent::InvalidateSettings => I::Composer(C::InvalidateSettings),
         ChatIntent::ChangeSetting { chat, pick } => I::Composer(C::Change {
             chat: chat_ref(chat),
@@ -884,6 +886,57 @@ fn intent(i: ChatIntent) -> chats::Intent {
     }
 }
 
+fn feedback_seeds(value: &cc_domain::dart::Dv) -> Vec<FeedbackSeedView> {
+    let cc_domain::dart::Dv::Map(seeds) = value else {
+        return Vec::new();
+    };
+    seeds
+        .iter()
+        .filter_map(|(turn, seed)| {
+            let text = |name| seed.get(name).as_str().map(str::to_owned);
+            let rating @ ("up" | "down") = seed.get("rating").as_str()? else {
+                return None;
+            };
+            Some(FeedbackSeedView {
+                turn: turn.to_owned(),
+                rating: rating.to_owned(),
+                sync_state: text("syncState"),
+                feedback_id: text("feedbackId").filter(|id| !id.is_empty()),
+                reason: text("reason"),
+            })
+        })
+        .collect()
+}
+
+fn plugin_selection_count(selections: &cc_domain::dart::Dv) -> Option<u32> {
+    use cc_domain::dart::Dv;
+    let map = match selections {
+        Dv::Null => return Some(0),
+        Dv::Map(map) => map,
+        _ => return None,
+    };
+    let list = |key| match map.get(key) {
+        Dv::Null => Some(Vec::new()),
+        Dv::List(values) => Some(values.clone()),
+        Dv::Bytes(values) => Some(values.iter().map(|&v| Dv::Int(i64::from(v))).collect()),
+        _ => None,
+    };
+    let mut collections = Vec::<Dv>::new();
+    for value in list("collectionIds")?.into_iter().chain(list("bundleIds")?) {
+        if value.is_map()
+            || matches!(value, Dv::List(_) | Dv::Bytes(_))
+            || !collections.contains(&value)
+        {
+            collections.push(value);
+        }
+    }
+    let count = collections.len()
+        + list("skillRefs")?.len()
+        + list("pluginRefs")?.len()
+        + list("mcpServerRefs")?.len();
+    u32::try_from(count).ok()
+}
+
 fn ref_view(c: &ChatRef) -> ChatRefView {
     ChatRefView {
         project_id: c.project_id.clone(),
@@ -921,12 +974,17 @@ pub(crate) fn failure_view(f: chats::Failure) -> ChatFailure {
 fn outcome_view(o: chats::Outcome) -> ChatOutcome {
     use chats::Outcome as O;
     match o {
-        O::Opened { selected } => ChatOutcome::Opened { selected },
+        O::Opened {
+            selected,
+            generation,
+        } => ChatOutcome::Opened {
+            selected,
+            generation,
+        },
         O::Sent { accepted } => ChatOutcome::Sent { accepted },
         O::Created(chat) => ChatOutcome::Created {
             chat: ref_view(&chat),
         },
-        O::Stopped { refresh } => ChatOutcome::Stopped { refresh },
         O::Stored {
             filename,
             path,
@@ -974,6 +1032,9 @@ impl ChatsService {
             self.handle.peer().clone(),
             self.handle.view(),
         );
+        let _ = self
+            .handle
+            .send(chats::Intent::BindActivity(handle.clone()), None);
         super::ActivityService::new(self.inner.clone(), handle)
     }
     /// The computer's pipelines and the work drawers of its mounted chats
@@ -986,6 +1047,9 @@ impl ChatsService {
             self.handle.peer().clone(),
             self.handle.view(),
         );
+        let _ = self
+            .handle
+            .send(chats::Intent::BindPipelines(handle.clone()), None);
         super::PipelinesService::new(self.inner.clone(), handle)
     }
     pub(crate) fn handle(&self) -> &Handle {
@@ -1048,12 +1112,9 @@ impl ChatsService {
 struct Sent {
     key: String,
     transcript_revision: i64,
-    // The desktop state.
-    tab: cc_domain::dart::DvMap,
-    runtime: cc_domain::dart::DvMap,
-    scope: cc_domain::chat::ScopeState,
-    raw: HashSet<u64>,
-    raw_order: Vec<u64>,
+    plugin_selections: cc_domain::dart::Dv,
+    plugin_selections_revision: u64,
+    plugin_selection_count: Option<u32>,
     // The feed.
     feed: Arc<FeedSnapshot>,
     messages: HashSet<u64>,
@@ -1119,6 +1180,7 @@ impl ChatFrames {
             revision: p.revision,
             generation: p.generation,
             connected: p.connected,
+            activity_connected: p.activity_connected,
             loading: p.loading,
             loading_older: p.loading_older,
             hydrating: p.hydrating,
@@ -1129,6 +1191,7 @@ impl ChatFrames {
             sending: p.sending,
             pending_send: p.pending.as_ref().map(pending_view),
             confirmed_send: p.confirmed.as_ref().map(pending_view),
+            successful_turns: p.successful_turns.clone(),
             drafts,
             draft_seq: p.draft_seq,
             composer,
@@ -1162,6 +1225,23 @@ impl ChatFrames {
         if reset {
             self.sent = None;
         }
+        let plugin_selections = state.tab.get("pluginSelections");
+        let sent = self.sent.get_or_insert_with(|| Sent {
+            key,
+            transcript_revision: state.transcript_revision,
+            plugin_selections: cc_domain::dart::Dv::Null,
+            plugin_selections_revision: 0,
+            plugin_selection_count: Some(0),
+            feed: Arc::default(),
+            messages: HashSet::new(),
+            results: HashMap::new(),
+        });
+        if &sent.plugin_selections != plugin_selections {
+            sent.plugin_selections = plugin_selections.clone();
+            sent.plugin_selections_revision += 1;
+            sent.plugin_selection_count = plugin_selection_count(plugin_selections);
+        }
+        let text = |name: &str| state.tab.get(name).as_str().map(str::to_owned);
         let header = ChatHeaderView {
             revision: state.revision,
             transcript_revision: state.transcript_revision,
@@ -1201,13 +1281,26 @@ impl ChatFrames {
                     folder: t.folder,
                 })
                 .collect(),
+            has_messages: !state.messages.is_empty(),
+            model: text("model"),
+            execution_harness: text("executionHarness"),
+            provider_type: text("providerType"),
+            terminal_mode: state.tab.get("interfaceMode").is_str("claude-code"),
+            plugin_selections_revision: sent.plugin_selections_revision,
+            plugin_selection_count: sent.plugin_selection_count,
+            feedback_turns: s
+                .feed
+                .feedback_turns
+                .iter()
+                .map(|(footer, turn)| FeedbackTurnView {
+                    footer: footer.clone(),
+                    turn: turn.clone(),
+                })
+                .collect(),
+            feedback_seeds: feedback_seeds(state.tab.get("turnFeedback")),
             questions: super::composer::pending_questions(state),
         };
-        let state_frame = self.state_frame(state);
         let feed = self.feed_frame(&s.feed, state.transcript_revision);
-        if let Some(sent) = &mut self.sent {
-            sent.key = key;
-        }
         SelectionFrame {
             chat: ChatRefView {
                 project_id: s.chat.project_id.clone(),
@@ -1217,77 +1310,12 @@ impl ChatFrames {
             },
             reset,
             header,
-            state: state_frame,
             feed,
         }
     }
 
-    fn state_frame(&mut self, state: &cc_domain::chat::ChatState) -> ChatStateFrame {
-        let json = |v: serde_json::Value| v.to_string();
-        let scope_json = |scope: &cc_domain::chat::ScopeState| {
-            let list = |maps: &[cc_domain::dart::DvMap]| {
-                serde_json::Value::Array(maps.iter().map(dto::bridge_map).collect())
-            };
-            json(serde_json::json!({
-                "tabsFile": {
-                    "tabs": list(&scope.tabs),
-                    "pendingQuestions": list(&scope.questions),
-                    "pendingApprovals": list(&scope.approvals),
-                },
-                "runtimeByChatId": dto::bridge_map(&scope.runtime),
-            }))
-        };
-        let order: Vec<u64> = state.messages.iter().map(|m| m.uid).collect();
-        let sent = self.sent.as_ref();
-        let tab_json =
-            (sent.is_none_or(|s| s.tab != state.tab)).then(|| json(dto::bridge_map(&state.tab)));
-        let runtime_json = (sent.is_none_or(|s| s.runtime != state.runtime))
-            .then(|| json(dto::bridge_map(&state.runtime)));
-        let scope = (sent.is_none_or(|s| s.scope != state.scope)).then(|| scope_json(&state.scope));
-        let messages = state
-            .messages
-            .iter()
-            .filter(|m| sent.is_none_or(|s| !s.raw.contains(&m.uid)))
-            .map(|m| RawMessageView {
-                uid: m.uid,
-                json: json(dto::bridge_map(&m.raw)),
-            })
-            .collect();
-        let order_changed = sent.is_none_or(|s| s.raw_order != order);
-        let frame = ChatStateFrame {
-            revision: state.revision,
-            transcript_revision: state.transcript_revision,
-            before: state.before,
-            total_messages: state.total_messages,
-            closed: state.closed,
-            tab_json,
-            runtime_json,
-            scope_json: scope,
-            messages,
-            order: order_changed.then(|| order.clone()),
-        };
-        let sent = self.sent.get_or_insert_with(|| Sent {
-            key: state.chat.key(),
-            transcript_revision: state.transcript_revision,
-            tab: Default::default(),
-            runtime: Default::default(),
-            scope: Default::default(),
-            raw: HashSet::new(),
-            raw_order: Vec::new(),
-            feed: Arc::default(),
-            messages: HashSet::new(),
-            results: HashMap::new(),
-        });
-        sent.tab = state.tab.clone();
-        sent.runtime = state.runtime.clone();
-        sent.scope = state.scope.clone();
-        sent.raw = order.iter().copied().collect();
-        sent.raw_order = order;
-        frame
-    }
-
     fn feed_frame(&mut self, feed: &Arc<FeedSnapshot>, transcript_revision: i64) -> FeedFrame {
-        let sent = self.sent.as_mut().expect("state_frame remembered");
+        let sent = self.sent.as_mut().expect("selection initialized the feed");
         let prepended = sent
             .feed
             .order

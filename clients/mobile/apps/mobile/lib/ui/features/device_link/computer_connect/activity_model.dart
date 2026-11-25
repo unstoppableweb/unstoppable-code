@@ -91,10 +91,6 @@ abstract interface class ComputerActivity {
   void setWorkspaceKind(String id, String kind);
   String? workspaceKind(String id);
 
-  /// The session became usable or ended; completes when the reads a
-  /// connect started finished.
-  Future<void> setConnected(bool connected);
-
   /// The changed files' diffs.
   ComputerFileDiffs get diffs;
 

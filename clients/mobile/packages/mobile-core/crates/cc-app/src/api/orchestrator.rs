@@ -10,7 +10,7 @@ use super::{
 use crate::{
     account::View,
     api::{CoreInner, chats::failure_view},
-    orchestrator::{Entering, Handle, Intent, Outcome, Published},
+    orchestrator::{Handle, Intent, Outcome, Published},
 };
 use std::{
     collections::HashMap,
@@ -77,15 +77,8 @@ pub enum OrchestratorIntent {
     ///
     /// Resolves when settled: the write finished.
     WatchEntries,
-    /// Starts opening `entry_id` (`None`: a new chat). Reads the entry's
-    /// active tab first.
-    ///
-    /// Resolves when settled: what the host opens next.
+    /// Opens the entry's active tab or creates one. With no entry, starts a new chat.
     Enter { entry_id: Option<String> },
-    /// The host's open of `generation` finished.
-    ///
-    /// Resolves when applied: `Entered{opened}`, whether the chat stays.
-    Entered { generation: u64, opened: bool },
     /// The chat was left.
     ///
     /// Resolves when applied.
@@ -117,33 +110,9 @@ pub enum OrchestratorOutcome {
     Catalog {
         catalog: CatalogView,
     },
-    /// Already in a chat.
-    Busy,
-    /// Open `chat`, the entry's active tab.
-    Open {
-        chat: ChatRefView,
-        generation: u64,
-    },
-    /// Create a chat in `workspace`.
-    NewChat {
-        workspace: CatalogWorkspaceView,
-        generation: u64,
-    },
-    /// Create a tab in entry `entry_id`; `failure` is what a failed
-    /// creation shows.
-    NewTab {
-        entry_id: String,
-        generation: u64,
-        failure: String,
-    },
-    /// The entry could not be read; show `message`.
-    LoadFailed {
-        message: String,
-    },
-    /// The connection changed meanwhile.
-    Stale,
-    Entered {
-        opened: bool,
+    Opened {
+        chat_revision: u64,
+        chat_generation: u64,
     },
     Failed {
         failure: ChatFailure,
@@ -274,35 +243,13 @@ fn outcome(o: Outcome) -> OrchestratorOutcome {
                 }],
             },
         },
-        Outcome::Entering(entering) => match entering {
-            Entering::Busy => O::Busy,
-            Entering::Open { chat, generation } => O::Open {
-                chat: chat_view(&chat),
-                generation,
-            },
-            Entering::NewChat { generation } => O::NewChat {
-                workspace: CatalogWorkspaceView {
-                    id: crate::orchestrator::PROJECT.into(),
-                    name: crate::copy::orchestrator::text(
-                        crate::copy::orchestrator::CopyKey::Workspace,
-                    )
-                    .into(),
-                },
-                generation,
-            },
-            Entering::NewTab {
-                entry,
-                generation,
-                failure,
-            } => O::NewTab {
-                entry_id: entry,
-                generation,
-                failure,
-            },
-            Entering::Failed { message } => O::LoadFailed { message },
-            Entering::Stale => O::Stale,
+        Outcome::Opened {
+            revision,
+            generation,
+        } => O::Opened {
+            chat_revision: revision,
+            chat_generation: generation,
         },
-        Outcome::Entered(opened) => O::Entered { opened },
         Outcome::Failed(failure) => O::Failed {
             failure: failure_view(failure),
         },
@@ -319,7 +266,6 @@ fn intent(i: OrchestratorIntent) -> Intent {
         I::CatalogShown => Intent::Shown,
         I::WatchEntries => Intent::Watch,
         I::Enter { entry_id } => Intent::Enter(entry_id),
-        I::Entered { generation, opened } => Intent::Entered { generation, opened },
         I::Leave => Intent::Leave,
         I::Answer {
             chat_id,

@@ -15,7 +15,7 @@ import 'pipelines.dart';
 part 'chats.freezed.dart';
 
 // These functions are ignored because they are not marked as `pub`: `new`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`, `from`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner< ChatsService>>
 abstract class ChatsService implements RustOpaqueInterface {
@@ -121,6 +121,7 @@ class ChatFrame {
   final int revision;
   final int generation;
   final bool connected;
+  final bool activityConnected;
   final bool loading;
   final bool loadingOlder;
   final bool hydrating;
@@ -139,6 +140,7 @@ class ChatFrame {
 
   /// The last send accepted or confirmed.
   final PendingSendView? confirmedSend;
+  final List<String> successfulTurns;
 
   /// Drafts changed since this subscriber's previous frame (all on the
   /// first frame).
@@ -155,6 +157,7 @@ class ChatFrame {
     required this.revision,
     required this.generation,
     required this.connected,
+    required this.activityConnected,
     required this.loading,
     required this.loadingOlder,
     required this.hydrating,
@@ -165,6 +168,7 @@ class ChatFrame {
     required this.sending,
     this.pendingSend,
     this.confirmedSend,
+    required this.successfulTurns,
     required this.drafts,
     required this.draftSeq,
     this.composer,
@@ -175,6 +179,7 @@ class ChatFrame {
       revision.hashCode ^
       generation.hashCode ^
       connected.hashCode ^
+      activityConnected.hashCode ^
       loading.hashCode ^
       loadingOlder.hashCode ^
       hydrating.hashCode ^
@@ -185,6 +190,7 @@ class ChatFrame {
       sending.hashCode ^
       pendingSend.hashCode ^
       confirmedSend.hashCode ^
+      const DeepCollectionEquality().hash(successfulTurns) ^
       const DeepCollectionEquality().hash(drafts) ^
       draftSeq.hashCode ^
       composer.hashCode;
@@ -197,6 +203,7 @@ class ChatFrame {
           revision == other.revision &&
           generation == other.generation &&
           connected == other.connected &&
+          activityConnected == other.activityConnected &&
           loading == other.loading &&
           loadingOlder == other.loadingOlder &&
           hydrating == other.hydrating &&
@@ -207,6 +214,10 @@ class ChatFrame {
           sending == other.sending &&
           pendingSend == other.pendingSend &&
           confirmedSend == other.confirmedSend &&
+          const DeepCollectionEquality().equals(
+            successfulTurns,
+            other.successfulTurns,
+          ) &&
           const DeepCollectionEquality().equals(drafts, other.drafts) &&
           draftSeq == other.draftSeq &&
           composer == other.composer;
@@ -230,6 +241,15 @@ class ChatHeaderView {
 
   /// The worktree's open file tabs, in tab order (P6).
   final List<FileTabView> fileTabs;
+  final bool hasMessages;
+  final String? model;
+  final String? executionHarness;
+  final String? providerType;
+  final bool terminalMode;
+  final int pluginSelectionsRevision;
+  final int? pluginSelectionCount;
+  final List<FeedbackTurnView> feedbackTurns;
+  final List<FeedbackSeedView> feedbackSeeds;
 
   /// The chat's pending questions (P5c).
   final List<QuestionView> questions;
@@ -249,6 +269,15 @@ class ChatHeaderView {
     required this.totalMessages,
     required this.tabs,
     required this.fileTabs,
+    required this.hasMessages,
+    this.model,
+    this.executionHarness,
+    this.providerType,
+    required this.terminalMode,
+    required this.pluginSelectionsRevision,
+    this.pluginSelectionCount,
+    required this.feedbackTurns,
+    required this.feedbackSeeds,
     required this.questions,
   });
 
@@ -268,6 +297,15 @@ class ChatHeaderView {
       totalMessages.hashCode ^
       const DeepCollectionEquality().hash(tabs) ^
       const DeepCollectionEquality().hash(fileTabs) ^
+      hasMessages.hashCode ^
+      model.hashCode ^
+      executionHarness.hashCode ^
+      providerType.hashCode ^
+      terminalMode.hashCode ^
+      pluginSelectionsRevision.hashCode ^
+      pluginSelectionCount.hashCode ^
+      const DeepCollectionEquality().hash(feedbackTurns) ^
+      const DeepCollectionEquality().hash(feedbackSeeds) ^
       const DeepCollectionEquality().hash(questions);
 
   @override
@@ -289,6 +327,21 @@ class ChatHeaderView {
           totalMessages == other.totalMessages &&
           const DeepCollectionEquality().equals(tabs, other.tabs) &&
           const DeepCollectionEquality().equals(fileTabs, other.fileTabs) &&
+          hasMessages == other.hasMessages &&
+          model == other.model &&
+          executionHarness == other.executionHarness &&
+          providerType == other.providerType &&
+          terminalMode == other.terminalMode &&
+          pluginSelectionsRevision == other.pluginSelectionsRevision &&
+          pluginSelectionCount == other.pluginSelectionCount &&
+          const DeepCollectionEquality().equals(
+            feedbackTurns,
+            other.feedbackTurns,
+          ) &&
+          const DeepCollectionEquality().equals(
+            feedbackSeeds,
+            other.feedbackSeeds,
+          ) &&
           const DeepCollectionEquality().equals(questions, other.questions);
 }
 
@@ -357,11 +410,23 @@ sealed class ChatIntent with _$ChatIntent {
   /// Resolves when applied.
   const factory ChatIntent.retryReadReceipts() = ChatIntent_RetryReadReceipts;
 
-  /// Archives `chat`'s tab on the computer.
-  ///
-  /// Resolves when settled: the desktop answered (or the call failed).
-  const factory ChatIntent.archive({required ChatRefView chat}) =
-      ChatIntent_Archive;
+  /// Archives an open tab and reconciles the selected chat.
+  const factory ChatIntent.closeTab({required String id}) = ChatIntent_CloseTab;
+
+  /// Re-reads the chat if it is still selected in this generation.
+  const factory ChatIntent.refresh({
+    required ChatRefView chat,
+    required int generation,
+  }) = ChatIntent_Refresh;
+
+  /// Rehydrates a retained selection after a successful catalog read,
+  /// then restores the composer and resumes activity and pipelines.
+  const factory ChatIntent.restoreConnection({required bool catalogLoaded}) =
+      ChatIntent_RestoreConnection;
+
+  /// Tracks successful turns while the host observes this chat.
+  const factory ChatIntent.trackTurns({required bool enabled}) =
+      ChatIntent_TrackTurns;
 
   /// Stops this read path (the drafts are written first).
   ///
@@ -388,11 +453,9 @@ sealed class ChatIntent with _$ChatIntent {
     required List<String> attachmentPaths,
   }) = ChatIntent_Send;
 
-  /// Cancels the selected chat's turn (`chat:cancel`, once).
-  ///
-  /// Resolves when settled: the desktop answered (`Stopped`, with whether
-  /// the host should re-read the chat) or the call failed.
-  const factory ChatIntent.stop() = ChatIntent_Stop;
+  /// Cancels the supplied chat’s turn if it is still selected.
+  /// The actor refreshes the selection after acknowledgement.
+  const factory ChatIntent.stop({required ChatRefView chat}) = ChatIntent_Stop;
 
   /// Creates a work entry in `workspace_id` (a catalog workspace) and its
   /// starter chat, each sent once.
@@ -491,12 +554,6 @@ sealed class ChatIntent with _$ChatIntent {
     required bool running,
   }) = ChatIntent_SyncSettings;
 
-  /// Reads the catalog until the selected chat's model, harness and
-  /// running state stay the same over a read (`_restore`).
-  ///
-  /// Resolves when settled: the loop ended (or the connection changed).
-  const factory ChatIntent.restoreSettings() = ChatIntent_RestoreSettings;
-
   /// Forgets the catalog (offline).
   ///
   /// Resolves when applied.
@@ -590,8 +647,10 @@ sealed class ChatOutcome with _$ChatOutcome {
   const ChatOutcome._();
 
   /// The requested selection survived its reads.
-  const factory ChatOutcome.opened({required bool selected}) =
-      ChatOutcome_Opened;
+  const factory ChatOutcome.opened({
+    required bool selected,
+    required int generation,
+  }) = ChatOutcome_Opened;
 
   /// The computer accepted the send, or may have (`accepted: false`).
   const factory ChatOutcome.sent({required bool accepted}) = ChatOutcome_Sent;
@@ -599,10 +658,6 @@ sealed class ChatOutcome with _$ChatOutcome {
   /// A chat or tab was created; the host opens it.
   const factory ChatOutcome.created({required ChatRefView chat}) =
       ChatOutcome_Created;
-
-  /// The turn was cancelled; with `refresh` the host re-reads the chat.
-  const factory ChatOutcome.stopped({required bool refresh}) =
-      ChatOutcome_Stopped;
 
   /// The computer stored the file at `path`.
   const factory ChatOutcome.stored({
@@ -658,67 +713,6 @@ class ChatSettled {
           revision == other.revision &&
           failure == other.failure &&
           outcome == other.outcome;
-}
-
-/// The selected chat's desktop state (`DeviceChatState`), for the Dart
-/// features not yet ported. Bridge-form JSON fields are sent when they
-/// changed; `order` when the message list changed.
-class ChatStateFrame {
-  final int revision;
-  final int transcriptRevision;
-  final int? before;
-  final int totalMessages;
-  final bool closed;
-  final String? tabJson;
-  final String? runtimeJson;
-
-  /// `{tabsFile: {tabs, pendingQuestions, pendingApprovals},
-  /// runtimeByChatId}`.
-  final String? scopeJson;
-  final List<RawMessageView> messages;
-  final List<int>? order;
-
-  const ChatStateFrame({
-    required this.revision,
-    required this.transcriptRevision,
-    this.before,
-    required this.totalMessages,
-    required this.closed,
-    this.tabJson,
-    this.runtimeJson,
-    this.scopeJson,
-    required this.messages,
-    this.order,
-  });
-
-  @override
-  int get hashCode =>
-      revision.hashCode ^
-      transcriptRevision.hashCode ^
-      before.hashCode ^
-      totalMessages.hashCode ^
-      closed.hashCode ^
-      tabJson.hashCode ^
-      runtimeJson.hashCode ^
-      scopeJson.hashCode ^
-      const DeepCollectionEquality().hash(messages) ^
-      const DeepCollectionEquality().hash(order);
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ChatStateFrame &&
-          runtimeType == other.runtimeType &&
-          revision == other.revision &&
-          transcriptRevision == other.transcriptRevision &&
-          before == other.before &&
-          totalMessages == other.totalMessages &&
-          closed == other.closed &&
-          tabJson == other.tabJson &&
-          runtimeJson == other.runtimeJson &&
-          scopeJson == other.scopeJson &&
-          const DeepCollectionEquality().equals(messages, other.messages) &&
-          const DeepCollectionEquality().equals(order, other.order);
 }
 
 /// A chat tab as the chat screen lists it.
@@ -882,6 +876,59 @@ sealed class FeedRow with _$FeedRow {
   }) = FeedRow_ResponseActions;
 }
 
+class FeedbackSeedView {
+  final String turn;
+  final String rating;
+  final String? syncState;
+  final String? feedbackId;
+  final String? reason;
+
+  const FeedbackSeedView({
+    required this.turn,
+    required this.rating,
+    this.syncState,
+    this.feedbackId,
+    this.reason,
+  });
+
+  @override
+  int get hashCode =>
+      turn.hashCode ^
+      rating.hashCode ^
+      syncState.hashCode ^
+      feedbackId.hashCode ^
+      reason.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is FeedbackSeedView &&
+          runtimeType == other.runtimeType &&
+          turn == other.turn &&
+          rating == other.rating &&
+          syncState == other.syncState &&
+          feedbackId == other.feedbackId &&
+          reason == other.reason;
+}
+
+class FeedbackTurnView {
+  final String footer;
+  final String turn;
+
+  const FeedbackTurnView({required this.footer, required this.turn});
+
+  @override
+  int get hashCode => footer.hashCode ^ turn.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is FeedbackTurnView &&
+          runtimeType == other.runtimeType &&
+          footer == other.footer &&
+          turn == other.turn;
+}
+
 /// A presented message's place in the transcript, with what turn feedback
 /// reads of it whether or not a row materializes it.
 class MessageRef {
@@ -1043,25 +1090,6 @@ class PendingSendView {
           );
 }
 
-/// One desktop message entry, in bridge form.
-class RawMessageView {
-  final int uid;
-  final String json;
-
-  const RawMessageView({required this.uid, required this.json});
-
-  @override
-  int get hashCode => uid.hashCode ^ json.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is RawMessageView &&
-          runtimeType == other.runtimeType &&
-          uid == other.uid &&
-          json == other.json;
-}
-
 class ResultsRef {
   final int turn;
   final int rev;
@@ -1087,24 +1115,18 @@ class SelectionFrame {
   /// A new selection: drop what was held.
   final bool reset;
   final ChatHeaderView header;
-  final ChatStateFrame state;
   final FeedFrame feed;
 
   const SelectionFrame({
     required this.chat,
     required this.reset,
     required this.header,
-    required this.state,
     required this.feed,
   });
 
   @override
   int get hashCode =>
-      chat.hashCode ^
-      reset.hashCode ^
-      header.hashCode ^
-      state.hashCode ^
-      feed.hashCode;
+      chat.hashCode ^ reset.hashCode ^ header.hashCode ^ feed.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -1114,7 +1136,6 @@ class SelectionFrame {
           chat == other.chat &&
           reset == other.reset &&
           header == other.header &&
-          state == other.state &&
           feed == other.feed;
 }
 

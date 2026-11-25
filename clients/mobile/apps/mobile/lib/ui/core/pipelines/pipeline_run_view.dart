@@ -567,7 +567,7 @@ class _StepRow extends StatelessWidget {
 
 /// Reads and opens one step's complete readable output (CAN-3717).
 typedef PipelineStepOutput = ({
-  Future<RemotePipelineContentDocument> Function() load,
+  Future<List<PipelineContentChunk>> Function() load,
   VoidCallback open,
 });
 

@@ -55,13 +55,14 @@ extension WorktreeLoadPatterns on WorktreeLoad {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( WorktreeLoad_Loaded value)?  loaded,TResult Function( WorktreeLoad_Unavailable value)?  unavailable,TResult Function( WorktreeLoad_Stale value)?  stale,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( WorktreeLoad_Loaded value)?  loaded,TResult Function( WorktreeLoad_Unavailable value)?  unavailable,TResult Function( WorktreeLoad_Stale value)?  stale,TResult Function( WorktreeLoad_SessionLost value)?  sessionLost,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case WorktreeLoad_Loaded() when loaded != null:
 return loaded(_that);case WorktreeLoad_Unavailable() when unavailable != null:
 return unavailable(_that);case WorktreeLoad_Stale() when stale != null:
-return stale(_that);case _:
+return stale(_that);case WorktreeLoad_SessionLost() when sessionLost != null:
+return sessionLost(_that);case _:
   return orElse();
 
 }
@@ -79,13 +80,14 @@ return stale(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( WorktreeLoad_Loaded value)  loaded,required TResult Function( WorktreeLoad_Unavailable value)  unavailable,required TResult Function( WorktreeLoad_Stale value)  stale,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( WorktreeLoad_Loaded value)  loaded,required TResult Function( WorktreeLoad_Unavailable value)  unavailable,required TResult Function( WorktreeLoad_Stale value)  stale,required TResult Function( WorktreeLoad_SessionLost value)  sessionLost,}){
 final _that = this;
 switch (_that) {
 case WorktreeLoad_Loaded():
 return loaded(_that);case WorktreeLoad_Unavailable():
 return unavailable(_that);case WorktreeLoad_Stale():
-return stale(_that);}
+return stale(_that);case WorktreeLoad_SessionLost():
+return sessionLost(_that);}
 }
 /// A variant of `map` that fallback to returning `null`.
 ///
@@ -99,13 +101,14 @@ return stale(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( WorktreeLoad_Loaded value)?  loaded,TResult? Function( WorktreeLoad_Unavailable value)?  unavailable,TResult? Function( WorktreeLoad_Stale value)?  stale,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( WorktreeLoad_Loaded value)?  loaded,TResult? Function( WorktreeLoad_Unavailable value)?  unavailable,TResult? Function( WorktreeLoad_Stale value)?  stale,TResult? Function( WorktreeLoad_SessionLost value)?  sessionLost,}){
 final _that = this;
 switch (_that) {
 case WorktreeLoad_Loaded() when loaded != null:
 return loaded(_that);case WorktreeLoad_Unavailable() when unavailable != null:
 return unavailable(_that);case WorktreeLoad_Stale() when stale != null:
-return stale(_that);case _:
+return stale(_that);case WorktreeLoad_SessionLost() when sessionLost != null:
+return sessionLost(_that);case _:
   return null;
 
 }
@@ -122,12 +125,13 @@ return stale(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( WorktreeChatsView field0)?  loaded,TResult Function()?  unavailable,TResult Function()?  stale,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( WorktreeChatsView field0)?  loaded,TResult Function()?  unavailable,TResult Function()?  stale,TResult Function()?  sessionLost,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case WorktreeLoad_Loaded() when loaded != null:
 return loaded(_that.field0);case WorktreeLoad_Unavailable() when unavailable != null:
 return unavailable();case WorktreeLoad_Stale() when stale != null:
-return stale();case _:
+return stale();case WorktreeLoad_SessionLost() when sessionLost != null:
+return sessionLost();case _:
   return orElse();
 
 }
@@ -145,12 +149,13 @@ return stale();case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( WorktreeChatsView field0)  loaded,required TResult Function()  unavailable,required TResult Function()  stale,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( WorktreeChatsView field0)  loaded,required TResult Function()  unavailable,required TResult Function()  stale,required TResult Function()  sessionLost,}) {final _that = this;
 switch (_that) {
 case WorktreeLoad_Loaded():
 return loaded(_that.field0);case WorktreeLoad_Unavailable():
 return unavailable();case WorktreeLoad_Stale():
-return stale();}
+return stale();case WorktreeLoad_SessionLost():
+return sessionLost();}
 }
 /// A variant of `when` that fallback to returning `null`
 ///
@@ -164,12 +169,13 @@ return stale();}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( WorktreeChatsView field0)?  loaded,TResult? Function()?  unavailable,TResult? Function()?  stale,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( WorktreeChatsView field0)?  loaded,TResult? Function()?  unavailable,TResult? Function()?  stale,TResult? Function()?  sessionLost,}) {final _that = this;
 switch (_that) {
 case WorktreeLoad_Loaded() when loaded != null:
 return loaded(_that.field0);case WorktreeLoad_Unavailable() when unavailable != null:
 return unavailable();case WorktreeLoad_Stale() when stale != null:
-return stale();case _:
+return stale();case WorktreeLoad_SessionLost() when sessionLost != null:
+return sessionLost();case _:
   return null;
 
 }
@@ -299,6 +305,38 @@ int get hashCode => runtimeType.hashCode;
 @override
 String toString() {
   return 'WorktreeLoad.stale()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class WorktreeLoad_SessionLost extends WorktreeLoad {
+  const WorktreeLoad_SessionLost(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+  return identical(this, other) || (other.runtimeType == runtimeType&&other is WorktreeLoad_SessionLost);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+  return 'WorktreeLoad.sessionLost()';
 }
 
 
