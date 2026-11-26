@@ -18,6 +18,7 @@ final class HomeRecentChat {
     required this.open,
     required this.isCurrent,
     this.locationLabel,
+    this.cachedTranscript,
   });
 
   /// Stable identity across computers, safe for widget keys.
@@ -34,6 +35,9 @@ final class HomeRecentChat {
 
   /// Sort key; null when the computer does not say when it was last active.
   final DateTime? activityAt;
+
+  /// Supplies a read-only transcript while the live page prepares.
+  final Widget? Function()? cachedTranscript;
 
   /// Opens the chat from [context], which must outlive the drawer. The shell
   /// hosts [showChat]'s page until another destination is selected; completing

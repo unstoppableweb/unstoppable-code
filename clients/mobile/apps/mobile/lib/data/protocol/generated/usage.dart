@@ -141,7 +141,7 @@ class TelemetryEventStatusCount {
 
 /// A single most-expensive session for the click-through panel.
 class TelemetryExpensiveRun {
-  const TelemetryExpensiveRun({this.authorName, required this.branchName, this.durationMs, required this.eventType, required this.inputTokens, required this.label, this.model, required this.outputTokens, this.prUrl, required this.provider, required this.sessionId, required this.startedAtIso, required this.status, required this.totalCostUsd, required this.turnCount, required this.worktreeId});
+  const TelemetryExpensiveRun({this.authorName, required this.branchName, this.durationMs, required this.eventType, required this.inputTokens, required this.label, this.model, required this.outputTokens, this.prUrl, required this.provider, required this.sessionId, required this.startedAtIso, required this.status, required this.totalCostUsd, this.transcriptSessionId, required this.turnCount, required this.worktreeId});
 
   /// `users.name` for the attribution actor; null → render "Unknown".
   final String? authorName;
@@ -170,6 +170,8 @@ class TelemetryExpensiveRun {
   final String status;
   /// Summed across all of the session's turns.
   final num totalCostUsd;
+  /// The canonical organization transcript session ID (or null when the session has no shared transcript), set only for an organization owner with the transcript browser on. Absent for every other viewer.
+  final String? transcriptSessionId;
   /// Number of turns summed into this session.
   final num turnCount;
   final String worktreeId;
@@ -189,6 +191,7 @@ class TelemetryExpensiveRun {
         startedAtIso: json['startedAtIso'] as String,
         status: json['status'] as String,
         totalCostUsd: (json['totalCostUsd'] as num?) ?? 0,
+        transcriptSessionId: json['transcriptSessionId'] as String?,
         turnCount: (json['turnCount'] as num?) ?? 0,
         worktreeId: json['worktreeId'] as String,
       );

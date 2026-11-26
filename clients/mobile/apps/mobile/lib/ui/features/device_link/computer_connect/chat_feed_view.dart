@@ -1,11 +1,12 @@
 import 'package:flutter/widgets.dart';
 import 'package:mobile/ui/core/chat/view_models/response_action_target.dart';
 import 'package:mobile/ui/core/chat/widgets/chat_feed.dart';
+import 'package:mobile/ui/core/chat/widgets/chat_transcript_landing.dart';
 
 import 'chat_feed_model.dart';
 
 /// Renders the Rust core's transcript rows.
-class ComputerChatFeedView extends StatelessWidget {
+class ComputerChatFeedView extends StatefulWidget {
   const ComputerChatFeedView({
     super.key,
     required this.feed,
@@ -19,6 +20,8 @@ class ComputerChatFeedView extends StatelessWidget {
     this.bottomActionInset = 0,
     this.onForkResponse,
     this.forkEnabled = true,
+    this.landingPlaceholder,
+    this.onInitialLanding,
   });
 
   final ComputerChatFeed feed;
@@ -32,20 +35,62 @@ class ComputerChatFeedView extends StatelessWidget {
   final double bottomActionInset;
   final ForkResponse? onForkResponse;
   final bool forkEnabled;
+  final Widget? landingPlaceholder;
+
+  final VoidCallback? onInitialLanding;
 
   @override
-  Widget build(BuildContext context) => ChatFeed(
-    chatId: chatId,
-    messages: feed.messages,
-    rows: (footers) => feed.project(footerTurns: footers),
-    onToggleTurn: onToggleTurn,
-    onLoadOlder: onLoadOlder,
-    loadingOlder: loadingOlder,
-    trailing: trailing,
-    turnFooters: turnFooters,
-    topContentInset: topContentInset,
-    bottomActionInset: bottomActionInset,
-    onForkResponse: onForkResponse,
-    forkEnabled: forkEnabled,
+  State<ComputerChatFeedView> createState() => _ComputerChatFeedViewState();
+}
+
+class _ComputerChatFeedViewState extends State<ComputerChatFeedView> {
+  bool _landed = false;
+
+  bool _initialLanding(ChatTranscriptLanded _) {
+    if (_landed) return false;
+    if (widget.landingPlaceholder != null) {
+      setState(() => _landed = true);
+    } else {
+      _landed = true;
+    }
+    widget.onInitialLanding?.call();
+    return false;
+  }
+
+  @override
+  Widget build(BuildContext context) => Stack(
+    fit: StackFit.expand,
+    children: [
+      if (!_landed)
+        if (widget.landingPlaceholder case final preview?)
+          Padding(
+            padding: EdgeInsets.only(
+              top: widget.topContentInset,
+              bottom: widget.bottomActionInset,
+            ),
+            child: preview,
+          ),
+      IgnorePointer(
+        key: const ValueKey('live-transcript'),
+        ignoring: !_landed && widget.landingPlaceholder != null,
+        child: NotificationListener<ChatTranscriptLanded>(
+          onNotification: _initialLanding,
+          child: ChatFeed(
+            chatId: widget.chatId,
+            messages: widget.feed.messages,
+            rows: (footers) => widget.feed.project(footerTurns: footers),
+            onToggleTurn: widget.onToggleTurn,
+            onLoadOlder: widget.onLoadOlder,
+            loadingOlder: widget.loadingOlder,
+            trailing: widget.trailing,
+            turnFooters: widget.turnFooters,
+            topContentInset: widget.topContentInset,
+            bottomActionInset: widget.bottomActionInset,
+            onForkResponse: widget.onForkResponse,
+            forkEnabled: widget.forkEnabled,
+          ),
+        ),
+      ),
+    ],
   );
 }

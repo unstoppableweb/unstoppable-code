@@ -52,6 +52,7 @@
  * consumer of canopy-tokens.css pick up the same utilities. The path is
  * relative to this CSS file. */
 @source "../components";
+@source "../primitives";
 @source "../icons";
 @source "../lib";
 
@@ -706,6 +707,25 @@ body {
     }
   }
 
+  /* Two quick taps on a control must not zoom the page on touch screens.
+   * Pinch zoom still works. Zero specificity, so a gesture surface's own
+   * `touch-action` (a slider, a resize handle) always wins. */
+  :where(
+    a,
+    button,
+    input,
+    label,
+    select,
+    textarea,
+    [role='button'],
+    [role='checkbox'],
+    [role='radio'],
+    [role='switch'],
+    [role='tab']
+  ) {
+    touch-action: manipulation;
+  }
+
   /* Keep native selection theme-aware without recoloring syntax or links. */
   @media (forced-colors: none) {
     /* Let descendants inherit the highlight. A universal descendant highlight
@@ -1237,6 +1257,18 @@ body {
   }
 }
 
+/* While the window itself is being resized, the bar's width changes on every
+   frame: shed controls and folding labels take their new size in the frame
+   their breakpoint is crossed, so nothing trails the window edge. The mark
+   comes from `window-resize-marker.ts`; `!important` outranks the container
+   query states above, which set their own transitions. */
+.canopy-shed-scope[data-window-resizing] .canopy-shed,
+.canopy-shed-scope[data-window-resizing] .canopy-morph,
+.canopy-shed-scope[data-window-resizing] .canopy-morph-ink,
+.canopy-shed-scope[data-window-resizing] .canopy-morph-pad {
+  transition: none !important;
+}
+
 /* Reduced motion: gentler, not none. Sizes snap; the text still fades. */
 @media (prefers-reduced-motion: reduce) {
   .canopy-morph,
@@ -1503,6 +1535,57 @@ body {
     black calc(100% - var(--data-table-fade)),
     transparent
   );
+}
+
+/* A one-line label too long for its box fades out over its last 8px instead
+ * of ending in "…", like a fill tab's title (panels.css), so a narrow row
+ * keeps more of its letters. Only a label that overflows fades: its own
+ * inline scroll timeline is active only then, and the animation bound to it
+ * lifts the `none` override. Without scroll timelines the label keeps the
+ * plain ellipsis, so a label that fits never loses its last letters. The
+ * mask covers the content box only, so a label that reserves space for hover
+ * actions with its own right padding fades out before that space rather than
+ * running under them. */
+.truncate-fade {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@supports (animation-timeline: scroll()) {
+  .truncate-fade {
+    --truncate-fade-no-mask: none;
+    text-overflow: clip;
+    -webkit-mask-image: var(
+      --truncate-fade-no-mask,
+      linear-gradient(
+        to right,
+        #000 calc(100% - var(--truncate-fade-length, 8px)),
+        transparent
+      )
+    );
+    mask-image: var(
+      --truncate-fade-no-mask,
+      linear-gradient(
+        to right,
+        #000 calc(100% - var(--truncate-fade-length, 8px)),
+        transparent
+      )
+    );
+    -webkit-mask-origin: content-box;
+    mask-origin: content-box;
+    -webkit-mask-clip: content-box;
+    mask-clip: content-box;
+    animation: truncate-fade-overflow 1ms linear both;
+    animation-timeline: scroll(self inline);
+  }
+}
+
+@keyframes truncate-fade-overflow {
+  from,
+  to {
+    --truncate-fade-no-mask: initial;
+  }
 }
 
 .data-table-scroll[data-overflow]:focus-visible,
@@ -1950,36 +2033,6 @@ body {
   }
 }
 
-/* `InlineTextSkeleton`: the same soft shade as a bar on a line of prose,
- * holding the place of text that has not arrived. 0.9em tall and centered on
- * the text, it stays inside the line box, so the line height never changes.
- * The halo softens its edges. It shades only while `data-active` marks a
- * fetch in flight, after 300ms so cache hits never flash. */
-.canopy-inline-skeleton {
-  position: relative;
-  display: inline-block;
-  height: 0.9em;
-  overflow: hidden;
-  vertical-align: middle;
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--fg-quaternary) 24%, transparent);
-  box-shadow: 0 0 0.2em 0.05em
-    color-mix(in srgb, var(--fg-quaternary) 16%, transparent);
-}
-
-/* Only an active bar gets the shade layer: a transcript can hold hundreds of
- * idle bars, and each pseudo-element is another box to lay out. */
-@media (prefers-reduced-motion: no-preference) {
-  .canopy-inline-skeleton[data-active='true']::after {
-    position: absolute;
-    inset: 0;
-    content: '';
-    background: color-mix(in srgb, var(--fg-quaternary) 20%, transparent);
-    opacity: 0;
-    animation: sidebar-icon-skeleton-shade 1200ms ease-in-out 300ms infinite;
-  }
-}
-
 /* Skeletons (`Skeleton`) draw through skullet, whose
  * stylesheet the token entry points import. Its blocks and measured bones read
  * these properties: the muted surface in every theme, a slow pulse rather than
@@ -2055,7 +2108,7 @@ body {
   content: none !important;
 }
 
-/* A hidden label (`canopy-reserved-label`): `LoadingButton` (resting and
+/* A hidden label (`canopy-reserved-label`): a loading `Button` (resting and
  * busy labels) and a labeled `CopyButton` (resting and copied labels) lay
  * both labels in one grid cell so the button keeps one width, and draw the
  * label that is not showing from `data-reserved-label`, so it holds its

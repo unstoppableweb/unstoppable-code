@@ -52,6 +52,7 @@ class DeviceChatScreen extends StatefulWidget {
     this.worktree,
     this.speechRecognizer,
     this.attachmentPicker,
+    this.cachedTranscript,
   });
   final DeviceChatsViewModel model;
   final SpeechRecognizer? speechRecognizer;
@@ -61,6 +62,8 @@ class DeviceChatScreen extends StatefulWidget {
   final AttachmentPicker? attachmentPicker;
   final String? locationLabel;
   final WorktreeActivityContext? worktree;
+  final ({String chatKey, Widget preview, double bottomInset})?
+  cachedTranscript;
   @override
   State<DeviceChatScreen> createState() => _DeviceChatScreenState();
 }
@@ -83,13 +86,14 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
   ]);
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   late final _locationTarget = widget.model.state?.ref;
+  late var _openingTranscript = widget.cachedTranscript;
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _composer.addListener(_draftChanged);
-    widget.model.addListener(_syncAttachments);
-    _syncAttachments();
+    widget.model.addListener(_syncSelectedChat);
+    _syncSelectedChat();
     // Android may have killed the app while a picker was open.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(_attachments?.recoverLostMedia());
@@ -102,8 +106,9 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
   ChatAttachmentController? _attachments;
   String? _attachmentsKey;
 
-  void _syncAttachments() {
+  void _syncSelectedChat() {
     final ref = widget.model.state?.ref;
+    if (_openingTranscript?.chatKey != ref?.key) _openingTranscript = null;
     // Keep staged files while a reconnect clears the selection.
     if (ref == null || ref.key == _attachmentsKey) return;
     final previous = _attachments;
@@ -210,7 +215,7 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
     _backHandlers?.remove(_consumeDrawerBack);
     WidgetsBinding.instance.removeObserver(this);
     widget.model.setTranscriptVisible(false);
-    widget.model.removeListener(_syncAttachments);
+    widget.model.removeListener(_syncSelectedChat);
     if (_attachments case final attachments?) _discardAttachments(attachments);
     // A send still in flight then discards its files if it is refused.
     _attachments = null;
@@ -338,11 +343,15 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
       final questions = state == null
           ? const []
           : model.pendingQuestionsFor(state.ref.id);
-      // Like Remote Control, only a chat with nothing to show yet presents
-      // loading; refreshes behind an existing transcript stay silent.
+      final openingTranscript = _openingTranscript;
+      final cachedPreview = openingTranscript?.preview;
+      // An opening preview owns the transcript until hydration. The first
+      // Rust frame can replace Flutter's cached rows with an empty feed.
       final transcriptLoading =
           model.chats.loading &&
-          (state == null || (!state.hasMessages && questions.isEmpty));
+          (cachedPreview != null ||
+              state == null ||
+              (!state.hasMessages && questions.isEmpty));
       final notices = <Widget>[
         if (!model.online &&
             (!model.connection.reconnecting || _reconnectNotice.visible))
@@ -412,6 +421,9 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
           DeviceSettingsNotice(model: model),
       ];
       final hasTabs = model.tabs.isNotEmpty;
+      final transcriptBottomInset = hasTabs
+          ? CanopyOverlayAction.stackOffset
+          : 0.0;
       return CanopyScaffold(
         scaffoldKey: _scaffoldKey,
         onEndDrawerChanged: (open) {
@@ -481,11 +493,20 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
                       child: Stack(
                         children: [
                           if (transcriptLoading)
-                            const Positioned.fill(
-                              child: ChatTranscriptLoading(
-                                key: ValueKey('device-transcript-loading'),
-                                label: 'Loading conversation…',
-                              ),
+                            Positioned.fill(
+                              child: openingTranscript == null
+                                  ? const ChatTranscriptLoading(
+                                      key: ValueKey(
+                                        'device-transcript-loading',
+                                      ),
+                                      label: 'Loading conversation…',
+                                    )
+                                  : Padding(
+                                      padding: EdgeInsets.only(
+                                        bottom: openingTranscript.bottomInset,
+                                      ),
+                                      child: openingTranscript.preview,
+                                    ),
                             )
                           else if (state != null)
                             Positioned.fill(
@@ -522,10 +543,11 @@ class _DeviceChatScreenState extends State<DeviceChatScreen>
                                               context,
                                             ).top
                                           : 0,
-                                      bottomActionInset: hasTabs
-                                          ? CanopyOverlayAction.stackOffset
-                                          : 0,
+                                      bottomActionInset: transcriptBottomInset,
                                       feed: model.feed,
+                                      landingPlaceholder: cachedPreview,
+                                      onInitialLanding: () =>
+                                          _openingTranscript = null,
                                       onToggleTurn: model.toggleTurn,
                                       onLoadOlder:
                                           state.header?.hasOlder == true &&

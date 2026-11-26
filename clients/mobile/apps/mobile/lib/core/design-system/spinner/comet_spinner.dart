@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:mobile/ui/core/design_tokens.dart';
 
 /// Flutter port of the shared desktop/web `CometSpinner`
-/// (`packages/ui-shared/src/components/CometSpinner.tsx` and the
+/// (`packages/ui-shared/src/primitives/CometSpinner.tsx` and the
 /// `.canopy-comet-*` rules in `canopy-tokens-core.css`): a ring whose ink
 /// fades in toward a round head, turning clockwise once every 1.2s. Desktop
 /// and web draw their thinking, loading, and run spinners as this ring, so

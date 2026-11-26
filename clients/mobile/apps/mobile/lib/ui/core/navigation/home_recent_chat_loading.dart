@@ -46,9 +46,9 @@ class _HomeRecentChatLoadingState extends State<HomeRecentChatLoading> {
       builder: (context) => Padding(
         padding: CanopyScaffold.contentPaddingOf(context),
         child: ChatBody(
-          transcript: const ChatTranscriptLoading(
-            label: 'Loading conversation…',
-          ),
+          transcript:
+              widget.chat.cachedTranscript?.call() ??
+              const ChatTranscriptLoading(label: 'Loading conversation…'),
           composer: ChatInput(
             controller: _draft,
             enabled: false,

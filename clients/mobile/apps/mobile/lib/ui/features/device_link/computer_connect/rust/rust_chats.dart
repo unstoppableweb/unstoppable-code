@@ -329,7 +329,7 @@ final class RustChatReader implements DeviceChatReader {
       current = _state = DeviceChatState(ref);
     }
     current.header = selected.header;
-    feed._apply(selected.feed, ref);
+    feed._apply(selected.feed, ref, hasTabs: selected.header.tabs.isNotEmpty);
     _seen
       ..remove(ref.key)
       ..[ref.key] = (state: current, composer: _composer);
@@ -373,10 +373,7 @@ final class RustReadMarker implements DeviceChatReadMarker {
   void dispose() {}
 }
 
-/// What the feed shows of one chat.
-typedef _FeedView = ({List<ChatMessage> messages, List<TranscriptRow> rows});
-
-const _FeedView _noFeed = (messages: [], rows: []);
+const ComputerTranscript _noFeed = (messages: [], rows: [], hasTabs: false);
 
 /// The Rust-grouped feed: applies the core's keyed feed ops to an immutable
 /// row list, keeping each unchanged row (and message) the same object so
@@ -403,13 +400,12 @@ final class RustChatFeed implements ComputerChatFeed {
   String? _key;
 
   /// The last view of each recent chat, by key.
-  final _shown = <String, _FeedView>{};
+  final _shown = <String, ComputerTranscript>{};
 
-  _FeedView get _view => switch (_selected()) {
-    null => _noFeed,
-    final key when key == _key => (messages: _order, rows: _rows),
-    final key => _shown[key] ?? _noFeed,
-  };
+  ComputerTranscript get _view => _shown[_selected()] ?? _noFeed;
+
+  @override
+  ComputerTranscript? cachedTranscript(String chatKey) => _shown[chatKey];
 
   @override
   List<ChatMessage> get messages => _view.messages;
@@ -443,14 +439,18 @@ final class RustChatFeed implements ComputerChatFeed {
     _rows = const [];
   }
 
-  void _apply(core.FeedFrame frame, DeviceChatRef chat) {
+  void _apply(
+    core.FeedFrame frame,
+    DeviceChatRef chat, {
+    required bool hasTabs,
+  }) {
     if (frame.reset || chat.key != _key) _clear();
     _key = chat.key;
     _chatId = chat.id;
     _build(frame, chat.id);
     _shown
       ..remove(chat.key)
-      ..[chat.key] = (messages: _order, rows: _rows);
+      ..[chat.key] = (messages: _order, rows: _rows, hasTabs: hasTabs);
     if (_shown.length > _cachedChats) _shown.remove(_shown.keys.first);
   }
 

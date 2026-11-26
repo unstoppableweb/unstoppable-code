@@ -462,6 +462,7 @@ final class AgentSessionFeedItem extends FeedItem {
     required this.latestStatus,
     this.toolUseCount,
     this.totalCostUsd,
+    this.transcriptSessionId,
     required this.turnCount,
   });
 
@@ -475,6 +476,8 @@ final class AgentSessionFeedItem extends FeedItem {
   /// Number of tool invocations across the session's turns.
   final num? toolUseCount;
   final num? totalCostUsd;
+  /// The canonical organization transcript session ID, set only for an organization owner with the transcript browser on when the session has a shared transcript. Absent otherwise; older clients ignore it.
+  final String? transcriptSessionId;
   final num turnCount;
 
   factory AgentSessionFeedItem.fromJson(Map<String, dynamic> j) {
@@ -489,6 +492,7 @@ final class AgentSessionFeedItem extends FeedItem {
       latestStatus: j['latestStatus'] as String,
       toolUseCount: j['toolUseCount'] as num?,
       totalCostUsd: j['totalCostUsd'] as num?,
+      transcriptSessionId: j['transcriptSessionId'] as String?,
       turnCount: (j['turnCount'] as num?) ?? 0,
     );
   }

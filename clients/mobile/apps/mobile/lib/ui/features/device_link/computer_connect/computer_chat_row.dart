@@ -1,10 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/widgets.dart';
+import 'package:mobile/core/design-system/overlay-action/canopy_overlay_action.dart';
 import 'package:provider/provider.dart';
 import 'package:mobile/data/models/workspace_context.dart';
 import 'package:mobile/device_link/chats/models.dart';
 import 'package:mobile/device_link/chats/recent_chat.dart';
+import 'package:mobile/ui/core/chat/widgets/cached_chat_transcript.dart';
+import 'package:mobile/ui/core/chat/widgets/chat_provisioning.dart';
 import 'package:mobile/ui/core/navigation/home_recent_chats.dart';
 import '../chats_screen.dart';
 import 'account_model.dart';
@@ -38,7 +41,45 @@ final class ComputerChatRows {
     },
     open: (context, showChat) =>
         _open(context, computerId, chat.ref, chat.worktreeName, showChat),
+    cachedTranscript: () {
+      final cached = _cachedTranscript(computerId, chat.ref);
+      if (cached == null) return null;
+      return Padding(
+        padding: EdgeInsets.only(bottom: cached.bottomInset),
+        child: cached.preview,
+      );
+    },
   );
+
+  ({Widget preview, double bottomInset})? _cachedTranscript(
+    String computerId,
+    DeviceChatRef ref,
+  ) {
+    final owner = account.sessions.sessions[computerId];
+    final transcript = owner?.chats.feed.cachedTranscript(ref.key);
+    if (owner == null || transcript == null || transcript.rows.isEmpty) {
+      return null;
+    }
+    final preview = ListenableBuilder(
+      listenable: account,
+      builder: (context, _) {
+        final workspaceContext =
+            context.watch<WorkspaceContext?>() ??
+            const WorkspaceContext.personal();
+        if (!identical(account.sessions.sessions[computerId], owner) ||
+            !owner.chats.online ||
+            owner.scopePending ||
+            !owner.overview.scope(workspaceContext).includesChat(ref)) {
+          return const ChatTranscriptLoading(label: 'Loading conversation…');
+        }
+        return CachedChatTranscript(rows: transcript.rows);
+      },
+    );
+    return (
+      preview: preview,
+      bottomInset: transcript.hasTabs ? CanopyOverlayAction.stackOffset : 0,
+    );
+  }
 
   /// Switches to the chat's computer, so its overview and Home follow, then
   /// lets the shell host the chat with its navigation menu.
@@ -69,6 +110,7 @@ final class ComputerChatRows {
         return;
       }
       controller.enterChat();
+      final preview = _cachedTranscript(computerId, ref);
       final opening = controller.chats.open(ref);
       var generation = controller.chats.chats.selectionGeneration;
       try {
@@ -77,6 +119,13 @@ final class ComputerChatRows {
             model: controller.chats,
             locationLabel: worktreeName,
             worktree: controller.activityContext(ref),
+            cachedTranscript: preview == null
+                ? null
+                : (
+                    chatKey: ref.key,
+                    preview: preview.preview,
+                    bottomInset: preview.bottomInset,
+                  ),
           ),
         );
         // The page owned the selection, including tab switches and reconnects
