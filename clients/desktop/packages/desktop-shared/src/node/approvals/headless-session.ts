@@ -3,6 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { isRecord } from '@canopy/execution-engine/node/lib/type-guards';
 import { validateId } from '@canopy/execution-engine/node/lib/validation';
+import { readPreferencesEnvelopeRecord } from '@canopy/protocol/preferences';
 import type { ApprovalMode, ApprovalRule } from '../../types';
 import {
   evaluateApproval,
@@ -85,12 +86,13 @@ function strictRules(value: unknown): ApprovalRule[] {
 export async function readHeadlessPreferences(): Promise<
   Record<string, unknown>
 > {
-  const value: unknown = JSON.parse(
-    await readFile(join(getCanopyDataDir(), 'preferences.json'), 'utf8'),
+  const preferences = readPreferencesEnvelopeRecord(
+    JSON.parse(
+      await readFile(join(getCanopyDataDir(), 'preferences.json'), 'utf8'),
+    ),
   );
-  if (!isRecord(value) || value.version !== 1 || !isRecord(value.preferences))
-    throw new Error('Preferences are unreadable.');
-  return value.preferences;
+  if (!preferences) throw new Error('Preferences are unreadable.');
+  return preferences;
 }
 
 /** No prompt transport: every decision requiring a person is denied. */

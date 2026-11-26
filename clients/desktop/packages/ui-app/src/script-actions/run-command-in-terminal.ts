@@ -1,5 +1,6 @@
 import type { TerminalClient, TerminalShellSpawnArgs } from '@canopy/app-core';
 import type { TerminalSession } from '@canopy/protocol/terminal';
+import { beginTerminalPlacement } from '@canopy/app-state/terminal';
 
 /** Where a {@link runCommandInTerminal} attempt stopped. */
 export type TerminalRunStage = 'hydrate' | 'spawn' | 'reveal' | 'write';
@@ -74,20 +75,29 @@ export async function runCommandInTerminal({
   }
   const { relativeCwd, ...rest } = spawn;
   let session: TerminalSession;
+  // Main can publish the shell before the spawn reply; `reveal` places it.
+  const endPlacement = beginTerminalPlacement(
+    spawn.projectId,
+    spawn.worktreeId,
+  );
   try {
-    session = await client.command('terminal.spawn', {
-      ...rest,
-      ...(relativeCwd ? { relativeCwd } : {}),
-    });
-  } catch (error) {
-    throw new TerminalRunError('spawn', null, error);
-  }
-  if (reveal) {
     try {
-      reveal(session);
+      session = await client.command('terminal.spawn', {
+        ...rest,
+        ...(relativeCwd ? { relativeCwd } : {}),
+      });
     } catch (error) {
-      throw new TerminalRunError('reveal', session, error);
+      throw new TerminalRunError('spawn', null, error);
     }
+    if (reveal) {
+      try {
+        reveal(session);
+      } catch (error) {
+        throw new TerminalRunError('reveal', session, error);
+      }
+    }
+  } finally {
+    endPlacement();
   }
   try {
     await client.command('terminal.write', {

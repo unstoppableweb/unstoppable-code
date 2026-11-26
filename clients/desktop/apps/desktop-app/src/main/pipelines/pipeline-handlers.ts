@@ -253,11 +253,19 @@ import {
   isPipelineLocalMetadataReadable,
   readPipelineLocalMetadata,
   recordUserPipelineOwner,
+  clearUserPipelinePersonAuthored,
+  personTakeoverHolds,
 } from './pipeline-local-metadata-store';
 import {
   approvePipelineForSchedules,
   stampPersonApproval,
+  stampPersonAuthored,
 } from './pipeline-person-approval';
+import { nativeGrantContentHash } from '../automations/chat-automation-native-grant';
+import {
+  agentRequestedEditorSavePending,
+  endAgentRequestedEditorSave,
+} from './agent-editor-save';
 import {
   WORKFLOW_DUPLICATE_FAILED,
   copyWorkflowNameToSchedules,
@@ -503,6 +511,17 @@ type MainProcessExecutePipelineRequestOptions =
     automationPipelinePackage?: ExecutionOptions['pipelinePackage'];
     /** Fresh foreground dispatch marker; never accepted from renderer IPC. */
     allowUnverifiedForegroundChildren?: boolean;
+    /**
+     * CAN-7228: the person's takeover an automation run of an agent's
+     * schedule relies on, in place of `agentOrigin`. Checked on the
+     * definition this start admits; never accepted from renderer IPC and
+     * never passed to the executor.
+     */
+    personTakeover?: {
+      pipelineId: string;
+      personAuthoredAt: string;
+      agentOrigin: NonNullable<ExecutePipelineRequestOptions['agentOrigin']>;
+    };
   };
 
 async function setupAppAdvisorPipelineWatchersForExecution(args: {
@@ -1230,8 +1249,16 @@ async function scheduleSaveRefusalFor(
   );
 }
 
+/**
+ * Who saves from the editor (CAN-7228): the person, or an agent: the
+ * Pipeline Editor assistant writing the draft it holds (CAN-5822), or App
+ * Advisor pressing the editor's Save.
+ */
+type EditorPipelineWriter = 'person' | 'agent';
+
 export async function saveEditorPipeline(
   input: PipelineSaveInput,
+  writer: EditorPipelineWriter = 'person',
 ): Promise<IPCResultWithOutcome<PipelineInfo>> {
   if (pipelineResourceContextEnabled() && input.id) {
     try {
@@ -1256,6 +1283,13 @@ export async function saveEditorPipeline(
   ): Promise<void> => {
     if (existingUserPipelineId === undefined)
       recordUserPipelineOwner(saved.id, ownerContext);
+    // CAN-7228: a person's save makes the content it committed theirs, so a
+    // schedule an agent wrote before it runs that content as the person's.
+    // The assistant's never does, and drops an earlier person's.
+    if (writer === 'person') {
+      if (saved.revision !== undefined)
+        stampPersonAuthored(saved.id, saved.revision);
+    } else clearUserPipelinePersonAuthored(saved.id);
     const { revision } = saved;
     if (revision !== undefined)
       await withPipelineScheduleGuard(saved.id, () =>
@@ -1632,8 +1666,20 @@ export function registerPipelineHandlers(): void {
     PIPELINE_CHANNELS.GET,
     (_event, request: PipelineLookupRequest) => getPipelineForCaller(request),
   );
-  registerIpcHandler(PIPELINE_CHANNELS.SAVE, (_, input: PipelineSaveInput) =>
-    saveEditorPipeline(input),
+  registerIpcHandler(
+    PIPELINE_CHANNELS.SAVE,
+    async (_, input: PipelineSaveInput) => {
+      // CAN-7228: an editor save App Advisor pressed is the agent's, its
+      // retry after a schedule confirmation included.
+      const agent = agentRequestedEditorSavePending();
+      const result = await saveEditorPipeline(
+        input,
+        agent ? 'agent' : 'person',
+      );
+      if (agent && result.scheduleRefusal !== 'needs_confirmation')
+        endAgentRequestedEditorSave();
+      return result;
+    },
   );
   // CAN-5782: a person's **Approve for schedules**. Person-only: no agent
   // action or workflow assistant tool reaches it.
@@ -3495,6 +3541,7 @@ async function startPipelineExecutionFromMainInternal(args: {
       expectedRevision: requestedExpectedRevision,
       requireSentDefinition,
       definitionWorktreeId,
+      personTakeover,
       ...executionOptions
     } = options;
     // A share has no local document to check (CAN-7513).
@@ -4086,6 +4133,20 @@ async function startPipelineExecutionFromMainInternal(args: {
       const markerRefusal = markerRecoveryRefusal(userPipelineId);
       if (markerRefusal) return markerRefusal;
     }
+    // CAN-7228: a person's takeover holds only for their own pipeline, at
+    // the stamp it was read with, when the definition admitted above is
+    // exactly the content they saved; any other write fails it.
+    if (
+      personTakeover !== undefined &&
+      executionOptions.agentOrigin === undefined &&
+      (userPipelineId !== personTakeover.pipelineId ||
+        !personTakeoverHolds(
+          personTakeover.pipelineId,
+          personTakeover.personAuthoredAt,
+          nativeGrantContentHash(pipelineContent),
+        ))
+    )
+      executionOptions.agentOrigin = personTakeover.agentOrigin;
     executionOptions.agentOrigin ??=
       (initiator.kind === 'agent' || initiator.kind === 'app_advisor'
         ? initiator.chat

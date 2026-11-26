@@ -164,6 +164,8 @@ interface RecentExit {
   readonly exitCode: number | null;
   readonly signal: string | null;
   readonly outputOffset: number;
+  /** The host's own PTY exit carried its final output offset. */
+  readonly confirmed: boolean;
 }
 
 /**
@@ -639,6 +641,7 @@ export function createWorkerTerminalHandlers(
           ? descriptor.outputOffset
           : 0,
       ),
+      confirmed: event.outputOffset !== undefined,
     });
     while (recentExits.size > MAX_RECENT_EXITS) {
       const oldest = recentExits.keys().next().value;
@@ -1059,14 +1062,16 @@ export function createWorkerTerminalHandlers(
         const recent = recentExits.get(params.terminalId);
         const complete = (exited: NonNullable<typeof recent>): (() => void) => {
           // Exited while this client was away: report the exit, flagging
-          // the output it can no longer read.
+          // the output it can no longer read. An unconfirmed end may have
+          // lost output past any offset the host showed.
           sink.emit({
             terminalId: params.terminalId,
             fromOffset: params.fromOffset,
             toOffset: params.fromOffset,
             data: '',
             encoding: 'base64',
-            truncatedBefore: exited.outputOffset > params.fromOffset,
+            truncatedBefore:
+              !exited.confirmed || exited.outputOffset > params.fromOffset,
             exit: { code: exited.exitCode, signal: exited.signal },
           });
           sink.end('completed');

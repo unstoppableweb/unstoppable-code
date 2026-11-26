@@ -9,7 +9,6 @@
 import { ControlButton, ProjectCatalogRow } from '@canopy/ui-shared/components';
 import { type JSX, type ReactNode, type SyntheticEvent } from 'react';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
-import { StatusPill } from '@canopy/ui-shared';
 import { formatRelativeTime } from '@canopy/ui-shared/lib';
 import { CHAT_LABEL } from '@canopy/protocol';
 import { hasCompleteOrgProjectRepositories } from '@canopy/protocol/org-projects';
@@ -153,11 +152,9 @@ export function OrgProjectRow({
             nameLabel
           )}
           {visibility && (
-            <StatusPill
-              data-testid={`${testIdPrefix}-visibility-${project.id}`}
-            >
+            <Badge data-testid={`${testIdPrefix}-visibility-${project.id}`}>
               {VISIBILITY_LABEL[visibility]}
-            </StatusPill>
+            </Badge>
           )}
           {project.visibility === 'private' && !hidePrivatePill && (
             <Badge

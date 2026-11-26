@@ -7,7 +7,7 @@ import { ControlButton } from '../primitives/Button';
 import { useId, type JSX, type ReactNode } from 'react';
 import { ArchivedStateIcon } from '../icons/ArchivedStateIcon';
 import { LoadingSpinner } from '../primitives/LoadingSpinner';
-import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
+import { HoverCard } from '../primitives/HoverCard';
 import {
   getArchivedContainerStateLabel,
   type ArchivedContainerState,
@@ -198,7 +198,7 @@ export function ArchivedOverviewRow({
             <LoadingSpinner tone="secondary" decorative />
           </span>
         ) : (
-          <RichHoverTooltip
+          <HoverCard
             dataTestId={stateTooltipTestId}
             surfaceClassName="min-w-55 max-w-80"
             surfacePadding="card"
@@ -213,7 +213,7 @@ export function ArchivedOverviewRow({
             >
               <ArchivedStateIcon state={state} />
             </span>
-          </RichHoverTooltip>
+          </HoverCard>
         )
       }
       title={title}

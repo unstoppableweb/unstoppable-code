@@ -11,9 +11,10 @@
  * `getWorktreePanelLayoutFilePath` in the desktop app's paths module).
  */
 import type { SerializablePanelLayoutFile } from '@canopy/protocol/panels';
+import type { WorkspaceLayoutMode } from '@canopy/protocol/preferences';
 
-export const WORKSPACE_LAYOUT_MODES = ['minimal', 'advanced'] as const;
-export type WorkspaceLayoutMode = (typeof WORKSPACE_LAYOUT_MODES)[number];
+export { WORKSPACE_LAYOUT_MODES } from '@canopy/protocol/preferences';
+export type { WorkspaceLayoutMode } from '@canopy/protocol/preferences';
 
 export function isWorkspaceLayoutMode(
   value: unknown,

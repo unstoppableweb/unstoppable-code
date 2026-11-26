@@ -8,7 +8,7 @@ import type {
 } from '@canopy/protocol/canopy-core';
 import {
   Button,
-  DialogFormField,
+  FormField,
   DialogModal,
   Notice,
   SettingsSelect,
@@ -165,9 +165,9 @@ export function CloudModelReplacementDialog({
               data-testid={CLOUD_MODEL_DIALOG_TEST_IDS.item}
               data-item-key={item.itemKey}
             >
-              <DialogFormField
+              <FormField
                 label={cloudModelItemLabel(item)}
-                htmlFor={fieldId}
+                id={fieldId}
                 description={itemDescription(item)}
               >
                 {item.alternatives.length === 0 ? (
@@ -201,7 +201,7 @@ export function CloudModelReplacementDialog({
                     data-testid={CLOUD_MODEL_DIALOG_TEST_IDS.select}
                   />
                 )}
-              </DialogFormField>
+              </FormField>
             </div>
           );
         })}

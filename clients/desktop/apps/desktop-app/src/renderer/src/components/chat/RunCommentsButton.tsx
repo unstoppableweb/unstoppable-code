@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { ActionTooltip } from '@/components/shared/ActionTooltip';
+import { Tooltip } from '@canopy/ui-shared/components';
 import { openRunComments } from '@/stores/runCommentsStore';
 import {
   Button,
@@ -34,8 +34,8 @@ export function RunCommentsButton({
       ? `Run comments (${formatBadgeCount(unreadCount)})`
       : 'Run comments';
   return (
-    <ActionTooltip
-      title="Run comments"
+    <Tooltip
+      label="Run comments"
       description="Read and reply to comments reviewers left on this shared run."
     >
       <span className="relative inline-flex">
@@ -65,6 +65,6 @@ export function RunCommentsButton({
           />
         )}
       </span>
-    </ActionTooltip>
+    </Tooltip>
   );
 }

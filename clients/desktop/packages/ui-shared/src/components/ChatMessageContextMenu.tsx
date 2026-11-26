@@ -20,7 +20,7 @@ import {
   DEFAULT_COPIED_DURATION_MS,
 } from '../primitives/copy-to-clipboard';
 import { DropdownMenuStatusRow } from '../primitives/DropdownMenu';
-import { RichHoverCard } from '../primitives/RichHoverTooltip';
+import { HoverCard } from '../primitives/HoverCard';
 import { ErrorBanner } from '../primitives/StatusBlocks';
 import { selectionTextWithMathSource } from './markdown-math-copy';
 import { TabContextMenu, type TabContextMenuItem } from './TabContextMenu';
@@ -764,7 +764,8 @@ function ChatMessageCopyStatus({
   // Where the menu was, pulled back inside the window near an edge.
   const point = { x: feedback.x, y: feedback.y };
   return kind === 'copied' ? (
-    <RichHoverCard
+    <HoverCard
+      open
       anchorPoint={point}
       ownerDocument={ownerDocument}
       placement="at-point"
@@ -772,17 +773,21 @@ function ChatMessageCopyStatus({
       elevation="menu"
       surfacePadding="frame"
       surfaceClassName="w-max"
-    >
-      <DropdownMenuStatusRow role="presentation" aria-hidden="true">
-        Copied
-      </DropdownMenuStatusRow>
-      <span role="status" className="sr-only">
-        {announced ? 'Copied' : ''}
-      </span>
-    </RichHoverCard>
+      content={
+        <>
+          <DropdownMenuStatusRow role="presentation" aria-hidden="true">
+            Copied
+          </DropdownMenuStatusRow>
+          <span role="status" className="sr-only">
+            {announced ? 'Copied' : ''}
+          </span>
+        </>
+      }
+    />
   ) : (
     // The failure is the shared error notice, which brings its own tray.
-    <RichHoverCard
+    <HoverCard
+      open
       anchorPoint={point}
       ownerDocument={ownerDocument}
       placement="at-point"
@@ -790,12 +795,13 @@ function ChatMessageCopyStatus({
       elevation="menu"
       surfacePadding="flush"
       surfaceClassName="w-max"
-    >
-      <ErrorBanner
-        errorSource="chat-message-copy-status"
-        className=""
-        error="Couldn't copy to clipboard"
-      />
-    </RichHoverCard>
+      content={
+        <ErrorBanner
+          errorSource="chat-message-copy-status"
+          className=""
+          error="Couldn't copy to clipboard"
+        />
+      }
+    />
   );
 }

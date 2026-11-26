@@ -346,13 +346,14 @@ export class RpcPeer {
 
   close(reason: SessionCloseReason = 'closed'): void {
     if (this.closed) return;
+    let sentClose = false;
     try {
-      this.session.sendMessage({ kind: 'close', reason });
+      sentClose = this.session.sendMessage({ kind: 'close', reason });
     } catch {
       // Closing proceeds regardless.
     }
     // A suspended host session holds the close for the controller's resume.
-    this.session.closeAfterDelivery(reason);
+    this.session.closeAfterDelivery(reason, { inBandCloseSent: sentClose });
   }
 
   private handleMessage(value: unknown): void {

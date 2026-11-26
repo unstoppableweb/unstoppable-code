@@ -3,7 +3,7 @@
 import { useMemo, type JSX, type ReactNode } from 'react';
 import {
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   ProjectAvatarBadge,
   SearchEmptyState,
   SearchField,
@@ -151,9 +151,13 @@ export function WorkspaceMultiSelectPicker<
           >
             <ChoiceList aria-label={label}>
               {LOADING_ROW_SAMPLES.map((sample) => (
-                <ChoiceListRow key={sample} selected={false} disabled>
-                  {sample}
-                </ChoiceListRow>
+                <ChoiceField
+                  key={sample}
+                  layout="row"
+                  checked={false}
+                  disabled
+                  label={sample}
+                />
               ))}
             </ChoiceList>
           </Skeleton>
@@ -186,32 +190,38 @@ export function WorkspaceMultiSelectPicker<
               const subtitle = describeWorkspaceSubtitle(option);
               const optionName = getWorkspaceOptionDisplayName(option);
               return (
-                <ChoiceListRow
+                <ChoiceField
                   key={option.id}
-                  selected={selectedWorkspaceIdSet.has(option.id)}
-                  onClick={() => onToggleWorkspace(option.id)}
+                  layout="row"
+                  checked={selectedWorkspaceIdSet.has(option.id)}
+                  onChange={() => onToggleWorkspace(option.id)}
                   data-testid={`${testIdPrefix}-option-${option.id}`}
-                  leading={
-                    renderOptionIcon ? (
-                      renderOptionIcon(option)
-                    ) : (
-                      <ProjectAvatarBadge
-                        kind={option.isMultiRepo ? 'multi-repo' : 'single-repo'}
-                        temporary={option.temporary}
-                        color={option.color}
-                        avatarUrl={option.avatarUrl}
-                      />
-                    )
+                  end={subtitle || undefined}
+                  label={
+                    // The project's glyph leads the name, between the mark
+                    // and the text.
+                    <span className="flex min-w-0 items-center gap-3">
+                      {renderOptionIcon ? (
+                        renderOptionIcon(option)
+                      ) : (
+                        <ProjectAvatarBadge
+                          kind={
+                            option.isMultiRepo ? 'multi-repo' : 'single-repo'
+                          }
+                          temporary={option.temporary}
+                          color={option.color}
+                          avatarUrl={option.avatarUrl}
+                        />
+                      )}
+                      <span
+                        className="block min-w-0 flex-1 truncate font-medium"
+                        title={optionName}
+                      >
+                        {optionName}
+                      </span>
+                    </span>
                   }
-                  trailing={subtitle || undefined}
-                >
-                  <span
-                    className="block truncate font-medium"
-                    title={optionName}
-                  >
-                    {optionName}
-                  </span>
-                </ChoiceListRow>
+                />
               );
             })}
           </ChoiceList>

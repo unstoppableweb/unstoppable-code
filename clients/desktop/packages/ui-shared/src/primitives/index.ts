@@ -12,9 +12,7 @@ export * from './TextLink';
 export * from './Field';
 export * from './Fieldset';
 export * from './FormField';
-export * from './DialogFormField';
 export * from './SearchField';
-export * from './SearchBar';
 export * from './InlineTextInput';
 export * from './DateField';
 export * from './Slider';
@@ -26,8 +24,7 @@ export * from './SettingsSelect';
 
 // Overlays
 export * from './Tooltip';
-export * from './ActionTooltip';
-export * from './RichHoverTooltip';
+export * from './HoverCard';
 export * from './Popover';
 export * from './DropdownMenu';
 export * from './FloatingMenu';
@@ -54,8 +51,6 @@ export * from './ToastNotice';
 // Markers and type
 export * from './Badge';
 export * from './Chip';
-export * from './StatusPill';
-export * from './StatusBadge';
 export * from './Kbd';
 export * from './InlineCode';
 export * from './Heading';

@@ -19,7 +19,7 @@ import {
   TRANSCRIPT_PROSE_CLASS,
   ChatComposerShell,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   ComposerSendButton,
   EmptyState,
   ErrorBanner,
@@ -372,33 +372,40 @@ function NeedsYouRow({
                   {question.options.map((option, optionIndex) => {
                     const description =
                       question.optionDescriptions?.[optionIndex];
+                    const chosen = (
+                      selectedOptions[questionKey] ?? []
+                    ).includes(option);
+                    const choose = (): void =>
+                      chooseOption(questionKey, option, question.multiSelect);
                     return (
-                      <ChoiceListRow
+                      <ChoiceField
                         key={`${questionKey}:${optionIndex}`}
+                        layout="row"
                         kind={question.multiSelect ? 'checkbox' : 'radio'}
-                        selected={(selectedOptions[questionKey] ?? []).includes(
-                          option,
-                        )}
+                        checked={chosen}
                         disabled={pending || outcome !== null}
-                        onClick={(): void =>
-                          chooseOption(
-                            questionKey,
-                            option,
-                            question.multiSelect,
-                          )
+                        onChange={choose}
+                        // Pressing the chosen answer again (click, Space or
+                        // Enter) clears it, so an answer typed under Other can
+                        // go alone. A radio fires no change for that press.
+                        onClick={
+                          chosen && !question.multiSelect ? choose : undefined
                         }
-                      >
-                        <span className={`block ${REPLAY_BLOCK_CLASS}`}>
-                          {option}
-                        </span>
-                        {description === undefined ? null : (
-                          <span
-                            className={`block text-xs fg-tertiary ${REPLAY_BLOCK_CLASS}`}
-                          >
-                            {description}
-                          </span>
-                        )}
-                      </ChoiceListRow>
+                        label={
+                          <>
+                            <span className={`block ${REPLAY_BLOCK_CLASS}`}>
+                              {option}
+                            </span>
+                            {description === undefined ? null : (
+                              <span
+                                className={`block text-xs fg-tertiary ${REPLAY_BLOCK_CLASS}`}
+                              >
+                                {description}
+                              </span>
+                            )}
+                          </>
+                        }
+                      />
                     );
                   })}
                 </ChoiceList>

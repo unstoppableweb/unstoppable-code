@@ -5,6 +5,9 @@ import {
 } from '@canopy/protocol/remote-control/shell';
 import type { AppError } from '@canopy/protocol/app-errors';
 import type { SplitPlanIssue } from './pr-split-plan';
+import type { MergeQueueAgentHandling } from '@canopy/protocol/preferences';
+
+export type { MergeQueueAgentHandling } from '@canopy/protocol/preferences';
 
 // ---------------------------------------------------------------------------
 // GitHub PR integration types
@@ -1572,16 +1575,6 @@ export {
   isPrInMergeQueue,
   isPrReadyToMerge,
 } from '@canopy/protocol/pull-requests';
-
-/**
- * Whether Merge hands a pull request on a merge queue to an agent chat that
- * runs the `merge-pr` skill (Settings > Git > Merge queue):
- * - `always`: every merge-queue merge starts the chat.
- * - `when_hook_absent`: the chat starts unless the worktree would run a
- *   configured, unpaused `pr:queue:removed` hook for the PR's repository.
- * - `never`: Merge adds the pull request to the merge queue directly.
- */
-export type MergeQueueAgentHandling = 'always' | 'when_hook_absent' | 'never';
 
 export const MERGE_QUEUE_AGENT_HANDLING_VALUES: readonly MergeQueueAgentHandling[] =
   ['always', 'when_hook_absent', 'never'];

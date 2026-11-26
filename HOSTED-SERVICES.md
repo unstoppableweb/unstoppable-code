@@ -452,7 +452,13 @@ How to point the apps elsewhere:
   the skill safety check, and blocks other automatic connections.
   `pnpm run smoke:local` checks that it reaches no host it shouldn't. See
   [Build without our services](clients/desktop/README.md#build-without-our-services)
-  for what still works and the known limits.
+  for what still works and the known limits. To use your own server instead,
+  build with your server's address and `pnpm run build:selfhost`, then launch
+  with `pnpm run start:selfhost`. The self-host build keeps sign-in, Remote
+  Control, and cloud features on your server and turns the other hosted
+  services off, like the local-only build. See
+  [Build for your own server](clients/desktop/README.md#build-for-your-own-server)
+  for how to set the address.
 - **Mobile:** set the `UNSTOPPABLE_CODE_API_BASE_URL_PRODUCTION` and
   `UNSTOPPABLE_CODE_API_BASE_URL_STAGING` build defines. See the
   [mobile build instructions](clients/mobile/README.md).

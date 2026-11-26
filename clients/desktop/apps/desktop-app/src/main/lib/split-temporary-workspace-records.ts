@@ -284,7 +284,7 @@ export async function removeSplitCreatedWorkspace(request: {
     directory = beginDirectoryDeletion(getWorkspaceDir(request.workspaceId));
     await settleAll(
       request.worktreeIds.map(async (worktreeId) => {
-        // Capture every worktree even if a sibling's capture fails.
+        // Keep successful captures cancellable even if a sibling fails.
         retirements.push(
           await terminalPersistenceStore.prepareTerminalRecordRetirement({
             projectId: request.workspaceId,
@@ -355,6 +355,11 @@ export async function removeSplitCreatedWorkspace(request: {
     if (!committed && isDefiniteW5Refusal(error)) staged = false;
     return translateRefusal(error);
   } finally {
+    if (!staged)
+      for (const retirement of retirements)
+        terminalPersistenceStore.cancelPreparedTerminalRecordRetirement(
+          retirement,
+        );
     directory?.settle(
       committed
         ? await directoryRemovalOutcome(getWorkspaceDir(request.workspaceId))

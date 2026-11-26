@@ -71,7 +71,7 @@ import {
   DropdownMenuItem,
   DropdownMenuItemIcon,
   DropdownMenuStatusRow,
-  RichHoverTooltip,
+  HoverCard,
 } from '@canopy/ui-shared';
 import { BalanceSurface } from '@canopy/ui-app/credits';
 import {
@@ -673,7 +673,7 @@ export function SidebarAccountMenu({
                   {/* A status, not an action: it reads like the rows around
                       it and explains itself on hover, and to assistive tech
                       through the description below. */}
-                  <RichHoverTooltip
+                  <HoverCard
                     content={
                       <span className="text-xs">{syncPausedExplanation()}</span>
                     }
@@ -707,7 +707,7 @@ export function SidebarAccountMenu({
                         />
                       </span>
                     </DropdownMenuStatusRow>
-                  </RichHoverTooltip>
+                  </HoverCard>
                   <span id={syncPausedDescriptionId} className="sr-only">
                     {syncPausedExplanation()}
                   </span>

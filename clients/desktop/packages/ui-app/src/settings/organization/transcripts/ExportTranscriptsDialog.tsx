@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type JSX } from 'react';
 import type { OrgTranscriptExportEstimateResult } from '@canopy/protocol/canopy-core/core';
 import {
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   DialogModal,
   ErrorBanner,
   Fact,
@@ -249,28 +249,36 @@ export function ExportTranscriptsDialog({
           </Notice>
         ) : null}
         <ChoiceList aria-label="Include in the export">
-          <ChoiceListRow
-            selected={includePlans}
-            onClick={toggle(setIncludePlans)}
+          <ChoiceField
+            layout="row"
+            checked={includePlans}
+            onChange={toggle(setIncludePlans)}
             disabled={starting}
             data-testid="transcripts-export-include-plans"
-          >
-            <span className="block">Include plans</span>
-            <span className="block text-xs fg-secondary">
-              Plans members shared with the organization
-            </span>
-          </ChoiceListRow>
-          <ChoiceListRow
-            selected={includeSummaries}
-            onClick={toggle(setIncludeSummaries)}
+            label={
+              <>
+                <span className="block">Include plans</span>
+                <span className="block text-xs fg-secondary">
+                  Plans members shared with the organization
+                </span>
+              </>
+            }
+          />
+          <ChoiceField
+            layout="row"
+            checked={includeSummaries}
+            onChange={toggle(setIncludeSummaries)}
             disabled={starting}
             data-testid="transcripts-export-include-summaries"
-          >
-            <span className="block">Include session summaries</span>
-            <span className="block text-xs fg-secondary">
-              Short recaps written for each branch
-            </span>
-          </ChoiceListRow>
+            label={
+              <>
+                <span className="block">Include session summaries</span>
+                <span className="block text-xs fg-secondary">
+                  Short recaps written for each branch
+                </span>
+              </>
+            }
+          />
         </ChoiceList>
         {startFailure !== null ? (
           <ErrorBanner

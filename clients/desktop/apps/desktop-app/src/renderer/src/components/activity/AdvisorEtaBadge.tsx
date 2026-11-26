@@ -1,5 +1,5 @@
 import { type JSX } from 'react';
-import { RichHoverTooltip, StatusBadge } from '@canopy/ui-shared/components';
+import { Badge, HoverCard } from '@canopy/ui-shared/components';
 import { AgentAssistantIcon } from '@canopy/ui-shared/icons';
 import type {
   ExecutionSummary,
@@ -34,7 +34,7 @@ export function AdvisorEtaStatus({
   // healthy, the warning tint once its last update failed.
   // Hover or keyboard focus shows the health/inefficiency preview.
   return (
-    <RichHoverTooltip
+    <HoverCard
       disabled={!interactive}
       content={
         <AdvisorPreviewContent
@@ -52,13 +52,13 @@ export function AdvisorEtaStatus({
         aria-label="Workflow Advisor ETA"
         className={interactive ? 'focus-ring inline-flex' : 'inline-flex'}
       >
-        <StatusBadge variant={stale ? 'warning' : 'active'}>
+        <Badge tone={stale ? 'warning' : 'info'}>
           <AgentAssistantIcon size="sm" />
           <span>{etaText}</span>
           {stale ? <span aria-hidden="true">!</span> : null}
-        </StatusBadge>
+        </Badge>
       </span>
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }
 

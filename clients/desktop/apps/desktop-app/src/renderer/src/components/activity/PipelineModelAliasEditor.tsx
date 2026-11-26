@@ -31,7 +31,7 @@ import { ModelPicker } from '@/components/chat/ModelPicker';
 import { useAgentsStore } from '@/stores/agentsStore';
 import {
   Stack,
-  DialogFormField,
+  FormField,
   FieldError,
   SettingsSelect,
   Surface,
@@ -258,7 +258,7 @@ export function PipelineModelAliasEditor({
 
         {currentMode === 'inline' && (
           <Stack gap="item">
-            <DialogFormField
+            <FormField
               label="Base model"
               error={errorFor('base')}
               errorId={errorId}
@@ -280,8 +280,8 @@ export function PipelineModelAliasEditor({
                   />
                 </div>
               </Surface>
-            </DialogFormField>
-            <DialogFormField label="Instructions" htmlFor={instructionsId}>
+            </FormField>
+            <FormField label="Instructions" id={instructionsId}>
               <TextArea
                 id={instructionsId}
                 mono
@@ -295,8 +295,8 @@ export function PipelineModelAliasEditor({
                 placeholder="Instructions appended when this alias is used…"
                 disabled={readonly}
               />
-            </DialogFormField>
-            <DialogFormField
+            </FormField>
+            <FormField
               label="Plugin collection"
               description="Enabled in addition to any plugin_collection_id on the step."
               error={errorFor('plugin')}
@@ -323,7 +323,7 @@ export function PipelineModelAliasEditor({
                 ]}
                 disabled={readonly}
               />
-            </DialogFormField>
+            </FormField>
           </Stack>
         )}
 

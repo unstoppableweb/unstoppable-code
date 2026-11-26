@@ -311,6 +311,7 @@ import {
 import { createWorkerGitCommitPushAdapter } from './worker-git-commit-push-adapter';
 import { createWorkerGitSyncWriteAdapter } from './worker-git-sync-adapter';
 import { createWorkerGitLocalMutationAdapter } from './worker-git-local-mutations-adapter';
+import { createWorkerGitRepositoryCreationAdapter } from './worker-git-repository-creation-adapter';
 import { registerLocalGitMutationDispatcher } from './worker-git-local-mutations-dispatch';
 import { createWorkerGitMergeAdapter } from './worker-git-merge-adapter';
 import type {
@@ -1652,6 +1653,7 @@ export function createDesktopRuntime(
   const workerGitLocalMutationAdapter: DesktopDomainAdapter = {
     instructions: {
       ...createWorkerGitLocalMutationAdapter(),
+      ...createWorkerGitRepositoryCreationAdapter(),
       ...createDesktopWorktreeGitAdapter(),
     },
   };

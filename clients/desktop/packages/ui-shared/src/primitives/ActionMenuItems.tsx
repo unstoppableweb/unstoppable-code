@@ -11,7 +11,7 @@ import {
   useDropdownMenuRowStyle,
 } from './DropdownMenu';
 import { NestedMenuFlyout } from './NestedMenuFlyout';
-import { RichHoverTooltip } from './RichHoverTooltip';
+import { HoverCard } from './HoverCard';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { Notice } from './Notice';
 import { LoadingIndicator } from './LoadingIndicatorStyle';
@@ -240,14 +240,14 @@ export function ActionMenuRichTooltip<K extends string>({
 }): JSX.Element {
   if (!item.richTooltip) return children;
   return (
-    <RichHoverTooltip
+    <HoverCard
       content={item.richTooltip}
       dataTestId={item.richTooltipTestId}
       preferRightPlacement
       triggerWrapperClassName="w-full"
     >
       {children}
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }
 

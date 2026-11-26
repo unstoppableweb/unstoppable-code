@@ -9,7 +9,7 @@ import {
   AddedPluginsList,
   HeaderActionButton,
   ShareActionButton,
-  StatusPill,
+  Badge,
   shareAudienceLabelText,
   type AddedPluginItem,
   Heading,
@@ -263,8 +263,7 @@ function UsedInvocableRow({
               {/* DESIGN.md's plain-metadata rule has a bounded exception here:
                 Used in this chat uses a quiet audience pill on line two. */}
               {sharedAudience ? (
-                <StatusPill
-                  tone="tertiary"
+                <Badge
                   data-testid="chat-used-invocable-audience"
                   className={pluginName ? 'max-w-1/2' : 'max-w-full'}
                 >
@@ -275,7 +274,7 @@ function UsedInvocableRow({
                   >
                     {audienceLabel}
                   </span>
-                </StatusPill>
+                </Badge>
               ) : null}
             </div>
           ) : undefined

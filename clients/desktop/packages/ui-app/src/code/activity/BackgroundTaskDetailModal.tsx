@@ -11,7 +11,7 @@ import {
   Notice,
   LoadingSpinner,
 } from '@canopy/ui-shared/components';
-import { SearchBar } from '@canopy/ui-shared/primitives/SearchBar';
+import { FindBar } from '@canopy/ui-shared/components/FindBar';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   backgroundProcessStatusBadgeTone,
@@ -360,7 +360,7 @@ export function BackgroundTaskDetailModal({
                   Showing the latest output only.
                 </Notice>
               ) : null}
-              <SearchBar
+              <FindBar
                 query={search.query}
                 onQueryChange={search.setQuery}
                 currentIndex={search.currentIndex}

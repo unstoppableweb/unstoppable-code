@@ -8,7 +8,7 @@
 //    don't reserve dead space),
 //  - shows a count badge when the surface has more than one matching
 //    watcher,
-//  - opens a hover/focus preview (the shared `RichHoverTooltip`) listing up
+//  - opens a hover/focus preview (the shared `HoverCard`) listing up
 //    to five rows so the user can decide whether to click in,
 //  - opens the shared `WatcherManagementModal` on click, which handles all
 //    jump and delete interactions.
@@ -20,7 +20,7 @@ import type { AppAdvisorWatcherSummary } from '@canopy/desktop-shared/types';
 import {
   ChatComposerToolbarChip,
   DrawerWatcherControl,
-  RichHoverTooltip,
+  HoverCard,
 } from '@canopy/ui-shared';
 import { AppAdvisorWatcherIcon, WatcherEyeIcon } from '@canopy/ui-shared/icons';
 import { useChatSidebarStore } from '@/stores/chatSidebarStore';
@@ -261,7 +261,7 @@ export function WatcherManagementButton({
 
   return (
     <>
-      <RichHoverTooltip
+      <HoverCard
         open={tooltipOpen}
         onOpenChange={setTooltipOpen}
         dataTestId={`${dataTestId}-tooltip`}
@@ -336,7 +336,7 @@ export function WatcherManagementButton({
             </Button>
           </span>
         )}
-      </RichHoverTooltip>
+      </HoverCard>
 
       {modalOpen && (
         <WatcherManagementModal

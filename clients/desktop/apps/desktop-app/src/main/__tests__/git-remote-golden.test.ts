@@ -28,13 +28,13 @@ const mockHandlers = new Map<
   string,
   (event: unknown, request: unknown) => Promise<unknown>
 >();
-// Pass-through, so a test can hold the destination probe (stat).
-let mockStat: ((path: PathLike) => Promise<unknown>) | undefined;
+// Pass-through, so a test can hold a destination reservation (exclusive mkdir).
+let mockMkdir: ((path: PathLike) => Promise<unknown>) | undefined;
 jest.mock('node:fs/promises', () => {
   const actual = jest.requireActual<typeof FsPromises>('node:fs/promises');
-  const stat = (...args: Parameters<typeof actual.stat>): Promise<unknown> =>
-    mockStat && args.length === 1 ? mockStat(args[0]) : actual.stat(...args);
-  return { ...actual, stat };
+  const mkdir = (...args: Parameters<typeof actual.mkdir>): Promise<unknown> =>
+    mockMkdir && args.length === 1 ? mockMkdir(args[0]) : actual.mkdir(...args);
+  return { ...actual, mkdir };
 });
 jest.mock('../ipc/register', () => ({
   registerIpcHandler: (
@@ -605,14 +605,14 @@ describe('a file URL origin', () => {
   });
 });
 
-// CAN-4096 Capture (CAN-7937), explicit expectations on the unchanged
-// handlers: both channels name a destination with a stat-only probe, so two
-// calls that probe before either creates it share one path.
+// CAN-4096 Capture (CAN-7937) pinned a stat-only probe on both channels, so
+// two calls that probed before either created the path shared it. Fix
+// (CAN-7971): each call reserves its destination with an exclusive mkdir.
 describe('repo:add-remote and repo:init-local', () => {
-  const realStat =
-    jest.requireActual<typeof FsPromises>('node:fs/promises').stat;
+  const realMkdir =
+    jest.requireActual<typeof FsPromises>('node:fs/promises').mkdir;
   afterEach(() => {
-    mockStat = undefined;
+    mockMkdir = undefined;
   });
 
   function invoke(channel: string, request: unknown): Promise<Outcome> {
@@ -622,33 +622,32 @@ describe('repo:add-remote and repo:init-local', () => {
   }
 
   /**
-   * Two calls whose probes of `path` both run before the first call creates
-   * it; the second call goes on only once the first has settled.
+   * Two calls that both try to reserve `path` before the first has used it:
+   * the first holds its reservation until the second's attempt has settled.
    */
-  async function overlapProbes(
+  async function overlapReservations(
     path: string,
     call: () => Promise<Outcome>,
   ): Promise<[Outcome, Outcome]> {
-    const [reached, probed, settled] = [0, 1, 2].map(() =>
+    const [reserved, attempted] = [0, 1].map(() =>
       Promise.withResolvers<void>(),
     );
-    let calls = 0;
-    mockStat = async (target): Promise<unknown> => {
-      if (target !== path || calls === 2) return realStat(target);
-      calls += 1;
-      const isFirst = calls === 1;
-      if (isFirst) reached.resolve();
-      const result = await realStat(target).then(
-        (stats) => ({ stats }),
+    let attempts = 0;
+    mockMkdir = async (target): Promise<unknown> => {
+      if (target !== path || attempts === 2) return realMkdir(target);
+      attempts += 1;
+      const isFirst = attempts === 1;
+      const result = await realMkdir(target).then(
+        (value) => ({ value }),
         (error: unknown) => ({ error }),
       );
-      if (!isFirst) probed.resolve();
-      await (isFirst ? probed : settled).promise;
+      (isFirst ? reserved : attempted).resolve();
+      if (isFirst) await attempted.promise;
       if ('error' in result) throw result.error;
-      return result.stats;
+      return result.value;
     };
-    const first = call().finally(settled.resolve);
-    await reached.promise;
+    const first = call();
+    await reserved.promise;
     const second = call();
     return [await first, await second];
   }
@@ -683,55 +682,68 @@ describe('repo:add-remote and repo:init-local', () => {
     expect(readdirSync(destinationDir).sort()).toEqual(['single', 'single-2']);
   });
 
-  it('repo:add-remote calls that probe one name together leave the second to fail in the first clone', async () => {
+  it('repo:add-remote calls that race for one name each reserve their own', async () => {
     const origin = join(dir, 'origins', 'single.git');
     const destinationDir = join(dir, 'add-remote-race');
     const add = (): Promise<Outcome> =>
       invoke(IPC_CHANNELS.repoAddRemote, { remoteUrl: origin, destinationDir });
-    const [first, second] = await overlapProbes(
+    const [first, second] = await overlapReservations(
       join(destinationDir, 'single'),
       add,
     );
     expect(first).toEqual({
       json: '{"name":"single","path":"<root>/add-remote-race/single"}',
     });
-    expect('error' in second && String(second.error.message)).toContain(
-      "destination path '<root>/add-remote-race/single' already exists and is not an empty directory",
-    );
-    expect(readdirSync(destinationDir)).toEqual(['single']);
-    expect(git(join(destinationDir, 'single'), ['log', '--format=%s'])).toBe(
-      'initial',
-    );
+    expect(second).toEqual({
+      json: '{"name":"single-2","path":"<root>/add-remote-race/single-2"}',
+    });
+    expect(readdirSync(destinationDir).sort()).toEqual(['single', 'single-2']);
+    for (const name of ['single', 'single-2'])
+      expect(git(join(destinationDir, name), ['log', '--format=%s'])).toBe(
+        'initial',
+      );
   });
 
-  it('repo:init-local calls that probe one name together share its directory, and the second fails to commit; a later call takes the next name', async () => {
+  it('repo:add-remote removes the directory it reserved when the clone fails', async () => {
+    const destinationDir = join(dir, 'add-remote-missing');
+    expect(
+      await invoke(IPC_CHANNELS.repoAddRemote, {
+        remoteUrl: join(dir, 'origins', 'missing.git'),
+        destinationDir,
+      }),
+    ).toMatchObject({ error: { code: 128 } });
+    expect(readdirSync(destinationDir)).toEqual([]);
+  });
+
+  it('repo:init-local calls that race for one name each reserve their own; a later call takes the next name', async () => {
     const init = (name: string): Promise<Outcome> =>
       invoke(IPC_CHANNELS.repoInitLocal, { name });
-    const [first, second] = await overlapProbes(
+    const [first, second] = await overlapReservations(
       join(dataDir, 'repos', 'scratch'),
       () => init('scratch'),
     );
     expect(first).toEqual({
       json: '{"name":"scratch","path":"<root>/data/repos/scratch"}',
     });
-    // The second re-initializes the same checkout and finds nothing to commit.
-    expect(second).toMatchObject({ error: { code: 1 } });
-    expect('error' in second && String(second.error.message)).toContain(
-      'commit -m',
-    );
-    expect(await init(' scratch ')).toEqual({
+    expect(second).toEqual({
       json: '{"name":"scratch-2","path":"<root>/data/repos/scratch-2"}',
     });
-    const created = join(dataDir, 'repos', 'scratch');
-    expect(git(created, ['log', '--format=%s'])).toBe('Initial commit');
-    expect(git(created, ['ls-files']).split('\n').sort()).toEqual([
-      '.gitignore',
-      'README.md',
-      'canopy.json',
-    ]);
+    expect(await init(' scratch ')).toEqual({
+      json: '{"name":"scratch-3","path":"<root>/data/repos/scratch-3"}',
+    });
+    for (const name of ['scratch', 'scratch-2']) {
+      const created = join(dataDir, 'repos', name);
+      expect(git(created, ['log', '--format=%s'])).toBe('Initial commit');
+      expect(git(created, ['ls-files']).split('\n').sort()).toEqual([
+        '.gitignore',
+        'README.md',
+        'canopy.json',
+      ]);
+    }
     expect(readdirSync(join(dataDir, 'repos')).sort()).toEqual([
       'scratch',
       'scratch-2',
+      'scratch-3',
     ]);
   });
 });

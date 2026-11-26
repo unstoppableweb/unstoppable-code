@@ -5,11 +5,11 @@ import type { JSX, ReactElement, ReactNode } from 'react';
 import {
   CancelActionButton,
   HeaderActionButton,
-  RichHoverTooltip,
+  HoverCard,
   RunningActionIcon,
   ThinkingSpinner,
   Tooltip,
-  type TooltipTriggerProps,
+  type HoverCardTriggerProps,
 } from '@canopy/ui-shared/components';
 import {
   ChatIcon,
@@ -79,7 +79,7 @@ export type PullRequestProgressTarget =
  */
 export type PullRequestProgressRenderer = (
   target: PullRequestProgressTarget,
-  trigger: ReactElement<TooltipTriggerProps>,
+  trigger: ReactElement<HoverCardTriggerProps>,
   options: { readonly dataTestId?: string; readonly suppressed?: boolean },
 ) => ReactElement;
 
@@ -635,7 +635,7 @@ export function PullRequestActions({
           without agent helpers shows it unavailable; both with the reason. */}
       {plan.resolveConflicts !== null &&
         (plan.resolveConflicts.blockedReason === undefined ? (
-          <RichHoverTooltip
+          <HoverCard
             surfaceClassName="min-w-55 max-w-75"
             surfacePadding="card"
             content={
@@ -665,7 +665,7 @@ export function PullRequestActions({
               )}
               Resolve, commit &amp; push
             </HeaderActionButton>
-          </RichHoverTooltip>
+          </HoverCard>
         ) : (
           <HeaderActionButton
             tone="neutral"

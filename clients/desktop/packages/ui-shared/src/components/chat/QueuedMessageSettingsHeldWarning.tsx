@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 import type { SettingsHeldChange } from '@canopy/protocol/remote-control/shell';
 import { WarningIcon } from '../../icons/AppIcons';
-import { ActionTooltip } from '../../primitives/ActionTooltip';
+import { Tooltip } from '../../primitives/Tooltip';
 
 export const QUEUED_MESSAGE_SETTINGS_HELD_TITLE = 'New settings are waiting';
 
@@ -85,8 +85,8 @@ export function QueuedMessageSettingsHeldWarning({
     interrupt,
   });
   return (
-    <ActionTooltip
-      title={QUEUED_MESSAGE_SETTINGS_HELD_TITLE}
+    <Tooltip
+      label={QUEUED_MESSAGE_SETTINGS_HELD_TITLE}
       description={description}
     >
       {/* Focusable so keyboard users can open the explanation. */}
@@ -100,6 +100,6 @@ export function QueuedMessageSettingsHeldWarning({
       >
         <WarningIcon size="sm" aria-hidden />
       </span>
-    </ActionTooltip>
+    </Tooltip>
   );
 }

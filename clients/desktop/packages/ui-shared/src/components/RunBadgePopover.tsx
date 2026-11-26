@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 import { Dot, type DotTone } from '../primitives/Badge';
 import { BADGE_HOVER_CARD_SURFACE } from './ChatPreviewPopover';
-import { RichHoverCard } from '../primitives/RichHoverTooltip';
+import { HoverCard } from '../primitives/HoverCard';
 import { Stack } from '../primitives/Stack';
 
 export interface RunBadgeRow {
@@ -38,34 +38,36 @@ export function RunBadgePopover({
   id,
 }: RunBadgePopoverProps): JSX.Element | null {
   return (
-    <RichHoverCard
+    <HoverCard
+      open
       anchorRect={anchorRect}
       id={id}
       role="tooltip"
       dataTestId="worktree-row-script-popover"
       {...BADGE_HOVER_CARD_SURFACE}
       surfaceClassName="min-w-40 max-w-65"
-    >
-      <Stack gap="tight">
-        <div className="text-3xs font-semibold fg-secondary">{heading}</div>
-        {rows.length === 0 ? (
-          <div className="text-xs fg-secondary">{emptyText}</div>
-        ) : (
-          <div className="flex flex-col gap-1.5">
-            {rows.map((row) => (
-              <div key={row.id} className="flex items-center gap-1.5 text-xs">
-                <Dot tone={row.dotTone} />
-                <span className="truncate fg-primary" title={row.label}>
-                  {row.label}
-                </span>
-                <span className={`ml-auto shrink-0 ${row.statusClass}`}>
-                  {row.statusText}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </Stack>
-    </RichHoverCard>
+      content={
+        <Stack gap="tight">
+          <div className="text-3xs font-semibold fg-secondary">{heading}</div>
+          {rows.length === 0 ? (
+            <div className="text-xs fg-secondary">{emptyText}</div>
+          ) : (
+            <div className="flex flex-col gap-1.5">
+              {rows.map((row) => (
+                <div key={row.id} className="flex items-center gap-1.5 text-xs">
+                  <Dot tone={row.dotTone} />
+                  <span className="truncate fg-primary" title={row.label}>
+                    {row.label}
+                  </span>
+                  <span className={`ml-auto shrink-0 ${row.statusClass}`}>
+                    {row.statusText}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Stack>
+      }
+    />
   );
 }

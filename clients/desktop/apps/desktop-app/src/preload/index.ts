@@ -4599,6 +4599,8 @@ const canopyApi: CanopyApi = {
     scheduleUpdate: () => ipcRenderer.invoke(IPC_CHANNELS.updateSchedule),
     cancelScheduledUpdate: () =>
       ipcRenderer.invoke(IPC_CHANNELS.updateCancelScheduled),
+    openSystemUpdater: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.updateOpenSystemUpdater),
     reportBusyState: (busy: boolean) =>
       ipcRenderer.invoke(IPC_CHANNELS.updateReportBusy, busy),
     getAppVersion: () => ipcRenderer.invoke(IPC_CHANNELS.updateGetVersion),

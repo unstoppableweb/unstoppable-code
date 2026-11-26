@@ -88,11 +88,10 @@ describe('copying a desktop MCP server to the cloud account (CAN-6176 D30)', () 
       'config/default/authToken',
     ]);
     const rows = byTestId('copy-mcp-server-secrets').querySelectorAll(
-      '[aria-checked]',
+      'input[type="checkbox"]',
     );
     expect(rows).toHaveLength(3);
-    for (const row of rows)
-      expect(row.getAttribute('aria-checked')).toBe('false');
+    for (const row of rows) expect(row).toHaveProperty('checked', false);
     expect(document.body.textContent).not.toMatch(/ref-\d/);
     // A command server has nothing to copy.
     expect(

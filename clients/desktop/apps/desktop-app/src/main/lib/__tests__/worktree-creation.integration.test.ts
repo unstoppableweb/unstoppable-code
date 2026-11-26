@@ -136,6 +136,7 @@ import {
   setCachedGitExecutablePath,
 } from '../git-executable';
 import { ANIMAL_NAMES, getWorktreeIdClaimPrefix } from '../animals';
+import { createDesktopRuntime } from '../../canopy-runtime/desktop-runtime';
 import {
   createWorktreeFromSelection,
   projectWorktreeCreationRecord,
@@ -2398,6 +2399,14 @@ describeIdentityHost('desktop creation claim qualification', () => {
   let host: W5CommitLogHost;
   let store: W5CommitLogFileStore;
   let closeStoreSide: (() => Promise<void>) | undefined;
+  // Repository init dispatches on the registered desktop runtime (CAN-7952).
+  let runtime: ReturnType<typeof createDesktopRuntime>;
+  beforeAll(() => {
+    runtime = createDesktopRuntime();
+  });
+  afterAll(async () => {
+    await runtime.shutdown();
+  });
   beforeEach(async () => {
     const desktopStore = await import('../w5-commit-log-file-store');
     const { startW5TestCommitLogHost } =

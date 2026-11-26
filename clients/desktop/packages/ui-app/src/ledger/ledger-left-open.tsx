@@ -10,7 +10,7 @@ import {
   Button,
   ErrorBanner,
   LedgerOwnerPicker,
-  RichHoverTooltip,
+  HoverCard,
   Tooltip,
 } from '@canopy/ui-shared/components';
 import { WarningIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -85,7 +85,7 @@ export function LedgerLeftOpenTrigger({
   readonly testId: string;
 }): JSX.Element {
   return (
-    <RichHoverTooltip
+    <HoverCard
       surfacePadding="relaxed"
       dataTestId={`${testId}-tooltip`}
       content={
@@ -116,7 +116,7 @@ export function LedgerLeftOpenTrigger({
           <WarningIcon size={14} aria-hidden="true" className="fg-warning" />
         </Button>
       </span>
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }
 

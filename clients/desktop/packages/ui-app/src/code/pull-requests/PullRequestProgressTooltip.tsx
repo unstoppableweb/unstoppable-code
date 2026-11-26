@@ -3,10 +3,10 @@
 import type { JSX, ReactElement } from 'react';
 import {
   ProgressChecklist,
-  RichHoverTooltip,
+  HoverCard,
   type ProgressChecklistBadge,
   type ProgressChecklistStep,
-  type TooltipTriggerProps,
+  type HoverCardTriggerProps,
 } from '@canopy/ui-shared/components';
 
 /**
@@ -41,7 +41,7 @@ export interface PullRequestProgressTooltipProps {
   readonly suppressed?: boolean;
   readonly dataTestId?: string;
   /** The raw action button: the wrapper clones trigger props onto it. */
-  readonly children: ReactElement<TooltipTriggerProps>;
+  readonly children: ReactElement<HoverCardTriggerProps>;
 }
 
 /**
@@ -55,7 +55,7 @@ export function PullRequestProgressTooltip({
   children,
 }: PullRequestProgressTooltipProps): JSX.Element {
   return (
-    <RichHoverTooltip
+    <HoverCard
       disabled={suppressed || model === null}
       dataTestId={dataTestId}
       content={
@@ -69,6 +69,6 @@ export function PullRequestProgressTooltip({
       }
     >
       {children}
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }

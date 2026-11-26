@@ -16,6 +16,7 @@
 interface PendingFocusRequest {
   readonly ownerDocument: Document;
   readonly recordedAt: number;
+  readonly isCurrent?: () => boolean;
 }
 
 /**
@@ -151,14 +152,20 @@ function isWindowFocused(
 export function requestTerminalFocus(
   terminalId: string,
   ownerDocument: Document = document,
+  isCurrent?: () => boolean,
 ): void {
+  if (isCurrent && !isCurrent()) return;
   const ownerWindow = installWindowFocusTracking(ownerDocument);
   if (ownerWindow !== null && !isWindowFocused(ownerWindow, ownerDocument)) {
     return;
   }
   const now = Date.now();
   pruneExpiredRequests(now);
-  pendingRequests.set(terminalId, { ownerDocument, recordedAt: now });
+  pendingRequests.set(terminalId, {
+    ownerDocument,
+    recordedAt: now,
+    isCurrent,
+  });
   notify();
 }
 
@@ -175,6 +182,7 @@ export function consumeTerminalFocusRequest(
   if (request === undefined) return false;
   if (request.ownerDocument !== ownerDocument) return false;
   pendingRequests.delete(terminalId);
+  if (request.isCurrent && !request.isCurrent()) return false;
   // A request nobody consumed in time is void. Deleting it above is what stops
   // a later passive activation from redeeming it.
   if (Date.now() - request.recordedAt >= REQUEST_TTL_MS) return false;

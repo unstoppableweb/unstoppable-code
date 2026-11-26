@@ -30,7 +30,6 @@ import {
 } from '../../icons/AppIcons';
 import { DRAWER_ITEM_ACTIONS_CLASS } from '../../lib/drawer-reveal';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
-import { ActionTooltip } from '../../primitives/ActionTooltip';
 import { Button } from '../../primitives/Button';
 import { copyTextToClipboard } from '../../primitives/copy-to-clipboard';
 import {
@@ -776,12 +775,12 @@ export const QueuedMessageRow = forwardRef<
         {surface === 'drawer' ? null : settingsHeldWarning}
         {steerButton ? (
           steerBlockedByCapabilityChange ? (
-            <ActionTooltip
-              title={QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP_TITLE}
+            <Tooltip
+              label={QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP_TITLE}
               description={QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP}
             >
               {steerButton}
-            </ActionTooltip>
+            </Tooltip>
           ) : steerReason ? (
             <Tooltip label={steerReason}>{steerButton}</Tooltip>
           ) : (
@@ -789,10 +788,7 @@ export const QueuedMessageRow = forwardRef<
           )
         ) : null}
         {surface === 'drawer' ? null : sendBlock ? (
-          <ActionTooltip
-            title={sendBlock.title}
-            description={sendBlock.description}
-          >
+          <Tooltip label={sendBlock.title} description={sendBlock.description}>
             {/* `aria-disabled` keeps the explanation reachable by keyboard. */}
             <Button
               variant="ghost"
@@ -804,7 +800,7 @@ export const QueuedMessageRow = forwardRef<
             >
               Try again
             </Button>
-          </ActionTooltip>
+          </Tooltip>
         ) : sendNowButton && (interruptReason || InterruptIcon) ? (
           <Tooltip label={interruptReason ?? forceLabel} delay="long">
             {sendNowButton}

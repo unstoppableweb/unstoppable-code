@@ -17,7 +17,7 @@ import {
 } from '../lib/shortcut-platform';
 import { Button } from '../primitives/Button';
 import { DialogModal } from '../primitives/DialogModal';
-import { DialogFormField } from '../primitives/DialogFormField';
+import { FormField } from '../primitives/FormField';
 import { TextInput } from '../primitives/Field';
 import { LoadingSpinner } from '../primitives/LoadingSpinner';
 
@@ -93,7 +93,7 @@ export function RenameDialog({
   const [submittedSinceEdit, setSubmittedSinceEdit] = useState(false);
   const visibleError =
     error !== null && error !== '' && submittedSinceEdit ? error : null;
-  // `DialogFormField` adds its help text to the field's description.
+  // `FormField` adds its help text to the field's description.
   const describedBy = visibleError !== null ? errorId : undefined;
 
   useEffect(() => {
@@ -132,9 +132,9 @@ export function RenameDialog({
     >
       <form className="flex flex-col gap-4.5 pt-3" onSubmit={handleSubmit}>
         <div>
-          <DialogFormField
+          <FormField
             label={label}
-            htmlFor={fieldId}
+            id={fieldId}
             errorId={errorId}
             error={
               visibleError !== null ? (
@@ -166,7 +166,7 @@ export function RenameDialog({
               autoComplete="off"
               spellCheck={false}
             />
-          </DialogFormField>
+          </FormField>
         </div>
         <div className="flex items-center justify-end gap-2">
           <Button

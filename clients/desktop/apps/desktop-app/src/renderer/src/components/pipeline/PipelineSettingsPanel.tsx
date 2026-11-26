@@ -16,7 +16,7 @@ import {
   Surface,
   Stack,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   ConfirmDialog,
   Heading,
 } from '@canopy/ui-shared/components';
@@ -362,18 +362,24 @@ export function PipelineSettingsPanel({
               ).map((trigger) => {
                 const isActive = activeTriggerTypes.includes(trigger.type);
                 return (
-                  <ChoiceListRow
+                  <ChoiceField
                     key={trigger.type}
+                    layout="row"
                     data-testid={`pipeline-trigger-row-${trigger.type}`}
-                    selected={isActive}
+                    checked={isActive}
                     disabled={readonly}
-                    onClick={(): void => toggleTrigger(trigger.type)}
-                  >
-                    <span className="block font-medium">{trigger.label}</span>
-                    <span className="block text-xs fg-secondary">
-                      {trigger.hint}
-                    </span>
-                  </ChoiceListRow>
+                    onChange={(): void => toggleTrigger(trigger.type)}
+                    label={
+                      <>
+                        <span className="block font-medium">
+                          {trigger.label}
+                        </span>
+                        <span className="block text-xs fg-secondary">
+                          {trigger.hint}
+                        </span>
+                      </>
+                    }
+                  />
                 );
               })}
             </ChoiceList>
@@ -423,20 +429,26 @@ export function PipelineSettingsPanel({
                   isSelected && selectedScopes.length === 1;
                 const disabled = readonly || isLastSelected;
                 return (
-                  <ChoiceListRow
+                  <ChoiceField
                     key={option.scope}
+                    layout="row"
                     data-testid={`pipeline-execution-scope-row-${option.scope}`}
-                    selected={isSelected}
+                    checked={isSelected}
                     disabled={disabled}
-                    onClick={(): void =>
+                    onChange={(): void =>
                       toggleExecutionScope(option.scope, !isSelected)
                     }
-                  >
-                    <span className="block font-medium">{option.label}</span>
-                    <span className="block text-xs fg-secondary">
-                      {option.hint}
-                    </span>
-                  </ChoiceListRow>
+                    label={
+                      <>
+                        <span className="block font-medium">
+                          {option.label}
+                        </span>
+                        <span className="block text-xs fg-secondary">
+                          {option.hint}
+                        </span>
+                      </>
+                    }
+                  />
                 );
               })}
             </ChoiceList>

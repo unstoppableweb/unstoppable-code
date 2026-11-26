@@ -109,7 +109,7 @@ import { Button } from '@canopy/ui-shared';
 import {
   Checkbox,
   ChoiceField,
-  DialogFormField,
+  FormField,
   McpClientSetupDetails,
   McpConnectionFacts,
   Notice,
@@ -634,7 +634,7 @@ function ConfigEditor({
       {expanded && (
         <Surface variant="section" boundary="top" padding="compact" gap="item">
           {/* Name */}
-          <DialogFormField label="Name" htmlFor={`${fieldId}-name`}>
+          <FormField label="Name" id={`${fieldId}-name`}>
             <TextInput
               id={`${fieldId}-name`}
               value={config.name}
@@ -643,12 +643,12 @@ function ConfigEditor({
               }
               placeholder="Config name"
             />
-          </DialogFormField>
+          </FormField>
 
           {/* Description */}
-          <DialogFormField
+          <FormField
             label="Description (optional)"
-            htmlFor={`${fieldId}-description`}
+            id={`${fieldId}-description`}
           >
             <TextInput
               id={`${fieldId}-description`}
@@ -658,7 +658,7 @@ function ConfigEditor({
               }
               placeholder="Optional description"
             />
-          </DialogFormField>
+          </FormField>
 
           {/* Env vars */}
           <div className="flex flex-col text-xs gap-1">
@@ -674,7 +674,7 @@ function ConfigEditor({
           </div>
 
           {/* Extra args */}
-          <DialogFormField label="Extra arguments" htmlFor={`${fieldId}-args`}>
+          <FormField label="Extra arguments" id={`${fieldId}-args`}>
             <TextInput
               id={`${fieldId}-args`}
               value={config.extraArgs.join(' ')}
@@ -688,7 +688,7 @@ function ConfigEditor({
               }
               placeholder="Space-separated extra args"
             />
-          </DialogFormField>
+          </FormField>
 
           {/* Extra headers */}
           <div className="flex flex-col text-xs gap-1">
@@ -704,7 +704,7 @@ function ConfigEditor({
           </div>
 
           {/* Auth token */}
-          <DialogFormField label="Auth token" htmlFor={`${fieldId}-token`}>
+          <FormField label="Auth token" id={`${fieldId}-token`}>
             <TextInput
               id={`${fieldId}-token`}
               type="password"
@@ -724,7 +724,7 @@ function ConfigEditor({
                   : 'Bearer token'
               }
             />
-          </DialogFormField>
+          </FormField>
           {isStoredSecretValue(config.authToken) && (
             <Button
               className="self-start"
@@ -2133,7 +2133,7 @@ export function McpServerDialog({
             />
           )}
           {initialCurated.urlOptions?.length ? (
-            <DialogFormField label="Endpoint" htmlFor={`${fieldId}-endpoint`}>
+            <FormField label="Endpoint" id={`${fieldId}-endpoint`}>
               <Select
                 id={`${fieldId}-endpoint`}
                 options={initialCurated.urlOptions.map((option) => ({
@@ -2144,12 +2144,12 @@ export function McpServerDialog({
                 onValueChange={setUrl}
                 data-testid="mcp-curated-url-option"
               />
-            </DialogFormField>
+            </FormField>
           ) : null}
           {supportedFields ? (
             formFields.map(
               (field): JSX.Element => (
-                <DialogFormField
+                <FormField
                   key={field.kind}
                   label={
                     field.kind === 'oauth-client-id'
@@ -2158,7 +2158,7 @@ export function McpServerDialog({
                         ? 'OAuth client secret (optional)'
                         : 'OAuth client secret'
                   }
-                  htmlFor={`${fieldId}-${field.kind}`}
+                  id={`${fieldId}-${field.kind}`}
                 >
                   <TextInput
                     id={`${fieldId}-${field.kind}`}
@@ -2175,7 +2175,7 @@ export function McpServerDialog({
                     }
                     data-testid={`mcp-account-${field.kind}`}
                   />
-                </DialogFormField>
+                </FormField>
               ),
             )
           ) : (
@@ -2230,10 +2230,7 @@ export function McpServerDialog({
     </div>
   );
   const descriptionField = !cloudOnlyInCloud && (
-    <DialogFormField
-      label="Description (optional)"
-      htmlFor={`${fieldId}-description`}
-    >
+    <FormField label="Description (optional)" id={`${fieldId}-description`}>
       <TextInput
         id={`${fieldId}-description`}
         value={description}
@@ -2242,7 +2239,7 @@ export function McpServerDialog({
         }
         placeholder="Optional description"
       />
-    </DialogFormField>
+    </FormField>
   );
   const commandScopeField = serverType === 'command' &&
     accountConnectionsEnabled && (
@@ -2280,9 +2277,9 @@ export function McpServerDialog({
       )}
 
       {effectiveScope === 'device' && (
-        <DialogFormField
+        <FormField
           label="Auth handling"
-          htmlFor={`${fieldId}-auth-handler`}
+          id={`${fieldId}-auth-handler`}
           description={
             deviceHandler === 'provider'
               ? 'The agent provider receives this server directly and handles auth.'
@@ -2317,7 +2314,7 @@ export function McpServerDialog({
             data-testid="mcp-server-auth-handler"
             disabled={curatedRequiresProvider}
           />
-        </DialogFormField>
+        </FormField>
       )}
 
       {effectiveScope === 'cloud' && curatedMeta?.key && (
@@ -2384,9 +2381,9 @@ export function McpServerDialog({
               Its headers are stored in your cloud account too.
             </p>
           )}
-          <DialogFormField
+          <FormField
             label="Access token"
-            htmlFor={`${fieldId}-cloud-token`}
+            id={`${fieldId}-cloud-token`}
             description={
               !editsCloudConnection
                 ? 'Optional. The token is stored in your cloud account.'
@@ -2414,7 +2411,7 @@ export function McpServerDialog({
               }
               data-testid="mcp-cloud-access-token"
             />
-          </DialogFormField>
+          </FormField>
           {savedCloudToken !== undefined && !cloudToken && (
             <Button
               variant="ghost"
@@ -2444,9 +2441,9 @@ export function McpServerDialog({
           data-testid="mcp-device-placement"
         >
           <p className="fg-primary">Will move to this device</p>
-          <DialogFormField
+          <FormField
             label="Access token"
-            htmlFor={`${fieldId}-device-token`}
+            id={`${fieldId}-device-token`}
             description="Optional. Stored on this device. Or turn on OAuth below and connect after you save."
           >
             <TextInput
@@ -2460,7 +2457,7 @@ export function McpServerDialog({
               placeholder="Optional"
               data-testid="mcp-device-access-token"
             />
-          </DialogFormField>
+          </FormField>
         </div>
       )}
 
@@ -2608,7 +2605,7 @@ export function McpServerDialog({
                           registration is unavailable for this MCP server.
                         </p>
 
-                        <DialogFormField
+                        <FormField
                           label={
                             curatedEntry?.requiredConfigFields?.some(
                               (field) => field.kind === 'oauth-client-id',
@@ -2616,7 +2613,7 @@ export function McpServerDialog({
                               ? 'Client ID'
                               : 'Client ID (optional)'
                           }
-                          htmlFor={`${fieldId}-oauth-client-id`}
+                          id={`${fieldId}-oauth-client-id`}
                         >
                           <TextInput
                             id={`${fieldId}-oauth-client-id`}
@@ -2631,7 +2628,7 @@ export function McpServerDialog({
                             }
                             placeholder="optional client id"
                           />
-                        </DialogFormField>
+                        </FormField>
 
                         <div className="flex flex-col gap-1 text-xs">
                           <p className="fg-secondary">
@@ -2644,9 +2641,9 @@ export function McpServerDialog({
                           </p>
                         </div>
 
-                        <DialogFormField
+                        <FormField
                           label="Callback port (optional)"
-                          htmlFor={`${fieldId}-oauth-callback-port`}
+                          id={`${fieldId}-oauth-callback-port`}
                           description={
                             <>
                               Uses a dedicated loopback listener instead of the
@@ -2688,11 +2685,11 @@ export function McpServerDialog({
                             placeholder="e.g. 3118"
                             data-testid="mcp-server-oauth-callback-port"
                           />
-                        </DialogFormField>
+                        </FormField>
 
-                        <DialogFormField
+                        <FormField
                           label="Authorization URL (optional)"
-                          htmlFor={`${fieldId}-oauth-authorizationUrl`}
+                          id={`${fieldId}-oauth-authorizationUrl`}
                         >
                           <TextInput
                             id={`${fieldId}-oauth-authorizationUrl`}
@@ -2707,11 +2704,11 @@ export function McpServerDialog({
                             }
                             placeholder="optional authorization endpoint"
                           />
-                        </DialogFormField>
+                        </FormField>
 
-                        <DialogFormField
+                        <FormField
                           label="Token URL (optional)"
-                          htmlFor={`${fieldId}-oauth-tokenUrl`}
+                          id={`${fieldId}-oauth-tokenUrl`}
                         >
                           <TextInput
                             id={`${fieldId}-oauth-tokenUrl`}
@@ -2726,11 +2723,11 @@ export function McpServerDialog({
                             }
                             placeholder="optional token endpoint"
                           />
-                        </DialogFormField>
+                        </FormField>
 
-                        <DialogFormField
+                        <FormField
                           label="Scopes (optional)"
-                          htmlFor={`${fieldId}-oauth-scopes`}
+                          id={`${fieldId}-oauth-scopes`}
                         >
                           <TextInput
                             id={`${fieldId}-oauth-scopes`}
@@ -2745,11 +2742,11 @@ export function McpServerDialog({
                             }
                             placeholder="optional scopes"
                           />
-                        </DialogFormField>
+                        </FormField>
 
-                        <DialogFormField
+                        <FormField
                           label="Audience (optional)"
-                          htmlFor={`${fieldId}-oauth-audience`}
+                          id={`${fieldId}-oauth-audience`}
                         >
                           <TextInput
                             id={`${fieldId}-oauth-audience`}
@@ -2764,7 +2761,7 @@ export function McpServerDialog({
                             }
                             placeholder="optional audience"
                           />
-                        </DialogFormField>
+                        </FormField>
                       </div>
                     </Surface>
                   )}
@@ -2818,9 +2815,9 @@ export function McpServerDialog({
   );
   const commandFields = serverType === 'command' && (
     <>
-      <DialogFormField
+      <FormField
         label="Command"
-        htmlFor={`${fieldId}-command`}
+        id={`${fieldId}-command`}
         error={commandRefusal}
         dataTestId="mcp-server-command-field"
       >
@@ -2833,10 +2830,10 @@ export function McpServerDialog({
           onBlur={(): void => setCommandChecked(true)}
           placeholder="npx"
         />
-      </DialogFormField>
-      <DialogFormField
+      </FormField>
+      <FormField
         label="Arguments"
-        htmlFor={`${fieldId}-args`}
+        id={`${fieldId}-args`}
         description="Space-separated arguments"
       >
         <TextInput
@@ -2847,7 +2844,7 @@ export function McpServerDialog({
           }
           placeholder="-y @modelcontextprotocol/server-postgres"
         />
-      </DialogFormField>
+      </FormField>
     </>
   );
 
@@ -2903,9 +2900,9 @@ export function McpServerDialog({
           {serverId && (
             <div className="flex flex-wrap items-end gap-3">
               <div className="min-w-55">
-                <DialogFormField
+                <FormField
                   label="Config to validate"
-                  htmlFor={`${fieldId}-validate-config`}
+                  id={`${fieldId}-validate-config`}
                 >
                   <Select
                     id={`${fieldId}-validate-config`}
@@ -2921,7 +2918,7 @@ export function McpServerDialog({
                     onValueChange={setSelectedConfigId}
                     disabled={configs.length === 0}
                   />
-                </DialogFormField>
+                </FormField>
               </div>
               <Button
                 size="compact"
@@ -3098,10 +3095,7 @@ export function McpServerDialog({
           {serverType === 'http' && (
             <>
               {initialCurated?.urlOptions?.length && isCreate ? (
-                <DialogFormField
-                  label="Endpoint"
-                  htmlFor={`${fieldId}-endpoint`}
-                >
+                <FormField label="Endpoint" id={`${fieldId}-endpoint`}>
                   <Select
                     id={`${fieldId}-endpoint`}
                     options={initialCurated.urlOptions.map((option) => ({
@@ -3114,7 +3108,7 @@ export function McpServerDialog({
                     onValueChange={setUrl}
                     data-testid="mcp-curated-url-option"
                   />
-                </DialogFormField>
+                </FormField>
               ) : null}
 
               {!customCreate && httpAdvancedFields}

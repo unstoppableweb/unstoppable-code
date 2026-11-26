@@ -14,7 +14,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { TurnFeedbackControl, TurnFeedbackDialog } from '@canopy/ui-shared';
 import type { TurnFeedbackRating } from '@canopy/protocol/turn-feedback';
 import { useChatStore, useChatTabRenderState } from '@/stores/chatStore';
-import { ActionTooltip } from '../shared/ActionTooltip';
+import { Tooltip } from '@canopy/ui-shared/components';
 import { FeedbackModal } from '../feedback/FeedbackModal';
 
 export interface TurnFeedbackTarget {
@@ -72,16 +72,13 @@ export function TurnFeedbackControlHost({
   );
 
   const renderTooltip = useCallback(
-    // `ActionTooltip` types its trigger as a concrete element with
-    // `TooltipTriggerProps`; the shared control only promises a
-    // `ReactElement`, so a `span` carries the trigger props for it.
     (node: ReactElement, label: string): ReactNode => (
-      <ActionTooltip
-        title={label}
+      <Tooltip
+        label={label}
         description="Rate this turn so we know what to improve."
       >
         <span className="flex">{node}</span>
-      </ActionTooltip>
+      </Tooltip>
     ),
     [],
   );

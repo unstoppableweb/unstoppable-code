@@ -1,21 +1,21 @@
 import { Stack } from '@canopy/ui-shared/components';
 import type { JSX, ReactElement } from 'react';
 import {
-  RichHoverTooltip,
-  type TooltipTriggerProps,
-} from '@/components/shared/RichHoverTooltip';
+  HoverCard,
+  type HoverCardTriggerProps,
+} from '@canopy/ui-shared/components';
 
 interface EnvironmentUsageRichTooltipProps {
   title: string;
   items: ReadonlyArray<string>;
-  children: ReactElement<TooltipTriggerProps>;
+  children: ReactElement<HoverCardTriggerProps>;
   dataTestId?: string;
 }
 
 /**
  * Portaled rich tooltip used by the per-kind usage indicators on the
  * Settings → Environments list rows. Renders a heading and a bullet list of matching
- * usages. Thin wrapper over {@link RichHoverTooltip}.
+ * usages. Thin wrapper over {@link HoverCard}.
  */
 export function EnvironmentUsageRichTooltip({
   title,
@@ -24,7 +24,7 @@ export function EnvironmentUsageRichTooltip({
   dataTestId,
 }: EnvironmentUsageRichTooltipProps): JSX.Element {
   return (
-    <RichHoverTooltip
+    <HoverCard
       dataTestId={dataTestId}
       surfaceClassName="min-w-40 max-w-70"
       surfacePadding="card"
@@ -44,6 +44,6 @@ export function EnvironmentUsageRichTooltip({
       }
     >
       {children}
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }

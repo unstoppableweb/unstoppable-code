@@ -11,11 +11,11 @@ import {
   useCapabilityTileLayout,
   CapabilityTile,
   capabilityTileModel,
-  RichHoverTooltip,
+  HoverCard,
   ShareActionButton,
   type CapabilityTileAction,
   type CapabilityTileReceipt,
-  type TooltipTriggerProps,
+  type HoverCardTriggerProps,
 } from '@canopy/ui-shared/components';
 import { getDocument } from '@canopy/ui-shared/panels';
 import { useChatShareData } from '@/hooks/useChatShareData';
@@ -100,8 +100,8 @@ export const AgentArtifactCard = memo(function AgentArtifactCard({
   // Inside a turn's Agent activity the tile is a row (AA1); a card elsewhere.
   const row = useCapabilityTileLayout() === 'row';
   const wrapTrigger = useCallback(
-    (trigger: ReactElement<TooltipTriggerProps>): JSX.Element => (
-      <RichHoverTooltip
+    (trigger: ReactElement<HoverCardTriggerProps>): JSX.Element => (
+      <HoverCard
         content={<AgentArtifactTooltip receipt={receipt} model={model} />}
         // A row's trigger fills the row; a card's fills its grid cell
         // (CAPABILITY_TILE_CELL_CLASS, spelled out: this prop takes only a
@@ -113,7 +113,7 @@ export const AgentArtifactCard = memo(function AgentArtifactCard({
         }
       >
         {trigger}
-      </RichHoverTooltip>
+      </HoverCard>
     ),
     [model, receipt, row],
   );

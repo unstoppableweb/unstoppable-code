@@ -2160,15 +2160,21 @@ export async function replayJournaledTerminalRetirements(): Promise<void> {
     try {
       names = await readdir(journalDirectory());
     } catch (error) {
-      if (missing(error)) return;
-      logMainProcessWarn(
-        'Could not read journaled terminal retirements; keeping intents',
-        { code: destructiveFailureCode(error) },
-      );
-      return;
+      if (missing(error)) names = [];
+      else {
+        logMainProcessWarn(
+          'Could not read journaled terminal retirements; keeping intents',
+          { code: destructiveFailureCode(error) },
+        );
+        return;
+      }
     }
     const { terminalPersistenceStore } =
       await import('../terminal/persistence');
+    const unresolved: NonNullable<
+      DestructiveRecoveryRecord['terminalRecordRetirement']
+    >[] = [];
+    let complete = true;
     for (const name of names) {
       if (!LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN.test(name)) continue;
       const path = join(journalDirectory(), name);
@@ -2177,12 +2183,18 @@ export async function replayJournaledTerminalRetirements(): Promise<void> {
           JSON.parse(await readFile(path, 'utf8')),
         );
         const retirement = record.terminalRecordRetirement;
+        if (!retirement) continue;
         if (
-          !retirement ||
           retirement.projectId !== record.workspaceId ||
           record.operation !== 'workspace-delete'
-        )
+        ) {
+          complete = false;
           continue;
+        }
+        if (isInFlight(record)) {
+          unresolved.push(retirement);
+          continue;
+        }
         // Only the removal step's completion save, written after W5 applied,
         // proves the removal: absent records can follow a refusal. A crash
         // before that save leaks the intent rather than risk a live workspace.
@@ -2197,20 +2209,29 @@ export async function replayJournaledTerminalRetirements(): Promise<void> {
           !(await terminalPersistenceStore.replayTerminalRecordRetirement(
             retirement,
           ))
-        )
+        ) {
+          unresolved.push(retirement);
           continue;
+        }
         delete record.terminalRecordRetirement;
         await writeFileAtomically(path, JSON.stringify(record), {
           durable: true,
           mode: 0o600,
         });
       } catch (error) {
+        complete = false;
         logMainProcessWarn(
           'Could not transfer journaled terminal retirement; keeping intent',
           { name, code: destructiveFailureCode(error) },
         );
       }
     }
+    // Missing journals prove abandonment only after a complete scan and with
+    // no live owner that could still be staging its first journal save.
+    if (complete && running.size === 0)
+      await terminalPersistenceStore.reconcilePreparedTerminalRecordRetirements(
+        unresolved,
+      );
   });
 }
 

@@ -3,7 +3,7 @@
 import type { JSX } from 'react';
 import { ExternalLink } from '@canopy/ui-shared/icons/AppIcons';
 import type { TelemetryExpensiveRun } from '@canopy/protocol/telemetry';
-import { StatusBadge } from '@canopy/ui-shared';
+import { Badge } from '@canopy/ui-shared';
 import { SettingsLink, useSettingsPrivacy } from '../../host';
 import {
   formatDurationMs,
@@ -15,7 +15,7 @@ import {
   formatEventTypeLabel,
   formatProviderLabel,
   formatTurnStatusLabel,
-  turnStatusBadgeVariant,
+  turnStatusBadgeTone,
 } from './run-display';
 import { TextLink, Surface } from '@canopy/ui-shared/components';
 
@@ -126,11 +126,12 @@ export function MostExpensiveRuns({
             <div className="flex items-start justify-between gap-3 px-4 py-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <StatusBadge
-                    variant={turnStatusBadgeVariant(run.status)}
-                    label={formatTurnStatusLabel(run.status)}
-                    dataTestId={`expensive-run-status-${run.sessionId}`}
-                  />
+                  <Badge
+                    tone={turnStatusBadgeTone(run.status)}
+                    data-testid={`expensive-run-status-${run.sessionId}`}
+                  >
+                    {formatTurnStatusLabel(run.status)}
+                  </Badge>
                   <p
                     className={cx(
                       'truncate text-s font-medium fg-primary',

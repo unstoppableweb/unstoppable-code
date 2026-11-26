@@ -35,9 +35,9 @@ export interface TurnFeedbackControlProps {
    */
   onRate: (rating: TurnFeedbackRating | null) => void;
   /**
-   * Optional tooltip wrapper. `ActionTooltip` is renderer-only and cannot be
-   * imported into this package, so hosts inject their own via this render
-   * prop. The default renders the child unchanged.
+   * Optional tooltip wrapper, so each host supplies its own tooltip (the
+   * desktop's `Tooltip` with a description). The default renders the child
+   * unchanged.
    */
   renderTooltip?: (node: ReactElement, label: string) => ReactNode;
 }

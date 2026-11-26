@@ -6,10 +6,10 @@ import {
   ChevronDownMediumIcon as AppCatalogChevronDownMediumIcon,
   CloseIcon as AppCatalogCloseIcon,
 } from '../icons/AppIcons';
-import { Button } from './Button';
-import { SearchField } from './SearchField';
+import { Button } from '../primitives/Button';
+import { SearchField } from '../primitives/SearchField';
 
-export interface SearchBarProps {
+export interface FindBarProps {
   query: string;
   onQueryChange: (query: string) => void;
   currentIndex: number;
@@ -28,7 +28,7 @@ export interface SearchBarProps {
   placeholder?: string;
 }
 
-export function SearchBar({
+export function FindBar({
   query,
   onQueryChange,
   currentIndex,
@@ -41,7 +41,7 @@ export function SearchBar({
   inputRef,
   label = 'Search',
   placeholder = 'Search…',
-}: SearchBarProps): JSX.Element {
+}: FindBarProps): JSX.Element {
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>): void => {
       if (e.key === 'Enter' && !e.shiftKey) {

@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 import { PlanModeIcon } from '../icons';
 import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { ModelProviderIcon } from '../icons/ModelProviderIcon';
-import { RichHoverCard } from '../primitives/RichHoverTooltip';
+import { HoverCard } from '../primitives/HoverCard';
 import { Stack } from '../primitives/Stack';
 import { EmptyStateText } from '../primitives/StatusBlocks';
 
@@ -76,67 +76,69 @@ export function ChatPreviewPopover({
   // recorded; each message preview is conversation content and carries its
   // own block.
   return (
-    <RichHoverCard
+    <HoverCard
+      open
       anchorRect={anchorRect}
       id={id}
       role="tooltip"
       {...BADGE_HOVER_CARD_SURFACE}
       surfaceClassName="min-w-50 max-w-75"
-    >
-      <Stack gap="tight">
-        <div className="text-3xs font-semibold fg-secondary">{heading}</div>
-        {rows.length === 0 ? (
-          <div className="text-xs fg-secondary">No chat details</div>
-        ) : (
-          <div className="flex flex-col gap-1.5">
-            {rows.map((row) => (
-              <div key={row.chatId} className="min-w-0">
-                <div className="flex items-center gap-1.5 text-xs">
-                  <span className="inline-flex shrink-0 items-center">
-                    {row.isPlan ? (
-                      <PlanModeIcon size="sm" className="fg-secondary" />
-                    ) : (
-                      <ModelProviderIcon
-                        provider={row.providerType ?? 'claude'}
-                        size="xs"
-                        tone="secondary"
-                      />
-                    )}
-                  </span>
-                  <span
-                    className={`${REPLAY_MASK_CLASS} truncate font-medium fg-primary`}
-                  >
-                    {row.title}
-                  </span>
-                </div>
-                <div
-                  className={`${REPLAY_BLOCK_CLASS} truncate pl-4.5 text-3xs fg-secondary`}
-                >
-                  {row.markedUnread
-                    ? CHAT_PREVIEW_MARKED_UNREAD_COPY
-                    : (row.preview ?? (
-                        <EmptyStateText
-                          title="No response yet"
-                          tone="inherit"
+      content={
+        <Stack gap="tight">
+          <div className="text-3xs font-semibold fg-secondary">{heading}</div>
+          {rows.length === 0 ? (
+            <div className="text-xs fg-secondary">No chat details</div>
+          ) : (
+            <div className="flex flex-col gap-1.5">
+              {rows.map((row) => (
+                <div key={row.chatId} className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <span className="inline-flex shrink-0 items-center">
+                      {row.isPlan ? (
+                        <PlanModeIcon size="sm" className="fg-secondary" />
+                      ) : (
+                        <ModelProviderIcon
+                          provider={row.providerType ?? 'claude'}
+                          size="xs"
+                          tone="secondary"
                         />
-                      ))}
-                </div>
-                {row.scheduleLabel ? (
-                  <div className="truncate pl-4.5 text-3xs fg-secondary">
-                    {row.scheduleLabel}
+                      )}
+                    </span>
+                    <span
+                      className={`${REPLAY_MASK_CLASS} truncate font-medium fg-primary`}
+                    >
+                      {row.title}
+                    </span>
                   </div>
-                ) : (
-                  row.scheduledAt && (
+                  <div
+                    className={`${REPLAY_BLOCK_CLASS} truncate pl-4.5 text-3xs fg-secondary`}
+                  >
+                    {row.markedUnread
+                      ? CHAT_PREVIEW_MARKED_UNREAD_COPY
+                      : (row.preview ?? (
+                          <EmptyStateText
+                            title="No response yet"
+                            tone="inherit"
+                          />
+                        ))}
+                  </div>
+                  {row.scheduleLabel ? (
                     <div className="truncate pl-4.5 text-3xs fg-secondary">
-                      Scheduled for {formatScheduledDateTime(row.scheduledAt)}
+                      {row.scheduleLabel}
                     </div>
-                  )
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </Stack>
-    </RichHoverCard>
+                  ) : (
+                    row.scheduledAt && (
+                      <div className="truncate pl-4.5 text-3xs fg-secondary">
+                        Scheduled for {formatScheduledDateTime(row.scheduledAt)}
+                      </div>
+                    )
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </Stack>
+      }
+    />
   );
 }

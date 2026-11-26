@@ -2,8 +2,8 @@ import type { JSX } from 'react';
 import { Button, EmptyState, Notice } from '@canopy/ui-shared';
 import {
   ChoiceList,
-  ChoiceListRow,
-  DialogFormField,
+  ChoiceField,
+  FormField,
   Surface,
 } from '@canopy/ui-shared/components';
 import {
@@ -316,36 +316,35 @@ export function CloudProjectSetupPanel({
           data-testid="cloud-project-setup-repositories"
         >
           {state.repositories.map((repository) => (
-            <ChoiceListRow
+            <ChoiceField
               key={repository.repositoryId}
-              selected={
-                repository.root || selected.has(repository.repositoryId)
-              }
+              layout="row"
+              checked={repository.root || selected.has(repository.repositoryId)}
               disabled={state.busy || repository.root}
-              onClick={(): void => onToggleRepository(repository.repositoryId)}
-              trailing={repository.root ? 'Project root' : undefined}
+              onChange={(): void => onToggleRepository(repository.repositoryId)}
+              end={repository.root ? 'Project root' : undefined}
               data-testid={`cloud-project-setup-repository-${repository.repositoryId}`}
-            >
-              <span className={`block truncate ${REPLAY_MASK_CLASS}`}>
-                {repository.name}
-              </span>
-              {/* `host/owner/name` names the account and its private repository. */}
-              <span
-                className={`block truncate text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}
-              >
-                {repository.remoteKey}
-              </span>
-            </ChoiceListRow>
+              label={
+                <>
+                  <span className={`block truncate ${REPLAY_MASK_CLASS}`}>
+                    {repository.name}
+                  </span>
+                  {/* `host/owner/name` names the account and its private repository. */}
+                  <span
+                    className={`block truncate text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}
+                  >
+                    {repository.remoteKey}
+                  </span>
+                </>
+              }
+            />
           ))}
         </ChoiceList>
       </div>
       {/* The button is named by the label and the path, not a `<label for>`:
           that would drop the path from its name and open the folder picker
           when the label is clicked. */}
-      <DialogFormField
-        label="Destination folder"
-        labelId={DESTINATION_LABEL_ID}
-      >
+      <FormField label="Destination folder" labelId={DESTINATION_LABEL_ID}>
         <Button
           id="cloud-project-setup-destination"
           data-testid="cloud-project-setup-destination"
@@ -367,7 +366,7 @@ export function CloudProjectSetupPanel({
           </span>
           <span className="shrink-0 fg-secondary">Change</span>
         </Button>
-      </DialogFormField>
+      </FormField>
       <p className="text-s fg-secondary">
         Cloned with your Git credentials. No scripts run until you open a task.
       </p>

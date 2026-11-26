@@ -1,7 +1,7 @@
 import type { JSX, ReactElement } from 'react';
 import { useShallow } from 'zustand/shallow';
 import { PullRequestProgressTooltip } from '@canopy/ui-app/pull-requests';
-import type { TooltipTriggerProps } from '@/components/shared/RichHoverTooltip';
+import type { HoverCardTriggerProps } from '@canopy/ui-shared/components';
 import { useGitHubStore } from '@/stores/githubStore';
 import type { BranchSyncAction } from '@/lib/githubBranchActions';
 import {
@@ -25,7 +25,7 @@ interface GitActionProgressTooltipProps {
   projectId: string;
   worktreeId: string;
   action: GitActionKind;
-  children: ReactElement<TooltipTriggerProps>;
+  children: ReactElement<HoverCardTriggerProps>;
   dataTestId?: string;
   /**
    * Keeps the wrapper mounted but never shows the checklist, for an action

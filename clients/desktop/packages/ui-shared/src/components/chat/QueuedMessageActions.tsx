@@ -6,7 +6,7 @@ import type {
 } from '@canopy/protocol/remote-control/shell';
 import { PlayCircleIcon, RetryIcon, SteerIcon } from '../../icons';
 import { StopIcon, TrashIcon } from '../../icons/AppIcons';
-import { ActionTooltip } from '../../primitives/ActionTooltip';
+import { Tooltip } from '../../primitives/Tooltip';
 import { Button } from '../../primitives/Button';
 import { MessageEditBadge, type MessageEditHandler } from './MessageEditEntry';
 import { QueuedMessageSettingsHeldWarning } from './QueuedMessageSettingsHeldWarning';
@@ -236,8 +236,8 @@ export const QueuedMessageActions = memo(function QueuedMessageActions({
         />
       ) : null}
       {showSteer ? (
-        <ActionTooltip
-          title={QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP_TITLE}
+        <Tooltip
+          label={QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP_TITLE}
           description={QUEUED_MESSAGE_CAPABILITY_CHANGE_TOOLTIP}
           disabled={!showDisabledSteer}
         >
@@ -259,7 +259,7 @@ export const QueuedMessageActions = memo(function QueuedMessageActions({
             />
             Steer
           </Button>
-        </ActionTooltip>
+        </Tooltip>
       ) : null}
       {showInterrupt ? (
         <Button
@@ -278,8 +278,8 @@ export const QueuedMessageActions = memo(function QueuedMessageActions({
         </Button>
       ) : null}
       {showRetry ? (
-        <ActionTooltip
-          title={retryBlock?.title ?? ''}
+        <Tooltip
+          label={retryBlock?.title ?? ''}
           description={retryBlock?.description ?? ''}
           disabled={retryBlock === undefined}
         >
@@ -300,7 +300,7 @@ export const QueuedMessageActions = memo(function QueuedMessageActions({
             />
             Try again
           </Button>
-        </ActionTooltip>
+        </Tooltip>
       ) : null}
       {showRunNow ? (
         <Button

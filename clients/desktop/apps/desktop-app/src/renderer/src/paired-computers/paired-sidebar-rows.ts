@@ -4,11 +4,13 @@ import {
   parseAuthorityQualifiedId,
 } from '@canopy/protocol/authority-qualified-id';
 import { resolveWorkspaceLayout } from '@canopy/protocol/remote-control/shell';
+import { hasVisibleWorkspaceContent } from '@canopy/desktop-shared/lib/workspace-visibility';
 import {
   localProjectCopy,
   pairedComputerProjects,
   type NotSentProjectField,
   type PairedComputerProjects,
+  type PairedSnapshotWorkspace,
   type ProjectCopy,
   type ProjectGrouper,
   type ProjectGrouping,
@@ -20,6 +22,7 @@ import type {
 import type {
   PairedSidebarStructure,
   PairedSidebarStructureEntry,
+  PairedSidebarTask,
 } from './paired-computers-sidebar-store';
 
 type SidebarWorkspace = SessionViewModel['workspaces'][number];
@@ -46,6 +49,13 @@ export interface PairedSidebarProject {
   readonly notSent: ReadonlyMap<string, readonly NotSentProjectField[]>;
 }
 
+export function pairedRowWorkspaceKey(
+  sidebarWorkspaceId: string,
+  qualifiedTaskId: string,
+): string {
+  return `${sidebarWorkspaceId}\0${qualifiedTaskId}`;
+}
+
 export interface PairedSidebarRows {
   /** Projects only on paired computers, by qualified id, after the local ones. */
   readonly workspaces: readonly SidebarWorkspace[];
@@ -53,12 +63,18 @@ export interface PairedSidebarRows {
   readonly worktrees: readonly SidebarWorktree[];
   /** Every project that lists a paired computer's task, by its sidebar id. */
   readonly projects: ReadonlyMap<string, PairedSidebarProject>;
+  /**
+   * Maps each emitted paired row (`pairedRowWorkspaceKey(workspaceLocalId, localId)`)
+   * to the task's owning `workspaceLocalId` on its paired computer.
+   */
+  readonly rowRemoteWorkspaceIds: ReadonlyMap<string, string>;
 }
 
 export const NO_PAIRED_SIDEBAR_ROWS: PairedSidebarRows = {
   workspaces: [],
   worktrees: [],
   projects: new Map(),
+  rowRemoteWorkspaceIds: new Map(),
 };
 
 export interface PairedSidebarRowsInput {
@@ -135,11 +151,39 @@ function buildRows(
   const workspaces: SidebarWorkspace[] = [];
   const worktrees: SidebarWorktree[] = [];
   const projects = new Map<string, PairedSidebarProject>();
+  const rowRemoteWorkspaceIds = new Map<string, string>();
   const computerRank = new Map(
     Array.from(input.computers.keys())
       .sort()
       .map((deviceId, index) => [deviceId, index] as const),
   );
+  // Pre-index peer workspaces and tasks once so building rows is linear in
+  // snapshot size instead of rescanning every peer's arrays per project group.
+  const workspacesByComputer = new Map<
+    string,
+    Map<string, PairedSnapshotWorkspace>
+  >();
+  const tasksByComputerWorkspace = new Map<
+    string,
+    Map<string, PairedSidebarTask[]>
+  >();
+  for (const [deviceId, entry] of input.computers) {
+    const structure = entry.structure;
+    if (structure === null) continue;
+    const workspaceIndex = new Map<string, PairedSnapshotWorkspace>();
+    for (const workspace of structure.workspaces) {
+      workspaceIndex.set(workspace.localId, workspace);
+    }
+    workspacesByComputer.set(deviceId, workspaceIndex);
+    const tasksByWorkspace = new Map<string, PairedSidebarTask[]>();
+    for (const task of structure.tasks) {
+      const list = tasksByWorkspace.get(task.workspaceLocalId);
+      if (list === undefined)
+        tasksByWorkspace.set(task.workspaceLocalId, [task]);
+      else list.push(task);
+    }
+    tasksByComputerWorkspace.set(deviceId, tasksByWorkspace);
+  }
   for (const group of grouping.groups) {
     const local = group.members.find(
       (member) => member.computer.kind === 'local',
@@ -163,13 +207,12 @@ function buildRows(
       if (member.notSent !== undefined) notSent.set(deviceId, member.notSent);
     projects.set(targetId, { deviceIds, onlyOnPairedComputers, notSent });
     if (onlyOnPairedComputers) {
-      const source = input.computers
+      const firstLocalProjectId = firstPaired.member.projectId.slice(
+        firstPaired.member.projectId.indexOf(':') + 1,
+      );
+      const source = workspacesByComputer
         .get(firstPaired.deviceId)
-        ?.structure?.workspaces.find(
-          (workspace) =>
-            qualified(firstPaired.deviceId, workspace.localId) ===
-            firstPaired.member.projectId,
-        );
+        ?.get(firstLocalProjectId);
       workspaces.push({
         localId: targetId,
         name: projectName(group.name, deviceIds, input.computers),
@@ -180,20 +223,27 @@ function buildRows(
         ...(source?.owner === undefined ? {} : { owner: source.owner }),
       });
     }
+    const seenInTarget = new Set<string>();
     for (const { member, deviceId } of paired) {
-      const structure = input.computers.get(deviceId)?.structure;
-      if (structure === undefined || structure === null) continue;
       const localProjectId = member.projectId.slice(
         member.projectId.indexOf(':') + 1,
       );
+      const projectTasks = tasksByComputerWorkspace
+        .get(deviceId)
+        ?.get(localProjectId);
+      if (projectTasks === undefined) continue;
       const base =
         PAIRED_ORDER_BASE +
         (computerRank.get(deviceId) ?? 0) * PAIRED_ORDER_PER_COMPUTER;
       let index = 0;
-      for (const task of structure.tasks) {
-        if (task.workspaceLocalId !== localProjectId) continue;
+      for (const task of projectTasks) {
         const localId = qualified(deviceId, task.localId);
-        if (localId === null) continue;
+        if (localId === null || seenInTarget.has(localId)) continue;
+        seenInTarget.add(localId);
+        rowRemoteWorkspaceIds.set(
+          pairedRowWorkspaceKey(targetId, localId),
+          task.workspaceLocalId,
+        );
         worktrees.push({
           localId,
           workspaceLocalId: targetId,
@@ -209,7 +259,7 @@ function buildRows(
       }
     }
   }
-  return { workspaces, worktrees, projects };
+  return { workspaces, worktrees, projects, rowRemoteWorkspaceIds };
 }
 
 /**
@@ -302,4 +352,33 @@ export function appendPairedSidebarRows<
           ],
     worktrees: [...snapshot.worktrees, ...paired.worktrees],
   };
+}
+
+/**
+ * Empty deferred (`alwaysShow: false`) workspaces that should move to the
+ * Hidden disclosure. A local project with a visible paired-computer task stays
+ * in the main Projects list; explicitly hidden projects are handled separately.
+ */
+export function selectDeferredEmptyWorkspaceIds(
+  projects: readonly SidebarItem[],
+  pairedWorktrees: ReadonlyArray<{
+    readonly workspaceLocalId: string;
+    readonly hidden?: boolean;
+  }>,
+): ReadonlySet<string> {
+  const pairedWorkspaceIdsWithVisibleTasks = new Set(
+    pairedWorktrees
+      .filter((worktree) => worktree.hidden !== true)
+      .map((worktree) => worktree.workspaceLocalId),
+  );
+  return new Set(
+    projects
+      .filter(
+        (project) =>
+          project.alwaysShow === false &&
+          !hasVisibleWorkspaceContent(project) &&
+          !pairedWorkspaceIdsWithVisibleTasks.has(project.id),
+      )
+      .map((project) => project.id),
+  );
 }

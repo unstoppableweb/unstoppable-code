@@ -3,6 +3,8 @@ import { useStore } from 'zustand';
 import { createStore } from 'zustand/vanilla';
 import { useShallow } from 'zustand/shallow';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
+import type { SessionViewModel } from '@canopy/app-core';
+import { resolveWorkspaceLayout } from '@canopy/protocol/remote-control/shell';
 import { createProjectGrouper } from '@canopy/desktop-shared/lib/project-groups';
 import type { PairedComputerLocalProjectFacts } from '@canopy/desktop-shared/types';
 import {
@@ -10,8 +12,10 @@ import {
   type WorktreeRowOverrides,
   type WorktreeRowSlotContext,
 } from '@canopy/ui-app';
+import { worktreeRowKey } from '@canopy/ui-app/code/shell/workspace-sections-model';
 import { SidebarComputerStatusRow } from '@canopy/ui-app/sidebar';
 import { RowComputerMarker } from '@canopy/ui-shared/components';
+import { isDesktopSharedSidebarEnabled } from '@/components/sidebar/desktop-shared-sidebar-flag';
 import { usePairedComputersApi } from '@/stores/oneWindowStore';
 import {
   pairedComputerAddress,
@@ -20,14 +24,18 @@ import {
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useCanopyCloudAccountId } from '@/hooks/useCanopyCloudConnected';
 import {
+  pairedTaskKey,
   PairedComputersSidebarFollower,
   pairedSidebarStore,
   type PairedComputerToFollow,
+  type PairedSidebarComputer,
   type PairedSidebarComputerStatus,
+  type PairedSidebarStructure,
 } from './paired-computers-sidebar-store';
 import {
   createPairedSidebarRowsBuilder,
   NO_PAIRED_SIDEBAR_ROWS,
+  pairedRowWorkspaceKey,
   type PairedSidebarRows,
 } from './paired-sidebar-rows';
 
@@ -40,18 +48,21 @@ import {
  * demand and idle closing are CAN-7771. Mount once, in the app root.
  */
 export function usePairedComputersSidebarFollower(): void {
+  // Paired rows mount only in DesktopSharedSidebarHost; skip holding peer
+  // sessions while the legacy sidebar escape hatch is active.
+  const [sharedSidebarEnabled] = useState(isDesktopSharedSidebarEnabled);
   const api = usePairedComputersApi();
   const [follower, setFollower] =
     useState<PairedComputersSidebarFollower | null>(null);
   useEffect(() => {
-    if (api === null) return undefined;
+    if (!sharedSidebarEnabled || api === null) return undefined;
     const next = new PairedComputersSidebarFollower(api, reportClientAppError);
     setFollower(next);
     return (): void => {
       next.dispose();
       setFollower(null);
     };
-  }, [api]);
+  }, [sharedSidebarEnabled, api]);
   // One line per online computer, `<device id>\t<name>`, so the list is
   // equal while nothing in it changes (device ids hold no tab).
   const online = useRemoteControlStore(
@@ -90,24 +101,86 @@ function unavailableReason(
  * computer, so a status change re-renders that row alone. Undefined for
  * every other row.
  */
+const EMPTY_REMOTE_WORKSPACES: ReadonlyMap<string, string> = new Map();
+
+/**
+ * Maps each rendered paired row (`pairedRowWorkspaceKey(workspaceLocalId, localId)`)
+ * to its owning remote workspace id so live status and approval lookups stay
+ * scoped even when two projects on the same paired computer share a task id.
+ */
+const pairedRowRemoteWorkspacesStore = createStore<{
+  readonly byRowKey: ReadonlyMap<string, string>;
+}>(() => ({ byRowKey: EMPTY_REMOTE_WORKSPACES }));
+
+function resolveRemoteWorkspaceId(
+  computer: PairedSidebarComputer | undefined,
+  sidebarWorkspaceId: string,
+  localId: string,
+  mappedRemoteWorkspaceId: string | undefined,
+): string | undefined {
+  if (mappedRemoteWorkspaceId !== undefined) return mappedRemoteWorkspaceId;
+  const workspaceAddress = pairedComputerAddress(sidebarWorkspaceId);
+  if (workspaceAddress !== null) return workspaceAddress.localId;
+  if (computer?.structure === null || computer === undefined) return undefined;
+  let match: string | undefined;
+  for (const task of computer.structure.tasks) {
+    if (task.localId !== localId) continue;
+    if (match !== undefined) return undefined;
+    match = task.workspaceLocalId;
+  }
+  return match;
+}
+
 export function usePairedWorktreeRowOverrides(
   context: WorktreeRowSlotContext,
 ): WorktreeRowOverrides | undefined {
   const id = context.worktree.localId;
+  const sidebarWorkspaceId = context.workspace.localId;
   const address = useMemo(() => pairedComputerAddress(id), [id]);
   const deviceId = address?.deviceId;
   const localId = address?.localId;
-  const live = useStore(pairedSidebarStore, (state) =>
-    deviceId === undefined || localId === undefined
-      ? undefined
-      : state.computers.get(deviceId)?.live.get(localId),
+  const mappedRemoteWorkspaceId = useStore(
+    pairedRowRemoteWorkspacesStore,
+    (state) =>
+      deviceId === undefined
+        ? undefined
+        : state.byRowKey.get(pairedRowWorkspaceKey(sidebarWorkspaceId, id)),
   );
+  const live = useStore(pairedSidebarStore, (state) => {
+    if (deviceId === undefined || localId === undefined) return undefined;
+    const computer = state.computers.get(deviceId);
+    const remoteWorkspaceId = resolveRemoteWorkspaceId(
+      computer,
+      sidebarWorkspaceId,
+      localId,
+      mappedRemoteWorkspaceId,
+    );
+    return remoteWorkspaceId === undefined
+      ? undefined
+      : computer?.live.get(pairedTaskKey(remoteWorkspaceId, localId));
+  });
   const status = useStore(pairedSidebarStore, (state) =>
     deviceId === undefined ? undefined : state.computers.get(deviceId)?.status,
   );
   const name = useStore(pairedSidebarStore, (state) =>
     deviceId === undefined ? undefined : state.computers.get(deviceId)?.name,
   );
+  const waitingForApproval = useStore(pairedSidebarStore, (state) => {
+    if (deviceId === undefined || localId === undefined) return false;
+    const computer = state.computers.get(deviceId);
+    if (computer === undefined || computer.toolApprovals.size === 0)
+      return false;
+    const remoteWorkspaceId = resolveRemoteWorkspaceId(
+      computer,
+      sidebarWorkspaceId,
+      localId,
+      mappedRemoteWorkspaceId,
+    );
+    return (
+      remoteWorkspaceId !== undefined &&
+      computer.toolApprovals.has(pairedTaskKey(remoteWorkspaceId, localId))
+    );
+  });
   return useMemo((): WorktreeRowOverrides | undefined => {
     if (status === undefined || name === undefined) return undefined;
     const reason = unavailableReason(status);
@@ -124,20 +197,28 @@ export function usePairedWorktreeRowOverrides(
         unavailable: reason !== undefined,
       };
     const done = live.status === 'done';
+    // desktop:session-snapshot reports task-level streaming without per-chat
+    // breakdown, so while a tool approval is waiting we suppress streaming to
+    // match local rows (orange approval dot only, not the Working spinner).
+    const effectiveLive = waitingForApproval
+      ? { ...live, isStreaming: false, busy: false }
+      : live;
     return {
       trailingIconSlot: marker,
       unavailable: false,
-      uiStatus: done ? 'done' : deriveWorktreeUiStatus(live),
+      uiStatus: done ? 'done' : deriveWorktreeUiStatus(effectiveLive),
       runtimeState: done ? 'done' : undefined,
-      isStreaming: live.isStreaming,
+      isStreaming: waitingForApproval ? false : live.isStreaming,
+      pipelineStatus: live.pipelineStatus,
       backgroundTasks: live.backgroundTasks,
       awaitingApproval: live.awaitingApproval,
+      hasPendingToolApproval: waitingForApproval,
       hasUnread: live.hasUnread,
       ...(live.lastActivityAt === undefined
         ? {}
         : { lastActivityAt: live.lastActivityAt }),
     };
-  }, [live, status, name]);
+  }, [live, status, name, waitingForApproval]);
 }
 
 const NO_FACTS: Readonly<Record<string, PairedComputerLocalProjectFacts>> = {};
@@ -231,6 +312,16 @@ export function usePairedSidebarRows(): PairedSidebarRows {
           }),
     [build, computers, localProjects, facts, accountId],
   );
+  useEffect(() => {
+    pairedRowRemoteWorkspacesStore.setState({
+      byRowKey: rows.rowRemoteWorkspaceIds,
+    });
+    return (): void => {
+      pairedRowRemoteWorkspacesStore.setState({
+        byRowKey: EMPTY_REMOTE_WORKSPACES,
+      });
+    };
+  }, [rows.rowRemoteWorkspaceIds]);
   const collapsed = useStore(
     pairedProjectCollapseStore,
     (state) => state.collapsed,
@@ -253,11 +344,87 @@ export function usePairedSidebarRows(): PairedSidebarRows {
 }
 
 /**
- * One row for each paired computer the sidebar lists that has sent no tasks
- * yet and can't be reached: connecting or needing an update. Once a
- * computer's tasks arrive, they list under their projects instead.
+ * Collects paired computer device ids that have at least one task row
+ * currently rendered in the sidebar. When `renderedWorktreeKeys` is supplied
+ * by the mounted sidebar surface, it reflects the exact rows on screen
+ * (accounting for Projects collapse, pagination, project collapse, and
+ * expanded/closed Hidden tasks disclosures); otherwise it falls back to
+ * snapshot-level filtering.
  */
-export function PairedComputerStatusRows(): JSX.Element | null {
+export function collectVisiblePairedDeviceIds(options: {
+  readonly workspaces: readonly SessionViewModel['workspaces'][number][];
+  readonly pairedWorktrees: readonly SessionViewModel['worktrees'][number][];
+  readonly hiddenWorkspaceIds: readonly string[];
+  readonly matchesWorkspaceContext: (
+    workspace: SessionViewModel['workspaces'][number],
+  ) => boolean;
+  readonly renderedWorktreeKeys?: ReadonlySet<string>;
+}): ReadonlySet<string> {
+  const deviceIds = new Set<string>();
+  if (options.pairedWorktrees.length === 0) return deviceIds;
+  if (options.renderedWorktreeKeys !== undefined) {
+    for (const worktree of options.pairedWorktrees) {
+      if (
+        !options.renderedWorktreeKeys.has(
+          worktreeRowKey(worktree.workspaceLocalId, worktree.localId),
+        )
+      )
+        continue;
+      const deviceId = pairedComputerAddress(worktree.localId)?.deviceId;
+      if (deviceId !== undefined) deviceIds.add(deviceId);
+    }
+    return deviceIds;
+  }
+  const hiddenWorkspaces = new Set(options.hiddenWorkspaceIds);
+  const visibleWorkspaceIds = new Set<string>();
+  for (const workspace of options.workspaces) {
+    if (hiddenWorkspaces.has(workspace.localId)) continue;
+    if (workspace.collapsed === true) continue;
+    if (resolveWorkspaceLayout(workspace) !== 'tree') continue;
+    if (!options.matchesWorkspaceContext(workspace)) continue;
+    visibleWorkspaceIds.add(workspace.localId);
+  }
+  for (const worktree of options.pairedWorktrees) {
+    if (worktree.hidden === true) continue;
+    if (!visibleWorkspaceIds.has(worktree.workspaceLocalId)) continue;
+    const deviceId = pairedComputerAddress(worktree.localId)?.deviceId;
+    if (deviceId !== undefined) deviceIds.add(deviceId);
+  }
+  return deviceIds;
+}
+
+function hasProjectedTreeTask(
+  structure: PairedSidebarStructure | null,
+): boolean {
+  if (structure === null || structure.tasks.length === 0) return false;
+  const treeWorkspaceIds = new Set<string>();
+  for (const workspace of structure.workspaces) {
+    if (resolveWorkspaceLayout(workspace) === 'tree') {
+      treeWorkspaceIds.add(workspace.localId);
+    }
+  }
+  return structure.tasks.some((task) =>
+    treeWorkspaceIds.has(task.workspaceLocalId),
+  );
+}
+
+/**
+ * One row for each paired computer the sidebar lists that has no projected
+ * tree tasks and cannot be reached: connecting or needing an update. Once a
+ * computer's tree tasks arrive, they list under their projects instead.
+ */
+export interface PairedComputerStatusRowsProps {
+  /**
+   * Paired computer device ids that already have at least one visible task row
+   * in the current sidebar context. When omitted, falls back to checking the
+   * raw snapshot for any tree-layout task.
+   */
+  readonly visibleDeviceIds?: ReadonlySet<string>;
+}
+
+export function PairedComputerStatusRows({
+  visibleDeviceIds,
+}: PairedComputerStatusRowsProps = {}): JSX.Element | null {
   // One line per computer, `<device id>\t<status>\t<name>`, so the rows
   // re-render only when one of these changes, never for a task's status.
   const waiting = useStore(
@@ -266,7 +433,10 @@ export function PairedComputerStatusRows(): JSX.Element | null {
       Array.from(state.computers.values())
         .filter(
           (computer) =>
-            computer.structure === null && computer.status !== 'connected',
+            !(visibleDeviceIds !== undefined
+              ? visibleDeviceIds.has(computer.deviceId)
+              : hasProjectedTreeTask(computer.structure)) &&
+            computer.status !== 'connected',
         )
         .map(
           (computer) =>

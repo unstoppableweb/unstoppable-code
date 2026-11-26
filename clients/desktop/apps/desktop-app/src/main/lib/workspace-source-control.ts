@@ -46,11 +46,11 @@ import type {
 import {
   createWorktree,
   getRemoteUrl,
-  initGitRepo,
   isGitRepo,
   stageAllChanges,
   commitWithLocalIdentity,
 } from './git';
+import { initializeRepositoryThroughWorker } from '../canopy-runtime/worker-git-repository-creation-dispatch';
 import {
   getDefaultReposDir,
   getWorkspaceClaudeMdPath,
@@ -384,7 +384,10 @@ async function prepareWorkspaceSourceRepo(
   await mkdir(sourceRepoPath, {
     recursive: plannedSourceRepoPath === undefined,
   });
-  await initGitRepo(sourceRepoPath);
+  await initializeRepositoryThroughWorker({
+    kind: 'empty',
+    directory: sourceRepoPath,
+  });
 
   await writeWorkspaceRootFiles(
     sourceRepoPath,

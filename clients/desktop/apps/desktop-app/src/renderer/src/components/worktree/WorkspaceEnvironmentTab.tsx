@@ -3,7 +3,7 @@ import {
   Surface,
   Stack,
   Button,
-  DialogFormField,
+  FormField,
   CopyDetailsButton,
   Heading,
   Notice,
@@ -598,7 +598,7 @@ export function WorkspaceEnvironmentTab({
           const fallback = getFallbackEnvironment(data, runtime);
           const fallbackLabel = `Global default (${fallback?.name ?? 'unassigned'})`;
           return (
-            <DialogFormField
+            <FormField
               key={runtime}
               label={RUNTIME_META[runtime].label}
               description={runtimeHelper(runtime, workspaceKind)}
@@ -611,7 +611,7 @@ export function WorkspaceEnvironmentTab({
                 testId={`workspace-environment-${runtime}`}
                 ariaLabel={`${RUNTIME_META[runtime].label} assignment`}
               />
-            </DialogFormField>
+            </FormField>
           );
         })}
       </Stack>

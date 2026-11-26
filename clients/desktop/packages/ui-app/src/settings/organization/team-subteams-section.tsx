@@ -5,8 +5,8 @@ import { Pencil, Trash2, Users } from '@canopy/ui-shared/icons/AppIcons';
 import {
   Button,
   ChoiceList,
-  ChoiceListRow,
-  DialogFormField,
+  ChoiceField,
+  FormField,
   DialogModal,
   ErrorBanner,
   TextInput,
@@ -322,7 +322,7 @@ function RenameSubTeamDialog({
           error={error?.copy}
           details={error?.details}
         />
-        <DialogFormField label="Name" htmlFor="rename-subteam-name">
+        <FormField label="Name" id="rename-subteam-name">
           <TextInput
             id="rename-subteam-name"
             density="settings"
@@ -333,7 +333,7 @@ function RenameSubTeamDialog({
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
-        </DialogFormField>
+        </FormField>
         <div className="flex items-center justify-end gap-2">
           <Button variant="secondary" size="compact" onClick={onClose}>
             Cancel
@@ -430,21 +430,25 @@ function SubTeamMembershipDialog({
         {/* The whole list scrolls in its capped box. */}
         <ChoiceList aria-label="Members" height="bounded">
           {detail.members.map((member) => (
-            <ChoiceListRow
+            <ChoiceField
               key={member.id}
-              selected={selected.has(member.id)}
-              onClick={() => toggle(member.id)}
+              layout="row"
+              checked={selected.has(member.id)}
+              onChange={() => toggle(member.id)}
               data-testid="subteam-member-checkbox"
-            >
-              <span className={joinClassNames('block min-w-0', blockClassName)}>
-                <span className="block truncate font-medium fg-primary">
-                  {member.name}
+              label={
+                <span
+                  className={joinClassNames('block min-w-0', blockClassName)}
+                >
+                  <span className="block truncate font-medium fg-primary">
+                    {member.name}
+                  </span>
+                  <span className="block truncate text-xs fg-secondary">
+                    {member.email}
+                  </span>
                 </span>
-                <span className="block truncate text-xs fg-secondary">
-                  {member.email}
-                </span>
-              </span>
-            </ChoiceListRow>
+              }
+            />
           ))}
         </ChoiceList>
         <div className="flex items-center justify-end gap-2">

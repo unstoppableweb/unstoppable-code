@@ -18,7 +18,7 @@ import {
   type PositionedGroup,
 } from './dayWeekLayout';
 import { NowIndicator } from './NowIndicator';
-import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
+import { HoverCard } from '@canopy/ui-shared/components';
 import { CalendarDayNumber, Surface } from '@canopy/ui-shared/components';
 
 const DAY_HEIGHT = 24 * HOUR_PX;
@@ -77,7 +77,7 @@ function TimeGridEvent({
         width: `${(1 / laneCount) * 100}%`,
       }}
     >
-      <RichHoverTooltip
+      <HoverCard
         content={title}
         triggerWrapperClassName="h-full w-full"
         surfaceClassName="w-max max-w-80"
@@ -117,7 +117,7 @@ function TimeGridEvent({
           </span>
           {tall && <span className="truncate">{event.name}</span>}
         </ControlButton>
-      </RichHoverTooltip>
+      </HoverCard>
     </div>
   );
 }

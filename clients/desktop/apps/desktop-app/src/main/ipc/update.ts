@@ -23,6 +23,7 @@ import {
   listTargetUpdateVersions,
   reportRendererBusyState,
 } from '../updater';
+import { openLinuxSystemUpdater } from '../updater/linux-system-updater';
 import { getCanopyReleaseFlavor } from '../lib/app-identity';
 import { getInternalReleaseIndicatorForDisplay } from '../lib/internal-release-version';
 import { isE2eBuild } from '../lib/e2e-gate';
@@ -205,6 +206,10 @@ export function registerUpdateHandlers(
   registerIpcHandler(
     IPC_CHANNELS.updateGetDependencyVersions,
     (): DependencyVersions => DEPENDENCY_VERSIONS,
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.updateOpenSystemUpdater,
+    openLinuxSystemUpdater,
   );
   registerIpcHandler(
     IPC_CHANNELS.updateGetState,

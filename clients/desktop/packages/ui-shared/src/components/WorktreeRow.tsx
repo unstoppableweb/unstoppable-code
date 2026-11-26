@@ -32,8 +32,8 @@ import { GroupedDiffStats } from './GroupedDiffStats';
 import {
   ITEM_PREVIEW_OPEN_DELAY_MS,
   PREVIEW_CARD_SURFACE,
-  RichHoverTooltip,
-} from '../primitives/RichHoverTooltip';
+  HoverCard,
+} from '../primitives/HoverCard';
 import {
   isPrStatusInMergeQueue,
   PR_STATUS_ICONS,
@@ -1551,13 +1551,13 @@ function withStatusTooltip(
 ): JSX.Element {
   if (!label) return badge;
   return (
-    <RichHoverTooltip
+    <HoverCard
       surfaceClassName="w-max"
       surfacePadding="relaxed"
       content={<div className="text-xs fg-primary">{label}</div>}
     >
       {badge}
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }
 
@@ -1647,13 +1647,13 @@ function RowStatusBadge({
   if (hostOwnsSurface) return badge;
   if (tooltip === undefined) return withStatusTooltip(label, badge);
   return (
-    <RichHoverTooltip
+    <HoverCard
       content={tooltip}
       surfaceClassName="min-w-40 max-w-65"
       surfacePadding="card"
     >
       {badge}
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }
 
@@ -1736,7 +1736,7 @@ function DepthBadgeTrigger({
   testId: string;
 }): JSX.Element {
   return (
-    <RichHoverTooltip
+    <HoverCard
       content={<DepthBadgeTooltipContent badge={badge} textScale={textScale} />}
     >
       <span
@@ -1751,7 +1751,7 @@ function DepthBadgeTrigger({
       >
         {value}
       </span>
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }
 
@@ -2446,7 +2446,7 @@ function WorktreeRowImpl(
   ) : null;
   const prSubtitleBadge =
     showPrBadge && prLabel !== undefined && lastKnownPrStatus !== undefined ? (
-      <RichHoverTooltip
+      <HoverCard
         surfaceClassName="min-w-65 max-w-85"
         surfacePadding="card"
         preferRightPlacement
@@ -2479,7 +2479,7 @@ function WorktreeRowImpl(
             <PrBadgeContent label={prLabel} testIdSuffix={testIdSuffix} />
           </span>
         )}
-      </RichHoverTooltip>
+      </HoverCard>
     ) : null;
   const subtitleMetadata =
     prSubtitleBadge !== null || sharedSubtitleBadge !== null ? (
@@ -2587,7 +2587,7 @@ function WorktreeRowImpl(
     showPrBadge &&
     prLabel !== undefined &&
     lastKnownPrStatus !== undefined ? (
-      <RichHoverTooltip
+      <HoverCard
         surfaceClassName="min-w-65 max-w-85"
         surfacePadding="card"
         preferRightPlacement
@@ -2667,7 +2667,7 @@ function WorktreeRowImpl(
             )}
           </span>
         )}
-      </RichHoverTooltip>
+      </HoverCard>
     ) : null;
 
   if (isClassicSidebar) {
@@ -4719,7 +4719,7 @@ function WorktreeRowWithPreview(
     props.scheduledMessagesPopoverSlot,
   ].some((slot) => slot != null);
   return (
-    <RichHoverTooltip
+    <HoverCard
       content={
         <WorktreeRowPreviewCard
           row={props}
@@ -4766,7 +4766,7 @@ function WorktreeRowWithPreview(
       >
         <WorktreeRowBase {...props} ref={ref} />
       </div>
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }
 

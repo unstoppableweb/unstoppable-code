@@ -5,7 +5,7 @@ import {
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   SettingsBackButton,
   SettingsRowsGroup,
   SettingsRowsRow,
@@ -420,23 +420,27 @@ export function SettingsRadioGroup<T extends string>({
   return (
     <ChoiceList kind="radio" aria-label={label} data-testid={dataTestId}>
       {options.map((option) => (
-        <ChoiceListRow
+        <ChoiceField
           key={option.value}
+          layout="row"
           kind="radio"
           name={name}
           value={option.value}
-          selected={value === option.value}
+          checked={value === option.value}
           disabled={disabled || option.disabled}
-          onClick={() => onChange(option.value)}
+          onChange={() => onChange(option.value)}
           data-testid={option.dataTestId}
-        >
-          <span className="block font-medium">{option.label}</span>
-          {option.description ? (
-            <span className="block text-xs text-pretty fg-secondary">
-              {option.description}
-            </span>
-          ) : null}
-        </ChoiceListRow>
+          label={
+            <>
+              <span className="block font-medium">{option.label}</span>
+              {option.description ? (
+                <span className="block text-xs text-pretty fg-secondary">
+                  {option.description}
+                </span>
+              ) : null}
+            </>
+          }
+        />
       ))}
     </ChoiceList>
   );

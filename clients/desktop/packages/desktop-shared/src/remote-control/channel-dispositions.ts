@@ -810,6 +810,8 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     updateSchedule: 'local',
     // app updater/version of machine in use
     updateCancelScheduled: 'local',
+    // Software Updater opens on the computer in use, never the remote host.
+    updateOpenSystemUpdater: 'local',
     // app updater/version of machine in use
     updateReportBusy: 'local',
     // app updater/version of machine in use

@@ -130,10 +130,7 @@ test('Run on keeps each destination on this computer and starts a cloud run in t
     // A workflow only this computer has can't pick Cloud.
     await openRunDialog(window, app, LOCAL_PIPELINE);
     await expect(window.getByTestId('pipeline-run-on')).toBeVisible();
-    await expect(window.getByTestId('pipeline-run-on-local')).toHaveAttribute(
-      'aria-checked',
-      'true',
-    );
+    await expect(window.getByTestId('pipeline-run-on-local')).toBeChecked();
     await expect(window.getByTestId('pipeline-run-on-cloud')).toBeDisabled();
     await window.getByTestId('pipeline-trigger-modal-cancel').click();
 
@@ -154,10 +151,7 @@ test('Run on keeps each destination on this computer and starts a cloud run in t
     // This computer, the current task.
     await openRunDialog(window, app, CLOUD_WORKFLOW);
     await window.getByTestId('pipeline-run-location-current-task').click();
-    await expect(window.getByTestId('pipeline-run-on-local')).toHaveAttribute(
-      'aria-checked',
-      'true',
-    );
+    await expect(window.getByTestId('pipeline-run-on-local')).toBeChecked();
     await runAndClose(window);
     await expect
       .poll(async () => (await listExecutions(window)).length)
@@ -524,10 +518,7 @@ test('Run on keeps each destination on this computer and starts a cloud run in t
 
     // The choice is remembered for this workflow.
     await openRunDialog(window, app, CLOUD_WORKFLOW);
-    await expect(window.getByTestId('pipeline-run-on-cloud')).toHaveAttribute(
-      'aria-checked',
-      'true',
-    );
+    await expect(window.getByTestId('pipeline-run-on-cloud')).toBeChecked();
     await window.getByTestId('pipeline-trigger-modal-cancel').click();
   } finally {
     await closeCanopy(electronApp, userDataDir);

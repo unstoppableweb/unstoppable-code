@@ -27,7 +27,7 @@ import {
   PageSearchRow,
   SegmentedControl,
   Skeleton,
-  StatusPill,
+  Badge,
   FormField,
   TextArea,
   TextInput,
@@ -1301,24 +1301,24 @@ function ProjectList({
                     pills={
                       <>
                         {project.state === 'ARCHIVED' && (
-                          <StatusPill
+                          <Badge
                             data-testid={`team-projects-archived-${project.id}`}
                           >
                             Archived
-                          </StatusPill>
+                          </Badge>
                         )}
                         {project.preference === 'DISMISSED' && (
-                          <StatusPill
+                          <Badge
                             data-testid={`team-projects-hidden-${project.id}`}
                           >
                             Hidden
-                          </StatusPill>
+                          </Badge>
                         )}
                         {repository &&
                           repository.verification !== 'VERIFIED' && (
-                            <StatusPill tone="warning">
+                            <Badge tone="warning">
                               {VERIFICATION_LABELS[repository.verification]}
-                            </StatusPill>
+                            </Badge>
                           )}
                       </>
                     }

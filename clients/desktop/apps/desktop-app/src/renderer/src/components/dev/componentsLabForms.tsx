@@ -161,7 +161,7 @@ export const FORMS_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     name: 'Form field and errors',
     group: 'Unified',
     note: 'One labelled field: the label, the control, its error and its help text, 6px apart in that order. Help text sits under the field and the error comes first.',
-    source: `${PRIMITIVES_SRC}/{FormField,DialogFormField}.tsx`,
+    source: `${PRIMITIVES_SRC}/FormField.tsx`,
     prs: [],
     View: FormFieldSpecimen,
   },

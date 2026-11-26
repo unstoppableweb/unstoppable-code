@@ -163,6 +163,7 @@ import {
   repairWorkspaceRootWorktree,
 } from '../lib/workspace-source-control';
 import { convertWorkspaceType } from '../lib/workspace-type-conversion';
+import { createDesktopRuntime } from '../canopy-runtime/desktop-runtime';
 
 const realFs = jest.requireActual<typeof FsPromises>('node:fs/promises');
 
@@ -221,6 +222,15 @@ let root: string;
 let originalDataDir: string | undefined;
 
 let closeW5Store: (() => Promise<void>) | undefined;
+
+// Repository init and clone dispatch on the registered desktop runtime (CAN-7952).
+let runtime: ReturnType<typeof createDesktopRuntime>;
+beforeAll(() => {
+  runtime = createDesktopRuntime();
+});
+afterAll(async () => {
+  await runtime.shutdown();
+});
 
 beforeEach(async () => {
   __resetSidebarItemsStateForTests();

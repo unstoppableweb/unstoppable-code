@@ -131,8 +131,16 @@ export interface WorkEntryRepository<Row extends WorkEntryRegistryRow> {
     createdAt: string,
     options: { isEmpty: () => Promise<boolean>; onRemoved?: () => void },
   ): Promise<boolean>;
-  /** Installs bundle bytes unchanged once they parse; no reconciler or signal. */
-  installRaw(workspaceId: string, bytes: Uint8Array): Promise<void>;
+  /**
+   * Installs bundle bytes unchanged once they parse; no reconciler or signal.
+   * `beforeInstall` runs in the same queue slot, after the bytes parse and
+   * before they are written; it throws to refuse the install.
+   */
+  installRaw(
+    workspaceId: string,
+    bytes: Uint8Array,
+    options?: { beforeInstall?: () => Promise<void> },
+  ): Promise<void>;
   /** Tombstones the workspace now; returns its queued writes' settlement, if any. */
   retire(workspaceId: string): Promise<unknown> | undefined;
   activate(workspaceId: string): void;
@@ -395,7 +403,7 @@ export function createWorkEntryRepository<Row extends WorkEntryRegistryRow>(
         options.onRemoved?.();
         return true;
       }),
-    installRaw: (workspaceId, bytes) =>
+    installRaw: (workspaceId, bytes, options) =>
       transact(workspaceId, async () => {
         // Decoded as readFile(path, 'utf8') does; the bytes install as given.
         codec.parse(
@@ -403,6 +411,7 @@ export function createWorkEntryRepository<Row extends WorkEntryRegistryRow>(
         );
         assertAdmitted(workspaceId);
         ports.assertWriter();
+        await options?.beforeInstall?.();
         await install(workspaceId, () => bytes, undefined, undefined);
       }),
     retire(workspaceId) {

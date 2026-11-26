@@ -12,7 +12,7 @@ import {
   Surface,
   Button,
   CopyButton,
-  DialogFormField,
+  FormField,
   LoadingSpinner,
   SegmentedControl,
   TextArea,
@@ -261,9 +261,9 @@ export function FeedbackDialog({
               </div>
             )}
 
-            <DialogFormField
+            <FormField
               label={errorMode ? 'What were you trying to do?' : 'Description'}
-              htmlFor="feedback-modal-description"
+              id="feedback-modal-description"
               {...(errorMode
                 ? { description: 'Needed to send the report.' }
                 : {})}
@@ -282,13 +282,10 @@ export function FeedbackDialog({
                   : { placeholder: descriptionPlaceholder(type) })}
                 rows={5}
               />
-            </DialogFormField>
+            </FormField>
 
             {errorMode ? null : (
-              <DialogFormField
-                label="Title (optional)"
-                htmlFor="feedback-modal-title"
-              >
+              <FormField label="Title (optional)" id="feedback-modal-title">
                 <TextInput
                   id="feedback-modal-title"
                   type="text"
@@ -297,7 +294,7 @@ export function FeedbackDialog({
                   onChange={(event): void => setTitle(event.target.value)}
                   placeholder="Summarized from your description if left blank"
                 />
-              </DialogFormField>
+              </FormField>
             )}
 
             {attachments}

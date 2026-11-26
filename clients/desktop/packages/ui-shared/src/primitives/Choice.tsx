@@ -2,16 +2,22 @@
 
 import {
   forwardRef,
+  useContext,
   useId,
   useLayoutEffect,
   useRef,
   type ForwardedRef,
   type InputHTMLAttributes,
+  type FocusEvent,
+  type KeyboardEvent,
+  type KeyboardEventHandler,
   type JSX,
+  type MouseEvent,
   type ReactNode,
 } from 'react';
 import { CheckIcon } from '../icons/AppIcons';
 import { WORKSPACE_GLYPH_RADIUS_CLASS } from '../lib/workspace-glyph';
+import { ChoiceListContext } from './choice-list-context';
 
 /**
  * Canonical choice marks shared by desktop and web: `Checkbox`, `Radio`, and
@@ -58,7 +64,7 @@ const SHAPE: Record<ChoiceKind, string> = {
 const INPUT_MARK_CLASS = [
   // No transition: hover, press and selection colors change at once.
   'peer size-4 shrink-0 cursor-pointer appearance-none outline-none',
-  // Unselected.
+  // Unselected. Hovering the input's label hovers the input too.
   'ring-1 ring-inset ring-fg-quaternary',
   'enabled:hover:ring-fg-tertiary data-[force-state=hover]:ring-fg-tertiary',
   'enabled:active:ring-fg-secondary data-[force-state=pressed]:ring-fg-secondary',
@@ -68,11 +74,20 @@ const INPUT_MARK_CLASS = [
   'checked:data-[force-state=hover]:[background-image:linear-gradient(var(--glow-on-accent-hover),var(--glow-on-accent-hover))]',
   'enabled:checked:active:[background-image:linear-gradient(var(--glow-on-accent-pressed),var(--glow-on-accent-pressed))]',
   'checked:data-[force-state=pressed]:[background-image:linear-gradient(var(--glow-on-accent-pressed),var(--glow-on-accent-pressed))]',
-  // Focus: the neutral halo, and a dark ring when unselected.
-  'focus-visible:shadow-field-focus focus-visible:ring-fg-secondary',
   // Disabled: quiet ring; selected takes the muted fill, not the accent.
   'disabled:cursor-not-allowed disabled:ring-line-disabled disabled:checked:bg-muted',
 ].join(' ');
+
+/** Focus: the neutral halo, and a dark ring when unselected. */
+const INPUT_MARK_FOCUS_CLASS =
+  'focus-visible:shadow-field-focus focus-visible:ring-fg-secondary';
+
+/**
+ * The disabled look on an input that stays focusable (`aria-disabled`): the
+ * quiet ring, the muted fill selected, and no hover or press.
+ */
+const INPUT_MARK_INERT_CLASS =
+  'peer size-4 shrink-0 cursor-not-allowed appearance-none outline-none ring-1 ring-inset ring-line-disabled checked:bg-muted checked:ring-0';
 
 /**
  * A mixed checkbox looks selected. Checkbox only: an unchecked radio with no
@@ -80,6 +95,8 @@ const INPUT_MARK_CLASS = [
  */
 const CHECKBOX_MIXED_CLASS =
   'indeterminate:bg-accent indeterminate:ring-0 enabled:indeterminate:hover:[background-image:linear-gradient(var(--glow-on-accent-hover),var(--glow-on-accent-hover))] disabled:indeterminate:bg-muted';
+const CHECKBOX_MIXED_INERT_CLASS =
+  'indeterminate:bg-muted indeterminate:ring-0';
 
 const MARK_REVEAL_CLASS: Record<ChoiceKind, string> = {
   checkbox: 'peer-checked:opacity-100 peer-indeterminate:opacity-100',
@@ -147,9 +164,11 @@ export interface ChoiceMarkProps {
 }
 
 /**
- * The mark alone, for a row that is itself the control (a `<button>` with
- * `aria-pressed`). Hidden from assistive technology; the row carries the
- * state. Its hover follows the row (`group/choice-row`).
+ * The mark alone, for a row that is itself the control and carries other
+ * semantics (a `<button>` with `aria-pressed`, a sidebar row in selection
+ * mode). Hidden from assistive technology; the row carries the state. Its
+ * hover follows the row (`group/choice-row`). A plain list of choices uses
+ * `ChoiceField layout="row"` in a `ChoiceList`, with a native input.
  */
 export function ChoiceMark({
   kind,
@@ -208,10 +227,16 @@ function ChoiceInput({
     ...props
   },
   forwardedRef,
+  inert = false,
+  rowFocus = false,
 }: {
   readonly kind: ChoiceKind;
   readonly props: CheckboxProps;
   readonly forwardedRef: ForwardedRef<HTMLInputElement>;
+  /** Draw the disabled look on an input that stays focusable. */
+  readonly inert?: boolean;
+  /** The row around the input draws its keyboard focus, not the mark. */
+  readonly rowFocus?: boolean;
 }): JSX.Element {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const mixed = kind === 'checkbox' && indeterminate;
@@ -238,7 +263,18 @@ function ChoiceInput({
         checked={checked}
         disabled={disabled}
         data-force-state={forceState}
-        className={`${INPUT_MARK_CLASS} ${SHAPE[kind]}${kind === 'checkbox' ? ` ${CHECKBOX_MIXED_CLASS}` : ''}`}
+        className={[
+          inert ? INPUT_MARK_INERT_CLASS : INPUT_MARK_CLASS,
+          rowFocus ? '' : INPUT_MARK_FOCUS_CLASS,
+          SHAPE[kind],
+          kind === 'checkbox'
+            ? inert
+              ? CHECKBOX_MIXED_INERT_CLASS
+              : CHECKBOX_MIXED_CLASS
+            : '',
+        ]
+          .filter((part) => part !== '')
+          .join(' ')}
         {...props}
       />
       {/* Shown by the input's own :checked / :indeterminate, so an
@@ -247,7 +283,10 @@ function ChoiceInput({
         aria-hidden="true"
         className={`pointer-events-none absolute inset-0 flex items-center justify-center opacity-0 ${MARK_REVEAL_CLASS[kind]}`}
       >
-        <GlyphMark glyph={glyphFor(kind, mixed)} disabled={disabled === true} />
+        <GlyphMark
+          glyph={glyphFor(kind, mixed)}
+          disabled={disabled === true || inert}
+        />
       </span>
     </span>
   );
@@ -290,14 +329,21 @@ export type ChoiceFieldProps = CheckboxProps & {
    * `inline` (default) fits the label to its text. `row` makes the label a
    * whole list row: 36px tall (44px for a coarse pointer) with an 8px inset,
    * so a click anywhere on the row, padding included, toggles the choice.
+   * In a `ChoiceList` the row takes the list's look: a 12px inset, a hover
+   * and focus fill, and the focus ring inside the row.
    */
   readonly layout?: ChoiceFieldLayout;
   /**
-   * Decorative content at the row's end, inside the label so clicking it
-   * toggles the choice too (the ask-user card's letter hint). Hide it from
-   * assistive technology; the label text is the accessible name.
+   * Content at the row's end, inside the label so clicking it toggles the
+   * choice too: the ask-user card's letter hint (hide it from assistive
+   * technology), or in a `ChoiceList` a quiet note or badge.
    */
   readonly end?: ReactNode;
+  /**
+   * With `disabled`, the input stays focusable (`aria-disabled`) and never
+   * toggles, so a host's arrow keys can move through it.
+   */
+  readonly focusableWhenDisabled?: boolean;
 };
 
 export type ChoiceFieldLayout = 'inline' | 'row';
@@ -310,12 +356,68 @@ const FIELD_LAYOUT_CLASS: Record<ChoiceFieldLayout, string> = {
 };
 
 /**
+ * A row in a `ChoiceList`. The list scrolls, and would cut an outside ring
+ * off at its sides and the first row's top, so the focus ring sits inside
+ * the row; the end rows take the list's corner, so their ring and fill
+ * follow the curve.
+ */
+const LIST_ROW_CLASS =
+  'flex w-full min-w-0 items-center gap-3 px-3 py-2 text-left text-s fg-primary transition-colors first:rounded-t-lg last:rounded-b-lg pointer-coarse:min-h-11 has-[:focus-visible]:bg-subtle has-[:focus-visible]:outline-2 has-[:focus-visible]:-outline-offset-2 has-[:focus-visible]:outline-line-focus';
+// A disabled fieldset disables the input without the prop, so the row reads
+// the input's own state.
+const LIST_ROW_ENABLED_CLASS =
+  'cursor-pointer hover:bg-subtle has-[input:disabled]:cursor-not-allowed has-[input:disabled]:opacity-60 has-[input:disabled]:hover:bg-transparent';
+const LIST_ROW_DISABLED_CLASS = 'cursor-not-allowed opacity-60';
+
+/**
+ * Keyboard focus lands on the 16px input, so the browser scrolls only the
+ * mark into view; bring the whole row in, so a scrolling list never cuts the
+ * focused row's ring and fill off at its edge.
+ */
+function revealFocusedRow(event: FocusEvent<HTMLLabelElement>): void {
+  if (event.target.matches(':focus-visible')) {
+    event.currentTarget.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+/**
+ * Keys that press the input the way the old button row did. In a
+ * `ChoiceList` row, Enter clicks the input: it checks a radio and toggles a
+ * checkbox (a native input ignores Enter). A radio with an `onClick` that is
+ * already chosen also clicks itself on Space, which a native radio ignores,
+ * so a caller can act on pressing the chosen answer again (clear it, retry
+ * its load).
+ */
+function pressLikeRow(
+  own: KeyboardEventHandler<HTMLInputElement> | undefined,
+  enterClicks: boolean,
+  repressChosen: boolean,
+): KeyboardEventHandler<HTMLInputElement> {
+  return (event: KeyboardEvent<HTMLInputElement>): void => {
+    own?.(event);
+    if (event.defaultPrevented) return;
+    const chosenRepress = repressChosen && event.currentTarget.checked;
+    const press =
+      (event.key === 'Enter' && (enterClicks || chosenRepress)) ||
+      (event.key === ' ' && chosenRepress);
+    if (!press) return;
+    event.preventDefault();
+    event.currentTarget.click();
+  };
+}
+
+/** Keeps a focusable disabled choice from toggling. */
+function preventToggle(event: MouseEvent<HTMLInputElement>): void {
+  event.preventDefault();
+}
+
+/**
  * A checkbox or radio with its text, where the whole row is the label, so
  * clicking the text toggles it (design follow-up, 2026-10-30). The native
  * input keeps its checkbox/radio role and checked state for assistive
  * technology and UI automation. For a list of choices in a box use
- * `ChoiceList`; for a setting that applies at once use `ToggleSwitch`.
- * `className` places the row.
+ * `ChoiceField layout="row"` inside `ChoiceList`; for a setting that applies
+ * at once use `ToggleSwitch`. `className` places the row.
  */
 export const ChoiceField = forwardRef<HTMLInputElement, ChoiceFieldProps>(
   function ChoiceField(
@@ -329,28 +431,49 @@ export const ChoiceField = forwardRef<HTMLInputElement, ChoiceFieldProps>(
       className = '',
       disabled,
       indeterminate,
+      focusableWhenDisabled = false,
       ...props
     },
     ref,
   ): JSX.Element {
+    const list = useContext(ChoiceListContext);
     const generatedId = useId();
     const inputId = props.id ?? generatedId;
+    const inListRow =
+      list !== null && layout === 'row' && trailing === undefined;
+    const inert = focusableWhenDisabled && disabled === true;
+    const inputProps: CheckboxProps = {
+      ...props,
+      id: inputId,
+      // A radio list's radios share its name, so the browser groups them.
+      name: kind === 'radio' ? (props.name ?? list?.radioName) : props.name,
+      onKeyDown: pressLikeRow(
+        props.onKeyDown,
+        inListRow && !inert,
+        kind === 'radio' && props.onClick !== undefined,
+      ),
+      ...(inert
+        ? {
+            'aria-disabled': true,
+            readOnly: true,
+            onChange: undefined,
+            onClick: preventToggle,
+          }
+        : { disabled }),
+      ...(kind === 'checkbox' ? { indeterminate } : {}),
+    };
     const cursorClass = disabled ? 'cursor-not-allowed' : 'cursor-pointer';
     const toneClass = disabled ? 'fg-disabled' : 'fg-primary';
     /* The 16px mark sits on the first 20px line of the label. */
     const mark = (
       <span className="flex h-5 shrink-0 items-center">
-        {kind === 'radio' ? (
-          <Radio ref={ref} disabled={disabled} {...props} id={inputId} />
-        ) : (
-          <Checkbox
-            ref={ref}
-            disabled={disabled}
-            indeterminate={indeterminate}
-            {...props}
-            id={inputId}
-          />
-        )}
+        <ChoiceInput
+          kind={kind}
+          props={inputProps}
+          forwardedRef={ref}
+          inert={inert}
+          rowFocus={inListRow}
+        />
       </span>
     );
     const descriptionLine = description ? (
@@ -358,6 +481,23 @@ export const ChoiceField = forwardRef<HTMLInputElement, ChoiceFieldProps>(
         {description}
       </span>
     ) : null;
+    if (inListRow) {
+      return (
+        <label
+          className={`${LIST_ROW_CLASS} ${disabled ? LIST_ROW_DISABLED_CLASS : LIST_ROW_ENABLED_CLASS} ${className}`}
+          onFocus={revealFocusedRow}
+        >
+          {mark}
+          <span className="min-w-0 flex-1">
+            {label}
+            {descriptionLine}
+          </span>
+          {end ? (
+            <span className="shrink-0 text-xs fg-secondary">{end}</span>
+          ) : null}
+        </label>
+      );
+    }
     if (trailing === undefined) {
       return (
         <label

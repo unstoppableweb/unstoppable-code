@@ -30,6 +30,7 @@ const STALE_REQUEST_KEYS = {
   'structural.space-notification-policy':
     'request.structural.space-notification-policy',
   'chat.session-activity': 'request.chat.session-activity',
+  'pipeline.lifecycle': 'request.pipeline.lifecycle',
   'runtime-status.session-refresh': 'request.runtime-status.session-refresh',
   'delegation.activity': 'request.delegation.activity',
   'standalone-chat.tab-summary': 'request.standalone-chat.tab-summary',

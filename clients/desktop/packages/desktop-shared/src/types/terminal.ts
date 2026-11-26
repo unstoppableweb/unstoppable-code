@@ -19,7 +19,7 @@ import type {
   TerminalWriteRequest,
 } from '@canopy/protocol/terminal';
 
-import type { BrowserDrawerTabId } from '@canopy/execution-engine/types/browser';
+export type { TerminalDrawerPreferences } from '@canopy/protocol/preferences';
 
 export type {
   LoadWorktreeTerminalStateRequest,
@@ -124,39 +124,3 @@ export type UpdateTerminalSettingsResponse =
       error: { code: 'conflict'; message: string; settings: TerminalSettings };
     }
   | { ok: false; error: { code: 'invalid'; message: string } };
-
-// ---------------------------------------------------------------------------
-// Preferences contribution
-// ---------------------------------------------------------------------------
-
-/**
- * Preferences fields contributed by the terminal drawer feature.
- *
- * Merged into `PreferencesData` in `src/shared/types.ts`. The main-side
- * normalize/clamp logic lives with the rest of preference validation.
- */
-export interface TerminalDrawerPreferences {
-  /** Whether the drawer is collapsed. Default: `true`. */
-  terminalDrawerCollapsed: boolean;
-  /** Drawer height in pixels. Default: 300. Clamp: 180–600. */
-  terminalDrawerHeight: number;
-  /**
-   * Active drawer tab id. Default: `'terminal'`. The shared drawer now hosts
-   * both the terminal and the in-app browser, so this accepts
-   * {@link BrowserDrawerTabId} (`'terminal' | 'browser'`). The field name is
-   * kept for backward compatibility with persisted preferences. Runtime
-   * validation / invalid-value normalization of the stored value is a backend
-   * concern (see the backend plan).
-   */
-  terminalDrawerActiveTabId: BrowserDrawerTabId;
-  /** Detected shell entries hidden from the Terminal panel picker. */
-  disabledTerminalShellProfileIds: TerminalShellProfileId[];
-  /** User-defined shell + command shortcuts offered in the panel picker. */
-  terminalPresets: TerminalPreset[];
-  /**
-   * Revision of `disabledTerminalShellProfileIds` and `terminalPresets`
-   * (CAN-4148). It moves exactly when either committed value changes; the
-   * preference merge sets it and no patch can. Starts at 0.
-   */
-  terminalSettingsRevision: number;
-}

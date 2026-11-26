@@ -22,7 +22,8 @@ differs from the app you download:
   doesn't check for updates. To turn analytics off, set
   `CANOPY_POSTHOG_ENABLED` to `false` before `build:public`. To build with
   every hosted service off, use the
-  [local-only build](#build-without-our-services) instead.
+  [local-only build](#build-without-our-services) instead. To connect to
+  your own server, use the [self-host build](#build-for-your-own-server).
 - **Some helpers aren't included:** the bundled command-line tool and the
   native dictation helper are left out of this source.
 - **macOS and Linux only:** building from source on Windows isn't supported
@@ -130,6 +131,57 @@ Known limits:
   by up to a minute aren't covered by it.
 - Installers and Windows builds aren't supported from this source.
 
+## Build for your own server
+
+Apps you download from us always connect to our service and can't connect
+to your server. To use the desktop app with a server you host, build it from
+this source with your server's address:
+
+1. Run `pnpm install --frozen-lockfile --ignore-scripts`.
+2. Run `pnpm run setup:selfhost`.
+3. Run `CANOPY_CLOUD_BASE_URL=https://canopy.example.com pnpm run build:selfhost`,
+   with your server's address.
+4. Run `pnpm run start:selfhost`.
+
+The address must use `https`, with a certificate your operating system
+trusts. Plain `http` works only for a server on the same computer
+(`localhost`). The address can't have a path, query, or user name. If you
+don't have TLS yet, put the server behind a reverse proxy that provides it.
+`build:selfhost` stops with a message saying what to change.
+
+- `build:selfhost` builds the app for that server and records it. Build
+  again to switch servers.
+- `start:selfhost` launches the self-host build and prints its server. It
+  refuses to start a build made by another command.
+
+If `package.json` has no `build:selfhost` script, this source is from before
+the self-host build existed.
+
+What's off: PostHog analytics, hosted feature flags (the app uses each flag's
+built-in value), update checks, the skill safety check, remote images, and the
+other automatic calls listed under
+[Build without our services](#build-without-our-services). Sign-in, Remote
+Control, and cloud features use your server and the relay it hands out.
+
+Anything else is blocked and logged to `local-only-egress.jsonl` in the app's
+data folder, as in the local-only build. To allow another host, add its
+exact name to the `allowedHosts` list in `local-only.json` in the same
+folder.
+
+Known limits:
+
+- Storage your server hands out on another host, or on another port of the
+  same host, is blocked. Add its host to `allowedHosts` to use it.
+- Cloud features that reach a host other than your server or its relay are
+  blocked, such as an organization's model gateway.
+- Cloud chats and the Remote Control web preview are off, because their
+  built-in flag values are off.
+- Behind an HTTP or system proxy, connections go to the proxy, which is
+  blocked unless its host is in `allowedHosts`.
+- Programs the app starts, such as agent CLIs, `git`, and MCP servers, connect
+  wherever their own settings say.
+- Installers and Windows builds aren't supported from this source.
+
 ## Build and test everything
 
 Run these in this order:
@@ -164,7 +216,8 @@ is in [`PUBLIC_BUILD_SCOPE.json`](PUBLIC_BUILD_SCOPE.json).
   state, and runtime
 - `brands/`: the app's name, icons, and logos
 - `patches/`: the reviewed dependency patches the install applies
-- `scripts/public-build/`: the scripts behind the `*:public` commands
+- `scripts/public-build/`: the scripts behind the `*:public`, `*:local`, and
+  `*:selfhost` commands
 - `PUBLIC_BUILD_SCOPE.json`: what this export includes, leaves out, and tests
 
 ## Troubleshooting

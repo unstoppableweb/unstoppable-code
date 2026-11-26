@@ -134,7 +134,7 @@ function statusGlyphAndLabel(
  * turn's tool count. The card sizes to what exists: no reply reserves no
  * space, and a zero or unknown tool count is left out. Only the status glyph
  * is colored. Mount it inside the tab's hover
- * surface (a `RichHoverTooltip` with `elevation="menu"` and compact padding);
+ * surface (a `HoverCard` with `elevation="menu"` and compact padding);
  * the host supplies the chat's facts and re-renders as they change.
  */
 export function ChatTabPreviewCard({

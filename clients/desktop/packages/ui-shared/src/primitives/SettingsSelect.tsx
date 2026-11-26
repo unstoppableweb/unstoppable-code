@@ -13,10 +13,10 @@ import {
 import { ChevronDownIcon } from '../icons/AppIcons';
 import { Button } from './Button';
 import {
-  useDialogFormFieldDescribedBy,
-  useDialogFormFieldLabelledBy,
-} from './dialog-form-field-context';
-import { useInDialogFormField } from './DialogFormField';
+  useFormFieldDescribedBy,
+  useFormFieldLabelledBy,
+  useInFormField,
+} from './form-field-context';
 import { useSettingsRowDescriptionId } from './SettingsRowDescription';
 import {
   FloatingPickerMenu,
@@ -128,7 +128,8 @@ export function settingsSelectOptions<Value extends string>(
  * rectangle (`Button size="field"`) that opens Canopy's own picker menu, with a
  * checkmark on the chosen row and no selected-row fill. It is 144px wide by
  * default, so dropdowns in consecutive rows line up; in a dialog's form field
- * (`DialogFormField`) it fills the dialog's content width.
+ * (a `FormField` with the dropdown as its children) it fills the dialog's
+ * content width.
  *
  * The menu owns the keyboard (`FloatingMenu`'s listbox mode): ArrowUp or
  * ArrowDown on the trigger opens it on the chosen option; arrows, Home and
@@ -178,15 +179,11 @@ export function SettingsSelect<Value extends string>({
   const shownLabel = chosen?.label ?? placeholder ?? flat[0]?.label ?? '';
   const menuOpen = open && !disabled;
   const rowDescriptionId = useSettingsRowDescriptionId();
-  const describedBy = useDialogFormFieldDescribedBy(
+  const describedBy = useFormFieldDescribedBy(
     id,
     [ariaDescribedBy, rowDescriptionId].filter(Boolean).join(' ') || undefined,
   );
-  const labelledBy = useDialogFormFieldLabelledBy(
-    id,
-    ariaLabel,
-    ariaLabelledBy,
-  );
+  const labelledBy = useFormFieldLabelledBy(id, ariaLabel, ariaLabelledBy);
   // The host's replay markers: they never change how the trigger or menu
   // looks.
   // eslint-disable-next-line shadcn/require-static-classes -- host-owned marker, not styling
@@ -200,9 +197,9 @@ export function SettingsSelect<Value extends string>({
     privacyClassName ? String(flat.indexOf(option)) : option.value;
   // In a dialog's form field the dropdown fills the dialog's content width
   // instead of a Settings row's column.
-  const inDialogFormField = useInDialogFormField();
+  const inFormField = useInFormField();
   const shownWidth: SettingsSelectWidth =
-    inDialogFormField && width === 'control' ? 'fill' : width;
+    inFormField && width === 'control' ? 'fill' : width;
   // `fill` sits the trigger in a shrinkable wrapper: the shared button never
   // shrinks, so a full-width trigger beside other controls would overflow.
   const widthClassName =

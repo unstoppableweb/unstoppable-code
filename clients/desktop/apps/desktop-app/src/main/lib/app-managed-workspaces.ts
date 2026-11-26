@@ -30,6 +30,7 @@ import {
   getPipelineEditorHomeDir,
 } from './paths';
 import { isErrnoException, isRecord } from './type-guards';
+import { isWorkEntryRegistryArtifactName } from './work-entry-registry-files';
 
 export const APP_WORKSPACES_MIGRATION_KEY = 'app_workspaces';
 export const APP_ADVISOR_HOME_MIGRATION_KEY = 'app_advisor_home';
@@ -61,7 +62,6 @@ const APP_ADVISOR_METADATA_ENTRIES = new Set([
   'settings.json',
   'sidebar-item-groups.json',
   'summaries',
-  'work-entries.json',
   'worktree-data',
 ]);
 
@@ -79,10 +79,10 @@ const PIPELINE_EDITOR_METADATA_ENTRIES = new Set([
 function isAppAdvisorMetadataEntry(name: string): boolean {
   return (
     APP_ADVISOR_METADATA_ENTRIES.has(name) ||
+    isWorkEntryRegistryArtifactName(name) ||
     name.startsWith('sidebar-item-groups.json.corrupt-') ||
     (name.startsWith('.sidebar-item-groups.json.') && name.endsWith('.tmp')) ||
-    ((name.startsWith('.settings-') || name.startsWith('.work-entries-')) &&
-      name.endsWith('.tmp'))
+    (name.startsWith('.settings-') && name.endsWith('.tmp'))
   );
 }
 
@@ -168,6 +168,8 @@ async function mergeMissingEntries(
   await removeIfEmpty(sourceDir);
 }
 
+// Carries the Work Entry registry with its container, outside the registry
+// repository (CAN-4476): a one-time move behind the migration marker.
 async function migrateLegacyAppWorkspace(workspaceId: string): Promise<void> {
   const source = join(getDataDir(), 'workspaces', workspaceId);
   const destination = getAppManagedChatWorkspaceDir(workspaceId);

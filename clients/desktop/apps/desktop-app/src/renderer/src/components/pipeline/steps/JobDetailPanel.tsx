@@ -8,7 +8,7 @@ import {
   Surface,
   Button,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
 } from '@canopy/ui-shared/components';
 import { FormField } from '../shared/FormField';
 import { TextField } from '../shared/TextField';
@@ -327,10 +327,11 @@ export function JobDetailPanel({
         >
           <ChoiceList aria-label="Dependencies">
             {otherJobIds.map((otherId: string) => (
-              <ChoiceListRow
+              <ChoiceField
                 key={otherId}
-                selected={currentNeeds.includes(otherId)}
-                onClick={() => handleNeedsToggle(otherId)}
+                layout="row"
+                checked={currentNeeds.includes(otherId)}
+                onChange={() => handleNeedsToggle(otherId)}
                 disabled={
                   readonly ||
                   structure?.splitPath === true ||
@@ -339,10 +340,13 @@ export function JobDetailPanel({
                     : (structure?.dependents.has(otherId) ?? false) ||
                       (structure?.pathJobs.has(otherId) ?? false))
                 }
-              >
-                {/* Job IDs are authored: never recorded. */}
-                <span className={REPLAY_BLOCK_CLASS}>{otherId}</span>
-              </ChoiceListRow>
+                label={
+                  <>
+                    {/* Job IDs are authored: never recorded. */}
+                    <span className={REPLAY_BLOCK_CLASS}>{otherId}</span>
+                  </>
+                }
+              />
             ))}
           </ChoiceList>
         </FormField>

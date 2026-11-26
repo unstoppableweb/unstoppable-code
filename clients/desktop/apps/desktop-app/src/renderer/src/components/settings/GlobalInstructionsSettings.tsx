@@ -22,7 +22,7 @@ import { computeGlobalInstructionOverlapWarnings } from '@canopy/execution-engin
 import {
   Button,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   Notice,
 } from '@canopy/ui-shared/components';
 import {
@@ -163,9 +163,13 @@ function ScopeCheckbox({
   onToggle,
 }: ScopeCheckboxProps): JSX.Element {
   return (
-    <ChoiceListRow selected={checked} onClick={onToggle} data-testid={testId}>
-      {label}
-    </ChoiceListRow>
+    <ChoiceField
+      layout="row"
+      checked={checked}
+      onChange={onToggle}
+      data-testid={testId}
+      label={label}
+    />
   );
 }
 

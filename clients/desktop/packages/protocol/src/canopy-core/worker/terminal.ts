@@ -1072,10 +1072,17 @@ export const WorkerTerminalRecordRetireParamsSchema = z
     /** Worktrees to retire, including those whose first write is still pending. */
     worktreeIds: z.array(ID).optional(),
     /**
-     * A worktree to retire, alongside any `worktreeIds`. A request naming no
-     * worktree retires nothing until project-wide retirement lands (CAN-7704).
+     * A worktree to retire, alongside any `worktreeIds`. A cutoff request
+     * naming no worktree retires the project's worktree records on disk that
+     * started before `requestedAt` (CAN-7704).
      */
     worktreeId: ID.optional(),
+    /**
+     * Also retires the project's worktree records on disk that started before
+     * `requestedAt`, as a request naming no worktree does; named `worktreeIds`
+     * stay retired as named. Without it, named worktrees are the whole set.
+     */
+    projectWide: z.literal(true).optional(),
     /** Narrows a retirement selector to this incarnation, when both are known. */
     incarnation: z.string().min(1).max(512).nullable().optional(),
     /**
@@ -1097,6 +1104,15 @@ export const WorkerTerminalRecordRetireParamsSchema = z
     {
       message:
         'Retirement requires a generation, non-empty lifetimeIds, or requestedAt.',
+    },
+  )
+  .refine(
+    (params) =>
+      params.projectWide === undefined ||
+      (params.requestedAt !== undefined && params.worktreeId === undefined),
+    {
+      message:
+        'A project-wide retirement requires requestedAt and names no worktreeId.',
     },
   );
 

@@ -371,6 +371,110 @@ describe('R30 record ownership and observational query scope', () => {
 });
 
 describe('R29 retirement evidence and registration ownership', () => {
+  it('recovers names-only evidence without fencing unlisted legacy imports', () => {
+    const legacy = legacyTerminalStatePath(root, 'workspaces', 'proj', 'wt');
+    mkdirSync(dirname(legacy), { recursive: true });
+    writeFileSync(
+      legacy,
+      JSON.stringify({
+        version: 2,
+        lineage: 'recovery-legacy',
+        bindings: [],
+        terminalCustomNames: {},
+        terminals: [
+          {
+            session: session('t'),
+            scrollbackLines: ['legacy history'],
+            exitCode: null,
+            signal: null,
+          },
+        ],
+      }),
+    );
+    const authority = make();
+    authority.retire({
+      projectId: 'proj',
+      worktreeId: 'wt',
+      lifetimeIds: ['old'],
+    });
+    const unlisted = { ...client, lifetimeId: 'unlisted' };
+    expect(
+      authority.historyRead({ client: unlisted, terminalId: 't' }).text,
+    ).toBe('legacy history');
+    authority.dispose();
+    writeFileSync(
+      recordFile(),
+      JSON.stringify({
+        scope: { projectId: 'proj', worktreeId: 'wt' },
+        generation: 'damaged',
+        retiredLifetimeIds: ['other'],
+      }),
+    );
+    const repository = new TerminalRecordRepository({
+      dataRoot: root,
+      flushDirectorySync: (): void => undefined,
+    });
+    const recovered = repository.load('proj', 'wt', 'recover');
+    expect(recovered.kind).toBe('absent');
+    if (recovered.kind !== 'absent')
+      throw new Error('Expected recovered fence');
+    expect(recovered.tombstone).toMatchObject({
+      generation: 0,
+      namedOnly: true,
+      retiredLifetimeIds: ['old', 'other'],
+    });
+    const reload = make();
+    expect(reload.open(unlisted).import.from).toBe('v2');
+    expect(reload.historyRead({ client: unlisted, terminalId: 't' }).text).toBe(
+      'legacy history',
+    );
+    expect(
+      reload.historyRead({
+        client: { ...client, lifetimeId: 'other' },
+        terminalId: 't',
+      }).text,
+    ).toBe('');
+  });
+
+  it('retains qualified backup cleanup through damaged-record recovery and retry', () => {
+    const authority = make();
+    authority.open({ ...client, lifetimeId: 'old' });
+    const backup = join(dirname(recordFile()), 'import-source.json');
+    writeFileSync(backup, 'old backup');
+    const intent = {
+      projectId: 'proj',
+      worktreeId: 'wt',
+      lifetimeIds: ['old'],
+    };
+    const remove = fs.rmSync;
+    const blocked = jest
+      .spyOn(fs, 'rmSync')
+      .mockImplementation((path, options) => {
+        if (path === backup) throw new Error('cleanup blocked R29');
+        remove(path, options);
+      });
+    try {
+      expect(() => authority.retire(intent)).toThrow('cleanup blocked R29');
+      const tombstone = join(dirname(recordFile()), 'tombstone.json');
+      const identities = readJsonObject(tombstone).cleanupFiles;
+      authority.dispose();
+      const damaged = readJsonObject(recordFile());
+      damaged.revision = 'damaged';
+      writeFileSync(recordFile(), JSON.stringify(damaged));
+      const repository = new TerminalRecordRepository({
+        dataRoot: root,
+        flushDirectorySync: (): void => undefined,
+      });
+      repository.load('proj', 'wt', 'recover');
+      expect(readJsonObject(tombstone).cleanupFiles).toEqual(identities);
+      blocked.mockRestore();
+      expect(make().retire(intent)).toEqual({ retired: 1 });
+      expect(existsSync(backup)).toBe(false);
+    } finally {
+      blocked.mockRestore();
+    }
+  });
+
   it('releases an unpersisted registration exit without changing a reused saved ID', () => {
     const authority = make();
     authority.apply({
@@ -517,6 +621,83 @@ describe('R28 named coverage and qualified cleanup', () => {
       expect(
         authority.historyRead({ client: unlisted, terminalId: 't' }).text,
       ).toBe('legacy history');
+    },
+  );
+
+  it.each(['same owner', 'reload', 'coverage extension'])(
+    'retries qualified cleanup before acknowledging named-only %s',
+    (mode) => {
+      let authority = make();
+      authority.apply({
+        client: { ...client, lifetimeId: 'old' },
+        producer: { id: 'old', runId: 'one' },
+        seq: 1,
+        ops: [
+          { op: 'session.upsert', session: session('t') },
+          { op: 'output.append', terminalId: 't', text: 'retiring history' },
+        ],
+      });
+      const file = recordFile();
+      const backup = join(dirname(file), 'import-source.json');
+      writeFileSync(backup, 'retiring backup');
+      const intent = {
+        projectId: 'proj',
+        worktreeId: 'wt',
+        lifetimeIds: ['old'],
+      };
+      const remove = fs.rmSync;
+      const spy = jest
+        .spyOn(fs, 'rmSync')
+        .mockImplementation((path, options) => {
+          if (path === file || path === backup)
+            throw new Error('cleanup blocked R28');
+          remove(path, options);
+        });
+      try {
+        expect(() => authority.retire(intent)).toThrow('cleanup blocked R28');
+        const tombstone = join(dirname(file), 'tombstone.json');
+        const saved = readJsonObject(tombstone).cleanupFiles;
+        const identity: unknown = expect.any(String);
+        expect(saved).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              name: 'record.json',
+              identity,
+            }),
+          ]),
+        );
+        if (mode === 'reload') {
+          authority.dispose();
+          authority = make();
+        }
+        const retry =
+          mode === 'coverage extension'
+            ? { ...intent, lifetimeIds: ['other'] }
+            : intent;
+        expect(() => authority.retire(retry)).toThrow('cleanup blocked R28');
+        expect(readJsonObject(tombstone).cleanupFiles).toEqual(saved);
+        expect(existsSync(file)).toBe(true);
+        spy.mockRestore();
+        expect(authority.retire(retry)).toEqual({ retired: 1 });
+        expect(existsSync(file)).toBe(false);
+        expect(existsSync(backup)).toBe(false);
+        authority.dispose();
+        const reload = make();
+        for (const lifetimeId of [
+          'old',
+          ...(mode === 'coverage extension' ? ['other'] : []),
+        ])
+          expect(
+            reload.apply({
+              client: { ...client, lifetimeId },
+              producer: { id: 'late', runId: lifetimeId },
+              seq: 1,
+              ops: [],
+            }).outcome,
+          ).toBe('dropped');
+      } finally {
+        spy.mockRestore();
+      }
     },
   );
 });
@@ -760,10 +941,13 @@ describe('R26 destructive operations require target identity', (): void => {
       const loaded = repository.load('proj', 'wt');
       expect(loaded.kind).toBe('absent');
       expect(loaded.tombstone).toMatchObject({
+        cleanupFiles: [],
         retiredLifetimeIds: ['old'],
         damaged: true,
         retiredAt: 0,
       });
+      repository.retryRetirement('proj', 'wt');
+      expect(readFileSync(artifact, 'utf8')).toBe('unproven history');
       authority.dispose();
       const reload = make();
       expect(
@@ -918,6 +1102,11 @@ describe('R26 destructive operations require target identity', (): void => {
     expect(existsSync(artifact)).toBe(true);
     expect(readFileSync(artifact, 'utf8')).toBe('replacement');
     expect(existsSync(join(unknown, 'history'))).toBe(true);
+    expect(readFileSync(join(unknown, 'history'), 'utf8')).toBe(
+      'unidentified history',
+    );
+    repository.retryRetirement('proj', 'wt');
+    expect(readFileSync(artifact, 'utf8')).toBe('replacement');
     expect(readFileSync(join(unknown, 'history'), 'utf8')).toBe(
       'unidentified history',
     );
@@ -1189,6 +1378,40 @@ describe('R22 post-replay admission and coverage receipts', (): void => {
     },
   );
 
+  it('unions covered-derived names into an inherited cleanup acknowledgement', (): void => {
+    const seed = make();
+    seed.open({ ...client, lifetimeId: 'first' });
+    seed.retire({ projectId: 'proj', worktreeId: 'wt', generation: 1 });
+    seed.dispose();
+    const { authority, repository, faults } = controlled();
+    faults.read = true;
+    const held = authority.attribute({
+      terminalId: 'held',
+      client: { ...client, generation: 1, lifetimeId: 'unseen' },
+      session: session('held'),
+      persist: true,
+    });
+    authority.exited(held, 7, null);
+    faults.read = false;
+    seedSuccessor(repository, ['first']);
+    // The newer successor is preserved: its coverage counts no fence.
+    expect(
+      authority.retire({ projectId: 'proj', worktreeId: 'wt', generation: 1 }),
+    ).toEqual({ retired: 0 });
+    expect(record().retiredLifetimeIds).toEqual(
+      expect.arrayContaining(['first', 'unseen']),
+    );
+    expect(record().generation).toBe(2);
+    expect(
+      make().apply({
+        client: { ...client, lifetimeId: 'unseen' },
+        producer: { id: 'unseen', runId: 'r' },
+        seq: 1,
+        ops: [],
+      }).outcome,
+    ).toBe('dropped');
+  });
+
   it.each(['before rename', 'after rename', 'confirmation'])(
     'qualifies named-coverage publication at %s without claiming cleanup',
     (stage): void => {
@@ -1312,6 +1535,31 @@ describe('R22 post-replay admission and coverage receipts', (): void => {
       ]);
     },
   );
+
+  it('salvages intact named IDs from a damaged tombstone across reload', (): void => {
+    const directory = terminalRecordDir(root, 'proj', 'wt');
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, 'tombstone.json');
+    const bytes = JSON.stringify({
+      generation: 1,
+      incarnation: 'inc-1',
+      retiredAt: 'bad',
+      retiredLifetimeIds: ['old'],
+    });
+    writeFileSync(path, bytes);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(
+        make().apply({
+          client: { ...client, lifetimeId: 'old' },
+          producer: { id: 'old', runId: 'first' },
+          seq: 1,
+          ops: [],
+        }).outcome,
+      ).toBe('dropped');
+      expect(readFileSync(path, 'utf8')).toBe(bytes);
+      expect(existsSync(recordFile())).toBe(false);
+    }
+  });
 
   it.each([{ ids: undefined }, { ids: ['old', 7] }, { ids: 'old' }])(
     'does not invent named coverage from malformed IDs %j',
@@ -3107,6 +3355,67 @@ describe('R18 record ownership and stored evidence', () => {
     },
   );
 
+  it.each([undefined, 'invalid', null, 1.5])(
+    'keeps a surviving predecessor retired with malformed fence time %s',
+    (retiredAt) => {
+      const seed = make();
+      seed.apply({
+        client,
+        producer: { id: 'p', runId: 'r' },
+        seq: 1,
+        ops: [
+          { op: 'session.upsert', session: session('old') },
+          { op: 'output.append', terminalId: 'old', text: 'retired history' },
+        ],
+      });
+      seed.dispose();
+      const predecessor = record();
+      const before = readFileSync(recordFile(), 'utf8');
+      const fence = join(dirname(recordFile()), 'tombstone.json');
+      const bytes = JSON.stringify({
+        generation: predecessor.generation,
+        incarnation: client.incarnation,
+        retiredAt,
+      });
+      writeFileSync(fence, bytes);
+      const legacy = legacyTerminalStatePath(root, 'workspaces', 'proj', 'wt');
+      mkdirSync(dirname(legacy), { recursive: true });
+      writeFileSync(
+        legacy,
+        JSON.stringify({ ...predecessor.record, version: 2, lineage: 'old' }),
+      );
+      const repository = new TerminalRecordRepository({
+        dataRoot: root,
+        flushDirectorySync: (): void => undefined,
+      });
+      expect(repository.load('proj', 'wt')).toMatchObject({
+        kind: 'absent',
+        tombstone: { damaged: true },
+      });
+      expect(readFileSync(recordFile(), 'utf8')).toBe(before);
+      expect(readFileSync(fence, 'utf8')).toBe(bytes);
+      const authority = new TerminalRecordAuthority({ repository });
+      expect(authority.historyRead({ client, terminalId: 'old' }).text).toBe(
+        '',
+      );
+      const successor = authority.open(client);
+      expect(successor.generation).toBeGreaterThan(predecessor.generation);
+      expect(successor.terminals).toEqual([]);
+      expect(successor.import).toMatchObject({ from: 'none' });
+      expect(
+        authority.apply({
+          client,
+          generation: predecessor.generation,
+          producer: { id: 'p', runId: 'r' },
+          seq: 2,
+          ops: [{ op: 'session.upsert', session: session('late') }],
+        }).outcome,
+      ).toBe('dropped');
+      expect(make().open(client).generation).toBe(successor.generation);
+      expect(make().historyRead({ client, terminalId: 'old' }).text).toBe('');
+    },
+  );
+
   it('keeps a valid successor readable beside a malformed earlier fence', () => {
     const seed = make();
     seed.apply({
@@ -4835,7 +5144,152 @@ describe('R11 lifetime fencing', () => {
       ).toBe('held successor history');
     },
   );
+
+  it.each(
+    ['loaded', 'reloaded'].flatMap((mode) =>
+      [
+        'unqualified',
+        'matching incarnation',
+        'unknown predecessor incarnation',
+        'successor incarnation',
+        'other incarnation',
+        'future generation',
+        'empty lifetime ids',
+      ].map((qualifier) => ({ mode, qualifier })),
+    ),
+  )(
+    'generation-only cleanup retry preserves a $mode successor ($qualifier)',
+    ({ mode, qualifier }) => {
+      const authority = make();
+      authority.open({
+        ...client,
+        incarnation:
+          qualifier === 'unknown predecessor incarnation'
+            ? null
+            : client.incarnation,
+      });
+      const directory = terminalRecordDir(root, 'proj', 'wt');
+      const backup = join(directory, 'import-source.json');
+      writeFileSync(backup, 'predecessor history');
+      const remove = fs.rmSync;
+      const blocked = jest
+        .spyOn(fs, 'rmSync')
+        .mockImplementation((path, options) => {
+          if (path === backup) throw new Error('cleanup blocked');
+          remove(path, options);
+        });
+      const intent = { projectId: 'proj', worktreeId: 'wt', generation: 1 };
+      expect(() => authority.retire(intent)).toThrow('cleanup blocked');
+      const successor = { ...client, incarnation: 'inc-2' };
+      authority.apply({
+        client: successor,
+        producer: { id: 'current', runId: 'new' },
+        seq: 1,
+        ops: [
+          { op: 'session.upsert', session: session('new') },
+          { op: 'output.append', terminalId: 'new', text: 'successor history' },
+        ],
+      });
+      const successorBytes = readFileSync(recordFile(), 'utf8');
+      const retrying = mode === 'loaded' ? authority : make();
+      const eligible =
+        qualifier === 'unqualified' ||
+        qualifier === 'matching incarnation' ||
+        qualifier === 'unknown predecessor incarnation';
+      const params = {
+        ...intent,
+        ...(qualifier === 'matching incarnation' ||
+        qualifier === 'unknown predecessor incarnation'
+          ? { incarnation: 'inc-1' }
+          : {}),
+        ...(qualifier === 'other incarnation' ? { incarnation: 'inc-3' } : {}),
+        ...(qualifier === 'successor incarnation'
+          ? { incarnation: 'inc-2' }
+          : {}),
+        ...(qualifier === 'future generation'
+          ? { generation: 2, incarnation: 'inc-1' }
+          : {}),
+        ...(qualifier === 'empty lifetime ids' ? { lifetimeIds: [] } : {}),
+      };
+      if (eligible)
+        expect(() => retrying.retire(params)).toThrow('cleanup blocked');
+      else expect(retrying.retire(params)).toEqual({ retired: 0 });
+      expect(readFileSync(backup, 'utf8')).toBe('predecessor history');
+      blocked.mockRestore();
+      const newRecovery = join(directory, '.record.json.successor.tmp');
+      writeFileSync(newRecovery, successorBytes);
+      // A preserved successor counts no fence, even while its cleanup runs.
+      expect(retrying.retire(params)).toEqual({ retired: 0 });
+      expect(existsSync(backup)).toBe(!eligible);
+      expect(readFileSync(newRecovery, 'utf8')).toBe(successorBytes);
+      expect(readFileSync(recordFile(), 'utf8')).toBe(successorBytes);
+      expect(retrying.retire(params)).toEqual({ retired: 0 });
+      expect(
+        make().historyRead({ client: successor, terminalId: 'new' }).text,
+      ).toBe('successor history');
+    },
+  );
 });
+
+it.each(['loaded', 'reloaded'])(
+  'retirement retries clean old artifacts without deleting a %s successor',
+  (mode) => {
+    const authority = make();
+    const retiring = { ...client, lifetimeId: 'retiring' };
+    authority.apply({
+      client: retiring,
+      producer: { id: 'electron_main', runId: 'old' },
+      seq: 1,
+      ops: [{ op: 'session.upsert', session: session('old') }],
+    });
+    const directory = terminalRecordDir(root, 'proj', 'wt');
+    const backup = join(directory, 'import-source.json');
+    const recovery = join(directory, '.record.json.interrupted.tmp');
+    writeFileSync(backup, 'old backup');
+    writeFileSync(recovery, 'old recovery');
+    const remove = fs.rmSync;
+    const blocked = jest
+      .spyOn(fs, 'rmSync')
+      .mockImplementation((path, options) => {
+        if (path === backup)
+          throw Object.assign(new Error('cleanup blocked'), { code: 'EBUSY' });
+        remove(path, options);
+      });
+    const intent = {
+      projectId: 'proj',
+      worktreeId: 'wt',
+      lifetimeIds: ['retiring'],
+    };
+    expect(() => authority.retire(intent)).toThrow('cleanup blocked');
+    expect(existsSync(join(directory, 'tombstone.json'))).toBe(true);
+    const successor = { ...client, lifetimeId: 'successor' };
+    authority.apply({
+      client: successor,
+      producer: { id: 'electron_main', runId: 'new' },
+      seq: 1,
+      ops: [
+        { op: 'session.upsert', session: session('new') },
+        { op: 'output.append', terminalId: 'new', text: 'successor output' },
+      ],
+    });
+    const retrying = mode === 'loaded' ? authority : make();
+    // No successful acknowledgement while deletion still fails.
+    expect(() => retrying.retire(intent)).toThrow('cleanup blocked');
+    blocked.mockRestore();
+    // A successor's own recovery copy must not join the old cleanup set.
+    const newRecovery = join(directory, '.record.json.successor.tmp');
+    writeFileSync(newRecovery, readFileSync(recordFile()));
+    expect(retrying.retire(intent)).toEqual({ retired: 1 });
+    expect(readdirSync(directory).sort()).toEqual([
+      '.record.json.successor.tmp',
+      'record.json',
+      'tombstone.json',
+    ]);
+    expect(
+      make().historyRead({ client: successor, terminalId: 'new' }).text,
+    ).toBe('successor output');
+  },
+);
 
 it.each(['snapshot', 'legacy', 'damaged'])(
   'retirement preserves recreated successor artifacts with a %s tombstone',
@@ -6865,7 +7319,7 @@ it.each(
     blocked = false;
     expect(authority.retire(intent)).toEqual({ retired: 1 });
     expect(make().historyRead({ client, terminalId: 't' }).text).toBe('');
-    if (!published) expect(existsSync(recordFile())).toBe(false);
+    expect(existsSync(recordFile())).toBe(false);
   },
 );
 
@@ -9072,6 +9526,376 @@ describe('R23 independent retirement fence recovery', (): void => {
       JSON.stringify(predecessor),
     );
   });
+
+  it.each([
+    { generation: 9, ids: ['old'], version: 3 },
+    { generation: 'damaged', ids: ['old'], version: 3 },
+    { generation: 9, ids: ['old', 7], version: 3 },
+    { generation: 9, ids: ['old'], version: 'damaged' },
+  ])(
+    'persists damaged-record fencing fields before quarantine (%j)',
+    ({ generation, ids, version }): void => {
+      const repository = new TerminalRecordRepository({
+        dataRoot: root,
+        flushDirectorySync: (): void => undefined,
+      });
+      const envelope = repository.empty({ ...client, generation: 9 }, 'none');
+      envelope.revision = 17;
+      envelope.producerWatermarks = { 'stale/run': 55 };
+      const bytes = JSON.stringify({
+        ...envelope,
+        version,
+        generation,
+        retiredLifetimeIds: ids,
+        record: 'damaged',
+      });
+      const directory = dirname(recordFile());
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(recordFile(), bytes);
+      expect(repository.load('proj', 'wt').kind).toBe('absent');
+      expect(readFileSync(recordFile(), 'utf8')).toBe(bytes);
+      expect(readdirSync(directory)).toEqual(['record.json']);
+      const loaded = repository.load('proj', 'wt', 'recover');
+      expect(loaded.tombstone).toMatchObject({
+        generation: typeof generation === 'number' ? generation : 1,
+        incarnation: null,
+        retiredAt: 0,
+        damaged: true,
+      });
+      expect(loaded.tombstone?.retiredLifetimeIds).toEqual(
+        ids.every((id): boolean => typeof id === 'string') ? ids : [],
+      );
+      expect(loaded.tombstone?.cleanupFiles).toBeUndefined();
+      expect(existsSync(recordFile())).toBe(false);
+      const reloaded = new TerminalRecordRepository({
+        dataRoot: root,
+        flushDirectorySync: (): void => undefined,
+      }).load('proj', 'wt');
+      expect(reloaded.tombstone).toEqual(loaded.tombstone);
+      expect(
+        readFileSync(
+          join(
+            directory,
+            readdirSync(directory).find((name): boolean =>
+              name.startsWith('record.json.damaged-'),
+            ) ?? '',
+          ),
+          'utf8',
+        ),
+      ).toBe(bytes);
+      if (typeof generation === 'number')
+        expect(
+          make().apply({
+            client: { ...client, lifetimeId: 'new' },
+            generation,
+            producer: { id: 'p', runId: 'one' },
+            seq: 1,
+            ops: [],
+          }).outcome,
+        ).toBe('dropped');
+      if (ids.every((id): boolean => typeof id === 'string'))
+        expect(
+          make().apply({
+            client: { ...client, lifetimeId: 'old' },
+            producer: { id: 'p', runId: 'one' },
+            seq: 1,
+            ops: [],
+          }).outcome,
+        ).toBe('dropped');
+      expect(
+        make().apply({
+          client: { ...client, lifetimeId: 'new' },
+          producer: { id: 'p', runId: 'one' },
+          seq: 1,
+          ops: [],
+        }).outcome,
+      ).toBe('applied');
+      expect(record().record.terminals).toEqual([]);
+      expect(record().producerWatermarks).toEqual({ 'p/one': 1 });
+      expect(record().lineage).not.toBe(envelope.lineage);
+      expect(record().revision).not.toBe(17);
+    },
+  );
+
+  it.each(['valid', 'damaged'])(
+    'merges damaged-record fences with the %s tombstone before a failed quarantine',
+    (kind): void => {
+      const repository = new TerminalRecordRepository({
+        dataRoot: root,
+        flushDirectorySync: (): void => undefined,
+      });
+      const envelope = repository.empty({ ...client, generation: 9 }, 'none');
+      envelope.retiredLifetimeIds = ['old'];
+      const bytes = JSON.stringify({ ...envelope, record: 'damaged' });
+      const directory = dirname(recordFile());
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(recordFile(), bytes);
+      writeFileSync(
+        join(directory, 'tombstone.json'),
+        JSON.stringify({
+          generation: 9_000_000_000_000,
+          incarnation: 'inc-1',
+          retiredAt: kind === 'valid' ? 123 : 'damaged',
+          retiredLifetimeIds: ['earlier'],
+          cleanupFiles: [{ name: 'unqualified', identity: null }],
+        }),
+      );
+      writeFileSync(join(directory, 'unqualified'), 'keep');
+      const rename = fs.renameSync;
+      const spy = jest
+        .spyOn(fs, 'renameSync')
+        .mockImplementation((from, to): void => {
+          if (from === recordFile()) throw new Error('quarantine blocked');
+          rename(from, to);
+        });
+      try {
+        expect(() => repository.load('proj', 'wt', 'recover')).toThrow(
+          'quarantine blocked',
+        );
+        expect(readFileSync(recordFile(), 'utf8')).toBe(bytes);
+      } finally {
+        spy.mockRestore();
+      }
+      const reloaded = new TerminalRecordRepository({
+        dataRoot: root,
+        flushDirectorySync: (): void => undefined,
+      });
+      expect(reloaded.load('proj', 'wt').tombstone).toEqual({
+        generation: 9_000_000_000_000,
+        incarnation: null,
+        retiredAt: 0,
+        damaged: true,
+        retiredLifetimeIds: ['earlier', 'old'],
+      });
+      expect(
+        reloaded.load('proj', 'wt', 'recover').tombstone?.retiredLifetimeIds,
+      ).toEqual(['earlier', 'old']);
+      reloaded.retryRetirement('proj', 'wt');
+      expect(readFileSync(join(directory, 'unqualified'), 'utf8')).toBe('keep');
+      expect(
+        make().apply({
+          client: { ...client, lifetimeId: 'old' },
+          producer: { id: 'p', runId: 'one' },
+          seq: 1,
+          ops: [],
+        }).outcome,
+      ).toBe('dropped');
+    },
+  );
+
+  it.each(['write', 'fsync', 'directory flush'])(
+    'does not quarantine damaged-record fences until %s succeeds',
+    (fault): void => {
+      let blocked = false;
+      const directory = dirname(recordFile());
+      const repository = new TerminalRecordRepository({
+        dataRoot: root,
+        flushDirectorySync: (path): void => {
+          if (blocked && fault === 'directory flush' && path === directory)
+            throw new Error('fence flush blocked');
+        },
+      });
+      repository.save(repository.empty({ ...client, generation: 9 }, 'none'));
+      const envelope = record();
+      envelope.retiredLifetimeIds = ['old'];
+      const bytes = JSON.stringify({ ...envelope, record: 'damaged' });
+      writeFileSync(recordFile(), bytes);
+      blocked = true;
+      const spy =
+        fault === 'directory flush'
+          ? undefined
+          : fault === 'write'
+            ? jest.spyOn(fs, 'writeFileSync').mockImplementation((): never => {
+                throw new Error('fence write blocked');
+              })
+            : jest.spyOn(fs, 'fsyncSync').mockImplementation((): never => {
+                throw new Error('fence fsync blocked');
+              });
+      try {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          expect(() => repository.load('proj', 'wt', 'recover')).toThrow();
+          expect(existsSync(recordFile())).toBe(true);
+          expect(readFileSync(recordFile(), 'utf8')).toBe(bytes);
+          expect(
+            readdirSync(directory).filter((name): boolean =>
+              name.startsWith('record.json.damaged-'),
+            ),
+          ).toEqual([]);
+        }
+      } finally {
+        spy?.mockRestore();
+        blocked = false;
+      }
+      expect(
+        repository.load('proj', 'wt', 'recover').tombstone?.retiredLifetimeIds,
+      ).toEqual(['old']);
+      expect(
+        make().apply({
+          client: { ...client, lifetimeId: 'old' },
+          producer: { id: 'p', runId: 'one' },
+          seq: 1,
+          ops: [],
+        }).outcome,
+      ).toBe('dropped');
+    },
+  );
+
+  it.each([
+    { ids: [] },
+    { ids: ['old'] },
+    { ids: ['x'.repeat(513)] },
+    { ids: ['old', 7] },
+  ])(
+    'keeps independently valid fence fields for stored IDs %j',
+    ({ ids }): void => {
+      const directory = terminalRecordDir(root, 'proj', 'wt');
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(
+        join(directory, 'tombstone.json'),
+        JSON.stringify({
+          generation: 9_000_000_000_000,
+          incarnation: 'inc-1',
+          retiredAt: 123,
+          cleanupFiles: 'damaged',
+          retiredLifetimeIds: ids,
+        }),
+      );
+      const loaded = new TerminalRecordRepository({
+        dataRoot: root,
+        flushDirectorySync: (): void => undefined,
+      }).load('proj', 'wt');
+      expect(loaded.kind).toBe('absent');
+      expect(loaded.tombstone).toMatchObject({
+        generation: 9_000_000_000_000,
+        incarnation: null,
+        retiredAt: 0,
+        damaged: true,
+      });
+      expect(loaded.tombstone?.cleanupFiles).toBeUndefined();
+      expect(loaded.tombstone?.retiredLifetimeIds).toEqual(
+        ids.every((id): boolean => typeof id === 'string') ? ids : undefined,
+      );
+      expect(
+        make().apply({
+          client,
+          generation: 2,
+          producer: { id: 'old', runId: 'one' },
+          seq: 1,
+          ops: [],
+        }).outcome,
+      ).toBe('dropped');
+    },
+  );
+
+  it.each(['generation', 'incarnation', 'retiredAt'])(
+    'keeps other fence fields when only %s is damaged',
+    (field): void => {
+      const directory = terminalRecordDir(root, 'proj', 'wt');
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(
+        join(directory, 'tombstone.json'),
+        JSON.stringify({
+          generation: 9_000_000_000_000,
+          incarnation: 'inc-1',
+          retiredAt: 123,
+          retiredLifetimeIds: ['old'],
+          [field]: field === 'incarnation' ? 7 : 'damaged',
+        }),
+      );
+      const loaded = new TerminalRecordRepository({
+        dataRoot: root,
+        flushDirectorySync: (): void => undefined,
+      }).load('proj', 'wt');
+      expect(loaded.kind).toBe('absent');
+      expect(loaded.tombstone).toMatchObject({
+        incarnation: null,
+        retiredAt: 0,
+        retiredLifetimeIds: ['old'],
+        damaged: true,
+      });
+      if (field !== 'generation')
+        expect(loaded.tombstone?.generation).toBe(9_000_000_000_000);
+      else expect(loaded.tombstone?.generation).toBeGreaterThan(1);
+    },
+  );
+
+  it.each(['generation', 'retiredAt', 'cleanupFiles'])(
+    'unions damaged tombstone IDs into a valid successor (%s)',
+    (field): void => {
+      const repository = new TerminalRecordRepository({
+        dataRoot: root,
+        flushDirectorySync: (): void => undefined,
+      });
+      const successor = repository.empty({ ...client, generation: 7 }, 'none');
+      successor.retiredLifetimeIds = ['earlier'];
+      repository.save(successor);
+      const path = join(dirname(recordFile()), 'tombstone.json');
+      const bytes = JSON.stringify({
+        generation: 1,
+        incarnation: 'inc-1',
+        retiredAt: 1,
+        retiredLifetimeIds: ['old'],
+        [field]: 'damaged',
+      });
+      writeFileSync(path, bytes);
+      const before = readFileSync(recordFile());
+      const a = make();
+      expect(a.open(client).generation).toBe(7);
+      expect(readFileSync(recordFile())).toEqual(before);
+      expect(
+        a.apply({
+          client: { ...client, lifetimeId: 'old' },
+          producer: { id: 'old', runId: 'one' },
+          seq: 1,
+          ops: [],
+        }).outcome,
+      ).toBe('dropped');
+      expect(
+        a.apply({
+          client: { ...client, lifetimeId: 'new' },
+          producer: { id: 'new', runId: 'one' },
+          seq: 1,
+          ops: [],
+        }).outcome,
+      ).toBe('applied');
+      expect(record().retiredLifetimeIds).toEqual(['earlier', 'old']);
+      expect(readFileSync(path, 'utf8')).toBe(bytes);
+    },
+  );
+
+  it.each([
+    { generation: 'damaged', retiredAt: 1 },
+    { generation: undefined, retiredAt: 1 },
+    { generation: 1, retiredAt: 'damaged' },
+    { generation: 'damaged', retiredAt: 'damaged' },
+  ])('retains named coverage independently of %j', (damage): void => {
+    const directory = terminalRecordDir(root, 'proj', 'wt');
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, 'tombstone.json');
+    const bytes = JSON.stringify({
+      ...damage,
+      incarnation: 'inc-1',
+      retiredLifetimeIds: ['old'],
+    });
+    writeFileSync(path, bytes);
+    const batch = {
+      client: { ...client, lifetimeId: 'old' },
+      producer: { id: 'old', runId: 'one' },
+      seq: 1,
+      ops: [],
+    };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(make().apply(batch).outcome).toBe('dropped');
+      expect(readFileSync(path, 'utf8')).toBe(bytes);
+      expect(existsSync(recordFile())).toBe(false);
+    }
+    expect(
+      make().apply({ ...batch, client: { ...client, lifetimeId: 'new' } })
+        .outcome,
+    ).toBe('applied');
+    expect(record().retiredLifetimeIds).toContain('old');
+    expect(make().apply(batch).outcome).toBe('dropped');
+  });
 });
 
 type FaultEvent = {
@@ -9310,10 +10134,12 @@ const recordFaultScenes = [
   'known predecessor',
   'unknown predecessor',
   'terminal recreation',
+  'retirement cleanup',
   'lower fence',
   'damaged record',
   'damaged tombstone',
   'valid record and damaged tombstone',
+  'project retirement',
   'shutdown with held reports',
 ] as const;
 
@@ -9324,7 +10150,8 @@ function faultRows(
   // Full shared-install coverage belongs to producer, backup and tombstone
   // scenes; the other scenes qualify their distinct admission/recovery edges.
   return reached.filter((event) => {
-    if (scene === 'producer publication') return true;
+    if (scene === 'producer publication' || scene === 'retirement cleanup')
+      return true;
     if (scene === 'cold import')
       return (
         event.artifact === 'import-source.json' ||
@@ -9579,7 +10406,11 @@ function recordFaultScene(
       },
     };
   }
-  if (name === 'lower fence') {
+  if (
+    name === 'retirement cleanup' ||
+    name === 'lower fence' ||
+    name === 'project retirement'
+  ) {
     const authority = makeHere();
     const retiring = { ...client, lifetimeId: 'retired' };
     attribute(authority, 't', retiring);
@@ -9589,12 +10420,30 @@ function recordFaultScene(
     const directory = terminalRecordDir(dataRoot, 'proj', 'wt');
     writeFileSync(join(directory, 'import-source.json'), 'old');
     writeFileSync(join(directory, '.record.json.interrupted.tmp'), 'old');
-    authority.retire({ projectId: 'proj', worktreeId: 'wt', generation: 1 });
-    const params = { projectId: 'proj', worktreeId: 'wt', generation: 4 };
+    if (name === 'lower fence')
+      authority.retire({ projectId: 'proj', worktreeId: 'wt', generation: 1 });
+    if (name === 'project retirement') {
+      // An unloaded worktree on disk: the project request names no worktree.
+      const disk = makeHere();
+      attribute(disk, 'disk', { ...client, worktreeId: 'disk' });
+      disk.flushSync();
+      disk.dispose();
+    }
+    const params =
+      name === 'project retirement'
+        ? // After every record this scene starts, in every fault run.
+          { projectId: 'proj', requestedAt: 4_102_444_800_000 }
+        : {
+            projectId: 'proj',
+            worktreeId: 'wt',
+            generation: name === 'lower fence' ? 4 : 1,
+          };
     return {
       attempt: () => authority.retire(params),
       recover: () => {
-        expect(authority.retire(params)).toEqual({ retired: 1 });
+        expect(authority.retire(params)).toEqual({
+          retired: name === 'project retirement' ? 2 : 1,
+        });
         authority.output('t', Buffer.from('after'));
         authority.flushSync();
       },
@@ -9602,11 +10451,13 @@ function recordFaultScene(
         expect(history(makeHere(), 't', retiring)).toBe('');
         expect(existsSync(recordPath())).toBe(false);
         expect(authority.isAttributed('t')).toBe(false);
+        if (name === 'project retirement')
+          expect(existsSync(recordPath('disk'))).toBe(false);
         expect(
           makeHere().apply({
             ...seedBatch,
             client: retiring,
-            generation: 4,
+            generation: name === 'lower fence' ? 4 : 1,
           }).outcome,
         ).toBe('dropped');
       },
@@ -9836,7 +10687,8 @@ describe('R10 reachable storage phase matrix', () => {
       }
       expect(reached.length).toBeGreaterThan(0);
       for (const [index, target] of reached.entries()) {
-        for (const persistent of name === 'producer publication'
+        for (const persistent of name === 'producer publication' ||
+        name === 'retirement cleanup'
           ? [false, true]
           : [true]) {
           const directory = join(root, `${index}-${persistent}`);
@@ -9847,7 +10699,8 @@ describe('R10 reachable storage phase matrix', () => {
             const scene = recordFaultScene(name, directory, faults);
             faults.install();
             const persistentDirectoryFlush =
-              name === 'producer publication' &&
+              (name === 'producer publication' ||
+                name === 'retirement cleanup') &&
               persistent &&
               target.operation === 'directory.flush';
             const hardProducerFault =
@@ -10046,6 +10899,109 @@ describe('R31 retry identity and cold admission', () => {
       ).toEqual(before);
     },
   );
+  it.each([false, true])(
+    'reloads qualified cleanup debt beside a successor (recovered=%s)',
+    (recovered) => {
+      const authority = make();
+      authority.open({ ...client, lifetimeId: 'old' });
+      const backup = join(dirname(recordFile()), 'import-source.json');
+      writeFileSync(backup, 'predecessor backup');
+      const remove = fs.rmSync;
+      const blocked = jest
+        .spyOn(fs, 'rmSync')
+        .mockImplementation((path, options) => {
+          if (path === backup) throw new Error('cleanup blocked R31');
+          remove(path, options);
+        });
+      expect(() =>
+        authority.retire({
+          projectId: 'proj',
+          worktreeId: 'wt',
+          generation: 1,
+        }),
+      ).toThrow('cleanup blocked R31');
+      authority.dispose();
+      const repository = new TerminalRecordRepository({
+        dataRoot: root,
+        flushDirectorySync: (): void => undefined,
+      });
+      if (recovered) {
+        const damaged = readJsonObject(recordFile());
+        damaged.revision = 'damaged';
+        writeFileSync(recordFile(), JSON.stringify(damaged));
+        repository.load('proj', 'wt', 'recover');
+      }
+      blocked.mockRestore();
+      const next = { ...client, generation: 2, lifetimeId: 'next' };
+      const successor = new TerminalRecordAuthority({ repository });
+      successor.open(next);
+      successor.apply({
+        client: next,
+        producer: { id: 'p', runId: 'r' },
+        seq: 1,
+        ops: [
+          { op: 'session.upsert', session: session('t') },
+          { op: 'output.append', terminalId: 't', text: 'successor' },
+        ],
+      });
+      successor.dispose();
+      expect(existsSync(backup)).toBe(true);
+      const retry = make();
+      expect(
+        retry.retire({ projectId: 'proj', worktreeId: 'wt', generation: 1 }),
+      ).toEqual({ retired: 0 });
+      expect(existsSync(backup)).toBe(false);
+      expect(retry.historyRead({ client: next, terminalId: 't' }).text).toBe(
+        'successor',
+      );
+    },
+  );
+  it.each([
+    { generation: 1 },
+    { generation: 3, lifetimeId: 'old' },
+    { lifetimeId: 'old' },
+  ])('projects damaged-record fences before stale admission %j', (selector) => {
+    const repository = new TerminalRecordRepository({
+      dataRoot: root,
+      flushDirectorySync: (): void => undefined,
+    });
+    const envelope = repository.empty({ ...client, generation: 2 }, 'none');
+    envelope.retiredLifetimeIds = ['old'];
+    repository.save(envelope);
+    writeFileSync(
+      recordFile(),
+      JSON.stringify({ ...envelope, revision: 'damaged' }),
+    );
+    const before = readFileSync(recordFile());
+    const rename = jest.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw new Error('quarantine unavailable R31');
+    });
+    const stale = { ...client, ...selector };
+    for (const operation of ['open', 'apply', 'attribute']) {
+      const authority = make();
+      if (operation === 'open')
+        expect(authority.open(stale).terminals).toEqual([]);
+      else if (operation === 'apply')
+        expect(
+          authority.apply({
+            client: stale,
+            producer: { id: 'p', runId: 'r' },
+            seq: 1,
+            ops: [],
+          }).outcome,
+        ).toBe('dropped');
+      else
+        authority.attribute({
+          terminalId: 't',
+          client: stale,
+          session: session('t'),
+          persist: true,
+        });
+    }
+    expect(rename).not.toHaveBeenCalled();
+    expect(readdirSync(dirname(recordFile()))).toEqual(['record.json']);
+    expect(readFileSync(recordFile())).toEqual(before);
+  });
 });
 
 describe('R35 an incarnation filter only narrows a retirement', () => {
@@ -10060,7 +11016,8 @@ describe('R35 an incarnation filter only narrows a retirement', () => {
   const destroying = (
     spy: jest.SpiedFunction<TerminalRecordRepository['retire']>,
   ): Parameters<TerminalRecordRepository['retire']>[] =>
-    spy.mock.calls.filter((call) => call[4] !== false);
+    // Only a tombstone without its own cleanup set snapshots artifacts to delete.
+    spy.mock.calls.filter((call) => call[2].cleanupFiles === undefined);
 
   it.each(['cached', 'cold'] as const)(
     "a delayed %s retirement of an old lifetime keeps another lifetime's history",
@@ -10771,6 +11728,14 @@ describe('R37 retirement reaches only named worktrees and observes before it pub
     writer.dispose();
     return seeded;
   };
+  // Strictly after every record started so far (CAN-7953: never a tie).
+  const cutoff = (): number => {
+    const written = Date.now();
+    while (Date.now() <= written) {
+      // Spin to the next millisecond.
+    }
+    return Date.now();
+  };
 
   it.each([
     ['project', 'first attempt'],
@@ -10789,10 +11754,12 @@ describe('R37 retirement reaches only named worktrees and observes before it pub
         projectId: 'proj',
         ...(selection === 'named' ? { worktreeIds: ['wt'] } : {}),
         generation: 1,
-        requestedAt: Date.now() + 60_000,
+        // A project request's cutoff is its only bound, so it is captured
+        // before the later worktree exists, as the producer captures it.
+        requestedAt: selection === 'named' ? Date.now() + 60_000 : cutoff(),
         lifetimeIds: ['gone'],
       };
-      const retired = selection === 'named' ? 1 : 0;
+      const retired = 1;
       const later = (): WorkerTerminalRecordClient => {
         const created = seed('wt-later', 'later', 'later history');
         // A loaded scope is no more a target than one on disk.
@@ -10812,7 +11779,7 @@ describe('R37 retirement reaches only named worktrees and observes before it pub
         );
         expect(
           reader.historyRead({ client: first, terminalId: 't' }).text,
-        ).toBe(selection === 'named' ? '' : 'first history');
+        ).toBe('');
       }
       expect(
         existsSync(
@@ -10820,6 +11787,178 @@ describe('R37 retirement reaches only named worktrees and observes before it pub
         ),
       ).toBe(false);
       expect(make().open(next).generation).toBe(1);
+    },
+  );
+
+  it('a project retirement reaches every worktree on disk, unloaded ones included, but no later record or bare directory (CAN-7704)', (): void => {
+    const first = seed('wt', 'first', 'first history');
+    const unloaded = seed('wt-unloaded', 'unloaded', 'unloaded history');
+    mkdirSync(terminalRecordDir(root, 'proj', 'wt-bare'), { recursive: true });
+    const requestedAt = Date.now() + 60_000;
+    const later = seed('wt-later', 'later', 'later history');
+    const laterFile = join(
+      terminalRecordDir(root, 'proj', 'wt-later'),
+      'record.json',
+    );
+    const envelope: unknown = JSON.parse(readFileSync(laterFile, 'utf8'));
+    if (!isTerminalRecordEnvelope(envelope))
+      throw new Error('Expected a record');
+    // Started after the cutoff: a discovered record the request cannot reach.
+    writeFileSync(
+      laterFile,
+      JSON.stringify({ ...envelope, startedAt: requestedAt + 1 }),
+    );
+    expect(
+      make().retire({ projectId: 'proj', generation: 1, requestedAt }),
+    ).toEqual({ retired: 2 });
+    const reader = make();
+    for (const retired of [first, unloaded])
+      expect(
+        reader.historyRead({ client: retired, terminalId: 't' }).text,
+      ).toBe('');
+    expect(reader.historyRead({ client: later, terminalId: 't' }).text).toBe(
+      'later history',
+    );
+    for (const untouched of ['wt-later', 'wt-bare'])
+      expect(
+        existsSync(
+          join(terminalRecordDir(root, 'proj', untouched), 'tombstone.json'),
+        ),
+      ).toBe(false);
+  });
+
+  it.each(['same authority', 'restarted authority'] as const)(
+    'a project retirement retry by a %s finishes its first attempt and never fences a worktree created after it (CAN-7704)',
+    (retrier): void => {
+      const first = seed('wt', 'first', 'first history');
+      const second = seed('wt-second', 'second', 'second history');
+      const intent = {
+        projectId: 'proj',
+        generation: 1,
+        requestedAt: cutoff(),
+        lifetimeIds: ['gone'],
+      };
+      const authority = make();
+      const rename = fs.renameSync;
+      const secondTombstone = join(
+        terminalRecordDir(root, 'proj', 'wt-second'),
+        'tombstone.json',
+      );
+      const blocked = jest
+        .spyOn(fs, 'renameSync')
+        .mockImplementation((from, to): void => {
+          if (to === secondTombstone) throw new Error('retirement blocked');
+          rename(from, to);
+        });
+      try {
+        expect(() => authority.retire(intent)).toThrow('retirement blocked');
+      } finally {
+        blocked.mockRestore();
+      }
+      expect(existsSync(secondTombstone)).toBe(false);
+      // Same generation and a named lifetime: only the cutoff keeps it out.
+      const later = seed('wt-later', 'gone', 'later history');
+      const retrying = retrier === 'same authority' ? authority : make();
+      expect(retrying.retire(intent)).toEqual({ retired: 2 });
+      expect(retrying.retire(intent)).toEqual({ retired: 2 });
+      const reader = make();
+      for (const retired of [first, second])
+        expect(
+          reader.historyRead({ client: retired, terminalId: 't' }).text,
+        ).toBe('');
+      expect(reader.historyRead({ client: later, terminalId: 't' }).text).toBe(
+        'later history',
+      );
+      expect(
+        existsSync(
+          join(terminalRecordDir(root, 'proj', 'wt-later'), 'tombstone.json'),
+        ),
+      ).toBe(false);
+      expect(make().open(later).generation).toBe(1);
+      // A retry re-lists the project; it persists no selection of its own.
+      expect(
+        readdirSync(dirname(terminalRecordDir(root, 'proj', 'wt'))).sort(),
+      ).toEqual(['wt', 'wt-later', 'wt-second']);
+    },
+  );
+
+  it.each(['same authority', 'restarted authority'] as const)(
+    'a projectWide retry by a %s retires its named and discovered worktrees but never a later one (CAN-7704)',
+    (retrier): void => {
+      const unloaded = seed('wt-unloaded', 'unloaded', 'unloaded history');
+      const intent = {
+        projectId: 'proj',
+        worktreeIds: ['wt', 'wt-pending'],
+        projectWide: true as const,
+        lifetimeIds: ['first'],
+        requestedAt: cutoff(),
+      };
+      // Named, so its lifetime retires it although it started after the cutoff.
+      const named = seed('wt', 'first', 'first history');
+      const authority = make();
+      const rename = fs.renameSync;
+      const unloadedTombstone = join(
+        terminalRecordDir(root, 'proj', 'wt-unloaded'),
+        'tombstone.json',
+      );
+      const blocked = jest
+        .spyOn(fs, 'renameSync')
+        .mockImplementation((from, to): void => {
+          if (to === unloadedTombstone) throw new Error('retirement blocked');
+          rename(from, to);
+        });
+      try {
+        expect(() => authority.retire(intent)).toThrow('retirement blocked');
+      } finally {
+        blocked.mockRestore();
+      }
+      // A named lifetime and generation: only the cutoff keeps it out.
+      const later = seed('wt-later', 'first', 'later history');
+      const retrying = retrier === 'same authority' ? authority : make();
+      // wt, wt-unloaded and the recordless named wt-pending.
+      expect(retrying.retire(intent)).toEqual({ retired: 3 });
+      expect(retrying.retire(intent)).toEqual({ retired: 3 });
+      const reader = make();
+      for (const retired of [named, unloaded])
+        expect(
+          reader.historyRead({ client: retired, terminalId: 't' }).text,
+        ).toBe('');
+      expect(reader.historyRead({ client: later, terminalId: 't' }).text).toBe(
+        'later history',
+      );
+      for (const [worktreeId, fenced] of [
+        ['wt-unloaded', true],
+        ['wt-pending', true],
+        ['wt-later', false],
+      ] as const)
+        expect(
+          existsSync(
+            join(terminalRecordDir(root, 'proj', worktreeId), 'tombstone.json'),
+          ),
+        ).toBe(fenced);
+    },
+  );
+
+  it.each([
+    { generation: 1 },
+    { generation: 1, lifetimeIds: ['first'] },
+    { lifetimeIds: ['first'] },
+  ])(
+    'a retirement naming no worktree and no cutoff reaches no unnamed worktree (%j)',
+    (selectors): void => {
+      const first = seed('wt', 'first', 'first history');
+      // Without a cutoff, nothing bounds a retry to the worktrees it first saw.
+      expect(make().retire({ projectId: 'proj', ...selectors })).toEqual({
+        retired: 0,
+      });
+      expect(
+        existsSync(
+          join(terminalRecordDir(root, 'proj', 'wt'), 'tombstone.json'),
+        ),
+      ).toBe(false);
+      expect(make().historyRead({ client: first, terminalId: 't' }).text).toBe(
+        'first history',
+      );
     },
   );
 

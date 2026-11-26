@@ -323,8 +323,11 @@ import {
   validatePipelineOwnerTargetsOnSave,
 } from '../pipelines/pipeline-owner-policy';
 import {
+  clearUserPipelinePersonAuthored,
   isPipelineLocalMetadataReadable,
   pipelineMarkerRefusalMessage,
+  restoreUserPipelinePersonAuthored,
+  userPipelinePersonAuthorship,
 } from '../pipelines/pipeline-local-metadata-store';
 import { listWorkEntryIds } from '../lib/cowork-work-entries';
 import type { AppAdvisorToolRuntimeSurfaces } from '../app-advisor/runtime';
@@ -374,6 +377,9 @@ import {
   scheduledUserPipelineId,
   targetsAgentHiddenPipeline,
   usesInputOnlyInRunScripts,
+  schedulePersonTakeover,
+  scheduleRunAgentAuthor,
+  type SchedulePersonTakeover,
   userPipelineMetadata,
   type OwnedPipelineRelease,
 } from './workflow-schedules';
@@ -848,6 +854,20 @@ function projectRootPipelineCwd(
 interface AutomationRunIdentity {
   initiator: PipelineExecutionInitiator;
   agentOrigin?: PipelineAgentChatAddress;
+  /**
+   * An agent wrote the schedule, so it runs only as `dispatch` (CAN-5782),
+   * even when a person's later save makes its run theirs (CAN-7228).
+   */
+  agentScheduled?: true;
+  /**
+   * The person's takeover that left `agentOrigin` unset (CAN-7228), checked
+   * again once the definition the run starts is resolved.
+   */
+  personTakeover?: SchedulePersonTakeover & {
+    /** The schedule as the run copied it, checked against the stored one. */
+    scheduleId: string;
+    scheduleAction: AutomationAction;
+  };
 }
 
 /** Who started an automation's pipeline run, recorded on the run. */
@@ -863,13 +883,20 @@ function sameRunResult(
   );
 }
 
+/** Why an agent's schedule write was refused before it landed (CAN-7228). */
+const AGENT_SCHEDULE_AUTHOR_UNRECORDED =
+  "Couldn't save the schedule because its workflow's authorship couldn't be recorded. Try again.";
+
 function automationRunIdentity(
-  activity: Pick<ScheduledActivity, 'id' | 'name' | 'agentAuthor'>,
+  activity: Pick<ScheduledActivity, 'id' | 'name' | 'action' | 'agentAuthor'>,
   /** The run's gate output; a converted chat automation's send reads it (CAN-4551). */
   ifCommandOutput?: string,
   /** A scheduled run, whose chats stay behind the current tab (CAN-4551). */
   background = false,
 ): AutomationRunIdentity {
+  // CAN-7228: a person's later save of its workflow makes the run theirs.
+  const agentAuthor = scheduleRunAgentAuthor(activity);
+  const personTakeover = schedulePersonTakeover(activity);
   return {
     initiator: {
       kind: 'automation',
@@ -878,7 +905,17 @@ function automationRunIdentity(
       ...(ifCommandOutput !== undefined ? { ifCommandOutput } : {}),
       ...(background ? { background: true } : {}),
     },
-    ...(activity.agentAuthor ? { agentOrigin: activity.agentAuthor.chat } : {}),
+    ...(agentAuthor ? { agentOrigin: agentAuthor.chat } : {}),
+    ...(activity.agentAuthor ? { agentScheduled: true as const } : {}),
+    ...(personTakeover
+      ? {
+          personTakeover: {
+            ...personTakeover,
+            scheduleId: activity.id,
+            scheduleAction: structuredClone(activity.action),
+          },
+        }
+      : {}),
   };
 }
 
@@ -2688,7 +2725,7 @@ export class AutomationsService {
     if (
       event === 'unsupported' ||
       (event !== 'dispatch' &&
-        this.requiresDispatch(activityId, identity?.agentOrigin !== undefined))
+        this.requiresDispatch(activityId, identity?.agentScheduled === true))
     )
       throw new ScheduledWorkflowRefusal(SCHEDULE_DISPATCH_REQUIRED_MESSAGE);
   }
@@ -3666,6 +3703,19 @@ export class AutomationsService {
               if (refusal) return { ok: false, error: refusal };
             }
             await assertAutomationContext(activity);
+            // CAN-7228: under the pipeline's guard and before the write, so
+            // a person's save before this agent's write no longer makes its
+            // runs theirs, and the write never lands without it.
+            const takenBack =
+              trusted.agentAuthor && scheduledPipeline !== undefined
+                ? userPipelinePersonAuthorship(scheduledPipeline)
+                : undefined;
+            if (
+              trusted.agentAuthor &&
+              scheduledPipeline !== undefined &&
+              !clearUserPipelinePersonAuthored(scheduledPipeline)
+            )
+              return { ok: false, error: AGENT_SCHEDULE_AUTHOR_UNRECORDED };
             activity.nextRunAt = nextRunForEnabledActivity(activity, file, now);
             file.activities.push(activity);
             // CAN-7285: an install owns the bundled pipeline it saved.
@@ -3674,6 +3724,9 @@ export class AutomationsService {
               await this.persistAndNotify(file);
             } catch (error) {
               if (gated) file.activities.pop();
+              // An agent's create that never landed takes nothing back.
+              if (scheduledPipeline !== undefined && takenBack !== undefined)
+                restoreUserPipelinePersonAuthored(scheduledPipeline, takenBack);
               throw error;
             }
             if (scheduledPipeline !== undefined)
@@ -4175,7 +4228,22 @@ export class AutomationsService {
         if (!activity.enabled) {
           delete activity.nextRunAt;
         }
+        // CAN-7228: an agent's edit takes back the runs a person's earlier
+        // save made theirs, under the pipeline's guard and before the write,
+        // which never lands without it.
+        const editedPipeline = trusted.agentAuthor
+          ? scheduledUserPipelineId(activity)
+          : undefined;
+        const takenBack =
+          editedPipeline === undefined
+            ? undefined
+            : userPipelinePersonAuthorship(editedPipeline);
         try {
+          if (
+            editedPipeline !== undefined &&
+            !clearUserPipelinePersonAuthored(editedPipeline)
+          )
+            throw new Error(AGENT_SCHEDULE_AUTHOR_UNRECORDED);
           await this.writeFile(file);
         } catch (error) {
           // Unwritten, the update isn't the activity: the cache keeps the
@@ -4183,6 +4251,9 @@ export class AutomationsService {
           const index = file.activities.indexOf(activity);
           if (index !== -1) file.activities[index] = stored;
           trusted.releasesOwnedPipeline?.restore();
+          // An agent's edit that never landed takes nothing back.
+          if (editedPipeline !== undefined && takenBack !== undefined)
+            restoreUserPipelinePersonAuthored(editedPipeline, takenBack);
           throw error;
         }
         regeneration.written = true;
@@ -7274,6 +7345,27 @@ export class AutomationsService {
       throw new Error('Automations service is not configured.');
     }
     const { action, selection, executionContext } = args;
+    // CAN-7228: a takeover covers the schedule as the person's save found
+    // it; a run sending a copy the schedule has since replaced (one that
+    // waited at its gate) is the agent's. The start checks the rest on the
+    // definition it admits.
+    const takeover = args.identity?.personTakeover;
+    const stored =
+      takeover === undefined
+        ? undefined
+        : (await this.ensureFile()).activities.find(
+            (activity) => activity.id === takeover.scheduleId,
+          );
+    const takeoverCurrent =
+      takeover !== undefined &&
+      stored !== undefined &&
+      stored.agentAuthor?.recordedAt === takeover.agent.recordedAt &&
+      isDeepStrictEqual(stored.action, takeover.scheduleAction);
+    const agentOrigin =
+      args.identity?.agentOrigin ??
+      (takeover !== undefined && !takeoverCurrent
+        ? takeover.agent.chat
+        : undefined);
     const result = await startPipelineExecutionFromMain({
       pipeline: selection.pipeline,
       getWindow: this.surfaces.getMainWindow,
@@ -7285,13 +7377,27 @@ export class AutomationsService {
           ? {}
           : { childPipelineAuthorizations: args.childPipelineAuthorizations }),
         initiationSource: 'automation',
-        ...args.identity,
+        ...(args.identity
+          ? {
+              initiator: args.identity.initiator,
+              ...(agentOrigin ? { agentOrigin } : {}),
+              ...(takeover && takeoverCurrent && !agentOrigin
+                ? {
+                    personTakeover: {
+                      pipelineId: takeover.pipelineId,
+                      personAuthoredAt: takeover.personAuthoredAt,
+                      agentOrigin: takeover.agent.chat,
+                    },
+                  }
+                : {}),
+            }
+          : {}),
         // An agent's run starts as `dispatch`; the start handler refuses it
         // unless the definition it admits declares it (CAN-5782). Any other
         // schedule's event is chosen there, from that definition.
         ...(this.requiresDispatch(
           args.activityId,
-          args.identity?.agentOrigin !== undefined,
+          args.identity?.agentScheduled === true,
         )
           ? { eventName: 'dispatch' as const }
           : {}),

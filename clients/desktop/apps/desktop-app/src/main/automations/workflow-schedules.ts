@@ -117,6 +117,59 @@ export function userPipelineMetadata(
 }
 
 /**
+ * The agent a run of `activity` acts for (CAN-7228): its agent author,
+ * unless a person saved the user pipeline it runs after the agent wrote
+ * the schedule and no agent has written the pipeline since. That run is
+ * the person's, and may use what they chose, plugin selections included.
+ * A later agent write of either makes it the agent's again.
+ */
+export function scheduleRunAgentAuthor(
+  activity: Pick<ScheduledActivity, 'action' | 'agentAuthor'>,
+): PipelineAgentAuthor | undefined {
+  const author = activity.agentAuthor;
+  if (author === undefined) return undefined;
+  const pipelineId = scheduledUserPipelineId(activity);
+  if (pipelineId === undefined) return author;
+  const metadata = userPipelineMetadata(pipelineId);
+  if (metadata.agentAuthor !== undefined) return author;
+  const personAt = Date.parse(metadata.personAuthoredAt ?? '');
+  const agentAt = Date.parse(author.recordedAt);
+  // An unreadable time keeps the agent's: it fails closed.
+  return Number.isFinite(personAt) &&
+    Number.isFinite(agentAt) &&
+    personAt > agentAt
+    ? undefined
+    : author;
+}
+
+/**
+ * The person's takeover a run of an agent's schedule relied on (CAN-7228):
+ * their save of `pipelineId` at `personAuthoredAt`, in place of the agent.
+ */
+export interface SchedulePersonTakeover {
+  pipelineId: string;
+  personAuthoredAt: string;
+  agent: PipelineAgentAuthor;
+}
+
+/** The takeover {@link scheduleRunAgentAuthor} applies to `activity`, if any. */
+export function schedulePersonTakeover(
+  activity: Pick<ScheduledActivity, 'action' | 'agentAuthor'>,
+): SchedulePersonTakeover | undefined {
+  const agent = activity.agentAuthor;
+  if (agent === undefined || scheduleRunAgentAuthor(activity) !== undefined)
+    return undefined;
+  const pipelineId = scheduledUserPipelineId(activity);
+  const personAuthoredAt =
+    pipelineId === undefined
+      ? undefined
+      : userPipelineMetadata(pipelineId).personAuthoredAt;
+  return pipelineId === undefined || personAuthoredAt === undefined
+    ? undefined
+    : { pipelineId, personAuthoredAt, agent };
+}
+
+/**
  * Whether a record runs an Orchestrator pipeline whose owner marker was
  * cleared (`agentHidden`): it counts as an Orchestrator automation.
  */

@@ -64,6 +64,7 @@ import { markStartPageSuppressed } from '@/lib/panels/start-page-suppression';
 import type { WorkspaceTemplateShareSummary } from '@canopy/protocol';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { webCoreCoworkProject } from '@/lib/cowork-directory';
+import { notifyWorktreeRemoved } from '@/lib/worktree-removal-listeners';
 import { webCoreUnavailable } from './chat/web-core/web-core-chat-backend';
 
 /**
@@ -1617,6 +1618,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       }
 
       for (const entry of entries) {
+        notifyWorktreeRemoved(workEntryKey(projectId, entry.id));
         chatStore.cleanupWorktree(projectId, entry.id);
         // Drop the in-memory panel-grid layout for the deleted entry so a
         // future workspace reusing the key never resurrects a stale grid
@@ -2064,6 +2066,7 @@ export const useStandaloneChatStore = create<StandaloneChatState>(
       entryId,
     ): Promise<void> => {
       const chatStore = useChatStore.getState();
+      notifyWorktreeRemoved(workEntryKey(resolvedProjectId, entryId));
       chatStore.suppressWorktreePersistence(resolvedProjectId, entryId);
       chatStore.cleanupWorktree(resolvedProjectId, entryId);
       usePanelLayoutStore

@@ -1,5 +1,5 @@
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
-import type { StatusBadgeVariant } from '@canopy/ui-shared';
+import type { BadgeTone } from '@canopy/ui-shared';
 
 /**
  * Friendly-label and badge-variant helpers for the raw UPPERCASE telemetry
@@ -57,20 +57,20 @@ export function formatTurnStatusLabel(status: string): string {
   return TURN_STATUS_LABELS[status] ?? titleCaseEnum(status);
 }
 
-/** Map a telemetry turn-status enum value to a {@link StatusBadgeVariant}. */
-export function turnStatusBadgeVariant(status: string): StatusBadgeVariant {
+/** Map a telemetry turn-status enum value to a `Badge` tone. */
+export function turnStatusBadgeTone(status: string): BadgeTone {
   switch (status) {
     case 'SUCCESS':
       return 'success';
     case 'FAILURE':
-      return 'destructive';
+      return 'danger';
     case 'CANCELLED':
     case 'INTERRUPTED':
       return 'warning';
     case 'RUNNING':
-      return 'active';
+      return 'info';
     default:
-      return 'muted';
+      return 'neutral';
   }
 }
 

@@ -40,7 +40,7 @@ import { Tooltip } from '@canopy/ui-shared';
 import {
   Button,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   ErrorState,
   ToggleSwitch,
   FieldError,
@@ -827,20 +827,24 @@ function ModeRadioOption({
 }: ModeRadioOptionProps): JSX.Element {
   return (
     <Tooltip label={disabledReason} disabled={!disabled} className="w-full">
-      <ChoiceListRow
+      <ChoiceField
+        layout="row"
         kind="radio"
         name={name}
         value={value}
-        selected={checked}
+        checked={checked}
         disabled={disabled}
-        onClick={(): void => onSelect(value)}
+        onChange={(): void => onSelect(value)}
         data-testid={dataTestId}
-      >
-        <span className="block font-medium">{label}</span>
-        <span className="block text-xs text-pretty fg-secondary">
-          {description}
-        </span>
-      </ChoiceListRow>
+        label={
+          <>
+            <span className="block font-medium">{label}</span>
+            <span className="block text-xs text-pretty fg-secondary">
+              {description}
+            </span>
+          </>
+        }
+      />
     </Tooltip>
   );
 }

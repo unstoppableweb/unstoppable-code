@@ -17,6 +17,7 @@ import { CopilotConnection } from './CopilotConnection';
 import { CursorConnection } from './CursorConnection';
 import { CursorApprovalCheck } from './CursorApprovalCheck';
 import { DesktopLabsSettingsSection } from './hosted/DesktopLabsSettingsSection';
+import { isDesktopSharedSidebarEnabled } from '@/components/sidebar/desktop-shared-sidebar-flag';
 import { OneWindowSection } from './OneWindowSection';
 import { RendererCodeCacheSection } from './RendererCodeCacheSection';
 import { SettingsPage, SettingsLoading } from './SettingsLayout';
@@ -52,6 +53,7 @@ export function ExperimentsTab(): JSX.Element {
   const opencodeReleased = useFeatureFlagsStore(isOpenCodeHarnessReleased);
   // The one-window switch belongs to the computer in front of the person,
   // so a window that shows another computer leaves it out.
+  const [sharedSidebarEnabled] = useState(isDesktopSharedSidebarEnabled);
   const localWindow = useRemoteControlStore(
     (store) => store.context.mode === 'local',
   );
@@ -143,7 +145,7 @@ export function ExperimentsTab(): JSX.Element {
         !antigravityReleased && <GoogleSubscriptionConnection />}
       {copilotHarnessEnabled && !copilotReleased && <CopilotConnection />}
       {opencodeHarnessEnabled && !opencodeReleased && <OpenCodeConnection />}
-      {localWindow && <OneWindowSection />}
+      {localWindow && sharedSidebarEnabled && <OneWindowSection />}
       <RendererCodeCacheSection />
     </SettingsPage>
   );

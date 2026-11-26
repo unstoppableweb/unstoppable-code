@@ -1,6 +1,6 @@
 'use client';
 
-import { StatusPill } from '../primitives/StatusPill';
+import { Badge } from '../primitives/Badge';
 import { Stack } from '../primitives/Stack';
 import { useEffect, useId, useRef, type JSX, type RefObject } from 'react';
 import { ControlButton, Button } from '../primitives/Button';
@@ -177,8 +177,8 @@ function RepositoryRow({
           <span className="truncate text-s font-medium">
             {repository.fullName}
           </span>
-          {repository.private && <StatusPill>Private</StatusPill>}
-          {repository.archived && <StatusPill>Archived</StatusPill>}
+          {repository.private && <Badge>Private</Badge>}
+          {repository.archived && <Badge>Archived</Badge>}
           <PickerMenuOptionCheck
             selected={selected}
             reserveSpace

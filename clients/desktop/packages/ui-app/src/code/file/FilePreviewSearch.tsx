@@ -13,7 +13,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react';
-import { SearchBar } from '@canopy/ui-shared/primitives/SearchBar';
+import { FindBar } from '@canopy/ui-shared/components/FindBar';
 import { PaneSheet } from '@canopy/ui-shared/primitives/Sheet';
 import { createDomSearchExecutor } from '@canopy/ui-shared/lib/dom-search-highlight';
 
@@ -326,7 +326,7 @@ export function FilePreviewSearch({
               aria-label="Find in preview"
               data-testid="file-preview-search-drawer"
             >
-              <SearchBar
+              <FindBar
                 query={query}
                 onQueryChange={(value): void => {
                   setQuery(value);

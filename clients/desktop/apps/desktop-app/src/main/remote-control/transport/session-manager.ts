@@ -38,9 +38,11 @@ import {
 } from './envelope';
 import {
   decodeAckFragment,
+  decodeMessage,
   deflateSmallMessage,
   encodeAckFragment,
   fragmentPayload,
+  inflateSmallMessage,
   isTransportControlFragment,
   MAX_MESSAGE_BYTES,
   MessageAssembler,
@@ -48,6 +50,7 @@ import {
   SYNC_CODEC_BYTES,
   wantsCompression,
   zlibMessageCompressor,
+  type AssembledMessage,
   type MessageCodecOptions,
   type MessageCompressor,
 } from './message-codec';
@@ -137,6 +140,28 @@ export interface SendBudget {
  * it.
  */
 const SEND_BATCH_MESSAGES = 256;
+/**
+ * Bytes of received message fragments and whole messages a session's receive
+ * chain may hold while one ahead of them is inflated: the most one message
+ * may already take while its fragments arrive. Past it the session ends as
+ * for an oversized message.
+ */
+export const RECEIVE_CHAIN_BYTES = MAX_MESSAGE_BYTES;
+/**
+ * Minimum charge per message waiting on the receive chain, so tiny or empty
+ * messages cannot queue without bound behind one being inflated.
+ */
+const RECEIVE_ENTRY_MIN_BYTES = 1024;
+
+function receiveChainCharge(payload: Buffer): number {
+  return Math.max(payload.byteLength, RECEIVE_ENTRY_MIN_BYTES);
+}
+
+/**
+ * At most this many messages are delivered from the receive chain before
+ * main gets a turn, so a backlog freed by one inflate does not hold it.
+ */
+const RECEIVE_BATCH_MESSAGES = 256;
 
 /** A first-in, first-out queue whose shift is O(1). */
 class Fifo<T> {
@@ -207,6 +232,56 @@ class Fifo<T> {
 /** Acks follow received data within this long, or after this many bytes. */
 const ACK_INTERVAL_MS = 250;
 
+/**
+ * Runs one asynchronous inflate at a time in the process, across sessions,
+ * so peak inflate memory is one message, as it was when inflate ran on main.
+ * `run` returns a cancel that removes a job still waiting, so a closed
+ * session's payload is not retained here.
+ */
+class InflateGate {
+  private running = false;
+  private readonly waiting = new Set<() => void>();
+
+  run(task: () => Promise<void>): (() => void) | null {
+    if (!this.running) {
+      this.start(task);
+      return null;
+    }
+    const job = (): void => this.start(task);
+    this.waiting.add(job);
+    return () => {
+      this.waiting.delete(job);
+    };
+  }
+
+  private start(task: () => Promise<void>): void {
+    this.running = true;
+    let work: Promise<void>;
+    try {
+      work = task();
+    } catch {
+      this.next();
+      return;
+    }
+    work.then(
+      () => this.next(),
+      () => this.next(),
+    );
+  }
+
+  private next(): void {
+    const next = this.waiting.values().next();
+    if (next.done) {
+      this.running = false;
+      return;
+    }
+    this.waiting.delete(next.value);
+    next.value();
+  }
+}
+
+const inflateGate = new InflateGate();
+
 const ACK_BYTES = 1024 * 1024;
 /**
  * How long a suspended session waits for a resume before it closes and the
@@ -224,6 +299,13 @@ const MAX_SESSIONS_PER_PEER = 8;
 /** One abort per unknown session per this window, at most this many tracked. */
 const UNKNOWN_SESSION_ABORT_WINDOW_MS = 5_000;
 const MAX_TRACKED_UNKNOWN_SESSIONS = 256;
+/**
+ * Late data and resume frames for a session that just closed in-band are
+ * dropped quietly for this window instead of triggering an unknown-session
+ * abort that could overtake the peer's async inflate.
+ */
+const IN_BAND_CLOSE_QUIET_MS = 10_000;
+const MAX_TRACKED_IN_BAND_CLOSES = 256;
 
 /** Abort reason for traffic to a session this side does not have. */
 export const UNKNOWN_SESSION_MESSAGE = 'unknown_session';
@@ -295,6 +377,8 @@ export interface SecureSessionOptions {
    * sessions; by default its own, of {@link SEND_CHAIN_BYTES}.
    */
   sendBudget?: SendBudget;
+  /** Overrides {@link RECEIVE_CHAIN_BYTES}, for tests. */
+  receiveChainBytes?: number;
 }
 
 /** A message waiting on the send chain. */
@@ -305,6 +389,19 @@ interface QueuedSend {
   keepOnDiscard: boolean;
   /** Undefined until deflated; null when it goes uncompressed. */
   deflated: Buffer | null | undefined;
+}
+
+/** A whole assembled message waiting on the receive chain. */
+interface QueuedReceive {
+  payload: Buffer;
+  compressed: boolean;
+  /** Next receive counter immediately after this message's final fragment. */
+  endCounter: bigint;
+  /** Wire fragment bytes not yet accounted for in `noteReceived`. */
+  ackBytes: number;
+  inflated: Buffer | undefined;
+  inflating: boolean;
+  failed: boolean;
 }
 
 interface RetainedFrame {
@@ -336,8 +433,16 @@ interface RetainedFrame {
  *   what they did; a message sealed while suspended is held like any other.
  *   A backlog freed by one deflate is sealed at most
  *   {@link SEND_BATCH_MESSAGES} per turn of main.
- * - Receive. Unchanged: frames are opened, acknowledged, reassembled,
- *   inflated and delivered as they arrive, on main.
+ * - Receive. Frames are opened and reassembled on main in arrival order.
+ *   Compressed messages over {@link SYNC_CODEC_BYTES} are inflated on the
+ *   thread pool through a process-wide {@link InflateGate}, one at a time;
+ *   smaller ones stay on main unless an earlier message is still inflating
+ *   ahead of them. A backlog freed by an inflate is delivered at most
+ *   {@link RECEIVE_BATCH_MESSAGES} per turn of main. A message's final
+ *   fragment is acknowledged (and reported in resume counters) only after
+ *   the message is delivered, so the peer is never told an undelivered
+ *   message was received. Any end condition closes the session immediately
+ *   and drops messages still waiting on the receive chain.
  * - Close. `closeAfterDelivery`, the RPC peer's close, stops delivering at
  *   once and refuses new sends, but still reads acks, then closes once every
  *   message it accepted is sealed, deflated as usual, so a suspended host
@@ -375,6 +480,8 @@ export class SecureSession {
   readonly establishedAt = Date.now();
   private stateValue: Exclude<SessionState, 'closed'> = 'active';
   private resumeNegotiatedValue = false;
+  /** True once resume was agreed at hello, even if later disabled on preview revocation. */
+  private resumeEverNegotiated = false;
   /** Pairing sessions never resume, so never hold frames. */
   private retaining: boolean;
   private retained: RetainedFrame[] = [];
@@ -413,6 +520,24 @@ export class SecureSession {
    * acks free held frames, but no message is reassembled or delivered.
    */
   private deliveryEnded = false;
+  private inBandCloseSent = false;
+  private closedInBandValue = false;
+  private readonly receiveChain = new Fifo<QueuedReceive>();
+  private receiveChainBytes = 0;
+  private readonly receiveChainLimit: number;
+  /** The next batch of the receive chain is due on a later turn. */
+  private receiveYield: ReturnType<typeof setImmediate> | null = null;
+  /** Messages are currently being delivered from the receive chain. */
+  private delivering = false;
+  /** Cancels a queued inflate waiting on the process-wide gate. */
+  private cancelQueuedInflate: (() => void) | null = null;
+  /**
+   * Highest receive counter safe to advertise in acks and resume frames:
+   * never advances past an undelivered message.
+   */
+  private ackableReceiveCounter = BigInt(0);
+  /** Wire bytes of fragments buffered while waiting behind the receive chain. */
+  private assemblerAckBytes = 0;
 
   constructor(
     readonly sessionId: Buffer,
@@ -434,6 +559,7 @@ export class SecureSession {
       used: 0,
       limit: SEND_CHAIN_BYTES,
     };
+    this.receiveChainLimit = options.receiveChainBytes ?? RECEIVE_CHAIN_BYTES;
     // Held from the first frame, so a drop right after the hello can resume;
     // released at once if the peers do not negotiate it.
     this.retaining = handshake.purpose === 'control';
@@ -488,9 +614,20 @@ export class SecureSession {
     return this.lingering;
   }
 
-  /** The counter of the first frame from the peer not yet received. */
+  /**
+   * The counter of the first frame from the peer not yet acknowledged as
+   * received; never advances past a message still waiting on the receive chain.
+   */
   get nextReceiveCounter(): bigint {
-    return this.channel.nextReceiveCounter;
+    return this.ackableReceiveCounter;
+  }
+
+  /**
+   * Closed after handing an in-band RPC close frame to an active relay link,
+   * so an out-of-band abort would race ahead of the peer's async inflate.
+   */
+  get closedInBand(): boolean {
+    return this.closedInBandValue;
   }
 
   /**
@@ -559,6 +696,7 @@ export class SecureSession {
       return;
     }
     this.resumeNegotiatedValue = true;
+    this.resumeEverNegotiated = true;
   }
 
   /**
@@ -747,6 +885,7 @@ export class SecureSession {
       this.sendYield = null;
     }
     this.closingAfterDelivery = null;
+    this.inBandCloseSent = false;
     this.pumpSendChain();
   }
 
@@ -905,26 +1044,220 @@ export class SecureSession {
         return;
     }
     let fragment: Buffer;
-    let decoded: { complete: true; value: unknown } | null;
+    let assembled: AssembledMessage | null;
     try {
       fragment = this.channel.open(body, this.dataHeader);
       this.lastReceivedAtValue = Date.now();
       if (isTransportControlFragment(fragment)) {
         this.handleAck(decodeAckFragment(fragment));
+        if (
+          this.closedReason === null &&
+          !this.deliveryEnded &&
+          this.receiveChain.length === 0 &&
+          !this.delivering &&
+          this.assembler.bufferedBytes === 0 &&
+          this.channel.nextReceiveCounter > this.ackableReceiveCounter
+        ) {
+          this.ackableReceiveCounter = this.channel.nextReceiveCounter;
+        }
         return;
       }
       // Closing after delivery: acks above still free held frames.
       if (this.deliveryEnded) return;
-      decoded = this.assembler.push(fragment);
+      // Fragments of a message still arriving count against the same
+      // per-session budget as whole messages waiting behind an inflate.
+      const payloadBytes = Math.max(0, fragment.byteLength - 1);
+      if (
+        this.receiveChainBytes + this.assembler.bufferedBytes + payloadBytes >
+        this.receiveChainLimit
+      ) {
+        this.close('protocol_error');
+        return;
+      }
+      assembled = this.assembler.pushFragment(fragment);
     } catch {
       this.close('protocol_error');
       return;
     }
-    this.noteReceived(fragment.byteLength);
-    // A refused ack may have closed it: nothing is delivered after close.
-    if (decoded === null || this.closedReason !== null) return;
-    for (const listener of Array.from(this.messageListeners))
-      listener(decoded.value);
+    if (assembled === null) {
+      if (this.receiveChain.length === 0 && !this.delivering) {
+        if (this.channel.nextReceiveCounter > this.ackableReceiveCounter) {
+          this.ackableReceiveCounter = this.channel.nextReceiveCounter;
+        }
+        const ackBytes = this.assemblerAckBytes + fragment.byteLength;
+        this.assemblerAckBytes = 0;
+        this.noteReceived(ackBytes);
+      } else {
+        this.assemblerAckBytes += fragment.byteLength;
+      }
+      return;
+    }
+    const ackBytes = this.assemblerAckBytes + fragment.byteLength;
+    this.assemblerAckBytes = 0;
+    const charged = receiveChainCharge(assembled.payload);
+    if (this.receiveChainBytes + charged > this.receiveChainLimit) {
+      this.close('protocol_error');
+      return;
+    }
+    this.receiveChain.push({
+      payload: assembled.payload,
+      compressed: assembled.compressed,
+      endCounter: this.channel.nextReceiveCounter,
+      ackBytes,
+      inflated: undefined,
+      inflating: false,
+      failed: false,
+    });
+    this.receiveChainBytes += charged;
+    this.pumpReceiveChain();
+  }
+
+  /**
+   * Delivers messages from the head of the receive chain until one still
+   * needs inflating on the thread pool, which it starts, or the batch cap is
+   * reached.
+   */
+  private pumpReceiveChain(): void {
+    // A frame received from a listener joins the chain; the running pump
+    // reaches it in order. With a batch continuation pending, that
+    // continuation reaches it, so a burst cannot deliver more than one batch
+    // per turn of main.
+    if (this.delivering || this.receiveYield !== null) return;
+    this.delivering = true;
+    let delivered = 0;
+    try {
+      while (
+        this.receiveChain.length > 0 &&
+        this.closedReason === null &&
+        !this.deliveryEnded
+      ) {
+        const head = this.receiveChain.peek();
+        if (!head) return;
+        if (delivered >= RECEIVE_BATCH_MESSAGES) {
+          this.yieldReceive();
+          return;
+        }
+        if (head.failed) {
+          this.close('protocol_error');
+          return;
+        }
+        if (head.compressed && head.inflated === undefined) {
+          if (head.inflating) return;
+          const inflated = inflateSmallMessage(
+            head.payload,
+            this.assembler.maxMessageBytes,
+          );
+          if (inflated === null) {
+            this.startInflate(head);
+            return;
+          }
+          head.inflated = inflated;
+        }
+        this.receiveChain.shift();
+        this.receiveChainBytes -= receiveChainCharge(head.payload);
+        let value: unknown;
+        try {
+          value = decodeMessage(head.inflated ?? head.payload);
+        } catch {
+          this.close('protocol_error');
+          return;
+        }
+        delivered += 1;
+        for (const listener of Array.from(this.messageListeners)) {
+          if (this.closedReason !== null || this.deliveryEnded) return;
+          try {
+            listener(value);
+          } catch {
+            // A listener's failure ends neither the session nor delivery.
+          }
+        }
+        if (this.closedReason !== null || this.deliveryEnded) return;
+        const nextAckable =
+          this.receiveChain.length === 0 && this.assembler.bufferedBytes === 0
+            ? this.channel.nextReceiveCounter
+            : head.endCounter;
+        if (nextAckable > this.ackableReceiveCounter) {
+          this.ackableReceiveCounter = nextAckable;
+        }
+        this.noteReceived(head.ackBytes);
+      }
+    } finally {
+      this.delivering = false;
+    }
+  }
+
+  private yieldReceive(): void {
+    if (this.receiveYield !== null) return;
+    this.receiveYield = setImmediate(() => {
+      this.receiveYield = null;
+      try {
+        this.pumpReceiveChain();
+      } catch {
+        // A close listener's failure must not escape the event loop.
+      }
+    });
+  }
+
+  private startInflate(entry: QueuedReceive): void {
+    if (entry.inflating) return;
+    entry.inflating = true;
+    this.cancelQueuedInflate = inflateGate.run(() => {
+      this.cancelQueuedInflate = null;
+      if (
+        this.closedReason !== null ||
+        this.deliveryEnded ||
+        this.receiveChain.peek() !== entry
+      ) {
+        return Promise.resolve();
+      }
+      let work: Promise<Buffer>;
+      try {
+        work = this.compressor.inflate(
+          entry.payload,
+          this.assembler.maxMessageBytes,
+        );
+      } catch {
+        entry.failed = true;
+        this.inflated(entry);
+        return Promise.resolve();
+      }
+      return work.then(
+        (inflated) => {
+          entry.inflated = inflated;
+          this.inflated(entry);
+        },
+        () => {
+          entry.failed = true;
+          this.inflated(entry);
+        },
+      );
+    });
+  }
+
+  private inflated(entry: QueuedReceive): void {
+    if (
+      this.closedReason !== null ||
+      this.deliveryEnded ||
+      this.receiveChain.peek() !== entry
+    ) {
+      return;
+    }
+    try {
+      this.pumpReceiveChain();
+    } catch {
+      // A listener's failure must not become an unhandled rejection.
+    }
+  }
+
+  private clearReceiveChain(): void {
+    this.receiveChain.clear();
+    this.receiveChainBytes = 0;
+    this.assembler.reset();
+    this.assemblerAckBytes = 0;
+    this.cancelQueuedInflate?.();
+    this.cancelQueuedInflate = null;
+    if (this.receiveYield !== null) clearImmediate(this.receiveYield);
+    this.receiveYield = null;
   }
 
   private handleAck(nextExpected: bigint): void {
@@ -968,11 +1301,17 @@ export class SecureSession {
   private sendAck(): void {
     if (this.ackTimer) clearTimeout(this.ackTimer);
     this.ackTimer = null;
-    // A resume carries the same counter, so a skipped ack loses nothing.
-    if (this.closedReason !== null || this.stateValue !== 'active') return;
+    // Not active yet: resume carries the counter, and resumeFrom flushes any
+    // advance delivered while resuming.
+    if (
+      this.closedReason !== null ||
+      this.deliveryEnded ||
+      this.stateValue !== 'active'
+    )
+      return;
     this.unackedBytes = 0;
     try {
-      this.sendFragment(encodeAckFragment(this.channel.nextReceiveCounter));
+      this.sendFragment(encodeAckFragment(this.ackableReceiveCounter));
     } catch {
       this.close('transport_error');
     }
@@ -1013,7 +1352,10 @@ export class SecureSession {
    * the peer acknowledged them, so the peer already has everything below
    * that frame. Re-sending from it is safe; the peer drops duplicates.
    */
-  resumeFrom(peerNextExpected: bigint): boolean {
+  resumeFrom(
+    peerNextExpected: bigint,
+    advertisedReceiveCounter?: bigint,
+  ): boolean {
     const lingering = this.lingering;
     if (!this.resumable && !lingering) return false;
     if (peerNextExpected > this.channel.nextSendCounter) return false;
@@ -1033,6 +1375,14 @@ export class SecureSession {
         break;
       }
     }
+    if (
+      !lingering &&
+      this.resumeNegotiatedValue &&
+      advertisedReceiveCounter !== undefined &&
+      this.ackableReceiveCounter > advertisedReceiveCounter
+    ) {
+      this.sendAck();
+    }
     // Sent is only queued: a lingering session keeps its frames, and answers
     // the controller's next resume again, until that resume shows they all
     // arrived or its deadline passes.
@@ -1045,9 +1395,13 @@ export class SecureSession {
    * `close` and `session.ended`) still reaches the controller when it
    * resumes. The session manager drops it at the deadline.
    */
-  closeAfterDelivery(reason: SessionCloseReason): void {
+  closeAfterDelivery(
+    reason: SessionCloseReason,
+    options: { inBandCloseSent?: boolean } = {},
+  ): void {
     if (this.closedReason !== null || this.closingAfterDelivery !== null)
       return;
+    this.inBandCloseSent = options.inBandCloseSent === true;
     if (this.sendChain.length === 0) {
       this.finishCloseAfterDelivery(reason);
       return;
@@ -1057,6 +1411,9 @@ export class SecureSession {
     // delivered or accepted meanwhile; acks are still read.
     this.closingAfterDelivery = reason;
     this.deliveryEnded = true;
+    this.clearReceiveChain();
+    if (this.ackTimer) clearTimeout(this.ackTimer);
+    this.ackTimer = null;
     this.messageListeners.clear();
     this.pumpSendChain();
   }
@@ -1069,6 +1426,17 @@ export class SecureSession {
       this.retained.length > 0
     ) {
       this.lingering = true;
+    } else if (
+      this.resumeEverNegotiated &&
+      this.purpose === 'control' &&
+      this.stateValue === 'active' &&
+      this.inBandCloseSent
+    ) {
+      // Resumable peers inflate large messages off main: skipping the
+      // out-of-band abort after an in-band RPC close avoids overtaking a
+      // queued inflate. Non-resumable peers (e.g. remote-session) still get
+      // abort so bursts ending on 0x30 behave unchanged.
+      this.closedInBandValue = true;
     }
     this.close(reason);
   }
@@ -1094,6 +1462,7 @@ export class SecureSession {
     this.keepDroppedDeflateCharged();
     if (this.sendYield !== null) clearImmediate(this.sendYield);
     this.sendYield = null;
+    this.clearReceiveChain();
     if (this.ackTimer) clearTimeout(this.ackTimer);
     this.ackTimer = null;
     if (!this.lingering) this.dropRetained();
@@ -1139,6 +1508,8 @@ export interface SessionManagerOptions {
   compressor?: MessageCompressor;
   /** Overrides {@link SEND_CHAIN_BYTES}, the sessions' shared limit, for tests. */
   sendChainBytes?: number;
+  /** Overrides {@link RECEIVE_CHAIN_BYTES} for every session, for tests. */
+  receiveChainBytes?: number;
 }
 
 /** The manager's bookkeeping for a session that is not active. */
@@ -1150,6 +1521,8 @@ interface ResumeEpisode {
   nonce: Buffer;
   /** The host is re-authorizing a resume1. */
   authorizing: boolean;
+  /** Lowest receive counter advertised by a sent resume1 in this episode. */
+  advertisedReceiveCounter: bigint | null;
 }
 
 export interface ConnectOptions {
@@ -1204,6 +1577,8 @@ export class RemoteSessionManager {
   private readonly responders = new Map<string, PendingResponder>();
   /** Unknown sessions recently answered with an abort, and when. */
   private readonly abortedUnknown = new Map<string, number>();
+  /** Sessions recently closed in-band, and when; late data frames drop quietly. */
+  private readonly closedInBandAt = new Map<string, number>();
   private readonly episodes = new Map<SecureSession, ResumeEpisode>();
   private readonly stateListeners = new Set<
     (session: SecureSession, state: SessionState) => void
@@ -1331,6 +1706,7 @@ export class RemoteSessionManager {
     }
     for (const session of Array.from(this.episodes.keys()))
       this.endEpisode(session);
+    this.closedInBandAt.clear();
   }
 
   /** Drops a lingering session: it stops waiting for the peer's resume. */
@@ -1346,12 +1722,14 @@ export class RemoteSessionManager {
     result: HandshakeResult,
     grant: SessionGrant | null,
   ): SecureSession {
-    const { resendBufferBytes, ackCadence, compressor } = this.options;
+    const { resendBufferBytes, ackCadence, compressor, receiveChainBytes } =
+      this.options;
     return new SecureSession(sessionId, result, this.options.transport, grant, {
       ...(resendBufferBytes === undefined ? {} : { resendBufferBytes }),
       ...(ackCadence === undefined ? {} : { ackCadence }),
       ...(compressor === undefined ? {} : { compressor }),
       sendBudget: this.sendBudget,
+      ...(receiveChainBytes === undefined ? {} : { receiveChainBytes }),
     });
   }
 
@@ -1381,7 +1759,9 @@ export class RemoteSessionManager {
       // Tell the peer at once instead of leaving it to its keepalive. The
       // abort is unauthenticated, so it can only end a session, which a
       // relay could already do by dropping frames.
-      if (reason !== 'peer_closed' && reason !== 'peer_offline') {
+      if (session.closedInBand) {
+        this.recordClosedInBand(key);
+      } else if (reason !== 'peer_closed' && reason !== 'peer_offline') {
         this.abort(session.peerDeviceId, session.sessionId, reason);
       }
     });
@@ -1430,7 +1810,8 @@ export class RemoteSessionManager {
         case 'data': {
           const session = this.sessions.get(key);
           if (session) session.receive(envelope.body);
-          else this.answerUnknownSession(peer, envelope.sessionId, key);
+          else if (!this.wasRecentlyClosedInBand(key))
+            this.answerUnknownSession(peer, envelope.sessionId, key);
           return;
         }
         case 'hello1':
@@ -1562,6 +1943,34 @@ export class RemoteSessionManager {
     } catch (error) {
       this.failHandshake(peer, sessionId, key, error);
     }
+  }
+
+  private recordClosedInBand(key: string): void {
+    const now = Date.now();
+    this.closedInBandAt.delete(key);
+    if (this.closedInBandAt.size >= MAX_TRACKED_IN_BAND_CLOSES) {
+      for (const [tracked, at] of Array.from(this.closedInBandAt)) {
+        if (now - at >= IN_BAND_CLOSE_QUIET_MS) {
+          this.closedInBandAt.delete(tracked);
+        }
+      }
+      while (this.closedInBandAt.size >= MAX_TRACKED_IN_BAND_CLOSES) {
+        const oldest = this.closedInBandAt.keys().next();
+        if (oldest.done) break;
+        this.closedInBandAt.delete(oldest.value);
+      }
+    }
+    this.closedInBandAt.set(key, now);
+  }
+
+  private wasRecentlyClosedInBand(key: string): boolean {
+    const at = this.closedInBandAt.get(key);
+    if (at === undefined) return false;
+    if (Date.now() - at >= IN_BAND_CLOSE_QUIET_MS) {
+      this.closedInBandAt.delete(key);
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -1831,6 +2240,7 @@ export class RemoteSessionManager {
       retry,
       nonce: createResumeNonce(),
       authorizing: false,
+      advertisedReceiveCounter: null,
     });
   }
 
@@ -1845,18 +2255,24 @@ export class RemoteSessionManager {
   private sendResume1(session: SecureSession): void {
     const episode = this.episodes.get(session);
     if (!episode || session.state !== 'resuming') return;
+    const advertised = session.nextReceiveCounter;
     const resume1 = buildResume1(
       session.handshake.resumeKey,
       session.sessionId,
       episode.nonce,
-      session.nextReceiveCounter,
+      advertised,
     );
+    const firstAttempt = episode.advertisedReceiveCounter === null;
+    if (firstAttempt) episode.advertisedReceiveCounter = advertised;
     const sent = this.options.transport.sendFrame(
       session.peerDeviceId,
       encodeEnvelope('resume1', session.sessionId, jsonBody(resume1)),
     );
     // Not connected to the relay: wait for it, and for the peer, again.
-    if (!sent) session.suspend();
+    if (!sent) {
+      if (firstAttempt) episode.advertisedReceiveCounter = null;
+      session.suspend();
+    }
   }
 
   /** Host: the controller asks to continue a session after a drop. */
@@ -1868,7 +2284,9 @@ export class RemoteSessionManager {
   ): void {
     const session = this.sessions.get(key);
     if (!session) {
-      this.answerUnknownSession(peer, sessionId, key);
+      if (!this.wasRecentlyClosedInBand(key)) {
+        this.answerUnknownSession(peer, sessionId, key);
+      }
       return;
     }
     // Only the controller asks.
@@ -1965,7 +2383,9 @@ export class RemoteSessionManager {
   ): void {
     const session = this.sessions.get(key);
     if (!session) {
-      this.answerUnknownSession(peer, sessionId, key);
+      if (!this.wasRecentlyClosedInBand(key)) {
+        this.answerUnknownSession(peer, sessionId, key);
+      }
       return;
     }
     // Accepted while suspended too: an undeliverable retry may have set it
@@ -1985,6 +2405,13 @@ export class RemoteSessionManager {
     // An answer to an earlier episode's nonce, or forged: ignore it; the
     // retry asks again.
     if (nextExpected === null) return;
-    if (!session.resumeFrom(nextExpected)) session.close('protocol_error');
+    if (
+      !session.resumeFrom(
+        nextExpected,
+        episode?.advertisedReceiveCounter ?? undefined,
+      )
+    ) {
+      session.close('protocol_error');
+    }
   }
 }

@@ -17,6 +17,7 @@ import {
   watchInstalledPackage,
   type InstalledPackageWatch,
 } from './updater/linux-installed-package';
+import { systemUpdaterAvailable } from './updater/linux-system-updater';
 import {
   verifiedLinuxRelease,
   verifiedLinuxMetadata,
@@ -697,10 +698,10 @@ function refusePackageManagerTarget(install: LinuxPackageInstall): void {
     );
 }
 
-function linuxUpdateInfo(
+async function linuxUpdateInfo(
   release: VerifiedLinuxRelease,
   source: PackageManagedLinuxInstallSource,
-): UpdateInfoData {
+): Promise<UpdateInfoData> {
   if (source.kind === 'pacman')
     return {
       version: release.version,
@@ -711,6 +712,9 @@ function linuxUpdateInfo(
     };
   return {
     version: release.version,
+    ...((await systemUpdaterAvailable()) && {
+      systemUpdater: 'update-manager' as const,
+    }),
     manualDownload: {
       url: release.url,
       guidance: linuxUpdateCopy(BRAND, RELEASE_FLAVOR).verification,
@@ -911,7 +915,8 @@ async function checkLinuxUpdates(
           next[difference] > current[difference]
         : relation === 'upgrade' ||
           (target !== undefined && relation === 'downgrade');
-    const info = linuxUpdateInfo(release, install.source);
+    const info = await linuxUpdateInfo(release, install.source);
+    if (generation !== updaterGeneration || hasLinuxInstalledUpdate()) return;
     setState(
       {
         phase: available ? 'available' : 'not-available',

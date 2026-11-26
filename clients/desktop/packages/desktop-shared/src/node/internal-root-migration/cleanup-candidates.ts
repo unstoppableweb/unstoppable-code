@@ -792,6 +792,7 @@ export async function saveInternalRootCleanupReport(
         stat.ctimeMs !== prior.stat.ctimeMs
       )
         continue;
+      // eslint-disable-next-line admitted-writers/no-unadmitted-write -- removes an abandoned cleanup-report staging file in the report directory; it only stats work-entries.json; remove when cleanup stops naming the Work Entry registry.
       await rm(prior.path, { force: true });
     } catch {
       // A concurrent replacement or removal must not fail the saved report.

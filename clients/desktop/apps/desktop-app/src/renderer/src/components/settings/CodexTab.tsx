@@ -45,7 +45,7 @@ import {
   Button,
   ErrorState,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   Notice,
   NoticeButton,
   ToggleSwitch,
@@ -164,23 +164,23 @@ function CodexDefaultSpeed({
             {CODEX_SPEED_CHOICES.map((choice) => {
               const state = states[choice];
               return (
-                <ChoiceListRow
+                <ChoiceField
                   key={choice}
+                  layout="row"
                   kind="radio"
                   name="settings-codex-default-speed"
                   value={choice}
-                  selected={speed === choice}
+                  checked={speed === choice}
                   disabled={!state.selectable}
-                  onClick={(): void => onChange(choice)}
+                  onChange={(): void => onChange(choice)}
                   data-testid={`settings-codex-speed-default-${choice}`}
-                  trailing={
+                  end={
                     !state.selectable && state.shortReason
                       ? state.shortReason
                       : undefined
                   }
-                >
-                  {CODEX_SPEED_LABELS[choice]}
-                </ChoiceListRow>
+                  label={CODEX_SPEED_LABELS[choice]}
+                />
               );
             })}
           </ChoiceList>
@@ -301,18 +301,18 @@ function CodexDefaultContextWindow({
             data-testid="settings-codex-context-window-default"
           >
             {DEFAULT_CONTEXT_WINDOW_CHOICES.map((choice) => (
-              <ChoiceListRow
+              <ChoiceField
                 key={choice.value}
+                layout="row"
                 kind="radio"
                 name="settings-codex-default-context-window"
                 value={choice.value}
-                selected={value === choice.value}
-                onClick={(): void => onChange(choice.value)}
+                checked={value === choice.value}
+                onChange={(): void => onChange(choice.value)}
                 data-testid={`settings-codex-context-window-${choice.value}`}
-                trailing={choice.trailing}
-              >
-                {choice.label}
-              </ChoiceListRow>
+                end={choice.trailing}
+                label={choice.label}
+              />
             ))}
           </ChoiceList>
         </SettingsRow>

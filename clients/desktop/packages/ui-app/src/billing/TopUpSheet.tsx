@@ -19,7 +19,7 @@ import {
   AI_CREDITS_PROCESSING_COPY,
   AI_CREDITS_PURCHASE_LABEL,
   Button,
-  DialogFormField,
+  FormField,
   DialogModal,
   ErrorBanner,
   MODEL_LIBRARY_UNLOCK_COPY,
@@ -463,7 +463,7 @@ export function TopUpSheet({
               setValue(next);
             }}
           />
-          <DialogFormField label="Amount (USD)" htmlFor={amountId}>
+          <FormField label="Amount (USD)" id={amountId}>
             <TextInput
               ref={customRef}
               id={amountId}
@@ -478,7 +478,7 @@ export function TopUpSheet({
               disabled={working}
               onChange={(e) => setValue(e.target.value)}
             />
-          </DialogFormField>
+          </FormField>
           <ErrorBanner
             errorSource="credits-top-up-submit"
             className=""

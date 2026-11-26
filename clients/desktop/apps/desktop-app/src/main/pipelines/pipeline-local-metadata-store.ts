@@ -93,6 +93,18 @@ export interface PipelineLocalMetadata {
    * after a person's write commits; an agent's write clears it.
    */
   personApprovedDigest?: PipelinePersonApproval;
+  /**
+   * CAN-7228: when a person last saved the pipeline in the editor or took
+   * an agent's content over. A schedule an agent wrote before then runs as
+   * the person's; an agent's write clears it. Written by main alone.
+   */
+  personAuthoredAt?: string;
+  /**
+   * CAN-7228: the `nativeGrantContentHash` digest of the content the person
+   * saved at `personAuthoredAt`. A run holds their takeover only while it
+   * admits exactly that content.
+   */
+  personAuthoredContentHash?: string;
 }
 
 /**
@@ -193,6 +205,19 @@ function normalizeEntry(value: unknown): PipelineLocalMetadata {
     value.personApprovedDigest,
   );
   if (personApprovedDigest) entry.personApprovedDigest = personApprovedDigest;
+  const personAuthoredAt = nonEmptyString(value.personAuthoredAt);
+  const personAuthoredContentHash = nonEmptyString(
+    value.personAuthoredContentHash,
+  );
+  // The stamp counts only with the content it was made for.
+  if (
+    personAuthoredAt &&
+    Number.isFinite(Date.parse(personAuthoredAt)) &&
+    personAuthoredContentHash
+  ) {
+    entry.personAuthoredAt = personAuthoredAt;
+    entry.personAuthoredContentHash = personAuthoredContentHash;
+  }
   return entry;
 }
 
@@ -490,8 +515,14 @@ export function setUserPipelineAgentAuthorIfCurrent(
       if (metadata.unreadable === true) return 'unreadable';
       const key = userPipelineKey(pipelineId);
       const previous = metadata.entries[key];
-      const { agentAuthor, nativeGrant, personApprovedDigest, ...rest } =
-        previous ?? {};
+      const {
+        agentAuthor,
+        nativeGrant,
+        personApprovedDigest,
+        personAuthoredAt,
+        personAuthoredContentHash,
+        ...rest
+      } = previous ?? {};
       void agentAuthor;
       const expectedAuthor = normalizeEntry({
         agentAuthor: author,
@@ -500,6 +531,12 @@ export function setUserPipelineAgentAuthorIfCurrent(
         return 'write_failed';
       const next = {
         ...rest,
+        // CAN-7228: an agent's write ends a person's takeover; theirs keeps it.
+        ...(author === null &&
+        personAuthoredAt !== undefined &&
+        personAuthoredContentHash !== undefined
+          ? { personAuthoredAt, personAuthoredContentHash }
+          : {}),
         ...(author === null && personApprovedDigest !== undefined
           ? { personApprovedDigest }
           : {}),
@@ -655,15 +692,119 @@ export function takeRequiredUserPipelineMarkerWrite():
 }
 
 /**
+ * A person's authorship of a pipeline's content (CAN-7228): when they saved
+ * it, and the digest of what they saved.
+ */
+export interface PersonAuthorship {
+  at: string;
+  contentHash: string;
+}
+
+/** The pipeline's person authorship, if it has one. */
+export function userPipelinePersonAuthorship(
+  pipelineId: string,
+): PersonAuthorship | undefined {
+  const entry = readMetadataFile().entries[userPipelineKey(pipelineId)];
+  return entry?.personAuthoredAt !== undefined &&
+    entry.personAuthoredContentHash !== undefined
+    ? {
+        at: entry.personAuthoredAt,
+        contentHash: entry.personAuthoredContentHash,
+      }
+    : undefined;
+}
+
+/**
+ * Records that a person wrote the pipeline's content, whose digest is
+ * `contentHash`, now (CAN-7228), after their editor save commits.
+ */
+export function recordUserPipelinePersonAuthored(
+  pipelineId: string,
+  contentHash: string,
+): void {
+  const personAuthoredAt = new Date().toISOString();
+  updateUserPipelineEntry(pipelineId, (entry) => ({
+    ...entry,
+    personAuthoredAt,
+    personAuthoredContentHash: contentHash,
+  }));
+}
+
+/**
+ * Drops a person's authorship of the pipeline (CAN-7228): an agent wrote it,
+ * or a schedule of it, after them. Returns whether it is gone when read back;
+ * the store logs a failed write instead of throwing.
+ */
+export function clearUserPipelinePersonAuthored(pipelineId: string): boolean {
+  // An unreadable store reads as empty: that is no proof the stamp is gone.
+  if (!isPipelineLocalMetadataReadable()) return false;
+  const key = userPipelineKey(pipelineId);
+  if (!readMetadataFile().entries[key]?.personAuthoredAt) return true;
+  updateUserPipelineEntry(pipelineId, (entry) => {
+    const { personAuthoredAt, personAuthoredContentHash, ...rest } = entry;
+    void personAuthoredAt;
+    void personAuthoredContentHash;
+    return rest;
+  });
+  return (
+    isPipelineLocalMetadataReadable() &&
+    !readMetadataFile().entries[key]?.personAuthoredAt
+  );
+}
+
+/**
+ * Puts back a person's authorship that an agent's schedule write cleared
+ * before it failed to land (CAN-7228), unless anything wrote it since.
+ */
+export function restoreUserPipelinePersonAuthored(
+  pipelineId: string,
+  authorship: PersonAuthorship,
+): void {
+  const current = readMetadataFile().entries[userPipelineKey(pipelineId)];
+  if (current?.personAuthoredAt !== undefined || current?.agentAuthor) return;
+  updateUserPipelineEntry(pipelineId, (entry) => ({
+    ...entry,
+    personAuthoredAt: authorship.at,
+    personAuthoredContentHash: authorship.contentHash,
+  }));
+}
+
+/**
+ * Whether a person's takeover read at `personAuthoredAt` still holds for a
+ * run that admitted content with digest `admittedContentHash` (CAN-7228): no
+ * agent marker, the same stamp, and exactly the content the person saved.
+ * Any later write of other content fails it, whoever wrote it.
+ */
+export function personTakeoverHolds(
+  pipelineId: string,
+  personAuthoredAt: string,
+  admittedContentHash: string,
+): boolean {
+  const entry = readMetadataFile().entries[userPipelineKey(pipelineId)];
+  return (
+    entry?.agentAuthor === undefined &&
+    entry?.personAuthoredAt === personAuthoredAt &&
+    entry.personAuthoredContentHash === admittedContentHash
+  );
+}
+
+/**
  * The entry with `author` as its agent author, or none with `null`. An
- * agent's write drops a person's approval of the content (CAN-5782); a
- * person's keeps it.
+ * agent's write drops a person's approval of the content (CAN-5782) and
+ * their authorship of it (CAN-7228); a person's keeps both.
  */
 function withAgentAuthor(
   entry: PipelineLocalMetadata,
   author: PipelineAgentAuthor | null,
 ): PipelineLocalMetadata {
-  const { agentAuthor, nativeGrant, personApprovedDigest, ...rest } = entry;
+  const {
+    agentAuthor,
+    nativeGrant,
+    personApprovedDigest,
+    personAuthoredAt,
+    personAuthoredContentHash,
+    ...rest
+  } = entry;
   void agentAuthor;
   return author
     ? {
@@ -674,6 +815,9 @@ function withAgentAuthor(
     : {
         ...rest,
         ...(personApprovedDigest === undefined ? {} : { personApprovedDigest }),
+        ...(personAuthoredAt === undefined
+          ? {}
+          : { personAuthoredAt, personAuthoredContentHash }),
       };
 }
 
@@ -694,19 +838,22 @@ export function recordUserPipelineOwnerReported(
 /**
  * A person's **Approve for schedules** of content an agent wrote last
  * (CAN-5782): one write records the approval and clears the agent author,
- * so neither lands without the other. Callers have checked that no native
- * grant would be dropped.
+ * so neither lands without the other, and makes the content the person's
+ * (CAN-7228). Callers have checked that no native grant would be dropped.
  */
 export function recordPersonApprovalTakeover(
   pipelineId: string,
   approval: PipelinePersonApproval,
 ): void {
+  const personAuthoredAt = new Date().toISOString();
   updateUserPipelineEntry(pipelineId, (entry) => {
     const { agentAuthor, personApprovedDigest, ...rest } = entry;
     void agentAuthor;
     void personApprovedDigest;
     return {
       ...rest,
+      personAuthoredAt,
+      personAuthoredContentHash: approval.contentHash,
       personApprovedDigest: {
         contentHash: approval.contentHash,
         revision: approval.revision,

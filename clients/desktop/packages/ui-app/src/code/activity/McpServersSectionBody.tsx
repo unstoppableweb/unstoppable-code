@@ -14,7 +14,7 @@ import {
   type McpCardDisplayServer,
 } from '@canopy/ui-shared/lib';
 import {
-  ActionTooltip,
+  Tooltip,
   Button,
   DelayedLoadingPlaceholder,
   EmptyStateText,
@@ -482,7 +482,7 @@ function ProxyToggle({
   onToggle,
 }: ProxyToggleProps): JSX.Element {
   return (
-    <ActionTooltip title={heading} description={action}>
+    <Tooltip label={heading} description={action}>
       <ControlButton
         onClick={onToggle}
         disabled={updating}
@@ -501,7 +501,7 @@ function ProxyToggle({
       >
         {logo}
       </ControlButton>
-    </ActionTooltip>
+    </Tooltip>
   );
 }
 

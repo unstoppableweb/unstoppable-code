@@ -1,16 +1,18 @@
 // CAN-7051: Electron main's side of the worktree terminal record against a
 // real in-process record authority: import and fence on load, in-process
 // output through apply batches, the outbox while the daemon is down, its
-// quit seal, at-most-once resends, retirement and the restore prefetch.
+// sealed drain on the next launch, at-most-once resends, retirement and the
+// restore prefetch (terminal:load-worktree-state's persistence projection).
 import * as fs from 'node:fs';
 import { z } from 'zod';
 import { isRecord } from '../../lib/type-guards';
 import fsPromises from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 // The module itself, so a spy reaches the daemon repository's reads.
 import fsModule from 'node:fs';
 import * as atomicFile from '@canopy/execution-engine/node/lib/atomic-file';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import {
   TerminalRecordAuthority,
   TerminalRecordRepository,
@@ -32,26 +34,37 @@ import {
   terminalWorktreeExists,
   terminalPersistenceStore,
   enqueueTerminalRecordOp,
+  recipientTerminalRetirementPath,
   type TerminalPersistenceStoreOptions,
 } from '../persistence';
 import { cleanupSharedContainerRecipientViewState } from '../../shared-containers/recipient-view-state';
 import { beginDirectoryDeletion } from '../../lib/directory-effect-admission';
 import { removePersistedWorktreeDataDirectory } from '@canopy/desktop-shared/node/lib/worktree-data-cleanup';
+import { removeTreeWithoutAsar } from '../../lib/remove-tree-without-asar';
 import {
   retainRetiredOutboxIdentities,
   TerminalRecordOutbox,
   type TerminalRecordOutboxFile,
 } from '../record-outbox';
+import { getWorktreeTerminalReplayWitnessFilePath } from '../../lib/paths';
 import type { TerminalRecordClientPort } from '../record-client';
 import type { readWorkspaceWorktreesDetailed } from '../../lib/workspace-persistence';
 import { fixture, session } from './fixtures/terminal-persistence';
-import { createTerminalStore } from '@canopy/app-state/terminal';
+import {
+  createTerminalStore,
+  type WorktreeTerminalBucket,
+} from '@canopy/app-state/terminal';
 import type {
+  CommandMap,
   QueryMap,
   TerminalClient,
+  TerminalCommandName,
   TerminalQueryName,
 } from '@canopy/app-core';
-import type { LoadWorktreeTerminalStateResponse } from '@canopy/protocol/terminal';
+import type {
+  LoadWorktreeTerminalStateRequest,
+  LoadWorktreeTerminalStateResponse,
+} from '@canopy/protocol/terminal';
 import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types';
 import {
   applyTerminalRecordOp,
@@ -72,10 +85,24 @@ jest.mock('../../lib/paths', () => ({
       'terminal-presentation.json',
     ),
   getWorktreeTerminalLegacyLayout: (): 'workspaces' => 'workspaces',
+  getWorktreeTerminalReplayWitnessFilePath: (
+    p: string,
+    w: string,
+    id: string,
+  ): string =>
+    join(
+      mockRoot,
+      'workspaces',
+      p,
+      'worktree-data',
+      w,
+      `terminal-replay-witness.${createHash('sha256').update(id).digest('hex')}.json`,
+    ),
   getTerminalOutboxDataRoot: (): string => mockRoot,
   getWorkspaceWorkEntriesFilePath: (): string =>
     join(mockRoot, 'work-entries.json'),
   getWorktreeDataRootDir: (): string => mockRoot,
+  getSharedContainerRunRootDir: (): string => join(mockRoot, 'run'),
 }));
 jest.mock('../../lib/workspace-persistence', () => ({
   readWorkspaceWorktreesDetailed: (): ReturnType<
@@ -92,6 +119,8 @@ jest.mock('../../lib/remove-tree-without-asar', () => ({
 }));
 jest.mock('@canopy/desktop-shared/node/lib/worktree-data-cleanup', () => ({
   removePersistedWorktreeDataDirectory: jest.fn(() => Promise.resolve()),
+  WORKTREE_DATA_REMOVE_MAX_RETRIES: 20,
+  WORKTREE_DATA_REMOVE_RETRY_DELAY_MS: 100,
 }));
 jest.mock('../../lib/main-process-logging', () => ({
   logMainProcessWarn: jest.fn(),
@@ -160,6 +189,41 @@ function newOutbox(): TerminalRecordOutbox {
   return new TerminalRecordOutbox(() => root);
 }
 
+it.each([false, true])(
+  'R9 partial collapse merges only the readable scalar (fresh offline: %s)',
+  async (fresh) => {
+    fs.mkdirSync(join(legacyPath(), '..'), { recursive: true });
+    fs.writeFileSync(legacyPath(), JSON.stringify(fixture()));
+    const first = store();
+    const full = await first.loadWorktreeState('p', 'w');
+    const path = join(legacyPath(), '..', 'terminal-presentation.json');
+    const before: unknown = JSON.parse(fs.readFileSync(path, 'utf8'));
+    if (!isRecord(before)) throw new Error('Expected presentation');
+    up = false;
+    const s = fresh ? store() : first;
+    s.registerLiveSession(session('a'));
+    const partial = await s.loadWorktreeState('p', 'w');
+    expect(partial.history?.status).toBe('unavailable');
+    s.saveWorktreeState({
+      ...partial,
+      projectId: 'p',
+      worktreeId: 'w',
+      drawerCollapsed: true,
+    });
+    await s.drainAll();
+    s.markAllLiveTerminalsExited('app-quit');
+    expect(JSON.parse(fs.readFileSync(path, 'utf8'))).toEqual(
+      expect.objectContaining({ drawerCollapsed: true }),
+    );
+    const after: unknown = JSON.parse(fs.readFileSync(path, 'utf8'));
+    expect(after).toEqual({ ...before, drawerCollapsed: true });
+    up = true;
+    const restarted = await store().loadWorktreeState('p', 'w');
+    expect(restarted.drawerCollapsed).toBe(true);
+    expect(restarted.groups).toEqual(full.groups);
+  },
+);
+
 it('R9 a partial rename with an unchanged fallback scalar preserves saved collapse', async () => {
   fs.mkdirSync(join(legacyPath(), '..'), { recursive: true });
   fs.writeFileSync(
@@ -185,8 +249,244 @@ it('R9 a partial rename with an unchanged fallback scalar preserves saved collap
   );
 });
 
+it.each([undefined, 'evicted-view'])(
+  'R9 repeated partial collapse toggles keep their scalar baseline (token: %s)',
+  async (viewToken) => {
+    fs.mkdirSync(join(legacyPath(), '..'), { recursive: true });
+    fs.writeFileSync(legacyPath(), JSON.stringify(fixture()));
+    const s = store();
+    await s.loadWorktreeState('p', 'w');
+    const path = join(legacyPath(), '..', 'terminal-presentation.json');
+    const before: unknown = JSON.parse(fs.readFileSync(path, 'utf8'));
+    if (!isRecord(before)) throw new Error('Expected presentation');
+    up = false;
+    s.registerLiveSession(session('a'));
+    const partial = await s.loadWorktreeState('p', 'w');
+    for (const drawerCollapsed of [true, false, true, false]) {
+      s.saveWorktreeState({
+        ...partial,
+        projectId: 'p',
+        worktreeId: 'w',
+        viewToken,
+        drawerCollapsed,
+      });
+      await s.drainAll();
+      s.flushAllSync();
+      expect(JSON.parse(fs.readFileSync(path, 'utf8'))).toEqual({
+        ...before,
+        drawerCollapsed,
+      });
+    }
+    s.markAllLiveTerminalsExited('app-quit');
+    const final: unknown = JSON.parse(fs.readFileSync(path, 'utf8'));
+    expect(final).toEqual(expect.objectContaining({ drawerCollapsed: false }));
+  },
+);
+
 it.each([false, true])(
-  'R9 empty first reads, flush and quit create no metadata directory (authority up: %s)',
+  'R9 scrub cannot replace quit custody (unmerged: %s)',
+  async (unmerged) => {
+    up = false;
+    const outbox = newOutbox();
+    if (unmerged)
+      jest.spyOn(outbox, 'read').mockRejectedValue(new Error('unreadable'));
+    const s = newStore({ records, outbox });
+    s.registerLiveSession(session('keep'));
+    s.appendTerminalOutput('p', 'w', 'keep', Buffer.from('before'));
+    await s.drainAll();
+    // Unmerged startup queues in this run's own file, never the shared one.
+    const artifacts = fs
+      .readdirSync(mockRoot)
+      .filter((name) => name.startsWith('terminal-record-outbox'));
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0] === 'terminal-record-outbox.json').toBe(!unmerged);
+    await newOutbox().write(
+      {
+        version: 1,
+        producer: 'electron_main',
+        publicationId: 'undiscovered-source',
+        retirements: [],
+        scopes: [
+          {
+            client: {
+              projectId: 'unrelated',
+              worktreeId: 'w',
+              legacyLayout: 'workspaces',
+              incarnation: null,
+            },
+            entries: [
+              {
+                runId: 'unread',
+                seq: 1,
+                ops: [
+                  {
+                    op: 'session.upsert',
+                    session: { ...session('unread'), projectId: 'unrelated' },
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            client: {
+              projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
+              worktreeId: 'old',
+              legacyLayout: 'workspaces',
+              incarnation: null,
+              lifetimeId: 'undiscovered-recipient',
+            },
+            entries: [
+              {
+                runId: 'recipient',
+                seq: 1,
+                ops: [
+                  {
+                    op: 'output.append',
+                    terminalId: 'private',
+                    text: 'PRIVATE-RECIPIENT',
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      'unread',
+    );
+    let reached: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const actual = atomicFile.writeFileAtomically;
+    let held = false;
+    const write = jest
+      .spyOn(atomicFile, 'writeFileAtomically')
+      .mockImplementation(async (...args) => {
+        if (!held && String(args[0]).endsWith('run-unread.json')) {
+          held = true;
+          reached();
+          await gate;
+          // Already-issued install: an async beforeInstall guard cannot retract it.
+          fs.writeFileSync(args[0], args[1]);
+          return;
+        }
+        return actual(...args);
+      });
+    const scrub = outbox.scrubRecipient({
+      projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
+      worktreeId: 'old',
+    });
+    try {
+      await started;
+      s.appendTerminalOutput('p', 'w', 'keep', Buffer.from('-final'));
+      s.markAllLiveTerminalsExited('fatal-exit');
+      release();
+      await scrub;
+      const recovered = (await newOutbox().read()).outbox;
+      expect(JSON.stringify(recovered)).not.toContain('PRIVATE-RECIPIENT');
+      expect(
+        recovered.scopes.some(
+          (scope) =>
+            scope.client.projectId === 'unrelated' &&
+            JSON.stringify(scope.entries).includes('unread'),
+        ),
+      ).toBe(true);
+      expect(
+        recovered.scopes
+          .flatMap((scope) => scope.entries)
+          .flatMap((entry) => entry.ops),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ op: 'exit', signal: 'fatal-exit' }),
+          expect.objectContaining({
+            op: 'output.append',
+            text: 'before-final',
+          }),
+        ]),
+      );
+    } finally {
+      release();
+      write.mockRestore();
+    }
+  },
+);
+
+it.each([false, true])(
+  'R9 scrub cannot replace quit custody while paused on the seal target (unmerged: %s)',
+  async (unmerged) => {
+    up = false;
+    const outbox = newOutbox();
+    if (unmerged)
+      jest.spyOn(outbox, 'read').mockRejectedValue(new Error('unreadable'));
+    const s = newStore({ records, outbox });
+    s.registerLiveSession(session('keep'));
+    s.appendTerminalOutput('p', 'w', 'keep', Buffer.from('before'));
+    await s.drainAll();
+    // The seal's primary is the only artifact: no publication is active.
+    const artifacts = fs
+      .readdirSync(mockRoot)
+      .filter((name) => name.startsWith('terminal-record-outbox'));
+    expect(artifacts).toHaveLength(1);
+    const target = join(mockRoot, artifacts[0] ?? '');
+    expect(basename(target) === 'terminal-record-outbox.json').toBe(!unmerged);
+    let reached: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const actual = atomicFile.writeFileAtomically;
+    let held = false;
+    const write = jest
+      .spyOn(atomicFile, 'writeFileAtomically')
+      .mockImplementation(async (...args) => {
+        if (!held && String(args[0]) === target) {
+          held = true;
+          reached();
+          await gate;
+          // Already-issued install of the scrub's pre-quit read.
+          fs.writeFileSync(args[0], args[1]);
+          return;
+        }
+        return actual(...args);
+      });
+    const scrub = outbox.scrubRecipient({
+      projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
+      worktreeId: 'old',
+    });
+    try {
+      await started;
+      s.appendTerminalOutput('p', 'w', 'keep', Buffer.from('-final'));
+      s.markAllLiveTerminalsExited('fatal-exit');
+      release();
+      await scrub;
+      // The scrub's install replaced the sealed primary.
+      expect(fs.readFileSync(target, 'utf8')).not.toContain('fatal-exit');
+      write.mockRestore();
+      up = true;
+      const loaded = await store().loadWorktreeState('p', 'w');
+      expect(
+        loaded.terminals.map((entry) => [
+          entry.session.id,
+          entry.scrollbackLines,
+          entry.signal,
+        ]),
+      ).toEqual([['keep', ['before-final'], 'fatal-exit']]);
+    } finally {
+      release();
+      write.mockRestore();
+    }
+  },
+);
+
+it.each([false, true])(
+  'R9 empty first reads, flush and quit create no witness directory (authority up: %s)',
   async (available) => {
     up = available;
     const s = store();
@@ -280,6 +580,70 @@ it.each(['remove', 'discard', 'damaged-read'] as const)(
   },
 );
 
+it('R9 recipient policy filters the seal before scrub discovers old lifetimes', async () => {
+  const outbox = newOutbox();
+  const scope = (id: string): TerminalRecordOutboxFile['scopes'][number] => ({
+    client: {
+      projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
+      worktreeId: 'recipient',
+      legacyLayout: 'workspaces',
+      incarnation: null,
+      lifetimeId: id,
+    },
+    entries: [
+      {
+        runId: id,
+        seq: 1,
+        ops: [{ op: 'output.append', terminalId: id, text: id }],
+      },
+    ],
+  });
+  const image: TerminalRecordOutboxFile = {
+    version: 1,
+    producer: 'electron_main',
+    retirements: [],
+    scopes: [scope('unlisted-old'), scope('successor')],
+  };
+  await outbox.write(image);
+  const enumerate = fsPromises.readdir;
+  let reached: () => void = () => undefined;
+  const started = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const reading = jest
+    .spyOn(fsPromises, 'readdir')
+    .mockImplementation((...args) => {
+      reached();
+      return gate.then(() => Reflect.apply(enumerate, fsPromises, args));
+    });
+  const scrub = outbox.scrubRecipient(
+    { projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID, worktreeId: 'recipient' },
+    (id) => id === 'successor',
+  );
+  try {
+    await started;
+    outbox.seal(image, null);
+    release();
+    await scrub;
+    reading.mockRestore();
+    expect((await newOutbox().read()).outbox.scopes).toEqual([
+      {
+        ...scope('successor'),
+        entries: scope('successor').entries.map((entry) => ({
+          ...entry,
+          discoveryFenceIds: [],
+        })),
+      },
+    ]);
+  } finally {
+    release();
+    reading.mockRestore();
+  }
+});
 const stores: TerminalPersistenceStore[] = [];
 function newStore(
   options: TerminalPersistenceStoreOptions,
@@ -294,84 +658,25 @@ const store = (): TerminalPersistenceStore =>
     outbox: newOutbox(),
   });
 
-it.each(['online', 'outbox-unwritable', 'offline-restart'] as const)(
-  'R1 recipient cleanup retires the viewer record before removing its data (%s)',
-  async (mode) => {
-    const writable = mode !== 'outbox-unwritable';
-    const projectId = SHARED_CONTAINER_VIEWER_PROJECT_ID;
-    const worktreeId = 'container';
-    const outbox = newOutbox();
-    const first = newStore({ records, outbox });
-    first.registerLiveSession({ ...session('private'), projectId, worktreeId });
-    first.appendTerminalOutput(
-      projectId,
-      worktreeId,
-      'private',
-      Buffer.from('prior account output'),
-    );
-    await first.drainAll();
-    expect(
-      (await first.loadWorktreeState(projectId, worktreeId)).terminals,
-    ).toHaveLength(1);
-    const order: string[] = [];
+it.each([false, true])(
+  'R1 recipient cleanup retains only a retry fence unless retirement is durable: %s',
+  async (durable) => {
     const retire = jest
-      .spyOn(terminalPersistenceStore, 'retireTerminalRecord')
-      .mockImplementation(async (params) => {
-        order.push('retire');
-        return first.retireTerminalRecord(params);
-      });
-    const remove = jest
-      .mocked(removePersistedWorktreeDataDirectory)
-      .mockImplementation(() => {
-        order.push('remove');
-        return Promise.resolve();
-      });
-    const write = writable
-      ? undefined
-      : jest
-          .spyOn(outbox, 'write')
-          .mockRejectedValue(new Error('outbox disk unavailable'));
-    if (mode === 'offline-restart') up = false;
+      .spyOn(terminalPersistenceStore, 'retireRecipientTerminalRecord')
+      .mockResolvedValue(durable);
+    const remove = jest.mocked(removePersistedWorktreeDataDirectory);
+    const removeRun = jest.mocked(removeTreeWithoutAsar);
+    remove.mockClear();
+    removeRun.mockClear();
     try {
-      // Never refused, even when the retirement cannot be made durable.
       await expect(
-        cleanupSharedContainerRecipientViewState(worktreeId),
+        cleanupSharedContainerRecipientViewState('container'),
       ).resolves.toBeUndefined();
-      expect(retire).toHaveBeenCalledWith({ projectId, worktreeId });
-      expect(order).toEqual(['retire', 'remove']);
-      write?.mockRestore();
-      if (mode === 'offline-restart') {
-        // Quit before the daemon applies it: the outbox carries the retirement.
-        first.markAllLiveTerminalsExited('app-quit');
-        await first.drainAll();
-        expect(
-          fs.existsSync(
-            join(
-              terminalRecordDir(mockRoot, projectId, worktreeId),
-              'record.json',
-            ),
-          ),
-        ).toBe(true);
-        up = true;
-        await newStore({ records, outbox: newOutbox() }).drainAll();
-      } else await first.drainAll();
-      expect(
-        fs.existsSync(
-          join(
-            terminalRecordDir(mockRoot, projectId, worktreeId),
-            'record.json',
-          ),
-        ),
-      ).toBe(false);
-      // The next account viewing the same container sees none of its history.
-      const next = store();
-      expect(
-        (await next.loadWorktreeState(projectId, worktreeId)).terminals,
-      ).toEqual([]);
+      expect(retire).toHaveBeenCalledTimes(1);
+      expect(remove).toHaveBeenCalledTimes(durable ? 1 : 0);
+      expect(removeRun).toHaveBeenCalledTimes(durable ? 0 : 1);
     } finally {
-      write?.mockRestore();
       retire.mockRestore();
-      remove.mockReset().mockResolvedValue(undefined);
     }
   },
 );
@@ -465,7 +770,7 @@ it.each([false, true])(
   },
 );
 
-it.each(['old', null])(
+it.each(['old', null, 'current'])(
   'R1 offline replay verifies queued incarnation %s for drawer and prefetch',
   async (incarnation) => {
     const outbox = newOutbox();
@@ -505,10 +810,14 @@ it.each(['old', null])(
       incarnation: (): Promise<string> => Promise.resolve('current'),
     });
     const loaded = await s.loadWorktreeState('p', 'w');
-    expect(loaded.terminals.map((t) => t.session.id)).toEqual([]);
+    expect(loaded.terminals.map((t) => t.session.id)).toEqual(
+      incarnation === 'current' ? ['queued'] : [],
+    );
     s.registerLiveSession(session('queued'));
     const release = await s.prefetchPersistedEntry('queued');
-    expect(s.getPersistedTerminalEntry('queued')?.scrollbackLines).toEqual([]);
+    expect(s.getPersistedTerminalEntry('queued')?.scrollbackLines).toEqual(
+      incarnation === 'current' ? ['earlier output'] : [],
+    );
     release();
   },
 );
@@ -601,7 +910,7 @@ it('R11 a recovered older run cannot replay after newer online writes', async ()
       retirements: [],
       scopes: [
         {
-          client: earlierClient('older'),
+          client: seedReplayWitness('older'),
           entries: [
             {
               runId: 'older',
@@ -646,6 +955,91 @@ it('staging retirement keeps live output writable until canonical deletion commi
   ).toBe(false);
 });
 
+it('deleting a project retires its loaded and unloaded worktrees, but a retry never fences a later one (CAN-7704)', async () => {
+  const seed = (worktreeId: string, text: string): void => {
+    const seeder = newAuthority();
+    seeder.apply({
+      client: {
+        projectId: 'p',
+        worktreeId,
+        legacyLayout: 'workspaces',
+        incarnation: null,
+      },
+      producer: { id: 'seed', runId: worktreeId },
+      seq: 1,
+      ops: [
+        { op: 'session.upsert', session: session('t', worktreeId) },
+        { op: 'output.append', terminalId: 't', text },
+      ],
+    });
+    seeder.flushSync();
+    seeder.dispose();
+  };
+  // CAN-7953: a cutoff taken in the record's own millisecond keeps it.
+  const nextMillisecond = (): void => {
+    const now = Date.now();
+    while (Date.now() <= now) {
+      // Spin to the next millisecond.
+    }
+  };
+  const history = (worktreeId: string, terminalId = 't'): string =>
+    newAuthority().historyRead({
+      client: {
+        projectId: 'p',
+        worktreeId,
+        legacyLayout: 'workspaces',
+        incarnation: null,
+      },
+      terminalId,
+    }).text;
+  const tombstone = (worktreeId: string): boolean =>
+    fs.existsSync(
+      join(terminalRecordDir(mockRoot, 'p', worktreeId), 'tombstone.json'),
+    );
+  seed('w-unloaded', 'unloaded history');
+  const s = store();
+  s.registerLiveSession(session('loaded'));
+  s.appendTerminalOutput('p', 'w', 'loaded', Buffer.from('loaded history'));
+  await s.drainAll();
+  expect(history('w', 'loaded')).toBe('loaded history');
+  expect(history('w-unloaded')).toBe('unloaded history');
+  nextMillisecond();
+  const intent = await s.prepareTerminalRecordRetirement({ projectId: 'p' });
+  // Only the loaded worktree is named; the unloaded one needs discovery.
+  expect(intent.worktreeIds).toEqual(['w']);
+  // The deletion journal and the outbox keep the selector.
+  expect(
+    WorkerTerminalRecordRetireParamsSchema.parse(
+      JSON.parse(JSON.stringify(intent)),
+    ),
+  ).toEqual(intent);
+  // Discovery is bounded by the cutoff alone, and never by one worktree.
+  for (const invalid of [
+    { projectId: 'p', projectWide: true, lifetimeIds: ['x'] },
+    { projectId: 'p', projectWide: true, worktreeId: 'w', requestedAt: 1 },
+  ])
+    expect(
+      WorkerTerminalRecordRetireParamsSchema.safeParse(invalid).success,
+    ).toBe(false);
+  up = false;
+  expect(await s.retirePreparedTerminalRecord(intent)).toBe(true);
+  expect((await newOutbox().read()).outbox.retirements).toEqual([intent]);
+  up = true;
+  await s.drainAll();
+  expect((await newOutbox().read()).outbox.retirements).toEqual([]);
+  expect(history('w', 'loaded')).toBe('');
+  expect(history('w-unloaded')).toBe('');
+  for (const worktreeId of ['w', 'w-unloaded'])
+    expect(tombstone(worktreeId)).toBe(true);
+  nextMillisecond();
+  seed('w-later', 'later history');
+  expect(await s.replayTerminalRecordRetirement(intent)).toBe(true);
+  await s.drainAll();
+  expect((await newOutbox().read()).outbox.retirements).toEqual([]);
+  expect(history('w-later')).toBe('later history');
+  expect(tombstone('w-later')).toBe(false);
+});
+
 it('R11 a journaled retirement survives an outbox failure and replays its original identity', async () => {
   const s = store();
   s.registerLiveSession(session('deleted'));
@@ -656,14 +1050,18 @@ it('R11 a journaled retirement survives an outbox failure and replays its origin
     .spyOn(TerminalRecordOutbox.prototype, 'write')
     .mockRejectedValue(new Error('outbox full'));
   try {
-    // As workspace deletion journals its captured intent before activating it.
-    const captured = await s.prepareTerminalRecordRetirement({
-      projectId: 'p',
-    });
-    await atomicFile.writeFileAtomically(journal, JSON.stringify(captured), {
-      durable: true,
-    });
-    expect(await s.retirePreparedTerminalRecord(captured)).toBe(false);
+    expect(
+      await s.retireTerminalRecord(
+        { projectId: 'p' },
+        async (intent): Promise<void> => {
+          await atomicFile.writeFileAtomically(
+            journal,
+            JSON.stringify(intent),
+            { durable: true },
+          );
+        },
+      ),
+    ).toBe(false);
     expect(fs.existsSync(journal)).toBe(true);
     const intent = WorkerTerminalRecordRetireParamsSchema.parse(
       JSON.parse(fs.readFileSync(journal, 'utf8')),
@@ -790,7 +1188,7 @@ it('R2 an empty retirement intent is never enlarged by later queued identities',
   });
   expect(retirement.lifetimeIds).toEqual([]);
   const later = {
-    client: earlierClient('replacement'),
+    client: seedReplayWitness('replacement'),
     entries: [
       {
         runId: 'replacement',
@@ -846,45 +1244,68 @@ it('R1 completed zero-retirement requests do not hold unrelated retirements', as
   ).toEqual([]);
 });
 
-it('R11 an older hydration cannot overwrite a successful retry', async () => {
-  const s = store();
-  const available = await s.loadWorktreeState('p', 'w');
-  let finishOld: (response: LoadWorktreeTerminalStateResponse) => void = () =>
-    undefined;
-  const old = new Promise<LoadWorktreeTerminalStateResponse>((resolve) => {
-    finishOld = resolve;
-  });
-  let first = true;
-  const controller = createTerminalStore(() =>
-    terminalClientFor(s, undefined, () => {
-      if (!first)
-        return Promise.resolve({ ...available, viewToken: 'newer-view' });
-      first = false;
-      return old;
-    }),
+it('R8 a recipient bind held by its legacy import holds only its own scope', async () => {
+  const viewer = SHARED_CONTAINER_VIEWER_PROJECT_ID;
+  const stuckLegacy = join(
+    mockRoot,
+    'workspaces',
+    viewer,
+    'worktree-data',
+    'stuck',
+    'terminal-state.json',
   );
+  fs.mkdirSync(join(stuckLegacy, '..'), { recursive: true });
+  fs.writeFileSync(stuckLegacy, JSON.stringify(fixture()));
+  // The daemon's reads of it fail, so its import stays pending.
+  const original = fsModule.readFileSync;
+  const unreadable = jest
+    .spyOn(fsModule, 'readFileSync')
+    .mockImplementation((path, options) => {
+      if (path === stuckLegacy)
+        throw Object.assign(new Error('denied'), { code: 'EACCES' });
+      return original(path, options);
+    });
+  const outbox = newOutbox();
+  const s = newStore({ records, outbox });
+  const otherRecord = join(
+    terminalRecordDir(mockRoot, 'p', 'other'),
+    'record.json',
+  );
+  const queued = async (): Promise<(string | undefined)[][]> =>
+    (await outbox.read()).outbox.retirements.map((entry) => [
+      entry.projectId,
+      entry.worktreeId,
+    ]);
   try {
-    const pending = controller.store.getState().hydrateWorktree('p', 'w');
-    await controller.store.getState().hydrateWorktree('p', 'w');
-    finishOld({
-      ...available,
-      viewToken: 'old-view',
-      history: { status: 'unavailable', reason: 'background_service' },
-    });
-    await pending;
-    expect(controller.store.getState().worktrees['p/w']).toMatchObject({
-      historyUnavailable: false,
-      viewToken: 'newer-view',
-    });
+    s.registerLiveSession({ ...session('x'), worktreeId: 'other' });
+    s.appendTerminalOutput('p', 'other', 'x', Buffer.from('unrelated'));
+    await s.drainAll();
+    authority.flushSync();
+    expect(fs.existsSync(otherRecord)).toBe(true);
+    await s.retireRecipientTerminalRecord('stuck');
+    // Same scope as the held bind: it keeps its place behind it.
+    await s.retireTerminalRecord({ projectId: viewer });
+    await s.retireTerminalRecord({ projectId: 'p', worktreeId: 'other' });
+    await s.drainAll();
+    authority.flushSync();
+    expect(fs.existsSync(otherRecord)).toBe(false);
+    expect(await queued()).toEqual([
+      [viewer, 'stuck'],
+      [viewer, undefined],
+    ]);
   } finally {
-    controller.reset();
+    unreadable.mockRestore();
   }
+  await s.drainAll();
+  expect(await queued()).toEqual([]);
 });
 
 function terminalClientFor(
   persistence: TerminalPersistenceStore,
   probe?: () => Promise<LoadWorktreeTerminalStateResponse>,
-  load?: () => Promise<LoadWorktreeTerminalStateResponse>,
+  load?: (
+    request: LoadWorktreeTerminalStateRequest,
+  ) => Promise<LoadWorktreeTerminalStateResponse>,
 ): TerminalClient {
   const queries: {
     [K in TerminalQueryName]: (
@@ -897,11 +1318,13 @@ function terminalClientFor(
       args,
     ): Promise<LoadWorktreeTerminalStateResponse> => {
       if (args.historyStatusOnly && probe) return probe();
-      if (!args.historyStatusOnly && load) return load();
+      if (!args.historyStatusOnly && load) return load(args);
       return persistence.loadWorktreeState(
         args.projectId,
         args.worktreeId,
         args.historyStatusOnly,
+        args.historyConfirmationOnly,
+        args.retainedViewToken,
       );
     },
   };
@@ -917,6 +1340,1911 @@ function terminalClientFor(
     subscribe: (): (() => void) => (): void => undefined,
   };
 }
+
+function durableTerminalClientFor(
+  persistence: TerminalPersistenceStore,
+  load?: (
+    request: LoadWorktreeTerminalStateRequest,
+  ) => Promise<LoadWorktreeTerminalStateResponse>,
+): TerminalClient {
+  const unexpected = (): Promise<never> =>
+    Promise.reject(new Error('Unexpected terminal command'));
+  const commands: {
+    [K in TerminalCommandName]: (
+      args: CommandMap[K]['args'],
+    ) => Promise<CommandMap[K]['result']>;
+  } = {
+    'terminal.spawn': unexpected,
+    'terminal.attach': unexpected,
+    'terminal.write': unexpected,
+    'terminal.resize': unexpected,
+    'terminal.kill': unexpected,
+    'terminal.restore': unexpected,
+    'terminal.worktreeState.save': (request) => {
+      persistence.saveWorktreeState(request);
+      return Promise.resolve();
+    },
+  };
+  return {
+    ...terminalClientFor(persistence, undefined, load),
+    command<K extends TerminalCommandName>(
+      name: K,
+      args: CommandMap[K]['args'],
+    ): Promise<CommandMap[K]['result']> {
+      return commands[name](args);
+    },
+  };
+}
+
+it.each([false, true])(
+  'closing an exited cached terminal during an outage stays closed after restart (Try again: %s)',
+  async (retry) => {
+    const s = store();
+    await s.loadWorktreeState('p', 'w');
+    s.registerLiveSession(session('shown'));
+    s.markTerminalExited('p', 'w', 'shown', 0, null);
+    await s.drainAll();
+    const load = jest.fn(
+      (
+        request: LoadWorktreeTerminalStateRequest,
+      ): Promise<LoadWorktreeTerminalStateResponse> =>
+        s.loadWorktreeState(
+          request.projectId,
+          request.worktreeId,
+          request.historyStatusOnly,
+          request.historyConfirmationOnly,
+          request.retainedViewToken,
+        ),
+    );
+    const controller = createTerminalStore(() =>
+      durableTerminalClientFor(s, load),
+    );
+    try {
+      await controller.ensureHydrated('p', 'w');
+      const fullToken = controller.store.getState().worktrees['p/w'].viewToken;
+      expect(fullToken).toBeDefined();
+      up = false;
+      jest.useFakeTimers();
+      controller.observeHistory('p', 'w');
+      await jest.advanceTimersByTimeAsync(0);
+      expect(load).toHaveBeenCalledTimes(2);
+      await load.mock.results[1].value;
+      await Promise.resolve();
+      if (retry) await controller.store.getState().hydrateWorktree('p', 'w');
+      const cached = controller.store.getState().worktrees['p/w'];
+      expect(cached.historyUnavailable).toBe(true);
+      expect(cached.sessions.shown.live).toBe(false);
+      // An exited pane's Close removes it without issuing terminal.kill.
+      controller.store.getState().removeTerminal('p', 'w', 'shown');
+      await s.drainAll();
+      controller.reset();
+      jest.useRealTimers();
+      up = true;
+      await s.drainAll();
+      const reloaded = await store().loadWorktreeState('p', 'w');
+      expect(reloaded.terminals.map(({ session }) => session.id)).not.toContain(
+        'shown',
+      );
+      if (!retry) expect(cached.viewToken).toBe(fullToken);
+      expect(reloaded.terminals).toEqual([]);
+    } finally {
+      controller.reset();
+      jest.useRealTimers();
+    }
+  },
+);
+
+it.each([false, true])(
+  'Close stays durable after 65 partial history retries (initial partial view: %s)',
+  async (initialPartial) => {
+    const s = store();
+    await s.loadWorktreeState('p', 'w');
+    up = !initialPartial;
+    s.registerLiveSession(session('shown'));
+    s.appendTerminalOutput('p', 'w', 'shown', Buffer.from('saved output'));
+    s.markTerminalExited('p', 'w', 'shown', 0, null);
+    await s.drainAll();
+    const load = jest.fn(
+      (
+        request: LoadWorktreeTerminalStateRequest,
+      ): Promise<LoadWorktreeTerminalStateResponse> =>
+        s.loadWorktreeState(
+          request.projectId,
+          request.worktreeId,
+          request.historyStatusOnly,
+          request.historyConfirmationOnly,
+          request.retainedViewToken,
+        ),
+    );
+    const controller = createTerminalStore(() =>
+      durableTerminalClientFor(s, load),
+    );
+    try {
+      await controller.ensureHydrated('p', 'w');
+      const first = controller.store.getState().worktrees['p/w'];
+      expect(first.historyUnavailable).toBe(initialPartial);
+      expect(first.sessions.shown.live).toBe(false);
+      expect(first.viewToken).toBeDefined();
+      controller.store.getState().setTerminalName('p', 'w', 'shown', 'Cached');
+      up = false;
+      // Main retains at most 64 served views and evicts partial ones first.
+      for (let attempt = 0; attempt < 65; attempt += 1) {
+        await controller.store.getState().hydrateWorktree('p', 'w');
+        const result = load.mock.results[attempt + 1];
+        if (result.type !== 'return') throw new Error('Load did not return');
+        const response = await result.value;
+        expect(response.history?.status).toBe('unavailable');
+        if (initialPartial)
+          expect(response.terminals.map(({ session }) => session.id)).toEqual([
+            'shown',
+          ]);
+      }
+      const retried = controller.store.getState().worktrees['p/w'];
+      expect(retried.sessions.shown.live).toBe(false);
+      expect(controller.store.getState().terminalCustomNames.shown).toBe(
+        'Cached',
+      );
+      controller.store.getState().setTerminalName('p', 'w', 'shown', null);
+      up = true;
+      await s.drainAll();
+      const beforeClose = await store().loadWorktreeState('p', 'w');
+      expect(
+        beforeClose.terminals.map(({ session, scrollbackLines }) => ({
+          id: session.id,
+          scrollbackLines,
+        })),
+      ).toEqual([{ id: 'shown', scrollbackLines: ['saved output'] }]);
+      expect(beforeClose.terminalCustomNames.shown).toBeUndefined();
+      // Close an exited pane without terminal.kill or another drawer load.
+      controller.store.getState().removeTerminal('p', 'w', 'shown');
+      await s.drainAll();
+      controller.reset();
+      authority.dispose();
+      authority = newAuthority();
+      const reloaded = await store().loadWorktreeState('p', 'w');
+      expect(reloaded.terminals).toEqual([]);
+      expect(retried.viewToken).not.toBe(first.viewToken);
+      expect(reloaded.terminalCustomNames.shown).toBeUndefined();
+    } finally {
+      controller.reset();
+    }
+  },
+);
+
+it.each([false, true])(
+  'Close stays durable when 65 partial retries omit a cached terminal (held partial view: %s)',
+  async (initialPartial) => {
+    const s = store();
+    await s.loadWorktreeState('p', 'w');
+    s.registerLiveSession(session('shown'));
+    s.registerLiveSession(session('omitted'));
+    s.appendTerminalOutput('p', 'w', 'shown', Buffer.from('saved output'));
+    await s.drainAll();
+    up = !initialPartial;
+    const load = jest.spyOn(s, 'loadWorktreeState');
+    const controller = createTerminalStore(() => durableTerminalClientFor(s));
+    try {
+      await controller.ensureHydrated('p', 'w');
+      const first = controller.store.getState().worktrees['p/w'];
+      expect(first.historyUnavailable).toBe(initialPartial);
+      expect(first.viewTokenPartial).toBe(initialPartial);
+      expect(first.viewToken).toBeDefined();
+      expect(first.sessions.shown.live).toBe(true);
+      expect(first.sessions.omitted.live).toBe(true);
+      controller.store.getState().setTerminalName('p', 'w', 'shown', 'Cached');
+      // The partial view saw both live panes. After this exit is saved, an
+      // offline retry sees only the still-live pane.
+      up = true;
+      s.markTerminalExited('p', 'w', 'omitted', 0, null);
+      controller.store.getState().applyExit({
+        projectId: 'p',
+        worktreeId: 'w',
+        terminalId: 'omitted',
+        exitCode: 0,
+        signal: null,
+      });
+      await s.drainAll();
+      s.registerLiveSession(session('unseen'));
+      s.markTerminalExited('p', 'w', 'unseen', 0, null);
+      await s.drainAll();
+      const other = await s.loadWorktreeState('p', 'w');
+      s.saveWorktreeState({
+        ...other,
+        projectId: 'p',
+        worktreeId: 'w',
+        terminalCustomNames: { omitted: 'Another pane name' },
+      });
+      await s.drainAll();
+      load.mockClear();
+      up = false;
+      for (let attempt = 0; attempt < 65; attempt += 1) {
+        await controller.store.getState().hydrateWorktree('p', 'w');
+        const result = load.mock.results[attempt];
+        if (result.type !== 'return') throw new Error('Load did not return');
+        const response = await result.value;
+        expect(response.history?.status).toBe('unavailable');
+        expect(response.terminals.map(({ session }) => session.id)).toEqual([
+          'shown',
+        ]);
+        expect(
+          controller.store.getState().worktrees['p/w'].sessions.omitted,
+        ).toBeDefined();
+      }
+      // An independent drawer's load must not evict the actively retried view.
+      await s.loadWorktreeState('p', 'w');
+      expect(controller.store.getState().terminalCustomNames.shown).toBe(
+        'Cached',
+      );
+      controller.store.getState().setTerminalName('p', 'w', 'shown', null);
+      up = true;
+      s.markTerminalExited('p', 'w', 'shown', 0, null);
+      controller.store.getState().applyExit({
+        projectId: 'p',
+        worktreeId: 'w',
+        terminalId: 'shown',
+        exitCode: 0,
+        signal: null,
+      });
+      await s.drainAll();
+      // No new load or save renews the held token before this exited pane's Close.
+      controller.store.getState().removeTerminal('p', 'w', 'shown');
+      await s.drainAll();
+      controller.reset();
+      authority.dispose();
+      authority = newAuthority();
+      const reloaded = await store().loadWorktreeState('p', 'w');
+      expect(
+        reloaded.terminals.map(({ session }) => session.id).sort(),
+      ).toEqual(['omitted', 'unseen']);
+      // Retaining a view must not borrow another pane's name or deletion rights.
+      expect(reloaded.terminalCustomNames.omitted).toBe('Another pane name');
+      expect(reloaded.terminalCustomNames.shown).toBeUndefined();
+    } finally {
+      controller.reset();
+      load.mockRestore();
+    }
+  },
+);
+
+it('full recovery omitting a retained terminal restores durable drawer layout edits', async () => {
+  const s = store();
+  const initial = await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('shown'));
+  await s.drainAll();
+  up = false;
+  const load = jest.fn(
+    (
+      request: LoadWorktreeTerminalStateRequest,
+    ): Promise<LoadWorktreeTerminalStateResponse> =>
+      s.loadWorktreeState(
+        request.projectId,
+        request.worktreeId,
+        request.historyStatusOnly,
+        request.historyConfirmationOnly,
+        request.retainedViewToken,
+      ),
+  );
+  const controller = createTerminalStore(() =>
+    durableTerminalClientFor(s, load),
+  );
+  try {
+    await controller.ensureHydrated('p', 'w');
+    const partial = controller.store.getState().worktrees['p/w'];
+    expect(partial.historyUnavailable).toBe(true);
+    expect(partial.viewTokenPartial).toBe(true);
+    expect(partial.viewToken).toBeDefined();
+    // A renderer lifecycle publication need not exist in main's record yet.
+    controller.store.getState().addGroupWithTerminal(session('retained'));
+    up = true;
+    await s.drainAll();
+    await controller.store.getState().hydrateWorktree('p', 'w');
+    const result = load.mock.results[1];
+    if (result.type !== 'return') throw new Error('Recovery did not return');
+    const response = await result.value;
+    expect(response.history?.status).toBe('available');
+    expect(response.terminals.map(({ session }) => session.id)).toEqual([
+      'shown',
+    ]);
+    const recovered = controller.store.getState().worktrees['p/w'];
+    expect(recovered.historyUnavailable).toBe(false);
+    expect(recovered.sessions.retained.live).toBe(true);
+    const collapsed = !initial.drawerCollapsed;
+    jest.useFakeTimers();
+    controller.store.getState().setDrawerCollapsed('p', 'w', collapsed);
+    await jest.advanceTimersByTimeAsync(100);
+    await s.drainAll();
+    controller.reset();
+    jest.useRealTimers();
+    authority.dispose();
+    authority = newAuthority();
+    const reloaded = await store().loadWorktreeState('p', 'w');
+    expect(reloaded.drawerCollapsed).toBe(collapsed);
+  } finally {
+    controller.reset();
+    jest.useRealTimers();
+  }
+});
+
+it('readable outage confirmation cannot evict a partial view needed for durable Close', async () => {
+  const s = store();
+  await s.loadWorktreeState('p', 'w');
+  up = false;
+  s.registerLiveSession(session('shown'));
+  s.appendTerminalOutput('p', 'w', 'shown', Buffer.from('saved output'));
+  const controller = createTerminalStore(() => durableTerminalClientFor(s));
+  try {
+    await controller.ensureHydrated('p', 'w');
+    const partial = controller.store.getState().worktrees['p/w'];
+    expect(partial.viewTokenPartial).toBe(true);
+    expect(partial.viewToken).toBeDefined();
+    up = true;
+    await s.drainAll();
+    for (const id of ['shown', 'extra']) {
+      if (id === 'extra') {
+        s.registerLiveSession(session(id));
+        s.appendTerminalOutput('p', 'w', id, Buffer.from('extra output'));
+      }
+      s.markTerminalExited('p', 'w', id, 0, null);
+    }
+    await s.drainAll();
+    up = false;
+    fs.writeFileSync(
+      legacyPath(),
+      JSON.stringify({
+        ...fixture(),
+        groups: [],
+        activeGroupId: null,
+        terminals: ['shown', 'extra'].map((id) => ({
+          session: session(id),
+          scrollbackLines: [id === 'shown' ? 'saved output' : 'extra output'],
+          exitCode: 0,
+          signal: null,
+        })),
+        terminalCustomNames: {},
+        groupCustomNames: {},
+      }),
+    );
+    // One initial full view, the drawer's partial view, and 62 full views.
+    for (let view = 0; view < 62; view += 1)
+      await s.loadWorktreeState('p', 'w');
+    // Exercise confirmation directly: the observer retries an unavailable
+    // drawer only after reachability returns, when it would adopt a full view.
+    const confirmation = await s.loadWorktreeState('p', 'w', false, true);
+    // Slice 3 RF5: legacy alone leaves authority history unavailable.
+    expect(confirmation.history?.status).toBe('unavailable');
+    controller.store.getState().applyExit({
+      projectId: 'p',
+      worktreeId: 'w',
+      terminalId: 'shown',
+      exitCode: 0,
+      signal: null,
+    });
+    controller.store.getState().removeTerminal('p', 'w', 'shown');
+    await s.drainAll();
+    controller.reset();
+    up = true;
+    await s.drainAll();
+    fs.unlinkSync(legacyPath());
+    authority.dispose();
+    authority = newAuthority();
+    const reloaded = await store().loadWorktreeState('p', 'w');
+    expect(reloaded.terminals.map(({ session }) => session.id)).toEqual([
+      'extra',
+    ]);
+    expect(reloaded.terminals[0].scrollbackLines).toEqual(['extra output']);
+    expect(confirmation.viewToken).toBeUndefined();
+  } finally {
+    controller.reset();
+  }
+});
+
+it('Close stays durable because outage confirmation preserves a recovered full view', async () => {
+  const s = store();
+  await s.loadWorktreeState('p', 'w');
+  up = false;
+  s.registerLiveSession(session('shown'));
+  s.appendTerminalOutput('p', 'w', 'shown', Buffer.from('saved output'));
+  const load = jest.fn(
+    (
+      request: LoadWorktreeTerminalStateRequest,
+    ): Promise<LoadWorktreeTerminalStateResponse> =>
+      s.loadWorktreeState(
+        request.projectId,
+        request.worktreeId,
+        request.historyStatusOnly,
+        request.historyConfirmationOnly,
+        request.retainedViewToken,
+      ),
+  );
+  const client = durableTerminalClientFor(s, load);
+  const query = jest.spyOn(client, 'query');
+  const controller = createTerminalStore(() => client);
+  try {
+    await controller.ensureHydrated('p', 'w');
+    const first = controller.store.getState().worktrees['p/w'];
+    expect(first.viewTokenPartial).toBe(true);
+    expect(first.sessions.shown.live).toBe(true);
+    up = true;
+    await s.drainAll();
+    s.markTerminalExited('p', 'w', 'shown', 0, null);
+    await s.drainAll();
+    const legacy = {
+      ...fixture(),
+      groups: [],
+      activeGroupId: null,
+      terminals: [
+        {
+          session: session('shown'),
+          scrollbackLines: ['saved output'],
+          exitCode: 0,
+          signal: null,
+        },
+      ],
+      terminalCustomNames: {},
+      groupCustomNames: {},
+    };
+    fs.writeFileSync(legacyPath(), JSON.stringify(legacy));
+    // Slice 3 RF5: only authority recovery can grant the recovered full view.
+    await controller.store.getState().hydrateWorktree('p', 'w');
+    controller.store.getState().applyExit({
+      projectId: 'p',
+      worktreeId: 'w',
+      terminalId: 'shown',
+      exitCode: 0,
+      signal: null,
+    });
+    const retained = controller.store.getState().worktrees['p/w'];
+    expect(retained.historyUnavailable).toBe(false);
+    expect(retained.viewTokenPartial).toBe(false);
+    expect(retained.viewToken).not.toBe(first.viewToken);
+    expect(retained.sessions.shown.live).toBe(false);
+    s.registerLiveSession(session('extra'));
+    s.appendTerminalOutput('p', 'w', 'extra', Buffer.from('extra output'));
+    s.markTerminalExited('p', 'w', 'extra', 0, null);
+    await s.drainAll();
+    up = false;
+    fs.writeFileSync(
+      legacyPath(),
+      JSON.stringify({
+        ...legacy,
+        terminals: ['shown', 'extra'].map((id) => ({
+          session: session(id),
+          scrollbackLines: [id + ' output'],
+          exitCode: 0,
+          signal: null,
+        })),
+      }),
+    );
+    // Initial full, initial partial, covering retry: exactly 64 views.
+    for (let view = 0; view < 61; view += 1)
+      await s.loadWorktreeState('p', 'w');
+    // Explicit hydration may adopt a full token; confirmation must preserve it.
+    const beforeConfirmation = controller.store.getState();
+    jest.useFakeTimers();
+    controller.observeHistory('p', 'w');
+    await jest.advanceTimersByTimeAsync(0);
+    expect(load).toHaveBeenCalledTimes(3);
+    const result = load.mock.results[2];
+    if (result.type !== 'return')
+      throw new Error('Confirmation did not return');
+    await result.value;
+    await Promise.resolve();
+    const afterConfirmation = controller.store.getState();
+    const confirmed = afterConfirmation.worktrees['p/w'];
+    expect(afterConfirmation.terminalCustomNames).toEqual(
+      beforeConfirmation.terminalCustomNames,
+    );
+    expect(afterConfirmation.groupCustomNames).toEqual(
+      beforeConfirmation.groupCustomNames,
+    );
+    controller.store.getState().removeTerminal('p', 'w', 'shown');
+    await s.drainAll();
+    controller.reset();
+    jest.useRealTimers();
+    up = true;
+    await s.drainAll();
+    fs.unlinkSync(legacyPath());
+    authority.dispose();
+    authority = newAuthority();
+    const reloaded = await store().loadWorktreeState('p', 'w');
+    expect(reloaded.terminals.map(({ session }) => session.id)).toEqual([
+      'extra',
+    ]);
+    expect(reloaded.terminals[0].scrollbackLines).toEqual(['extra output']);
+    // Slice 3 RF5: outage confirmation changes only the unavailable notice.
+    expect(confirmed).toEqual({ ...retained, historyUnavailable: true });
+    expect(confirmed.viewToken).toBe(
+      beforeConfirmation.worktrees['p/w'].viewToken,
+    );
+    expect(confirmed.viewTokenPartial).toBe(
+      beforeConfirmation.worktrees['p/w'].viewTokenPartial,
+    );
+    expect(confirmed.sessions.extra).toBeUndefined();
+    expect(query).toHaveBeenLastCalledWith('terminal.worktreeState.get', {
+      projectId: 'p',
+      worktreeId: 'w',
+      historyConfirmationOnly: true,
+    });
+  } finally {
+    controller.reset();
+    query.mockRestore();
+    jest.useRealTimers();
+  }
+});
+
+it("Observational outage confirmation preserves another view's unseen name through a later layout save", async () => {
+  const s = store();
+  await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('shown'));
+  s.markTerminalExited('p', 'w', 'shown', 0, null);
+  await s.drainAll();
+  const load = jest.fn(
+    (
+      request: LoadWorktreeTerminalStateRequest,
+    ): Promise<LoadWorktreeTerminalStateResponse> =>
+      s.loadWorktreeState(
+        request.projectId,
+        request.worktreeId,
+        request.historyStatusOnly,
+        request.historyConfirmationOnly,
+        request.retainedViewToken,
+      ),
+  );
+  const client = durableTerminalClientFor(s, load);
+  const query = jest.spyOn(client, 'query');
+  const controller = createTerminalStore(() => client);
+  try {
+    await controller.ensureHydrated('p', 'w');
+    const paneA = controller.store.getState().worktrees['p/w'];
+    expect(
+      controller.store.getState().terminalCustomNames.shown,
+    ).toBeUndefined();
+    const viewB = await s.loadWorktreeState('p', 'w');
+    s.saveWorktreeState({
+      ...viewB,
+      projectId: 'p',
+      worktreeId: 'w',
+      terminalCustomNames: { shown: 'Other pane name' },
+    });
+    await s.drainAll();
+    fs.writeFileSync(
+      legacyPath(),
+      JSON.stringify({
+        ...fixture(),
+        groups: viewB.groups,
+        terminals: viewB.terminals,
+        terminalCustomNames: { shown: 'Other pane name' },
+      }),
+    );
+    up = false;
+    jest.useFakeTimers();
+    controller.observeHistory('p', 'w');
+    await jest.advanceTimersByTimeAsync(0);
+    expect(load).toHaveBeenCalledTimes(2);
+    const result = load.mock.results[1];
+    if (result.type !== 'return')
+      throw new Error('Confirmation did not return');
+    await result.value;
+    await Promise.resolve();
+    const confirmed = controller.store.getState().worktrees['p/w'];
+    // Slice 3 RF5: readable fallback cannot clear the authority outage notice.
+    expect(confirmed.historyUnavailable).toBe(true);
+    expect(
+      controller.store.getState().terminalCustomNames.shown,
+    ).toBeUndefined();
+    controller.store
+      .getState()
+      .setDrawerCollapsed('p', 'w', !paneA.drawerCollapsed);
+    // Presentation-only saves use the 100 ms debounce, not the record outbox.
+    await jest.advanceTimersByTimeAsync(100);
+    await s.drainAll();
+    controller.reset();
+    jest.useRealTimers();
+    up = true;
+    await s.drainAll();
+    fs.unlinkSync(legacyPath());
+    authority.dispose();
+    authority = newAuthority();
+    const reloaded = await store().loadWorktreeState('p', 'w');
+    expect(reloaded.terminalCustomNames.shown).toBe('Other pane name');
+    expect(reloaded.drawerCollapsed).toBe(!paneA.drawerCollapsed);
+    expect(confirmed.viewToken).toBe(paneA.viewToken);
+    expect(confirmed.viewTokenPartial).toBe(paneA.viewTokenPartial);
+    expect(query).toHaveBeenLastCalledWith('terminal.worktreeState.get', {
+      projectId: 'p',
+      worktreeId: 'w',
+      historyConfirmationOnly: true,
+    });
+  } finally {
+    controller.reset();
+    query.mockRestore();
+    jest.useRealTimers();
+  }
+});
+
+it('outage confirmation serving an extra terminal cannot authorize its deletion', async () => {
+  const s = store();
+  await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('cached'));
+  s.markTerminalExited('p', 'w', 'cached', 0, null);
+  await s.drainAll();
+  const load = jest.fn(
+    (
+      request: LoadWorktreeTerminalStateRequest,
+    ): Promise<LoadWorktreeTerminalStateResponse> =>
+      s.loadWorktreeState(
+        request.projectId,
+        request.worktreeId,
+        request.historyStatusOnly,
+        request.historyConfirmationOnly,
+        request.retainedViewToken,
+      ),
+  );
+  const controller = createTerminalStore(() =>
+    durableTerminalClientFor(s, load),
+  );
+  try {
+    await controller.ensureHydrated('p', 'w');
+    const before = controller.store.getState().worktrees['p/w'];
+    expect(Object.keys(before.sessions)).toEqual(['cached']);
+    // Another drawer creates this terminal after our view was loaded.
+    s.registerLiveSession(session('extra'));
+    s.appendTerminalOutput('p', 'w', 'extra', Buffer.from('extra'));
+    s.markTerminalExited('p', 'w', 'extra', 0, null);
+    await s.drainAll();
+    const full = await s.loadWorktreeState('p', 'w');
+    fs.writeFileSync(
+      legacyPath(),
+      JSON.stringify({
+        ...fixture(),
+        terminals: full.terminals,
+      }),
+    );
+    up = false;
+    jest.useFakeTimers();
+    controller.observeHistory('p', 'w');
+    await jest.advanceTimersByTimeAsync(0);
+    expect(load).toHaveBeenCalledTimes(2);
+    const result = load.mock.results[1];
+    if (result.type !== 'return')
+      throw new Error('Confirmation did not return');
+    const confirmation = await result.value;
+    // Slice 3 RF5: legacy alone leaves authority history unavailable.
+    expect(confirmation.history?.status).toBe('unavailable');
+    expect(confirmation.terminals).toEqual([]);
+    expect(confirmation.viewToken).toBeUndefined();
+    await Promise.resolve();
+    const after = controller.store.getState().worktrees['p/w'];
+    expect(after.viewToken).toBe(before.viewToken);
+    expect(after.sessions).toEqual(before.sessions);
+    controller.store.getState().removeTerminal('p', 'w', 'cached');
+    await s.drainAll();
+    controller.reset();
+    jest.useRealTimers();
+    up = true;
+    await s.drainAll();
+    fs.unlinkSync(legacyPath());
+    authority.dispose();
+    authority = newAuthority();
+    const reloaded = await store().loadWorktreeState('p', 'w');
+    // Close stays durable: only the confirmation-served terminal survives.
+    expect(reloaded.terminals.map(({ session }) => session.id)).toEqual([
+      'extra',
+    ]);
+    expect(
+      reloaded.terminals.find(({ session }) => session.id === 'extra')
+        ?.scrollbackLines,
+    ).toEqual(['extra']);
+  } finally {
+    controller.reset();
+    jest.useRealTimers();
+  }
+});
+
+it.each([false, true])(
+  "partial history refresh omitting a live terminal's saved binding preserves exactly one membership (Try again: %s)",
+  async (retry) => {
+    const s = store();
+    const initial = await s.loadWorktreeState('p', 'w');
+    s.registerLiveSession(session('running'));
+    s.saveWorktreeState({
+      ...initial,
+      projectId: 'p',
+      worktreeId: 'w',
+      groups: [
+        {
+          id: 'saved-live',
+          terminalIds: ['running'],
+          focusedTerminalId: 'running',
+          splitSizes: [1],
+        },
+      ],
+      activeGroupId: 'saved-live',
+      groupOrdinals: { 'saved-live': 3 },
+      nextGroupOrdinal: 4,
+    });
+    await s.drainAll();
+    const load = jest.fn(
+      (
+        request: LoadWorktreeTerminalStateRequest,
+      ): Promise<LoadWorktreeTerminalStateResponse> =>
+        s.loadWorktreeState(
+          request.projectId,
+          request.worktreeId,
+          request.historyStatusOnly,
+          request.historyConfirmationOnly,
+          request.retainedViewToken,
+        ),
+    );
+    const controller = createTerminalStore(() =>
+      durableTerminalClientFor(s, load),
+    );
+    try {
+      await controller.ensureHydrated('p', 'w');
+      const fullToken = controller.store.getState().worktrees['p/w'].viewToken;
+      up = false;
+      jest.useFakeTimers();
+      controller.observeHistory('p', 'w');
+      await jest.advanceTimersByTimeAsync(0);
+      const result = load.mock.results[1];
+      if (result.type !== 'return') throw new Error('Load did not return');
+      const confirmation = await result.value;
+      expect(confirmation.terminals).toEqual([]);
+      const partial = await s.loadWorktreeState('p', 'w');
+      expect(partial.history?.status).toBe('unavailable');
+      // An outage load serves the bindings main last read (slice 3a), never
+      // a synthesized `live/` group beside the saved one.
+      expect(partial.groups).toEqual([
+        expect.objectContaining({
+          id: 'saved-live',
+          terminalIds: ['running'],
+        }),
+      ]);
+      if (retry) await controller.store.getState().hydrateWorktree('p', 'w');
+      const bucket = controller.store.getState().worktrees['p/w'];
+      expect(
+        bucket.groups
+          .filter((group) => group.terminalIds.includes('running'))
+          .map((group) => group.id),
+      ).toEqual(['saved-live']);
+      if (!retry) expect(bucket.viewToken).toBe(fullToken);
+      controller.store
+        .getState()
+        .setDrawerCollapsed('p', 'w', !bucket.drawerCollapsed);
+      await s.drainAll();
+      controller.reset();
+      jest.useRealTimers();
+      up = true;
+      await s.drainAll();
+      const reloaded = await store().loadWorktreeState('p', 'w');
+      expect(
+        reloaded.groups
+          .filter((group) => group.terminalIds.includes('running'))
+          .map((group) => group.id),
+      ).toEqual(['saved-live']);
+    } finally {
+      controller.reset();
+      jest.useRealTimers();
+    }
+  },
+);
+
+it("an outage retry keeps a split in its saved group when the split's save never reached main", async () => {
+  const s = store();
+  const initial = await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('running'));
+  s.saveWorktreeState({
+    ...initial,
+    projectId: 'p',
+    worktreeId: 'w',
+    groups: [
+      {
+        id: 'saved-live',
+        terminalIds: ['running'],
+        focusedTerminalId: 'running',
+        splitSizes: [1],
+      },
+    ],
+    activeGroupId: 'saved-live',
+    groupOrdinals: { 'saved-live': 3 },
+    nextGroupOrdinal: 4,
+  });
+  await s.drainAll();
+  const durable = durableTerminalClientFor(s);
+  let saveLost = false;
+  const client: TerminalClient = {
+    ...durable,
+    command: (name, args) =>
+      saveLost && name === 'terminal.worktreeState.save'
+        ? Promise.reject(new Error('transport lost'))
+        : durable.command(name, args),
+  };
+  const controller = createTerminalStore(() => client);
+  try {
+    await controller.ensureHydrated('p', 'w');
+    up = false;
+    jest.useFakeTimers();
+    controller.observeHistory('p', 'w');
+    await jest.advanceTimersByTimeAsync(0);
+    s.registerLiveSession(session('second'));
+    saveLost = true;
+    controller.store
+      .getState()
+      .splitGroup('p', 'w', 'saved-live', session('second'));
+    saveLost = false;
+    // Without the split's binding, main's outage load gives the new shell
+    // its own `live/` group; the drawer must not regroup it there.
+    const partial = await s.loadWorktreeState('p', 'w');
+    expect(partial.history?.status).toBe('unavailable');
+    expect(
+      partial.groups.some(
+        (group) =>
+          group.id !== 'saved-live' && group.terminalIds.includes('second'),
+      ),
+    ).toBe(true);
+    await controller.store.getState().hydrateWorktree('p', 'w');
+    const bucket = controller.store.getState().worktrees['p/w'];
+    expect(
+      bucket.groups.map(({ id, terminalIds }) => ({ id, terminalIds })),
+    ).toEqual([{ id: 'saved-live', terminalIds: ['running', 'second'] }]);
+  } finally {
+    controller.reset();
+    jest.useRealTimers();
+  }
+});
+
+it('retry after an initial partial load materializes a newly readable missing bound session', async () => {
+  const s = store();
+  await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('bound'));
+  s.markTerminalExited('p', 'w', 'bound', 0, null);
+  await s.drainAll();
+  up = false;
+  const controller = createTerminalStore(() => durableTerminalClientFor(s));
+  try {
+    await controller.ensureHydrated('p', 'w');
+    expect(
+      controller.store.getState().worktrees['p/w'].sessions.bound,
+    ).toBeUndefined();
+    up = true;
+    await controller.store.getState().hydrateWorktree('p', 'w');
+    expect(
+      controller.store.getState().worktrees['p/w'].sessions.bound,
+    ).toBeDefined();
+    controller.store.getState().removeTerminal('p', 'w', 'bound');
+    await s.drainAll();
+    expect((await store().loadWorktreeState('p', 'w')).terminals).toEqual([]);
+  } finally {
+    controller.reset();
+  }
+});
+
+it('a mixed partial retry materializes a new session without dropping an omitted cached session', async () => {
+  const s = store();
+  await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('cached'));
+  s.markTerminalExited('p', 'w', 'cached', 0, null);
+  await s.drainAll();
+  const load = jest.fn(
+    (
+      request: LoadWorktreeTerminalStateRequest,
+    ): Promise<LoadWorktreeTerminalStateResponse> =>
+      s.loadWorktreeState(
+        request.projectId,
+        request.worktreeId,
+        request.historyStatusOnly,
+        request.historyConfirmationOnly,
+        request.retainedViewToken,
+      ),
+  );
+  const controller = createTerminalStore(() =>
+    durableTerminalClientFor(s, load),
+  );
+  try {
+    await controller.ensureHydrated('p', 'w');
+    const fullToken = controller.store.getState().worktrees['p/w'].viewToken;
+    controller.store.getState().setTerminalName('p', 'w', 'cached', 'Cached');
+    s.registerLiveSession(session('unseen'));
+    s.markTerminalExited('p', 'w', 'unseen', 0, null);
+    await s.drainAll();
+    const other = await s.loadWorktreeState('p', 'w');
+    s.saveWorktreeState({
+      ...other,
+      projectId: 'p',
+      worktreeId: 'w',
+      terminalCustomNames: {
+        ...other.terminalCustomNames,
+        unseen: 'Other drawer',
+      },
+    });
+    await s.drainAll();
+    up = false;
+    s.registerLiveSession(session('newly-bound'));
+    await controller.store.getState().hydrateWorktree('p', 'w');
+    const result = load.mock.results[1];
+    if (result.type !== 'return') throw new Error('Load did not return');
+    const partial = await result.value;
+    expect(partial.terminals.map(({ session }) => session.id)).toEqual([
+      'newly-bound',
+    ]);
+    const bucket = controller.store.getState().worktrees['p/w'];
+    expect(bucket.sessions.cached.live).toBe(false);
+    expect(bucket.sessions['newly-bound'].live).toBe(true);
+    expect(bucket.viewToken).toBe(partial.viewToken);
+    expect(bucket.viewToken).not.toBe(fullToken);
+    expect(bucket.groups.flatMap((group) => group.terminalIds).sort()).toEqual([
+      'cached',
+      'newly-bound',
+    ]);
+    controller.store
+      .getState()
+      .setTerminalName('p', 'w', 'newly-bound', 'Recovered');
+    controller.store.getState().setTerminalName('p', 'w', 'cached', null);
+    controller.store.getState().setTerminalName('p', 'w', 'newly-bound', null);
+    await s.drainAll();
+    up = true;
+    await s.drainAll();
+    authority.dispose();
+    authority = newAuthority();
+    const named = await store().loadWorktreeState('p', 'w');
+    expect(named.terminalCustomNames).toEqual({ unseen: 'Other drawer' });
+    expect(named.terminals.map(({ session }) => session.id).sort()).toEqual([
+      'cached',
+      'newly-bound',
+      'unseen',
+    ]);
+    for (const id of ['cached', 'newly-bound']) {
+      s.markTerminalExited('p', 'w', id, 0, null);
+      controller.store.getState().applyExit({
+        projectId: 'p',
+        worktreeId: 'w',
+        terminalId: id,
+        exitCode: 0,
+        signal: null,
+      });
+      controller.store.getState().removeTerminal('p', 'w', id);
+      await s.drainAll();
+    }
+    controller.reset();
+    authority.dispose();
+    authority = newAuthority();
+    const reloaded = await store().loadWorktreeState('p', 'w');
+    expect(reloaded.terminals.map(({ session }) => session.id)).toEqual([
+      'unseen',
+    ]);
+    expect(reloaded.terminalCustomNames).toEqual({ unseen: 'Other drawer' });
+  } finally {
+    controller.reset();
+  }
+});
+
+it('readable legacy outage confirmation changes notices without replacing the cached layout view', async () => {
+  const s = store();
+  await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('cached'));
+  s.appendTerminalOutput('p', 'w', 'cached', Buffer.from('cached output'));
+  s.markTerminalExited('p', 'w', 'cached', 0, null);
+  await s.drainAll();
+  const load = jest.fn(
+    (
+      request: LoadWorktreeTerminalStateRequest,
+    ): Promise<LoadWorktreeTerminalStateResponse> =>
+      s.loadWorktreeState(
+        request.projectId,
+        request.worktreeId,
+        request.historyStatusOnly,
+        request.historyConfirmationOnly,
+        request.retainedViewToken,
+      ),
+  );
+  const controller = createTerminalStore(() =>
+    durableTerminalClientFor(s, load),
+  );
+  try {
+    await controller.ensureHydrated('p', 'w');
+    controller.store
+      .getState()
+      .setTerminalName('p', 'w', 'cached', 'Cached name');
+    await s.drainAll();
+    const before = controller.store.getState();
+    // A readable legacy file is different from the already displayed record.
+    fs.writeFileSync(legacyPath(), JSON.stringify(fixture()));
+    up = false;
+    const partial = await s.loadWorktreeState('p', 'w');
+    // Slice 3 RF5: readable legacy bytes remain visible during an authority outage.
+    expect(partial.history?.status).toBe('unavailable');
+    expect(partial.terminals.map(({ session }) => session.id)).toEqual([
+      'a',
+      'b',
+    ]);
+    jest.useFakeTimers();
+    controller.observeHistory('p', 'w');
+    await jest.advanceTimersByTimeAsync(0);
+    expect(load).toHaveBeenCalledTimes(2);
+    await load.mock.results[1].value;
+    await Promise.resolve();
+    const after = controller.store.getState();
+    // Slice 3 RF5: confirmation changes the notice, not the cached view.
+    expect(after.worktrees['p/w'].historyUnavailable).toBe(true);
+    expect(after.worktrees['p/w']).toEqual({
+      ...before.worktrees['p/w'],
+      historyUnavailable: true,
+    });
+    expect(after.terminalCustomNames).toEqual(before.terminalCustomNames);
+    expect(after.groupCustomNames).toEqual(before.groupCustomNames);
+  } finally {
+    controller.reset();
+    jest.useRealTimers();
+  }
+});
+
+it('available recovery retaining a concurrently exited terminal preserves its durable close authority', async () => {
+  const s = store();
+  await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('shown'));
+  await s.drainAll();
+  let complete: () => void = () => {
+    throw new Error('Load not started');
+  };
+  const pending = new Promise<void>((resolve) => {
+    complete = resolve;
+  });
+  let signalIssued: () => void = () => {
+    throw new Error('Barrier not initialized');
+  };
+  const issued = new Promise<void>((resolve) => {
+    signalIssued = resolve;
+  });
+  const load = jest.fn(
+    (
+      request: LoadWorktreeTerminalStateRequest,
+    ): Promise<LoadWorktreeTerminalStateResponse> =>
+      s.loadWorktreeState(
+        request.projectId,
+        request.worktreeId,
+        request.historyStatusOnly,
+        request.historyConfirmationOnly,
+        request.retainedViewToken,
+      ),
+  );
+  const controller = createTerminalStore(() =>
+    durableTerminalClientFor(s, load),
+  );
+  try {
+    await controller.ensureHydrated('p', 'w');
+    load.mockImplementationOnce(async (request) => {
+      const response = await s.loadWorktreeState(
+        request.projectId,
+        request.worktreeId,
+        request.historyStatusOnly,
+        request.historyConfirmationOnly,
+        request.retainedViewToken,
+      );
+      signalIssued();
+      await pending;
+      return response;
+    });
+    const hydration = controller.store.getState().hydrateWorktree('p', 'w');
+    await issued;
+    // The successor already exists in main; these saves still use its predecessor.
+    controller.store
+      .getState()
+      .setTerminalName('p', 'w', 'shown', 'Local rename');
+    s.registerLiveSession(session('concurrent'));
+    controller.store.getState().addGroupWithTerminal(session('concurrent'));
+    controller.store
+      .getState()
+      .setTerminalName('p', 'w', 'concurrent', 'Local addition');
+    s.markTerminalExited('p', 'w', 'concurrent', 0, null);
+    controller.store.getState().applyExit({
+      projectId: 'p',
+      worktreeId: 'w',
+      terminalId: 'concurrent',
+      exitCode: 0,
+      signal: null,
+    });
+    await s.drainAll();
+    complete();
+    await hydration;
+    expect(
+      controller.store.getState().worktrees['p/w'].sessions.concurrent.live,
+    ).toBe(false);
+    expect(controller.store.getState().terminalCustomNames).toMatchObject({
+      shown: 'Local rename',
+      concurrent: 'Local addition',
+    });
+    // The successor's load never served 'concurrent'; only the predecessor's
+    // save did, and that evidence lets the successor's omission ungroup it.
+    const bucket = controller.store.getState().worktrees['p/w'];
+    s.saveWorktreeState({
+      projectId: 'p',
+      worktreeId: 'w',
+      drawerCollapsed: bucket.drawerCollapsed,
+      groups: bucket.groups.filter(
+        (group) => !group.terminalIds.includes('concurrent'),
+      ),
+      activeGroupId: null,
+      nextGroupOrdinal: bucket.nextGroupOrdinal,
+      groupOrdinals: bucket.groupOrdinals,
+      terminalCustomNames: {},
+      groupCustomNames: {},
+      clearedTerminalNames: [],
+      viewToken: bucket.viewToken,
+    });
+    await s.drainAll();
+    authority.dispose();
+    authority = newAuthority();
+    const ungrouped = await store().loadWorktreeState('p', 'w');
+    expect(ungrouped.terminals.map(({ session }) => session.id).sort()).toEqual(
+      ['concurrent', 'shown'],
+    );
+    expect(ungrouped.groups.flatMap((group) => group.terminalIds)).toEqual([
+      'shown',
+    ]);
+    for (const id of ['shown', 'concurrent'])
+      controller.store.getState().setTerminalName('p', 'w', id, null);
+    await s.drainAll();
+    authority.dispose();
+    authority = newAuthority();
+    const cleared = await store().loadWorktreeState('p', 'w');
+    expect(cleared.terminalCustomNames).toEqual({});
+    expect(cleared.terminals.map(({ session }) => session.id).sort()).toEqual([
+      'concurrent',
+      'shown',
+    ]);
+    s.markTerminalExited('p', 'w', 'shown', 0, null);
+    controller.store.getState().applyExit({
+      projectId: 'p',
+      worktreeId: 'w',
+      terminalId: 'shown',
+      exitCode: 0,
+      signal: null,
+    });
+    for (const id of ['shown', 'concurrent'])
+      controller.store.getState().removeTerminal('p', 'w', id);
+    await s.drainAll();
+    controller.reset();
+    authority.dispose();
+    authority = newAuthority();
+    expect((await store().loadWorktreeState('p', 'w')).terminals).toEqual([]);
+  } finally {
+    controller.reset();
+  }
+});
+
+it('a partial retry serves new names with cumulative Close and name authority', async () => {
+  const s = store();
+  await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('shown'));
+  s.markTerminalExited('p', 'w', 'shown', 0, null);
+  await s.drainAll();
+  const controller = createTerminalStore(() => durableTerminalClientFor(s));
+  try {
+    await controller.ensureHydrated('p', 'w');
+    const token = controller.store.getState().worktrees['p/w'].viewToken;
+    // Another pane saves a name this drawer's full view never knew.
+    const other = await s.loadWorktreeState('p', 'w');
+    s.saveWorktreeState({
+      ...other,
+      projectId: 'p',
+      worktreeId: 'w',
+      terminalCustomNames: { shown: 'New name' },
+    });
+    await s.drainAll();
+    fs.writeFileSync(
+      legacyPath(),
+      JSON.stringify({
+        ...fixture(),
+        groups: [],
+        terminals: [
+          {
+            session: session('shown'),
+            scrollbackLines: [],
+            exitCode: 0,
+            signal: null,
+          },
+        ],
+        terminalCustomNames: { shown: 'New name' },
+        groupCustomNames: {},
+      }),
+    );
+    up = false;
+    await controller.store.getState().hydrateWorktree('p', 'w');
+    expect(controller.store.getState().terminalCustomNames.shown).toBe(
+      'New name',
+    );
+    expect(controller.store.getState().worktrees['p/w'].viewToken).not.toBe(
+      token,
+    );
+    // The newly served name must be clearable without a teaching save.
+    controller.store.getState().setTerminalName('p', 'w', 'shown', null);
+    const collapsed =
+      !controller.store.getState().worktrees['p/w'].drawerCollapsed;
+    controller.store.getState().setDrawerCollapsed('p', 'w', collapsed);
+    await s.drainAll();
+    up = true;
+    await s.drainAll();
+    authority.dispose();
+    authority = newAuthority();
+    const reloaded = await store().loadWorktreeState('p', 'w');
+    expect(reloaded.terminalCustomNames.shown).toBeUndefined();
+    expect(reloaded.terminals.map(({ session }) => session.id)).toContain(
+      'shown',
+    );
+    expect(reloaded.drawerCollapsed).toBe(collapsed);
+    expect(controller.store.getState().worktrees['p/w'].viewToken).not.toBe(
+      token,
+    );
+  } finally {
+    controller.reset();
+  }
+});
+
+it('a partial retry carries cached name omission authority through reload', async () => {
+  fs.mkdirSync(join(legacyPath(), '..'), { recursive: true });
+  fs.writeFileSync(
+    legacyPath(),
+    JSON.stringify({ ...fixture(), terminalCustomNames: { a: 'Cached name' } }),
+  );
+  const s = store();
+  await s.loadWorktreeState('p', 'w');
+  await s.drainAll();
+  // Reintroduce readable legacy history only as the offline fallback.
+  fs.writeFileSync(
+    legacyPath(),
+    JSON.stringify({ ...fixture(), terminalCustomNames: { a: 'Cached name' } }),
+  );
+  up = false;
+  const controller = createTerminalStore(() => durableTerminalClientFor(s));
+  try {
+    await controller.ensureHydrated('p', 'w');
+    expect(controller.store.getState().terminalCustomNames.a).toBe(
+      'Cached name',
+    );
+    // Omit the name while still serving every displayed terminal.
+    fs.writeFileSync(
+      legacyPath(),
+      JSON.stringify({ ...fixture(), terminalCustomNames: {} }),
+    );
+    await controller.store.getState().hydrateWorktree('p', 'w');
+    expect(controller.store.getState().terminalCustomNames.a).toBe(
+      'Cached name',
+    );
+    controller.store.getState().setTerminalName('p', 'w', 'a', null);
+    await s.drainAll();
+    controller.reset();
+    up = true;
+    await s.drainAll();
+    authority.dispose();
+    authority = newAuthority();
+    const reloaded = await store().loadWorktreeState('p', 'w');
+    expect(reloaded.terminals.map(({ session }) => session.id)).toContain('a');
+    if (reloaded.terminalCustomNames.a !== undefined)
+      throw new Error('Cached name returned after clearing with retry token');
+    expect(reloaded.terminalCustomNames.a).toBeUndefined();
+  } finally {
+    controller.reset();
+  }
+});
+
+it('discarding a successor never widens its predecessor with unseen terminals or names', async () => {
+  const s = store();
+  await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('shown'));
+  s.markTerminalExited('p', 'w', 'shown', 0, null);
+  await s.drainAll();
+  const predecessor = await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('unseen'));
+  s.markTerminalExited('p', 'w', 'unseen', 0, null);
+  const other = await s.loadWorktreeState('p', 'w');
+  s.saveWorktreeState({
+    ...other,
+    projectId: 'p',
+    worktreeId: 'w',
+    terminalCustomNames: { shown: 'Unseen name', unseen: 'Other drawer' },
+  });
+  await s.drainAll();
+  const discarded = await s.loadWorktreeState(
+    'p',
+    'w',
+    false,
+    false,
+    predecessor.viewToken,
+  );
+  expect(discarded.terminals.map(({ session }) => session.id).sort()).toEqual([
+    'shown',
+    'unseen',
+  ]);
+  expect(discarded.terminalCustomNames.shown).toBe('Unseen name');
+  // A cancelled/stale renderer reply never becomes its saving view.
+  s.saveWorktreeState({
+    ...predecessor,
+    projectId: 'p',
+    worktreeId: 'w',
+    terminalCustomNames: {},
+  });
+  await s.drainAll();
+  authority.dispose();
+  authority = newAuthority();
+  const reloaded = await store().loadWorktreeState('p', 'w');
+  expect(reloaded.terminals.map(({ session }) => session.id).sort()).toEqual([
+    'shown',
+    'unseen',
+  ]);
+  // Omission ungroups (CAN-6616), so only an unwidened view keeps 'unseen' grouped.
+  expect(reloaded.groups.flatMap((group) => group.terminalIds)).toContain(
+    'unseen',
+  );
+  expect(reloaded.terminalCustomNames).toEqual({
+    shown: 'Unseen name',
+    unseen: 'Other drawer',
+  });
+});
+
+it("an empty unavailable successor of a full view saves the drawer's collapse toggle", async () => {
+  let exists = true;
+  const s = newStore({
+    records,
+    outbox: newOutbox(),
+    scopeExists: () => Promise.resolve(exists),
+  });
+  await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('shown'));
+  s.markTerminalExited('p', 'w', 'shown', 0, null);
+  await s.drainAll();
+  const predecessor = await s.loadWorktreeState('p', 'w');
+  exists = false;
+  const empty = await s.loadWorktreeState(
+    'p',
+    'w',
+    false,
+    false,
+    predecessor.viewToken,
+  );
+  expect(empty.terminals).toEqual([]);
+  expect(empty.history?.status).toBe('unavailable');
+  exists = true;
+  s.saveWorktreeState({
+    ...empty,
+    projectId: 'p',
+    worktreeId: 'w',
+    drawerCollapsed: !predecessor.drawerCollapsed,
+  });
+  await s.drainAll();
+  authority.dispose();
+  authority = newAuthority();
+  const reloaded = await store().loadWorktreeState('p', 'w');
+  // The inherited view omits what its predecessor showed: ungrouped, with
+  // its history (CAN-6616).
+  expect(reloaded.terminals.map(({ session }) => session.id)).toEqual([
+    'shown',
+  ]);
+  expect(reloaded.groups).toEqual([]);
+  expect(reloaded.drawerCollapsed).toBe(!predecessor.drawerCollapsed);
+});
+
+it.each([true, false])(
+  "a drawer's save keeps another drawer's unseen group layout (partial retry: %s)",
+  async (retry) => {
+    const s = store();
+    await s.loadWorktreeState('p', 'w');
+    const controller = createTerminalStore(() => durableTerminalClientFor(s));
+    try {
+      await controller.ensureHydrated('p', 'w');
+      s.registerLiveSession(session('mine'));
+      controller.store.getState().addGroupWithTerminal(session('mine'));
+      await settle();
+      await s.drainAll();
+      // Another drawer adds a split, named group this drawer never loads.
+      const other = await s.loadWorktreeState('p', 'w');
+      s.registerLiveSession(session('x'));
+      s.registerLiveSession(session('y'));
+      const unseen = {
+        id: 'unseen',
+        terminalIds: ['y', 'x'],
+        focusedTerminalId: 'x',
+        splitSizes: [0.3, 0.7],
+      };
+      s.saveWorktreeState({
+        ...other,
+        projectId: 'p',
+        worktreeId: 'w',
+        groups: [...other.groups, unseen],
+        groupCustomNames: { ...other.groupCustomNames, unseen: 'Other drawer' },
+      });
+      s.markTerminalExited('p', 'w', 'x', 0, null);
+      s.markTerminalExited('p', 'w', 'y', 0, null);
+      await s.drainAll();
+      expect(
+        (await store().loadWorktreeState('p', 'w')).groups.find(
+          ({ id }) => id === 'unseen',
+        ),
+      ).toEqual(unseen);
+      if (retry) {
+        const token = controller.store.getState().worktrees['p/w'].viewToken;
+        up = false;
+        await controller.store.getState().hydrateWorktree('p', 'w');
+        const bucket = controller.store.getState().worktrees['p/w'];
+        expect(bucket.viewToken).not.toBe(token);
+        // The retry saves as a partial view, whatever its predecessor was.
+        expect(bucket.viewTokenPartial).toBe(true);
+      }
+      expect(
+        controller.store
+          .getState()
+          .worktrees['p/w'].groups.flatMap(({ terminalIds }) => terminalIds),
+      ).toEqual(['mine']);
+      controller.store.getState().setTerminalName('p', 'w', 'mine', 'Renamed');
+      await settle();
+      await s.drainAll();
+      up = true;
+      await s.drainAll();
+      controller.reset();
+      authority.dispose();
+      authority = newAuthority();
+      const reloaded = await store().loadWorktreeState('p', 'w');
+      expect(reloaded.groups.find(({ id }) => id === 'unseen')).toEqual(unseen);
+      expect(reloaded.groupCustomNames.unseen).toBe('Other drawer');
+      expect(reloaded.terminalCustomNames.mine).toBe('Renamed');
+    } finally {
+      controller.reset();
+    }
+  },
+);
+
+function recordedGroupIds(): string[] {
+  return authority
+    .open({
+      projectId: 'p',
+      worktreeId: 'w',
+      legacyLayout: 'workspaces',
+      incarnation: null,
+    })
+    .bindings.map(({ groupId }) => groupId);
+}
+
+const sharedSplit = (
+  terminalIds: string[],
+): LoadWorktreeTerminalStateResponse['groups'][number] => ({
+  id: 'shared',
+  terminalIds,
+  focusedTerminalId: terminalIds[0],
+  splitSizes: terminalIds.length === 2 ? [0.4, 0.6] : [1],
+});
+
+/** `a` in group `shared`; another drawer then splits it with `b`, which exits. */
+async function sharedGroupSplitElsewhere(
+  s: TerminalPersistenceStore,
+  beforeSplit?: () => Promise<void>,
+): Promise<void> {
+  await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('a'));
+  const first = await s.loadWorktreeState('p', 'w');
+  s.saveWorktreeState({
+    ...first,
+    projectId: 'p',
+    worktreeId: 'w',
+    groups: [sharedSplit(['a'])],
+    activeGroupId: 'shared',
+  });
+  await s.drainAll();
+  await beforeSplit?.();
+  const other = await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('b'));
+  s.saveWorktreeState({
+    ...other,
+    projectId: 'p',
+    worktreeId: 'w',
+    groups: [sharedSplit(['a', 'b'])],
+    activeGroupId: 'shared',
+    groupCustomNames: { shared: 'Shared' },
+  });
+  s.markTerminalExited('p', 'w', 'b', 0, null);
+  await s.drainAll();
+}
+
+it("a full view's partial retry renames without rebinding the group's unseen split", async () => {
+  const s = store();
+  const controller = createTerminalStore(() => durableTerminalClientFor(s));
+  try {
+    await sharedGroupSplitElsewhere(s, () =>
+      controller.ensureHydrated('p', 'w'),
+    );
+    const full = controller.store.getState().worktrees['p/w'];
+    expect(full.viewTokenPartial).toBe(false);
+    up = false;
+    await controller.store.getState().hydrateWorktree('p', 'w');
+    const retried = controller.store.getState().worktrees['p/w'];
+    expect(retried.historyUnavailable).toBe(true);
+    controller.store.getState().setTerminalName('p', 'w', 'a', 'Renamed');
+    await settle();
+    await s.drainAll();
+    up = true;
+    await s.drainAll();
+    controller.reset();
+    const groupIds = recordedGroupIds();
+    expect(new Set(groupIds).size).toBe(groupIds.length);
+    authority.dispose();
+    authority = newAuthority();
+    const reloaded = await store().loadWorktreeState('p', 'w');
+    expect(reloaded.groups).toEqual([sharedSplit(['a', 'b'])]);
+    expect(reloaded.groupCustomNames.shared).toBe('Shared');
+    expect(reloaded.terminalCustomNames.a).toBe('Renamed');
+    // A partial retry never inherits whole-layout authority from a full view.
+    // Asserted last so a regression first trips the saved-layout checks above.
+    expect(retried.viewTokenPartial).toBe(true);
+  } finally {
+    controller.reset();
+  }
+});
+
+it.each([false, true])(
+  "a full view's save during an outage reuses the record's binding keys (outage: %s)",
+  async (outage) => {
+    const s = store();
+    let stale: LoadWorktreeTerminalStateResponse | undefined;
+    await sharedGroupSplitElsewhere(s, async () => {
+      stale = await s.loadWorktreeState('p', 'w');
+    });
+    if (!stale) throw new Error('Expected the stale full view');
+    expect(stale.history?.status).toBe('available');
+    if (outage) {
+      up = false;
+      // Another drawer's outage load replaces the shadow it can read.
+      const retry = await s.loadWorktreeState('p', 'w');
+      expect(retry.history?.status).toBe('unavailable');
+    }
+    s.saveWorktreeState({
+      ...stale,
+      projectId: 'p',
+      worktreeId: 'w',
+      terminalCustomNames: { a: 'Renamed' },
+    });
+    await s.drainAll();
+    up = true;
+    await s.drainAll();
+    const groupIds = recordedGroupIds();
+    expect(new Set(groupIds).size).toBe(groupIds.length);
+    authority.dispose();
+    authority = newAuthority();
+    const reloaded = await store().loadWorktreeState('p', 'w');
+    expect(
+      reloaded.groups.map(({ id, terminalIds }) => ({ id, terminalIds })),
+    ).toEqual([{ id: 'shared', terminalIds: ['a', 'b'] }]);
+    expect(reloaded.terminalCustomNames.a).toBe('Renamed');
+  },
+);
+
+it("an outage load that reads another lineage's legacy file keeps the record's layout", async () => {
+  const s = store();
+  await sharedGroupSplitElsewhere(s);
+  const path = join(legacyPath(), '..', 'terminal-presentation.json');
+  const installed: unknown = JSON.parse(fs.readFileSync(path, 'utf8'));
+  fs.writeFileSync(legacyPath(), JSON.stringify(fixture()));
+  up = false;
+  const outage = await s.loadWorktreeState('p', 'w');
+  expect(outage.history?.status).toBe('unavailable');
+  await s.drainAll();
+  s.flushAllSync();
+  expect(JSON.parse(fs.readFileSync(path, 'utf8'))).toEqual(installed);
+  up = true;
+  fs.unlinkSync(legacyPath());
+  authority.dispose();
+  authority = newAuthority();
+  const reloaded = await store().loadWorktreeState('p', 'w');
+  expect(reloaded.groups).toEqual([sharedSplit(['a', 'b'])]);
+  expect(reloaded.groupCustomNames.shared).toBe('Shared');
+});
+
+it.each([false, true])(
+  "forgetting a terminal during an outage keeps an unseen group's layout (legacy file: %s)",
+  async (legacy) => {
+    const s = store();
+    await s.loadWorktreeState('p', 'w');
+    for (const id of ['a', 'x', 'y']) s.registerLiveSession(session(id));
+    const first = await s.loadWorktreeState('p', 'w');
+    const unseen = {
+      id: 'unseen',
+      terminalIds: ['x', 'y'],
+      focusedTerminalId: 'y',
+      splitSizes: [0.3, 0.7],
+    };
+    s.saveWorktreeState({
+      ...first,
+      projectId: 'p',
+      worktreeId: 'w',
+      groups: [
+        {
+          id: 'mine',
+          terminalIds: ['a'],
+          focusedTerminalId: 'a',
+          splitSizes: [1],
+        },
+        unseen,
+      ],
+      groupCustomNames: { unseen: 'Unseen' },
+      activeGroupId: 'mine',
+    });
+    s.markTerminalExited('p', 'w', 'x', 0, null);
+    s.markTerminalExited('p', 'w', 'y', 0, null);
+    await s.drainAll();
+    if (legacy) fs.writeFileSync(legacyPath(), JSON.stringify(fixture()));
+    up = false;
+    // Exited and unreadable, the unseen group is not served during the outage.
+    const outage = await s.loadWorktreeState('p', 'w');
+    expect(outage.history?.status).toBe('unavailable');
+    expect(outage.groups.some(({ id }) => id === 'unseen')).toBe(false);
+    s.forget('a');
+    await s.drainAll();
+    up = true;
+    await s.drainAll();
+    if (legacy) fs.unlinkSync(legacyPath());
+    const groupIds = recordedGroupIds();
+    expect(new Set(groupIds).size).toBe(groupIds.length);
+    authority.dispose();
+    authority = newAuthority();
+    const reloaded = await store().loadWorktreeState('p', 'w');
+    expect(reloaded.groups).toEqual([unseen]);
+    expect(reloaded.groupCustomNames.unseen).toBe('Unseen');
+  },
+);
+
+it('partial successors remember membership edits saved on the predecessor after issuance', async () => {
+  fs.mkdirSync(join(legacyPath(), '..'), { recursive: true });
+  fs.writeFileSync(legacyPath(), JSON.stringify(fixture()));
+  const s = store();
+  await s.loadWorktreeState('p', 'w');
+  await s.drainAll();
+  fs.writeFileSync(legacyPath(), JSON.stringify(fixture()));
+  up = false;
+  let release = (): void => {
+    throw new Error('not initialized');
+  };
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let signalIssued = (): void => {
+    throw new Error('not initialized');
+  };
+  const issued = new Promise<void>((resolve) => {
+    signalIssued = resolve;
+  });
+  const load = jest.fn((request: LoadWorktreeTerminalStateRequest) =>
+    s.loadWorktreeState(
+      request.projectId,
+      request.worktreeId,
+      request.historyStatusOnly,
+      request.historyConfirmationOnly,
+      request.retainedViewToken,
+    ),
+  );
+  const controller = createTerminalStore(() =>
+    durableTerminalClientFor(s, load),
+  );
+  try {
+    await controller.ensureHydrated('p', 'w');
+    load.mockImplementationOnce(async (request) => {
+      let response = await s.loadWorktreeState(
+        request.projectId,
+        request.worktreeId,
+        false,
+        false,
+        request.retainedViewToken,
+      );
+      for (let i = 0; i < 2; i += 1)
+        response = await s.loadWorktreeState(
+          request.projectId,
+          request.worktreeId,
+          false,
+          false,
+          response.viewToken,
+        );
+      signalIssued();
+      await gate;
+      return response;
+    });
+    const hydration = controller.store.getState().hydrateWorktree('p', 'w');
+    await issued;
+    controller.store.getState().addGroupWithTerminal(session('a'));
+    await s.drainAll();
+    up = true;
+    await s.drainAll();
+    const other = await s.loadWorktreeState('p', 'w');
+    s.saveWorktreeState({
+      ...other,
+      projectId: 'p',
+      worktreeId: 'w',
+      groups: [
+        {
+          id: 'external',
+          terminalIds: ['a', 'b'],
+          focusedTerminalId: 'a',
+          splitSizes: [0.5, 0.5],
+        },
+      ],
+      activeGroupId: 'external',
+    });
+    await s.drainAll();
+    up = false;
+    release();
+    await hydration;
+    controller.store.getState().setTerminalName('p', 'w', 'a', 'Local name');
+    await s.drainAll();
+    controller.reset();
+    up = true;
+    await s.drainAll();
+    fs.unlinkSync(legacyPath());
+    authority.dispose();
+    authority = newAuthority();
+    const reloaded = await store().loadWorktreeState('p', 'w');
+    expect(reloaded.terminalCustomNames.a).toBe('Local name');
+    expect(
+      reloaded.groups.map(({ id, terminalIds }) => ({ id, terminalIds })),
+    ).toEqual([{ id: 'external', terminalIds: ['a', 'b'] }]);
+  } finally {
+    release();
+    controller.reset();
+  }
+});
+
+it.each([false, true])(
+  'partial-only successors retain membership baselines without gaining presentation authority (new siblings: %s)',
+  async (newSiblings) => {
+    fs.mkdirSync(join(legacyPath(), '..'), { recursive: true });
+    fs.writeFileSync(legacyPath(), JSON.stringify(fixture()));
+    const s = store();
+    const full = await s.loadWorktreeState('p', 'w');
+    await s.drainAll();
+    fs.writeFileSync(legacyPath(), JSON.stringify(fixture()));
+    up = false;
+    const controller = createTerminalStore(() => durableTerminalClientFor(s));
+    try {
+      await controller.ensureHydrated('p', 'w');
+      expect(
+        controller.store.getState().worktrees['p/w'].viewTokenPartial,
+      ).toBe(true);
+      fs.unlinkSync(legacyPath());
+      up = true;
+      if (newSiblings) {
+        s.registerLiveSession(session('c'));
+        s.markTerminalExited('p', 'w', 'c', 0, null);
+      }
+      const other = await s.loadWorktreeState('p', 'w');
+      const otherIds = newSiblings ? ['a', 'b', 'c'] : ['a', 'b'];
+      s.saveWorktreeState({
+        ...other,
+        projectId: 'p',
+        worktreeId: 'w',
+        groups: [
+          {
+            id: 'other-group',
+            terminalIds: otherIds,
+            focusedTerminalId: 'a',
+            splitSizes: otherIds.map(() => 1 / otherIds.length),
+          },
+        ],
+        activeGroupId: 'other-group',
+        drawerCollapsed: !full.drawerCollapsed,
+      });
+      await s.drainAll();
+      up = false;
+      if (newSiblings) {
+        const fallback = fixture();
+        fallback.groups = [
+          {
+            id: 'g',
+            terminalIds: ['b', 'c'],
+            focusedTerminalId: 'b',
+            splitSizes: [0.5, 0.5],
+          },
+        ];
+        fallback.terminals = ['b', 'c'].map((id) => ({
+          session: session(id),
+          scrollbackLines: [id],
+          exitCode: 0,
+          signal: null,
+        }));
+        fs.writeFileSync(legacyPath(), JSON.stringify(fallback));
+      }
+      await controller.store.getState().hydrateWorktree('p', 'w');
+      expect(
+        controller.store
+          .getState()
+          .worktrees[
+            'p/w'
+          ].groups.map(({ id, terminalIds }) => ({ id, terminalIds })),
+      ).toEqual([
+        { id: 'g', terminalIds: newSiblings ? ['b', 'c', 'a'] : ['a', 'b'] },
+      ]);
+      controller.store.getState().setTerminalName('p', 'w', 'a', 'Local name');
+      controller.store
+        .getState()
+        .setDrawerCollapsed('p', 'w', full.drawerCollapsed);
+      await s.drainAll();
+      up = true;
+      await s.drainAll();
+      if (newSiblings) fs.unlinkSync(legacyPath());
+      authority.dispose();
+      authority = newAuthority();
+      const reloaded = await store().loadWorktreeState('p', 'w');
+      expect(
+        reloaded.groups.map(({ id, terminalIds }) => ({ id, terminalIds })),
+      ).toEqual([{ id: 'other-group', terminalIds: otherIds }]);
+      expect(reloaded.drawerCollapsed).toBe(!full.drawerCollapsed);
+      expect(reloaded.terminalCustomNames).toEqual({
+        a: 'Local name',
+        b: 'Build',
+      });
+    } finally {
+      controller.reset();
+    }
+  },
+);
+
+it('full recovery of known live sessions restores durable name and layout edits', async () => {
+  const s = store();
+  await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('shown'));
+  const full = await s.loadWorktreeState('p', 'w');
+  s.saveWorktreeState({
+    ...full,
+    projectId: 'p',
+    worktreeId: 'w',
+    drawerCollapsed: false,
+    terminalCustomNames: { shown: 'Saved name' },
+  });
+  await s.drainAll();
+  up = false;
+  const controller = createTerminalStore(() => durableTerminalClientFor(s));
+  try {
+    await controller.ensureHydrated('p', 'w');
+    expect(
+      controller.store.getState().worktrees['p/w'].sessions.shown,
+    ).toBeDefined();
+    expect(
+      controller.store.getState().terminalCustomNames.shown,
+    ).toBeUndefined();
+    up = true;
+    await controller.store.getState().hydrateWorktree('p', 'w');
+    expect(controller.store.getState().terminalCustomNames.shown).toBe(
+      'Saved name',
+    );
+    controller.store.getState().setTerminalName('p', 'w', 'shown', null);
+    controller.store.getState().setDrawerCollapsed('p', 'w', true);
+    await s.drainAll();
+    const reloaded = await store().loadWorktreeState('p', 'w');
+    expect({
+      name: reloaded.terminalCustomNames.shown,
+      collapsed: reloaded.drawerCollapsed,
+    }).toEqual({ name: undefined, collapsed: true });
+  } finally {
+    controller.reset();
+  }
+});
+
+it('repeated covering refreshes keep durable close authority after old views expire', async () => {
+  const s = store();
+  await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('shown'));
+  s.markTerminalExited('p', 'w', 'shown', 0, null);
+  await s.drainAll();
+  const controller = createTerminalStore(() => durableTerminalClientFor(s));
+  try {
+    await controller.ensureHydrated('p', 'w');
+    // Main bounds served views to 64, so the original token is now expired.
+    for (let i = 0; i < 65; i += 1)
+      await controller.store.getState().hydrateWorktree('p', 'w');
+    controller.store.getState().removeTerminal('p', 'w', 'shown');
+    await s.drainAll();
+    expect(
+      (await store().loadWorktreeState('p', 'w')).terminals.map(
+        ({ session }) => session.id,
+      ),
+    ).not.toContain('shown');
+  } finally {
+    controller.reset();
+  }
+});
 
 it('an open drawer observes unsaved history and refreshes displayed history on recovery', async () => {
   const outbox = newOutbox();
@@ -1004,6 +3332,686 @@ it('an open drawer observes unsaved history and refreshes displayed history on r
   }
 });
 
+it('post-hydration outages publish unavailable history, retain output and recover live', async () => {
+  const s = store();
+  await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('shown'));
+  s.appendTerminalOutput('p', 'w', 'shown', Buffer.from('cached\n'));
+  s.markTerminalExited('p', 'w', 'shown', 0, null);
+  await s.drainAll();
+  const load = jest.fn(
+    (
+      request: LoadWorktreeTerminalStateRequest,
+    ): Promise<LoadWorktreeTerminalStateResponse> =>
+      s.loadWorktreeState(
+        request.projectId,
+        request.worktreeId,
+        request.historyStatusOnly,
+        request.historyConfirmationOnly,
+        request.retainedViewToken,
+      ),
+  );
+  const controller = createTerminalStore(() =>
+    terminalClientFor(s, undefined, load),
+  );
+  const bucket = (): WorktreeTerminalBucket =>
+    controller.store.getState().worktrees['p/w'];
+  await controller.ensureHydrated('p', 'w');
+  expect(bucket().historyUnavailable).toBe(false);
+  const cached = bucket().sessions.shown;
+  up = false;
+  jest.useFakeTimers();
+  const release = controller.observeHistory('p', 'w');
+  try {
+    await jest.advanceTimersByTimeAsync(0);
+    expect(load).toHaveBeenCalledTimes(2);
+    await load.mock.results[1].value;
+    await Promise.resolve();
+    // This is the shared panel's unavailable-notice / Try again condition.
+    expect(bucket().historyUnavailable && !bucket().sessions.shown.live).toBe(
+      true,
+    );
+    expect(bucket().sessions.shown).toEqual(cached);
+    await controller.ensureHydrated('p', 'w');
+    await jest.advanceTimersByTimeAsync(6_000);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(bucket().historyUnavailable).toBe(true);
+    // Try again bypasses the automatic outage confirmation limit.
+    await controller.store.getState().hydrateWorktree('p', 'w');
+    expect(load).toHaveBeenCalledTimes(3);
+    expect(bucket().historyUnavailable).toBe(true);
+    expect(bucket().sessions.shown).toEqual(cached);
+    up = true;
+    await jest.advanceTimersByTimeAsync(2_000);
+    expect(load).toHaveBeenCalledTimes(4);
+    await load.mock.results[3].value;
+    await Promise.resolve();
+    expect(bucket().historyUnavailable).toBe(false);
+    expect(bucket().historyRevision).toBe(1);
+    expect(bucket().sessions.shown.scrollbackLines).toEqual(['cached', '']);
+  } finally {
+    release();
+    controller.reset();
+    jest.useRealTimers();
+  }
+});
+
+it('post-hydration outage confirmation checks readable legacy history only once per outage', async () => {
+  fs.mkdirSync(join(legacyPath(), '..'), { recursive: true });
+  fs.writeFileSync(legacyPath(), JSON.stringify(fixture()));
+  // Keep main's readable fallback while the daemon cannot import the source.
+  const original = fsModule.readFileSync;
+  const read = jest
+    .spyOn(fsModule, 'readFileSync')
+    .mockImplementation((path, options) => {
+      if (path === legacyPath())
+        throw Object.assign(new Error('denied'), { code: 'EACCES' });
+      return original(path, options);
+    });
+  const s = store();
+  let complete: () => void = () => {
+    throw new Error('Confirmation not started');
+  };
+  const gate = new Promise<void>((resolve) => {
+    complete = resolve;
+  });
+  let holdResponse = false;
+  const load = jest.fn(async (request: LoadWorktreeTerminalStateRequest) => {
+    const response = await s.loadWorktreeState(
+      request.projectId,
+      request.worktreeId,
+      request.historyStatusOnly,
+      request.historyConfirmationOnly,
+      request.retainedViewToken,
+    );
+    if (holdResponse) await gate;
+    return response;
+  });
+  let historyHeld = false;
+  const probe = async (): Promise<LoadWorktreeTerminalStateResponse> => ({
+    ...(await s.loadWorktreeState('p', 'w', true)),
+    historyHeld,
+  });
+  const controller = createTerminalStore(() =>
+    terminalClientFor(s, probe, load),
+  );
+  let sawUnavailable = false;
+  const unsubscribe = controller.store.subscribe((state) => {
+    if (state.worktrees['p/w']?.historyUnavailable) sawUnavailable = true;
+  });
+  try {
+    await controller.ensureHydrated('p', 'w');
+    expect(
+      controller.store.getState().worktrees['p/w'].historyUnavailable,
+    ).toBe(false);
+    const cachedToken = controller.store.getState().worktrees['p/w'].viewToken;
+    up = false;
+    historyHeld = true;
+    holdResponse = true;
+    jest.useFakeTimers();
+    const release = controller.observeHistory('p', 'w');
+    await jest.advanceTimersByTimeAsync(0);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(
+      controller.store.getState().worktrees['p/w'].historyUnavailable,
+    ).toBe(false);
+    expect(sawUnavailable).toBe(false);
+    expect(controller.store.getState().worktrees['p/w'].historyHeld).toBe(true);
+    expect(
+      controller.store.getState().worktrees['p/w'].sessions.a.scrollbackLines,
+    ).toEqual(['A0']);
+    historyHeld = false;
+    complete();
+    const confirmationResult = load.mock.results[1];
+    if (confirmationResult.type !== 'return') {
+      throw new Error('Confirmation did not return a response');
+    }
+    const confirmation = await confirmationResult.value;
+    await Promise.resolve();
+    const bucket = controller.store.getState().worktrees['p/w'];
+    // Slice 3 RF5: readable legacy history cannot clear an authority outage.
+    expect(bucket.historyUnavailable).toBe(true);
+    expect(bucket.historyHeld).toBe(false);
+    expect(bucket.sessions.a.scrollbackLines).toEqual(['A0']);
+    expect(bucket.viewToken).toBe(cachedToken);
+    expect(confirmation.viewToken).toBeUndefined();
+    expect(confirmation.terminals).toEqual([]);
+    expect(load).toHaveBeenLastCalledWith({
+      projectId: 'p',
+      worktreeId: 'w',
+      historyConfirmationOnly: true,
+    });
+    await jest.advanceTimersByTimeAsync(6_000);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(
+      controller.store.getState().worktrees['p/w'].historyUnavailable,
+    ).toBe(true); // Slice 3 RF5: no offline retry can restore authority availability.
+    release();
+    controller.observeHistory('p', 'w');
+    await jest.advanceTimersByTimeAsync(0);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(
+      controller.store.getState().worktrees['p/w'].historyUnavailable,
+    ).toBe(true); // Slice 3 RF5: revealing a fallback pane retains the outage notice.
+    up = true;
+    await jest.advanceTimersByTimeAsync(2_000);
+    // Slice 3 RF5: authority recovery now reloads the unavailable history.
+    expect(load).toHaveBeenCalledTimes(3);
+    await load.mock.results[2].value;
+    await Promise.resolve();
+    expect(
+      controller.store.getState().worktrees['p/w'].historyUnavailable,
+    ).toBe(false);
+    const lastLoadRequest = load.mock.calls.at(-1)?.[0];
+    expect(load.mock.calls.at(-1)).toStrictEqual([
+      {
+        projectId: 'p',
+        worktreeId: 'w',
+        retainedViewToken: lastLoadRequest?.retainedViewToken,
+      },
+    ]);
+    expect(typeof lastLoadRequest?.retainedViewToken).toBe('string');
+    const recoveredToken =
+      controller.store.getState().worktrees['p/w'].viewToken;
+    up = false;
+    await jest.advanceTimersByTimeAsync(2_000);
+    expect(load).toHaveBeenCalledTimes(4);
+    const secondConfirmationResult = load.mock.results[3];
+    if (secondConfirmationResult.type !== 'return') {
+      throw new Error('Second confirmation did not return a response');
+    }
+    const secondConfirmation = await secondConfirmationResult.value;
+    await Promise.resolve();
+    expect(
+      controller.store.getState().worktrees['p/w'].historyUnavailable,
+    ).toBe(true); // Slice 3 RF5: the next authority outage is unavailable too.
+    expect(controller.store.getState().worktrees['p/w'].viewToken).toBe(
+      recoveredToken,
+    );
+    expect(secondConfirmation.viewToken).toBeUndefined();
+    expect(secondConfirmation.terminals).toEqual([]);
+    expect(load).toHaveBeenLastCalledWith({
+      projectId: 'p',
+      worktreeId: 'w',
+      historyConfirmationOnly: true,
+    });
+    await jest.advanceTimersByTimeAsync(6_000);
+    expect(load).toHaveBeenCalledTimes(4);
+    expect(sawUnavailable).toBe(true); // Slice 3 RF5: fallback publishes the notice.
+  } finally {
+    unsubscribe();
+    controller.reset();
+    jest.useRealTimers();
+    read.mockRestore();
+  }
+});
+
+it.each([false, true])(
+  'an offline renderer retry keeps cached output for a live terminal present in a partial load (new live sibling: %s)',
+  async (newLiveSibling) => {
+    const s = store();
+    await s.loadWorktreeState('p', 'w');
+    s.registerLiveSession(session('shown'));
+    s.appendTerminalOutput('p', 'w', 'shown', Buffer.from('cached\n'));
+    await s.drainAll();
+    const load = jest.fn(
+      (
+        request: LoadWorktreeTerminalStateRequest,
+      ): Promise<LoadWorktreeTerminalStateResponse> =>
+        s.loadWorktreeState(
+          request.projectId,
+          request.worktreeId,
+          request.historyStatusOnly,
+          request.historyConfirmationOnly,
+          request.retainedViewToken,
+        ),
+    );
+    const controller = createTerminalStore(() =>
+      durableTerminalClientFor(s, load),
+    );
+    const bucket = (): WorktreeTerminalBucket =>
+      controller.store.getState().worktrees['p/w'];
+    await controller.ensureHydrated('p', 'w');
+    expect(bucket().sessions.shown.scrollbackLines).toEqual(['cached', '']);
+    const cachedGroups = bucket().groups;
+    const cachedToken = bucket().viewToken;
+    up = false;
+    jest.useFakeTimers();
+    controller.observeHistory('p', 'w');
+    try {
+      await jest.advanceTimersByTimeAsync(0);
+      expect(load).toHaveBeenCalledTimes(2);
+      const result = load.mock.results[1];
+      if (result.type !== 'return')
+        throw new Error('Confirmation did not return');
+      const confirmation = await result.value;
+      expect(confirmation.terminals).toEqual([]);
+      if (newLiveSibling) s.registerLiveSession(session('new-live'));
+      await controller.store.getState().hydrateWorktree('p', 'w');
+      expect(bucket().historyUnavailable).toBe(true);
+      expect(bucket().sessions.shown.live).toBe(true);
+      expect(bucket().sessions.shown.scrollbackLines).toEqual(['cached', '']);
+      expect(load).toHaveBeenCalledTimes(3);
+      expect(load).toHaveBeenLastCalledWith({
+        projectId: 'p',
+        worktreeId: 'w',
+        retainedViewToken: cachedToken,
+      });
+      const retry = load.mock.results[2];
+      if (retry.type !== 'return') throw new Error('Retry did not return');
+      const partial = await retry.value;
+      expect(partial.history?.status).toBe('unavailable');
+      const shown = partial.terminals.find(
+        ({ session }) => session.id === 'shown',
+      );
+      expect(shown).toBeDefined();
+      expect(shown?.scrollbackLines).toEqual([]);
+      if (newLiveSibling) {
+        // Prove the partial reply was merged, not discarded to preserve output.
+        expect(bucket().sessions['new-live'].live).toBe(true);
+        expect(bucket().sessions['new-live'].scrollbackLines).toEqual([]);
+        expect(bucket().groups.flatMap((group) => group.terminalIds)).toEqual(
+          expect.arrayContaining(['shown', 'new-live']),
+        );
+        expect(bucket().viewToken).toBe(partial.viewToken);
+      } else {
+        expect(bucket().groups).toEqual(cachedGroups);
+        expect(bucket().viewToken).toBe(partial.viewToken);
+      }
+      controller.store
+        .getState()
+        .setTerminalName('p', 'w', 'shown', 'Temporary');
+      controller.store.getState().setTerminalName('p', 'w', 'shown', null);
+      controller.reset();
+      jest.useRealTimers();
+      up = true;
+      await s.drainAll();
+      authority.dispose();
+      authority = newAuthority();
+      const reloaded = await store().loadWorktreeState('p', 'w');
+      expect(reloaded.terminalCustomNames.shown).toBeUndefined();
+      expect(
+        reloaded.terminals.find(({ session }) => session.id === 'shown')
+          ?.scrollbackLines,
+      ).toEqual(['cached', '']);
+    } finally {
+      controller.reset();
+      jest.useRealTimers();
+    }
+  },
+);
+
+it.each(['available', 'unavailable'] as const)(
+  'post-hydration confirmation retains %s fallback availability across an interrupted visibility lease',
+  async (status) => {
+    const s = store();
+    await s.loadWorktreeState('p', 'w');
+    s.registerLiveSession(session('shown'));
+    s.markTerminalExited('p', 'w', 'shown', 0, null);
+    await s.drainAll();
+    let complete: () => void = () => {
+      throw new Error('Confirmation not started');
+    };
+    const gate = new Promise<void>((resolve) => {
+      complete = resolve;
+    });
+    let holdResponse = false;
+    const load = jest.fn(async (request: LoadWorktreeTerminalStateRequest) => {
+      // Hold the real persistence response to the observer's actual request mode.
+      const response = await s.loadWorktreeState(
+        request.projectId,
+        request.worktreeId,
+        request.historyStatusOnly,
+        request.historyConfirmationOnly,
+        request.retainedViewToken,
+      );
+      if (holdResponse) await gate;
+      return response;
+    });
+    const controller = createTerminalStore(() =>
+      durableTerminalClientFor(s, load),
+    );
+    const bucket = (): WorktreeTerminalBucket =>
+      controller.store.getState().worktrees['p/w'];
+    await controller.ensureHydrated('p', 'w');
+    // Evict setup's view, leaving the drawer oldest at the 64-view cap.
+    for (let view = 0; view < 63; view += 1)
+      await s.loadWorktreeState('p', 'w');
+    const token = bucket().viewToken;
+    // Cached reachability can lag a readable authority; confirmation decides.
+    const peek = jest.spyOn(records, 'peekAvailable').mockReturnValue(false);
+    up = status === 'available';
+    holdResponse = true;
+    jest.useFakeTimers();
+    const release = controller.observeHistory('p', 'w');
+    try {
+      await jest.advanceTimersByTimeAsync(0);
+      expect(load).toHaveBeenCalledTimes(2);
+      expect(bucket().historyUnavailable).toBe(false);
+      release();
+      // The main-side response settles after the visible pane has gone away.
+      complete();
+      const confirmationResult = load.mock.results[1];
+      if (confirmationResult.type !== 'return')
+        throw new Error('Confirmation did not return');
+      const confirmationResponse = await confirmationResult.value;
+      await jest.advanceTimersByTimeAsync(0);
+      expect(bucket().historyUnavailable).toBe(false);
+      const revealed = controller.observeHistory('p', 'w');
+      await jest.advanceTimersByTimeAsync(0);
+      expect(bucket().historyUnavailable).toBe(status !== 'available');
+      await jest.advanceTimersByTimeAsync(6_000);
+      expect(load).toHaveBeenCalledTimes(2);
+      revealed();
+      const retainedToken = bucket().viewToken;
+      controller.store.getState().removeTerminal('p', 'w', 'shown');
+      await s.drainAll();
+      controller.reset();
+      jest.useRealTimers();
+      up = true;
+      await s.drainAll();
+      authority.dispose();
+      authority = newAuthority();
+      // A serving request would evict the retained token and lose this Close.
+      expect((await store().loadWorktreeState('p', 'w')).terminals).toEqual([]);
+      expect(retainedToken).toBe(token);
+      expect(confirmationResponse.viewToken).toBeUndefined();
+      expect(load).toHaveBeenLastCalledWith({
+        projectId: 'p',
+        worktreeId: 'w',
+        historyConfirmationOnly: true,
+      });
+    } finally {
+      release();
+      controller.reset();
+      jest.useRealTimers();
+      peek.mockRestore();
+    }
+  },
+);
+
+it('a second outage after an available confirmation shows the history-unavailable notice again', async () => {
+  const s = store();
+  await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('shown'));
+  s.appendTerminalOutput('p', 'w', 'shown', Buffer.from('cached\n'));
+  s.markTerminalExited('p', 'w', 'shown', 0, null);
+  await s.drainAll();
+  const load = jest.fn(
+    (
+      request: LoadWorktreeTerminalStateRequest,
+    ): Promise<LoadWorktreeTerminalStateResponse> =>
+      s.loadWorktreeState(
+        request.projectId,
+        request.worktreeId,
+        request.historyStatusOnly,
+        request.historyConfirmationOnly,
+        request.retainedViewToken,
+      ),
+  );
+  const settled = async (call: number): Promise<void> => {
+    const result = load.mock.results[call];
+    if (result.type !== 'return')
+      throw new Error(`Load ${call} did not return`);
+    await result.value;
+    await jest.advanceTimersByTimeAsync(0);
+  };
+  const controller = createTerminalStore(() =>
+    durableTerminalClientFor(s, load),
+  );
+  const bucket = (): WorktreeTerminalBucket =>
+    controller.store.getState().worktrees['p/w'];
+  await controller.ensureHydrated('p', 'w');
+  const cached = bucket().sessions.shown;
+  // Probes keep reporting the outage, so none can end it before the next drop.
+  const peek = jest.spyOn(records, 'peekAvailable').mockReturnValue(false);
+  jest.useFakeTimers();
+  const release = controller.observeHistory('p', 'w');
+  try {
+    await jest.advanceTimersByTimeAsync(0);
+    expect(load).toHaveBeenCalledTimes(2);
+    await settled(1);
+    expect(bucket().historyUnavailable).toBe(false);
+    up = false;
+    // A disputed confirmation is rechecked after a bounded delay, not per probe.
+    await jest.advanceTimersByTimeAsync(6_000);
+    expect(load).toHaveBeenCalledTimes(2);
+    await jest.advanceTimersByTimeAsync(6_000);
+    expect(load).toHaveBeenCalledTimes(3);
+    expect(load).toHaveBeenLastCalledWith({
+      projectId: 'p',
+      worktreeId: 'w',
+      historyConfirmationOnly: true,
+    });
+    await settled(2);
+    // This is the shared panel's unavailable-notice / Try again condition.
+    expect(bucket().historyUnavailable && !bucket().sessions.shown.live).toBe(
+      true,
+    );
+    expect(bucket().sessions.shown).toEqual(cached);
+    // A confirmed outage is not confirmed again automatically.
+    await jest.advanceTimersByTimeAsync(120_000);
+    expect(load).toHaveBeenCalledTimes(3);
+    await controller.store.getState().hydrateWorktree('p', 'w');
+    expect(load).toHaveBeenCalledTimes(4);
+    expect(bucket().historyUnavailable).toBe(true);
+    expect(bucket().sessions.shown).toEqual(cached);
+  } finally {
+    release();
+    controller.reset();
+    jest.useRealTimers();
+    peek.mockRestore();
+  }
+});
+
+it.each([
+  [false, 'pending'],
+  [true, 'pending'],
+  [true, 'empty'],
+  [true, 'malformed'],
+] as const)(
+  'history confirmation leaves a saved recipient-retirement fence and queued outbox unchanged (authority reachable: %s, witness: %s)',
+  async (reachable, witnessKind) => {
+    const projectId = SHARED_CONTAINER_VIEWER_PROJECT_ID;
+    const worktreeId = 'container';
+    const outbox = newOutbox();
+    const s = newStore({ records, outbox });
+    await s.loadWorktreeState(projectId, worktreeId);
+    up = false;
+    s.registerLiveSession({ ...session('queued'), projectId, worktreeId });
+    s.appendTerminalOutput(
+      projectId,
+      worktreeId,
+      'queued',
+      Buffer.from('held'),
+    );
+    await s.drainAll();
+    const retirement = await s.prepareTerminalRecordRetirement({
+      projectId,
+      worktreeId,
+    });
+    const path = recipientTerminalRetirementPath(projectId, worktreeId);
+    fs.mkdirSync(join(path, '..'), { recursive: true });
+    const witness =
+      witnessKind === 'empty'
+        ? ''
+        : witnessKind === 'malformed'
+          ? '{'
+          : JSON.stringify({ version: 1, recipientRetirements: [retirement] });
+    fs.writeFileSync(path, witness);
+    const before = await outbox.read();
+    const write = jest.spyOn(outbox, 'write');
+    const retire = jest.spyOn(records, 'retire');
+    up = reachable;
+    try {
+      const confirmation = await s.loadWorktreeState(
+        projectId,
+        worktreeId,
+        false,
+        true,
+      );
+      expect(await outbox.read()).toEqual(before);
+      expect(fs.readFileSync(path, 'utf8')).toBe(witness);
+      expect(confirmation.history?.status).toBe('unavailable');
+      expect(confirmation.viewToken).toBeUndefined();
+      expect(write).not.toHaveBeenCalled();
+      expect(retire).not.toHaveBeenCalled();
+    } finally {
+      write.mockRestore();
+      retire.mockRestore();
+    }
+  },
+);
+
+it.each([false, true])(
+  'history confirmation fails closed when no recipient-retirement journal can be read (read denied: %s)',
+  async (denied) => {
+    const projectId = SHARED_CONTAINER_VIEWER_PROJECT_ID;
+    const worktreeId = 'container';
+    const outbox = newOutbox();
+    const s = newStore({ records, outbox });
+    await s.loadWorktreeState(projectId, worktreeId);
+    up = false;
+    s.registerLiveSession({ ...session('queued'), projectId, worktreeId });
+    s.appendTerminalOutput(
+      projectId,
+      worktreeId,
+      'queued',
+      Buffer.from('held'),
+    );
+    await s.drainAll();
+    const path = recipientTerminalRetirementPath(projectId, worktreeId);
+    expect(fs.existsSync(path)).toBe(false);
+    const before = await outbox.read();
+    const write = jest.spyOn(outbox, 'write');
+    const originalRead = fsPromises.readFile;
+    let deniedReads = 0;
+    const read = jest
+      .spyOn(fsPromises, 'readFile')
+      .mockImplementation((...args) => {
+        if (!denied || args[0] !== path)
+          return Reflect.apply(originalRead, fsPromises, args);
+        deniedReads += 1;
+        return Promise.reject(
+          Object.assign(new Error('denied'), { code: 'EACCES' }),
+        );
+      });
+    up = true;
+    try {
+      const confirmation = await s.loadWorktreeState(
+        projectId,
+        worktreeId,
+        false,
+        true,
+      );
+      // Without the denied read, the same journal-free scope confirms.
+      expect(confirmation.history?.status).toBe(
+        denied ? 'unavailable' : 'available',
+      );
+      expect(deniedReads > 0).toBe(denied);
+      expect(confirmation.viewToken).toBeUndefined();
+      expect(await outbox.read()).toEqual(before);
+      expect(write).not.toHaveBeenCalled();
+      expect(fs.existsSync(path)).toBe(false);
+    } finally {
+      write.mockRestore();
+      read.mockRestore();
+    }
+  },
+);
+
+it.each(['record', 'offline', 'pending legacy'] as const)(
+  'history confirmation respects settled recipient admission and legacy denial (%s)',
+  async (source) => {
+    const projectId = SHARED_CONTAINER_VIEWER_PROJECT_ID;
+    const worktreeId = 'container';
+    const first = store();
+    await first.loadWorktreeState(projectId, worktreeId);
+    first.registerLiveSession({ ...session('old'), projectId, worktreeId });
+    await first.drainAll();
+    expect(await first.retireRecipientTerminalRecord(worktreeId)).toBe(true);
+
+    const outbox = newOutbox();
+    const next = newStore({ records, outbox });
+    await next.loadWorktreeState(projectId, worktreeId);
+    await next.recordClientFor(projectId, worktreeId);
+    next.registerLiveSession({
+      ...session('successor'),
+      projectId,
+      worktreeId,
+    });
+    next.appendTerminalOutput(
+      projectId,
+      worktreeId,
+      'successor',
+      Buffer.from('new account'),
+    );
+    await next.drainAll();
+    expect(
+      (await next.loadWorktreeState(projectId, worktreeId)).history?.status,
+    ).toBe('available');
+
+    const markerPath = recipientTerminalRetirementPath(projectId, worktreeId);
+    const marker = fs.readFileSync(markerPath, 'utf8');
+    const path = join(markerPath, '..', 'terminal-state.json');
+    const legacy = fixture();
+    for (const entry of legacy.terminals)
+      entry.session = { ...entry.session, projectId, worktreeId };
+    fs.writeFileSync(path, JSON.stringify(legacy));
+    const before = await outbox.read();
+    const originalOpen = records.open.bind(records);
+    const open = jest
+      .spyOn(records, 'open')
+      .mockImplementation(async (client) => {
+        const opened = await originalOpen(client);
+        return source === 'pending legacy'
+          ? {
+              ...opened,
+              import: { ...opened.import, from: 'none', pending: true },
+            }
+          : opened;
+      });
+    const write = jest.spyOn(outbox, 'write');
+    const retire = jest.spyOn(records, 'retire');
+    const apply = jest.spyOn(records, 'apply');
+    up = source !== 'offline';
+    try {
+      const confirmation = await next.loadWorktreeState(
+        projectId,
+        worktreeId,
+        false,
+        true,
+      );
+      expect(confirmation.history?.status).toBe(
+        source === 'record' ? 'available' : 'unavailable',
+      );
+      expect(confirmation.viewToken).toBeUndefined();
+      expect(confirmation.terminals).toEqual([]);
+      expect(await outbox.read()).toEqual(before);
+      expect(fs.readFileSync(markerPath, 'utf8')).toBe(marker);
+      expect(fs.readFileSync(path, 'utf8')).toBe(JSON.stringify(legacy));
+      expect(write).not.toHaveBeenCalled();
+      expect(retire).not.toHaveBeenCalled();
+      expect(apply).not.toHaveBeenCalled();
+
+      const full = await next.loadWorktreeState(projectId, worktreeId);
+      expect(full.history).toEqual(confirmation.history);
+      expect(full.terminals.map(({ session }) => session.id)).toEqual([
+        'successor',
+      ]);
+      expect(full.terminals[0].scrollbackLines).toEqual(
+        source === 'offline' ? [] : ['new account'],
+      );
+    } finally {
+      open.mockRestore();
+      write.mockRestore();
+      retire.mockRestore();
+      apply.mockRestore();
+      up = true;
+    }
+  },
+);
+
 it('history status probes carry no output and never open a drawer view', async () => {
   const s = store();
   await s.loadWorktreeState('p', 'w');
@@ -1039,68 +4047,6 @@ it('history status probes carry no output and never open a drawer view', async (
     open.mockRestore();
     history.mockRestore();
     availabilityCall.mockRestore();
-  }
-});
-
-it.each(['unmount', 'reset', 'purge'] as const)(
-  'a history probe completing after %s cannot publish stale status',
-  async (cleanup) => {
-    const s = store();
-    let answer: (response: LoadWorktreeTerminalStateResponse) => void = () => {
-      throw new Error('Probe not started');
-    };
-    const pending = new Promise<LoadWorktreeTerminalStateResponse>(
-      (resolve) => {
-        answer = resolve;
-      },
-    );
-    const controller = createTerminalStore(() =>
-      terminalClientFor(s, () => pending),
-    );
-    await controller.store.getState().hydrateWorktree('p', 'w');
-    const release = controller.observeHistory('p', 'w');
-    if (cleanup === 'unmount') release();
-    else if (cleanup === 'reset') controller.reset();
-    else controller.purgeWorktrees(['w']);
-    answer({
-      ...(await s.loadWorktreeState('p', 'w', true)),
-      historyHeld: true,
-    });
-    await pending;
-    await Promise.resolve();
-    const bucket = controller.store.getState().worktrees['p/w'];
-    expect(bucket?.historyHeld).not.toBe(true);
-    if (cleanup !== 'unmount') expect(bucket).toBeUndefined();
-    release();
-    controller.reset();
-  },
-);
-
-it('a peer without status acknowledgement is probed at most once', async () => {
-  const s = store();
-  const ordinary = await s.loadWorktreeState('p', 'w');
-  expect(ordinary.historyRefreshSupported).toBeUndefined();
-  // Older hosts ignore historyStatusOnly and return an ordinary load.
-  const client = terminalClientFor(s, () => Promise.resolve(ordinary));
-  const controller = createTerminalStore(() => client);
-  await controller.store.getState().hydrateWorktree('p', 'w');
-  const query = jest.spyOn(client, 'query');
-  jest.useFakeTimers();
-  try {
-    const release = controller.observeHistory('p', 'w');
-    await jest.advanceTimersByTimeAsync(6_000);
-    expect(query).toHaveBeenCalledTimes(1);
-    expect(
-      controller.store.getState().worktrees['p/w'].historyRefreshSupported,
-    ).toBe(false);
-    const secondRelease = controller.observeHistory('p', 'w');
-    expect(query).toHaveBeenCalledTimes(1);
-    secondRelease();
-    release();
-  } finally {
-    query.mockRestore();
-    controller.reset();
-    jest.useRealTimers();
   }
 });
 
@@ -1190,6 +4136,7 @@ it.each(['unmount', 'reset', 'purge'] as const)(
     }
   },
 );
+
 const legacyPath = (): string =>
   join(
     mockRoot,
@@ -1212,44 +4159,33 @@ function earlierClient(lifetimeId: string): WorkerTerminalRecordClient {
   };
 }
 
+function seedReplayWitness(lifetimeId: string): WorkerTerminalRecordClient {
+  const path = getWorktreeTerminalReplayWitnessFilePath('p', 'w', lifetimeId);
+  fs.mkdirSync(join(path, '..'), { recursive: true });
+  fs.writeFileSync(path, JSON.stringify({ lifetimeId }));
+  return {
+    projectId: 'p',
+    worktreeId: 'w',
+    legacyLayout: 'workspaces',
+    incarnation: null,
+    lifetimeId,
+  };
+}
+
 async function prepareReplayScope(s: TerminalPersistenceStore): Promise<void> {
   const client = await s.recordClientFor('p', 'w');
   if (!client.lifetimeId) throw new Error('Missing fixture lifetime');
   // This scenario starts with metadata already present; a read no longer creates it.
-  fs.mkdirSync(join(legacyPath(), '..'), { recursive: true });
+  fs.mkdirSync(
+    join(
+      getWorktreeTerminalReplayWitnessFilePath('p', 'w', client.lifetimeId),
+      '..',
+    ),
+    { recursive: true },
+  );
 }
 
-/**
- * Applies the outbox custody to the authority in order. Only the current
- * lifetime replays, so this checks what a quit sealed into custody.
- */
-async function applyCustody(): Promise<void> {
-  for (const scope of (await newOutbox().read()).outbox.scopes)
-    for (const entry of scope.entries)
-      authority.apply({
-        client: entry.client ?? scope.client,
-        producer: { id: 'electron_main', runId: entry.runId },
-        seq: entry.seq,
-        ...(entry.generation !== undefined && { generation: entry.generation }),
-        ...(entry.sealed && { sealed: entry.sealed }),
-        ops: entry.ops,
-      });
-}
-
-/** One terminal's queued output, in custody order. */
-function custodyText(
-  entries: readonly { ops: readonly WorkerTerminalRecordOp[] }[],
-  terminalId: string,
-): string {
-  return entries
-    .flatMap((entry) => entry.ops)
-    .map((op) =>
-      op.op === 'output.append' && op.terminalId === terminalId ? op.text : '',
-    )
-    .join('');
-}
-
-it("R2 an earlier run's null-incarnation batches stay durable in custody without blocking", async () => {
+it('R2 unwitnessed legacy null-incarnation batches remain quarantined and durable', async () => {
   await newOutbox().write({
     version: 1,
     producer: 'electron_main',
@@ -1272,23 +4208,9 @@ it("R2 an earlier run's null-incarnation batches stay durable in custody without
       },
     ],
   });
-  const outbox = newOutbox();
-  const next = newStore({ records, outbox });
-  await next.loadWorktreeState('p', 'w');
-  // Held custody is inert: this run's writes still go online, not to the outbox.
-  const write = outbox.write.bind(outbox);
-  const images: string[] = [];
-  const writes = jest.spyOn(outbox, 'write').mockImplementation((...args) => {
-    images.push(JSON.stringify(args[0]));
-    return write(...args);
-  });
-  try {
-    next.registerLiveSession(session('allowed'));
-    await next.drainAll();
-    expect(images.join('\n')).not.toContain('allowed');
-  } finally {
-    writes.mockRestore();
-  }
+  const next = store();
+  next.registerLiveSession(session('allowed'));
+  await next.drainAll();
   expect(
     (await next.loadWorktreeState('p', 'w')).terminals.map(
       (entry) => entry.session.id,
@@ -1343,7 +4265,267 @@ it("R2 an earlier run's file in custody never routes a healthy authority's write
   expect(loaded.terminals[0]?.scrollbackLines).toEqual(['applied']);
 });
 
-it('R2 immediate quit without a prepared directory stays synchronous and keeps history in custody', async () => {
+it.each(['write', 'read'] as const)(
+  'R2 witness %s failure quarantines custody without blocking terminals',
+  async (failure) => {
+    up = false;
+    const s = store();
+    await s.recordClientFor('p', 'w');
+    const originalWrite = atomicFile.writeFileAtomicallySync;
+    const write = jest
+      .spyOn(atomicFile, 'writeFileAtomicallySync')
+      .mockImplementation((path, data, options) => {
+        if (
+          failure === 'write' &&
+          String(path).includes('terminal-replay-witness.')
+        )
+          throw new Error('witness write denied');
+        originalWrite(path, data, options);
+      });
+    try {
+      expect(() => s.registerLiveSession(session('held'))).not.toThrow();
+      s.appendTerminalOutput('p', 'w', 'held', Buffer.from('held output'));
+      await s.drainAll();
+      s.markAllLiveTerminalsExited('app-quit');
+    } finally {
+      write.mockRestore();
+    }
+    const originalRead = fsPromises.readFile;
+    const read = jest
+      .spyOn(fsPromises, 'readFile')
+      .mockImplementation((...args) =>
+        failure === 'read' &&
+        typeof args[0] === 'string' &&
+        args[0].includes('terminal-replay-witness.')
+          ? Promise.reject(new Error('witness read denied'))
+          : Reflect.apply(originalRead, fsPromises, args),
+      );
+    try {
+      up = true;
+      const next = store();
+      next.registerLiveSession(session('allowed'));
+      await next.drainAll();
+      expect(
+        (await next.loadWorktreeState('p', 'w')).terminals.map(
+          (entry) => entry.session.id,
+        ),
+      ).toEqual(['allowed']);
+      const queued = (await newOutbox().read()).outbox.scopes.flatMap(
+        (scope) => scope.entries,
+      );
+      expect(
+        queued.some((entry) =>
+          entry.ops.some(
+            (op) => op.op === 'output.append' && op.text === 'held output',
+          ),
+        ),
+      ).toBe(true);
+    } finally {
+      read.mockRestore();
+    }
+  },
+);
+
+it.each(['directory', 'install', 'late-directory'] as const)(
+  'R3 queued exited history recovers after transient witness %s failure without another batch',
+  async (failure) => {
+    up = false;
+    const directoryPath = join(
+      mockRoot,
+      'workspaces',
+      'p',
+      'worktree-data',
+      'w',
+    );
+    const originalMkdir = fsPromises.mkdir;
+    const originalWrite = atomicFile.writeFileAtomicallySync;
+    let release = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let fail = true;
+    let preparation: ReturnType<typeof fsPromises.mkdir> | undefined;
+    const mkdir = jest
+      .spyOn(fsPromises, 'mkdir')
+      .mockImplementation((...args) => {
+        if (String(args[0]) !== directoryPath)
+          return Reflect.apply(originalMkdir, fsPromises, args);
+        if (!fail) {
+          preparation = Reflect.apply(originalMkdir, fsPromises, args);
+          return preparation;
+        }
+        if (failure === 'directory')
+          return Promise.reject(
+            Object.assign(new Error('temporary mkdir failure'), {
+              code: 'EIO',
+            }),
+          );
+        if (failure === 'late-directory') {
+          preparation = held.then(() =>
+            Reflect.apply(originalMkdir, fsPromises, args),
+          );
+          return preparation;
+        }
+        return Reflect.apply(originalMkdir, fsPromises, args);
+      });
+    const write = jest
+      .spyOn(atomicFile, 'writeFileAtomicallySync')
+      .mockImplementation((path, data, options) => {
+        if (
+          failure === 'install' &&
+          fail &&
+          String(path).includes('terminal-replay-witness.')
+        )
+          throw Object.assign(new Error('temporary witness failure'), {
+            code: 'EIO',
+          });
+        originalWrite(path, data, options);
+      });
+    const s = store();
+    try {
+      const client = await s.recordClientFor('p', 'w');
+      if (!client.lifetimeId) throw new Error('Missing lifetime');
+      const path = getWorktreeTerminalReplayWitnessFilePath(
+        'p',
+        'w',
+        client.lifetimeId,
+      );
+      s.registerLiveSession(session('held'));
+      s.appendTerminalOutput('p', 'w', 'held', Buffer.from('retained tail'));
+      s.markTerminalExited('p', 'w', 'held', 0, null);
+      await s.drainAll();
+      expect(fs.existsSync(path)).toBe(false);
+      expect((await newOutbox().read()).outbox.scopes).not.toEqual([]);
+      fail = false;
+      release();
+      await preparation;
+      await s.drainAll();
+      // A drain starts preparation without delaying its caller. Observe the
+      // actual filesystem completion before the next event retries the install.
+      await preparation;
+      await s.drainAll();
+      expect(fs.existsSync(path)).toBe(true);
+      s.markAllLiveTerminalsExited('app-quit');
+      up = true;
+      const loaded = await store().loadWorktreeState('p', 'w');
+      expect(loaded.terminals.map((entry) => entry.session.id)).toEqual([
+        'held',
+      ]);
+      expect(loaded.terminals[0].scrollbackLines).toEqual(['retained tail']);
+      expect(loaded.terminals[0].exitCode).toBe(0);
+    } finally {
+      release();
+      await preparation;
+      mkdir.mockRestore();
+      write.mockRestore();
+    }
+  },
+);
+
+it('R9 late witness directory completion installs exited custody without another drain', async () => {
+  up = false;
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const mkdir = fsPromises.mkdir;
+  const directory = jest
+    .spyOn(fsPromises, 'mkdir')
+    .mockImplementation(async (...args) => {
+      if (String(args[0]) === join(legacyPath(), '..')) await gate;
+      return Reflect.apply(mkdir, fsPromises, args);
+    });
+  let witnessed: () => void = () => undefined;
+  const installed = new Promise<void>((resolve) => {
+    witnessed = resolve;
+  });
+  const write = atomicFile.writeFileAtomicallySync;
+  const writing = jest
+    .spyOn(atomicFile, 'writeFileAtomicallySync')
+    .mockImplementation((...args) => {
+      write(...args);
+      if (String(args[0]).includes('terminal-replay-witness.')) witnessed();
+    });
+  const s = store();
+  try {
+    s.registerLiveSession(session('exited'));
+    s.appendTerminalOutput('p', 'w', 'exited', Buffer.from('retained'));
+    s.markTerminalExited('p', 'w', 'exited', 0, null);
+    await s.drainAll();
+    release();
+    await installed;
+    const client = await s.recordClientFor('p', 'w');
+    if (!client.lifetimeId) throw new Error('Missing fixture lifetime');
+    expect(
+      fs.existsSync(
+        getWorktreeTerminalReplayWitnessFilePath('p', 'w', client.lifetimeId),
+      ),
+    ).toBe(true);
+  } finally {
+    release();
+    directory.mockRestore();
+    writing.mockRestore();
+  }
+});
+
+it('R3 a witness read resolving after quit never sends from the sealed store', async () => {
+  const client = seedReplayWitness('earlier');
+  await newOutbox().write({
+    version: 1,
+    producer: 'electron_main',
+    retirements: [],
+    scopes: [
+      {
+        client,
+        entries: [
+          {
+            runId: 'earlier',
+            seq: 1,
+            ops: [{ op: 'session.upsert', session: session('held') }],
+          },
+        ],
+      },
+    ],
+  });
+  const witness = getWorktreeTerminalReplayWitnessFilePath('p', 'w', 'earlier');
+  const originalRead = fsPromises.readFile;
+  let release = (): void => undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let observe = (): void => undefined;
+  const reading = new Promise<void>((resolve) => {
+    observe = resolve;
+  });
+  const read = jest
+    .spyOn(fsPromises, 'readFile')
+    .mockImplementation((...args) => {
+      if (args[0] !== witness)
+        return Reflect.apply(originalRead, fsPromises, args);
+      observe();
+      return held.then(() => Reflect.apply(originalRead, fsPromises, args));
+    });
+  const apply = jest.fn(
+    (params: Parameters<TerminalRecordClientPort['apply']>[0]) =>
+      records.apply(params),
+  );
+  const s = newStore({ records: { ...records, apply }, outbox: newOutbox() });
+  const draining = s.drainAll();
+  try {
+    await reading;
+    s.markAllLiveTerminalsExited('app-quit');
+    release();
+    await draining;
+    expect(apply).not.toHaveBeenCalled();
+    expect((await newOutbox().read()).outbox.scopes).toHaveLength(1);
+  } finally {
+    release();
+    await draining;
+    read.mockRestore();
+  }
+});
+
+it('R2 immediate quit without a prepared directory stays synchronous and quarantines history', async () => {
   up = false;
   const mkdir = jest.spyOn(fsModule, 'mkdirSync').mockImplementation(() => {
     throw new Error('quit must not create directories');
@@ -1371,6 +4553,81 @@ it('R2 immediate quit without a prepared directory stays synchronous and keeps h
     (await newOutbox().read()).outbox.scopes.flatMap((scope) => scope.entries),
   ).not.toEqual([]);
 });
+
+it.each(['absent', 'predecessor'] as const)(
+  'R3 a surviving predecessor witness cannot qualify successor history (successor evidence: %s)',
+  async (evidence) => {
+    up = false;
+    const s = store();
+    s.registerLiveSession(session('old'));
+    s.appendTerminalOutput('p', 'w', 'old', Buffer.from('retired output'));
+    await s.drainAll();
+    const oldClient = await s.recordClientFor('p', 'w');
+    if (!oldClient.lifetimeId) throw new Error('Missing old lifetime');
+    const oldPath = getWorktreeTerminalReplayWitnessFilePath(
+      'p',
+      'w',
+      oldClient.lifetimeId,
+    );
+    expect(fs.existsSync(oldPath)).toBe(true);
+    await s.retireTerminalRecord({ projectId: 'p', worktreeId: 'w' });
+
+    // Retirement drops batches, not this shared directory's old evidence.
+    expect(fs.existsSync(oldPath)).toBe(true);
+    const originalWrite = atomicFile.writeFileAtomicallySync;
+    const write = jest
+      .spyOn(atomicFile, 'writeFileAtomicallySync')
+      .mockImplementation((path, data, options) => {
+        if (String(path).includes('terminal-replay-witness.'))
+          throw new Error('successor witness unavailable');
+        originalWrite(path, data, options);
+      });
+    try {
+      s.registerLiveSession(session('new'));
+      s.appendTerminalOutput('p', 'w', 'new', Buffer.from('held output'));
+      s.markAllLiveTerminalsExited('app-quit');
+    } finally {
+      write.mockRestore();
+    }
+    const queued = (await newOutbox().read()).outbox.scopes;
+    expect(
+      queued.flatMap((scope) => scope.entries).flatMap((entry) => entry.ops),
+    ).not.toContainEqual({ op: 'session.upsert', session: session('old') });
+    const successor = queued.find((scope) =>
+      scope.entries.some((entry) =>
+        entry.ops.some(
+          (op) => op.op === 'session.upsert' && op.session.id === 'new',
+        ),
+      ),
+    );
+    if (!successor?.client.lifetimeId)
+      throw new Error('Missing successor custody');
+    expect(successor.client.lifetimeId).not.toBe(oldClient.lifetimeId);
+    const newPath = getWorktreeTerminalReplayWitnessFilePath(
+      'p',
+      'w',
+      successor.client.lifetimeId,
+    );
+    expect(newPath).not.toBe(oldPath);
+    expect(fs.existsSync(newPath)).toBe(false);
+    if (evidence === 'predecessor') fs.copyFileSync(oldPath, newPath);
+
+    up = true;
+    const next = store();
+    expect((await next.loadWorktreeState('p', 'w')).terminals).toEqual([]);
+    const held = (await newOutbox().read()).outbox.scopes;
+    expect(held.map((scope) => scope.client.lifetimeId)).toEqual([
+      successor.client.lifetimeId,
+    ]);
+    expect(
+      held.flatMap((scope) => scope.entries).flatMap((entry) => entry.ops),
+    ).toContainEqual({
+      op: 'output.append',
+      terminalId: 'new',
+      text: 'held output',
+    });
+  },
+);
 
 it.each([undefined, 'w'])(
   'R2 retirement replay keeps offline replacement history (worktree: %s)',
@@ -1424,9 +4681,7 @@ it.each([undefined, 'w'])(
         ),
     ).toBe(true);
     up = true;
-    expect((await boot.loadWorktreeState('p', 'w')).terminals).toEqual([]);
-    await applyCustody();
-    const loaded = await store().loadWorktreeState('p', 'w');
+    const loaded = await boot.loadWorktreeState('p', 'w');
     expect(
       loaded.terminals.map((entry) => [
         entry.session.id,
@@ -1489,12 +4744,15 @@ it.each([false, true])(
           ),
       ).toBe(true);
       await draining;
+      up = true;
+      const loaded = await store().loadWorktreeState('p', 'w');
       expect(
-        custodyText(
-          recovered.outbox.scopes.flatMap((scope) => scope.entries),
-          'quit-race',
-        ),
-      ).toBe('before-final');
+        loaded.terminals.map((entry) => [
+          entry.session.id,
+          entry.scrollbackLines,
+          entry.signal,
+        ]),
+      ).toEqual([['quit-race', ['before-final'], 'fatal-exit']]);
     } finally {
       publish();
       write.mockRestore();
@@ -1611,7 +4869,6 @@ it.each(['matching', 'missing', 'mismatched', 'damaged'] as const)(
         expect(entries).toEqual(finalEntries);
         await draining;
         up = true;
-        await applyCustody();
         const loaded = await store().loadWorktreeState('p', 'w');
         expect(
           loaded.terminals.find((entry) => entry.session.id === ids.at(-1))
@@ -2549,13 +5806,16 @@ it('defers to the outbox while the daemon is down, serves unavailable history, t
   expect(
     overlay.terminals.find((t) => t.session.id === 'd')?.scrollbackLines,
   ).toEqual(['queued']);
-  // Reconnecting drains it before the load.
+  // Quit seals it; the next run drains before its load.
+  s.markAllLiveTerminalsExited('app-quit');
   up = true;
-  await s.drainAll();
-  const loaded = await s.loadWorktreeState('p', 'w');
+  const next = store();
+  next.start();
+  const loaded = await next.loadWorktreeState('p', 'w');
   expect(loaded.history).toEqual({ status: 'available' });
   expect(loaded.terminals.find((t) => t.session.id === 'd')).toMatchObject({
     scrollbackLines: ['queued'],
+    signal: 'app-quit',
   });
   expect(fs.existsSync(join(mockRoot, 'terminal-record-outbox.json'))).toBe(
     false,
@@ -2675,42 +5935,38 @@ it('a quit seals more ops than one apply carries as several entries, sealed last
     entries.map((_, index) => index === entries.length - 1),
   );
   up = true;
-  await applyCustody();
-  const loaded = await store().loadWorktreeState('p', 'w');
+  const next = store();
+  next.start();
+  const loaded = await next.loadWorktreeState('p', 'w');
   expect(loaded.terminals).toHaveLength(700);
   expect(loaded.terminals.every((t) => t.signal === 'app-quit')).toBe(true);
 });
 
 it('an outbox entry the authority rejects never holds later writes behind it', async () => {
-  // One op of a queued batch is one the authority can never accept.
-  const rejects = (
-    params: Parameters<TerminalRecordClientPort['apply']>[0],
-  ): boolean =>
-    params.ops.some(
-      (op) => op.op === 'session.upsert' && op.session.id === 't300',
-    );
-  const s = newStore({
-    records: {
-      ...records,
-      apply: (params) =>
-        rejects(params)
-          ? Promise.reject(
-              Object.assign(new Error('invalid'), {
-                payload: { kind: 'invalid_argument', retry: { kind: 'never' } },
-              }),
-            )
-          : records.apply(params),
-    },
-    outbox: newOutbox(),
-  });
-  await s.loadWorktreeState('p', 'w');
-  up = false;
+  // An earlier run left an entry past the cap, holding one op the schema
+  // rejects (a name longer than any the record keeps).
   const ids = terminalIds(600);
-  for (const id of ids) s.registerLiveSession(session(id));
-  await settle();
-  expect(readOutbox().scopes.flatMap((scope) => scope.entries)).not.toEqual([]);
-  up = true;
-  applyCalls = 0;
+  const ops: unknown[] = ids.map((id) => ({
+    op: 'session.upsert',
+    session: session(id),
+  }));
+  ops.splice(300, 0, { op: 'rename', terminalId: 't0', name: 'n'.repeat(65) });
+  fs.writeFileSync(
+    join(mockRoot, 'terminal-record-outbox.json'),
+    JSON.stringify({
+      version: 1,
+      producer: 'electron_main',
+      scopes: [
+        {
+          client: seedReplayWitness('rejected-entry'),
+          entries: [{ seq: 1, runId: 'earlier', ops }],
+        },
+      ],
+      retirements: [],
+    }),
+  );
+  const s = store();
+  s.start();
   await s.drainAll();
   // Split, the bad op isolated and dropped, in a bounded number of calls.
   expect(applyCalls).toBeLessThan(40);
@@ -2725,8 +5981,9 @@ it('an outbox entry the authority rejects never holds later writes behind it', a
   );
   const loaded = await store().loadWorktreeState('p', 'w');
   expect(loaded.terminals.map((t) => t.session.id).sort()).toEqual(
-    [...ids.filter((id) => id !== 't300'), 'later'].sort(),
+    [...ids, 'later'].sort(),
   );
+  expect(loaded.terminalCustomNames).toEqual({});
 });
 
 it('a drain repeated after an unknown outcome applies once', async () => {
@@ -2744,8 +6001,8 @@ it('a drain repeated after an unknown outcome applies once', async () => {
   ).toEqual(['once']);
 });
 
-it.each(['reconnect', 'quit custody'] as const)(
-  'a lost online reply keeps its full admission identity for %s',
+it.each(['reconnect', 'outbox rehydration'] as const)(
+  'a lost online reply retries its full admission identity after %s',
   async (recovery) => {
     const attempts: string[] = [];
     let loseReply = true;
@@ -2776,32 +6033,76 @@ it.each(['reconnect', 'quit custody'] as const)(
     expect(JSON.parse(attempts[0])).toMatchObject({
       client: { generation: 1, incarnation: 'known-incarnation' },
     });
-    if (recovery === 'quit custody') {
+    if (recovery === 'outbox rehydration')
       s.markAllLiveTerminalsExited('app-quit');
-      const sent = WorkerTerminalRecordApplyParamsSchema.parse(
-        JSON.parse(attempts[0]),
-      );
-      const [queued] = (await newOutbox().read()).outbox.scopes;
-      const [entry] = queued.entries;
-      // The held retry is the exact lost request, under its own client.
-      expect(entry).toMatchObject({
-        runId: sent.producer.runId,
-        seq: sent.seq,
-        ops: sent.ops,
-        attempted: true,
-      });
-      expect(entry.client ?? queued.client).toEqual(sent.client);
-      return;
-    }
+    const next =
+      recovery === 'outbox rehydration'
+        ? newStore({ ...options, outbox: newOutbox() })
+        : s;
     up = true;
-    await s.drainAll();
+    await next.drainAll();
     expect(attempts.length).toBeGreaterThan(1);
     expect(attempts[1]).toBe(attempts[0]);
-    const loaded = await s.loadWorktreeState('p', 'w');
+    const loaded = await next.loadWorktreeState('p', 'w');
     expect(
       loaded.terminals.find((entry) => entry.session.id === 'rehydrated')
         ?.scrollbackLines,
     ).toEqual(['once']);
+  },
+);
+
+it.each(['plain', 'run/slash', 'run%percent', 'run%2Fencoded'])(
+  'a lost reply rebases queued history against the escaped watermark for %s',
+  async (runId) => {
+    const outbox = newOutbox();
+    const client: WorkerTerminalRecordClient = {
+      projectId: 'p',
+      worktreeId: 'w',
+      legacyLayout: 'workspaces',
+      incarnation: 'current',
+    };
+    await outbox.write({
+      version: 1,
+      producer: 'electron_main',
+      scopes: [
+        {
+          client,
+          entries: [
+            {
+              seq: 1,
+              runId,
+              ops: [
+                { op: 'session.upsert', session: session('escaped') },
+                { op: 'output.append', terminalId: 'escaped', text: 'once' },
+              ],
+            },
+          ],
+        },
+      ],
+      retirements: [],
+    });
+    const s = newStore({
+      records: {
+        ...records,
+        apply: async (params): Promise<WorkerTerminalRecordApplyResult> => {
+          await records.apply(params);
+          throw new Error('lost reply');
+        },
+      },
+      outbox,
+      incarnation: () => Promise.resolve('current'),
+    });
+    await s.drainAll();
+    expect((await outbox.read())?.outbox.scopes[0].entries).toHaveLength(1);
+    expect(
+      (await s.loadWorktreeState('p', 'w')).terminals[0].scrollbackLines,
+    ).toEqual(['once']);
+    const release = await s.prefetchPersistedEntry('escaped');
+    expect(s.getPersistedTerminalEntry('escaped')?.scrollbackLines).toEqual([
+      'once',
+    ]);
+    release();
+    expect((await outbox.read())?.outbox.scopes[0].entries).toHaveLength(1);
   },
 );
 
@@ -2924,8 +6225,7 @@ it.each(['pending', 'outbox'] as const)(
     }, 0);
     expect(bytes).toBeLessThanOrEqual(1024 * 1024);
     up = true;
-    if (mode === 'pending') await applyCustody();
-    else await s.drainAll();
+    await s.drainAll();
     const loaded = await store().loadWorktreeState('p', 'w');
     expect(
       loaded.terminals.find((t) => t.session.id === 'bounded-producer')
@@ -3089,6 +6389,7 @@ it.each([
     const attemptedEntry =
       mode === 'lost-reply' ? readOutbox().scopes[0]?.entries[0] : undefined;
     const attemptedBytes = attemptedEntry && JSON.stringify(attemptedEntry);
+    const attemptedRequest = attempts[0];
     if (mode === 'lost-reply') expect(attemptedEntry).toBeDefined();
     up = false;
     for (let index = 0; index < 16; index += 1) {
@@ -3141,8 +6442,13 @@ it.each([
     up = true;
     await s.drainAll();
     expect(attempts).toHaveLength(mode === 'lost-reply' ? 1 : 0);
-    // Quit keeps the custody; check what it holds.
-    await applyCustody();
+    // Quit transfers replay to the next launch; observe its retries too.
+    const next = newStore({ records: client, outbox: newOutbox() });
+    await next.drainAll();
+    if (mode === 'lost-reply') {
+      expect(attempts.length).toBeGreaterThan(1);
+      expect(attempts[1]).toBe(attemptedRequest);
+    }
     const loaded = await store().loadWorktreeState('p', 'w');
     const lines = loaded.terminals.find(
       (t) => t.session.id === 'barriers',
@@ -3174,6 +6480,111 @@ it.each([
     );
   },
 );
+
+it.each(['token', 'tokenless', 'evicted-token', 'evicted-tokenless'] as const)(
+  'R8 partial-drawer renames preserve saved split membership (%s)',
+  async (client) => {
+    fs.mkdirSync(join(legacyPath(), '..'), { recursive: true });
+    fs.writeFileSync(legacyPath(), JSON.stringify(fixture()));
+    const full = await store().loadWorktreeState('p', 'w');
+    // A later run that has not read the record serves fallback singletons.
+    const s = store();
+    s.registerLiveSession(session('a'));
+    await s.drainAll();
+    up = false;
+    const partial = await s.loadWorktreeState('p', 'w');
+    expect(partial.groups.flatMap((group) => group.terminalIds)).toEqual(['a']);
+    expect(partial.groups[0].id).not.toBe(full.groups[0].id);
+    if (client.startsWith('evicted')) {
+      up = true;
+      for (let load = 0; load < 64; load += 1)
+        await s.loadWorktreeState('p', 'w');
+    }
+    const request = {
+      ...partial,
+      projectId: 'p',
+      worktreeId: 'w',
+      viewToken: client.endsWith('tokenless') ? undefined : partial.viewToken,
+      terminalCustomNames: { a: 'Renamed' },
+    };
+    s.saveWorktreeState(request);
+    up = true;
+    await s.drainAll();
+    const after = await store().loadWorktreeState('p', 'w');
+    expect(
+      after.groups.map(({ id, terminalIds }) => ({ id, terminalIds })),
+    ).toEqual(full.groups.map(({ id, terminalIds }) => ({ id, terminalIds })));
+    expect(after.terminalCustomNames).toEqual({ a: 'Renamed', b: 'Build' });
+    if (client === 'token') {
+      s.saveWorktreeState({ ...request, terminalCustomNames: {} });
+      await s.drainAll();
+      expect(
+        (await store().loadWorktreeState('p', 'w')).terminalCustomNames,
+      ).toEqual({ b: 'Build' });
+    }
+    // Explicit membership changes from the same partial drawer still apply.
+    s.saveWorktreeState({
+      ...request,
+      groups: [{ ...partial.groups[0], id: 'user-group' }],
+    });
+    await s.drainAll();
+    expect((await store().loadWorktreeState('p', 'w')).groups).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'user-group', terminalIds: ['a'] }),
+        expect.objectContaining({ id: full.groups[0].id, terminalIds: ['b'] }),
+      ]),
+    );
+    if (client === 'token') {
+      // A known drawer can intentionally move back into a default-shaped group.
+      s.saveWorktreeState(request);
+      await s.drainAll();
+      expect((await store().loadWorktreeState('p', 'w')).groups).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: partial.groups[0].id,
+            terminalIds: ['a'],
+          }),
+          expect.objectContaining({
+            id: full.groups[0].id,
+            terminalIds: ['b'],
+          }),
+        ]),
+      );
+    }
+  },
+);
+
+it('R8 partial regroup preserves untouched fallback membership', async () => {
+  fs.mkdirSync(join(legacyPath(), '..'), { recursive: true });
+  fs.writeFileSync(legacyPath(), JSON.stringify(fixture()));
+  const full = await store().loadWorktreeState('p', 'w');
+  // A later run that has not read the record serves fallback singletons.
+  const s = store();
+  s.registerLiveSession(session('a'));
+  s.registerLiveSession(session('b'));
+  await s.drainAll();
+  up = false;
+  const partial = await s.loadWorktreeState('p', 'w');
+  s.saveWorktreeState({
+    ...partial,
+    projectId: 'p',
+    worktreeId: 'w',
+    groups: partial.groups.map((group) =>
+      group.terminalIds.includes('a') ? { ...group, id: 'user-group' } : group,
+    ),
+    terminalCustomNames: { a: 'Renamed' },
+  });
+  up = true;
+  await s.drainAll();
+  const after = await store().loadWorktreeState('p', 'w');
+  expect(after.groups).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: 'user-group', terminalIds: ['a'] }),
+      expect.objectContaining({ id: full.groups[0].id, terminalIds: ['b'] }),
+    ]),
+  );
+  expect(after.terminalCustomNames).toEqual({ a: 'Renamed', b: 'Build' });
+});
 
 it('a save after a partial load never forgets what that load could not show', async () => {
   fs.mkdirSync(join(legacyPath(), '..'), { recursive: true });
@@ -3268,6 +6679,36 @@ it('a layout save that drops a terminal keeps its history, ungrouped; its forget
   expect(forgotten.terminals.map((t) => t.session.id)).toEqual(['b']);
   expect(forgotten.terminalCustomNames).not.toHaveProperty('a');
 });
+
+it.each(['token', 'tokenless'] as const)(
+  'a partial view save that drops an unnamed terminal ungroups it too (%s)',
+  async (client) => {
+    fs.mkdirSync(join(legacyPath(), '..'), { recursive: true });
+    fs.writeFileSync(
+      legacyPath(),
+      JSON.stringify({ ...fixture(), terminalCustomNames: { b: 'Build' } }),
+    );
+    const s = store();
+    await s.loadWorktreeState('p', 'w');
+    // A partial view shows only live terminals.
+    s.registerLiveSession(session('a'));
+    s.registerLiveSession(session('b'));
+    await s.drainAll();
+    up = false;
+    const partial = await s.loadWorktreeState('p', 'w');
+    expect(partial.history).toMatchObject({ status: 'unavailable' });
+    const save = keepOnly(partial, 'b');
+    // An older client's close, from a drawer the authority could not serve.
+    s.saveWorktreeState(client === 'token' ? save : withoutToken(save));
+    s.saveWorktreeState(client === 'token' ? save : withoutToken(save));
+    up = true;
+    await settle();
+    const kept = await store().loadWorktreeState('p', 'w');
+    expect(kept.terminals.map((t) => t.session.id)).toEqual(['a', 'b']);
+    expect(kept.groups.flatMap((g) => g.terminalIds)).toEqual(['b']);
+    expect(kept.terminalCustomNames).toEqual({ b: 'Build' });
+  },
+);
 
 it("one window's full load never lets another window's partial view forget what it was not shown", async () => {
   fs.mkdirSync(join(legacyPath(), '..'), { recursive: true });
@@ -3464,8 +6905,9 @@ it('only drawer terminals reach the outbox while the daemon is down, or its seal
   expect(mentions('agent')).toBe(false);
   expect(mentions('worker')).toBe(false);
   up = true;
-  await applyCustody();
-  const loaded = await store().loadWorktreeState('p', 'w');
+  const next = store();
+  next.start();
+  const loaded = await next.loadWorktreeState('p', 'w');
   expect(
     loaded.terminals.map((t) => [t.session.id, t.scrollbackLines]),
   ).toEqual([
@@ -3503,115 +6945,99 @@ it.each([
   'retry after partial deletion',
   'restart after directory flush failure',
   'retry after directory flush failure',
-])(
-  "runs' own outboxes merge into the shared custody in run order, including %s",
-  async (cleanup) => {
-    const upsert = (
-      id: string,
-    ): { op: 'session.upsert'; session: ReturnType<typeof session> } => ({
-      op: 'session.upsert',
-      session: session(id),
-    });
-    // The newer run's file sorts first: it retired the worktree, then a new
-    // lifetime queued 'new'. The older run queued 'old' before that cleanup.
-    fs.writeFileSync(
-      join(mockRoot, 'terminal-record-outbox.run-00000000.json'),
-      JSON.stringify({
-        version: 1,
-        producer: 'electron_main',
-        runStartedAt: 2_000,
-        scopes: [
-          {
-            client: earlierClient('newer'),
-            entries: [{ seq: 1, runId: 'newer', ops: [upsert('new')] }],
-          },
-        ],
-        retirements: [
-          {
-            projectId: 'p',
-            worktreeId: 'w',
-            requestedAt: 2_500,
-            lifetimeIds: ['older'],
-          },
-        ],
-      }),
-    );
-    fs.writeFileSync(
-      join(mockRoot, 'terminal-record-outbox.run-ffffffff.json'),
-      JSON.stringify({
-        version: 1,
-        producer: 'electron_main',
-        runStartedAt: 1_000,
-        scopes: [
-          {
-            client: earlierClient('older'),
-            entries: [{ seq: 1, runId: 'older', ops: [upsert('old')] }],
-          },
-        ],
-        retirements: [],
-      }),
-    );
-    let failing = cleanup !== 'normal';
-    class PartialDiscard extends TerminalRecordOutbox {
-      public override async discard(paths: readonly string[]): Promise<void> {
-        if (!failing) return super.discard(paths);
-        if (cleanup.includes('directory flush')) {
-          const flush = jest
-            .spyOn(atomicFile, 'syncDirectory')
-            .mockRejectedValue(new Error('directory flush failed'));
-          try {
-            await super.discard(paths);
-          } finally {
-            flush.mockRestore();
-          }
-          return;
+])("runs' own outboxes replay in run order, including %s", async (cleanup) => {
+  const client = seedReplayWitness('newer');
+  const oldClient = seedReplayWitness('older');
+  const upsert = (
+    id: string,
+  ): { op: 'session.upsert'; session: ReturnType<typeof session> } => ({
+    op: 'session.upsert',
+    session: session(id),
+  });
+  // The newer run's file sorts first: it retired the worktree, then a new
+  // lifetime queued 'new'. The older run queued 'old' before that cleanup.
+  fs.writeFileSync(
+    join(mockRoot, 'terminal-record-outbox.run-00000000.json'),
+    JSON.stringify({
+      version: 1,
+      producer: 'electron_main',
+      runStartedAt: 2_000,
+      scopes: [
+        { client, entries: [{ seq: 1, runId: 'newer', ops: [upsert('new')] }] },
+      ],
+      retirements: [
+        {
+          projectId: 'p',
+          worktreeId: 'w',
+          requestedAt: 2_500,
+          lifetimeIds: ['older'],
+        },
+      ],
+    }),
+  );
+  fs.writeFileSync(
+    join(mockRoot, 'terminal-record-outbox.run-ffffffff.json'),
+    JSON.stringify({
+      version: 1,
+      producer: 'electron_main',
+      runStartedAt: 1_000,
+      scopes: [
+        {
+          client: oldClient,
+          entries: [{ seq: 1, runId: 'older', ops: [upsert('old')] }],
+        },
+      ],
+      retirements: [],
+    }),
+  );
+  let failing = cleanup !== 'normal';
+  class PartialDiscard extends TerminalRecordOutbox {
+    public override async discard(paths: readonly string[]): Promise<void> {
+      if (!failing) return super.discard(paths);
+      if (cleanup.includes('directory flush')) {
+        const flush = jest
+          .spyOn(atomicFile, 'syncDirectory')
+          .mockRejectedValue(new Error('directory flush failed'));
+        try {
+          await super.discard(paths);
+        } finally {
+          flush.mockRestore();
         }
-        await super.discard(paths.slice(-1));
-        throw new Error('second source deletion failed');
+        return;
       }
+      await super.discard(paths.slice(-1));
+      throw new Error('second source deletion failed');
     }
-    // The newer run's retirement, in run order, drops only the older run's
-    // write; the newer one stays held, never sent.
-    const custody = async (): Promise<string[]> =>
-      (await newOutbox().read()).outbox.scopes
-        .flatMap((scope) => scope.entries)
-        .flatMap((entry) => entry.ops)
-        .flatMap((op) => (op.op === 'session.upsert' ? [op.session.id] : []));
-    const next = newStore({
-      records,
-      outbox: new PartialDiscard(() => mockRoot),
-    });
-    await next.drainAll();
-    expect(await custody()).toEqual(['new']);
-    if (cleanup !== 'normal') {
-      expect(next.isOutboxWarningShown()).toBe(true);
-      const merged = await newOutbox().read();
-      expect(merged.outbox.merged).toContain(
-        'terminal-record-outbox.run-ffffffff.json',
-      );
-      expect(
-        fs.existsSync(
-          join(mockRoot, 'terminal-record-outbox.run-ffffffff.json'),
-        ),
-      ).toBe(!cleanup.includes('directory flush'));
-      failing = false;
-      if (cleanup.startsWith('restart')) {
-        next.markAllLiveTerminalsExited('app-quit');
-        await store().drainAll();
-      } else {
-        await next.drainAll();
-        expect(next.isOutboxWarningShown()).toBe(false);
-      }
-      expect(await custody()).toEqual(['new']);
-    }
-    for (const name of [
-      'terminal-record-outbox.run-00000000.json',
+  }
+  const next = newStore({
+    records,
+    outbox: new PartialDiscard(() => mockRoot),
+  });
+  await next.drainAll();
+  expect(await recordedIds()).toEqual(['new']);
+  if (cleanup !== 'normal') {
+    expect(next.isOutboxWarningShown()).toBe(true);
+    const merged = await newOutbox().read();
+    expect(merged.outbox.merged).toContain(
       'terminal-record-outbox.run-ffffffff.json',
-    ])
-      expect(fs.existsSync(join(mockRoot, name))).toBe(false);
-    expect(await recordedIds()).toEqual([]);
-  },
-);
+    );
+    expect(
+      fs.existsSync(join(mockRoot, 'terminal-record-outbox.run-ffffffff.json')),
+    ).toBe(!cleanup.includes('directory flush'));
+    failing = false;
+    if (cleanup.startsWith('restart')) {
+      next.markAllLiveTerminalsExited('app-quit');
+      await store().drainAll();
+    } else await next.drainAll();
+    expect(await recordedIds()).toEqual(['new']);
+  }
+  expect(fs.existsSync(join(mockRoot, 'terminal-record-outbox.json'))).toBe(
+    false,
+  );
+  expect(
+    fs.existsSync(join(mockRoot, 'terminal-record-outbox.run-ffffffff.json')),
+  ).toBe(false);
+});
 
 it("a run's own outbox the shared file already holds is never merged again", async () => {
   // An earlier run quit before it merged the shared file: it retired the
@@ -3645,18 +7071,16 @@ it("a run's own outbox the shared file already holds is never merged again", asy
   await settle();
   s.markAllLiveTerminalsExited('app-quit');
   expect(fs.existsSync(runFile)).toBe(true);
-  // The launch after replays the retirement once; the newer write stays in custody.
+  // The launch after replays the retirement once, before the newer write.
   up = true;
   const next = store();
   next.start();
   await next.drainAll();
-  expect(await recordedIds()).toEqual([]);
-  expect(fs.existsSync(runFile)).toBe(false);
-  await applyCustody();
   expect(await recordedIds()).toEqual(['new']);
+  expect(fs.existsSync(runFile)).toBe(false);
 });
 
-it('writes from a second outage after a drain are durable in the quit seal', async () => {
+it('writes from a second outage after a drain are durable, and drain on the next launch', async () => {
   const outbox = newOutbox();
   const write = outbox.write.bind(outbox);
   let firstWritten = (): void => undefined;
@@ -3695,8 +7119,9 @@ it('writes from a second outage after a drain are durable in the quit seal', asy
   expect(readOutbox().scopes.flatMap((scope) => scope.entries)).not.toEqual([]);
   s.markAllLiveTerminalsExited('app-quit');
   up = true;
-  await applyCustody();
-  const loaded = await store().loadWorktreeState('p', 'w');
+  const next = store();
+  next.start();
+  const loaded = await next.loadWorktreeState('p', 'w');
   expect(loaded.terminals.find((t) => t.session.id === 'o')).toMatchObject({
     scrollbackLines: ['first outage', 'second outage'],
     signal: 'app-quit',
@@ -3766,19 +7191,29 @@ it('a daemon terminal waits for a queued retirement of its worktree before it at
 });
 
 it('a retirement the authority rejects never holds the worktree behind it', async () => {
-  // An earlier run queued one the schema rejects, ahead of this run's write.
+  // An earlier run queued one the schema rejects, ahead of a write.
   fs.writeFileSync(
     join(mockRoot, 'terminal-record-outbox.json'),
     JSON.stringify({
       version: 1,
       producer: 'electron_main',
-      scopes: [],
+      scopes: [
+        {
+          client: seedReplayWitness('rejected-retirement'),
+          entries: [
+            {
+              seq: 1,
+              runId: 'earlier',
+              ops: [{ op: 'session.upsert', session: session('kept') }],
+            },
+          ],
+        },
+      ],
       retirements: [{ projectId: 'p', worktreeId: 'w', incarnation: '' }],
     }),
   );
   const s = store();
   s.start();
-  s.registerLiveSession(session('kept'));
   await s.drainAll();
   expect(fs.existsSync(join(mockRoot, 'terminal-record-outbox.json'))).toBe(
     false,
@@ -3816,8 +7251,6 @@ it('a reused worktree id that writes right after its retirement keeps its own re
   up = true;
   const next = make();
   next.start();
-  await next.drainAll();
-  await applyCustody();
   const loaded = await next.loadWorktreeState('p', 'w');
   expect(loaded.terminals.map((t) => t.session.id)).toEqual(['new']);
 });
@@ -4121,6 +7554,11 @@ describe('a retired lifetime never writes into the next one', () => {
       seq: 1,
       ops: [{ op: 'session.upsert', session: session('old') }],
     });
+    // An open names no lifetime: only a cutoff strictly after startedAt retires it.
+    const { startedAt } = z
+      .object({ startedAt: z.number() })
+      .parse(JSON.parse(fs.readFileSync(recordPath(), 'utf8')));
+    while (Date.now() <= startedAt) await settle(1);
     const delivered: string[] = [];
     const { port, sending, deliver } = inTransit('open', delivered);
     const s = newStore({
@@ -4348,19 +7786,12 @@ describe('a retired lifetime never writes into the next one', () => {
     await s.drainAll();
     // The outbox seal closes only outbox mutation; the store closes sends.
     expect(sentAfterQuit).toEqual([]);
-    // Neither run's earlier writes replay here; this run's stay apart in custody.
-    expect(loaded.terminals).toEqual([]);
-    expect(authority.open(clientOf('inc-2')).terminals).toEqual([]);
-    const custody = (await newOutbox().read()).outbox.scopes;
+    expect(loaded.terminals.map((t) => [t.session.id, t.signal])).toEqual([
+      ['new', 'app-quit'],
+    ]);
     expect(
-      custody.find((scope) =>
-        scope.entries.some((entry) =>
-          entry.ops.some(
-            (op) => op.op === 'session.upsert' && op.session.id === 'new',
-          ),
-        ),
-      )?.client.incarnation,
-    ).toBeNull();
+      authority.open(clientOf('inc-2')).terminals.map((t) => t.session.id),
+    ).toEqual(['new']);
   });
 
   it('history pages read the generation the open served', async () => {
@@ -5048,7 +8479,420 @@ it('R3 the unattempted reducer is equivalent to sequential ops on unknown bases 
     }
 });
 
-it('RF5 denied retired loads cannot revive writes or recreate metadata directories', async () => {
+it.each(['normal', 'lost-retirement-reply', 'lost-binding-reply'] as const)(
+  'R8 recipient retirement survives clock rollback and successor writes before drain (%s)',
+  async (reply) => {
+    const projectId = SHARED_CONTAINER_VIEWER_PROJECT_ID;
+    const worktreeId = 'container';
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000);
+    try {
+      await records.apply({
+        client: {
+          projectId,
+          worktreeId,
+          legacyLayout: 'workspaces',
+          incarnation: null,
+        },
+        producer: { id: 'electron_main', runId: 'prior-account' },
+        seq: 1,
+        ops: [
+          {
+            op: 'session.upsert',
+            session: { ...session('private'), projectId, worktreeId },
+          },
+          {
+            op: 'output.append',
+            terminalId: 'private',
+            text: 'prior account output',
+          },
+        ],
+      });
+      clock.mockReturnValue(1);
+      up = false;
+      // A new process owns no local predecessor scope or queued output.
+      let lose = reply === 'lost-retirement-reply';
+      let loseBinding = reply === 'lost-binding-reply';
+      const s = newStore({
+        records: {
+          ...records,
+          apply: async (params) => {
+            const result = await records.apply(params);
+            if (loseBinding && params.ops.length === 0) {
+              loseBinding = false;
+              throw new Error('binding reply lost');
+            }
+            return result;
+          },
+          retire: async (params) => {
+            const result = await records.retire(params);
+            if (lose) {
+              lose = false;
+              throw new Error('reply lost');
+            }
+            return result;
+          },
+        },
+        outbox: newOutbox(),
+      });
+      await s.retireRecipientTerminalRecord(worktreeId);
+      // User operations stay unblocked. Their authority sends must follow the
+      // cleanup binding, even when queued before its background drain runs.
+      s.registerLiveSession({ ...session('successor'), projectId, worktreeId });
+      s.appendTerminalOutput(
+        projectId,
+        worktreeId,
+        'successor',
+        Buffer.from('new account output'),
+      );
+      up = true;
+      await s.drainAll();
+      await s.drainAll();
+      const view = await s.loadWorktreeState(projectId, worktreeId);
+      expect(view.terminals.map((entry) => entry.session.id)).toEqual([
+        'successor',
+      ]);
+      expect(view.terminals[0].scrollbackLines).toEqual(['new account output']);
+      // The retained journal retries on restart without binding to a successor.
+      s.markAllLiveTerminalsExited('app-quit');
+      const next = store();
+      const afterRestart = await next.loadWorktreeState(projectId, worktreeId);
+      expect(afterRestart.terminals.map((entry) => entry.session.id)).toEqual([
+        'successor',
+      ]);
+      expect(afterRestart.terminals[0].scrollbackLines).toEqual([
+        'new account output',
+      ]);
+    } finally {
+      clock.mockRestore();
+    }
+  },
+);
+
+it('R8 recipient binding holds concurrent successor sends until cleanup is fenced', async () => {
+  const projectId = SHARED_CONTAINER_VIEWER_PROJECT_ID;
+  const worktreeId = 'container';
+  await records.apply({
+    client: {
+      projectId,
+      worktreeId,
+      legacyLayout: 'workspaces',
+      incarnation: null,
+    },
+    producer: { id: 'electron_main', runId: 'prior-account' },
+    seq: 1,
+    ops: [
+      {
+        op: 'session.upsert',
+        session: { ...session('private'), projectId, worktreeId },
+      },
+    ],
+  });
+  let bindingStarted = (): void => undefined;
+  let releaseBinding = (): void => undefined;
+  let writeObserved = (): void => undefined;
+  const binding = new Promise<void>((resolve) => {
+    bindingStarted = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    releaseBinding = resolve;
+  });
+  const successorWrite = new Promise<void>((resolve) => {
+    writeObserved = resolve;
+  });
+  let bindingReleased = false;
+  let sentBeforeBinding = false;
+  const outbox = newOutbox();
+  const write = outbox.write.bind(outbox);
+  jest.spyOn(outbox, 'write').mockImplementation(async (...args) => {
+    await write(...args);
+    if (
+      args[0].scopes.some(({ entries }) =>
+        entries.some(({ ops }) =>
+          ops.some(
+            (op) => op.op === 'output.append' && op.terminalId === 'successor',
+          ),
+        ),
+      )
+    )
+      writeObserved();
+  });
+  const s = newStore({
+    outbox,
+    records: {
+      ...records,
+      apply: async (params) => {
+        if (params.ops.length === 0) {
+          bindingStarted();
+          await released;
+        }
+        const result = await records.apply(params);
+        if (
+          params.ops.some(
+            (op) => op.op === 'output.append' && op.terminalId === 'successor',
+          )
+        ) {
+          sentBeforeBinding ||= !bindingReleased;
+          writeObserved();
+        }
+        return result;
+      },
+    },
+  });
+  try {
+    await s.retireRecipientTerminalRecord(worktreeId);
+    await binding;
+    s.registerLiveSession({ ...session('successor'), projectId, worktreeId });
+    s.appendTerminalOutput(
+      projectId,
+      worktreeId,
+      'successor',
+      Buffer.from('new account output'),
+    );
+    // Observe the scheduled flush: correct admission queues custody while the
+    // bind is held; the red control instead sends it to the predecessor record.
+    await successorWrite;
+  } finally {
+    bindingReleased = true;
+    releaseBinding();
+  }
+  await s.drainAll();
+  expect(sentBeforeBinding).toBe(false);
+  const view = await s.loadWorktreeState(projectId, worktreeId);
+  expect(
+    view.terminals.map((entry) => [entry.session.id, entry.scrollbackLines]),
+  ).toEqual([['successor', ['new account output']]]);
+});
+
+it('R3 recipient outbox failure scrubs plaintext and fences recreated account views across restart', async () => {
+  const projectId = SHARED_CONTAINER_VIEWER_PROJECT_ID;
+  const worktreeId = 'container';
+  const directory = join(
+    mockRoot,
+    'workspaces',
+    projectId,
+    'worktree-data',
+    worktreeId,
+  );
+  const path = join(directory, 'terminal-state.json');
+  const legacy = fixture();
+  for (const entry of legacy.terminals)
+    entry.session = { ...entry.session, projectId, worktreeId };
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path, JSON.stringify(legacy));
+  const outbox = newOutbox();
+  const first = newStore({ records, outbox });
+  expect(
+    (await first.loadWorktreeState(projectId, worktreeId)).terminals,
+  ).toHaveLength(2);
+  up = false;
+  fs.writeFileSync(path, JSON.stringify(legacy));
+  fs.writeFileSync(
+    join(directory, 'other-history.txt'),
+    'private account data',
+  );
+  const write = jest
+    .spyOn(outbox, 'write')
+    .mockRejectedValue(new Error('outbox disk unavailable'));
+  const retire = jest
+    .spyOn(terminalPersistenceStore, 'retireRecipientTerminalRecord')
+    .mockImplementation((id) => first.retireRecipientTerminalRecord(id));
+  const remove = jest
+    .mocked(removeTreeWithoutAsar)
+    .mockImplementation((target, options) => fsPromises.rm(target, options));
+  try {
+    await cleanupSharedContainerRecipientViewState(worktreeId);
+    const markerPath = recipientTerminalRetirementPath(projectId, worktreeId);
+    expect(fs.readdirSync(directory)).toEqual([basename(markerPath)]);
+    const marker = fs.readFileSync(markerPath, 'utf8');
+    expect(marker).not.toContain('A0');
+    expect(marker).not.toContain('B0');
+    expect(JSON.parse(marker)).toMatchObject({
+      version: 1,
+      recipientRetirements: [
+        expect.objectContaining({ projectId, worktreeId }),
+      ],
+    });
+    // Recreating the runnable copy cannot authorize either source of old history.
+    fs.mkdirSync(join(mockRoot, 'run'), { recursive: true });
+    expect(
+      (await first.loadWorktreeState(projectId, worktreeId)).terminals,
+    ).toEqual([]);
+    await first.prefetchPersistedEntry('a');
+    expect(first.getPersistedTerminalEntry('a')).toBeNull();
+    const next = newStore({ records, outbox: newOutbox() });
+    expect(
+      (await next.loadWorktreeState(projectId, worktreeId)).terminals,
+    ).toEqual([]);
+    up = true;
+    await next.drainAll();
+    await next.recordClientFor(projectId, worktreeId);
+    next.registerLiveSession({
+      ...session('successor'),
+      projectId,
+      worktreeId,
+    });
+    next.appendTerminalOutput(
+      projectId,
+      worktreeId,
+      'successor',
+      Buffer.from('new account'),
+    );
+    await next.drainAll();
+    const view = await next.loadWorktreeState(projectId, worktreeId);
+    expect(view.terminals.map((entry) => entry.session.id)).toEqual([
+      'successor',
+    ]);
+    expect(view.terminals[0].scrollbackLines).toEqual(['new account']);
+  } finally {
+    write.mockRestore();
+    retire.mockRestore();
+    remove.mockReset().mockResolvedValue(undefined);
+  }
+});
+
+it('R3 an unreadable recipient journal is neither replaced nor swept and fences history after restart', async () => {
+  const projectId = SHARED_CONTAINER_VIEWER_PROJECT_ID;
+  const worktreeId = 'container';
+  const directory = join(
+    mockRoot,
+    'workspaces',
+    projectId,
+    'worktree-data',
+    worktreeId,
+  );
+  const markerPath = recipientTerminalRetirementPath(projectId, worktreeId);
+  const outbox = newOutbox();
+  const first = newStore({ records, outbox });
+  first.registerLiveSession({ ...session('private'), projectId, worktreeId });
+  first.appendTerminalOutput(
+    projectId,
+    worktreeId,
+    'private',
+    Buffer.from('prior account output'),
+  );
+  await first.drainAll();
+  authority.flushSync();
+  up = false;
+  const write = jest
+    .spyOn(outbox, 'write')
+    .mockRejectedValue(new Error('outbox disk unavailable'));
+  const retire = jest
+    .spyOn(terminalPersistenceStore, 'retireRecipientTerminalRecord')
+    .mockImplementation((id) => first.retireRecipientTerminalRecord(id));
+  const remove = jest
+    .mocked(removeTreeWithoutAsar)
+    .mockImplementation((target, options) => fsPromises.rm(target, options));
+  const read = fsPromises.readFile;
+  let reading: jest.SpiedFunction<typeof fsPromises.readFile> | undefined;
+  let journal = '';
+  try {
+    // The first purge leaves only its journal: the one durable fence.
+    await cleanupSharedContainerRecipientViewState(worktreeId);
+    journal = fs.readFileSync(markerPath, 'utf8');
+    fs.writeFileSync(
+      join(directory, 'other-history.txt'),
+      'private account data',
+    );
+    reading = jest
+      .spyOn(fsPromises, 'readFile')
+      .mockImplementation(async (...args) => {
+        if (typeof args[0] === 'string' && args[0] === markerPath)
+          throw Object.assign(new Error('denied'), { code: 'EACCES' });
+        return Reflect.apply(read, fsPromises, args);
+      });
+    await cleanupSharedContainerRecipientViewState(worktreeId);
+  } finally {
+    reading?.mockRestore();
+    write.mockRestore();
+    retire.mockRestore();
+    remove.mockReset().mockResolvedValue(undefined);
+  }
+  // Plaintext is still scrubbed; the journal it could not read is kept as is.
+  expect(fs.readdirSync(directory)).toEqual([basename(markerPath)]);
+  expect(fs.readFileSync(markerPath, 'utf8')).toBe(journal);
+  // The process dies before an in-memory retry: only the journal remains.
+  epoch += 1;
+  records = recordsFor(epoch);
+  up = true;
+  const next = store();
+  const view = await next.loadWorktreeState(projectId, worktreeId);
+  expect(view.terminals.map((entry) => entry.session.id)).not.toContain(
+    'private',
+  );
+  expect(JSON.stringify(view)).not.toContain('prior account output');
+});
+
+it.each(['online', 'offline'] as const)(
+  'R3 a quit while the recipient journal install is pending seals none of the retiring scrollback (%s)',
+  async (authorityState) => {
+    const projectId = SHARED_CONTAINER_VIEWER_PROJECT_ID;
+    const worktreeId = 'container';
+    const markerPath = recipientTerminalRetirementPath(projectId, worktreeId);
+    const s = newStore({ records, outbox: newOutbox() });
+    s.registerLiveSession({ ...session('private'), projectId, worktreeId });
+    up = authorityState === 'online';
+    s.appendTerminalOutput(
+      projectId,
+      worktreeId,
+      'private',
+      Buffer.from('earlier scrollback'),
+    );
+    await s.drainAll();
+    // Offline, the lifetime's earlier output is already queued on disk.
+    expect(
+      fs.existsSync(join(mockRoot, 'terminal-record-outbox.json')) &&
+        fs
+          .readFileSync(join(mockRoot, 'terminal-record-outbox.json'), 'utf8')
+          .includes('earlier scrollback'),
+    ).toBe(authorityState === 'offline');
+    let reached = (): void => undefined;
+    let release = (): void => undefined;
+    const pending = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const mkdir = fsPromises.mkdir;
+    const holding = jest
+      .spyOn(fsPromises, 'mkdir')
+      .mockImplementation(async (...args) => {
+        if (args[0] === dirname(markerPath)) {
+          reached();
+          await released;
+        }
+        return Reflect.apply(mkdir, fsPromises, args);
+      });
+    let retired: Promise<boolean> | undefined;
+    try {
+      s.appendTerminalOutput(
+        projectId,
+        worktreeId,
+        'private',
+        Buffer.from('retiring scrollback'),
+      );
+      retired = s.retireRecipientTerminalRecord(worktreeId);
+      await pending;
+      // Quit never waits: it seals the retiring lifetime's queued batch now.
+      s.markAllLiveTerminalsExited('app-quit');
+    } finally {
+      holding.mockRestore();
+      release();
+    }
+    await retired;
+    const artifacts = fs
+      .readdirSync(mockRoot)
+      .filter((name) => name.startsWith('terminal-record-outbox'));
+    expect(artifacts).not.toEqual([]);
+    for (const name of artifacts) {
+      const bytes = fs.readFileSync(join(mockRoot, name), 'utf8');
+      expect(bytes).not.toContain('retiring scrollback');
+      expect(bytes).not.toContain('earlier scrollback');
+    }
+  },
+);
+
+it('RF5 denied retired loads cannot revive writes or recreate witness directories', async () => {
   const s = newStore({
     records,
     outbox: newOutbox(),
@@ -5225,6 +9069,191 @@ it.each(['mkdir', 'install'])(
   },
 );
 
+it('RF5 recipient purge scrubs damaged and temporary outbox copies without dropping other scopes or successors', async () => {
+  const projectId = SHARED_CONTAINER_VIEWER_PROJECT_ID;
+  const client = {
+    projectId,
+    worktreeId: 'recipient',
+    legacyLayout: 'workspaces' as const,
+    incarnation: null,
+    lifetimeId: 'retired',
+  };
+  const payload: TerminalRecordOutboxFile = {
+    version: 1,
+    producer: 'electron_main',
+    retirements: [],
+    scopes: [
+      {
+        client,
+        entries: [
+          {
+            seq: 1,
+            runId: 'old',
+            ops: [
+              {
+                op: 'output.append',
+                terminalId: 'a',
+                text: 'private scrollback',
+              },
+            ],
+          },
+        ],
+      },
+      {
+        client: { ...client, projectId: 'other' },
+        entries: [
+          {
+            seq: 1,
+            runId: 'other',
+            ops: [
+              {
+                op: 'output.append',
+                terminalId: 'b',
+                text: 'keep other output',
+              },
+            ],
+          },
+        ],
+      },
+      {
+        client: { ...client, lifetimeId: 'successor' },
+        entries: [
+          {
+            seq: 1,
+            runId: 'new',
+            ops: [
+              {
+                op: 'output.append',
+                terminalId: 'c',
+                text: 'keep successor output',
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+  const outbox = newOutbox();
+  const damaged = 'terminal-record-outbox.json.damaged-123';
+  const temporary = '.terminal-record-outbox.run-old.json.123.uuid.tmp';
+  // A crash while scrubbing a leftover temp leaves an atomic temp of that temp.
+  const scrubTemporary = `.${temporary}.456.uuid.tmp`;
+  fs.writeFileSync(join(mockRoot, damaged), '{bad JSON private scrollback');
+  fs.writeFileSync(join(mockRoot, temporary), JSON.stringify(payload));
+  fs.writeFileSync(join(mockRoot, scrubTemporary), JSON.stringify(payload));
+  const writing = outbox.write(payload);
+  const purging = outbox.scrubRecipient(
+    { projectId, worktreeId: 'recipient', lifetimeIds: ['retired'] },
+    (id) => id === 'successor',
+  );
+  await writing;
+  await purging;
+  expect(fs.existsSync(join(mockRoot, damaged))).toBe(false);
+  for (const name of fs.readdirSync(mockRoot)) {
+    const bytes = fs.readFileSync(join(mockRoot, name), 'utf8');
+    expect(bytes).not.toContain('private scrollback');
+    expect(bytes).toContain('keep other output');
+    expect(bytes).toContain('keep successor output');
+  }
+  // Even a stale caller's later async publication or synchronous quit seal is filtered.
+  await outbox.write(payload, 'stale');
+  outbox.seal(payload, 'quit');
+  for (const name of fs.readdirSync(mockRoot))
+    expect(fs.readFileSync(join(mockRoot, name), 'utf8')).not.toContain(
+      'private scrollback',
+    );
+});
+
+it.each([false, true])(
+  'RF7 delayed discovery cannot resurrect retirement (restart=%s)',
+  async (restart) => {
+    const outbox = newOutbox();
+    await outbox.write({
+      version: 1,
+      producer: 'electron_main',
+      retirements: [],
+      scopes: [
+        {
+          client: {
+            projectId: 'p',
+            worktreeId: 'w',
+            legacyLayout: 'workspaces',
+            incarnation: 'same',
+            lifetimeId: 'unseen-old',
+          },
+          entries: [
+            {
+              runId: 'unseen',
+              seq: 1,
+              ops: [
+                { op: 'session.upsert', session: session('deleted') },
+                {
+                  op: 'output.append',
+                  terminalId: 'deleted',
+                  text: 'must stay quarantined',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const read = jest
+      .spyOn(outbox, 'read')
+      .mockRejectedValue(new Error('temporarily unreadable'));
+    const s = newStore({
+      records,
+      outbox,
+      incarnation: () => Promise.resolve('same'),
+    });
+    await s.retireTerminalRecord({
+      projectId: 'p',
+      worktreeId: 'w',
+      incarnation: 'same',
+    });
+    read.mockRestore();
+    const next = restart
+      ? newStore({
+          records,
+          outbox: newOutbox(),
+          incarnation: () => Promise.resolve('same'),
+        })
+      : s;
+    await next.drainAll();
+    const view = await next.loadWorktreeState('p', 'w');
+    expect(view.terminals.map((entry) => entry.session.id)).not.toContain(
+      'deleted',
+    );
+    const quarantined = await newOutbox().read();
+    expect(
+      quarantined.outbox.scopes
+        .flatMap((scope) => scope.entries)
+        .filter((entry) => entry.quarantined)
+        .flatMap((entry) => entry.ops),
+    ).toContainEqual({
+      op: 'output.append',
+      terminalId: 'deleted',
+      text: 'must stay quarantined',
+    });
+    // A later deletion that captures the quarantined lifetime removes its output.
+    await next.retireTerminalRecord({
+      projectId: 'p',
+      worktreeId: 'w',
+      incarnation: 'same',
+    });
+    await next.drainAll();
+    const retained = await newOutbox().read();
+    expect(
+      retained.outbox.scopes
+        .flatMap((scope) => scope.entries)
+        .flatMap((entry) => entry.ops),
+    ).not.toContainEqual({
+      op: 'output.append',
+      terminalId: 'deleted',
+      text: 'must stay quarantined',
+    });
+  },
+);
 it('RF7 PTY output during drawer history loading does not prevent opening persisted history', async () => {
   fs.mkdirSync(join(legacyPath(), '..'), { recursive: true });
   fs.writeFileSync(legacyPath(), JSON.stringify(fixture()));
@@ -5258,4 +9287,865 @@ it('RF7 PTY output during drawer history loading does not prevent opening persis
   } finally {
     release();
   }
+});
+
+it.each(['activate-after-discovery', 'replay-after-restart'] as const)(
+  'RF7 prepared discovery barrier activates without changing its frozen intent: %s',
+  async (mode) => {
+    up = false;
+    const outbox = newOutbox();
+    await outbox.write({
+      version: 1,
+      producer: 'electron_main',
+      retirements: [],
+      scopes: [
+        {
+          client: {
+            projectId: 'p',
+            worktreeId: 'w',
+            legacyLayout: 'workspaces',
+            incarnation: 'same',
+            lifetimeId: 'unseen-old',
+          },
+          entries: [
+            {
+              runId: 'unseen',
+              seq: 1,
+              ops: [
+                { op: 'session.upsert', session: session('deleted') },
+                {
+                  op: 'output.append',
+                  terminalId: 'deleted',
+                  text: 'held predecessor',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const read = jest
+      .spyOn(outbox, 'read')
+      .mockRejectedValue(new Error('temporarily unreadable'));
+    const first = newStore({
+      records,
+      outbox,
+      incarnation: () => Promise.resolve('same'),
+    });
+    const intent = await first.prepareTerminalRecordRetirement({
+      projectId: 'p',
+      worktreeId: 'w',
+      incarnation: 'same',
+    });
+    const frozen = JSON.stringify(intent);
+    read.mockRestore();
+    let next = first;
+    if (mode === 'replay-after-restart') {
+      first.markAllLiveTerminalsExited('app-quit');
+      next = newStore({
+        records,
+        outbox: newOutbox(),
+        incarnation: () => Promise.resolve('same'),
+      });
+      // Journal decoders can reorder DTO keys; the local barrier key is canonical.
+      await next.replayTerminalRecordRetirement(
+        WorkerTerminalRecordRetireParamsSchema.parse(intent),
+      );
+    } else {
+      await next.drainAll();
+      const before = await next.loadWorktreeState('p', 'w');
+      expect(before.terminals.map((entry) => entry.session.id)).toContain(
+        'deleted',
+      );
+      await next.retirePreparedTerminalRecord(intent);
+    }
+    expect(JSON.stringify(intent)).toBe(frozen);
+    await next.prefetchPersistedEntry('deleted');
+    expect(next.getPersistedTerminalEntry('deleted')).toBeNull();
+    up = true;
+    await next.drainAll();
+    // A replacement remains usable; quarantine never holds new output behind it.
+    next.registerLiveSession(session('successor'));
+    next.appendTerminalOutput('p', 'w', 'successor', Buffer.from('new output'));
+    await next.drainAll();
+    const restored = newStore({
+      records,
+      outbox: newOutbox(),
+      incarnation: () => Promise.resolve('same'),
+    });
+    const after = await restored.loadWorktreeState('p', 'w');
+    expect(after.terminals.map((entry) => entry.session.id)).not.toContain(
+      'deleted',
+    );
+    expect(
+      after.terminals.find((entry) => entry.session.id === 'successor')
+        ?.scrollbackLines,
+    ).toEqual(['new output']);
+    const held = await newOutbox().read();
+    expect(
+      held.outbox.scopes
+        .flatMap((scope) => scope.entries)
+        .filter((entry) => entry.quarantined)
+        .flatMap((entry) => entry.ops),
+    ).toContainEqual({
+      op: 'output.append',
+      terminalId: 'deleted',
+      text: 'held predecessor',
+    });
+  },
+);
+
+it('R8 idle startup retries failed discovery until queued history drains', async () => {
+  const outbox = newOutbox();
+  await outbox.write({
+    version: 1,
+    producer: 'electron_main',
+    scopes: [
+      {
+        client: {
+          projectId: 'p',
+          worktreeId: 'w',
+          legacyLayout: 'workspaces',
+          incarnation: 'same',
+          lifetimeId: 'previous',
+        },
+        entries: [
+          {
+            runId: 'idle-predecessor',
+            seq: 1,
+            ops: [
+              { op: 'session.upsert', session: session('idle') },
+              { op: 'output.append', terminalId: 'idle', text: 'held history' },
+            ],
+          },
+        ],
+      },
+    ],
+    retirements: [],
+  });
+  const earlier = await outbox.read();
+  const read = jest
+    .spyOn(outbox, 'read')
+    .mockRejectedValue(new Error('EACCES'));
+  const s = newStore({
+    records,
+    outbox,
+    incarnation: () => Promise.resolve('same'),
+  });
+  jest.useFakeTimers();
+  try {
+    s.start();
+    await s.drainAll();
+    const drain = jest.spyOn(s, 'drainAll');
+    read.mockResolvedValue(earlier);
+    await jest.advanceTimersByTimeAsync(30_001);
+    expect(drain).toHaveBeenCalled();
+    for (const result of drain.mock.results)
+      if (result.type === 'return') await result.value;
+    const loaded = await s.loadWorktreeState('p', 'w');
+    expect(
+      loaded.terminals.find((entry) => entry.session.id === 'idle')
+        ?.scrollbackLines,
+    ).toEqual(['held history']);
+  } finally {
+    read.mockRestore();
+    jest.useRealTimers();
+  }
+});
+
+it.each([false, true])(
+  'R8 boot abandonment survives failed discovery (retained journal: %s)',
+  async (retained) => {
+    const prepared = await prepareUndiscoveredRetirement();
+    prepared.store.markAllLiveTerminalsExited('app-quit');
+    const outbox = newOutbox();
+    const read = jest
+      .spyOn(outbox, 'read')
+      .mockRejectedValue(new Error('EACCES'));
+    const s = newStore({
+      records: { ...records, apply: prepared.apply },
+      outbox,
+      incarnation: () => Promise.resolve('same'),
+    });
+    await s.reconcilePreparedTerminalRecordRetirements(
+      retained ? [prepared.intent] : [],
+    );
+    read.mockRestore();
+    await s.drainAll();
+    const calls = prepared.apply.mock.calls.filter(
+      ([params]) => params.producer.runId === 'unseen',
+    );
+    expect(calls).toHaveLength(retained ? 0 : 1);
+    const loaded = await s.loadWorktreeState('p', 'w');
+    expect(
+      loaded.terminals.find((entry) => entry.session.id === 'deleted')
+        ?.scrollbackLines,
+    ).toEqual(['pending history']);
+  },
+);
+
+it('R8 deferred boot proof never abandons a preparation created after the scan', async () => {
+  const prepared = await prepareUndiscoveredRetirement();
+  prepared.store.markAllLiveTerminalsExited('app-quit');
+  const outbox = newOutbox();
+  const read = jest
+    .spyOn(outbox, 'read')
+    .mockRejectedValue(new Error('EACCES'));
+  const s = newStore({
+    records: { ...records, apply: prepared.apply },
+    outbox,
+    incarnation: () => Promise.resolve('same'),
+  });
+  await s.reconcilePreparedTerminalRecordRetirements([]);
+  const newer = await s.prepareTerminalRecordRetirement({
+    projectId: 'new',
+    worktreeId: 'scope',
+  });
+  expect((await newOutbox().read()).outbox.discoveryFences).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ projectId: 'new', worktreeId: 'scope' }),
+    ]),
+  );
+  read.mockRestore();
+  await s.drainAll();
+  const held = (await outbox.read()).outbox;
+  expect(held.discoveryFences).toBeDefined();
+  expect(
+    held.discoveryFences?.filter(
+      (fence) => !fence.cancelled && !fence.activated,
+    ),
+  ).toEqual([
+    expect.objectContaining({ projectId: 'new', worktreeId: 'scope' }),
+  ]);
+  expect(
+    prepared.apply.mock.calls.filter(
+      ([params]) => params.producer.runId === 'unseen',
+    ),
+  ).toHaveLength(1);
+  s.cancelPreparedTerminalRecordRetirement(newer);
+});
+
+async function prepareUndiscoveredRetirement(): Promise<{
+  store: TerminalPersistenceStore;
+  outbox: TerminalRecordOutbox;
+  intent: WorkerTerminalRecordRetireParams;
+  apply: jest.MockedFunction<TerminalRecordClientPort['apply']>;
+}> {
+  const outbox = newOutbox();
+  await outbox.write({
+    version: 1,
+    producer: 'electron_main',
+    scopes: [
+      {
+        client: {
+          projectId: 'p',
+          worktreeId: 'w',
+          legacyLayout: 'workspaces',
+          incarnation: 'same',
+          lifetimeId: 'unseen-old',
+        },
+        entries: [
+          {
+            runId: 'unseen',
+            seq: 1,
+            ops: [
+              { op: 'session.upsert', session: session('deleted') },
+              {
+                op: 'output.append',
+                terminalId: 'deleted',
+                text: 'pending history',
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    retirements: [],
+  });
+  const read = jest
+    .spyOn(outbox, 'read')
+    .mockRejectedValue(new Error('unreadable'));
+  const apply = jest.fn(
+    (...args: Parameters<TerminalRecordClientPort['apply']>) =>
+      records.apply(...args),
+  );
+  const s = newStore({
+    records: { ...records, apply },
+    outbox,
+    incarnation: () => Promise.resolve('same'),
+  });
+  try {
+    const intent = await s.prepareTerminalRecordRetirement({
+      projectId: 'p',
+      worktreeId: 'w',
+      incarnation: 'same',
+    });
+    return { store: s, outbox, intent, apply };
+  } finally {
+    read.mockRestore();
+  }
+}
+
+it.each([
+  'activate',
+  'cancel',
+  'restart-abandoned',
+  'restart-uncertain',
+] as const)(
+  'RF7 pending-source send cannot cross activation and abandonment releases it: %s',
+  async (resolution) => {
+    const prepared = await prepareUndiscoveredRetirement();
+    const { intent, apply } = prepared;
+    const frozen = JSON.stringify(intent);
+    let s = prepared.store;
+    if (resolution.startsWith('restart')) {
+      s.markAllLiveTerminalsExited('app-quit');
+      s = newStore({
+        records: { ...records, apply },
+        outbox: newOutbox(),
+        incarnation: () => Promise.resolve('same'),
+      });
+    }
+    await s.drainAll();
+    const before = await s.loadWorktreeState('p', 'w');
+    expect(
+      before.terminals.find((entry) => entry.session.id === 'deleted')
+        ?.scrollbackLines,
+    ).toEqual(['pending history']);
+    expect(
+      apply.mock.calls.filter(([params]) => params.producer.runId === 'unseen'),
+    ).toHaveLength(0);
+    // Local lifetimes keep working while an earlier intent is undecidable.
+    s.registerLiveSession(session('successor'));
+    s.appendTerminalOutput('p', 'w', 'successor', Buffer.from('new output'));
+    await s.drainAll();
+    expect(
+      apply.mock.calls.some(([params]) => params.producer.runId !== 'unseen'),
+    ).toBe(true);
+    const local = await s.loadWorktreeState('p', 'w');
+    expect(
+      local.terminals.find((entry) => entry.session.id === 'successor')
+        ?.scrollbackLines,
+    ).toEqual(['new output']);
+    if (resolution === 'activate') await s.retirePreparedTerminalRecord(intent);
+    else if (resolution === 'cancel')
+      s.cancelPreparedTerminalRecordRetirement(intent);
+    else
+      await s.reconcilePreparedTerminalRecordRetirements(
+        resolution === 'restart-abandoned' ? [] : [intent],
+      );
+    await s.drainAll();
+    expect(JSON.stringify(intent)).toBe(frozen);
+    const held = (await newOutbox().read()).outbox;
+    const entries = held.scopes.flatMap((scope) => scope.entries);
+    if (resolution === 'activate') {
+      expect(
+        apply.mock.calls.filter(
+          ([params]) => params.producer.runId === 'unseen',
+        ),
+      ).toHaveLength(0);
+      expect(
+        entries.find((entry) => entry.runId === 'unseen')?.quarantined,
+      ).toBe(true);
+      expect(
+        (await s.loadWorktreeState('p', 'w')).terminals.map(
+          (entry) => entry.session.id,
+        ),
+      ).not.toContain('deleted');
+      expect(held.discoveryFences ?? []).toHaveLength(0);
+    } else if (resolution === 'restart-uncertain') {
+      expect(
+        entries.find((entry) => entry.runId === 'unseen')?.discoveryFenceIds,
+      ).toHaveLength(1);
+      expect(
+        apply.mock.calls.filter(
+          ([params]) => params.producer.runId === 'unseen',
+        ),
+      ).toHaveLength(0);
+    } else {
+      expect(
+        apply.mock.calls.filter(
+          ([params]) => params.producer.runId === 'unseen',
+        ),
+      ).toHaveLength(1);
+      expect(entries.filter((entry) => entry.runId === 'unseen')).toHaveLength(
+        0,
+      );
+      expect(held.discoveryFences ?? []).toHaveLength(0);
+    }
+  },
+);
+
+it('RF7 activation racing discovery uses the latest fence, not the read snapshot', async () => {
+  const {
+    store: s,
+    outbox,
+    intent,
+    apply,
+  } = await prepareUndiscoveredRetirement();
+  const read = outbox.read.bind(outbox);
+  let discovered = (): void => {};
+  let finish = (): void => {};
+  const entered = new Promise<void>((resolve) => {
+    discovered = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  jest.spyOn(outbox, 'read').mockImplementation(async (...args) => {
+    const result = await read(...args);
+    discovered();
+    await held;
+    return result;
+  });
+  const drain = s.drainAll();
+  await entered;
+  const retirement = s.retirePreparedTerminalRecord(intent);
+  finish();
+  await retirement;
+  await drain;
+  expect(
+    apply.mock.calls.filter(([params]) => params.producer.runId === 'unseen'),
+  ).toHaveLength(0);
+  expect(
+    (await s.loadWorktreeState('p', 'w')).terminals.map(
+      (entry) => entry.session.id,
+    ),
+  ).not.toContain('deleted');
+});
+
+it('RF7 a predecessor source stamped later by a clock that moved back stays behind the barrier', async () => {
+  // The earlier run started while the wall clock read an hour ahead.
+  fs.writeFileSync(
+    join(mockRoot, 'terminal-record-outbox.run-ahead.json'),
+    JSON.stringify({
+      version: 1,
+      producer: 'electron_main',
+      runStartedAt: Date.now() + 3_600_000,
+      retirements: [],
+      scopes: [
+        {
+          client: {
+            projectId: 'p',
+            worktreeId: 'w',
+            legacyLayout: 'workspaces',
+            incarnation: 'same',
+            lifetimeId: 'ahead-old',
+          },
+          entries: [
+            {
+              runId: 'ahead',
+              seq: 1,
+              ops: [
+                { op: 'session.upsert', session: session('deleted') },
+                {
+                  op: 'output.append',
+                  terminalId: 'deleted',
+                  text: 'must stay quarantined',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  const outbox = newOutbox();
+  const read = jest
+    .spyOn(outbox, 'read')
+    .mockRejectedValue(new Error('temporarily unreadable'));
+  const apply = jest.fn(
+    (...args: Parameters<TerminalRecordClientPort['apply']>) =>
+      records.apply(...args),
+  );
+  const s = newStore({
+    records: { ...records, apply },
+    outbox,
+    incarnation: () => Promise.resolve('same'),
+  });
+  await s.retireTerminalRecord({
+    projectId: 'p',
+    worktreeId: 'w',
+    incarnation: 'same',
+  });
+  read.mockRestore();
+  await s.drainAll();
+  expect(
+    apply.mock.calls.filter(([params]) => params.producer.runId === 'ahead'),
+  ).toHaveLength(0);
+  expect(
+    (await s.loadWorktreeState('p', 'w')).terminals.map(
+      (entry) => entry.session.id,
+    ),
+  ).not.toContain('deleted');
+  expect(
+    (await newOutbox().read()).outbox.scopes
+      .flatMap((scope) => scope.entries)
+      .find((entry) => entry.runId === 'ahead')?.quarantined,
+  ).toBe(true);
+});
+
+it('RF7 a pending barrier never routes independent writes through a failing outbox', async () => {
+  const { store: s, outbox, apply } = await prepareUndiscoveredRetirement();
+  await s.drainAll();
+  const write = jest
+    .spyOn(outbox, 'write')
+    .mockRejectedValue(Object.assign(new Error('denied'), { code: 'EACCES' }));
+  try {
+    s.registerLiveSession(session('independent'));
+    s.appendTerminalOutput('p', 'w', 'independent', Buffer.from('applied'));
+    await s.drainAll();
+  } finally {
+    write.mockRestore();
+  }
+  expect(
+    apply.mock.calls.filter(([params]) => params.producer.runId === 'unseen'),
+  ).toHaveLength(0);
+  const client = await s.recordClientFor('p', 'w');
+  expect(
+    authority.historyRead({ client, terminalId: 'independent' }).text,
+  ).toBe('applied');
+});
+
+it.each([
+  ['explicit forget', 'cancel'],
+  ['save forget', 'cancel'],
+  ['explicit forget', 'restart-abandoned'],
+  ['save forget', 'restart-abandoned'],
+] as const)(
+  'RF7 a terminal forgotten behind a pending barrier stays forgotten once it is released (%s, %s)',
+  async (method, release) => {
+    const prepared = await prepareUndiscoveredRetirement();
+    const { intent, apply } = prepared;
+    let s = prepared.store;
+    await s.drainAll();
+    const view = await s.loadWorktreeState('p', 'w');
+    expect(view.terminals.map((entry) => entry.session.id)).toContain(
+      'deleted',
+    );
+    if (method === 'explicit forget') s.forget('deleted');
+    else
+      s.saveWorktreeState({
+        ...view,
+        projectId: 'p',
+        worktreeId: 'w',
+        groups: [],
+        activeGroupId: null,
+        forgetTerminalIds: ['deleted'],
+      });
+    await s.drainAll();
+    if (release === 'cancel') s.cancelPreparedTerminalRecordRetirement(intent);
+    else {
+      s.markAllLiveTerminalsExited('app-quit');
+      s = newStore({
+        records: { ...records, apply },
+        outbox: newOutbox(),
+        incarnation: () => Promise.resolve('same'),
+      });
+      await s.reconcilePreparedTerminalRecordRetirements([]);
+    }
+    await s.drainAll();
+    const reloaded = newStore({
+      records,
+      outbox: newOutbox(),
+      incarnation: () => Promise.resolve('same'),
+    });
+    expect(
+      (await reloaded.loadWorktreeState('p', 'w')).terminals.map(
+        (entry) => entry.session.id,
+      ),
+    ).not.toContain('deleted');
+  },
+);
+
+it('R2 unwitnessed predecessor custody never keeps a daemon restore or the legacy fence in process', async () => {
+  await newOutbox().write({
+    version: 1,
+    producer: 'electron_main',
+    retirements: [],
+    scopes: [
+      {
+        client: earlierClient('unwitnessed'),
+        entries: [
+          {
+            seq: 1,
+            runId: 'unwitnessed',
+            ops: [{ op: 'session.upsert', session: session('unwitnessed') }],
+          },
+        ],
+      },
+    ],
+  });
+  const s = store();
+  await s.loadWorktreeState('p', 'w');
+  s.registerLiveSession(session('switch'));
+  s.appendTerminalOutput('p', 'w', 'switch', Buffer.from('last output'));
+  s.markTerminalExited('p', 'w', 'switch', 9, null);
+  expect(await s.prepareDaemonRestore('switch')).toBe(true);
+  await s.drainAll();
+  expect(JSON.parse(fs.readFileSync(legacyPath(), 'utf8'))).toMatchObject({
+    version: 3,
+    movedTo: 'terminal-record-authority',
+  });
+  expect(
+    (await newOutbox().read()).outbox.scopes
+      .flatMap((scope) => scope.entries)
+      .some((entry) => entry.runId === 'unwitnessed'),
+  ).toBe(true);
+});
+
+it('RF7 a retained recipient intent replayed before discovery keeps the successor history queued after it', async () => {
+  const projectId = SHARED_CONTAINER_VIEWER_PROJECT_ID;
+  const worktreeId = 'container';
+  const s = store();
+  await s.loadWorktreeState(projectId, worktreeId);
+  await s.retireRecipientTerminalRecord(worktreeId);
+  await s.drainAll();
+  up = false;
+  s.registerLiveSession({ ...session('successor'), projectId, worktreeId });
+  s.appendTerminalOutput(
+    projectId,
+    worktreeId,
+    'successor',
+    Buffer.from('new account output'),
+  );
+  await s.drainAll();
+  s.markAllLiveTerminalsExited('app-quit');
+  up = true;
+  // The next launch replays the journaled intent before it can read the outbox.
+  const outbox = newOutbox();
+  const read = jest
+    .spyOn(outbox, 'read')
+    .mockRejectedValue(new Error('unreadable'));
+  const next = newStore({ records, outbox });
+  await next.loadWorktreeState(projectId, worktreeId);
+  read.mockRestore();
+  await next.drainAll();
+  await next.drainAll();
+  expect(
+    (await next.loadWorktreeState(projectId, worktreeId)).terminals.find(
+      (entry) => entry.session.id === 'successor',
+    )?.scrollbackLines,
+  ).toEqual(['new account output']);
+});
+
+it('RF7 a forget behind a pending barrier reaches a healthy authority while the outbox fails', async () => {
+  const { store: s, outbox, intent } = await prepareUndiscoveredRetirement();
+  await s.drainAll();
+  s.registerLiveSession(session('deleted'));
+  s.appendTerminalOutput('p', 'w', 'deleted', Buffer.from('current output'));
+  s.markTerminalExited('p', 'w', 'deleted', 0, null);
+  await s.drainAll();
+  const client = await s.recordClientFor('p', 'w');
+  expect(authority.historyRead({ client, terminalId: 'deleted' }).text).toBe(
+    'current output',
+  );
+  const write = jest
+    .spyOn(outbox, 'write')
+    .mockRejectedValue(Object.assign(new Error('denied'), { code: 'EACCES' }));
+  try {
+    s.forget('deleted');
+    await s.drainAll();
+    expect(authority.historyRead({ client, terminalId: 'deleted' }).text).toBe(
+      '',
+    );
+  } finally {
+    write.mockRestore();
+  }
+  s.cancelPreparedTerminalRecordRetirement(intent);
+  await s.drainAll();
+  await s.drainAll();
+  expect(
+    (await store().loadWorktreeState('p', 'w')).terminals.map(
+      (entry) => entry.session.id,
+    ),
+  ).not.toContain('deleted');
+});
+
+it('RF7 a daemon restore never proceeds over pending-barrier ops of the same terminal', async () => {
+  const { store: s } = await prepareUndiscoveredRetirement();
+  await s.drainAll();
+  expect(
+    (await s.loadWorktreeState('p', 'w')).terminals.map(
+      (entry) => entry.session.id,
+    ),
+  ).toContain('deleted');
+  s.registerLiveSession(session('other'));
+  s.markTerminalExited('p', 'w', 'other', 0, null);
+  await s.drainAll();
+  expect(await s.prepareDaemonRestore('other')).toBe(true);
+  expect(await s.prepareDaemonRestore('deleted')).toBe(false);
+});
+
+it('a full refresh drops stale name evidence before another drawer renames', async () => {
+  fs.mkdirSync(join(legacyPath(), '..'), { recursive: true });
+  fs.writeFileSync(legacyPath(), JSON.stringify(fixture()));
+  const s = store();
+  const drawerA = await s.loadWorktreeState('p', 'w');
+  const drawerB = await s.loadWorktreeState('p', 'w');
+  // Review 27: A's own name save before its refresh is not name knowledge after it.
+  s.saveWorktreeState({
+    ...drawerA,
+    projectId: 'p',
+    worktreeId: 'w',
+    terminalCustomNames: { a: 'Original', b: 'Build' },
+  });
+  await s.drainAll();
+  s.saveWorktreeState({
+    ...drawerB,
+    projectId: 'p',
+    worktreeId: 'w',
+    terminalCustomNames: { b: 'Build' },
+  });
+  await s.drainAll();
+  const refreshedA = await s.loadWorktreeState(
+    'p',
+    'w',
+    false,
+    false,
+    drawerA.viewToken,
+  );
+  expect(refreshedA.history?.status).toBe('available');
+  expect(refreshedA.terminalCustomNames.a).toBeUndefined();
+  s.saveWorktreeState({
+    ...drawerB,
+    projectId: 'p',
+    worktreeId: 'w',
+    terminalCustomNames: { a: 'Renamed', b: 'Build' },
+  });
+  await s.drainAll();
+  jest.useFakeTimers();
+  try {
+    s.saveWorktreeState({
+      ...refreshedA,
+      projectId: 'p',
+      worktreeId: 'w',
+      drawerCollapsed: !refreshedA.drawerCollapsed,
+    });
+    // Presentation-only saves use the 100 ms debounce, not the record outbox.
+    await jest.advanceTimersByTimeAsync(100);
+    await s.drainAll();
+  } finally {
+    jest.useRealTimers();
+  }
+  authority.dispose();
+  authority = newAuthority();
+  const reloaded = await store().loadWorktreeState('p', 'w');
+  expect(reloaded.terminalCustomNames).toEqual({
+    a: 'Renamed',
+    b: 'Build',
+  });
+  expect(reloaded.drawerCollapsed).toBe(!refreshedA.drawerCollapsed);
+});
+
+it("a rename the store held back during a refresh survives that drawer's layout save", async () => {
+  fs.mkdirSync(join(legacyPath(), '..'), { recursive: true });
+  fs.writeFileSync(legacyPath(), JSON.stringify(fixture()));
+  const s = store();
+  let release = (): void => {
+    throw new Error('not initialized');
+  };
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const load = jest.fn((request: LoadWorktreeTerminalStateRequest) =>
+    s.loadWorktreeState(
+      request.projectId,
+      request.worktreeId,
+      request.historyStatusOnly,
+      request.historyConfirmationOnly,
+      request.retainedViewToken,
+    ),
+  );
+  const controller = createTerminalStore(() =>
+    durableTerminalClientFor(s, load),
+  );
+  try {
+    await controller.ensureHydrated('p', 'w');
+    expect(controller.store.getState().terminalCustomNames.a).toBe('API');
+    load.mockImplementationOnce(async (request) => {
+      await gate;
+      return s.loadWorktreeState(
+        request.projectId,
+        request.worktreeId,
+        false,
+        false,
+        request.retainedViewToken,
+      );
+    });
+    const refreshing = controller.store.getState().hydrateWorktree('p', 'w');
+    controller.store.getState().setTerminalName('p', 'w', 'a', null);
+    await s.drainAll();
+    const drawerB = await s.loadWorktreeState('p', 'w');
+    s.saveWorktreeState({
+      ...drawerB,
+      projectId: 'p',
+      worktreeId: 'w',
+      terminalCustomNames: { a: 'Renamed', b: 'Build' },
+    });
+    await s.drainAll();
+    release();
+    await refreshing;
+    // The full reply served 'Renamed'; the pending clear keeps it hidden here.
+    expect(controller.store.getState().terminalCustomNames.a).toBeUndefined();
+    const collapsed =
+      !controller.store.getState().worktrees['p/w'].drawerCollapsed;
+    jest.useFakeTimers();
+    controller.store.getState().setDrawerCollapsed('p', 'w', collapsed);
+    // Presentation-only saves use the 100 ms debounce, not the record outbox.
+    await jest.advanceTimersByTimeAsync(100);
+    await s.drainAll();
+    controller.reset();
+    jest.useRealTimers();
+    authority.dispose();
+    authority = newAuthority();
+    const reloaded = await store().loadWorktreeState('p', 'w');
+    expect(reloaded.terminalCustomNames).toEqual({
+      a: 'Renamed',
+      b: 'Build',
+    });
+    expect(reloaded.drawerCollapsed).toBe(collapsed);
+  } finally {
+    controller.reset();
+    jest.useRealTimers();
+  }
+});
+
+it('partial successor retries preserve another drawer full-save Close token', async () => {
+  fs.mkdirSync(join(legacyPath(), '..'), { recursive: true });
+  fs.writeFileSync(legacyPath(), JSON.stringify(fixture()));
+  const s = store();
+  const drawerB = await s.loadWorktreeState('p', 'w');
+  let drawerA = await s.loadWorktreeState('p', 'w');
+  up = false;
+  for (let attempt = 0; attempt < 65; attempt += 1) {
+    drawerA = await s.loadWorktreeState(
+      'p',
+      'w',
+      false,
+      false,
+      drawerA.viewToken,
+    );
+    expect(drawerA.history?.status).toBe('unavailable');
+  }
+  up = true;
+  // B's token still names what B was shown: its omission ungroups 'a',
+  // keeping its history (CAN-6616); an evicted token would leave it grouped.
+  s.saveWorktreeState(keepOnly(drawerB, 'b'));
+  await s.drainAll();
+  authority.dispose();
+  authority = newAuthority();
+  const ungrouped = await store().loadWorktreeState('p', 'w');
+  expect(ungrouped.terminals.map(({ session }) => session.id)).toEqual([
+    'a',
+    'b',
+  ]);
+  expect(ungrouped.groups.flatMap((g) => g.terminalIds)).toEqual(['b']);
+  // B's Close names what it forgets.
+  s.saveWorktreeState({ ...keepOnly(drawerB, 'b'), forgetTerminalIds: ['a'] });
+  await s.drainAll();
+  authority.dispose();
+  authority = newAuthority();
+  const reloaded = await store().loadWorktreeState('p', 'w');
+  expect(reloaded.terminals.map(({ session }) => session.id)).toEqual(['b']);
 });

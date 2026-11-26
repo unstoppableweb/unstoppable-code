@@ -62,8 +62,7 @@ import type {
 } from '@canopy/desktop-shared/types/skills';
 import {
   ChoiceList,
-  ChoiceListRow,
-  DialogFormField,
+  ChoiceField,
   FieldError,
   FormField,
   SkillFilePreview,
@@ -356,10 +355,7 @@ export function AddSkillsModal({
         {/* Source input step */}
         {modalStep.step === 'source' && (
           <>
-            <DialogFormField
-              label="GitHub repository"
-              htmlFor="add-skills-source-input"
-            >
+            <FormField label="GitHub repository" id="add-skills-source-input">
               <TextInput
                 id="add-skills-source-input"
                 value={sourceInput}
@@ -375,7 +371,7 @@ export function AddSkillsModal({
                 placeholder="owner/repo or https://github.com/owner/repo"
                 autoFocus
               />
-            </DialogFormField>
+            </FormField>
             <Button
               className="self-start"
               variant="primary"
@@ -453,23 +449,25 @@ export function AddSkillsModal({
                   const risk: SkillRiskInfo | undefined =
                     modalStep.response.riskInfo[skill.name];
                   return (
-                    <ChoiceListRow
+                    <ChoiceField
                       key={skill.name}
-                      selected={selectedNames.has(skill.name)}
-                      onClick={() => toggleSkill(skill.name)}
-                      trailing={
-                        risk ? <RiskBadge level={risk.level} /> : undefined
+                      layout="row"
+                      checked={selectedNames.has(skill.name)}
+                      onChange={() => toggleSkill(skill.name)}
+                      end={risk ? <RiskBadge level={risk.level} /> : undefined}
+                      label={
+                        <>
+                          <span className="block truncate font-medium">
+                            {skill.name}
+                          </span>
+                          {skill.description && (
+                            <span className="mt-0.5 line-clamp-2 block text-xs fg-secondary">
+                              {skill.description}
+                            </span>
+                          )}
+                        </>
                       }
-                    >
-                      <span className="block truncate font-medium">
-                        {skill.name}
-                      </span>
-                      {skill.description && (
-                        <span className="mt-0.5 line-clamp-2 block text-xs fg-secondary">
-                          {skill.description}
-                        </span>
-                      )}
-                    </ChoiceListRow>
+                    />
                   );
                 })}
               </ChoiceList>

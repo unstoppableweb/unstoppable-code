@@ -17,9 +17,9 @@ import {
 } from '../icons/AppIcons';
 import { Button } from './Button';
 import {
-  useDialogFormFieldDescribedBy,
-  useDialogFormFieldLabelledBy,
-} from './dialog-form-field-context';
+  useFormFieldDescribedBy,
+  useFormFieldLabelledBy,
+} from './form-field-context';
 import { FieldPickerChevron, FieldPickerTrigger } from './Field';
 import { FLOATING_MENU_GAP } from './FloatingMenu';
 import { Popover } from './Popover';
@@ -341,8 +341,8 @@ export const DateField = forwardRef<HTMLButtonElement, DateFieldProps>(
     const triggerRef = useRef<HTMLButtonElement | null>(null);
     const focusedDayRef = useRef<HTMLButtonElement | null>(null);
     const calendarId = useId();
-    const describedBy = useDialogFormFieldDescribedBy(id, ariaDescribedBy);
-    const labelledBy = useDialogFormFieldLabelledBy(id, ariaLabel, undefined);
+    const describedBy = useFormFieldDescribedBy(id, ariaDescribedBy);
+    const labelledBy = useFormFieldLabelledBy(id, ariaLabel, undefined);
     const selected = parseIsoDateValue(value);
     const minDate = min ? parseIsoDateValue(min) : null;
 

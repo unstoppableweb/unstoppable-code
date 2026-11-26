@@ -392,6 +392,8 @@ export function registerTerminalHandlers(
         request.projectId,
         request.worktreeId,
         request.historyStatusOnly === true,
+        request.historyConfirmationOnly === true,
+        request.retainedViewToken,
       );
     },
   );

@@ -18,7 +18,7 @@ import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/post
 import {
   Stack,
   Button,
-  DialogFormField,
+  FormField,
   EmptyStateRow,
   ErrorBanner,
   HeaderActionButton,
@@ -134,7 +134,7 @@ function EditorModal({
   return (
     <DialogModal onClose={onClose} title={heading} maxWidth="md">
       <Stack gap="item">
-        <DialogFormField label="Title" htmlFor={titleId}>
+        <FormField label="Title" id={titleId}>
           <TextInput
             id={titleId}
             type="text"
@@ -143,8 +143,8 @@ function EditorModal({
             placeholder={`${heading} title`}
             autoFocus
           />
-        </DialogFormField>
-        <DialogFormField label="Content" htmlFor={contentId}>
+        </FormField>
+        <FormField label="Content" id={contentId}>
           <div className={`${POSTHOG_REPLAY_BLOCK_CLASS} w-full`}>
             <TextArea
               id={contentId}
@@ -154,7 +154,7 @@ function EditorModal({
               rows={10}
             />
           </div>
-        </DialogFormField>
+        </FormField>
         <ErrorBanner
           errorSource="editor-modal-save"
           className=""

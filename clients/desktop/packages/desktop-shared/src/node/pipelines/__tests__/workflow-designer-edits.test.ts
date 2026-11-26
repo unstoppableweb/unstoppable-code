@@ -15,9 +15,11 @@ import {
   setWorkflowStepId,
   type WorkflowDesignerEditResult,
 } from '@canopy/pipeline-interop/workflow-designer-edits';
-import { workflowJobStructure } from '@canopy/pipeline-interop/workflow-designer-job-edits';
-import { splitWorkflowJob } from '@canopy/pipeline-interop/workflow-designer-split-edits';
 import { dependencyStepIds } from '@canopy/pipeline-interop/workflow-designer-edits';
+import { workflowJobStructure } from '@canopy/pipeline-interop/workflow-designer-job-edits';
+import * as workflowDesignerSplitEdits from '@canopy/pipeline-interop/workflow-designer-split-edits';
+
+const { splitWorkflowJob } = workflowDesignerSplitEdits;
 
 const ROOT = resolve(__dirname, '../../../../../..');
 const CORPUS_DIRS = [
@@ -942,22 +944,29 @@ describe('workflow designer job structure (CAN-4224 phase 08)', () => {
         outputs: { value: 'x' },
         steps: [{ run: 'echo' }],
       };
-    // One job needs every other, with long step text: it's scanned once,
-    // not once per need.
+    // One job needs every other, with long step text. That text is scanned
+    // once. Scanning it once per need calls `reads` 401 times here and still
+    // finishes in the same half-second range, so a wall-clock budget cannot
+    // tell the two apart.
     jobs.fan_in = {
       needs: Object.keys(jobs),
       steps: Array.from({ length: 40 }, (_, index) => ({
         run: `echo \${{ needs.job_${String(index)}.outputs.value }} ${'x'.repeat(2000)}`,
       })),
     };
-    const started = performance.now();
-    workflowJobStructure({ name: 'Large', on: 'dispatch', jobs }, 'job_200');
-    const fanIn = workflowJobStructure(
-      { name: 'Large', on: 'dispatch', jobs },
-      'fan_in',
-    );
-    expect(performance.now() - started).toBeLessThan(500);
-    expect(fanIn.readNeeds.size).toBe(40);
+    const reads = jest.spyOn(workflowDesignerSplitEdits, 'reads');
+    try {
+      workflowJobStructure({ name: 'Large', on: 'dispatch', jobs }, 'job_200');
+      reads.mockClear();
+      const fanIn = workflowJobStructure(
+        { name: 'Large', on: 'dispatch', jobs },
+        'fan_in',
+      );
+      expect(reads).toHaveBeenCalledTimes(1);
+      expect(fanIn.readNeeds.size).toBe(40);
+    } finally {
+      reads.mockRestore();
+    }
   });
 
   it('marks a job a path only when it reads the router route', () => {

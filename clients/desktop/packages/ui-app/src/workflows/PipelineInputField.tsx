@@ -9,7 +9,7 @@
 import { useId, type JSX } from 'react';
 import type { RemoteControlPipelineInputDefinition } from '@canopy/protocol/remote-control/shell';
 import {
-  DialogFormField,
+  FormField,
   Select,
   TextInput,
   type SelectOption,
@@ -64,9 +64,9 @@ export function PipelineInputField({
   const invalid = error ? true : undefined;
   const describedBy = error ? errorId : undefined;
   return (
-    <DialogFormField
+    <FormField
       label={`${label}${definition.required ? ' *' : ''}`}
-      htmlFor={id}
+      id={id}
       error={error}
       errorId={errorId}
     >
@@ -93,6 +93,6 @@ export function PipelineInputField({
           onChange={(event) => onChange(event.target.value)}
         />
       )}
-    </DialogFormField>
+    </FormField>
   );
 }

@@ -7,6 +7,8 @@ description: Teaches Claude how to write and edit {{BRAND_DISPLAY_NAME}} pipelin
 
 This skill covers how to write and edit {{BRAND_DISPLAY_NAME}} pipeline YAML files and action manifests.
 
+In the app a pipeline is a **workflow**: it has a page under **Workflows → Library** with a Trigger tab, and **schedules** attach to that page. A schedule isn't YAML. It is a separate record that runs the workflow at set times with its own input values, and one workflow can have several. See [Workflows and schedules](#workflows-and-schedules).
+
 {{BRAND_DISPLAY_NAME}} pipelines follow GitHub Actions conventions: a pipeline contains **jobs** arranged in a dependency graph, and each job contains sequential **steps** that either run inline scripts or invoke reusable **actions**.
 
 Important runtime and authoring rules:
@@ -106,7 +108,7 @@ pipeline:
 | `icon`                           | string           | no       | Emoji icon                                                                                                                                                                                |
 | `readonly`                       | boolean          | no       | Prevents editing in the UI                                                                                                                                                                |
 | `scope`                          | string or array  | no       | Execution scope(s): `global`, `directory`, or `worktree`. Omitted means `directory`. `chat-project` is not supported. A worktree execution can run directory-scoped pipelines.            |
-| `on`                             | string or object | yes      | Trigger type(s): `'dispatch'`, `'plan_ready'`, `'task_ready'`, or object form. Trigger-scoped inputs live under `on.dispatch.inputs`, `on.plan_ready.inputs`, and `on.task_ready.inputs`. |
+| `on`                             | string or object | yes      | Trigger type(s): `'dispatch'`, `'workflow'`, `'plan_ready'`, `'task_ready'`, or object form. Each trigger declares its inputs in `on.<trigger>.inputs`, for example `on.workflow.inputs`. |
 | `env`                            | map              | no       | Pipeline-level environment variables                                                                                                                                                      |
 | `defaults.run.shell`             | ShellType        | no       | Default shell for `run` steps                                                                                                                                                             |
 | `defaults.run.working_directory` | string           | no       | Default working directory                                                                                                                                                                 |
@@ -270,16 +272,18 @@ What a run sees:
 
 The `on` field declares which events can start the pipeline.
 
-| Trigger      | Description                                                     |
-| ------------ | --------------------------------------------------------------- |
-| `dispatch`   | Manually triggered via the UI or API (default)                  |
-| `plan_ready` | Triggered when an agent plan is ready to run through a pipeline |
-| `task_ready` | Triggered when a task definition is ready to be planned         |
+| Trigger      | Description                                                                                                                                                                                           |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dispatch`   | **Manual**: run from the UI, a chat, an agent, another pipeline or an API (default)                                                                                                                   |
+| `workflow`   | **Workflow**: started by the workflow's schedules; a child pipeline inherits its parent's event when it declares that trigger, else runs as `workflow` when it declares `workflow` without `dispatch` |
+| `plan_ready` | Triggered when an agent plan is ready to run through a pipeline                                                                                                                                       |
+| `task_ready` | Triggered when a task definition is ready to be planned                                                                                                                                               |
 
 **String shorthand** — single trigger with no configuration:
 
 ```yaml
 on: dispatch
+on: workflow
 on: plan_ready
 on: task_ready
 ```
@@ -308,7 +312,30 @@ on:
         default: engineer
 ```
 
-Dispatch inputs are declared under `on.dispatch.inputs`. Plan-ready inputs are declared under `on.plan_ready.inputs`. Task-ready inputs are declared under `on.task_ready.inputs`. Top-level `inputs` is no longer supported.
+Dispatch inputs are declared under `on.dispatch.inputs`. Workflow inputs are declared under `on.workflow.inputs`. Plan-ready inputs are declared under `on.plan_ready.inputs`. Task-ready inputs are declared under `on.task_ready.inputs`. Top-level `inputs` is no longer supported.
+
+#### `workflow` trigger
+
+`workflow` marks a pipeline as one its schedules start. It takes `inputs` like `dispatch`, and each schedule supplies their values. The rules that decide how a schedule runs:
+
+- A pipeline that declares `dispatch` runs its schedules as `dispatch`, even when it also declares `workflow`. Its schedules' inputs resolve from `on.dispatch.inputs`, and `{{BRAND_EXPRESSION_ROOT}}.event_name` is `dispatch`.
+- A pipeline that declares `workflow` without `dispatch` runs its schedules as `workflow`, resolving `on.workflow.inputs`. It runs on a schedule only after a **person** saves or approves its current content on its page. A write through the `pipeline.create` or `pipeline.update` action clears that approval, and agents can't approve. A workflow assistant edit saved in the editor counts as the person's save and approves the saved content.
+- **A schedule an agent creates, and an agent's Run now, run only as `dispatch`.** When an agent creates a workflow it will schedule, declare `dispatch`. The refusal otherwise reads "Workflow does not support dispatch triggers.", which means the pipeline lacks a Manual (`dispatch`) trigger. Don't add `dispatch` to an existing workflow to get past it unless the person asks: its existing schedules would then run as `dispatch`, without the approval they needed. Check the `on` block (`pipeline.get` with `includeYaml: true`). For a saved workflow that declares `workflow` but not `dispatch`, the person selects **Approve for schedules** on its page, then adds the schedule with Add schedule. Before approval a schedule can only be saved paused; approval is needed to save it enabled, to enable it, and for each timed run on this computer. A workflow from a package installed with an automation can't be approved: ask its publisher for a version with a Manual trigger, then reinstall it. A repository or shared workflow that declares `workflow` but not `dispatch` can't run on a schedule for anyone (install a shared one and schedule the copy).
+- A pipeline that declares neither can't be scheduled.
+
+When creating a pipeline that will run on schedules, declare both triggers with the same inputs, as a converted chat automation does. Leave an existing pipeline's triggers as they are unless the person asks:
+
+```yaml
+on:
+  dispatch:
+    inputs:
+      project_id:
+        required: false
+  workflow:
+    inputs:
+      project_id:
+        required: false
+```
 
 #### `plan_ready` trigger
 
@@ -594,7 +621,7 @@ In practice, bundled nested execution is usually exposed through `builtin/run-pi
 - `inputs`: JSON object of child pipeline inputs
 - `cwd`: optional child working directory relative to the parent step cwd
 
-Child pipelines inherit the parent execution's event data and paths. A child of a `plan_ready` pipeline receives the same writable plan path, and a child of a `task_ready` pipeline receives the same task and reserved plan paths. The child inherits the parent's `event_name` only when its own `on` declaration includes that trigger; otherwise its `event_name` is `dispatch`. For example, a dispatch-only child of a `plan_ready` pipeline sees `event_name: dispatch`, while a child declaring `on: [plan_ready]` sees `event_name: plan_ready`.
+Child pipelines inherit the parent execution's event data and paths. A child of a `plan_ready` pipeline receives the same writable plan path, and a child of a `task_ready` pipeline receives the same task and reserved plan paths. The child inherits the parent's `event_name` only when its own `on` declaration includes that trigger; otherwise its `event_name` is `workflow` when it declares `workflow` without `dispatch`, and `dispatch` in every other case. For example, a dispatch-only child of a `plan_ready` pipeline sees `event_name: dispatch`, while a child declaring `on: [plan_ready]` sees `event_name: plan_ready`.
 
 Nested execution target selection is a first-class **step property**, not a `with` input:
 
@@ -860,7 +887,7 @@ job.max_retries                   # max_retries from job definition
 matrix.<axis>                     # Current matrix value for an authored axis
 assets.<id>.path                  # Resolved folder of a declared asset ('' when an optional one is missing)
 {{BRAND_EXPRESSION_ROOT}}.pipeline_data_dir          # The pipeline's own data folder, kept across runs
-{{BRAND_EXPRESSION_ROOT}}.event_name                 # Trigger that started this execution ('dispatch', 'plan_ready', or 'task_ready')
+{{BRAND_EXPRESSION_ROOT}}.event_name                 # Trigger that started this execution ('dispatch', 'workflow', 'plan_ready', or 'task_ready')
 {{BRAND_EXPRESSION_ROOT}}.event.plan_ready.plan_path # Path to shared plan file (writable by the pipeline)
 {{BRAND_EXPRESSION_ROOT}}.event.task_ready.task_path # Path to the task definition file
 {{BRAND_EXPRESSION_ROOT}}.event.task_ready.plan_path # Reserved writable plan path for generated plans
@@ -1033,6 +1060,16 @@ Rules:
 
 A pipeline with `scope: global` can run with no project or task (an automation's **No project** destination, `target: { kind: 'global' }`). It runs in a scratch folder that is deleted with the execution, can't use project actions or project pipelines, and runs as its owner (`{{BRAND_EXPRESSION_ROOT}}.owner`). Its steps name every project, task and chat with explicit IDs, usually through `inputs`, since there is no current project to default to.
 
+## Workflows and schedules
+
+Every saved user pipeline is a workflow with its own page. Its schedules are records outside the YAML, each with a cron or one-time trigger, where it runs, and its own input values. The pipeline is the reusable part, and several schedules can run it with different inputs.
+
+- **Inputs replace the old run target.** Make the project, task, chat or bot a workflow acts on an input (`project_id`, `task_id`, `chat_id`, `bot_id`) that each schedule sets, rather than hard-coding IDs. A `scope: global` workflow can then run with no project and still work in a repository by creating a worktree from `inputs.project_id`.
+- **A person** adds a schedule with **Add schedule** on the workflow's Trigger tab.
+- **An agent** adds a schedule with the `automation.create` action using `worktree_pipeline`, the workflow's `pipelineId`, its `pipelineSource` from `pipeline.list` and `inputs`. Choose `target` from where the person wants it to run: `{ kind: "global" }` only for no project (the workflow must declare `scope: global`), otherwise the project's `workspaceId` with a `project`, `new_worktree` or `task` target. A saved workflow's (`pipelineSource: "user"`) schedules show on its page. A repository workflow (`pipelineSource: "project"`) needs the project's `workspaceId` and, in a multi-repository project, the `repoId` of the repository it lives in. Schedule a shared workflow only as an installed copy the person has reviewed (`pipelineSource: "user"`), never the live share, which its publisher can change. For a schedule that only starts a chat with a prompt, the chat variants of `automation.create` create the workflow and its first schedule together.
+- An agent's schedule runs only as `dispatch`, so the workflow must declare `dispatch` (see [`workflow` trigger](#workflow-trigger)). The app refuses an agent's schedule on a workflow someone installed, or on one another agent wrote with authority granted to it.
+- YAML an agent writes with the `pipeline.create` or `pipeline.update` action can't contain inline `run` steps; use `uses:` with a trusted or builtin action. The workflow assistant's saves count as the person's and have no such limit.
+
 ## Examples
 
 ### Minimal pipeline
@@ -1052,13 +1089,17 @@ pipeline:
 
 ### Chat automation as a global pipeline
 
-This is the workflow an automation owns when it starts a chat in a cowork project each run: create a task, send the prompt, wait for the reply. The project is an input, so the steps hold no local IDs, and `replace_empty_chat` keeps the new task to one chat in runs an automation starts.
+This is the workflow an automation owns when it starts a chat in a cowork project each run: create a task, send the prompt, wait for the reply. The project is an input, so the steps hold no local IDs; each schedule sets `project_id`. `replace_empty_chat` keeps the new task to one chat in runs an automation starts.
 
 ```yaml
 name: Morning check
 scope: global
 on:
   dispatch:
+    inputs:
+      project_id:
+        required: false
+  workflow:
     inputs:
       project_id:
         required: false

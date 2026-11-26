@@ -19,7 +19,7 @@ import { DocumentProse } from './DocumentProse';
 import { FileTreeRow } from './FileTreeRow';
 import { Markdown } from './Markdown';
 import { OverlayScrollArea } from '../primitives/OverlayScrollArea';
-import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
+import { HoverCard } from '../primitives/HoverCard';
 import { Tooltip } from '../primitives/Tooltip';
 
 export function SkillMarkdownBody({
@@ -63,7 +63,7 @@ export function FileTab({
       data-active={active ? 'true' : undefined}
       className={`group inline-flex shrink-0 items-center rounded-md border text-xs transition-colors ${onClose ? 'pr-1' : ''} ${active ? 'bg-secondary fg-primary' : 'border-transparent fg-secondary hover:fg-primary hover:bg-muted'}`}
     >
-      <RichHoverTooltip
+      <HoverCard
         content={title}
         surfaceClassName="w-max max-w-72"
         surfacePadding="compact"
@@ -77,7 +77,7 @@ export function FileTab({
         >
           {label}
         </ControlButton>
-      </RichHoverTooltip>
+      </HoverCard>
       {onClose && (
         <ControlButton
           type="button"

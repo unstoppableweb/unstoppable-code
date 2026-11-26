@@ -14,7 +14,7 @@ import {
   MessageIcon,
   ShareIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { ActionTooltip } from '@/components/shared/ActionTooltip';
+import { Tooltip } from '@canopy/ui-shared/components';
 import { ShareRunModal } from '@/components/shared/ShareRunModal';
 import { useShareRunAction } from '@/hooks/useShareRunAction';
 import { useActivityStore } from '@/stores/activityStore';
@@ -247,8 +247,8 @@ export function ShareSessionControl({
 
   return (
     <div className="relative">
-      <ActionTooltip
-        title={isShared ? 'Sharing settings' : `Share ${CHAT_UNIT_LABEL}`}
+      <Tooltip
+        label={isShared ? 'Sharing settings' : `Share ${CHAT_UNIT_LABEL}`}
         description={
           isShared
             ? `Manage or unshare this ${CHAT_UNIT_LABEL}.`
@@ -275,7 +275,7 @@ export function ShareSessionControl({
         >
           <ShareIcon size="sm" />
         </Button>
-      </ActionTooltip>
+      </Tooltip>
 
       {/* No unread badge here by design. This icon-button variant only ever
           renders beside `RunCommentsButton` (both are gated on the same

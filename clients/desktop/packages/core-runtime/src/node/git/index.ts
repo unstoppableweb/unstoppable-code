@@ -32,6 +32,12 @@ export {
   type WorkerGitLocalMutationHost,
   type WorkerGitLocalMutationHandlers,
 } from './worker-git-local-mutations';
+export {
+  createWorkerGitRepositoryCreationHandlers,
+  type WorkerGitRepositoryCreationName,
+  type WorkerGitRepositoryCreationHost,
+  type WorkerGitRepositoryCreationHandlers,
+} from './worker-git-repository-creation';
 
 export * from './worktree-writes';
 export * from './worker-git-worktree-writes';

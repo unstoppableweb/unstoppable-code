@@ -19,7 +19,32 @@ interface BotVisibilityDependencies {
 export function createBotVisibility(dependencies: BotVisibilityDependencies): {
   readVisibleBots(): Promise<BotRecord[]>;
   readVisibleBot(botId: string): Promise<BotRecord>;
+  projectVisible(record: BotRecord): Promise<BotRecord>;
 } {
+  async function withVisiblePins(
+    record: BotRecord,
+    warning: { logged: boolean },
+  ): Promise<BotRecord> {
+    const pins: BotPin[] = [];
+    for (const pin of record.pins) {
+      try {
+        if (await dependencies.projectExists(pin.projectId)) pins.push(pin);
+      } catch {
+        if (!warning.logged) {
+          warning.logged = true;
+          try {
+            logMainProcessWarn(
+              '[bots] Saved project pin could not be verified; hiding it.',
+            );
+          } catch {
+            // A logging failure must not block visibility checks.
+          }
+        }
+      }
+    }
+    return { ...record, pins };
+  }
+
   async function readVisibleBots(): Promise<BotRecord[]> {
     await dependencies.store.load();
     const enabled = dependencies.isEnabled();
@@ -31,27 +56,9 @@ export function createBotVisibility(dependencies: BotVisibilityDependencies): {
           (enabled || record.botId === APP_ADVISOR_BOT_ID),
       );
     const visible: BotRecord[] = [];
-    let loggedUnconfirmedPin = false;
-    for (const record of records) {
-      const pins: BotPin[] = [];
-      for (const pin of record.pins) {
-        try {
-          if (await dependencies.projectExists(pin.projectId)) pins.push(pin);
-        } catch {
-          if (!loggedUnconfirmedPin) {
-            loggedUnconfirmedPin = true;
-            try {
-              logMainProcessWarn(
-                '[bots] Saved project pin could not be verified; hiding it.',
-              );
-            } catch {
-              // A logging failure must not block visibility reads.
-            }
-          }
-        }
-      }
-      visible.push({ ...record, pins });
-    }
+    const warning = { logged: false };
+    for (const record of records)
+      visible.push(await withVisiblePins(record, warning));
     return dependencies.isEnabled()
       ? visible
       : visible.filter((record) => record.botId === APP_ADVISOR_BOT_ID);
@@ -63,7 +70,12 @@ export function createBotVisibility(dependencies: BotVisibilityDependencies): {
     return record;
   }
 
-  return { readVisibleBots, readVisibleBot };
+  /** Filter pins on the supplied record, including a replayed receipt. */
+  function projectVisible(record: BotRecord): Promise<BotRecord> {
+    return withVisiblePins(record, { logged: false });
+  }
+
+  return { readVisibleBots, readVisibleBot, projectVisible };
 }
 
 function mainBotVisibility(): ReturnType<typeof createBotVisibility> {
@@ -80,4 +92,8 @@ export async function readVisibleBots(): Promise<BotRecord[]> {
 
 export async function readVisibleBot(botId: string): Promise<BotRecord> {
   return mainBotVisibility().readVisibleBot(botId);
+}
+
+export function projectVisible(record: BotRecord): Promise<BotRecord> {
+  return mainBotVisibility().projectVisible(record);
 }

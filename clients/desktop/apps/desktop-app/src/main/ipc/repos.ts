@@ -3,7 +3,7 @@ import {
   repositoryNameFromCloneUrl,
 } from '@canopy/protocol/remote-control/shell';
 import { type Dirent } from 'node:fs';
-import { mkdir, readdir, stat } from 'node:fs/promises';
+import { mkdir, readdir, rmdir, stat } from 'node:fs/promises';
 import { basename, isAbsolute, join, posix, win32 } from 'node:path';
 import {
   IPC_CHANNELS,
@@ -22,10 +22,8 @@ import {
 } from '@canopy/desktop-shared/types';
 import {
   addRemoteAndSync,
-  cloneRepo,
   getRemoteUrl,
   getRepoName,
-  initLocalRepo,
   isGitRepo,
 } from '../lib/git';
 import { getDefaultReposDir } from '../lib/paths';
@@ -33,10 +31,15 @@ import { readCanopyJson } from '../lib/canopy-json';
 import { remoteUrlsMatch } from '../lib/repo-url-matcher';
 import { showOpenDialogForEvent } from '../lib/dialog-window';
 import { registerIpcHandler } from './register';
-import { ensureUniqueDestination } from '../lib/unique-destination';
+import { reserveUniqueDestination } from '../lib/unique-destination';
 import { readRepositoryRemoteUrl } from '../canopy-runtime/worker-git-dispatch';
 import { remoteUrlForCaller } from '../canopy-runtime/remote-url-redaction';
 import type { WorkerGitDispatcher } from '../canopy-runtime/worker-git-adapter';
+import {
+  cloneRepositoryThroughWorker,
+  initializeRepositoryThroughWorker,
+  type WorkerGitRepositoryCreationDispatcher,
+} from '../canopy-runtime/worker-git-repository-creation-dispatch';
 import type { DesktopIpcCallerResolver } from './file-tree';
 
 function inferRepoNameFromRemote(remoteUrl: string): string {
@@ -97,7 +100,7 @@ async function getAndEnsureDefaultReposDir(): Promise<string> {
 }
 
 export function registerRepoHandlers(runtime: {
-  dispatcher: WorkerGitDispatcher;
+  dispatcher: WorkerGitDispatcher & WorkerGitRepositoryCreationDispatcher;
   resolveCaller: DesktopIpcCallerResolver;
 }): void {
   registerIpcHandler(
@@ -237,7 +240,8 @@ export function registerRepoHandlers(runtime: {
 
   registerIpcHandler(
     IPC_CHANNELS.repoAddRemote,
-    async (_event, request: AddRemoteRepoRequest): Promise<RepoSelection> => {
+    async (event, request: AddRemoteRepoRequest): Promise<RepoSelection> => {
+      const caller = runtime.resolveCaller(event);
       const remoteUrl = normalizeRepositoryCloneUrl(request.remoteUrl);
       if (!remoteUrl) {
         throw new Error('Remote URL is required');
@@ -255,11 +259,25 @@ export function registerRepoHandlers(runtime: {
         throw new Error('Unable to determine repository name from URL');
       }
 
-      const destinationPath = await ensureUniqueDestination(
+      const destinationPath = await reserveUniqueDestination(
         destinationDir,
         preferredName,
       );
-      await cloneRepo(remoteUrl, destinationPath);
+      try {
+        await cloneRepositoryThroughWorker(
+          {
+            kind: 'clone',
+            url: remoteUrl,
+            destination: destinationPath,
+            destinationCreatedByRequest: true,
+          },
+          { dispatcher: runtime.dispatcher, caller },
+        );
+      } catch (error) {
+        // A failed `git clone` empties the directory it was given but keeps it.
+        await rmdir(destinationPath).catch(() => undefined);
+        throw error;
+      }
 
       return validateAndReturnRepo(destinationPath);
     },
@@ -267,7 +285,8 @@ export function registerRepoHandlers(runtime: {
 
   registerIpcHandler(
     IPC_CHANNELS.repoInitLocal,
-    async (_event, request: InitLocalRepoRequest): Promise<RepoSelection> => {
+    async (event, request: InitLocalRepoRequest): Promise<RepoSelection> => {
+      const caller = runtime.resolveCaller(event);
       const name = request.name.trim();
       if (!name) {
         throw new Error('Repository name is required');
@@ -279,9 +298,11 @@ export function registerRepoHandlers(runtime: {
       }
 
       const baseDir = await getAndEnsureDefaultReposDir();
-      const destinationPath = await ensureUniqueDestination(baseDir, name);
-      await mkdir(destinationPath, { recursive: true });
-      await initLocalRepo(destinationPath, name);
+      const destinationPath = await reserveUniqueDestination(baseDir, name);
+      await initializeRepositoryThroughWorker(
+        { kind: 'seeded', directory: destinationPath, name },
+        { dispatcher: runtime.dispatcher, caller },
+      );
 
       return validateAndReturnRepo(destinationPath);
     },

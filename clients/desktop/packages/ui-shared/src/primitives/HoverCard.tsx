@@ -45,7 +45,7 @@ const DEFAULT_TRIGGER_OPEN_KEYS: readonly string[] = ['Enter', ' '];
  * preview's header and diff well); `flush` holds sections that run to the
  * card's edges (an attachment preview's header rule).
  */
-export type RichHoverTooltipSurfacePadding =
+export type HoverCardSurfacePadding =
   | 'compact'
   | 'default'
   | 'relaxed'
@@ -53,10 +53,7 @@ export type RichHoverTooltipSurfacePadding =
   | 'frame'
   | 'flush';
 
-const SURFACE_PADDING_CLASS_NAMES: Record<
-  RichHoverTooltipSurfacePadding,
-  string
-> = {
+const SURFACE_PADDING_CLASS_NAMES: Record<HoverCardSurfacePadding, string> = {
   compact: 'px-2 py-1',
   default: 'px-2 py-1.5',
   relaxed: 'px-2.5 py-1.5',
@@ -70,7 +67,7 @@ const SURFACE_PADDING_CLASS_NAMES: Record<
  * inset. Exported so a gallery can draw a card on the exact surface it hovers
  * on.
  */
-export function richHoverTooltipSurfaceClassName({
+export function hoverCardSurfaceClassName({
   elevation = 'tooltip',
   tone = 'default',
   surfacePadding = 'default',
@@ -78,8 +75,8 @@ export function richHoverTooltipSurfaceClassName({
 }: {
   elevation?: 'tooltip' | 'menu';
   tone?: 'default' | 'inverse';
-  surfacePadding?: RichHoverTooltipSurfacePadding;
-  surfaceWidth?: RichHoverTooltipSurfaceWidth;
+  surfacePadding?: HoverCardSurfacePadding;
+  surfaceWidth?: HoverCardSurfaceWidth;
 }): string {
   return `text-left text-2xs font-normal ${
     elevation === 'menu' ? 'rounded-lg shadow-xl' : 'rounded-md shadow-tooltip'
@@ -102,8 +99,8 @@ export const PREVIEW_CARD_SURFACE = {
   surfaceWidth: 'preview-card',
 } as const satisfies {
   elevation: 'menu';
-  surfacePadding: RichHoverTooltipSurfacePadding;
-  surfaceWidth: RichHoverTooltipSurfaceWidth;
+  surfacePadding: HoverCardSurfacePadding;
+  surfaceWidth: HoverCardSurfaceWidth;
 };
 
 /**
@@ -111,14 +108,14 @@ export const PREVIEW_CARD_SURFACE = {
  * (or the window less 16px each side): wide enough for a typical worktree,
  * branch and pull request line, so long names truncate at one steady edge.
  */
-export type RichHoverTooltipSurfaceWidth = 'preview-card';
+export type HoverCardSurfaceWidth = 'preview-card';
 
-const SURFACE_WIDTH_CLASS_NAMES: Record<RichHoverTooltipSurfaceWidth, string> =
-  {
-    'preview-card': 'w-70 max-w-[calc(100vw-2rem)]',
-  };
+const SURFACE_WIDTH_CLASS_NAMES: Record<HoverCardSurfaceWidth, string> = {
+  'preview-card': 'w-70 max-w-[calc(100vw-2rem)]',
+};
 
-interface RichHoverTooltipProps {
+/** A card with a trigger, which opens on hover and focus by default. */
+interface HoverCardTriggeredProps {
   /** Rich content rendered inside the portaled tooltip surface. */
   content: ReactNode;
   /** Mount the controller on first interaction without replacing the trigger. */
@@ -126,7 +123,7 @@ interface RichHoverTooltipProps {
   /** Retire an activated controller when the described identity changes. */
   resetKey?: string | number;
   /** The single trigger element that receives tooltip interaction/ARIA props. */
-  children: ReactElement<TooltipTriggerProps>;
+  children: ReactElement<HoverCardTriggerProps>;
   dataTestId?: string;
   /**
    * Surface id, for a trigger that already names its description (for
@@ -171,9 +168,9 @@ interface RichHoverTooltipProps {
    * narrower or wider sizing. The inset is `surfacePadding`, never a class.
    */
   surfaceClassName?: string;
-  surfacePadding?: RichHoverTooltipSurfacePadding;
+  surfacePadding?: HoverCardSurfacePadding;
   /** A width band the component owns; `surfaceClassName` adds to it. */
-  surfaceWidth?: RichHoverTooltipSurfaceWidth;
+  surfaceWidth?: HoverCardSurfaceWidth;
   /**
    * Surface color treatment. `inverse` is the reversed black sheet in light
    * mode and the regular dark tooltip surface in dark mode, matching
@@ -271,7 +268,7 @@ interface RichHoverTooltipProps {
   containEvents?: boolean;
 }
 
-export interface TooltipTriggerProps {
+export interface HoverCardTriggerProps {
   'aria-controls'?: string;
   'aria-describedby'?: string;
   'aria-expanded'?: boolean;
@@ -353,19 +350,40 @@ type TooltipDelay =
       readonly id: number;
     };
 
-export function RichHoverTooltip(props: RichHoverTooltipProps): JSX.Element {
+/**
+ * The rich hover surface: a card of rich content (a preview, a status list, a
+ * title with its detail) on the tooltip layer, portaled into its anchor's
+ * window. Not {@link Tooltip}, which is a short label, and not a popover,
+ * which takes focus and holds controls.
+ *
+ * With a trigger (`children`) it opens itself on hover and focus; a caller can
+ * still control it with `open` and `onOpenChange`. With no trigger it is
+ * anchored: the caller tracks hover and focus itself (a status badge whose
+ * row does, a menu row's detail card, a preview over a control), sets `open`,
+ * and places it with `anchorRect`, `anchorRef` or `anchorPoint`.
+ */
+export function HoverCard(props: HoverCardProps): JSX.Element | null {
+  if (isAnchored(props)) {
+    return props.open ? <AnchoredHoverCard {...props} /> : null;
+  }
   return props.deferUntilInteraction ? (
-    <DeferredRichHoverTooltip {...props} />
+    <DeferredHoverCard {...props} />
   ) : (
-    <RichHoverTooltipController {...props} />
+    <HoverCardController {...props} />
   );
 }
 
-function DeferredRichHoverTooltip(props: RichHoverTooltipProps): JSX.Element {
+export type HoverCardProps = HoverCardTriggeredProps | HoverCardAnchoredProps;
+
+function isAnchored(props: HoverCardProps): props is HoverCardAnchoredProps {
+  return props.children === undefined;
+}
+
+function DeferredHoverCard(props: HoverCardTriggeredProps): JSX.Element {
   const triggerRef = useRef<HTMLSpanElement | null>(null);
   const handlers = useRef<TooltipControllerHandlers | null>(null);
   const [activation, setActivation] = useState<{
-    resetKey: RichHoverTooltipProps['resetKey'];
+    resetKey: HoverCardTriggeredProps['resetKey'];
   } | null>(null);
   const active = activation !== null && activation.resetKey === props.resetKey;
   const [open, setOpen] = useState(false);
@@ -434,7 +452,7 @@ function DeferredRichHoverTooltip(props: RichHoverTooltipProps): JSX.Element {
     >
       {trigger}
       {active && (
-        <RichHoverTooltipController
+        <HoverCardController
           {...props}
           id={tooltipId}
           externalTrigger={{ ref: triggerRef, handlers, onOpenChange: setOpen }}
@@ -449,7 +467,7 @@ function DeferredRichHoverTooltip(props: RichHoverTooltipProps): JSX.Element {
  * content. Positions above the trigger, flips below and clamps to the viewport
  * when there is not enough room, and follows the trigger on scroll/resize.
  */
-function RichHoverTooltipController({
+function HoverCardController({
   content,
   children,
   dataTestId,
@@ -482,7 +500,7 @@ function RichHoverTooltipController({
   dismissOnEscape = controlledOpen === undefined,
   containEvents = false,
   externalTrigger,
-}: RichHoverTooltipProps & {
+}: HoverCardTriggeredProps & {
   externalTrigger?: ExternalTooltipTrigger;
 }): JSX.Element {
   const containsEvents = interactive && containEvents;
@@ -1054,7 +1072,7 @@ function RichHoverTooltipController({
         onClick={containsEvents ? stopAtSurface : undefined}
         onDoubleClick={containsEvents ? stopAtSurface : undefined}
         onContextMenu={containsEvents ? stopAtSurface : undefined}
-        className={`${interactive ? 'electron-no-drag pointer-events-auto' : 'pointer-events-none'} fixed z-tooltip ${richHoverTooltipSurfaceClassName(
+        className={`${interactive ? 'electron-no-drag pointer-events-auto' : 'pointer-events-none'} fixed z-tooltip ${hoverCardSurfaceClassName(
           { elevation, tone, surfacePadding, surfaceWidth },
         )} ${surfaceClassName ?? (surfaceWidth ? '' : 'min-w-45 max-w-80')}`}
         style={
@@ -1232,8 +1250,16 @@ function besideMenuPosition(
   return { top, left };
 }
 
-interface RichHoverCardBaseProps {
-  readonly children: ReactNode;
+interface HoverCardAnchoredBaseProps {
+  /**
+   * Shows the card. With no trigger the caller tracks hover and focus itself
+   * and decides; the card opens and closes only through this prop.
+   */
+  readonly open: boolean;
+  /** Rich content rendered inside the portaled surface. */
+  readonly content: ReactNode;
+  /** An anchored card has no trigger; its anchor prop places it. */
+  readonly children?: never;
   readonly id?: string;
   readonly dataTestId?: string;
   /**
@@ -1243,13 +1269,13 @@ interface RichHoverCardBaseProps {
   readonly role?: 'tooltip';
   readonly tone?: 'default' | 'inverse';
   readonly elevation?: 'tooltip' | 'menu';
-  readonly surfacePadding?: RichHoverTooltipSurfacePadding;
-  readonly surfaceWidth?: RichHoverTooltipSurfaceWidth;
-  /** Width classes (`w-*`, `min-w-*`, `max-w-*`), as for {@link RichHoverTooltip}. */
+  readonly surfacePadding?: HoverCardSurfacePadding;
+  readonly surfaceWidth?: HoverCardSurfaceWidth;
+  /** Width classes (`w-*`, `min-w-*`, `max-w-*`), as with a trigger. */
   readonly surfaceClassName?: string;
 }
 
-interface RichHoverCardAtRectProps extends RichHoverCardBaseProps {
+interface HoverCardAtRectProps extends HoverCardAnchoredBaseProps {
   /**
    * The trigger's box, measured by a caller that tracks its own hover and
    * focus (a sidebar row's status badges). The card hangs under it, left
@@ -1268,7 +1294,7 @@ interface RichHoverCardAtRectProps extends RichHoverCardBaseProps {
   readonly onMouseLeave?: never;
 }
 
-interface RichHoverCardBesideMenuProps extends RichHoverCardBaseProps {
+interface HoverCardBesideMenuProps extends HoverCardAnchoredBaseProps {
   /**
    * A row inside a floating menu. The card sits beside the menu's surface,
    * right then left, never over another open menu, centred on the row.
@@ -1284,7 +1310,7 @@ interface RichHoverCardBesideMenuProps extends RichHoverCardBaseProps {
   readonly onMouseLeave?: never;
 }
 
-interface RichHoverCardAtControlProps extends RichHoverCardBaseProps {
+interface HoverCardAtControlProps extends HoverCardAnchoredBaseProps {
   /**
    * The control the card previews (a changed file, an attachment). The card
    * is centred on it, 8px above or below: `above` and `below` flip only when
@@ -1310,7 +1336,7 @@ interface RichHoverCardAtControlProps extends RichHoverCardBaseProps {
   readonly placementGap?: never;
 }
 
-interface RichHoverCardAtPointProps extends RichHoverCardBaseProps {
+interface HoverCardAtPointProps extends HoverCardAnchoredBaseProps {
   /**
    * A point in `ownerDocument`'s viewport, such as where a context menu was:
    * the card's top-left corner sits there, pulled back inside the window
@@ -1327,11 +1353,11 @@ interface RichHoverCardAtPointProps extends RichHoverCardBaseProps {
   readonly onMouseLeave?: never;
 }
 
-export type RichHoverCardProps =
-  | RichHoverCardAtRectProps
-  | RichHoverCardBesideMenuProps
-  | RichHoverCardAtControlProps
-  | RichHoverCardAtPointProps;
+type HoverCardAnchoredProps =
+  | HoverCardAtRectProps
+  | HoverCardBesideMenuProps
+  | HoverCardAtControlProps
+  | HoverCardAtPointProps;
 
 /** A card at a point keeps this far inside the window, as a context menu does. */
 const POINT_VIEWPORT_PADDING = 4;
@@ -1345,18 +1371,16 @@ interface HoverCardPlacedPosition extends HoverCardPosition {
 }
 
 /**
- * The rich hover surface for a caller that decides when it shows: a status
- * badge whose row tracks hover and focus itself, a menu row's detail card, or
- * a preview hovering over a control. Mounted means shown. Like
- * {@link RichHoverTooltip} it portals into the anchor's window, sits on the
- * tooltip layer, ignores the pointer unless `interactive` (content that
- * scrolls opts back in with `pointer-events-auto`), and re-places itself when
- * the window resizes or scrolls or the card's content changes size. It takes
- * no focus, so Escape and dismissal stay with the caller's trigger.
+ * An open anchored card: mounted means shown, so each opening places it
+ * afresh. It portals into the anchor's window, sits on the tooltip layer,
+ * ignores the pointer unless `interactive` (content that scrolls opts back in
+ * with `pointer-events-auto`), and re-places itself when the window resizes
+ * or scrolls or the card's content changes size. It takes no focus, so Escape
+ * and dismissal stay with the caller's trigger.
  */
-export function RichHoverCard(props: RichHoverCardProps): JSX.Element | null {
+function AnchoredHoverCard(props: HoverCardAnchoredProps): JSX.Element | null {
   const {
-    children,
+    content,
     id,
     dataTestId,
     role,
@@ -1566,7 +1590,7 @@ export function RichHoverCard(props: RichHoverCardProps): JSX.Element | null {
       onMouseLeave={interactive ? props.onMouseLeave : undefined}
       className={`${interactive ? 'electron-no-drag pointer-events-auto' : 'pointer-events-none'} fixed z-tooltip ${
         atControl ? 'flex flex-col overflow-hidden ' : ''
-      }${richHoverTooltipSurfaceClassName({
+      }${hoverCardSurfaceClassName({
         elevation,
         tone,
         surfacePadding,
@@ -1587,7 +1611,7 @@ export function RichHoverCard(props: RichHoverCardProps): JSX.Element | null {
           : { visibility: 'hidden', top: 0, left: 0 }
       }
     >
-      {children}
+      {content}
     </div>,
     body,
   );

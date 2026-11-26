@@ -63,7 +63,7 @@ import {
   FactList,
   Skeleton,
 } from '@canopy/ui-shared/components';
-import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
+import { HoverCard } from '@canopy/ui-shared/components';
 
 type BranchInfoTab = 'details' | 'pipelines' | 'code-graph';
 type WorktreeDirectoryStatus = 'idle' | 'loading' | 'loaded' | 'error';
@@ -558,9 +558,9 @@ function BranchActionButtons({
 }: BranchActionButtonsProps): JSX.Element {
   return (
     <>
-      {/* RichHoverTooltip (not Tooltip): its wrapper carries no `shrink-0`,
+      {/* HoverCard (not Tooltip): its wrapper carries no `shrink-0`,
           so the branch name can still truncate inside the row. */}
-      <RichHoverTooltip
+      <HoverCard
         triggerWrapperClassName="min-w-0"
         surfaceClassName="w-max"
         surfacePadding="compact"
@@ -578,7 +578,7 @@ function BranchActionButtons({
           <span className="truncate font-mono">{branch}</span>
           <AppCatalogChevronDownMediumIcon size={14} className="shrink-0" />
         </Button>
-      </RichHoverTooltip>
+      </HoverCard>
       <Tooltip label="Rename branch">
         <Button
           variant="ghost"

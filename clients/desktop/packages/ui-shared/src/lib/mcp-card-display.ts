@@ -162,13 +162,6 @@ export function mcpConnectionStatusBadgeTone(
   }
 }
 
-/** Full shared-badge class string for the connection-status badge. */
-export function mcpConnectionStatusBadgeClass(
-  status: McpCardConnectionStatus,
-): string {
-  return badgeClassName(mcpConnectionStatusBadgeTone(status));
-}
-
 /** Builds the secondary "source · context" line for a row. */
 export function mcpRowSecondaryText(server: McpCardDisplayServer): string {
   switch (server.source) {

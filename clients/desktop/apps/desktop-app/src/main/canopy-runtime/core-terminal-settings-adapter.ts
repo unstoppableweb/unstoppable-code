@@ -156,6 +156,8 @@ export function createDesktopTerminalSettingsStore(
       let aborted = false;
       try {
         const change = await preferences.update((latest) => {
+          conflict = false;
+          aborted = false;
           if (signal?.aborted) {
             aborted = true;
             return null;

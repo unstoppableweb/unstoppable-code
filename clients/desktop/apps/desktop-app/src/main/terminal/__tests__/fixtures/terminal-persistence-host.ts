@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 function worktreeFile(p: string, w: string, file: string): string {
   return join(
@@ -21,6 +22,17 @@ export function getWorktreeTerminalPresentationFilePath(
 }
 export function getWorktreeTerminalLegacyLayout(): 'workspaces' {
   return 'workspaces';
+}
+export function getWorktreeTerminalReplayWitnessFilePath(
+  p: string,
+  w: string,
+  id: string,
+): string {
+  return worktreeFile(
+    p,
+    w,
+    `terminal-replay-witness.${createHash('sha256').update(id).digest('hex')}.json`,
+  );
 }
 export function getTerminalOutboxDataRoot(): string {
   return process.env.TERMINAL_TEST_ROOT ?? '';

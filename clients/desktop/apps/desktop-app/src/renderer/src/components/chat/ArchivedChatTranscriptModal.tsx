@@ -25,7 +25,7 @@ import { ModelProviderIcon } from '@canopy/ui-shared/components';
 import { getArchivedChatDisplayLabel } from '@/components/standalone-chat/chat-label';
 import { SummaryIcon, UnarchiveIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { useTranscriptSearch } from '@/hooks/useTranscriptSearch';
-import { SearchBar } from '../shared/search/SearchBar';
+import { FindBar } from '@canopy/ui-shared/components/FindBar';
 import { ChatMessageList } from './ChatMessageList';
 import { LoadingSpinner } from '../shared/loading/spinners/LoadingSpinner';
 import { ShareIcon } from '@canopy/ui-shared/icons';
@@ -350,7 +350,7 @@ export function ArchivedChatTranscriptModal({
           padding="section-default"
           className="shrink-0"
         >
-          <SearchBar
+          <FindBar
             query={search.query}
             onQueryChange={search.setQuery}
             currentIndex={search.currentIndex}

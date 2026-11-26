@@ -21,9 +21,11 @@ import {
   serializeV8,
 } from '@canopy/remote-session';
 import {
+  decodeMessage as desktopDecodeMessage,
   deflateSmallMessage,
   encodeMessage as desktopEncodeMessage,
   fragmentPayload,
+  inflateSmallMessage,
   MessageAssembler as DesktopMessageAssembler,
   serializeMessage as desktopSerializeMessage,
   SYNC_CODEC_BYTES,
@@ -121,16 +123,16 @@ async function portableDecode(
   return result.value;
 }
 
-function desktopDecode(
+async function desktopDecode(
   fragments: Uint8Array[],
   maxMessageBytes?: number,
-): unknown {
+): Promise<unknown> {
   const assembler = new DesktopMessageAssembler(
     maxMessageBytes === undefined ? {} : { maxMessageBytes },
   );
   let result: { complete: true; value: unknown } | null = null;
   for (const fragment of fragments)
-    result = assembler.push(Buffer.from(fragment));
+    result = await assembler.push(Buffer.from(fragment));
   if (result === null) throw new Error('No message decoded.');
   return result.value;
 }
@@ -386,7 +388,7 @@ describe('message codec interop with the desktop', () => {
         id += 1;
         const expected = plain(deserialize(serialize(envelope)));
         const portableFragments = await encodeMessage(envelope);
-        expect(plain(desktopDecode(portableFragments))).toEqual(expected);
+        expect(plain(await desktopDecode(portableFragments))).toEqual(expected);
         const desktopFragments = await desktopEncodeMessage(envelope);
         expect(plain(await portableDecode(desktopFragments))).toEqual(expected);
         expect(plain(await portableDecode(portableFragments))).toEqual(
@@ -432,7 +434,7 @@ describe('message codec interop with the desktop', () => {
       );
       expectSameBytes(
         `size ${size} desktop decode`,
-        desktopDecode(portable),
+        await desktopDecode(portable),
         value,
       );
     }
@@ -453,7 +455,7 @@ describe('message codec interop with the desktop', () => {
     expect(
       fragments.reduce((sum, fragment) => sum + fragment.byteLength, 0),
     ).toBeLessThan(serializeMessage(large).byteLength);
-    expect(desktopDecode(fragments)).toEqual(large);
+    expect(await desktopDecode(fragments)).toEqual(large);
     expect(await portableDecode(await desktopEncodeMessage(large))).toEqual(
       large,
     );
@@ -464,9 +466,9 @@ describe('message codec interop with the desktop', () => {
 
   it('writes the same bytes as a desktop on the previous release, and reads them', async () => {
     // The previous release deflated synchronously (level 1) before it split
-    // the message (CAN-7764 moved deflate of messages over 32 KiB to the
-    // thread pool). Both deflate paths must stay byte-compatible with it,
-    // and read what it wrote.
+    // the message (CAN-7764 and CAN-7931 moved deflate and inflate of
+    // messages over 32 KiB to the thread pool). Both codec paths, in both
+    // directions, must stay byte-compatible with it.
     const previousRelease = (value: unknown): Buffer[] => {
       const serialized = serialize(value);
       const deflated =
@@ -490,7 +492,8 @@ describe('message codec interop with the desktop', () => {
       } while (offset < payload.byteLength);
       return fragments;
     };
-    // What SecureSession does on main for a message up to SYNC_CODEC_BYTES.
+    // What SecureSession does on main for a message up to SYNC_CODEC_BYTES:
+    // deflate and fragment on send, join and inflate on receive.
     const sessionSend = (value: unknown): Buffer[] => {
       const serialized = desktopSerializeMessage(value);
       expect(serialized.byteLength).toBeLessThanOrEqual(SYNC_CODEC_BYTES);
@@ -500,6 +503,20 @@ describe('message codec interop with the desktop', () => {
       return deflated === null
         ? fragmentPayload(serialized, false)
         : fragmentPayload(deflated, true);
+    };
+    const sessionReceive = (fragments: Buffer[]): unknown => {
+      const assembler = new DesktopMessageAssembler();
+      let assembled: ReturnType<typeof assembler.pushFragment> = null;
+      for (const fragment of fragments)
+        assembled = assembler.pushFragment(fragment);
+      if (assembled === null) throw new Error('No message assembled.');
+      if (!assembled.compressed) return desktopDecodeMessage(assembled.payload);
+      const inflated = inflateSmallMessage(
+        assembled.payload,
+        assembler.maxMessageBytes,
+      );
+      if (inflated === null) throw new Error('Not inflated on main.');
+      return desktopDecodeMessage(inflated);
     };
     const expectSameFragments = (
       current: Buffer[],
@@ -523,6 +540,7 @@ describe('message codec interop with the desktop', () => {
     for (const value of small) {
       const previous = previousRelease(value);
       expectSameFragments(sessionSend(value), previous);
+      expect(plain(sessionReceive(previous))).toEqual(plain(value));
     }
     for (const value of [
       ...small,
@@ -531,7 +549,7 @@ describe('message codec interop with the desktop', () => {
     ]) {
       const previous = previousRelease(value);
       expectSameFragments(await desktopEncodeMessage(value), previous);
-      expect(plain(desktopDecode(previous))).toEqual(plain(value));
+      expect(plain(await desktopDecode(previous))).toEqual(plain(value));
     }
   });
 
@@ -556,7 +574,7 @@ describe('message codec interop with the desktop', () => {
     await expect(portableDecode(fragments, limit)).rejects.toMatchObject({
       code: 'too_large',
     });
-    expect(() => desktopDecode(fragments, limit)).toThrow('too large');
+    await expect(desktopDecode(fragments, limit)).rejects.toThrow('too large');
     await expect(
       inflateRawBounded(new Uint8Array(bomb), limit),
     ).rejects.toMatchObject({

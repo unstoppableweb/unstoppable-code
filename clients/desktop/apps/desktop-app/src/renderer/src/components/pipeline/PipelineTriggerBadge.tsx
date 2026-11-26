@@ -1,6 +1,6 @@
 import { ControlButton } from '@canopy/ui-shared/components';
 import { type JSX } from 'react';
-import { ActionTooltip } from '@canopy/ui-shared';
+import { Tooltip } from '@canopy/ui-shared';
 import type { PipelineTriggerType } from '@canopy/execution-engine/types/pipeline';
 import { TriggerIcon, WorkflowIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { PlanModeIcon, TaskIcon } from '@canopy/ui-shared/icons';
@@ -33,7 +33,7 @@ export function PipelineTriggerDetails({
   }
 
   return (
-    <ActionTooltip title={meta.label} description={meta.description}>
+    <Tooltip label={meta.label} description={meta.description}>
       <ControlButton
         type="button"
         aria-label={`${meta.label}: ${meta.description}`}
@@ -42,6 +42,6 @@ export function PipelineTriggerDetails({
       >
         {PIPELINE_TRIGGER_GLYPHS[type]}
       </ControlButton>
-    </ActionTooltip>
+    </Tooltip>
   );
 }

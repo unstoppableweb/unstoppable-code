@@ -2,7 +2,7 @@ import { useId, type JSX } from 'react';
 import type { CanopyCapabilities } from '@canopy/app-core';
 import {
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   Notice,
   NoticeButton,
   SegmentedControl,
@@ -203,32 +203,40 @@ function RunOnControl({
         aria-label={PIPELINE_RUN_CONTEXT_COPY.runOn}
         data-testid="pipeline-run-on"
       >
-        <ChoiceListRow
+        <ChoiceField
+          layout="row"
           kind="radio"
-          selected={value === 'local'}
+          checked={value === 'local'}
           disabled={disabled}
-          onClick={(): void => choose('local')}
+          onChange={(): void => choose('local')}
           data-testid="pipeline-run-on-local"
-        >
-          <span className="block">
-            {PIPELINE_RUN_CONTEXT_COPY.thisComputer}
-          </span>
-          <span className="block text-xs fg-secondary">
-            {PIPELINE_RUN_CONTEXT_COPY.thisComputerDetail}
-          </span>
-        </ChoiceListRow>
-        <ChoiceListRow
+          label={
+            <>
+              <span className="block">
+                {PIPELINE_RUN_CONTEXT_COPY.thisComputer}
+              </span>
+              <span className="block text-xs fg-secondary">
+                {PIPELINE_RUN_CONTEXT_COPY.thisComputerDetail}
+              </span>
+            </>
+          }
+        />
+        <ChoiceField
+          layout="row"
           kind="radio"
-          selected={value === 'cloud'}
+          checked={value === 'cloud'}
           disabled={disabled || unavailable !== undefined}
-          onClick={(): void => choose('cloud')}
+          onChange={(): void => choose('cloud')}
           data-testid="pipeline-run-on-cloud"
-        >
-          <span className="block">{PIPELINE_RUN_CONTEXT_COPY.cloud}</span>
-          <span className="block text-xs fg-secondary">
-            {unavailable ?? PIPELINE_RUN_CONTEXT_COPY.cloudDetail}
-          </span>
-        </ChoiceListRow>
+          label={
+            <>
+              <span className="block">{PIPELINE_RUN_CONTEXT_COPY.cloud}</span>
+              <span className="block text-xs fg-secondary">
+                {unavailable ?? PIPELINE_RUN_CONTEXT_COPY.cloudDetail}
+              </span>
+            </>
+          }
+        />
       </ChoiceList>
       {blocked !== undefined ? (
         <FieldError

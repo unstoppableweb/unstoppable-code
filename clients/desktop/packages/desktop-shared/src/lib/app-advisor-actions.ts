@@ -8646,6 +8646,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       keywords: ['pipeline', 'create', 'new', 'yaml', 'definition', 'file'],
       notes: [
         'This creates the pipeline directly. Use pipeline.open_editor to navigate to the pipeline editor UI.',
+        'A saved pipeline is a workflow with its own page. For a workflow that will run on schedules, declare on.dispatch and on.workflow with the same inputs, and take the projects, tasks and chats it acts on as inputs; then add schedules with automation.create (worktree_pipeline, pipelineSource "user"). A schedule an agent creates runs as dispatch, so a workflow without dispatch cannot take one; do not add dispatch to an existing workflow unasked, since its existing schedules would then run as dispatch.',
         'Agent-dispatched pipeline.create rejects shell run steps. Reference an existing trusted action with uses, or configure shell pipelines manually in the pipeline editor.',
       ],
     },
@@ -10308,7 +10309,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       type: 'automation.create',
       category: 'automations',
       summary:
-        'Create a new triggered activity with a scheduled cron trigger or one-time trigger that dispatches an Orchestrator prompt or a project-targeted action: a chat prompt (code projects provision an automation-owned worktree; cowork projects start a cowork chat) or a pipeline run (worktree-scoped on code projects, directory-scoped at the cowork root on cowork projects).',
+        'Create a new triggered activity with a scheduled cron trigger or one-time trigger that dispatches an Orchestrator prompt or a project-targeted action: a chat prompt (code projects provision an automation-owned worktree; cowork projects start a cowork chat) or a pipeline run (worktree-scoped on code projects, directory-scoped at the cowork root on cowork projects). A pipeline run of a user workflow (pipelineSource "user") is a schedule on that workflow\'s page.',
       fields: [
         field(
           'input',
@@ -10457,6 +10458,7 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
               target: { kind: 'global' },
               pipelineId: 'user-weekly-digest',
               pipelineSource: 'user',
+              inputs: { project_id: 'cowork-workspace-1' },
             },
           },
         },
@@ -10464,6 +10466,9 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       keywords: [
         'automation',
         'automations',
+        'workflow',
+        'workflow schedule',
+        'add schedule',
         'triggered activities',
         'scheduled activities',
         'cron',
@@ -10493,7 +10498,9 @@ export const APP_ADVISOR_ACTION_CATALOG: readonly AppAdvisorActionCatalogEntry[]
       notes: [
         'input.name must be non-empty. schedule is the persisted trigger field: either { kind: "cron", expression: "<five fields>", timezone: "local" } or { kind: "one_time", runAt: "<ISO timestamp>", timezone: "local" }.',
         'action variants are app_advisor_prompt { workEntryId?, sidebarGroupName?, prompt, approvalMode? }, standalone_prompt { chatProjectId, workEntryId?, sidebarGroupName?, prompt, approvalMode? }, worktree_prompt { workspaceId, baseWorktreeId?, baseBranch?, existingBranch?, existingWorktreeId?, sidebarGroupName?, prompt, planMode?, interfaceMode?, approvalMode? }, or worktree_pipeline { target?, workspaceId?, baseWorktreeId?, repoId?, pipelineId, pipelineSource?, inputs? }.',
-        'The Automations page groups these as two actions: Orchestrator (app_advisor_prompt) and Project, where the project kind plus a Chat/Pipeline choice picks the variant — code project + Chat is worktree_prompt, code project + Pipeline is worktree_pipeline, cowork project + Chat is standalone_prompt (chatProjectId IS the cowork project id), and cowork project + Pipeline is worktree_pipeline with the cowork workspaceId.',
+        'To schedule a workflow, use worktree_pipeline with its pipelineId, its pipelineSource from pipeline.list and inputs for the inputs it declares. For a saved workflow (pipelineSource "user") this is what Add schedule on the workflow\'s Trigger tab creates, and the schedule shows on that page. Choose the target from where the user wants it to run: { kind: "global" } only for no project (the workflow must declare scope: global), otherwise the project\'s workspaceId with a project, new_worktree or task target. A repository workflow (pipelineSource "project") needs the project\'s workspaceId and, in a multi-repository project, the repoId of the repository it lives in. Schedule a shared workflow only as an installed copy the person has reviewed (pipelineSource "user"), never the live share, which its publisher can change. Pass the projects, tasks, chats and bots the workflow acts on as inputs (project_id, task_id, chat_id, bot_id), not fixed IDs in its steps. When no workflow fits multi-step work, create one with pipeline.create first.',
+        "A schedule an agent creates runs its workflow as Manual (dispatch), so a workflow an agent creates for schedules declares dispatch and workflow with the same inputs. An existing workflow without dispatch is refused with \"Workflow does not support dispatch triggers.\". Do not add dispatch to it unasked: that changes how its existing schedules run and drops the person's approval they need. Read its on block with pipeline.get and includeYaml: true. For a saved workflow that declares workflow but not dispatch, the person selects Approve for schedules on its page, then uses Add schedule on its Trigger tab (before approval a schedule can only be saved paused); a workflow from a package installed with an automation can\'t be approved, so the person asks its publisher for a version with a Manual trigger and reinstalls it; a workflow with neither trigger needs one added. A repository or shared workflow that declares workflow but not dispatch cannot run on a schedule for anyone until it has a Manual trigger (or a shared one is installed and the copy scheduled). Never recreate the work as a chat prompt automation. A workflow whose only trigger is Workflow runs on a schedule only after a person approves it on its page; agents cannot approve it, and a pipeline.create or pipeline.update write clears the approval (a workflow assistant edit saved in the editor counts as the person's save and approves it). The app also refuses an agent's schedule on a workflow someone installed, or on one another agent wrote with authority granted to it.",
+        'In the automation editor, the destination plus a Chat/Pipeline choice picks the variant: Orchestrator is app_advisor_prompt, code project + Chat is worktree_prompt, code project + Pipeline is worktree_pipeline, cowork project + Chat is standalone_prompt (chatProjectId IS the cowork project id), and cowork project + Pipeline is worktree_pipeline with the cowork workspaceId.',
         'worktree_pipeline with a cowork workspaceId runs the pipeline directory-scoped at the cowork root without creating a worktree; baseWorktreeId and repoId must be omitted, and worktree-only pipelines (YAML scope: worktree) are rejected. On code projects the run provisions a fresh worktree (optionally from baseWorktreeId) and is worktree-scoped.',
         'worktree_pipeline target chooses where it runs; omit target to keep the behavior above. { kind: "global" } runs with no project in its own scratch folder: omit workspaceId, baseWorktreeId, repoId, and projectPipelineFilename; the pipeline must declare scope: global and cannot be a project pipeline (pipelineSource "project"). { kind: "new_worktree" } creates a fresh worktree each run on a code project. { kind: "task", taskId } runs in an existing worktree (code) or Work Entry (cowork) of workspaceId without creating anything. { kind: "project" } runs directory-scoped in the project folder of workspaceId without creating a task. Every kind except global requires workspaceId; baseWorktreeId applies only to new_worktree.',
         "A pipeline automation with no project is owned by the caller: a code or cowork agent creates it in its own project's owner, Orchestrator in the selected owner. It keeps that owner when it is turned on, run, or edited, and a user pipeline it names must belong to the same owner. Do not pass executionContext.",

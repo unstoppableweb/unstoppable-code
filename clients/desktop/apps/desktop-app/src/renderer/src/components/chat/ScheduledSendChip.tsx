@@ -5,7 +5,7 @@ import {
   CloseMediumIcon,
   ScheduleIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
+import { HoverCard } from '@canopy/ui-shared/components';
 import {
   formatScheduledSendCompactLabel,
   formatScheduledSendFullLabel,
@@ -53,7 +53,7 @@ export function ScheduledSendControl({
       : 'Clear this schedule to send with Cursor');
   return (
     <ScheduledSendCapsule failed={error !== null}>
-      <RichHoverTooltip
+      <HoverCard
         surfaceClassName="w-max max-w-72"
         surfacePadding="relaxed"
         content={<span className="text-xs fg-primary">{tooltip}</span>}
@@ -79,7 +79,7 @@ export function ScheduledSendControl({
               ? formatScheduledSendCompactLabel(date, now)
               : formatScheduledSendLabel(date, now)}
         </ControlButton>
-      </RichHoverTooltip>
+      </HoverCard>
       <ControlButton
         type="button"
         onClick={onClear}

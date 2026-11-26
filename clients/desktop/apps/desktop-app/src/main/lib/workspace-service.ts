@@ -49,14 +49,11 @@ import {
 import { PROJECT_COLORS } from '@canopy/desktop-shared/constants/project-colors';
 import { getDefaultWorkspaceClaudeMd } from '@canopy/desktop-shared/constants/workspace-templates';
 import { assertImportFolderExists } from '@canopy/desktop-shared/node/lib/import-folder';
+import { getGitCommonDir, getRemoteUrl, isGitRepo } from './git';
 import {
-  cloneRepo,
-  cloneRepoWithLiveProgress,
-  getGitCommonDir,
-  getRemoteUrl,
-  initLocalRepo,
-  isGitRepo,
-} from './git';
+  cloneRepositoryThroughWorker,
+  initializeRepositoryThroughWorker,
+} from '../canopy-runtime/worker-git-repository-creation-dispatch';
 import {
   getDataDir,
   getDefaultReposDir,
@@ -87,7 +84,8 @@ import {
   readCanopyJson,
   writeCanopyJson,
 } from './canopy-json';
-import { remoteUrlsMatch } from './repo-url-matcher';
+import { normalizeRemoteUrl, remoteUrlsMatch } from './repo-url-matcher';
+import { reserveUniqueDestination } from './unique-destination';
 import {
   readWorkspaceConfig,
   WorkspaceConfigUnreadableError,
@@ -97,7 +95,10 @@ import { refreshOrganizationOwner } from './workspace-ownership';
 import { ensureAgentsMdSymlink } from './instruction-files';
 import { scaffoldWorkspaceInstructions } from '@canopy/core-runtime/node/workspace/workspace-instructions';
 import { createExternalCoworkWorkspace } from './cowork-workspace-crud';
-import { serializeWorkspaceMutation } from './chat-project-operation-queue';
+import {
+  ownsWorkspaceMutation,
+  serializeWorkspaceMutation,
+} from './chat-project-operation-queue';
 import { refuseWorkspaceCreation } from './workspace-creation-refusal';
 import { sanitizeWorkspaceSourceRepoName } from '@canopy/desktop-shared/node/lib/workspace-source-repo';
 import { settleAll } from '@canopy/desktop-shared/node/lib/detached-work';
@@ -139,8 +140,10 @@ async function withSplitDestinationWorkspaceLock<T>(
   identityKey: string,
   operation: () => Promise<T>,
 ): Promise<T> {
-  const release =
-    await acquireSplitDestinationWorkspaceIdentityLock(identityKey);
+  const release = await acquireKeyedLock(
+    splitDestinationWorkspaceLocks,
+    identityKey,
+  );
   try {
     return await operation();
   } finally {
@@ -148,15 +151,16 @@ async function withSplitDestinationWorkspaceLock<T>(
   }
 }
 
-async function acquireSplitDestinationWorkspaceIdentityLock(
-  identityKey: string,
+async function acquireKeyedLock(
+  locks: Map<string, Promise<void>>,
+  key: string,
 ): Promise<() => void> {
-  const previous = splitDestinationWorkspaceLocks.get(identityKey);
+  const previous = locks.get(key);
   let releaseLock: (() => void) | undefined;
   const current = new Promise<void>((resolveLock) => {
     releaseLock = resolveLock;
   });
-  splitDestinationWorkspaceLocks.set(identityKey, current);
+  locks.set(key, current);
   await previous;
   let released = false;
   return () => {
@@ -165,10 +169,49 @@ async function acquireSplitDestinationWorkspaceIdentityLock(
     }
     released = true;
     releaseLock?.();
-    if (splitDestinationWorkspaceLocks.get(identityKey) === current) {
-      splitDestinationWorkspaceLocks.delete(identityKey);
+    if (locks.get(key) === current) {
+      locks.delete(key);
     }
   };
+}
+
+const manifestMemberLocks = new Map<string, Promise<void>>();
+
+/** A manifest member's remote; a URL that doesn't normalize keeps its text. */
+function manifestMemberKey(url: string): string {
+  return normalizeRemoteUrl(url) ?? url.trim();
+}
+
+/**
+ * Holds one in-process lock per manifest member URL while `operation` runs,
+ * taken in sorted order, so an import that shares a member with another
+ * waits for it to publish and then reuses its checkout.
+ *
+ * Taken outside `serializeWorkspaceMutation`: a waiter inside the queue would
+ * hold the queue its holder needs to publish.
+ *
+ * Residual risk: installs and org/cloud materialization also clone into
+ * `<data>/repos` without these locks, so either can still race an import.
+ */
+async function withManifestMemberLocks<T>(
+  urls: readonly string[],
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (ownsWorkspaceMutation()) {
+    throw new Error(
+      'Manifest member locks must be taken outside workspace serialization',
+    );
+  }
+  const keys = [...new Set(urls.map(manifestMemberKey))].sort();
+  const releases: (() => void)[] = [];
+  try {
+    for (const key of keys) {
+      releases.push(await acquireKeyedLock(manifestMemberLocks, key));
+    }
+    return await operation();
+  } finally {
+    for (const release of releases.reverse()) release();
+  }
 }
 
 export async function withSplitDestinationWorkspaceCreationLock<T>(
@@ -354,25 +397,6 @@ async function ensureUniqueDestination(
   }
 
   return candidate;
-}
-
-/** Reserve an empty checkout directory before a tracked clone can use it. */
-export async function reserveUniqueDestination(
-  baseDir: string,
-  preferredName: string,
-): Promise<string> {
-  let suffix = 1;
-  while (true) {
-    const name = suffix === 1 ? preferredName : `${preferredName}-${suffix}`;
-    const candidate = join(baseDir, name);
-    try {
-      await mkdir(candidate);
-      return candidate;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      suffix += 1;
-    }
-  }
 }
 
 export function buildWorkspaceId(
@@ -804,12 +828,17 @@ async function importMultiRepoWorkspaceFromRepo<T>(
       );
     return { manifest, workspaceId, workspaceName, reservation };
   });
+  const manifestRepos = admission.manifest.repos ?? [];
   const provision = async (): Promise<T> => {
     const localRepos: WorkspaceConfigFile['repos'] = [];
     const clonedRepoIds: string[] = [];
-    for (const manifestRepo of admission.manifest.repos ?? []) {
+    // A URL listed twice still clones twice (`<name>`, `<name>-2`): members
+    // sharing a checkout can't create a multi-repo worktree. Revisit with
+    // shared-repoPath worktree support (CAN-7974).
+    for (const manifestRepo of manifestRepos) {
       const step = await serializeWorkspaceMutation(async () => {
-        // A prior member clone may have overlapped other imports or installs.
+        // A prior member clone may have overlapped an install or an org/cloud
+        // materialization, which take no member lock.
         const { items } = await readAllSidebarItems();
         const bindings = await resolveExistingRepoBindings(items);
         const existing = bindings.find(
@@ -859,7 +888,10 @@ async function importMultiRepoWorkspaceFromRepo<T>(
         return { repository, cloned: true };
       });
       if (step.cloned) {
-        await cloneRepo(manifestRepo.url, step.repository.repoPath, {
+        await cloneRepositoryThroughWorker({
+          kind: 'clone',
+          url: manifestRepo.url,
+          destination: step.repository.repoPath,
           signal: untrackedClonesStop.signal,
         });
         await serializeWorkspaceMutation(() =>
@@ -918,9 +950,14 @@ async function importMultiRepoWorkspaceFromRepo<T>(
       return publish({ workspace, childWorkspaces, clonedRepoIds });
     });
   };
+  const provisionLocked = (): Promise<T> =>
+    withManifestMemberLocks(
+      manifestRepos.map((repo) => repo.url),
+      provision,
+    );
   return admission.reservation
-    ? admission.reservation.run(provision)
-    : provision();
+    ? admission.reservation.run(provisionLocked)
+    : provisionLocked();
 }
 
 export async function listWorkspaceItems(options?: {
@@ -1262,14 +1299,20 @@ async function addAdmittedWorkspaceFromRemote(
   return admission.reservation.run(async () => {
     const { destinationPath, workspaceId } = admission;
     if (progress) {
-      await cloneRepoWithLiveProgress(normalizedRemoteUrl, destinationPath, {
+      await cloneRepositoryThroughWorker({
+        kind: 'live-progress',
+        url: normalizedRemoteUrl,
+        destination: destinationPath,
         signal: progress.signal,
         onProgress: progress.onProgress,
       });
       if (progress.signal.aborted) throw new CloneCancelledError();
       progress.onCloned();
     } else {
-      await cloneRepo(normalizedRemoteUrl, destinationPath, {
+      await cloneRepositoryThroughWorker({
+        kind: 'clone',
+        url: normalizedRemoteUrl,
+        destination: destinationPath,
         signal: untrackedClonesStop.signal,
       });
     }
@@ -1556,7 +1599,7 @@ export async function acquireSplitDestinationWorkspaceLeases(
   try {
     for (const identityKey of identityKeys) {
       releases.push(
-        await acquireSplitDestinationWorkspaceIdentityLock(identityKey),
+        await acquireKeyedLock(splitDestinationWorkspaceLocks, identityKey),
       );
     }
   } catch (error) {
@@ -1612,7 +1655,11 @@ async function createAdmittedSingleRepoWorkspace(
         await mkdir(getDefaultReposDir(), { recursive: true });
         // Exclusive creation refuses a path replaced after planning; never adopt it.
         await mkdir(item.repoPath);
-        await initLocalRepo(item.repoPath, normalizedName);
+        await initializeRepositoryThroughWorker({
+          kind: 'seeded',
+          directory: item.repoPath,
+          name: normalizedName,
+        });
         await ensureSingleRepoCanopyJson(item.repoPath);
       },
     },
@@ -1633,7 +1680,11 @@ export async function initNewLocalRepoFolder(name: string): Promise<string> {
     destinationRoot,
     slugify(normalizedName) || 'workspace',
   );
-  await initLocalRepo(destinationPath, normalizedName);
+  await initializeRepositoryThroughWorker({
+    kind: 'seeded',
+    directory: destinationPath,
+    name: normalizedName,
+  });
   await ensureSingleRepoCanopyJson(destinationPath);
   return destinationPath;
 }

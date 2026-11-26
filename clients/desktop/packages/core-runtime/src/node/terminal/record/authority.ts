@@ -102,6 +102,12 @@ interface Scope {
       TerminalRecordPublication<TerminalRecordTombstone>,
       { state: 'unpublished' }
     >;
+    /**
+     * Physical cleanup owed by the fence: `inherited` debt read from disk is
+     * retried and synced only if it removes something; `pending` debt of
+     * this process's failed or unfinished cleanup always syncs on retry.
+     */
+    cleanup: 'settled' | 'inherited' | 'pending';
   };
   confirmationFailed: boolean;
   /** Published record evidence used to release reports, still awaiting sync. */
@@ -130,6 +136,7 @@ type RetirementDecision =
       kind: 'preserved-record';
       lifetimeIds: readonly string[];
       acknowledged: 0 | 1;
+      retryCleanup: boolean;
     }
   | {
       kind: 'already-covered';
@@ -545,6 +552,10 @@ export class TerminalRecordAuthority {
                 state: 'published-unconfirmed' as const,
                 image: loaded.tombstone,
               },
+              cleanup:
+                loaded.tombstone.cleanupFiles?.length === 0
+                  ? ('settled' as const)
+                  : ('inherited' as const),
             },
           }
         : {}),
@@ -713,13 +724,13 @@ export class TerminalRecordAuthority {
           ),
         );
       } catch (error) {
-        // A durable fence permits reuse even if its cleanup failed.
+        // A durable logical fence permits reuse even if physical cleanup owes work.
         if (
           !this.fenceConfirmed(scope) ||
           !this.retirementCovers(scope, envelope.generation)
         )
           throw error;
-        this.log('Terminal retirement cleanup failed; leaving its leftovers', {
+        this.log('Terminal retirement cleanup remains pending', {
           code: errorCode(error),
         });
       }
@@ -895,7 +906,7 @@ export class TerminalRecordAuthority {
       historyEpoch: randomUUID(),
       historyRevisions: new Map(),
     };
-    // Preserve the per-scope owner across lifetime replacement.
+    // Preserve the per-scope owner across lifetime replacement and cleanup debt.
     const owner = previous ? Object.assign(previous, scope) : scope;
     this.scopes.set(owner.key, owner);
     this.installNow(owner);
@@ -1121,6 +1132,7 @@ export class TerminalRecordAuthority {
         }
       | {
           kind: 'fence';
+          cleanup?: boolean;
           generation?: number;
           lifetimeIds?: readonly string[];
         }
@@ -1153,6 +1165,15 @@ export class TerminalRecordAuthority {
         };
         // The sync covers every rename of this directory before it.
         this.unconfirmedFences.delete(scope.key);
+      }
+      // After confirmation: a deletion must never outlive an unsynced fence.
+      if (effect.cleanup && retirement.cleanup !== 'settled') {
+        this.options.repository.retryRetirement(
+          projectId,
+          worktreeId,
+          retirement.cleanup === 'pending',
+        );
+        retirement.cleanup = 'settled';
       }
       return scope.envelope;
     }
@@ -1338,6 +1359,18 @@ export class TerminalRecordAuthority {
     const identified =
       record !== undefined &&
       (retirementNames(params, record) || params.generation === generation);
+    // A generation-only retry behind a successor still finishes its fence's
+    // cleanup; the successor is preserved, so it acknowledges nothing.
+    const generationCleanup =
+      params.lifetimeIds === undefined &&
+      params.generation !== undefined &&
+      generation > params.generation &&
+      scope.retirement !== undefined &&
+      scope.retirement.cleanup !== 'settled' &&
+      this.retirementCovers(scope, params.generation) &&
+      (params.incarnation == null ||
+        scope.retirement.publication.image.incarnation === null ||
+        params.incarnation === scope.retirement.publication.image.incarnation);
     if (
       record &&
       params.lifetimeIds?.length &&
@@ -1360,12 +1393,14 @@ export class TerminalRecordAuthority {
         kind: 'preserved-record',
         lifetimeIds,
         acknowledged: 0,
+        retryCleanup: generationCleanup,
       };
     if (record && namedOnly && !identified)
       return {
         kind: 'preserved-record',
         lifetimeIds,
         acknowledged: 1,
+        retryCleanup: true,
       };
     if (
       (params.generation !== undefined &&
@@ -1381,6 +1416,7 @@ export class TerminalRecordAuthority {
         kind: 'preserved-record',
         lifetimeIds,
         acknowledged: 0,
+        retryCleanup: generationCleanup,
       };
     const ids = this.retiredIds(scope, [
       ...(record?.lifetimeIds ?? []),
@@ -1427,6 +1463,13 @@ export class TerminalRecordAuthority {
         kind: 'coverage',
         lifetimeIds: decision.lifetimeIds,
       });
+      if (decision.kind === 'already-covered' || decision.retryCleanup) {
+        if (scope.retirement)
+          this.receipt(scope, { kind: 'fence', cleanup: true });
+        else if (decision.kind === 'already-covered')
+          // A successor's coverage proves fencing, never ownership of its files.
+          this.options.repository.retryRetirement(projectId, worktreeId);
+      }
       return decision.kind === 'preserved-record' ? decision.acknowledged : 1;
     }
     if (decision.kind !== 'already-covered') {
@@ -1450,13 +1493,22 @@ export class TerminalRecordAuthority {
                 damaged: true as const,
               }),
               retiredLifetimeIds: [...decision.lifetimeIds],
+              // Names alone acquire no artifacts; the repository unions prior debt.
+              cleanupFiles: [],
             };
       this.options.repository.retire(
         projectId,
         worktreeId,
         tombstone,
         (publication) => {
-          scope.retirement = { publication };
+          scope.retirement = {
+            publication,
+            // Names-only coverage acquires no artifacts, only inherited debt.
+            cleanup:
+              decision.kind === 'generation'
+                ? 'pending'
+                : (scope.retirement?.cleanup ?? 'inherited'),
+          };
           // Names-only coverage leaves a cold scope uncached, so the next
           // write-authorized load still sets a damaged record aside first;
           // its unconfirmed fence is still tracked for shutdown.
@@ -1469,7 +1521,7 @@ export class TerminalRecordAuthority {
           if (decision.kind !== 'generation') return;
           if (scope.timer !== undefined) clearTimeout(scope.timer);
           scope.timer = undefined;
-          // Published fences release working history even when cleanup fails.
+          // Published fences release working history even when cleanup needs retry.
           scope.envelope = {
             ...envelope,
             generation: decision.generation,
@@ -1485,8 +1537,8 @@ export class TerminalRecordAuthority {
           scope.shutdownStamps.clear();
           this.reconciled.delete(scope.key);
         },
-        decision.kind === 'generation',
       );
+      if (scope.retirement) scope.retirement.cleanup = 'settled';
     } else {
       // A retry resumes the published fence's discharge, never widened to
       // lifetimes requested after that fence.
@@ -1505,6 +1557,7 @@ export class TerminalRecordAuthority {
     }
     this.receipt(scope, {
       kind: 'fence',
+      cleanup: true,
       generation:
         decision.kind === 'names-only' ? undefined : decision.generation,
       lifetimeIds: decision.lifetimeIds,
@@ -3096,10 +3149,11 @@ export class TerminalRecordAuthority {
   }
 
   /**
-   * Retires the records of the worktrees a request names. A record of another
-   * known incarnation, or newer than the generation named, is left alone. A
-   * request naming no worktree reaches nothing here: project-wide retirement
-   * arrives with the retire-recovery slice of CAN-7051 (CAN-7704).
+   * Retires the records of the worktrees a request names. A cutoff request
+   * naming no worktree, or marked `projectWide`, also reaches the project's
+   * worktree records on disk that started before its cutoff (CAN-7704). A
+   * record of another known incarnation, or newer than the generation named,
+   * is left alone.
    */
   public retire(params: WorkerTerminalRecordRetireParams): { retired: number } {
     if (params.generation !== undefined)
@@ -3107,12 +3161,20 @@ export class TerminalRecordAuthority {
     const namedOnly = namesOnlyRetirement(params);
     if (namedOnly && params.lifetimeIds?.length === 0) return { retired: 0 };
     const { repository } = this.options;
-    const worktreeIds = new Set([
+    const named = new Set([
       ...(params.worktreeId !== undefined ? [params.worktreeId] : []),
       ...(params.worktreeIds ?? []),
     ]);
+    // Named worktrees are the whole selection unless `projectWide` widens it.
+    // Discovery needs a cutoff: it is the only bound that keeps a retry from
+    // reaching a later worktree.
+    const discovered =
+      (named.size === 0 || params.projectWide === true) &&
+      params.requestedAt !== undefined
+        ? repository.worktreesOf(params.projectId)
+        : [];
     let retired = 0;
-    for (const worktreeId of worktreeIds) {
+    for (const worktreeId of new Set([...named, ...discovered])) {
       const key = scopeKey(params.projectId, worktreeId);
       // Observational: the decision never quarantines or prunes recovery copies.
       const observed = this.peek({
@@ -3124,6 +3186,18 @@ export class TerminalRecordAuthority {
       const record =
         observed.kind === 'live' ? observed.scope.envelope : undefined;
       const fence = observed.scope?.retirement?.publication.image;
+      const isNamed = named.has(worktreeId);
+      // A discovered scope is reached only through a record started before the
+      // cutoff, even one its selectors identify, or through an existing fence.
+      if (
+        !isNamed &&
+        (record
+          ? record.startedAt === undefined ||
+            params.requestedAt === undefined ||
+            record.startedAt >= params.requestedAt
+          : observed.kind !== 'tombstone')
+      )
+        continue;
       const covered = new Set<DeferredLifetime>();
       for (const terminalId of this.admissions.get(key)?.waiting ?? []) {
         const pending = this.registrations.get(terminalId);
@@ -3190,6 +3264,14 @@ export class TerminalRecordAuthority {
         lifetimeIds,
         covered,
       );
+      // A discovered scope without a record gains no new fence: only an
+      // existing one that covers the request is confirmed and its debt retried.
+      if (
+        !isNamed &&
+        record === undefined &&
+        decision.kind !== 'already-covered'
+      )
+        continue;
       if (record && !preservesRecord(decision)) {
         // A qualified retirement of this record identifies the predecessor of
         // a surviving already-authorized successor, without creating its

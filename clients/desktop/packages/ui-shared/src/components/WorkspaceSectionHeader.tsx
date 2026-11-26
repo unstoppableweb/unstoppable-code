@@ -39,7 +39,7 @@ import {
 import { CloudBackendIcon } from '../icons/CloudBackendIcon';
 import { DeviceBackendIcon } from '../icons/DeviceBackendIcon';
 import { RailIconButton } from './RailIconButton';
-import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
+import { HoverCard } from '../primitives/HoverCard';
 import { useMediaQuery } from '../primitives/useMediaQuery';
 import { ProjectAvatarBadge } from './ProjectAvatarBadge';
 import { WorkspaceIconDisclosureSwap } from './WorkspaceIconDisclosureSwap';
@@ -804,7 +804,7 @@ export function WorkspaceSectionHeader({
       tabIndex={hasContextMenu ? -1 : undefined}
     >
       <div
-        className={`group/workspace-header relative flex items-center ${textScale === 'sidebar' ? 'h-full gap-1.5' : 'gap-1'} ${touchTarget ? 'min-h-11' : textScale === 'sidebar' ? '' : 'min-h-6'}`}
+        className={`${REPLAY_MASK_CLASS} group/workspace-header relative flex items-center ${textScale === 'sidebar' ? 'h-full gap-1.5' : 'gap-1'} ${touchTarget ? 'min-h-11' : textScale === 'sidebar' ? '' : 'min-h-6'}`}
       >
         {dragHandleSlot !== undefined ? dragHandleSlot : badge}
 
@@ -1030,7 +1030,7 @@ export function WorkspaceSectionHeader({
         </div>
       </div>
       {isMultiRepo && repoCount !== undefined && textScale !== 'sidebar' && (
-        <div className="-mt-1.5 pl-6">
+        <div className={`${REPLAY_MASK_CLASS} -mt-1.5 pl-6`}>
           <RepoCountWithTooltip
             count={repoCount}
             repoNames={repoNames}
@@ -1142,7 +1142,7 @@ function RepoTooltipTrigger({
   const remaining = repoNames.length - visibleNames.length;
 
   return (
-    <RichHoverTooltip
+    <HoverCard
       placement="below-start"
       placementGap={REPO_TOOLTIP_GAP}
       surfacePadding="relaxed"
@@ -1175,6 +1175,6 @@ function RepoTooltipTrigger({
       >
         {label}
       </ControlButton>
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }

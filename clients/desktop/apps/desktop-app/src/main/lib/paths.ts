@@ -946,6 +946,18 @@ export function getWorktreeTerminalPresentationFilePath(
   );
 }
 
+export function getWorktreeTerminalReplayWitnessFilePath(
+  workspaceId: string,
+  worktreeId: string,
+  lifetimeId: string,
+): string {
+  const key = createHash('sha256').update(lifetimeId).digest('hex');
+  return join(
+    getWorktreeDataDir(workspaceId, worktreeId),
+    `terminal-replay-witness.${key}.json`,
+  );
+}
+
 export function getWorktreeShareFileScopePath(
   workspaceId: string,
   worktreeId: string,

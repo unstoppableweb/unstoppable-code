@@ -21,7 +21,7 @@ import {
   PickListResults,
   pickListOptionId,
   resolvePickListActiveKey,
-  RichHoverTooltip,
+  HoverCard,
   SearchField,
   Skeleton,
   tabNavigationIndex,
@@ -793,14 +793,14 @@ export function BaseBranchPicker({
   return (
     <div data-testid={testIdPrefix} className={className}>
       {tooltip ? (
-        <RichHoverTooltip
+        <HoverCard
           dataTestId={tooltipTestId ?? `${testIdPrefix}-tooltip`}
           tone="inverse"
           surfaceClassName="w-max max-w-48"
           content={tooltip}
         >
           {trigger}
-        </RichHoverTooltip>
+        </HoverCard>
       ) : (
         trigger
       )}

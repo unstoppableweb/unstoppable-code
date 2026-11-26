@@ -4,7 +4,7 @@ import { MAX_HOST_PORTS } from '@canopy/protocol/canopy-core/core';
 import {
   Button,
   ChoiceField,
-  DialogFormField,
+  FormField,
   TextArea,
   TextInput,
 } from '@canopy/ui-shared';
@@ -33,9 +33,9 @@ export function CloudProjectNetworkTab({
   onChange,
 }: CloudProjectNetworkTabProps): JSX.Element {
   return (
-    <DialogFormField
+    <FormField
       label="Allowed egress hosts"
-      htmlFor={fieldId}
+      id={fieldId}
       description="Enter up to 64 hostnames, one per line. Applies to new chats."
     >
       <TextArea
@@ -47,7 +47,7 @@ export function CloudProjectNetworkTab({
           onChange(event.target.value)
         }
       />
-    </DialogFormField>
+    </FormField>
   );
 }
 
@@ -104,9 +104,9 @@ export function CloudProjectHostTab({
         }
         data-testid="cloud-workspace-settings-host-enabled"
       />
-      <DialogFormField
+      <FormField
         label="Ports"
-        htmlFor={portsFieldId}
+        id={portsFieldId}
         description={`Comma separated, up to ${MAX_HOST_PORTS} ports.`}
       >
         <TextInput
@@ -122,7 +122,7 @@ export function CloudProjectHostTab({
           aria-invalid={portsError !== null ? true : undefined}
           data-testid="cloud-workspace-settings-host-ports"
         />
-      </DialogFormField>
+      </FormField>
       {portsError !== null && (
         <FieldError
           id="cloud-workspace-settings-host-ports-error"

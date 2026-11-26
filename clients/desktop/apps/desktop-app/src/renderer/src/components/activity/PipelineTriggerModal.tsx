@@ -103,7 +103,6 @@ import { PipelinePluginCollectionsSection } from './PipelinePluginCollectionsSec
 import { PipelineModelAliasesSection } from './PipelineModelAliasesSection';
 import { ChevronLeftMediumIcon as AppCatalogChevronLeftMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { PipelineGlyph, WatcherEyeIcon } from '@canopy/ui-shared/icons';
-import { ActionTooltip } from '@/components/shared/ActionTooltip';
 import {
   WatcherRecipientPicker,
   type WatcherRecipientGroup,
@@ -117,7 +116,7 @@ import {
 } from './pipelineTriggerModalUtils';
 import {
   ChoiceField,
-  DialogFormField,
+  FormField as SharedFormField,
   SearchField,
   Tooltip,
 } from '@canopy/ui-shared';
@@ -2147,9 +2146,9 @@ export function PipelineTriggerModal({
   const repoSelector =
     showRepoDropdown && showRepositoryChoice && repoChoices ? (
       <div data-testid="pipeline-trigger-modal-repo-select">
-        <DialogFormField
+        <SharedFormField
           label="Working directory"
-          htmlFor="pipeline-trigger-modal-repo"
+          id="pipeline-trigger-modal-repo"
         >
           <SelectField
             id="pipeline-trigger-modal-repo"
@@ -2161,7 +2160,7 @@ export function PipelineTriggerModal({
             }))}
             disabled={settingsOff}
           />
-        </DialogFormField>
+        </SharedFormField>
       </div>
     ) : null;
 
@@ -2613,8 +2612,8 @@ export function PipelineTriggerModal({
           <div className="flex items-center gap-2">
             {watcherSupported && watcherRecipientGroups && (
               <>
-                <ActionTooltip
-                  title="Notify a chat"
+                <Tooltip
+                  label="Notify a chat"
                   description={
                     watcherEnabled
                       ? 'Pick a chat to notify when this workflow completes.'
@@ -2648,7 +2647,7 @@ export function PipelineTriggerModal({
                   >
                     <WatcherEyeIcon size="sm" aria-hidden="true" />
                   </Button>
-                </ActionTooltip>
+                </Tooltip>
                 {watcherEnabled && (
                   <WatcherRecipientPicker
                     groups={watcherRecipientGroups}

@@ -7,6 +7,11 @@ const workspaceMutationTails = new Map<string, Promise<void>>();
 // not enqueue behind themselves and deadlock.
 const activeWorkspaceMutation = new AsyncLocalStorage<boolean>();
 
+/** Whether the caller runs inside `serializeWorkspaceMutation`. */
+export function ownsWorkspaceMutation(): boolean {
+  return activeWorkspaceMutation.getStore() === true;
+}
+
 export async function serializeWorkspaceMutation<T>(
   operation: () => Promise<T>,
   cancellation?: { signal: AbortSignal; error: () => Error },

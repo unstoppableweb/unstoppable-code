@@ -13,9 +13,8 @@ import {
   Button,
   Checkbox,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   DateField,
-  DialogFormField,
   DialogModal,
   FieldError,
   FilterDropdown,
@@ -570,24 +569,24 @@ function LabInline({
 
 const DIALOG_FIELD_ROW: StateRow = {
   id: 'dialog-field',
-  name: 'DialogFormField',
+  name: 'FormField in a dialog',
   cell: (state): ReactNode => {
     switch (state) {
       case 'Filled':
         return (
-          <DialogFormField label="Organization name" htmlFor="lab-dialog-name">
+          <FormField label="Organization name" id="lab-dialog-name">
             <TextInput
               id="lab-dialog-name"
               density="settings"
               defaultValue="Acme"
             />
-          </DialogFormField>
+          </FormField>
         );
       case 'Help text':
         return (
-          <DialogFormField
+          <FormField
             label="Organization name"
-            htmlFor="lab-dialog-help"
+            id="lab-dialog-help"
             description="You can change this later."
           >
             <TextInput
@@ -595,13 +594,13 @@ const DIALOG_FIELD_ROW: StateRow = {
               density="settings"
               defaultValue="Acme"
             />
-          </DialogFormField>
+          </FormField>
         );
       case 'Error + help':
         return (
-          <DialogFormField
+          <FormField
             label="Organization name"
-            htmlFor="lab-dialog-error"
+            id="lab-dialog-error"
             description="You can change this later."
             error="Enter a name."
           >
@@ -611,11 +610,11 @@ const DIALOG_FIELD_ROW: StateRow = {
               aria-invalid
               aria-describedby="lab-dialog-error-error"
             />
-          </DialogFormField>
+          </FormField>
         );
       case 'Disabled':
         return (
-          <DialogFormField label="Role" htmlFor="lab-dialog-role">
+          <FormField label="Role" id="lab-dialog-role">
             <SettingsSelect
               id="lab-dialog-role"
               value="member"
@@ -623,7 +622,7 @@ const DIALOG_FIELD_ROW: StateRow = {
               onValueChange={() => undefined}
               disabled
             />
-          </DialogFormField>
+          </FormField>
         );
       default:
         return NOT_APPLICABLE;
@@ -658,39 +657,51 @@ const CHOICE_LIST_ROW: StateRow = {
       case 'Filled':
         return (
           <ChoiceList aria-label="Notify me" className="w-full">
-            <ChoiceListRow selected={state === 'Filled'}>
-              Pull requests
-            </ChoiceListRow>
-            <ChoiceListRow selected={false}>Mentions</ChoiceListRow>
+            <ChoiceField
+              layout="row"
+              checked={state === 'Filled'}
+              readOnly
+              label="Pull requests"
+            />
+            <ChoiceField
+              layout="row"
+              checked={false}
+              readOnly
+              label="Mentions"
+            />
           </ChoiceList>
         );
       case 'Focused':
         return (
           <Drive active={focused} action="focus">
             <ChoiceList aria-label="Plan" className="w-full">
-              <ChoiceListRow kind="radio" selected>
-                Team
-              </ChoiceListRow>
+              <ChoiceField
+                layout="row"
+                kind="radio"
+                checked
+                readOnly
+                label="Team"
+              />
             </ChoiceList>
           </Drive>
         );
       case 'Disabled':
         return (
           <ChoiceList aria-label="Plan" className="w-full">
-            <ChoiceListRow
+            <ChoiceField
+              layout="row"
               kind="radio"
-              selected={false}
+              checked={false}
               disabled
-              trailing="Soon"
-            >
-              Enterprise
-            </ChoiceListRow>
+              end="Soon"
+              label="Enterprise"
+            />
           </ChoiceList>
         );
       case 'Long value':
         return (
           <ChoiceList aria-label="Repos" className="w-full">
-            <ChoiceListRow selected>{LONG_VALUE}</ChoiceListRow>
+            <ChoiceField layout="row" checked readOnly label={LONG_VALUE} />
           </ChoiceList>
         );
       default:
@@ -1649,9 +1660,9 @@ function DialogDemo(): JSX.Element {
               setSubmitted(true);
             }}
           >
-            <DialogFormField
+            <FormField
               label="Email"
-              htmlFor="lab-invite-email"
+              id="lab-invite-email"
               description="They get a link to join."
               error={invalid ? 'Enter an email address.' : null}
             >
@@ -1669,15 +1680,15 @@ function DialogDemo(): JSX.Element {
                   setSubmitted(false);
                 }}
               />
-            </DialogFormField>
-            <DialogFormField label="Role" htmlFor="lab-invite-role">
+            </FormField>
+            <FormField label="Role" id="lab-invite-role">
               <SettingsSelect
                 id="lab-invite-role"
                 value={role}
                 options={ROLES}
                 onValueChange={setRole}
               />
-            </DialogFormField>
+            </FormField>
             <div className="flex justify-end gap-2">
               <Button
                 type="button"
@@ -1716,14 +1727,14 @@ function ChoicesDemo(): JSX.Element {
           ['mentions', 'Mentions'],
           ['digests', 'Weekly digests'],
         ].map(([value, label]) => (
-          <ChoiceListRow
+          <ChoiceField
             key={value}
-            selected={picked.includes(value ?? '')}
+            layout="row"
+            checked={picked.includes(value ?? '')}
             disabled={flags.allDisabled}
-            onClick={() => toggle(value ?? '')}
-          >
-            {label}
-          </ChoiceListRow>
+            onChange={() => toggle(value ?? '')}
+            label={label}
+          />
         ))}
       </ChoiceList>
       <ChoiceList aria-label="Plan">
@@ -1731,15 +1742,15 @@ function ChoicesDemo(): JSX.Element {
           ['team', 'Team'],
           ['business', 'Business'],
         ].map(([value, label]) => (
-          <ChoiceListRow
+          <ChoiceField
             key={value}
+            layout="row"
             kind="radio"
-            selected={plan === value}
+            checked={plan === value}
             disabled={flags.allDisabled}
-            onClick={() => setPlan(value ?? 'team')}
-          >
-            {label}
-          </ChoiceListRow>
+            onChange={() => setPlan(value ?? 'team')}
+            label={label}
+          />
         ))}
       </ChoiceList>
     </div>

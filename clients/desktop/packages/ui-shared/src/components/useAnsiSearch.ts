@@ -6,7 +6,7 @@ import { useCallback, useRef, useState } from 'react';
  * AnsiOutput handles highlighting internally via its searchQuery/activeMatchIndex
  * props and reports match count via onMatchCountChange. This hook manages
  * the query, current index, and total count, providing props for both
- * SearchBar and AnsiOutput.
+ * FindBar and AnsiOutput.
  */
 
 interface AnsiSearchResult {

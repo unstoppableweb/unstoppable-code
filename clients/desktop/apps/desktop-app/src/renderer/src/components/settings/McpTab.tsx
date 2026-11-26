@@ -38,8 +38,8 @@ import {
   Button,
   Skeleton,
   SlowLoadNote,
-  StatusBadge,
-  type StatusBadgeVariant,
+  Badge,
+  type BadgeTone,
   FieldError,
 } from '@canopy/ui-shared/components';
 import { useLoadingPhase } from '@canopy/ui-shared/lib';
@@ -64,14 +64,14 @@ function statusLabel(status: McpProxyStatus): string {
   }
 }
 
-function statusBadgeVariant(status: McpProxyStatus): StatusBadgeVariant {
+function statusBadgeTone(status: McpProxyStatus): BadgeTone {
   switch (status) {
     case 'stopped':
-      return 'muted';
+      return 'neutral';
     case 'running':
       return 'success';
     case 'error':
-      return 'destructive';
+      return 'danger';
   }
 }
 
@@ -503,12 +503,11 @@ export function McpTab(): JSX.Element {
               control={
                 <McpLoadingValue shown={skeletonShown}>
                   <Skeleton loading label="Loading proxy status">
-                    <StatusBadge
-                      variant={statusBadgeVariant(
-                        SAMPLE_MCP_SETTINGS.proxyStatus,
-                      )}
-                      label={statusLabel(SAMPLE_MCP_SETTINGS.proxyStatus)}
-                    />
+                    <Badge
+                      tone={statusBadgeTone(SAMPLE_MCP_SETTINGS.proxyStatus)}
+                    >
+                      {statusLabel(SAMPLE_MCP_SETTINGS.proxyStatus)}
+                    </Badge>
                   </Skeleton>
                 </McpLoadingValue>
               }
@@ -526,10 +525,9 @@ export function McpTab(): JSX.Element {
                   : undefined
               }
               control={
-                <StatusBadge
-                  variant={statusBadgeVariant(proxyState.status)}
-                  label={statusLabel(proxyState.status)}
-                />
+                <Badge tone={statusBadgeTone(proxyState.status)}>
+                  {statusLabel(proxyState.status)}
+                </Badge>
               }
             />
           )}

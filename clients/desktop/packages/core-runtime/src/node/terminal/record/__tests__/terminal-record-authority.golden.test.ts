@@ -2369,8 +2369,13 @@ it.each([
   ['stream', 'exited', 'received'],
   ['stream', 'running', 'missed'],
   ['stream', 'running', 'received'],
+  // A client that reattaches after the host ended, at its last offset.
+  ['reattach', 'exited', 'missed'],
+  ['reattach', 'exited', 'received'],
+  ['reattach', 'running', 'missed'],
+  ['reattach', 'running', 'received'],
 ] as const)(
-  'marks a host-loss exit truncated only when its attachment missed final output (%s, %s, %s)',
+  'marks a host-loss exit truncated unless its PTY exit confirmed the attachment has every byte (%s, %s, %s)',
   async (path, pty, output): Promise<void> => {
     jest.useFakeTimers();
     const terminal: TerminalHostTerminal = {
@@ -2432,6 +2437,32 @@ it.each([
     }[] = [];
     const ends: string[] = [];
     let sequence = 0;
+    const attachStream = (fromOffset: number): Promise<unknown> =>
+      handlers.streams['worker.terminal.attach'](
+        {
+          scope: { workspaceId: 'proj', worktreeId: 'wt' },
+          terminalId: 'lost',
+          fromOffset,
+        },
+        context,
+        {
+          emit: (item) => {
+            if (item.exit)
+              exits.push({
+                fromOffset: item.fromOffset,
+                truncatedBefore: item.truncatedBefore,
+                exit: item.exit,
+              });
+            sequence += 1;
+            return { daemonEpoch: 'test', sequence };
+          },
+          emitAt: () => null,
+          end: (outcome): void => {
+            ends.push(outcome);
+          },
+          endAt: (): void => undefined,
+        },
+      );
     try {
       await handlers.instructions['worker.terminal.restore'](
         {
@@ -2469,32 +2500,7 @@ it.each([
             },
           },
         );
-      else
-        await handlers.streams['worker.terminal.attach'](
-          {
-            scope: { workspaceId: 'proj', worktreeId: 'wt' },
-            terminalId: 'lost',
-            fromOffset: 0,
-          },
-          context,
-          {
-            emit: (item) => {
-              if (item.exit)
-                exits.push({
-                  fromOffset: item.fromOffset,
-                  truncatedBefore: item.truncatedBefore,
-                  exit: item.exit,
-                });
-              sequence += 1;
-              return { daemonEpoch: 'test', sequence };
-            },
-            emitAt: () => null,
-            end: (outcome): void => {
-              ends.push(outcome);
-            },
-            endAt: (): void => undefined,
-          },
-        );
+      else if (path === 'stream') await attachStream(0);
       host.emit('message', {
         kind: 'item',
         attachmentId,
@@ -2508,7 +2514,8 @@ it.each([
         },
       });
       const outputOffset = output === 'missed' ? 12 : 4;
-      // The host saw output past what this attachment's items carried.
+      // The host saw output past what this attachment's items carried. Only
+      // its own PTY exit confirms a final offset; this report never does.
       host.emit('message', {
         kind: 'report',
         report: {
@@ -2533,10 +2540,15 @@ it.each([
       expect(exits).toEqual([]);
       host.emit('exit', 1);
       await jest.advanceTimersByTimeAsync(50);
+      if (path === 'reattach') {
+        await attachStream(4);
+        await jest.advanceTimersByTimeAsync(50);
+      }
       expect(exits).toEqual([
         {
           fromOffset: 4,
-          truncatedBefore: output === 'missed',
+          // Unconfirmed (running) ends are truncated even when caught up.
+          truncatedBefore: pty === 'running' || output === 'missed',
           exit:
             pty === 'exited'
               ? { code: 0, signal: null }

@@ -1,4 +1,12 @@
-import { type JSX, type ReactNode, useEffect, useState } from 'react';
+import {
+  type JSX,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { LoadingSpinner } from '@canopy/ui-shared/components';
 import { ErrorBanner } from '@canopy/ui-shared/components';
@@ -7,6 +15,7 @@ import {
   CloseMediumIcon,
   DownloadIcon,
   RestartIcon,
+  TerminalIcon,
   TimeslotIcon,
   WarningIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
@@ -15,9 +24,13 @@ import { brand } from '@/lib/brand';
 import { useUpdateState } from '@/hooks/useUpdateState';
 import { formatVersionLabel } from '@/lib/version-label';
 import { pt } from '@/lib/platform-text';
-import { openLinuxUpdateTerminal } from '@/lib/linux-update-terminal';
+import {
+  beginLinuxUpdateAction,
+  openLinuxUpdateTerminal,
+} from '@/lib/linux-update-terminal';
 import { extractIpcErrorMessage } from '@/lib/errors';
 import { useNavigationStore } from '@/stores/navigationStore';
+import { useChatStore } from '@/stores/chatStore';
 import {
   SidebarFooterBanner,
   SidebarFooterBannerIcon,
@@ -55,6 +68,17 @@ interface PromptView {
  */
 export function UpdatePrompt(): JSX.Element {
   const { state } = useUpdateState();
+  const updateOffer = `${state.phase}:${state.info?.version ?? ''}`;
+  const currentUpdateOffer = useRef<string | null>(null);
+  const systemUpdaterRequestId = useRef(0);
+  const [systemUpdaterPending, setSystemUpdaterPending] = useState(false);
+  useLayoutEffect(() => {
+    currentUpdateOffer.current = updateOffer;
+    return (): void => {
+      currentUpdateOffer.current = null;
+      systemUpdaterRequestId.current += 1;
+    };
+  }, [updateOffer]);
   const openSettings = useNavigationStore((s) => s.openSettings);
   const manualLinux = window.platform === 'linux';
   const linuxCopy = linuxUpdateCopy(brand, __CANOPY_RELEASE_FLAVOR__);
@@ -72,13 +96,13 @@ export function UpdatePrompt(): JSX.Element {
     null,
   );
 
-  // Every updater event produces a new state object (even repeated errors
-  // refresh `checkedAt`), so any state change means the main process has
-  // acknowledged — or superseded — the pending action.
   useEffect(() => {
     setPendingAction(null);
     setActionError(null);
   }, [state]);
+  useEffect(() => {
+    setSystemUpdaterPending(false);
+  }, [updateOffer]);
 
   const showActionError = (error: unknown): void => {
     const classified = toAppError(error);
@@ -88,17 +112,64 @@ export function UpdatePrompt(): JSX.Element {
     });
     setPendingAction(null);
   };
-  const openUpdateTerminal = async (): Promise<void> => {
+  const openUpdateTerminal = async (
+    isCurrent: () => boolean,
+  ): Promise<void> => {
     try {
-      const result = await openLinuxUpdateTerminal();
-      if (!result.opened)
+      const result = await openLinuxUpdateTerminal(isCurrent);
+      if (result.reason === 'no-local-worktree' && isCurrent())
         openSettings('canopy', { scrollTo: 'settings-linux-update-guidance' });
     } catch (error: unknown) {
+      if (!isCurrent()) return;
+      openSettings('canopy', { scrollTo: 'settings-linux-update-guidance' });
       const classified = toAppError(error);
       setActionError({
         message: extractIpcErrorMessage(error),
         code: classified?.code,
       });
+    }
+  };
+  const openUpdateAction = async (useSystemUpdater: boolean): Promise<void> => {
+    const navigationContext = useNavigationStore.getState();
+    const selectedWorktree = useChatStore.getState().selectedWorktree;
+    const requestId = ++systemUpdaterRequestId.current;
+    const isCurrentRequest = (): boolean =>
+      requestId === systemUpdaterRequestId.current &&
+      currentUpdateOffer.current === updateOffer;
+    const isLatestAction = beginLinuxUpdateAction((): void => {
+      if (isCurrentRequest()) setSystemUpdaterPending(false);
+    }, state.info?.version);
+    const isCurrent = (): boolean => isLatestAction() && isCurrentRequest();
+    setSystemUpdaterPending(true);
+    setActionError(null);
+    try {
+      let opened = false;
+      if (useSystemUpdater) {
+        try {
+          const result = await window.api.update.openSystemUpdater();
+          opened = result.opened;
+        } catch (error: unknown) {
+          if (!isCurrent()) return;
+          // Still offer the terminal and Settings after an unexpected failure.
+          reportClientAppError(error);
+        }
+      }
+      if (!isCurrent()) return;
+      if (
+        !opened &&
+        useSystemUpdater &&
+        (useNavigationStore.getState() !== navigationContext ||
+          useChatStore.getState().selectedWorktree !== selectedWorktree)
+      ) {
+        setActionError({
+          message:
+            "Couldn't open Software Updater. Use the terminal or copy the command.",
+        });
+        return;
+      }
+      if (!opened) await openUpdateTerminal(isCurrent);
+    } finally {
+      if (isCurrentRequest()) setSystemUpdaterPending(false);
     }
   };
 
@@ -114,6 +185,8 @@ export function UpdatePrompt(): JSX.Element {
   const packageManagerUpdate = manualLinux
     ? state.info?.packageManagerUpdate
     : undefined;
+
+  const hasSystemUpdater = state.info?.systemUpdater === 'update-manager';
 
   if (state.phase === 'available') {
     view = packageManagerUpdate
@@ -141,11 +214,21 @@ export function UpdatePrompt(): JSX.Element {
             icon: <DownloadIcon size={16} aria-hidden="true" />,
             iconTone: 'accent',
             label: 'Update available',
-            ariaLabel: `Update available (${versionLabel}): open in terminal`,
+            ariaLabel: `Update available (${versionLabel}): ${hasSystemUpdater ? linuxCopy.softwareUpdater : 'open in terminal'}`,
             title: `Version ${versionLabel} is available.`,
             onClick: (): void => {
-              void openUpdateTerminal();
+              void openUpdateAction(hasSystemUpdater);
             },
+            trailingAction: hasSystemUpdater
+              ? {
+                  ariaLabel: linuxCopy.openInTerminal,
+                  icon: <TerminalIcon size={16} aria-hidden="true" />,
+                  onClick: (): void => {
+                    void openUpdateAction(false);
+                  },
+                  testId: 'update-prompt-open-terminal',
+                }
+              : undefined,
           }
         : manualLinux
           ? {
@@ -312,6 +395,7 @@ export function UpdatePrompt(): JSX.Element {
           ariaLabel={view.ariaLabel}
           surface="status"
           onClick={view.onClick}
+          disabled={state.phase === 'available' && systemUpdaterPending}
           testId="update-prompt"
           title={view.title ?? view.ariaLabel}
           trailingAction={view.trailingAction}

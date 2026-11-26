@@ -3,26 +3,22 @@ import type {
   ProviderRateLimitSnapshot,
   ProviderUsageErrorInfo,
 } from '@canopy/execution-engine/types/observability';
+import type {
+  AccountProxyConnection,
+  AccountProxyRoutingStrategy,
+} from '@canopy/protocol/preferences';
 // Account proxy (CLIProxyAPI) contracts shared by main, preload, and the
 // renderer. See docs/planning/2026-10-12-account-proxy/README.md.
 
+export { ACCOUNT_PROXY_ROUTING_STRATEGIES } from '@canopy/protocol/preferences';
+export type {
+  AccountProxyConnection,
+  AccountProxyConnectionKind,
+  AccountProxyRoutingStrategy,
+} from '@canopy/protocol/preferences';
+
 /** The oldest CLIProxyAPI major version whose v8 management API we speak. */
 export const ACCOUNT_PROXY_MIN_MAJOR_VERSION = 8;
-
-/**
- * Where the proxy runs. Only `server` exists today; `local` (this device runs
- * it) and `device` (another paired desktop relays its accounts) are reserved
- * so stored connections never need a migration to add them.
- */
-export type AccountProxyConnectionKind = 'server' | 'local' | 'device';
-
-export interface AccountProxyConnection {
-  /** Random id, stable for the life of the connection. */
-  readonly id: string;
-  readonly kind: AccountProxyConnectionKind;
-  /** Normalized base URL without a trailing slash. */
-  readonly url: string;
-}
 
 export type AccountProxyAccountStatus =
   | 'active'
@@ -103,16 +99,6 @@ export interface AccountProxyError {
   readonly code: AccountProxyErrorCode;
   readonly message: string;
 }
-
-/** How the proxy picks an account for each request (`routing.strategy`). */
-export const ACCOUNT_PROXY_ROUTING_STRATEGIES = [
-  'round-robin',
-  'weighted-round-robin',
-  'fill-first',
-] as const;
-
-export type AccountProxyRoutingStrategy =
-  (typeof ACCOUNT_PROXY_ROUTING_STRATEGIES)[number];
 
 export interface AccountProxyRouting {
   readonly strategy: AccountProxyRoutingStrategy;

@@ -8,7 +8,7 @@ import type {
 import { useMarketplaceSourceAdd } from '@canopy/app-state';
 import {
   Button,
-  DialogFormField,
+  FormField,
   DialogModal,
   TextInput,
   ErrorBanner,
@@ -101,13 +101,13 @@ export function MarketplaceSourceAddDialog({
                 ? `${ADD_SOURCE_LEAD} You can also use a skills repository or a skills.sh link. Preview the contents, then confirm the revision.`
                 : `${ADD_SOURCE_LEAD} The repository is checked for Claude and Codex plugins when you add it.`}
             </p>
-            <DialogFormField
+            <FormField
               label={
                 session.inputKind === 'github-or-skills'
                   ? 'Repository or skills.sh URL'
                   : 'Repository'
               }
-              htmlFor={repoInputId}
+              id={repoInputId}
             >
               <TextInput
                 ref={inputRef}
@@ -129,7 +129,7 @@ export function MarketplaceSourceAddDialog({
                 placeholder="owner/repo or https://github.com/owner/repo"
                 data-testid="cloud-marketplace-add-input"
               />
-            </DialogFormField>
+            </FormField>
           </>
         )}
 

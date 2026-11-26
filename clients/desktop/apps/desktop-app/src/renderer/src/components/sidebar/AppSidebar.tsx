@@ -239,21 +239,68 @@ const MORE_HEIGHT_VAR = '--sidebar-more-height';
  */
 const WORKSPACE_CLIP_BAND_PX = 40;
 
-/** Height of the pinned workspace slot, matching its 2rem rule. */
-const STICKY_WORKSPACE_SLOT_HEIGHT_PX = 32;
 /**
- * The slot's height WHEN IT IS STANDING IN, and 0 when it is not.
- *
- * The band's depth was written as a flat 2rem for the slot, but the slot is
- * hidden whenever the selected-row pin already owns the header seat. The clip
- * then reserved 32px nothing was painting, leaving a strip of rail showing
- * neither band nor row directly under the pinned selection.
+ * Overrides the slot's default 2rem clip reservation to 0px when the surface
+ * has no sticky slot or the selected-row pin already owns the header seat.
+ * Otherwise left unset so the CSS 2rem fallback applies without mutating an
+ * inherited property on every scroll across the sticky threshold.
  */
 const WORKSPACES_SLOT_HEIGHT_VAR = '--sidebar-workspaces-slot-height';
 
 /** The label's live distance below the seat; consumed only by the projections. */
 const EXTERNAL_PROJECTS_HEADER_OFFSET_VAR =
   '--sidebar-external-projects-header-offset';
+
+interface StickyViewportMetrics {
+  moreHeight: number;
+  chatsStackHeight: number;
+  workspaceHeaderTop: number | null;
+  selectedPinBottomClip: number;
+}
+
+const stickyViewportMetrics = new WeakMap<HTMLElement, StickyViewportMetrics>();
+
+function getStickyViewportMetrics(
+  viewport: HTMLElement,
+): StickyViewportMetrics {
+  let metrics = stickyViewportMetrics.get(viewport);
+  if (!metrics) {
+    metrics = {
+      moreHeight: 0,
+      chatsStackHeight: 0,
+      workspaceHeaderTop: null,
+      selectedPinBottomClip: 0,
+    };
+    stickyViewportMetrics.set(viewport, metrics);
+  }
+  return metrics;
+}
+
+function setStylePropertyIfChanged(
+  element: HTMLElement | null,
+  name: string,
+  value: string | null,
+): void {
+  if (!element) return;
+  const current = element.style.getPropertyValue(name);
+  if (value === null) {
+    if (current !== '') element.style.removeProperty(name);
+  } else if (current !== value) {
+    element.style.setProperty(name, value);
+  }
+}
+
+function setAttributeIfChanged(
+  element: HTMLElement,
+  name: string,
+  value: string | null,
+): void {
+  if (value === null) {
+    if (element.hasAttribute(name)) element.removeAttribute(name);
+  } else if (element.getAttribute(name) !== value) {
+    element.setAttribute(name, value);
+  }
+}
 
 /**
  * How far below the band's seat a host-rendered Projects label currently sits.
@@ -286,7 +333,7 @@ function syncExternalProjectsHeaderOffset(
   const { externalProjectsHeaderFlowTop, externalProjectsHeaderHeight } =
     layout;
   if (externalProjectsHeaderFlowTop === null) return;
-  const seat = readPxVar(viewport, WORKSPACE_HEADER_TOP_VAR);
+  const seat = getStickyViewportMetrics(viewport).workspaceHeaderTop ?? 0;
   const naturalTop = externalProjectsHeaderFlowTop - scrollTop;
   const offset = Math.round(
     Math.max(
@@ -294,34 +341,27 @@ function syncExternalProjectsHeaderOffset(
       Math.max(seat, naturalTop) + externalProjectsHeaderHeight - seat,
     ),
   );
-  const target = layout.stickyControls;
-  if (target) {
-    const value = `${offset}px`;
-    if (
-      target.style.getPropertyValue(EXTERNAL_PROJECTS_HEADER_OFFSET_VAR) !==
-      value
-    ) {
-      target.style.setProperty(EXTERNAL_PROJECTS_HEADER_OFFSET_VAR, value);
-    }
-  }
+  setStylePropertyIfChanged(
+    layout.stickyControls,
+    EXTERNAL_PROJECTS_HEADER_OFFSET_VAR,
+    `${offset}px`,
+  );
 }
 
 function syncWorkspacesSlotHeightVar(
-  viewport: HTMLElement,
-  slotActive: boolean,
+  workspacesContent: HTMLElement | null,
+  reserveSlotHeight: boolean,
 ): void {
-  const value = slotActive ? `${STICKY_WORKSPACE_SLOT_HEIGHT_PX}px` : '0px';
-  if (viewport.style.getPropertyValue(WORKSPACES_SLOT_HEIGHT_VAR) !== value) {
-    viewport.style.setProperty(WORKSPACES_SLOT_HEIGHT_VAR, value);
-  }
-}
-
-/** Reads a px-valued custom property off an element, 0 when unset. */
-function readPxVar(element: HTMLElement, name: string): number {
-  const raw = element.style.getPropertyValue(name).trim();
-  if (raw.length === 0) return 0;
-  const parsed = Number.parseFloat(raw);
-  return Number.isFinite(parsed) ? parsed : 0;
+  // Keep the property unset (using the CSS `2rem` fallback) when reserving the
+  // slot height, and write `0px` only when no slot copy will stand in.
+  // Toggling between `0px` and `32px` on every approach to the first header
+  // mutates an inherited custom property on the ancestor of every row and
+  // forces a full-rail style recalculation.
+  setStylePropertyIfChanged(
+    workspacesContent,
+    WORKSPACES_SLOT_HEIGHT_VAR,
+    reserveSlotHeight ? null : '0px',
+  );
 }
 
 /**
@@ -343,10 +383,11 @@ const chatsSelectedPinHeight = new WeakMap<HTMLElement, number>();
  * row is released when it clears the header, not the copy.
  */
 function chatsHeaderSeatBottom(viewport: HTMLElement): number {
+  const metrics = getStickyViewportMetrics(viewport);
   return (
     STICKY_CONTROLS_TOP_PX +
-    readPxVar(viewport, MORE_HEIGHT_VAR) +
-    readPxVar(viewport, CHATS_HEADER_HEIGHT_VAR) -
+    metrics.moreHeight +
+    metrics.chatsStackHeight -
     (chatsSelectedPinHeight.get(viewport) ?? 0)
   );
 }
@@ -383,6 +424,8 @@ function syncChatsSelectedPinHeight(
  * never size, the measured elements.
  */
 interface StickyWorkspaceHeaderOffsetMeasurement {
+  readonly stickyControls: HTMLElement;
+  readonly workspacesContent: HTMLElement | null;
   readonly chatsHeader: HTMLElement | null;
   readonly chatsHeaderHeight: number;
   readonly moreHeight: number;
@@ -398,6 +441,9 @@ function measureStickyWorkspaceHeaderOffset(
     STICKY_CONTROLS_SELECTOR,
   );
   if (!stickyControls) return null;
+  const workspacesContent = viewport.querySelector<HTMLElement>(
+    WORKSPACES_ROWS_SELECTOR,
+  );
   const chatsHeader = viewport.querySelector<HTMLElement>(
     CHATS_HEADER_SELECTOR,
   );
@@ -409,6 +455,8 @@ function measureStickyWorkspaceHeaderOffset(
     stickyControls,
   );
   return {
+    stickyControls,
+    workspacesContent,
     chatsHeader,
     chatsHeaderHeight: chatsHeader?.offsetHeight ?? 0,
     moreHeight: moreLead?.offsetHeight ?? 0,
@@ -420,19 +468,31 @@ function measureStickyWorkspaceHeaderOffset(
 
 /**
  * Publishes the natural-flow threshold at which a workspace identity moves
- * into the dedicated slot. The slot itself is a stable child of the controls
- * group and therefore never needs to be translated or repositioned. Writes
- * only: the caller measures first (`measureStickyWorkspaceHeaderOffset`).
+ * into the dedicated slot. Writes each custom property on the band or flow
+ * container that consumes it rather than the scroll viewport, so updates do
+ * not cascade across unrelated subtrees. Writes only: the caller measures
+ * first (`measureStickyWorkspaceHeaderOffset`).
  */
 function applyStickyWorkspaceHeaderOffset(
   viewport: HTMLElement,
   measurement: StickyWorkspaceHeaderOffsetMeasurement | null,
 ): void {
+  const metrics = getStickyViewportMetrics(viewport);
   if (!measurement) {
-    viewport.style.removeProperty(WORKSPACE_HEADER_TOP_VAR);
+    metrics.workspaceHeaderTop = null;
+    const workspacesContent = viewport.querySelector<HTMLElement>(
+      WORKSPACES_ROWS_SELECTOR,
+    );
+    setStylePropertyIfChanged(
+      workspacesContent,
+      WORKSPACE_HEADER_TOP_VAR,
+      null,
+    );
     return;
   }
   const {
+    stickyControls,
+    workspacesContent,
     chatsHeader,
     chatsHeaderHeight,
     moreHeight,
@@ -455,17 +515,14 @@ function applyStickyWorkspaceHeaderOffset(
   const chatsStackHeight =
     chatsHeaderHeight +
     (chatsHeader !== null ? (chatsSelectedPinHeight.get(viewport) ?? 0) : 0);
-  const chatsHeaderValue = `${chatsStackHeight}px`;
-  if (
-    viewport.style.getPropertyValue(CHATS_HEADER_HEIGHT_VAR) !==
-    chatsHeaderValue
-  ) {
-    viewport.style.setProperty(CHATS_HEADER_HEIGHT_VAR, chatsHeaderValue);
-  }
-  const moreValue = `${moreHeight}px`;
-  if (viewport.style.getPropertyValue(MORE_HEIGHT_VAR) !== moreValue) {
-    viewport.style.setProperty(MORE_HEIGHT_VAR, moreValue);
-  }
+  metrics.moreHeight = moreHeight;
+  metrics.chatsStackHeight = chatsStackHeight;
+  setStylePropertyIfChanged(
+    stickyControls,
+    CHATS_HEADER_HEIGHT_VAR,
+    `${chatsStackHeight}px`,
+  );
+  setStylePropertyIfChanged(stickyControls, MORE_HEIGHT_VAR, `${moreHeight}px`);
   // Seat the Chats header directly under the pinned More row from this same
   // pass. Driving it imperatively keeps the stack's two offsets derived from
   // one measurement instead of two independent var resolutions.
@@ -486,15 +543,14 @@ function applyStickyWorkspaceHeaderOffset(
   }
   // The band's bottom is the whole sticky stack: More, then the Chats header
   // (and a selected chat seated under it), then the controls themselves.
-  const value = `${
+  const headerTopPx =
     stickyControlsHeight +
     STICKY_CONTROLS_TOP_PX +
     moreHeight +
-    chatsStackHeight
-  }px`;
-  if (viewport.style.getPropertyValue(WORKSPACE_HEADER_TOP_VAR) !== value) {
-    viewport.style.setProperty(WORKSPACE_HEADER_TOP_VAR, value);
-  }
+    chatsStackHeight;
+  metrics.workspaceHeaderTop = headerTopPx;
+  const value = `${headerTopPx}px`;
+  setStylePropertyIfChanged(workspacesContent, WORKSPACE_HEADER_TOP_VAR, value);
   // A host-rendered Projects header sits BELOW the band rather than inside it,
   // so it inherits none of the band's seating and would otherwise pin at the
   // viewport's top edge, on top of More and the Chats header. The band's
@@ -507,19 +563,19 @@ function applyStickyWorkspaceHeaderOffset(
   // The selected-item pin group is ABSOLUTELY positioned at the band's bottom
   // edge, so it contributes nothing to the band's measured height and lands on
   // exactly the offset a host-rendered Projects header was just seated at —
-  // the two drew over each other. Publish that header's height so the group
-  // clears it. The legacy rail renders its header INSIDE the band, leaves this
-  // unset, and is unaffected.
+  // the two drew over each other. Publish that header's height on both the
+  // band and the rows container so each consumer reads it locally.
   const externalProjectsHeight = `${projectsHeaderHeight}px`;
-  if (
-    viewport.style.getPropertyValue(EXTERNAL_PROJECTS_HEADER_HEIGHT_VAR) !==
-    externalProjectsHeight
-  ) {
-    viewport.style.setProperty(
-      EXTERNAL_PROJECTS_HEADER_HEIGHT_VAR,
-      externalProjectsHeight,
-    );
-  }
+  setStylePropertyIfChanged(
+    stickyControls,
+    EXTERNAL_PROJECTS_HEADER_HEIGHT_VAR,
+    externalProjectsHeight,
+  );
+  setStylePropertyIfChanged(
+    workspacesContent,
+    EXTERNAL_PROJECTS_HEADER_HEIGHT_VAR,
+    externalProjectsHeight,
+  );
   // Reserve the whole stack so programmatic scrolls (pending-worktree reveal,
   // selected-row restore) land below it rather than under it.
   if (viewport.style.scrollPaddingTop !== value) {
@@ -743,6 +799,8 @@ interface StickySelectedPinLayout {
   readonly otherTopGroup: HTMLElement | null;
   readonly bottomGroup: HTMLElement;
   readonly bottomHeaderPart: HTMLElement;
+  readonly stickyControls: HTMLElement | null;
+  readonly workspacesContent: HTMLElement | null;
 }
 
 interface StickyWorkspaceRailLayout {
@@ -769,8 +827,10 @@ interface StickyWorkspaceRailLayout {
   readonly projectsPin: HTMLElement | null;
   readonly primaryNavigation: HTMLElement | null;
   readonly primaryNavigationOffsetTop: number;
+  readonly primaryNavigationHeight: number;
   readonly chatsSection: HTMLElement | null;
   readonly chatsSectionOffsetTop: number;
+  readonly chatsSectionHeight: number;
   /**
    * Cached separately from `chatsSection`: collapsing Chats unmounts the rows
    * but leaves the header on screen, and that is exactly the pass that has to
@@ -819,12 +879,8 @@ function syncFlowHeaderAccessibility(header: HTMLElement): void {
   const covered =
     header.dataset.sidebarStickyFlowHidden === 'true' ||
     header.dataset.sidebarSelectedPinFlowHidden === 'true';
-  header.inert = covered;
-  if (covered) {
-    header.setAttribute('aria-hidden', 'true');
-  } else {
-    header.removeAttribute('aria-hidden');
-  }
+  if (header.inert !== covered) header.inert = covered;
+  setAttributeIfChanged(header, 'aria-hidden', covered ? 'true' : null);
 }
 
 /**
@@ -938,6 +994,12 @@ function measureStickySelectedPin(
     ),
     bottomGroup,
     bottomHeaderPart,
+    stickyControls: viewport.querySelector<HTMLElement>(
+      STICKY_CONTROLS_SELECTOR,
+    ),
+    workspacesContent: viewport.querySelector<HTMLElement>(
+      WORKSPACES_ROWS_SELECTOR,
+    ),
   };
 }
 
@@ -1005,31 +1067,28 @@ function measureChatsSelectedPin(
     ),
     bottomGroup,
     bottomHeaderPart,
+    stickyControls: viewport.querySelector<HTMLElement>(
+      STICKY_CONTROLS_SELECTOR,
+    ),
+    workspacesContent: viewport.querySelector<HTMLElement>(
+      WORKSPACES_ROWS_SELECTOR,
+    ),
   };
 }
 
 function setPinSurfaceActive(surface: HTMLElement, active: boolean): void {
-  if (surface.hidden !== !active) {
-    surface.hidden = !active;
-  }
-  surface.inert = !active;
-  if (active) {
-    surface.removeAttribute('aria-hidden');
-  } else {
-    surface.setAttribute('aria-hidden', 'true');
-  }
+  const hidden = !active;
+  if (surface.hidden !== hidden) surface.hidden = hidden;
+  if (surface.inert !== hidden) surface.inert = hidden;
+  setAttributeIfChanged(surface, 'aria-hidden', active ? null : 'true');
 }
 
 function setPinLengthVar(
-  viewport: HTMLElement,
+  element: HTMLElement | null,
   name: string,
   value: number,
 ): void {
-  if (value > 0) {
-    viewport.style.setProperty(name, `${value}px`);
-  } else {
-    viewport.style.removeProperty(name);
-  }
+  setStylePropertyIfChanged(element, name, value > 0 ? `${value}px` : null);
 }
 
 /** Clears every applied selected-pin surface, var, and flow-row covering. */
@@ -1037,15 +1096,15 @@ function resetStickySelectedPin(viewport: HTMLElement): void {
   const inertRow = stickySelectedPinInertRow.get(viewport);
   if (inertRow) {
     delete inertRow.dataset.sidebarSelectedPinFlowHidden;
-    inertRow.inert = false;
-    inertRow.removeAttribute('aria-hidden');
+    if (inertRow.inert) inertRow.inert = false;
+    setAttributeIfChanged(inertRow, 'aria-hidden', null);
     stickySelectedPinInertRow.delete(viewport);
   }
   const inertGroupHeader = stickySelectedPinInertGroupHeader.get(viewport);
   if (inertGroupHeader) {
     delete inertGroupHeader.dataset.sidebarSelectedPinFlowHidden;
-    inertGroupHeader.inert = false;
-    inertGroupHeader.removeAttribute('aria-hidden');
+    if (inertGroupHeader.inert) inertGroupHeader.inert = false;
+    setAttributeIfChanged(inertGroupHeader, 'aria-hidden', null);
     stickySelectedPinInertGroupHeader.delete(viewport);
   }
   const inertHeader = stickySelectedPinInertHeader.get(viewport);
@@ -1056,9 +1115,25 @@ function resetStickySelectedPin(viewport: HTMLElement): void {
   }
   if (viewport.dataset.sidebarSelectedPinApplied !== 'true') return;
   delete viewport.dataset.sidebarSelectedPinApplied;
-  viewport.style.removeProperty(SELECTED_PIN_TOP_HEIGHT_VAR);
-  viewport.style.removeProperty(SELECTED_PIN_TOP_CLIP_VAR);
-  viewport.style.removeProperty(SELECTED_PIN_BOTTOM_CLIP_VAR);
+  getStickyViewportMetrics(viewport).selectedPinBottomClip = 0;
+  const stickyControls = viewport.querySelector<HTMLElement>(
+    STICKY_CONTROLS_SELECTOR,
+  );
+  const workspacesContent = viewport.querySelector<HTMLElement>(
+    WORKSPACES_ROWS_SELECTOR,
+  );
+  setStylePropertyIfChanged(stickyControls, SELECTED_PIN_TOP_HEIGHT_VAR, null);
+  setStylePropertyIfChanged(
+    workspacesContent,
+    SELECTED_PIN_TOP_HEIGHT_VAR,
+    null,
+  );
+  setStylePropertyIfChanged(workspacesContent, SELECTED_PIN_TOP_CLIP_VAR, null);
+  setStylePropertyIfChanged(
+    workspacesContent,
+    SELECTED_PIN_BOTTOM_CLIP_VAR,
+    null,
+  );
   const topGroup = viewport.querySelector<HTMLElement>(
     SELECTED_PIN_TOP_SELECTOR,
   );
@@ -1092,11 +1167,28 @@ function applyStickySelectedPin(
     resetStickySelectedPin(viewport);
     return;
   }
-  viewport.dataset.sidebarSelectedPinApplied = 'true';
-  setPinLengthVar(viewport, SELECTED_PIN_TOP_HEIGHT_VAR, band.topGroupHeight);
-  setPinLengthVar(viewport, SELECTED_PIN_TOP_CLIP_VAR, band.topClipExtension);
+  if (viewport.dataset.sidebarSelectedPinApplied !== 'true') {
+    viewport.dataset.sidebarSelectedPinApplied = 'true';
+  }
+  getStickyViewportMetrics(viewport).selectedPinBottomClip =
+    band.bottomClipExtension;
   setPinLengthVar(
-    viewport,
+    pin.stickyControls,
+    SELECTED_PIN_TOP_HEIGHT_VAR,
+    band.topGroupHeight,
+  );
+  setPinLengthVar(
+    pin.workspacesContent,
+    SELECTED_PIN_TOP_HEIGHT_VAR,
+    band.topGroupHeight,
+  );
+  setPinLengthVar(
+    pin.workspacesContent,
+    SELECTED_PIN_TOP_CLIP_VAR,
+    band.topClipExtension,
+  );
+  setPinLengthVar(
+    pin.workspacesContent,
     SELECTED_PIN_BOTTOM_CLIP_VAR,
     band.bottomClipExtension,
   );
@@ -1123,12 +1215,14 @@ function applyStickySelectedPin(
   const previousInertRow = stickySelectedPinInertRow.get(viewport);
   if (previousInertRow && previousInertRow !== pin.flowRow) {
     delete previousInertRow.dataset.sidebarSelectedPinFlowHidden;
-    previousInertRow.inert = false;
-    previousInertRow.removeAttribute('aria-hidden');
+    if (previousInertRow.inert) previousInertRow.inert = false;
+    setAttributeIfChanged(previousInertRow, 'aria-hidden', null);
   }
-  pin.flowRow.dataset.sidebarSelectedPinFlowHidden = 'true';
-  pin.flowRow.inert = true;
-  pin.flowRow.setAttribute('aria-hidden', 'true');
+  if (pin.flowRow.dataset.sidebarSelectedPinFlowHidden !== 'true') {
+    pin.flowRow.dataset.sidebarSelectedPinFlowHidden = 'true';
+  }
+  if (!pin.flowRow.inert) pin.flowRow.inert = true;
+  setAttributeIfChanged(pin.flowRow, 'aria-hidden', 'true');
   stickySelectedPinInertRow.set(viewport, pin.flowRow);
   const previousInertHeader = stickySelectedPinInertHeader.get(viewport);
   if (
@@ -1140,7 +1234,9 @@ function applyStickySelectedPin(
     stickySelectedPinInertHeader.delete(viewport);
   }
   if (hasProjectHeader && pin.flowHeader) {
-    pin.flowHeader.dataset.sidebarSelectedPinFlowHidden = 'true';
+    if (pin.flowHeader.dataset.sidebarSelectedPinFlowHidden !== 'true') {
+      pin.flowHeader.dataset.sidebarSelectedPinFlowHidden = 'true';
+    }
     syncFlowHeaderAccessibility(pin.flowHeader);
     stickySelectedPinInertHeader.set(viewport, pin.flowHeader);
   }
@@ -1151,14 +1247,16 @@ function applyStickySelectedPin(
     (previousGroupHeader !== pin.flowGroupHeader || !coverGroupHeader)
   ) {
     delete previousGroupHeader.dataset.sidebarSelectedPinFlowHidden;
-    previousGroupHeader.inert = false;
-    previousGroupHeader.removeAttribute('aria-hidden');
+    if (previousGroupHeader.inert) previousGroupHeader.inert = false;
+    setAttributeIfChanged(previousGroupHeader, 'aria-hidden', null);
     stickySelectedPinInertGroupHeader.delete(viewport);
   }
   if (coverGroupHeader && pin.flowGroupHeader) {
-    pin.flowGroupHeader.dataset.sidebarSelectedPinFlowHidden = 'true';
-    pin.flowGroupHeader.inert = true;
-    pin.flowGroupHeader.setAttribute('aria-hidden', 'true');
+    if (pin.flowGroupHeader.dataset.sidebarSelectedPinFlowHidden !== 'true') {
+      pin.flowGroupHeader.dataset.sidebarSelectedPinFlowHidden = 'true';
+    }
+    if (!pin.flowGroupHeader.inert) pin.flowGroupHeader.inert = true;
+    setAttributeIfChanged(pin.flowGroupHeader, 'aria-hidden', 'true');
     stickySelectedPinInertGroupHeader.set(viewport, pin.flowGroupHeader);
   }
 }
@@ -1279,15 +1377,11 @@ function applyStickySelectedPinAtRest(
     syncChatsBottomPinCutAtRest(viewport, band.bottomClipExtension);
     return;
   }
-  // An inline-style read, not a layout read: the band top the header-offset
-  // pass published earlier in this same pass.
-  const bandTopRaw = Number.parseFloat(
-    viewport.style.getPropertyValue(WORKSPACE_HEADER_TOP_VAR),
-  );
+  const stickyBandTop = getStickyViewportMetrics(viewport).workspaceHeaderTop;
   const state = computeStickySelectedPinState({
     scrollTop: measurement.scrollTop,
     clientHeight: measurement.clientHeight,
-    stickyBandTop: Number.isFinite(bandTopRaw) ? bandTopRaw : null,
+    stickyBandTop,
     metrics: pin.metrics,
   });
   const band = computeStickySelectedPinBand(state, pin.metrics, false);
@@ -1529,10 +1623,12 @@ function getStickyWorkspaceRailLayout(
     primaryNavigationOffsetTop: primaryNavigation
       ? getLayoutOffsetTop(primaryNavigation) - viewportFlowTop
       : 0,
+    primaryNavigationHeight: primaryNavigation?.offsetHeight ?? 0,
     chatsSection: chatsSectionMask,
     chatsSectionOffsetTop: chatsSectionMask
       ? getLayoutOffsetTop(chatsSectionMask) - viewportFlowTop
       : 0,
+    chatsSectionHeight: chatsSectionMask?.offsetHeight ?? 0,
     chatsHeader: viewport.querySelector<HTMLElement>(CHATS_HEADER_SELECTOR),
     externalProjectsHeaderFlowTop: externalProjectsHeader
       ? getLayoutOffsetTop(externalProjectsHeader) - viewportFlowTop
@@ -1608,7 +1704,7 @@ function setStickyWorkspaceSlotActive(
     row.setAttribute('aria-hidden', 'true');
     row.style.removeProperty('transform');
   }
-  nextRow.hidden = false;
+  if (nextRow.hidden) nextRow.hidden = false;
   layout.activeStickySlotRow = nextRow;
   // Preserve the natural inter-header spacing, capped at the 40px clip band
   // (the 32px header plus the rail's 8px divider gap). In particular, adjacent
@@ -1625,29 +1721,37 @@ function setStickyWorkspaceSlotActive(
   const outgoingOffset = incomingRow
     ? Math.min(0, incomingDistance - pushOffDistance)
     : 0;
-  nextRow.style.transform = `translateY(${outgoingOffset}px)`;
+  const outgoingTransform = `translateY(${outgoingOffset}px)`;
+  if (nextRow.style.transform !== outgoingTransform) {
+    nextRow.style.transform = outgoingTransform;
+  }
   const measuredSlotRowHeight =
     layout.stickySlotRowHeights.get(section.workspaceId) ?? 0;
   const outgoingHeight = measuredSlotRowHeight || section.headerHeight;
   const outgoingIsExposed = outgoingOffset > -outgoingHeight;
-  nextRow.inert = !outgoingIsExposed;
-  if (outgoingIsExposed) {
-    nextRow.removeAttribute('aria-hidden');
-  } else {
-    nextRow.setAttribute('aria-hidden', 'true');
-  }
+  if (nextRow.inert !== !outgoingIsExposed) nextRow.inert = !outgoingIsExposed;
+  setAttributeIfChanged(
+    nextRow,
+    'aria-hidden',
+    outgoingIsExposed ? null : 'true',
+  );
   if (incomingRow) {
-    incomingRow.hidden = false;
-    incomingRow.inert = false;
-    incomingRow.removeAttribute('aria-hidden');
-    incomingRow.style.transform = `translateY(${incomingDistance}px)`;
+    if (incomingRow.hidden) incomingRow.hidden = false;
+    if (incomingRow.inert) incomingRow.inert = false;
+    setAttributeIfChanged(incomingRow, 'aria-hidden', null);
+    const incomingTransform = `translateY(${incomingDistance}px)`;
+    if (incomingRow.style.transform !== incomingTransform) {
+      incomingRow.style.transform = incomingTransform;
+    }
   }
   layout.incomingStickySlotRow = incomingRow;
 
-  slot.hidden = false;
-  slot.inert = false;
-  slot.removeAttribute('aria-hidden');
-  slot.dataset.activeWorkspaceId = section.workspaceId;
+  if (slot.hidden) slot.hidden = false;
+  if (slot.inert) slot.inert = false;
+  setAttributeIfChanged(slot, 'aria-hidden', null);
+  if (slot.dataset.activeWorkspaceId !== section.workspaceId) {
+    slot.dataset.activeWorkspaceId = section.workspaceId;
+  }
   return true;
 }
 
@@ -1961,28 +2065,33 @@ function syncStickyWorkspaceRail(
     );
   }
   if (layout.workspacesContent) {
-    if (stickyControlsVisible) {
-      layout.workspacesContent.setAttribute(
-        'data-sidebar-workspace-sticky-active',
-        'true',
-      );
-    } else {
-      layout.workspacesContent.removeAttribute(
-        'data-sidebar-workspace-sticky-active',
-      );
-    }
+    setAttributeIfChanged(
+      layout.workspacesContent,
+      'data-sidebar-workspace-sticky-active',
+      stickyControlsVisible ? 'true' : null,
+    );
   }
+  const viewportMetrics = getStickyViewportMetrics(viewport);
   const { primaryNavigation } = layout;
   if (primaryNavigation) {
-    const maskStart =
+    const rawMaskStart =
       scrollTop > 0
         ? scrollTop - layout.primaryNavigationOffsetTop
         : -NEW_TASK_MASK_EDGE_PX;
-    primaryNavigation.style.setProperty(
+    // Once scrolled past the nav block, it is completely masked off-screen;
+    // clamping keeps steady-state scrolling from rewriting these vars on
+    // every wheel event.
+    const maskStart =
+      layout.primaryNavigationHeight > 0
+        ? Math.min(rawMaskStart, layout.primaryNavigationHeight)
+        : rawMaskStart;
+    setStylePropertyIfChanged(
+      primaryNavigation,
       '--sidebar-new-task-mask-start',
       `${maskStart}px`,
     );
-    primaryNavigation.style.setProperty(
+    setStylePropertyIfChanged(
+      primaryNavigation,
       '--sidebar-new-task-mask-end',
       `${maskStart + NEW_TASK_MASK_EDGE_PX}px`,
     );
@@ -1999,25 +2108,25 @@ function syncStickyWorkspaceRail(
     // Projects band sits BELOW this list in flow, so the list never passes
     // behind it: the band travels up with the list until it reaches its own
     // sticky top, by which point the list's bottom is already above it.
-    const chatsHeaderRaw = Number.parseFloat(
-      viewport.style.getPropertyValue(CHATS_HEADER_HEIGHT_VAR),
-    );
-    const moreRaw = Number.parseFloat(
-      viewport.style.getPropertyValue(MORE_HEIGHT_VAR),
-    );
     const chatsHeaderBottom =
-      (Number.isFinite(chatsHeaderRaw) ? chatsHeaderRaw : 0) +
-      (Number.isFinite(moreRaw) ? moreRaw : 0) +
+      viewportMetrics.chatsStackHeight +
+      viewportMetrics.moreHeight +
       STICKY_CONTROLS_TOP_PX;
-    const chatsMaskStart =
+    const rawChatsMaskStart =
       scrollTop > 0
         ? scrollTop + chatsHeaderBottom - layout.chatsSectionOffsetTop
         : -NEW_TASK_MASK_EDGE_PX;
-    chatsSection.style.setProperty(
+    const chatsMaskStart =
+      layout.chatsSectionHeight > 0
+        ? Math.min(rawChatsMaskStart, layout.chatsSectionHeight)
+        : rawChatsMaskStart;
+    setStylePropertyIfChanged(
+      chatsSection,
       '--sidebar-new-task-mask-start',
       `${chatsMaskStart}px`,
     );
-    chatsSection.style.setProperty(
+    setStylePropertyIfChanged(
+      chatsSection,
       '--sidebar-new-task-mask-end',
       `${chatsMaskStart + NEW_TASK_MASK_EDGE_PX}px`,
     );
@@ -2027,19 +2136,11 @@ function syncStickyWorkspaceRail(
     //
     // A selected chat's band is already decided for THIS pass; a project
     // selection's is decided further down, so it is read from the last one.
-    const pinBottomRaw = Number.parseFloat(
-      viewport.style.getPropertyValue(SELECTED_PIN_BOTTOM_CLIP_VAR),
-    );
-    // The Projects pin deliberately contributes nothing here: it sits below
-    // the viewport rather than over it, so there is no content behind it to
-    // cut.
     const pinBand =
       chatsPinState !== null && pin !== null
         ? computeChatsSelectedPinBand(chatsPinState, pin.metrics.rowHeight)
             .bottomClipExtension
-        : Number.isFinite(pinBottomRaw)
-          ? pinBottomRaw
-          : 0;
+        : viewportMetrics.selectedPinBottomClip;
     const bottomCut =
       chatsRect !== null && hostRect !== null
         ? chatsBottomPinCut(
@@ -2051,7 +2152,8 @@ function syncStickyWorkspaceRail(
             scrollTop - viewport.scrollTop,
           )
         : 0;
-    chatsSection.style.setProperty(
+    setStylePropertyIfChanged(
+      chatsSection,
       '--sidebar-chats-bottom-cut',
       `${bottomCut}px`,
     );
@@ -2095,9 +2197,7 @@ function syncStickyWorkspaceRail(
 
   // Select the last in-flow header to cross the fixed slot coordinate. The
   // slot remains fixed; its copies move during the next header's approach.
-  const workspaceHeaderTop = Number.parseFloat(
-    viewport.style.getPropertyValue(WORKSPACE_HEADER_TOP_VAR),
-  );
+  const workspaceHeaderTop = viewportMetrics.workspaceHeaderTop ?? Number.NaN;
   // Selected-item pin state precedes slot selection: an active top pin group
   // (selected workspace header + selected row) occupies the seat directly
   // below the controls, pushing the slot's replacement line — and therefore
@@ -2155,7 +2255,7 @@ function syncStickyWorkspaceRail(
       ? scrollTop >=
         stickyThreshold - WORKSPACE_CLIP_BAND_PX - externalProjectsHeaderHeight
       : layout.externalProjectsHeaderFlowTop - scrollTop <=
-        readPxVar(viewport, WORKSPACE_HEADER_TOP_VAR) + WORKSPACE_CLIP_BAND_PX;
+        (viewportMetrics.workspaceHeaderTop ?? 0) + WORKSPACE_CLIP_BAND_PX;
   let activeSection: StickyWorkspaceSectionClip | null = firstHeaderWithinReach
     ? (layout.workspaceSections[0] ?? null)
     : null;
@@ -2221,23 +2321,47 @@ function syncStickyWorkspaceRail(
     incomingSection,
     incomingDistance,
   );
-  // The band only reaches the slot's bottom while the slot is actually
-  // standing in. When the selected-row pin already owns the header seat the
-  // slot is hidden, and reserving its 2rem anyway left a strip of rail
-  // showing neither band nor row directly under the pinned selection.
-  syncWorkspacesSlotHeightVar(viewport, slotActive);
-  resetIncomingFlowHeader(layout);
+  // Once a section is active, match the slot's actual standing-in state so
+  // inactive slots (single-project layouts without project headers, surfaces
+  // with disconnected slot copies, or a selected-row pin covering the seat)
+  // drop to 0px instead of leaving a blank 2rem strip. Before the sticky
+  // threshold (activeSection === null), pre-reserve the 2rem default only when
+  // the first section has a connected slot copy so crossing the threshold does
+  // not toggle an inherited custom property on the rows container.
+  const firstSection = layout.workspaceSections[0] ?? null;
+  const firstSlotRow = firstSection
+    ? (layout.stickySlotRows.get(firstSection.workspaceId) ?? null)
+    : null;
+  const reserveSlotHeight =
+    activeSection !== null
+      ? slotActive
+      : layout.stickyWorkspaceSlot !== null &&
+        !pinCoversActiveSection &&
+        firstSlotRow !== null &&
+        firstSlotRow.isConnected;
+  syncWorkspacesSlotHeightVar(layout.workspacesContent, reserveSlotHeight);
+  const nextIncomingFlowHeader =
+    slotActive && layout.incomingStickySlotRow && incomingSection
+      ? incomingSection.header
+      : null;
+  if (layout.incomingFlowHeader !== nextIncomingFlowHeader) {
+    resetIncomingFlowHeader(layout);
+  }
   syncFlowWorkspaceAccessibility(
     layout,
     slotActive || pinCoversActiveSection ? activeSection : null,
   );
-  if (slotActive && layout.incomingStickySlotRow && incomingSection) {
-    incomingSection.header.setAttribute(
+  if (
+    nextIncomingFlowHeader &&
+    layout.incomingFlowHeader !== nextIncomingFlowHeader
+  ) {
+    setAttributeIfChanged(
+      nextIncomingFlowHeader,
       'data-sidebar-sticky-flow-hidden',
       'true',
     );
-    syncFlowHeaderAccessibility(incomingSection.header);
-    layout.incomingFlowHeader = incomingSection.header;
+    syncFlowHeaderAccessibility(nextIncomingFlowHeader);
+    layout.incomingFlowHeader = nextIncomingFlowHeader;
   }
   const pinBand = pin
     ? pin.seat === 'chats'

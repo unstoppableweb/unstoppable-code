@@ -1,3 +1,4 @@
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import {
   NEW_WORKTREE_DISPLAY_NAME,
@@ -162,12 +163,19 @@ export function partitionWorktrees(
   workspaceLocalId: string,
   mode: SidebarSortMode = 'manual',
 ): WorktreeSectionsPartition {
-  const ordered = orderWorktreesForSidebar(
-    worktrees.filter(
-      (worktree) => worktree.workspaceLocalId === workspaceLocalId,
-    ),
-    mode,
-  );
+  const local: SnapshotWorktree[] = [];
+  const paired: SnapshotWorktree[] = [];
+  for (const worktree of worktrees) {
+    if (worktree.workspaceLocalId !== workspaceLocalId) continue;
+    if (isPairedComputerId(worktree.localId)) paired.push(worktree);
+    else local.push(worktree);
+  }
+  // Local rows sort by the section's mode; paired rows always follow them in
+  // their computer order so recency sorting never moves a peer ahead of local.
+  const ordered = [
+    ...orderWorktreesForSidebar(local, mode),
+    ...paired.sort(compareWorktrees),
+  ];
   return {
     visible: ordered.filter((worktree) => worktree.hidden !== true),
     hidden: ordered.filter((worktree) => worktree.hidden === true),

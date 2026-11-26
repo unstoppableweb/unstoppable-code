@@ -9,7 +9,7 @@ import {
   Inline,
   Button,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   CopyButton,
   Disclosure,
   SearchField,
@@ -122,12 +122,12 @@ export function RetrievalPreview({
         </Inline>
         <Stack gap="inline">
           <ChoiceList aria-label="Context prefix">
-            <ChoiceListRow
-              selected={usePrefix}
-              onClick={() => setUsePrefix((current) => !current)}
-            >
-              Add context prefix (real turns send “repo — worktree — query”)
-            </ChoiceListRow>
+            <ChoiceField
+              layout="row"
+              checked={usePrefix}
+              onChange={() => setUsePrefix((current) => !current)}
+              label="Add context prefix (real turns send “repo — worktree — query”)"
+            />
           </ChoiceList>
           {usePrefix && (
             <div className="grid gap-2 sm:grid-cols-2">

@@ -20,7 +20,7 @@ import {
   Badge,
   Button,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   DialogModal,
   EmptyStateRow,
   ErrorBanner,
@@ -820,24 +820,27 @@ function ConnectorToolsDialog({
         data-testid="project-setup-connector-tools-choice"
       >
         {(['all', 'readOnly', 'chosen'] as const).map((option) => (
-          <ChoiceListRow
+          <ChoiceField
             key={option}
+            layout="row"
             kind="radio"
-            selected={choice === option}
+            checked={choice === option}
             disabled={
               locked || (option === 'readOnly' && readOnly.length === 0)
             }
             focusableWhenDisabled
             data-testid={`project-setup-connector-tools-${option}`}
-            trailing={
+            end={
               option === 'readOnly' && tools !== null && readOnly.length === 0
                 ? 'No read-only tools'
                 : undefined
             }
-            onClick={() => pick(option)}
-          >
-            {CHOICE_COPY[option]}
-          </ChoiceListRow>
+            onChange={() => pick(option)}
+            // Pressing the chosen row keeps it over the default the tools
+            // load with; a radio fires no change for that press.
+            onClick={choice === option ? () => pick(option) : undefined}
+            label={CHOICE_COPY[option]}
+          />
         ))}
       </ChoiceList>
       {choice === 'chosen' && (
@@ -910,23 +913,25 @@ function ToolChoices({
         data-testid="project-setup-connector-tools-list"
       >
         {options.map((tool) => (
-          <ChoiceListRow
+          <ChoiceField
             key={tool.name}
-            selected={chosen.has(tool.name)}
+            layout="row"
+            checked={chosen.has(tool.name)}
             disabled={disabled}
             data-testid={`project-setup-connector-tool-${tool.name}`}
-            trailing={tool.readOnly === true ? 'Read only' : undefined}
-            onClick={() => onToggle(tool.name)}
-          >
-            <span className="flex min-w-0 flex-col">
-              <span className="truncate">{tool.title ?? tool.name}</span>
-              {tool.description !== undefined && (
-                <span className="line-clamp-2 text-xs text-pretty fg-secondary">
-                  {tool.description}
-                </span>
-              )}
-            </span>
-          </ChoiceListRow>
+            end={tool.readOnly === true ? 'Read only' : undefined}
+            onChange={() => onToggle(tool.name)}
+            label={
+              <span className="flex min-w-0 flex-col">
+                <span className="truncate">{tool.title ?? tool.name}</span>
+                {tool.description !== undefined && (
+                  <span className="line-clamp-2 text-xs text-pretty fg-secondary">
+                    {tool.description}
+                  </span>
+                )}
+              </span>
+            }
+          />
         ))}
       </ChoiceList>
     </div>

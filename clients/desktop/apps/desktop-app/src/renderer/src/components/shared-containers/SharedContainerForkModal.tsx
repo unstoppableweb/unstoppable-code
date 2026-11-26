@@ -85,8 +85,8 @@ import {
 import { RevisionTime } from './RevisionTime';
 import {
   ChoiceList,
-  ChoiceListRow,
-  DialogFormField,
+  ChoiceField,
+  FormField,
   Disclosure,
   ErrorBanner,
   SettingsSelect,
@@ -593,49 +593,57 @@ function SharedContainerForkReview({
             )}
 
             <ChoiceList kind="radio" aria-label="Destination">
-              <ChoiceListRow
+              <ChoiceField
+                layout="row"
                 kind="radio"
                 data-testid="shared-container-fork-destination-new"
-                selected={kind === 'new'}
-                onClick={(): void => setKind('new')}
-              >
-                <span className="block">
-                  {isCowork ? 'New Cowork project' : 'New workspace'}
-                </span>
-                <span className="block text-xs fg-quaternary">
-                  {isCowork
-                    ? 'Creates a project just for this copy.'
-                    : 'Copies the repositories to this computer and sets up a workspace around them.'}
-                </span>
-              </ChoiceListRow>
-              <ChoiceListRow
+                checked={kind === 'new'}
+                onChange={(): void => setKind('new')}
+                label={
+                  <>
+                    <span className="block">
+                      {isCowork ? 'New Cowork project' : 'New workspace'}
+                    </span>
+                    <span className="block text-xs fg-quaternary">
+                      {isCowork
+                        ? 'Creates a project just for this copy.'
+                        : 'Copies the repositories to this computer and sets up a workspace around them.'}
+                    </span>
+                  </>
+                }
+              />
+              <ChoiceField
+                layout="row"
                 kind="radio"
                 data-testid="shared-container-fork-destination-existing"
-                selected={kind === 'existing'}
+                checked={kind === 'existing'}
                 disabled={candidates.length === 0}
-                onClick={(): void => setKind('existing')}
-              >
-                <span className="block">
-                  {isCowork
-                    ? 'An existing Cowork project'
-                    : 'An existing workspace'}
-                </span>
-                <span className="block text-xs fg-quaternary">
-                  {candidates.length === 0 ? (
-                    owningContext === null ? (
-                      'Unavailable until the organization is known.'
-                    ) : isCowork ? (
-                      <>No Cowork projects in {contextName}.</>
-                    ) : (
-                      <>No compatible workspaces in {contextName}.</>
-                    )
-                  ) : isCowork ? (
-                    'Adds the copy as a new entry in a project you already have.'
-                  ) : (
-                    'Only works in a workspace that already has the same repositories.'
-                  )}
-                </span>
-              </ChoiceListRow>
+                onChange={(): void => setKind('existing')}
+                label={
+                  <>
+                    <span className="block">
+                      {isCowork
+                        ? 'An existing Cowork project'
+                        : 'An existing workspace'}
+                    </span>
+                    <span className="block text-xs fg-quaternary">
+                      {candidates.length === 0 ? (
+                        owningContext === null ? (
+                          'Unavailable until the organization is known.'
+                        ) : isCowork ? (
+                          <>No Cowork projects in {contextName}.</>
+                        ) : (
+                          <>No compatible workspaces in {contextName}.</>
+                        )
+                      ) : isCowork ? (
+                        'Adds the copy as a new entry in a project you already have.'
+                      ) : (
+                        'Only works in a workspace that already has the same repositories.'
+                      )}
+                    </span>
+                  </>
+                }
+              />
             </ChoiceList>
 
             {kind === 'new' && owningContext !== null && (
@@ -682,8 +690,8 @@ function SharedContainerForkReview({
 
             {kind === 'existing' && candidates.length > 0 && (
               <div className="pl-6">
-                <DialogFormField
-                  htmlFor="shared-container-fork-workspace"
+                <FormField
+                  id="shared-container-fork-workspace"
                   label={
                     <span data-testid="shared-container-fork-workspace-context">
                       Projects in {contextName}
@@ -702,7 +710,7 @@ function SharedContainerForkReview({
                       label: item.name,
                     }))}
                   />
-                </DialogFormField>
+                </FormField>
               </div>
             )}
           </div>

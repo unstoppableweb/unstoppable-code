@@ -121,11 +121,13 @@ function BackgroundServiceUnavailableNotice({
   const action = restartApp ? onRestart : onRetry;
   const elsewhere = action === undefined;
   const dataFolderShared = status.reason === 'data_folder_shared';
+  const includesRepairCommand =
+    status.reason === 'endpoint_repair_required' && repairCommand !== undefined;
   const copy = backgroundServiceNoticeCopy(
     status.retry,
     status.recovery,
     restartUnavailable,
-    status.reason === 'endpoint_repair_required' ? repairCommand : undefined,
+    includesRepairCommand ? repairCommand : undefined,
     elsewhere,
     dataFolderShared,
   );
@@ -196,7 +198,15 @@ function BackgroundServiceUnavailableNotice({
       }
     >
       {/* The repair command is one token; it wraps instead of running under the actions. */}
-      <p className="break-words">{copy.message}</p>
+      <p
+        className={
+          includesRepairCommand
+            ? `break-words ${REPLAY_BLOCK_CLASS}`
+            : 'break-words'
+        }
+      >
+        {copy.message}
+      </p>
       {dataFolderShared && !elsewhere && dataFolder ? (
         // The path names the account; replay records a placeholder.
         <p

@@ -17,7 +17,7 @@ import {
 import {
   Button,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   DelayedLoadingPlaceholder,
   DialogModal,
   Disclosure,
@@ -519,23 +519,33 @@ function RoutingBacktestConfirmDialog({
         <div className="flex flex-col gap-1.5">
           <p className="text-xs font-medium fg-primary">How many turns</p>
           <ChoiceList aria-label="How many turns" kind="radio">
-            <ChoiceListRow
+            <ChoiceField
+              layout="row"
               kind="radio"
-              selected={mode === 'sample'}
-              onClick={() => setMode('sample')}
+              checked={mode === 'sample'}
+              onChange={() => setMode('sample')}
               data-testid="routing-backtest-mode-sample"
-            >
-              A sample of {formatCount(estimate.plannedTurnCount.sample)} turns
-            </ChoiceListRow>
+              label={
+                <>
+                  A sample of {formatCount(estimate.plannedTurnCount.sample)}{' '}
+                  turns
+                </>
+              }
+            />
             {fullAvailable ? (
-              <ChoiceListRow
+              <ChoiceField
+                layout="row"
                 kind="radio"
-                selected={mode === 'full'}
-                onClick={() => setMode('full')}
+                checked={mode === 'full'}
+                onChange={() => setMode('full')}
                 data-testid="routing-backtest-mode-full"
-              >
-                Every turn ({formatCount(estimate.plannedTurnCount.full ?? 0)})
-              </ChoiceListRow>
+                label={
+                  <>
+                    Every turn (
+                    {formatCount(estimate.plannedTurnCount.full ?? 0)})
+                  </>
+                }
+              />
             ) : null}
           </ChoiceList>
         </div>

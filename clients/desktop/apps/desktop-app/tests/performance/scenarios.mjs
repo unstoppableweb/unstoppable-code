@@ -5395,8 +5395,8 @@ function linearReferenceDom(page) {
     const visit = (fiber) => {
       if (!fiber) return;
       if (
-        fiber.type?.name === 'RichHoverTooltip' ||
-        fiber.type?.name === 'RichHoverTooltipController'
+        fiber.type?.name === 'HoverCard' ||
+        fiber.type?.name === 'HoverCardController'
       ) {
         recognizedTooltip = true;
         let hooks = 0;

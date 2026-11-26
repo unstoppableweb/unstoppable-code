@@ -229,6 +229,7 @@ function mapRefusal(
   ): PipelineHostActionResult =>
     failure(target, reason, message, outputs, chatSend);
   switch (error.code) {
+    case 'unknown_bot':
     case 'not_found':
       // Worded like a missing target, so an owner boundary reveals nothing.
       if (target.chatId !== undefined) {

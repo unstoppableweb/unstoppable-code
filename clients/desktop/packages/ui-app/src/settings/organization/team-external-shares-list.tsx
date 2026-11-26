@@ -6,7 +6,7 @@ import {
   Button,
   ErrorBanner,
   Stack,
-  StatusBadge,
+  Badge,
   Heading,
   Tooltip,
 } from '@canopy/ui-shared/components';
@@ -182,9 +182,9 @@ export function TeamExternalSharesList({
                       {recipientLabel(share)}
                     </p>
                     {share.recipient.status === 'invited' ? (
-                      <StatusBadge variant="warning" label="Invited" />
+                      <Badge tone="warning">Invited</Badge>
                     ) : (
-                      <StatusBadge variant="success" label="Joined" />
+                      <Badge tone="success">Joined</Badge>
                     )}
                   </div>
                   <span

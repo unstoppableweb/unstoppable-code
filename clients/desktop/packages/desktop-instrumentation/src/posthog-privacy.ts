@@ -8,9 +8,13 @@ import { normalizePostHogEmailDomain } from './posthog-account';
 import { POSTHOG_CLICK_EVENTS } from './client/posthog-autocapture-options';
 import { POSTHOG_HEATMAP_DATA_PROPERTY } from './client/posthog-heatmaps';
 import {
-  maskReplayAttribute,
-  recordReplayText,
+  maskClickAttribute,
+  maskClickText,
 } from './client/posthog-replay-masking';
+import {
+  POSTHOG_REPLAY_BLOCK_CLASS,
+  POSTHOG_REPLAY_MASK_CLASS,
+} from './posthog-replay-privacy';
 import {
   buildPostHogRouteProperties,
   isPostHogRoute,
@@ -91,6 +95,10 @@ const LOCATION_PROPERTIES = new Set([
   '$prev_pageview_url',
 ]);
 const URL_ATTRIBUTES = new Set(['attr__href', 'attr__src', 'attr__action']);
+const CLICK_MASK_CLASSES = new Set([
+  POSTHOG_REPLAY_MASK_CLASS,
+  POSTHOG_REPLAY_BLOCK_CLASS,
+]);
 
 function isDeniedProperty(key: string): boolean {
   const normalized = normalizePropertyName(key);
@@ -106,6 +114,43 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
+function hasClickMaskClass(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value
+      .trim()
+      .split(/\s+/)
+      .some((token) => CLICK_MASK_CLASSES.has(token));
+  }
+  if (Array.isArray(value)) {
+    return value.some(
+      (entry) => typeof entry === 'string' && CLICK_MASK_CLASSES.has(entry),
+    );
+  }
+  return false;
+}
+
+function elementHasClickMask(element: unknown): boolean {
+  if (!isRecord(element)) return false;
+  return (
+    hasClickMaskClass(element.attr__class) || hasClickMaskClass(element.classes)
+  );
+}
+
+/**
+ * PostHog orders `$elements` innermost-first (`[target, parent, ...]`). Walk
+ * from the outermost ancestor inward so every element at or beneath a
+ * `ph-mask` / `ph-no-capture` container inherits masked click sanitization.
+ */
+function computeClickElementMaskFlags(elements: readonly unknown[]): boolean[] {
+  const flags = new Array<boolean>(elements.length).fill(false);
+  let masked = false;
+  for (let index = elements.length - 1; index >= 0; index -= 1) {
+    if (elementHasClickMask(elements[index])) masked = true;
+    flags[index] = masked;
+  }
+  return flags;
+}
+
 function sanitizeValue(
   value: unknown,
   key: string,
@@ -113,6 +158,7 @@ function sanitizeValue(
   ancestors: WeakSet<object>,
   depth: number,
   maskClickContent: boolean,
+  inMaskedClickSubtree = false,
 ): unknown {
   if (normalizePropertyName(key) === 'emaildomain') {
     return key === 'email_domain'
@@ -126,9 +172,13 @@ function sanitizeValue(
   if (typeof value === 'string') {
     const maskedValue = maskClickContent
       ? key === '$el_text'
-        ? recordReplayText(value)
+        ? maskClickText(value, inMaskedClickSubtree)
         : key.startsWith('attr__')
-          ? maskReplayAttribute(key.slice('attr__'.length), value)
+          ? maskClickAttribute(
+              key.slice('attr__'.length),
+              value,
+              inMaskedClickSubtree,
+            )
           : value
       : value;
     if (key.endsWith('_url') || URL_ATTRIBUTES.has(key)) {
@@ -154,8 +204,12 @@ function sanitizeValue(
   ancestors.add(value);
   let result: unknown;
   if (Array.isArray(value)) {
+    const elementMaskFlags =
+      maskClickContent && key === '$elements'
+        ? computeClickElementMaskFlags(value)
+        : null;
     result = value.map(
-      (entry) =>
+      (entry, index) =>
         sanitizeValue(
           entry,
           key,
@@ -163,6 +217,9 @@ function sanitizeValue(
           ancestors,
           depth + 1,
           maskClickContent,
+          elementMaskFlags
+            ? elementMaskFlags[index] === true
+            : inMaskedClickSubtree,
         ) ?? null,
     );
   } else {
@@ -178,6 +235,7 @@ function sanitizeValue(
             ancestors,
             depth + 1,
             maskClickContent,
+            inMaskedClickSubtree,
           ),
         ])
         .filter(([, entry]) => entry !== undefined),
@@ -239,6 +297,14 @@ function sanitizeProperties(
   preserveProjectToken = false,
   maskClickContent = false,
 ): Record<string, unknown> {
+  // Fail closed on click events that omit `$elements` (for example PostHog's
+  // string-only `$elements_chain` mode), so masked header names never leak via
+  // top-level `$el_text` or `attr__*` properties.
+  const targetInMaskedClickSubtree = maskClickContent
+    ? Array.isArray(properties.$elements) && properties.$elements.length > 0
+      ? computeClickElementMaskFlags(properties.$elements)[0] === true
+      : true
+    : false;
   const sanitized = sanitizeValue(
     properties,
     '',
@@ -246,6 +312,7 @@ function sanitizeProperties(
     new WeakSet(),
     0,
     maskClickContent,
+    targetInMaskedClickSubtree,
   );
   if (!isRecord(sanitized)) return {};
   if ('screen_route' in sanitized && !isPostHogRoute(sanitized.screen_route)) {

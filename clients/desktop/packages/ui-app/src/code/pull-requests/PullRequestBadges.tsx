@@ -10,7 +10,7 @@ import { Dot, type DotTone } from '@canopy/ui-shared/primitives/Badge';
 import type { JSX } from 'react';
 import {
   PrBadgeTooltipContent,
-  RichHoverTooltip,
+  HoverCard,
   Tooltip,
 } from '@canopy/ui-shared/components';
 import {
@@ -148,7 +148,7 @@ export function CiStatusIndicator({ status }: CiStatusBadgeProps): JSX.Element {
 
 // ---------------------------------------------------------------------------
 // Hover cards – the per-check CI list and the multi-repo PR list. Both are
-// interactive RichHoverTooltips, so the cursor can travel into the card (and
+// interactive HoverCards, so the cursor can travel into the card (and
 // scroll a long list) and into the cards nested inside it without it closing.
 // ---------------------------------------------------------------------------
 
@@ -179,7 +179,7 @@ export function CiStatusBadgeWithPopover({
     return <Tooltip label={getCheckStatusLabel(status)}>{badge}</Tooltip>;
   }
   return (
-    <RichHoverTooltip
+    <HoverCard
       interactive
       placement="below-start"
       elevation="menu"
@@ -189,7 +189,7 @@ export function CiStatusBadgeWithPopover({
       content={<CheckDetailsList checkDetails={checkDetails} scrollable />}
     >
       {badge}
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }
 
@@ -202,7 +202,7 @@ export function PullRequestStateBadgeWithTooltip({
   readonly dataTestId?: string;
 }): JSX.Element {
   return (
-    <RichHoverTooltip
+    <HoverCard
       dataTestId={dataTestId}
       surfaceClassName="min-w-65 max-w-85"
       surfacePadding="card"
@@ -210,7 +210,7 @@ export function PullRequestStateBadgeWithTooltip({
       content={pr.tooltip ? <PrBadgeTooltipContent pr={pr.tooltip} /> : null}
     >
       <PrStateIndicator state={pr.state} prNumber={pr.number} prUrl={pr.url} />
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }
 
@@ -252,7 +252,7 @@ export function MultiRepoPrControl({
   readonly onOpen: () => void;
 }): JSX.Element {
   return (
-    <RichHoverTooltip
+    <HoverCard
       interactive
       // Enter and Space open the PR details; ArrowDown opens the list.
       triggerOpenKeys={['ArrowDown']}
@@ -291,6 +291,6 @@ export function MultiRepoPrControl({
           {openRepos.length} {openRepos.length === 1 ? 'PR' : 'PRs'}
         </Badge>
       </Button>
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }

@@ -1012,6 +1012,10 @@ type PipelineEditorCapability =
   | 'set_yaml'
   | 'save'
   | 'get_action_definition'
+  | 'list_automations'
+  | 'get_automation'
+  | 'create_automation'
+  | 'update_automation'
   | 'navigate_to_list'
   | 'search_deferred_tools'
   | 'load_deferred_tools';
@@ -1027,6 +1031,10 @@ const PIPELINE_EDITOR_MCP_DISPLAY_TO_CAPABILITY: ReadonlyMap<
   ['SetPipelineYaml', 'set_yaml'],
   ['SavePipeline', 'save'],
   ['GetBuiltinActionDefinition', 'get_action_definition'],
+  ['ListAutomations', 'list_automations'],
+  ['GetAutomation', 'get_automation'],
+  ['CreateAutomation', 'create_automation'],
+  ['UpdateAutomation', 'update_automation'],
   ['NavigateToPipelineList', 'navigate_to_list'],
   ['SearchDeferredTools', 'search_deferred_tools'],
   ['LoadDeferredTools', 'load_deferred_tools'],
@@ -1043,6 +1051,10 @@ const PIPELINE_EDITOR_CODEX_SUFFIX_TO_CAPABILITY: ReadonlyMap<
   ['pipeline_set_yaml', 'set_yaml'],
   ['pipeline_save', 'save'],
   ['pipeline_get_action_definition', 'get_action_definition'],
+  ['automation_list', 'list_automations'],
+  ['automation_get', 'get_automation'],
+  ['automation_create', 'create_automation'],
+  ['automation_update', 'update_automation'],
   ['navigation_to_list', 'navigate_to_list'],
   ['search_deferred_tools', 'search_deferred_tools'],
   ['load_deferred_tools', 'load_deferred_tools'],
@@ -1057,7 +1069,7 @@ function getPipelineEditorCapability(
   }
 
   const codexMatch = toolName.match(
-    /^(.+)_pipeline_editor_(pipeline_list|pipeline_open|pipeline_create|pipeline_get_current|pipeline_set_yaml|pipeline_save|pipeline_get_action_definition|navigation_to_list|search_deferred_tools|load_deferred_tools)$/,
+    /^(.+)_pipeline_editor_(pipeline_list|pipeline_open|pipeline_create|pipeline_get_current|pipeline_set_yaml|pipeline_save|pipeline_get_action_definition|automation_list|automation_get|automation_create|automation_update|navigation_to_list|search_deferred_tools|load_deferred_tools)$/,
   );
   if (codexMatch) {
     return (
@@ -2354,6 +2366,66 @@ const renderPipelineEditorGetActionDefinition: ToolDisplayRenderer = (
   };
 };
 
+const renderPipelineEditorListAutomations: ToolDisplayRenderer = () => ({
+  icon: <ScheduleIcon />,
+  label: 'List automations',
+});
+
+const renderPipelineEditorGetAutomation: ToolDisplayRenderer = (parsed) => {
+  const id = asString(parsed.id);
+  return {
+    icon: <ScheduleIcon />,
+    label: (
+      <>
+        Read automation
+        {id && (
+          <>
+            {' '}
+            <CodeChunk>{id}</CodeChunk>
+          </>
+        )}
+      </>
+    ),
+  };
+};
+
+const renderPipelineEditorCreateAutomation: ToolDisplayRenderer = (parsed) => {
+  const name = isParsedInput(parsed.input) ? asString(parsed.input.name) : '';
+  return {
+    icon: <ScheduleIcon />,
+    label: (
+      <>
+        Create automation
+        {name && (
+          <>
+            {' '}
+            <CodeChunk>{name}</CodeChunk>
+          </>
+        )}
+      </>
+    ),
+  };
+};
+
+const renderPipelineEditorUpdateAutomation: ToolDisplayRenderer = (parsed) => {
+  const name = isParsedInput(parsed.patch) ? asString(parsed.patch.name) : '';
+  const id = asString(parsed.id);
+  return {
+    icon: <ScheduleIcon />,
+    label: (
+      <>
+        Update automation
+        {(name || id) && (
+          <>
+            {' '}
+            <CodeChunk>{name || id}</CodeChunk>
+          </>
+        )}
+      </>
+    ),
+  };
+};
+
 const renderPipelineEditorNavigate: ToolDisplayRenderer = () => ({
   icon: <PipelineIcon />,
   label: 'Go to workflow list',
@@ -2370,6 +2442,10 @@ const PIPELINE_EDITOR_CAPABILITY_RENDERERS: Record<
   set_yaml: renderPipelineEditorSetYaml,
   save: renderPipelineEditorSave,
   get_action_definition: renderPipelineEditorGetActionDefinition,
+  list_automations: renderPipelineEditorListAutomations,
+  get_automation: renderPipelineEditorGetAutomation,
+  create_automation: renderPipelineEditorCreateAutomation,
+  update_automation: renderPipelineEditorUpdateAutomation,
   navigate_to_list: renderPipelineEditorNavigate,
   search_deferred_tools: renderPipelineEditorSearchDeferredTools,
   load_deferred_tools: renderPipelineEditorLoadDeferredTools,

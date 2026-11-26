@@ -81,10 +81,8 @@ interface Pending {
   timer: ReturnType<typeof setTimeout>;
 }
 
-/** A PTY exit with the host's final output offset, when it reported one. */
+/** A PTY exit; the host's own exits confirm their final output offset. */
 type RetainedExit = TerminalHostExit & { outputOffset?: number };
-
-type TerminalHostExitEvent = Extract<TerminalHostEvent, { type: 'exit' }>;
 
 interface AttachmentRoute {
   readonly terminalId: string;
@@ -119,8 +117,6 @@ interface LiveHost {
   readonly attachments: Map<string, AttachmentRoute>;
   /** Final exits retained only while that lifetime has open attachments. */
   readonly attachmentExits: Map<string, RetainedExit>;
-  /** The highest output offset reports, replies or items showed per live lifetime. */
-  readonly outputOffsets: Map<string, number>;
   exited: boolean;
   idleTimer?: ReturnType<typeof setTimeout>;
 }
@@ -141,23 +137,6 @@ function isHostTerminal(value: unknown): value is TerminalHostTerminal {
   );
 }
 
-/** The terminals a reply shows: a list's, a restore's, or the reply itself. */
-function replyTerminals(value: unknown): unknown[] {
-  if (Array.isArray(value)) return value;
-  if (isRecord(value) && typeof value.recreated === 'boolean')
-    return [value.terminal];
-  return [value];
-}
-
-/** An exit raised to an output offset the host showed for its lifetime. */
-function withOutputOffset<T extends RetainedExit>(
-  exit: T,
-  shown: number | undefined,
-): T {
-  if (shown === undefined || shown <= (exit.outputOffset ?? 0)) return exit;
-  return { ...exit, outputOffset: shown };
-}
-
 function hostTerminal(value: unknown): TerminalHostTerminal {
   if (!isHostTerminal(value))
     throw new TerminalHostRequestError({
@@ -174,9 +153,10 @@ function hostTerminal(value: unknown): TerminalHostTerminal {
  * them lost: an `exit` event precedes each open attachment's exit item and
  * completion, so no client waits on output that will never come. That item
  * carries the PTY's known exit, else its acknowledged exit reason, else
- * {@link WORKER_TERMINAL_LOST_SIGNAL}, and is truncated when the host had
- * reported output past what the attachment received. A lost terminal is gone
- * from this worker; restoring it recreates it.
+ * {@link WORKER_TERMINAL_LOST_SIGNAL}. It is truncated unless the host's own
+ * exit confirmed that the attachment received every byte. These lost exits
+ * carry no output offset: the host's final offset is unknown. A lost
+ * terminal is gone from this worker; restoring it recreates it.
  */
 export class TerminalHostSupervisor {
   private host: LiveHost | null = null;
@@ -206,19 +186,20 @@ export class TerminalHostSupervisor {
     return this.host?.terminals.has(terminalId) ?? false;
   }
 
-  /** Exits to record before shutdown fences an unconfirmed host drain. */
+  /**
+   * Exits to record before shutdown fences an unconfirmed host drain. The
+   * host never confirmed them, so they carry no output offset.
+   */
   public pendingRecordExits(): ReadonlyArray<{
     registration: TerminalRecordRegistration;
     exitCode: number | null;
     signal: string | null;
-    outputOffset: number;
   }> {
     const host = this.host;
     if (!host) return [];
     return [...host.registrations].map(([key, registration]) => ({
       registration,
       ...this.exitFor(host, key),
-      outputOffset: this.knownOutputOffset(host, key),
     }));
   }
 
@@ -376,10 +357,7 @@ export class TerminalHostSupervisor {
       this.scheduleIdleStop(host);
       return;
     }
-    if (!exit && !lost) {
-      host.terminals.set(id, terminal.pid);
-      this.noteOutputOffset(host, id, lifetime, terminal.outputOffset);
-    }
+    if (!exit && !lost) host.terminals.set(id, terminal.pid);
     // No observer sees these bytes until the caller has installed attribution.
     const registration = initialize?.();
     if (registration !== undefined) host.registrations.set(key, registration);
@@ -391,17 +369,13 @@ export class TerminalHostSupervisor {
     // recreation of this id, not arrive later and exit the new lifetime.
     // Callers without one retain the after-response announcement contract.
     host.early.delete(key);
-    const lostExit: TerminalHostExitEvent = {
+    // Without the host's own exit, its final output offset is unknown.
+    const ended: TerminalHostEvent = exit ?? {
       type: 'exit',
       terminalId: id,
       lifetimeId: terminal.lifetimeId,
       ...this.exitFor(host, key),
     };
-    // Its host may never have reported the output this reply showed.
-    const ended = withOutputOffset(
-      exit?.type === 'exit' ? exit : lostExit,
-      terminal.outputOffset,
-    );
     const announce = (): void => this.emit(host, ended);
     if (initialize) announce();
     else setTimeout(announce, 0);
@@ -557,7 +531,6 @@ export class TerminalHostSupervisor {
       exits: new Map(),
       attachments: new Map(),
       attachmentExits: new Map(),
-      outputOffsets: new Map(),
       exited: false,
     };
     this.host = host;
@@ -632,16 +605,6 @@ export class TerminalHostSupervisor {
       }, timeoutMs);
       host.pending.set(id, {
         resolve: (value): void => {
-          // Replies can overtake the output reports the host still holds.
-          // A recreation's new lifetime is noted once its opening registers it.
-          for (const terminal of replyTerminals(value))
-            if (isHostTerminal(terminal))
-              this.noteOutputOffset(
-                host,
-                terminal.session.id,
-                terminal.lifetimeId ?? 0,
-                terminal.outputOffset,
-              );
           if (request.op === 'attach' && isHostTerminal(value)) {
             const route = host.attachments.get(request.attachmentId);
             if (route && value.session.id === route.terminalId) {
@@ -665,7 +628,7 @@ export class TerminalHostSupervisor {
                   host,
                   route.terminalId,
                   route.lifetimeId,
-                  withOutputOffset(exit, value.outputOffset),
+                  exit,
                 );
             }
           }
@@ -803,14 +766,6 @@ export class TerminalHostSupervisor {
         const route = host.attachments.get(message.attachmentId);
         if (!route) return;
         route.offset = message.item.toOffset;
-        // Only a reply binds the lifetime; it carries any earlier item's offset.
-        if (!route.awaitingReply)
-          this.noteOutputOffset(
-            host,
-            route.terminalId,
-            route.lifetimeId,
-            message.item.toOffset,
-          );
         route.sink.item(message.item, message.attachmentId);
         return;
       }
@@ -840,15 +795,10 @@ export class TerminalHostSupervisor {
         return;
       }
       case 'event': {
-        const lifetime = message.event.lifetimeId ?? 0;
-        const key = `${message.event.terminalId}\u0000${lifetime}`;
-        // An exit carries what reports and replies showed past its own offset.
-        const event =
-          message.event.type === 'exit'
-            ? withOutputOffset(message.event, host.outputOffsets.get(key))
-            : message.event;
+        const { event } = message;
+        const lifetime = event.lifetimeId ?? 0;
+        const key = `${event.terminalId}\u0000${lifetime}`;
         if (event.type === 'exit') {
-          host.outputOffsets.delete(key);
           this.retainAttachmentExit(host, event.terminalId, lifetime, event);
           // A resolved opening can register after the last attachment drains.
           if (host.openings > 0) host.early.set(key, event);
@@ -908,29 +858,30 @@ export class TerminalHostSupervisor {
     for (const pid of host.terminals.values())
       if (pid !== null && pid > 0) this.options.killProcessGroup?.(pid);
     host.terminals.clear();
-    for (const terminalId of lost) {
-      const key = `${terminalId}\u0000${host.lifetimes.get(terminalId) ?? 0}`;
-      // Lets the record mark output the host wrote but never reported.
+    // No output offset: the host never confirmed these lifetimes' final output.
+    for (const terminalId of lost)
       this.emit(host, {
         type: 'exit',
         terminalId,
         lifetimeId: host.lifetimes.get(terminalId),
-        ...this.exitFor(host, key),
-        outputOffset: this.knownOutputOffset(host, key),
+        ...this.exitFor(
+          host,
+          `${terminalId}\u0000${host.lifetimes.get(terminalId) ?? 0}`,
+        ),
       });
-    }
     host.registrations.clear();
     for (const [attachmentId, route] of host.attachments) {
       const key = `${route.terminalId}\u0000${route.lifetimeId}`;
-      const finalOffset = this.knownOutputOffset(host, key);
+      const confirmedOffset = host.attachmentExits.get(key)?.outputOffset;
       route.sink.item(
         {
           terminalId: route.terminalId,
           fromOffset: route.offset,
           toOffset: route.offset,
           data: new Uint8Array(0),
-          // Output the host wrote past this attachment's cursor is lost with it.
-          truncatedBefore: finalOffset > route.offset,
+          // Only the host's own exit can confirm that no output was lost.
+          truncatedBefore:
+            confirmedOffset === undefined || confirmedOffset > route.offset,
           exit: exits.get(key) ?? this.exitFor(host, key),
         },
         attachmentId,
@@ -939,18 +890,9 @@ export class TerminalHostSupervisor {
     }
     host.attachments.clear();
     host.attachmentExits.clear();
-    host.outputOffsets.clear();
     // Already-resolved create/restore replies still need their lifetime's reason.
     if (host.openings === 0) host.acknowledgedExitSignals.clear();
     this.options.onHostExit?.({ code, lost, expected: this.stopped });
-  }
-
-  /** The highest output offset the host showed for a lifetime, or its exit's. */
-  private knownOutputOffset(host: LiveHost, key: string): number {
-    return Math.max(
-      host.attachmentExits.get(key)?.outputOffset ?? 0,
-      host.outputOffsets.get(key) ?? 0,
-    );
   }
 
   private exitFor(host: LiveHost, key: string): TerminalHostExit {
@@ -990,25 +932,6 @@ export class TerminalHostSupervisor {
       host.attachmentExits.set(`${terminalId}\u0000${lifetimeId}`, known);
   }
 
-  /** Tracks live lifetimes only; their exit drops the entry. */
-  private noteOutputOffset(
-    host: LiveHost,
-    terminalId: string,
-    lifetimeId: number,
-    offset: number,
-  ): void {
-    if (
-      !host.terminals.has(terminalId) ||
-      (host.lifetimes.get(terminalId) ?? 0) !== lifetimeId
-    )
-      return;
-    const key = `${terminalId}\u0000${lifetimeId}`;
-    host.outputOffsets.set(
-      key,
-      Math.max(host.outputOffsets.get(key) ?? 0, offset),
-    );
-  }
-
   private pruneAttachmentExit(host: LiveHost, key: string): void {
     if (!host.attachmentExits.has(key)) return;
     for (const route of host.attachments.values()) {
@@ -1029,13 +952,6 @@ export class TerminalHostSupervisor {
 
   private report(host: LiveHost, report: TerminalHostReport): void {
     const key = `${report.terminalId}\u0000${report.lifetimeId ?? 0}`;
-    if (report.type !== 'firstOutput')
-      this.noteOutputOffset(
-        host,
-        report.terminalId,
-        report.lifetimeId ?? 0,
-        report.type === 'offset' ? report.outputOffset : report.toOffset,
-      );
     const registration = host.registrations.get(key);
     for (const listener of this.reporters) listener(report, registration);
   }

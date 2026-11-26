@@ -117,7 +117,7 @@ import { serializeWorkspaceContext } from '@canopy/protocol/workspace-context';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import {
   Button,
-  DialogFormField,
+  FormField,
   Notice,
   NoticeButton,
   PrivateMemoryInlineToggle,
@@ -3178,9 +3178,9 @@ function AddRepoModalDraft({
                 testId="add-workspace-github-repo-list"
               />
             ) : (
-              <DialogFormField
+              <FormField
                 label="Repository URL"
-                htmlFor="add-workspace-remote-url-input"
+                id="add-workspace-remote-url-input"
               >
                 <TextInput
                   id="add-workspace-remote-url-input"
@@ -3189,7 +3189,7 @@ function AddRepoModalDraft({
                   onChange={(event) => setRemoteUrl(event.target.value)}
                   placeholder="https://github.com/org/repo.git"
                 />
-              </DialogFormField>
+              </FormField>
             )}
 
             <ChosenFolderPath

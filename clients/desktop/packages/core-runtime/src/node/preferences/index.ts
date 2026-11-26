@@ -30,6 +30,11 @@ export {
   type WithStoredKeys,
 } from './preserve-stored-keys';
 export {
+  storedClientLocalValues,
+  type DomainPreferencesData,
+  type StoredDomainPreferences,
+} from './domain-preferences';
+export {
   PREFERENCES_BACKUPS_FOLDER,
   PREFERENCES_FAMILY_FILES,
   PREFERENCES_NAMESPACE_ID,

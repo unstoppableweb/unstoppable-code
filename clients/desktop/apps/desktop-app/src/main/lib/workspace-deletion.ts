@@ -1034,11 +1034,11 @@ async function deleteWorkspaceWithLease(
     getWorkspaceDir(request.workspaceId),
   );
   const removal: { state: CanonicalRemovalState } = { state: 'none' };
+  let retirement: WorkerTerminalRecordRetireParams | undefined;
   try {
-    const retirement =
-      await terminalPersistenceStore.prepareTerminalRecordRetirement({
-        projectId: request.workspaceId,
-      });
+    retirement = await terminalPersistenceStore.prepareTerminalRecordRetirement(
+      { projectId: request.workspaceId },
+    );
     return await deleteWorkspaceWithTerminalRetirement(
       request,
       options,
@@ -1048,6 +1048,12 @@ async function deleteWorkspaceWithLease(
       },
     );
   } finally {
+    // Before staging, a failure proves no commit. Afterwards only activation
+    // or boot recovery can classify a failed W5 publication safely.
+    if (removal.state === 'none' && retirement)
+      terminalPersistenceStore.cancelPreparedTerminalRecordRetirement(
+        retirement,
+      );
     directory.settle(
       removal.state === 'applied'
         ? await directoryRemovalOutcome(getWorkspaceDir(request.workspaceId))

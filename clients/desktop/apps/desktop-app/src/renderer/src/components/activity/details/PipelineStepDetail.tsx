@@ -39,7 +39,7 @@ import {
   useSessionWriter,
 } from './pipelineDetailSession';
 import type { ArchivedPipelineSource } from './pipelineDetailTypes';
-import { SearchBar } from '../../shared/search/SearchBar';
+import { FindBar } from '@canopy/ui-shared/components/FindBar';
 import type { SearchExecutor } from '@/components/shared/search/search-types';
 import { useAnsiSearch } from '@/hooks/useAnsiSearch';
 import { useContentSearch } from '@/hooks/useContentSearch';
@@ -298,7 +298,7 @@ export function PipelineStepDetail({
     logViewMode === 'rich' ? !isStepRunning && loadingRich : loadingPlain;
 
   // The rich transcript searches the rendered DOM; plain logs search the ANSI
-  // text. Route the SearchBar to whichever view is active.
+  // text. Route the FindBar to whichever view is active.
   const useRichSearch = logViewMode === 'rich' && richTranscriptAvailable;
   const activeSearch = useRichSearch ? richSearch : ansiSearch;
 
@@ -504,7 +504,7 @@ export function PipelineStepDetail({
           )}
         </div>
 
-        <SearchBar
+        <FindBar
           className=""
           query={activeSearch.query}
           onQueryChange={activeSearch.setQuery}

@@ -46,7 +46,7 @@ import { ModelProviderIcon } from '@canopy/ui-shared/components';
 import { getModelCatalogProviderLabel } from '@canopy/ui-shared';
 import { TranscriptViewer } from '@/components/chat/TranscriptViewer';
 import { DialogModal } from '@/components/shared/DialogModal';
-import { SearchBar } from '@/components/shared/search/SearchBar';
+import { FindBar } from '@canopy/ui-shared/components/FindBar';
 import { LoadingSpinner } from '@/components/shared/loading';
 import {
   Stack,
@@ -1026,7 +1026,7 @@ export function AuditTrailPage(): JSX.Element {
                     ? `Transcript truncated at ${transcriptResponse.truncation.maxBytes.toLocaleString()} bytes.`
                     : 'View the captured raw sidecar or the reconstructed rich transcript.'}
                 </div>
-                <SearchBar
+                <FindBar
                   query={transcriptSearch.query}
                   onQueryChange={transcriptSearch.setQuery}
                   currentIndex={transcriptSearch.currentIndex}

@@ -3,7 +3,7 @@
 import { useId, useState, type FormEvent, type JSX } from 'react';
 import {
   Button,
-  DialogFormField,
+  FormField,
   DialogModal,
   ErrorBanner,
   TextInput,
@@ -83,7 +83,7 @@ export function CreateTeamDialog({
           error={error?.copy}
           details={error?.details}
         />
-        <DialogFormField label="Organization name" htmlFor={nameId}>
+        <FormField label="Organization name" id={nameId}>
           <TextInput
             id={nameId}
             density="settings"
@@ -96,7 +96,7 @@ export function CreateTeamDialog({
             placeholder="Acme Engineering"
             data-testid="create-team-name-input"
           />
-        </DialogFormField>
+        </FormField>
         {/* No Cancel: the dialog closes from its X, Escape, or the backdrop. */}
         <div className="flex items-center justify-end gap-2">
           <Button

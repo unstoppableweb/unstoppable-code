@@ -10,7 +10,7 @@ import {
   Badge,
   Button,
   Checkbox,
-  RichHoverTooltip,
+  HoverCard,
   SettingsSelect,
   Heading,
   ErrorBanner,
@@ -309,7 +309,7 @@ function IncludedFilesHelp({
   // publisher sees what a share copies, including private and runnable files.
   const [open, setOpen] = useState(false);
   return (
-    <RichHoverTooltip
+    <HoverCard
       dataTestId={`${testIdPrefix}-dependencies-help-details`}
       surfacePadding="card"
       surfaceClassName="w-80"
@@ -342,7 +342,7 @@ function IncludedFilesHelp({
       >
         <QuestionMarkIcon aria-hidden="true" />
       </Button>
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }
 

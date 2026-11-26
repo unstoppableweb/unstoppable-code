@@ -1,4 +1,8 @@
-import type { PipelineEditorToolKey } from '@canopy/desktop-shared/lib/pipeline-editor-tools';
+import type { AppAdvisorActionResponse } from '@canopy/desktop-shared/types';
+import {
+  PIPELINE_EDITOR_TOOL_REGISTRY,
+  type PipelineEditorToolKey,
+} from '@canopy/desktop-shared/lib/pipeline-editor-tools';
 import {
   executeCanopyInjectedTool,
   type CanopyInjectedToolContext,
@@ -6,6 +10,7 @@ import {
 } from '../canopy-tools/core';
 import {
   emptyArgsSchema,
+  parsePipelineEditorAutomationAction,
   pipelineGetActionDefinitionSchema,
   pipelineOpenSchema,
   pipelineSetYamlSchema,
@@ -16,6 +21,28 @@ function invalidArguments(toolName: string): CanopyInjectedToolTextResult {
   return {
     text: `Invalid arguments for ${toolName}.`,
     isError: true,
+  };
+}
+
+/** GetAutomation's newest runs; the rest are counted, keeping the result small. */
+const GET_AUTOMATION_RUN_LIMIT = 20;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function withRecentRunsOnly(response: AppAdvisorActionResponse): unknown {
+  const { result } = response;
+  if (!isRecord(result) || !Array.isArray(result.recentRuns)) return response;
+  const runs: unknown[] = result.recentRuns;
+  if (runs.length <= GET_AUTOMATION_RUN_LIMIT) return response;
+  return {
+    ...response,
+    result: {
+      ...result,
+      recentRuns: runs.slice(0, GET_AUTOMATION_RUN_LIMIT),
+      olderRunsOmitted: runs.length - GET_AUTOMATION_RUN_LIMIT,
+    },
   };
 }
 
@@ -119,6 +146,32 @@ export async function executePipelineEditorTool(
         return invalidArguments('GetBuiltinActionDefinition');
       const result = runtime.getBuiltinActionDefinition(parsed.data.name);
       return { text: jsonText(result), isError: result.found !== true };
+    }
+    case 'automation_list':
+    case 'automation_get':
+    case 'automation_create':
+    case 'automation_update': {
+      const toolName = PIPELINE_EDITOR_TOOL_REGISTRY[canonicalKey].displayName;
+      const parsed = parsePipelineEditorAutomationAction(canonicalKey, rawArgs);
+      if (!parsed.ok)
+        return parsed.problem
+          ? {
+              text: `Invalid arguments for ${toolName}: ${parsed.problem}`,
+              isError: true,
+            }
+          : invalidArguments(toolName);
+      const response = await runtime.dispatchAutomationAction(parsed.action, {
+        ...(context?.toolUseId ? { requestId: context.toolUseId } : {}),
+        ...(context?.signal ? { signal: context.signal } : {}),
+      });
+      return {
+        text: jsonText(
+          canonicalKey === 'automation_get'
+            ? withRecentRunsOnly(response)
+            : response,
+        ),
+        isError: response.ok !== true,
+      };
     }
     case 'navigation_to_list': {
       const parsed = emptyArgsSchema.safeParse(rawArgs);

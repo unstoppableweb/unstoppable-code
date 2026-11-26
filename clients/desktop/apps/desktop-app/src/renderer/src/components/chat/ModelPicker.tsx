@@ -146,7 +146,7 @@ import { useGatewayKeyStatus } from '@/hooks/useGatewayKeyStatus';
 import { useCloudConnectGateStore } from '@/stores/cloudConnectGateStore';
 import { getProviderLabel } from '@/lib/providerLabels';
 import type { ProviderAvailability } from '@/hooks/useProviderAvailability';
-import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
+import { HoverCard } from '@canopy/ui-shared/components';
 import type {
   BillingFramework,
   ChatBillingResolution,
@@ -3197,7 +3197,7 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
                         <div className="flex flex-col gap-1.5">
                           {/* Preserve the trigger's inline line box before the notes. */}
                           <div>
-                            <RichHoverTooltip
+                            <HoverCard
                               triggerWrapperClassName="w-full"
                               dataTestId="chat-billing-tooltip"
                               surfaceClassName="w-max max-w-56"
@@ -3320,7 +3320,7 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
                                   checked={billing.value === 'ai-credits'}
                                 />
                               </DropdownMenuControl>
-                            </RichHoverTooltip>
+                            </HoverCard>
                           </div>
                           {billing.disabled && billing.lockedReason ? (
                             <div

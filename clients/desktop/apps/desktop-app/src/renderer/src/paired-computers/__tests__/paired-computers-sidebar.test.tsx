@@ -1,9 +1,12 @@
 /** @jest-environment jsdom */
 import '../../cloud-chats/__tests__/jsdom-globals';
-import { act, createElement, type JSX } from 'react';
+import { act, createElement, useState, type JSX } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { SessionViewModel } from '@canopy/app-core';
+import type { CanopyCapabilities, SessionViewModel } from '@canopy/app-core';
 import { createProjectGrouper } from '@canopy/desktop-shared/lib/project-groups';
+import { maskReplayAttribute } from '@canopy/desktop-instrumentation/client/posthog-replay-masking';
+import { sanitizePostHogEvent } from '@canopy/desktop-instrumentation/posthog-privacy';
+import { WorkspaceSectionHeader } from '@canopy/ui-shared/components';
 import type {
   PairedComputerHoldResult,
   PairedComputerState,
@@ -11,20 +14,37 @@ import type {
   PairedComputersApi,
   SingleRepoSidebarItem,
 } from '@canopy/desktop-shared/types';
-import type {
-  WorktreeRowOverrides,
-  WorktreeRowSlotContext,
+import {
+  SidebarSurface,
+  WorkspacesSidebarSections,
+  type WorktreeRowOverrides,
+  type WorktreeRowSlotContext,
 } from '@canopy/ui-app';
 import {
+  partitionWorkspaces,
+  partitionWorktrees,
+} from '@canopy/ui-app/code/shell/workspace-sections-model';
+import { isWorktreeSelectable } from '@canopy/ui-app/code/shell/sidebar/sidebar-row-selection';
+import { DESKTOP_SHARED_SIDEBAR_STORAGE_KEY } from '@/components/sidebar/desktop-shared-sidebar-flag';
+import {
+  applyPairedSnapshot,
+  MAX_PAIRED_SNAPSHOT_TASKS,
+  MAX_PAIRED_SNAPSHOT_WORKSPACES,
+  pairedTaskKey,
   PairedComputersSidebarFollower,
   pairedSidebarStore,
 } from '../paired-computers-sidebar-store';
 import {
   appendPairedSidebarRows,
   createPairedSidebarRowsBuilder,
+  selectDeferredEmptyWorkspaceIds,
 } from '../paired-sidebar-rows';
+import { pairedSidebarRowCapabilities } from '../paired-sidebar-capabilities';
 import {
+  collectVisiblePairedDeviceIds,
   PairedComputerStatusRows,
+  setPairedProjectCollapsed,
+  usePairedSidebarRows,
   usePairedWorktreeRowOverrides,
 } from '../usePairedComputersSidebar';
 
@@ -134,6 +154,7 @@ interface FakeApi {
   readonly invoke: jest.Mock;
   readonly release: jest.Mock;
   readonly hold: jest.Mock;
+  readonly send: jest.Mock;
   readonly localProjectFacts: jest.Mock;
   state(deviceId: string, state: PairedComputerState): void;
   update(deviceId: string, update: PairedComputerUpdate): void;
@@ -158,7 +179,12 @@ function fakeApi(
     string,
     (result: PairedComputerHoldResult) => void
   >();
-  const invoke = jest.fn((deviceId: string) => replies(deviceId));
+  // Approvals answer at once with none pending; snapshots as the test says.
+  const invoke = jest.fn((deviceId: string, channel: string) =>
+    channel === 'approval:pending-requests'
+      ? Promise.resolve([])
+      : replies(deviceId),
+  );
   const release = jest.fn((): Promise<void> => Promise.resolve());
   const hold = jest.fn(
     (deviceId: string): Promise<PairedComputerHoldResult> =>
@@ -167,6 +193,7 @@ function fakeApi(
         : new Promise((resolve) => pendingHolds.set(deviceId, resolve)),
   );
   const localProjectFacts = jest.fn(() => Promise.resolve({}));
+  const send = jest.fn();
   const listen = <T,>(
     map: Map<string, Set<(value: T) => void>>,
     deviceId: string,
@@ -181,7 +208,7 @@ function fakeApi(
     hold,
     release,
     invoke,
-    send: jest.fn(),
+    send,
     getState: jest.fn(() => Promise.resolve(CONNECTED)),
     onUpdate: (deviceId, listener) => listen(updates, deviceId, listener),
     onStateChanged: (deviceId, listener) => listen(states, deviceId, listener),
@@ -192,6 +219,7 @@ function fakeApi(
     invoke,
     release,
     hold,
+    send,
     localProjectFacts,
     pendingHolds,
     state: (deviceId, state) => {
@@ -203,8 +231,16 @@ function fakeApi(
   };
 }
 
+function snapshotReads(fake: FakeApi): number {
+  return fake.invoke.mock.calls.filter(
+    ([, channel]) => channel === 'desktop:session-snapshot',
+  ).length;
+}
+
+/** Lets every pending reply and the reads they chain run to the end. */
 async function settle(): Promise<void> {
-  for (let index = 0; index < 5; index += 1) await Promise.resolve();
+  for (let index = 0; index < 3; index += 1)
+    await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function rowsFor(
@@ -251,6 +287,30 @@ function renderOverrides(context: WorktreeRowSlotContext): {
   });
   return { current: () => latest, renders: () => count, root };
 }
+
+const DESKTOP: CanopyCapabilities = {
+  localExecution: true,
+  terminalPty: true,
+  fileSystemAccess: 'read-write',
+  voice: true,
+  settingsScope: 'full',
+  pipelines: 'execute',
+  routing: 'in-memory',
+  overviewNotifications: true,
+  workspaceReordering: true,
+  worktreeReordering: true,
+  itemGrouping: true,
+  worktreePinning: true,
+  workspaceSettings: 'full',
+  workspaceRemoval: 'archive',
+  worktreeRemoval: 'archive',
+  worktreeRetention: 'archive-or-delete',
+  workspaceMoveToOrganization: true,
+  worktreeCreation: true,
+  worktreeMetadata: true,
+  worktreeBranching: true,
+  scriptActions: true,
+};
 
 beforeAll(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -418,7 +478,7 @@ describe("paired computers' tasks in the main window's sidebar (CAN-7766)", () =
     follower = new PairedComputersSidebarFollower(fake.api, jest.fn());
     follower.follow([{ deviceId: MAC, name: 'MacBook Pro' }]);
     await settle();
-    expect(fake.invoke).toHaveBeenCalledTimes(1);
+    expect(snapshotReads(fake)).toBe(1);
     // Two signals while the first read runs ask for one more read, not two.
     fake.update(MAC, {
       type: 'push',
@@ -426,10 +486,10 @@ describe("paired computers' tasks in the main window's sidebar (CAN-7766)", () =
       args: [],
     });
     fake.update(MAC, { type: 'reconnected' });
-    expect(fake.invoke).toHaveBeenCalledTimes(1);
+    expect(snapshotReads(fake)).toBe(1);
     answers[0]?.(macSnapshot({ label: 'First' }));
     await settle();
-    expect(fake.invoke).toHaveBeenCalledTimes(2);
+    expect(snapshotReads(fake)).toBe(2);
     answers[1]?.(macSnapshot({ label: 'Second' }));
     await settle();
     const tasks = pairedSidebarStore.getState().computers.get(MAC)
@@ -544,11 +604,11 @@ describe("paired computers' tasks in the main window's sidebar (CAN-7766)", () =
     fake.pendingHolds.get(LINUX)?.({ holdId: 'hold-linux', state: CONNECTED });
     await settle();
     expect(fake.release).toHaveBeenCalledWith('hold-linux');
-    expect(fake.invoke).toHaveBeenCalledTimes(1);
+    expect(snapshotReads(fake)).toBe(1);
     expect(pairedSidebarStore.getState().computers.size).toBe(0);
     // Late events change nothing.
     fake.update(MAC, { type: 'reconnected' });
-    expect(fake.invoke).toHaveBeenCalledTimes(1);
+    expect(snapshotReads(fake)).toBe(1);
   });
 
   it('a computer unpaired while held leaves at once, and offline or ended computers are not listed or held again', async () => {
@@ -585,5 +645,2251 @@ describe("paired computers' tasks in the main window's sidebar (CAN-7766)", () =
     follower.follow([]);
     follower.follow([{ deviceId: LINUX, name: 'Linux workstation' }]);
     expect(fake.hold).toHaveBeenCalledTimes(3);
+  });
+
+  it('shows a task waiting for a tool approval on its computer, read only, and keeps pushes that land during the read', async () => {
+    let pendingReply: (value: unknown) => void = () => undefined;
+    const fake = fakeApi(() => Promise.resolve(macSnapshot()));
+    fake.invoke.mockImplementation((_deviceId: string, channel: string) =>
+      channel === 'approval:pending-requests'
+        ? new Promise((resolve) => {
+            pendingReply = resolve;
+          })
+        : Promise.resolve(macSnapshot()),
+    );
+    follower = new PairedComputersSidebarFollower(fake.api, jest.fn());
+    follower.follow([{ deviceId: MAC, name: 'MacBook Pro' }]);
+    await settle();
+    // Read after the snapshot, with no arguments; nothing answers it from here.
+    expect(fake.invoke).toHaveBeenCalledWith(
+      MAC,
+      'approval:pending-requests',
+      [],
+    );
+    const probe = renderOverrides(
+      rowContext('storefront', `computer-${MAC}:fix-upload`),
+    );
+    // A request pushed while the read is in flight survives the reply,
+    // which was taken before it.
+    await act(async () => {
+      fake.update(MAC, {
+        type: 'push',
+        channel: 'approval:request',
+        args: [
+          {
+            requestId: 'r-2',
+            projectId: 'docs-remote',
+            worktreeId: 'search',
+            chatId: 'c',
+          },
+        ],
+      });
+      pendingReply([
+        {
+          requestId: 'r-1',
+          projectId: 'shop',
+          worktreeId: 'fix-upload',
+          chatId: 'c',
+        },
+      ]);
+      await settle();
+    });
+    expect(probe.current()).toMatchObject({ hasPendingToolApproval: true });
+    expect(
+      pairedSidebarStore.getState().computers.get(MAC)?.toolApprovals,
+    ).toEqual(
+      new Set([
+        pairedTaskKey('shop', 'fix-upload'),
+        pairedTaskKey('docs-remote', 'search'),
+      ]),
+    );
+    // An approval for the same worktreeId in a different project must not mark
+    // this project's task as awaiting approval.
+    await act(async () => {
+      fake.update(MAC, {
+        type: 'push',
+        channel: 'approval:request',
+        args: [
+          {
+            requestId: 'r-other',
+            projectId: 'other-project',
+            worktreeId: 'fix-upload',
+            chatId: 'c',
+          },
+        ],
+      });
+      await settle();
+    });
+    // Answered or withdrawn on that computer: the row no longer waits.
+    await act(async () => {
+      fake.update(MAC, {
+        type: 'push',
+        channel: 'approval:cancelled',
+        args: [{ requestId: 'r-1' }],
+      });
+      await settle();
+    });
+    expect(probe.current()).toMatchObject({ hasPendingToolApproval: false });
+    expect(
+      fake.invoke.mock.calls.every(
+        ([, channel]) =>
+          channel === 'desktop:session-snapshot' ||
+          channel === 'approval:pending-requests',
+      ),
+    ).toBe(true);
+    expect(fake.send).not.toHaveBeenCalled();
+    act(() => {
+      probe.root.unmount();
+    });
+  });
+
+  it('never reads approvals from a computer that does not announce them', async () => {
+    const fake = fakeApi();
+    fake.hold.mockImplementation((deviceId: string) =>
+      Promise.resolve({
+        holdId: `hold-${deviceId}`,
+        state: { ...CONNECTED, capabilities: ['chats', 'composer', 'sidebar'] },
+      }),
+    );
+    follower = new PairedComputersSidebarFollower(fake.api, jest.fn());
+    follower.follow([{ deviceId: MAC, name: 'MacBook Pro' }]);
+    await settle();
+    fake.update(MAC, {
+      type: 'push',
+      channel: 'approval:request',
+      args: [{ requestId: 'r-1', projectId: 'shop', worktreeId: 'fix-upload' }],
+    });
+    expect(fake.invoke).not.toHaveBeenCalledWith(
+      MAC,
+      'approval:pending-requests',
+      [],
+    );
+    expect(
+      pairedSidebarStore.getState().computers.get(MAC)?.toolApprovals.size,
+    ).toBe(0);
+  });
+
+  it("a paired row offers nothing that changes it and never reaches this computer's local paths", async () => {
+    const caps = pairedSidebarRowCapabilities(DESKTOP);
+    expect(caps).toMatchObject({
+      worktreeRemoval: false,
+      worktreeReordering: false,
+      worktreePinning: false,
+      worktreeMetadata: false,
+      worktreeCreation: false,
+      worktreeBranching: false,
+      itemGrouping: false,
+      workspaceSettings: false,
+      workspaceRemoval: false,
+      workspaceReordering: false,
+      scriptActions: false,
+      localExecution: false,
+    });
+    expect(caps).not.toHaveProperty('worktreeRetention');
+    // Multi-select needs removal, so a paired row can't join a selection.
+    expect(
+      isWorktreeSelectable({
+        subject: 'worktree',
+        worktreeRemoval: caps.worktreeRemoval,
+        commandsDisabled: false,
+        hidden: false,
+        removalInProgress: false,
+      }),
+    ).toBe(false);
+
+    const { routeDesktopSidebarSelection, isSnapshotWorktreeListed } =
+      await import('@/components/sidebar/DesktopSharedSidebarHost');
+    // Listed in this computer's project though its store never holds it, as
+    // a local row the store let go of is not.
+    const storeProjects = [
+      { id: 'storefront', type: 'single-repo', worktrees: [] },
+    ];
+    expect(
+      isSnapshotWorktreeListed(storeProjects, {
+        workspaceLocalId: 'storefront',
+        localId: `computer-${MAC}:fix-upload`,
+      }),
+    ).toBe(true);
+    expect(
+      isSnapshotWorktreeListed(storeProjects, {
+        workspaceLocalId: 'storefront',
+        localId: 'csv-export',
+      }),
+    ).toBe(false);
+    const actions = {
+      navigate: jest.fn(),
+      openStandaloneChat: jest.fn(),
+      selectWorkspace: jest.fn(),
+      selectWorktree: jest.fn(),
+      openPairedComputer: jest.fn(),
+    };
+    const snapshot = {
+      ...appendPairedSidebarRows(LOCAL_SNAPSHOT, {
+        workspaces: [],
+        worktrees: [
+          {
+            localId: `computer-${MAC}:fix-upload`,
+            workspaceLocalId: 'storefront',
+            branch: 'fix-upload',
+          },
+        ],
+        projects: new Map(),
+        rowRemoteWorkspaceIds: new Map(),
+      }),
+      standaloneChats: [],
+    } as unknown as SessionViewModel;
+    routeDesktopSidebarSelection(
+      {
+        kind: 'worktree',
+        workspaceLocalId: 'storefront',
+        worktreeLocalId: `computer-${MAC}:fix-upload`,
+      },
+      snapshot,
+      actions,
+    );
+    // It opens that computer's own window and selects nothing here.
+    expect(actions.openPairedComputer).toHaveBeenCalledWith(MAC);
+    expect(actions.selectWorktree).not.toHaveBeenCalled();
+    expect(actions.navigate).not.toHaveBeenCalled();
+    expect(actions.openStandaloneChat).not.toHaveBeenCalled();
+    // A local row still selects as before.
+    routeDesktopSidebarSelection(
+      {
+        kind: 'worktree',
+        workspaceLocalId: 'storefront',
+        worktreeLocalId: 'csv-export',
+      },
+      snapshot,
+      actions,
+    );
+    expect(actions.selectWorktree).toHaveBeenCalledWith(
+      'storefront',
+      'csv-export',
+    );
+    expect(actions.openPairedComputer).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps local tasks ahead of paired tasks under last-updated sorting', () => {
+    const olderLocal = {
+      localId: 'csv-export',
+      workspaceLocalId: 'storefront',
+      branch: 'csv-export',
+      createdAt: '2026-11-20T00:00:00Z',
+      lastActivityAt: '2026-11-20T00:00:00Z',
+      order: 0,
+    };
+    const newerLocal = {
+      localId: 'checkout-fix',
+      workspaceLocalId: 'storefront',
+      branch: 'checkout-fix',
+      createdAt: '2026-11-21T00:00:00Z',
+      lastActivityAt: '2026-11-21T00:00:00Z',
+      order: 1,
+    };
+    const newestPaired = {
+      localId: `computer-${MAC}:fix-upload`,
+      workspaceLocalId: 'storefront',
+      branch: 'fix-upload',
+      createdAt: '2026-11-25T12:00:00Z',
+      lastActivityAt: '2026-11-25T12:00:00Z',
+      order: 1_000_000_000,
+    };
+
+    const { visible } = partitionWorktrees(
+      [olderLocal, newerLocal, newestPaired],
+      'storefront',
+      'last-updated',
+    );
+    expect(visible.map((row) => row.localId)).toEqual([
+      'checkout-fix',
+      'csv-export',
+      `computer-${MAC}:fix-upload`,
+    ]);
+  });
+
+  it('rejects a paired snapshot with malformed nested workspace metadata and keeps the last valid snapshot', async () => {
+    const fake = fakeApi(() =>
+      Promise.resolve({
+        workspaces: [
+          {
+            localId: 'mac-sf',
+            name: 'storefront',
+            type: 'single-repo',
+            repositoryIdentity: { owner: 'acme', repo: 'storefront' },
+          },
+        ],
+        worktrees: [
+          {
+            localId: 'fix-upload',
+            workspaceLocalId: 'mac-sf',
+            branch: 'fix-upload',
+          },
+        ],
+      }),
+    );
+    const follower = new PairedComputersSidebarFollower(
+      fake.api,
+      () => undefined,
+    );
+    follower.follow([{ deviceId: MAC, name: 'Work Mac' }]);
+    await settle();
+
+    const validStructure = pairedSidebarStore
+      .getState()
+      .computers.get(MAC)?.structure;
+    expect(validStructure?.workspaces).toHaveLength(1);
+    expect(validStructure?.tasks.map((t) => t.localId)).toEqual(['fix-upload']);
+
+    // Malformed nested repositoryIdentity (null) and malformed owner must be
+    // rejected cleanly without crashing downstream row building.
+    applyPairedSnapshot(MAC, {
+      workspaces: [
+        {
+          localId: 'mac-sf',
+          name: 'storefront',
+          type: 'single-repo',
+          repositoryIdentity: null,
+        },
+      ],
+      worktrees: [],
+    });
+    applyPairedSnapshot(MAC, {
+      workspaces: [
+        {
+          localId: 'mac-sf',
+          name: 'storefront',
+          type: 'single-repo',
+          owner: { type: 'organization', organizationId: null, projectId: 123 },
+        },
+      ],
+      worktrees: [],
+    });
+
+    const afterMalformed = pairedSidebarStore
+      .getState()
+      .computers.get(MAC)?.structure;
+    expect(afterMalformed).toBe(validStructure);
+
+    const buildRows = createPairedSidebarRowsBuilder(createProjectGrouper());
+    expect(() =>
+      buildRows({
+        localProjects: [LOCAL_STOREFRONT],
+        localFacts: null,
+        accountId: 'acc-1',
+        computers: pairedSidebarStore.getState().structures,
+      }),
+    ).not.toThrow();
+
+    follower.dispose();
+  });
+
+  it('caps the approval journal and times out hung pending-requests reads without stacking RPCs', async () => {
+    const errors: unknown[] = [];
+    const fake = fakeApi(() => Promise.resolve(macSnapshot()));
+    let approvalReadCalls = 0;
+    let settleHungApprovalRead: (error: Error) => void = () => undefined;
+    fake.api.invoke = (_deviceId, channel): Promise<unknown> => {
+      if (channel === 'approval:pending-requests') {
+        approvalReadCalls += 1;
+        if (approvalReadCalls === 1) {
+          return new Promise((_resolve, reject) => {
+            settleHungApprovalRead = reject;
+          });
+        }
+        return Promise.resolve([]);
+      }
+      return Promise.resolve(macSnapshot());
+    };
+
+    const follower = new PairedComputersSidebarFollower(
+      fake.api,
+      (err) => errors.push(err),
+      { approvalJournalLimit: 3, approvalReadTimeoutMs: 40 },
+    );
+    follower.follow([{ deviceId: MAC, name: 'Work Mac' }]);
+    await settle();
+
+    // Flood approval pushes beyond the journal limit while the read hangs.
+    for (let i = 0; i < 6; i += 1) {
+      fake.update(MAC, {
+        type: 'push',
+        channel: 'approval:request',
+        args: [
+          {
+            requestId: `req-${i}`,
+            projectId: 'shop',
+            worktreeId: 'fix-upload',
+          },
+        ],
+      });
+    }
+    expect(
+      pairedSidebarStore
+        .getState()
+        .computers.get(MAC)
+        ?.toolApprovals.has(pairedTaskKey('shop', 'fix-upload')),
+    ).toBe(true);
+
+    // Past the read deadline: partial state is discarded and error reported,
+    // without launching a duplicate overlapping approval RPC while the first
+    // invoke is still pending in RpcPeer.
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    await settle();
+
+    expect(errors.length).toBeGreaterThanOrEqual(1);
+    expect(approvalReadCalls).toBe(1);
+    expect(
+      pairedSidebarStore.getState().computers.get(MAC)?.toolApprovals.size,
+    ).toBe(0);
+
+    // Once the timed-out RPC finally settles, the single bounded resync runs.
+    settleHungApprovalRead(new Error('session closed'));
+    await settle();
+    expect(approvalReadCalls).toBe(2);
+
+    follower.dispose();
+  });
+
+  it('does not start the paired follower when the legacy sidebar escape hatch is active', async () => {
+    const previous = window.localStorage.getItem(
+      DESKTOP_SHARED_SIDEBAR_STORAGE_KEY,
+    );
+    window.localStorage.setItem(DESKTOP_SHARED_SIDEBAR_STORAGE_KEY, '0');
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    const fake = fakeApi();
+    const prevApi = window.api;
+    try {
+      const { usePairedComputersSidebarFollower } =
+        await import('../usePairedComputersSidebar');
+      const { useRemoteControlStore } =
+        await import('@/stores/remoteControlStore');
+      const { refreshOneWindowSwitch } =
+        await import('@/stores/oneWindowStore');
+      const noopUnsub = (): void => undefined;
+      window.api = {
+        ...prevApi,
+        loadPreferences: jest
+          .fn()
+          .mockResolvedValue({ __oneWindowEnabled: true }),
+        onPreferencesSynced: jest.fn((): (() => void) => noopUnsub),
+        onPreferencesChanged: jest.fn((): (() => void) => noopUnsub),
+        pairedComputers: fake.api,
+      };
+      await refreshOneWindowSwitch();
+      useRemoteControlStore.setState((state) => ({
+        ...state,
+        context: { mode: 'local' },
+        state: {
+          ...state.state,
+          signedIn: true,
+          hosts: [
+            {
+              deviceId: MAC,
+              name: 'Work Mac',
+              online: true,
+            } as (typeof state.state.hosts)[number],
+          ],
+        },
+      }));
+      function Probe(): JSX.Element | null {
+        usePairedComputersSidebarFollower();
+        return null;
+      }
+      act(() => {
+        root.render(createElement(Probe));
+      });
+      await settle();
+      expect(fake.hold).not.toHaveBeenCalled();
+    } finally {
+      window.api = prevApi;
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+      if (previous === null) {
+        window.localStorage.removeItem(DESKTOP_SHARED_SIDEBAR_STORAGE_KEY);
+      } else {
+        window.localStorage.setItem(
+          DESKTOP_SHARED_SIDEBAR_STORAGE_KEY,
+          previous,
+        );
+      }
+    }
+  });
+
+  it("accepts a paired snapshot containing a 'not-local' placeholder workspace", async () => {
+    const fake = fakeApi(() =>
+      Promise.resolve({
+        workspaces: [
+          {
+            localId: 'cloud-only',
+            name: 'Cloud project',
+            type: 'single-repo',
+            placeholder: { projectId: 'cloud-proj-1', state: 'not-local' },
+          },
+          {
+            localId: 'shop',
+            name: 'storefront',
+            type: 'single-repo',
+            owner: {
+              type: 'organization',
+              organizationId: ORG,
+              projectId: ORG_PROJECT,
+            },
+          },
+        ],
+        worktrees: [
+          {
+            localId: 'fix-upload',
+            workspaceLocalId: 'shop',
+            branch: 'fix-upload',
+          },
+        ],
+      }),
+    );
+    follower = new PairedComputersSidebarFollower(fake.api, jest.fn());
+    follower.follow([{ deviceId: MAC, name: 'Work Mac' }]);
+    await settle();
+
+    const structure = pairedSidebarStore
+      .getState()
+      .computers.get(MAC)?.structure;
+    expect(structure?.workspaces).toHaveLength(2);
+    expect(structure?.workspaces[0]?.placeholder).toEqual({
+      projectId: 'cloud-proj-1',
+      state: 'not-local',
+    });
+    expect(structure?.tasks.map((task) => task.localId)).toEqual([
+      'fix-upload',
+    ]);
+  });
+
+  it('refreshes snapshots immediately even while an approval pending-requests read is hung', async () => {
+    let label = 'First';
+    let approvalCalls = 0;
+    const fake = fakeApi();
+    fake.api.invoke = (_deviceId, channel): Promise<unknown> => {
+      if (channel === 'approval:pending-requests') {
+        approvalCalls += 1;
+        return new Promise(() => undefined);
+      }
+      return Promise.resolve(macSnapshot({ label }));
+    };
+
+    follower = new PairedComputersSidebarFollower(fake.api, jest.fn(), {
+      approvalReadTimeoutMs: 5_000,
+    });
+    follower.follow([{ deviceId: MAC, name: 'Work Mac' }]);
+    await settle();
+
+    expect(approvalCalls).toBe(1);
+    expect(
+      pairedSidebarStore
+        .getState()
+        .computers.get(MAC)
+        ?.structure?.tasks.find((task) => task.localId === 'fix-upload')?.label,
+    ).toBe('First');
+
+    // Trigger a snapshot refresh while the first approval RPC is still hanging.
+    label = 'Second';
+    fake.update(MAC, {
+      type: 'push',
+      channel: 'desktop:session-snapshot-stale',
+      args: [],
+    });
+    await settle();
+
+    expect(
+      pairedSidebarStore
+        .getState()
+        .computers.get(MAC)
+        ?.structure?.tasks.find((task) => task.localId === 'fix-upload')?.label,
+    ).toBe('Second');
+    // Single-flight approval guard avoids starting a duplicate approval RPC.
+    expect(approvalCalls).toBe(1);
+  });
+
+  it('keeps paired rows out of local branch grouping and local item-group drop targets', () => {
+    const pairedId = `computer-${MAC}:remote-parent`;
+    const localCaps: CanopyCapabilities = {
+      ...DESKTOP,
+      worktreeBranchGrouping: true,
+    };
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    try {
+      act(() => {
+        root.render(
+          <WorkspacesSidebarSections
+            state={{
+              workspaces: [
+                {
+                  localId: 'storefront',
+                  name: 'storefront',
+                  type: 'single-repo',
+                  order: 0,
+                  itemGroups: [
+                    {
+                      id: 'g-1',
+                      name: 'Sprint',
+                      color: 'categorical-1',
+                      collapsed: false,
+                      memberIds: ['local-child'],
+                    },
+                  ],
+                },
+              ],
+              worktrees: [
+                {
+                  localId: 'local-parent',
+                  workspaceLocalId: 'storefront',
+                  branch: 'local-base',
+                  order: 0,
+                },
+                {
+                  localId: 'local-stacked',
+                  workspaceLocalId: 'storefront',
+                  branch: 'feature/on-local',
+                  order: 1,
+                },
+                {
+                  localId: 'local-child',
+                  workspaceLocalId: 'storefront',
+                  branch: 'feature/stacked',
+                  order: 2,
+                },
+                {
+                  localId: pairedId,
+                  workspaceLocalId: 'storefront',
+                  branch: 'shared-base',
+                  order: 1_000_000_000,
+                },
+              ],
+            }}
+            capabilities={localCaps}
+            capabilitiesFor={(localId): CanopyCapabilities =>
+              localId === pairedId
+                ? pairedSidebarRowCapabilities(localCaps)
+                : localCaps
+            }
+            selected={null}
+            onSelectWorktree={(): void => undefined}
+            onCreateWorktree={(): Promise<undefined> =>
+              Promise.resolve(undefined)
+            }
+            branchGroupingEnabled
+            getBranchGrouping={(): {
+              readonly groupingEnabled: boolean;
+              readonly defaultBranches: ReadonlySet<string>;
+              readonly baseBranchByWorktreeId: ReadonlyMap<string, string>;
+            } => ({
+              groupingEnabled: true,
+              defaultBranches: new Set(['main']),
+              baseBranchByWorktreeId: new Map([
+                ['local-stacked', 'local-base'],
+                ['local-child', 'shared-base'],
+              ]),
+            })}
+          />,
+        );
+      });
+
+      // Local-to-local branch grouping is active, proving the check is live.
+      expect(
+        container.querySelector(
+          '[data-testid="worktree-branch-group-children"][data-parent-worktree-id="local-parent"]',
+        ),
+      ).not.toBeNull();
+      // Local child must not nest under the paired row even though its base
+      // branch matches the paired row's branch.
+      expect(
+        container.querySelector(
+          `[data-testid="worktree-branch-group-children"][data-parent-worktree-id="${pairedId}"]`,
+        ),
+      ).toBeNull();
+      // Paired row must not become a local item-group block or drop target.
+      expect(
+        container.querySelector(`[data-sidebar-group-block="${pairedId}"]`),
+      ).toBeNull();
+      const itemGroups = container.querySelector(
+        '[data-testid="sidebar-code-item-groups"]',
+      );
+      expect(itemGroups).not.toBeNull();
+      expect(
+        itemGroups?.querySelector(`[data-worktree-id="${pairedId}"]`),
+      ).toBeNull();
+      // Paired row still renders in flow, after the local item-groups list.
+      const pairedRow = container.querySelector(
+        `[data-worktree-id="${pairedId}"]`,
+      );
+      expect(pairedRow).not.toBeNull();
+      expect(
+        Boolean(
+          itemGroups &&
+          pairedRow &&
+          itemGroups.compareDocumentPosition(pairedRow) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+        ),
+      ).toBe(true);
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+
+  it('keeps tasks with the same localId in different paired workspaces distinct for rows, live status, and approvals', async () => {
+    const fake = fakeApi(() =>
+      Promise.resolve({
+        workspaces: [
+          {
+            localId: 'shop',
+            name: 'storefront',
+            type: 'single-repo',
+            owner: {
+              type: 'organization',
+              organizationId: ORG,
+              projectId: ORG_PROJECT,
+            },
+          },
+          { localId: 'docs-remote', name: 'docs', type: 'single-repo' },
+        ],
+        worktrees: [
+          {
+            localId: 'shared-id',
+            workspaceLocalId: 'shop',
+            branch: 'shop-branch',
+            isStreaming: true,
+          },
+          {
+            localId: 'shared-id',
+            workspaceLocalId: 'docs-remote',
+            branch: 'docs-branch',
+            status: 'done',
+          },
+        ],
+      }),
+    );
+    follower = new PairedComputersSidebarFollower(fake.api, jest.fn());
+    follower.follow([{ deviceId: MAC, name: 'MacBook Pro' }]);
+    await settle();
+
+    // Both tasks survive snapshot deduplication and appear under their own workspaces.
+    const build = createPairedSidebarRowsBuilder(createProjectGrouper());
+    const rows = rowsFor(build);
+    const qualifiedId = `computer-${MAC}:shared-id`;
+    const remoteDocsId = `computer-${MAC}:docs-remote`;
+    expect(
+      rows.worktrees.map((w) => [w.workspaceLocalId, w.localId, w.branch]),
+    ).toEqual([
+      ['storefront', qualifiedId, 'shop-branch'],
+      [remoteDocsId, qualifiedId, 'docs-branch'],
+    ]);
+
+    // Mount usePairedSidebarRows so rowRemoteWorkspaceIds is published, and verify
+    // each row resolves its own workspace's live status and tool approval.
+    const { usePairedSidebarRows } =
+      await import('../usePairedComputersSidebar');
+    const { useProjectsStore } = await import('@/stores/projectsStore');
+    const prevProjects = useProjectsStore.getState().projects;
+    useProjectsStore.setState({ projects: [LOCAL_STOREFRONT, LOCAL_DOCS] });
+    let shopOverrides: WorktreeRowOverrides | undefined;
+    let docsOverrides: WorktreeRowOverrides | undefined;
+    const shopCtx = rowContext('storefront', qualifiedId);
+    const docsCtx = rowContext(remoteDocsId, qualifiedId);
+    function Probe(): null {
+      usePairedSidebarRows();
+      shopOverrides = usePairedWorktreeRowOverrides(shopCtx);
+      docsOverrides = usePairedWorktreeRowOverrides(docsCtx);
+      return null;
+    }
+    const root = createRoot(document.createElement('div'));
+    try {
+      await act(async () => {
+        root.render(createElement(Probe));
+        await settle();
+      });
+      await act(async () => {
+        fake.update(MAC, {
+          type: 'push',
+          channel: 'approval:request',
+          args: [
+            {
+              requestId: 'r-docs',
+              projectId: 'docs-remote',
+              worktreeId: 'shared-id',
+            },
+          ],
+        });
+        await settle();
+      });
+      expect(shopOverrides).toMatchObject({
+        isStreaming: true,
+        uiStatus: 'working',
+        hasPendingToolApproval: false,
+      });
+      expect(docsOverrides).toMatchObject({
+        uiStatus: 'done',
+        runtimeState: 'done',
+        hasPendingToolApproval: true,
+      });
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      useProjectsStore.setState({ projects: prevProjects });
+    }
+  });
+
+  it('bounds oversized paired snapshots, reports an error, and keeps tasks within the cap', async () => {
+    const errors: unknown[] = [];
+    const fake = fakeApi();
+    follower = new PairedComputersSidebarFollower(fake.api, (err) =>
+      errors.push(err),
+    );
+    follower.follow([{ deviceId: MAC, name: 'MacBook Pro' }]);
+    await settle();
+
+    applyPairedSnapshot(
+      MAC,
+      {
+        workspaces: Array.from(
+          { length: MAX_PAIRED_SNAPSHOT_WORKSPACES + 2 },
+          (_, i) => ({
+            localId: `ws-${i}`,
+            name: `ws-${i}`,
+            type: 'single-repo',
+          }),
+        ),
+        worktrees: [
+          { localId: 'kept', workspaceLocalId: 'ws-0', branch: 'kept' },
+          {
+            localId: 'dropped',
+            workspaceLocalId: `ws-${MAX_PAIRED_SNAPSHOT_WORKSPACES + 1}`,
+            branch: 'dropped',
+          },
+        ],
+      },
+      (err) => errors.push(err),
+    );
+    const afterWorkspacesCap = pairedSidebarStore
+      .getState()
+      .computers.get(MAC)?.structure;
+    expect(afterWorkspacesCap?.workspaces).toHaveLength(
+      MAX_PAIRED_SNAPSHOT_WORKSPACES,
+    );
+    expect(afterWorkspacesCap?.tasks.map((task) => task.localId)).toEqual([
+      'kept',
+    ]);
+
+    applyPairedSnapshot(
+      MAC,
+      {
+        workspaces: [
+          { localId: 'shop', name: 'storefront', type: 'single-repo' },
+        ],
+        worktrees: Array.from(
+          { length: MAX_PAIRED_SNAPSHOT_TASKS + 2 },
+          (_, i) => ({
+            localId: `wt-${i}`,
+            workspaceLocalId: 'shop',
+            branch: `b-${i}`,
+          }),
+        ),
+      },
+      (err) => errors.push(err),
+    );
+
+    expect(errors).toHaveLength(2);
+    expect(
+      pairedSidebarStore.getState().computers.get(MAC)?.structure?.tasks,
+    ).toHaveLength(MAX_PAIRED_SNAPSHOT_TASKS);
+  });
+
+  it('suppresses Working streaming status while a paired task has a pending tool approval', async () => {
+    const fake = fakeApi(() =>
+      Promise.resolve(macSnapshot({ isStreaming: true, busy: true })),
+    );
+    follower = new PairedComputersSidebarFollower(fake.api, jest.fn());
+    follower.follow([{ deviceId: MAC, name: 'MacBook Pro' }]);
+    await settle();
+
+    const probe = renderOverrides(
+      rowContext('storefront', `computer-${MAC}:fix-upload`),
+    );
+    try {
+      expect(probe.current()).toMatchObject({
+        isStreaming: true,
+        uiStatus: 'working',
+        hasPendingToolApproval: false,
+      });
+
+      await act(async () => {
+        fake.update(MAC, {
+          type: 'push',
+          channel: 'approval:request',
+          args: [
+            {
+              requestId: 'r-stream',
+              projectId: 'shop',
+              worktreeId: 'fix-upload',
+            },
+          ],
+        });
+        await settle();
+      });
+      expect(probe.current()).toMatchObject({
+        isStreaming: false,
+        uiStatus: 'idle',
+        hasPendingToolApproval: true,
+      });
+
+      await act(async () => {
+        fake.update(MAC, {
+          type: 'push',
+          channel: 'approval:cancelled',
+          args: [{ requestId: 'r-stream' }],
+        });
+        await settle();
+      });
+      expect(probe.current()).toMatchObject({
+        isStreaming: true,
+        uiStatus: 'working',
+        hasPendingToolApproval: false,
+      });
+    } finally {
+      act(() => {
+        probe.root.unmount();
+      });
+    }
+  });
+
+  it('keeps showing a status row when a peer with no projected tree tasks reconnects or needs an update', async () => {
+    const fake = fakeApi((deviceId) =>
+      Promise.resolve(
+        deviceId === MAC
+          ? {
+              workspaces: [
+                {
+                  localId: 'cowork',
+                  name: 'Notes',
+                  type: 'cowork',
+                  layout: 'flat',
+                },
+              ],
+              worktrees: [],
+            }
+          : { workspaces: [], worktrees: [] },
+      ),
+    );
+    follower = new PairedComputersSidebarFollower(fake.api, jest.fn());
+    follower.follow([
+      { deviceId: MAC, name: 'MacBook Pro' },
+      { deviceId: LINUX, name: 'Linux Box' },
+    ]);
+    await settle();
+    expect(
+      pairedSidebarStore.getState().computers.get(MAC)?.structure?.workspaces,
+    ).toHaveLength(1);
+
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    try {
+      act(() => {
+        root.render(createElement(PairedComputerStatusRows));
+      });
+      expect(container.textContent).toBe('');
+
+      await act(async () => {
+        fake.state(MAC, { status: 'connecting' });
+        fake.state(LINUX, {
+          status: 'needs-update',
+          reason: 'computer-too-old',
+          computerVersion: null,
+          computerAppVersion: '1.10.0',
+          thisComputerVersion: { protocolVersion: 26, appVersion: '1.24.0' },
+          update: null,
+        });
+        await settle();
+      });
+      expect(container.textContent).toContain('MacBook Pro');
+      expect(container.textContent).toContain('Connecting…');
+      expect(container.textContent).toContain('Linux Box');
+      expect(container.textContent).toContain('Needs an update');
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+
+  it('ignores oversized approval ids and bounds sparse pending-requests replies', async () => {
+    const sparseReply = new Array<unknown>(10_000_000);
+    sparseReply[0] = {
+      requestId: 'r-valid',
+      projectId: 'shop',
+      worktreeId: 'fix-upload',
+    };
+    sparseReply[9_999_999] = {
+      requestId: 'r-out-of-range',
+      projectId: 'shop',
+      worktreeId: 'other',
+    };
+    const fake = fakeApi();
+    fake.api.invoke = (_deviceId, channel): Promise<unknown> =>
+      Promise.resolve(
+        channel === 'approval:pending-requests' ? sparseReply : macSnapshot(),
+      );
+    follower = new PairedComputersSidebarFollower(fake.api, jest.fn());
+    follower.follow([{ deviceId: MAC, name: 'MacBook Pro' }]);
+    await settle();
+
+    // Oversized id push is rejected instead of retained.
+    fake.update(MAC, {
+      type: 'push',
+      channel: 'approval:request',
+      args: [
+        {
+          requestId: 'r-' + 'x'.repeat(300),
+          projectId: 'shop',
+          worktreeId: 'other',
+        },
+      ],
+    });
+    expect(
+      pairedSidebarStore.getState().computers.get(MAC)?.toolApprovals,
+    ).toEqual(new Set([pairedTaskKey('shop', 'fix-upload')]));
+  });
+
+  it('shows a status row when visibleDeviceIds excludes an unreachable peer whose tasks are hidden by context', async () => {
+    const fake = fakeApi(() => Promise.resolve(macSnapshot()));
+    follower = new PairedComputersSidebarFollower(fake.api, jest.fn());
+    follower.follow([{ deviceId: MAC, name: 'MacBook Pro' }]);
+    await settle();
+    await act(async () => {
+      fake.state(MAC, { status: 'connecting' });
+      await settle();
+    });
+
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    try {
+      act(() => {
+        root.render(
+          <PairedComputerStatusRows visibleDeviceIds={new Set<string>()} />,
+        );
+      });
+      expect(container.textContent).toContain('MacBook Pro');
+      expect(container.textContent).toContain('Connecting…');
+
+      act(() => {
+        root.render(
+          <PairedComputerStatusRows visibleDeviceIds={new Set([MAC])} />,
+        );
+      });
+      expect(container.textContent).toBe('');
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+
+  it('masks paired project and computer names in WorkspaceSectionHeader button aria-labels for PostHog replay', () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    try {
+      act(() => {
+        root.render(
+          <WorkspaceSectionHeader
+            workspaceType="single-repo"
+            name="Secret Repo on Nick's Mac"
+            collapsed={false}
+            onToggleCollapse={(): void => undefined}
+            worktreeCount={2}
+            textScale="sidebar"
+            inlineCollapseChevron
+          />,
+        );
+      });
+      const labeledButtons = Array.from(
+        container.querySelectorAll('button[aria-label]'),
+      );
+      expect(labeledButtons.length).toBeGreaterThanOrEqual(2);
+      for (const button of labeledButtons) {
+        const label = button.getAttribute('aria-label');
+        expect(label).toContain('Secret Repo');
+        expect(maskReplayAttribute('aria-label', label ?? '', button)).toBe(
+          '********',
+        );
+      }
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+
+  it('redacts data-worktree-selection-row and identifier-bearing data-testid on rendered paired sidebar rows and headers', () => {
+    const pairedWorkspaceId = `computer-${MAC}:secret-repo`;
+    const pairedWorktreeId = `computer-${MAC}:secret-task`;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    try {
+      act(() => {
+        root.render(
+          <WorkspacesSidebarSections
+            state={{
+              workspaces: [
+                {
+                  localId: pairedWorkspaceId,
+                  name: 'Secret Repo',
+                  type: 'single-repo',
+                  order: 0,
+                },
+              ],
+              worktrees: [
+                {
+                  localId: pairedWorktreeId,
+                  workspaceLocalId: pairedWorkspaceId,
+                  branch: 'secret-branch',
+                  order: 0,
+                },
+              ],
+            }}
+            capabilities={DESKTOP}
+            capabilitiesFor={(): CanopyCapabilities =>
+              pairedSidebarRowCapabilities(DESKTOP)
+            }
+            selected={null}
+            onSelectWorktree={(): void => undefined}
+            onCreateWorktree={(): Promise<undefined> =>
+              Promise.resolve(undefined)
+            }
+            worktreeMultiSelect={{
+              selectMode: false,
+              onRowsChange: jest.fn(),
+              escapeClears: true,
+              isRemoving: () => false,
+              rowMenuFor: () => undefined,
+              menuItemsFor: () => ({ items: [], replacesMenu: false }),
+              selection: {
+                keys: new Set(),
+                kind: undefined,
+                active: false,
+                count: 0,
+                isSelected: () => false,
+                toggle: jest.fn(),
+                selectRange: jest.fn(),
+                anchor: jest.fn(),
+                extend: jest.fn(() => undefined),
+                selectAllInList: jest.fn(),
+                clear: jest.fn(),
+                replace: jest.fn(),
+              },
+              selectModeFor: () => false,
+              isSelectable: () => false,
+            }}
+            testIds={{
+              workspace: (workspaceId) => `sidebar-project-${workspaceId}`,
+              workspaceHeader: (workspaceId) =>
+                `sidebar-project-header-${workspaceId}`,
+              workspaceToggle: (workspaceId) =>
+                `sidebar-project-toggle-${workspaceId}`,
+              workspaceSortableHeader: (workspaceId) =>
+                `sidebar-project-sortable-header-${workspaceId}`,
+              workspaceEmpty: (workspaceId) =>
+                `sidebar-project-${workspaceId}-empty`,
+              hiddenWorktreesToggle: (workspaceId) =>
+                `hidden-worktrees-toggle-${workspaceId}`,
+              worktreeRow: () => 'worktree-row',
+            }}
+          />,
+        );
+      });
+
+      const selectionEl = container.querySelector(
+        '[data-worktree-selection-row]',
+      );
+      expect(selectionEl).not.toBeNull();
+      expect(
+        maskReplayAttribute(
+          'data-worktree-selection-row',
+          selectionEl?.getAttribute('data-worktree-selection-row') ?? '',
+          selectionEl ?? undefined,
+        ),
+      ).toBe('********');
+
+      const headerTestIdEl = container.querySelector(
+        `[data-testid="sidebar-project-header-${pairedWorkspaceId}"]`,
+      );
+      const sectionTestIdEl = container.querySelector(
+        `[data-testid="sidebar-project-${pairedWorkspaceId}"]`,
+      );
+      const staticRowEl = container.querySelector(
+        '[data-testid="worktree-row"]',
+      );
+      expect(headerTestIdEl).not.toBeNull();
+      expect(sectionTestIdEl).not.toBeNull();
+      expect(staticRowEl).not.toBeNull();
+      expect(
+        maskReplayAttribute(
+          'data-testid',
+          headerTestIdEl?.getAttribute('data-testid') ?? '',
+          headerTestIdEl ?? undefined,
+        ),
+      ).toBe('********');
+      expect(
+        maskReplayAttribute(
+          'data-testid',
+          sectionTestIdEl?.getAttribute('data-testid') ?? '',
+          sectionTestIdEl ?? undefined,
+        ),
+      ).toBe('********');
+      expect(
+        maskReplayAttribute(
+          'data-testid',
+          staticRowEl?.getAttribute('data-testid') ?? '',
+          staticRowEl ?? undefined,
+        ),
+      ).toBe('worktree-row');
+
+      for (const el of Array.from(container.querySelectorAll('*'))) {
+        for (const attr of Array.from(el.attributes)) {
+          const masked = maskReplayAttribute(attr.name, attr.value, el);
+          expect(masked).not.toContain(MAC);
+          expect(masked).not.toContain('secret-repo');
+          expect(masked).not.toContain('secret-task');
+          expect(masked).not.toContain('secret-branch');
+        }
+      }
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+
+  it('keeps the fallback status row visible when a reconnecting peer only has tasks in collapsed projects or hidden tasks', async () => {
+    const fake = fakeApi(() => Promise.resolve(macSnapshot()));
+    follower = new PairedComputersSidebarFollower(fake.api, jest.fn());
+    follower.follow([{ deviceId: MAC, name: 'MacBook Pro' }]);
+    await settle();
+    await act(async () => {
+      fake.state(MAC, { status: 'connecting' });
+      await settle();
+    });
+
+    const pairedWorkspaceId = `computer-${MAC}:shop`;
+    const pairedWorktreeId = `computer-${MAC}:fix-upload`;
+    const expandedVisible = collectVisiblePairedDeviceIds({
+      workspaces: [
+        {
+          localId: pairedWorkspaceId,
+          name: 'shop',
+          type: 'single-repo',
+          order: 0,
+          collapsed: false,
+        },
+      ],
+      pairedWorktrees: [
+        {
+          localId: pairedWorktreeId,
+          workspaceLocalId: pairedWorkspaceId,
+          branch: 'fix-upload',
+          order: 0,
+        },
+      ],
+      hiddenWorkspaceIds: [],
+      matchesWorkspaceContext: () => true,
+    });
+    expect(expandedVisible.has(MAC)).toBe(true);
+
+    const collapsedVisible = collectVisiblePairedDeviceIds({
+      workspaces: [
+        {
+          localId: pairedWorkspaceId,
+          name: 'shop',
+          type: 'single-repo',
+          order: 0,
+          collapsed: true,
+        },
+      ],
+      pairedWorktrees: [
+        {
+          localId: pairedWorktreeId,
+          workspaceLocalId: pairedWorkspaceId,
+          branch: 'fix-upload',
+          order: 0,
+        },
+      ],
+      hiddenWorkspaceIds: [],
+      matchesWorkspaceContext: () => true,
+    });
+    expect(collapsedVisible.has(MAC)).toBe(false);
+
+    const hiddenTaskVisible = collectVisiblePairedDeviceIds({
+      workspaces: [
+        {
+          localId: pairedWorkspaceId,
+          name: 'shop',
+          type: 'single-repo',
+          order: 0,
+          collapsed: false,
+        },
+      ],
+      pairedWorktrees: [
+        {
+          localId: pairedWorktreeId,
+          workspaceLocalId: pairedWorkspaceId,
+          branch: 'fix-upload',
+          hidden: true,
+          order: 0,
+        },
+      ],
+      hiddenWorkspaceIds: [],
+      matchesWorkspaceContext: () => true,
+    });
+    expect(hiddenTaskVisible.has(MAC)).toBe(false);
+
+    function LiveCollapsedStatusProbe(): JSX.Element {
+      const pairedRows = usePairedSidebarRows();
+      const visible = collectVisiblePairedDeviceIds({
+        workspaces: pairedRows.workspaces,
+        pairedWorktrees: pairedRows.worktrees,
+        hiddenWorkspaceIds: [],
+        matchesWorkspaceContext: () => true,
+      });
+      return <PairedComputerStatusRows visibleDeviceIds={visible} />;
+    }
+
+    const secondPairedWorkspaceId = `computer-${MAC}:docs-remote`;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    try {
+      act(() => {
+        setPairedProjectCollapsed(pairedWorkspaceId, false);
+        setPairedProjectCollapsed(secondPairedWorkspaceId, false);
+        root.render(<LiveCollapsedStatusProbe />);
+      });
+      expect(container.textContent).toBe('');
+
+      // Collapsing only one project leaves the peer's other project visible.
+      act(() => {
+        setPairedProjectCollapsed(pairedWorkspaceId, true);
+      });
+      expect(container.textContent).toBe('');
+
+      // Collapsing all projects containing the peer's tasks reveals the fallback status row.
+      act(() => {
+        setPairedProjectCollapsed(secondPairedWorkspaceId, true);
+      });
+      expect(container.textContent).toContain('MacBook Pro');
+      expect(container.textContent).toContain('Connecting…');
+
+      act(() => {
+        setPairedProjectCollapsed(pairedWorkspaceId, false);
+        setPairedProjectCollapsed(secondPairedWorkspaceId, false);
+      });
+      expect(container.textContent).toBe('');
+
+      act(() => {
+        root.render(
+          <PairedComputerStatusRows visibleDeviceIds={hiddenTaskVisible} />,
+        );
+      });
+      expect(container.textContent).toContain('MacBook Pro');
+      expect(container.textContent).toContain('Connecting…');
+    } finally {
+      act(() => {
+        setPairedProjectCollapsed(pairedWorkspaceId, false);
+        setPairedProjectCollapsed(secondPairedWorkspaceId, false);
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+
+  it('keeps previously confirmed pending approvals when a subsequent approval read times out without overflow', async () => {
+    let approvalCall = 0;
+    const fake = fakeApi();
+    fake.api.invoke = (_deviceId, channel): Promise<unknown> => {
+      if (channel === 'approval:pending-requests') {
+        approvalCall += 1;
+        if (approvalCall === 1) {
+          return Promise.resolve([
+            { requestId: 'r-1', projectId: 'shop', worktreeId: 'fix-upload' },
+          ]);
+        }
+        return new Promise(() => undefined);
+      }
+      return Promise.resolve(macSnapshot());
+    };
+    const onError = jest.fn();
+    follower = new PairedComputersSidebarFollower(fake.api, onError, {
+      approvalReadTimeoutMs: 25,
+    });
+    follower.follow([{ deviceId: MAC, name: 'MacBook Pro' }]);
+    await settle();
+    expect(
+      pairedSidebarStore.getState().computers.get(MAC)?.toolApprovals,
+    ).toEqual(new Set([pairedTaskKey('shop', 'fix-upload')]));
+
+    // Trigger a second read whose approval RPC hangs past the timeout.
+    fake.update(MAC, { type: 'reconnected' });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(approvalCall).toBe(2);
+    expect(
+      onError.mock.calls.some(
+        ([err]: [unknown]) =>
+          err instanceof Error &&
+          err.message.includes('Timed out reading pending approvals'),
+      ),
+    ).toBe(true);
+    expect(
+      pairedSidebarStore.getState().computers.get(MAC)?.toolApprovals,
+    ).toEqual(new Set([pairedTaskKey('shop', 'fix-upload')]));
+  });
+
+  it('preserves the running workflow indicator alongside pending tool approval instead of showing generic Working', async () => {
+    const fake = fakeApi();
+    fake.api.invoke = (_deviceId, channel): Promise<unknown> =>
+      Promise.resolve(
+        channel === 'approval:pending-requests'
+          ? [{ requestId: 'r-1', projectId: 'shop', worktreeId: 'fix-upload' }]
+          : macSnapshot({
+              isStreaming: true,
+              isRunningRun: true,
+              pipelineStatus: 'running',
+            }),
+      );
+    follower = new PairedComputersSidebarFollower(fake.api, jest.fn());
+    follower.follow([{ deviceId: MAC, name: 'MacBook Pro' }]);
+    await settle();
+
+    const pairedWorkspaceId = `computer-${MAC}:shop`;
+    const pairedWorktreeId = `computer-${MAC}:fix-upload`;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    try {
+      act(() => {
+        root.render(
+          <WorkspacesSidebarSections
+            state={{
+              workspaces: [
+                {
+                  localId: pairedWorkspaceId,
+                  name: 'storefront',
+                  type: 'single-repo',
+                  order: 0,
+                },
+              ],
+              worktrees: [
+                {
+                  localId: pairedWorktreeId,
+                  workspaceLocalId: pairedWorkspaceId,
+                  branch: 'fix-upload',
+                  order: 0,
+                },
+              ],
+            }}
+            capabilities={DESKTOP}
+            capabilitiesFor={(): CanopyCapabilities =>
+              pairedSidebarRowCapabilities(DESKTOP)
+            }
+            useWorktreeRowOverrides={usePairedWorktreeRowOverrides}
+            selected={null}
+            onSelectWorktree={(): void => undefined}
+            onCreateWorktree={(): Promise<undefined> =>
+              Promise.resolve(undefined)
+            }
+          />,
+        );
+      });
+
+      expect(
+        container.querySelector('[aria-label="Workflow running"]'),
+      ).not.toBeNull();
+      expect(container.querySelector('[aria-label="Working"]')).toBeNull();
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+
+  it('keeps the fallback status row visible when the Projects section is collapsed or a paired project is paginated out of view', async () => {
+    const fake = fakeApi(() => Promise.resolve(macSnapshot()));
+    follower = new PairedComputersSidebarFollower(fake.api, jest.fn());
+    follower.follow([{ deviceId: MAC, name: 'MacBook Pro' }]);
+    await settle();
+    await act(async () => {
+      fake.state(MAC, { status: 'connecting' });
+      await settle();
+    });
+
+    const pairedWorkspaceId = `computer-${MAC}:shop`;
+    const pairedWorktreeId = `computer-${MAC}:fix-upload`;
+
+    // 1) Projects section collapse via SidebarSurface.
+    function CollapsibleProjectsHarness(): JSX.Element {
+      const [renderedIds, setRenderedIds] =
+        useState<ReadonlySet<string> | null>(null);
+      const workspaces = [
+        {
+          localId: pairedWorkspaceId,
+          name: 'storefront',
+          type: 'single-repo' as const,
+          order: 0,
+        },
+      ];
+      const pairedWorktrees = [
+        {
+          localId: pairedWorktreeId,
+          workspaceLocalId: pairedWorkspaceId,
+          branch: 'fix-upload',
+          order: 0,
+        },
+      ];
+      const visible = collectVisiblePairedDeviceIds({
+        workspaces,
+        pairedWorktrees,
+        hiddenWorkspaceIds: [],
+        renderedWorktreeKeys: renderedIds ?? undefined,
+        matchesWorkspaceContext: () => true,
+      });
+      return (
+        <SidebarSurface
+          variant="drawer"
+          chrome="navigation-only"
+          workspacesSectionCollapsible
+          contentState="ready"
+          capabilities={DESKTOP}
+          capabilitiesFor={(): CanopyCapabilities =>
+            pairedSidebarRowCapabilities(DESKTOP)
+          }
+          snapshot={{
+            workspaces,
+            worktrees: pairedWorktrees,
+            standaloneChats: [],
+          }}
+          selection={null}
+          onSelect={(): void => undefined}
+          onRenderedWorktreeKeysChange={setRenderedIds}
+          testIds={{
+            workspacesSection: 'sidebar-section-code',
+            workspacesSectionToggle: 'sidebar-section-code-toggle',
+          }}
+          additionalRows={
+            <PairedComputerStatusRows visibleDeviceIds={visible} />
+          }
+        />
+      );
+    }
+
+    const collapseContainer = document.createElement('div');
+    document.body.appendChild(collapseContainer);
+    const collapseRoot: Root = createRoot(collapseContainer);
+    try {
+      act(() => {
+        collapseRoot.render(<CollapsibleProjectsHarness />);
+      });
+      expect(
+        collapseContainer.querySelector(
+          '[data-testid="sidebar-paired-computer-status"]',
+        ),
+      ).toBeNull();
+
+      const sectionToggle = collapseContainer.querySelector<HTMLButtonElement>(
+        '[data-testid="sidebar-section-code-toggle"]',
+      );
+      expect(sectionToggle).not.toBeNull();
+      act(() => {
+        sectionToggle?.click();
+      });
+      const statusRow = collapseContainer.querySelector(
+        '[data-testid="sidebar-paired-computer-status"]',
+      );
+      expect(statusRow?.textContent).toContain('MacBook Pro');
+      expect(statusRow?.textContent).toContain('Connecting…');
+    } finally {
+      act(() => {
+        collapseRoot.unmount();
+      });
+      collapseContainer.remove();
+    }
+
+    // 2) Pagination hiding the paired project past page 1.
+    function PaginatedProjectsHarness(): JSX.Element {
+      const [renderedIds, setRenderedIds] =
+        useState<ReadonlySet<string> | null>(null);
+      const workspaces = [
+        ...Array.from({ length: 10 }, (_, index) => ({
+          localId: `local-proj-${index}`,
+          name: `Local ${index}`,
+          type: 'single-repo' as const,
+          order: index,
+        })),
+        {
+          localId: pairedWorkspaceId,
+          name: 'storefront',
+          type: 'single-repo' as const,
+          order: 10,
+        },
+      ];
+      const pairedWorktrees = [
+        {
+          localId: pairedWorktreeId,
+          workspaceLocalId: pairedWorkspaceId,
+          branch: 'fix-upload',
+          order: 0,
+        },
+      ];
+      const visible = collectVisiblePairedDeviceIds({
+        workspaces,
+        pairedWorktrees,
+        hiddenWorkspaceIds: [],
+        renderedWorktreeKeys: renderedIds ?? undefined,
+        matchesWorkspaceContext: () => true,
+      });
+      return (
+        <>
+          <WorkspacesSidebarSections
+            paginateProjects
+            state={{ workspaces, worktrees: pairedWorktrees }}
+            capabilities={DESKTOP}
+            capabilitiesFor={(): CanopyCapabilities =>
+              pairedSidebarRowCapabilities(DESKTOP)
+            }
+            selected={null}
+            onSelectWorktree={(): void => undefined}
+            onCreateWorktree={(): Promise<undefined> =>
+              Promise.resolve(undefined)
+            }
+            onRenderedWorktreeKeysChange={setRenderedIds}
+          />
+          <PairedComputerStatusRows visibleDeviceIds={visible} />
+        </>
+      );
+    }
+
+    const pageContainer = document.createElement('div');
+    document.body.appendChild(pageContainer);
+    const pageRoot: Root = createRoot(pageContainer);
+    try {
+      act(() => {
+        pageRoot.render(<PaginatedProjectsHarness />);
+      });
+      const pagedStatus = pageContainer.querySelector(
+        '[data-testid="sidebar-paired-computer-status"]',
+      );
+      expect(pagedStatus?.textContent).toContain('MacBook Pro');
+      expect(pagedStatus?.textContent).toContain('Connecting…');
+
+      const showMore = pageContainer.querySelector<HTMLButtonElement>(
+        '[data-testid="sidebar-projects-show-more"]',
+      );
+      expect(showMore).not.toBeNull();
+      act(() => {
+        showMore?.click();
+      });
+      expect(
+        pageContainer.querySelector(
+          '[data-testid="sidebar-paired-computer-status"]',
+        ),
+      ).toBeNull();
+    } finally {
+      act(() => {
+        pageRoot.unmount();
+      });
+      pageContainer.remove();
+    }
+  });
+
+  it("removes the fallback status row when a reconnecting peer's Hidden tasks disclosure is expanded and restores it when closed", async () => {
+    const fake = fakeApi(() =>
+      Promise.resolve({
+        workspaces: [
+          { localId: 'shop', name: 'storefront', type: 'single-repo' },
+        ],
+        worktrees: [
+          {
+            localId: 'fix-upload',
+            workspaceLocalId: 'shop',
+            branch: 'fix-upload',
+            hidden: true,
+            order: 0,
+          },
+        ],
+      }),
+    );
+    follower = new PairedComputersSidebarFollower(fake.api, jest.fn());
+    follower.follow([{ deviceId: MAC, name: 'MacBook Pro' }]);
+    await settle();
+    await act(async () => {
+      fake.state(MAC, { status: 'connecting' });
+      await settle();
+    });
+
+    const pairedWorkspaceId = `computer-${MAC}:shop`;
+    const pairedWorktreeId = `computer-${MAC}:fix-upload`;
+
+    function HiddenDisclosureHarness(): JSX.Element {
+      const [renderedKeys, setRenderedKeys] =
+        useState<ReadonlySet<string> | null>(null);
+      const workspaces = [
+        {
+          localId: pairedWorkspaceId,
+          name: 'storefront',
+          type: 'single-repo' as const,
+          order: 0,
+        },
+      ];
+      const pairedWorktrees = [
+        {
+          localId: pairedWorktreeId,
+          workspaceLocalId: pairedWorkspaceId,
+          branch: 'fix-upload',
+          hidden: true,
+          order: 0,
+        },
+      ];
+      const visible = collectVisiblePairedDeviceIds({
+        workspaces,
+        pairedWorktrees,
+        hiddenWorkspaceIds: [],
+        renderedWorktreeKeys: renderedKeys ?? undefined,
+        matchesWorkspaceContext: () => true,
+      });
+      return (
+        <>
+          <WorkspacesSidebarSections
+            state={{ workspaces, worktrees: pairedWorktrees }}
+            capabilities={DESKTOP}
+            capabilitiesFor={(): CanopyCapabilities =>
+              pairedSidebarRowCapabilities(DESKTOP)
+            }
+            useWorktreeRowOverrides={usePairedWorktreeRowOverrides}
+            hiddenWorktreesPlacement={() => 'inline'}
+            testIds={{
+              hiddenWorktreesToggle: (workspaceId) =>
+                `hidden-worktrees-toggle-${workspaceId}`,
+            }}
+            selected={null}
+            onSelectWorktree={(): void => undefined}
+            onCreateWorktree={(): Promise<undefined> =>
+              Promise.resolve(undefined)
+            }
+            onRenderedWorktreeKeysChange={setRenderedKeys}
+          />
+          <PairedComputerStatusRows visibleDeviceIds={visible} />
+        </>
+      );
+    }
+
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    try {
+      act(() => {
+        root.render(<HiddenDisclosureHarness />);
+      });
+      // Closed disclosure: task row is not rendered, fallback status row shows.
+      expect(
+        container.querySelector(`[data-worktree-id="${pairedWorktreeId}"]`),
+      ).toBeNull();
+      expect(
+        container.querySelector(
+          '[data-testid="sidebar-paired-computer-status"]',
+        )?.textContent,
+      ).toContain('Connecting…');
+
+      // Expanding Hidden tasks shows the task row and removes the duplicate fallback row.
+      const toggle = container.querySelector<HTMLButtonElement>(
+        `[data-testid="hidden-worktrees-toggle-${pairedWorkspaceId}"]`,
+      );
+      expect(toggle).not.toBeNull();
+      act(() => {
+        toggle?.click();
+      });
+      expect(
+        container.querySelector(`[data-worktree-id="${pairedWorktreeId}"]`),
+      ).not.toBeNull();
+      expect(
+        container.querySelector(
+          '[data-testid="sidebar-paired-computer-status"]',
+        ),
+      ).toBeNull();
+
+      // Closing Hidden tasks hides the task row and brings the fallback row back.
+      act(() => {
+        toggle?.click();
+      });
+      expect(
+        container.querySelector(`[data-worktree-id="${pairedWorktreeId}"]`),
+      ).toBeNull();
+      expect(
+        container.querySelector(
+          '[data-testid="sidebar-paired-computer-status"]',
+        )?.textContent,
+      ).toContain('Connecting…');
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+
+  it("updates a paired row's workflow badge live when snapshot-stale pushes follow workflow status changes without a reconnect", async () => {
+    let currentPipelineStatus: 'running' | 'paused' | undefined;
+    const fake = fakeApi(() =>
+      Promise.resolve(
+        macSnapshot(
+          currentPipelineStatus === undefined
+            ? {}
+            : { pipelineStatus: currentPipelineStatus },
+        ),
+      ),
+    );
+    follower = new PairedComputersSidebarFollower(fake.api, jest.fn());
+    follower.follow([{ deviceId: MAC, name: 'MacBook Pro' }]);
+    await settle();
+
+    const pairedWorkspaceId = `computer-${MAC}:shop`;
+    const pairedWorktreeId = `computer-${MAC}:fix-upload`;
+    const renderPipelinePopover = jest.fn(() => (
+      <div data-testid="local-pipeline-popover">No workflow details</div>
+    ));
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    try {
+      act(() => {
+        root.render(
+          <WorkspacesSidebarSections
+            state={{
+              workspaces: [
+                {
+                  localId: pairedWorkspaceId,
+                  name: 'storefront',
+                  type: 'single-repo',
+                  order: 0,
+                },
+              ],
+              worktrees: [
+                {
+                  localId: pairedWorktreeId,
+                  workspaceLocalId: pairedWorkspaceId,
+                  branch: 'fix-upload',
+                  order: 0,
+                },
+              ],
+            }}
+            capabilities={DESKTOP}
+            capabilitiesFor={(): CanopyCapabilities =>
+              pairedSidebarRowCapabilities(DESKTOP)
+            }
+            useWorktreeRowOverrides={usePairedWorktreeRowOverrides}
+            renderPipelinePopover={renderPipelinePopover}
+            selected={null}
+            onSelectWorktree={(): void => undefined}
+            onCreateWorktree={(): Promise<undefined> =>
+              Promise.resolve(undefined)
+            }
+          />,
+        );
+      });
+      expect(
+        container.querySelector('[aria-label="Workflow running"]'),
+      ).toBeNull();
+
+      // Workflow starts on peer -> stale push refreshes badge to running.
+      currentPipelineStatus = 'running';
+      await act(async () => {
+        fake.update(MAC, {
+          type: 'push',
+          channel: 'desktop:session-snapshot-stale',
+          args: [],
+        });
+        await settle();
+      });
+      const runningBadge = container.querySelector(
+        '[aria-label="Workflow running"]',
+      );
+      expect(runningBadge).not.toBeNull();
+      act(() => {
+        runningBadge?.dispatchEvent(
+          new MouseEvent('mouseover', { bubbles: true }),
+        );
+        runningBadge?.dispatchEvent(
+          new FocusEvent('focusin', { bubbles: true }),
+        );
+      });
+      expect(renderPipelinePopover).not.toHaveBeenCalled();
+      expect(
+        container.querySelector('[data-testid="local-pipeline-popover"]'),
+      ).toBeNull();
+
+      // Workflow pauses on peer -> stale push refreshes badge to paused.
+      currentPipelineStatus = 'paused';
+      await act(async () => {
+        fake.update(MAC, {
+          type: 'push',
+          channel: 'desktop:session-snapshot-stale',
+          args: [],
+        });
+        await settle();
+      });
+      const pausedBadge = container.querySelector(
+        '[aria-label="Workflow paused"]',
+      );
+      expect(pausedBadge).not.toBeNull();
+      act(() => {
+        pausedBadge?.dispatchEvent(
+          new MouseEvent('mouseover', { bubbles: true }),
+        );
+        pausedBadge?.dispatchEvent(
+          new FocusEvent('focusin', { bubbles: true }),
+        );
+      });
+      expect(renderPipelinePopover).not.toHaveBeenCalled();
+      expect(
+        container.querySelector('[data-testid="local-pipeline-popover"]'),
+      ).toBeNull();
+
+      // Workflow finishes on peer -> stale push clears workflow badge.
+      currentPipelineStatus = undefined;
+      await act(async () => {
+        fake.update(MAC, {
+          type: 'push',
+          channel: 'desktop:session-snapshot-stale',
+          args: [],
+        });
+        await settle();
+      });
+      expect(
+        container.querySelector('[aria-label="Workflow running"]'),
+      ).toBeNull();
+      expect(
+        container.querySelector('[aria-label="Workflow paused"]'),
+      ).toBeNull();
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+
+  it('masks paired project and computer names in PostHog click autocapture events from rendered headers', () => {
+    const projectName = 'Secret Project';
+    const computerName = "Nick's Mac";
+    const displayName = `${projectName} on ${computerName}`;
+    const pairedWorkspaceId = `computer-${MAC}:secret`;
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    try {
+      act(() => {
+        root.render(
+          <WorkspaceSectionHeader
+            name={displayName}
+            workspaceType="single-repo"
+            worktreeCount={2}
+            collapsed={false}
+            onToggleCollapse={(): void => undefined}
+            onSettings={(): void => undefined}
+            onDelete={(): void => undefined}
+            dataTestId={`sidebar-project-${pairedWorkspaceId}`}
+          />,
+        );
+      });
+
+      const collapseButton = container.querySelector<HTMLButtonElement>(
+        `button[aria-label*="Collapse ${displayName}"]`,
+      );
+      expect(collapseButton).not.toBeNull();
+
+      // Build PostHog's innermost-first $elements chain from the rendered DOM.
+      const elements: Record<string, unknown>[] = [];
+      for (
+        let node: Element | null = collapseButton;
+        node && node !== document.body;
+        node = node.parentElement
+      ) {
+        const entry: Record<string, unknown> = {
+          tag_name: node.tagName.toLowerCase(),
+        };
+        for (const attr of Array.from(node.attributes)) {
+          entry[`attr__${attr.name}`] = attr.value;
+        }
+        if (node === collapseButton) {
+          entry.$el_text = node.textContent ?? '';
+        }
+        elements.push(entry);
+      }
+
+      for (const eventName of ['$autocapture', '$rageclick', '$dead_click']) {
+        const sanitized = sanitizePostHogEvent({
+          event: eventName,
+          properties: {
+            $event_type: 'click',
+            $el_text: collapseButton?.textContent ?? '',
+            $elements: elements,
+          },
+        });
+        expect(sanitized).not.toBeNull();
+        const serialized = JSON.stringify(sanitized);
+        expect(serialized).not.toContain(projectName);
+        expect(serialized).not.toContain(computerName);
+        expect(serialized).not.toContain(MAC);
+        const sanitizedElements = sanitized?.properties?.$elements;
+        expect(sanitizedElements?.[0]?.['attr__aria-label']).toBe('********');
+      }
+
+      // String-only $elements_chain payloads that omit $elements fail closed.
+      const stringOnly = sanitizePostHogEvent({
+        event: '$autocapture',
+        properties: {
+          $event_type: 'click',
+          $el_text: displayName,
+          'attr__aria-label': `Collapse ${displayName}`,
+          $elements_chain: `button.focus-ring:aria-label="Collapse ${displayName}";div.ph-mask`,
+        },
+      });
+      const stringOnlySerialized = JSON.stringify(stringOnly);
+      expect(stringOnlySerialized).not.toContain(projectName);
+      expect(stringOnlySerialized).not.toContain(computerName);
+      expect(stringOnly?.properties?.$elements_chain).toBeUndefined();
+      expect(stringOnly?.properties?.['attr__aria-label']).toBe('********');
+
+      // Clicks outside a masked subtree keep ordinary button labels intact.
+      const unmasked = sanitizePostHogEvent({
+        event: '$autocapture',
+        properties: {
+          $event_type: 'click',
+          $el_text: 'Open settings',
+          $elements: [
+            {
+              tag_name: 'button',
+              'attr__aria-label': 'Open settings',
+              $el_text: 'Open settings',
+            },
+            { tag_name: 'div', attr__class: 'toolbar' },
+          ],
+        },
+      });
+      const unmaskedElements = unmasked?.properties?.$elements;
+      expect(unmaskedElements?.[0]?.['attr__aria-label']).toBe('Open settings');
+      expect(unmaskedElements?.[0]?.$el_text).toBe('Open settings');
+      expect(unmasked?.properties?.$el_text).toBe('Open settings');
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+
+  it('does not show a duplicate Connecting status row when a reconnecting peer task is revealed under expanded Hidden projects', async () => {
+    const fake = fakeApi();
+    follower = new PairedComputersSidebarFollower(fake.api, jest.fn());
+    follower.follow([{ deviceId: MAC, name: 'MacBook Pro' }]);
+    await settle();
+    fake.state(MAC, { status: 'connecting' });
+
+    const pairedWorkspaceId = `computer-${MAC}:shop`;
+    const pairedWorktreeId = `computer-${MAC}:fix-upload`;
+
+    function HiddenProjectsHarness(): JSX.Element {
+      const [renderedKeys, setRenderedKeys] =
+        useState<ReadonlySet<string> | null>(null);
+      const workspaces = [
+        {
+          localId: 'local-visible',
+          name: 'visible-repo',
+          type: 'single-repo' as const,
+          order: 0,
+        },
+        {
+          localId: pairedWorkspaceId,
+          name: 'storefront',
+          type: 'single-repo' as const,
+          order: 1,
+          hidden: true,
+        },
+      ];
+      const pairedWorktrees = [
+        {
+          localId: pairedWorktreeId,
+          workspaceLocalId: pairedWorkspaceId,
+          branch: 'fix-upload',
+          order: 0,
+        },
+      ];
+      const visible = collectVisiblePairedDeviceIds({
+        workspaces,
+        pairedWorktrees,
+        hiddenWorkspaceIds: [pairedWorkspaceId],
+        renderedWorktreeKeys: renderedKeys ?? undefined,
+        matchesWorkspaceContext: () => true,
+      });
+      return (
+        <>
+          <WorkspacesSidebarSections
+            state={{ workspaces, worktrees: pairedWorktrees }}
+            capabilities={DESKTOP}
+            capabilitiesFor={(): CanopyCapabilities =>
+              pairedSidebarRowCapabilities(DESKTOP)
+            }
+            useWorktreeRowOverrides={usePairedWorktreeRowOverrides}
+            testIds={{
+              hiddenWorkspacesToggle: 'hidden-workspaces-toggle',
+            }}
+            selected={null}
+            onSelectWorktree={(): void => undefined}
+            onCreateWorktree={(): Promise<undefined> =>
+              Promise.resolve(undefined)
+            }
+            onRenderedWorktreeKeysChange={setRenderedKeys}
+          />
+          <PairedComputerStatusRows visibleDeviceIds={visible} />
+        </>
+      );
+    }
+
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root: Root = createRoot(container);
+    try {
+      act(() => {
+        root.render(<HiddenProjectsHarness />);
+      });
+      // Collapsed Hidden projects: task row hidden, fallback Connecting row visible.
+      expect(
+        container.querySelector(`[data-worktree-id="${pairedWorktreeId}"]`),
+      ).toBeNull();
+      expect(
+        container.querySelector(
+          '[data-testid="sidebar-paired-computer-status"]',
+        )?.textContent,
+      ).toContain('Connecting…');
+
+      // Expanding Hidden projects renders the task row and removes the duplicate fallback row.
+      const toggle = container.querySelector<HTMLButtonElement>(
+        '[data-testid="hidden-workspaces-toggle"]',
+      );
+      expect(toggle).not.toBeNull();
+      act(() => {
+        toggle?.click();
+      });
+      expect(
+        container.querySelector(`[data-worktree-id="${pairedWorktreeId}"]`),
+      ).not.toBeNull();
+      expect(
+        container.querySelector(
+          '[data-testid="sidebar-paired-computer-status"]',
+        ),
+      ).toBeNull();
+
+      // Collapsing Hidden projects restores the fallback Connecting row.
+      act(() => {
+        toggle?.click();
+      });
+      expect(
+        container.querySelector(`[data-worktree-id="${pairedWorktreeId}"]`),
+      ).toBeNull();
+      expect(
+        container.querySelector(
+          '[data-testid="sidebar-paired-computer-status"]',
+        )?.textContent,
+      ).toContain('Connecting…');
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+
+  it('keeps a deferred local project with visible paired tasks in the main Projects section while keeping explicitly hidden projects hidden', async () => {
+    const fake = fakeApi(() => Promise.resolve(macSnapshot()));
+    follower = new PairedComputersSidebarFollower(fake.api, jest.fn());
+    follower.follow([{ deviceId: MAC, name: 'MacBook Pro' }]);
+    await settle();
+
+    const emptyDeferredStorefront: SingleRepoSidebarItem = {
+      ...LOCAL_STOREFRONT,
+      alwaysShow: false,
+      worktrees: [],
+    };
+    const buildRows = createPairedSidebarRowsBuilder(createProjectGrouper());
+    const paired = buildRows({
+      localProjects: [emptyDeferredStorefront],
+      localFacts: null,
+      accountId: null,
+      computers: pairedSidebarStore.getState().structures,
+    });
+
+    // Paired task grouped into the empty deferred local project prevents auto-hiding.
+    const deferredEmpty = selectDeferredEmptyWorkspaceIds(
+      [emptyDeferredStorefront],
+      paired.worktrees,
+    );
+    expect(deferredEmpty.has('storefront')).toBe(false);
+
+    const combined = appendPairedSidebarRows(
+      {
+        workspaces: [
+          {
+            localId: 'storefront',
+            name: 'storefront',
+            type: 'single-repo' as const,
+            order: 0,
+            alwaysShow: false,
+            ...(deferredEmpty.has('storefront') ? { hidden: true } : {}),
+          },
+        ],
+        worktrees: [],
+      },
+      paired,
+    );
+    const partitions = partitionWorkspaces(
+      combined.workspaces,
+      combined.worktrees,
+    );
+    expect(partitions.visible.map((w) => w.localId)).toContain('storefront');
+    expect(partitions.hidden.map((w) => w.localId)).not.toContain('storefront');
+
+    // Explicitly hidden projects remain hidden even when they hold visible paired tasks.
+    const explicitlyHiddenPartitions = partitionWorkspaces(
+      combined.workspaces.map((w) =>
+        w.localId === 'storefront' ? { ...w, hidden: true } : w,
+      ),
+      combined.worktrees,
+    );
+    expect(
+      explicitlyHiddenPartitions.visible.map((w) => w.localId),
+    ).not.toContain('storefront');
+    expect(explicitlyHiddenPartitions.hidden.map((w) => w.localId)).toContain(
+      'storefront',
+    );
   });
 });

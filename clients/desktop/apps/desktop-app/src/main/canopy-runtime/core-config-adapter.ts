@@ -2,6 +2,7 @@ import { BrowserWindow } from 'electron';
 import { CanopyOperationError } from '@canopy/core-runtime';
 import { catalogContentRevision } from '@canopy/core-runtime/node/catalog';
 import { KeyedOutcomes } from '@canopy/core-runtime/node/operations';
+import { StorageRowOwnerError } from '@canopy/core-runtime/node/pipeline/store';
 import {
   CONFIG_GIT_NAMESPACE,
   CONFIG_ONBOARDING_TIPS_NAMESPACE,
@@ -212,6 +213,16 @@ const unavailable = (message: string): CanopyOperationError =>
     code: 'core.config.invalidState',
     retry: { kind: 'never' },
   });
+
+const ownedElsewhere = (error: StorageRowOwnerError): CanopyOperationError =>
+  new CanopyOperationError(
+    {
+      kind: 'capability_unavailable',
+      message: error.message,
+      retry: { kind: 'never' },
+    },
+    error,
+  );
 
 function isWritableNamespace(
   namespace: string,
@@ -543,6 +554,7 @@ async function updateNamespace(
   } catch (error) {
     if (error instanceof StaleNamespaceError)
       throw revisionConflict(params.namespace);
+    if (error instanceof StorageRowOwnerError) throw ownedElsewhere(error);
     throw error;
   }
 }

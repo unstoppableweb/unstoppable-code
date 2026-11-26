@@ -37,7 +37,7 @@ import {
   Button,
   FormField,
   SettingsSelect,
-  StatusBadge,
+  Badge,
 } from '@canopy/ui-shared/components';
 import {
   SettingsGroup,
@@ -460,10 +460,9 @@ function RuleList({
           style={{ gridTemplateColumns: RULE_GRID_COLUMNS }}
         >
           <span className="flex">
-            <StatusBadge
-              variant={rule.behavior === 'allow' ? 'success' : 'destructive'}
-              label={rule.behavior === 'allow' ? 'Allow' : 'Deny'}
-            />
+            <Badge tone={rule.behavior === 'allow' ? 'success' : 'danger'}>
+              {rule.behavior === 'allow' ? 'Allow' : 'Deny'}
+            </Badge>
           </span>
           <div className="min-w-0">
             {/* Command rules quote whole command lines, so the target is blocked. */}

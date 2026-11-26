@@ -654,6 +654,9 @@ export async function savePreferencesPatch(
             );
         }
       },
+      // The save rules above already ran on this caller's patch; it is never
+      // classified (CAN-5722).
+      { route: 'caller' },
     );
   const saveGeneration = ++preferencesSaveGeneration;
   // updateManagedDelegationPolicy changes the process-authoritative
@@ -967,6 +970,8 @@ export function registerPreferenceHandlers(
         await requireAuthority();
         await updatePreferencesFile(
           async (previous) => {
+            changedScopes.length = 0;
+            skippedScopes.length = 0;
             if (peekPreferencesLoadError() !== null)
               throw new DataSharingOptInError('preferences-unavailable');
             const enforcement = await requireAuthority();

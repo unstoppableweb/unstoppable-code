@@ -324,6 +324,18 @@ export interface LoadWorktreeTerminalStateRequest {
   worktreeId: string;
   /** Status probe only: no terminal output, layout load or view token. */
   historyStatusOnly?: boolean;
+  /** Fallback-aware confirmation: reads history, but never serves a view. */
+  historyConfirmationOnly?: boolean;
+  /**
+   * Issue a scope-local cumulative successor of this drawer's save view.
+   * Terminal evidence includes prior loads, and explicit-save terminal
+   * evidence is shared, even for predecessor saves arriving after issuance.
+   * Name evidence applies only to saves without `clearedTerminalNames`: it
+   * carries prior loads only on partial retries, a full refresh uses just the
+   * names that response served, and a save extends only its own view's. Unknown
+   * or expired tokens inherit no authority and never become tokenless.
+   */
+  retainedViewToken?: string;
 }
 
 /**
@@ -349,8 +361,13 @@ export interface LoadWorktreeTerminalStateResponse extends WorktreeTerminalLayou
   /** Status-only reply acknowledgement; omitted from ordinary loads. */
   historyRefreshSupported?: boolean;
   /**
-   * Names what this load served (CAN-7051); a save made from it echoes it,
-   * so it forgets only terminals this view was shown. Absent from older hosts.
+   * Names this drawer's cumulative served terminal/name evidence (CAN-7051).
+   * Echo it on saves so omissions forget only what this view knew. A valid
+   * retainedViewToken adds this load's terminal evidence without widening the
+   * predecessor; whole-view save eligibility follows this load alone. Explicit-
+   * save terminal evidence stays shared. Name evidence applies only to saves
+   * without `clearedTerminalNames`: full loads replace it, partial retries
+   * carry it. Absent on older hosts.
    */
   viewToken?: string;
 }
@@ -362,6 +379,8 @@ export interface SaveWorktreeTerminalStateRequest extends WorktreeTerminalLayout
   viewToken?: string;
   /** Closed terminals whose history to delete; omission from `groups` keeps it. */
   forgetTerminalIds?: string[];
+  /** Names this save clears. When present, an omitted name is never a clear. */
+  clearedTerminalNames?: string[];
 }
 
 // ---------------------------------------------------------------------------

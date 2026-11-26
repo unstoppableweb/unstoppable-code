@@ -16,6 +16,7 @@ import {
   WORKER_TERMINAL_RECORD_HISTORY_MAX_BYTES,
   WORKER_TERMINAL_RECORD_MAX_OPS,
   WORKER_TERMINAL_RECORD_TEXT_MAX_CHARS,
+  WorkerTerminalRecordRetireParamsSchema,
   type WorkerTerminalRecordApplyResult,
   type WorkerTerminalRecordClient,
   type WorkerTerminalRecordOp,
@@ -25,6 +26,7 @@ import {
 } from '@canopy/protocol/canopy-core';
 import {
   TERMINAL_PERSISTED_SCROLLBACK_MAX_LINES,
+  SHARED_CONTAINER_VIEWER_PROJECT_ID,
   type LoadWorktreeTerminalStateResponse,
   type PersistedTerminalEntry,
   type PersistedWorktreeTerminalStateFile,
@@ -62,9 +64,11 @@ import {
   getTerminalOutboxDataRoot,
   getWorktreeTerminalLegacyLayout,
   getWorktreeTerminalPresentationFilePath,
+  getWorktreeTerminalReplayWitnessFilePath,
   getWorktreeTerminalStateFilePath,
 } from '../lib/paths';
 import {
+  beginDirectoryDeletion,
   captureDirectoryEffects,
   directoryDeletionSince,
   directoryEffectsAdmitted,
@@ -83,7 +87,11 @@ import {
   appendScopeOutbox,
   dropRetiredOutboxEntries,
   emptyTerminalRecordOutbox,
+  mergeTerminalRecordDiscoveryFences,
+  reconcileTerminalRecordDiscoverySource,
+  rememberReconciledRetirements,
   retainRetiredOutboxIdentities,
+  terminalRecordDiscoveryFenceId,
   TerminalRecordOutbox,
   type TerminalRecordOutboxEntry,
   type TerminalRecordOutboxFile,
@@ -120,6 +128,15 @@ interface AuthorityAdmission {
   readonly epoch: number;
 }
 
+interface RecipientAdmissionState {
+  readonly epoch: number;
+  readonly target: Pick<ScopeState, 'projectId' | 'worktreeId' | 'key'>;
+  discovery?: Promise<boolean>;
+  discovered: boolean;
+  settled: boolean;
+  settling?: Promise<boolean>;
+}
+
 interface HistorySeedLease {
   readonly scope: ScopeState;
   readonly epoch: number;
@@ -128,6 +145,31 @@ interface HistorySeedLease {
   revoked: boolean;
   preparation?: Promise<void>;
   entry?: PersistedTerminalEntry;
+}
+
+function recipientRetirements(
+  value: unknown,
+): WorkerTerminalRecordRetireParams[] | null {
+  if (!isRecord(value) || !Array.isArray(value.recipientRetirements))
+    return null;
+  const intents: WorkerTerminalRecordRetireParams[] = [];
+  for (const entry of value.recipientRetirements) {
+    const parsed = WorkerTerminalRecordRetireParamsSchema.safeParse(entry);
+    if (!parsed.success) return null;
+    intents.push(parsed.data);
+  }
+  return intents;
+}
+
+/** A retirement naming no worktree covers its whole project, as pending ones do. */
+function retirementsOverlap(
+  a: WorkerTerminalRecordRetireParams,
+  b: WorkerTerminalRecordRetireParams,
+): boolean {
+  if (a.projectId !== b.projectId) return false;
+  if (a.worktreeId === undefined || b.worktreeId === undefined) return true;
+  const named = new Set([a.worktreeId, ...(a.worktreeIds ?? [])]);
+  return [b.worktreeId, ...(b.worktreeIds ?? [])].some((id) => named.has(id));
 }
 
 interface TerminalHistoryRead {
@@ -142,16 +184,37 @@ interface IndexEntry {
   signal: string | null;
 }
 
-/** What one load served a drawer, and what it was shown since. */
+/** `null` when a save does not declare the names it clears. */
+function declaredNameClears(value: unknown): Set<string> | null {
+  if (!Array.isArray(value)) return null;
+  return new Set(
+    value.filter(
+      (terminalId): terminalId is string => typeof terminalId === 'string',
+    ),
+  );
+}
+
+interface SavedViewEvidence {
+  readonly seen: Set<string>;
+}
+
+/** Cumulative serving evidence for one drawer, plus its explicit saves. */
 interface ServedView {
-  /** The load could not read the record: it saw only part of it. */
+  /**
+   * This view's own load could not read the whole record. A partial retry of
+   * a full view is partial too: it never refreshed the bindings that view saw.
+   */
   readonly partial: boolean;
   readonly seen: Set<string>;
   /**
-   * Names actually served or set by this view. A partial load may serve a
-   * live session without its record name; that is not a known unnamed session.
+   * Names actually served or set by this view, for saves that do not declare
+   * their clears. A partial load may serve a live session without its record
+   * name; that is not a known unnamed session.
    */
   readonly named: Set<string>;
+  /** Shared by successors: saves may arrive after a successor is issued. */
+  readonly saved: SavedViewEvidence;
+  membership: readonly TerminalGroup[];
   /** The collapse this view last showed or saved: a save changes it only if it differs. */
   drawerCollapsed: boolean;
 }
@@ -164,6 +227,8 @@ interface ScopeState {
   readonly key: string;
   /** The record as last opened, plus every op since: no output. */
   shadow: TerminalRecordPayloadState;
+  /** False until a load builds the shadow from the record it read; never reset. */
+  shadowFromRecord: boolean;
   lineage: string | null;
   /** The record generation this lifetime last saw; `null` until it sees one. */
   generation: number | null;
@@ -173,7 +238,12 @@ interface ScopeState {
    * retirement never seeds the next lifetime.
    */
   incarnation: string | null | undefined;
+  replayWitnessInstalled: boolean;
+  replayWitnessWarning: boolean;
+  replayWitnessDirectory: Promise<boolean> | undefined;
   presentation: TerminalPresentationFile | undefined;
+  pendingCollapse: boolean | undefined;
+  servedCollapse: boolean | undefined;
   presentationInstalled: string | undefined;
   presentationDirty: boolean;
   presentationDamaged: boolean;
@@ -235,12 +305,14 @@ interface ScopeState {
 const WORKTREE_WRITE_DEBOUNCE_MS = 100;
 const LOAD_DRAIN_BOUND_MS = DIRECTORY_EFFECT_DRAIN_BOUND_MS;
 const INCARNATION_LOOKUP_BOUND_MS = 1_000;
+const REPLAY_WITNESS_DIRECTORY_BOUND_MS = 50;
 const DRAIN_INTERVAL_MS = 30_000;
 // The longest a send that never settles holds a retirement and the drains behind it.
 const RETIREMENT_BARRIER_BOUND_MS = 10_000;
 // Views kept per worktree; a save from an evicted one forgets nothing.
 const SERVED_VIEW_LIMIT = 64;
 const PRODUCER_ID = 'electron_main';
+const RECIPIENT_RETIREMENT_LIFETIME_PREFIX = 'recipient-retirement/';
 
 function producerWatermarkKey(runId: string): string {
   return `${PRODUCER_ID}/${runId.replace(/%/g, '%25').replace(/\//g, '%2F')}`;
@@ -326,6 +398,184 @@ function setAsideDamagedStateFile(filePath: string): boolean {
 
 function emptyPayload(): TerminalRecordPayloadState {
   return { bindings: [], terminals: [], terminalCustomNames: {} };
+}
+
+function groupMembership(groups: readonly TerminalGroup[]): string {
+  return JSON.stringify(groups.map(({ id, terminalIds }) => [id, terminalIds]));
+}
+
+/** Terminals an op removes from the record: a forget, or a queued pre-CAN-6616 save that dropped them. */
+function forgottenTerminalIds(op: WorkerTerminalRecordOp): string[] {
+  if (op.op === 'forget') return [op.terminalId];
+  if (op.op !== 'layout.save') return [];
+  const referenced = new Set(op.referencedIds);
+  return op.servedIds.filter((id) => !referenced.has(id));
+}
+
+function touchedTerminalIds(op: WorkerTerminalRecordOp): string[] {
+  if (op.op === 'session.upsert') return [op.session.id];
+  if (op.op !== 'layout.save') return [op.terminalId];
+  return [
+    ...op.servedIds,
+    ...op.referencedIds,
+    ...op.bindings.flatMap((binding) =>
+      binding.members.map((member) => member.terminalId),
+    ),
+    ...Object.keys(op.terminalCustomNames),
+  ];
+}
+
+/** The op without these terminals: `null` once nothing of it is left. */
+function withoutTerminals(
+  op: WorkerTerminalRecordOp,
+  ids: ReadonlySet<string>,
+): WorkerTerminalRecordOp | null {
+  if (!touchedTerminalIds(op).some((id) => ids.has(id))) return op;
+  if (op.op !== 'layout.save') return null;
+  const kept = (id: string): boolean => !ids.has(id);
+  return {
+    ...op,
+    servedIds: op.servedIds.filter(kept),
+    referencedIds: op.referencedIds.filter(kept),
+    bindings: op.bindings.flatMap((binding) => {
+      const members = binding.members.filter((member) =>
+        kept(member.terminalId),
+      );
+      return members.length > 0 ? [{ ...binding, members }] : [];
+    }),
+    terminalCustomNames: Object.fromEntries(
+      Object.entries(op.terminalCustomNames).filter(([id]) => kept(id)),
+    ),
+  };
+}
+
+function mergePartialViewMembership(
+  groups: readonly TerminalGroup[],
+  cached: readonly TerminalGroup[],
+): TerminalGroup[] {
+  const cachedGroups = new Map<string, string>();
+  for (const group of cached)
+    for (const id of group.terminalIds)
+      if (!cachedGroups.has(id)) cachedGroups.set(id, group.id);
+  const assigned = new Set<string>();
+  // Match the drawer: response order first, then omitted cached siblings.
+  // A different order would turn its next rename into a regrouping save.
+  const membership = structuredClone(groups).flatMap(
+    (group): TerminalGroup[] => {
+      const terminalIds = group.terminalIds.filter((id) => {
+        const cachedGroup = cachedGroups.get(id);
+        if (
+          assigned.has(id) ||
+          (cachedGroup !== undefined && cachedGroup !== group.id)
+        )
+          return false;
+        assigned.add(id);
+        return true;
+      });
+      return terminalIds.length > 0 ? [{ ...group, terminalIds }] : [];
+    },
+  );
+  for (const group of cached) {
+    const retained = group.terminalIds.filter((id) => !assigned.has(id));
+    if (retained.length === 0) continue;
+    const existing = membership.find((entry) => entry.id === group.id);
+    if (existing) existing.terminalIds = [...existing.terminalIds, ...retained];
+    else membership.push({ ...group, terminalIds: retained });
+    for (const id of retained) assigned.add(id);
+  }
+  return membership;
+}
+
+type BindingIdentity = Readonly<{ key: string; groupId: string }>;
+
+/**
+ * A whole-view save rewrites the layout of the groups it covers. Groups the
+ * record keeps because the save never saw them (another drawer's, say) keep
+ * their layout, name and ordinal, in their saved relative order. A shadow
+ * no load has built from the record yet may lack those bindings, so
+ * then only groups this save dropped lose theirs: an unbound layout is
+ * inert, and the next save from a readable shadow discards it.
+ */
+function retainUncoveredPresentation(
+  previous: TerminalPresentationFile | undefined,
+  next: TerminalPresentationFile,
+  before: readonly BindingIdentity[],
+  after: readonly BindingIdentity[],
+  shadowFromRecord: boolean,
+): TerminalPresentationFile {
+  if (previous?.lineage !== next.lineage) return next;
+  const coveredKeys = new Set(next.groups.map((group) => group.bindingKey));
+  const coveredGroupIds = new Set(
+    after
+      .filter((binding) => coveredKeys.has(binding.key))
+      .map((binding) => binding.groupId),
+  );
+  const keeps = (
+    keyOf: (binding: BindingIdentity) => string,
+    value: string,
+  ): boolean =>
+    after.some((binding) => keyOf(binding) === value) ||
+    (!shadowFromRecord && !before.some((binding) => keyOf(binding) === value));
+  const keepsGroup = (groupId: string): boolean =>
+    !coveredGroupIds.has(groupId) && keeps(({ groupId: id }) => id, groupId);
+  const groups = [...next.groups];
+  let anchor = -1;
+  for (const layout of previous.groups) {
+    const covered = groups.findIndex(
+      (group) => group.bindingKey === layout.bindingKey,
+    );
+    // After every covered group it followed, however the save reordered them.
+    if (covered >= 0) {
+      anchor = Math.max(anchor, covered);
+      continue;
+    }
+    const groupId = after.find(({ key }) => key === layout.bindingKey)?.groupId;
+    if (
+      !keeps(({ key }) => key, layout.bindingKey) ||
+      (groupId !== undefined && !keepsGroup(groupId))
+    )
+      continue;
+    anchor += 1;
+    groups.splice(anchor, 0, structuredClone(layout));
+  }
+  const has = (dictionary: object, key: string): boolean =>
+    Object.prototype.hasOwnProperty.call(dictionary, key);
+  // Entries, not assignment: group IDs are opaque keys.
+  const keptNames = Object.entries(previous.groupCustomNames).filter(
+    ([groupId]) => !has(next.groupCustomNames, groupId) && keepsGroup(groupId),
+  );
+  const groupCustomNames = Object.fromEntries([
+    ...Object.entries(next.groupCustomNames),
+    ...keptNames,
+  ]);
+  const usedOrdinals = new Set(Object.values(next.groupOrdinals));
+  let nextGroupOrdinal = next.nextGroupOrdinal;
+  const keptOrdinals: [string, number][] = [];
+  const renumbered: string[] = [];
+  for (const [groupId, ordinal] of Object.entries(previous.groupOrdinals)) {
+    if (has(next.groupOrdinals, groupId) || !keepsGroup(groupId)) continue;
+    // The saving drawer took this number for a group of its own.
+    if (usedOrdinals.has(ordinal)) {
+      renumbered.push(groupId);
+      continue;
+    }
+    keptOrdinals.push([groupId, ordinal]);
+    usedOrdinals.add(ordinal);
+    if (ordinal >= nextGroupOrdinal) nextGroupOrdinal = ordinal + 1;
+  }
+  for (const groupId of renumbered)
+    keptOrdinals.push([groupId, nextGroupOrdinal++]);
+  const groupOrdinals = Object.fromEntries([
+    ...Object.entries(next.groupOrdinals),
+    ...keptOrdinals,
+  ]);
+  return {
+    ...next,
+    groups,
+    groupOrdinals,
+    groupCustomNames,
+    nextGroupOrdinal,
+  };
 }
 
 function hasGroupForTerminal(
@@ -708,12 +958,27 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
 
   private readonly retiredProjects = new Set<string>();
 
+  /** Recipient privacy fences are independent of outbox publication. */
+  private readonly recipientFences = new Map<
+    string,
+    WorkerTerminalRecordRetireParams[] | null
+  >();
+  private readonly recipientAdmissions = new Map<
+    string,
+    RecipientAdmissionState
+  >();
+  private readonly recipientIntents = new Map<
+    string,
+    WorkerTerminalRecordRetireParams[]
+  >();
+  private readonly recipientPurges = new Map<string, Promise<boolean>>();
   /** Only exact, installed mappings on current queue objects may issue. */
   private readonly installedBatches = new WeakMap<
     TerminalRecordOutboxEntry,
     TerminalRecordOutboxEntry & { client: WorkerTerminalRecordClient }
   >();
   private readonly readRevisions = new Map<string, number>();
+  private readonly recipientFenceWrites = new Map<string, Promise<void>>();
   private readonly metadataWrites = new Map<string, Promise<void>>();
 
   /** Worktrees of a retired project that a new lifetime started in again. */
@@ -753,11 +1018,18 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
 
   private earlierMerged = false;
 
+  private pendingRetirementReconciliation:
+    | { retained: ReadonlySet<string>; candidates: Set<string> }
+    | undefined;
+
   /** `null` for the shared outbox file, else this run's own file. */
   private outboxFile: string | null = null;
 
   /** Earlier runs' own files, discarded once the shared file holds them. */
   private mergedRunFiles: string[] = [];
+
+  /** Earlier lifetimes whose last witness lookup failed: the drain skips them. */
+  private readonly missingWitnesses = new Set<string>();
 
   private outboxWrites: Promise<void> = Promise.resolve();
 
@@ -793,7 +1065,10 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     return this.clientFor(scope);
   }
 
-  /** Looks a lifetime's incarnation up once; unknown stays `null`. */
+  /**
+   * Looks a lifetime's incarnation up once; unknown stays `null` unless
+   * `lookUpIncarnationAgain` finds it.
+   */
   private async resolveIncarnation(scope: ScopeState): Promise<void> {
     if (scope.incarnation !== undefined) return;
     if (!this.options.incarnation) {
@@ -811,6 +1086,32 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       // Unknown: a null incarnation never retires a record.
     }
     if (scope.incarnation === undefined) scope.incarnation = incarnation;
+  }
+
+  /**
+   * A lifetime whose incarnation was not known looks it up again before a
+   * drain sends an earlier run's writes queued under a known one, so a
+   * failed lookup never lets an earlier worktree's writes into this one's
+   * record. Still unknown, predecessor custody stays held, not sendable.
+   */
+  private async lookUpIncarnationAgain(scope: ScopeState): Promise<void> {
+    if (
+      scope.incarnation !== null ||
+      !this.options.incarnation ||
+      !this.queuedOutboxes(scope).some(
+        ({ client }) => client.incarnation !== null,
+      )
+    )
+      return;
+    try {
+      const incarnation = await withTimeout(
+        this.options.incarnation(scope.projectId, scope.worktreeId),
+        this.options.incarnationLookupBoundMs ?? INCARNATION_LOOKUP_BOUND_MS,
+      );
+      if (scope.incarnation === null) scope.incarnation = incarnation;
+    } catch {
+      // Still unknown.
+    }
   }
 
   /**
@@ -864,10 +1165,16 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       worktreeId,
       key,
       shadow: emptyPayload(),
+      shadowFromRecord: false,
       lineage: null,
       generation: null,
       incarnation: undefined,
+      replayWitnessInstalled: false,
+      replayWitnessWarning: false,
+      replayWitnessDirectory: undefined,
       presentation: undefined,
+      pendingCollapse: undefined,
+      servedCollapse: undefined,
       presentationInstalled: undefined,
       presentationDirty: false,
       presentationDamaged: false,
@@ -969,7 +1276,174 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       );
     }
     scope.presentationLoaded = true;
+    this.mergePartialCollapse(scope);
     this.installPresentation(scope);
+  }
+
+  private ensureReplayWitness(scope: ScopeState): void {
+    if (
+      scope.replayWitnessInstalled ||
+      !this.owns(scope) ||
+      !directoryEffectsAdmitted(scope.metadataAdmission) ||
+      this.sealed !== null
+    )
+      return;
+    try {
+      assertAdmittedWriter(
+        'terminal_replay_witness',
+        'electron_main',
+        'main/terminal/persistence',
+        STORAGE_OWNERSHIP,
+      );
+      const path = getWorktreeTerminalReplayWitnessFilePath(
+        scope.projectId,
+        scope.worktreeId,
+        scope.lifetimeId,
+      );
+      writeFileAtomicallySync(
+        path,
+        JSON.stringify({ lifetimeId: scope.lifetimeId }),
+        {
+          encoding: 'utf8',
+          mode: 0o600,
+          durable: true,
+          admittedWriter: {
+            namespace: 'terminal_replay_witness',
+            writer: 'electron_main',
+            module: 'main/terminal/persistence',
+          },
+        },
+      );
+      scope.replayWitnessInstalled = true;
+    } catch (error) {
+      if (errorCode(error) === 'ENOENT') {
+        if (scope.replayWitnessDirectory) return;
+      }
+      // No witness means quarantine on replay, never refusal or lost custody.
+      this.warnReplayWitness(scope, error);
+    }
+  }
+
+  private warnReplayWitness(scope: ScopeState, error: unknown): void {
+    if (scope.replayWitnessWarning) return;
+    scope.replayWitnessWarning = true;
+    logMainProcessWarn(
+      'Could not prepare terminal replay evidence; queued history may remain held',
+      {
+        code: errorCode(error),
+      },
+    );
+  }
+
+  private hasUnwitnessedCustody(scope: ScopeState): boolean {
+    return (
+      !scope.replayWitnessInstalled &&
+      this.queuedOutboxes(scope).some(({ client, entries }) =>
+        entries.some((entry) => {
+          const owner = entry.client ?? client;
+          return (
+            owner.incarnation === null && owner.lifetimeId === scope.lifetimeId
+          );
+        }),
+      )
+    );
+  }
+
+  private startReplayWitnessDirectory(scope: ScopeState): void {
+    if (
+      scope.replayWitnessInstalled ||
+      scope.replayWitnessDirectory ||
+      !this.owns(scope) ||
+      !directoryEffectsAdmitted(scope.metadataAdmission) ||
+      this.sealed !== null
+    )
+      return;
+    const preparation = this.prepareReplayWitnessDirectory(scope);
+    scope.replayWitnessDirectory = preparation;
+    void preparation.then((ready) => {
+      scope.replayWitnessDirectory = undefined;
+      // A flush may already have queued an exited terminal after its 50ms bound.
+      // Never install evidence for a lifetime detached while mkdir was pending.
+      if (ready && this.hasUnwitnessedCustody(scope))
+        this.ensureReplayWitness(scope);
+    });
+  }
+
+  private retryQueuedReplayWitness(scope: ScopeState): void {
+    if (
+      !this.owns(scope) ||
+      this.sealed !== null ||
+      !this.hasUnwitnessedCustody(scope)
+    )
+      return;
+    this.ensureReplayWitness(scope);
+    if (!scope.replayWitnessInstalled) this.startReplayWitnessDirectory(scope);
+  }
+
+  private async prepareReplayWitnessDirectory(
+    scope: ScopeState,
+  ): Promise<boolean> {
+    let ready = false;
+    await this.writeMetadata(scope, async () => {
+      ready = await this.prepareReplayWitnessDirectoryNow(scope);
+    });
+    return ready;
+  }
+
+  private async prepareReplayWitnessDirectoryNow(
+    scope: ScopeState,
+  ): Promise<boolean> {
+    try {
+      assertAdmittedWriter(
+        'terminal_replay_witness',
+        'electron_main',
+        'main/terminal/persistence',
+        STORAGE_OWNERSHIP,
+      );
+      return await mutateDirectory(
+        scope.metadataAdmission,
+        async (lease) => {
+          await lease.mkdir(
+            dirname(
+              getWorktreeTerminalReplayWitnessFilePath(
+                scope.projectId,
+                scope.worktreeId,
+                scope.lifetimeId,
+              ),
+            ),
+          );
+        },
+        () => this.owns(scope),
+      );
+    } catch (error) {
+      this.warnReplayWitness(scope, error);
+      return false;
+    }
+  }
+
+  private async hasReplayWitness(
+    client: WorkerTerminalRecordClient,
+  ): Promise<boolean> {
+    if (!client.lifetimeId) return false;
+    let witnessed = false;
+    try {
+      const value: unknown = JSON.parse(
+        await readFile(
+          getWorktreeTerminalReplayWitnessFilePath(
+            client.projectId,
+            client.worktreeId,
+            client.lifetimeId,
+          ),
+          'utf8',
+        ),
+      );
+      witnessed = isRecord(value) && value.lifetimeId === client.lifetimeId;
+    } catch {
+      // Unreadable or damaged: skipped like a missing witness.
+    }
+    if (witnessed) this.missingWitnesses.delete(client.lifetimeId);
+    else this.missingWitnesses.add(client.lifetimeId);
+    return witnessed;
   }
 
   // -----------------------------------------------------------------------
@@ -982,19 +1456,42 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     partial: boolean,
     served: readonly string[],
     named: readonly string[],
+    groups: readonly TerminalGroup[],
     drawerCollapsed: boolean,
+    retainedViewToken?: string,
   ): string {
+    const predecessor = this.viewFor(scope, retainedViewToken);
+    // Partial retries retain cached memberships; that unchanged projection is
+    // not an explicit regroup. Full loads still establish a fresh baseline.
+    const membership =
+      partial && predecessor
+        ? mergePartialViewMembership(groups, predecessor.membership)
+        : structuredClone(groups);
     const token = randomUUID();
+    scope.servedCollapse = drawerCollapsed;
     scope.views.set(token, {
       partial,
-      seen: new Set(served),
-      named: new Set(named),
-      drawerCollapsed,
+      // Loads never widen a predecessor that might still be saving (or whose
+      // renderer discards this reply). Explicit saves alone share terminal
+      // evidence.
+      seen: new Set([...(predecessor?.seen ?? []), ...served]),
+      // Full refreshes drop cached names, but may retain cached live sessions.
+      named: new Set([
+        ...(partial ? (predecessor?.named ?? []) : []),
+        ...named,
+      ]),
+      saved: predecessor?.saved ?? { seen: new Set() },
+      membership,
+      // The drawer keeps its local collapse across refreshes, so a partial
+      // retry's served scalar is not that drawer's edit baseline.
+      drawerCollapsed:
+        partial && predecessor ? predecessor.drawerCollapsed : drawerCollapsed,
     });
-    // Partial views go first: a history retry opens one per try, and must
-    // not evict the full views of drawers that loaded once.
+    // Keep the in-flight drawer's predecessor usable until it accepts the reply.
     while (scope.views.size > SERVED_VIEW_LIMIT) {
-      const views = Array.from(scope.views);
+      const views = Array.from(scope.views).filter(
+        ([key]) => key !== retainedViewToken,
+      );
       const [stale] =
         views.find(([key, view]) => view.partial && key !== token) ?? views[0];
       scope.views.delete(stale);
@@ -1297,19 +1794,64 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
 
   private replayEntries(scope: ScopeState): TerminalRecordOutboxEntry[] {
     return this.queuedOutboxes(scope).flatMap(({ client, entries }) =>
-      entries.filter((entry) => this.canReplay(scope, entry.client ?? client)),
+      entries.filter(
+        (entry) =>
+          this.batchAdmitted(entry) &&
+          this.canReplay(scope, entry.client ?? client),
+      ),
     );
   }
 
-  /**
-   * Only this lifetime's own batches replay. An earlier lifetime's stay
-   * durable in custody, never sent or overlaid: they leak rather than block.
-   */
+  /** Quarantined custody cannot enter any read overlay or authority effect. */
+  private batchAdmitted(entry: TerminalRecordOutboxEntry): boolean {
+    return entry.quarantined !== true;
+  }
+
+  /** Custody is not authority to replace a record. Unknown predecessors stay held. */
+  private replayQualification(
+    scope: ScopeState,
+    client: WorkerTerminalRecordClient,
+  ): 'current' | 'matching' | 'witness' | 'held' {
+    if (client.lifetimeId === scope.lifetimeId) return 'current';
+    if (client.incarnation === null) return 'witness';
+    return typeof scope.incarnation === 'string' &&
+      client.incarnation === scope.incarnation
+      ? 'matching'
+      : 'held';
+  }
+
   private canReplay(
     scope: ScopeState,
     client: WorkerTerminalRecordClient,
   ): boolean {
-    return client.lifetimeId === scope.lifetimeId;
+    const qualification = this.replayQualification(scope, client);
+    return qualification === 'current' || qualification === 'matching';
+  }
+
+  /** Pending discovery cannot issue a send that could arrive after its activation. */
+  private batchSendable(entry: TerminalRecordOutboxEntry): boolean {
+    return this.batchAdmitted(entry) && !entry.discoveryFenceIds?.length;
+  }
+
+  /**
+   * The one rule for what a drain sends next from a queued outbox: its
+   * head now (`send`), only with a readable witness (`witness`), or never
+   * while it stays as it is (`skip`). Direct sends, daemon restore and the
+   * legacy fence wait only behind what this rule lets a drain send.
+   */
+  private drainEligibility(
+    scope: ScopeState,
+    outbox: TerminalRecordScopeOutbox,
+  ): 'send' | 'witness' | 'skip' {
+    const head = outbox.entries[0];
+    if (!head || !this.batchSendable(head)) return 'skip';
+    const client = head.client ?? outbox.client;
+    const qualification = this.replayQualification(scope, client);
+    if (qualification === 'current' || qualification === 'matching')
+      return 'send';
+    return qualification === 'witness' && client.lifetimeId
+      ? 'witness'
+      : 'skip';
   }
 
   private async readAdmission(scope: ScopeState): Promise<ReadAdmission> {
@@ -1321,6 +1863,13 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       if (exists === false || !this.owns(scope)) return 'denied';
       if (exists === null) return 'unavailable';
       await withTimeout(this.whenStarted(), LOAD_DRAIN_BOUND_MS);
+      if (
+        (await withTimeout(
+          this.resumeRecipientRetirement(scope),
+          LOAD_DRAIN_BOUND_MS,
+        )) !== true
+      )
+        return 'unavailable';
       return this.owns(scope) && this.earlierMerged ? 'allowed' : 'unavailable';
     } catch {
       return 'unavailable';
@@ -1330,6 +1879,7 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
   private emptyRead(
     scope: ScopeState,
     includeLive: boolean,
+    retainedViewToken?: string,
   ): LoadWorktreeTerminalStateResponse {
     const state = createEmptyState();
     const liveTerminalIds =
@@ -1341,7 +1891,9 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       true,
       liveTerminalIds,
       [],
+      state.groups,
       state.drawerCollapsed,
+      retainedViewToken,
     );
     return serializeResponse(
       state,
@@ -1356,9 +1908,165 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     scope: ScopeState,
     revision = this.readRevisions.get(scope.key) ?? 0,
   ): boolean {
+    if (
+      !this.owns(scope) ||
+      revision !== (this.readRevisions.get(scope.key) ?? 0)
+    )
+      return false;
+    if (!this.recipientFences.has(scope.key)) return true;
+    const intents = this.recipientFences.get(scope.key);
     return (
-      this.owns(scope) && revision === (this.readRevisions.get(scope.key) ?? 0)
+      intents !== null &&
+      intents !== undefined &&
+      !intents.some((intent) => intent.lifetimeIds?.includes(scope.lifetimeId))
     );
+  }
+
+  private writeRecipientFence(
+    key: string,
+    write: () => Promise<void>,
+  ): Promise<void> {
+    const run = (this.recipientFenceWrites.get(key) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(write);
+    this.recipientFenceWrites.set(key, run);
+    void run
+      .finally(() => {
+        if (this.recipientFenceWrites.get(key) === run)
+          this.recipientFenceWrites.delete(key);
+      })
+      .catch(() => undefined);
+    return run;
+  }
+
+  private recipientState(
+    scope: Pick<ScopeState, 'projectId' | 'worktreeId' | 'key'>,
+  ): RecipientAdmissionState {
+    let state = this.recipientAdmissions.get(scope.key);
+    if (!state || state.epoch !== (this.readRevisions.get(scope.key) ?? 0)) {
+      state = {
+        epoch: this.readRevisions.get(scope.key) ?? 0,
+        target: {
+          projectId: scope.projectId,
+          worktreeId: scope.worktreeId,
+          key: scope.key,
+        },
+        discovered: false,
+        settled: false,
+      };
+      this.recipientAdmissions.set(scope.key, state);
+    }
+    return state;
+  }
+
+  private async discoverRecipientFence(
+    scope: Pick<ScopeState, 'projectId' | 'worktreeId' | 'key'>,
+    state: RecipientAdmissionState,
+  ): Promise<boolean> {
+    if (this.recipientPurges.has(scope.key)) return false;
+    if (state.discovered) return true;
+    if (state.discovery) return state.discovery;
+    const run = (async (): Promise<boolean> => {
+      try {
+        const bytes = await readFileIfPresent(
+          recipientTerminalRetirementPath(scope.projectId, scope.worktreeId),
+        );
+        if (
+          this.recipientAdmissions.get(scope.key) !== state ||
+          state.epoch !== (this.readRevisions.get(scope.key) ?? 0)
+        )
+          return false;
+        if (bytes !== null) {
+          // Even a malformed marker denies plaintext fallback.
+          this.recipientFences.set(scope.key, null);
+          const intents = recipientRetirements(
+            JSON.parse(bytes.toString('utf8')),
+          );
+          if (
+            !intents ||
+            intents.some(
+              (intent) =>
+                intent.projectId !== scope.projectId ||
+                intent.worktreeId !== scope.worktreeId,
+            )
+          )
+            return false;
+          this.recipientFences.set(
+            scope.key,
+            this.retainRecipientIntents(scope.key, intents),
+          );
+        }
+        state.discovered = true;
+        state.settled = !this.recipientFences.has(scope.key);
+        return true;
+      } catch {
+        // Admission stays closed until a retry classifies the marker. A read
+        // error alone must not invent an irrevocable, intent-less fence.
+        return false;
+      }
+    })();
+    state.discovery = run;
+    try {
+      return await run;
+    } finally {
+      if (state.discovery === run) state.discovery = undefined;
+    }
+  }
+
+  /** Authority settlement does not prove that legacy plaintext was scrubbed. */
+  private async resumeRecipientRetirement(
+    scope: Pick<ScopeState, 'projectId' | 'worktreeId' | 'key'>,
+  ): Promise<boolean> {
+    if (scope.projectId !== SHARED_CONTAINER_VIEWER_PROJECT_ID) return true;
+    const state = this.recipientState(scope);
+    if (!(await this.discoverRecipientFence(scope, state))) {
+      this.reconcileRetries();
+      return false;
+    }
+    if (this.recipientAdmissions.get(scope.key) !== state) return false;
+    if (state.settled) return true;
+    if (state.settling) return state.settling;
+    const run = (async (): Promise<boolean> => {
+      const intents = this.recipientFences.get(scope.key);
+      if (!intents) return false;
+      for (const intent of intents) {
+        if (this.recipientAdmissions.get(scope.key) !== state) return false;
+        await this.replayTerminalRecordRetirement(intent);
+      }
+      await withTimeout(this.drainRetirements(), LOAD_DRAIN_BOUND_MS);
+      if (
+        this.retirementPending(scope) ||
+        this.recipientAdmissions.get(scope.key) !== state ||
+        this.recipientFences.get(scope.key) !== intents
+      )
+        return false;
+      // Retain the exact journal across acknowledgement/restart. Removing it
+      // would admit legacy history after a scrub failure and a later read failure.
+      state.settled = true;
+      return true;
+    })();
+    state.settling = run;
+    try {
+      return await run;
+    } finally {
+      if (state.settling === run) state.settling = undefined;
+      this.reconcileRetries();
+    }
+  }
+
+  private retainRecipientIntents(
+    key: string,
+    incoming: WorkerTerminalRecordRetireParams[],
+  ): WorkerTerminalRecordRetireParams[] {
+    const intents = new Map<string, WorkerTerminalRecordRetireParams>();
+    for (const intent of [
+      ...(this.recipientIntents.get(key) ?? []),
+      ...incoming,
+    ])
+      intents.set(JSON.stringify(intent), intent);
+    const retained = Array.from(intents.values());
+    this.recipientIntents.set(key, retained);
+    return retained;
   }
 
   private async authorityAdmission(
@@ -1370,6 +2078,13 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       await withTimeout(this.whenStarted(), LOAD_DRAIN_BOUND_MS);
       if (!this.earlierMerged || !this.owns(scope) || this.sealed !== null)
         return null;
+      if (
+        (await withTimeout(
+          this.resumeRecipientRetirement(scope),
+          LOAD_DRAIN_BOUND_MS,
+        )) !== true
+      )
+        return null;
       if (this.retirementPending(scope))
         await withTimeout(this.drainRetirements(), LOAD_DRAIN_BOUND_MS);
       return this.admissionCurrent(token) ? token : null;
@@ -1378,25 +2093,143 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     }
   }
 
-  private admissionCurrent(token: AuthorityAdmission): boolean {
+  private admissionCurrent(
+    token: AuthorityAdmission,
+    batch?: TerminalRecordOutboxEntry,
+  ): boolean {
     const { scope, epoch } = token;
+    const recipient = this.recipientAdmissions.get(scope.key);
     return (
       this.sealed === null &&
+      // Pending discovery is visible locally, but cannot issue a predecessor
+      // send that could arrive after activation of its frozen retirement.
+      (!batch || this.batchSendable(batch)) &&
       this.owns(scope) &&
       this.earlierMerged &&
       epoch === (this.readRevisions.get(scope.key) ?? 0) &&
-      !this.retirementPending(scope)
+      !this.retirementPending(scope) &&
+      (scope.projectId !== SHARED_CONTAINER_VIEWER_PROJECT_ID ||
+        (recipient?.epoch === epoch && recipient.settled))
     );
   }
 
-  /**
-   * Whether this lifetime has batches to replay. An earlier lifetime's held
-   * custody is inert: it neither orders nor delays this lifetime's sends.
-   */
+  /** Any custody at all: drain scheduling only, never a gate on writes. */
   private hasOutbox(scope: ScopeState): boolean {
-    return this.queuedOutboxes(scope).some(({ client, entries }) =>
-      entries.some((entry) => this.canReplay(scope, entry.client ?? client)),
-    );
+    return this.queuedOutboxes(scope).some(({ entries }) => entries.length > 0);
+  }
+
+  /**
+   * Custody a drain would still send, by `drainEligibility`: direct sends,
+   * daemon restore and the legacy fence wait only behind it. Custody a drain
+   * skips (quarantined, behind a pending barrier, held, or a predecessor
+   * whose witness it could not read) stays durable without holding healthy
+   * writes back.
+   */
+  private hasReplayableOutbox(scope: ScopeState): boolean {
+    return this.queuedOutboxes(scope).some((outbox) => {
+      const eligibility = this.drainEligibility(scope, outbox);
+      if (eligibility !== 'witness') return eligibility === 'send';
+      const { lifetimeId } = outbox.entries[0].client ?? outbox.client;
+      return !!lifetimeId && !this.missingWitnesses.has(lifetimeId);
+    });
+  }
+
+  /**
+   * A forget supersedes the ops on its terminals queued in other outboxes:
+   * a drain may skip those now (pending barrier, held, no witness) and send
+   * them after the forget, recreating what the user closed. A replaced entry
+   * has no install certificate, so no drain sends it before a publication
+   * holds it. Returns whether custody changed.
+   */
+  private supersedeForgottenTerminals(
+    scope: ScopeState,
+    ops: readonly WorkerTerminalRecordOp[],
+    keep?: TerminalRecordScopeOutbox,
+  ): boolean {
+    const ids = new Set(ops.flatMap(forgottenTerminalIds));
+    if (ids.size === 0) return false;
+    let changed = false;
+    for (const outbox of this.queuedOutboxes(scope)) {
+      if (outbox === keep) continue;
+      const entries = outbox.entries.flatMap((entry) => {
+        const next = this.withoutForgotten(entry, ids);
+        return next ? [next] : [];
+      });
+      if (
+        entries.length === outbox.entries.length &&
+        entries.every((entry, index) => entry === outbox.entries[index])
+      )
+        continue;
+      outbox.entries = entries;
+      changed = true;
+    }
+    if (changed) this.outboxDirty = true;
+    return changed;
+  }
+
+  /** As above for merged runs: each forget supersedes older ops in other outboxes. */
+  private supersedeQueuedForgets(): boolean {
+    const forgotten = new Map<
+      string,
+      Map<string, Set<TerminalRecordScopeOutbox>>
+    >();
+    let changed = false;
+    const { scopes } = this.outboxState;
+    for (let index = scopes.length - 1; index >= 0; index -= 1) {
+      const outbox = scopes[index];
+      const key = worktreeKey(
+        outbox.client.projectId,
+        outbox.client.worktreeId,
+      );
+      const later =
+        forgotten.get(key) ?? new Map<string, Set<TerminalRecordScopeOutbox>>();
+      forgotten.set(key, later);
+      const kept: TerminalRecordOutboxEntry[] = [];
+      let superseded = false;
+      for (let at = outbox.entries.length - 1; at >= 0; at -= 1) {
+        const entry = outbox.entries[at];
+        const ids = new Set(
+          entry.ops.flatMap(touchedTerminalIds).filter((id) => {
+            const by = later.get(id);
+            return !!by && by.size > (by.has(outbox) ? 1 : 0);
+          }),
+        );
+        const next = ids.size > 0 ? this.withoutForgotten(entry, ids) : entry;
+        if (next !== entry) superseded = true;
+        if (next) kept.push(next);
+        if (entry.quarantined) continue;
+        for (const id of entry.ops.flatMap(forgottenTerminalIds)) {
+          const by = later.get(id) ?? new Set<TerminalRecordScopeOutbox>();
+          by.add(outbox);
+          later.set(id, by);
+        }
+      }
+      if (!superseded) continue;
+      outbox.entries = kept.reverse();
+      changed = true;
+    }
+    if (changed) this.outboxDirty = true;
+    return changed;
+  }
+
+  /** Quarantined custody is never sent, so it keeps its exact bytes. */
+  private withoutForgotten(
+    entry: TerminalRecordOutboxEntry,
+    ids: ReadonlySet<string>,
+  ): TerminalRecordOutboxEntry | null {
+    if (entry.quarantined) return entry;
+    const ops = entry.ops.flatMap((op) => {
+      const next = withoutTerminals(op, ids);
+      return next ? [next] : [];
+    });
+    if (
+      ops.length === entry.ops.length &&
+      ops.every((op, index) => op === entry.ops[index])
+    )
+      return entry;
+    // A seal still marks its run's end after its ops are superseded.
+    if (ops.length === 0 && entry.sealed === undefined) return null;
+    return { ...entry, ops };
   }
 
   /** A retirement of this worktree not applied yet: its writes queue behind it. */
@@ -1413,13 +2246,14 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
 
   /**
    * Checked again after every await: a retirement may have detached it
-   * (R4-F2). Earlier runs' files still in custody never gate it.
+   * (R4-F2). Earlier runs' custody gates it only while a drain would replay
+   * that custody first.
    */
   private canSendOnline(scope: ScopeState): boolean {
     return (
       this.owns(scope) &&
       this.earlierMerged &&
-      !this.hasOutbox(scope) &&
+      !this.hasReplayableOutbox(scope) &&
       !this.retirementPending(scope) &&
       !scope.inflight &&
       scope.pending.length > 0
@@ -1437,6 +2271,18 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     const run = (async (): Promise<void> => {
       try {
         await this.resolveIncarnation(scope);
+        // As a drain does: held custody a lookup now matches orders this flush.
+        await this.lookUpIncarnationAgain(scope);
+        if (
+          (scope.pending.length > 0 && typeof scope.incarnation !== 'string') ||
+          this.hasUnwitnessedCustody(scope)
+        )
+          this.startReplayWitnessDirectory(scope);
+        await withTimeout(
+          scope.replayWitnessDirectory ?? Promise.resolve(true),
+          REPLAY_WITNESS_DIRECTORY_BOUND_MS,
+        );
+        this.retryQueuedReplayWitness(scope);
         // Layout lands only once its membership is applied or durably
         // queued (§5.15).
         if (await this.flushScopeOnce(scope)) {
@@ -1466,6 +2312,18 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       if (!batch) return true;
       scope.inflight = batch;
       try {
+        // The ops a forget supersedes go durably first when the outbox takes
+        // them; a failed write still sends the forget to a healthy authority.
+        if (this.supersedeForgottenTerminals(scope, batch.ops)) {
+          await this.persistOutbox();
+          // Quit took custody of the batch while the write ran.
+          if (scope.inflight !== batch) return true;
+          if (
+            !this.admissionCurrent(admission) ||
+            this.hasReplayableOutbox(scope)
+          )
+            return await this.toOutbox(scope, batch);
+        }
         const result = await this.track(
           scope,
           this.records.apply({
@@ -1491,7 +2349,13 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       }
     }
     // Unsent, so the outbox splits it into `apply` batches in one write.
-    const batch = this.takeBatchAll(scope);
+    return this.queueBatch(scope, this.takeBatchAll(scope));
+  }
+
+  private async queueBatch(
+    scope: ScopeState,
+    batch: TerminalRecordOutboxEntry | null,
+  ): Promise<boolean> {
     const durable = batch ? await this.toOutbox(scope, batch) : true;
     // Until discovery succeeds, drainAll owns retries of unreadable sources.
     if (this.earlierMerged && this.hasOutbox(scope))
@@ -1509,7 +2373,12 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
   ): Promise<boolean> {
     // A retired lifetime's late batch never reaches its successor's record.
     if (this.scopes.get(scope.key) !== scope) return Promise.resolve(true);
-    const { entries } = this.outboxOf(scope);
+    if ((batch.client ?? this.clientFor(scope)).incarnation === null)
+      this.ensureReplayWitness(scope);
+    const destination = this.outboxOf(scope);
+    // Published with this batch, never after it.
+    this.supersedeForgottenTerminals(scope, batch.ops, destination);
+    const { entries } = destination;
     let first = entries.length;
     // An unknown outcome must retry exact bytes, never a compacted batch.
     if (!batch.attempted) {
@@ -1598,8 +2467,12 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     const { incarnation } = scope;
     if (typeof incarnation !== 'string') return false;
     const foreign = this.queuedOutboxes(scope).filter(
-      ({ client }) =>
-        client.incarnation !== null && client.incarnation !== incarnation,
+      ({ client, entries }) =>
+        !entries.some(
+          (entry) => entry.quarantined || entry.discoveryFenceIds?.length,
+        ) &&
+        client.incarnation !== null &&
+        client.incarnation !== incarnation,
     );
     if (foreign.length === 0) return false;
     logMainProcessWarn(
@@ -1652,9 +2525,13 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
           if (!this.outbox) throw new Error('No terminal outbox root.');
           const empty =
             this.outboxState.scopes.length === 0 &&
-            this.outboxState.retirements.length === 0;
+            this.outboxState.retirements.length === 0 &&
+            !this.outboxState.discoveryFences?.length;
           const merged =
             this.outboxFile === null && this.mergedRunFiles.length > 0;
+          const reconciled = this.earlierMerged;
+          let installedFences: string[] = [];
+          let reconciledFences: string[] = [];
           // Even an empty ledger suppresses retired writes in surviving sources.
           if (empty && !merged) await this.outbox.remove(this.outboxFile);
           else {
@@ -1663,7 +2540,18 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
             await this.outbox.write(
               { ...this.outboxState, publicationId },
               this.outboxFile,
-              (image) => this.certifyPublication(entries, image),
+              (image) => {
+                this.certifyPublication(entries, image);
+                if (reconciled) {
+                  installedFences = (image.discoveryFences ?? [])
+                    .filter((fence) => fence.activated || fence.cancelled)
+                    .map((fence) => fence.id);
+                  // A cancelled fence released its custody: never provenance.
+                  reconciledFences = (image.discoveryFences ?? [])
+                    .filter((fence) => fence.activated)
+                    .map((fence) => fence.id);
+                }
+              },
             );
           }
           if (this.sealed !== null) return false;
@@ -1673,6 +2561,21 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
             if (empty) await this.outbox.remove(this.outboxFile);
             this.mergedRunFiles = [];
             delete this.outboxState.merged;
+          }
+          // All sources are now reconciled, with quarantine and the merge ledger
+          // installed. A crash before this smaller image merely retains fences.
+          if (installedFences.length > 0) {
+            rememberReconciledRetirements(this.outboxState, reconciledFences);
+            this.outboxState.discoveryFences =
+              this.outboxState.discoveryFences?.filter(
+                (fence) => !installedFences.includes(fence.id),
+              );
+            for (const queued of this.outboxState.scopes)
+              for (const entry of queued.entries)
+                entry.discoveryFenceIds = entry.discoveryFenceIds?.filter(
+                  (id) => !installedFences.includes(id),
+                );
+            void this.persistOutbox();
           }
           // A later queued write may hold changes absent from this install.
           if (revision === this.outboxWriteRevision) this.outboxDirty = false;
@@ -1758,12 +2661,13 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       this.sealed === null &&
       // Loads stay unavailable until an unreadable outbox is merged.
       ((this.outbox !== null && !this.earlierMerged) ||
-        Array.from(this.scopes.values()).some((scope) =>
-          this.hasOutbox(scope),
-        ) ||
+        this.outboxState.scopes.some(({ entries }) => entries.length > 0) ||
         this.outboxState.retirements.length > 0 ||
         this.outboxDirty ||
-        this.mergedRunFiles.length > 0)
+        this.mergedRunFiles.length > 0 ||
+        Array.from(this.recipientAdmissions.values()).some(
+          (state) => !state.settled,
+        ))
     );
   }
 
@@ -1813,8 +2717,11 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     if (!admission) return;
     if (!this.canContinueDrain(scope)) return;
     await this.resolveIncarnation(scope);
-    // Quit keeps these batches in custody, even after a late lookup.
     if (!this.canContinueDrain(scope)) return;
+    await this.lookUpIncarnationAgain(scope);
+    // Quit transfers these batches to the next launch, including a late lookup.
+    if (!this.canContinueDrain(scope)) return;
+    this.retryQueuedReplayWitness(scope);
     if (this.dropForeignOutbox(scope)) await this.persistOutbox();
     if (!this.canContinueDrain(scope)) return;
     // A retirement not applied yet holds this worktree's writes behind it.
@@ -1827,12 +2734,34 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     for (;;) {
       // A retired lifetime's drain stops: what is queued now is its successor's.
       if (!this.admissionCurrent(admission)) return;
-      // Earlier lifetimes' batches stay in custody; this lifetime's go past them.
-      const outbox = this.queuedOutboxes(scope).find(
-        ({ client, entries }) =>
-          entries[0] !== undefined &&
-          this.canReplay(scope, entries[0].client ?? client),
-      );
+      let outbox: TerminalRecordScopeOutbox | undefined;
+      for (const candidate of this.queuedOutboxes(scope)) {
+        const first = candidate.entries[0];
+        if (!first) continue;
+        if (!this.admissionCurrent(admission, first)) continue;
+        // External CLI deletion removes this witness with the worktree data.
+        // Keep unprovable batches durable, but let the replacement record run.
+        // Failed CLI cleanup plus ID reuse can retain a stale witness. Revisit when
+        // CLI deletion retires terminal outbox batches or exposes a worktree lifetime identity.
+        const eligibility = this.drainEligibility(scope, candidate);
+        if (eligibility === 'skip') continue;
+        if (eligibility === 'witness') {
+          const witnessed = await this.hasReplayWitness(
+            first.client ?? candidate.client,
+          );
+          if (!this.canContinueDrain(scope) || this.retirementPending(scope))
+            return;
+          if (!witnessed) continue;
+        }
+        // A replayed intent can remove entries without detaching this scope.
+        if (
+          !this.outboxState.scopes.includes(candidate) ||
+          candidate.entries[0] !== first
+        )
+          continue;
+        outbox = candidate;
+        break;
+      }
       const entry = outbox?.entries[0];
       if (!outbox || !entry) break;
       const installed = this.installedBatches.get(entry);
@@ -1840,7 +2769,7 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       // An older certified object displaced meanwhile is never a drain source.
       if (
         !installed ||
-        !this.admissionCurrent(admission) ||
+        !this.admissionCurrent(admission, entry) ||
         !this.outboxState.scopes.includes(outbox) ||
         outbox.entries[0] !== entry
       )
@@ -1949,7 +2878,8 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
    */
   private async flushPending(scope: ScopeState): Promise<void> {
     for (let passes = scope.pending.length; passes > 0; passes -= 1) {
-      const queued = this.hasOutbox(scope);
+      // Only replayable custody routes the flush through the outbox.
+      const queued = this.hasReplayableOutbox(scope);
       const taken = this.seqs.get(scope.key);
       if (scope.timer !== undefined) clearTimeout(scope.timer);
       scope.timer = undefined;
@@ -1971,10 +2901,14 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     // Refresh the session even when an idle reconnect has nothing to drain.
     if (refreshSession) await this.records.available();
     await this.drainRetirements();
-    // Held custody still gets its drain, which drops another worktree's.
+    await Promise.all(
+      Array.from(this.recipientAdmissions.values())
+        .filter((state) => !state.settled)
+        .map((state) => this.resumeRecipientRetirement(state.target)),
+    );
     await Promise.all(
       Array.from(this.scopes.values())
-        .filter((scope) => this.queuedEntries(scope).length > 0)
+        .filter((scope) => this.hasOutbox(scope))
         .map((scope) => this.drainScope(scope)),
     );
     // Then this run's writes waiting on their debounce go now, in order.
@@ -1982,7 +2916,7 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       await scope.flushRun;
       if (scope.pending.length === 0) continue;
       await this.flushPending(scope);
-      // This lifetime's queued batches route new writes through the outbox.
+      // A queued predecessor can force new local writes through the outbox.
       // Join their replay once, bounded: a silent daemon retains durable
       // custody and its serialized drain after the wait expires.
       if (scope.draining)
@@ -2009,8 +2943,36 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
 
   private async mergeEarlierOutbox(): Promise<void> {
     try {
-      const earlier = await this.outbox?.read(this.runId);
+      const earlier = await this.outbox?.read(
+        this.runId,
+        this.outboxState.discoveryFences,
+      );
       if (earlier) {
+        for (const fence of earlier.outbox.discoveryFences ?? []) {
+          // read() also carries current-run fences. A boot proof predates
+          // preparations created since that scan and cannot abandon them.
+          if (
+            !this.outboxState.discoveryFences?.some(
+              (own) => own.id === fence.id,
+            )
+          )
+            this.pendingRetirementReconciliation?.candidates.add(fence.id);
+        }
+        this.outboxState.discoveryFences = mergeTerminalRecordDiscoveryFences(
+          earlier.outbox.discoveryFences,
+          this.outboxState.discoveryFences,
+        );
+        const own = this.outboxState.reconciledRetirements ?? [];
+        this.outboxState.reconciledRetirements =
+          earlier.outbox.reconciledRetirements;
+        rememberReconciledRetirements(this.outboxState, own);
+        // Activation/cancellation can race an asynchronous read. Reconcile its
+        // original source envelopes against the owner's latest fences too.
+        for (const source of earlier.discoverySources ?? [])
+          reconcileTerminalRecordDiscoverySource(
+            source,
+            this.outboxState.discoveryFences,
+          );
         this.mergedRunFiles = earlier.runFiles;
         // Named in the shared file until discarded, so a quit or crash
         // before the discard never has the next run merge them twice.
@@ -2034,6 +2996,9 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
           // its incarnation, the drain drops them if it differs (rule 4).
           const { incarnation } = loaded.client;
           if (
+            !loaded.entries.some(
+              (entry) => entry.quarantined || entry.discoveryFenceIds?.length,
+            ) &&
             incarnation !== null &&
             this.queuedOutboxes(loaded.client).some(
               ({ client }) =>
@@ -2057,6 +3022,19 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
         }
         for (const queued of mine) appendScopeOutbox(merged, queued);
         this.outboxState.scopes = merged;
+        // Published before a drain can send what they supersede.
+        if (this.supersedeQueuedForgets()) void this.persistOutbox();
+        const quarantined = merged.reduce(
+          (count, outbox) =>
+            count +
+            outbox.entries.filter((entry) => !this.batchAdmitted(entry)).length,
+          0,
+        );
+        if (quarantined > 0)
+          logMainProcessWarn(
+            'Retained terminal record batches quarantined after retirement',
+            { entries: quarantined },
+          );
         this.outboxState.retirements = [
           ...earlier.outbox.retirements,
           ...this.outboxState.retirements,
@@ -2064,6 +3042,7 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       }
       this.outboxFile = null;
       this.earlierMerged = true;
+      this.applyPreparedRetirementReconciliation();
       this.reconcileRetries();
     } catch (error) {
       logMainProcessWarn('Could not read the terminal outbox; keeping it', {
@@ -2127,27 +3106,44 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     };
   }
 
-  private async openRecord(scope: ScopeState): Promise<{
+  private async openRecord(
+    scope: ScopeState,
+    confirmationOnly = false,
+  ): Promise<{
     worker: TerminalWorkerFile;
     opened: WorkerTerminalRecordOpenResult;
     historyWatermarks: Map<string, ProducerWatermarks>;
     authorityRevision: number;
   } | null> {
-    await this.whenStarted();
-    const admission = await this.authorityAdmission(scope);
+    const readRevision = this.readRevisions.get(scope.key) ?? 0;
+    if (!confirmationOnly) await this.whenStarted();
+    const admission = confirmationOnly
+      ? { scope, epoch: readRevision }
+      : await this.authorityAdmission(scope);
     if (!admission) return null;
+    if (
+      confirmationOnly &&
+      !(await this.canConfirmHistory(scope, readRevision))
+    )
+      return null;
     await this.resolveIncarnation(scope);
     if (!(await this.records.available())) return null;
     // A queued retirement of this worktree goes first, so the next lifetime
     // never opens the record it retires.
-    if (this.retirementPending(scope))
+    if (!confirmationOnly && this.retirementPending(scope))
       await withTimeout(this.drainRetirements(), LOAD_DRAIN_BOUND_MS);
-    if (this.hasOutbox(scope))
+    if (!confirmationOnly && this.hasOutbox(scope))
       await withTimeout(this.drainScope(scope), LOAD_DRAIN_BOUND_MS);
     await this.resolveIncarnation(scope);
     // Detached by a retirement while it waited, or still behind one: served
     // as unavailable, and nothing opened would recreate the record.
-    if (!this.admissionCurrent(admission)) return null;
+    if (
+      confirmationOnly
+        ? !(await this.canConfirmHistory(scope, readRevision)) ||
+          !this.confirmationCurrent(scope, readRevision)
+        : !this.admissionCurrent(admission)
+    )
+      return null;
     // Receipts drained before this snapshot are already represented by it.
     const authorityRevision = scope.authorityRevision;
     const opened = await this.track(
@@ -2213,7 +3209,8 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       !this.owns(scope) ||
       (scope.presentationDirty && !scope.importPending) ||
       !scope.presentationWritable ||
-      this.hasOutbox(scope)
+      // Custody a drain never sends cannot change the record it fences.
+      this.hasReplayableOutbox(scope)
     )
       return;
     try {
@@ -2402,10 +3399,14 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
    * fenced file is never read as state again. A newer build's file leaves
    * the presentation as it is too, as main's pair froze together.
    */
-  private async readLegacy(scope: ScopeState): Promise<TerminalRecords | null> {
+  private async readLegacy(
+    scope: ScopeState,
+    updatePresentation = true,
+  ): Promise<TerminalRecords | null> {
     const epoch = this.readRevisions.get(scope.key) ?? 0;
     if (
       !this.canPublishRead(scope) ||
+      this.recipientFences.has(scope.key) ||
       !this.earlierMerged ||
       this.retirementPending(scope)
     )
@@ -2414,13 +3415,18 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       const bytes = await readFileIfPresent(
         getWorktreeTerminalStateFilePath(scope.projectId, scope.worktreeId),
       );
-      if (!this.canPublishRead(scope, epoch)) return null;
+      if (
+        !this.canPublishRead(scope, epoch) ||
+        this.recipientFences.has(scope.key)
+      )
+        return null;
       const legacy = readLegacyTerminalState(
         bytes,
         scope.projectId,
         scope.worktreeId,
       );
-      if (legacy.kind === 'newer') this.freezePresentation(scope, 'newer');
+      if (updatePresentation && legacy.kind === 'newer')
+        this.freezePresentation(scope, 'newer');
       return legacy.kind === 'v1' || legacy.kind === 'v2'
         ? legacy.records
         : null;
@@ -2448,20 +3454,16 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     projectId: string,
     worktreeId: string,
     historyStatusOnly = false,
+    historyConfirmationOnly = false,
+    retainedViewToken?: string,
   ): Promise<LoadWorktreeTerminalStateResponse> {
     if (historyStatusOnly) {
       // A probe never reads output, opens a drawer view or revives a retired scope.
       const available = this.records.peekAvailable?.() === true;
-      return {
-        ...createEmptyState(),
-        liveTerminalIds: [],
-        history: available
-          ? { status: 'available' }
-          : { status: 'unavailable', reason: 'background_service' },
-        historyHeld: this.outboxWarning,
-        historyRefreshSupported: true,
-      };
+      return this.historyStatusResponse(available);
     }
+    if (historyConfirmationOnly)
+      return this.confirmHistory(projectId, worktreeId);
     // Retired or revoked terminal state needs confirmed existence; shell
     // registration remains non-blocking. Directory epochs independently
     // revoke old callbacks.
@@ -2506,16 +3508,116 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     const acknowledged: TerminalRecordOutboxEntry[] = [];
     scope.loadReceipts.add(acknowledged);
     try {
-      return await this.loadScopeState(scope, acknowledged);
+      return await this.loadScopeState(scope, acknowledged, retainedViewToken);
     } finally {
       scope.loadReceipts.delete(acknowledged);
       acknowledged.length = 0;
     }
   }
 
+  private historyStatusResponse(
+    available: boolean,
+  ): LoadWorktreeTerminalStateResponse {
+    return {
+      ...createEmptyState(),
+      liveTerminalIds: [],
+      history: available
+        ? { status: 'available' }
+        : { status: 'unavailable', reason: 'background_service' },
+      historyHeld: this.outboxWarning,
+      historyRefreshSupported: true,
+    };
+  }
+
+  private confirmationCurrent(scope: ScopeState, epoch: number): boolean {
+    return (
+      this.sealed === null &&
+      this.earlierMerged &&
+      this.canPublishRead(scope, epoch) &&
+      !this.retirementPending(scope) &&
+      !this.recipientPurges.has(scope.key) &&
+      (scope.projectId !== SHARED_CONTAINER_VIEWER_PROJECT_ID ||
+        !this.recipientFences.has(scope.key) ||
+        this.admissionCurrent({ scope, epoch }))
+    );
+  }
+
+  private async canConfirmHistory(
+    scope: ScopeState,
+    epoch = this.readRevisions.get(scope.key) ?? 0,
+  ): Promise<boolean> {
+    if (!this.confirmationCurrent(scope, epoch)) return false;
+    try {
+      const exists = this.scopeExists
+        ? await this.scopeExists(scope.projectId, scope.worktreeId)
+        : true;
+      if (exists !== true) return false;
+      if (scope.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID) {
+        // A settled journal admits successor records, but still denies legacy.
+        if (this.recipientFences.has(scope.key))
+          return this.confirmationCurrent(scope, epoch);
+        // No journal needs no replay or recipient-state installation. An
+        // undiscovered journal must wait for a normal load to settle it.
+        if (
+          (await readFileIfPresent(
+            recipientTerminalRetirementPath(scope.projectId, scope.worktreeId),
+          )) !== null
+        )
+          return false;
+      }
+      return this.confirmationCurrent(scope, epoch);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Availability without granting a new view or changing the cached projection. */
+  private async confirmHistory(
+    projectId: string,
+    worktreeId: string,
+  ): Promise<LoadWorktreeTerminalStateResponse> {
+    const scope = this.scopes.get(worktreeKey(projectId, worktreeId));
+    // Starting outbox replay can create scopes; only a real load may do that.
+    if (!scope || !this.earlierMerged) return this.historyStatusResponse(false);
+    const revision = this.readRevisions.get(scope.key) ?? 0;
+    if (!(await this.canConfirmHistory(scope, revision)))
+      return this.historyStatusResponse(false);
+    let opened: WorkerTerminalRecordOpenResult | null = null;
+    try {
+      // Unlike a load, confirmation neither drains writes into shadow nor
+      // installs presentation. It still verifies record pages and legacy fallback.
+      // Worker open may complete pending import/install, as the full load it
+      // replaces did; only Electron-side writes are excluded by confirmation.
+      const result = await withTimeout(
+        this.openRecord(scope, true),
+        LOAD_DRAIN_BOUND_MS * 2,
+      );
+      opened = result?.opened ?? null;
+    } catch (error) {
+      logMainProcessWarn('Terminal record unavailable for confirmation', {
+        reason: error instanceof Error ? error.name : 'error',
+      });
+    }
+    if (!(await this.canConfirmHistory(scope, revision)))
+      return this.historyStatusResponse(false);
+    // Slice 3 RF5: legacy alone cannot confirm available authority history.
+    if (!opened) return this.historyStatusResponse(false);
+    const needsLegacy =
+      opened.import.pending === true && opened.import.from === 'none';
+    const available = needsLegacy
+      ? (await this.readLegacy(scope, false)) !== null
+      : true;
+    return this.historyStatusResponse(
+      (await this.canConfirmHistory(scope, revision)) &&
+        this.confirmationCurrent(scope, revision) &&
+        available,
+    );
+  }
+
   private async loadScopeState(
     scope: ScopeState,
     acknowledged: TerminalRecordOutboxEntry[],
+    retainedViewToken?: string,
   ): Promise<LoadWorktreeTerminalStateResponse> {
     const { projectId, worktreeId } = scope;
     const loadRevision = ++scope.loadRevision;
@@ -2536,7 +3638,8 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       canCommitMetadata() && scope.mutationRevision === mutationRevision;
 
     const admission = await this.readAdmission(scope);
-    if (admission === 'denied') return this.emptyRead(scope, false);
+    if (admission === 'denied')
+      return this.emptyRead(scope, false, retainedViewToken);
     const persistedAllowed = admission === 'allowed';
     let worker: TerminalWorkerFile | null = null;
     let history: TerminalRecordHistoryStatus = persistedAllowed
@@ -2563,7 +3666,7 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       scope.loadReceipts.delete(acknowledged);
     }
     if (!this.canPublishRead(scope, readRevision))
-      return this.emptyRead(scope, false);
+      return this.emptyRead(scope, false, retainedViewToken);
     let legacyPresentation: TerminalPresentationFile | undefined;
     if (!worker && persistedAllowed) {
       history = { status: 'unavailable', reason: 'background_service' };
@@ -2574,7 +3677,7 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       } else history = { status: 'unavailable', reason: 'background_service' };
     }
     if (!this.canPublishRead(scope, readRevision))
-      return this.emptyRead(scope, false);
+      return this.emptyRead(scope, false, retainedViewToken);
     let nextLineage = worker?.lineage ?? scope.lineage;
     const pending = opened?.import.pending === true;
     const legacyImportPending = pending && opened?.import.from === 'none';
@@ -2609,7 +3712,7 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       }
     }
     if (!this.canPublishRead(scope, readRevision))
-      return this.emptyRead(scope, false);
+      return this.emptyRead(scope, false, retainedViewToken);
     const commit = canCommit();
     if (opened && canCommitMetadata()) {
       scope.importPending = pending;
@@ -2706,13 +3809,23 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       }
     }
     for (const op of scope.pending) applyTerminalRecordOp(overlay, op);
+    // A load that cannot read the record keeps the bindings and terminals last
+    // read from it (plus every op since): a save must reuse the authority's
+    // binding keys, and a Close must keep the layout of groups it cannot see.
+    const keepRecord = opened === null && scope.shadowFromRecord;
+    if (commit && opened !== null) scope.shadowFromRecord = true;
+    const kept = new Set(
+      keepRecord ? scope.shadow.terminals.map((entry) => entry.session.id) : [],
+    );
     if (commit)
       scope.shadow = {
-        bindings: overlay.bindings,
-        terminals: overlay.terminals.map((entry) => ({
-          ...entry,
-          scrollbackLines: [],
-        })),
+        bindings: keepRecord ? scope.shadow.bindings : overlay.bindings,
+        terminals: [
+          ...(keepRecord ? scope.shadow.terminals : []),
+          ...overlay.terminals
+            .filter((entry) => !kept.has(entry.session.id))
+            .map((entry) => ({ ...entry, scrollbackLines: [] })),
+        ],
         // A load that could not read the record keeps the names this lifetime
         // last knew: a drawer may still show them (R6-F2).
         terminalCustomNames:
@@ -2729,7 +3842,13 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
         : legacyPresentation?.lineage === lineage
           ? legacyPresentation
           : undefined;
-    if (commit && presentation && presentation !== scope.presentation) {
+    // Legacy state another lineage wrote is shown, never adopted over the record's.
+    if (
+      commit &&
+      presentation &&
+      presentation !== scope.presentation &&
+      (scope.lineage === null || presentation.lineage === scope.lineage)
+    ) {
       scope.presentation = presentation;
       scope.presentationDirty = true;
     }
@@ -2739,6 +3858,8 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       projectId,
       worktreeId,
     );
+    if (history.status === 'unavailable' && scope.presentation)
+      state.drawerCollapsed = scope.presentation.drawerCollapsed;
     const recorded = new Set(
       overlay.terminals.map((entry) => entry.session.id),
     );
@@ -2765,7 +3886,9 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       history.status === 'unavailable',
       state.terminals.map((entry) => entry.session.id),
       Object.keys(state.terminalCustomNames),
+      state.groups,
       state.drawerCollapsed,
+      retainedViewToken,
     );
     // A lifetime retired while this load awaited never fills the index of
     // the next one.
@@ -2826,7 +3949,7 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     )
       await this.writeFence(scope, opened);
     if (!this.canPublishRead(scope, readRevision))
-      return this.emptyRead(scope, false);
+      return this.emptyRead(scope, false, retainedViewToken);
     return serializeResponse(
       state,
       liveTerminalIds,
@@ -2937,7 +4060,15 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       this.index.get(terminalId)?.revision === indexed.revision &&
       !this.retirementPending(scope) &&
       !scope.importPending &&
-      !this.hasOutbox(scope) &&
+      !this.hasReplayableOutbox(scope) &&
+      // A cancelled barrier would release this shell's held writes onto the
+      // daemon's: it restores in process. Other terminals stay unaffected.
+      !this.queuedEntries(scope).some(
+        (entry) =>
+          this.batchAdmitted(entry) &&
+          !!entry.discoveryFenceIds?.length &&
+          entry.ops.some((op) => touchedTerminalIds(op).includes(terminalId)),
+      ) &&
       !scope.inflight &&
       !scope.flushing &&
       scope.pending.length === 0
@@ -3019,6 +4150,13 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     return release;
   }
 
+  private recipientAuthorityReady(scope: ScopeState): boolean {
+    return (
+      scope.projectId !== SHARED_CONTAINER_VIEWER_PROJECT_ID ||
+      this.recipientAdmissions.get(scope.key)?.settled === true
+    );
+  }
+
   private async prepareHistorySeed(
     terminalId: string,
     indexed: IndexEntry,
@@ -3043,6 +4181,7 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
         persistedAllowed &&
         this.canPublishRead(scope, readRevision) &&
         !this.retirementPending(scope) &&
+        this.recipientAuthorityReady(scope) &&
         (await this.records.available().catch(() => false))
           ? await withTimeout(
               this.readRestoreHistory(scope, client, terminalId),
@@ -3097,7 +4236,7 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     const overlay: TerminalRecordPayloadState = {
       bindings: [],
       // An old index entry is metadata, not evidence of readable history.
-      // Uncertain admission can seed only a live session or this lifetime's ops.
+      // Uncertain admission can seed only a live session or qualified local ops.
       terminals:
         persistedAllowed || this.liveSessions.has(terminalId) ? [entry] : [],
       terminalCustomNames: {},
@@ -3155,17 +4294,19 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     const shown =
       view === null
         ? (scope.partialFloor ?? scope.servedIds)
-        : (view?.seen ?? new Set<string>());
+        : new Set([...(view?.seen ?? []), ...(view?.saved.seen ?? [])]);
     const ungrouped = Array.from(shown).filter(
       (terminalId) =>
         scope.servedIds.has(terminalId) && !referenced.has(terminalId),
     );
-    // Referencing a session is not name knowledge: preserve names never served.
+    // A declared save omits only names it keeps (leak, never erase). Otherwise
+    // referencing a session is not name knowledge: preserve names never served.
     // A tokenless save after a partial load cannot prove which names it knew.
     const named =
-      view === null && scope.partialFloor === null
+      declaredNameClears(request.clearedTerminalNames) ??
+      (view === null && scope.partialFloor === null
         ? scope.servedIds
-        : (view?.named ?? new Set<string>());
+        : (view?.named ?? new Set<string>()));
     const unknownNames: Record<string, string> = {};
     for (const terminalId of referenced) {
       const kept = scope.shadow.terminalCustomNames[terminalId];
@@ -3173,9 +4314,9 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
         unknownNames[terminalId] = kept;
     }
     for (const terminalId of referenced) {
-      // Only the saving view is known to show it.
+      // Explicit saves extend this drawer's lineage, never another drawer's.
       scope.servedIds.add(terminalId);
-      view?.seen.add(terminalId);
+      view?.saved.seen.add(terminalId);
       // A referenced live lifetime that was forgotten rejoins the record.
       if (!scope.suppressed.delete(terminalId)) continue;
       const live = this.liveSessions.get(terminalId);
@@ -3262,6 +4403,10 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
         scope.presentation ??
         recordsForState(createEmptyState(), lineage).presentation,
     });
+    const bindingsBefore = scope.shadow.bindings.map(({ key, groupId }) => ({
+      key,
+      groupId,
+    }));
     const workerChanged =
       records.worker.bindings.length !== scope.shadow.bindings.length ||
       records.worker.bindings.some((binding, index) => {
@@ -3283,7 +4428,72 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       Object.entries(records.worker.terminalCustomNames).some(
         ([id, name]) => name !== scope.shadow.terminalCustomNames[id],
       );
-    if (workerChanged)
+    const wholeView =
+      view === null ? scope.partialFloor === null : view?.partial === false;
+    if (!wholeView) {
+      const partialViews = Array.from(scope.views.values()).filter(
+        (candidate) => candidate.partial,
+      );
+      const baseline =
+        view?.membership ??
+        (view === null &&
+        new Set(
+          partialViews.map((candidate) =>
+            groupMembership(candidate.membership),
+          ),
+        ).size === 1
+          ? partialViews[0]?.membership
+          : undefined);
+      // A partial save carries only membership the user changed. Without a
+      // cached view, recomputable fallback singletons are still not user intent.
+      const changedGroups = nextGroups.filter((group) => {
+        const previous = baseline?.find((entry) => entry.id === group.id);
+        if (baseline)
+          return (
+            !previous ||
+            groupMembership([previous]) !== groupMembership([group])
+          );
+        return !(
+          group.terminalIds.length === 1 &&
+          group.id ===
+            liveBinding({ bindings: [] }, group.terminalIds[0]).groupId
+        );
+      });
+      const changedIds = new Set(changedGroups.map((group) => group.id));
+      // What the view was shown and omits leaves the group main last knew it
+      // in, as a whole save does; the shadow drops it, so it leaves once.
+      // Leaving carries the name main knows: layout.save cannot keep one main
+      // never read, and refusing the ungroup would restore a closed terminal.
+      const leaving = ungrouped.filter((terminalId) =>
+        scope.shadow.bindings.some((binding) =>
+          binding.members.some((member) => member.terminalId === terminalId),
+        ),
+      );
+      const changedReferences = new Set([
+        ...changedGroups.flatMap((group) => group.terminalIds),
+        ...leaving,
+      ]);
+      // Unreferenced bindings merge at the authority, not from a stale shadow.
+      if (changedReferences.size > 0)
+        this.enqueue(scope, {
+          op: 'layout.save',
+          servedIds: [],
+          referencedIds: Array.from(changedReferences),
+          bindings: records.worker.bindings.filter((binding) =>
+            changedIds.has(binding.groupId),
+          ),
+          terminalCustomNames: Object.fromEntries(
+            Object.entries(records.worker.terminalCustomNames).filter(([id]) =>
+              changedReferences.has(id),
+            ),
+          ),
+        });
+      for (const id of referenced) {
+        const name = records.worker.terminalCustomNames[id] ?? null;
+        if (name !== (scope.shadow.terminalCustomNames[id] ?? null))
+          this.enqueue(scope, { op: 'rename', terminalId: id, name });
+      }
+    } else if (workerChanged)
       this.enqueue(scope, {
         op: 'layout.save',
         // A save forgets nothing; closes send `forget` ops. Listing an
@@ -3295,24 +4505,49 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       });
     // Presentation for an unknown lineage waits for a load (§5.15), and a
     // save from a partial view never rewrites the layout of what it missed.
-    const wholeView =
-      view === null ? scope.partialFloor === null : view?.partial === false;
-    const collapseChanged =
-      view !== null &&
-      view !== undefined &&
-      view.drawerCollapsed !== request.drawerCollapsed;
-    if (view) view.drawerCollapsed = request.drawerCollapsed;
+    // A served view's collapse toggle still lands on the loaded presentation.
+    if (!wholeView || (scope.lineage === null && view)) {
+      const served =
+        view?.drawerCollapsed ??
+        scope.servedCollapse ??
+        scope.presentation?.drawerCollapsed ??
+        false;
+      if (request.drawerCollapsed !== served) {
+        scope.pendingCollapse = request.drawerCollapsed;
+        // Tokenless/evicted views need the same edit baseline as cached views.
+        scope.servedCollapse = request.drawerCollapsed;
+        this.mergePartialCollapse(scope);
+        this.scheduleFlush(scope);
+        void this.loadPresentation(scope);
+      }
+    }
+    if (view) {
+      // A reply may already exist while its predecessor saves local edits.
+      // Rebase only this lineage's baselines, retaining each reply's unseen IDs.
+      for (const candidate of scope.views.values()) {
+        if (candidate === view || candidate.saved !== view.saved) continue;
+        const kept = candidate.membership.map((group) => ({
+          ...group,
+          terminalIds: group.terminalIds.filter(
+            (id) => !shown.has(id) || referenced.has(id),
+          ),
+        }));
+        candidate.membership = mergePartialViewMembership(kept, nextGroups);
+        candidate.drawerCollapsed = request.drawerCollapsed;
+      }
+      view.membership = structuredClone(nextGroups);
+      view.drawerCollapsed = request.drawerCollapsed;
+    }
     if (scope.lineage !== null && wholeView) {
-      scope.presentation = records.presentation;
-      scope.presentationDirty = true;
-      if (!workerChanged) this.scheduleFlush(scope);
-    } else if (collapseChanged && scope.presentation) {
-      // Collapse is the one scalar a partial view sees whole; an unchanged
-      // fallback value never overwrites the saved one.
-      scope.presentation = {
-        ...scope.presentation,
-        drawerCollapsed: request.drawerCollapsed,
-      };
+      // The shadow already holds this save's layout.save merge.
+      scope.presentation = retainUncoveredPresentation(
+        scope.presentation,
+        records.presentation,
+        bindingsBefore,
+        scope.shadow.bindings,
+        scope.shadowFromRecord,
+      );
+      scope.pendingCollapse = undefined;
       scope.presentationDirty = true;
       if (!workerChanged) this.scheduleFlush(scope);
     }
@@ -3397,7 +4632,21 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     );
     if (state.activeGroupId !== null && !groupIds.has(state.activeGroupId))
       state.activeGroupId = state.groups[0]?.id ?? null;
-    const { presentation } = recordsForState(state, lineage, {
+    const presentation = this.shadowPresentation(scope, lineage, state);
+    if (JSON.stringify(presentation) === JSON.stringify(scope.presentation))
+      return;
+    scope.presentation = presentation;
+    scope.presentationDirty = true;
+  }
+
+  /** The layout of `state`, bound to the shadow's bindings. */
+  private shadowPresentation(
+    scope: ScopeState,
+    lineage: string,
+    state: PersistedWorktreeTerminalStateFile,
+  ): TerminalPresentationFile {
+    const { shadow } = scope;
+    return recordsForState(state, lineage, {
       worker: {
         version: 2,
         lineage,
@@ -3408,11 +4657,7 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       presentation:
         scope.presentation ??
         recordsForState(createEmptyState(), lineage).presentation,
-    });
-    if (JSON.stringify(presentation) === JSON.stringify(scope.presentation))
-      return;
-    scope.presentation = presentation;
-    scope.presentationDirty = true;
+    }).presentation;
   }
 
   private invalidateRestoreEntry(scope: ScopeState, terminalId: string): void {
@@ -3450,6 +4695,39 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
         (entry) => !this.installedBatches.has(entry) && membership(entry.ops),
       )
     );
+  }
+
+  private mergePartialCollapse(scope: ScopeState): void {
+    const { lineage } = scope;
+    if (
+      scope.pendingCollapse === undefined ||
+      !scope.presentationLoaded ||
+      !scope.presentationWritable
+    )
+      return;
+    // A known record without a layout yet starts one from its shadow, as a
+    // whole-view save would.
+    const presentation =
+      scope.presentation ??
+      (lineage === null
+        ? undefined
+        : this.shadowPresentation(
+            scope,
+            lineage,
+            composeRecords(
+              { version: 2, lineage, ...scope.shadow },
+              undefined,
+              scope.projectId,
+              scope.worktreeId,
+            ),
+          ));
+    if (!presentation) return;
+    scope.presentation = {
+      ...presentation,
+      drawerCollapsed: scope.pendingCollapse,
+    };
+    scope.pendingCollapse = undefined;
+    scope.presentationDirty = true;
   }
 
   private installPresentation(scope: ScopeState, atQuit = false): void {
@@ -3522,9 +4800,8 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
   /**
    * Quit: stamps every live in-process terminal's exit, then seals this
    * run's unacknowledged and pending writes into the outbox synchronously.
-   * They stay there in durable custody (only a current lifetime replays);
-   * a sealed run never recreates a shell. Daemon terminals the record keeps
-   * are stamped by the daemon.
+   * The next launch drains it before any load; a sealed run never recreates
+   * a shell. Daemon terminals the record keeps are stamped by the daemon.
    */
   public markAllLiveTerminalsExited(
     signal: WorkerTerminalRecordShutdownParams['signal'],
@@ -3550,12 +4827,15 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       scope.inflight = null;
       if (batch)
         void this.toOutbox(scope, { ...batch, sealed: { reason: signal } });
+      // Exited terminals may have queued everything before an install failed.
+      if (this.hasUnwitnessedCustody(scope)) this.ensureReplayWitness(scope);
     }
     this.sealed = signal;
     this.dropEmptyScopes();
     if (
       this.outboxState.scopes.length > 0 ||
-      this.outboxState.retirements.length > 0
+      this.outboxState.retirements.length > 0 ||
+      this.outboxState.discoveryFences?.length
     ) {
       // Before earlier runs' outbox is merged, this run seals into its own
       // file rather than overwrite theirs.
@@ -3599,7 +4879,14 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     incarnation?: string | null;
   }): Promise<WorkerTerminalRecordRetireParams> {
     await this.whenStarted();
-    return this.captureTerminalRecordRetirement(params);
+    const retirement = this.captureTerminalRecordRetirement(params);
+    if (!this.earlierMerged) {
+      this.fenceUndiscoveredSources(retirement, false);
+      // A failed/slow install never adds a deletion prerequisite. The same
+      // owner keeps retrying, as for retirement/outbox custody generally.
+      await withTimeout(this.persistOutbox(), LOAD_DRAIN_BOUND_MS);
+    }
+    return retirement;
   }
 
   private captureTerminalRecordRetirement(params: {
@@ -3616,6 +4903,13 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
             scope.worktreeId === params.worktreeId),
       )
       .map((scope) => scope.lifetimeId);
+    if (
+      params.projectId === SHARED_CONTAINER_VIEWER_PROJECT_ID &&
+      params.worktreeId !== undefined
+    )
+      lifetimeIds.push(
+        `${RECIPIENT_RETIREMENT_LIFETIME_PREFIX}${randomUUID()}`,
+      );
     const worktreeIds = Array.from(this.scopes.values())
       .filter((scope) => scope.projectId === params.projectId)
       .map((scope) => scope.worktreeId);
@@ -3624,7 +4918,12 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       ...(params.worktreeId !== undefined && { worktreeId: params.worktreeId }),
       ...fence,
       lifetimeIds,
-      ...(params.worktreeId === undefined && { worktreeIds }),
+      // Loaded and outboxed worktrees are named; unloaded ones on disk are
+      // discovered under the cutoff.
+      ...(params.worktreeId === undefined && {
+        worktreeIds,
+        projectWide: true,
+      }),
       // A record a newer lifetime starts after this is left alone, even
       // when neither incarnation is known.
       requestedAt: Date.now(),
@@ -3635,17 +4934,181 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
   }
 
   /** Drops this lifetime's writes and durably queues retirement (§5.12). */
-  public retireTerminalRecord(params: {
-    projectId: string;
-    worktreeId?: string;
-    incarnation?: string | null;
-  }): Promise<boolean> {
+  public retireRecipientTerminalRecord(worktreeId: string): Promise<boolean> {
+    const projectId = SHARED_CONTAINER_VIEWER_PROJECT_ID;
+    const key = worktreeKey(projectId, worktreeId);
+    const epoch = (this.readRevisions.get(key) ?? 0) + 1;
+    this.readRevisions.set(key, epoch);
+    const evidence = beginDirectoryDeletion(
+      dirname(recipientTerminalRetirementPath(projectId, worktreeId)),
+    );
+    // Before any await: a quit seal during the purge must omit this lifetime.
+    const retiring = this.scopes.get(key)?.lifetimeId;
+    this.outbox?.denyRecipient(
+      {
+        projectId,
+        worktreeId,
+        lifetimeIds: retiring === undefined ? [] : [retiring],
+      },
+      (id) => this.scopes.get(key)?.lifetimeId === id,
+    );
+    const previous = this.recipientFences.get(key);
+    this.recipientFences.set(key, null);
+    const state: RecipientAdmissionState = {
+      epoch,
+      target: { projectId, worktreeId, key },
+      discovered: false,
+      settled: false,
+    };
+    this.recipientAdmissions.set(key, state);
+    for (const [id, lease] of this.seeded)
+      if (lease.scope.key === key) this.revokeSeed(id);
+    const run = (this.recipientPurges.get(key) ?? Promise.resolve(true))
+      .catch(() => false)
+      .then(() =>
+        this.retireRecipientTerminalRecordOnce(
+          worktreeId,
+          previous,
+          state,
+          evidence,
+        ),
+      )
+      .finally(() => evidence.settle('cleanup-debt'));
+    this.recipientPurges.set(key, run);
+    void run
+      .finally(() => {
+        if (this.recipientPurges.get(key) === run)
+          this.recipientPurges.delete(key);
+        this.reconcileRetries();
+      })
+      .catch(() => undefined);
+    this.reconcileRetries();
+    return run;
+  }
+
+  private async retireRecipientTerminalRecordOnce(
+    worktreeId: string,
+    previous: WorkerTerminalRecordRetireParams[] | null | undefined,
+    state: RecipientAdmissionState,
+    evidence: ReturnType<typeof beginDirectoryDeletion>,
+  ): Promise<boolean> {
+    const projectId = SHARED_CONTAINER_VIEWER_PROJECT_ID;
+    const key = worktreeKey(projectId, worktreeId);
+    const path = recipientTerminalRetirementPath(projectId, worktreeId);
+    let retained = previous ?? [];
+    let bytes: Buffer | null = null;
+    let unread: { code: string | undefined } | undefined;
+    try {
+      bytes = await readFileIfPresent(path);
+    } catch (error) {
+      // The in-memory privacy fence remains closed.
+      unread = { code: errorCode(error) };
+    }
+    try {
+      if (bytes)
+        retained =
+          recipientRetirements(JSON.parse(bytes.toString('utf8'))) ?? retained;
+    } catch {
+      /* A malformed journal names no retirement to keep. */
+    }
+    let captured: WorkerTerminalRecordRetireParams | undefined;
+    const durable = await this.retireTerminalRecord(
+      { projectId, worktreeId },
+      async (retirement) => {
+        captured = retirement;
+        // Also before an await: it may name a lifetime that started mid-purge.
+        this.outbox?.denyRecipient(
+          { ...retirement, worktreeId },
+          (id) => this.scopes.get(key)?.lifetimeId === id,
+        );
+        const intents = this.retainRecipientIntents(key, [
+          ...retained,
+          retirement,
+        ]);
+        if (this.recipientAdmissions.get(key) === state) {
+          this.recipientFences.set(key, intents);
+          state.discovered = true;
+        }
+        if (unread) {
+          // Replacing a journal it could not read may drop an earlier
+          // lifetime's intents; this retirement is then unjournaled, as on a
+          // failed write.
+          logMainProcessWarn(
+            'Kept the unreadable recipient terminal retirement fence',
+            unread,
+          );
+          return;
+        }
+        try {
+          await this.writeRecipientFence(key, async () => {
+            assertAdmittedWriter(
+              'terminal_replay_witness',
+              'electron_main',
+              'main/terminal/persistence',
+              STORAGE_OWNERSHIP,
+            );
+            await evidence.writeEvidence(path, async (lease) => {
+              await lease.mkdir(dirname(path));
+              await lease.install(
+                path,
+                JSON.stringify({ version: 1, recipientRetirements: intents }),
+                {
+                  encoding: 'utf8',
+                  durable: true,
+                  admittedWriter: {
+                    namespace: 'terminal_replay_witness',
+                    writer: 'electron_main',
+                    module: 'main/terminal/persistence',
+                  },
+                },
+              );
+            });
+          });
+        } catch (error) {
+          // Accepted residual (never-refuse/q-46 A): if journal, outbox and scrub
+          // all fail, prior-account plaintext may be readable after restart.
+          // Local scrubbing alone also cannot retire unjournaled authority history.
+          logMainProcessWarn(
+            'Could not persist the recipient terminal retirement fence',
+            { code: errorCode(error) },
+          );
+        }
+      },
+    );
+    try {
+      await this.outbox?.scrubRecipient(
+        { ...captured, projectId, worktreeId },
+        (id) => this.scopes.get(key)?.lifetimeId === id,
+      );
+    } catch (error) {
+      logMainProcessWarn(
+        'Could not scrub recipient terminal outbox artifacts',
+        {
+          code: errorCode(error),
+        },
+      );
+    }
+    return durable;
+  }
+
+  /** Drops this lifetime's writes and durably queues retirement (§5.12). */
+  public retireTerminalRecord(
+    params: {
+      projectId: string;
+      worktreeId?: string;
+      incarnation?: string | null;
+    },
+    journalIntent?: (
+      retirement: WorkerTerminalRecordRetireParams,
+    ) => Promise<void>,
+  ): Promise<boolean> {
     if (!this.earlierMerged)
       return this.prepareTerminalRecordRetirement(params).then((retirement) =>
-        this.retirePreparedTerminalRecord(retirement),
+        this.retirePreparedTerminalRecord(retirement, journalIntent),
       );
     return this.retirePreparedTerminalRecord(
       this.captureTerminalRecordRetirement(params),
+      journalIntent,
     );
   }
 
@@ -3655,7 +5118,12 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
    */
   public async retirePreparedTerminalRecord(
     retirement: WorkerTerminalRecordRetireParams,
+    journalIntent?: (
+      retirement: WorkerTerminalRecordRetireParams,
+    ) => Promise<void>,
   ): Promise<boolean> {
+    if (journalIntent) await journalIntent(retirement);
+    this.fenceUndiscoveredSources(retirement);
     const params = retirement;
     const inFlight: Promise<unknown>[] = [];
     const metadataDirectories = new Set<string>();
@@ -3745,7 +5213,9 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
   public async replayTerminalRecordRetirement(
     retirement: WorkerTerminalRecordRetireParams,
   ): Promise<boolean> {
+    this.fenceUndiscoveredSources(retirement);
     await this.whenStarted();
+    this.fenceUndiscoveredSources(retirement);
     this.outboxState.scopes = this.outboxState.scopes.filter(
       (outbox) => !dropRetiredOutboxEntries(retirement, outbox),
     );
@@ -3760,6 +5230,138 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     const durable = await this.persistOutbox();
     void this.drainRetirements();
     return durable;
+  }
+
+  private fenceUndiscoveredSources(
+    retirement: WorkerTerminalRecordRetireParams,
+    activated = true,
+  ): void {
+    const id = this.discoveryFenceId(retirement);
+    const held = this.outboxState.discoveryFences?.find(
+      (fence) => fence.id === id,
+    );
+    if (this.earlierMerged && !held) return;
+    // Never block deletion or enlarge its frozen identity set. Sources still
+    // unread at activation retain custody, but cannot recreate its tombstone.
+    // q-51 option 1 (CAN-7664) covers O(prepared intents), per retained lifetime, never
+    // per edit/output. Unactivated intents remain until their owner/recovery
+    // proves abandonment; only that uncertainty can hold their sends.
+    const fence = {
+      id,
+      projectId: retirement.projectId,
+      ...(retirement.worktreeId !== undefined && {
+        worktreeId: retirement.worktreeId,
+      }),
+      activated,
+    };
+    if (held) held.activated ||= activated;
+    else (this.outboxState.discoveryFences ??= []).push(fence);
+    if (activated) this.activateDiscoveryQuarantine(id);
+    this.outboxDirty = true;
+  }
+
+  private discoveryFenceId(
+    retirement: WorkerTerminalRecordRetireParams,
+  ): string {
+    return terminalRecordDiscoveryFenceId(retirement);
+  }
+
+  /** The deletion owner proved it did not commit. Active retirements never roll back. */
+  public cancelPreparedTerminalRecordRetirement(
+    retirement: WorkerTerminalRecordRetireParams,
+  ): void {
+    this.cancelDiscoveryFences(new Set([this.discoveryFenceId(retirement)]));
+  }
+
+  /** Called after a complete, exclusive recovery scan, not mere index absence. */
+  public async reconcilePreparedTerminalRecordRetirements(
+    unresolved: readonly WorkerTerminalRecordRetireParams[],
+  ): Promise<void> {
+    this.pendingRetirementReconciliation = {
+      retained: new Set(
+        unresolved.map((intent) => this.discoveryFenceId(intent)),
+      ),
+      candidates: new Set(
+        (this.outboxState.discoveryFences ?? []).map((fence) => fence.id),
+      ),
+    };
+    await this.whenStarted();
+    this.applyPreparedRetirementReconciliation();
+  }
+
+  private applyPreparedRetirementReconciliation(): void {
+    const decision = this.pendingRetirementReconciliation;
+    if (!this.earlierMerged || !decision) return;
+    this.pendingRetirementReconciliation = undefined;
+    this.cancelDiscoveryFences(
+      new Set(
+        (this.outboxState.discoveryFences ?? [])
+          .filter(
+            (fence) =>
+              !fence.activated &&
+              decision.candidates.has(fence.id) &&
+              !decision.retained.has(fence.id),
+          )
+          .map((fence) => fence.id),
+      ),
+    );
+  }
+
+  private cancelDiscoveryFences(ids: ReadonlySet<string>): void {
+    let changed = false;
+    for (const fence of this.outboxState.discoveryFences ?? []) {
+      if (!ids.has(fence.id) || fence.activated || fence.cancelled) continue;
+      fence.cancelled = true;
+      changed = true;
+      for (const queued of this.outboxState.scopes)
+        for (const entry of queued.entries)
+          entry.discoveryFenceIds = entry.discoveryFenceIds?.filter(
+            (id) => id !== fence.id,
+          );
+    }
+    if (changed) void this.persistOutbox();
+  }
+
+  private activateDiscoveryQuarantine(id: string): void {
+    const invalidated = new Set<string>();
+    for (const outbox of this.outboxState.scopes) {
+      const scope = this.scopes.get(
+        worktreeKey(outbox.client.projectId, outbox.client.worktreeId),
+      );
+      for (const entry of outbox.entries) {
+        if (entry.quarantined || !entry.discoveryFenceIds?.includes(id))
+          continue;
+        entry.quarantined = true;
+        if (!scope) continue;
+        if (!invalidated.has(scope.key)) {
+          invalidated.add(scope.key);
+          this.readRevisions.set(
+            scope.key,
+            (this.readRevisions.get(scope.key) ?? 0) + 1,
+          );
+        }
+        // A prepared-but-not-committed deletion may already have served the
+        // discovered source. Revoke that projection, not a replacement shell.
+        const ids = new Set<string>();
+        for (const op of entry.ops) {
+          if (op.op === 'session.upsert') ids.add(op.session.id);
+          else if (op.op === 'layout.save') {
+            for (const binding of op.bindings)
+              for (const member of binding.members) ids.add(member.terminalId);
+          } else ids.add(op.terminalId);
+        }
+        for (const terminalId of ids) {
+          if (
+            this.liveSessions.has(terminalId) ||
+            this.isRecordedDaemonTerminal(terminalId)
+          )
+            continue;
+          this.invalidateRestoreEntry(scope, terminalId);
+          scope.servedIds.delete(terminalId);
+          applyTerminalRecordOp(scope.shadow, { op: 'forget', terminalId });
+        }
+      }
+    }
   }
 
   /**
@@ -3812,10 +5414,22 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       !(await this.records.available())
     )
       return;
+    const held: WorkerTerminalRecordRetireParams[] = [];
     for (const retirement of this.outboxState.retirements.slice()) {
+      if (held.some((earlier) => retirementsOverlap(earlier, retirement)))
+        continue;
       await this.waitForRetirementBarrier(retirement);
       if (this.sealed !== null) return;
       try {
+        if (!(await this.bindRecipientRetirement(retirement))) {
+          // An unreachable authority stops the drain, as a failed retire does.
+          // A bind it holds (a pending legacy import) holds only its own
+          // scope's later intents; unrelated ones still drain.
+          if (!(await this.records.available())) return;
+          held.push(retirement);
+          continue;
+        }
+        if (this.sealed !== null) return;
         // Zero is final: absent scopes and successor fences need no retry.
         await this.records.retire(retirement);
       } catch (error) {
@@ -3829,7 +5443,54 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
       }
       const index = this.outboxState.retirements.indexOf(retirement);
       if (index >= 0) this.outboxState.retirements.splice(index, 1);
+      // A later replay of it must not quarantine what this run queued since.
+      rememberReconciledRetirements(this.outboxState, [
+        this.discoveryFenceId(retirement),
+      ]);
       await this.persistOutbox();
+    }
+  }
+
+  /**
+   * False when the authority could not bind it yet; an `invalid_argument`
+   * rejection still throws, so the drain drops that intent.
+   */
+  private async bindRecipientRetirement(
+    retirement: WorkerTerminalRecordRetireParams,
+  ): Promise<boolean> {
+    if (
+      retirement.projectId !== SHARED_CONTAINER_VIEWER_PROJECT_ID ||
+      retirement.worktreeId === undefined
+    )
+      return true;
+    const lifetimeId = retirement.lifetimeIds?.find((id) =>
+      id.startsWith(RECIPIENT_RETIREMENT_LIFETIME_PREFIX),
+    );
+    // Unmarked pre-release intents retain their legacy cutoff semantics.
+    if (!lifetimeId) return true;
+    // Admission holds successor sends behind this retirement. The empty apply
+    // binds the predecessor durably without relying on clock order; replay of
+    // its retired ID cannot attach to a successor, even after a lost reply.
+    try {
+      await this.records.apply({
+        client: {
+          projectId: retirement.projectId,
+          worktreeId: retirement.worktreeId,
+          legacyLayout: getWorktreeTerminalLegacyLayout(retirement.projectId),
+          incarnation: retirement.incarnation ?? null,
+          ...(retirement.generation !== undefined && {
+            generation: retirement.generation,
+          }),
+          lifetimeId,
+        },
+        producer: { id: PRODUCER_ID, runId: lifetimeId },
+        seq: 1,
+        ops: [],
+      });
+      return true;
+    } catch (error) {
+      if (errorKind(error) === 'invalid_argument') throw error;
+      return false;
     }
   }
 
@@ -3872,6 +5533,18 @@ export class TerminalPersistenceStore implements TerminalPersistencePort {
     for (const scope of this.scopes.values())
       this.installPresentation(scope, this.sealed !== null);
   }
+}
+
+/** A reserved witness identity, never one of the producer's random lifetime IDs. */
+export function recipientTerminalRetirementPath(
+  projectId: string,
+  worktreeId: string,
+): string {
+  return getWorktreeTerminalReplayWitnessFilePath(
+    projectId,
+    worktreeId,
+    'recipient-retirements',
+  );
 }
 
 /** The shadow keeps no output; ops without output change it as they will the record. */

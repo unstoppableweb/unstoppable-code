@@ -1,10 +1,6 @@
 import { useId, type JSX, type ReactNode } from 'react';
 import { DESCRIPTION_MARKDOWN_HINT } from '@canopy/ui-shared';
-import {
-  DialogFormField,
-  TextInput,
-  TextArea,
-} from '@canopy/ui-shared/components';
+import { FormField, TextInput, TextArea } from '@canopy/ui-shared/components';
 
 export function collectionNameValid(name: string): boolean {
   return name.trim().length > 0;
@@ -30,13 +26,13 @@ export function CollectionEditorFields({
   const descriptionFieldId = useId();
   return (
     <>
-      <DialogFormField
+      <FormField
         label={
           <>
             Name <span className="fg-destructive">*</span>
           </>
         }
-        htmlFor={nameFieldId}
+        id={nameFieldId}
       >
         <TextInput
           id={nameFieldId}
@@ -46,10 +42,10 @@ export function CollectionEditorFields({
           disabled={disabled}
           autoFocus
         />
-      </DialogFormField>
-      <DialogFormField
+      </FormField>
+      <FormField
         label="Description"
-        htmlFor={descriptionFieldId}
+        id={descriptionFieldId}
         description={
           <span data-testid="collection-description-hint">
             {DESCRIPTION_MARKDOWN_HINT}
@@ -64,7 +60,7 @@ export function CollectionEditorFields({
           rows={2}
           disabled={disabled}
         />
-      </DialogFormField>
+      </FormField>
       {children}
     </>
   );

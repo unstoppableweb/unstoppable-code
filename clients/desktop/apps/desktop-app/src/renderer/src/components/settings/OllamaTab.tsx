@@ -32,8 +32,8 @@ import {
   NoticeButton,
   NoticeList,
   NoticeListItem,
-  StatusBadge,
-  type StatusBadgeVariant,
+  Badge,
+  type BadgeTone,
   FieldError,
   Surface,
 } from '@canopy/ui-shared/components';
@@ -103,18 +103,18 @@ function statusLabel(status: OllamaServerStatus): string {
   }
 }
 
-function statusBadgeVariant(status: OllamaServerStatus): StatusBadgeVariant {
+function statusBadgeTone(status: OllamaServerStatus): BadgeTone {
   switch (status) {
     case 'stopped':
-      return 'muted';
+      return 'neutral';
     case 'starting':
       return 'warning';
     case 'running-managed':
       return 'success';
     case 'running-external':
-      return 'active';
+      return 'info';
     case 'error':
-      return 'destructive';
+      return 'danger';
   }
 }
 
@@ -1149,11 +1149,12 @@ export function OllamaTab(): JSX.Element {
                 : undefined
             }
             control={
-              <StatusBadge
-                variant={statusBadgeVariant(ollamaState.status)}
-                label={statusLabel(ollamaState.status)}
-                dataTestId="ollama-status"
-              />
+              <Badge
+                tone={statusBadgeTone(ollamaState.status)}
+                data-testid="ollama-status"
+              >
+                {statusLabel(ollamaState.status)}
+              </Badge>
             }
           />
         </SettingsGroup>

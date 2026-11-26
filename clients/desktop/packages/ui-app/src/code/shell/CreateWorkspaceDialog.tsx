@@ -9,7 +9,7 @@ import {
 } from '@canopy/protocol/remote-control/shell';
 import {
   Button,
-  DialogFormField,
+  FormField,
   DialogModal,
   LoadingSpinner,
   RepositoryCloneError,
@@ -77,9 +77,9 @@ export function CreateWorkspaceDialog({
       dataTestId={testIds?.dialog}
     >
       <div className="flex flex-col gap-4">
-        <DialogFormField
+        <FormField
           label="Git repository URL"
-          htmlFor={remoteUrlId}
+          id={remoteUrlId}
           description="The desktop clones the repo into its default repositories folder and names the project after it."
         >
           <TextInput
@@ -100,7 +100,7 @@ export function CreateWorkspaceDialog({
             aria-describedby={error ? errorId : undefined}
             data-testid={testIds?.remoteUrl}
           />
-        </DialogFormField>
+        </FormField>
         {error && (
           <RepositoryCloneError id={errorId} testId={errorId} message={error} />
         )}

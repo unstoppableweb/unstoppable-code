@@ -1,11 +1,7 @@
 import { ControlButton } from '@canopy/ui-shared/components';
 import { SidebarFooterBannerSurface } from '@canopy/ui-shared/components';
 import { type JSX, type ReactNode } from 'react';
-import {
-  Button,
-  RichHoverTooltip,
-  Tooltip,
-} from '@canopy/ui-shared/components';
+import { Button, HoverCard, Tooltip } from '@canopy/ui-shared/components';
 import { useLabsExperimentEnabled } from '@/stores/labsExperimentsStore';
 
 interface SidebarFooterBannerAction {
@@ -27,6 +23,7 @@ interface SidebarFooterBannerProps {
    */
   surface?: 'status' | 'development';
   onClick?: () => void;
+  disabled?: boolean;
   testId: string;
   /** Hover content; only a string also becomes a static banner's native title. */
   title?: ReactNode;
@@ -48,6 +45,7 @@ export function SidebarFooterBanner({
   children,
   surface,
   onClick,
+  disabled,
   testId,
   title,
   trailingAction,
@@ -64,10 +62,10 @@ export function SidebarFooterBanner({
         {/* `data-banner-primary` lets the consumer scope row-level hover
             treatments to the primary action via `has-[...]` so hovering the
             trailing icon button highlights only itself. */}
-        {/* RichHoverTooltip (not Tooltip): its wrapper carries no `shrink-0`,
+        {/* HoverCard (not Tooltip): its wrapper carries no `shrink-0`,
             so it can take over the primary button's `min-w-0 flex-1` slot and
             the label keeps truncating. */}
-        <RichHoverTooltip
+        <HoverCard
           disabled={title === undefined}
           triggerWrapperClassName="h-full min-w-0 flex-1"
           surfaceClassName="w-max max-w-72"
@@ -77,6 +75,7 @@ export function SidebarFooterBanner({
           <ControlButton
             type="button"
             onClick={onClick}
+            disabled={disabled}
             aria-label={ariaLabel}
             presentation="sidebar-banner-primary"
             data-testid={testId}
@@ -84,7 +83,7 @@ export function SidebarFooterBanner({
           >
             {children}
           </ControlButton>
-        </RichHoverTooltip>
+        </HoverCard>
         {/* The shared 28px quiet icon button sits 2px from the banner's
             trailing edge (-mr-1.5 against the banner's pr-2), which puts the
             glyph center 16px from the content edge — the same center line
@@ -118,6 +117,7 @@ export function SidebarFooterBanner({
         <ControlButton
           type="button"
           onClick={onClick}
+          disabled={disabled}
           aria-label={ariaLabel}
           presentation="sidebar-banner-action"
           appearance={{ tall, surface: surface ?? 'plain' }}

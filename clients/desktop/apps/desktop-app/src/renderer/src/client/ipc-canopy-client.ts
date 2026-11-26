@@ -215,6 +215,7 @@ function createNormalDesktopCapabilities(
     terminalPty: true,
     // Main persists names; a cloud scope's durable client keeps them in memory.
     terminalRename: true,
+    terminalHistoryRefresh: true,
     fileSystemAccess: 'read-write',
     voice: isVoiceDictationPlatform(platform),
     settingsScope: 'full',

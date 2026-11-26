@@ -14,7 +14,7 @@ import {
 import { Fact, FactList } from '../primitives/FactList';
 import { Button } from '../primitives/Button';
 import { DialogModal } from '../primitives/DialogModal';
-import { DialogFormField } from '../primitives/DialogFormField';
+import { FormField } from '../primitives/FormField';
 import { ListRow } from '../primitives/ListRow';
 import { TextInput } from '../primitives/Field';
 import { ErrorBanner } from '../primitives/StatusBlocks';
@@ -129,7 +129,7 @@ export function WorktreeInfoDialog({
             </FactList>
           ) : (
             <Stack gap="inline">
-              <DialogFormField label="Display label" htmlFor={labelInputId}>
+              <FormField label="Display label" id={labelInputId}>
                 <TextInput
                   ref={labelInputRef}
                   id={labelInputId}
@@ -138,7 +138,7 @@ export function WorktreeInfoDialog({
                   placeholder={branch}
                   data-testid={testIds?.labelInput}
                 />
-              </DialogFormField>
+              </FormField>
               {saveError && (
                 <div>
                   <ErrorBanner

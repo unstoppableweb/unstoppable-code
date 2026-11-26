@@ -11,7 +11,7 @@ import {
 import { MAX_MCP_EXTRA_HEADERS } from '@canopy/protocol/mcp-servers';
 import {
   Button,
-  DialogFormField,
+  FormField,
   Disclosure,
   FieldError,
   FORM_FIELD_DESCRIPTION_CLASS,
@@ -42,7 +42,7 @@ export function CustomMcpField({
   const errorId = error ? `${id}-error` : undefined;
   const describedBy = [hintId, errorId].filter(Boolean).join(' ') || undefined;
   return (
-    <DialogFormField label={label} htmlFor={id}>
+    <FormField label={label} id={id}>
       <div className="flex w-full min-w-0 flex-col gap-1.5">
         {children(describedBy)}
         {error && errorId && (
@@ -60,7 +60,7 @@ export function CustomMcpField({
           </p>
         )}
       </div>
-    </DialogFormField>
+    </FormField>
   );
 }
 

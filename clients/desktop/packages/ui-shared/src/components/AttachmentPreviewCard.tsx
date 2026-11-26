@@ -4,7 +4,7 @@ import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { Button } from '../primitives/Button';
 import { CenteredLoadingSpinner } from '../primitives/CenteredLoadingSpinner';
 import { CodeBlock } from '../primitives/CodeBlock';
-import { RichHoverCard } from '../primitives/RichHoverTooltip';
+import { HoverCard } from '../primitives/HoverCard';
 import { Skeleton } from '../primitives/Skeleton';
 import { Surface } from '../primitives/Surface';
 import { ImageThumbnail } from './ImageThumbnail';
@@ -170,7 +170,8 @@ export function AttachmentPreviewCard({
   onMouseLeave,
 }: AttachmentPreviewCardProps): JSX.Element {
   return (
-    <RichHoverCard
+    <HoverCard
+      open
       anchorRef={anchorRef}
       placement={placement}
       interactive
@@ -179,74 +180,81 @@ export function AttachmentPreviewCard({
       elevation="menu"
       surfacePadding="flush"
       surfaceClassName="w-70"
-    >
-      {/* Header */}
-      <Surface
-        variant="section"
-        boundary="bottom"
-        padding="section-compact"
-        className="shrink-0"
-      >
-        <div className="truncate text-xs font-medium fg-primary">{name}</div>
-        {sizeBytes !== undefined && (
-          <div className="text-3xs fg-secondary">
-            {formatFileSize(sizeBytes)}
-          </div>
-        )}
-        {createdAt !== undefined && (
-          <div className="text-3xs fg-secondary">
-            Created {new Date(createdAt).toLocaleString()}
-          </div>
-        )}
-      </Surface>
+      content={
+        <>
+          {/* Header */}
+          <Surface
+            variant="section"
+            boundary="bottom"
+            padding="section-compact"
+            className="shrink-0"
+          >
+            <div className="truncate text-xs font-medium fg-primary">
+              {name}
+            </div>
+            {sizeBytes !== undefined && (
+              <div className="text-3xs fg-secondary">
+                {formatFileSize(sizeBytes)}
+              </div>
+            )}
+            {createdAt !== undefined && (
+              <div className="text-3xs fg-secondary">
+                Created {new Date(createdAt).toLocaleString()}
+              </div>
+            )}
+          </Surface>
 
-      {/* Preview body. Portaled to the body, out of the composer's and
+          {/* Preview body. Portaled to the body, out of the composer's and
           transcript's replay blocks, so it carries its own: the attachment's
           contents. The header (name, size) and footer stay recorded. */}
-      <div
-        className={`${REPLAY_BLOCK_CLASS} min-h-0 flex-1 overflow-auto`}
-        data-selectable
-        data-testid="attachment-preview-body"
-      >
-        {loading && <LoadingSkeleton />}
-        {error && (
-          <div className="flex h-20 items-center justify-center text-xs fg-secondary">
-            {error}
+          <div
+            className={`${REPLAY_BLOCK_CLASS} min-h-0 flex-1 overflow-auto`}
+            data-selectable
+            data-testid="attachment-preview-body"
+          >
+            {loading && <LoadingSkeleton />}
+            {error && (
+              <div className="flex h-20 items-center justify-center text-xs fg-secondary">
+                {error}
+              </div>
+            )}
+            {preview && !loading && !error && (
+              <>
+                {preview.kind === 'image' && (
+                  <ImagePreview src={preview.content} />
+                )}
+                {preview.kind === 'text' && (
+                  <TextPreview
+                    content={preview.content}
+                    truncated={preview.truncated}
+                  />
+                )}
+                {preview.kind === 'markdown' && (
+                  <MarkdownPreview
+                    content={preview.content}
+                    truncated={preview.truncated}
+                  />
+                )}
+                {preview.kind === 'unsupported' && <UnsupportedPreview />}
+              </>
+            )}
           </div>
-        )}
-        {preview && !loading && !error && (
-          <>
-            {preview.kind === 'image' && <ImagePreview src={preview.content} />}
-            {preview.kind === 'text' && (
-              <TextPreview
-                content={preview.content}
-                truncated={preview.truncated}
-              />
-            )}
-            {preview.kind === 'markdown' && (
-              <MarkdownPreview
-                content={preview.content}
-                truncated={preview.truncated}
-              />
-            )}
-            {preview.kind === 'unsupported' && <UnsupportedPreview />}
-          </>
-        )}
-      </div>
 
-      {onOpen !== undefined ? (
-        <Surface
-          variant="section"
-          boundary="top"
-          padding="picker-section"
-          className="flex shrink-0"
-        >
-          <Button variant="ghost" size="compact" onClick={onOpen}>
-            <FileIcon size="sm" />
-            Open
-          </Button>
-        </Surface>
-      ) : null}
-    </RichHoverCard>
+          {onOpen !== undefined ? (
+            <Surface
+              variant="section"
+              boundary="top"
+              padding="picker-section"
+              className="flex shrink-0"
+            >
+              <Button variant="ghost" size="compact" onClick={onOpen}>
+                <FileIcon size="sm" />
+                Open
+              </Button>
+            </Surface>
+          ) : null}
+        </>
+      }
+    />
   );
 }

@@ -6,7 +6,7 @@ import {
   FLOATING_PICKER_GAP,
   FloatingMenu,
   DirectoryPickerOptionRow,
-  RichHoverTooltip,
+  HoverCard,
 } from '@canopy/ui-shared';
 import {
   ChevronDownMediumIcon,
@@ -126,7 +126,7 @@ export function DirectoryPicker({
     <div className={statusRow ? 'relative min-w-0' : 'relative'}>
       {/* On the tooltip layer, so composer toolbars that clip overflow
           cannot cut it off; hidden while the menu is open. */}
-      <RichHoverTooltip
+      <HoverCard
         content={tooltipContent}
         suppressed={open}
         surfacePadding="card"
@@ -167,7 +167,7 @@ export function DirectoryPicker({
             {triggerContents}
           </ControlButton>
         )}
-      </RichHoverTooltip>
+      </HoverCard>
 
       <FloatingMenu
         id={menuId}

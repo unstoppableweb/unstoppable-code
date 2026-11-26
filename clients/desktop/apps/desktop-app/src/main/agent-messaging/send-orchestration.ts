@@ -93,10 +93,8 @@ async function requireSendBotWorkspaces(
   action: ChatSendAction,
   caller: TrustedSendCaller,
 ): Promise<void> {
-  if (action.type === 'bots.send_message') {
-    await ensureBotRegistryLoaded?.();
-    requireBotWorkspace(action.botId);
-  } else await requireBotWorkspaceForProjectId(action.projectId);
+  if (action.type === 'projects.send_message')
+    await requireBotWorkspaceForProjectId(action.projectId);
 
   const sourceProjectId =
     caller.kind === 'pipeline'
@@ -924,8 +922,18 @@ async function resolveBotTarget(
 }> {
   const { requireBotAccess, readBotEntries } =
     await import('../project-discovery/bots/target');
-  const bot = requireBotWorkspace(action.botId);
   await requireBotAccess(caller);
+  await ensureBotRegistryLoaded();
+  // Preferences can change while the registry loads.
+  await requireBotAccess(caller);
+  let bot: ReturnType<typeof requireBotWorkspace>;
+  try {
+    bot = requireBotWorkspace(action.botId);
+  } catch (error) {
+    if (error instanceof DiscoveryError && error.code === 'unknown_bot')
+      throw new AgentChatSendError(error.code, error.message);
+    throw error;
+  }
   if (
     !(await readBotEntries(bot.botId)).some(
       (entry) => entry.id === action.taskId,
@@ -948,7 +956,7 @@ async function resolveBotTarget(
     );
   return {
     address: { botId: bot.botId, taskId: action.taskId, chatId: tab.id },
-    projectType: 'cowork' as const,
+    projectType: 'cowork',
     scope: {
       workspaceId: bot.projectId,
       worktreeId: action.taskId,

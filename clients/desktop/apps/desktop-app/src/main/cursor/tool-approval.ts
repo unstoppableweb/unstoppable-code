@@ -262,6 +262,8 @@ export async function authorizeCursorMcpTool(
         'pipeline_list',
         'pipeline_get_current',
         'pipeline_get_action_definition',
+        'automation_list',
+        'automation_get',
       ].includes(key)
     )
       return { decision: 'deny' };

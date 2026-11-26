@@ -41,6 +41,7 @@ let mockReadFailure: string | undefined;
 let mockAsideFailure = false;
 let mockPruneFailure = false;
 let mockRefuse: string | undefined;
+let mockRefuseReplayWitnessWithRecord = true;
 let mockEvents: string[] = [];
 const mockLegacy = (root: string, p: string, w: string, file: string): string =>
   join(root, 'workspaces', p, 'worktree-data', w, file);
@@ -49,6 +50,17 @@ jest.mock('../../lib/paths', () => ({
     mockLegacy(mockRoot, p, w, 'terminal-state.json'),
   getWorktreeTerminalPresentationFilePath: (p: string, w: string): string =>
     mockLegacy(mockRoot, p, w, 'terminal-presentation.json'),
+  getWorktreeTerminalReplayWitnessFilePath: (
+    p: string,
+    w: string,
+    id: string,
+  ): string =>
+    mockLegacy(
+      mockRoot,
+      p,
+      w,
+      `terminal-replay-witness.${createHash('sha256').update(id).digest('hex')}.json`,
+    ),
   getWorktreeTerminalLegacyLayout: (): 'workspaces' => 'workspaces',
   getTerminalOutboxDataRoot: (): string => mockRoot,
 }));
@@ -64,7 +76,11 @@ jest.mock('@canopy/core-runtime/storage', () => {
     get STORAGE_OWNERSHIP(): readonly Storage.StorageOwnershipRow[] {
       return mockRefuse
         ? actual.STORAGE_OWNERSHIP.map((row) =>
-            row.id === mockRefuse
+            row.id === mockRefuse ||
+            (mockRefuseReplayWitnessWithRecord &&
+              (mockRefuse === 'terminal_record' ||
+                mockRefuse === 'terminal_presentation') &&
+              row.id === 'terminal_replay_witness')
               ? { ...row, transitionOwner: 'offline' }
               : row,
           )
@@ -249,23 +265,6 @@ async function settle(store: TerminalPersistenceStore): Promise<void> {
   store.flushAllSync();
   authority.flushSync();
 }
-/**
- * Applies the outbox custody to the authority in order. Only the current
- * lifetime replays, so this checks what a quit sealed into custody.
- */
-async function applyCustody(): Promise<void> {
-  for (const scope of (await new TerminalRecordOutbox(() => mockRoot).read())
-    .outbox.scopes)
-    for (const entry of scope.entries)
-      authority.apply({
-        client: entry.client ?? scope.client,
-        producer: { id: 'electron_main', runId: entry.runId },
-        seq: entry.seq,
-        ...(entry.generation !== undefined && { generation: entry.generation }),
-        ...(entry.sealed && { sealed: entry.sealed }),
-        ops: entry.ops,
-      });
-}
 /** A restarted main run against the same daemon. */
 async function open(w = 'w'): Promise<TerminalPersistenceStore> {
   const store = newStore();
@@ -343,6 +342,7 @@ beforeEach(() => {
   mockAsideFailure = false;
   mockPruneFailure = false;
   mockRefuse = undefined;
+  mockRefuseReplayWitnessWithRecord = true;
   mockEvents = [];
   up = true;
   applies = 0;
@@ -840,7 +840,6 @@ it('R11: 100ms coalescing and synchronous quit cancel the timer', async () => {
   await new Promise((resolve) => setTimeout(resolve, 150));
   // Quit sealed the pending write into the outbox; no timer sent it.
   expect(applies).toBe(1);
-  await applyCustody();
   expect((await load(await open())).terminals[0].scrollbackLines).toEqual([
     'A0123',
   ]);
@@ -1361,6 +1360,70 @@ it.each(['terminal_record', 'terminal_presentation'])(
   },
 );
 
+it('R2 an independently admitted witness preserves deferred history when the record writer is refused', async () => {
+  mockRefuse = 'terminal_record';
+  mockRefuseReplayWitnessWithRecord = false;
+  const s = newStore();
+  await s.recordClientFor('p', 'w');
+  s.registerLiveSession(session('deferred'));
+  s.appendTerminalOutput('p', 'w', 'deferred', Buffer.from('replay normally'));
+  await s.drainAll();
+  s.markAllLiveTerminalsExited('app-quit');
+  const names = fs.readdirSync(dirname(workerPath()));
+  expect(names).toEqual([
+    expect.stringMatching(/^terminal-replay-witness\.[a-f0-9]{64}\.json$/),
+  ]);
+  const witness: unknown = JSON.parse(
+    fs.readFileSync(join(dirname(workerPath()), names[0]), 'utf8'),
+  );
+  if (!isRecord(witness)) throw new Error('Expected a replay witness');
+  expect(Object.keys(witness)).toEqual(['lifetimeId']);
+  expect(typeof witness.lifetimeId).toBe('string');
+  expect(installs()).toEqual([]);
+  expect(fs.existsSync(recordPath())).toBe(false);
+  const queued = await new TerminalRecordOutbox(() => mockRoot).read();
+  expect(
+    queued.outbox.scopes
+      .flatMap((scope) => scope.entries)
+      .some((entry) =>
+        entry.ops.some(
+          (op) => op.op === 'output.append' && op.text === 'replay normally',
+        ),
+      ),
+  ).toBe(true);
+  mockRefuse = undefined;
+  const loaded = await load(newStore());
+  expect(
+    loaded.terminals.map((entry) => [entry.session.id, entry.scrollbackLines]),
+  ).toEqual([['deferred', ['replay normally']]]);
+});
+
+it('R2 witness-only owner refusal creates no directory and quarantines durable batches', async () => {
+  mockRefuse = 'terminal_replay_witness';
+  up = false;
+  const s = newStore();
+  await s.recordClientFor('p', 'w');
+  s.registerLiveSession(session('held'));
+  s.appendTerminalOutput('p', 'w', 'held', Buffer.from('still durable'));
+  await s.drainAll();
+  s.markAllLiveTerminalsExited('app-quit');
+  expect(fs.existsSync(join(mockRoot, 'workspaces'))).toBe(false);
+  mockRefuse = undefined;
+  up = true;
+  const loaded = await load(newStore());
+  expect(loaded.terminals).toEqual([]);
+  const queued = await new TerminalRecordOutbox(() => mockRoot).read();
+  expect(
+    queued.outbox.scopes
+      .flatMap((scope) => scope.entries)
+      .some((entry) =>
+        entry.ops.some(
+          (op) => op.op === 'output.append' && op.text === 'still durable',
+        ),
+      ),
+  ).toBe(true);
+});
+
 it.each(['absent', 'damaged', 'mismatched'])(
   'Fdup worker truth survives %s presentation without grouping ungrouped history',
   async (mode) => {
@@ -1474,7 +1537,7 @@ it('a terminal still listed in groups ignores its forgetTerminalIds entry', asyn
   expect(restarted.terminalCustomNames.a).toBe('API');
 });
 
-it('UTF8 streaming, decoder finalization, 5000 lines and shutdown signal precedence survive the quit seal', async () => {
+it('UTF8 streaming, decoder finalization, 5000 lines and shutdown signal precedence survive restart', async () => {
   const store = await pair();
   store.registerLiveSession(session('a'));
   const bytes = Buffer.from('€');
@@ -1490,7 +1553,6 @@ it('UTF8 streaming, decoder finalization, 5000 lines and shutdown signal precede
   store.appendTerminalOutput('p', 'w', 'a', Buffer.from([0xe2]));
   store.markAllLiveTerminalsExited('app-quit');
   store.markTerminalExited('p', 'w', 'a', 9, 'SIGKILL');
-  await applyCustody();
   const entry = (await load(await open())).terminals[0];
   expect(entry.scrollbackLines).toHaveLength(5000);
   expect(entry.scrollbackLines.at(-1)).toBe('last�');
@@ -1635,7 +1697,6 @@ describe('real process termination around the real atomic writer', () => {
         ),
     ).toBe(true);
     authority = newAuthority();
-    await applyCustody();
     const next = await open();
     await settle(next);
     for (const current of [next, await open()]) {

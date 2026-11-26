@@ -5,7 +5,7 @@ import type { LedgerEntryType } from '@canopy/protocol/canopy-core';
 import { LedgerEntryTypeIcon } from '../../icons/LedgerEntryTypeIcon';
 import { LEDGER_ENTRY_TYPE_LABELS } from '../../lib/ledger-display';
 import { DisplayAvatar } from '../../primitives/DisplayAvatar';
-import { RichHoverTooltip } from '../../primitives/RichHoverTooltip';
+import { HoverCard } from '../../primitives/HoverCard';
 import {
   LEDGER_DISPLAY_AVATAR_SIZE,
   type LedgerActorAvatarSize,
@@ -55,7 +55,7 @@ export function LedgerEntryTypeAvatar({
   const label = LEDGER_ENTRY_TYPE_LABELS[type];
   const avatarSize = LEDGER_DISPLAY_AVATAR_SIZE[size];
   return (
-    <RichHoverTooltip
+    <HoverCard
       content={label}
       deferUntilInteraction
       dataTestId="ledger-entry-type-tooltip"
@@ -72,6 +72,6 @@ export function LedgerEntryTypeAvatar({
           <LedgerEntryTypeIcon type={type} size="sm" />
         }
       />
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }

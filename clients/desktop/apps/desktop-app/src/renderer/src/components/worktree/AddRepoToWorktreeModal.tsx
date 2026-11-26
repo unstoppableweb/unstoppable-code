@@ -35,7 +35,7 @@ import {
   Stack,
   CenteredLoadingSpinner,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   DelayedLoadingPlaceholder,
   EmptyState,
   Notice,
@@ -761,37 +761,41 @@ function AddRepoToWorktreeModalContent({
           <Surface variant="group" gap="inline" padding="compact">
             <span className="block text-xs fg-secondary">Update mode</span>
             <ChoiceList className="" kind="radio" aria-label="Update mode">
-              <ChoiceListRow
+              <ChoiceField
+                layout="row"
                 kind="radio"
-                selected={mode === 'temporary'}
-                onClick={() => setMode('temporary')}
+                checked={mode === 'temporary'}
+                onChange={() => setMode('temporary')}
                 disabled={submitting}
                 data-testid="add-repo-to-worktree-modal-mode-temporary"
-              >
-                <Stack gap="tight">
-                  <span className="block text-s font-medium">Temporary</span>
-                  <span className="block text-xs fg-secondary">
-                    Create or reuse a temporary multi-repo project for this
-                    worktree only.
-                  </span>
-                </Stack>
-              </ChoiceListRow>
-              <ChoiceListRow
+                label={
+                  <Stack gap="tight">
+                    <span className="block text-s font-medium">Temporary</span>
+                    <span className="block text-xs fg-secondary">
+                      Create or reuse a temporary multi-repo project for this
+                      worktree only.
+                    </span>
+                  </Stack>
+                }
+              />
+              <ChoiceField
+                layout="row"
                 kind="radio"
-                selected={mode === 'update-source-workspace'}
-                onClick={() => setMode('update-source-workspace')}
+                checked={mode === 'update-source-workspace'}
+                onChange={() => setMode('update-source-workspace')}
                 disabled={submitting}
                 data-testid="add-repo-to-worktree-modal-mode-update"
-              >
-                <Stack gap="tight">
-                  <span className="block text-s font-medium">
-                    Update project
-                  </span>
-                  <span className="block text-xs fg-secondary">
-                    Add missing repos to this project and this worktree.
-                  </span>
-                </Stack>
-              </ChoiceListRow>
+                label={
+                  <Stack gap="tight">
+                    <span className="block text-s font-medium">
+                      Update project
+                    </span>
+                    <span className="block text-xs fg-secondary">
+                      Add missing repos to this project and this worktree.
+                    </span>
+                  </Stack>
+                }
+              />
             </ChoiceList>
           </Surface>
         ) : null

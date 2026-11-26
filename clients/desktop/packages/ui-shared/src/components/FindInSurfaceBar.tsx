@@ -12,7 +12,7 @@ import {
 } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { HeaderActionButton } from './HeaderActionButton';
-import { SearchBar } from '../primitives/SearchBar';
+import { FindBar } from './FindBar';
 import { ErrorBanner } from '../primitives/StatusBlocks';
 
 /** Which focused surface the floating find bar searches. */
@@ -227,7 +227,7 @@ export function FindInSurfaceBar({
       data-find-mode={mode}
       // Browser mode searches the live page; never swap it for a still frame.
       data-canopy-browser-native-overlay="false"
-      // The input's SearchBar already closes on Escape (and prevents the
+      // The input's FindBar already closes on Escape (and prevents the
       // default); this catches Escape from the mode, step, and close buttons.
       onKeyDown={(event): void => {
         if (event.key === 'Escape' && !event.defaultPrevented) {
@@ -269,7 +269,7 @@ export function FindInSurfaceBar({
               )}
             </div>
           ) : null}
-          <SearchBar
+          <FindBar
             className="min-w-56 flex-1"
             query={query}
             onQueryChange={onQueryChange}

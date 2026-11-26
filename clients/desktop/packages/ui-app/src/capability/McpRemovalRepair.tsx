@@ -22,7 +22,7 @@ import {
   Button,
   ConfirmDialog,
   Disclosure,
-  DialogFormField,
+  FormField,
   Heading,
   Inline,
   Notice,
@@ -456,7 +456,7 @@ export function McpRemovalRepair({
                     )}
                 </Stack>
               )}
-              <DialogFormField label="Device server ID" htmlFor={id}>
+              <FormField label="Device server ID" id={id}>
                 <TextInput
                   ref={serverInput}
                   id={id}
@@ -470,7 +470,7 @@ export function McpRemovalRepair({
                   }}
                   data-testid="mcp-removal-server-id"
                 />
-              </DialogFormField>
+              </FormField>
               <div>
                 <Button
                   loading={busy && confirmation === null}

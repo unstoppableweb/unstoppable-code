@@ -802,6 +802,21 @@ function provenanceAgentOrigin(
   return 'agentOrigin' in evidence ? evidence.agentOrigin : undefined;
 }
 
+/**
+ * The agent chat behind `source` as a person reads it, `“Title” in
+ * Project`, or `null` when it can't be resolved (CAN-7228). Display only.
+ */
+export async function agentOriginChatLabel(
+  source: AgentSenderRuntimeSource,
+): Promise<string | null> {
+  try {
+    const resolved = await resolveSender(source);
+    return `“${resolved.chatTitle}” in ${resolved.projectLabel}`;
+  } catch {
+    return null;
+  }
+}
+
 /** The live identity of a trusted caller, e.g. an agent steering a queued input. */
 export async function resolveAgentSenderIdentity(
   source: AgentSenderRuntimeSource,

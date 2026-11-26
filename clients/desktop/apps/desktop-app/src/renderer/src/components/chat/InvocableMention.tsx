@@ -5,7 +5,7 @@ import {
   INLINE_CHIP_ICON_CLASS,
   PREVIEW_CARD_SURFACE,
   ReferenceHoverCard,
-  RichHoverTooltip,
+  HoverCard,
 } from '@canopy/ui-shared/components';
 import { SkillIcon } from '@canopy/ui-shared/icons/AppIcons';
 import type { InvocableInventoryEntry } from '@canopy/desktop-shared/types';
@@ -54,7 +54,7 @@ export const InvocableMention = memo(function InvocableMention({
       {/* The whole chip opens the details, like every other chip in prose.
           The preview is portaled out of the transcript's and composer's
           replay blocks: the skill's name and description are recorded. */}
-      <RichHoverTooltip
+      <HoverCard
         content={
           <ReferenceHoverCard
             testId="invocable-mention-card"
@@ -87,7 +87,7 @@ export const InvocableMention = memo(function InvocableMention({
           />
           {children}
         </ControlButton>
-      </RichHoverTooltip>
+      </HoverCard>
 
       {detailsOpen && typeof document !== 'undefined' ? (
         <InvocableDetailsModal

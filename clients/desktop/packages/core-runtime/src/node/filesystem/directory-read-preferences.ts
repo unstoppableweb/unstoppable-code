@@ -3,6 +3,7 @@ import {
   createDefaultFileIndexingPreferences,
   type FileIndexingPreferences,
 } from '@canopy/protocol/file-indexing';
+import { readPreferencesEnvelopeRecord } from '@canopy/protocol/preferences';
 import { normalizeFileIndexingPreferences } from './file-indexing';
 
 const DIRECTORY_PRIMARY_PREFERENCES_FILE_NAME = 'preferences.json';
@@ -67,8 +68,8 @@ function createDefaultDirectoryReadPreferences(): DirectoryReadPreferences {
 
 /**
  * The `preferences` record of a desktop preferences file, or null when the
- * envelope is unusable (not JSON, not version 1, no `preferences` record).
- * Fields inside are not checked; each reader normalizes its own.
+ * envelope is unusable (not JSON, an unreadable version, no `preferences`
+ * record). Fields inside are not checked; each reader normalizes its own.
  */
 export function readDesktopPreferencesRecord(
   raw: string,
@@ -79,14 +80,7 @@ export function readDesktopPreferencesRecord(
   } catch {
     return null;
   }
-  if (
-    !isRecord(parsed) ||
-    parsed.version !== 1 ||
-    !isRecord(parsed.preferences)
-  ) {
-    return null;
-  }
-  return parsed.preferences;
+  return readPreferencesEnvelopeRecord(parsed);
 }
 
 /**

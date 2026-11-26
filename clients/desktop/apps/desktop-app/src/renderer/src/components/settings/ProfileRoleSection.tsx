@@ -13,8 +13,8 @@ import type {
 import {
   Button,
   ChoiceList,
-  ChoiceListRow,
-  DialogFormField,
+  ChoiceField,
+  FormField,
   DialogModal,
   TextInput,
   ErrorBanner,
@@ -252,22 +252,22 @@ export function ProfileRoleSection(): JSX.Element {
               data-testid="settings-profile-role-options"
             >
               {ROLE_OPTIONS.map((option) => (
-                <ChoiceListRow
+                <ChoiceField
                   key={option.id}
-                  selected={draftRoles.includes(option.id)}
-                  onClick={(): void => toggleRole(option.id)}
+                  layout="row"
+                  checked={draftRoles.includes(option.id)}
+                  onChange={(): void => toggleRole(option.id)}
                   disabled={saving}
                   data-testid={`settings-profile-role-option-${option.id}`}
-                >
-                  {option.label}
-                </ChoiceListRow>
+                  label={option.label}
+                />
               ))}
             </ChoiceList>
           </div>
           <div className="px-6 pb-6">
-            <DialogFormField
+            <FormField
               label="Tell us more about what you do (optional)"
-              htmlFor="settings-profile-role-detail-input"
+              id="settings-profile-role-detail-input"
             >
               <TextInput
                 id="settings-profile-role-detail-input"
@@ -279,7 +279,7 @@ export function ProfileRoleSection(): JSX.Element {
                 placeholder="Role, responsibilities, or goals"
                 disabled={saving}
               />
-            </DialogFormField>
+            </FormField>
           </div>
           {saveError ? (
             <div className="px-6 pb-6">

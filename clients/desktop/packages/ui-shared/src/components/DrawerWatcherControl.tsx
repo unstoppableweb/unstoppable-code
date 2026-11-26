@@ -3,7 +3,7 @@ import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { BeingWatchedIcon } from '../icons/AppIcons';
 import { DrawerInspectorAction } from './DrawerInspectorAction';
 import { ExecutionActionButton } from './ExecutionActionButton';
-import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
+import { HoverCard } from '../primitives/HoverCard';
 
 export interface DrawerWatcherPreviewRow {
   readonly id: string;
@@ -32,7 +32,7 @@ export function DrawerWatcherControl({
   const [previewOpen, setPreviewOpen] = useState(false);
   if (count === 0) return null;
   return (
-    <RichHoverTooltip
+    <HoverCard
       open={previewOpen}
       onOpenChange={setPreviewOpen}
       dataTestId={dataTestId ? `${dataTestId}-tooltip` : undefined}
@@ -95,6 +95,6 @@ export function DrawerWatcherControl({
           }}
         />
       )}
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }

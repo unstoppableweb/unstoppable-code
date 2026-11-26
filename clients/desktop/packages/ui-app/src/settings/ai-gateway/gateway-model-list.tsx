@@ -5,7 +5,7 @@ import { useSettingsPrivacy } from '../host';
 import {
   Button,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   FieldError,
   FormField,
   SettingsSelect,
@@ -291,12 +291,13 @@ export function AddGatewayModelForm({
         <p className="text-xs font-medium fg-primary">Thinking levels</p>
         <ChoiceList aria-label="Thinking levels">
           {SELECTABLE_THINKING_LEVELS.map((level) => (
-            <ChoiceListRow
+            <ChoiceField
               key={level}
-              selected={thinking.has(level)}
+              layout="row"
+              checked={thinking.has(level)}
               disabled={busy}
               data-testid={`model-gateway-add-thinking-${level}`}
-              onClick={() =>
+              onChange={() =>
                 setThinking((prev) => {
                   const next = new Set(prev);
                   if (next.has(level)) {
@@ -307,24 +308,22 @@ export function AddGatewayModelForm({
                   return next;
                 })
               }
-            >
-              {level}
-            </ChoiceListRow>
+              label={level}
+            />
           ))}
         </ChoiceList>
       </div>
 
       <div className="flex flex-col gap-3">
         <ChoiceList aria-label="Tool schemas">
-          <ChoiceListRow
-            selected={flatSchema}
+          <ChoiceField
+            layout="row"
+            checked={flatSchema}
             disabled={busy}
             data-testid="model-gateway-add-flat-schema"
-            onClick={() => setFlatSchema((prev) => !prev)}
-          >
-            Send simplified tool schemas. Try this if the model errors on tool
-            calls.
-          </ChoiceListRow>
+            onChange={() => setFlatSchema((prev) => !prev)}
+            label="Send simplified tool schemas. Try this if the model errors on tool calls."
+          />
         </ChoiceList>
 
         {duplicateLabel && trimmedLabel.length > 0 ? (

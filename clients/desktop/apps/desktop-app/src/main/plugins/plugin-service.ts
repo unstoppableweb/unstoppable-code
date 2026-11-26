@@ -4429,6 +4429,7 @@ async function persistCuratedPluginDefaults(
 
   let changed = false;
   const preferences = await updatePreferencesFile((latest) => {
+    changed = false;
     assertCatalogHealth();
     const seen = new Set(latest.initializedCuratedPluginDefaults ?? []);
     const additions = names.filter((name) => !seen.has(name));

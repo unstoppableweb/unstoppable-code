@@ -1,5 +1,6 @@
 'use client';
 
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { ControlButton } from '@canopy/ui-shared/components';
 import {
   requestArchiveRecoveryReview,
@@ -1236,6 +1237,14 @@ export interface WorkspacesSidebarSectionsProps {
     workspace: SnapshotWorkspace,
   ) => WorkspaceBranchGrouping | undefined;
   readonly testIds?: WorkspacesSidebarSectionsTestIds;
+  /**
+   * Reports the `worktreeRowKey` values of task rows currently rendered in the
+   * sidebar after project pagination, project collapse, and Hidden tasks
+   * disclosure state are applied.
+   */
+  readonly onRenderedWorktreeKeysChange?: (
+    worktreeKeys: ReadonlySet<string>,
+  ) => void;
 }
 
 /**
@@ -1381,6 +1390,7 @@ export function WorkspacesSidebarSections({
   branchGroupingEnabled = false,
   getBranchGrouping,
   testIds,
+  onRenderedWorktreeKeysChange,
 }: WorkspacesSidebarSectionsProps): JSX.Element | null {
   const recoveryWorkspaceIds = useArchiveRecoveryWorkspaceIds();
   // A waiting question is carried per chat on the wire; the row dot is per
@@ -1544,6 +1554,71 @@ export function WorkspacesSidebarSections({
     context?.kind === 'organization' ? context.organizationId : 'personal',
     paginateProjects,
   );
+  const renderedWorktreeKeys = useMemo((): readonly string[] => {
+    const keys: string[] = [];
+    const worktreesByWorkspace = new Map<string, SnapshotWorktree[]>();
+    for (const worktree of worktrees) {
+      const list = worktreesByWorkspace.get(worktree.workspaceLocalId);
+      if (list) list.push(worktree);
+      else worktreesByWorkspace.set(worktree.workspaceLocalId, [worktree]);
+    }
+    const collectForWorkspace = (workspace: SnapshotWorkspace): void => {
+      const collapsed =
+        collapsedOverrides[workspace.localId] ?? workspace.collapsed === true;
+      if (collapsed) return;
+      const workspaceWorktrees = worktreesByWorkspace.get(workspace.localId);
+      if (!workspaceWorktrees) return;
+      const hiddenPlacement =
+        hiddenWorktreesPlacement?.(workspace.localId) ?? 'inline';
+      const hiddenExpanded =
+        hiddenWorktreesExpanded[workspace.localId] === true;
+      for (const worktree of workspaceWorktrees) {
+        if (worktree.hidden !== true) {
+          keys.push(worktreeRowKey(workspace.localId, worktree.localId));
+        } else if (
+          hiddenExpanded &&
+          (hiddenPlacement === 'inline' || isPairedComputerId(worktree.localId))
+        ) {
+          keys.push(worktreeRowKey(workspace.localId, worktree.localId));
+        }
+      }
+    };
+    for (const item of projectPage.projects) {
+      if ('node' in item) continue;
+      collectForWorkspace(item);
+    }
+    if (hiddenWorkspacesExpanded) {
+      for (const workspace of partitions.hidden) {
+        collectForWorkspace(workspace);
+      }
+    }
+    return keys;
+  }, [
+    projectPage.projects,
+    hiddenWorkspacesExpanded,
+    partitions.hidden,
+    worktrees,
+    collapsedOverrides,
+    hiddenWorktreesExpanded,
+    hiddenWorktreesPlacement,
+  ]);
+  const onRenderedWorktreeKeysChangeRef = useRef(onRenderedWorktreeKeysChange);
+  onRenderedWorktreeKeysChangeRef.current = onRenderedWorktreeKeysChange;
+  const lastRenderedWorktreeKeysRef = useRef<readonly string[] | null>(null);
+  useEffect(() => {
+    const callback = onRenderedWorktreeKeysChangeRef.current;
+    if (!callback) return;
+    const previous = lastRenderedWorktreeKeysRef.current;
+    if (
+      previous !== null &&
+      previous.length === renderedWorktreeKeys.length &&
+      previous.every((key, index) => key === renderedWorktreeKeys[index])
+    ) {
+      return;
+    }
+    lastRenderedWorktreeKeysRef.current = renderedWorktreeKeys;
+    callback(new Set(renderedWorktreeKeys));
+  }, [renderedWorktreeKeys]);
   // The single capability-resolution site in this component. Every affordance
   // below reads through it with the id of the thing it actually addresses.
   const capsOf = (localId: string): CanopyCapabilities =>
@@ -2014,6 +2089,17 @@ export function WorkspacesSidebarSections({
       workspace.localId,
       itemSortMode,
     );
+    // Paired-computer rows are read-only projections from another machine, so
+    // they never join local branch stacks or local item-group drag targets.
+    const localVisibleRows = rows.visible.filter(
+      (worktree) => !isPairedComputerId(worktree.localId),
+    );
+    const pairedVisibleRows = rows.visible.filter((worktree) =>
+      isPairedComputerId(worktree.localId),
+    );
+    const localHiddenRows = rows.hidden.filter(
+      (worktree) => !isPairedComputerId(worktree.localId),
+    );
     const workspaceType = workspaceKind(workspace);
     const childUnitLabel = workspaceChildUnitLabel(workspaceType).toLowerCase();
     const childUnitLabelPlural = workspaceChildUnitLabel(
@@ -2044,7 +2130,7 @@ export function WorkspacesSidebarSections({
     // row menu read it, and so does the pinned-ancestor walk below.
     const depthGrouping = groupingInput
       ? computeBranchGroups(
-          [...rows.visible, ...rows.hidden].map(toGroupingNode),
+          [...localVisibleRows, ...localHiddenRows].map(toGroupingNode),
           groupingInput.defaultBranches,
           groupingInput.groupingEnabled,
         )
@@ -2055,7 +2141,7 @@ export function WorkspacesSidebarSections({
     // flat but still offers "Unstack from base", and an unpinned child of a
     // pinned root lists after every pinned row instead of splitting them.
     const pinnedById = new Map(
-      [...rows.visible, ...rows.hidden].map((worktree) => [
+      [...localVisibleRows, ...localHiddenRows].map((worktree) => [
         worktree.localId,
         worktree.pinned === true,
       ]),
@@ -2082,7 +2168,7 @@ export function WorkspacesSidebarSections({
     };
     const grouping = groupingInput
       ? computeBranchGroups(
-          rows.visible.map(toPaintedGroupingNode),
+          localVisibleRows.map(toPaintedGroupingNode),
           groupingInput.defaultBranches,
           groupingInput.groupingEnabled,
         )
@@ -2091,7 +2177,7 @@ export function WorkspacesSidebarSections({
     // legacy section did: hops below the top-most base-branch ancestor, with
     // the direct parent named when it is not that ancestor.
     const nameByWorktreeId = new Map(
-      [...rows.visible, ...rows.hidden].map((worktree) => [
+      [...localVisibleRows, ...localHiddenRows].map((worktree) => [
         worktree.localId,
         { branchName: worktree.branch, animalName: worktree.localId },
       ]),
@@ -2147,7 +2233,7 @@ export function WorkspacesSidebarSections({
             ),
           ),
         }))
-      : rows.visible.map((row) => ({
+      : localVisibleRows.map((row) => ({
           rootId: row.localId,
           itemIds: [row.localId],
           pinned: row.pinned === true,
@@ -2174,7 +2260,7 @@ export function WorkspacesSidebarSections({
       : undefined;
     const containerByWorktreeId = grouping
       ? new Map(
-          rows.visible.map((worktree) => {
+          localVisibleRows.map((worktree) => {
             const root = grouping.stateById.get(worktree.localId)?.rootId;
             return [worktree.localId, root ? `group:${root}` : 'top'] as const;
           }),
@@ -2186,7 +2272,7 @@ export function WorkspacesSidebarSections({
     if (worktreeMultiSelect !== undefined) {
       const visibleById =
         itemGroupsEnabled && !collapsed
-          ? new Map(rows.visible.map((item) => [item.localId, item]))
+          ? new Map(localVisibleRows.map((item) => [item.localId, item]))
           : undefined;
       const renderedWorktrees = (
         collapsed
@@ -2203,7 +2289,7 @@ export function WorkspacesSidebarSections({
                   group.node.worktree,
                   ...group.children.map((child) => child.worktree),
                 ])
-              : rows.visible
+              : localVisibleRows
       ).filter(
         // The pending row is outside ranges, select-all and bulk actions.
         (worktree) => !isPendingRow(workspace.localId, worktree.localId),
@@ -2379,6 +2465,7 @@ export function WorkspacesSidebarSections({
       // workspace. Redundant while workspaces are single-backend, and
       // deliberately so: it is what lets a workspace holding rows from more
       // than one backend answer per row without re-threading these call sites.
+      const isPairedRow = isPairedComputerId(worktree.localId);
       const rowCapabilities = capsOf(worktree.localId);
       // A pending create's stand-in: rendered by the real row path, but inert
       // until the host lists the created row (no drag, menu, actions,
@@ -2459,12 +2546,14 @@ export function WorkspacesSidebarSections({
           variant="bare"
           role={
             !pinnedSurface &&
+            rowSelectable &&
             worktreeMultiSelect?.selectModeFor(workspace.localId)
               ? 'checkbox'
               : undefined
           }
           aria-checked={
             !pinnedSurface &&
+            rowSelectable &&
             worktreeMultiSelect?.selectModeFor(workspace.localId)
               ? multiSelection?.isSelected(rowKey)
               : undefined
@@ -2645,8 +2734,12 @@ export function WorkspacesSidebarSections({
               isWorktreeSpaceMuted?.(workspace.localId, worktree.localId) ===
               true
             }
-            renderPipelinePopover={renderPipelinePopover}
-            renderTerminalPopover={renderTerminalPopover}
+            renderPipelinePopover={
+              isPairedRow ? undefined : renderPipelinePopover
+            }
+            renderTerminalPopover={
+              isPairedRow ? undefined : renderTerminalPopover
+            }
             rowProps={{
               ...worktreeRowDisplayProps(worktree, rowContext),
               onIntent:
@@ -2686,9 +2779,12 @@ export function WorkspacesSidebarSections({
                 ? {
                     multiSelect: {
                       selected:
-                        !pinnedSurface && multiSelection.isSelected(rowKey),
+                        !pinnedSurface &&
+                        rowSelectable &&
+                        multiSelection.isSelected(rowKey),
                       selectMode:
                         !pinnedSurface &&
+                        rowSelectable &&
                         worktreeMultiSelect?.selectModeFor(workspace.localId),
                       selectable: rowSelectable,
                     },
@@ -2778,9 +2874,22 @@ export function WorkspacesSidebarSections({
                 </div>
               </Fragment>
             ))
-          : rows.visible.map((worktree) => renderRow(worktree, false))}
+          : localVisibleRows.map((worktree) => renderRow(worktree, false))}
       </SidebarList>
     );
+    const pairedVisibleList =
+      pairedVisibleRows.length > 0 ? (
+        <SidebarList
+          className={
+            localVisibleRows.length > 0 || itemBlocks.length > 0
+              ? 'mt-px'
+              : undefined
+          }
+          rowGap={worktreeRowGap ?? 'hairline'}
+        >
+          {pairedVisibleRows.map((worktree) => renderRow(worktree, false))}
+        </SidebarList>
+      ) : null;
     const renderGroupStatus = (block: SidebarItemGroupBlock): ReactNode => {
       const runtime = block.units
         .flatMap((unit) => unit.itemIds)
@@ -2934,19 +3043,19 @@ export function WorkspacesSidebarSections({
     );
     const sortableWorktreeIds = hidden
       ? []
-      : rows.visible
+      : localVisibleRows
           .filter(canSortWorktree)
           .map((worktree) => worktree.localId);
     const wrappedVisibleList =
       (itemGroupsEnabled ? undefined : wrapWorktreeList)?.(
         {
           workspace,
-          worktrees: rows.visible,
+          worktrees: localVisibleRows,
           sortable,
           sortableWorktreeIds,
           containerByWorktreeId,
           renderDragPreview: (worktreeLocalId): ReactNode => {
-            const worktree = rows.visible.find(
+            const worktree = localVisibleRows.find(
               (candidate) => candidate.localId === worktreeLocalId,
             );
             if (!worktree) return null;
@@ -2986,10 +3095,21 @@ export function WorkspacesSidebarSections({
     // also showing — a pin for a hidden or foreign row is a dead end.
     const hiddenPlacement =
       hiddenWorktreesPlacement?.(workspace.localId) ?? 'inline';
+    const moreHiddenWorktrees =
+      hiddenPlacement === 'more' ? localHiddenRows : [];
+    const inlineHiddenWorktrees =
+      hiddenPlacement === 'inline'
+        ? rows.hidden
+        : rows.hidden.filter((worktree) =>
+            isPairedComputerId(worktree.localId),
+          );
+    const actionableInlineHiddenIds = inlineHiddenWorktrees
+      .filter((worktree) => !isPairedComputerId(worktree.localId))
+      .map((worktree) => worktree.localId);
     const selectedHiddenWorktree =
       selected?.kind === 'worktree' &&
       selected.workspaceLocalId === workspace.localId
-        ? rows.hidden.find(
+        ? moreHiddenWorktrees.find(
             (worktree) => worktree.localId === selected.worktreeLocalId,
           )
         : undefined;
@@ -3419,7 +3539,11 @@ export function WorkspacesSidebarSections({
                       : `No ${childUnitLabelPlural}`}
                   </div>
                 ) : (
-                  wrappedVisibleList
+                  <>
+                    {(localVisibleRows.length > 0 || itemBlocks.length > 0) &&
+                      wrappedVisibleList}
+                    {pairedVisibleList}
+                  </>
                 )}
                 {hiddenPlacement === 'more' &&
                   selectedHiddenWorktree !== undefined && (
@@ -3429,18 +3553,22 @@ export function WorkspacesSidebarSections({
                       {renderRow(selectedHiddenWorktree, true)}
                     </SidebarList>
                   )}
-                {hiddenPlacement === 'inline' && rows.hidden.length > 0 && (
+                {inlineHiddenWorktrees.length > 0 && (
                   <div
                     className="mt-0.5 min-w-0"
                     data-testid={testIds?.hiddenWorktreesSection}
                   >
                     <HiddenItemsRow
                       label={`Hidden ${WORKTREE_UNIT_LABEL_PLURAL.toLowerCase()}`}
-                      count={rows.hidden.length}
-                      contextMenuActions={hiddenWorktreeActions?.(
-                        workspace.localId,
-                        rows.hidden.map((worktree) => worktree.localId),
-                      )}
+                      count={inlineHiddenWorktrees.length}
+                      contextMenuActions={
+                        actionableInlineHiddenIds.length > 0
+                          ? hiddenWorktreeActions?.(
+                              workspace.localId,
+                              actionableInlineHiddenIds,
+                            )
+                          : undefined
+                      }
                       contextMenuLabel={`Hidden ${WORKTREE_UNIT_LABEL_PLURAL.toLowerCase()} actions`}
                       expanded={
                         hiddenWorktreesExpanded[workspace.localId] === true
@@ -3458,7 +3586,7 @@ export function WorkspacesSidebarSections({
                     />
                     {hiddenWorktreesExpanded[workspace.localId] === true && (
                       <SidebarList className="mt-0.5" rowGap="hairline" quiet>
-                        {rows.hidden.map((worktree) =>
+                        {inlineHiddenWorktrees.map((worktree) =>
                           renderRow(worktree, true),
                         )}
                       </SidebarList>
@@ -3467,8 +3595,7 @@ export function WorkspacesSidebarSections({
                 )}
                 {renderArchivedSection?.(workspace.localId, {
                   // Counted by the More row only when they wait behind it.
-                  hiddenWorktreeCount:
-                    hiddenPlacement === 'more' ? rows.hidden.length : 0,
+                  hiddenWorktreeCount: moreHiddenWorktrees.length,
                 })}
                 {!renderArchivedSection &&
                   archivedCount !== undefined &&

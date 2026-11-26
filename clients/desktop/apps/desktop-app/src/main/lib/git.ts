@@ -1811,6 +1811,8 @@ export async function cloneRepo(
     skipLfsSmudge?: boolean;
     signal?: AbortSignal;
     timeoutMs?: number;
+    /** The caller reserved `destination` empty; a refused clone removes it. */
+    destinationCreatedByRequest?: boolean;
   },
 ): Promise<void> {
   // Default stays redirect-following so unrelated callers (workspace/repo
@@ -1824,6 +1826,7 @@ export async function cloneRepo(
   };
   await cloneThenCheckOut(destination, {
     signal: options?.signal,
+    destinationCreatedByRequest: options?.destinationCreatedByRequest,
     clone: async () => {
       await runGit(
         buildCloneRepoArgs(
@@ -1893,6 +1896,7 @@ async function cloneThenCheckOut(
   destination: string,
   steps: {
     signal?: AbortSignal;
+    destinationCreatedByRequest?: boolean;
     clone(): Promise<void>;
     checkOut(): Promise<void>;
   },
@@ -1900,10 +1904,12 @@ async function cloneThenCheckOut(
   // Resolved once; the existence check, the HEAD read and any removal all
   // use this one path.
   const target = resolve(destination);
-  const existedBefore = await lstat(target).then(
-    () => true,
-    () => false,
-  );
+  const existedBefore =
+    steps.destinationCreatedByRequest !== true &&
+    (await lstat(target).then(
+      () => true,
+      () => false,
+    ));
   // Each caller's clone step settles only after its git process has exited.
   await steps.clone();
   await refuseInvalidClonedHead(target, existedBefore, steps.signal);

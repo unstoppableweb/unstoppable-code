@@ -2177,6 +2177,7 @@ async function rememberApprovalDefaultForSurface(
     // fail. Returning null explicitly skips the write after inspecting that
     // queue-fresh state.
     const normalized = await updatePreferencesFile((current) => {
+      didChangeDefault = false;
       if (
         !isApprovalDefaultIntentCurrent(surfaceKey, intent.generation) ||
         peekPreferencesLoadError() !== null ||

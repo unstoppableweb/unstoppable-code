@@ -45,6 +45,7 @@ import {
   type PipelineInfo,
 } from '@canopy/execution-engine/types/pipeline';
 import {
+  personTakeoverHolds,
   readPipelineLocalMetadata,
   setUserPipelineAgentAuthorIfCurrent,
   setUserPipelineNativeGrant,
@@ -57,6 +58,8 @@ import {
 } from '@canopy/desktop-shared/types';
 import {
   scheduledUserPipelineId,
+  scheduleRunAgentAuthor,
+  schedulePersonTakeover,
   inheritedInstallOwner,
   scheduleInstall,
   targetsAgentHiddenPipeline,
@@ -2284,6 +2287,219 @@ describe('workflow schedules (CAN-5782)', () => {
     } finally {
       for (const id of [grantedId, installedId])
         if (id && getStoredPipeline(id).success) deleteStoredPipeline(id);
+    }
+  });
+
+  // CAN-7228: a run takes its agent origin from the schedule's author, so a
+  // person's editor save of the workflow after the agent's write makes its
+  // runs the person's (they may then choose plugins for a new chat), and an
+  // agent's later write makes them the agent's again.
+  it("runs an agent's schedule as the person's after they save its workflow, until an agent writes again", async () => {
+    const pipelineId = await savedId();
+    const author = {
+      chat: {
+        projectId: 'golden-agent-project',
+        worktreeId: 'golden-agent-worktree',
+        chatId: 'golden-agent-chat',
+      },
+      recordedAt: '2026-11-09T00:00:00.000Z',
+    };
+    let scheduleId = '';
+    const runsAs = async (): Promise<string> => {
+      const activity = (await getAutomationsService().allActivities()).find(
+        (candidate) => candidate.id === scheduleId,
+      );
+      if (activity === undefined) return 'missing';
+      return scheduleRunAgentAuthor(activity) === undefined
+        ? 'person'
+        : 'agent';
+    };
+    const personSave = async (): Promise<boolean> => {
+      const stored = getStoredPipelineBySource('user', pipelineId);
+      const saved = (await invokeIpc(PIPELINE_CHANNELS.SAVE, {
+        id: pipelineId,
+        name: 'Golden workflow page',
+        description: '',
+        icon: '',
+        content: stored.data?.content,
+      })) as IPCResult<PipelineInfo>;
+      return saved.success;
+    };
+    try {
+      // An agent wrote the workflow and its schedule.
+      const savedRevision = getStoredPipelineBySource('user', pipelineId).data
+        ?.info.revision;
+      if (savedRevision === undefined)
+        throw new Error('Expected a saved workflow revision');
+      expect(
+        setUserPipelineAgentAuthorIfCurrent(pipelineId, author, {
+          revision: savedRevision,
+        }),
+      ).toBe('written');
+      const created = await getAutomationsService().create(
+        {
+          name: 'Golden schedule',
+          schedule: {
+            kind: 'cron',
+            expression: '0 9 * * 1-5',
+            timezone: 'local',
+          },
+          action: {
+            type: 'worktree_pipeline',
+            target: { kind: 'global' },
+            pipelineId,
+            pipelineSource: 'user',
+            pipelineName: 'Golden workflow page',
+            inputs: { topic: 'agent' },
+          },
+          enabled: false,
+          executionContext: 'personal',
+        },
+        { agentAuthor: author },
+      );
+      scheduleId = created.ok ? (created.activity?.id ?? '') : '';
+      const agentWrote = await runsAs();
+      const saved = await personSave();
+      const afterSave = await runsAs();
+      expect(
+        await dispatchAgentAction(
+          { type: 'pipeline.update', pipelineId, name: 'Agent edit' },
+          goldenWorktreeActionRuntime(world.worktreePath),
+        ),
+      ).toMatchObject({ isError: false });
+      const afterAgentEdit = await runsAs();
+      const savedAgain = await personSave();
+      const afterSecondSave = await runsAs();
+      // An agent's schedule edit that waited behind the save, with the time
+      // it was asked for before it, takes the runs back when it commits.
+      const scheduleEdit = await getAutomationsService().update(
+        { id: scheduleId, name: 'Golden agent edit' },
+        undefined,
+        undefined,
+        { agentAuthor: author },
+      );
+      const afterScheduleEdit = await runsAs();
+      // The Pipeline Editor assistant saving its draft is an agent's write,
+      // never a person's takeover.
+      await personSave();
+      // A run that read this takeover before the assistant's save starts as
+      // the agent's: the takeover no longer holds once its definition is
+      // resolved.
+      const scheduled = (await getAutomationsService().allActivities()).find(
+        (activity) => activity.id === scheduleId,
+      );
+      const takeover =
+        scheduled === undefined ? undefined : schedulePersonTakeover(scheduled);
+      const storedHash = (): string =>
+        nativeGrantContentHash(
+          getStoredPipelineBySource('user', pipelineId).data?.content,
+        );
+      const takeoverHeld =
+        takeover !== undefined &&
+        personTakeoverHolds(
+          takeover.pipelineId,
+          takeover.personAuthoredAt,
+          storedHash(),
+        );
+      // It holds only for the content the person saved: another write's
+      // content fails it, whenever its writer clears the stamp.
+      const otherContentHeld =
+        takeover !== undefined &&
+        personTakeoverHolds(
+          takeover.pipelineId,
+          takeover.personAuthoredAt,
+          nativeGrantContentHash(parsePipelineText(GOLDEN_NO_JOBS_YAML)),
+        );
+      const { savePipelineEditorSnapshot } =
+        await import('../../pipeline-editor/editor-save');
+      // An assistant draft refused as stale writes nothing and takes
+      // nothing back.
+      const staleAssistantSave = await savePipelineEditorSnapshot({
+        id: 'golden-stale-assistant-draft',
+        target: { persistedId: pipelineId, source: 'user', revision: 1 },
+        pipeline: parsePipelineText(SCHEDULED_YAML),
+      });
+      const takeoverHeldAfterStale =
+        takeover !== undefined &&
+        personTakeoverHolds(
+          takeover.pipelineId,
+          takeover.personAuthoredAt,
+          storedHash(),
+        );
+      const stored = getStoredPipelineBySource('user', pipelineId);
+      const assistantSave = await savePipelineEditorSnapshot({
+        id: 'golden-assistant-draft',
+        target: {
+          persistedId: pipelineId,
+          source: 'user',
+          revision: stored.data?.info.revision ?? 0,
+        },
+        pipeline: parsePipelineText(SCHEDULED_YAML),
+      });
+      const afterAssistantSave = await runsAs();
+      // An editor save App Advisor's pipeline.save pressed is the agent's;
+      // the person's own next save takes the runs over.
+      const { noteAgentRequestedEditorSave } =
+        await import('../../pipelines/agent-editor-save');
+      noteAgentRequestedEditorSave();
+      await personSave();
+      const afterAdvisorSave = await runsAs();
+      await personSave();
+      const afterPersonSaveAgain = await runsAs();
+      const takeoverHeldAfterAssistant =
+        takeover !== undefined &&
+        personTakeoverHolds(
+          takeover.pipelineId,
+          takeover.personAuthoredAt,
+          storedHash(),
+        );
+      expect({
+        agentWrote,
+        saved,
+        afterSave,
+        afterAgentEdit,
+        savedAgain,
+        afterSecondSave,
+        scheduleEdited: scheduleEdit.ok,
+        afterScheduleEdit,
+        assistantSaved: assistantSave.ok,
+        afterAssistantSave,
+        takeoverHeld,
+        otherContentHeld,
+        staleAssistantSaved: staleAssistantSave.ok,
+        takeoverHeldAfterStale,
+        takeoverHeldAfterAssistant,
+        afterAdvisorSave,
+        afterPersonSaveAgain,
+        // The schedule keeps its agent author: only its runs change.
+        scheduleAuthor: (await getAutomationsService().allActivities()).find(
+          (activity) => activity.id === scheduleId,
+        )?.agentAuthor,
+      }).toEqual({
+        agentWrote: 'agent',
+        saved: true,
+        afterSave: 'person',
+        afterAgentEdit: 'agent',
+        savedAgain: true,
+        afterSecondSave: 'person',
+        scheduleEdited: true,
+        afterScheduleEdit: 'agent',
+        assistantSaved: true,
+        afterAssistantSave: 'agent',
+        takeoverHeld: true,
+        otherContentHeld: false,
+        staleAssistantSaved: false,
+        takeoverHeldAfterStale: true,
+        takeoverHeldAfterAssistant: false,
+        afterAdvisorSave: 'agent',
+        afterPersonSaveAgain: 'person',
+        scheduleAuthor: author,
+      });
+    } finally {
+      if (scheduleId)
+        await invokeIpc(IPC_CHANNELS.automationsDelete, { id: scheduleId });
+      if (getStoredPipeline(pipelineId).success)
+        deleteStoredPipeline(pipelineId);
     }
   });
 

@@ -99,6 +99,26 @@ const rendererEventBroadcaster = new PipelineExecutionEventBroadcaster(
   },
 );
 
+const pipelineLifecycleListeners = new Set<(event: ExecutionEvent) => void>();
+const lastBroadcastStatusByExecutionId = new Map<
+  string,
+  ExecutionEvent['state']['status']
+>();
+
+/**
+ * Subscribes to discrete pipeline status transitions (start, pause, resume,
+ * completion, failure, cancellation) without firing on steady-state step
+ * updates.
+ */
+export function subscribePipelineLifecycleTransitions(
+  listener: (event: ExecutionEvent) => void,
+): () => void {
+  pipelineLifecycleListeners.add(listener);
+  return (): void => {
+    pipelineLifecycleListeners.delete(listener);
+  };
+}
+
 export function broadcastPipelineExecutionEvent(event: ExecutionEvent): void {
   // Main-process seam shared by interactive runs, retries, and replayed events.
   // The attention tracker owns the 15-second self-suppression timer. A native
@@ -108,8 +128,30 @@ export function broadcastPipelineExecutionEvent(event: ExecutionEvent): void {
   syncPipelineAttention(event);
   latchNativeQuotaFromPipelineReasons(event.state.status_reasons);
   rendererEventBroadcaster.publish(event);
+  const previousStatus = lastBroadcastStatusByExecutionId.get(
+    event.executionId,
+  );
+  const nextStatus = event.state.status;
+  const isTerminal =
+    event.type === 'execution.completed' ||
+    event.type === 'execution.cancelled' ||
+    event.type === 'execution.failed' ||
+    nextStatus === 'success' ||
+    nextStatus === 'failure' ||
+    nextStatus === 'cancelled';
+  if (isTerminal || nextStatus === 'paused') {
+    lastBroadcastStatusByExecutionId.delete(event.executionId);
+  } else {
+    lastBroadcastStatusByExecutionId.set(event.executionId, nextStatus);
+  }
+  if (event.type !== 'execution.updated' || previousStatus !== nextStatus) {
+    for (const listener of Array.from(pipelineLifecycleListeners)) {
+      listener(event);
+    }
+  }
 }
 
 export function resetPipelineExecutionEventBroadcasterForTests(): void {
   rendererEventBroadcaster.dispose();
+  lastBroadcastStatusByExecutionId.clear();
 }

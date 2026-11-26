@@ -16,7 +16,7 @@ import {
   type CalendarEventGroup,
 } from './calendarEvents';
 import type { CalendarView } from './calendarPreferences';
-import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
+import { HoverCard } from '@canopy/ui-shared/components';
 import {
   CalendarDayNumber,
   Button,
@@ -57,7 +57,7 @@ function MonthGridEvent({
       ? `${formatEventTime(group.at)} · ${event.name}`
       : `${formatEventTime(group.at)} · ${event.name} ${countLabel}`;
   return (
-    <RichHoverTooltip
+    <HoverCard
       content={title}
       triggerWrapperClassName="w-full"
       surfaceClassName="w-max max-w-80"
@@ -94,7 +94,7 @@ function MonthGridEvent({
           </span>
         )}
       </ControlButton>
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }
 

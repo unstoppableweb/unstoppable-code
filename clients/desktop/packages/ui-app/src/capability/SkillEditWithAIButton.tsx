@@ -1,7 +1,7 @@
 'use client';
 
 import { type JSX, useId } from 'react';
-import { ActionTooltip, Button } from '@canopy/ui-shared/components';
+import { Tooltip, Button } from '@canopy/ui-shared/components';
 import { SparkleIcon } from '@canopy/ui-shared/icons/AppIcons';
 
 /** The action's visible label (CAN-1259). */
@@ -65,12 +65,12 @@ export function SkillEditWithAIButton({
   if (state.available) return button;
   return (
     <>
-      <ActionTooltip
-        title={EDIT_WITH_AI_UNAVAILABLE_TITLE}
+      <Tooltip
+        label={EDIT_WITH_AI_UNAVAILABLE_TITLE}
         description={state.reason}
       >
         {button}
-      </ActionTooltip>
+      </Tooltip>
       <span id={reasonId} className="sr-only">
         {state.reason}
       </span>

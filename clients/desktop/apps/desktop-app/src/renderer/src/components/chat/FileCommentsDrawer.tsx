@@ -13,7 +13,7 @@ import type {
 import {
   ChangesIcon,
   CodeBracketsIcon,
-  StatusPill,
+  Badge,
   Tooltip,
 } from '@canopy/ui-shared';
 import { CommentsTray } from '@/components/shared/CommentsTray';
@@ -154,9 +154,9 @@ export function FileCommentsDrawer({
                       tabIndex={0}
                       className="focus-ring inline-flex"
                     >
-                      <StatusPill>
+                      <Badge>
                         <ChangesIcon size={12} aria-hidden="true" />
-                      </StatusPill>
+                      </Badge>
                     </span>
                   </Tooltip>
                 ) : undefined,

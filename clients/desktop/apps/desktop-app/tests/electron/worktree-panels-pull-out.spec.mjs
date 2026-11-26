@@ -90,6 +90,481 @@ function normalizeTerminalText(text) {
   return text.replace(/\s+/g, '');
 }
 
+test('history recovery exposes saved sessions without reloading or reopening closed tabs', async () => {
+  test.setTimeout(120_000);
+  const { electronApp, userDataDir, window } = await seedPanelWorktree();
+
+  try {
+    // Keep the real IPC client, observer, terminal store and panel host. Only
+    // the history transport is controlled, including historical byte replay.
+    await electronApp.evaluate(({ ipcMain }) => {
+      const loadChannel = 'terminal:load-worktree-state';
+      const attachChannel = 'terminal:attach';
+      const load = ipcMain._invokeHandlers.get(loadChannel);
+      const attach = ipcMain._invokeHandlers.get(attachChannel);
+      if (typeof load !== 'function' || typeof attach !== 'function')
+        throw new Error('Expected the terminal history handlers');
+      const fixture = {
+        available: false,
+        ids: ['recovered-first', 'recovered-second'],
+        unavailableLoads: 0,
+        recoveredLoads: 0,
+      };
+      globalThis.__terminalHistoryRecovery = fixture;
+      const session = (id) => ({
+        id,
+        projectId: 'demo-ts-pnpm-vite',
+        worktreeId: 'demo-main',
+        shell: '/bin/zsh',
+        shellBasename: 'zsh',
+        cwd: '/',
+        createdAt: 1,
+        title: id,
+      });
+      ipcMain.removeHandler(loadChannel);
+      ipcMain.handle(loadChannel, async (event, request) => {
+        const original = await load(event, request);
+        if (
+          request.projectId !== 'demo-ts-pnpm-vite' ||
+          request.worktreeId !== 'demo-main'
+        )
+          return original;
+        const history = fixture.available
+          ? { status: 'available' }
+          : { status: 'unavailable', reason: 'background_service' };
+        if (request.historyStatusOnly)
+          return { ...original, history, historyRefreshSupported: true };
+        if (!fixture.available) {
+          fixture.unavailableLoads += 1;
+          return { ...original, history };
+        }
+        fixture.recoveredLoads += 1;
+        return {
+          ...original,
+          history,
+          groups: fixture.ids.map((id) => ({
+            id: `legacy-${id}`,
+            terminalIds: [id],
+            focusedTerminalId: id,
+            splitSizes: [1],
+          })),
+          terminals: fixture.ids.map((id) => ({
+            session: session(id),
+            scrollbackLines: [`saved-${id}`],
+            exitCode: 0,
+            signal: null,
+          })),
+          liveTerminalIds: [],
+        };
+      });
+      ipcMain.removeHandler(attachChannel);
+      ipcMain.handle(attachChannel, (event, request) => {
+        if (!fixture.ids.includes(request.terminalId))
+          return attach(event, request);
+        const replay = new TextEncoder().encode(
+          `saved-${request.terminalId}\r\n`,
+        );
+        return {
+          session: session(request.terminalId),
+          replay,
+          seq: replay.length,
+        };
+      });
+    });
+    // Passive expansion must leave the empty placeholder empty, not spawn.
+    await window.evaluate(() => {
+      window.__canopyPanelTestApi.collapseGroup('group-terminal', false);
+      document
+        .querySelector('[data-panel-content-host="panel-terminal"]')
+        ?.setAttribute('data-recovery-host', 'same-host');
+    });
+    await expect(
+      window.getByRole('button', { name: 'Start terminal', exact: true }),
+    ).toBeVisible();
+    await expect
+      .poll(() =>
+        electronApp.evaluate(
+          () => globalThis.__terminalHistoryRecovery.unavailableLoads,
+        ),
+      )
+      .toBeGreaterThan(0);
+    const before = await getLayout(window);
+    expect(
+      collectLeaves(before.root)
+        .flatMap((leaf) => leaf.panels)
+        .filter((panel) => panel.kind === 'terminal')
+        .map((panel) => panel.instance?.terminalId),
+    ).toEqual([undefined]);
+
+    await electronApp.evaluate(() => {
+      globalThis.__terminalHistoryRecovery.available = true;
+    });
+    const first = window.locator('[data-panel-content-host="panel-terminal"]');
+    await expect(first.getByTestId('terminal-pane')).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(first).toHaveAttribute('data-recovery-host', 'same-host');
+    await expect
+      .poll(() => first.innerText().then(normalizeTerminalText))
+      .toContain('saved-recovered-first');
+    await expect(
+      window.getByTestId('panel-tab-panel-terminal-recovered-second'),
+    ).toBeVisible();
+    const recovered = await getLayout(window);
+    const recoveredTabs = collectLeaves(recovered.root)
+      .flatMap((leaf) => leaf.panels)
+      .filter((panel) => panel.kind === 'terminal');
+    expect(recoveredTabs.map((panel) => panel.instance?.terminalId)).toEqual([
+      'recovered-first',
+      'recovered-second',
+    ]);
+    expect(recoveredTabs[0].panelId).toBe(DEFAULT_PANEL_IDS.terminal);
+    await first.locator('.xterm').evaluate((node) => {
+      node.__recoveryIdentity = 'same-xterm';
+    });
+    await first.getByTestId('terminal-panel-surface').evaluate((node) => {
+      node.__recoveryIdentity = 'same-surface';
+    });
+
+    await window
+      .getByTestId('panel-tab-panel-terminal-recovered-second')
+      .hover();
+    await window
+      .getByTestId('panel-tab-close-panel-terminal-recovered-second')
+      .click();
+    await expect(
+      window.getByTestId('panel-tab-panel-terminal-recovered-second'),
+    ).toHaveCount(0);
+    await electronApp.evaluate(() => {
+      globalThis.__terminalHistoryRecovery.available = false;
+    });
+    await expect(
+      first.getByTestId('terminal-history-unavailable-notice'),
+    ).toBeVisible({ timeout: 20_000 });
+    await electronApp.evaluate(() => {
+      globalThis.__terminalHistoryRecovery.ids.push('recovered-third');
+      globalThis.__terminalHistoryRecovery.available = true;
+    });
+    await expect(
+      window.getByTestId('panel-tab-panel-terminal-recovered-third'),
+    ).toBeVisible({ timeout: 20_000 });
+    await expect(
+      first.getByTestId('terminal-history-unavailable-notice'),
+    ).toHaveCount(0);
+    await expect(
+      window.getByTestId('panel-tab-panel-terminal-recovered-second'),
+    ).toHaveCount(0);
+    expect(
+      await first.locator('.xterm').evaluate((node) => node.__recoveryIdentity),
+    ).toBe('same-xterm');
+    expect(
+      await first
+        .getByTestId('terminal-panel-surface')
+        .evaluate((node) => node.__recoveryIdentity),
+    ).toBe('same-surface');
+    await expect
+      .poll(() => first.innerText().then(normalizeTerminalText))
+      .toContain('saved-recovered-first');
+    // The newly discovered tab is reachable, not merely present in a store.
+    await window
+      .getByTestId('panel-tab-panel-terminal-recovered-third')
+      .click();
+    await expect
+      .poll(() =>
+        window
+          .locator('[data-panel-content-host="panel-terminal-recovered-third"]')
+          .innerText()
+          .then(normalizeTerminalText),
+      )
+      .toContain('saved-recovered-third');
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+/**
+ * Real spawn, renderer and panel host. The first in-scope spawn after this
+ * call flips history to available, so the next history refresh lists the new
+ * shell, and main holds that spawn's reply until the test releases it: the
+ * overlap a slow daemon spawn reply allows.
+ */
+async function installSpawnRecoveryRace(electronApp) {
+  await electronApp.evaluate(({ ipcMain }) => {
+    const loadChannel = 'terminal:load-worktree-state';
+    const spawnChannel = 'terminal:spawn';
+    const killChannel = 'terminal:kill';
+    const load = ipcMain._invokeHandlers.get(loadChannel);
+    const spawn = ipcMain._invokeHandlers.get(spawnChannel);
+    const kill = ipcMain._invokeHandlers.get(killChannel);
+    if (
+      typeof load !== 'function' ||
+      typeof spawn !== 'function' ||
+      typeof kill !== 'function'
+    )
+      throw new Error('Expected the terminal spawn and history handlers');
+    const fixture = {
+      available: false,
+      spawned: null,
+      unavailableLoads: 0,
+      releaseSpawn: false,
+      releasedByTest: false,
+      killed: [],
+    };
+    globalThis.__terminalAddRecoveryRace = fixture;
+    const inScope = (request) =>
+      request.projectId === 'demo-ts-pnpm-vite' &&
+      request.worktreeId === 'demo-main';
+    ipcMain.removeHandler(loadChannel);
+    ipcMain.handle(loadChannel, async (event, request) => {
+      const original = await load(event, request);
+      if (!inScope(request)) return original;
+      const history = fixture.available
+        ? { status: 'available' }
+        : { status: 'unavailable', reason: 'background_service' };
+      if (request.historyStatusOnly)
+        return { ...original, history, historyRefreshSupported: true };
+      if (!fixture.available) {
+        fixture.unavailableLoads += 1;
+        return { ...original, history };
+      }
+      const shell = fixture.spawned;
+      if (shell === null) return { ...original, history };
+      const listed = original.terminals.some(
+        (terminal) => terminal.session.id === shell.id,
+      );
+      const grouped = original.groups.some((group) =>
+        group.terminalIds.includes(shell.id),
+      );
+      return {
+        ...original,
+        history,
+        groups: grouped
+          ? original.groups
+          : [
+              ...original.groups,
+              {
+                id: 'recovery-race-group',
+                terminalIds: [shell.id],
+                focusedTerminalId: shell.id,
+                splitSizes: [1],
+              },
+            ],
+        terminals: listed
+          ? original.terminals
+          : [
+              ...original.terminals,
+              {
+                session: shell,
+                scrollbackLines: [],
+                exitCode: null,
+                signal: null,
+              },
+            ],
+        liveTerminalIds: [
+          ...original.liveTerminalIds.filter((id) => id !== shell.id),
+          shell.id,
+        ],
+      };
+    });
+    ipcMain.removeHandler(spawnChannel);
+    ipcMain.handle(spawnChannel, async (event, request) => {
+      const session = await spawn(event, request);
+      if (!inScope(request) || fixture.spawned !== null) return session;
+      fixture.spawned = session;
+      fixture.available = true;
+      const deadline = Date.now() + 30_000;
+      while (!fixture.releaseSpawn && Date.now() < deadline)
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      fixture.releasedByTest = fixture.releaseSpawn;
+      return session;
+    });
+    ipcMain.removeHandler(killChannel);
+    ipcMain.handle(killChannel, (event, request) => {
+      fixture.killed.push(request.terminalId);
+      return kill(event, request);
+    });
+  });
+}
+
+/**
+ * Waits, with the spawn reply still held, until the recovered load has put
+ * the new shell in the renderer's terminal store (nothing else can before the
+ * reply), checks the passive pass left it unbound, then releases the reply.
+ */
+async function releaseSpawnAfterRendererRecovery(electronApp, window) {
+  const spawnedId = () =>
+    electronApp.evaluate(
+      () => globalThis.__terminalAddRecoveryRace.spawned?.id ?? null,
+    );
+  await expect.poll(spawnedId, { timeout: 20_000 }).not.toBeNull();
+  const shellId = await spawnedId();
+  await expect
+    .poll(
+      () =>
+        window.evaluate(
+          () =>
+            window.__canopyPanelTestApi.getTerminalPlacementState().sessionIds,
+        ),
+      { timeout: 20_000 },
+    )
+    .toContain(shellId);
+  // That store update scheduled the passive reconcile as a zero-delay timer.
+  const held = await window.evaluate(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    return window.__canopyPanelTestApi.getTerminalPlacementState();
+  });
+  expect(held.bindings.map((binding) => binding.terminalId)).not.toContain(
+    shellId,
+  );
+  await electronApp.evaluate(() => {
+    globalThis.__terminalAddRecoveryRace.releaseSpawn = true;
+  });
+  return shellId;
+}
+
+/** One binding across the main and auxiliary layouts, and it is in main. */
+async function expectBoundOnceInMainLayout(window, shellId) {
+  const { bindings } = await window.evaluate(() =>
+    window.__canopyPanelTestApi.getTerminalPlacementState(),
+  );
+  expect(
+    bindings
+      .filter((binding) => binding.terminalId === shellId)
+      .map((binding) => binding.layoutKey),
+  ).toEqual(['demo-ts-pnpm-vite/demo-main']);
+}
+
+async function waitForHistoryOutage(electronApp) {
+  await expect
+    .poll(
+      () =>
+        electronApp.evaluate(
+          () => globalThis.__terminalAddRecoveryRace.unavailableLoads,
+        ),
+      { timeout: 20_000 },
+    )
+    .toBeGreaterThan(0);
+}
+
+async function expectSpawnSurvived(electronApp, shellId) {
+  const race = await electronApp.evaluate(
+    () => globalThis.__terminalAddRecoveryRace,
+  );
+  expect(race.releasedByTest).toBe(true);
+  expect(race.killed).not.toContain(shellId);
+}
+
+test('Add Terminal keeps its shell when history recovery publishes it first', async () => {
+  test.setTimeout(120_000);
+  const { electronApp, userDataDir, window } = await seedPanelWorktree();
+
+  try {
+    await installSpawnRecoveryRace(electronApp);
+    await window.evaluate(() => {
+      window.__canopyPanelTestApi.collapseGroup('group-terminal', false);
+    });
+    await expect(
+      window.getByRole('button', { name: 'Start terminal', exact: true }),
+    ).toBeVisible();
+    await waitForHistoryOutage(electronApp);
+
+    await window
+      .getByTestId(`panel-add-tab-${DEFAULT_GROUP_IDS.terminal}`)
+      .click();
+    await expect(window.getByTestId('panel-add-menu')).toBeVisible();
+    await window.getByTestId('panel-add-menu-terminal-submenu').click();
+    await window.getByTestId('panel-add-menu-item-terminal').click();
+
+    const shellId = await releaseSpawnAfterRendererRecovery(
+      electronApp,
+      window,
+    );
+    const tab = window.getByTestId(`panel-tab-panel-terminal-${shellId}`);
+    await expect(tab).toBeVisible({ timeout: 30_000 });
+    await expectSpawnSurvived(electronApp, shellId);
+    await expect(window.getByText('Unable to open Terminal')).toHaveCount(0);
+    // Bound exactly once, in the requested group, and the shell is live.
+    const layout = await getLayout(window);
+    const bindings = collectLeaves(layout.root).flatMap((leaf) =>
+      leaf.panels
+        .filter((panel) => panel.instance?.terminalId === shellId)
+        .map(() => leaf.groupId),
+    );
+    expect(bindings).toEqual([DEFAULT_GROUP_IDS.terminal]);
+    await expectBoundOnceInMainLayout(window, shellId);
+    await tab.click();
+    const pane = window.locator(
+      `[data-panel-content-host="panel-terminal-${shellId}"] [data-testid="terminal-pane"]`,
+    );
+    await expect(pane).toBeVisible({ timeout: 20_000 });
+    await pane.click();
+    // Joined only by the shell, so PTY input echo cannot satisfy the check.
+    await window.keyboard.type(
+      "printf '%s%s\\n' 'canopy-add-' 'terminal-survived'\n",
+    );
+    await expect
+      .poll(() => pane.innerText().then(normalizeTerminalText), {
+        timeout: 20_000,
+      })
+      .toContain('canopy-add-terminal-survived');
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
+test('composer command stays in the source layout when history recovery publishes its shell first', async () => {
+  test.setTimeout(120_000);
+  const { electronApp, userDataDir, window } = await seedPanelWorktree();
+
+  try {
+    // With the only terminal group popped out, a passive placement would put
+    // the composer's shell in the auxiliary window.
+    await spawnPanelTerminal(window);
+    const auxWindowPromise = electronApp.waitForEvent('window');
+    await window
+      .getByTestId(`panel-group-menu-${DEFAULT_GROUP_IDS.terminal}`)
+      .click();
+    await window
+      .getByTestId(`panel-group-pop-out-${DEFAULT_GROUP_IDS.terminal}`)
+      .click();
+    const aux = await auxWindowPromise;
+    await expect(aux.getByTestId('terminal-pane')).toHaveCount(1);
+    await expect(window.getByTestId('terminal-pane')).toHaveCount(0);
+
+    await installSpawnRecoveryRace(electronApp);
+    await waitForHistoryOutage(electronApp);
+
+    const chatPanel = window.locator(
+      '[data-testid="panel-content-chat"]:visible',
+    );
+    await chatPanel
+      .locator('[data-chat-textarea][contenteditable="true"]')
+      .fill("!printf '%s%s\\n' 'canopy-composer-' 'recovery-race'");
+    await chatPanel
+      .getByRole('button', { name: 'Run terminal command', exact: true })
+      .click();
+
+    const shellId = await releaseSpawnAfterRendererRecovery(
+      electronApp,
+      window,
+    );
+    const mainTerminal = window.locator(
+      `[data-panel-content-host="panel-terminal-${shellId}"] [data-testid="terminal-pane"]`,
+    );
+    await expect(mainTerminal).toBeVisible({ timeout: 20_000 });
+    await expect
+      .poll(() => mainTerminal.innerText().then(normalizeTerminalText), {
+        timeout: 20_000,
+      })
+      .toContain('canopy-composer-recovery-race');
+    await expect(aux.getByTestId('terminal-pane')).toHaveCount(1);
+    await expectSpawnSurvived(electronApp, shellId);
+    await expectBoundOnceInMainLayout(window, shellId);
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
+  }
+});
+
 test('terminal command stays in the source layout when another terminal is popped out', async () => {
   test.setTimeout(120_000);
   const { electronApp, userDataDir, window } = await seedPanelWorktree();

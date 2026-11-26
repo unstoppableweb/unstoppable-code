@@ -21,7 +21,7 @@ import {
   Button,
   Chip,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   FieldError,
   Fieldset,
   FORM_FIELD_DESCRIPTION_CLASS,
@@ -426,34 +426,39 @@ export function AgentModelModal({
         >
           <div className="flex flex-col gap-2.5">
             <ChoiceList kind="radio" aria-label="Default model">
-              <ChoiceListRow
+              <ChoiceField
+                layout="row"
                 kind="radio"
-                selected={inheritsDefaultModel}
+                checked={inheritsDefaultModel}
                 disabled={submitting}
-                onClick={(): void => {
+                onChange={(): void => {
                   // A radio row: pressing the selected row changes nothing.
                   if (!inheritsDefaultModel) {
                     handleBaseModelChange(AGENT_DEFAULT_BASE_MODEL);
                   }
                 }}
                 data-testid="agent-model-base-default"
-              >
-                <span className="block">Use chat default</span>
-                <span className="block text-xs fg-secondary">
-                  Each chat uses its default model from Settings when it starts.
-                </span>
-              </ChoiceListRow>
-              <ChoiceListRow
+                label={
+                  <>
+                    <span className="block">Use chat default</span>
+                    <span className="block text-xs fg-secondary">
+                      Each chat uses its default model from Settings when it
+                      starts.
+                    </span>
+                  </>
+                }
+              />
+              <ChoiceField
+                layout="row"
                 kind="radio"
-                selected={!inheritsDefaultModel}
+                checked={!inheritsDefaultModel}
                 disabled={submitting}
-                onClick={(): void => {
+                onChange={(): void => {
                   if (inheritsDefaultModel) handleBaseModelChange('');
                 }}
                 data-testid="agent-model-base-specific"
-              >
-                Specific model
-              </ChoiceListRow>
+                label="Specific model"
+              />
             </ChoiceList>
             {/*
             Only real provider base models are offered. The Agents group is

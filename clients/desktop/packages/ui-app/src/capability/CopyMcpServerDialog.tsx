@@ -1,6 +1,6 @@
 import { useState, type JSX } from 'react';
 import { ConfirmDialog } from '@canopy/ui-shared';
-import { ChoiceList, ChoiceListRow } from '@canopy/ui-shared/components';
+import { ChoiceList, ChoiceField } from '@canopy/ui-shared/components';
 import { McpActionRefusedError } from './McpServerManagement';
 
 /** A secret of the server the person may copy; named, never its value. */
@@ -132,19 +132,19 @@ export function CopyMcpServerDialog({
                 data-testid="copy-mcp-server-secrets"
               >
                 {slots.map((item) => (
-                  <ChoiceListRow
+                  <ChoiceField
                     key={item.slot}
-                    selected={chosen.has(item.slot)}
+                    layout="row"
+                    checked={chosen.has(item.slot)}
                     data-testid={`copy-mcp-server-secret-${item.slot}`}
-                    onClick={(): void => {
+                    onChange={(): void => {
                       const next = new Set(chosen);
                       if (next.has(item.slot)) next.delete(item.slot);
                       else next.add(item.slot);
                       setChosen(next);
                     }}
-                  >
-                    {item.label}
-                  </ChoiceListRow>
+                    label={item.label}
+                  />
                 ))}
               </ChoiceList>
             </>

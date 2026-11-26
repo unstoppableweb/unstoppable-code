@@ -1,5 +1,6 @@
 import { toAppError } from '@canopy/protocol/app-errors';
 import { randomBytes } from 'node:crypto';
+import * as zlib from 'node:zlib';
 import {
   decodeDeviceRelayDataFrame,
   encodeDeviceRelayDataFrame,
@@ -18,7 +19,7 @@ import {
   generateDeviceKeyPair,
   type DeviceKeyPair,
 } from '../../crypto/device-key';
-import { decodeEnvelope } from '../envelope';
+import { decodeEnvelope, encodeEnvelope } from '../envelope';
 import { serialize } from 'node:v8';
 import {
   SYNC_CODEC_BYTES,
@@ -40,6 +41,12 @@ import {
   type SessionGrant,
   type SessionState,
 } from '../session-manager';
+
+// The codec's synchronous inflate, observed (and otherwise unchanged).
+jest.mock('node:zlib', () => {
+  const actual = jest.requireActual<typeof zlib>('node:zlib');
+  return { ...actual, inflateRawSync: jest.fn(actual.inflateRawSync) };
+});
 
 /**
  * Session resume across relay drops, over the real handshake, secure
@@ -166,6 +173,12 @@ class TestEndpoint implements RelayTransport {
   afterSend: ((type: string | undefined) => void) | null = null;
   /** Every resume1 sent, so a test can deliver one again later. */
   readonly sentResume1: Buffer[] = [];
+  /** While set, resume2 answers are kept here instead of sent. */
+  holdResume2 = false;
+  readonly heldResume2: Buffer[] = [];
+  /** While set, data frames are kept here instead of sent. */
+  holdData = false;
+  readonly heldData: Buffer[] = [];
 
   constructor(
     readonly deviceId: string,
@@ -179,8 +192,16 @@ class TestEndpoint implements RelayTransport {
       this.refuseData -= 1;
       return false;
     }
+    if (type === 'data' && this.holdData) {
+      this.heldData.push(bytes);
+      return true;
+    }
     if (type) this.sentTypes.push(type);
     if (type === 'resume1') this.sentResume1.push(bytes);
+    if (type === 'resume2' && this.holdResume2) {
+      this.heldResume2.push(bytes);
+      return true;
+    }
     const sent = this.relay.send({
       from: this.deviceId,
       to: peer,
@@ -267,7 +288,11 @@ function side(
   relay: TestRelay,
   identity: DeviceKeyPair,
   compressor?: MessageCompressor,
-  chains: { sendChainBytes?: number } = {},
+  chains: {
+    sendChainBytes?: number;
+    receiveChainBytes?: number;
+    resumeRetryMs?: number;
+  } = {},
 ): Side {
   const endpoint = relay.endpoint(identity.deviceId);
   const created: Side = {
@@ -295,6 +320,9 @@ function pair(
     controller?: MessageCompressor;
     host?: MessageCompressor;
     sendChainBytes?: number;
+    receiveChainBytes?: number;
+    hostReceiveChainBytes?: number;
+    resumeRetryMs?: number;
   } = {},
 ): Pair {
   const relay = new TestRelay();
@@ -306,9 +334,19 @@ function pair(
       ...(compressors.sendChainBytes === undefined
         ? {}
         : { sendChainBytes: compressors.sendChainBytes }),
+      ...(compressors.receiveChainBytes === undefined
+        ? {}
+        : { receiveChainBytes: compressors.receiveChainBytes }),
+      ...(compressors.resumeRetryMs === undefined
+        ? {}
+        : { resumeRetryMs: compressors.resumeRetryMs }),
     },
   );
-  const host = side(relay, generateDeviceKeyPair(), compressors.host);
+  const host = side(relay, generateDeviceKeyPair(), compressors.host, {
+    ...(compressors.hostReceiveChainBytes === undefined
+      ? {}
+      : { receiveChainBytes: compressors.hostReceiveChainBytes }),
+  });
   relay.connect(controller.identity.deviceId);
   relay.connect(host.identity.deviceId);
   return { relay, controller, host };
@@ -986,6 +1024,10 @@ describe('ordered compression off main', () => {
         await wait();
         return zlibMessageCompressor.deflate(serialized);
       },
+      inflate: async (compressed, maxBytes) => {
+        await wait();
+        return zlibMessageCompressor.inflate(compressed, maxBytes);
+      },
     };
   }
 
@@ -997,12 +1039,16 @@ describe('ordered compression off main', () => {
     rejections.length = 0;
     process.on('unhandledRejection', onRejection);
   });
-  /** Gates of every gated zlib, opened after each test, failed or not. */
+  /** Gates and in-flight promises of every gated zlib, drained after each test. */
   const allGates: Array<Array<() => void>> = [];
-  afterEach(() => {
+  const allPending: Array<Promise<unknown>> = [];
+  afterEach(async () => {
     process.off('unhandledRejection', onRejection);
     for (const gates of allGates.splice(0)) {
       for (const open of gates.splice(0)) open();
+    }
+    if (allPending.length > 0) {
+      await Promise.allSettled(allPending.splice(0));
     }
   });
 
@@ -1095,7 +1141,13 @@ describe('ordered compression off main', () => {
   });
 
   it('still sends a small reply queued behind a deflate when a revocation drops the rest', async () => {
-    const env = pair({ host: slowZlib(300) });
+    // Slow to deflate only, so the host reads the large request at once.
+    const env = pair({
+      host: {
+        deflate: slowZlib(300).deflate,
+        inflate: zlibMessageCompressor.inflate,
+      },
+    });
     const link = await connect(env);
     link.hostRpc.notify('seq', large(0));
     const queued = link.hostSession.heldBytes;
@@ -1209,13 +1261,15 @@ describe('ordered compression off main', () => {
     const gated = <T>(work: () => Promise<T>): Promise<T> => {
       stats.running += 1;
       stats.most = Math.max(stats.most, stats.running);
-      return new Promise<T>((resolve, reject) => {
+      const pending = new Promise<T>((resolve, reject) => {
         gates.push(() => {
           work().then(resolve, reject);
         });
       }).finally(() => {
         stats.running -= 1;
       });
+      allPending.push(pending);
+      return pending;
     };
     return {
       gates,
@@ -1223,6 +1277,8 @@ describe('ordered compression off main', () => {
       compressor: {
         deflate: (serialized) =>
           gated(() => zlibMessageCompressor.deflate(serialized)),
+        inflate: (compressed, maxBytes) =>
+          gated(() => zlibMessageCompressor.inflate(compressed, maxBytes)),
       },
     };
   }
@@ -1377,9 +1433,10 @@ describe('ordered compression off main', () => {
     expect(rejections).toEqual([]);
   });
 
-  it('deflates messages up to 32 KiB on main, so a stalled thread pool delays none of them', async () => {
+  it('deflates and inflates messages up to 32 KiB on main, so a stalled thread pool delays none of them', async () => {
     const stalled: MessageCompressor = {
       deflate: () => new Promise<Buffer | null>(() => undefined),
+      inflate: () => new Promise<Buffer>(() => undefined),
     };
     const env = pair({ controller: stalled, host: stalled });
     const link = await connect(env);
@@ -1411,12 +1468,16 @@ describe('ordered compression off main', () => {
     }
   }
 
-  it('deflates messages up to 32 KiB on main and gives larger ones to the thread pool, both ways', async () => {
-    const calls = { deflate: 0 };
+  it('keeps messages up to 32 KiB on main and gives larger ones to the thread pool, both ways', async () => {
+    const calls = { deflate: 0, inflate: 0 };
     const counting: MessageCompressor = {
       deflate: (serialized) => {
         calls.deflate += 1;
         return zlibMessageCompressor.deflate(serialized);
+      },
+      inflate: (compressed, maxBytes) => {
+        calls.inflate += 1;
+        return zlibMessageCompressor.inflate(compressed, maxBytes);
       },
     };
     const env = pair({ controller: counting, host: counting });
@@ -1427,14 +1488,14 @@ describe('ordered compression off main', () => {
       () => link.atHost.length === 1 && link.atController.length === 1,
       'the messages at the bound',
     );
-    expect(calls).toEqual({ deflate: 0 });
+    expect(calls).toEqual({ deflate: 0, inflate: 0 });
     link.controllerRpc.notify('seq', sized(SYNC_CODEC_BYTES + 1, 1));
     link.hostRpc.notify('seq', sized(SYNC_CODEC_BYTES + 1, 1));
     await waitFor(
       () => link.atHost.length === 2 && link.atController.length === 2,
       'the messages past the bound',
     );
-    expect(calls).toEqual({ deflate: 2 });
+    expect(calls).toEqual({ deflate: 2, inflate: 2 });
     expect(order(link.atHost)).toEqual([0, 1]);
     expect(order(link.atController)).toEqual([0, 1]);
   });
@@ -1484,6 +1545,645 @@ describe('ordered compression off main', () => {
     expect(order(link.atController)).toEqual(range(0, 2_001));
     expect(firstTurn).toBeGreaterThan(0);
     expect(firstTurn).toBeLessThan(2_001);
+    expect(link.closes).toEqual({ controller: [], host: [] });
+    expect(rejections).toEqual([]);
+  });
+
+  it('tries a message that is small on the wire once on main, then inflates it on the thread pool', async () => {
+    const { compressor, gates } = gatedZlib();
+    const env = pair({ controller: compressor });
+    const link = await connect(env);
+    const probes = jest.mocked(zlib.inflateRawSync);
+    probes.mockClear();
+    // A few KiB deflated, 4 MiB inflated: past the bound for main.
+    link.hostRpc.notify('seq', { n: 0, text: 'z'.repeat(4 * MIB) });
+    send(link.hostRpc, range(1, 40));
+    await waitFor(() => gates.length > 0, 'the inflate');
+    await env.relay.settle();
+    expect(probes).toHaveBeenCalledTimes(1);
+    expect(gates).toHaveLength(1);
+    await openGatesUntil(
+      gates,
+      () => link.atController.length >= 40,
+      'every message',
+    );
+    expect(order(link.atController)).toEqual(range(0, 40));
+    expect(probes).toHaveBeenCalledTimes(1);
+    expect(rejections).toEqual([]);
+  });
+
+  it('accepts a message exactly at the receive limit, and ends the session one byte past it', async () => {
+    const payload = { n: 0, bytes: new Uint8Array(randomBytes(100_000)) };
+    // Incompressible, so it travels as it is: its size is exact.
+    const size = serialize({ kind: 'event', name: 'seq', payload }).byteLength;
+    const at = pair({ receiveChainBytes: size });
+    const atLink = await connect(at);
+    atLink.hostRpc.notify('seq', payload);
+    await waitFor(() => atLink.atController.length === 1, 'the message');
+    expect(atLink.closes.controller).toEqual([]);
+    const past = pair({ receiveChainBytes: size - 1 });
+    const pastLink = await connect(past);
+    pastLink.hostRpc.notify('seq', payload);
+    await waitFor(() => pastLink.closes.controller.length > 0, 'the close');
+    expect(pastLink.closes.controller).toEqual(['protocol_error']);
+    expect(pastLink.atController).toEqual([]);
+    expect(rejections).toEqual([]);
+  });
+
+  it('counts fragments of an arriving message against the per-session receive budget', async () => {
+    const { compressor, gates } = gatedZlib();
+    const env = pair({ controller: compressor, receiveChainBytes: 100_000 });
+    const link = await connect(env);
+    link.hostRpc.notify('seq', large(0));
+    await waitFor(() => gates.length > 0, 'the inflate');
+    // Multi-fragment incompressible message (~140 KiB > 100 KiB budget). Hold
+    // its final fragment so only non-final fragments reach the controller.
+    env.host.endpoint.holdData = true;
+    link.hostRpc.notify(
+      'seq',
+      { n: 1, bytes: new Uint8Array(randomBytes(140_000)) },
+      { compress: false },
+    );
+    env.host.endpoint.holdData = false;
+    const fragments = env.host.endpoint.heldData.splice(0);
+    expect(fragments.length).toBeGreaterThanOrEqual(3);
+    for (const fragment of fragments.slice(0, -1)) {
+      env.controller.endpoint.deliver(env.host.identity.deviceId, fragment);
+    }
+    expect(link.closes.controller).toEqual(['protocol_error']);
+    for (const open of gates.splice(0)) open();
+    await env.relay.settle();
+    expect(link.atController).toEqual([]);
+    expect(rejections).toEqual([]);
+  });
+
+  it('counts tiny messages waiting behind an inflate against the receive budget and ends immediately', async () => {
+    const { compressor, gates } = gatedZlib();
+    const env = pair({ controller: compressor, receiveChainBytes: 16 * 1024 });
+    const link = await connect(env);
+    link.hostRpc.notify('seq', large(0));
+    await waitFor(() => gates.length > 0, 'the inflate');
+    send(link.hostRpc, range(1, 40));
+    await waitFor(
+      () => link.closes.controller.length > 0,
+      'the immediate budget close',
+    );
+    expect(link.closes.controller).toEqual(['protocol_error']);
+    for (const open of gates.splice(0)) open();
+    await env.relay.settle();
+    expect(link.atController).toEqual([]);
+    expect(rejections).toEqual([]);
+  });
+
+  it('ends the session on a failed inflate and delivers nothing queued behind it', async () => {
+    const failInflates: Array<(error: Error) => void> = [];
+    const failing: MessageCompressor = {
+      deflate: (serialized) => zlibMessageCompressor.deflate(serialized),
+      inflate: () =>
+        new Promise<Buffer>((_resolve, reject) => {
+          failInflates.push(reject);
+        }),
+    };
+    const env = pair({ controller: failing });
+    const link = await connect(env);
+    link.hostRpc.notify('seq', large(0));
+    send(link.hostRpc, range(1, 5));
+    await waitFor(() => failInflates.length > 0, 'the inflate to start');
+    // Let every follower frame arrive and queue behind large(0) before rejecting.
+    await env.relay.settle();
+    expect(link.closes.controller).toEqual([]);
+    for (const reject of failInflates.splice(0)) {
+      reject(new Error('corrupt deflate'));
+    }
+    await waitFor(() => link.closes.controller.length > 0, 'the close');
+    await env.relay.settle();
+    expect(link.closes.controller).toEqual(['protocol_error']);
+    expect(link.atController).toEqual([]);
+    expect(rejections).toEqual([]);
+  });
+
+  it('ends a pairing session at once when its peer goes offline, leaving no approvable prompt', async () => {
+    const { compressor, gates } = gatedZlib();
+    const env = pair({ controller: compressor });
+    const controllerSession = await env.controller.manager.connect({
+      peerDeviceId: env.host.identity.deviceId,
+      purpose: 'pair',
+      pinnedPeerPublicKey: null,
+    });
+    await env.relay.settle();
+    const hostSession = env.host.incoming.at(-1);
+    if (!hostSession) throw new Error('The host did not accept the session.');
+    const delivered: unknown[] = [];
+    const closes: SessionCloseReason[] = [];
+    controllerSession.onMessage((value) => delivered.push(value));
+    controllerSession.onClose((reason) => closes.push(reason));
+    hostSession.sendMessage({ text: 'z'.repeat(4 * MIB) });
+    await waitFor(() => gates.length > 0, 'the inflate');
+    env.relay.drop(env.controller.identity.deviceId);
+    expect(closes).toEqual(['peer_offline']);
+    for (const open of gates.splice(0)) open();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(delivered).toEqual([]);
+    expect(rejections).toEqual([]);
+  });
+
+  it('ends immediately on peer abort, drops inflating messages unacknowledged, and refuses later resume', async () => {
+    const host = gatedZlib();
+    const env = pair({ host: host.compressor });
+    const link = await connect(env);
+    // Capture a resume1 to replay after the abort.
+    env.relay.announce(env.host.identity.deviceId);
+    await env.relay.settle();
+    const resume1 = env.controller.endpoint.sentResume1.at(-1);
+    if (!resume1) throw new Error('The controller did not ask to resume.');
+    link.controllerRpc.notify('seq', large(0));
+    send(link.controllerRpc, [1]);
+    await waitFor(() => host.gates.length > 0, 'the host inflate');
+    await env.relay.settle();
+    // Wait past the 250 ms ack cadence: neither large(0) nor 1 may be acked
+    // before delivery, so the controller still holds them.
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await env.relay.settle();
+    expect(link.controllerSession.heldBytes).toBeGreaterThan(0);
+    // Peer abort arrives while large(0) is still inflating: close at once.
+    link.controllerSession.close('closed');
+    await waitFor(() => link.closes.host.length > 0, 'the host close');
+    expect(link.closes.host).toEqual(['peer_closed']);
+    expect(link.hostSession.isClosed).toBe(true);
+    // A resume1 arriving after abort must be refused, never answered with resume2.
+    const resume2Before = env.host.endpoint.count('resume2');
+    env.host.endpoint.deliver(env.controller.identity.deviceId, resume1);
+    await env.relay.settle();
+    expect(env.host.endpoint.count('resume2')).toBe(resume2Before);
+    for (const open of host.gates.splice(0)) open();
+    await env.relay.settle();
+    expect(link.atHost).toEqual([]);
+    expect(rejections).toEqual([]);
+  });
+
+  it('does not acknowledge an inflating message in resume1, and delivers in order after resume', async () => {
+    const controller = gatedZlib();
+    const env = pair({ controller: controller.compressor });
+    const link = await connect(env);
+    link.hostRpc.notify('seq', large(0));
+    send(link.hostRpc, [1]);
+    await waitFor(() => controller.gates.length > 0, 'the controller inflate');
+    await env.relay.settle();
+    const heldBeforeDrop = link.hostSession.heldBytes;
+    expect(heldBeforeDrop).toBeGreaterThan(0);
+    // Drop and reconnect while large(0) is still inflating, before sending message 2.
+    env.relay.drop(env.controller.identity.deviceId);
+    await env.relay.settle();
+    env.relay.connect(env.controller.identity.deviceId);
+    await waitFor(
+      () => link.controllerSession.state === 'active',
+      'the session to resume',
+    );
+    await env.relay.settle();
+    // If resume1 had prematurely acknowledged message 0 or 1, heldBytes would have dropped.
+    expect(link.hostSession.heldBytes).toBe(heldBeforeDrop);
+    expect(link.atController).toEqual([]);
+    send(link.hostRpc, [2]);
+    // Release the inflate: 0, 1, and 2 arrive in order, and acks then clear heldBytes.
+    await openGatesUntil(
+      controller.gates,
+      () => link.atController.length >= 3,
+      'all resumed messages',
+    );
+    expect(order(link.atController)).toEqual([0, 1, 2]);
+    await waitFor(
+      () => link.hostSession.heldBytes === 0,
+      'acks after delivery',
+    );
+    expect(link.closes).toEqual({ controller: [], host: [] });
+    expect(rejections).toEqual([]);
+  });
+
+  it('ignores a late resume2 after closing while inflating, and delivers nothing', async () => {
+    const controller = gatedZlib();
+    const env = pair({ controller: controller.compressor });
+    const link = await connect(env);
+    link.hostRpc.notify('seq', large(0));
+    send(link.hostRpc, [1]);
+    await waitFor(() => controller.gates.length > 0, 'the controller inflate');
+    await env.relay.settle();
+    env.relay.drop(env.controller.identity.deviceId);
+    await env.relay.settle();
+    env.host.endpoint.holdResume2 = true;
+    env.relay.connect(env.controller.identity.deviceId);
+    await waitFor(
+      () => env.host.endpoint.heldResume2.length > 0,
+      'the held resume2',
+    );
+    const lateResume2 = env.host.endpoint.heldResume2.splice(0)[0];
+    if (!lateResume2) throw new Error('Expected a held resume2.');
+    // Peer abort ends the controller immediately while large(0) still inflates.
+    env.controller.endpoint.deliver(
+      env.host.identity.deviceId,
+      encodeEnvelope(
+        'abort',
+        link.controllerSession.sessionId,
+        Buffer.from(JSON.stringify({ message: 'closed' })),
+      ),
+    );
+    expect(link.closes.controller).toEqual(['peer_closed']);
+    // Late resume2 arrives after close: must not revive or deliver anything.
+    env.controller.endpoint.deliver(env.host.identity.deviceId, lateResume2);
+    for (const open of controller.gates.splice(0)) open();
+    await env.relay.settle();
+    expect(link.atController).toEqual([]);
+    expect(link.closes.controller).toEqual(['peer_closed']);
+    expect(rejections).toEqual([]);
+  });
+
+  it('closes immediately at the resume deadline while a message is inflating, dropping it unacknowledged', async () => {
+    const controller = gatedZlib();
+    const env = pair({ controller: controller.compressor });
+    const link = await connect(env);
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+    link.hostRpc.notify('seq', large(0));
+    send(link.hostRpc, [1]);
+    while (controller.gates.length === 0) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    await env.relay.settle();
+    env.relay.drop(env.host.identity.deviceId);
+    await env.relay.settle();
+    expect(link.controllerSession.state).toBe('suspended');
+    await jest.advanceTimersByTimeAsync(1_600);
+    expect(link.closes.controller).toEqual(['peer_offline']);
+    expect(link.hostSession.heldBytes).toBeGreaterThan(0);
+    for (const open of controller.gates.splice(0)) open();
+    await env.relay.settle();
+    expect(link.atController).toEqual([]);
+    expect(rejections).toEqual([]);
+  });
+
+  it('ends a suspended session immediately when its controller handshakes again while a message is inflating', async () => {
+    const host = gatedZlib();
+    const env = pair({ host: host.compressor });
+    const link = await connect(env);
+    link.controllerRpc.notify('seq', large(0));
+    send(link.controllerRpc, [1]);
+    await waitFor(() => host.gates.length > 0, 'the host inflate');
+    await env.relay.settle();
+    env.relay.drop(env.controller.identity.deviceId);
+    await env.relay.settle();
+    expect(link.hostSession.state).toBe('suspended');
+    // The controller gave up on the suspended session while offline, so on
+    // reconnect it opens a fresh handshake instead of resuming.
+    link.controllerSession.close('closed');
+    env.relay.connect(env.controller.identity.deviceId);
+    await env.relay.settle();
+    expect(link.hostSession.state).toBe('suspended');
+    const again = await connect(env);
+    expect(link.closes.host).toEqual(['peer_offline']);
+    for (const open of host.gates.splice(0)) open();
+    await env.relay.settle();
+    expect(link.atHost).toEqual([]);
+    await expect(again.controllerRpc.request('echo', 'fresh')).resolves.toBe(
+      'fresh',
+    );
+    expect(rejections).toEqual([]);
+  });
+
+  it('ends immediately when the peer goes offline without resume while a message is inflating', async () => {
+    const controller = gatedZlib();
+    const env = pair({ controller: controller.compressor });
+    const link = await connect(env, {
+      resume: { controller: false, host: false },
+    });
+    link.hostRpc.notify('seq', large(0));
+    send(link.hostRpc, [1]);
+    await waitFor(() => controller.gates.length > 0, 'the controller inflate');
+    await env.relay.settle();
+    env.relay.drop(env.controller.identity.deviceId);
+    expect(link.closes.controller).toEqual(['peer_offline']);
+    for (const open of controller.gates.splice(0)) open();
+    await env.relay.settle();
+    expect(link.atController).toEqual([]);
+    expect(rejections).toEqual([]);
+  });
+
+  it('stops delivering inflating messages immediately when the local RPC peer closes', async () => {
+    const host = gatedZlib();
+    const env = pair({ host: host.compressor });
+    const link = await connect(env);
+    link.controllerRpc.notify('seq', large(0));
+    send(link.controllerRpc, [1]);
+    await waitFor(() => host.gates.length > 0, 'the host inflate');
+    await env.relay.settle();
+    link.hostRpc.close('closed');
+    expect(link.closes.host).toEqual(['closed']);
+    for (const open of host.gates.splice(0)) open();
+    await env.relay.settle();
+    expect(link.atHost).toEqual([]);
+    expect(rejections).toEqual([]);
+  });
+
+  it('delivers nothing after a refused ack closes the session', async () => {
+    const env = pair();
+    const link = await connect(env);
+    // Host closes with transport_error when its immediate 1 MiB ack is refused.
+    env.host.endpoint.refuseData = 1;
+    // Incompressible 2 MiB message: non-final fragments trigger the 1 MiB ack.
+    link.controllerRpc.notify('seq', {
+      n: 0,
+      bytes: new Uint8Array(randomBytes(2 * MIB)),
+    });
+    send(link.controllerRpc, [1]);
+    await waitFor(() => link.closes.host.length > 0, 'the host close');
+    await env.relay.settle();
+    expect(link.closes.host).toEqual(['transport_error']);
+    expect(link.atHost).toEqual([]);
+    expect(rejections).toEqual([]);
+  });
+
+  it('delivers a backlog freed by one inflate in order, over several turns', async () => {
+    const host = gatedZlib();
+    const env = pair({ host: host.compressor });
+    const link = await connect(env);
+    link.controllerRpc.notify('seq', large(0));
+    send(link.controllerRpc, range(1, 2_001));
+    await waitFor(() => host.gates.length > 0, 'the host inflate');
+    await env.relay.settle();
+    let firstTurn = -1;
+    const stop = link.hostSession.onMessage(() => {
+      if (firstTurn !== -1) return;
+      firstTurn = 0;
+      setImmediate(() => {
+        firstTurn = link.atHost.length;
+      });
+    });
+    await openGatesUntil(
+      host.gates,
+      () => link.atHost.length >= 2_001,
+      'every message',
+    );
+    stop();
+    expect(order(link.atHost)).toEqual(range(0, 2_001));
+    expect(firstTurn).toBeGreaterThan(0);
+    expect(firstTurn).toBeLessThan(2_001);
+    expect(link.closes).toEqual({ controller: [], host: [] });
+    expect(rejections).toEqual([]);
+  });
+
+  it('delivers at most one batch per turn while frames keep arriving', async () => {
+    const host = gatedZlib();
+    const env = pair({ host: host.compressor });
+    const link = await connect(env);
+    link.controllerRpc.notify('seq', large(0));
+    send(link.controllerRpc, range(1, 1_001));
+    await waitFor(() => host.gates.length > 0, 'the host inflate');
+    await env.relay.settle();
+    // More frames, handed to the host in the turn its first batch ends.
+    env.controller.endpoint.holdData = true;
+    send(link.controllerRpc, range(1_001, 1_011));
+    env.controller.endpoint.holdData = false;
+    const burst = env.controller.endpoint.heldData.splice(0);
+    expect(burst.length).toBeGreaterThan(0);
+    let delivered = 0;
+    let firstTurn = -1;
+    const stop = link.hostSession.onMessage(() => {
+      delivered += 1;
+      if (delivered === 1) {
+        setImmediate(() => {
+          firstTurn = link.atHost.length;
+        });
+      }
+      if (delivered === 256) {
+        queueMicrotask(() => {
+          for (const frame of burst) {
+            env.host.endpoint.deliver(env.controller.identity.deviceId, frame);
+          }
+        });
+      }
+    });
+    await openGatesUntil(
+      host.gates,
+      () => link.atHost.length >= 1_011,
+      'every message',
+    );
+    stop();
+    expect(order(link.atHost)).toEqual(range(0, 1_011));
+    expect(firstTurn).toBe(256);
+    expect(link.closes).toEqual({ controller: [], host: [] });
+    expect(rejections).toEqual([]);
+  });
+
+  it('runs one inflate at a time across sessions and releases the gate when a waiting session closes', async () => {
+    const { compressor, gates, stats } = gatedZlib();
+    const env = pair({ controller: compressor });
+    const first = await connect(env);
+    const second = await connect(env);
+    const third = await connect(env);
+    first.hostRpc.notify('seq', large(0));
+    await waitFor(() => gates.length === 1, 'first inflate starts');
+    second.hostRpc.notify('seq', large(0));
+    third.hostRpc.notify('seq', large(0));
+    first.hostRpc.notify('seq', 1);
+    third.hostRpc.notify('seq', 1);
+    await env.relay.settle();
+    // Only the first session entered the compressor; second and third wait.
+    expect(stats.most).toBe(1);
+    // Closing the waiting second session cancels its gate entry cleanly.
+    second.controllerSession.close('closed');
+    await openGatesUntil(
+      gates,
+      () => first.atController.length >= 2 && third.atController.length >= 2,
+      'first and third sessions',
+    );
+    expect(order(first.atController)).toEqual([0, 1]);
+    expect(second.atController).toEqual([]);
+    expect(order(third.atController)).toEqual([0, 1]);
+    expect(stats.most).toBe(1);
+    expect(rejections).toEqual([]);
+  });
+
+  it('keeps a lingering host holding frames when the controller reconnects while inflating', async () => {
+    const controller = gatedZlib();
+    const env = pair({ controller: controller.compressor });
+    const link = await connect(env);
+    env.relay.drop(env.controller.identity.deviceId);
+    await env.relay.settle();
+    link.hostRpc.notify('seq', large(0));
+    link.hostRpc.notify('seq', 1);
+    link.hostRpc.close();
+    await waitFor(() => link.closes.host.length > 0, 'the host to linger');
+    expect(link.hostSession.isLingering).toBe(true);
+    // First reconnect delivers the lingering frames; drop again before inflate finishes.
+    env.relay.connect(env.controller.identity.deviceId);
+    await waitFor(() => controller.gates.length > 0, 'the controller inflate');
+    await env.relay.settle();
+    env.relay.drop(env.controller.identity.deviceId);
+    await env.relay.settle();
+    // Second reconnect sends resume1 with ackableReceiveCounter still before large(0):
+    // the lingering host must not abandon its held frames prematurely.
+    env.relay.connect(env.controller.identity.deviceId);
+    await env.relay.settle();
+    expect(link.hostSession.isLingering).toBe(true);
+    expect(link.hostSession.heldBytes).toBeGreaterThan(0);
+    await openGatesUntil(
+      controller.gates,
+      () => link.closes.controller.length > 0,
+      'the controller to deliver and close',
+    );
+    expect(order(link.atController)).toEqual([0, 1]);
+    expect(link.closes.controller).toEqual(['peer_closed']);
+    expect(rejections).toEqual([]);
+  });
+
+  it('drops late data frames after an in-band close without sending an abort that overtakes an inflate', async () => {
+    const controller = gatedZlib();
+    const env = pair({ controller: controller.compressor });
+    const link = await connect(env);
+    link.hostRpc.notify('seq', large(0));
+    link.hostRpc.notify('seq', 1);
+    await waitFor(() => controller.gates.length > 0, 'the controller inflate');
+    const abortsBefore = env.host.endpoint.count('abort');
+    // Host closes in-band while large(0) is still inflating on the controller.
+    link.hostRpc.close('revoked');
+    expect(link.closes.host).toEqual(['revoked']);
+    // Controller sends data frames already in flight after the host deleted the session.
+    link.controllerRpc.notify('seq', 99);
+    await env.relay.settle();
+    expect(env.host.endpoint.count('abort')).toBe(abortsBefore);
+    expect(link.closes.controller).toEqual([]);
+    // Release the inflate: both large(0) and the ending (1) arrive in order before close.
+    await openGatesUntil(
+      controller.gates,
+      () => link.closes.controller.length > 0,
+      'the controller to deliver and close',
+    );
+    expect(order(link.atController)).toEqual([0, 1]);
+    expect(link.closes.controller).toEqual(['peer_closed']);
+    expect(rejections).toEqual([]);
+  });
+
+  it('delivers an ending sent after preview revocation turns off resume while the peer is inflating', async () => {
+    const controller = gatedZlib();
+    const env = pair({ controller: controller.compressor });
+    const link = await connect(env);
+    link.hostRpc.notify('seq', large(0));
+    await waitFor(() => controller.gates.length > 0, 'the controller inflate');
+    const abortsBefore = env.host.endpoint.count('abort');
+    // As host-session.end() does after carrying preview: disable resume, drop unsent,
+    // send ending notice, and close the RPC in-band.
+    link.hostSession.setResumeNegotiated(false);
+    link.hostSession.discardUnsent();
+    link.hostRpc.notify('seq', 1);
+    link.hostRpc.close('revoked');
+    expect(link.closes.host).toEqual(['revoked']);
+    expect(link.hostSession.isLingering).toBe(false);
+    await env.relay.settle();
+    expect(env.host.endpoint.count('abort')).toBe(abortsBefore);
+    expect(link.closes.controller).toEqual([]);
+    await openGatesUntil(
+      controller.gates,
+      () => link.closes.controller.length > 0,
+      'the controller to deliver the ending and close',
+    );
+    expect(order(link.atController)).toEqual([0, 1]);
+    expect(link.closes.controller).toEqual(['peer_closed']);
+    expect(rejections).toEqual([]);
+  });
+
+  it('drops a late resume1 during the in-band close quiet window without aborting a queued inflate', async () => {
+    const controller = gatedZlib();
+    const env = pair({ controller: controller.compressor });
+    const link = await connect(env);
+    link.hostRpc.notify('seq', large(0));
+    link.hostRpc.notify('seq', 1);
+    await waitFor(() => controller.gates.length > 0, 'the controller inflate');
+    const abortsBefore = env.host.endpoint.count('abort');
+    // Host closes in-band while large(0) is still inflating on the controller.
+    link.hostRpc.close('revoked');
+    expect(link.closes.host).toEqual(['revoked']);
+    // Presence re-announce makes the active controller send resume1 while still inflating.
+    env.relay.announce(env.host.identity.deviceId);
+    await env.relay.settle();
+    expect(env.host.endpoint.count('abort')).toBe(abortsBefore);
+    expect(link.closes.controller).toEqual([]);
+    await openGatesUntil(
+      controller.gates,
+      () => link.closes.controller.length > 0,
+      'the controller to deliver and close',
+    );
+    expect(order(link.atController)).toEqual([0, 1]);
+    expect(link.closes.controller).toEqual(['peer_closed']);
+    expect(rejections).toEqual([]);
+  });
+
+  it('never advances or sends an ack for frames received after closeAfterDelivery ends delivery', async () => {
+    const host = gatedZlib();
+    const env = pair({ host: host.compressor });
+    const link = await connect(env);
+    // Hold host send chain on a large message, then start closeAfterDelivery (deliveryEnded = true).
+    link.hostRpc.notify('seq', large(0));
+    await waitFor(() => host.gates.length > 0, 'the host deflate');
+    const beforeCounter = link.hostSession.nextReceiveCounter;
+    link.hostRpc.close('closed');
+    expect(link.hostSession.isClosed).toBe(false);
+    // Controller sends data (discarded by host because deliveryEnded) plus an ack.
+    send(link.controllerRpc, [1, 2]);
+    await env.relay.settle();
+    const heldAtController = link.controllerSession.heldBytes;
+    expect(heldAtController).toBeGreaterThan(0);
+    // Wait past the 250 ms ack cadence while host is still draining sends.
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await env.relay.settle();
+    expect(link.hostSession.nextReceiveCounter).toBe(beforeCounter);
+    expect(link.controllerSession.heldBytes).toBe(heldAtController);
+    expect(link.atHost).toEqual([]);
+    for (const open of host.gates.splice(0)) open();
+    await waitFor(
+      () => link.closes.controller.length > 0,
+      'both sides to close',
+    );
+    expect(rejections).toEqual([]);
+  });
+
+  it('acks a message delivered between resume1 and resume2 once resume finishes', async () => {
+    const controller = gatedZlib();
+    const env = pair({
+      controller: controller.compressor,
+      resumeRetryMs: 2_000,
+    });
+    const link = await connect(env);
+    link.hostRpc.notify('seq', large(0));
+    await waitFor(() => controller.gates.length > 0, 'the controller inflate');
+    env.host.endpoint.holdResume2 = true;
+    env.relay.drop(env.controller.identity.deviceId);
+    await env.relay.settle();
+    env.relay.connect(env.controller.identity.deviceId);
+    await waitFor(
+      () => env.host.endpoint.heldResume2.length > 0,
+      'host to answer resume1',
+    );
+    expect(link.controllerSession.state).toBe('resuming');
+    // Finish inflating and delivering large(0) while still resuming.
+    for (const open of controller.gates.splice(0)) open();
+    await waitFor(() => link.atController.length === 1, 'large(0) delivered');
+    // Let the 250 ms ack timer fire while resuming, when sendAck skips it.
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await env.relay.settle();
+    expect(link.controllerSession.state).toBe('resuming');
+    expect(link.hostSession.heldBytes).toBeGreaterThan(0);
+    // Deliver resume2: the controller activates and flushes an ack for large(0)
+    // without waiting for any later message.
+    env.host.endpoint.holdResume2 = false;
+    const resume2 = env.host.endpoint.heldResume2.shift();
+    expect(resume2).toBeDefined();
+    if (resume2) {
+      env.controller.endpoint.deliver(env.host.identity.deviceId, resume2);
+    }
+    await waitFor(
+      () =>
+        link.controllerSession.state === 'active' &&
+        link.hostSession.heldBytes === 0,
+      'host to release delivered frames after resume',
+    );
+    expect(order(link.atController)).toEqual([0]);
     expect(link.closes).toEqual({ controller: [], host: [] });
     expect(rejections).toEqual([]);
   });

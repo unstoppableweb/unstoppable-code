@@ -80,10 +80,7 @@ import {
 } from '../primitives/PickerMenu';
 import { Button } from '../primitives/Button';
 import { Fact, FactList } from '../primitives/FactList';
-import {
-  RichHoverCard,
-  RichHoverTooltip,
-} from '../primitives/RichHoverTooltip';
+import { HoverCard } from '../primitives/HoverCard';
 import { SearchField } from '../primitives/SearchField';
 import { Skeleton } from '../primitives/Skeleton';
 import { Stack } from '../primitives/Stack';
@@ -4177,7 +4174,7 @@ function ModelPickerOption({
 
   return (
     <>
-      <RichHoverTooltip
+      <HoverCard
         id={tooltipId}
         open={
           visibleDetail === 'keyboard'
@@ -4398,7 +4395,7 @@ function ModelPickerOption({
             </Button>
           ) : null}
         </div>
-      </RichHoverTooltip>
+      </HoverCard>
       {/* Other tabs keep hidden copies of a row under the same menu key; only
           the visible copy may open its menu. */}
       {billingOpen && hasSettings && !hidden ? (
@@ -4512,7 +4509,8 @@ function ModelPickerOption({
         </FloatingMenu>
       ) : null}
       {tooltipVisible && !pickerChrome && rowRef.current ? (
-        <RichHoverCard
+        <HoverCard
+          open
           anchorRef={rowRef}
           placement="beside-menu"
           id={tooltipId}
@@ -4521,64 +4519,65 @@ function ModelPickerOption({
           tone="inverse"
           surfacePadding="relaxed"
           surfaceClassName="w-64 whitespace-normal"
-        >
-          <Stack gap="tight">
-            {/* Quieter lines dim the inverse ink, as ModelRowDetail does:
+          content={
+            <Stack gap="tight">
+              {/* Quieter lines dim the inverse ink, as ModelRowDetail does:
               fg-secondary is too faint on the inverse surface. */}
-            {/* The row already describes itself with this hint. */}
-            {lock || hasExtraCharge || hasDescription ? (
-              <Stack gap="tight">
-                {lock ? (
-                  <div aria-hidden="true" className="text-xs leading-snug">
-                    {lock.hint}
-                  </div>
-                ) : null}
-                {hasExtraCharge ? (
-                  <div className="text-xs leading-snug">
-                    <div>Extra charge only</div>
-                    {option.extraChargeMessage ? (
-                      <div className="mt-0.5 opacity-70">
-                        {option.extraChargeMessage}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-                {hasDescription ? (
-                  <div
-                    data-testid={
-                      uniformTestIds
-                        ? `${testIdPrefix}-option-tooltip-description`
-                        : `${testIdPrefix}-option-tooltip-description-${option.id}`
-                    }
-                    className={`text-xs leading-snug${hasExtraCharge || lock ? ' opacity-70' : ''}`}
-                  >
-                    {option.description}
-                  </div>
-                ) : null}
-              </Stack>
-            ) : null}
-            {contextWindowLabel ? (
-              <div
-                className="text-xs leading-snug opacity-70"
-                data-testid={`${testIdPrefix}-option-context-window`}
-              >
-                {contextWindowLabel} context
-              </div>
-            ) : null}
-            {showReasonInTooltip ? (
-              <div
-                className="text-xs leading-snug opacity-70"
-                data-testid={
-                  uniformTestIds
-                    ? undefined
-                    : `${testIdPrefix}-unavailable-tooltip`
-                }
-              >
-                {state.unavailableReason}
-              </div>
-            ) : null}
-          </Stack>
-        </RichHoverCard>
+              {/* The row already describes itself with this hint. */}
+              {lock || hasExtraCharge || hasDescription ? (
+                <Stack gap="tight">
+                  {lock ? (
+                    <div aria-hidden="true" className="text-xs leading-snug">
+                      {lock.hint}
+                    </div>
+                  ) : null}
+                  {hasExtraCharge ? (
+                    <div className="text-xs leading-snug">
+                      <div>Extra charge only</div>
+                      {option.extraChargeMessage ? (
+                        <div className="mt-0.5 opacity-70">
+                          {option.extraChargeMessage}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {hasDescription ? (
+                    <div
+                      data-testid={
+                        uniformTestIds
+                          ? `${testIdPrefix}-option-tooltip-description`
+                          : `${testIdPrefix}-option-tooltip-description-${option.id}`
+                      }
+                      className={`text-xs leading-snug${hasExtraCharge || lock ? ' opacity-70' : ''}`}
+                    >
+                      {option.description}
+                    </div>
+                  ) : null}
+                </Stack>
+              ) : null}
+              {contextWindowLabel ? (
+                <div
+                  className="text-xs leading-snug opacity-70"
+                  data-testid={`${testIdPrefix}-option-context-window`}
+                >
+                  {contextWindowLabel} context
+                </div>
+              ) : null}
+              {showReasonInTooltip ? (
+                <div
+                  className="text-xs leading-snug opacity-70"
+                  data-testid={
+                    uniformTestIds
+                      ? undefined
+                      : `${testIdPrefix}-unavailable-tooltip`
+                  }
+                >
+                  {state.unavailableReason}
+                </div>
+              ) : null}
+            </Stack>
+          }
+        />
       ) : null}
     </>
   );

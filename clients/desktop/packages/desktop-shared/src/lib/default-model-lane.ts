@@ -15,12 +15,9 @@ import {
   resolveGatewayModelEntry,
   resolveModelIdForGatewayId,
 } from '@canopy/execution-engine/lib/gateway-model-availability';
+import type { BillingLane } from '@canopy/protocol/preferences';
 
-export type BillingLane =
-  | 'claude-native'
-  | 'codex-native'
-  | 'ai-credits'
-  | 'ollama';
+export type { BillingLane } from '@canopy/protocol/preferences';
 
 export const BILLING_LANES = [
   'claude-native',

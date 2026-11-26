@@ -5,6 +5,10 @@ import {
   createWorkEntryRepository,
   type WorkEntryRegistryReconciler,
 } from '@canopy/core-runtime/node/work-entries';
+import {
+  assertAdmittedWriter,
+  STORAGE_OWNERSHIP,
+} from '@canopy/core-runtime/storage';
 import type { CoworkWorkEntryData } from '@canopy/desktop-shared/types';
 import { renameWithRetry } from './atomic-file';
 import { parseWorkEntriesFile } from './cowork-work-entries-file';
@@ -12,6 +16,10 @@ import { isPathInside } from './path-safety';
 import { getWorkspaceDir, getWorkspaceWorkEntriesFilePath } from './paths';
 import { publishSidebarItemGroupsChanged } from './sidebar-item-groups';
 import { isErrnoException } from './type-guards';
+import {
+  WORK_ENTRIES_FILE_NAME,
+  workEntryRegistryTempName,
+} from './work-entry-registry-files';
 
 export type { WorkEntryRegistryWriteOptions } from '@canopy/core-runtime/node/work-entries';
 
@@ -91,7 +99,7 @@ export const workEntryRepository = createWorkEntryRepository({
       await mkdir(dirname(path), { recursive: true });
     },
     tempPath: (path) =>
-      join(dirname(path), `.work-entries-${randomUUID()}.tmp`),
+      join(dirname(path), workEntryRegistryTempName(randomUUID())),
     writeFile: (path, data) => writeFile(path, data, 'utf8'),
     // Late-bound: tests intercept the install by spying on atomic-file.
     rename: (source, target, options) =>
@@ -105,16 +113,18 @@ export const workEntryRepository = createWorkEntryRepository({
   reconciler: () => registryReconciler,
   publishGroups: (workspaceId) => publishSidebarItemGroupsChanged(workspaceId),
   onListChanged: notifyWorkEntryListChanged,
-  // No-op until PR3 (the CAN-4476 ratchet) admits this module on the
-  // work_entries row; without that row assertAdmittedWriter refuses.
-  assertWriter: () => undefined,
+  assertWriter: () =>
+    assertAdmittedWriter(
+      'work_entries',
+      'electron_main',
+      'main/lib/work-entry-repository',
+      STORAGE_OWNERSHIP,
+    ),
 });
-
-const BUNDLE_FILE_NAME = 'work-entries.json';
 
 /** Where an export bundle carries the registry. */
 export function workEntryRegistryBundleSource(bundleRoot: string): string {
-  return join(bundleRoot, BUNDLE_FILE_NAME);
+  return join(bundleRoot, WORK_ENTRIES_FILE_NAME);
 }
 
 /** Copies the registry's bytes into an export bundle when one exists. */

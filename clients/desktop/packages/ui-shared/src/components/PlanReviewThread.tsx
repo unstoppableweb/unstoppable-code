@@ -22,7 +22,7 @@ import {
   DISPLAY_AVATAR_GLYPH_SIZE,
   DisplayAvatar,
 } from '../primitives/DisplayAvatar';
-import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
+import { HoverCard } from '../primitives/HoverCard';
 import { Stack } from '../primitives/Stack';
 import { Tooltip } from '../primitives/Tooltip';
 import { StatusGlyph } from '../primitives/StatusGlyph';
@@ -329,7 +329,7 @@ export function PlanReviewThread({
         )}
         {reference ? (
           reference.onActivate ? (
-            <RichHoverTooltip
+            <HoverCard
               content={reference.activateLabel ?? reference.text}
               triggerWrapperClassName="min-w-0 flex-1"
               surfaceClassName="w-max max-w-96"
@@ -345,7 +345,7 @@ export function PlanReviewThread({
                   {reference.text}
                 </span>
               </Button>
-            </RichHoverTooltip>
+            </HoverCard>
           ) : (
             <span className="min-w-0 flex-1 truncate text-2xs italic fg-secondary/90">
               {reference.text}

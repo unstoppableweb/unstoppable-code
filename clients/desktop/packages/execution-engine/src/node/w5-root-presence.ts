@@ -38,13 +38,16 @@ export async function restrictW5RootPresenceToReads(
   readOnlyRoots.add(await realpath(dataRoot).catch(() => resolve(dataRoot)));
 }
 
-/** Permanent host presence; historical-peer exclusion remains a separate step. */
-export async function joinW5RootPresence(
+// Joins still resolving their root; each settles once `roots` records it.
+const registering = new Set<Promise<unknown>>();
+
+async function registerJoin(
   dataRoot: string,
   kind: string,
-): Promise<void> {
-  if (readOnlyRoots.has(resolve(dataRoot)))
-    throw new W5HostCohortRefusedError('cohort-unavailable');
+): Promise<{
+  readonly root: string;
+  readonly pending: Promise<W5RootPresence>;
+}> {
   const root = await realpath(dataRoot);
   if (readOnlyRoots.has(root))
     throw new W5HostCohortRefusedError('cohort-unavailable');
@@ -52,6 +55,25 @@ export async function joinW5RootPresence(
   if (!pending) {
     pending = acquireW5RootPresence(root, 'host', kind, inspectSelf);
     roots.set(root, pending);
+  }
+  return { root, pending };
+}
+
+/** Permanent host presence; historical-peer exclusion remains a separate step. */
+export async function joinW5RootPresence(
+  dataRoot: string,
+  kind: string,
+): Promise<void> {
+  if (readOnlyRoots.has(resolve(dataRoot)))
+    throw new W5HostCohortRefusedError('cohort-unavailable');
+  const registration = registerJoin(dataRoot, kind);
+  registering.add(registration);
+  let root: string;
+  let pending: Promise<W5RootPresence>;
+  try {
+    ({ root, pending } = await registration);
+  } finally {
+    registering.delete(registration);
   }
   let presence: W5RootPresence;
   try {
@@ -64,6 +86,31 @@ export async function joinW5RootPresence(
   }
   // An uncertain acquired hold stays owned until drain; never orphan or reacquire it.
   if (!presence.isHeld()) throw new Error('W5 root presence lost.');
+}
+
+async function joinsRegistered(): Promise<void> {
+  while (registering.size) await Promise.allSettled([...registering]);
+}
+
+/**
+ * True while this process holds, or is still joining, host presence for the
+ * root. Offline maintenance windows refuse such a caller (CAN-4498).
+ */
+export async function hasJoinedW5RootPresence(
+  dataRoot: string,
+): Promise<boolean> {
+  await joinsRegistered();
+  const root = await realpath(dataRoot).catch(() => resolve(dataRoot));
+  // A join may have started while this resolved the root.
+  await joinsRegistered();
+  const pending = roots.get(root);
+  if (!pending) return false;
+  try {
+    await pending;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** CLI beforeExit only: no outstanding asynchronous I/O remains. */

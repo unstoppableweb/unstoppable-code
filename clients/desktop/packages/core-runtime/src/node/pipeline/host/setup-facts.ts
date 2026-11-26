@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { homedir, userInfo } from 'node:os';
 import type { WorkerPipelineSetupFact } from '@canopy/protocol/canopy-core';
 import type { PlatformOperatingSystem } from '../../../platform/platform-services';
+import { readPreferencesEnvelopeRecord } from '@canopy/protocol/preferences';
 
 /** Host-local projection only; these paths never enter a public assessment. */
 export function pipelineSetupFactRoots(input: {
@@ -429,14 +430,10 @@ export async function readPipelineSetupFactVersion(
           // digest; auth refresh and unrelated preferences are not route facts.
           hash.update('no-native-mcp');
         } else if (fact.projection === 'preferences') {
-          const value: unknown = JSON.parse(content.toString('utf8'));
-          if (
-            !record(value) ||
-            value.version !== 1 ||
-            !record(value.preferences)
-          )
-            throw new Error('Invalid preferences');
-          const preferences = value.preferences;
+          const preferences = readPreferencesEnvelopeRecord(
+            JSON.parse(content.toString('utf8')),
+          );
+          if (!preferences) throw new Error('Invalid preferences');
           if (
             options.requireAiCreditsConsent &&
             (preferences.aiCreditsRoutingMode !== 'on' ||

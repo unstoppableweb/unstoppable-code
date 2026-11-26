@@ -1,5 +1,5 @@
 import { constants as bufferConstants } from 'node:buffer';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { open, readdir, rename, rm, type FileHandle } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import {
@@ -41,6 +41,24 @@ export interface TerminalRecordOutboxEntry {
    * retry is the same batch under the same seq.
    */
   attempted?: boolean;
+  /** Discovered behind an activated retirement: custody only, never admission. */
+  quarantined?: boolean;
+  /** Pending discovery barriers this source predates, activated only on commit. */
+  discoveryFenceIds?: string[];
+}
+
+/**
+ * Local activation order, independent of the frozen authority retirement DTO.
+ * Ordering is source provenance (`reconcileTerminalRecordDiscoverySource`),
+ * never wall-clock start times, which a clock moved back can invert.
+ */
+export interface TerminalRecordDiscoveryFence {
+  readonly id: string;
+  readonly projectId: string;
+  readonly worktreeId?: string;
+  activated: boolean;
+  /** Proven abandoned; retained until the reconciled merge ledger is installed. */
+  cancelled?: boolean;
 }
 
 export interface TerminalRecordScopeOutbox {
@@ -53,6 +71,14 @@ export interface TerminalRecordOutboxFile {
   readonly producer: 'electron_main';
   scopes: TerminalRecordScopeOutbox[];
   retirements: WorkerTerminalRecordRetireParams[];
+  /** Unread predecessor sources must be quarantined when discovery succeeds. */
+  discoveryFences?: TerminalRecordDiscoveryFence[];
+  /**
+   * Fence ids of retirements this file's custody already answered (drained,
+   * or its activated quarantine installed): a later replay of one finds this
+   * file a successor. Bounded; an evicted id only quarantines, never replays.
+   */
+  reconciledRetirements?: string[];
   /**
    * When the run that wrote it started (epoch ms): runs' own files replay
    * in this order, not their random names' (R5-F2).
@@ -92,6 +118,21 @@ function isRunFileName(name: string): boolean {
   );
 }
 
+function isOutboxArtifactName(name: string): boolean {
+  // Scrubbing a crash-left temp atomically can itself leave a temp of that temp.
+  const temporaryTarget = name.replace(/^\.+/, '');
+  return (
+    name === FILE_NAME ||
+    isRunFileName(name) ||
+    name.startsWith(`${FILE_NAME}.damaged-`) ||
+    (name.startsWith(RUN_FILE_PREFIX) && name.includes('.json.damaged-')) ||
+    (name.startsWith('.') &&
+      name.endsWith('.tmp') &&
+      (temporaryTarget.startsWith(`${FILE_NAME}.`) ||
+        temporaryTarget.startsWith(RUN_FILE_PREFIX)))
+  );
+}
+
 function errorCode(error: unknown): string | undefined {
   if (error === null || typeof error !== 'object') return undefined;
   const code: unknown = Reflect.get(error, 'code');
@@ -103,6 +144,11 @@ function isEntry(value: unknown): value is TerminalRecordOutboxEntry {
     isRecord(value) &&
     typeof value.seq === 'number' &&
     typeof value.runId === 'string' &&
+    (value.quarantined === undefined ||
+      typeof value.quarantined === 'boolean') &&
+    (value.discoveryFenceIds === undefined ||
+      (Array.isArray(value.discoveryFenceIds) &&
+        value.discoveryFenceIds.every((id) => typeof id === 'string'))) &&
     Array.isArray(value.ops) &&
     (value.client === undefined || isClient(value.client))
   );
@@ -147,7 +193,9 @@ function isRetirement(
       (Array.isArray(value.worktreeIds) &&
         value.worktreeIds.every((id) => typeof id === 'string'))) &&
     (value.generation === undefined || typeof value.generation === 'number') &&
-    (value.requestedAt === undefined || typeof value.requestedAt === 'number')
+    (value.requestedAt === undefined ||
+      typeof value.requestedAt === 'number') &&
+    (value.projectWide === undefined || value.projectWide === true)
   );
 }
 
@@ -192,7 +240,17 @@ export function appendScopeOutbox(
         (held) => held.runId === entry.runId && held.seq === entry.seq,
       );
       if (index < 0) last.entries.push(entry);
-      else last.entries[index] = entry;
+      else {
+        // A stale sibling image cannot undo an activation fence.
+        if (last.entries[index].quarantined) entry.quarantined = true;
+        entry.discoveryFenceIds = Array.from(
+          new Set([
+            ...(last.entries[index].discoveryFenceIds ?? []),
+            ...(entry.discoveryFenceIds ?? []),
+          ]),
+        );
+        last.entries[index] = entry;
+      }
     }
     return last;
   }
@@ -230,6 +288,7 @@ export function dropRetiredOutboxEntries(
   retirement: WorkerTerminalRecordRetireParams,
   outbox: TerminalRecordScopeOutbox,
 ): boolean {
+  // Quarantined custody goes too when the intent captured its exact identity.
   outbox.entries = outbox.entries.filter((entry) => {
     const client = entry.client ?? outbox.client;
     if (
@@ -258,6 +317,126 @@ export interface TerminalRecordOutboxRead {
   readonly outbox: TerminalRecordOutboxFile;
   /** Runs' own files merged here, to discard once the shared file holds them. */
   readonly runFiles: string[];
+  /** Exact source provenance, retained only until the owner installs this read. */
+  readonly discoverySources?: readonly TerminalRecordOutboxFile[];
+}
+
+function isDiscoveryFence(
+  value: unknown,
+): value is TerminalRecordDiscoveryFence {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    typeof value.activated === 'boolean' &&
+    (value.cancelled === undefined || typeof value.cancelled === 'boolean') &&
+    typeof value.projectId === 'string' &&
+    (value.worktreeId === undefined || typeof value.worktreeId === 'string')
+  );
+}
+
+/** A retirement intent's fence key, independent of how a decoder ordered its keys. */
+export function terminalRecordDiscoveryFenceId(
+  retirement: WorkerTerminalRecordRetireParams,
+): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        retirement.projectId,
+        retirement.worktreeId,
+        retirement.incarnation,
+        retirement.generation,
+        retirement.requestedAt,
+        [...(retirement.lifetimeIds ?? [])].sort(),
+        [...(retirement.worktreeIds ?? [])].sort(),
+      ]),
+    )
+    .digest('hex');
+}
+
+/** Covers a replay of retained recipient intents for many launches. */
+const RECONCILED_RETIREMENTS_MAX = 64;
+
+/** Most recent last; a repeated id moves to the end. */
+export function rememberReconciledRetirements(
+  outbox: TerminalRecordOutboxFile,
+  ids: readonly string[],
+): void {
+  if (ids.length === 0) return;
+  const incoming = new Set(ids);
+  outbox.reconciledRetirements = [
+    ...(outbox.reconciledRetirements ?? []).filter((id) => !incoming.has(id)),
+    ...incoming,
+  ].slice(-RECONCILED_RETIREMENTS_MAX);
+}
+
+/**
+ * A source that holds a fence, the retirement it fences, or that
+ * retirement's reconciled id, was written by a run that knew of that
+ * retirement: its earlier custody was retired or quarantined then, so the
+ * rest follows activation. Any other source is a predecessor, even one a
+ * crash kept from reading the fence: ambiguous ordering is quarantined on
+ * activation, never replayed. No wall-clock time: a clock moved back can
+ * invert it.
+ */
+export function reconcileTerminalRecordDiscoverySource(
+  source: TerminalRecordOutboxFile,
+  fences: readonly TerminalRecordDiscoveryFence[],
+): void {
+  const known = new Set([
+    ...(source.discoveryFences ?? []).map((fence) => fence.id),
+    ...source.retirements.map(terminalRecordDiscoveryFenceId),
+    ...(source.reconciledRetirements ?? []),
+  ]);
+  for (const scope of source.scopes)
+    for (const entry of scope.entries) {
+      const client = entry.client ?? scope.client;
+      const predecessors = fences.filter(
+        (fence) =>
+          !(fence.cancelled && !fence.activated) &&
+          !known.has(fence.id) &&
+          client.projectId === fence.projectId &&
+          (fence.worktreeId === undefined ||
+            client.worktreeId === fence.worktreeId),
+      );
+      if (predecessors.length > 0)
+        entry.discoveryFenceIds = Array.from(
+          new Set([
+            ...(entry.discoveryFenceIds ?? []),
+            ...predecessors.map((fence) => fence.id),
+          ]),
+        );
+      entry.discoveryFenceIds = entry.discoveryFenceIds?.filter(
+        (id) =>
+          !fences.some(
+            (fence) => fence.id === id && fence.cancelled && !fence.activated,
+          ),
+      );
+      if (
+        fences.some(
+          (fence) =>
+            fence.activated && entry.discoveryFenceIds?.includes(fence.id),
+        )
+      )
+        entry.quarantined = true;
+    }
+}
+
+export function mergeTerminalRecordDiscoveryFences(
+  ...sources: (readonly TerminalRecordDiscoveryFence[] | undefined)[]
+): TerminalRecordDiscoveryFence[] {
+  const fences = new Map<string, TerminalRecordDiscoveryFence>();
+  for (const source of sources)
+    for (const fence of source ?? []) {
+      const held = fences.get(fence.id);
+      fences.set(fence.id, {
+        id: fence.id,
+        projectId: fence.projectId,
+        ...(fence.worktreeId !== undefined && { worktreeId: fence.worktreeId }),
+        activated: fence.activated || held?.activated === true,
+        cancelled: fence.cancelled === true || held?.cancelled === true,
+      });
+    }
+  return Array.from(fences.values());
 }
 
 export interface TerminalRecordOutboxOptions {
@@ -427,6 +606,14 @@ function parseOutbox(parsed: unknown): TerminalRecordOutboxFile | null {
     retirements: Array.isArray(parsed.retirements)
       ? parsed.retirements.filter(isRetirement)
       : [],
+    ...(Array.isArray(parsed.discoveryFences) && {
+      discoveryFences: parsed.discoveryFences.filter(isDiscoveryFence),
+    }),
+    ...(Array.isArray(parsed.reconciledRetirements) && {
+      reconciledRetirements: parsed.reconciledRetirements.filter(
+        (id): id is string => typeof id === 'string',
+      ),
+    }),
     ...(typeof parsed.publicationId === 'string' && {
       publicationId: parsed.publicationId,
     }),
@@ -462,6 +649,11 @@ export class TerminalRecordOutbox {
   private sealed = false;
   private active = false;
   private publication: { file: string; publicationId: string } | undefined;
+  private readonly recipientPolicies = new Map<
+    string,
+    (id: string) => boolean
+  >();
+  private readonly purgedLifetimes = new Map<string, Set<string | undefined>>();
 
   private serialize<T>(run: () => Promise<T>): Promise<T> {
     const result = this.operations
@@ -486,6 +678,123 @@ export class TerminalRecordOutbox {
 
   private readonly maxStringLength: number;
 
+  private scrubbed(outbox: TerminalRecordOutboxFile): TerminalRecordOutboxFile {
+    const copy = structuredClone(outbox);
+    copy.scopes = copy.scopes.filter((scope) => {
+      const denied = this.purgedLifetimes.get(
+        `${scope.client.projectId}/${scope.client.worktreeId}`,
+      );
+      if (!denied) return true;
+      const current = this.recipientPolicies.get(
+        `${scope.client.projectId}/${scope.client.worktreeId}`,
+      );
+      scope.entries = scope.entries.filter((entry) => {
+        const id = (entry.client ?? scope.client).lifetimeId;
+        return (
+          !denied.has(id) &&
+          (current === undefined || (id !== undefined && current(id)))
+        );
+      });
+      return scope.entries.length > 0;
+    });
+    return copy;
+  }
+
+  /**
+   * Synchronous, so a quit seal or queued write issued after it already omits
+   * these lifetimes: only the on-disk scrub waits.
+   */
+  public denyRecipient(
+    target: {
+      projectId: string;
+      worktreeId: string;
+      lifetimeIds?: readonly string[];
+    },
+    isCurrentLifetime: (id: string) => boolean = () => false,
+  ): Set<string | undefined> {
+    const key = `${target.projectId}/${target.worktreeId}`;
+    const denied =
+      this.purgedLifetimes.get(key) ?? new Set<string | undefined>();
+    denied.add(undefined);
+    for (const id of target.lifetimeIds ?? []) denied.add(id);
+    this.purgedLifetimes.set(key, denied);
+    this.recipientPolicies.set(key, isCurrentLifetime);
+    return denied;
+  }
+
+  /** All plaintext recovery siblings belong to this writer, including crash leftovers. */
+  public scrubRecipient(
+    retirement: WorkerTerminalRecordRetireParams & { worktreeId: string },
+    isCurrentLifetime: (id: string) => boolean = () => false,
+  ): Promise<void> {
+    const denied = this.denyRecipient(retirement, isCurrentLifetime);
+    return this.serialize(async () => {
+      let names: string[];
+      try {
+        names = await readdir(this.root());
+      } catch (error) {
+        if (errorCode(error) === 'ENOENT') return;
+        throw error;
+      }
+      if (this.sealed) return;
+      const failures: unknown[] = [];
+      for (const name of names) {
+        if (this.sealed) return;
+        if (!isOutboxArtifactName(name)) continue;
+        const path = join(this.root(), name);
+        try {
+          const parsed = parseOutbox(
+            await readOutboxDocument(path, this.maxStringLength),
+          );
+          if (this.sealed) return;
+          if (!parsed) {
+            // Unreplayable evidence must not retain a prior recipient's plaintext.
+            await rm(path, { force: true });
+            continue;
+          }
+          for (const scope of parsed.scopes) {
+            if (
+              scope.client.projectId !== retirement.projectId ||
+              scope.client.worktreeId !== retirement.worktreeId
+            )
+              continue;
+            for (const client of [
+              scope.client,
+              ...scope.entries.map((entry) => entry.client ?? scope.client),
+            ]) {
+              if (
+                client.lifetimeId === undefined ||
+                !isCurrentLifetime(client.lifetimeId)
+              )
+                denied.add(client.lifetimeId);
+            }
+          }
+          await writeFileAtomically(
+            path,
+            encodeOutbox(this.scrubbed(parsed), this.maxStringLength),
+            {
+              mode: FILE_MODE,
+              durable: true,
+              admittedWriter: ADMITTED,
+              beforeInstall: () => {
+                this.assertMutable();
+                return Promise.resolve();
+              },
+            },
+          );
+        } catch (error) {
+          if (errorCode(error) !== 'ENOENT') failures.push(error);
+        }
+      }
+      // Unlinks, not just rewritten files, must survive successful purge.
+      if (!this.sealed) await syncDirectory(this.root());
+      if (failures.length > 0)
+        throw new AggregateError(
+          failures,
+          'Terminal outbox artifact scrub incomplete',
+        );
+    });
+  }
   public constructor(
     private readonly root: () => string,
     options: TerminalRecordOutboxOptions = {},
@@ -524,12 +833,17 @@ export class TerminalRecordOutbox {
    * Every earlier run's queued writes, the shared file's first. Throws when
    * the shared file cannot be read; it is then left as it is.
    */
-  public read(excludeRunId?: string): Promise<TerminalRecordOutboxRead> {
-    return this.serialize(() => this.readNow(excludeRunId));
+  public read(
+    excludeRunId?: string,
+    discoveryFences: readonly TerminalRecordDiscoveryFence[] = [],
+  ): Promise<TerminalRecordOutboxRead> {
+    const fences = structuredClone(discoveryFences);
+    return this.serialize(() => this.readNow(excludeRunId, fences));
   }
 
   private async readNow(
     excludeRunId?: string,
+    discoveryFences: readonly TerminalRecordDiscoveryFence[] = [],
   ): Promise<TerminalRecordOutboxRead> {
     const outbox = await this.readOne(this.path());
     let names: string[] = [];
@@ -589,7 +903,36 @@ export class TerminalRecordOutbox {
     if (replaced.has(FILE_NAME)) {
       outbox.scopes = [];
       outbox.retirements = [];
+      delete outbox.discoveryFences;
+      delete outbox.reconciledRetirements;
     }
+    const activeSources = [
+      ...(!replaced.has(FILE_NAME) ? [{ path: this.path(), run: outbox }] : []),
+      ...runs.filter(({ path }) => !replaced.has(basename(path))),
+    ];
+    // appendScopeOutbox mutates arrays while merging. Preserve each source's
+    // envelope and entry identities for fences activated while read() awaited.
+    const discoverySources = activeSources.map(({ run }) => ({
+      ...run,
+      // The shared file's own provenance, before the merge appends others'.
+      retirements: [...run.retirements],
+      ...(run.reconciledRetirements && {
+        reconciledRetirements: [...run.reconciledRetirements],
+      }),
+      scopes: run.scopes.map((scope) => ({
+        ...scope,
+        entries: [...scope.entries],
+      })),
+    }));
+    const fences = mergeTerminalRecordDiscoveryFences(
+      discoveryFences,
+      ...activeSources.map(({ run }) => run.discoveryFences),
+    );
+    for (const source of discoverySources)
+      reconcileTerminalRecordDiscoverySource(source, fences);
+    // Pending barriers survive a restart between prepare and commit. Activation
+    // is monotonic, independent of the authority's retirement acknowledgement.
+    if (fences.length > 0) outbox.discoveryFences = fences;
     for (const { path, run } of runs) {
       if (replaced.has(basename(path))) {
         runFiles.push(path);
@@ -603,10 +946,11 @@ export class TerminalRecordOutbox {
           dropRetiredOutboxEntries(retirement, scope);
       for (const scope of run.scopes) appendScopeOutbox(outbox.scopes, scope);
       outbox.retirements.push(...run.retirements);
+      rememberReconciledRetirements(outbox, run.reconciledRetirements ?? []);
       runFiles.push(path);
     }
     outbox.merged = runFiles.map((path) => basename(path));
-    return { outbox, runFiles };
+    return { outbox, runFiles, discoverySources };
   }
 
   /** Throws when the outbox cannot be written; the caller keeps the batch. */
@@ -615,14 +959,15 @@ export class TerminalRecordOutbox {
     runId: string | null = null,
     installed?: (image: TerminalRecordOutboxFile) => void,
   ): Promise<void> {
-    const image = structuredClone(outbox);
+    const snapshot = structuredClone(outbox);
     return this.serialize(async () => {
+      const image = this.scrubbed(snapshot);
       // Only a complete publication from main is covered by its final custody
-      // image. A read of an undiscovered source never grants supersession.
-      if (image.publicationId)
+      // image. A scrub/read of an undiscovered source never grants supersession.
+      if (snapshot.publicationId)
         this.publication = {
           file: terminalRecordOutboxFileName(runId),
-          publicationId: image.publicationId,
+          publicationId: snapshot.publicationId,
         };
       await writeFileAtomically(
         this.path(runId),
@@ -667,7 +1012,7 @@ export class TerminalRecordOutbox {
   ): void {
     if (this.sealed) return;
     this.sealed = true;
-    const image = structuredClone(outbox);
+    const image = this.scrubbed(outbox);
     let recovered = false;
     if (this.active) {
       // Already-issued rename/unlink cannot be retracted. No ordinary operation
@@ -699,15 +1044,16 @@ export class TerminalRecordOutbox {
     runId: string | null = null,
     installed?: (image: TerminalRecordOutboxFile) => void,
   ): void {
+    const image = this.scrubbed(outbox);
     writeFileAtomicallySync(
       this.path(runId),
-      encodeOutbox(outbox, this.maxStringLength),
+      encodeOutbox(image, this.maxStringLength),
       {
         mode: FILE_MODE,
         durable: true,
         admittedWriter: ADMITTED,
       },
     );
-    installed?.(outbox);
+    installed?.(image);
   }
 }

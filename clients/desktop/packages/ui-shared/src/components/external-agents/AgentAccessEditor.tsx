@@ -8,7 +8,7 @@ import {
   SegmentedControl,
   type SegmentedControlOption,
 } from '../../primitives/SegmentedControl';
-import { StatusPill } from '../../primitives/StatusPill';
+import { Badge } from '../../primitives/Badge';
 import { SettingsRowsRow } from '../settings/SettingsRows';
 import { ToggleSwitch } from '../../primitives/ToggleSwitch';
 import type {
@@ -69,7 +69,7 @@ export function AgentToolMarkerLabel({
 }: {
   readonly marker: AgentToolMarker;
 }): JSX.Element {
-  return <StatusPill tone="tertiary">{TOOL_MARKER_LABELS[marker]}</StatusPill>;
+  return <Badge>{TOOL_MARKER_LABELS[marker]}</Badge>;
 }
 
 function levelOptions(

@@ -125,9 +125,9 @@ import {
 } from '@/components/worktree/branch-options';
 import { FloatingPickerMenu } from '@canopy/ui-shared';
 import {
-  RichHoverTooltip,
-  type TooltipTriggerProps,
-} from '@/components/shared/RichHoverTooltip';
+  HoverCard,
+  type HoverCardTriggerProps,
+} from '@canopy/ui-shared/components';
 import { setWorktreeBaseBranch } from '@/lib/setWorktreeBaseBranch';
 import { ipcCanopyClient } from '@/client/ipc-canopy-client';
 import {
@@ -409,10 +409,10 @@ function RepoBranchesHoverCard({
   children,
 }: {
   repoBranches: RepoBranchInfo[];
-  children: ReactElement<TooltipTriggerProps>;
+  children: ReactElement<HoverCardTriggerProps>;
 }): JSX.Element {
   return (
-    <RichHoverTooltip
+    <HoverCard
       triggerDisplay="contents"
       getPlacementAnchor={branchLabelInsideTrigger}
       elevation="menu"
@@ -422,7 +422,7 @@ function RepoBranchesHoverCard({
       content={<RepoBranchesCard repoBranches={repoBranches} />}
     >
       {children}
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }
 
@@ -2200,7 +2200,7 @@ export const PrStatusBar = memo(function PrStatusBar({
   const renderHeaderProgress: PullRequestProgressRenderer = useCallback(
     (
       target: PullRequestProgressTarget,
-      trigger: ReactElement<TooltipTriggerProps>,
+      trigger: ReactElement<HoverCardTriggerProps>,
       options: Parameters<PullRequestProgressRenderer>[2],
     ): ReactElement => (
       <GitActionProgressTooltip
@@ -2705,12 +2705,12 @@ export const PrStatusBar = memo(function PrStatusBar({
                     </span>
                   )
                 ) : (
-                  // Single-repo: clickable dropdown trigger. RichHoverTooltip
+                  // Single-repo: clickable dropdown trigger. HoverCard
                   // (not Tooltip): its wrapper carries no `shrink-0`, so with
                   // the button's floor moved onto it the trigger still yields
                   // space and the label truncates instead of overflowing the
                   // bar. The full branch name lives in the tooltip.
-                  <RichHoverTooltip
+                  <HoverCard
                     triggerWrapperClassName={BASE_BRANCH_ITEM}
                     surfaceClassName="w-max max-w-72"
                     surfacePadding="compact"
@@ -2731,7 +2731,7 @@ export const PrStatusBar = memo(function PrStatusBar({
                     >
                       <span className={BRANCH_LABEL}>{baseBranchDisplay}</span>
                     </ControlButton>
-                  </RichHoverTooltip>
+                  </HoverCard>
                 )}
                 {visibleBaseBranchDrifts.length > 0 &&
                   !baseBranchDriftConfirmationOpen && (

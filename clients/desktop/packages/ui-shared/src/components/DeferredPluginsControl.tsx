@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { ActionTooltip } from '../primitives/ActionTooltip';
+import { Tooltip } from '../primitives/Tooltip';
 import { ToggleSwitch } from '../primitives/ToggleSwitch';
 
 export interface DeferredPluginsControlProps {
@@ -16,8 +16,8 @@ export function DeferredPluginsControl({
 }: DeferredPluginsControlProps): JSX.Element {
   return (
     <div className="flex min-w-0 items-center gap-2">
-      <ActionTooltip
-        title="Deferred plugins"
+      <Tooltip
+        label="Deferred plugins"
         description={
           allowed
             ? 'Allow this chat to discover and enable missing skills, plugins, and MCP servers.'
@@ -32,7 +32,7 @@ export function DeferredPluginsControl({
           onChange={onChange}
           dataTestId="chat-plugins-deferred-tools-toggle"
         />
-      </ActionTooltip>
+      </Tooltip>
       <span
         className="truncate text-2xs fg-secondary"
         data-testid="chat-plugins-deferred-tools-state"

@@ -37,10 +37,5 @@ export function PullRequestCheckStatusMarker({
   if (mapped === null) {
     return <LoadingSpinner tone="warning" />;
   }
-  if (mapped === 'pending') {
-    return (
-      <CheckStatusBadge status="pending" pendingIcon={<LoadingSpinner />} />
-    );
-  }
   return <CheckStatusBadge status={mapped} />;
 }

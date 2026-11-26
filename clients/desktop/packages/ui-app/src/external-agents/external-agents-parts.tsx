@@ -26,7 +26,7 @@ import {
   NoticeButton,
   Radio,
   SettingsRowsRow,
-  StatusPill,
+  Badge,
   ToggleSwitch,
   EmptyStateRow,
   Heading,
@@ -415,15 +415,10 @@ export function AgentRow({
               {externalAgentDisplayName(connection)}
             </span>
             {status ? (
-              <StatusPill
-                tone="secondary"
-                data-testid="external-agent-row-status"
-              >
-                {status}
-              </StatusPill>
+              <Badge data-testid="external-agent-row-status">{status}</Badge>
             ) : null}
             {!connection.verified ? (
-              <StatusPill tone="warning">Unverified</StatusPill>
+              <Badge tone="warning">Unverified</Badge>
             ) : null}
           </span>
           <span className="block text-xs text-pretty fg-secondary">
@@ -785,7 +780,7 @@ export function IdentityBlock({
           <Heading level={2} variant="page" className="min-w-0">
             {externalAgentDisplayName(detail)}
           </Heading>
-          {status ? <StatusPill tone="secondary">{status}</StatusPill> : null}
+          {status ? <Badge>{status}</Badge> : null}
         </div>
         <div className="text-s text-pretty fg-secondary">
           {`${EXTERNAL_AGENT_SERVER_COPY[detail.server].title} · ${detail.verified ? 'Verified' : 'Unverified'}`}

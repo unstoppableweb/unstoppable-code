@@ -8,10 +8,10 @@ import type {
 import {
   DagProgressBar,
   Disclosure,
-  StatusBadge,
+  Badge,
   type DagJobMeta,
   type DagJobStatus,
-  type StatusBadgeVariant,
+  type BadgeTone,
 } from '@canopy/ui-shared/components';
 import { computeDagTiers } from '@canopy/ui-shared/lib/dag-tiers';
 import { Surface } from '@canopy/ui-shared/components';
@@ -51,14 +51,14 @@ export function toDagJobStatus(
   }
 }
 
-function statusVariant(status: string): StatusBadgeVariant {
-  if (status === 'running') return 'active';
+function statusTone(status: string): BadgeTone {
+  if (status === 'running') return 'info';
   if (status === 'queued' || status === 'pending') return 'warning';
-  if (status === 'paused') return 'muted';
+  if (status === 'paused') return 'neutral';
   if (status === 'completed' || status === 'success' || status === 'succeeded')
     return 'success';
-  if (status === 'failed' || status === 'failure') return 'destructive';
-  return 'muted';
+  if (status === 'failed' || status === 'failure') return 'danger';
+  return 'neutral';
 }
 
 function isStepComplete(status: string): boolean {
@@ -145,11 +145,9 @@ function PipelineRunRow({
     >
       <div className={active ? 'p-3' : 'px-3 py-2.5'}>
         <div className="flex items-center gap-2">
-          <StatusBadge
-            variant={statusVariant(run.status)}
-            muted={!active}
-            label={run.status || 'unknown'}
-          />
+          <Badge tone={statusTone(run.status)} muted={!active}>
+            {run.status || 'unknown'}
+          </Badge>
         </div>
         <div
           className={`pt-1 truncate text-xs ${active ? 'font-medium fg-primary/80' : 'fg-secondary'}`}

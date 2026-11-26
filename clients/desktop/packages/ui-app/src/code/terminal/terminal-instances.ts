@@ -22,6 +22,7 @@ import {
 } from './terminal-geometry';
 
 import { TERMINAL_THEME } from './terminal-theme';
+import { notifyTerminalInput } from './terminal-input';
 export { TERMINAL_BG_COLOR, TERMINAL_THEME } from './terminal-theme';
 /**
  * Find-bar match highlights, in the other find modes' warning amber: the
@@ -151,6 +152,7 @@ export function getOrCreateInstance(terminalId: string): TerminalInstanceEntry {
     }
 
     event.preventDefault();
+    if (!term.options.disableStdin) notifyTerminalInput(terminalId);
     term.input(`${TERMINAL_ESCAPE}${TERMINAL_CARRIAGE_RETURN}`);
     return false;
   });

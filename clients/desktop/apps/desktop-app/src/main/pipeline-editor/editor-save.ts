@@ -47,14 +47,18 @@ export async function savePipelineEditorSnapshot(
     target.persistedId && target.source === 'user'
       ? (target.revision ?? 0)
       : undefined;
-  const result = await saveEditorPipeline({
-    ...(target.persistedId ? { id: target.persistedId } : {}),
-    ...(expectedRevision === undefined ? {} : { expectedRevision }),
-    name: pipeline.name,
-    description: pipeline.description ?? '',
-    icon: pipeline.icon ?? '',
-    content: pipeline,
-  });
+  // The assistant's save is an agent's write, never a person's (CAN-7228).
+  const result = await saveEditorPipeline(
+    {
+      ...(target.persistedId ? { id: target.persistedId } : {}),
+      ...(expectedRevision === undefined ? {} : { expectedRevision }),
+      name: pipeline.name,
+      description: pipeline.description ?? '',
+      icon: pipeline.icon ?? '',
+      content: pipeline,
+    },
+    'agent',
+  );
   if (!result.success)
     return {
       ok: false,

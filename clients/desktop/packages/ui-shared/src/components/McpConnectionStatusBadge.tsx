@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
+import { Badge } from '../primitives/Badge';
 import { StatusToneText, useItemStateMarks } from './ItemStateMark';
 import {
-  mcpConnectionStatusBadgeClass,
   mcpConnectionStatusBadgeTone,
   mcpConnectionStatusLabel,
   type McpConnectionBadge,
@@ -34,13 +34,12 @@ export function McpConnectionStatusBadge({
           {mcpConnectionStatusLabel(badge.status)}
         </StatusToneText>
       ) : (
-        <span
-          className={mcpConnectionStatusBadgeClass(badge.status)}
+        <Badge
+          tone={mcpConnectionStatusBadgeTone(badge.status)}
           data-testid={dataTestId}
-          data-status={badge.status}
         >
           {mcpConnectionStatusLabel(badge.status)}
-        </span>
+        </Badge>
       )}
       {badge.isProvider && (
         <span className="text-3xs fg-secondary" data-testid={providerTestId}>

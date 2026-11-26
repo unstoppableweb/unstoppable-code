@@ -144,7 +144,19 @@ import {
   isGitHubConnectResumeFresh,
   currentMissingFolderRecovery,
 } from '@/stores/homeComposerStore';
-import { readRemoteControlContext } from '@/stores/remoteControlStore';
+import {
+  readRemoteControlContext,
+  useRemoteControlStore,
+} from '@/stores/remoteControlStore';
+import {
+  requestRecoveryShellSnapshotRefresh,
+  useRecoveryShellSnapshotStore,
+} from '@/stores/recoveryShellSnapshotStore';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import {
+  describeRemoteHostUnavailable,
+  homeUnavailableChatMessage,
+} from '@/components/background-service/remoteHostNoticeCopy';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import {
   HOME_COMPOSER_KEY,
@@ -447,19 +459,44 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
     resolvedReadiness === 'pending',
     homeSendTargetSessionKey(),
   );
+  const remoteMode = useRemoteControlStore(
+    (store) => store.context.mode === 'remote',
+  );
+  const remoteNotices = useRecoveryShellSnapshotStore(
+    (store) => store.remoteNotices,
+  );
+  const remoteSnapshotFailed = useRecoveryShellSnapshotStore(
+    (store) => store.remoteSnapshotFailed,
+  );
+  const remoteUnavailable =
+    remoteMode && remoteSnapshotFailed
+      ? describeRemoteHostUnavailable(remoteNotices)
+      : null;
+  const remoteHostUnavailable = remoteUnavailable !== null;
   const targetReadiness =
-    resolvedReadiness === 'pending' && startupDeadline.expired
+    resolvedReadiness === 'pending' &&
+    (startupDeadline.expired || remoteHostUnavailable)
       ? 'unavailable'
       : resolvedReadiness;
   const composerDisabled = targetReadiness !== 'ready';
   const retrySendTarget = (): void => {
     startupDeadline.retry();
-    defaultChats.retry();
     if (!contextReady) {
       void useWorkspaceContextStore.getState().hydrate();
     }
     const projectsState = useProjectsStore.getState();
     const targetId = workspaceId ?? homeScope.fallbackWorkspaceId;
+    if (remoteHostUnavailable) {
+      const requestedSnapshotRefresh = requestRecoveryShellSnapshotRefresh();
+      if (
+        !requestedSnapshotRefresh &&
+        projectsState.projectInventoryStatus !== 'loading'
+      ) {
+        void projectsState.loadProjects({ silent: true });
+      }
+      return;
+    }
+    defaultChats.retry();
     if (
       contextReady &&
       targetId !== null &&
@@ -1777,7 +1814,15 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                 </NoticeButton>
               }
             >
-              Your draft is kept.
+              {remoteUnavailable?.includesCommand ? (
+                <span className={REPLAY_BLOCK_CLASS}>
+                  {homeUnavailableChatMessage(remoteNotices)}
+                </span>
+              ) : (
+                homeUnavailableChatMessage(
+                  remoteMode && remoteSnapshotFailed ? remoteNotices : null,
+                )
+              )}
             </Notice>
           ) : null,
           // CAN-7326: the frame counts every entry as a showing notice, so a

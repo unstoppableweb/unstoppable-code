@@ -481,10 +481,9 @@ describe('core.bots on the desktop dispatcher (BOTS-02)', () => {
     const brokenHost: CoreBotsHost = {
       store: fixture.host.store,
       visibility: {
+        ...fixture.host.visibility,
         readVisibleBots: (): Promise<BotRecord[]> =>
           Promise.reject(new Error('private registry path')),
-        readVisibleBot: (botId: string): Promise<BotRecord> =>
-          fixture.host.visibility.readVisibleBot(botId),
       },
     };
     const runtime = createDesktopRuntime({ botsHost: brokenHost });

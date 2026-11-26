@@ -287,6 +287,10 @@ async function runDirectoryMutation(
 
 export function beginDirectoryDeletion(directory: string): {
   settle: (outcome: DirectoryDeletionOutcome) => void;
+  writeEvidence: (
+    path: string,
+    write: (lease: DirectoryMutationLease) => Promise<void>,
+  ) => Promise<boolean>;
 } {
   const target = resolve(directory);
   const owner = Symbol();
@@ -298,9 +302,11 @@ export function beginDirectoryDeletion(directory: string): {
   boundary.epoch = ++epoch;
   boundary.owners.add(owner);
   boundaries.set(target, boundary);
+  let evidenceActive = true;
   return {
     settle(outcome) {
       if (!boundary.owners.has(owner)) return;
+      evidenceActive = false;
       boundary.epoch = ++epoch;
       // Only uncertainty keeps exclusion. Settled deletion never refuses reuse;
       // old callbacks remain revoked by the epoch. A process restart clears
@@ -313,6 +319,17 @@ export function beginDirectoryDeletion(directory: string): {
       boundary.uncertain.delete(owner);
       // A later removal of the same directory answers every unanswered one.
       if (outcome !== 'abandoned') answer(boundary);
+    },
+    writeEvidence(path, write) {
+      // Exact deletion-owned evidence, before removal; ordinary writers get no bypass.
+      if (!evidenceActive || resolve(path, '..') !== target)
+        throw new Error('Directory deletion evidence owner expired');
+      return runDirectoryMutation(
+        captureDirectoryEffects(target),
+        () => evidenceActive,
+        () => evidenceActive,
+        write,
+      );
     },
   };
 }

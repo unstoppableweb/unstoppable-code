@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { richHoverTooltipSurfaceClassName } from '../primitives/RichHoverTooltip';
+import { hoverCardSurfaceClassName } from '../primitives/HoverCard';
 import { Surface } from '../primitives/Surface';
 
 /** How a tooltip row marks its series: a bar's square, a line's dash, or nothing. */
@@ -61,7 +61,7 @@ export function ChartTooltip({
   const title = labelText(label);
   return (
     <div
-      className={richHoverTooltipSurfaceClassName({})}
+      className={hoverCardSurfaceClassName({})}
       role={accessibilityLayer ? 'status' : undefined}
       aria-live={accessibilityLayer ? 'assertive' : undefined}
     >

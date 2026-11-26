@@ -4,6 +4,23 @@ import { POSTHOG_REPLAY_MASK_CLASS } from '../posthog-replay-privacy';
 const MAX_MASKED_ATTRIBUTE_LENGTH = 256;
 const MASKED_TITLE_SELECTOR = `.${POSTHOG_REPLAY_MASK_CLASS}`;
 /** Attributes that can carry what a masked element shows. */
+const ALWAYS_MASKED_ATTRIBUTES: ReadonlySet<string> = new Set([
+  'value',
+  'data-branch',
+  'data-workspace-id',
+  'data-sidebar-workspace-id',
+  'data-sidebar-sticky-slot-workspace-id',
+  'data-active-workspace-id',
+  'data-sidebar-workspace-drag-overlay-id',
+  'data-sidebar-workspace-sortable-header',
+  'data-project-id',
+  'data-worktree-id',
+  'data-parent-worktree-id',
+  'data-worktree-selection-row',
+]);
+/** Test IDs that interpolate a workspace, worktree, or paired computer ID. */
+const IDENTIFIER_BEARING_TEST_ID =
+  /^(?:sidebar-(?:cowork-)?project-|hidden-worktrees-toggle-|archived-worktree-|sidebar-org-project-placeholder-)|computer-[^:]+:/i;
 const MASKED_CONTENT_ATTRIBUTES: ReadonlySet<string> = new Set([
   'alt',
   'aria-description',
@@ -95,6 +112,15 @@ export function recordReplayText(
   return maskCredentialText(redactReplaySecrets(text));
 }
 
+/**
+ * Click-event counterpart to {@link recordReplayText} when the DOM is no
+ * longer available and ancestor masking has been derived from `$elements`.
+ */
+export function maskClickText(text: string, inMaskedSubtree: boolean): string {
+  if (inMaskedSubtree) return text.replace(/\S/g, '*');
+  return recordReplayText(text);
+}
+
 /** Empty every CSS `url(...)` that points at a local file. */
 function emptyLocalCssUrls(value: string): string {
   return value.replace(CSS_URL, (url) =>
@@ -125,11 +151,14 @@ function stripLocalFileUrls(value: string): string {
 
 /**
  * rrweb calls this for both snapshot and attribute mutations. Every attribute
- * is recorded except `value`, which carries form and input values, and, on
- * or inside a {@link POSTHOG_REPLAY_MASK_CLASS} element, the attributes that
- * can carry its content (`placeholder`, `title`, `aria-label`, `data-value`
- * and the like). Local file URLs are dropped and credentials redacted from
- * every other attribute.
+ * is recorded except `value`, sidebar identifier/branch attributes
+ * (`data-branch`, `data-workspace-id`, `data-sidebar-workspace-id`,
+ * `data-project-id`, `data-worktree-id`, `data-worktree-selection-row`, and
+ * related sidebar identifiers), dynamic identifier-bearing `data-testid`
+ * values, and, on or inside a {@link POSTHOG_REPLAY_MASK_CLASS} element, the
+ * attributes that can carry its content (`placeholder`, `title`, `aria-label`,
+ * `data-value` and the like). Local file URLs are dropped and credentials
+ * redacted from every other attribute.
  */
 export function maskReplayAttribute(
   name: string,
@@ -149,7 +178,14 @@ export function maskReplayAttribute(
   if (!value) return value;
   const normalizedName = name.toLowerCase();
   // Same fixed placeholder as typed input, so the length stays hidden.
-  if (normalizedName === 'value') return INPUT_VALUE_MASK;
+  // Sidebar identifier and branch attributes can carry user/peer project or
+  // branch slugs outside masked text nodes, so redact them unconditionally.
+  if (ALWAYS_MASKED_ATTRIBUTES.has(normalizedName)) return INPUT_VALUE_MASK;
+  if (
+    normalizedName === 'data-testid' &&
+    IDENTIFIER_BEARING_TEST_ID.test(value)
+  )
+    return INPUT_VALUE_MASK;
   if (
     MASKED_CONTENT_ATTRIBUTES.has(normalizedName) &&
     element?.closest(MASKED_TITLE_SELECTOR)
@@ -157,4 +193,20 @@ export function maskReplayAttribute(
     return INPUT_VALUE_MASK;
   if (normalizedName === '_csstext') return sanitizeCssText(value);
   return maskCredentialText(redactReplaySecrets(stripLocalFileUrls(value)));
+}
+
+/**
+ * Click-event counterpart to {@link maskReplayAttribute} when serialized
+ * `$elements` replaces live DOM traversal for ancestor masking.
+ */
+export function maskClickAttribute(
+  name: string,
+  value: string,
+  inMaskedSubtree: boolean,
+): string {
+  if (!value) return value;
+  if (inMaskedSubtree && MASKED_CONTENT_ATTRIBUTES.has(name.toLowerCase())) {
+    return INPUT_VALUE_MASK;
+  }
+  return maskReplayAttribute(name, value);
 }

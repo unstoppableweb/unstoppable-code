@@ -117,7 +117,10 @@ export type TerminalHostEvent = { lifetimeId?: number } & (
   | ({
       type: 'exit';
       terminalId: string;
-      /** Offset just past the terminal's last byte; absent when its host died. */
+      /**
+       * Offset just past the terminal's last byte, set only by the host's own
+       * PTY exit. Absent means unknown: the host never confirmed this end.
+       */
       outputOffset?: number;
     } & TerminalHostExit)
 );

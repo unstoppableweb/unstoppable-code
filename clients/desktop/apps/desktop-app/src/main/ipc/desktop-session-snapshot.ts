@@ -2,6 +2,8 @@ import type { BrowserWindow } from 'electron';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { DesktopSessionSnapshotArgs } from '@canopy/desktop-shared/types';
 import { subscribeChatSessionActivity } from '../agents/session-manager';
+import { subscribePipelineLifecycleTransitions } from '../pipelines/pipeline-execution-event-broadcaster';
+import { subscribeToActiveCountChange } from '../pipelines/pipeline-execution-registry';
 import { buildDesktopSessionSnapshot } from '../services/desktop-session-snapshot-service';
 import {
   requestDesktopSessionSnapshotInvalidation,
@@ -12,12 +14,18 @@ import { sendToWindow } from '../lib/window-send';
 
 let unsubscribeDesktopSessionSnapshotInvalidation: (() => void) | null = null;
 let unsubscribeChatSessionActivity: (() => void) | null = null;
+let unsubscribePipelineLifecycle: (() => void) | null = null;
+let unsubscribePipelineActiveCount: (() => void) | null = null;
 
 export function disposeDesktopSessionSnapshotHandlers(): void {
   unsubscribeDesktopSessionSnapshotInvalidation?.();
   unsubscribeDesktopSessionSnapshotInvalidation = null;
   unsubscribeChatSessionActivity?.();
   unsubscribeChatSessionActivity = null;
+  unsubscribePipelineLifecycle?.();
+  unsubscribePipelineLifecycle = null;
+  unsubscribePipelineActiveCount?.();
+  unsubscribePipelineActiveCount = null;
 }
 
 export function registerDesktopSessionSnapshotHandlers(
@@ -50,5 +58,18 @@ export function registerDesktopSessionSnapshotHandlers(
   unsubscribeChatSessionActivity?.();
   unsubscribeChatSessionActivity = subscribeChatSessionActivity((): void => {
     requestDesktopSessionSnapshotInvalidation('chat.session-activity');
+  });
+  // Mark the snapshot stale on discrete workflow lifecycle transitions so
+  // paired computers refresh active running/completed workflow state live.
+  // Durable "paused" status after a run leaves active handles is deferred to CAN-7945.
+  unsubscribePipelineLifecycle?.();
+  unsubscribePipelineLifecycle = subscribePipelineLifecycleTransitions(
+    (): void => {
+      requestDesktopSessionSnapshotInvalidation('pipeline.lifecycle');
+    },
+  );
+  unsubscribePipelineActiveCount?.();
+  unsubscribePipelineActiveCount = subscribeToActiveCountChange((): void => {
+    requestDesktopSessionSnapshotInvalidation('pipeline.lifecycle');
   });
 }

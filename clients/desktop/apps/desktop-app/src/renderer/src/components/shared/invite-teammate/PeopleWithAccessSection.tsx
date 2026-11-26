@@ -10,7 +10,7 @@ import {
   Button,
   CapabilityPill,
   ConfirmDialog,
-  StatusPill,
+  Badge,
   ErrorBanner,
 } from '@canopy/ui-shared/components';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
@@ -184,28 +184,28 @@ export function PeopleWithAccessSection({
                 */}
                   <span className="flex shrink-0 items-center gap-1">
                     {grant.recipient.kind === 'email' && (
-                      <StatusPill
+                      <Badge
                         data-testid={`shared-container-invite-modal-invited-${grant.id}`}
                       >
                         {INVITED_LABEL}
-                      </StatusPill>
+                      </Badge>
                     )}
                     {grant.via === 'link' && (
-                      <StatusPill
+                      <Badge
                         data-testid={`shared-container-invite-modal-joined-with-link-${grantRowKey(grant)}`}
                       >
                         {JOINED_WITH_LINK_LABEL}
-                      </StatusPill>
+                      </Badge>
                     )}
                     {grant.dismissedAt !== undefined ? (
                       // The recipient removed the share and may still restore
                       // it. The row is revoke-only: its capabilities are a
                       // snapshot of the removed grant, not live access.
-                      <StatusPill
+                      <Badge
                         data-testid={`shared-container-invite-modal-removed-by-recipient-${grantRowKey(grant)}`}
                       >
                         {REMOVED_BY_RECIPIENT_LABEL}
-                      </StatusPill>
+                      </Badge>
                     ) : (
                       grant.capabilities.map((capability) => (
                         <CapabilityPill

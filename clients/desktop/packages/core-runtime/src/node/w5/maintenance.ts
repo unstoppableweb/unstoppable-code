@@ -1,4 +1,4 @@
-import { lstat, readFile, realpath } from 'node:fs/promises';
+import { lstat, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { PlatformServices, DaemonStartupClaimPort } from '../../..';
 import {
@@ -15,18 +15,12 @@ import {
   withW5BackupPlatform,
   type W5BackupPlatform,
 } from './backup';
-import { CanopyRuntimeDescriptorSchema } from '@canopy/protocol/canopy-core';
 import {
   restoreW5Backup,
   type W5BackupContext,
   type W5ExclusiveMaintenance,
 } from './backup';
-import { isErrnoException } from './maintenance-guards';
-import { assertCanopyDaemonEndpointStale } from '../daemon/binding';
-import type {
-  PlatformEndpointPathIdentity,
-  PlatformUnixSocketAddress,
-} from '../../platform/platform-services';
+import { createW5EndpointDescriptorProof } from './endpoint-descriptor-proof';
 import {
   readW5MaintenanceDecisions,
   refuseW5MaintenanceDecisions,
@@ -354,23 +348,12 @@ async function runMaintenance(
         : await endpoints.probe(
             endpoints.address({ dataRoot, endpointName: 'core' }),
           );
-    async function requireStaleSocket(
-      socketAddress: PlatformUnixSocketAddress,
-      identity: PlatformEndpointPathIdentity,
-    ): Promise<void> {
-      try {
-        await assertCanopyDaemonEndpointStale({
-          descriptorPath: join(runtime, 'core.json'),
-          address: socketAddress,
-          identity,
-          supervision: platform.supervision,
-          signal,
-        });
-      } catch {
-        signal?.throwIfAborted();
-        refuse('endpoint-unavailable');
-      }
-    }
+    const proof = createW5EndpointDescriptorProof({
+      runtime,
+      address,
+      platform,
+      signal,
+    });
     if (
       probe.state !== 'absent' &&
       !(
@@ -378,60 +361,10 @@ async function runMaintenance(
       )
     )
       refuse('endpoint-unavailable');
-    async function readDescriptor(): Promise<Buffer | undefined> {
-      let descriptorBytes: Buffer | undefined;
-      const descriptorPath = join(runtime, 'core.json');
-      try {
-        const stat = await lstat(descriptorPath);
-        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024)
-          refuse('endpoint-unavailable');
-        const permissions = await platform.secureFiles.permissions({
-          path: descriptorPath,
-          kind: 'file',
-          mode: 'owner-only',
-          action: 'verify',
-        });
-        if (permissions.state !== 'private') refuse('endpoint-unavailable');
-        descriptorBytes = await readFile(descriptorPath);
-      } catch (error) {
-        if (!isErrnoException(error) || error.code !== 'ENOENT') throw error;
-      }
-      return descriptorBytes;
-    }
-    async function verifyDescriptor(
-      descriptorBytes: Buffer | undefined,
-    ): Promise<void> {
-      if (descriptorBytes) {
-        let raw: unknown;
-        try {
-          raw = JSON.parse(descriptorBytes.toString('utf8'));
-        } catch {
-          refuse('endpoint-unavailable');
-        }
-        const descriptor = CanopyRuntimeDescriptorSchema.safeParse(raw);
-        if (
-          !descriptor.success ||
-          descriptor.data.endpoint.path !== address.path ||
-          descriptor.data.endpoint.kind !==
-            (address.kind === 'unix-socket' ? 'socket' : 'pipe')
-        )
-          refuse('endpoint-unavailable');
-        const owner = await platform.supervision.inspectProcess({
-          pid: descriptor.data.pid,
-          signal,
-        });
-        if (
-          owner.state === 'unverifiable' ||
-          (owner.state === 'running' &&
-            owner.startIdentity === descriptor.data.startIdentity)
-        )
-          refuse('identity-unprovable');
-      }
-    }
-    const descriptorBytes = await readDescriptor();
+    const descriptorBytes = await proof.readDescriptor();
     if (probe.state === 'refused' && address.kind === 'unix-socket')
-      await requireStaleSocket(address, probe.identity);
-    await verifyDescriptor(descriptorBytes);
+      await proof.requireStaleSocket(address, probe.identity);
+    await proof.verifyDescriptor(descriptorBytes);
     try {
       presence = await dependencies.acquirePresence(dataRoot);
     } catch (error) {
@@ -487,9 +420,9 @@ async function runMaintenance(
         fresh.identity.inode !== probe.identity.inode
       )
         refuse('endpoint-unavailable');
-      const freshDescriptor = await readDescriptor();
-      await requireStaleSocket(socketAddress, fresh.identity);
-      await verifyDescriptor(freshDescriptor);
+      const freshDescriptor = await proof.readDescriptor();
+      await proof.requireStaleSocket(socketAddress, fresh.identity);
+      await proof.verifyDescriptor(freshDescriptor);
       signal?.throwIfAborted();
       if (!(await isW5MaintenanceHeld(exclusive, dataRoot)))
         refuse('claim-lost');

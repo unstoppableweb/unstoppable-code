@@ -4,7 +4,7 @@ import type { JSX } from 'react';
 import {
   Button,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   EmptyStateRow,
   FieldError,
   Heading,
@@ -98,20 +98,22 @@ export function WorkflowTriggerPanel({
         </span>
         <ChoiceList aria-label="Manual entries">
           {ENTRY_ORDER.map((entry) => (
-            <ChoiceListRow
+            <ChoiceField
               key={entry}
-              selected={entries.includes(entry)}
-              onClick={() => onToggleEntry?.(entry, !entries.includes(entry))}
+              layout="row"
+              checked={entries.includes(entry)}
+              onChange={() => onToggleEntry?.(entry, !entries.includes(entry))}
               disabled={onToggleEntry === undefined}
               data-testid={`workflow-trigger-entry-${entry}`}
-            >
-              <span className="flex flex-col">
-                <span>{WORKFLOW_DESIGNER_ENTRY_LABELS[entry]}</span>
-                <span className="text-xs fg-tertiary">
-                  {ENTRY_HINTS[entry]}
+              label={
+                <span className="flex flex-col">
+                  <span>{WORKFLOW_DESIGNER_ENTRY_LABELS[entry]}</span>
+                  <span className="text-xs fg-tertiary">
+                    {ENTRY_HINTS[entry]}
+                  </span>
                 </span>
-              </span>
-            </ChoiceListRow>
+              }
+            />
           ))}
         </ChoiceList>
         {entryError !== undefined ? (

@@ -1,7 +1,7 @@
 import { useId, type JSX } from 'react';
 import { TerminalBorderedIcon, TerminalIcon } from '@canopy/ui-shared/icons';
 import { SegmentedControl } from '@canopy/ui-shared';
-import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
+import { HoverCard } from '@canopy/ui-shared/components';
 
 /**
  * Runtime selection for a command that can either stream its output into the
@@ -96,7 +96,7 @@ export function RuntimeModePicker({
           <span className="text-2xs font-medium fg-secondary">Runtime</span>
         )}
         {lockedReason ? (
-          <RichHoverTooltip
+          <HoverCard
             surfaceClassName="w-max max-w-56"
             surfacePadding="relaxed"
             dataTestId={`${testId}-tooltip`}
@@ -107,7 +107,7 @@ export function RuntimeModePicker({
             }
           >
             {group}
-          </RichHoverTooltip>
+          </HoverCard>
         ) : (
           group
         )}

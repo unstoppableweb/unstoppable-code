@@ -2,7 +2,7 @@ import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import {
   Button,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   DialogModal,
   ErrorBanner,
 } from '@canopy/ui-shared/components';
@@ -247,27 +247,31 @@ export function LinkCloudProjectDialog({
                 data-testid="link-cloud-project-choices"
               >
                 {state.candidates.map((candidate) => (
-                  <ChoiceListRow
+                  <ChoiceField
                     key={candidate.projectId}
+                    layout="row"
                     kind="radio"
-                    selected={selected === candidate.projectId}
+                    checked={selected === candidate.projectId}
                     disabled={busy}
-                    onClick={(): void => setSelected(candidate.projectId)}
-                    trailing={matchedLabel(candidate)}
+                    onChange={(): void => setSelected(candidate.projectId)}
+                    end={matchedLabel(candidate)}
                     data-testid={`link-cloud-project-choice-${candidate.projectId}`}
-                  >
-                    <span className={REPLAY_MASK_CLASS}>{candidate.name}</span>
-                  </ChoiceListRow>
+                    label={
+                      <span className={REPLAY_MASK_CLASS}>
+                        {candidate.name}
+                      </span>
+                    }
+                  />
                 ))}
-                <ChoiceListRow
+                <ChoiceField
+                  layout="row"
                   kind="radio"
-                  selected={selected === NEW_TARGET}
+                  checked={selected === NEW_TARGET}
                   disabled={busy}
-                  onClick={(): void => setSelected(NEW_TARGET)}
+                  onChange={(): void => setSelected(NEW_TARGET)}
                   data-testid="link-cloud-project-choice-new"
-                >
-                  {NEW_PROJECT_LABEL}
-                </ChoiceListRow>
+                  label={NEW_PROJECT_LABEL}
+                />
               </ChoiceList>
             </div>
           </>

@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 import type { SharedConnectionTool } from '@canopy/protocol/canopy-core';
 import {
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   ErrorBanner,
   FORM_FIELD_DESCRIPTION_CLASS,
   FORM_FIELD_LABEL_CLASS,
@@ -272,24 +272,26 @@ function WriteChoices({
     <div className="flex max-h-72 min-h-0 flex-col">
       <ChoiceList aria-label="Write actions" data-testid={testId}>
         {options.map((tool) => (
-          <ChoiceListRow
+          <ChoiceField
             key={tool.name}
-            selected={chosen.has(tool.name)}
+            layout="row"
+            checked={chosen.has(tool.name)}
             disabled={disabled}
             data-testid={
               testId === undefined ? undefined : `${testId}-${tool.name}`
             }
-            onClick={(): void => onToggle(tool.name)}
-          >
-            <span className="flex min-w-0 flex-col">
-              <span className="truncate">{tool.title ?? tool.name}</span>
-              {tool.description !== undefined && (
-                <span className="line-clamp-2 text-xs text-pretty fg-secondary">
-                  {tool.description}
-                </span>
-              )}
-            </span>
-          </ChoiceListRow>
+            onChange={(): void => onToggle(tool.name)}
+            label={
+              <span className="flex min-w-0 flex-col">
+                <span className="truncate">{tool.title ?? tool.name}</span>
+                {tool.description !== undefined && (
+                  <span className="line-clamp-2 text-xs text-pretty fg-secondary">
+                    {tool.description}
+                  </span>
+                )}
+              </span>
+            }
+          />
         ))}
       </ChoiceList>
     </div>

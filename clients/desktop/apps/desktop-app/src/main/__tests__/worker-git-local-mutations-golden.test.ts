@@ -1,5 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import {
+  existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -18,6 +20,11 @@ import {
   restoreSnapshotThroughWorker,
   revertFileThroughWorker,
 } from '../canopy-runtime/worker-git-local-mutations-dispatch';
+import { withRepositoryCreationBinding } from '../canopy-runtime/worker-git-repository-creation-binding';
+import {
+  cloneRepositoryThroughWorker,
+  initializeRepositoryThroughWorker,
+} from '../canopy-runtime/worker-git-repository-creation-dispatch';
 import * as gitEffects from '../lib/git';
 import {
   clearRepoShadowRuntimeCaches,
@@ -496,4 +503,126 @@ it('checks the grant before consuming a request binding', async () => {
       });
     },
   );
+});
+
+// CAN-7952: repository initialize and clone share the binding admission.
+describe('worker.git.repository initialize and clone', () => {
+  const seeded = (directory: string) =>
+    ({
+      operation: 'worker.git.repository.initialize',
+      effect: { kind: 'seeded', directory, name: 'fresh' },
+    }) as const;
+
+  it('admits a paired controller and the core caller with the helpers effects', async () => {
+    const created = join(root, 'created');
+    mkdirSync(created);
+    await initializeRepositoryThroughWorker(
+      { kind: 'seeded', directory: created, name: 'fresh' },
+      {
+        dispatcher: runtime,
+        caller: { ...caller, principalId: 'remote-device:paired' },
+      },
+    );
+    expect(
+      execFileSync('git', ['-C', created, 'log', '--format=%s'], {
+        encoding: 'utf8',
+      }).trim(),
+    ).toBe('Initial commit');
+    const cloned = join(root, 'cloned');
+    await cloneRepositoryThroughWorker({
+      kind: 'clone',
+      url: root,
+      destination: cloned,
+    });
+    expect(readFileSync(join(cloned, 'file'), 'utf8')).toBe('original');
+  });
+
+  it.each([
+    'worker.git.repository.initialize',
+    'worker.git.repository.clone',
+  ] as const)(
+    'refuses renderer relay for %s before effects',
+    async (operation) => {
+      const destination = join(root, 'refused');
+      const staged =
+        operation === 'worker.git.repository.clone'
+          ? ({
+              operation,
+              effect: { kind: 'clone', url: root, destination },
+            } as const)
+          : seeded(destination);
+      await withRepositoryCreationBinding(staged, async (bindingId) => {
+        await expect(
+          runtime.instruction(
+            operation,
+            { bindingId },
+            {
+              caller: { ...caller, principalId: 'local-desktop-renderer:one' },
+            },
+          ),
+        ).rejects.toMatchObject({
+          payload: {
+            kind: 'permission_denied',
+            code: 'worker.git.repository.callerRefused',
+          },
+        });
+      });
+      expect(existsSync(destination)).toBe(false);
+    },
+  );
+
+  it('rejects absent, wrong-operation, foreign-context and consumed bindings', async () => {
+    const directory = join(root, 'bound');
+    mkdirSync(directory);
+    const invoke = (bindingId: string): Promise<unknown> =>
+      runtime.instruction(
+        'worker.git.repository.initialize',
+        { bindingId },
+        { caller },
+      );
+    const unavailable = {
+      payload: {
+        kind: 'failed_precondition',
+        code: 'worker.git.repository.bindingUnavailable',
+      },
+    };
+    await expect(
+      invoke('00000000-0000-4000-8000-000000000001'),
+    ).rejects.toMatchObject(unavailable);
+    await withRepositoryCreationBinding(
+      {
+        operation: 'worker.git.repository.clone',
+        effect: { kind: 'clone', url: root, destination: directory },
+      },
+      async (bindingId) => {
+        await expect(invoke(bindingId)).rejects.toMatchObject(unavailable);
+      },
+    );
+    await withRepositoryCreationBinding(
+      seeded(directory),
+      async (bindingId) => {
+        await withRepositoryCreationBinding(seeded(directory), async () => {
+          await expect(invoke(bindingId)).rejects.toMatchObject(unavailable);
+        });
+        expect(existsSync(join(directory, '.git'))).toBe(false);
+        await invoke(bindingId);
+        await expect(invoke(bindingId)).rejects.toMatchObject(unavailable);
+      },
+    );
+  });
+
+  it('fails closed without a registered runtime and never falls back to direct effects', async () => {
+    const directory = join(root, 'closed');
+    mkdirSync(directory);
+    await runtime.shutdown();
+    await expect(
+      initializeRepositoryThroughWorker({ kind: 'empty', directory }),
+    ).rejects.toMatchObject({
+      payload: {
+        kind: 'unavailable',
+        message: 'The desktop Git mutation runtime is unavailable.',
+      },
+    });
+    expect(existsSync(join(directory, '.git'))).toBe(false);
+  });
 });

@@ -1,8 +1,5 @@
 import { type JSX } from 'react';
-import {
-  SettingsSelect,
-  useInDialogFormField,
-} from '@canopy/ui-shared/components';
+import { SettingsSelect, useInFormField } from '@canopy/ui-shared/components';
 import type { EnvironmentDefinitionView } from '@canopy/desktop-shared/types';
 
 export interface EnvironmentRuntimeSelectOption {
@@ -54,7 +51,7 @@ export function EnvironmentRuntimeSelect({
   ariaLabel,
   variant = 'field',
 }: EnvironmentRuntimeSelectProps): JSX.Element {
-  const inDialog = useInDialogFormField();
+  const inDialog = useInFormField();
   const selected =
     value === null && fallbackOption ? FALLBACK_VALUE : (value ?? '');
 

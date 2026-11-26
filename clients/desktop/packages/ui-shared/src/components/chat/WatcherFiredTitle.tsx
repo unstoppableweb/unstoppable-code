@@ -9,9 +9,9 @@ import {
   REPLAY_MASK_CLASS,
 } from '../../lib/replay-privacy';
 import {
-  RichHoverTooltip,
-  type TooltipTriggerProps,
-} from '../../primitives/RichHoverTooltip';
+  HoverCard,
+  type HoverCardTriggerProps,
+} from '../../primitives/HoverCard';
 
 interface WatcherFiredTitleProps {
   watcherFired: ChatWatcherFiredInfo;
@@ -79,10 +79,10 @@ export function CombinedWatchersTooltip({
   readonly combinedWatchers: NonNullable<
     ChatWatcherFiredInfo['combinedWatchers']
   >;
-  readonly children: ReactElement<TooltipTriggerProps>;
+  readonly children: ReactElement<HoverCardTriggerProps>;
 }): JSX.Element {
   return (
-    <RichHoverTooltip
+    <HoverCard
       interactive
       dataTestId="watcher-fired-tooltip"
       surfaceClassName="w-[min(360px,calc(100vw-16px))]"
@@ -114,7 +114,7 @@ export function CombinedWatchersTooltip({
       }
     >
       {children}
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }
 

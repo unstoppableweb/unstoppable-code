@@ -1,5 +1,5 @@
-import type { JSX, ReactNode } from 'react';
-import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
+import type { JSX } from 'react';
+import { Badge, type BadgeTone } from '../primitives/Badge';
 
 /** Canonical check status — matches desktop's `CheckStatus` palette but
  * uses portable names instead of GitHub-specific verbs. */
@@ -11,72 +11,34 @@ export type CheckStatusBadgeStatus =
 
 export interface CheckStatusBadgeProps {
   status: CheckStatusBadgeStatus;
-  /** Optional pending-spinner override. Caller can pass a `<LoadingSpinner />`
-   * if it wants animation; the default static dot avoids importing
-   * runtime-only spinner CSS into this shared file. */
-  pendingIcon?: ReactNode;
   /** Test ID hook for automation. */
   dataTestId?: string;
-  /** Optional override for the wrapper span class. */
-  className?: string;
 }
 
 /**
- * Pure check-status glyph used for PR check rows, agent self-test feeds, and
- * other terse pass/fail indicators. Renders a check mark, X, dot, or pending
- * indicator depending on `status`.
+ * Each status's tone and word. The words match the CI badge's plain-language
+ * states (`getCheckStatusLabel`): a pending check is running.
+ */
+const CHECK_STATUS_BADGE: Readonly<
+  Record<CheckStatusBadgeStatus, { tone: BadgeTone; label: string }>
+> = {
+  success: { tone: 'success', label: 'Passing' },
+  failure: { tone: 'danger', label: 'Failing' },
+  pending: { tone: 'info', label: 'Running' },
+  neutral: { tone: 'neutral', label: 'Neutral' },
+};
+
+/**
+ * A CI check's state as a `Badge`, for PR check rows and self-test feeds.
  */
 export function CheckStatusBadge({
   status,
-  pendingIcon,
   dataTestId,
-  className,
 }: CheckStatusBadgeProps): JSX.Element {
-  const wrapperClass = className ?? 'inline-flex items-center';
-  if (status === 'success') {
-    return (
-      <span
-        data-testid={dataTestId}
-        className={`${wrapperClass} ${OPERATIONAL_STATUS_COLORS.success.foreground}`}
-      >
-        {'✓'}
-      </span>
-    );
-  }
-  if (status === 'failure') {
-    return (
-      <span
-        data-testid={dataTestId}
-        className={`${wrapperClass} ${OPERATIONAL_STATUS_COLORS.failed.foreground}`}
-      >
-        {'✗'}
-      </span>
-    );
-  }
-  if (status === 'neutral') {
-    return (
-      <span
-        data-testid={dataTestId}
-        className={`${wrapperClass} ${OPERATIONAL_STATUS_COLORS.paused.foreground}`}
-      >
-        {'•'}
-      </span>
-    );
-  }
-  // pending — show the pending icon (caller-provided spinner or a quiet
-  // ring) tinted with the shared unread/pending status color.
+  const { tone, label } = CHECK_STATUS_BADGE[status];
   return (
-    <span
-      data-testid={dataTestId}
-      className={`${wrapperClass} ${OPERATIONAL_STATUS_COLORS.unread.foreground}`}
-    >
-      {pendingIcon ?? (
-        <span className="inline-flex h-2.5 w-2.5 items-center justify-center">
-          <span
-            className={`h-1.5 w-1.5 rounded-full border ${OPERATIONAL_STATUS_COLORS.unread.border}`}
-          />
-        </span>
-      )}
-    </span>
+    <Badge tone={tone} data-testid={dataTestId}>
+      {label}
+    </Badge>
   );
 }

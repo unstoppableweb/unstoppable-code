@@ -78,7 +78,8 @@ import {
 } from '@/lib/sharedCollectionTableMerge';
 import { DESCRIPTION_MARKDOWN_HINT } from '@canopy/ui-shared';
 import {
-  ChoiceListRow,
+  ChoiceField,
+  ChoiceList,
   DetailActionBar,
   DetailPageActions,
   FormField,
@@ -1116,11 +1117,7 @@ export function SharedCollectionDetailModal({
                     meta={`${editable.items.filter((item) => item.required).length}/${editable.items.length}`}
                     dataTestId="collection-required-items"
                   >
-                    <div
-                      role="group"
-                      aria-label="Required items"
-                      className="divide-y"
-                    >
+                    <ChoiceList aria-label="Required items">
                       {editable.items.map((item, index) => {
                         const label =
                           item.kind === 'external_plugin'
@@ -1135,23 +1132,25 @@ export function SharedCollectionDetailModal({
                                 ? 'Linked custom skill'
                                 : 'New custom skill';
                         return (
-                          <ChoiceListRow
+                          <ChoiceField
                             key={`required-${item.kind}-${index}`}
-                            selected={item.required === true}
-                            onClick={() =>
+                            layout="row"
+                            checked={item.required === true}
+                            onChange={() =>
                               setItemRequired(index, item.required !== true)
                             }
-                          >
-                            <span className="flex min-w-0 gap-1">
-                              <span className="shrink-0 fg-secondary">
-                                {kindLabel}:
+                            label={
+                              <span className="flex min-w-0 gap-1">
+                                <span className="shrink-0 fg-secondary">
+                                  {kindLabel}:
+                                </span>
+                                <span className="truncate">{label}</span>
                               </span>
-                              <span className="truncate">{label}</span>
-                            </span>
-                          </ChoiceListRow>
+                            }
+                          />
                         );
                       })}
-                    </div>
+                    </ChoiceList>
                   </Disclosure>
                 )}
               </>

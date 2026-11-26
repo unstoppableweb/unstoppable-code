@@ -475,6 +475,8 @@ export const INTERFACE_RELAY_ALLOWLIST: InterfaceRelayAllowlist = {
       'worker.git.push',
       'worker.git.rebase',
       'worker.git.repoShadow.ensure',
+      'worker.git.repository.clone',
+      'worker.git.repository.initialize',
       'worker.git.snapshot.restore',
       'worker.git.turnRef.persist',
       'worker.git.worktree.add',

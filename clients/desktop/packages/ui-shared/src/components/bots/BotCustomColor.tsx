@@ -10,7 +10,7 @@ import {
   type BotHsv,
 } from '../../lib/bot-colors';
 import { FieldError, TextInput } from '../../primitives/Field';
-import { DialogFormField } from '../../primitives/DialogFormField';
+import { FormField } from '../../primitives/FormField';
 import { Slider } from '../../primitives/Slider';
 
 export interface BotCustomColorProps {
@@ -51,7 +51,7 @@ export function BotCustomColor({
   return (
     <div className="flex flex-col gap-2 border-b px-3 py-3">
       <div className="flex flex-wrap items-center gap-2">
-        <DialogFormField label="Hex" htmlFor={`${id}-hex`}>
+        <FormField label="Hex" id={`${id}-hex`}>
           <TextInput
             id={`${id}-hex`}
             density="compact"
@@ -73,7 +73,7 @@ export function BotCustomColor({
               }
             }}
           />
-        </DialogFormField>
+        </FormField>
         <span
           id={`${id}-hint`}
           className="text-pretty text-xs fg-tertiary"

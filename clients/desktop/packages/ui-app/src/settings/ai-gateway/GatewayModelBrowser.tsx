@@ -18,7 +18,7 @@ import {
 } from '@tanstack/react-virtual';
 import {
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   Heading,
   Divider,
   HighlightedText,
@@ -69,7 +69,7 @@ export interface GatewayModelBrowserProps {
 const OPTION_HEIGHT_PX = 55;
 const HEADER_HEIGHT_PX = 28;
 const LIST_HEIGHT_PX = { page: 360, dialog: 300 } as const;
-const ROW_SELECTOR = '[role="checkbox"]';
+const ROW_SELECTOR = 'input[type="checkbox"]';
 // Stable defaults, so the memoized view isn't rebuilt on every render.
 const NO_SUGGESTIONS: readonly string[] = [];
 const NO_SELECTION: ReadonlySet<string> = new Set();
@@ -288,37 +288,44 @@ export const GatewayModelBrowser = forwardRef<
         </div>
       </Surface>
     ) : (
-      <ChoiceListRow
+      <ChoiceField
+        layout="row"
         focusableWhenDisabled
-        selected={selected.has(item.model.id)}
+        checked={selected.has(item.model.id)}
         disabled={disabled || (atCapacity && !selected.has(item.model.id))}
         tabIndex={at === tabStop ? 0 : -1}
         data-testid={`ai-gateway-model-choice-${item.model.gatewayId}`}
         onFocus={() => setActiveKey(item.key)}
-        onClick={() => onToggle(item.model.id)}
-      >
-        <span className={joinClassNames('block truncate', maskClassName)}>
-          <HighlightedText
-            text={item.model.label}
-            indices={gatewayHighlightIndices(item.model.label, deferredQuery)}
-          />
-        </span>
-        <span
-          className={joinClassNames(
-            'block truncate font-mono text-xs fg-secondary',
-            maskClassName,
-          )}
-          title={item.model.gatewayId}
-        >
-          <HighlightedText
-            text={item.model.gatewayId}
-            indices={gatewayHighlightIndices(
-              item.model.gatewayId,
-              deferredQuery,
-            )}
-          />
-        </span>
-      </ChoiceListRow>
+        onChange={() => onToggle(item.model.id)}
+        label={
+          <>
+            <span className={joinClassNames('block truncate', maskClassName)}>
+              <HighlightedText
+                text={item.model.label}
+                indices={gatewayHighlightIndices(
+                  item.model.label,
+                  deferredQuery,
+                )}
+              />
+            </span>
+            <span
+              className={joinClassNames(
+                'block truncate font-mono text-xs fg-secondary',
+                maskClassName,
+              )}
+              title={item.model.gatewayId}
+            >
+              <HighlightedText
+                text={item.model.gatewayId}
+                indices={gatewayHighlightIndices(
+                  item.model.gatewayId,
+                  deferredQuery,
+                )}
+              />
+            </span>
+          </>
+        }
+      />
     );
 
   return (

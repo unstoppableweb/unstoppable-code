@@ -617,13 +617,13 @@ describe('CAN-7051 workspace terminal retirement', () => {
     );
     jest
       .spyOn(terminalPersistenceStore, 'retireTerminalRecord')
-      .mockImplementation(async (params) => {
+      .mockImplementation(async (params, journal) => {
         panelLayoutPersistenceStore.saveWorktreeLayout(
           'b',
           'r9-worktree',
           panel,
         );
-        return retire(params);
+        return retire(params, journal);
       });
     const remove = treeRemoval.removeTreeWithoutAsar;
     let reached: () => void = () => undefined;
@@ -904,10 +904,15 @@ describe('CAN-7051 workspace terminal retirement', () => {
       terminalPersistenceStore,
       'replayTerminalRecordRetirement',
     );
+    const reconcile = jest.spyOn(
+      terminalPersistenceStore,
+      'reconcilePreparedTerminalRecordRetirements',
+    );
     const { reconcileGitPendingWorktrees } =
       await import('../worktree-boot-recovery');
     await expect(reconcileGitPendingWorktrees()).rejects.toThrow();
     expect(replay).toHaveBeenCalledWith(intent);
+    expect(reconcile).not.toHaveBeenCalled();
     expect(
       (await readDestructiveRecovery('b'))?.terminalRecordRetirement,
     ).toBeUndefined();
@@ -929,6 +934,14 @@ describe('CAN-7051 workspace terminal retirement', () => {
         terminalPersistenceStore,
         'replayTerminalRecordRetirement',
       );
+      const cancel = jest.spyOn(
+        terminalPersistenceStore,
+        'cancelPreparedTerminalRecordRetirement',
+      );
+      const reconcile = jest.spyOn(
+        terminalPersistenceStore,
+        'reconcilePreparedTerminalRecordRetirements',
+      );
       await expect(
         deleteWorkspace({ workspaceId: id, source: 'shared_container_fork' }),
       ).rejects.toThrow();
@@ -936,19 +949,33 @@ describe('CAN-7051 workspace terminal retirement', () => {
       expect(before?.terminalRecordRetirement).toMatchObject({ projectId: id });
       expect(indexIds()).toContain(id);
       expect(activate).not.toHaveBeenCalled();
+      expect(cancel).toHaveBeenCalledWith(before?.terminalRecordRetirement);
       await replayJournaledTerminalRetirements();
       expect(replay).not.toHaveBeenCalled();
+      expect(reconcile).toHaveBeenLastCalledWith([]);
       expect(await readDestructiveRecovery(id)).toEqual(before);
       if (failure === 'canonical-removal') {
+        reconcile.mockClear();
         jest
           .spyOn(sidebarItems, 'readWorkspaceIndexStoredDetailed')
           .mockRejectedValue(new Error('index unavailable'));
         await replayJournaledTerminalRetirements();
         expect(replay).not.toHaveBeenCalled();
+        // A pending removal never reads the index, so the scan stays complete.
+        expect(reconcile).toHaveBeenLastCalledWith([]);
         expect(await readDestructiveRecovery(id)).toEqual(before);
       }
     },
   );
+
+  it('RF7 boot without any deletion journal releases orphan prepared discovery fences', async () => {
+    const reconcile = jest.spyOn(
+      terminalPersistenceStore,
+      'reconcilePreparedTerminalRecordRetirements',
+    );
+    await replayJournaledTerminalRetirements();
+    expect(reconcile).toHaveBeenCalledWith([]);
+  });
 
   it.each(['present', 'unreadable', 'absent'] as const)(
     'does not replay a refused unindexed deletion with a %s manifest',

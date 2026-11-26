@@ -24,7 +24,11 @@ import {
   assertAdmittedWriter,
 } from '../../../storage';
 import { isWorkerFile, readLegacyTerminalState } from './codec';
-import { legacyTerminalStatePath, terminalRecordDir } from './paths';
+import {
+  legacyTerminalStatePath,
+  terminalRecordDir,
+  terminalRecordProjectDir,
+} from './paths';
 import type { TerminalRecordPayloadState } from './ops';
 
 export type TerminalRecordImportSource =
@@ -73,6 +77,8 @@ export interface TerminalRecordEnvelope {
 }
 
 export interface TerminalRecordTombstone {
+  /** Names alone cannot distinguish a retired artifact from its replacement. */
+  cleanupFiles?: { name: string; identity: string | null }[];
   retiredLifetimeIds?: string[];
   /** Zero carries named coverage only; record generations start at one. */
   generation: number;
@@ -83,9 +89,11 @@ export interface TerminalRecordTombstone {
   damaged?: true;
 }
 
+type FenceFields = { generation?: number; retiredLifetimeIds?: string[] };
+
 type TombstoneObservation =
   | { kind: 'absent' }
-  | { kind: 'damaged' }
+  | ({ kind: 'damaged' } & FenceFields)
   | { kind: 'valid'; image: TerminalRecordTombstone };
 
 /** Publication evidence always names the immutable image attempted. */
@@ -152,6 +160,21 @@ function isTimestamp(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
+function readFenceFields(parsed: Record<string, unknown>): FenceFields {
+  const generation =
+    WorkerTerminalRecordOpenResultSchema.shape.generation.safeParse(
+      parsed.generation,
+    );
+  const ids = parsed.retiredLifetimeIds;
+  return {
+    ...(generation.success ? { generation: generation.data } : {}),
+    ...(Array.isArray(ids) &&
+    ids.every((id): id is string => typeof id === 'string')
+      ? { retiredLifetimeIds: ids }
+      : {}),
+  };
+}
+
 export function isTerminalRecordEnvelope(
   value: unknown,
 ): value is TerminalRecordEnvelope {
@@ -206,6 +229,19 @@ export function isTerminalRecordEnvelope(
 function isTombstone(value: unknown): value is TerminalRecordTombstone {
   return (
     isRecordValue(value) &&
+    (value.cleanupFiles === undefined ||
+      (Array.isArray(value.cleanupFiles) &&
+        value.cleanupFiles.every(
+          (file) =>
+            isRecordValue(file) &&
+            typeof file.name === 'string' &&
+            file.name.length > 0 &&
+            file.name !== '.' &&
+            file.name !== '..' &&
+            !file.name.includes('/') &&
+            !file.name.includes('\\') &&
+            (file.identity === null || typeof file.identity === 'string'),
+        ))) &&
     (value.retiredLifetimeIds === undefined ||
       (Array.isArray(value.retiredLifetimeIds) &&
         value.retiredLifetimeIds.every((id) => typeof id === 'string'))) &&
@@ -352,6 +388,9 @@ export class TerminalRecordRepository {
     // Read first: a record its retirement could not remove stays retired.
     const observation = this.readTombstone(directory);
     const tombstone = observation.kind === 'valid' ? observation.image : null;
+    const damagedGeneration =
+      observation.kind === 'damaged' ? observation.generation : undefined;
+    let recoveredFence: TerminalRecordTombstone | undefined;
     const bytes = readIfPresent(recordPath);
     if (bytes !== null) {
       let parsed: unknown;
@@ -366,14 +405,18 @@ export class TerminalRecordRepository {
         parsed.scope.worktreeId === worktreeId
           ? parsed
           : null;
-      // Damaged bytes give no fence evidence: a damaged tombstone cannot hide
-      // a matching record, and a damaged record's fields are not salvaged.
-      // Revisit when the retire-recovery slice of CAN-7051 lands.
+      // An unreadable fence cannot hide a matching record. A parseable
+      // generation still fences predecessors even when its timestamp is bad.
       if (
         envelope !== null &&
+        (damagedGeneration === undefined ||
+          envelope.generation > damagedGeneration) &&
         (tombstone === null || envelope.generation > tombstone.generation)
       ) {
-        const retiredIds = tombstone?.retiredLifetimeIds;
+        const retiredIds =
+          observation.kind === 'damaged'
+            ? observation.retiredLifetimeIds
+            : tombstone?.retiredLifetimeIds;
         return {
           kind: 'record',
           envelope: retiredIds?.length
@@ -390,9 +433,56 @@ export class TerminalRecordRepository {
           ...(tombstone ? { tombstone } : {}),
         };
       }
-      // Visibility is not a durable retirement receipt: a retired record
-      // stays in place until a later retirement or successor install.
-      if (envelope !== null) return { kind: 'absent', tombstone };
+      if (envelope !== null) {
+        // Visibility is not a durable retirement receipt. Leave physical cleanup
+        // to the scope owner after it confirms the fence and qualifies artifacts.
+        return {
+          kind: 'absent',
+          tombstone:
+            tombstone ?? this.recoverDamagedTombstone(directory, observation),
+        };
+      }
+      if (
+        isRecordValue(parsed) &&
+        isRecordValue(parsed.scope) &&
+        parsed.scope.projectId === projectId &&
+        parsed.scope.worktreeId === worktreeId
+      ) {
+        const fields = readFenceFields(parsed);
+        if (
+          fields.generation !== undefined ||
+          fields.retiredLifetimeIds?.length
+        ) {
+          const previous =
+            tombstone ??
+            (observation.kind === 'damaged'
+              ? this.recoverDamagedTombstone(directory, observation)
+              : null);
+          const generation = Math.max(
+            previous?.generation ?? 0,
+            // Only validated names-only evidence makes an unknown generation
+            // non-fencing; otherwise retain the damaged-record fence contract.
+            fields.generation ?? (tombstone?.namedOnly ? 0 : 1),
+          );
+          const cleanupFiles = tombstone?.cleanupFiles?.filter(
+            (file) => file.identity !== null,
+          );
+          recoveredFence = {
+            generation,
+            ...(generation === 0 ? { namedOnly: true as const } : {}),
+            incarnation: null,
+            retiredAt: 0,
+            damaged: true,
+            ...(cleanupFiles?.length ? { cleanupFiles } : {}),
+            retiredLifetimeIds: Array.from(
+              new Set([
+                ...(previous?.retiredLifetimeIds ?? []),
+                ...(fields.retiredLifetimeIds ?? []),
+              ]),
+            ),
+          };
+        }
+      }
       if (access === 'recover') {
         assertAdmittedWriter(
           CLAIM.namespace,
@@ -400,6 +490,10 @@ export class TerminalRecordRepository {
           CLAIM.module,
           STORAGE_OWNERSHIP,
         );
+        // Persist only fences before quarantine can remove their source.
+        // Reads use the same projection without acquiring recovery rights.
+        if (recoveredFence)
+          this.write(directory, TOMBSTONE_FILE, recoveredFence);
         // Kept beside it; the requested scope starts from its own fence.
         const aside = damagedCopyPath(recordPath, this.now());
         try {
@@ -421,37 +515,53 @@ export class TerminalRecordRepository {
     return {
       kind: 'absent',
       tombstone:
-        observation.kind === 'damaged'
-          ? this.recoverDamagedTombstone(directory)
-          : tombstone,
+        recoveredFence ??
+        (observation.kind === 'damaged'
+          ? this.recoverDamagedTombstone(directory, observation)
+          : tombstone),
     };
   }
 
   private readTombstone(directory: string): TombstoneObservation {
-    const bytes = readIfPresent(join(directory, TOMBSTONE_FILE));
+    const path = join(directory, TOMBSTONE_FILE);
+    const bytes = readIfPresent(path);
     if (bytes === null) return { kind: 'absent' };
     try {
       const parsed: unknown = JSON.parse(bytes.toString('utf8'));
       if (isTombstone(parsed)) return { kind: 'valid', image: parsed };
+      if (isRecordValue(parsed)) {
+        return {
+          kind: 'damaged',
+          ...readFenceFields(parsed),
+        };
+      }
     } catch {
       // Damaged: below.
     }
     return { kind: 'damaged' };
   }
 
-  private recoverDamagedTombstone(directory: string): TerminalRecordTombstone {
+  private recoverDamagedTombstone(
+    directory: string,
+    observation: TombstoneObservation,
+  ): TerminalRecordTombstone {
     // A damaged tombstone still means the scope was retired. Its write time
     // is a generation floor every load agrees on, above any generation
     // issued before it, so a late writer of the retired record stays stale.
     // Unavailable metadata leaves recovery pending, never a generation-1 fence.
+    const floor = Math.max(
+      observation.kind === 'damaged' ? (observation.generation ?? 1) : 1,
+      Math.floor(statSync(join(directory, TOMBSTONE_FILE)).mtimeMs),
+    );
     return {
-      generation: Math.max(
-        1,
-        Math.floor(statSync(join(directory, TOMBSTONE_FILE)).mtimeMs),
-      ),
+      generation: floor,
       incarnation: null,
       retiredAt: 0,
       damaged: true,
+      // Partial fields never prove timestamp ordering or cleanup ownership.
+      ...(observation.kind === 'damaged' && observation.retiredLifetimeIds
+        ? { retiredLifetimeIds: observation.retiredLifetimeIds }
+        : {}),
     };
   }
 
@@ -750,11 +860,10 @@ export class TerminalRecordRepository {
   }
 
   /**
-   * Publishes coverage; with `destroy`, then removes the artifacts listed
-   * before publication whose identity is unchanged. Positive generations
-   * prevent legacy reimport; names-only coverage fences listed IDs and
-   * deletes nothing. The observer retains the exact fence even if
-   * confirmation or cleanup fails.
+   * Publishes coverage and removes only identity-qualified artifacts. Positive
+   * generations prevent legacy reimport; names-only coverage fences listed IDs.
+   * Publication and qualified cleanup are separate obligations. The observer
+   * retains the exact fence even if confirmation or cleanup fails.
    */
   public retire(
     projectId: string,
@@ -766,22 +875,23 @@ export class TerminalRecordRepository {
         { state: 'unpublished' }
       >,
     ) => void,
-    destroy = true,
   ): void {
     const directory = this.dir(projectId, worktreeId);
-    let artifacts: { name: string; identity: string | null }[] = [];
-    if (destroy) {
+    let cleanupFiles = tombstone.cleanupFiles;
+    if (cleanupFiles === undefined) {
       try {
-        artifacts = readdirSync(directory).map((name) => ({
+        cleanupFiles = readdirSync(directory).map((name) => ({
           name,
           identity: artifactIdentity(join(directory, name)),
         }));
       } catch (error) {
         if (errorCode(error) !== 'ENOENT') throw error;
+        cleanupFiles = [];
       }
     }
     const previous = this.readTombstone(directory);
     const inherited = previous.kind === 'valid' ? previous.image : undefined;
+    // Cleanup identities belong to the tombstone, not to the latest selector.
     const pending = {
       ...tombstone,
       retiredLifetimeIds: Array.from(
@@ -789,6 +899,17 @@ export class TerminalRecordRepository {
           ...(inherited?.retiredLifetimeIds ?? []),
           ...(tombstone.retiredLifetimeIds ?? []),
         ]),
+      ),
+      cleanupFiles: [
+        ...(inherited?.cleanupFiles ?? []),
+        ...cleanupFiles,
+      ].filter(
+        (file, index, files) =>
+          files.findIndex(
+            (candidate) =>
+              candidate.name === file.name &&
+              candidate.identity === file.identity,
+          ) === index,
       ),
     };
     try {
@@ -805,15 +926,72 @@ export class TerminalRecordRepository {
       throw error;
     }
     onPublished?.({ state: 'durable', image: pending });
-    // A failed cleanup is not retried: leftovers leak until the next
-    // generation retirement or a successor install overwrites them.
-    // Revisit when the retire-recovery slice of CAN-7051 lands.
-    if (destroy) this.cleanupRetirement(directory, artifacts);
+    this.cleanupRetirement(directory, pending);
+  }
+
+  /**
+   * Worktrees with a valid record directory under a project. Read-only: a
+   * project-wide retirement re-lists them on every attempt and lets its
+   * cutoff, not this list, keep a later worktree out.
+   */
+  public worktreesOf(projectId: string): string[] {
+    try {
+      return readdirSync(
+        terminalRecordProjectDir(this.options.dataRoot, projectId),
+        { withFileTypes: true },
+      )
+        .filter((entry) => {
+          if (!entry.isDirectory()) return false;
+          try {
+            terminalRecordDir(this.options.dataRoot, projectId, entry.name);
+            return true;
+          } catch {
+            return false;
+          }
+        })
+        .map((entry) => entry.name)
+        .sort();
+    } catch (error) {
+      if (errorCode(error) === 'ENOENT') return [];
+      throw error;
+    }
+  }
+
+  /**
+   * Completes an inherited retirement without removing the successor record.
+   * `sync` forces the directory sync an earlier failed cleanup still owes.
+   */
+  public retryRetirement(
+    projectId: string,
+    worktreeId: string,
+    sync = false,
+  ): void {
+    const directory = this.dir(projectId, worktreeId);
+    const observation = this.readTombstone(directory);
+    if (observation.kind === 'damaged') {
+      this.log('Retaining unqualified terminal retirement artifacts', {
+        projectId,
+        worktreeId,
+      });
+      return;
+    }
+    if (observation.kind === 'valid') {
+      const tombstone = observation.image;
+      // Legacy/damaged tombstones cannot prove ownership of successor files.
+      // Prefer retaining ambiguous data to deleting the successor's history.
+      if (tombstone.cleanupFiles === undefined)
+        this.log('Retaining unqualified terminal retirement artifacts', {
+          projectId,
+          worktreeId,
+        });
+      this.cleanupRetirement(directory, tombstone, sync);
+    }
   }
 
   private cleanupRetirement(
     directory: string,
-    artifacts: readonly { name: string; identity: string | null }[],
+    tombstone: TerminalRecordTombstone,
+    sync = false,
   ): void {
     assertAdmittedWriter(
       CLAIM.namespace,
@@ -822,25 +1000,24 @@ export class TerminalRecordRepository {
       STORAGE_OWNERSHIP,
     );
     // The scope owns this directory: recovery and interrupted-install copies
-    // contain terminal content too. Names alone cannot tell a retired
-    // artifact from its replacement, so only unchanged identities go.
-    for (const file of artifacts) {
+    // contain terminal content too. A retry removes only the old artifacts.
+    let removed = false;
+    for (const file of tombstone.cleanupFiles ?? []) {
       if (file.name === TOMBSTONE_FILE) continue;
       const path = join(directory, file.name);
       if (file.identity === null || artifactIdentity(path) !== file.identity)
         continue;
       rmSync(path, { force: true, recursive: true });
+      removed = true;
     }
-    this.options.flushDirectorySync(directory);
+    // Nothing removed: the fence's own sync already covers this directory.
+    if (removed || sync) this.options.flushDirectorySync(directory);
   }
 
   /**
    * The Phase 0B tested restore: the imported legacy bytes, verified against
    * their SHA-256, and only their matching imported record removed. The
    * caller (main's own writer) reinstalls the bytes at the legacy path.
-   * Accepted exposure: after a failed retirement cleanup it can return
-   * retired bytes, since the record and backup survive beside the tombstone.
-   * Revisit before it gains a production caller.
    */
   public takeLegacyBackup(
     projectId: string,

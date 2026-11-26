@@ -23,9 +23,9 @@ import { ChevronDownMediumIcon, WarningIcon } from '../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { ControlButton } from './Button';
 import {
-  useDialogFormFieldDescribedBy,
-  useDialogFormFieldLabelledBy,
-} from './dialog-form-field-context';
+  useFormFieldDescribedBy,
+  useFormFieldLabelledBy,
+} from './form-field-context';
 import {
   FieldButtonNestProvider,
   type FieldButtonNest,
@@ -234,11 +234,8 @@ export const TextInput = forwardRef<HTMLInputElement, TextInputProps>(
     },
     ref,
   ): JSX.Element {
-    const describedBy = useDialogFormFieldDescribedBy(
-      props.id,
-      ariaDescribedBy,
-    );
-    const labelledBy = useDialogFormFieldLabelledBy(
+    const describedBy = useFormFieldDescribedBy(props.id, ariaDescribedBy);
+    const labelledBy = useFormFieldLabelledBy(
       props.id,
       props['aria-label'],
       props['aria-labelledby'],
@@ -422,11 +419,8 @@ export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(
     },
     ref,
   ): JSX.Element {
-    const describedBy = useDialogFormFieldDescribedBy(
-      props.id,
-      ariaDescribedBy,
-    );
-    const labelledBy = useDialogFormFieldLabelledBy(
+    const describedBy = useFormFieldDescribedBy(props.id, ariaDescribedBy);
+    const labelledBy = useFormFieldLabelledBy(
       props.id,
       props['aria-label'],
       props['aria-labelledby'],
@@ -561,12 +555,8 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(
     const listboxId = useId();
     const generatedTriggerId = useId();
     const triggerId = id ?? generatedTriggerId;
-    const describedBy = useDialogFormFieldDescribedBy(id, ariaDescribedBy);
-    const labelledBy = useDialogFormFieldLabelledBy(
-      id,
-      ariaLabel,
-      ariaLabelledBy,
-    );
+    const describedBy = useFormFieldDescribedBy(id, ariaDescribedBy);
+    const labelledBy = useFormFieldLabelledBy(id, ariaLabel, ariaLabelledBy);
     const chosen = options.find((option) => option.value === value);
 
     return (

@@ -25,6 +25,7 @@ export async function pruneMarketplaceRefsFromPreferences(
   let globalDefaultsChanged = false;
   await updatePreferencesFile(
     (latest) => {
+      globalDefaultsChanged = false;
       // Patch keys declare intent (a present `planModeHint` is a hint
       // update), so return only the selections this prune changed.
       const patch: Partial<PreferencesData> = {};

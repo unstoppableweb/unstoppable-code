@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
+import { HoverCard } from '../primitives/HoverCard';
 import { ShareIcon } from '../icons/AppIcons';
 
 export const SHARED_WITH_TEAMMATES_LABEL = 'Shared with teammates';
@@ -45,7 +45,7 @@ export interface SharedWithTeammatesBadgeProps {
  * glyph can never swallow a click aimed at the ••• button that now occupies the
  * same pixels. Because both of those hold, the tooltip is skipped outright
  * rather than mounted and blocked, which drops the wrapper `<span>` and the
- * `cloneElement` per shared row. (`RichHoverTooltip`'s `disabled` return sits
+ * `cloneElement` per shared row. (`HoverCard`'s `disabled` return sits
  * after its hooks, so the `useId`/state/refs still run — the correctness
  * argument is what carries this decision, not the saving.) The accessible name
  * is unaffected — it lives on the glyph's
@@ -57,7 +57,7 @@ export function SharedWithTeammatesBadge({
   testIdSuffix,
   fadeOnRowHover = false,
 }: SharedWithTeammatesBadgeProps): JSX.Element {
-  // `RichHoverTooltip`'s `disabled` branch returns the child bare, dropping its
+  // `HoverCard`'s `disabled` branch returns the child bare, dropping its
   // wrapper — so the layout classes the wrapper would have carried (the host's
   // coarse-pointer action reserve included) have to ride on the glyph itself.
   const glyphClassName = [
@@ -73,7 +73,7 @@ export function SharedWithTeammatesBadge({
   const wrapperClassName = `shrink-0 ${className ?? ''}`;
 
   return (
-    <RichHoverTooltip
+    <HoverCard
       disabled={fadeOnRowHover}
       surfaceClassName="w-max"
       surfacePadding="relaxed"
@@ -94,6 +94,6 @@ export function SharedWithTeammatesBadge({
       >
         <ShareIcon size={12} />
       </span>
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }

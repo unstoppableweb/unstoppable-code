@@ -68,7 +68,7 @@ import {
   ChatTab as SharedChatTab,
   Dot,
   FloatingMenu,
-  RichHoverTooltip,
+  HoverCard,
   TitlebarIconButton,
 } from '@canopy/ui-shared/components';
 import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib';
@@ -737,7 +737,7 @@ export const ChatTabBar = memo(function ChatTabBar({
         : tab.title
       : chatTabStripLabel(tab);
     return (
-      <RichHoverTooltip
+      <HoverCard
         key={tab.id}
         content={
           <span className="flex items-center gap-1.5 text-xs">
@@ -763,7 +763,7 @@ export const ChatTabBar = memo(function ChatTabBar({
         deferUntilInteraction
       >
         {chatTab}
-      </RichHoverTooltip>
+      </HoverCard>
     );
   };
 

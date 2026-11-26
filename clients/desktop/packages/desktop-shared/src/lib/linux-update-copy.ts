@@ -5,7 +5,16 @@ export function linuxUpdateCopy(
     Partial<Pick<DesktopBrandRuntime, 'id' | 'cliName'>>,
   flavor?: string,
 ): {
-  apt: { command: string; introduction: string } | null;
+  apt: {
+    command: string;
+    introduction: string;
+    alternativesIntroduction: string;
+    softwareUpdaterTitle: string;
+    softwareUpdaterDescription: string;
+    alternativeSeparator: string;
+    terminalTitle: string;
+    terminalDescription: string;
+  } | null;
   downloadLabel: string;
   downloadTooltip: string;
   manual: string;
@@ -13,12 +22,14 @@ export function linuxUpdateCopy(
   unavailable: string;
   authentication: string;
   verification: string;
+  administratorAccess: string;
   packageManager: string;
   packageManagerVersion: string;
   relaunchBlockedByEdits: string;
   relaunchFirst: string;
   relaunchWaitForPackage: string;
   relaunchWaitForTerminal: string;
+  softwareUpdater: string;
   openInTerminal: string;
   openInTerminalUnavailable: string;
   terminalTitle: string;
@@ -38,13 +49,19 @@ export function linuxUpdateCopy(
       ? {
           command: `sudo apt update && sudo apt install --only-upgrade ${brand.cliName}-desktop`,
           introduction: `Update ${brand.displayName} with APT. Run in your terminal:`,
+          alternativesIntroduction: `Update ${brand.displayName} in one of these ways:`,
+          softwareUpdaterTitle: 'Software Updater',
+          softwareUpdaterDescription:
+            'Installs it with your other Ubuntu updates.',
+          alternativeSeparator: 'or',
+          terminalTitle: 'Terminal',
+          terminalDescription: `Updates only ${brand.displayName}. Run:`,
         }
       : null;
   return {
     apt,
     downloadLabel: apt ? 'Reinstall Linux package' : 'Download Linux update',
-    // Sidebar tooltip only; the full verification guidance and checksum stay
-    // in Settings, where there is room for them.
+    // Sidebar tooltip only; manual-download verification belongs in Settings.
     downloadTooltip: 'Opens the official release site',
     manual: apt
       ? `${apt.introduction} ${apt.command}.`
@@ -55,6 +72,8 @@ export function linuxUpdateCopy(
     verification: apt
       ? 'For the reinstall fallback, download the official Linux .deb matching your installed architecture. Verify its published checksum before installing with your package manager. The app never installs updates or requests administrator access.'
       : 'Download the Linux .deb matching your installed architecture from the official site. Verify its published checksum before installing with your package manager. The app never installs updates or requests administrator access.',
+    administratorAccess:
+      'The app never installs updates or requests administrator access.',
     packageManager: 'Update with your package manager:',
     packageManagerVersion:
       'Your package manager installs the newest published version. Specific versions are not available here.',
@@ -66,6 +85,7 @@ export function linuxUpdateCopy(
       'Wait for the package update to finish, then relaunch.',
     relaunchWaitForTerminal:
       'Wait for the update in the terminal to finish, or close that terminal, then relaunch.',
+    softwareUpdater: 'Open Software Updater',
     openInTerminal: 'Open in terminal',
     openInTerminalUnavailable:
       'Open a local project to use the built-in terminal, or copy the command.',

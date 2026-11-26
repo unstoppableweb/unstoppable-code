@@ -78,8 +78,17 @@ export type TooltipLink = TooltipHrefLink | TooltipActionLink;
 export type TooltipPlacement = 'top' | 'left' | 'right';
 
 export interface TooltipProps {
-  /** Tooltip content. */
+  /** Tooltip content; the medium-weight title when `description` is set. */
   label: ReactNode;
+  /**
+   * A muted line under the label that says what the control does or why it
+   * is held. The label becomes a medium-weight title, both lines center, and
+   * the tip narrows to 224px. A node, so a caller can mask one user-authored
+   * value in it (an automation's prompt) for session replay while the title
+   * stays recorded. Not combined with `shortcut`, which keeps its one-line
+   * layout.
+   */
+  description?: ReactNode;
   /** Optional inline link rendered under the label. Makes the tooltip interactive. */
   link?: TooltipLink;
   /**
@@ -157,6 +166,12 @@ interface TooltipTargetProps {
   tabIndex?: number;
 }
 
+// A trigger in an auxiliary window has that window's `Node`, so an
+// `instanceof` check against this realm's would fail.
+function isDomNode(target: EventTarget): target is Node {
+  return 'nodeType' in target && typeof target.nodeType === 'number';
+}
+
 function mergeDescribedBy(
   existing: string | undefined,
   tooltipId: string | undefined,
@@ -214,6 +229,7 @@ function attachTooltipDescription(
 
 export function Tooltip({
   label,
+  description,
   link,
   shortcut,
   delay = 'none',
@@ -232,6 +248,7 @@ export function Tooltip({
   children,
 }: TooltipProps): JSX.Element {
   const defaultContent = contentClassName === undefined;
+  const described = description !== undefined;
   const labelClassName = clamp ? 'line-clamp-5' : undefined;
   const tooltipId = useId();
   const wrapperRef = useRef<HTMLSpanElement | null>(null);
@@ -241,6 +258,10 @@ export function Tooltip({
   // Escape closed the tip: it stays closed until the pointer leaves or focus
   // moves, so the resting pointer's next movement does not reopen it.
   const escapeDismissedRef = useRef(false);
+  // A right-click on the trigger closed the tip: it stays closed until the
+  // pointer leaves or keyboard focus returns. Unlike Escape, a blur does not
+  // clear it, because the context menu the right-click opens takes focus.
+  const contextMenuDismissedRef = useRef(false);
   const [tooltipMounted, setTooltipMounted] = useState(false);
   // The portal target is the TRIGGER's window body: a wrapper in an
   // auxiliary window must portal into THAT window, not the module-global main
@@ -364,7 +385,11 @@ export function Tooltip({
 
   const showTooltipAfter = useCallback(
     (delayMs: number): void => {
-      if (suppressed || escapeDismissedRef.current) {
+      if (
+        suppressed ||
+        escapeDismissedRef.current ||
+        contextMenuDismissedRef.current
+      ) {
         return;
       }
       clearHideTimer();
@@ -414,6 +439,9 @@ export function Tooltip({
       if (!wasFocusVisible(event.target)) {
         return;
       }
+      // Keyboard focus is a fresh request: a right-click, or a context menu
+      // opened with the keyboard, no longer holds the tip closed.
+      contextMenuDismissedRef.current = false;
       showTooltip();
     },
     [showTooltip],
@@ -424,6 +452,7 @@ export function Tooltip({
   // neighbour that opens meanwhile replaces it at once.
   const requestHide = useCallback((): void => {
     escapeDismissedRef.current = false;
+    contextMenuDismissedRef.current = false;
     clearOpenTimer();
     clearHideTimer();
     const linger = Math.max(
@@ -491,7 +520,7 @@ export function Tooltip({
     }
 
     updatePosition();
-  }, [tooltipMounted, updatePosition, label, link, clamp]);
+  }, [tooltipMounted, updatePosition, label, description, link, clamp]);
 
   // Inline reposition effect (mirrors the desktop
   // `useWindowPositionInvalidation` hook and ui-shared's existing
@@ -587,10 +616,20 @@ export function Tooltip({
       onFocus={handleFocus}
       onBlur={handleBlur}
       onKeyDown={scrollable ? handleScrollKey : undefined}
+      onContextMenu={(event): void => {
+        // React bubbles a right-click inside the portaled surface here too;
+        // only the trigger's own context menu closes the tip.
+        const target = event.target;
+        if (isDomNode(target) && wrapperRef.current?.contains(target)) {
+          contextMenuDismissedRef.current = true;
+          hideTooltip();
+        }
+      }}
       onClick={
         showOnPress
           ? (): void => {
               escapeDismissedRef.current = false;
+              contextMenuDismissedRef.current = false;
               showTooltip();
             }
           : undefined
@@ -620,9 +659,14 @@ export function Tooltip({
             onFocus={interactive ? handleFocus : undefined}
             onBlur={interactive ? handleBlur : undefined}
             // With a shortcut the key cap sits in the corner: its top, bottom
-            // and right insets are all the 4px vertical padding.
-            className={`fixed z-tooltip flex flex-col gap-1 ${contentClassName ?? 'w-max whitespace-normal wrap-anywhere'} rounded-md py-1 text-xs font-normal shadow-tooltip ${
-              shortcut ? 'pl-2 pr-1' : 'px-2'
+            // and right insets are all the 4px vertical padding. A title and
+            // description pair takes the roomier 10px by 6px inset.
+            className={`fixed z-tooltip flex flex-col gap-1 ${contentClassName ?? 'w-max whitespace-normal wrap-anywhere'} rounded-md text-xs font-normal shadow-tooltip ${
+              shortcut
+                ? 'py-1 pl-2 pr-1'
+                : described
+                  ? 'px-2.5 py-1.5'
+                  : 'px-2 py-1'
             } ${
               tone === 'inverse'
                 ? 'bg-tooltip-inverse fg-tooltip-inverse'
@@ -640,7 +684,7 @@ export function Tooltip({
                 : {}),
               ...(defaultContent
                 ? {
-                    maxWidth: `min(22rem, calc(100vw - ${2 * VIEWPORT_PADDING}px))`,
+                    maxWidth: `min(${described ? '14rem' : '22rem'}, calc(100vw - ${2 * VIEWPORT_PADDING}px))`,
                   }
                 : {}),
               ...(position
@@ -659,6 +703,15 @@ export function Tooltip({
                   nest="tooltip"
                   data-testid="tooltip-shortcut"
                 />
+              </span>
+            ) : described ? (
+              <span className="flex flex-col items-center text-center">
+                <span className="text-2xs font-medium leading-tight">
+                  {label}
+                </span>
+                <span className="mt-0.5 text-3xs leading-snug fg-secondary">
+                  {description}
+                </span>
               </span>
             ) : (
               <span className={labelClassName}>{label}</span>

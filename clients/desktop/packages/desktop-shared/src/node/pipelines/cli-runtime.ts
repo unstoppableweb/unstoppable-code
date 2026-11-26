@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
+import { readPreferencesEnvelopeRecord } from '@canopy/protocol/preferences';
 import {
   getCursorRuntimeRootDir,
   getEnhancedEnv,
@@ -362,19 +363,14 @@ async function resolveCliOllamaPort(): Promise<number> {
 /**
  * Whether a parsed `preferences.json` connects Cursor.
  *
- * The desktop writes `{ version: 1, preferences: { ... } }`
- * (`writePreferencesDataFile`) and treats any other shape, including an
- * unversioned flat object, as unsupported and recovers it rather than reading
- * `cursorEnabled` from it. This reads the same envelope and nothing else, so a
- * flat, malformed, differently versioned or non-`true` value is disconnected.
+ * The desktop writes `{ version, preferences: { ... } }` and treats any other
+ * shape, including an unversioned flat object, as unsupported and recovers it
+ * rather than reading `cursorEnabled` from it. This reads the same envelope
+ * (`readPreferencesEnvelopeRecord`) and nothing else, so a flat, malformed,
+ * unreadably versioned or non-`true` value is disconnected.
  */
 export function cursorEnabledInPreferencesFile(parsed: unknown): boolean {
-  return (
-    isRecordValue(parsed) &&
-    parsed.version === 1 &&
-    isRecordValue(parsed.preferences) &&
-    parsed.preferences.cursorEnabled === true
-  );
+  return readPreferencesEnvelopeRecord(parsed)?.cursorEnabled === true;
 }
 
 /**

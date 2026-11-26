@@ -11,11 +11,11 @@ import { SettingsGroup, SettingsRow, SettingsSection } from './SettingsLayout';
 
 const SAVE_ERROR_MESSAGE = 'Could not save this setting. Try again.';
 const LABEL = 'One window for all computers';
-// Nothing acts on the switch until the one-window work lands (CAN-7761 and
-// later), so the description says so instead of promising the behavior.
-// Those changes update it.
+// What the switch does today (CAN-7766): paired computers' tasks are listed
+// in the sidebar and still open in each computer's own window. Later
+// one-window units update it as they land.
 const DESCRIPTION =
-  'Show tasks from your paired computers in this window instead of a separate window for each one. Still being built: turning it on changes nothing yet.';
+  "Lists tasks from your online paired computers in this window's sidebar, under their projects. Opening one still opens that computer's own window.";
 
 /**
  * Settings → Labs → One window for all computers (CAN-7755): this

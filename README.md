@@ -146,6 +146,9 @@ commands to run.
 Desktop builds use stable hosted service defaults. To build the desktop app
 with every hosted service off, use `pnpm run build:local`; see
 [Build without our services](clients/desktop/README.md#build-without-our-services).
+To connect the desktop app to a server you host, use
+`pnpm run build:selfhost`; see
+[Build for your own server](clients/desktop/README.md#build-for-your-own-server).
 Mobile connectivity depends on generated brand configuration and build settings. Follow each client's README
 for configuration; a successful build alone does not verify sign-in or cloud
 features.

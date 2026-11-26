@@ -1,6 +1,7 @@
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type { JSX } from 'react';
-import { ChoiceList, ChoiceListRow } from '../primitives/ChoiceList';
+import { ChoiceField } from '../primitives/Choice';
+import { ChoiceList } from '../primitives/ChoiceList';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { SegmentedControl } from '../primitives/SegmentedControl';
 import { SettingsRowsRow } from './settings/SettingsRows';
@@ -209,41 +210,43 @@ export function AppAdvisorProjectAgentAccessControl({
                 ownersMatch(owner, row.owner),
               );
               return (
-                <ChoiceListRow
+                <ChoiceField
                   key={`${ownerKey(row.owner)}-${index}`}
-                  selected={selected}
+                  layout="row"
+                  checked={selected}
                   aria-disabled={
                     row.unavailable && !selected ? 'true' : undefined
                   }
                   data-testid={ownerTestId(testIdPrefix, row.owner)}
                   data-unavailable={row.unavailable ? 'true' : undefined}
                   disabled={disabled || saving}
-                  onClick={(): void =>
+                  onChange={(): void =>
                     handleOwnerToggle(row.owner, row.unavailable, selected)
                   }
-                >
-                  {row.staleOrganizationId !== null ? (
-                    <>
-                      <span className="block truncate font-medium">
+                  label={
+                    row.staleOrganizationId !== null ? (
+                      <>
+                        <span className="block truncate font-medium">
+                          {row.label}
+                        </span>
+                        <span className="block truncate font-mono text-xs fg-secondary">
+                          {row.staleOrganizationId}
+                        </span>
+                      </>
+                    ) : (
+                      <span
+                        className={`block truncate font-medium ${
+                          row.owner.kind === 'organization'
+                            ? REPLAY_MASK_CLASS
+                            : ''
+                        }`}
+                      >
                         {row.label}
+                        {row.unavailable ? ' (unavailable)' : ''}
                       </span>
-                      <span className="block truncate font-mono text-xs fg-secondary">
-                        {row.staleOrganizationId}
-                      </span>
-                    </>
-                  ) : (
-                    <span
-                      className={`block truncate font-medium ${
-                        row.owner.kind === 'organization'
-                          ? REPLAY_MASK_CLASS
-                          : ''
-                      }`}
-                    >
-                      {row.label}
-                      {row.unavailable ? ' (unavailable)' : ''}
-                    </span>
-                  )}
-                </ChoiceListRow>
+                    )
+                  }
+                />
               );
             })}
           </ChoiceList>

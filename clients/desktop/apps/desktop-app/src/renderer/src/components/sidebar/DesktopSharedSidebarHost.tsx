@@ -71,7 +71,12 @@ import { useNavigationStore } from '@/stores/navigationStore';
 import { useAppAdvisorStore } from '@/stores/appAdvisorStore';
 import { useDesktopPendingProjects } from './desktopPendingProjects';
 import { useHomeComposerStore } from '@/stores/homeComposerStore';
-import { TeardownFailedError, useProjectsStore } from '@/stores/projectsStore';
+import {
+  getAuthoritativeProjectsLoadEpoch,
+  requestRemoteRecoveryProjectsReload,
+  TeardownFailedError,
+  useProjectsStore,
+} from '@/stores/projectsStore';
 import { finishWorktreeArchive } from '@/components/worktree/finishWorktreeArchive';
 import {
   WorktreeArchiveRefusalError,
@@ -111,6 +116,8 @@ import {
   DelayedLoadingPlaceholder,
   DropdownMenuItem,
   DropdownMenuItemIcon,
+  Notice,
+  NoticeButton,
   type WorktreeMenuItem,
   type WorktreeMenuItemKey,
 } from '@canopy/ui-shared/components';
@@ -158,7 +165,6 @@ import {
 } from '@/components/worktree/worktree-delete-action';
 import { resolveArchiveRetentionDays } from '@canopy/desktop-shared/lib/archive-retention';
 import { useGitHubStore } from '@/stores/githubStore';
-import { hasVisibleWorkspaceContent } from '@canopy/desktop-shared/lib/workspace-visibility';
 import { InviteTeammateModal } from '@/components/shared/InviteTeammateModal';
 import { SharedContainerSidebarSection } from '@/components/shared-containers/SharedContainerSidebarSection';
 import {
@@ -206,6 +212,24 @@ import {
 import { useCloudCoworkSidebar } from '@/cloud-chats/useCloudCoworkSidebar';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { appendCloudSidebarRows } from '@/cloud-chats/append-cloud-sidebar-rows';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
+import {
+  pairedComputerAddress,
+  useRemoteControlStore,
+} from '@/stores/remoteControlStore';
+import {
+  appendPairedSidebarRows,
+  selectDeferredEmptyWorkspaceIds,
+} from '@/paired-computers/paired-sidebar-rows';
+import { pairedSidebarRowCapabilities } from '@/paired-computers/paired-sidebar-capabilities';
+import {
+  collectVisiblePairedDeviceIds,
+  PairedComputerStatusRows,
+  setPairedProjectCollapsed,
+  usePairedSidebarRows,
+  usePairedWorktreeRowOverrides,
+} from '@/paired-computers/usePairedComputersSidebar';
 import { sidebarRowPrefetchTarget } from '@/cloud-chats/cloud-sidebar-intent';
 import { routeSidebarReorder } from '@/cloud-chats/route-sidebar-reorder';
 import { StickyWorkspaceControls } from './SidebarWorkspacesSection';
@@ -239,6 +263,14 @@ import {
   type WorktreeRowNaming,
 } from './worktreeChatNames';
 import { useSpaceNotificationSidebarProps } from '@/hooks/useSpaceNotificationSidebarProps';
+import {
+  publishRecoveryShellSnapshot,
+  publishRemoteHostNotices,
+  registerRecoveryShellSnapshotRefresh,
+  useRecoveryShellSnapshotStore,
+} from '@/stores/recoveryShellSnapshotStore';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import { describeRemoteHostUnavailable } from '@/components/background-service/remoteHostNoticeCopy';
 
 /** Row naming while early access is off: stored label or branch, then id. */
 const DEFAULT_ROW_NAMING: WorktreeRowNaming = { title: undefined };
@@ -424,6 +456,35 @@ export interface DesktopSelectionActions {
   readonly openStandaloneChat: (workspaceId: string, chatId: string) => void;
   readonly selectWorkspace: (workspaceId: string) => void;
   readonly selectWorktree: (workspaceId: string, worktreeId: string) => void;
+  /** Opens a paired computer's own window, by its relay device id. */
+  readonly openPairedComputer: (deviceId: string) => void;
+}
+
+/**
+ * A paired computer's task row (CAN-7766) opens that computer's own window,
+ * as the app opens it today, and never becomes this window's selected task:
+ * nothing about it is saved here (CAN-7767 opens it in this window).
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useDesktopSidebarRowOverrides(
+  context: Parameters<typeof useDesktopWorktreeRowOverrides>[0],
+): ReturnType<typeof useDesktopWorktreeRowOverrides> {
+  const local = useDesktopWorktreeRowOverrides(context);
+  const paired = usePairedWorktreeRowOverrides(context);
+  return useMemo(
+    () =>
+      paired === undefined
+        ? local
+        : // Only the status model carries over: a local override for a
+          // paired computer's id would read this computer's stores.
+          {
+            ...(local?.statusModel === undefined
+              ? {}
+              : { statusModel: local.statusModel }),
+            ...paired,
+          },
+    [local, paired],
+  );
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -503,8 +564,8 @@ const CLOUD_ROW_MENU_KEYS: ReadonlySet<string> = new Set([
  * (its archive is in flight) leaves at once, as it did on the legacy list,
  * while the snapshot still carries it. A cloud row is never the store's (it
  * holds only this device's worktrees), so it is the snapshot's to list even
- * when its workspace id matches a store project; so are rows of workspaces the
- * store does not own.
+ * when its workspace id matches a store project; so are a paired computer's
+ * tasks and rows of workspaces the store does not own.
  */
 // eslint-disable-next-line react-refresh/only-export-components
 export function isSnapshotWorktreeListed(
@@ -515,7 +576,9 @@ export function isSnapshotWorktreeListed(
     readonly backend?: string;
   },
 ): boolean {
-  if (worktree.backend === 'cloud') return true;
+  // A paired computer's task (CAN-7766) is never this store's either.
+  if (worktree.backend === 'cloud' || isPairedComputerId(worktree.localId))
+    return true;
   const project = projects.find(
     (item) => item.id === worktree.workspaceLocalId,
   );
@@ -625,6 +688,11 @@ export function routeDesktopSidebarSelection(
 ): void {
   if (!selection) return;
   if (selection.kind === 'worktree') {
+    const paired = pairedComputerAddress(selection.worktreeLocalId);
+    if (paired !== null) {
+      actions.openPairedComputer(paired.deviceId);
+      return;
+    }
     // A cloud task opens through the cowork work-entry seam, which picks its
     // page (CAN-6099; CAN-6175 moves it to the cowork page).
     if (isWebCoreScope(selection.workspaceLocalId)) {
@@ -977,6 +1045,15 @@ export function DesktopSharedSidebarHost({
   worktreeDiffStatsStyle = 'short',
 }: DesktopSharedSidebarHostProps): JSX.Element | null {
   const attention = useDesktopAutoDeleteAttention();
+  const remoteMode = useRemoteControlStore(
+    (state) => state.context.mode === 'remote',
+  );
+  const remoteNotices = useRecoveryShellSnapshotStore(
+    (state) => state.remoteNotices,
+  );
+  const remoteSnapshotFailed = useRecoveryShellSnapshotStore(
+    (state) => state.remoteSnapshotFailed,
+  );
   const model = useSidebarWorkspaces();
   const activity = useDesktopSidebarActivityHost(client);
   const groupsByScope = useSidebarItemGroupsStore((state) => state.byScope);
@@ -1280,18 +1357,16 @@ export function DesktopSharedSidebarHost({
   // The legacy rule for a deferred (temporary) workspace applies here too: it
   // lists only while it has visible content, read from the store, which is
   // what the archived-container purge refreshes.
+  // Paired computers' tasks (CAN-7766) join their projects after the local
+  // tasks; projects only on paired computers follow the local ones.
+  const pairedRows = usePairedSidebarRows();
   const deferredEmptyWorkspaceIds = useMemo(
     (): ReadonlySet<string> =>
-      new Set(
-        model.sortedProjects
-          .filter(
-            (project) =>
-              project.alwaysShow === false &&
-              !hasVisibleWorkspaceContent(project),
-          )
-          .map((project) => project.id),
+      selectDeferredEmptyWorkspaceIds(
+        model.sortedProjects,
+        pairedRows.worktrees,
       ),
-    [model.sortedProjects],
+    [model.sortedProjects, pairedRows.worktrees],
   );
   // An empty deferred workspace moves to the Hidden disclosure, as the legacy
   // list's `hiddenProjects` did, rather than leaving the rail with no way back.
@@ -1368,16 +1443,14 @@ export function DesktopSharedSidebarHost({
   // (CAN-7053), opened in place of the sidebar's details-only dialog.
   const [cloudSettingsTarget, setCloudSettingsTarget] =
     useState<CloudProjectSettingsTarget | null>(null);
-  const surfaceSnapshot = useMemo(
-    (): SessionViewModel | null =>
-      localSurfaceSnapshot && cloudRows
-        ? {
-            ...localSurfaceSnapshot,
-            ...appendCloudSidebarRows(localSurfaceSnapshot, cloudRows),
-          }
-        : localSurfaceSnapshot,
-    [localSurfaceSnapshot, cloudRows],
-  );
+  const surfaceSnapshot = useMemo((): SessionViewModel | null => {
+    const local =
+      localSurfaceSnapshot &&
+      appendPairedSidebarRows(localSurfaceSnapshot, pairedRows);
+    return local && cloudRows
+      ? { ...local, ...appendCloudSidebarRows(local, cloudRows) }
+      : local;
+  }, [localSurfaceSnapshot, pairedRows, cloudRows]);
   const chatsWorkspaceId = defaultCoworkWorkspaceIdForContext(scopingContext);
   const chatsSectionSettled = useChatsSectionSettled(
     (surfaceSnapshot ?? snapshot)?.workspaces.some(
@@ -1394,6 +1467,32 @@ export function DesktopSharedSidebarHost({
     },
     [cloudRows],
   );
+  const [renderedWorktreeKeys, setRenderedWorktreeKeys] =
+    useState<ReadonlySet<string> | null>(null);
+  const pairedDeviceIdsWithVisibleRows = useMemo((): ReadonlySet<string> => {
+    if (!surfaceSnapshot || pairedRows.worktrees.length === 0) {
+      return new Set<string>();
+    }
+    return collectVisiblePairedDeviceIds({
+      workspaces: surfaceSnapshot.workspaces,
+      pairedWorktrees: pairedRows.worktrees,
+      hiddenWorkspaceIds: model.hiddenWorkspaceIds,
+      renderedWorktreeKeys: renderedWorktreeKeys ?? undefined,
+      matchesWorkspaceContext: (workspace) =>
+        snapshotWorkspaceMatchesContext(
+          workspace,
+          scopingContext,
+          model.linkedPersonalWorkspaceIds,
+        ),
+    });
+  }, [
+    surfaceSnapshot,
+    pairedRows.worktrees,
+    scopingContext,
+    model.linkedPersonalWorkspaceIds,
+    model.hiddenWorkspaceIds,
+    renderedWorktreeKeys,
+  ]);
   const visibleWorkspaceIds = useMemo((): ReadonlySet<string> => {
     const hidden = new Set(model.hiddenWorkspaceIds);
     return new Set(
@@ -1681,6 +1780,7 @@ export function DesktopSharedSidebarHost({
       workspaceMoveToOrganization,
     ],
   );
+  const remoteOutageLoadEpochRef = useRef<number | null>(null);
   const refresh = useCallback(
     async function refreshSnapshot(): Promise<void> {
       const state = refreshState.current;
@@ -1701,8 +1801,28 @@ export function DesktopSharedSidebarHost({
       try {
         const next = await client.query('session.snapshot', {});
         if (!state.active) return;
+        const previousSnapshotFailed =
+          useRecoveryShellSnapshotStore.getState().remoteSnapshotFailed;
+        const isRemote =
+          useRemoteControlStore.getState().context.mode === 'remote';
+        const recoveredFromRemoteOutage = isRemote && previousSnapshotFailed;
         setSnapshot(next);
         onSnapshotRef.current?.(next);
+        if (
+          isRemote &&
+          onSnapshotRef.current !== publishRecoveryShellSnapshot
+        ) {
+          publishRemoteHostNotices(next, { snapshotFailed: false });
+        }
+        if (recoveredFromRemoteOutage) {
+          const outageEpoch =
+            remoteOutageLoadEpochRef.current ??
+            getAuthoritativeProjectsLoadEpoch();
+          remoteOutageLoadEpochRef.current = null;
+          requestRemoteRecoveryProjectsReload(outageEpoch);
+        } else {
+          remoteOutageLoadEpochRef.current = null;
+        }
         onRefreshMeasuredRef.current?.(performance.now() - startedAt);
       } catch (error) {
         if (!state.active) return;
@@ -1710,6 +1830,24 @@ export function DesktopSharedSidebarHost({
         reportRendererConsoleError('Shared sidebar snapshot refresh failed', {
           error,
         });
+        if (useRemoteControlStore.getState().context.mode === 'remote') {
+          remoteOutageLoadEpochRef.current ??=
+            getAuthoritativeProjectsLoadEpoch();
+          try {
+            const notices = await client.query('session.snapshot', {
+              noticesOnly: true,
+            });
+            if (!state.active) return;
+            publishRemoteHostNotices(notices, { snapshotFailed: true });
+          } catch (noticesError) {
+            if (!state.active) return;
+            reportClientAppError(noticesError);
+            reportRendererConsoleError(
+              'Shared sidebar notices-only snapshot refresh failed',
+              { error: noticesError },
+            );
+          }
+        }
         if (!state.pending) setSnapshotFailures((count) => count + 1);
       } finally {
         const finishedAt = performance.now();
@@ -1733,6 +1871,7 @@ export function DesktopSharedSidebarHost({
       gapTimer: null,
     };
     refreshState.current = state;
+    const unregisterRefresh = registerRecoveryShellSnapshotRefresh(refresh);
     const unsubscribe = client.subscribe('session.snapshot-stale', () => {
       void refresh();
     });
@@ -1740,6 +1879,7 @@ export function DesktopSharedSidebarHost({
     return (): void => {
       state.active = false;
       if (state.gapTimer !== null) clearTimeout(state.gapTimer);
+      unregisterRefresh();
       unsubscribe();
     };
   }, [client, refresh]);
@@ -1839,6 +1979,14 @@ export function DesktopSharedSidebarHost({
         selectCoworkWorkspaceFromSidebar(workspaceId);
       },
       selectWorktree: model.onSelectWorktree,
+      openPairedComputer: (deviceId): void => {
+        // Opening a window rarely fails; the failure is recorded, and the
+        // row stays as it was, so the next click tries again.
+        void useRemoteControlStore
+          .getState()
+          .openMachine(deviceId)
+          .catch(reportClientAppError);
+      },
     }),
     [model.onSelectWorktree],
   );
@@ -2035,6 +2183,9 @@ export function DesktopSharedSidebarHost({
         </OrgProjectPlaceholderSection>
       )}
       <CloudCoworkOfflineRow model={cloudSidebar} />
+      <PairedComputerStatusRows
+        visibleDeviceIds={pairedDeviceIdsWithVisibleRows}
+      />
       <SharedContainerSidebarSection
         expanded={sharedWithMeExpanded}
         onExpandedChange={setSharedWithMeExpanded}
@@ -2043,6 +2194,43 @@ export function DesktopSharedSidebarHost({
   );
 
   if (!snapshot) {
+    const remoteUnavailable =
+      remoteMode && remoteSnapshotFailed
+        ? describeRemoteHostUnavailable(remoteNotices)
+        : null;
+    if (remoteUnavailable) {
+      return (
+        <div
+          className="group/section min-h-px px-2 py-2"
+          data-testid="sidebar-section-code"
+        >
+          <Notice
+            data-testid="sidebar-remote-host-unavailable"
+            intent="attention"
+            title={remoteUnavailable.title}
+            actionsPlacement="below"
+            actions={
+              <NoticeButton
+                data-testid="sidebar-remote-host-retry"
+                onClick={() => {
+                  void refresh();
+                }}
+              >
+                Refresh
+              </NoticeButton>
+            }
+          >
+            {remoteUnavailable.includesCommand ? (
+              <span className={REPLAY_BLOCK_CLASS}>
+                {remoteUnavailable.message}
+              </span>
+            ) : (
+              remoteUnavailable.message
+            )}
+          </Notice>
+        </div>
+      );
+    }
     return (
       <div
         className="group/section min-h-px"
@@ -2114,7 +2302,7 @@ export function DesktopSharedSidebarHost({
         // particular re-render. It does not make rows immune to an ordinary
         // parent re-render (this host or the surface above it re-rendering
         // for any other reason still re-renders every row once).
-        useWorktreeRowOverrides={useDesktopWorktreeRowOverrides}
+        useWorktreeRowOverrides={useDesktopSidebarRowOverrides}
         // The runs behind a row's pipeline badge, from the renderer's run
         // store (the same list the legacy row's popover showed). Falls back
         // to a stable shared empty array, not a fresh `[]` literal — see
@@ -2135,6 +2323,8 @@ export function DesktopSharedSidebarHost({
         ) => usePipelineRunsStore.subscribe(onChange)}
         onSelect={handleSelect}
         onWorktreeIntent={(projectId, worktreeId, phase, source): void => {
+          // A paired computer's task reads nothing here (CAN-7766).
+          if (isPairedComputerId(worktreeId)) return;
           // Cloud rows read ahead through the web core, never the local chat
           // store (CAN-6774).
           const target = sidebarRowPrefetchTarget(
@@ -2343,6 +2533,7 @@ export function DesktopSharedSidebarHost({
           void launchWorktreeFresh(workspaceId, worktreeId);
         }}
         onWorktreeMenuOpened={(workspaceId, worktreeId) => {
+          if (isPairedComputerId(worktreeId)) return;
           void useProjectsStore
             .getState()
             .ensureWorktreeEffective(workspaceId, [worktreeId]);
@@ -2353,15 +2544,18 @@ export function DesktopSharedSidebarHost({
         onStopRunningScripts={(workspaceId, worktreeId) => {
           void stopWorktreeScripts(workspaceId, worktreeId);
         }}
-        renderWorktreeIdSlot={({ workspace, worktree, pinnedSurface }) =>
-          contextMenuWorkspaceIds.has(workspace.localId) ? (
+        renderWorktreeIdSlot={({ workspace, worktree, pinnedSurface }) => {
+          // A paired computer's task shows its id on that computer.
+          const paired = pairedComputerAddress(worktree.localId);
+          if (paired !== null) return paired.localId;
+          return contextMenuWorkspaceIds.has(workspace.localId) ? (
             <WorktreeLaunchIdSlot
               projectId={workspace.localId}
               worktreeId={worktree.localId}
               testId={pinnedTestId('worktree-row-stop-launch', pinnedSurface)}
             />
-          ) : undefined
-        }
+          ) : undefined;
+        }}
         deriveWorktreeRowLabel={({ workspace, worktree }) =>
           contextMenuWorkspaceIds.has(workspace.localId)
             ? rowNamingFor(workspace.localId, worktree.localId).title
@@ -2382,6 +2576,9 @@ export function DesktopSharedSidebarHost({
           { workspace, worktree, pinnedSurface },
           incomingItems,
         ) => {
+          // Nothing in a paired computer's task can be changed from here yet
+          // (CAN-7766), so it has no menu.
+          if (isPairedComputerId(worktree.localId)) return [];
           const kept = isWebCoreScope(workspace.localId)
             ? CLOUD_ROW_MENU_KEYS
             : NON_STORE_ROW_MENU_KEYS;
@@ -2434,19 +2631,26 @@ export function DesktopSharedSidebarHost({
         // Reorder persists through the store too, so such a row is not
         // sortable. Keyed by local id, as the surface resolves it.
         capabilitiesFor={(localId) =>
-          isWebCoreScope(localId)
-            ? cloudSidebarRowCapabilities(capabilities, cloudRowKind(localId), {
-                taskDelete:
-                  cloudSidebar.status === 'online' && cloudSidebar.taskDelete,
-                offline: cloudSidebar.status === 'offline',
-              })
-            : nonStoreWorktreeIds.has(localId)
-              ? {
-                  ...capabilities,
-                  worktreeReordering: false,
-                  itemGrouping: false,
-                }
-              : capabilities
+          isPairedComputerId(localId)
+            ? pairedSidebarRowCapabilities(capabilities)
+            : isWebCoreScope(localId)
+              ? cloudSidebarRowCapabilities(
+                  capabilities,
+                  cloudRowKind(localId),
+                  {
+                    taskDelete:
+                      cloudSidebar.status === 'online' &&
+                      cloudSidebar.taskDelete,
+                    offline: cloudSidebar.status === 'offline',
+                  },
+                )
+              : nonStoreWorktreeIds.has(localId)
+                ? {
+                    ...capabilities,
+                    worktreeReordering: false,
+                    itemGrouping: false,
+                  }
+                : capabilities
         }
         itemGroupCommandsFor={(workspaceId) => {
           const project = model.sortedProjects.find(
@@ -2595,6 +2799,7 @@ export function DesktopSharedSidebarHost({
         sentenceCaseMenuLabels={earlyAccess}
         worktreeHoverPreview={earlyAccess}
         onChatsSectionCollapsedChange={setChatsSectionCollapsed}
+        onRenderedWorktreeKeysChange={setRenderedWorktreeKeys}
         // Desktop's cowork row toggled on its name and opened chats from its
         // entries; keep that so a header click never leaves the page.
         workspaceNameTogglesCollapse
@@ -2605,6 +2810,12 @@ export function DesktopSharedSidebarHost({
           <StickyWorkspaceControls workspaceHeader={header} />
         )}
         onWorkspaceCollapsedChange={(workspaceId, collapsed) => {
+          // A project only on paired computers keeps its collapse in this
+          // window alone: nothing about it is saved here (CAN-7766).
+          if (isPairedComputerId(workspaceId)) {
+            setPairedProjectCollapsed(workspaceId, collapsed);
+            return;
+          }
           if (isWebCoreScope(workspaceId)) {
             if (cloudSidebar.status !== 'disabled')
               cloudSidebar.setCollapsed(workspaceId, collapsed);
@@ -2946,8 +3157,11 @@ export function DesktopSharedSidebarHost({
           desktopArchivedCount(model.sortedProjects, workspaceId)
         }
         renderArchivedSection={(workspaceId, { hiddenWorktreeCount }) =>
-          // A cloud project's archived tasks are the web core's (CAN-6511).
-          isWebCoreScope(workspaceId) ? (
+          // Paired-only projects have no local More or archived tasks here.
+          isPairedComputerId(workspaceId) ? null : isWebCoreScope(
+              workspaceId,
+            ) ? (
+            // A cloud project's archived tasks are the web core's (CAN-6511).
             <CloudArchivedNavLink projectId={workspaceId} />
           ) : (
             <DesktopArchivedNavLink
@@ -2959,10 +3173,13 @@ export function DesktopSharedSidebarHost({
             />
           )
         }
-        // Local projects keep hidden worktrees on their More page; a cloud
-        // project has no More page here, so it keeps its Hidden row.
+        // Local projects keep hidden worktrees on their More page; cloud and
+        // paired-only projects have no local More page, so they keep an inline
+        // Hidden row.
         hiddenWorktreesPlacement={(workspaceId) =>
-          isWebCoreScope(workspaceId) ? 'inline' : 'more'
+          isWebCoreScope(workspaceId) || isPairedComputerId(workspaceId)
+            ? 'inline'
+            : 'more'
         }
         archivedEntries={(workspaceId) =>
           loadedArchivedWorkspaces[workspaceId]
@@ -2975,19 +3192,29 @@ export function DesktopSharedSidebarHost({
             : undefined
         }
         onLoadArchived={(workspaceId) =>
-          useArchivedContainersStore.getState().loadForWorkspace(workspaceId)
+          isPairedComputerId(workspaceId)
+            ? Promise.resolve()
+            : useArchivedContainersStore
+                .getState()
+                .loadForWorkspace(workspaceId)
         }
-        onViewArchived={(workspaceId, worktreeId) =>
+        onViewArchived={(workspaceId, worktreeId) => {
+          if (isPairedComputerId(workspaceId) || isPairedComputerId(worktreeId))
+            return;
           useArchivedContainersStore
             .getState()
-            .openViewer(workspaceId, worktreeId)
-        }
+            .openViewer(workspaceId, worktreeId);
+        }}
         onRestoreArchived={(workspaceId, worktreeId) => {
+          if (isPairedComputerId(workspaceId) || isPairedComputerId(worktreeId))
+            return;
           void useArchivedContainersStore
             .getState()
             .restore(workspaceId, worktreeId);
         }}
         onDeleteArchived={(workspaceId, worktreeId) => {
+          if (isPairedComputerId(workspaceId) || isPairedComputerId(worktreeId))
+            return;
           const remove = (): void => {
             void useArchivedContainersStore
               .getState()

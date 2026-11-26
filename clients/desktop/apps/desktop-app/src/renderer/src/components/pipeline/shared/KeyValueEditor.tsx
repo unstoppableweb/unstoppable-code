@@ -3,7 +3,6 @@ import type { PipelineScalar } from '@canopy/execution-engine/types/pipeline';
 import { Stack, Surface, TextArea } from '@canopy/ui-shared/components';
 import { TextField } from './TextField';
 import { EnlargeValueModal } from './EnlargeValueModal';
-import { ActionTooltip } from '@/components/shared/ActionTooltip';
 import { Tooltip } from '@canopy/ui-shared';
 import {
   Button,
@@ -143,8 +142,8 @@ export function KeyValueEditor({
                   disabled={readonly}
                 />
                 {!stringOnly && !readonly && (
-                  <ActionTooltip
-                    title={`Type: ${valType}`}
+                  <Tooltip
+                    label={`Type: ${valType}`}
                     description="Select to cycle"
                   >
                     <Button
@@ -154,7 +153,7 @@ export function KeyValueEditor({
                     >
                       {TYPE_LABELS[valType]}
                     </Button>
-                  </ActionTooltip>
+                  </Tooltip>
                 )}
                 {!readonly && (
                   <Tooltip label="Edit in expanded view">

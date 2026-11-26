@@ -87,9 +87,15 @@ const NATIVE_ARTIFACT_FILES = new Set([
   'core-secret-protection.node',
 ]);
 const APPROVALS_FILE = 'approvals.json';
+const WORK_ENTRIES_FILE = 'work-entries.json';
 const APPROVALS_ROOTS = ['workspaces', 'app-workspaces'];
+// Files directly in a `<data>/{workspaces,app-workspaces}/{}` container.
+const WORKSPACE_FILES: ReadonlyMap<string, AdmittedStorageNamespace> = new Map([
+  [APPROVALS_FILE, 'workspace_approvals'],
+  [WORK_ENTRIES_FILE, 'work_entries'],
+]);
 const TERMINAL_RECORD_FILE =
-  /^(terminal-state|terminal-presentation)\.json(?:\.damaged-[^/]+)?$/;
+  /^(terminal-state|terminal-presentation|terminal-replay-witness\.[a-z0-9_-]+)\.json(?:\.damaged-[^/]+)?$/;
 const DAEMON_TERMINAL_RECORD_FILE =
   /^(?:(?:record|import-source|tombstone)\.json|(?:record|legacy-terminal-state)\.json\.damaged-[^/]+)$/;
 const TERMINAL_RECORD_OUTBOX_FILE =
@@ -303,7 +309,7 @@ export function isAdmittedStorageCandidate(targetPath: string): boolean {
     isSlackConversationsPath(target, null) ||
     dataRootFile(name) !== undefined ||
     isPluginCachePath(target, null) ||
-    name === APPROVALS_FILE ||
+    WORKSPACE_FILES.has(name) ||
     TERMINAL_RECORD_FILE.test(name) ||
     name === GITHUB_CREDENTIAL_FENCE_FILE ||
     isNativeArtifactPath(target, null) ||
@@ -396,10 +402,13 @@ export function admittedStorageRowForPath(
     return matches
       ? terminalFile[1] === 'terminal-state'
         ? 'terminal_state'
-        : 'terminal_presentation'
+        : terminalFile[1] === 'terminal-presentation'
+          ? 'terminal_presentation'
+          : 'terminal_replay_witness'
       : undefined;
   }
-  if (name !== APPROVALS_FILE) return undefined;
+  const workspaceFile = WORKSPACE_FILES.get(name);
+  if (workspaceFile === undefined) return undefined;
   const container = dirname(parent);
   const matches =
     dataRoot === null
@@ -407,7 +416,7 @@ export function admittedStorageRowForPath(
       : APPROVALS_ROOTS.some(
           (folder) => container === fold(resolve(dataRoot, folder)),
         );
-  return matches ? 'workspace_approvals' : undefined;
+  return matches ? workspaceFile : undefined;
 }
 
 /**

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type JSX } from 'react';
 import { Button, ConfirmDialog } from '@canopy/ui-shared';
 import {
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   DetailFact,
   DetailFactList,
   DETAIL_FACT_VALUE_OFFSET_CLASS,
@@ -203,16 +203,16 @@ function AllowDialog({
               data-testid="cloud-reach-back-tools"
             >
               {tools.tools.map((tool) => (
-                <ChoiceListRow
+                <ChoiceField
                   key={tool.name}
-                  selected={used.has(tool.name)}
+                  layout="row"
+                  checked={used.has(tool.name)}
                   data-testid={`cloud-reach-back-use-${tool.name}`}
-                  onClick={(): void =>
+                  onChange={(): void =>
                     setUsed(toggle(used, tool.name, !used.has(tool.name)))
                   }
-                >
-                  {tool.name}
-                </ChoiceListRow>
+                  label={tool.name}
+                />
               ))}
             </ChoiceList>
           )}
@@ -226,18 +226,18 @@ function AllowDialog({
                 {tools.tools
                   .filter((tool) => used.has(tool.name))
                   .map((tool) => (
-                    <ChoiceListRow
+                    <ChoiceField
                       key={tool.name}
-                      selected={unasked.has(tool.name)}
+                      layout="row"
+                      checked={unasked.has(tool.name)}
                       data-testid={`cloud-reach-back-unasked-${tool.name}`}
-                      onClick={(): void =>
+                      onChange={(): void =>
                         setUnasked(
                           toggle(unasked, tool.name, !unasked.has(tool.name)),
                         )
                       }
-                    >
-                      {tool.name}
-                    </ChoiceListRow>
+                      label={tool.name}
+                    />
                   ))}
               </ChoiceList>
             </>

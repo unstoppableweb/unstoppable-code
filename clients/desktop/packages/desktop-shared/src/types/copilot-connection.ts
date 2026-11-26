@@ -1,9 +1,7 @@
 import type { CopilotModelEntry } from '@canopy/execution-engine/types/copilot-models';
+import type { CopilotAccount } from '@canopy/protocol/preferences';
 
-export interface CopilotAccount {
-  host: string;
-  login: string;
-}
+export type { CopilotAccount } from '@canopy/protocol/preferences';
 
 export interface CopilotConnectionStatus {
   supported: boolean;

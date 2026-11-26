@@ -20,6 +20,7 @@ import {
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { expect, test } from '@playwright/test';
 import { closeCanopy } from '../launchCanopy.mjs';
@@ -101,20 +102,20 @@ function workspaceCreationReservations(userDataDir) {
   }
 }
 
-function manifestRepoWithChild(name) {
-  const childRemote = initBareRemote(fixtures, `${name}-child`);
+function manifestRepo(name, repos) {
   const repoPath = initRepo(path.join(fixtures, name));
   writeFileSync(
     path.join(repoPath, 'canopy.json'),
-    `${JSON.stringify(
-      { version: 1, repos: [{ id: 'child', name: 'child', url: childRemote }] },
-      null,
-      2,
-    )}\n`,
+    `${JSON.stringify({ version: 1, repos }, null, 2)}\n`,
   );
   git(repoPath, ['add', 'canopy.json']);
   git(repoPath, ['commit', '-q', '-m', 'manifest']);
   return repoPath;
+}
+
+function manifestRepoWithChild(name) {
+  const childRemote = initBareRemote(fixtures, `${name}-child`);
+  return manifestRepo(name, [{ id: 'child', name: 'child', url: childRemote }]);
 }
 
 test('workspace_create_local/normal: workspace:create-new and workspace:create from the Add project dialog index one entry each with its manifest', async () => {
@@ -747,6 +748,78 @@ test('workspace_create_local/concurrent_client: a CLI create that reserved its i
     await expect
       .poll(() => loadProjectIds(window))
       .toEqual(readIndexIds(userDataDir));
+  } finally {
+    await closeCanopy(launched.electronApp, userDataDir);
+  }
+});
+
+test('workspace_create_local/concurrent_client: manifest imports that share a member URL clone it once (CAN-7971)', async () => {
+  test.skip(
+    process.platform === 'win32',
+    'The Git gate is a POSIX shell shim.',
+  );
+  test.setTimeout(120_000);
+  const gateDir = path.join(fixtures, 'gate');
+  const launched = await launchW5App({
+    env: { CANOPY_GIT_EXECUTABLE: writeGatedGitShim(gateDir, GATE_CLONE) },
+  });
+  const { window, userDataDir } = launched;
+  try {
+    // A file URL: remote matching ignores plain paths.
+    const url = pathToFileURL(initBareRemote(fixtures, 'shared')).href;
+    const first = manifestRepo('suite-a', [{ id: 'one', name: 'shared', url }]);
+    const second = manifestRepo('suite-b', [
+      { id: 'other', name: 'shared', url },
+    ]);
+    const startImport = (key, repoPath) =>
+      window.evaluate(
+        ({ key, repoPath }) => {
+          globalThis[key] = window.api.importWorkspaceFromRepo({ repoPath });
+        },
+        { key, repoPath },
+      );
+    const settledImport = (key) =>
+      window.evaluate((key) => globalThis[key], key);
+
+    await startImport('importA', first);
+    await expect
+      .poll(() => heldGitCommandCount(gateDir), { timeout: 30_000 })
+      .toBe(1);
+    await startImport('importB', second);
+    // The second import waits on the member's lock; it never clones beside
+    // the first.
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    expect(heldGitCommandCount(gateDir)).toBe(1);
+    releaseGitGate(gateDir);
+
+    const checkout = path.join(userDataDir, 'repos', 'shared');
+    expect(await settledImport('importA')).toMatchObject({
+      workspace: {
+        id: 'suite-a',
+        repos: [{ id: 'one', repoPath: checkout }],
+      },
+      clonedRepoIds: ['one'],
+    });
+    expect(await settledImport('importB')).toMatchObject({
+      workspace: {
+        id: 'suite-b',
+        repos: [{ id: 'other', repoPath: checkout }],
+      },
+      clonedRepoIds: [],
+    });
+    expect(
+      readdirSync(path.join(userDataDir, 'repos')).filter((name) =>
+        name.startsWith('shared'),
+      ),
+    ).toEqual(['shared']);
+    expect(readIndexIds(userDataDir)).toEqual([
+      DEFAULT_COWORK_WORKSPACE_ID,
+      'suite-a',
+      'shared',
+      'suite-b',
+    ]);
+    expect(orphanManifestIds(userDataDir)).toEqual([]);
+    expect(await loadProjectIds(window)).toEqual(readIndexIds(userDataDir));
   } finally {
     await closeCanopy(launched.electronApp, userDataDir);
   }

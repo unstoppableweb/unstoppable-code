@@ -251,6 +251,7 @@ export const acceptedInputReceiptSchema = z.union([
 /** Typed refusals for agent sends at acceptance or delayed delivery. */
 export type AgentSendRefusalCode =
   | 'not_found'
+  | 'unknown_bot'
   | 'owner_boundary'
   | 'advisor_access_disabled'
   | 'owner_context_unavailable'

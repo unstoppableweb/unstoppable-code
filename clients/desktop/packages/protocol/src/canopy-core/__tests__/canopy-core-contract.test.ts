@@ -37,7 +37,9 @@ import { z } from 'zod';
 
 import {
   WORKER_GIT_LOCAL_MUTATION_INSTRUCTION_DEFINITIONS,
+  WORKER_GIT_REPOSITORY_CREATION_INSTRUCTION_DEFINITIONS,
   WORKER_GIT_WORKTREE_WRITE_INSTRUCTION_DEFINITIONS,
+  canopyOperationAcceptsHostExecution,
   WORKER_GIT_COMMAND_ONLY_GRANTS,
   CANOPY_QUERY_DEFINITIONS,
   CANOPY_INSTRUCTION_DEFINITIONS,
@@ -3224,6 +3226,59 @@ describe('desktop-only Git primitive contract (CAN-5931)', () => {
         shadowPath: '/host',
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('desktop-only repository creation contract (CAN-4096)', () => {
+  const definitions = WORKER_GIT_REPOSITORY_CREATION_INSTRUCTION_DEFINITIONS;
+  const bindingId = '00000000-0000-4000-8000-000000000001';
+  it('defines exactly initialize and clone, outside the composed registry', () => {
+    expect(Object.keys(definitions).sort()).toEqual([
+      'worker.git.repository.clone',
+      'worker.git.repository.initialize',
+    ]);
+    for (const name of Object.keys(definitions)) {
+      expect(Object.hasOwn(CANOPY_INSTRUCTION_DEFINITIONS, name)).toBe(false);
+      expect(canopyOperationAcceptsHostExecution(name)).toBe(false);
+    }
+  });
+  it.each(Object.entries(definitions))(
+    '%s takes only a binding, under the write grant, unkeyed',
+    (_name, definition) => {
+      expect(definition.placement).toBe('worker-only');
+      expect(definition.idempotency).toBe('none');
+      expect(definition.requiredGrants).toEqual(['worker.git.write']);
+      expect(definition.params.safeParse({ bindingId }).success).toBe(true);
+      for (const params of [
+        {},
+        { bindingId: '' },
+        { bindingId: 'not-a-uuid' },
+        { bindingId, _meta: {} },
+        { bindingId, destination: '/host' },
+        { bindingId, url: 'https://example.com/repo.git' },
+      ]) {
+        expect(definition.params.safeParse(params).success).toBe(false);
+      }
+      expect(definition.result.safeParse({}).success).toBe(true);
+      expect(definition.result.safeParse({ path: '/host' }).success).toBe(
+        false,
+      );
+    },
+  );
+  it.each([
+    ['worker.git.repository.callerRefused', true],
+    ['worker.git.repository.bindingUnavailable', true],
+    ['worker.git.localMutation.bindingUnavailable', false],
+  ] as const)('error code %s is declared: %s', (code, declared) => {
+    const refusal = {
+      kind: 'permission_denied',
+      message: 'refused',
+      code,
+      retry: { kind: 'never' },
+    };
+    for (const definition of Object.values(definitions)) {
+      expect(definition.error.safeParse(refusal).success).toBe(declared);
+    }
   });
 });
 

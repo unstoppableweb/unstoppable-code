@@ -22,7 +22,7 @@ import {
   ProgressStepMark,
   ProgressSteps,
 } from '../primitives/Progress';
-import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
+import { HoverCard } from '../primitives/HoverCard';
 
 /**
  * Closed enumeration of DAG job statuses understood by the shared progress
@@ -295,7 +295,7 @@ function JobDot({
       className="contents"
       onClick={(e: MouseEvent<HTMLSpanElement>): void => e.stopPropagation()}
     >
-      <RichHoverTooltip
+      <HoverCard
         content={detail}
         // The job's card: the menu's corners and shadow, above the dot and
         // below it when there is no room.
@@ -322,7 +322,7 @@ function JobDot({
         >
           <ProgressStepMark state={jobGlyphState(job.status)} />
         </ControlButton>
-      </RichHoverTooltip>
+      </HoverCard>
     </span>
   );
 }

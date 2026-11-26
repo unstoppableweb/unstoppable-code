@@ -1422,6 +1422,70 @@ tr:has(td[data-review-selected]) td:first-child {
   initial-value: -100000px;
 }
 
+/* Sticky-band and flow-clip inputs read only by the element they are written
+ * on (.sidebar-sticky-workspace-controls or .sidebar-workspaces-rows-clip).
+ * Registering them with `inherits: false` keeps updates from cascading a
+ * style recalculation through every project and task row (CAN-7892). */
+@property --sidebar-more-height {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --sidebar-chats-header-height {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --sidebar-workspaces-flow-top {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --sidebar-workspaces-clip-start {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 100000px;
+}
+
+@property --sidebar-workspaces-clip-distance {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: -100000px;
+}
+
+@property --sidebar-workspaces-bottom-clip-start {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: -100000px;
+}
+
+@property --sidebar-workspaces-clip-total {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --sidebar-workspaces-flow-inline-start {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --sidebar-selected-pin-top-clip {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --sidebar-selected-pin-bottom-clip {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
 /* Mirror the development-footer edge directly below fixed New task. The
  * scroll-synchronized stops keep the 12px ramp pinned to the viewport edge
  * while masking only primary navigation; More and Workspaces remain outside

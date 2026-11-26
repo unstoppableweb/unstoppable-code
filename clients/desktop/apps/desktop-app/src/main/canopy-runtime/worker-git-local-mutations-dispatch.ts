@@ -40,7 +40,8 @@ export function registerLocalGitMutationDispatcher(
   };
 }
 
-function activeDispatcher(): WorkerGitLocalMutationDispatcher {
+/** The registered desktop dispatcher, or an unavailable error. */
+export function activeLocalGitMutationDispatcher(): WorkerGitLocalMutationDispatcher {
   if (activeLocalGitDispatcher?.state !== 'accepting')
     throw canopyUnavailableError(
       'The desktop Git mutation runtime is unavailable.',
@@ -85,7 +86,7 @@ export async function restoreSnapshotThroughWorker(
   ref: SnapshotRestoreRef,
   dispatcher?: WorkerGitLocalMutationDispatcher,
 ): Promise<void> {
-  const runtime = dispatcher ?? activeDispatcher();
+  const runtime = dispatcher ?? activeLocalGitMutationDispatcher();
   await legacy(
     withLocalGitBinding(
       'worker.git.snapshot.restore',
@@ -107,7 +108,7 @@ export async function persistTurnRefThroughWorker(
   treeSha: string,
   dispatcher?: WorkerGitLocalMutationDispatcher,
 ): Promise<void> {
-  const runtime = dispatcher ?? activeDispatcher();
+  const runtime = dispatcher ?? activeLocalGitMutationDispatcher();
   await legacy(
     withLocalGitBinding(
       'worker.git.turnRef.persist',
@@ -127,7 +128,7 @@ export async function ensureRepoShadowThroughWorker(
   options?: EnsureRepoShadowOptions,
   dispatcher?: WorkerGitLocalMutationDispatcher,
 ): Promise<RepoShadowInfo> {
-  const runtime = dispatcher ?? activeDispatcher();
+  const runtime = dispatcher ?? activeLocalGitMutationDispatcher();
   const { shadow } = await legacy(
     withLocalGitBinding(
       'worker.git.repoShadow.ensure',

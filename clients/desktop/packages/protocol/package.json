@@ -54,6 +54,7 @@
     "./ledger-view": "./src/ledger-view/index.ts",
     "./ledger-sync": "./src/ledger-sync/index.ts",
     "./file-indexing": "./src/file-indexing/index.ts",
+    "./preferences": "./src/preferences/index.ts",
     "./git-executable": "./src/git-executable/index.ts",
     "./sidebar": "./src/sidebar/index.ts",
     "./scripts": "./src/scripts/index.ts",

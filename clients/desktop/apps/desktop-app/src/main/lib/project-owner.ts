@@ -1,5 +1,6 @@
 import {
   CODE_REVIEW_CHAT_PROJECT_ID,
+  PIPELINE_EDITOR_PROJECT_ID,
   PLAN_EXPLORE_CHAT_PROJECT_ID,
   STANDALONE_CHAT_PROJECT_ID,
   type AutomationAction,
@@ -10,7 +11,12 @@ import {
   agentAutomationTargetProject,
   type AgentAutomationTargetProject,
 } from '@canopy/desktop-shared/lib/agent-automation-policy';
-import { resolveBackgroundWorkspaceTarget } from '../services/background-execution-context';
+import { parseWorkspaceContext } from '@canopy/protocol/workspace-context';
+import {
+  backgroundExecutionContextEnabled,
+  captureBackgroundExecutionContext,
+  resolveBackgroundWorkspaceTarget,
+} from '../services/background-execution-context';
 import { getCodeReviewTarget } from './code-review-registry';
 import { resolveCoworkWorkspaceId } from './cowork-migration-map';
 import { logMainProcessWarn } from './main-process-logging';
@@ -48,16 +54,36 @@ async function resolveRealTarget(
 }
 
 /**
+ * The Pipeline Editor has no project. It works in the selected owner, the
+ * one its workflow list shows, so its reads and writes stay in that owner
+ * like a project agent's stay in its project's (organization decision
+ * source: the selected navigation context).
+ */
+async function pipelineEditorOwner(): Promise<ResolvedProjectOwner> {
+  if (!backgroundExecutionContextEnabled()) return { kind: 'personal' };
+  const selected = await captureBackgroundExecutionContext();
+  if (selected === undefined) return { kind: 'personal' };
+  const owner = parseWorkspaceContext(selected);
+  if (!owner) return { kind: 'unknown' };
+  return owner.kind === 'organization'
+    ? { kind: 'organization', organizationId: owner.organizationId }
+    : { kind: 'personal' };
+}
+
+/**
  * Resolve a project's saved owner: the owning organization of an org-owned
  * workspace (including an organization's Chats project), otherwise Personal.
- * A linked Personal code project is Personal. The selected navigation context,
- * session captures, and membership order are never consulted.
+ * A linked Personal code project is Personal. Session captures and
+ * membership order are never consulted, and the selected navigation context
+ * only for the projectless Pipeline Editor.
  */
 export async function resolveProjectSavedOwner(
   target: ProjectOwnerTarget,
 ): Promise<ResolvedProjectOwner> {
   if (isBotProjectId(target.projectId)) return { kind: 'none' };
   try {
+    if (target.projectId === PIPELINE_EDITOR_PROJECT_ID)
+      return await pipelineEditorOwner();
     const realTarget = await resolveRealTarget(target);
     if (!realTarget) return { kind: 'unknown' };
     if (isBotProjectId(realTarget.projectId)) {

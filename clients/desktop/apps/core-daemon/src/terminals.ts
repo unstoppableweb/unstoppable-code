@@ -159,7 +159,7 @@ export function createDaemonTerminalModule(
   });
   const outputProgress = new Map<
     TerminalRecordRegistration,
-    { nextOffset: number; reportedOffset: number }
+    { nextOffset: number }
   >();
   let recordWritesFenced = false;
   let fenceExitFailed = false;
@@ -168,18 +168,11 @@ export function createDaemonTerminalModule(
   const activeRecord = (): TerminalRecordAuthority | null =>
     recordWritesFenced ? null : authority;
   const unsubscribeReports = supervisor.onReport((report, registration) => {
-    if (report.type === 'firstOutput') return;
+    if (report.type !== 'output') return;
     const record = activeRecord();
     if (!record || registration === undefined) return;
     const progress = outputProgress.get(registration);
     if (!progress) return;
-    if (report.type === 'offset') {
-      progress.reportedOffset = Math.max(
-        progress.reportedOffset,
-        report.outputOffset,
-      );
-      return;
-    }
     const fromOffset = report.toOffset - report.data.byteLength;
     if (fromOffset !== progress.nextOffset)
       record.output(registration, TRUNCATION_MARKER_BYTES);
@@ -190,12 +183,13 @@ export function createDaemonTerminalModule(
     registration: TerminalRecordRegistration,
     exitCode: number | null,
     signal: string | null,
-    finalOffset = 0,
+    confirmedOffset?: number,
   ): void => {
     const progress = outputProgress.get(registration);
     if (!progress) return;
-    // Offset reports and host replies can outrun byte reports.
-    if (Math.max(finalOffset, progress.reportedOffset) > progress.nextOffset)
+    // Only the host's own PTY exit confirms its final offset; it reports every
+    // byte before that exit. Any other end may have lost output.
+    if (confirmedOffset === undefined || confirmedOffset > progress.nextOffset)
       authority.output(registration, TRUNCATION_MARKER_BYTES);
     outputProgress.delete(registration);
     authority.exited(registration, exitCode, signal);
@@ -214,11 +208,10 @@ export function createDaemonTerminalModule(
       registration,
       exitCode,
       signal,
-      outputOffset,
     } of supervisor.pendingRecordExits()) {
       if (!outputProgress.has(registration)) continue;
       try {
-        recordExit(registration, exitCode, signal, outputOffset);
+        recordExit(registration, exitCode, signal);
       } catch {
         // Finish fencing every lifetime; phase 6 reports the durability failure.
         fenceExitFailed = true;
@@ -253,10 +246,7 @@ export function createDaemonTerminalModule(
     validateRecordTarget: validateTarget,
     onOutputStart: (_terminal, fromOffset, registration): void => {
       if (!activeRecord()) return;
-      outputProgress.set(registration, {
-        nextOffset: fromOffset,
-        reportedOffset: fromOffset,
-      });
+      outputProgress.set(registration, { nextOffset: fromOffset });
     },
     ...(options.log && { log: options.log }),
     resolveRoot: async (scope, rootId) => {

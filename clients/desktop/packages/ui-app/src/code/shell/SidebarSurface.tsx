@@ -19,6 +19,7 @@ import {
   workspaceChildUnitLabel,
 } from '@canopy/ui-shared/components';
 import { DEFAULT_ARCHIVE_RETENTION_DAYS } from '@canopy/protocol/archive-retention';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import {
   recordSurfacedError,
   useSidebarHeaderRest,
@@ -1212,6 +1213,14 @@ export interface SidebarSurfaceProps {
   readonly chatsSectionCollapsed?: boolean;
   readonly onChatsSectionCollapsedChange?: (collapsed: boolean) => void;
   /**
+   * Reports the `worktreeRowKey` values of task rows currently rendered in the
+   * Projects section (empty when the section is collapsed or empty, and
+   * reflecting project pagination, collapse, and Hidden tasks disclosures).
+   */
+  readonly onRenderedWorktreeKeysChange?: (
+    worktreeKeys: ReadonlySet<string>,
+  ) => void;
+  /**
    * Keep the Projects "+" visible at rest (onboarding spotlight, filter on).
    * The surface also keeps it there while the Projects body lists no project.
    */
@@ -2300,9 +2309,23 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
     }
     setChatSearchRevealed(true);
   };
+  const onRenderedWorktreeKeysChangeRef = useRef(
+    props.onRenderedWorktreeKeysChange,
+  );
+  onRenderedWorktreeKeysChangeRef.current = props.onRenderedWorktreeKeysChange;
   const [workspacesSectionCollapsed, setWorkspacesSectionCollapsed] = useState(
     props.workspacesSectionInitiallyCollapsed === true,
   );
+  const workspacesListHidden =
+    (props.workspacesSectionCollapsible === true &&
+      workspacesSectionCollapsed) ||
+    contentState !== 'ready' ||
+    projectsListEmpty;
+  useEffect(() => {
+    if (workspacesListHidden) {
+      onRenderedWorktreeKeysChangeRef.current?.(new Set());
+    }
+  }, [workspacesListHidden]);
   const workspacesHeaderRest = useSidebarHeaderRest(
     workspacesSectionCollapsed,
     workspacesMenuOpen,
@@ -2959,7 +2982,10 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
       worktree.splitPrLocked === true ||
       isRowRemovalInProgress(workspace.localId, worktree.localId);
     return {
-      unhide: !commandsDisabled && props.onUpdateWorktree !== undefined,
+      unhide:
+        !commandsDisabled &&
+        !isPairedComputerId(worktree.localId) &&
+        props.onUpdateWorktree !== undefined,
       archive: removal !== false && (retention || presentation === 'archive'),
       delete: removal !== false && (retention || presentation === 'delete'),
       removalLocked: removalBlocked,
@@ -3040,7 +3066,8 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
         .filter(
           (worktree) =>
             worktree.hidden === true &&
-            worktree.workspaceLocalId === workspace.localId,
+            worktree.workspaceLocalId === workspace.localId &&
+            !isPairedComputerId(worktree.localId),
         )
         .map((worktree): SidebarHiddenWorktreeEntry => {
           const {
@@ -3996,6 +4023,11 @@ function SidebarSurfaceContent(props: SidebarSurfaceProps): JSX.Element {
         onWorkspaceCollapsedChange={props.onWorkspaceCollapsedChange}
         workspaceNameTogglesCollapse={props.workspaceNameTogglesCollapse}
         visibleWorkspaceIds={props.visibleWorkspaceIds}
+        onRenderedWorktreeKeysChange={
+          readOnly || headerless
+            ? undefined
+            : props.onRenderedWorktreeKeysChange
+        }
         context={props.context}
         emptyListMark={
           readOnly ? undefined : (

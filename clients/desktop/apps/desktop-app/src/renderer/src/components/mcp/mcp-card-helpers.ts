@@ -1,7 +1,6 @@
 export {
   mcpAuthStatusBadgeClass,
   mcpAuthStatusLabel,
-  mcpConnectionStatusBadgeClass,
   mcpConnectionStatusLabel,
   mcpPanelCardSubtitle,
   mcpRowSecondaryText,

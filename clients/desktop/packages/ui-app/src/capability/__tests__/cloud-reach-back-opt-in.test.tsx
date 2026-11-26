@@ -82,16 +82,14 @@ describe('reach-back opt-in (CAN-6176 D26)', () => {
   it('chooses every tool, and none to run without asking, by default', async () => {
     act(() => byTestId('cloud-reach-back-open').click());
     await flush();
-    expect(
-      byTestId('cloud-reach-back-use-create_issue').getAttribute(
-        'aria-checked',
-      ),
-    ).toBe('true');
-    expect(
-      byTestId('cloud-reach-back-unasked-create_issue').getAttribute(
-        'aria-checked',
-      ),
-    ).toBe('false');
+    expect(byTestId('cloud-reach-back-use-create_issue')).toHaveProperty(
+      'checked',
+      true,
+    );
+    expect(byTestId('cloud-reach-back-unasked-create_issue')).toHaveProperty(
+      'checked',
+      false,
+    );
     act(() => byTestId('cloud-reach-back-allow').click());
     await flush();
     expect(allowed).toEqual([
@@ -110,11 +108,10 @@ describe('reach-back opt-in (CAN-6176 D26)', () => {
     render();
     await flush();
     expect(loads).toBe(1);
-    expect(
-      byTestId('cloud-reach-back-unasked-list_issues').getAttribute(
-        'aria-checked',
-      ),
-    ).toBe('true');
+    expect(byTestId('cloud-reach-back-unasked-list_issues')).toHaveProperty(
+      'checked',
+      true,
+    );
     act(() => byTestId('cloud-reach-back-allow').click());
     await flush();
     expect(allowed).toEqual([

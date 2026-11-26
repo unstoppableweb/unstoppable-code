@@ -13,7 +13,6 @@ import {
   ErrorBanner,
   OrgEnforcedConsentList,
   Skeleton,
-  StatusBadge,
   Heading,
 } from '@canopy/ui-shared/components';
 import type {
@@ -294,7 +293,7 @@ export function TeamPanel({
                           {invite.organizationName}
                         </p>
                         <div className="flex flex-wrap items-center gap-2">
-                          <StatusBadge variant="warning" label="Invited" />
+                          <Badge tone="warning">Invited</Badge>
                           <Badge>{ROLE_LABEL[invite.role]}</Badge>
                           {invite.organizationTeamName && (
                             <Badge>{invite.organizationTeamName}</Badge>

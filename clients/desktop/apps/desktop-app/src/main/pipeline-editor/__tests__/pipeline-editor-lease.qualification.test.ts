@@ -238,12 +238,16 @@ describe('pipeline editor tools through the interface lease (CAN-5822)', () => {
       );
     const all = names(EDITOR_TOOLS);
     const unbound = names([]);
-    expect(all).toHaveLength(11);
+    expect(all).toHaveLength(15);
     expect(
       unbound.map((name) => name.replace(/^.*_pipeline_editor_/, '')),
     ).toEqual([
       'ask_user_question',
       'pipeline_get_action_definition',
+      'automation_list',
+      'automation_get',
+      'automation_create',
+      'automation_update',
       'search_deferred_tools',
       'load_deferred_tools',
     ]);

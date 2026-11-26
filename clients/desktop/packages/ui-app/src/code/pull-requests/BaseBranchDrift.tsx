@@ -5,7 +5,7 @@ import type { JSX } from 'react';
 import {
   Button,
   DialogModal,
-  RichHoverTooltip,
+  HoverCard,
   ThinkingSpinner,
 } from '@canopy/ui-shared/components';
 import { WarningIcon } from '@canopy/ui-shared/icons/AppIcons';
@@ -155,7 +155,7 @@ export function BaseBranchDriftWarning({
   readonly onAlign: () => void;
 }): JSX.Element {
   return (
-    <RichHoverTooltip
+    <HoverCard
       dataTestId="pr-status-base-branch-drift-tooltip"
       surfaceClassName="min-w-60 max-w-90"
       surfacePadding="card"
@@ -176,6 +176,6 @@ export function BaseBranchDriftWarning({
       >
         <WarningIcon size={16} aria-hidden="true" />
       </Button>
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }

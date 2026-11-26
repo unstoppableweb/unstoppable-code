@@ -4,6 +4,7 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
 const modes = [
   'verify-lock',
@@ -20,14 +21,27 @@ if (!modes.includes(mode))
   throw new Error(`Expected one of: ${modes.join(', ')}`);
 // The local-only profile turns every hosted service off at build time. Only
 // setup, build and start take the flag; smoke always tests a local-only build.
+// The self-host profile keeps the cloud on, pointed at the operator's own
+// server (CANOPY_CLOUD_BASE_URL), and turns every third-party hosted service
+// off. The two profiles are mutually exclusive.
 const extraArgs = process.argv.slice(3);
 const localOnlyFlag = extraArgs.includes('--local-only');
+const selfHost = extraArgs.includes('--self-host');
+if (localOnlyFlag && selfHost)
+  throw new Error(
+    '--local-only and --self-host cannot be combined. Use one of them.',
+  );
 if (localOnlyFlag && !['setup', 'build', 'start'].includes(mode))
   throw new Error('--local-only applies only to setup, build and start.');
+if (selfHost && !['setup', 'build', 'start'].includes(mode))
+  throw new Error('--self-host applies only to setup, build and start.');
 const localOnly = localOnlyFlag || mode === 'smoke';
 // Written beside the build output by `build --local-only` and removed by every
 // other build, so start:local and smoke:local never run a normal build.
 const localOnlyMarker = 'out/.local-only-build.json';
+// Written by `build --self-host` after its last tool succeeds and removed by
+// every other build, so start:selfhost never runs another build.
+const selfHostMarker = 'out/.self-host-build.json';
 // Sources exported before the profile existed lack it, and building them with
 // the flag would silently produce a normal build.
 if (localOnly && !existsSync('apps/desktop-app/src/main/local-only/policy.ts'))
@@ -36,6 +50,42 @@ if (localOnly && !existsSync('apps/desktop-app/src/main/local-only/policy.ts'))
       '(apps/desktop-app/src/main/local-only/policy.ts is missing). ' +
       'Use a newer source release, or the build:public scripts.',
   );
+if (
+  selfHost &&
+  !existsSync('apps/desktop-app/src/main/local-only/relay-egress-origin.ts')
+)
+  throw new Error(
+    'This source tree has no self-host build profile ' +
+      '(apps/desktop-app/src/main/local-only/relay-egress-origin.ts is missing). ' +
+      'Use a newer source release.',
+  );
+// The server origin, validated before any tool runs by the same rule every
+// bundler applies (scripts/lib/local-only-build-env.mjs).
+let selfHostCloudOrigin = '';
+if (selfHost && mode === 'build') {
+  // Paths in this script are relative to the source root (the working
+  // directory), not to this file.
+  const { assertSelfHostCloudBaseUrl } = await import(
+    pathToFileURL(resolve('scripts/lib/local-only-build-env.mjs')).href
+  );
+  selfHostCloudOrigin = assertSelfHostCloudBaseUrl(
+    process.env.CANOPY_CLOUD_BASE_URL,
+  );
+}
+/** The self-host marker's server origin, or null when out/ lacks a valid one. */
+const readSelfHostMarker = () => {
+  try {
+    const marker = JSON.parse(readFileSync(selfHostMarker, 'utf8'));
+    return marker?.schemaVersion === 1 &&
+      marker.profile === 'self-host' &&
+      typeof marker.cloudOrigin === 'string' &&
+      marker.cloudOrigin
+      ? marker.cloudOrigin
+      : null;
+  } catch {
+    return null;
+  }
+};
 const tarballs =
   JSON.parse(readFileSync('package.json', 'utf8')).publicTarballs ?? {};
 const lockedPackages =
@@ -129,17 +179,40 @@ const env = {
   CANOPY_BRAND: mode === 'test' ? 'canopy' : 'unstoppable-code',
   CANOPY_SOURCE_BUILD: 'true',
   // A local-only build forces every hosted service value empty itself, so it
-  // receives none of them, not even values inherited from this shell.
-  ...(localOnly ? { CANOPY_LOCAL_ONLY: 'true' } : hostedServiceConfig),
+  // receives none of them, not even values inherited from this shell. A
+  // self-host build receives only its validated server origin.
+  ...(localOnly || selfHost ? {} : hostedServiceConfig),
   CANOPY_SKIP_BRAND_PREPARE: 'true',
 };
-if (localOnly)
+if (localOnly || selfHost)
   for (const name of Object.keys(hostedServiceConfig)) delete env[name];
+// A profile never inherits the other profile's variable from the shell: the
+// bundlers refuse both together. Only `build --self-host` passes the
+// self-host variable and server origin on; a self-host launch reads the
+// values baked into out/.
+if (localOnly) {
+  delete env.CANOPY_SELF_HOST;
+  env.CANOPY_LOCAL_ONLY = 'true';
+}
+if (selfHost) {
+  delete env.CANOPY_LOCAL_ONLY;
+  delete env.CANOPY_SELF_HOST;
+  if (mode === 'build') {
+    env.CANOPY_SELF_HOST = 'true';
+    env.CANOPY_CLOUD_BASE_URL = selfHostCloudOrigin;
+  }
+}
 const run = (...args) =>
   execFileSync(process.execPath, args, { env, stdio: 'inherit' });
 const scripts = localOnly
   ? { build: 'build:local', setup: 'setup:local', start: 'start:local' }
-  : { build: 'build:public', setup: 'setup:public', start: 'start:public' };
+  : selfHost
+    ? {
+        build: 'build:selfhost',
+        setup: 'setup:selfhost',
+        start: 'start:selfhost',
+      }
+    : { build: 'build:public', setup: 'setup:public', start: 'start:public' };
 let electron;
 if (mode === 'start' || mode === 'smoke') {
   const command = mode === 'smoke' ? 'smoke:local' : scripts.start;
@@ -149,6 +222,14 @@ if (mode === 'start' || mode === 'smoke') {
     throw new Error(
       `out/ holds a build without the local-only profile. Run pnpm run build:local before pnpm run ${command}.`,
     );
+  if (selfHost) {
+    const cloudOrigin = readSelfHostMarker();
+    if (!cloudOrigin)
+      throw new Error(
+        `out/ holds a build without the self-host profile. Run pnpm run build:selfhost before pnpm run ${command}.`,
+      );
+    console.log(`Self-host build for ${cloudOrigin}.`);
+  }
   electron = createRequire(resolve('package.json'))('electron');
   if (typeof electron !== 'string' || !existsSync(electron))
     throw new Error(
@@ -180,7 +261,8 @@ if (mode === 'smoke') {
   const smoke = extraArgs.includes('--smoke');
   // Remaining arguments are Electron switches, such as --no-sandbox in CI.
   const switches = extraArgs.filter(
-    (arg) => arg !== '--smoke' && arg !== '--local-only',
+    (arg) =>
+      arg !== '--smoke' && arg !== '--local-only' && arg !== '--self-host',
   );
   const app = spawn(electron, [...switches, '.'], {
     env,
@@ -201,8 +283,9 @@ if (mode === 'smoke') {
   } else app.on('exit', (code) => process.exit(code ?? 1));
 } else run('scripts/brand/prepare-brand.mjs', '--brand', env.CANOPY_BRAND);
 if (mode === 'build') {
-  // Clear the marker first, so a failed or normal build never keeps it.
+  // Clear both markers first, so a failed or other build never keeps one.
   rmSync(localOnlyMarker, { force: true });
+  rmSync(selfHostMarker, { force: true });
   run('--import', 'tsx', 'scripts/validate-model-config.ts');
   run('scripts/build-builtin-actions.mjs', '--skip-brand-prepare');
   run('apps/desktop-app/scripts/run-electron-vite-build.mjs');
@@ -214,6 +297,19 @@ if (mode === 'build') {
     writeFileSync(
       localOnlyMarker,
       `${JSON.stringify({ schemaVersion: 1, profile: 'local-only' }, null, 2)}\n`,
+    );
+  if (selfHost)
+    writeFileSync(
+      selfHostMarker,
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          profile: 'self-host',
+          cloudOrigin: selfHostCloudOrigin,
+        },
+        null,
+        2,
+      )}\n`,
     );
 } else if (mode === 'typecheck')
   run('node_modules/@typescript/native/bin/tsc', '--build', 'tsconfig.json');

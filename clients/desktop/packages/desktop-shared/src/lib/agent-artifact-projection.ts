@@ -31,6 +31,7 @@ import {
   APP_ADVISOR_TOOL_REGISTRY,
   getCanonicalAppAdvisorToolKey,
 } from './app-advisor-tools';
+import { getCanonicalPipelineEditorToolKey } from './pipeline-editor-tools';
 
 export interface AgentArtifactProjection {
   byTurn: Record<string, AgentArtifactReceiptV1[]>;
@@ -90,11 +91,17 @@ const ARTIFACT_DISPATCH_TOOL_NAMES = new Set([
  * are worth resolving before projection.
  */
 export function isArtifactDispatchTool(toolName: string): boolean {
+  const pipelineEditorKey = getCanonicalPipelineEditorToolKey(toolName);
   return (
     ARTIFACT_DISPATCH_TOOL_NAMES.has(toolName) ||
     getCanonicalAppAdvisorToolKey(toolName) === 'dispatch_action' ||
     getCanonicalAppAdvisorToolKey(toolName) === 'show_capabilities' ||
-    getCanonicalCanopyToolKey(toolName) === 'show_capabilities'
+    getCanonicalCanopyToolKey(toolName) === 'show_capabilities' ||
+    // The workflow assistant's automation tools return the same action
+    // response, receipts included, as DispatchAction's automation.* actions.
+    pipelineEditorKey === 'automation_get' ||
+    pipelineEditorKey === 'automation_create' ||
+    pipelineEditorKey === 'automation_update'
   );
 }
 

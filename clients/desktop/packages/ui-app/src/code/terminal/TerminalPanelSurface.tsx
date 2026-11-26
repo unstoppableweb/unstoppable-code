@@ -4,22 +4,37 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type JSX,
 } from 'react';
 import { useShallow } from 'zustand/react/shallow';
+import { useWorkspaceCapabilities } from '@canopy/app-state';
 import type { TerminalShellProfileId } from '@canopy/protocol/terminal';
-import { Button, ErrorBanner } from '@canopy/ui-shared/components';
+import {
+  Button,
+  ErrorBanner,
+  TerminalReadOnlyNotice,
+} from '@canopy/ui-shared/components';
 import { recordSurfacedError } from '@canopy/ui-shared/lib';
 import {
+  PANEL_CONTENT_ADOPTED_EVENT,
+  PANEL_CONTENT_HOST_ATTRIBUTE,
+} from '@canopy/ui-shared/panels';
+import {
+  beginTerminalPlacement,
   ensureTerminalWorktreeHydrated,
+  observeTerminalHistory,
   selectBucket,
   useTerminalStore,
 } from '@canopy/app-state/terminal';
 import { useTerminalActivityStore } from '@canopy/app-state/terminal';
 import { disposeInstance, peekInstance } from './terminal-instances';
-import { proposeUsableTerminalSize } from './terminal-resize-guard';
+import {
+  MIN_TERMINAL_RESIZE_HEIGHT_PX,
+  proposeUsableTerminalSize,
+} from './terminal-resize-guard';
 import {
   getTerminalReadOnlyMessage,
   isTerminalRestartableSession,
@@ -31,7 +46,11 @@ import {
   subscribeTerminalSpawnRequests,
   terminalSpawnRequestTargets,
 } from './terminal-spawn-requests';
-import { usePanelPlacement } from '../panels/panel-contexts';
+import {
+  usePanelHostState,
+  usePanelPlacement,
+  usePanelVisible,
+} from '../panels/panel-contexts';
 import { requestTerminalFocus } from './terminal-focus-intent';
 import { terminalShellUnavailableMessage } from './terminal-shell-unavailable';
 import {
@@ -47,6 +66,7 @@ interface TerminalSize {
   cols: number;
   rows: number;
 }
+
 const DEFAULT_SIZE: TerminalSize = { cols: 80, rows: 24 };
 
 /**
@@ -180,6 +200,169 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
     useShallow((state) => selectBucket(state, projectId, worktreeId)),
   );
   const session = terminalId ? bucket?.sessions[terminalId] : undefined;
+  const capabilities = useWorkspaceCapabilities(worktreeId);
+  const panelVisible = usePanelVisible();
+  const hostState = usePanelHostState();
+  const [documentVisible, setDocumentVisible] = useState(false);
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return undefined;
+    let ownerDocument = root.ownerDocument;
+    const updateVisibility = (): void => {
+      setDocumentVisible(ownerDocument.visibilityState !== 'hidden');
+    };
+    updateVisibility();
+    ownerDocument.addEventListener('visibilitychange', updateVisibility);
+    // Pop-out and merge-back adopt mounted content without remounting it.
+    const contentHost = root.closest(`[${PANEL_CONTENT_HOST_ATTRIBUTE}]`);
+    const onAdopted = (): void => {
+      if (root.ownerDocument === ownerDocument) return;
+      ownerDocument.removeEventListener('visibilitychange', updateVisibility);
+      ownerDocument = root.ownerDocument;
+      ownerDocument.addEventListener('visibilitychange', updateVisibility);
+      updateVisibility();
+    };
+    contentHost?.addEventListener(PANEL_CONTENT_ADOPTED_EVENT, onAdopted);
+    return (): void => {
+      contentHost?.removeEventListener(PANEL_CONTENT_ADOPTED_EVENT, onAdopted);
+      ownerDocument.removeEventListener('visibilitychange', updateVisibility);
+    };
+  }, [layoutKey]);
+  const visible =
+    panelVisible && hostState.visible !== false && documentVisible;
+  const refreshHistory =
+    capabilities.terminalHistoryRefresh === true &&
+    bucket?.hydrated === true &&
+    bucket.historyRefreshSupported !== false;
+  useEffect(() => {
+    if (!visible || !refreshHistory) return undefined;
+    return registerTerminalClientLifecycle(() =>
+      observeTerminalHistory(projectId, worktreeId),
+    );
+  }, [projectId, refreshHistory, visible, worktreeId]);
+
+  // Refresh notices, not the shown xterm: recovered bytes use normal attach
+  // on its next mount, preserving cached output and selections meanwhile.
+  const historyRevision = bucket?.historyRevision ?? 0;
+  // CAN-7051: a load that could not reach the terminal history's background
+  // service, and history held in memory because it could not be saved. Hosts
+  // that never report either (cloud terminals) show neither.
+  const historyUnavailable =
+    bucket?.historyUnavailable === true && session?.live === false;
+  // A bound terminal that load could not show yet. Its panel stays
+  // retryable until the terminal appears: the store keeps the partial load as
+  // hydrated, so nothing else loads it again.
+  const sessionUnavailable =
+    terminalId !== undefined &&
+    session === undefined &&
+    bucket?.hydrated === true &&
+    bucket.historyUnavailable === true;
+  const historyHeld = bucket?.historyHeld === true;
+  const hasHistoryNotices =
+    historyHeld || historyUnavailable || sessionUnavailable;
+  const historyStripRef = useRef<HTMLDivElement | null>(null);
+  const [showHistoryStrip, setShowHistoryStrip] = useState(false);
+  useLayoutEffect(() => {
+    const surface = rootRef.current;
+    const strip = historyStripRef.current;
+    if (!surface || !strip || !hasHistoryNotices) return undefined;
+    const measure = (): void => {
+      // Reserve body space for both a viewport and an unbound panel's Start.
+      // A missing session's notice is its recovery UI and must stay visible.
+      setShowHistoryStrip(
+        sessionUnavailable ||
+          surface.getBoundingClientRect().height >=
+            strip.getBoundingClientRect().height +
+              MIN_TERMINAL_RESIZE_HEIGHT_PX,
+      );
+    };
+    let observer: ResizeObserver | undefined;
+    const observe = (): void => {
+      observer?.disconnect();
+      const Observer = surface.ownerDocument.defaultView?.ResizeObserver;
+      if (Observer) {
+        observer = new Observer(measure);
+        observer.observe(surface);
+        observer.observe(strip);
+      }
+      measure();
+    };
+    const contentHost = surface.closest(`[${PANEL_CONTENT_HOST_ATTRIBUTE}]`);
+    contentHost?.addEventListener(PANEL_CONTENT_ADOPTED_EVENT, observe);
+    observe();
+    return (): void => {
+      observer?.disconnect();
+      contentHost?.removeEventListener(PANEL_CONTENT_ADOPTED_EVENT, observe);
+    };
+  }, [hasHistoryNotices, sessionUnavailable, layoutKey]);
+  const [retryingHistory, setRetryingHistory] = useState(false);
+  const [historyAttempts, setHistoryAttempts] = useState(0);
+  useEffect(() => {
+    // A recovered load and the next outage may be batched into one render.
+    setHistoryAttempts(0);
+  }, [bucket?.historyUnavailable, historyRevision]);
+  const retryHistory = useCallback(
+    async (automatic = false): Promise<void> => {
+      setRetryingHistory(true);
+      try {
+        await useTerminalStore
+          .getState()
+          .hydrateWorktree(projectId, worktreeId, { automatic });
+      } catch {
+        // The notice stays; the next try may reach it.
+      } finally {
+        setRetryingHistory(false);
+        const latestBucket = selectBucket(
+          useTerminalStore.getState(),
+          projectId,
+          worktreeId,
+        );
+        setHistoryAttempts((attempts) =>
+          latestBucket?.historyUnavailable ? attempts + 1 : 0,
+        );
+      }
+    },
+    [projectId, worktreeId],
+  );
+
+  // Retried on its own too, backing off to 30 seconds; never beside a try
+  // still in flight.
+  useEffect(() => {
+    if (
+      !visible ||
+      refreshHistory ||
+      !(sessionUnavailable || historyUnavailable) ||
+      retryingHistory
+    )
+      return undefined;
+    const delay = Math.min(30_000, 2_000 * 2 ** Math.min(historyAttempts, 4));
+    const timer = window.setTimeout(() => void retryHistory(true), delay);
+    return (): void => window.clearTimeout(timer);
+  }, [
+    historyAttempts,
+    historyUnavailable,
+    refreshHistory,
+    retryHistory,
+    retryingHistory,
+    sessionUnavailable,
+    visible,
+  ]);
+
+  const historyUnavailableNotice = (
+    <>
+      <span data-testid="terminal-history-unavailable-notice">
+        Couldn&apos;t load this terminal&apos;s history.
+      </span>
+      <Button
+        size="compact"
+        data-testid="terminal-history-retry-button"
+        onClick={(): void => void retryHistory()}
+        disabled={retryingHistory}
+      >
+        {retryingHistory ? 'Trying again…' : 'Try again'}
+      </Button>
+    </>
+  );
 
   // Cleared when the panel closes or is replaced, so a start's hydration that
   // rejects afterwards is a discarded load, not a failure.
@@ -258,6 +441,7 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
       host.onStartingChange?.(true);
       setError(null);
       let lifetime: TerminalClientLifetime | undefined;
+      let endPlacement: (() => void) | undefined;
       try {
         lifetime = requireTerminalClientLifetime();
         const hydrating = lifetime;
@@ -282,6 +466,7 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
         if (bound && !allowBoundTerminal) return;
         const { cols, rows } = await startSize();
         if (!lifetime.isCurrent()) throw clientChangedError();
+        endPlacement = beginTerminalPlacement(projectId, worktreeId);
         const created = await lifetime.client.command('terminal.spawn', {
           projectId,
           worktreeId,
@@ -326,6 +511,7 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
           reportFailure(error, "Couldn't start the terminal.", origin.current);
         throw error;
       } finally {
+        endPlacement?.();
         setStarting(false);
         host.onStartingChange?.(false);
       }
@@ -586,93 +772,115 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
       ref={rootRef}
       data-testid="terminal-panel-surface"
       data-panel-id={panelId}
-      className="relative flex h-full min-h-0 min-w-0 flex-1"
+      className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col"
     >
-      {terminalId ? (
-        session ? (
-          <>
-            <TerminalPane
-              key={`${terminalId}:${paneRevision}`}
-              terminalId={terminalId}
-              onSendToChat={onSendToChat}
-              getPathsForFiles={getPathsForFiles}
-              suppressNativeContextMenu={suppressNativeContextMenu}
-              onOpenLink={onOpenLink}
-              // Searchable even once exited: the scrollback stays readable.
-              findTitle={session.title?.trim() || 'Terminal'}
-              live={session.live}
-              restoreOnMount={
-                (host.restoreOnReveal ?? true) &&
-                active &&
-                isTerminalRestorableSession(session)
-              }
-              // A host that owns recovery UI shows the one restart notice, so
-              // the pane draws no read-only bar or second Restart button.
-              readOnlyMessage={
-                ownsRecoveryUi
-                  ? null
-                  : getTerminalReadOnlyMessage(session, appName)
-              }
-              onRestart={
-                !ownsRecoveryUi && isTerminalRestartableSession(session)
-                  ? restartFromSurface
-                  : undefined
-              }
-              onRestoreFailed={(error: unknown): void => {
-                // Only a chosen shell that cannot start is worth a message;
-                // any other lazy-restore failure keeps the read-only bar.
-                const reason = terminalShellUnavailableMessage(error);
-                if (reason !== null && !ownsRecoveryUi) setError(reason);
-              }}
-              restarting={restarting}
-              // Eligibility only — the pane claims the caret solely for a
-              // recorded user gesture, and releases it when this goes false.
-              focused={active}
-              onFocus={(): void => undefined}
-            />
-            {!ownsRecoveryUi && error && (
-              <div className="pointer-events-none absolute inset-x-3 top-3 z-10">
+      {hasHistoryNotices && (
+        <div
+          ref={historyStripRef}
+          data-testid="terminal-panel-notices"
+          aria-hidden={!showHistoryStrip}
+          inert={!showHistoryStrip}
+          className={`flex justify-center px-3 py-2 ${showHistoryStrip ? 'shrink-0' : 'pointer-events-none invisible absolute inset-x-0 top-0'}`}
+        >
+          <TerminalReadOnlyNotice>
+            {historyHeld && (
+              <span data-testid="terminal-history-held-notice">
+                Couldn&apos;t save terminal history. Your terminals keep
+                running, and new history is kept until it can be saved.
+              </span>
+            )}
+            {(historyUnavailable || sessionUnavailable) &&
+              historyUnavailableNotice}
+          </TerminalReadOnlyNotice>
+        </div>
+      )}
+      <div className="relative flex min-h-0 min-w-0 flex-1">
+        {terminalId ? (
+          session ? (
+            <>
+              <TerminalPane
+                key={`${terminalId}:${paneRevision}`}
+                terminalId={terminalId}
+                onSendToChat={onSendToChat}
+                getPathsForFiles={getPathsForFiles}
+                suppressNativeContextMenu={suppressNativeContextMenu}
+                onOpenLink={onOpenLink}
+                // Searchable even once exited: the scrollback stays readable.
+                findTitle={session.title?.trim() || 'Terminal'}
+                live={session.live}
+                restoreOnMount={
+                  (host.restoreOnReveal ?? true) &&
+                  active &&
+                  isTerminalRestorableSession(session)
+                }
+                // A host that owns recovery UI shows the one restart notice, so
+                // the pane draws no read-only bar or second Restart button.
+                readOnlyMessage={
+                  ownsRecoveryUi
+                    ? null
+                    : getTerminalReadOnlyMessage(session, appName)
+                }
+                onRestart={
+                  !ownsRecoveryUi && isTerminalRestartableSession(session)
+                    ? restartFromSurface
+                    : undefined
+                }
+                onRestoreFailed={(error: unknown): void => {
+                  // Only a chosen shell that cannot start is worth a message;
+                  // any other lazy-restore failure keeps the read-only bar.
+                  const reason = terminalShellUnavailableMessage(error);
+                  if (reason !== null && !ownsRecoveryUi) setError(reason);
+                }}
+                restarting={restarting}
+                // Eligibility only — the pane claims the caret solely for a
+                // recorded user gesture, and releases it when this goes false.
+                focused={active}
+                onFocus={(): void => undefined}
+              />
+              {!ownsRecoveryUi && error && (
+                <div className="pointer-events-none absolute inset-x-3 top-3 z-10">
+                  <ErrorBanner
+                    errorSource="terminal-panel-error"
+                    className=""
+                    error={error}
+                    blockMessageFromReplay
+                    testId="terminal-panel-error"
+                  />
+                </div>
+              )}
+            </>
+          ) : (
+            <div
+              data-testid="terminal-panel-loading"
+              className="flex min-h-0 flex-1 items-center justify-center text-xs fg-secondary"
+              aria-live="polite"
+            >
+              Loading terminal…
+            </div>
+          )
+        ) : ownsRecoveryUi ? null : (
+          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2">
+            {error && (
+              <div className="w-full max-w-sm px-3">
                 <ErrorBanner
-                  errorSource="terminal-panel-error"
+                  errorSource="terminal-panel-surface"
                   className=""
                   error={error}
                   blockMessageFromReplay
-                  testId="terminal-panel-error"
                 />
               </div>
             )}
-          </>
-        ) : (
-          <div
-            data-testid="terminal-panel-loading"
-            className="flex min-h-0 flex-1 items-center justify-center text-xs fg-secondary"
-            aria-live="polite"
-          >
-            Loading terminal…
+            <Button
+              size="compact"
+              data-testid="terminal-start-button"
+              onClick={startFromSurface}
+              disabled={starting}
+            >
+              Start terminal
+            </Button>
           </div>
-        )
-      ) : ownsRecoveryUi ? null : (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2">
-          {error && (
-            <div className="w-full max-w-sm px-3">
-              <ErrorBanner
-                errorSource="terminal-panel-surface"
-                className=""
-                error={error}
-                blockMessageFromReplay
-              />
-            </div>
-          )}
-          <Button
-            size="compact"
-            data-testid="terminal-start-button"
-            onClick={startFromSurface}
-            disabled={starting}
-          >
-            Start terminal
-          </Button>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 });

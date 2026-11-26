@@ -75,8 +75,29 @@ import {
   type SubagentPanelScope,
 } from './subagent-panel-open';
 import type { SubagentChatPanelTarget } from './subagent-panel-identity';
+import { useTerminalStore } from '@/stores/terminalStore';
+import {
+  probeLegacyTerminalPanelMaterializationForE2e,
+  type LegacyTerminalPanelMaterializationProbe,
+} from '@/components/terminal/terminalPanelMaterialization';
 
 type PanelArrangement = 'even' | 'maximize' | 'expand';
+
+interface TerminalMaterializationTestState extends LegacyTerminalPanelMaterializationProbe {
+  readonly bucketRetained: boolean;
+  readonly layoutPresent: boolean;
+}
+
+interface TerminalPlacementTestState {
+  readonly sessionIds: string[];
+  /** One entry per bound tab, duplicates included, across main and aux layouts. */
+  readonly bindings: { layoutKey: string; terminalId: string }[];
+}
+
+interface TerminalMaterializationTestProbe {
+  read(): TerminalMaterializationTestState;
+  touchStores(): void;
+}
 
 /**
  * The imperative test API installed by the desktop renderer test-harness layer.
@@ -84,6 +105,10 @@ type PanelArrangement = 'even' | 'maximize' | 'expand';
  * this API.
  */
 interface CanopyPanelTestApi {
+  /** Retains a read-only observer probe after archive removes its scope. */
+  captureTerminalMaterializationProbe(): TerminalMaterializationTestProbe;
+  /** Renderer terminal sessions, and their panel bindings in the layout family. */
+  getTerminalPlacementState(): TerminalPlacementTestState;
   getSerializedLayout(): SerializedPanelLayout;
   /** Throws during render at `panel:<panelId>`, `chart`, `lazy-load` or `window`. */
   failRender(target: RenderFaultTarget): void;
@@ -336,6 +361,46 @@ export function installPanelTestApi(
   );
 
   const api: CanopyPanelTestApi = {
+    captureTerminalMaterializationProbe:
+      (): TerminalMaterializationTestProbe => {
+        const probe =
+          probeLegacyTerminalPanelMaterializationForE2e(worktreeKey);
+        if (!probe) throw new Error('No terminal materialization observer');
+        return {
+          read: (): TerminalMaterializationTestState => ({
+            ...probe(),
+            bucketRetained:
+              useTerminalStore.getState().worktrees[worktreeKey] !== undefined,
+            layoutPresent: store().layouts[worktreeKey] !== undefined,
+          }),
+          touchStores: (): void => {
+            useTerminalStore.setState((state) => ({
+              worktrees: { ...state.worktrees },
+            }));
+            usePanelLayoutStore.setState((state) => ({
+              layouts: { ...state.layouts },
+            }));
+          },
+        };
+      },
+    getTerminalPlacementState: (): TerminalPlacementTestState => ({
+      sessionIds: Object.keys(
+        useTerminalStore.getState().worktrees[worktreeKey]?.sessions ?? {},
+      ),
+      bindings: Object.entries(store().layouts).flatMap(
+        ([layoutKey, layout]) =>
+          layoutKey === worktreeKey ||
+          getAuxPanelLayoutOwnerKey(layoutKey) === worktreeKey
+            ? Object.values(layout.groups).flatMap((group) =>
+                (group.tabs ?? []).flatMap((tab) =>
+                  tab.kind === 'terminal' && tab.instance?.terminalId
+                    ? [{ layoutKey, terminalId: tab.instance.terminalId }]
+                    : [],
+                ),
+              )
+            : [],
+      ),
+    }),
     failRender,
     clearRenderFault,
     getSerializedLayout: (): SerializedPanelLayout => {

@@ -16,7 +16,7 @@ import {
 } from 'react';
 import {
   Button,
-  DialogFormField,
+  FormField,
   DialogModal,
   Fact,
   FactList,
@@ -215,9 +215,9 @@ export function OrgProjectSetupDialog({
           )
         ) : (
           <>
-            <DialogFormField
+            <FormField
               label="Destination folder"
-              htmlFor="org-project-setup-destination"
+              id="org-project-setup-destination"
             >
               <Button
                 id="org-project-setup-destination"
@@ -241,7 +241,7 @@ export function OrgProjectSetupDialog({
                   <span className="shrink-0 fg-secondary">Change</span>
                 </span>
               </Button>
-            </DialogFormField>
+            </FormField>
             <p className="text-s fg-secondary">
               Cloned with your Git credentials. No scripts run until you open a
               task.

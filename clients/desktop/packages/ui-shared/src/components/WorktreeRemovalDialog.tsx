@@ -5,7 +5,7 @@ import { useState, type JSX } from 'react';
 import { InfoIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { ConfirmDialog } from '../primitives/ConfirmDialog';
-import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
+import { HoverCard } from '../primitives/HoverCard';
 import {
   KeepLocalBranchToggle,
   DEFAULT_KEEP_LOCAL_BRANCH,
@@ -136,7 +136,7 @@ export function WorktreeRemovalDialog({
             )}
             <span className="inline-flex max-w-full items-center gap-1 align-middle">
               <span className="min-w-0">{retentionSummary}</span>
-              <RichHoverTooltip
+              <HoverCard
                 content={
                   <span className="block text-xs leading-snug fg-primary">
                     {retentionDetail}
@@ -156,7 +156,7 @@ export function WorktreeRemovalDialog({
                 >
                   <InfoIcon size={14} aria-hidden="true" />
                 </Button>
-              </RichHoverTooltip>
+              </HoverCard>
             </span>
           </p>
         }

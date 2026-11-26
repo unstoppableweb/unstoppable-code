@@ -7,7 +7,7 @@ import {
   Notice,
   PrivateMemoryAdvancedOption,
   buttonClassName,
-  DialogFormField,
+  FormField,
   TextInput,
   CopyDetailsButton,
   Heading,
@@ -254,9 +254,9 @@ export function TeamProjectsCreateDialog({
             </Heading>
             {selected.map((repository) => (
               <div key={repository.id} className={blockClassName}>
-                <DialogFormField
+                <FormField
                   label={repository.fullName}
-                  htmlFor={`team-projects-name-${repository.id}`}
+                  id={`team-projects-name-${repository.id}`}
                 >
                   <TextInput
                     id={`team-projects-name-${repository.id}`}
@@ -274,7 +274,7 @@ export function TeamProjectsCreateDialog({
                       }))
                     }
                   />
-                </DialogFormField>
+                </FormField>
               </div>
             ))}
             <PrivateMemoryAdvancedOption

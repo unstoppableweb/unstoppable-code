@@ -4,6 +4,11 @@ import type {
   PairedComputerUpdate,
   PairedComputersApi,
 } from '@canopy/desktop-shared/types';
+import {
+  parseRemoteControlRepositoryIdentity,
+  type RemoteControlWorkspaceLayout,
+} from '@canopy/protocol/remote-control/shell';
+import type { OrgProjectPlaceholderState } from '@canopy/protocol/org-projects';
 import type { PairedSnapshotWorkspace } from '@canopy/desktop-shared/lib/project-groups';
 import type { SnapshotWorktree } from '@canopy/ui-app';
 
@@ -47,6 +52,7 @@ export type PairedSidebarTaskLive = Pick<
   | 'isStreaming'
   | 'busy'
   | 'isRunningRun'
+  | 'pipelineStatus'
   | 'backgroundTasks'
   | 'awaitingApproval'
   | 'hasUnread'
@@ -65,8 +71,15 @@ export interface PairedSidebarComputer {
   readonly status: PairedSidebarComputerStatus;
   /** Null until the computer's first snapshot arrives. */
   readonly structure: PairedSidebarStructure | null;
-  /** By the task's own local id on that computer. */
+  /** By `pairedTaskKey(workspaceLocalId, localId)` on that computer. */
   readonly live: ReadonlyMap<string, PairedSidebarTaskLive>;
+  /**
+   * The tasks, keyed by `pairedTaskKey(workspaceLocalId, taskLocalId)`,
+   * with a tool approval waiting on that computer: read from
+   * `approval:pending-requests` and followed through its approval pushes.
+   * Read only; answering is CAN-7865.
+   */
+  readonly toolApprovals: ReadonlySet<string>;
 }
 
 export interface PairedSidebarStructureEntry {
@@ -85,6 +98,17 @@ export interface PairedSidebarState {
 }
 
 const EMPTY_LIVE: ReadonlyMap<string, PairedSidebarTaskLive> = new Map();
+const EMPTY_TASK_IDS: ReadonlySet<string> = new Set();
+
+export const MAX_PAIRED_SNAPSHOT_WORKSPACES = 256;
+export const MAX_PAIRED_SNAPSHOT_TASKS = 4096;
+
+export function pairedTaskKey(
+  workspaceLocalId: string,
+  taskLocalId: string,
+): string {
+  return `${workspaceLocalId}\0${taskLocalId}`;
+}
 
 export const pairedSidebarStore = createStore<PairedSidebarState>(() => ({
   computers: new Map(),
@@ -150,6 +174,7 @@ const LIVE_KEYS = [
   'isStreaming',
   'busy',
   'isRunningRun',
+  'pipelineStatus',
   'backgroundTasks',
   'awaitingApproval',
   'hasUnread',
@@ -234,6 +259,17 @@ function optionalNumber(value: unknown): number | undefined {
     : undefined;
 }
 
+function optionalPipelineStatus(
+  value: unknown,
+): SnapshotWorktree['pipelineStatus'] {
+  return value === 'running' ||
+    value === 'unseen' ||
+    value === 'unseen-failure' ||
+    value === 'paused'
+    ? value
+    : undefined;
+}
+
 /** A task as sent, or null when it lacks the fields a row needs. */
 function readTask(
   value: unknown,
@@ -260,6 +296,7 @@ function readTask(
       isStreaming: optionalBoolean(value.isStreaming),
       busy: optionalBoolean(value.busy),
       isRunningRun: optionalBoolean(value.isRunningRun),
+      pipelineStatus: optionalPipelineStatus(value.pipelineStatus),
       backgroundTasks: optionalNumber(value.backgroundTasks),
       awaitingApproval: optionalBoolean(value.awaitingApproval),
       hasUnread: optionalBoolean(value.hasUnread),
@@ -269,38 +306,192 @@ function readTask(
   };
 }
 
-function isSnapshotWorkspace(value: unknown): value is PairedSnapshotWorkspace {
+const PLACEHOLDER_STATES: Record<OrgProjectPlaceholderState, true> = {
+  'ready-to-set-up': true,
+  'choose-folder': true,
+  'needs-github-access': true,
+  offline: true,
+  'access-changed': true,
+  'not-local': true,
+};
+
+function isPlaceholderState(
+  value: unknown,
+): value is OrgProjectPlaceholderState {
   return (
-    isRecord(value) &&
-    typeof value.localId === 'string' &&
-    typeof value.name === 'string' &&
-    (value.type === 'single-repo' ||
-      value.type === 'multi-repo' ||
-      value.type === 'cowork')
+    typeof value === 'string' &&
+    Object.prototype.hasOwnProperty.call(PLACEHOLDER_STATES, value)
   );
+}
+
+function readWorkspaceOwner(
+  value: unknown,
+): { valid: true; owner: PairedSnapshotWorkspace['owner'] } | { valid: false } {
+  if (value === undefined) return { valid: true, owner: undefined };
+  if (!isRecord(value)) return { valid: false };
+  if (value.type === 'personal')
+    return { valid: true, owner: { type: 'personal' } };
+  if (
+    value.type === 'organization' &&
+    typeof value.organizationId === 'string' &&
+    typeof value.projectId === 'string'
+  ) {
+    return {
+      valid: true,
+      owner: {
+        type: 'organization',
+        organizationId: value.organizationId,
+        projectId: value.projectId,
+      },
+    };
+  }
+  if (
+    value.type === 'cloud-organization' &&
+    typeof value.organizationId === 'string'
+  ) {
+    return {
+      valid: true,
+      owner: {
+        type: 'cloud-organization',
+        organizationId: value.organizationId,
+      },
+    };
+  }
+  return { valid: false };
+}
+
+function readWorkspacePlaceholder(
+  value: unknown,
+):
+  | { valid: true; placeholder: PairedSnapshotWorkspace['placeholder'] }
+  | { valid: false } {
+  if (value === undefined) return { valid: true, placeholder: undefined };
+  if (
+    !isRecord(value) ||
+    typeof value.projectId !== 'string' ||
+    !isPlaceholderState(value.state)
+  )
+    return { valid: false };
+  return {
+    valid: true,
+    placeholder: { projectId: value.projectId, state: value.state },
+  };
+}
+
+function readWorkspaceLayout(
+  value: unknown,
+):
+  | { valid: true; layout: RemoteControlWorkspaceLayout | undefined }
+  | { valid: false } {
+  if (value === undefined) return { valid: true, layout: undefined };
+  if (value === 'tree' || value === 'flat')
+    return { valid: true, layout: value };
+  return { valid: false };
+}
+
+/**
+ * Validates one workspace from a paired computer's snapshot, including nested
+ * repository and ownership metadata so a malformed peer reply can never throw
+ * when grouped or rendered.
+ */
+function readSnapshotWorkspace(value: unknown): PairedSnapshotWorkspace | null {
+  if (
+    !isRecord(value) ||
+    typeof value.localId !== 'string' ||
+    value.localId.length === 0 ||
+    typeof value.name !== 'string' ||
+    (value.type !== 'single-repo' &&
+      value.type !== 'multi-repo' &&
+      value.type !== 'cowork')
+  )
+    return null;
+  const layout = readWorkspaceLayout(value.layout);
+  if (!layout.valid) return null;
+  if (value.color !== undefined && typeof value.color !== 'string') return null;
+  if (value.sharedFrom !== undefined && typeof value.sharedFrom !== 'boolean')
+    return null;
+  const owner = readWorkspaceOwner(value.owner);
+  if (!owner.valid) return null;
+  const placeholder = readWorkspacePlaceholder(value.placeholder);
+  if (!placeholder.valid) return null;
+  const repositoryIdentity =
+    value.repositoryIdentity === undefined
+      ? undefined
+      : parseRemoteControlRepositoryIdentity(value.repositoryIdentity);
+  if (
+    value.repositoryIdentity !== undefined &&
+    repositoryIdentity === undefined
+  )
+    return null;
+  return {
+    localId: value.localId,
+    name: value.name,
+    type: value.type,
+    ...(layout.layout === undefined ? {} : { layout: layout.layout }),
+    ...(value.color === undefined ? {} : { color: value.color }),
+    ...(owner.owner === undefined ? {} : { owner: owner.owner }),
+    ...(repositoryIdentity === undefined ? {} : { repositoryIdentity }),
+    ...(placeholder.placeholder === undefined
+      ? {}
+      : { placeholder: placeholder.placeholder }),
+    ...(value.sharedFrom === true ? { sharedFrom: true } : {}),
+  };
 }
 
 /**
  * Applies a computer's snapshot, keeping every object that did not change:
  * the structure while it lists the same things, and each task's status
- * while it reads the same. A reply that isn't a snapshot changes nothing,
- * and neither does one for a computer no longer listed.
+ * while it reads the same. A reply that isn't a valid snapshot keeps the
+ * last valid snapshot, and one for a computer no longer listed changes nothing.
  */
-export function applyPairedSnapshot(deviceId: string, reply: unknown): void {
+export function applyPairedSnapshot(
+  deviceId: string,
+  reply: unknown,
+  onError?: (error: unknown) => void,
+): void {
   if (
     !isRecord(reply) ||
     !Array.isArray(reply.workspaces) ||
     !Array.isArray(reply.worktrees)
   )
     return;
-  const workspaces = reply.workspaces.filter(isSnapshotWorkspace);
+  const workspacesTruncated =
+    reply.workspaces.length > MAX_PAIRED_SNAPSHOT_WORKSPACES;
+  const tasksTruncated = reply.worktrees.length > MAX_PAIRED_SNAPSHOT_TASKS;
+  if (workspacesTruncated || tasksTruncated) {
+    onError?.(
+      new Error(
+        `Truncated oversized paired snapshot from ${deviceId}: ${reply.workspaces.length} workspaces (cap ${MAX_PAIRED_SNAPSHOT_WORKSPACES}), ${reply.worktrees.length} tasks (cap ${MAX_PAIRED_SNAPSHOT_TASKS})`,
+      ),
+    );
+  }
+  const workspaceLimit = Math.min(
+    reply.workspaces.length,
+    MAX_PAIRED_SNAPSHOT_WORKSPACES,
+  );
+  const workspaces: PairedSnapshotWorkspace[] = [];
+  const keptWorkspaceIds = new Set<string>();
+  for (let index = 0; index < workspaceLimit; index += 1) {
+    const workspace = readSnapshotWorkspace(reply.workspaces[index]);
+    if (workspace === null) return;
+    workspaces.push(workspace);
+    keptWorkspaceIds.add(workspace.localId);
+  }
+  const taskLimit = Math.min(reply.worktrees.length, MAX_PAIRED_SNAPSHOT_TASKS);
   const tasks: PairedSidebarTask[] = [];
-  const liveById = new Map<string, PairedSidebarTaskLive>();
-  for (const value of reply.worktrees) {
-    const read = readTask(value);
-    if (read === null || liveById.has(read.task.localId)) continue;
+  const liveByKey = new Map<string, PairedSidebarTaskLive>();
+  for (let index = 0; index < taskLimit; index += 1) {
+    const read = readTask(reply.worktrees[index]);
+    if (read === null) continue;
+    if (
+      workspacesTruncated &&
+      !keptWorkspaceIds.has(read.task.workspaceLocalId)
+    )
+      continue;
+    const key = pairedTaskKey(read.task.workspaceLocalId, read.task.localId);
+    if (liveByKey.has(key)) continue;
     tasks.push(read.task);
-    liveById.set(read.task.localId, read.live);
+    liveByKey.set(key, read.live);
   }
   updateComputer(deviceId, (current) => {
     if (current === undefined) return null;
@@ -312,12 +503,12 @@ export function applyPairedSnapshot(deviceId: string, reply: unknown): void {
         ? previous
         : { workspaces, tasks };
     const live = new Map<string, PairedSidebarTaskLive>();
-    let liveChanged = current.live.size !== liveById.size;
-    for (const [id, entry] of liveById) {
-      const kept = current.live.get(id);
-      if (kept !== undefined && sameLive(kept, entry)) live.set(id, kept);
+    let liveChanged = current.live.size !== liveByKey.size;
+    for (const [key, entry] of liveByKey) {
+      const kept = current.live.get(key);
+      if (kept !== undefined && sameLive(kept, entry)) live.set(key, kept);
       else {
-        live.set(id, entry);
+        live.set(key, entry);
         liveChanged = true;
       }
     }
@@ -363,6 +554,74 @@ export interface PairedComputerToFollow {
 
 const SNAPSHOT_CHANNEL = 'desktop:session-snapshot';
 const SNAPSHOT_STALE_CHANNEL = 'desktop:session-snapshot-stale';
+// The one-window list's `approvals` capability (CAN-7758), read only.
+const APPROVALS_CAPABILITY = 'approvals';
+const PENDING_APPROVALS_CHANNEL = 'approval:pending-requests';
+const APPROVAL_REQUEST_CHANNEL = 'approval:request';
+const APPROVAL_GONE_CHANNELS: ReadonlySet<string> = new Set([
+  'approval:cancelled',
+  'approval:auto-resolved',
+]);
+const DEFAULT_APPROVAL_JOURNAL_LIMIT = 512;
+const DEFAULT_PENDING_APPROVALS_LIMIT = 512;
+const DEFAULT_APPROVAL_READ_TIMEOUT_MS = 30_000;
+const MAX_CONSECUTIVE_APPROVAL_RESYNCS = 1;
+
+export interface PairedComputersSidebarFollowerOptions {
+  readonly approvalJournalLimit?: number;
+  readonly approvalReadTimeoutMs?: number;
+}
+
+const MAX_APPROVAL_ID_LENGTH = 256;
+
+function isBoundedApprovalId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= MAX_APPROVAL_ID_LENGTH
+  );
+}
+
+/** A pending approval as main sends it: its request and the scoped task it waits in. */
+function readApprovalRequest(
+  value: unknown,
+): { requestId: string; taskKey: string } | null {
+  if (!isRecord(value)) return null;
+  const { requestId, projectId, worktreeId } = value;
+  return isBoundedApprovalId(requestId) &&
+    isBoundedApprovalId(projectId) &&
+    isBoundedApprovalId(worktreeId)
+    ? { requestId, taskKey: pairedTaskKey(projectId, worktreeId) }
+    : null;
+}
+
+function requestIdOf(value: unknown): string | null {
+  return isRecord(value) && isBoundedApprovalId(value.requestId)
+    ? value.requestId
+    : null;
+}
+
+type ApprovalChange =
+  | {
+      readonly kind: 'add';
+      readonly requestId: string;
+      readonly taskKey: string;
+    }
+  | { readonly kind: 'remove'; readonly requestId: string };
+
+function applyApprovalChange(
+  approvals: Map<string, string>,
+  change: ApprovalChange,
+): void {
+  if (change.kind === 'add') approvals.set(change.requestId, change.taskKey);
+  else approvals.delete(change.requestId);
+}
+
+function sameTaskIds(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const id of a) if (!b.has(id)) return false;
+  return true;
+}
 
 interface Followed {
   name: string;
@@ -377,6 +636,20 @@ interface Followed {
   dropped: boolean;
   reading: boolean;
   readAgain: boolean;
+  readingApprovals: boolean;
+  readApprovalsAgain: boolean;
+  /** The computer announced the approvals capability in its last connected state. */
+  approvalsServed: boolean;
+  /** Pending tool approvals by request id, to the task each waits in. */
+  approvals: Map<string, string>;
+  /**
+   * Approval pushes that arrived while `approval:pending-requests` was being
+   * read, replayed over its reply so none is lost to the read.
+   */
+  approvalJournal: ApprovalChange[] | null;
+  approvalJournalOverflowed: boolean;
+  approvalReadTimer: ReturnType<typeof setTimeout> | null;
+  approvalResyncs: number;
   unsubscribe: () => void;
 }
 
@@ -393,11 +666,24 @@ export class PairedComputersSidebarFollower {
   private readonly followed = new Map<string, Followed>();
   private disposed = false;
 
+  private readonly approvalJournalLimit: number;
+  private readonly approvalReadTimeoutMs: number;
+
   constructor(
     private readonly api: PairedComputersApi,
     /** Records a failed hold, read or release; the rows stay as last read. */
     private readonly onError: (error: unknown) => void,
-  ) {}
+    options?: PairedComputersSidebarFollowerOptions,
+  ) {
+    this.approvalJournalLimit = Math.max(
+      1,
+      options?.approvalJournalLimit ?? DEFAULT_APPROVAL_JOURNAL_LIMIT,
+    );
+    this.approvalReadTimeoutMs = Math.max(
+      1,
+      options?.approvalReadTimeoutMs ?? DEFAULT_APPROVAL_READ_TIMEOUT_MS,
+    );
+  }
 
   follow(computers: readonly PairedComputerToFollow[]): void {
     if (this.disposed) return;
@@ -435,6 +721,14 @@ export class PairedComputersSidebarFollower {
       dropped: false,
       reading: false,
       readAgain: false,
+      readingApprovals: false,
+      readApprovalsAgain: false,
+      approvalsServed: false,
+      approvals: new Map(),
+      approvalJournal: null,
+      approvalJournalOverflowed: false,
+      approvalReadTimer: null,
+      approvalResyncs: 0,
       unsubscribe: () => undefined,
     };
     this.followed.set(deviceId, entry);
@@ -444,6 +738,7 @@ export class PairedComputersSidebarFollower {
       status: 'connecting',
       structure: null,
       live: EMPTY_LIVE,
+      toolApprovals: EMPTY_TASK_IDS,
     }));
     // Subscribed before the hold, so no change between them is missed.
     const offState = this.api.onStateChanged(deviceId, (state) => {
@@ -481,6 +776,13 @@ export class PairedComputersSidebarFollower {
 
   private letGo(entry: Followed): void {
     entry.unsubscribe();
+    entry.readAgain = false;
+    entry.readApprovalsAgain = false;
+    if (entry.approvalReadTimer !== null) {
+      clearTimeout(entry.approvalReadTimer);
+      entry.approvalReadTimer = null;
+    }
+    entry.approvalJournal = null;
     if (entry.holdId !== null) this.releaseHold(entry.holdId);
     entry.holdId = null;
   }
@@ -517,6 +819,8 @@ export class PairedComputersSidebarFollower {
         ? (current ?? null)
         : { ...current, status },
     );
+    if (state.status === 'connected')
+      entry.approvalsServed = state.capabilities.includes(APPROVALS_CAPABILITY);
     if (status === 'connected') this.read(deviceId, entry);
   }
 
@@ -526,11 +830,208 @@ export class PairedComputersSidebarFollower {
     update: PairedComputerUpdate,
   ): void {
     if (entry.stopped || entry.dropped) return;
+    if (update.type === 'push' && entry.approvalsServed) {
+      if (update.channel === APPROVAL_REQUEST_CHANNEL) {
+        const request = readApprovalRequest(update.args[0]);
+        if (request !== null)
+          this.changeApprovals(deviceId, entry, { kind: 'add', ...request });
+        return;
+      }
+      if (APPROVAL_GONE_CHANNELS.has(update.channel)) {
+        const requestId = requestIdOf(update.args[0]);
+        if (requestId !== null)
+          this.changeApprovals(deviceId, entry, { kind: 'remove', requestId });
+        return;
+      }
+    }
     if (
       update.type === 'reconnected' ||
       (update.type === 'push' && update.channel === SNAPSHOT_STALE_CHANNEL)
-    )
+    ) {
+      entry.approvalResyncs = 0;
       this.read(deviceId, entry);
+    }
+  }
+
+  private changeApprovals(
+    deviceId: string,
+    entry: Followed,
+    change: ApprovalChange,
+  ): void {
+    if (
+      change.kind === 'remove' ||
+      entry.approvals.has(change.requestId) ||
+      entry.approvals.size < DEFAULT_PENDING_APPROVALS_LIMIT
+    ) {
+      applyApprovalChange(entry.approvals, change);
+    }
+    if (entry.approvalJournal !== null) {
+      if (entry.approvalJournal.length < this.approvalJournalLimit) {
+        entry.approvalJournal.push(change);
+      } else {
+        entry.approvalJournalOverflowed = true;
+        entry.approvalJournal = null;
+      }
+    }
+    this.publishApprovals(deviceId, entry);
+  }
+
+  private publishApprovals(deviceId: string, entry: Followed): void {
+    const taskIds = new Set(entry.approvals.values());
+    updateComputer(deviceId, (current) =>
+      current === undefined || sameTaskIds(current.toolApprovals, taskIds)
+        ? (current ?? null)
+        : { ...current, toolApprovals: taskIds },
+    );
+  }
+
+  private discardPartialApprovalsAndResync(
+    deviceId: string,
+    entry: Followed,
+    error: unknown,
+    clearApprovals = true,
+  ): void {
+    this.onError(error);
+    entry.approvalJournal = null;
+    if (clearApprovals) {
+      entry.approvals.clear();
+      this.publishApprovals(deviceId, entry);
+    }
+    if (entry.approvalResyncs < MAX_CONSECUTIVE_APPROVAL_RESYNCS) {
+      entry.approvalResyncs += 1;
+      entry.readApprovalsAgain = true;
+    }
+  }
+
+  /**
+   * Reads the computer's pending tool approvals, as its own window would
+   * (its bridge stands for its main window), alongside each snapshot read:
+   * an approval answered on that computer sends no push here, and the turn
+   * it resumes stales the snapshot, so the next read drops it. Runs under its
+   * own single-flight guard so a slow approval RPC never stalls snapshots.
+   */
+  private readApprovals(deviceId: string, entry: Followed): void {
+    if (!entry.approvalsServed) {
+      entry.approvalResyncs = 0;
+      entry.readApprovalsAgain = false;
+      if (entry.approvalReadTimer !== null) {
+        clearTimeout(entry.approvalReadTimer);
+        entry.approvalReadTimer = null;
+      }
+      entry.approvalJournal = null;
+      entry.approvalJournalOverflowed = false;
+      if (entry.approvals.size > 0) {
+        entry.approvals.clear();
+        this.publishApprovals(deviceId, entry);
+      }
+      return;
+    }
+    if (entry.readingApprovals) {
+      entry.readApprovalsAgain = true;
+      return;
+    }
+    entry.readingApprovals = true;
+    entry.readApprovalsAgain = false;
+    const journal: ApprovalChange[] = [];
+    entry.approvalJournal = journal;
+    entry.approvalJournalOverflowed = false;
+    let timedOut = false;
+    let settled = false;
+    const clearTimerAndJournal = (): void => {
+      if (entry.approvalReadTimer === timer) entry.approvalReadTimer = null;
+      clearTimeout(timer);
+      if (entry.approvalJournal === journal) entry.approvalJournal = null;
+    };
+    const timer = setTimeout(() => {
+      if (settled || entry.stopped || entry.dropped || !entry.approvalsServed) {
+        clearTimerAndJournal();
+        return;
+      }
+      timedOut = true;
+      clearTimerAndJournal();
+      // Keep the last confirmed approval set unless a journal overflow made
+      // it unsafe, while keeping `readingApprovals` set until the underlying
+      // paired invoke settles so retries never stack outstanding RPCs in RpcPeer.
+      this.discardPartialApprovalsAndResync(
+        deviceId,
+        entry,
+        new Error('Timed out reading pending approvals from paired computer'),
+        entry.approvalJournalOverflowed,
+      );
+    }, this.approvalReadTimeoutMs);
+    entry.approvalReadTimer = timer;
+    this.api
+      .invoke(deviceId, PENDING_APPROVALS_CHANNEL, [])
+      .then(
+        (reply) => {
+          if (
+            timedOut ||
+            entry.stopped ||
+            entry.dropped ||
+            !entry.approvalsServed
+          )
+            return;
+          if (entry.approvalJournalOverflowed) {
+            this.discardPartialApprovalsAndResync(
+              deviceId,
+              entry,
+              new Error(
+                'Approval update journal exceeded limit during pending-requests read',
+              ),
+            );
+            return;
+          }
+          if (entry.approvalJournal !== journal) return;
+          if (!Array.isArray(reply)) return;
+          const approvals = new Map<string, string>();
+          const limit = Math.min(reply.length, DEFAULT_PENDING_APPROVALS_LIMIT);
+          for (let index = 0; index < limit; index += 1) {
+            const request = readApprovalRequest(reply[index]);
+            if (request !== null)
+              approvals.set(request.requestId, request.taskKey);
+          }
+          for (const change of journal) {
+            if (
+              change.kind === 'remove' ||
+              approvals.has(change.requestId) ||
+              approvals.size < DEFAULT_PENDING_APPROVALS_LIMIT
+            ) {
+              applyApprovalChange(approvals, change);
+            }
+          }
+          entry.approvals = approvals;
+          entry.approvalResyncs = 0;
+          this.publishApprovals(deviceId, entry);
+        },
+        (error: unknown) => {
+          if (
+            timedOut ||
+            entry.stopped ||
+            entry.dropped ||
+            !entry.approvalsServed
+          )
+            return;
+          if (entry.approvalJournalOverflowed) {
+            this.discardPartialApprovalsAndResync(deviceId, entry, error);
+            return;
+          }
+          // The approvals last read stay, kept current by the pushes since.
+          this.onError(error);
+        },
+      )
+      .finally(() => {
+        settled = true;
+        clearTimerAndJournal();
+        entry.readingApprovals = false;
+        if (
+          entry.readApprovalsAgain &&
+          !entry.stopped &&
+          !entry.dropped &&
+          entry.approvalsServed
+        ) {
+          this.readApprovals(deviceId, entry);
+        }
+      });
   }
 
   private read(deviceId: string, entry: Followed): void {
@@ -544,8 +1045,9 @@ export class PairedComputersSidebarFollower {
       .invoke(deviceId, SNAPSHOT_CHANNEL, [{}])
       .then(
         (reply) => {
-          if (!entry.stopped && !entry.dropped)
-            applyPairedSnapshot(deviceId, reply);
+          if (entry.stopped || entry.dropped) return;
+          applyPairedSnapshot(deviceId, reply, this.onError);
+          this.readApprovals(deviceId, entry);
         },
         (error: unknown) => {
           // The rows last read stay; the next signal reads again. A call

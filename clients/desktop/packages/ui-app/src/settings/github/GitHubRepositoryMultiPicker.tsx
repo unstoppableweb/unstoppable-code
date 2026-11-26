@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
 import {
   Button,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   CopyDetailsButton,
   DelayedLoadingPlaceholder,
   FloatingPickerMenu,
@@ -19,7 +19,7 @@ import {
   RailIconButton,
   SearchField,
   Skeleton,
-  StatusPill,
+  Badge,
 } from '@canopy/ui-shared/components';
 import { FilterIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
@@ -209,29 +209,31 @@ function RepositoryChoice({
   testIdPrefix,
 }: RepositoryChoiceProps): JSX.Element {
   return (
-    <ChoiceListRow
+    <ChoiceField
+      layout="row"
       data-testid={`${testIdPrefix}-${repository.id}`}
-      selected={selected}
+      checked={selected}
       disabled={disabled}
-      onClick={onClick}
-      trailing={
+      onChange={onClick}
+      end={
         repository.private || repository.archived ? (
           <span className="flex items-center gap-2">
-            {repository.private && <StatusPill>Private</StatusPill>}
-            {repository.archived && <StatusPill>Archived</StatusPill>}
+            {repository.private && <Badge>Private</Badge>}
+            {repository.archived && <Badge>Archived</Badge>}
           </span>
         ) : undefined
       }
-    >
-      <span
-        className={joinClasses('min-w-0 flex-1 break-words', blockClassName)}
-      >
-        {repository.fullName}
-        <span className="block fg-secondary">
-          Default branch: {repository.defaultBranch ?? 'Not set'}
+      label={
+        <span
+          className={joinClasses('min-w-0 flex-1 break-words', blockClassName)}
+        >
+          {repository.fullName}
+          <span className="block fg-secondary">
+            Default branch: {repository.defaultBranch ?? 'Not set'}
+          </span>
         </span>
-      </span>
-    </ChoiceListRow>
+      }
+    />
   );
 }
 

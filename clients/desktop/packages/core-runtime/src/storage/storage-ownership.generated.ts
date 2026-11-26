@@ -434,6 +434,18 @@ export const STORAGE_OWNERSHIP = [
     ]
   },
   {
+    "id": "terminal_replay_witness",
+    "transitionOwner": "interface-local",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/terminal/persistence"
+    ]
+  },
+  {
     "id": "terminal_state",
     "transitionOwner": "legacy",
     "currentWriters": [
@@ -443,6 +455,18 @@ export const STORAGE_OWNERSHIP = [
     "backupPolicy": "none",
     "admittedWriters": [
       "main/terminal/persistence"
+    ]
+  },
+  {
+    "id": "work_entries",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/lib/work-entry-repository"
     ]
   },
   {

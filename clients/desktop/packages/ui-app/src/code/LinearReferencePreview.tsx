@@ -31,7 +31,7 @@ import {
   InlineMeasuredSkeleton,
   LinearIssuePreviewCard,
   linearStatusGlyph,
-  RichHoverTooltip,
+  HoverCard,
   WordBoundaryTruncatedText,
   type LinearIssuePreviewCardView,
   INLINE_CHIP_CLASS,
@@ -366,7 +366,7 @@ function SupportedLinearReference({
     </BareIdentifierLink>
   );
   return (
-    <RichHoverTooltip
+    <HoverCard
       deferUntilInteraction
       resetKey={`${epoch}:${linearPreviewKey(request)}`}
       content={<LinearReferencePreviewContent request={request} />}
@@ -377,6 +377,6 @@ function SupportedLinearReference({
       triggerWrapperClassName="inline!"
     >
       {trigger}
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }

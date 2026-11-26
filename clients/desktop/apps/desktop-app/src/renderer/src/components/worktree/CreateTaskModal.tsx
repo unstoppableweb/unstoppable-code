@@ -38,7 +38,7 @@ import {
   Stack,
   Button,
   DelayedLoadingPlaceholder,
-  DialogFormField,
+  FormField,
   ListRow,
   SearchField,
   SegmentedControl,
@@ -872,13 +872,13 @@ export function CreateTaskModal({
               </div>
             )}
 
-            <DialogFormField
+            <FormField
               label={
                 mode === 'new'
                   ? 'Task description'
                   : 'Task description (optional)'
               }
-              htmlFor="create-task-text"
+              id="create-task-text"
             >
               <TextArea
                 id="create-task-text"
@@ -888,7 +888,7 @@ export function CreateTaskModal({
                 rows={mode === 'new' ? 6 : 3}
                 data-testid="create-task-text"
               />
-            </DialogFormField>
+            </FormField>
           </>
         )}
       </div>

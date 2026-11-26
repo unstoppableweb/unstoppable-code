@@ -112,6 +112,7 @@ async function rewriteGlobalDefaults(
 ): Promise<boolean> {
   let changed = false;
   const preferences = await updatePreferencesFile((latest) => {
+    changed = false;
     if (!latest.globalPluginSelections) return null;
     const next = rewriteMcpSelections(latest.globalPluginSelections, from, to);
     if (!next) return null;

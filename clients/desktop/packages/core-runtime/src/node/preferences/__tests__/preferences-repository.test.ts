@@ -107,7 +107,8 @@ describe('preference repository qualification (CAN-4471)', () => {
 
   it('never writes over a newer-version primary', async () => {
     const document = new MemoryPreferencesDocument();
-    const primary = JSON.stringify({ version: 2, preferences: {} });
+    // Version 2 is readable since CAN-7925; 3 is the first unknown version.
+    const primary = JSON.stringify({ version: 3, preferences: {} });
     document.slots.set('primary', primary);
     document.slots.set('lastGood', envelope(3, 3));
     document.slots.set('generation', record(3));

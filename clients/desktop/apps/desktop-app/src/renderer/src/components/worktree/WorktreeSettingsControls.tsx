@@ -3,7 +3,7 @@ import { WorktreeApplyControlSurface } from '@canopy/ui-shared/components';
 import { Stack, Heading, Surface } from '@canopy/ui-shared/components';
 import {
   Button,
-  RichHoverTooltip,
+  HoverCard,
   SegmentedControl,
   type SegmentedControlOption,
 } from '@canopy/ui-shared/components';
@@ -344,7 +344,7 @@ export function SourceWorktreePicker({
           ))}
         </FloatingPickerMenu>
       </div>
-      <RichHoverTooltip
+      <HoverCard
         id={helpTooltipId}
         content={SETTINGS_HELP_CONTENT}
         surfacePadding="card"
@@ -358,7 +358,7 @@ export function SourceWorktreePicker({
         >
           <AppCatalogQuestionMarkIcon size="sm" />
         </Button>
-      </RichHoverTooltip>
+      </HoverCard>
     </div>
   );
 }

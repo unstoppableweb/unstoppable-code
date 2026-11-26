@@ -635,8 +635,9 @@ describe('a domain the engine will not accept seeds nothing (pending)', () => {
   });
 
   it('a newer-format primary serves its last-good in memory and persists nothing (G11)', async () => {
+    // Version 2 is readable since CAN-7925; 3 is the first unknown version.
     await writeLegacyPreferences({ fileAutoSave: true }, 'preferences.json', {
-      version: 2,
+      version: 3,
     });
     await writeLegacyPreferences({ ...CHANGED }, 'preferences.last-good.json');
     const before = await readText('preferences.json');

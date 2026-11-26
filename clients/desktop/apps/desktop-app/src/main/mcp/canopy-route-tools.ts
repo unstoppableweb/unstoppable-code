@@ -174,6 +174,10 @@ import {
   appAdvisorSetProjectWorkEntryAutoDeleteJsonSchema,
 } from '../app-advisor/definitions';
 import {
+  AUTOMATION_CREATE_DESCRIPTION,
+  AUTOMATION_GET_DESCRIPTION,
+  AUTOMATION_LIST_DESCRIPTION,
+  AUTOMATION_UPDATE_DESCRIPTION,
   NAVIGATION_TO_LIST_DESCRIPTION,
   PIPELINE_CREATE_DESCRIPTION,
   PIPELINE_GET_ACTION_DEFINITION_DESCRIPTION,
@@ -183,6 +187,10 @@ import {
   PIPELINE_SAVE_DESCRIPTION,
   PIPELINE_SET_YAML_DESCRIPTION,
   askUserQuestionJsonSchema as pipelineEditorAskUserQuestionJsonSchema,
+  automationCreateJsonSchema,
+  automationGetJsonSchema,
+  automationListJsonSchema,
+  automationUpdateJsonSchema,
   emptyArgsJsonSchema as pipelineEditorEmptyArgsJsonSchema,
   pipelineGetActionDefinitionJsonSchema,
   pipelineOpenJsonSchema,
@@ -648,6 +656,22 @@ export const PIPELINE_EDITOR_TERMINAL_TOOL_DEFINITIONS: Readonly<
   pipeline_get_action_definition: {
     description: PIPELINE_GET_ACTION_DEFINITION_DESCRIPTION,
     inputSchema: pipelineGetActionDefinitionJsonSchema,
+  },
+  automation_list: {
+    description: AUTOMATION_LIST_DESCRIPTION,
+    inputSchema: automationListJsonSchema,
+  },
+  automation_get: {
+    description: AUTOMATION_GET_DESCRIPTION,
+    inputSchema: automationGetJsonSchema,
+  },
+  automation_create: {
+    description: AUTOMATION_CREATE_DESCRIPTION,
+    inputSchema: automationCreateJsonSchema,
+  },
+  automation_update: {
+    description: AUTOMATION_UPDATE_DESCRIPTION,
+    inputSchema: automationUpdateJsonSchema,
   },
   navigation_to_list: {
     description: NAVIGATION_TO_LIST_DESCRIPTION,

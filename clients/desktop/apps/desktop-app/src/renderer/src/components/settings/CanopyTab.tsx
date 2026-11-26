@@ -8,6 +8,7 @@ import {
   type JSX,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -25,6 +26,9 @@ import { linuxUpdateCopy } from '@canopy/desktop-shared/lib/linux-update-copy';
 import { isCliPathManagementPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import {
   Stack,
+  Inline,
+  Divider,
+  Heading,
   BusyLabel,
   Button,
   CodeBlock,
@@ -79,6 +83,7 @@ import { uiText } from '@/lib/ui-text';
 import { brand, brandText } from '@/lib/brand';
 import {
   openLinuxUpdateTerminal,
+  beginLinuxUpdateAction,
   getLinuxUpdateTerminalError,
   subscribeLinuxUpdateTerminalError,
   clearLinuxUpdateTerminalError,
@@ -369,9 +374,23 @@ export function CanopyTab(): JSX.Element {
     dependencyVersions,
     state: updateState,
   } = useUpdateState();
+  const updateOffer = `${updateState.phase}:${updateState.info?.version ?? ''}`;
+  const currentUpdateOffer = useRef<string | null>(null);
+  const systemUpdaterRequestId = useRef(0);
+  const [systemUpdaterPending, setSystemUpdaterPending] = useState(false);
+  useLayoutEffect(() => {
+    currentUpdateOffer.current = updateOffer;
+    return (): void => {
+      currentUpdateOffer.current = null;
+      systemUpdaterRequestId.current += 1;
+    };
+  }, [updateOffer]);
   useEffect(() => {
     setUpdateActionError(null);
   }, [updateState]);
+  useEffect(() => {
+    setSystemUpdaterPending(false);
+  }, [updateOffer]);
   const releaseNotesEnabled = useFeatureFlagsStore((state) =>
     state.isEnabled(CLIENT_FEATURE_FLAGS.canopySharedReleaseNotesEnabled.key),
   );
@@ -1118,59 +1137,162 @@ export function CanopyTab(): JSX.Element {
                 {window.platform === 'linux' &&
                   updateState.info?.manualDownload &&
                   linuxCopy.apt && (
-                    <Stack gap="inline">
-                      <p>{linuxCopy.apt.introduction}</p>
-                      <CodeBlock
-                        variant="snippet"
-                        selectable
-                        data-testid="settings-linux-update-command"
-                      >
-                        {linuxCopy.apt.command}
-                      </CodeBlock>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <CopyButton
-                          value={linuxCopy.apt.command}
-                          size="compact"
-                          dataTestId="settings-linux-update-copy"
-                        />
-                        <Tooltip
-                          label={
-                            terminalAvailable
-                              ? null
-                              : !localContext
-                                ? 'For remote computers, copy the command instead.'
-                                : linuxCopy.openInTerminalUnavailable
-                          }
+                    <Stack gap="item">
+                      {updateState.info.systemUpdater === 'update-manager' && (
+                        <>
+                          <p className="text-pretty">
+                            {linuxCopy.apt.alternativesIntroduction}
+                          </p>
+                          <Stack gap="inline">
+                            <Heading level={4} variant="label">
+                              {linuxCopy.apt.softwareUpdaterTitle}
+                            </Heading>
+                            <p className="text-pretty">
+                              {linuxCopy.apt.softwareUpdaterDescription}
+                            </p>
+                            <div>
+                              <Button
+                                variant="primary"
+                                size="compact"
+                                data-testid="settings-linux-update-open-updater"
+                                disabled={systemUpdaterPending}
+                                onClick={(): void => {
+                                  const requestId =
+                                    ++systemUpdaterRequestId.current;
+                                  const isCurrentRequest = (): boolean =>
+                                    requestId ===
+                                      systemUpdaterRequestId.current &&
+                                    currentUpdateOffer.current === updateOffer;
+                                  const isLatestAction = beginLinuxUpdateAction(
+                                    (): void => {
+                                      if (isCurrentRequest())
+                                        setSystemUpdaterPending(false);
+                                    },
+                                    updateState.info?.version,
+                                  );
+                                  setSystemUpdaterPending(true);
+                                  setUpdateActionError(null);
+                                  const message =
+                                    "Couldn't open Software Updater. Use the terminal or copy the command.";
+                                  void window.api.update
+                                    .openSystemUpdater()
+                                    .then(({ opened }): void => {
+                                      if (
+                                        !opened &&
+                                        isLatestAction() &&
+                                        isCurrentRequest()
+                                      )
+                                        setUpdateActionError({ message });
+                                    })
+                                    .catch((error: unknown): void => {
+                                      const classified = toAppError(error);
+                                      if (
+                                        isLatestAction() &&
+                                        isCurrentRequest()
+                                      ) {
+                                        setUpdateActionError({
+                                          message,
+                                          code: classified?.code,
+                                        });
+                                      }
+                                    })
+                                    .finally((): void => {
+                                      if (isCurrentRequest())
+                                        setSystemUpdaterPending(false);
+                                    });
+                                }}
+                              >
+                                {linuxCopy.softwareUpdater}
+                              </Button>
+                            </div>
+                          </Stack>
+                          <Inline gap="inline" align="center">
+                            <Divider className="flex-1" aria-hidden />
+                            <span>{linuxCopy.apt.alternativeSeparator}</span>
+                            <Divider className="flex-1" aria-hidden />
+                          </Inline>
+                        </>
+                      )}
+                      <Stack gap="inline">
+                        {updateState.info.systemUpdater === 'update-manager' ? (
+                          <>
+                            <Heading level={4} variant="label">
+                              {linuxCopy.apt.terminalTitle}
+                            </Heading>
+                            <p className="text-pretty">
+                              {linuxCopy.apt.terminalDescription}
+                            </p>
+                          </>
+                        ) : (
+                          <p>{linuxCopy.apt.introduction}</p>
+                        )}
+                        <CodeBlock
+                          variant="snippet"
+                          selectable
+                          data-testid="settings-linux-update-command"
                         >
-                          <Button
+                          {linuxCopy.apt.command}
+                        </CodeBlock>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <CopyButton
+                            value={linuxCopy.apt.command}
                             size="compact"
-                            disabled={!terminalAvailable}
-                            data-testid="settings-linux-update-open-terminal"
-                            onClick={(): void => {
-                              void openLinuxUpdateTerminal();
-                            }}
+                            dataTestId="settings-linux-update-copy"
+                          />
+                          <Tooltip
+                            label={
+                              terminalAvailable
+                                ? null
+                                : !localContext
+                                  ? 'For remote computers, copy the command instead.'
+                                  : linuxCopy.openInTerminalUnavailable
+                            }
                           >
-                            {linuxCopy.openInTerminal}
-                          </Button>
-                        </Tooltip>
-                      </div>
-                      <ErrorBanner
-                        errorSource="settings-linux-update-terminal"
-                        error={terminalError?.message}
-                        details={terminalError?.details}
-                        displayErrorCode={terminalError?.code}
-                        onDismiss={clearLinuxUpdateTerminalError}
-                        testId="settings-linux-update-terminal-error"
-                      />
+                            <Button
+                              size="compact"
+                              disabled={!terminalAvailable}
+                              data-testid="settings-linux-update-open-terminal"
+                              onClick={(): void => {
+                                systemUpdaterRequestId.current += 1;
+                                setSystemUpdaterPending(false);
+                                setUpdateActionError(null);
+                                void openLinuxUpdateTerminal(
+                                  undefined,
+                                  updateState.info?.version,
+                                );
+                              }}
+                            >
+                              {linuxCopy.openInTerminal}
+                            </Button>
+                          </Tooltip>
+                        </div>
+                        <ErrorBanner
+                          errorSource="settings-linux-update-terminal"
+                          error={terminalError?.message}
+                          details={terminalError?.details}
+                          displayErrorCode={terminalError?.code}
+                          onDismiss={clearLinuxUpdateTerminalError}
+                          testId="settings-linux-update-terminal-error"
+                        />
+                      </Stack>
+                      <p className="text-pretty">
+                        {linuxCopy.administratorAccess}
+                      </p>
                     </Stack>
                   )}
-                <p>
-                  {window.platform === 'linux'
-                    ? (updateState.info?.packageManagerUpdate?.guidance ??
-                      updateState.info?.manualDownload?.guidance ??
-                      'Check for updates again to get the official Linux download and checksum.')
-                    : 'Use “Update available” in the sidebar to start the download.'}
-                </p>
+                {!(
+                  window.platform === 'linux' &&
+                  updateState.info?.manualDownload &&
+                  linuxCopy.apt
+                ) && (
+                  <p>
+                    {window.platform === 'linux'
+                      ? (updateState.info?.packageManagerUpdate?.guidance ??
+                        updateState.info?.manualDownload?.guidance ??
+                        'Check for updates again to get the official Linux download and checksum.')
+                      : 'Use “Update available” in the sidebar to start the download.'}
+                  </p>
+                )}
                 {window.platform === 'linux' &&
                   updateState.info?.packageManagerUpdate && (
                     <code
@@ -1181,6 +1303,7 @@ export function CanopyTab(): JSX.Element {
                     </code>
                   )}
                 {window.platform === 'linux' &&
+                  !linuxCopy.apt &&
                   updateState.info?.manualDownload && (
                     <>
                       <Button

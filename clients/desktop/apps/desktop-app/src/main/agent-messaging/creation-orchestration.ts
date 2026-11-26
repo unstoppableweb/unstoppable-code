@@ -33,9 +33,13 @@ import {
   type PipelineNewChatSeed,
   type TrustedSendCaller,
 } from './send-orchestration';
-import type { AgentSenderRuntimeSource } from './sender-context';
+import type {
+  AgentSenderRuntimeSource,
+  PipelineSenderSource,
+} from './sender-context';
 import { isAutomationRunSource } from './automation-run-source';
 import {
+  agentOriginChatLabel,
   isAgentSenderContextError,
   resolveAgentSenderIdentity,
   revalidatePipelineAgentOrigin,
@@ -201,6 +205,35 @@ export async function dispatchAgentChatCreation(
   }
 }
 
+/**
+ * Why an agent-originated run can't choose plugins for a new chat, naming
+ * the agent's chat and how a person makes the run theirs (CAN-7228).
+ */
+async function agentPluginRefusal(
+  agentOrigin: AgentSenderRuntimeSource,
+  source: PipelineSenderSource,
+): Promise<string> {
+  // The run acts for one agent; another may have written the workflow since,
+  // so the message names whom the run acts for, not who wrote last.
+  const chat = await agentOriginChatLabel(agentOrigin);
+  const agent = chat ? `the agent in ${chat}` : 'an agent';
+  const scheduled = isAutomationRunSource(source);
+  // Only a saved workflow of this computer's can be taken over by a save; a
+  // project file or a share can't, so its schedule is added again instead.
+  const { isLocalUserPipeline } =
+    await import('../pipelines/pipeline-owner-policy');
+  const savable =
+    source.kind !== 'automation' && isLocalUserPipeline(source.pipelineId);
+  const because = `Couldn't choose plugins for the new chat because this run acts for ${agent}`;
+  if (scheduled)
+    return savable
+      ? `${because}, as an agent wrote this workflow or its schedule. To make its runs yours, edit the workflow's steps and save them.`
+      : `${because}, as an agent wrote this schedule. To make its runs yours, remove the schedule and add it again yourself.`;
+  return savable
+    ? `${because}, as an agent wrote this workflow or started this run. To make it yours, edit the workflow's steps, save them and run it yourself.`
+    : `${because}, as an agent started this run. To choose plugins, run the workflow yourself.`;
+}
+
 async function create(
   input: ChatCreationAction,
   context: AgentChatSendContext,
@@ -300,6 +333,21 @@ async function create(
       : trusted.kind === 'pipeline' && context.plannedTaskId !== undefined
         ? context.plannedTaskId
         : randomUUID();
+  // D11 for a new chat: an agent-originated seed may set the model, plan mode
+  // and interface, but never plugins, and approvals only within the agent's;
+  // a native grant keeps what the automation's native action set (CAN-5479).
+  // Checked before the Orchestrator seed rule, so a refused plugin choice
+  // says how to make the run the person's (CAN-7228).
+  if (
+    newChatSeed?.pluginSelections !== undefined &&
+    trusted.kind === 'pipeline' &&
+    trusted.source.agentOrigin &&
+    nativeGrant === undefined
+  )
+    throw new AgentChatSendError(
+      'authorization_conflict',
+      await agentPluginRefusal(trusted.source.agentOrigin, trusted.source),
+    );
   if (
     newChatSeed &&
     !projectAction &&
@@ -311,19 +359,6 @@ async function create(
     throw new AgentChatSendError(
       'unsupported_action',
       'Orchestrator chats accept only thinking effort, fast mode, plan mode and approval mode.',
-    );
-  // D11 for a new chat: an agent-originated seed may set the model, plan mode
-  // and interface, but never plugins, and approvals only within the agent's;
-  // a native grant keeps what the automation's native action set (CAN-5479).
-  if (
-    newChatSeed?.pluginSelections !== undefined &&
-    trusted.kind === 'pipeline' &&
-    trusted.source.agentOrigin &&
-    nativeGrant === undefined
-  )
-    throw new AgentChatSendError(
-      'authorization_conflict',
-      'An agent-originated run cannot choose plugins for a new chat.',
     );
   let selection: CreationModelSelection | undefined;
   let projectId: string;

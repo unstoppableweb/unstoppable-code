@@ -32,7 +32,7 @@ import {
   SearchField,
   SettingsButtonRow,
   SettingsSaveBar,
-  DialogFormField,
+  FormField,
   DialogModal,
   FieldError,
 } from '@canopy/ui-shared/components';
@@ -614,7 +614,7 @@ export function EnvironmentsTab(): JSX.Element {
             data-testid="environments-global-runtimes"
           >
             {ENVIRONMENT_RUNTIMES.map((runtime) => (
-              <DialogFormField
+              <FormField
                 key={runtime}
                 label={ENVIRONMENT_RUNTIME_LABEL[runtime]}
               >
@@ -626,7 +626,7 @@ export function EnvironmentsTab(): JSX.Element {
                   testId={`environments-global-runtime-${runtime}`}
                   ariaLabel={`${ENVIRONMENT_RUNTIME_LABEL[runtime]} global default`}
                 />
-              </DialogFormField>
+              </FormField>
             ))}
           </div>
         </DialogModal>

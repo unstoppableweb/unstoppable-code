@@ -23,10 +23,7 @@ import { McpServerIcon } from '../icons/McpServerIcon';
 import { PipelineIcon } from '../icons/PipelineIcon';
 import { PluginsIcon } from '../icons/PluginsIcon';
 import { SkillIcon } from '../icons/SkillIcon';
-import {
-  RichHoverTooltip,
-  type TooltipTriggerProps,
-} from '../primitives/RichHoverTooltip';
+import { HoverCard, type HoverCardTriggerProps } from '../primitives/HoverCard';
 import { StatusGlyph } from '../primitives/StatusGlyph';
 import { StepRow } from './chat/StepRow';
 import {
@@ -63,7 +60,7 @@ export interface CapabilityTileProps {
   /** Kept per receipt kind by the host, e.g. `agent-artifact-automation_run`. */
   testId: string;
   /** Wraps only the tile's trigger, e.g. in a hover tooltip. */
-  wrapTrigger?: (trigger: ReactElement<TooltipTriggerProps>) => ReactNode;
+  wrapTrigger?: (trigger: ReactElement<HoverCardTriggerProps>) => ReactNode;
   /**
    * A separate control such as Share. It renders beside the trigger, never
    * inside the anchor or button.
@@ -206,13 +203,13 @@ function TileStateGlyph({
   return (
     <span className="ml-auto flex h-5 shrink-0 items-center self-start pl-2">
       {tooltip ? (
-        <RichHoverTooltip
+        <HoverCard
           surfaceClassName="w-max"
           surfacePadding="relaxed"
           content={<div className="text-xs fg-primary">{statusText}</div>}
         >
           {trigger}
-        </RichHoverTooltip>
+        </HoverCard>
       ) : (
         trigger
       )}
@@ -397,7 +394,7 @@ export const CapabilityTile = memo(function CapabilityTile({
     />
   );
   const staticClass = row ? ROW_TRIGGER_CLASS : TRIGGER_CLASS;
-  let trigger: ReactElement<TooltipTriggerProps>;
+  let trigger: ReactElement<HoverCardTriggerProps>;
   if (action.kind === 'link') {
     const { href, onNavigate } = action;
     trigger = (

@@ -14,7 +14,7 @@ import {
 } from '@canopy/ui-shared/icons/AppIcons';
 import { ActivitySection } from './ActivitySection';
 import { LoadingSpinner } from '../shared/loading/spinners/LoadingSpinner';
-import { ActionTooltip } from '@/components/shared/ActionTooltip';
+import { Tooltip } from '@canopy/ui-shared/components';
 import {
   isSplitPrEligible,
   useGitHubStore,
@@ -942,8 +942,8 @@ export function PullRequestSection({
         {showSplitButton && (
           <div>
             {splitBlocked ? (
-              <ActionTooltip
-                title="Split PR"
+              <Tooltip
+                label="Split PR"
                 description={splitReadiness.blockers
                   .map((blocker) => SPLIT_PR_BLOCKER_COPY[blocker])
                   .join('\n')}
@@ -955,7 +955,7 @@ export function PullRequestSection({
                     ? ` (${splitLineCount.toLocaleString()} changed lines)`
                     : ''}
                 </Button>
-              </ActionTooltip>
+              </Tooltip>
             ) : (
               <Button
                 size="compact"

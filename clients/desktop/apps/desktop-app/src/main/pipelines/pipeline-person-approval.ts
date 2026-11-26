@@ -17,6 +17,7 @@ import { nativeGrantContentHash } from '../automations/chat-automation-native-gr
 import {
   readPipelineLocalMetadata,
   recordPersonApprovalTakeover,
+  recordUserPipelinePersonAuthored,
   setUserPipelinePersonApproval,
   type PipelineLocalMetadata,
   type PipelinePersonApproval,
@@ -123,6 +124,24 @@ export async function stampPersonApproval(
   };
   setUserPipelinePersonApproval(pipelineId, approval);
   return approvalRecorded(pipelineId, approval);
+}
+
+/**
+ * Records a person's authorship of the content their save committed at
+ * `committedRevision` (CAN-7228), with its digest, so a schedule an agent
+ * wrote before runs that exact content as theirs. Nothing is recorded when
+ * the pipeline has moved past that revision.
+ */
+export function stampPersonAuthored(
+  pipelineId: string,
+  committedRevision: number,
+): void {
+  const stored = storedUserPipeline(pipelineId);
+  if (stored === undefined || stored.revision !== committedRevision) return;
+  recordUserPipelinePersonAuthored(
+    pipelineId,
+    nativeGrantContentHash(stored.content),
+  );
 }
 
 /**

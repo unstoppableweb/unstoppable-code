@@ -1,8 +1,9 @@
 import {
   CLIENT_LOCAL_PREFERENCE_KEYS,
   type ClientLocalPreferenceKey,
+  type DomainPreferencesData,
   type PreferencesCodec,
-  type WithStoredKeys,
+  type StoredDomainPreferences,
 } from '@canopy/core-runtime/node/preferences';
 import {
   SIDEBAR_MAX_WIDTH,
@@ -32,22 +33,18 @@ import {
   normalizeWindowBounds,
 } from './record-normalizers';
 
+export {
+  storedClientLocalValues,
+  type DomainPreferencesData,
+  type StoredDomainPreferences,
+} from '@canopy/core-runtime/node/preferences';
+
 const CHECKED_CLIENT_LOCAL_KEYS =
   CLIENT_LOCAL_PREFERENCE_KEYS satisfies readonly (keyof PreferencesData)[];
 
 /** Window geometry, appearance and pure view state: this client's own document (CAN-4472). */
 export type ClientLocalPreferences = Pick<
   PreferencesData,
-  ClientLocalPreferenceKey
->;
-/** Everything else: the domain preferences document. */
-export type DomainPreferencesData = Omit<
-  PreferencesData,
-  ClientLocalPreferenceKey
->;
-/** The domain document as stored, with its frozen copy of client-local keys. */
-export type StoredDomainPreferences = WithStoredKeys<
-  DomainPreferencesData,
   ClientLocalPreferenceKey
 >;
 
@@ -189,18 +186,6 @@ export function mergeClientLocalPreferences(
   clientLocal: ClientLocalPreferences,
 ): PreferencesData {
   return { ...omitClientLocalPreferences(domain), ...clientLocal };
-}
-
-/** The client-local values a stored domain document still holds, as stored. */
-export function storedClientLocalValues(
-  domain: StoredDomainPreferences,
-): Record<string, unknown> {
-  const values: Record<string, unknown> = {};
-  for (const key of CHECKED_CLIENT_LOCAL_KEYS) {
-    if (Object.prototype.hasOwnProperty.call(domain, key))
-      values[key] = domain[key];
-  }
-  return values;
 }
 
 function copyKey<K extends ClientLocalPreferenceKey>(

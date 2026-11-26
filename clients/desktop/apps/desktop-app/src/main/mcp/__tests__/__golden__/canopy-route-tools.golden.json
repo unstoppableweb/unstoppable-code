@@ -4531,6 +4531,22 @@
         "43bf21b43649d3455ea4fa8bdcbcec64d4a8328157dc94b484eb0f63c81feb20"
       ],
       [
+        "ListAutomations",
+        "2cb85e14bbef884fb073b786c8fbd8f4f1ce5d3dea55da70413a44ccff0aa1fb"
+      ],
+      [
+        "GetAutomation",
+        "aeec46d387173933cae0ed44d33a28ae11e1fccf7288b2ae23656a596314a4c6"
+      ],
+      [
+        "CreateAutomation",
+        "a8906c4e33088696d75b73a62279e915f18d982090543d6a1c36f20251b283bd"
+      ],
+      [
+        "UpdateAutomation",
+        "cfd529b4407a562f68c71b3ecd0f04ba8646f0b46088faef07b4c044e1a34eab"
+      ],
+      [
         "NavigateToPipelineList",
         "0163af9e2d80faea41ce6e40a43eee5080c5d6f028f19caa8b476ae37f560758"
       ],

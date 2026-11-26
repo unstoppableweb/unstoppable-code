@@ -1,5 +1,6 @@
-import { stat } from 'node:fs/promises';
+import { mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isErrnoException } from './type-guards';
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -22,4 +23,26 @@ export async function ensureUniqueDestination(
     candidate = join(baseDir, `${preferredName}-${attempt}`);
   }
   return candidate;
+}
+
+/**
+ * Creates the first free `<name>`, `<name>-2`, … under `baseDir` with an
+ * exclusive mkdir, so concurrent callers never share a directory.
+ */
+export async function reserveUniqueDestination(
+  baseDir: string,
+  preferredName: string,
+): Promise<string> {
+  let suffix = 1;
+  while (true) {
+    const name = suffix === 1 ? preferredName : `${preferredName}-${suffix}`;
+    const candidate = join(baseDir, name);
+    try {
+      await mkdir(candidate);
+      return candidate;
+    } catch (error) {
+      if (!isErrnoException(error) || error.code !== 'EEXIST') throw error;
+      suffix += 1;
+    }
+  }
 }

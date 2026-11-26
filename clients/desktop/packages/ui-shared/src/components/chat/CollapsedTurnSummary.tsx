@@ -39,7 +39,7 @@ import type {
   TurnOutcomeCounts,
   TurnOutcomeStepDetail,
 } from '@canopy/protocol/remote-control/shell';
-import { RichHoverTooltip } from '../../primitives/RichHoverTooltip';
+import { HoverCard } from '../../primitives/HoverCard';
 import { useIsPhone } from '../../primitives/useMediaQuery';
 import { describeStepCounts, type StepKind } from './step-words';
 import { TurnOutcomeTooltip } from './TurnOutcomeTooltip';
@@ -426,7 +426,7 @@ export function TurnOutcomeControl({
 
   return (
     <span className={`inline-flex flex-shrink-0 ${STEP_ROW_DETAIL_INK_CLASS}`}>
-      <RichHoverTooltip
+      <HoverCard
         content={
           <TurnOutcomeTooltip
             outcomes={outcomes}
@@ -452,7 +452,7 @@ export function TurnOutcomeControl({
         dataTestId="turn-outcome-tooltip-surface"
       >
         {trigger}
-      </RichHoverTooltip>
+      </HoverCard>
     </span>
   );
 }

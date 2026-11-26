@@ -9,7 +9,7 @@ import { DiffContentView } from '../activity/DiffContentView';
 import {
   DiffTurnUnavailableState,
   HeaderActionButton,
-  RichHoverCard,
+  HoverCard,
   Surface,
 } from '@canopy/ui-shared/components';
 import {
@@ -115,7 +115,8 @@ export const TurnDiffPopover = memo(function TurnDiffPopover({
   // sit 4px in, with 8px corners nested in the card's 12px ones; the path
   // lands on the preview cards' 12px text edge.
   return (
-    <RichHoverCard
+    <HoverCard
+      open
       anchorRef={anchorRef}
       placement={placement}
       interactive
@@ -125,57 +126,60 @@ export const TurnDiffPopover = memo(function TurnDiffPopover({
       elevation="menu"
       surfacePadding="frame"
       surfaceClassName="w-72"
-    >
-      <div className="flex h-44 min-h-0 flex-col gap-1">
-        <div className="flex min-w-0 shrink-0 items-center gap-2 pl-2">
-          <span className="min-w-0 truncate text-xs font-medium fg-primary">
-            {file.path.split(/[\\/]/).pop() ?? file.path}
-          </span>
-          <span className="ml-auto flex shrink-0 items-center">
-            <HeaderActionButton
-              tone="neutral"
-              iconOnly
-              aria-label="Open full diff view"
-              onClick={onOpenModal}
-            >
-              <MaximizeIcon size="sm" />
-            </HeaderActionButton>
-            <HeaderActionButton
-              tone="neutral"
-              iconOnly
-              aria-label="Open file in editor"
-              onClick={onEdit}
-            >
-              <AppCatalogPencilIcon size="sm" aria-hidden="true" />
-            </HeaderActionButton>
-          </span>
-        </div>
-
-        <Surface
-          variant="group"
-          size="small"
-          className="min-h-0 flex-1 overflow-hidden flex flex-col"
-        >
-          <div className="flex diff-popover-compact min-h-0 flex-1">
-            {treeRef ? (
-              <DiffContentView
-                oldValue={oldValue}
-                newValue={newValue}
-                viewMode="unified"
-                loading={loading}
-                truncated={truncated}
-                binary={binary}
-                imagePreview={imagePreview}
-                variant="compact"
-              />
-            ) : (
-              <DiffTurnUnavailableState
-                action={<p>Expand to see all branch changes for this file.</p>}
-              />
-            )}
+      content={
+        <div className="flex h-44 min-h-0 flex-col gap-1">
+          <div className="flex min-w-0 shrink-0 items-center gap-2 pl-2">
+            <span className="min-w-0 truncate text-xs font-medium fg-primary">
+              {file.path.split(/[\\/]/).pop() ?? file.path}
+            </span>
+            <span className="ml-auto flex shrink-0 items-center">
+              <HeaderActionButton
+                tone="neutral"
+                iconOnly
+                aria-label="Open full diff view"
+                onClick={onOpenModal}
+              >
+                <MaximizeIcon size="sm" />
+              </HeaderActionButton>
+              <HeaderActionButton
+                tone="neutral"
+                iconOnly
+                aria-label="Open file in editor"
+                onClick={onEdit}
+              >
+                <AppCatalogPencilIcon size="sm" aria-hidden="true" />
+              </HeaderActionButton>
+            </span>
           </div>
-        </Surface>
-      </div>
-    </RichHoverCard>
+
+          <Surface
+            variant="group"
+            size="small"
+            className="min-h-0 flex-1 overflow-hidden flex flex-col"
+          >
+            <div className="flex diff-popover-compact min-h-0 flex-1">
+              {treeRef ? (
+                <DiffContentView
+                  oldValue={oldValue}
+                  newValue={newValue}
+                  viewMode="unified"
+                  loading={loading}
+                  truncated={truncated}
+                  binary={binary}
+                  imagePreview={imagePreview}
+                  variant="compact"
+                />
+              ) : (
+                <DiffTurnUnavailableState
+                  action={
+                    <p>Expand to see all branch changes for this file.</p>
+                  }
+                />
+              )}
+            </div>
+          </Surface>
+        </div>
+      }
+    />
   );
 });

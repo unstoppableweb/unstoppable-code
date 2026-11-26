@@ -1,5 +1,6 @@
 import type { CSSProperties, JSX } from 'react';
 import { Tooltip } from '../primitives/Tooltip';
+import { BADGE_BASE_CLASS, badgeClassName } from '../lib/badge';
 
 export interface PrLabelBadgeProps {
   /** Label text. */
@@ -122,17 +123,21 @@ function computeLabelColors(rgb: Rgb): LabelColorStyle {
   };
 }
 
-const PILL_BASE =
-  'inline-flex max-w-full items-center truncate rounded-full px-2.5 py-0.5 text-xs font-medium leading-4.5';
+// `Badge`'s 18px capsule and label type, so a label sits level with the
+// markers beside it; only the fill, ink and hairline are the label's own.
+const LABEL_CLASS = `${BADGE_BASE_CLASS} max-w-full truncate canopy-pr-label`;
+// A label whose color doesn't parse is the neutral badge.
+const FALLBACK_CLASS = `${badgeClassName('neutral')} max-w-full truncate`;
 
 /**
- * Pure GitHub-style PR label pill. Matches GitHub's Primer label treatment in
- * both color modes: a solid fill with contrasting text in light mode, and a
- * translucent label-color tint with a lightened, label-hued border and text in
- * dark mode. The color math is computed here and handed to
- * `.canopy-pr-label` (in `@canopy/ui-shared/styles/canopy-tokens.css`) via CSS
- * custom properties so the light/dark switch stays in CSS. Shared between the
- * desktop renderer and the web portal.
+ * Pure GitHub-style PR label, on `Badge`'s size and shape. Keeps GitHub's
+ * Primer label colors in both color modes: a solid fill with contrasting text
+ * in light mode, and a translucent label-color tint with a lightened,
+ * label-hued border and text in dark mode. The color math is computed here
+ * and handed to `.canopy-pr-label` (in
+ * `@canopy/ui-shared/styles/canopy-tokens.css`) via CSS custom properties so
+ * the light/dark switch stays in CSS. Shared between the desktop renderer and
+ * the web portal.
  */
 export function PrLabelBadge({
   name,
@@ -161,7 +166,7 @@ export function PrLabelBadge({
               'aria-label': `${name}: ${description}`,
             }
           : {})}
-        className={`${PILL_BASE} ${rgb ? 'canopy-pr-label' : 'border bg-muted fg-secondary'}${description ? ' focus-ring' : ''}`}
+        className={`${rgb ? LABEL_CLASS : FALLBACK_CLASS}${description ? ' focus-ring' : ''}`}
       >
         {name}
       </span>

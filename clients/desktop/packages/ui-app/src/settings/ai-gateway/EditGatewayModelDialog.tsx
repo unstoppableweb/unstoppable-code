@@ -4,7 +4,7 @@ import { useState, type JSX } from 'react';
 import {
   Button,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   DialogModal,
   ErrorBanner,
   FormField,
@@ -103,12 +103,13 @@ export function EditGatewayModelDialog({
           <p className="text-xs font-medium fg-primary">Thinking levels</p>
           <ChoiceList aria-label="Thinking levels">
             {SELECTABLE_THINKING_LEVELS.map((level) => (
-              <ChoiceListRow
+              <ChoiceField
                 key={level}
-                selected={thinking.has(level)}
+                layout="row"
+                checked={thinking.has(level)}
                 disabled={busy}
                 data-testid={`ai-gateway-edit-thinking-${level}`}
-                onClick={() =>
+                onChange={() =>
                   setThinking((previous) => {
                     const next = new Set(previous);
                     if (next.has(level)) next.delete(level);
@@ -116,21 +117,20 @@ export function EditGatewayModelDialog({
                     return next;
                   })
                 }
-              >
-                {level}
-              </ChoiceListRow>
+                label={level}
+              />
             ))}
           </ChoiceList>
         </div>
         <ChoiceList aria-label="Tool schemas">
-          <ChoiceListRow
-            selected={flatSchema}
+          <ChoiceField
+            layout="row"
+            checked={flatSchema}
             disabled={busy}
             data-testid="ai-gateway-edit-flat-schema"
-            onClick={() => setFlatSchema((previous) => !previous)}
-          >
-            Flat tool schema
-          </ChoiceListRow>
+            onChange={() => setFlatSchema((previous) => !previous)}
+            label="Flat tool schema"
+          />
         </ChoiceList>
         <div className="flex justify-end">
           <Button

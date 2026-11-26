@@ -28,7 +28,7 @@ import { resolveSharedPipelineUrl } from '@/lib/share-links';
 import { pipelineSharePath } from '@canopy/protocol/pipelines';
 import { useClipboardCopy } from '@/hooks/useClipboardCopy';
 import {
-  ActionTooltip,
+  Tooltip,
   TableActionButton,
   TableActionsCell,
 } from '@canopy/ui-shared';
@@ -48,7 +48,7 @@ function ExecutionScopeDetails({
   const meta = PIPELINE_EXECUTION_SCOPE_META[scope];
 
   return (
-    <ActionTooltip title={meta.label} description={meta.description}>
+    <Tooltip label={meta.label} description={meta.description}>
       <ControlButton
         type="button"
         aria-label={`${meta.label}: ${meta.description}`}
@@ -56,7 +56,7 @@ function ExecutionScopeDetails({
       >
         <Badge>{meta.label}</Badge>
       </ControlButton>
-    </ActionTooltip>
+    </Tooltip>
   );
 }
 

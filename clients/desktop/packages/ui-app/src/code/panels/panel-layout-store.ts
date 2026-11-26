@@ -378,8 +378,13 @@ export interface PanelLayoutState {
     panelId: string,
     replacement: PanelTabDescriptor,
   ): boolean;
-  /** Closes one tab; closing a group's last tab closes the group. */
-  closeTab(worktreeKey: string, groupId: string, panelId: string): void;
+  /** Closes one tab, optionally keeping its empty group for a pending bind. */
+  closeTab(
+    worktreeKey: string,
+    groupId: string,
+    panelId: string,
+    options?: { readonly keepEmptyGroup?: boolean },
+  ): void;
   /**
    * Closes a batch of tabs within one group (reusing {@link closeTab}
    * semantics: closing every tab of a group removes it, except the last
@@ -3135,7 +3140,7 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
       return true;
     },
 
-    closeTab: (worktreeKey, groupId, panelId): void => {
+    closeTab: (worktreeKey, groupId, panelId, options): void => {
       const layout = get().layouts[worktreeKey];
       const group = layout?.groups[groupId];
       if (!layout || !group) {
@@ -3163,7 +3168,12 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
 
       const work = startWork(layout);
       if (
-        workDetachTab(work, groupId, panelId, keepsEmptyGroups(worktreeKey))
+        workDetachTab(
+          work,
+          groupId,
+          panelId,
+          options?.keepEmptyGroup === true || keepsEmptyGroups(worktreeKey),
+        )
       ) {
         expandStaleCollapsesInWork(work);
       }

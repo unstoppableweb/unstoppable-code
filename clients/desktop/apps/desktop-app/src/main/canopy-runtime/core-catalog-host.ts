@@ -817,6 +817,7 @@ export function createDesktopCatalogHost(
       let change: { previous: PreferencesData; next: PreferencesData };
       try {
         change = await deps.updatePreferences((latest) => {
+          conflict = false;
           const current = normalizePluginSelections(
             latest.globalPluginSelections,
           );

@@ -19,6 +19,7 @@ import {
   interfaceToolAudience,
   interfaceToolAudienceOf,
 } from '../agents/interface-tool-binding';
+import { noteAgentRequestedEditorSave } from '../pipelines/agent-editor-save';
 import {
   interfaceToolOutcomeToRendererResponse,
   setLatestAppAdvisorUiState,
@@ -123,6 +124,8 @@ export async function presentAppAdvisorAction(input: {
       },
     };
   const audience = interfaceToolAudienceOf(destination.chatId);
+  // CAN-7228: the editor save this presses is the agent's, not the person's.
+  if (action.type === 'pipeline.save') noteAgentRequestedEditorSave();
   const outcome = await registry.invoke({
     toolName: 'ui.app_advisor.present',
     input: {

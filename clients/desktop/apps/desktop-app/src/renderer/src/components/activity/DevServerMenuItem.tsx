@@ -6,7 +6,7 @@ import {
   openDevServerHit,
   type DevServerOpenContext,
 } from './devServerOpen';
-import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
+import { HoverCard } from '@canopy/ui-shared/components';
 
 interface DevServerMenuItemProps {
   hit: DevServerHit;
@@ -27,7 +27,7 @@ export function DevServerMenuItem({
   onSelect,
 }: DevServerMenuItemProps): JSX.Element {
   return (
-    <RichHoverTooltip
+    <HoverCard
       content={hit.url}
       triggerWrapperClassName="w-full"
       surfaceClassName="w-max max-w-96"
@@ -44,6 +44,6 @@ export function DevServerMenuItem({
           {getDevServerMenuItemText(hit)}
         </span>
       </DropdownMenuItem>
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }

@@ -4,7 +4,7 @@ import { DialogActionFooter } from '@canopy/ui-shared/components';
 import {
   Stack,
   Button,
-  DialogFormField,
+  FormField,
   DialogModal,
   DisplayAvatar,
   ErrorBanner,
@@ -18,7 +18,7 @@ import {
   PickerMenuOptionTrailing,
   SearchField,
   SettingsSelect,
-  StatusPill,
+  Badge,
   EmptyStateRow,
 } from '@canopy/ui-shared/components';
 import type {
@@ -326,10 +326,7 @@ export function InviteTeammateDialog({
         )}
 
         {(organizations.length > 1 || organizationId === '') && (
-          <DialogFormField
-            label="Organization"
-            htmlFor="invite-teammate-organization"
-          >
+          <FormField label="Organization" id="invite-teammate-organization">
             <SettingsSelect
               id="invite-teammate-organization"
               data-testid="invite-teammate-organization"
@@ -344,7 +341,7 @@ export function InviteTeammateDialog({
                 label: organization.name,
               }))}
             />
-          </DialogFormField>
+          </FormField>
         )}
         {organizations.length <= 1 && organizationId !== '' && (
           <p
@@ -471,13 +468,13 @@ export function InviteTeammateDialog({
                   </span>
                   {grant.dismissedAt !== undefined ? (
                     // Revoke-only record of a share the recipient removed.
-                    <StatusPill
+                    <Badge
                       data-testid={`invite-teammate-removed-by-recipient-${grant.recipient.userId}`}
                     >
                       Removed by recipient
-                    </StatusPill>
+                    </Badge>
                   ) : (
-                    <StatusPill>Can view and prompt</StatusPill>
+                    <Badge>Can view and prompt</Badge>
                   )}
                   <Button
                     variant="ghost-destructive"

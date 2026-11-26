@@ -26,7 +26,6 @@ import {
   Disclosure,
   ErrorBanner,
   ProgressBar,
-  StatusPill,
   SourceBranchCommitHint,
   Surface,
   Tooltip,
@@ -175,12 +174,12 @@ function statusPill(candidate: ExternalProjectCandidate): JSX.Element | null {
         ? 'Imported'
         : 'Unavailable';
   return (
-    <StatusPill
-      tone={candidate.status === 'unavailable' ? 'warning' : 'tertiary'}
+    <Badge
+      tone={candidate.status === 'unavailable' ? 'warning' : 'neutral'}
       data-testid={`import-projects-status-${candidate.status}`}
     >
       {label}
-    </StatusPill>
+    </Badge>
   );
 }
 

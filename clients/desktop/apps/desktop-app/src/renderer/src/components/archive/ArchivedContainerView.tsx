@@ -106,7 +106,7 @@ import {
   HeaderActionButton,
   Notice,
   PrBadgeTooltipContent,
-  RichHoverTooltip,
+  HoverCard,
   type WorktreeRowPrStatus,
 } from '@canopy/ui-shared/components';
 import { PrStateIndicator } from '@/components/github/PrStatusBadge';
@@ -853,7 +853,7 @@ export function ArchivedContainerView({
               {showPullRequestRepositoryNames && (
                 <span className="text-2xs fg-secondary">{entry.repoName}</span>
               )}
-              <RichHoverTooltip
+              <HoverCard
                 dataTestId={`archived-pr-tooltip-${entry.repoId}`}
                 surfaceClassName="min-w-65 max-w-85"
                 surfacePadding="card"
@@ -875,7 +875,7 @@ export function ArchivedContainerView({
                 }
               >
                 <PrStateIndicator state={state} prNumber={number} prUrl={url} />
-              </RichHoverTooltip>
+              </HoverCard>
             </span>
           );
         })}
@@ -898,7 +898,7 @@ export function ArchivedContainerView({
             (removed at expiry). Same icon vocabulary as the overview list
             and the row menus, with the rich tooltip spelling out what each
             state means for the retained data. */}
-        <RichHoverTooltip
+        <HoverCard
           dataTestId="archived-state-tooltip"
           surfaceClassName="min-w-55 max-w-80"
           surfacePadding="card"
@@ -930,7 +930,7 @@ export function ArchivedContainerView({
                 : `Deleted ${formatDateOrEmpty(summary?.archivedAt)}`}
             </Badge>
           </span>
-        </RichHoverTooltip>
+        </HoverCard>
         {!locked && summary?.expiresAt !== undefined && (
           <span className="shrink-0 text-2xs fg-secondary">
             · Removed {formatDateOrEmpty(summary.expiresAt)}

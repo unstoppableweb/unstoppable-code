@@ -8,7 +8,7 @@ import {
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import { getModelDisplayName } from '@canopy/desktop-shared/types';
 import { BranchIcon } from '@canopy/ui-shared/icons/AppIcons';
-import { ActionTooltip } from '../shared/ActionTooltip';
+import { Tooltip } from '@canopy/ui-shared/components';
 import { ForkChatButton } from './ForkChatButton';
 
 export function TurnTimer({
@@ -116,8 +116,8 @@ export function TurnTimer({
       )}
       {archiveToggleButton}
       {showBranchAction && onBranch && (
-        <ActionTooltip
-          title={`Branch ${CHAT_UNIT_LABEL}`}
+        <Tooltip
+          label={`Branch ${CHAT_UNIT_LABEL}`}
           description="Create a new worktree from this one and continue the chat there."
         >
           <Button
@@ -129,7 +129,7 @@ export function TurnTimer({
           >
             <BranchIcon size="sm" aria-hidden="true" />
           </Button>
-        </ActionTooltip>
+        </Tooltip>
       )}
       {shareButton}
       {commentsButton}

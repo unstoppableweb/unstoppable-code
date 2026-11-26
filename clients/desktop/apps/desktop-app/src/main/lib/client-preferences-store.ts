@@ -16,6 +16,10 @@ import {
   normalizeClientLocalPreferences,
   type ClientLocalPreferences,
 } from '@canopy/desktop-shared/node/preferences/client-local-preferences';
+import {
+  PREFERENCES_ENVELOPE_WRITE_VERSION,
+  readPreferencesEnvelopeRecord,
+} from '@canopy/protocol/preferences';
 import { isRecord } from './type-guards';
 import { getClientPreferencesFilePath } from './paths';
 
@@ -160,13 +164,9 @@ async function readSlot(
       : { kind: 'unreadable', text: null };
   }
   try {
-    const parsed: unknown = JSON.parse(text);
-    if (
-      isRecord(parsed) &&
-      parsed.version === 1 &&
-      isRecord(parsed.preferences)
-    )
-      return { kind: 'readable', payload: parsed.preferences };
+    // The engine's own envelope rule, so this verdict matches its reads.
+    const payload = readPreferencesEnvelopeRecord(JSON.parse(text));
+    if (payload) return { kind: 'readable', payload };
   } catch {
     // Unparseable: moved aside below.
   }
@@ -262,7 +262,11 @@ export function createClientLocalPreferencesStore(options: {
       }
       await document.install(
         'primary',
-        JSON.stringify({ version: 1, preferences: rebuilt }, null, 2),
+        JSON.stringify(
+          { version: PREFERENCES_ENVELOPE_WRITE_VERSION, preferences: rebuilt },
+          null,
+          2,
+        ),
       );
     } catch (error) {
       options.warn(

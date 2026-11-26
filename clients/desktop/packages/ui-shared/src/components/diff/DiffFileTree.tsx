@@ -5,7 +5,7 @@ import {
 import type { JSX, MouseEventHandler, ReactNode } from 'react';
 import { ControlButton, Button } from '../../primitives/Button';
 import { DiffLineCounts } from '../DiffLineCounts';
-import { RichHoverTooltip } from '../../primitives/RichHoverTooltip';
+import { HoverCard } from '../../primitives/HoverCard';
 import { Heading } from '../../primitives/Heading';
 
 /**
@@ -356,7 +356,7 @@ export function DiffFileTreeRow({
     </>
   );
   return (
-    <RichHoverTooltip
+    <HoverCard
       content={details ?? <span className="font-mono">{file.filePath}</span>}
       triggerWrapperClassName={
         flat ? 'w-full' : fullPath ? 'w-full min-w-0' : 'w-max min-w-full'
@@ -382,6 +382,6 @@ export function DiffFileTreeRow({
           {content}
         </ControlButton>
       )}
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }

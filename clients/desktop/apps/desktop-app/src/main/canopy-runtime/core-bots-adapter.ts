@@ -25,7 +25,11 @@ import {
   type BotRegistryStore,
   type BotUpdatePatch,
 } from '../bots/registry-store';
-import { readVisibleBot, readVisibleBots } from '../bots/visibility';
+import {
+  projectVisible,
+  readVisibleBot,
+  readVisibleBots,
+} from '../bots/visibility';
 
 export type CoreBotsQueryHandlers = Pick<
   CanopyQueryHandlerMap<CanopyHandlerContext>,
@@ -45,6 +49,7 @@ export interface CoreBotsHost {
   visibility: {
     readVisibleBots(): Promise<BotRecord[]>;
     readVisibleBot(botId: string): Promise<BotRecord>;
+    projectVisible(record: BotRecord): Promise<BotRecord>;
   };
 }
 
@@ -136,7 +141,7 @@ const BOT_OPERATION_ERRORS: Record<
 
 const desktopBotsHost = (): CoreBotsHost => ({
   store: getBotRegistryStore(),
-  visibility: { readVisibleBots, readVisibleBot },
+  visibility: { readVisibleBots, readVisibleBot, projectVisible },
 });
 
 function botErrorReason(error: unknown): BotRegistryFailure {
@@ -236,12 +241,9 @@ export function createCoreBotsAdapter(host?: CoreBotsHost): CoreBotsAdapter {
             input.showInSidebar = params.showInSidebar;
           if (params.pinnedToTop !== undefined)
             input.pinnedToTop = params.pinnedToTop;
-          return {
-            bot: await currentHost().store.create(
-              input,
-              botReceipt(context, params),
-            ),
-          };
+          const { store, visibility } = currentHost();
+          const record = await store.create(input, botReceipt(context, params));
+          return { bot: await visibility.projectVisible(record) };
         }),
       'core.bots.update': (
         params: BotUpdateParams,
@@ -249,27 +251,29 @@ export function createCoreBotsAdapter(host?: CoreBotsHost): CoreBotsAdapter {
       ): Promise<BotResult> =>
         withBotErrors(async () => {
           const patch: BotUpdatePatch = params.patch;
-          return {
-            bot: await currentHost().store.update(
-              params.botId,
-              params.expectedRevision,
-              patch,
-              botReceipt(context, params),
-            ),
-          };
+          const { store, visibility } = currentHost();
+          const record = await store.update(
+            params.botId,
+            params.expectedRevision,
+            patch,
+            botReceipt(context, params),
+          );
+          return { bot: await visibility.projectVisible(record) };
         }),
       'core.bots.pins.set': (
         params: BotSetPinsParams,
         context: CanopyHandlerContext,
       ): Promise<BotResult> =>
-        withBotErrors(async () => ({
-          bot: await currentHost().store.setPins(
+        withBotErrors(async () => {
+          const { store, visibility } = currentHost();
+          const record = await store.setPins(
             params.botId,
             params.expectedRevision,
             params.projectIds,
             botReceipt(context, params),
-          ),
-        })),
+          );
+          return { bot: await visibility.projectVisible(record) };
+        }),
       'core.bots.delete': (
         params: BotDeleteParams,
         context: CanopyHandlerContext,

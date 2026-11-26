@@ -14,7 +14,7 @@ import {
   Stack,
   Button,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   DialogModal,
 } from '@canopy/ui-shared/components';
 import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
@@ -398,18 +398,18 @@ export function CodexLoginModal({
               </p>
               {!remote && (
                 <ChoiceList aria-label="Sign-in method">
-                  <ChoiceListRow
-                    selected={method === 'chatgptDeviceCode'}
-                    onClick={() =>
+                  <ChoiceField
+                    layout="row"
+                    checked={method === 'chatgptDeviceCode'}
+                    onChange={() =>
                       setMethod(
                         method === 'chatgptDeviceCode'
                           ? 'chatgpt'
                           : 'chatgptDeviceCode',
                       )
                     }
-                  >
-                    Use a device code
-                  </ChoiceListRow>
+                    label="Use a device code"
+                  />
                 </ChoiceList>
               )}
             </>

@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 
-import { StatusPill } from '../primitives/StatusPill';
+import { Badge } from '../primitives/Badge';
 
 /**
  * Renders one shared-container capability token as a friendly pill.
@@ -15,7 +15,7 @@ import { StatusPill } from '../primitives/StatusPill';
  * There is no single-capability assumption anywhere here. Callers map over the
  * grant's array and render one pill per capability.
  *
- * Shape and metrics come from `StatusPill` rather than being restated here, so
+ * Shape and metrics come from `Badge` rather than being restated here, so
  * this and `ViewOnlyPill` stay one visual family by construction.
  */
 const CAPABILITY_LABELS: Record<string, string> = {
@@ -48,8 +48,8 @@ export function CapabilityPill({
   capability,
 }: CapabilityPillProps): JSX.Element {
   return (
-    <StatusPill data-testid={`shared-container-capability-pill-${capability}`}>
+    <Badge data-testid={`shared-container-capability-pill-${capability}`}>
       {formatCapabilityLabel(capability)}
-    </StatusPill>
+    </Badge>
   );
 }

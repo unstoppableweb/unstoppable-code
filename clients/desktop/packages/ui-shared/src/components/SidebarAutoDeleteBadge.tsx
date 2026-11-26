@@ -5,7 +5,7 @@ import type { WorkEntryAutoDeleteRowState } from '@canopy/protocol';
 import { ArchiveIcon, TrashIcon } from '../icons/AppIcons';
 import { RailIconButton } from './RailIconButton';
 import { Dot } from '../primitives/Badge';
-import { ActionTooltip } from '../primitives/ActionTooltip';
+import { Tooltip } from '../primitives/Tooltip';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 
 export interface SidebarAutoDeleteBadgeProps {
@@ -67,8 +67,8 @@ export function SidebarAutoDeleteBadge({
   );
   return (
     <span className="relative inline-flex h-7 w-7 shrink-0 pointer-coarse:h-11 pointer-coarse:w-11">
-      <ActionTooltip
-        title={
+      <Tooltip
+        label={
           attention
             ? 'Auto-delete needs your answer'
             : archive
@@ -101,7 +101,7 @@ export function SidebarAutoDeleteBadge({
               event.stopPropagation();
           }}
         />
-      </ActionTooltip>
+      </Tooltip>
       {attention && (
         <Dot
           tone="attention"

@@ -3,7 +3,7 @@ import type { CanopyCapabilities } from '@canopy/app-core';
 import {
   Button,
   ChoiceList,
-  ChoiceListRow,
+  ChoiceField,
   FieldError,
   Notice,
   NoticeButton,
@@ -103,35 +103,43 @@ export function ScheduleRunOnField({
         aria-label={SCHEDULE_RUN_ON_COPY.runOn}
         data-testid="workflow-schedule-run-on-choices"
       >
-        <ChoiceListRow
+        <ChoiceField
+          layout="row"
           kind="radio"
-          selected={value === 'local'}
+          checked={value === 'local'}
           disabled={disabled}
-          onClick={(): void => choose('local')}
+          onChange={(): void => choose('local')}
           data-testid="workflow-schedule-run-on-local"
-        >
-          <span className="block">{SCHEDULE_RUN_ON_COPY.thisComputer}</span>
-          <span className="block text-xs fg-secondary">
-            {SCHEDULE_RUN_ON_COPY.thisComputerDetail}
-          </span>
-        </ChoiceListRow>
-        <ChoiceListRow
+          label={
+            <>
+              <span className="block">{SCHEDULE_RUN_ON_COPY.thisComputer}</span>
+              <span className="block text-xs fg-secondary">
+                {SCHEDULE_RUN_ON_COPY.thisComputerDetail}
+              </span>
+            </>
+          }
+        />
+        <ChoiceField
+          layout="row"
           kind="radio"
-          selected={value === 'cloud'}
+          checked={value === 'cloud'}
           disabled={
             disabled ||
             (value !== 'cloud' && cloudUnavailableReason !== undefined)
           }
-          onClick={(): void => choose('cloud')}
+          onChange={(): void => choose('cloud')}
           data-testid="workflow-schedule-run-on-cloud"
-        >
-          <span className="block">{SCHEDULE_RUN_ON_COPY.cloud}</span>
-          <span className="block text-xs fg-secondary">
-            {value !== 'cloud' && cloudUnavailableReason !== undefined
-              ? cloudUnavailableReason
-              : SCHEDULE_RUN_ON_COPY.cloudDetail}
-          </span>
-        </ChoiceListRow>
+          label={
+            <>
+              <span className="block">{SCHEDULE_RUN_ON_COPY.cloud}</span>
+              <span className="block text-xs fg-secondary">
+                {value !== 'cloud' && cloudUnavailableReason !== undefined
+                  ? cloudUnavailableReason
+                  : SCHEDULE_RUN_ON_COPY.cloudDetail}
+              </span>
+            </>
+          }
+        />
       </ChoiceList>
       {busy ? (
         <p

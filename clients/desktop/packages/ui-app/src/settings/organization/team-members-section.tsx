@@ -17,10 +17,9 @@ import {
   Badge,
   Button,
   CopyButton,
-  DialogFormField,
+  FormField,
   DialogModal,
   ErrorBanner,
-  StatusBadge,
   SettingsSelect,
   TextInput,
   Heading,
@@ -505,7 +504,7 @@ export function TeamMembersSection({
                     <div className="flex flex-wrap items-center gap-2">
                       {/* Invites no longer charge a seat, so an older invite's
                         stored seat payment state is not shown. */}
-                      <StatusBadge variant="warning" label="Pending" />
+                      <Badge tone="warning">Pending</Badge>
                       {invite.role && (
                         <span className="text-xs fg-secondary">
                           {titleCaseRole(invite.role)}
@@ -844,7 +843,7 @@ function AddMemberDialog({
             error={error?.copy}
             details={error?.details}
           />
-          <DialogFormField label="Email" htmlFor={`${fieldId}-email`}>
+          <FormField label="Email" id={`${fieldId}-email`}>
             <div className={joinClassNames('min-w-0 flex-1', blockClassName)}>
               <TextInput
                 id={`${fieldId}-email`}
@@ -857,10 +856,10 @@ function AddMemberDialog({
                 data-testid="add-member-email"
               />
             </div>
-          </DialogFormField>
+          </FormField>
           <div className="flex flex-wrap gap-3">
             <div className="min-w-0 flex-1">
-              <DialogFormField label="Role" htmlFor={`${fieldId}-role`}>
+              <FormField label="Role" id={`${fieldId}-role`}>
                 <SettingsSelect
                   id={`${fieldId}-role`}
                   value={role}
@@ -879,14 +878,11 @@ function AddMemberDialog({
                     label: titleCaseRole(option),
                   }))}
                 />
-              </DialogFormField>
+              </FormField>
             </div>
             {subTeams.length > 0 && (
               <div className="min-w-0 flex-1">
-                <DialogFormField
-                  label="Team (optional)"
-                  htmlFor={`${fieldId}-group`}
-                >
+                <FormField label="Team (optional)" id={`${fieldId}-group`}>
                   <SettingsSelect
                     id={`${fieldId}-group`}
                     value={groupId}
@@ -901,7 +897,7 @@ function AddMemberDialog({
                       })),
                     ]}
                   />
-                </DialogFormField>
+                </FormField>
               </div>
             )}
           </div>

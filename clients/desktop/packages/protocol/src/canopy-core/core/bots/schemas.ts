@@ -12,6 +12,10 @@ import {
 const projectId = z.string().min(1).max(512);
 const expectedRevision = z.number().int().nonnegative();
 
+/** Maximum project IDs supplied in one Bot pin write. */
+export const BOT_PLACEMENT_MAX_PINS = 256;
+const projectIds = z.array(projectId).max(BOT_PLACEMENT_MAX_PINS);
+
 /** The request metadata required by every keyed Bot registry instruction. */
 export const BotKeyedRequestMetadataSchema =
   CanopyRequestMetadataSchema.required({ idempotencyKey: true });
@@ -25,7 +29,7 @@ export const BotCreateParamsSchema = z.strictObject({
   name: BotNameSchema,
   description: BotDescriptionSchema.nullable().optional(),
   glyph: BotGlyphSchema.optional(),
-  pins: z.array(projectId).optional(),
+  pins: projectIds.optional(),
   showInSidebar: z.boolean().optional(),
   pinnedToTop: z.boolean().optional(),
   _meta: BotKeyedRequestMetadataSchema,
@@ -59,7 +63,7 @@ export const BotUpdateParamsSchema = z.strictObject({
 export const BotSetPinsParamsSchema = z.strictObject({
   botId: BotIdSchema,
   expectedRevision,
-  projectIds: z.array(projectId),
+  projectIds,
   _meta: BotKeyedRequestMetadataSchema,
 });
 

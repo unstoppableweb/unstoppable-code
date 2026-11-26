@@ -3,7 +3,7 @@ import { useEffect, useId, useRef, useState, type JSX } from 'react';
 import type { OrgProjectMoveErrorCode } from '@canopy/protocol/org-projects';
 import {
   Button,
-  DialogFormField,
+  FormField,
   DialogModal,
   Select,
   ErrorBanner,
@@ -161,7 +161,7 @@ export function MoveProjectToOrganizationDialog({
           an organization, it stays there and cannot move back to your personal
           space.
         </p>
-        <DialogFormField label={ORGANIZATION_LABEL} htmlFor={selectId}>
+        <FormField label={ORGANIZATION_LABEL} id={selectId}>
           <Select
             ref={selectRef}
             id={selectId}
@@ -178,7 +178,7 @@ export function MoveProjectToOrganizationDialog({
             }))}
             data-testid="move-project-to-organization-select"
           />
-        </DialogFormField>
+        </FormField>
         {visibleError && selected ? (
           <ErrorBanner
             errorSource="move-project-to-organization-error"

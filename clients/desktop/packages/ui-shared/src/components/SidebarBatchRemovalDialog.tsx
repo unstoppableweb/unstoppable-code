@@ -15,7 +15,7 @@ import { Button } from '../primitives/Button';
 import { DialogModal } from '../primitives/DialogModal';
 import { LoadingSpinner } from '../primitives/LoadingSpinner';
 import { OverlayScrollArea } from '../primitives/OverlayScrollArea';
-import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
+import { HoverCard } from '../primitives/HoverCard';
 import {
   unitCountLabel,
   type SidebarBatchUnitLabel,
@@ -251,7 +251,7 @@ function ConfirmSummary({
           <p className="fg-secondary" data-testid={`${testId}-summary`}>
             {retentionSummary}
             <span className="inline-flex pl-1 align-middle">
-              <RichHoverTooltip
+              <HoverCard
                 content={
                   <span className="block text-xs leading-snug fg-primary">
                     {retentionDetail}
@@ -269,7 +269,7 @@ function ConfirmSummary({
                 >
                   <InfoIcon size={14} aria-hidden="true" />
                 </Button>
-              </RichHoverTooltip>
+              </HoverCard>
             </span>
           </p>
         </>

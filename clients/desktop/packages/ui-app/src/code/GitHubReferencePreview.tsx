@@ -31,7 +31,7 @@ import {
   TextLink,
   chatMessageLinkUrlProps,
   PREVIEW_CARD_SURFACE,
-  RichHoverTooltip,
+  HoverCard,
   usePrHoverCards,
   INLINE_CHIP_CLASS,
   INLINE_CHIP_GITHUB_ICON_CLASS,
@@ -386,7 +386,7 @@ function SupportedGitHubReference({
   // surface; off, the classic card on the tooltip's.
   const prHoverCards = usePrHoverCards();
   return (
-    <RichHoverTooltip
+    <HoverCard
       deferUntilInteraction
       resetKey={`${epoch}:${githubPreviewKey(stableTarget)}`}
       content={
@@ -406,6 +406,6 @@ function SupportedGitHubReference({
       triggerWrapperClassName="inline!"
     >
       {trigger}
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }

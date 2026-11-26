@@ -15,7 +15,7 @@ import {
   PlusMediumIcon,
   TrashIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
-import { RichHoverTooltip } from '@/components/shared/RichHoverTooltip';
+import { HoverCard } from '@canopy/ui-shared/components';
 import { Button } from '@canopy/ui-shared/components';
 
 /**
@@ -58,7 +58,7 @@ export function ItemMetaInfo({
         : origin.branchName
       : null;
   return (
-    <RichHoverTooltip
+    <HoverCard
       surfaceClassName="w-max max-w-56"
       surfacePadding="relaxed"
       content={
@@ -91,7 +91,7 @@ export function ItemMetaInfo({
       >
         <InfoIcon size="sm" />
       </Button>
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }
 

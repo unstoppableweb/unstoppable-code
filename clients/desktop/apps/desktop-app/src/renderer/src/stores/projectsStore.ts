@@ -86,6 +86,8 @@ import type {
 import { useChatStore } from './chatStore';
 import { useOllamaConnectionBannerStore } from './ollamaConnectionBannerStore';
 import { markStartPageSuppressed } from '@/lib/panels/start-page-suppression';
+import { makeWorktreePanelKey } from './panelLayoutStore';
+import { notifyWorktreeRemoved } from '@/lib/worktree-removal-listeners';
 import {
   awaitPendingRemovalHoldForE2e,
   useArchivedContainersStore,
@@ -3687,6 +3689,8 @@ function cleanupArchivedWorktreeRendererState(
   worktreeId: string,
   get: () => ProjectsState,
 ): void {
+  // Settings deletion also archives directly, without the row's panel cleanup.
+  notifyWorktreeRemoved(makeWorktreePanelKey(projectId, worktreeId));
   deselectIfSelectedWorktree(projectId, worktreeId);
   useChatStore.getState().cleanupWorktree(projectId, worktreeId);
   useChatStore.getState().dropWorktreeQueuedState(projectId, worktreeId);
@@ -4158,20 +4162,66 @@ function createWorktreeLifecycleKey(
 const WORKSPACE_WORKTREES_RELOAD_DEBOUNCE_MS = 400;
 let workspaceWorktreesReloadTimeout: ReturnType<typeof setTimeout> | null =
   null;
+let workspaceWorktreesReloadIsEventDriven = false;
 
 function clearScheduledWorkspaceWorktreesReload(): void {
   if (workspaceWorktreesReloadTimeout !== null) {
     clearTimeout(workspaceWorktreesReloadTimeout);
     workspaceWorktreesReloadTimeout = null;
   }
+  workspaceWorktreesReloadIsEventDriven = false;
 }
 
-function scheduleWorkspaceWorktreesReload(reload: () => void): void {
+function scheduleWorkspaceWorktreesReload(
+  reload: () => void,
+  eventDriven = true,
+): void {
   clearScheduledWorkspaceWorktreesReload();
+  workspaceWorktreesReloadIsEventDriven = eventDriven;
   workspaceWorktreesReloadTimeout = setTimeout(() => {
     workspaceWorktreesReloadTimeout = null;
+    workspaceWorktreesReloadIsEventDriven = false;
     reload();
   }, WORKSPACE_WORKTREES_RELOAD_DEBOUNCE_MS);
+}
+
+let authoritativeProjectsLoadEpoch = 0;
+let activeProjectsLoadPromise: Promise<void> | null = null;
+
+export function getAuthoritativeProjectsLoadEpoch(): number {
+  return authoritativeProjectsLoadEpoch;
+}
+
+/**
+ * Coalesces remote host outage recovery with `worktrees:file-changed` so a
+ * recovery triggers at most one project-inventory reload even when the
+ * recovery snapshot arrives after the worktree debounce has already fired,
+ * without overwriting or suppressing a pending event-driven reload.
+ */
+export function requestRemoteRecoveryProjectsReload(
+  outageStartedLoadEpoch: number,
+): void {
+  if (authoritativeProjectsLoadEpoch > outageStartedLoadEpoch) {
+    return;
+  }
+  if (workspaceWorktreesReloadIsEventDriven) {
+    return;
+  }
+  scheduleWorkspaceWorktreesReload(() => {
+    if (authoritativeProjectsLoadEpoch > outageStartedLoadEpoch) {
+      return;
+    }
+    const inFlight = activeProjectsLoadPromise;
+    if (inFlight) {
+      void inFlight.finally(() => {
+        if (authoritativeProjectsLoadEpoch <= outageStartedLoadEpoch) {
+          void useProjectsStore.getState().loadProjects({ silent: true });
+        }
+      });
+      return;
+    }
+    void useProjectsStore.getState().loadProjects({ silent: true });
+  }, false);
 }
 
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
@@ -5167,6 +5217,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       return true;
     },
     loadProjects: (options) => {
+      clearScheduledWorkspaceWorktreesReload();
       const generation = ++projectsLoadGeneration;
       const inventoryStartedAt = Date.now();
       const completionPromise = new Promise<void>((resolve, reject) => {
@@ -5175,6 +5226,11 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           else resolve();
         });
       });
+      let resolveActiveProjectsLoad: () => void = () => undefined;
+      const activeLoadSettled = new Promise<void>((resolve) => {
+        resolveActiveProjectsLoad = resolve;
+      });
+      activeProjectsLoadPromise = activeLoadSettled;
       if (__CANOPY_E2E__)
         observeFirstProjectsLoadRenderer(
           'projects-load-renderer-entered',
@@ -5297,6 +5353,9 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
             ),
             projectLoadWarnings: loadWarnings,
           });
+          if (file.stale !== true) {
+            authoritativeProjectsLoadEpoch += 1;
+          }
           settlementStage = 'post-apply';
           if (__CANOPY_E2E__)
             observeFirstProjectsLoadRenderer(
@@ -5392,6 +5451,10 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           heldE2eBarrier?.resolveCompleted();
           if (e2eProjectsLoadBarrier === heldE2eBarrier) {
             e2eProjectsLoadBarrier = null;
+          }
+          resolveActiveProjectsLoad();
+          if (activeProjectsLoadPromise === activeLoadSettled) {
+            activeProjectsLoadPromise = null;
           }
           if (generation === projectsLoadGeneration) {
             resolveProjectsLoadsThrough(generation, loadFailure);

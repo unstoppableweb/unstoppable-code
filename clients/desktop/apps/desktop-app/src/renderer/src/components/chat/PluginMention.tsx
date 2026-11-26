@@ -3,7 +3,7 @@ import { InlineMention } from '@canopy/ui-shared';
 import {
   PREVIEW_CARD_SURFACE,
   ReferenceHoverCard,
-  RichHoverTooltip,
+  HoverCard,
   type InlineMentionIcon,
 } from '@canopy/ui-shared/components';
 import { PluginsIcon } from '@canopy/ui-shared/icons';
@@ -61,7 +61,7 @@ export const PluginMention = memo(function PluginMention({
   const logoUrl = details?.logoUrl;
   const icon = useMemo(() => pluginGlyph(logoUrl), [logoUrl]);
   return (
-    <RichHoverTooltip
+    <HoverCard
       content={
         <ReferenceHoverCard
           testId="plugin-mention-card"
@@ -86,6 +86,6 @@ export const PluginMention = memo(function PluginMention({
       >
         {children}
       </InlineMention>
-    </RichHoverTooltip>
+    </HoverCard>
   );
 });

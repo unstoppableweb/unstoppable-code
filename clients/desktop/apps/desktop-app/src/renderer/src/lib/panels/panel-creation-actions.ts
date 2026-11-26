@@ -1,5 +1,8 @@
 import type { TerminalShellProfileId } from '@canopy/desktop-shared/types';
-import { requireTerminalClient } from '@canopy/app-state/terminal';
+import {
+  beginTerminalPlacement,
+  requireTerminalClient,
+} from '@canopy/app-state/terminal';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { cloudTerminalsEnabled } from '@/lib/web-core-scope-capabilities';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
@@ -89,7 +92,9 @@ export async function createTerminalPanel(
   initialCommand?: string,
   ownerDocument: Document = document,
   onSpawned?: (terminalId: string) => void,
+  isCurrent: () => boolean = (): boolean => true,
 ): Promise<boolean> {
+  if (!isCurrent()) return false;
   const ownerKey = getAuxPanelLayoutOwnerKey(worktreeKey) ?? worktreeKey;
   const { projectId, worktreeId } = splitKey(ownerKey);
   // A cloud task's shell runs in its sandbox through the bound scoped client;
@@ -97,6 +102,7 @@ export async function createTerminalPanel(
   const cloud = isWebCoreScope(worktreeId);
   let terminalId: string | null = null;
   let client: ReturnType<typeof requireTerminalClient> | null = null;
+  let endPlacement: (() => void) | undefined;
   try {
     if (
       cloud &&
@@ -108,6 +114,8 @@ export async function createTerminalPanel(
       await ensureTerminalWorktreeHydrated(projectId, worktreeId).catch(
         () => undefined,
       );
+    if (!isCurrent()) return false;
+    endPlacement = beginTerminalPlacement(projectId, worktreeId);
     const session = await client.command('terminal.spawn', {
       projectId,
       worktreeId,
@@ -118,11 +126,12 @@ export async function createTerminalPanel(
       rows: 24,
     });
     terminalId = session.id;
+    if (!isCurrent()) throw new Error('Terminal opening superseded');
     onSpawned?.(terminalId);
     useTerminalStore.getState().addGroupWithTerminal(session);
     // Creating a terminal is an explicit user gesture, so the new pane may
     // claim the caret once it mounts (CAN-2309).
-    requestTerminalFocus(terminalId, ownerDocument);
+    requestTerminalFocus(terminalId, ownerDocument, isCurrent);
     const store = usePanelLayoutStore.getState();
     const added =
       store.addTab(worktreeKey, requestedGroupId, 'terminal', {
@@ -152,12 +161,15 @@ export async function createTerminalPanel(
     } else if (error instanceof Error && error.message) {
       message = `${message}. ${extractIpcErrorMessage(error)}`;
     }
-    useGitHubStore.getState().addToast(message, 'error', undefined, {
-      caught: error,
-      projectId,
-      worktreeId,
-      blockMessageFromReplay: message !== 'Unable to open Terminal',
-    });
+    if (isCurrent())
+      useGitHubStore.getState().addToast(message, 'error', undefined, {
+        caught: error,
+        projectId,
+        worktreeId,
+        blockMessageFromReplay: message !== 'Unable to open Terminal',
+      });
     return false;
+  } finally {
+    endPlacement?.();
   }
 }

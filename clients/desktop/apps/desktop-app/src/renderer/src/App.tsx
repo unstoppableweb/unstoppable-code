@@ -137,6 +137,7 @@ import { useModelUnlockReturn } from './hooks/useModelUnlockReturn';
 import { usePipelineCompletionToasts } from './hooks/usePipelineCompletionToasts';
 import { usePresenceReporter } from './hooks/usePresenceReporter';
 import { useRemoteControlSubscription } from './hooks/useRemoteControlSubscription';
+import { usePairedComputersSidebarFollower } from './paired-computers/usePairedComputersSidebar';
 import { useRunCommentUpdates } from './hooks/useRunCommentUpdates';
 import { useStandaloneChatEventSubscriptions } from './hooks/useStandaloneChatEventSubscriptions';
 import { useTerminalActivitySubscription } from './hooks/useTerminalActivitySubscription';
@@ -475,6 +476,8 @@ function App(): JSX.Element {
   // Device-to-device remote access: pairing state, the machine picker, and
   // the being-controlled notice all read this one store.
   useRemoteControlSubscription();
+  // Holds paired computers for the sidebar while the one-window switch is on (CAN-7766).
+  usePairedComputersSidebarFollower();
   // Fold main's shared-run comment poll into the tab's SharedRunMetadata and
   // fire the OS notification (CAN-397). The poll, not SSE, is the delivery
   // mechanism in production until CAN-486.

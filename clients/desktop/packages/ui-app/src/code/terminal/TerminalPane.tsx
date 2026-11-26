@@ -45,6 +45,7 @@ import {
 } from './terminal-focus-intent';
 import { TerminalSelectionMenu } from './TerminalSelectionMenu';
 import { installTerminalLinks } from './terminal-links';
+import { notifyTerminalInput } from './terminal-input';
 
 export interface TerminalPaneProps {
   terminalId: string;
@@ -609,6 +610,20 @@ function TerminalPaneImpl({
         // pane and host binding. A newer pane takes ownership immediately.
         entry.inputDisposable?.dispose();
         let active = true;
+        const notifyUserInput = (): void => {
+          if (active && isCurrent() && !entry.term.options.disableStdin)
+            notifyTerminalInput(terminalId);
+        };
+        const keySubscription = entry.term.onKey(notifyUserInput);
+        const textarea = entry.term.textarea;
+        const inputContainer = entry.container;
+        const notifyTextInput = (event: Event): void => {
+          if (event.target === textarea) notifyUserInput();
+        };
+        // Xterm already captures input on its textarea. Observe the ancestor
+        // first so paste/IME intent owns the line before xterm sends its data.
+        inputContainer.addEventListener('input', notifyTextInput, true);
+        inputContainer.addEventListener('paste', notifyTextInput, true);
         const subscription = entry.term.onData((data: string): void => {
           if (!active || !isCurrent()) return;
           // Historical replay can contain terminal capability/color queries.
@@ -631,6 +646,9 @@ function TerminalPaneImpl({
               entry.inputDisposable = null;
             }
             subscription.dispose();
+            keySubscription.dispose();
+            inputContainer.removeEventListener('input', notifyTextInput, true);
+            inputContainer.removeEventListener('paste', notifyTextInput, true);
           },
         };
         entry.inputDisposable = ownedInput;
@@ -1247,6 +1265,7 @@ function TerminalPaneImpl({
         if (
           !pasteText ||
           !liveRef.current ||
+          entry.term.options.disableStdin ||
           generation !== paneGenerationRef.current
         ) {
           return;
@@ -1255,6 +1274,7 @@ function TerminalPaneImpl({
         onFocus();
         rememberCaretPredecessor();
         entry.term.focus();
+        notifyTerminalInput(terminalId);
         entry.term.paste(pasteText);
       })
       .catch(() => {

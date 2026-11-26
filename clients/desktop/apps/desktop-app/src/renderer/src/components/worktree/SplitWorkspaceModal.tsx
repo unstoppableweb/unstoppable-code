@@ -19,7 +19,7 @@ import {
   type SplitTemporaryWorkspacePreviewResponse,
   type SplitTemporaryWorkspaceSelection,
 } from '@canopy/desktop-shared/types';
-import { RichHoverTooltip } from '@canopy/ui-shared/components';
+import { HoverCard } from '@canopy/ui-shared/components';
 import {
   ArchiveIcon,
   ChatIcon,
@@ -34,7 +34,6 @@ import { useNavigationStore } from '@/stores/navigationStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { createDiffStatsKey } from '@/stores/projectsStore.diffStats';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
-import { ActionTooltip } from '@/components/shared/ActionTooltip';
 import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
 import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { RefreshSpinner } from '@/components/shared/loading';
@@ -126,7 +125,7 @@ function ItemCounter({
     return null;
   }
   return (
-    <RichHoverTooltip
+    <HoverCard
       content={
         <ItemListContent
           heading={heading}
@@ -145,7 +144,7 @@ function ItemCounter({
         {icon}
         {summary.count}
       </span>
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }
 
@@ -181,7 +180,7 @@ function SelectionToggleButton({
         ? 'ghost-destructive'
         : 'ghost';
   return (
-    <ActionTooltip title={tooltipTitle} description={tooltipDescription}>
+    <Tooltip label={tooltipTitle} description={tooltipDescription}>
       <Button
         variant={variant}
         size="sm"
@@ -196,7 +195,7 @@ function SelectionToggleButton({
       >
         <Icon size="sm" />
       </Button>
-    </ActionTooltip>
+    </Tooltip>
   );
 }
 

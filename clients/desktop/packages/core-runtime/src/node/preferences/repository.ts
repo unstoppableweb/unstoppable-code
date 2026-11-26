@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { isRecord } from '../w5/commit-log/is-record';
 import { isStorageOutcomeUnknownError } from '../../storage';
+import { StorageRowOwnerError } from '../../storage/owner-records';
 import {
   type PreferencesDocument,
   type PreferencesLog,
@@ -16,6 +17,11 @@ import type {
 } from './codec';
 import { PreferencesRecoveryRequiredError } from './errors';
 import { createLastGoodRefresher } from './last-good-refresh';
+import {
+  PREFERENCES_ENVELOPE_WRITE_VERSION,
+  isReadablePreferencesEnvelopeVersion,
+  readPreferencesEnvelopeRecord,
+} from '@canopy/protocol/preferences';
 import {
   documentGeneration,
   readPreferencesGeneration,
@@ -40,6 +46,7 @@ export type PreferencesGenerationStamp =
   | 'present'
   | 'fresh'
   | 'degraded'
+  | 'refused'
   | 'failed'
   | 'stopped';
 
@@ -124,7 +131,7 @@ export function createPreferencesRepository<T extends object>(
     return options.document();
   }
   interface PreferencesEnvelope {
-    version: 1;
+    version: typeof PREFERENCES_ENVELOPE_WRITE_VERSION;
     generation: number;
     preferences: T;
   }
@@ -185,7 +192,7 @@ export function createPreferencesRepository<T extends object>(
       filePath: document.key,
       backupPath,
       code,
-      expectedVersion: 1,
+      expectedVersion: PREFERENCES_ENVELOPE_WRITE_VERSION,
       actualVersion,
     };
   }
@@ -226,7 +233,7 @@ export function createPreferencesRepository<T extends object>(
     generation: number,
   ): string {
     const payload: PreferencesEnvelope = {
-      version: 1,
+      version: PREFERENCES_ENVELOPE_WRITE_VERSION,
       generation,
       preferences,
     };
@@ -234,15 +241,8 @@ export function createPreferencesRepository<T extends object>(
   }
 
   function normalizeParsedPreferencesFile(parsed: unknown): T | null {
-    if (
-      !isRecord(parsed) ||
-      parsed.version !== 1 ||
-      !isRecord(parsed.preferences)
-    ) {
-      return null;
-    }
-
-    return codec.normalize(parsed.preferences, 'persisted');
+    const preferences = readPreferencesEnvelopeRecord(parsed);
+    return preferences ? codec.normalize(preferences, 'persisted') : null;
   }
 
   async function readLastGoodPreferencesFile(
@@ -519,7 +519,10 @@ export function createPreferencesRepository<T extends object>(
       );
     }
 
-    if (!isRecord(parsed) || parsed.version !== 1) {
+    if (
+      !isRecord(parsed) ||
+      !isReadablePreferencesEnvelopeVersion(parsed.version)
+    ) {
       return projectRecovery(
         await recoverOrServeFallback(
           document,
@@ -626,14 +629,10 @@ export function createPreferencesRepository<T extends object>(
       return unreadable();
     }
     try {
-      const parsed: unknown = JSON.parse(raw);
-      if (
-        isRecord(parsed) &&
-        parsed.version === 1 &&
-        isRecord(parsed.preferences)
-      ) {
+      const preferences = readPreferencesEnvelopeRecord(JSON.parse(raw));
+      if (preferences) {
         return {
-          preferences: codec.normalize(parsed.preferences, 'runtime'),
+          preferences: codec.normalize(preferences, 'runtime'),
           authority: 'ok',
         };
       }
@@ -654,20 +653,11 @@ export function createPreferencesRepository<T extends object>(
     ];
     for (const candidate of candidates) {
       try {
-        const parsed: unknown = JSON.parse(
-          await document.readText(candidate.slot),
+        const payload = readPreferencesEnvelopeRecord(
+          JSON.parse(await document.readText(candidate.slot)),
         );
-        if (
-          !isRecord(parsed) ||
-          parsed.version !== 1 ||
-          !isRecord(parsed.preferences)
-        )
-          continue;
-        return {
-          kind: 'read',
-          source: candidate.source,
-          payload: parsed.preferences,
-        };
+        if (!payload) continue;
+        return { kind: 'read', source: candidate.source, payload };
       } catch {
         continue;
       }
@@ -774,6 +764,8 @@ export function createPreferencesRepository<T extends object>(
         }),
       );
     } catch (error) {
+      // Another owner keeps the row; a retry can't write it either.
+      if (error instanceof StorageRowOwnerError) return 'refused';
       return error instanceof PreferencesRecoveryRequiredError
         ? 'degraded'
         : 'failed';

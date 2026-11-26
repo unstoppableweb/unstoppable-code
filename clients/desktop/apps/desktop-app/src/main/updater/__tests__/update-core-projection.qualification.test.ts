@@ -1,3 +1,11 @@
+import type { SpawnOptions } from 'node:child_process';
+import type * as ChildProcess from 'node:child_process';
+import type * as Electron from 'electron';
+import { EventEmitter } from 'node:events';
+import { constants } from 'node:fs';
+import type * as Fs from 'node:fs/promises';
+import type * as CurrentBrand from '@canopy/brand/current';
+import type * as CorePlatform from '@canopy/core-platform';
 import {
   CanopyOperationError,
   createCanopyDispatcher,
@@ -11,19 +19,107 @@ import {
   type CanopyCallerDescriptor,
 } from '@canopy/protocol/canopy-core';
 import { IPC_CHANNELS, type UpdateState } from '@canopy/desktop-shared/types';
+import {
+  formatIpcLegacyError,
+  restoreIpcRejection,
+} from '@canopy/desktop-shared/ipc/app-error-rejection';
 
-type Handler = (event: unknown, ...args: unknown[]) => Promise<unknown>;
+type Handler = (event: { sender: { id: number } }) => Promise<unknown>;
 const mockHandlers = new Map<string, Handler>();
 const mockState: { current: UpdateState } = { current: { phase: 'idle' } };
 const mockStateListeners = new Set<() => void>();
 
-jest.mock('electron', () => ({
-  app: { getVersion: (): string => '9999.0.0-internal.123', isPackaged: true },
-}));
-jest.mock('../../ipc/register', () => ({
-  registerIpcHandler: (channel: string, handler: Handler): void => {
-    mockHandlers.set(channel, handler);
-  },
+const mockSpawn = jest.fn<MockChild, [string, string[], SpawnOptions]>();
+const mockLinuxHost = { active: false, executable: true };
+const updateManagerPath = '/usr/bin/update-manager';
+
+class MockChild extends EventEmitter {
+  readonly unref = jest.fn();
+}
+
+jest.mock('electron', () => {
+  const electron = jest.requireActual<typeof Electron>('electron');
+  return {
+    ...electron,
+    app: {
+      ...electron.app,
+      getVersion: (): string => '9999.0.0-internal.123',
+      isPackaged: true,
+    },
+    ipcMain: {
+      ...electron.ipcMain,
+      handle: (channel: string, handler: Handler): void => {
+        mockHandlers.set(channel, handler);
+      },
+      removeHandler: (channel: string): void => {
+        mockHandlers.delete(channel);
+      },
+    },
+  };
+});
+jest.mock('@canopy/brand/current', () => {
+  const brand = jest.requireActual<typeof CurrentBrand>(
+    '@canopy/brand/current',
+  );
+  return {
+    ...brand,
+    BRAND: {
+      ...brand.BRAND,
+      id: 'unstoppable-code',
+      cliName: 'unstoppable-code',
+    },
+  };
+});
+// Stub the modules' exported boundaries, not an interop namespace copy.
+jest.mock('@canopy/core-platform', () => {
+  const platform = jest.requireActual<typeof CorePlatform>(
+    '@canopy/core-platform',
+  );
+  return {
+    ...platform,
+    hostPlatformOperatingSystem: (): ReturnType<
+      typeof CorePlatform.hostPlatformOperatingSystem
+    > =>
+      mockLinuxHost.active ? 'linux' : platform.hostPlatformOperatingSystem(),
+  };
+});
+jest.mock('node:fs/promises', () => {
+  const actual = jest.requireActual<typeof Fs>('node:fs/promises');
+  return {
+    ...actual,
+    readFile: async (
+      ...args: Parameters<typeof Fs.readFile>
+    ): ReturnType<typeof Fs.readFile> => {
+      if (!mockLinuxHost.active) return actual.readFile(...args);
+      if (args[0] === '/var/lib/dpkg/info/unstoppable-code-desktop.list')
+        return `${process.execPath}\n`;
+      throw new Error('Unexpected fixture read');
+    },
+    readdir: async (
+      ...args: Parameters<typeof Fs.readdir>
+    ): ReturnType<typeof Fs.readdir> =>
+      mockLinuxHost.active ? [] : actual.readdir(...args),
+    stat: async (
+      ...args: Parameters<typeof Fs.stat>
+    ): Promise<{ isFile(): boolean }> => {
+      if (!mockLinuxHost.active) return actual.stat(...args);
+      return { isFile: (): boolean => args[0] === updateManagerPath };
+    },
+    access: async (...args: Parameters<typeof Fs.access>): Promise<void> => {
+      if (!mockLinuxHost.active) return actual.access(...args);
+      if (
+        !mockLinuxHost.executable ||
+        args[0] !== updateManagerPath ||
+        args[1] !== constants.X_OK
+      )
+        throw new Error('EACCES');
+    },
+  };
+});
+jest.mock('node:child_process', () => ({
+  ...jest.requireActual<typeof ChildProcess>('node:child_process'),
+  spawn: (path: string, args: string[], options: SpawnOptions): MockChild =>
+    mockSpawn(path, args, options),
 }));
 jest.mock('../../lib/e2e-gate', () => ({ isE2eBuild: (): boolean => false }));
 jest.mock('../../agents/session-manager', () => ({
@@ -70,6 +166,7 @@ const caller: CanopyCallerDescriptor = {
   interfaceKind: 'desktop',
   grants: [],
 };
+const mockResolveCaller = jest.fn(() => caller);
 
 function setState(next: UpdateState): void {
   mockState.current = next;
@@ -78,8 +175,13 @@ function setState(next: UpdateState): void {
 
 function ipc(channel: string): Promise<unknown> {
   const handler = mockHandlers.get(channel);
-  if (!handler) throw new Error(`no handler for ${channel}`);
-  return handler({});
+  if (!handler) throw new Error(`no ipcMain handler for ${channel}`);
+  return handler({ sender: { id: 1 } }).catch((error: unknown) => {
+    // Electron prefixes the main rejection before the client restores it.
+    restoreIpcRejection(
+      new Error(formatIpcLegacyError(channel, String(error))),
+    );
+  });
 }
 
 type UpdateDispatcher = CanopyDispatcher<
@@ -106,6 +208,9 @@ let dispatcher: UpdateDispatcher;
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockSpawn.mockReset().mockImplementation(() => {
+    throw new Error('No native process is available in this fixture');
+  });
   // The updater's async calls return promises.
   jest.mocked(checkForUpdates).mockResolvedValue(undefined);
   jest.mocked(downloadUpdate).mockResolvedValue(undefined);
@@ -117,11 +222,92 @@ beforeEach(() => {
   Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', 'internal');
   Reflect.set(globalThis, '__CANOPY_INTERNAL_RELEASE_INDICATOR__', '');
   dispatcher = composeDispatcher();
-  registerUpdateHandlers(dispatcher, () => caller);
+  registerUpdateHandlers(dispatcher, mockResolveCaller);
 });
 
 afterEach(async () => {
   await dispatcher.shutdown();
+});
+
+describe('Desktop updates handed off to Linux Software Updater', () => {
+  const channel = 'update:open-system-updater';
+  const desktopSession = {
+    DISPLAY: ':0',
+    XDG_RUNTIME_DIR: '/run/user/1000',
+    DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus',
+  };
+
+  let coreCalls: { query: jest.SpyInstance; instruction: jest.SpyInstance };
+
+  beforeEach(() => {
+    coreCalls = {
+      query: jest.spyOn(dispatcher, 'query'),
+      instruction: jest.spyOn(dispatcher, 'instruction'),
+    };
+    mockLinuxHost.active = true;
+    mockLinuxHost.executable = true;
+    Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', 'stable');
+    jest.replaceProperty(process, 'env', {
+      ...desktopSession,
+      PATH: '/fixture/bin',
+      ELECTRON_RUN_AS_NODE: '1',
+      LD_PRELOAD: 'fixture-only',
+    });
+  });
+
+  afterEach(() => {
+    try {
+      expect(mockResolveCaller).not.toHaveBeenCalled();
+      expect(coreCalls.query).not.toHaveBeenCalled();
+      expect(coreCalls.instruction).not.toHaveBeenCalled();
+    } finally {
+      mockLinuxHost.active = false;
+      jest.restoreAllMocks();
+      Reflect.set(globalThis, '__CANOPY_RELEASE_FLAVOR__', 'internal');
+    }
+  });
+
+  it('reports a detached local handoff only after the fixed executable starts', async () => {
+    const child = new MockChild();
+    mockSpawn.mockReturnValueOnce(child);
+
+    let settled = false;
+    const result = ipc(channel).then((value) => {
+      settled = true;
+      return value;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    expect(mockSpawn).toHaveBeenCalledWith(updateManagerPath, [], {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...desktopSession, PATH: '/usr/sbin:/usr/bin:/sbin:/bin' },
+    });
+    expect(settled).toBe(false);
+    expect(child.unref).not.toHaveBeenCalled();
+
+    child.emit('spawn');
+    await expect(result).resolves.toEqual({ opened: true });
+    expect(child.unref).toHaveBeenCalledTimes(1);
+
+    // A stale offer in the UI does not authorize launching an unusable file.
+    mockLinuxHost.executable = false;
+    await expect(ipc(channel)).resolves.toEqual({ opened: false });
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a failed spawn as a refusal so the desktop can fall back', async () => {
+    const child = new MockChild();
+    mockSpawn.mockImplementationOnce(() => {
+      queueMicrotask(() => child.emit('error', new Error('ENOENT')));
+      return child;
+    });
+
+    await expect(ipc(channel)).resolves.toEqual({ opened: false });
+    expect(mockSpawn).toHaveBeenCalledTimes(1);
+    expect(child.unref).not.toHaveBeenCalled();
+  });
 });
 
 describe('update IPC through core.update', () => {
@@ -184,11 +370,16 @@ describe('update IPC through core.update', () => {
       throw refusal;
     });
 
-    await expect(ipc(IPC_CHANNELS.updateCheck)).rejects.toThrow(refusal);
-    await expect(ipc(IPC_CHANNELS.updateDownload)).rejects.toThrow(refusal);
+    const expectRefusal = async (channel: string): Promise<void> => {
+      await expect(ipc(channel)).rejects.toThrow(
+        new Error(formatIpcLegacyError(channel, String(refusal))),
+      );
+    };
+    await expectRefusal(IPC_CHANNELS.updateCheck);
+    await expectRefusal(IPC_CHANNELS.updateDownload);
     expect(downloadUpdate).not.toHaveBeenCalled();
-    await expect(ipc(IPC_CHANNELS.updateSchedule)).rejects.toThrow(refusal);
-    await expect(ipc(IPC_CHANNELS.updateInstall)).rejects.toThrow(refusal);
+    await expectRefusal(IPC_CHANNELS.updateSchedule);
+    await expectRefusal(IPC_CHANNELS.updateInstall);
     expect(installUpdate).not.toHaveBeenCalled();
   });
 

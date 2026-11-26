@@ -27,7 +27,7 @@ import { SIDEBAR_INDICATOR_COLORS } from '../../lib/operational-status-colors';
 import { useHorizontalOverflowScroll } from '../../lib/useHorizontalOverflowScroll';
 import type { PanelDropEdge, PanelTabModel } from '../../panels/registry-types';
 import { AgentStateGlyph } from '../AgentStateGlyph';
-import { RichHoverTooltip } from '../../primitives/RichHoverTooltip';
+import { HoverCard } from '../../primitives/HoverCard';
 import { ThinkingSpinner } from '../../primitives/ThinkingSpinner';
 import { Tooltip } from '../../primitives/Tooltip';
 import { PanelAddTabButton } from './PanelAddTabButton';
@@ -464,7 +464,7 @@ function PanelTabWithHoverCard({
   children: JSX.Element;
 }): JSX.Element {
   return (
-    <RichHoverTooltip
+    <HoverCard
       content={card}
       suppressed={card === null}
       dataTestId={`panel-tab-hover-card-${panelId}`}
@@ -480,7 +480,7 @@ function PanelTabWithHoverCard({
       aboveBrowser
     >
       {children}
-    </RichHoverTooltip>
+    </HoverCard>
   );
 }
 

@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState, type JSX } from 'react';
 import {
-  ActionTooltip,
+  Tooltip,
   ConfirmDialog,
   FloatingMenu,
   Notice,
@@ -20,6 +20,7 @@ import {
 import { getDocument } from '@canopy/ui-shared/panels';
 import type { AutomationMutationResponse } from '@canopy/desktop-shared/types';
 import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
+import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { toAppError } from '@canopy/protocol/app-errors';
 import type { ChatBannerTarget } from '@/stores/aiCreditsBannerStore';
 import { useAutomationsStore } from '@/stores/automationsStore';
@@ -346,11 +347,12 @@ export function ScheduledAutomationsNoticeView({
       >
         {/* Portaled to the body: the automation name is recorded, and the
             prompt preview carries its own replay block. */}
-        <ActionTooltip
-          title={single.activityName}
-          description={preview}
+        <Tooltip
+          label={single.activityName}
+          description={
+            <span className={POSTHOG_REPLAY_BLOCK_CLASS}>{preview}</span>
+          }
           disabled={preview.length === 0}
-          blockDescriptionFromReplay
         >
           <span
             // Focusable so keyboard users can reach the prompt preview.
@@ -360,7 +362,7 @@ export function ScheduledAutomationsNoticeView({
           >
             {single.activityName}
           </span>
-        </ActionTooltip>
+        </Tooltip>
         {nextLabel ? ` · next ${nextLabel}` : null}
       </Notice>
       {pauseId !== null && (

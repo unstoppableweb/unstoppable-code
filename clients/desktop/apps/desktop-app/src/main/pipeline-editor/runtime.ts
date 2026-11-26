@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { BrowserWindow } from 'electron';
 import type {
   AgentProviderType,
+  AppAdvisorActionResponse,
   ChatModel,
   ChatTabPluginSelections,
   McpQuestion,
@@ -26,7 +27,11 @@ import {
 } from './editor-tools';
 import { savePipelineEditorSnapshot } from './editor-save';
 import { logMainProcessWarn } from '../lib/main-process-logging';
-import type { PipelineEditorAction } from './definitions';
+import type {
+  PipelineEditorAction,
+  PipelineEditorAutomationAction,
+} from './definitions';
+import { getPipelineEditorHomeDir } from '../lib/paths';
 import {
   getBuiltinActionDefinition,
   type BuiltinActionDefinitionResult,
@@ -47,6 +52,16 @@ export interface PipelineEditorToolRuntime extends CanopyInjectedToolRuntime {
    * round-trip — so it is synchronous.
    */
   getBuiltinActionDefinition(name: string): BuiltinActionDefinitionResult;
+  /**
+   * List, read, create or change an automation through the same resource
+   * action path, owner checks and agent policy as every other agent surface.
+   * The editor has no project, so it acts in the selected owner, as
+   * Orchestrator does.
+   */
+  dispatchAutomationAction(
+    action: PipelineEditorAutomationAction,
+    options?: { requestId?: string; signal?: AbortSignal },
+  ): Promise<AppAdvisorActionResponse>;
 }
 
 export interface PipelineEditorToolRuntimeSurfaces {
@@ -76,32 +91,49 @@ const COMPLETED_RESPONSE_CACHE_LIMIT = 100;
 
 // A provider can retry a tool call under the same tool use id. Keyed by chat
 // plus request id, a retry joins the call in flight or gets its result, and
-// never runs the editor action, or its save, a second time.
-const inFlight = new Map<string, Promise<PipelineEditorRendererToolResponse>>();
-const completed = new Map<string, PipelineEditorRendererToolResponse>();
-
-function once(
+// never runs the editor action, its save, or an automation write a second
+// time.
+function createOnce<T>(): (
   chatId: string,
   requestId: string,
-  run: () => Promise<PipelineEditorRendererToolResponse>,
-): Promise<PipelineEditorRendererToolResponse> {
-  const key = getRendererToolRequestScopeKey(requestId, chatId);
-  const cached = completed.get(key);
-  if (cached) return Promise.resolve(cached);
-  const running = inFlight.get(key);
-  if (running) return running;
-  const pending = run().then((response) => {
-    completed.set(key, response);
-    while (completed.size > COMPLETED_RESPONSE_CACHE_LIMIT) {
-      const oldest = completed.keys().next().value;
-      if (oldest === undefined) break;
-      completed.delete(oldest);
-    }
-    return response;
-  });
-  inFlight.set(key, pending);
-  void pending.finally(() => inFlight.delete(key)).catch(() => undefined);
-  return pending;
+  run: () => Promise<T>,
+) => Promise<T> {
+  const inFlight = new Map<string, Promise<T>>();
+  const completed = new Map<string, T>();
+  return (chatId, requestId, run) => {
+    const key = getRendererToolRequestScopeKey(requestId, chatId);
+    const cached = completed.get(key);
+    if (cached !== undefined) return Promise.resolve(cached);
+    const running = inFlight.get(key);
+    if (running) return running;
+    const pending = run().then((response) => {
+      completed.set(key, response);
+      while (completed.size > COMPLETED_RESPONSE_CACHE_LIMIT) {
+        const oldest = completed.keys().next().value;
+        if (oldest === undefined) break;
+        completed.delete(oldest);
+      }
+      return response;
+    });
+    inFlight.set(key, pending);
+    void pending.finally(() => inFlight.delete(key)).catch(() => undefined);
+    return pending;
+  };
+}
+
+const once = createOnce<PipelineEditorRendererToolResponse>();
+const onceAutomation = createOnce<AppAdvisorActionResponse>();
+
+function stoppedTurnResponse(): AppAdvisorActionResponse {
+  return {
+    requestId: '',
+    ok: false,
+    error: {
+      code: 'execution_failed',
+      message:
+        'The turn was stopped, so the automation was not read or changed.',
+    },
+  };
 }
 
 /** Today's field order for a result built in main. */
@@ -281,6 +313,28 @@ export function createPipelineEditorToolRuntime(
     },
 
     getBuiltinActionDefinition: (name) => getBuiltinActionDefinition(name),
+
+    dispatchAutomationAction: (action, options) =>
+      onceAutomation(
+        identity.chatId,
+        options?.requestId ?? randomUUID(),
+        async () => {
+          if (options?.signal?.aborted) return stoppedTurnResponse();
+          // Deferred: the resource actions pull in the automation service graph.
+          const { dispatchAgentResourceAction } =
+            await import('../canopy-tools/resource-actions');
+          // The turn may have stopped while the module loaded.
+          if (options?.signal?.aborted) return stoppedTurnResponse();
+          return dispatchAgentResourceAction(action, {
+            projectId: identity.projectId,
+            worktreeId: identity.worktreeId,
+            chatId: identity.chatId,
+            cwd: getPipelineEditorHomeDir(),
+            executionScope: 'directory',
+            getWindow: surfaces.getMainWindow,
+          });
+        },
+      ),
 
     worktreeWatcherRuntime: undefined,
     worktreeActionRuntime: undefined,
