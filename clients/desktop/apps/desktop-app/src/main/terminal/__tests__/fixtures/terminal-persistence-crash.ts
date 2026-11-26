@@ -3,6 +3,10 @@ import process from 'node:process';
 import { syncBuiltinESMExports } from 'node:module';
 
 const point = process.env.TERMINAL_CRASH_POINT;
+// A run that forgets crashes only on writes from its forget on.
+const armed = (): boolean =>
+  process.env.TERMINAL_FORGET !== '1' ||
+  process.env.TERMINAL_CRASH_ARMED === '1';
 const descriptors = new Map<number, string>();
 const open = fs.openSync;
 const close = fs.closeSync;
@@ -23,21 +27,39 @@ fs.writeFileSync = (...args: Parameters<typeof write>): void => {
   const file = args[0];
   if (
     point === 'temp-write' &&
+    armed() &&
     typeof file === 'number' &&
     descriptors.get(file)?.endsWith('.tmp')
   )
     process.exit(73);
 };
-fs.renameSync = (from: fs.PathLike, to: fs.PathLike): void => {
+const promisedRename = fs.promises.rename;
+// The record (the authority's install), main's layout, and main's legacy
+// file, which it only ever replaces with the forward fence.
+function installKind(from: fs.PathLike, to: fs.PathLike): string | undefined {
   const target = String(to).replaceAll('\\', '/');
-  const kind = target.endsWith('/terminal-state.json')
-    ? 'worker'
-    : target.endsWith('/terminal-presentation.json')
-      ? 'presentation'
-      : undefined;
-  const atomic = kind && String(from).endsWith('.tmp');
-  if (atomic && point === `before-${kind}`) process.exit(73);
+  const kind = target.endsWith('/record.json')
+    ? 'record'
+    : target.endsWith('/terminal-state.json')
+      ? 'worker'
+      : target.endsWith('/terminal-presentation.json')
+        ? 'presentation'
+        : undefined;
+  return kind && String(from).endsWith('.tmp') ? kind : undefined;
+}
+fs.renameSync = (from: fs.PathLike, to: fs.PathLike): void => {
+  const kind = installKind(from, to);
+  if (kind && point === `before-${kind}` && armed()) process.exit(73);
   rename(from, to);
-  if (atomic && point === `after-${kind}`) process.exit(73);
+  if (kind && point === `after-${kind}` && armed()) process.exit(73);
+};
+fs.promises.rename = async (
+  from: fs.PathLike,
+  to: fs.PathLike,
+): Promise<void> => {
+  const kind = installKind(from, to);
+  if (kind && point === `before-${kind}` && armed()) process.exit(73);
+  await promisedRename(from, to);
+  if (kind && point === `after-${kind}` && armed()) process.exit(73);
 };
 syncBuiltinESMExports();

@@ -21,6 +21,7 @@ import type {
   DelegationChange,
   OperationAcceptRequest,
   OperationAcceptResult,
+  OperationChange,
   OperationLedger,
   OperationLedgerEvent,
   OperationListPage,
@@ -28,6 +29,8 @@ import type {
   OperationNonTerminalStatus,
   OperationReceiptInput,
   OperationReceiptLookup,
+  OperationUnfinishedPage,
+  OperationUnfinishedQuery,
 } from './ledger/ledger';
 import {
   OperationLedgerError,
@@ -171,8 +174,40 @@ export type OperationAdmissionOutcome =
   /** Its key was used before with other parameters. */
   | { status: 'keyReused' };
 
+/**
+ * What domains call on the operation service, wherever its ledger lives: the
+ * in-process service implements it, and so does a client of a service another
+ * process owns. `ready` only says the ledger opened and reconciled; the handle
+ * stays with the process that owns it.
+ */
+export type OperationServicePort = Omit<
+  OperationService,
+  | 'ready'
+  | 'runAsOwner'
+  | 'registerOwnerDomains'
+  | 'cancelIntent'
+  | 'withdrawCancelIntent'
+  | 'recordRecovery'
+  | 'listUnfinished'
+> & {
+  ready(): Promise<unknown>;
+};
+
+/**
+ * A domain whose work runs in the ledger owner's process, not the one that
+ * holds the ledger (CAN-6986 L3): the owner cancels and recovers its work
+ * there and records the result through the ledger's writes.
+ */
+export interface OperationOwnerDomain {
+  readonly domain: string;
+  readonly kinds: readonly string[];
+  readonly restartClass: OperationRestartClass;
+}
+
 export class OperationService {
   private readonly domains = new Map<string, OperationDomain>();
+  /** The ledger owner's domains, by kind; never in {@link domains}. */
+  private readonly ownerDomains = new Map<string, OperationOwnerDomain>();
   private readonly listeners = new Set<OperationEventListener>();
   private readonly recoveries = new Set<Promise<void>>();
   private readonly cancelDeliveries = new Map<string, Promise<unknown>>();
@@ -200,7 +235,7 @@ export class OperationService {
         `Operation domain ${domain.domain} is ${domain.restartClass} and needs recover().`,
       );
     for (const kind of domain.kinds) {
-      const existing = this.domains.get(kind);
+      const existing = this.domains.get(kind) ?? this.ownerDomains.get(kind);
       if (existing)
         throw new Error(
           `Operation kind ${kind} is claimed by both ${existing.domain} and ${domain.domain}.`,
@@ -244,6 +279,167 @@ export class OperationService {
       throw error;
     });
     return this.opening;
+  }
+
+  /**
+   * Run the open ledger as the owner process `ownerRun` (CAN-6986 L3). A new
+   * owner process starts a new run: work earlier runs left unfinished is
+   * reconciled as at an open, and the in-process worker is placed again.
+   * The same process resumes its run, after a reconnect or this process's
+   * restart, and its work is left as it is. Every call reconciles what
+   * earlier runs left, so a retry after a failed reconciliation finishes it.
+   */
+  async runAsOwner(ownerRun: string): Promise<string> {
+    const ledger = await this.ready();
+    const claimId = ledger.runAsOwner(ownerRun);
+    for (const operation of ledger.listInterrupted())
+      this.reconcileInterrupted(ledger, operation);
+    return claimId;
+  }
+
+  /**
+   * Claim the ledger owner's domains (CAN-6986 L3) for its process's run,
+   * {@link runAsOwner}. A new owner process replaces the earlier one's
+   * domains; the same process may claim its domains again. `lost`
+   * work is settled here; the rest is left paused and awaiting, for the
+   * owner to find through {@link list} and recover in its own process with
+   * {@link recordRecovery}. A kind claimed twice is refused before anything
+   * changes.
+   */
+  async registerOwnerDomains(
+    domains: readonly OperationOwnerDomain[],
+    options: { readonly ownerRun: string },
+  ): Promise<{
+    ledgerId: string;
+    eventsHead: number;
+    runEpoch: string;
+    claimId: string;
+    resumed: boolean;
+  }> {
+    const ledger = await this.ready();
+    const eventsHead = ledger.eventsHead();
+    const newProcess = ledger.ownerRun !== options.ownerRun;
+    const claimed = new Map<string, OperationOwnerDomain>();
+    for (const domain of domains)
+      for (const kind of domain.kinds) {
+        const owned = newProcess ? undefined : this.ownerDomains.get(kind);
+        const existing =
+          claimed.get(kind) ??
+          this.domains.get(kind) ??
+          (owned?.domain === domain.domain ? undefined : owned);
+        if (existing)
+          throw new OperationLedgerRefusedError(
+            'invalid-state',
+            `Operation kind ${kind} is claimed by both ${existing.domain} and ${domain.domain}.`,
+            { kind },
+          );
+        claimed.set(kind, domain);
+      }
+    if (newProcess) this.ownerDomains.clear();
+    const claimId = await this.runAsOwner(options.ownerRun);
+    for (const [kind, domain] of claimed) this.ownerDomains.set(kind, domain);
+    for (const operation of ledger.listUnfinished(Array.from(claimed.keys()))) {
+      const domain = claimed.get(operation.kind);
+      if (
+        !domain ||
+        operation.status !== 'paused' ||
+        operation.restart?.disposition !== 'unclaimed'
+      )
+        continue;
+      this.settleClaim(
+        ledger,
+        this.inheritCancellation(ledger, operation),
+        domain.restartClass,
+      );
+    }
+    return {
+      ledgerId: ledger.ledgerId,
+      eventsHead,
+      runEpoch: ledger.runEpoch,
+      claimId,
+      resumed: !newProcess,
+    };
+  }
+
+  /**
+   * Record the cancellation intent of the ledger owner's request before its
+   * domain is told (CAN-6986 L3), as {@link cancel} does before it asks a
+   * domain in this process. Finished work changes nothing.
+   */
+  async cancelIntent(
+    operationId: string,
+    request: OperationCancelRequest & { expectedRevision?: number },
+  ): Promise<{
+    operation: OperationRecord;
+    outcome: 'recorded' | 'already-terminal';
+  }> {
+    const ledger = await this.ready();
+    const current = ledger.get(operationId);
+    if (!current)
+      throw new OperationLedgerRefusedError(
+        'not-found',
+        'This operation does not exist.',
+        { operationId },
+      );
+    if (
+      request.expectedRevision !== undefined &&
+      request.expectedRevision !== current.revision
+    )
+      throw new OperationLedgerRefusedError(
+        'revision-conflict',
+        'This operation changed since it was read.',
+        { operationId, currentRevision: current.revision },
+      );
+    if (isTerminalOperationStatus(current.status))
+      return { operation: current, outcome: 'already-terminal' };
+    const requested = ledger.requestCancel(
+      operationId,
+      {
+        requestedAt: this.now(),
+        requestedBy: request.requestedBy,
+        reason: request.reason,
+      },
+      { expectedRevision: request.expectedRevision },
+    );
+    this.publish(requested.event);
+    return {
+      operation: requested.operation,
+      outcome: isTerminalOperationStatus(requested.operation.status)
+        ? 'already-terminal'
+        : 'recorded',
+    };
+  }
+
+  /** Withdraw the intent a refused owner cancellation recorded. */
+  async withdrawCancelIntent(operationId: string): Promise<OperationChange> {
+    const change = (await this.ready()).withdrawCancel(operationId);
+    this.publish(change.event);
+    return change;
+  }
+
+  /**
+   * Record what the ledger owner's domain found for work
+   * {@link registerOwnerDomains} left awaiting, as {@link recover} records
+   * a domain's answer in this process: whenever the work is unfinished. An
+   * answer from another run than the ledger's, or for work that is missing
+   * or finished, changes nothing and resolves null.
+   */
+  async recordRecovery(
+    operationId: string,
+    restartClass: Exclude<OperationRestartClass, 'lost'>,
+    recovery: OperationRecovery,
+    runEpoch: string,
+  ): Promise<OperationRecord | null> {
+    const ledger = await this.ready();
+    const current = ledger.get(operationId);
+    if (
+      runEpoch !== ledger.runEpoch ||
+      !current ||
+      isTerminalOperationStatus(current.status) ||
+      this.ownerDomains.get(current.kind)?.restartClass !== restartClass
+    )
+      return null;
+    return this.writeRecovery(ledger, current, restartClass, recovery);
   }
 
   /** Resolves once every domain recovery started so far has settled. */
@@ -378,7 +574,7 @@ export class OperationService {
       this.placements.set(ledger, leases);
     }
     const placed = leases.get(target.targetId);
-    if (placed) return placed;
+    if (placed?.runEpoch === ledger.runEpoch) return placed;
     ledger.registerTarget(target);
     const lease = ledger.acquireLease(target.targetId, terms);
     leases.set(target.targetId, lease);
@@ -480,6 +676,19 @@ export class OperationService {
     // The head is read first, so events after it cover any later change.
     const eventsHead = ledger.eventsHead();
     return { ...ledger.list(query), eventsHead };
+  }
+
+  /**
+   * Unfinished work in accept order, the order this service recovers and
+   * cancels in, for the ledger owner's process to do the same (CAN-6986 L3).
+   */
+  async listUnfinished(
+    query: OperationUnfinishedQuery,
+  ): Promise<OperationUnfinishedPage & { eventsHead: number }> {
+    const ledger = await this.ready();
+    // The head is read first, so events after it cover any later change.
+    const eventsHead = ledger.eventsHead();
+    return { ...ledger.listUnfinishedPage(query), eventsHead };
   }
 
   async transition(
@@ -837,6 +1046,28 @@ export class OperationService {
     domain: OperationDomain,
   ): void {
     const restartClass = domain.restartClass;
+    const awaiting = this.settleClaim(ledger, operation, restartClass);
+    if (!awaiting || restartClass === 'lost') return;
+    const recovery = this.recover(ledger, awaiting, domain, restartClass)
+      .catch((error: unknown) => {
+        this.options.onError?.(error, 'recover');
+      })
+      .finally(() => {
+        this.recoveries.delete(recovery);
+      });
+    this.recoveries.add(recovery);
+  }
+
+  /**
+   * Phase one for a claimed kind: `lost` work, and resumable work with a
+   * recorded cancellation, is settled; the rest is left paused and awaiting
+   * its domain, and returned.
+   */
+  private settleClaim(
+    ledger: OperationLedger,
+    operation: OperationRecord,
+    restartClass: OperationRestartClass,
+  ): OperationRecord | null {
     if (
       restartClass === 'lost' ||
       (operation.cancellation && restartClass === 'resumable')
@@ -856,7 +1087,7 @@ export class OperationService {
               },
         ).event,
       );
-      return;
+      return null;
     }
     const change = ledger.reconcile(operation.operationId, {
       status: 'paused',
@@ -864,19 +1095,7 @@ export class OperationService {
       restart: this.restart(restartClass, AWAITING[restartClass]),
     });
     this.publish(change.event);
-    const recovery = this.recover(
-      ledger,
-      change.operation,
-      domain,
-      restartClass,
-    )
-      .catch((error: unknown) => {
-        this.options.onError?.(error, 'recover');
-      })
-      .finally(() => {
-        this.recoveries.delete(recovery);
-      });
-    this.recoveries.add(recovery);
+    return change.operation;
   }
 
   /**
@@ -894,63 +1113,69 @@ export class OperationService {
     if (!ledger.isOpen) return;
     const current = ledger.get(operation.operationId);
     if (!current || isTerminalOperationStatus(current.status)) return;
+    const recorded = this.writeRecovery(ledger, current, restartClass, result);
+    const cancellation = recorded?.cancellation;
+    if (recorded && cancellation && !isTerminalOperationStatus(recorded.status))
+      await this.serializeCancel(operation.operationId, () =>
+        this.cancelThroughDomain(ledger, recorded, domain, {
+          reason: cancellation.reason,
+          requestedBy: cancellation.requestedBy,
+        }),
+      );
+  }
+
+  /** Record a domain's answer for unfinished work it was asked to recover. */
+  private writeRecovery(
+    ledger: OperationLedger,
+    current: OperationRecord,
+    restartClass: Exclude<OperationRestartClass, 'lost'>,
+    result: OperationRecovery,
+  ): OperationRecord {
+    const { operationId } = current;
     const recovered = this.restart(restartClass, RECOVERED[restartClass]);
+    let change: OperationChange;
     switch (result.status) {
       case 'running':
-      case 'queued': {
-        const change = ledger.transition(operation.operationId, result.status, {
+      case 'queued':
+        change = ledger.transition(operationId, result.status, {
           restart: recovered,
         });
-        this.publish(change.event);
-        const { cancellation } = change.operation;
-        if (cancellation)
-          await this.serializeCancel(operation.operationId, () =>
-            this.cancelThroughDomain(ledger, change.operation, domain, {
-              reason: cancellation.reason,
-              requestedBy: cancellation.requestedBy,
-            }),
-          );
-        return;
-      }
+        break;
       case 'completed':
       case 'cancelled':
-        this.publish(
-          ledger.finish(operation.operationId, {
-            status: result.status,
-            ...(result.status === 'completed' && result.outcome !== undefined
-              ? { outcome: result.outcome }
-              : {}),
-            restart: recovered,
-          }).event,
-        );
-        return;
+        change = ledger.finish(operationId, {
+          status: result.status,
+          ...(result.status === 'completed' && result.outcome !== undefined
+            ? { outcome: result.outcome }
+            : {}),
+          restart: recovered,
+        });
+        break;
       case 'failed':
-        this.publish(
-          ledger.finish(operation.operationId, {
-            status: 'failed',
-            error: result.error,
-            restart: recovered,
-          }).event,
-        );
-        return;
+        change = ledger.finish(operationId, {
+          status: 'failed',
+          error: result.error,
+          restart: recovered,
+        });
+        break;
       case 'lost':
-        this.publish(
-          ledger.finish(
-            operation.operationId,
-            current.cancellation
-              ? {
-                  status: 'cancelled',
-                  restart: this.restart(restartClass, 'cancelled'),
-                }
-              : {
-                  status: 'failed',
-                  error: INTERRUPTED_ERROR,
-                  restart: this.restart(restartClass, 'lost'),
-                },
-          ).event,
+        change = ledger.finish(
+          operationId,
+          current.cancellation
+            ? {
+                status: 'cancelled',
+                restart: this.restart(restartClass, 'cancelled'),
+              }
+            : {
+                status: 'failed',
+                error: INTERRUPTED_ERROR,
+                restart: this.restart(restartClass, 'lost'),
+              },
         );
-        return;
+        break;
     }
+    this.publish(change.event);
+    return change.operation;
   }
 
   private publish(event: OperationLedgerEvent | null): void {

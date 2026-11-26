@@ -276,6 +276,10 @@ import { createCliExecutionRuntime } from '@canopy/desktop-shared/node/pipelines
 import { readPreferencesFile } from './preferences-store';
 import { panelLayoutModePersistenceStore } from '../panels/layout-mode-persistence';
 import { logMainProcessWarn } from './main-process-logging';
+import {
+  isWorktreeSnapshotRefusalError,
+  worktreeSnapshotRefusalDiagnostic,
+} from './worktree-snapshot-refusal';
 import { mapWithConcurrency } from './concurrency';
 import { validateWorktreeHealthForStats } from './worktree-health';
 import { recordWorktreeHealth } from './worktree-repair';
@@ -392,6 +396,14 @@ export interface CreateWorktreeServiceOptions extends WorktreeSelectionFields {
   defaultBranchNaming?: 'worktree-id';
   /** Defaults to true; archive restore validates local refs and disables fetch. */
   allowBaseBranchNetwork?: boolean;
+  /**
+   * Archive restore, single-repo: the exact start point of a new branch that
+   * has no base branch or base worktree, instead of fetching origin and
+   * asking it for its default branch.
+   */
+  defaultStartPoint?: string;
+  /** Archive restore, multi-repo: {@link defaultStartPoint} by repository id. */
+  defaultStartPointsByRepo?: ReadonlyMap<string, string>;
   /** Portal picker intent: only the selected local/origin branch may supply the base. */
   baseBranchResolution?: 'exact-branch';
   /**
@@ -399,7 +411,11 @@ export interface CreateWorktreeServiceOptions extends WorktreeSelectionFields {
    * origin branch. Omitted keeps the local-then-origin lookup.
    */
   existingBranchNamespace?: 'local' | 'origin';
-  /** The Portal New Task catalogue selected a full ref in the base field. */
+  /**
+   * A single-repo `baseBranch`, or each `baseBranchesByRepo` value, is a full
+   * `refs/heads/` or `refs/remotes/origin/` ref: the Portal New Task
+   * catalogue's selection, or the base refs an archive restore checked.
+   */
   baseBranchIsQualified?: true;
   /** Restrict multi-repo creation to these child repository ids. */
   includedRepoIds?: readonly string[];
@@ -3623,12 +3639,20 @@ async function createAdmittedSingleRepoWorktree(
                 worktreeGitOptions,
                 baseResolution.trackingRef,
               )
-            : await createWorktreeWithPriority(
-                referenceRepoPath,
-                worktreePath,
-                reservation.worktree.branchName,
-                worktreeGitOptions,
-              );
+            : options.defaultStartPoint
+              ? await createWorktreeFromStartPointWithPriority(
+                  referenceRepoPath,
+                  worktreePath,
+                  reservation.worktree.branchName,
+                  options.defaultStartPoint,
+                  worktreeGitOptions,
+                )
+              : await createWorktreeWithPriority(
+                  referenceRepoPath,
+                  worktreePath,
+                  reservation.worktree.branchName,
+                  worktreeGitOptions,
+                );
 
       if (!(await shouldContinuePhaseB())) {
         await cleanupCancelledSingleRepoSetup({
@@ -3977,10 +4001,14 @@ async function resolveMappedMultiRepoBaseBranches(
   baseBranchesByRepo: Record<string, string>,
   allowNetwork = true,
   attempt?: W5KeyedAttempt,
+  qualified = false,
 ): Promise<Record<string, BaseBranchResolution>> {
   const pathsById = new Map(
     repoPaths.map((entry) => [entry.repoId, entry.repoPath]),
   );
+  const resolveBranch = qualified
+    ? resolveQualifiedBaseBranch
+    : resolveBaseBranch;
   const entries = await settleAll(
     Object.entries(baseBranchesByRepo).map(async ([repoId, baseBranch]) => {
       const repoPath = pathsById.get(repoId);
@@ -3992,7 +4020,7 @@ async function resolveMappedMultiRepoBaseBranches(
       }
       return [
         repoId,
-        await resolveBaseBranch(repoPath, baseBranch, allowNetwork, attempt),
+        await resolveBranch(repoPath, baseBranch, allowNetwork, attempt),
       ] as const;
     }),
   );
@@ -4173,6 +4201,7 @@ async function createAdmittedMultiRepoWorktree(
       mappedBaseBranches,
       options.allowBaseBranchNetwork !== false,
       preparationAttempt,
+      options.baseBranchIsQualified === true,
     );
   }
   const trackedRepoBaseBranches = options.baseWorktreeId
@@ -4378,12 +4407,23 @@ async function createAdmittedMultiRepoWorktree(
               baseResolutions?.[WORKSPACE_ROOT_REPO_ID]?.trackingRef,
             );
           } else {
-            nextBranchName = await createWorktreeWithPriority(
-              referenceRepoPath,
-              rootWorktreePath,
-              nextBranchName,
-              worktreeGitOptions,
+            const defaultStartPoint = options.defaultStartPointsByRepo?.get(
+              WORKSPACE_ROOT_REPO_ID,
             );
+            nextBranchName = defaultStartPoint
+              ? await createWorktreeFromStartPointWithPriority(
+                  referenceRepoPath,
+                  rootWorktreePath,
+                  nextBranchName,
+                  defaultStartPoint,
+                  worktreeGitOptions,
+                )
+              : await createWorktreeWithPriority(
+                  referenceRepoPath,
+                  rootWorktreePath,
+                  nextBranchName,
+                  worktreeGitOptions,
+                );
           }
         }
         nextRootBranchName = nextBranchName;
@@ -4595,6 +4635,9 @@ async function createAdmittedMultiRepoWorktree(
                 `Base worktree "${options.baseWorktreeId}" is missing repo "${repo.name}"`,
               );
             }
+            const defaultStartPoint = options.defaultStartPointsByRepo?.get(
+              repo.id,
+            );
             const createdBranchName = startPoint
               ? await createWorktreeFromStartPointWithPriority(
                   repo.repoPath,
@@ -4604,12 +4647,20 @@ async function createAdmittedMultiRepoWorktree(
                   worktreeGitOptions,
                   baseResolutions?.[repo.id]?.trackingRef,
                 )
-              : await createWorktreeWithPriority(
-                  repo.repoPath,
-                  repoWorktreePath,
-                  branchName,
-                  worktreeGitOptions,
-                );
+              : defaultStartPoint
+                ? await createWorktreeFromStartPointWithPriority(
+                    repo.repoPath,
+                    repoWorktreePath,
+                    branchName,
+                    defaultStartPoint,
+                    worktreeGitOptions,
+                  )
+                : await createWorktreeWithPriority(
+                    repo.repoPath,
+                    repoWorktreePath,
+                    branchName,
+                    worktreeGitOptions,
+                  );
             createdRepoBranches.set(repo.id, createdBranchName);
             if (createdBranchName !== branchName) {
               throw new Error(
@@ -4651,6 +4702,12 @@ async function createAdmittedMultiRepoWorktree(
         );
         if (classifications.every((failure) => failure !== undefined)) {
           Object.assign(combined, classifications[0]);
+        }
+        const refusals = failed
+          .map((failure): unknown => failure.reason)
+          .filter(isWorktreeSnapshotRefusalError);
+        if (refusals.length === failed.length && refusals[0]) {
+          Object.assign(combined, { code: refusals[0].code });
         }
         throw combined;
       }
@@ -5169,8 +5226,22 @@ async function prepareWorktreeArchiveContainer(options: {
           )),
         };
       } catch (error) {
-        if (!isArchivedGitCaptureRecoveryRequiredError(error)) throw error;
+        // A snapshot refusal takes the files-only recovery too (CAN-6776). It
+        // keeps the checkout, not the index, as that path always has; the
+        // archive warning and restore disclosure say so.
+        const refusal = worktreeSnapshotRefusalDiagnostic(error);
+        if (!refusal && !isArchivedGitCaptureRecoveryRequiredError(error))
+          throw error;
         acknowledgeArchiveCaptureRefusal();
+        if (refusal)
+          logMainProcessWarn(
+            'Worktree archive Git capture refused; retaining files only',
+            {
+              workspaceId: options.workspaceId,
+              worktreeId: options.worktreeId,
+              ...refusal,
+            },
+          );
         gitCaptureError = error;
       }
     }

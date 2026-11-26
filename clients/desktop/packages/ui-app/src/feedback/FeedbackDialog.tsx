@@ -255,6 +255,8 @@ export function FeedbackDialog({
                     dataTestId: `feedback-modal-type-${option.value}`,
                   }))}
                   onChange={setType}
+                  // The type picks the attached error, so it holds while sending.
+                  disabled={submitting}
                 />
               </div>
             )}

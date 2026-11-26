@@ -12,7 +12,7 @@ import {
 } from '@canopy/protocol/canopy-core';
 
 import type { LocalWorkerExecution } from '../../operations/local-worker';
-import type { OperationService } from '../../operations/service';
+import type { OperationServicePort } from '../../operations/service';
 
 export const CORE_HELPER_RUN_KIND = 'core.helper.run';
 export const WORKER_AGENT_HELPER_RUN = 'worker.agent.helper.run';
@@ -78,7 +78,7 @@ export type CoreHelperRunResult =
 export class CoreHelperRuns {
   constructor(
     private readonly options: {
-      operations: OperationService;
+      operations: OperationServicePort;
       localWorker: LocalWorkerExecution;
     },
   ) {

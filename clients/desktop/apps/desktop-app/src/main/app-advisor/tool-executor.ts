@@ -64,6 +64,8 @@ import { routeAppAdvisorAction } from './action-router';
 import { appAdvisorActionDisposition } from '@canopy/desktop-shared/lib/app-advisor-action-dispositions';
 import { projectSetupWatchersResultForProvider } from '@canopy/desktop-shared/lib/app-advisor-watchers';
 import { getFeatureFlagService } from '../feature-flags';
+import { isSlackConversationsChat } from '../remote-control/host/hosted-orchestrator-desktop';
+import { slackThreadActionCatalog } from '@canopy/agent-actions/families/slack-thread/catalog';
 import { readWatcherOutputPreview } from './local-watcher-output';
 
 export const APP_ADVISOR_START_FORKED_AGENT_DESCRIPTION =
@@ -437,6 +439,10 @@ export interface AppAdvisorToolContext extends CanopyInjectedToolContext {
   interfaceTools?: readonly InterfaceToolName[];
 }
 
+function isSlackThreadActionType(type: string): boolean {
+  return type === 'slack_thread.read' || type === 'slack_thread.open_file';
+}
+
 export function getDispatchRequestId(
   context: { toolUseId?: string } | undefined,
 ): string | undefined {
@@ -692,9 +698,24 @@ async function runAppAdvisorTool(
             ]),
           ),
         },
-        [...transcriptReadActionCatalog(), ...chatHistoryActionCatalog],
+        [
+          ...transcriptReadActionCatalog(),
+          ...chatHistoryActionCatalog,
+          // CAN-7749: flag-gated here, and listed only in a Slack tab below.
+          ...slackThreadActionCatalog,
+        ],
       );
-      const actions = [...sharedActions.actions, ...existing.actions]
+      const matched = [...sharedActions.actions, ...existing.actions];
+      // CAN-7749: Slack thread reads are listed only in a Slack tab; a failed
+      // check hides them. The port refuses them anywhere else regardless.
+      const slackTab =
+        matched.some((action) => isSlackThreadActionType(action.type)) &&
+        (await isSlackConversationsChat(
+          runtime.watcherDestination.worktreeId,
+          runtime.watcherDestination.chatId,
+        ).catch(() => false));
+      const actions = matched
+        .filter((action) => slackTab || !isSlackThreadActionType(action.type))
         .filter((action) => {
           const disposition = appAdvisorActionDisposition(action.type);
           if (disposition?.kind === 'core' && disposition.requiresInterface)

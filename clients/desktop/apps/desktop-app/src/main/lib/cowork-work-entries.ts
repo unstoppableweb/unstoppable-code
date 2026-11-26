@@ -1,9 +1,6 @@
 import { assertCoworkChatRootPresent } from './cowork-folder-guard';
 import { chatLastMessageRole } from './chat-last-message-role';
-import {
-  publishSidebarItemGroupsChanged,
-  type SidebarGroupRegistryReconciliation,
-} from './sidebar-item-groups';
+import { publishSidebarItemGroupsChanged } from './sidebar-item-groups';
 import { ChatStorageV2 } from './chat-storage-v2';
 /**
  * Work Entry registry — the worktree-like multi-chat containers a Work Entry
@@ -21,19 +18,10 @@ import { ChatStorageV2 } from './chat-storage-v2';
  * registry array is also the user-controlled sidebar order.
  */
 import { randomUUID } from 'node:crypto';
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  stat,
-  unlink,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { LegacyChatInput } from './legacy-chat-input';
 import { loadLegacyChatMigrationSource } from './legacy-chat-migration';
-import { renameWithRetry } from './atomic-file';
 import { dirname, join } from 'node:path';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
@@ -54,8 +42,12 @@ import {
   getWorkspaceChatTabsFilePath,
   getWorkspaceChatArchivesFilePath,
   getWorkspaceChatJournalFilePath,
-  getWorkspaceWorkEntriesFilePath,
 } from './paths';
+import {
+  notifyWorkEntryListChanged,
+  workEntryRepository,
+  type WorkEntryRegistryWriteOptions,
+} from './work-entry-repository';
 import {
   EMPTY_WORK_ENTRIES_FILE,
   isWorkEntryData,
@@ -93,69 +85,19 @@ export {
 
 const EMPTY_FILE = EMPTY_WORK_ENTRIES_FILE;
 
-/** Serializes registry mutations per workspace. */
-const mutationQueues = new Map<string, Promise<unknown>>();
-// Membership failure cannot hide a registry change that already committed.
-const failedRegistryWriteInvalidations = new Set<string>();
+// The registry queue, deletion fence and install live in the repository
+// composition; this module keeps summaries, reuse and the lifecycle fences.
+export {
+  onWorkEntryListChanged,
+  setWorkEntryRegistryReconciler,
+  type WorkEntryListChangeListener,
+  type WorkEntryRegistryWriteOptions,
+} from './work-entry-repository';
 
-export interface WorkEntryRegistryWriteOptions {
-  groupMutation?: boolean;
-  requireAuthoritativeRead?: boolean;
-  sidebarItemGroupId?: string;
-  newItemId?: string;
-  assertCanCommit?: () => void;
-  afterWrite?: () => Promise<void>;
-}
-
-type WorkEntryRegistryReconciler = (
-  workspaceId: string,
-  entries: CoworkWorkEntryData[],
-  options?: WorkEntryRegistryWriteOptions,
-) => Promise<SidebarGroupRegistryReconciliation<CoworkWorkEntryData>>;
-
-let workEntryRegistryReconciler: WorkEntryRegistryReconciler | undefined;
-
-export function setWorkEntryRegistryReconciler(
-  reconciler: WorkEntryRegistryReconciler,
-): void {
-  workEntryRegistryReconciler = reconciler;
-}
 const summaryBackfills = new Map<string, Promise<CoworkWorkEntriesFile>>();
 const liveSummaries = new Map<string, CoworkWorkEntrySummary>();
-const deletedWorkEntryWorkspaces = new Set<string>();
 const LARGE_SUMMARY_BACKFILL_FILE_BYTES = 32 * 1024 * 1024;
 const MAX_SUMMARY_BACKFILL_FILE_BYTES = 256 * 1024 * 1024;
-
-/** Called with the resolved workspace id after an entry-list write lands. */
-export type WorkEntryListChangeListener = (workspaceId: string) => void;
-
-const workEntryListChangeListeners = new Set<WorkEntryListChangeListener>();
-
-/**
- * Observe structural changes to a workspace's Work Entry list — an entry
- * added, removed or moved — which shift every sibling's registry index. The
- * registry cannot import the Portal projection (import cycle), so the
- * projection registers here instead. Returns the unsubscribe function.
- */
-export function onWorkEntryListChanged(
-  listener: WorkEntryListChangeListener,
-): () => void {
-  workEntryListChangeListeners.add(listener);
-  return (): void => {
-    workEntryListChangeListeners.delete(listener);
-  };
-}
-
-/** Fired after the registry lock settles; a listener can never fail a write. */
-function notifyWorkEntryListChanged(workspaceId: string): void {
-  workEntryListChangeListeners.forEach((listener) => {
-    try {
-      listener(workspaceId);
-    } catch {
-      // Observers are best-effort mirrors of the durable registry write.
-    }
-  });
-}
 
 function summaryCacheKey(workspaceId: string, entryId: string): string {
   return `${workspaceId}/${entryId}`;
@@ -167,49 +109,12 @@ function resolveWorkEntryWorkspaceId(projectId: string): string {
     : resolveCoworkWorkspaceId(projectId);
 }
 
-function withRegistryLock<T>(
-  workspaceId: string,
-  fn: () => Promise<T>,
-): Promise<T> {
-  if (deletedWorkEntryWorkspaces.has(workspaceId)) {
-    return Promise.reject(
-      new Error(`Work Entry project has been deleted: ${workspaceId}`),
-    );
-  }
-  const prev = mutationQueues.get(workspaceId) ?? Promise.resolve();
-  const next = prev.then(fn, fn).finally(() => {
-    if (
-      failedRegistryWriteInvalidations.delete(workspaceId) &&
-      !deletedWorkEntryWorkspaces.has(workspaceId)
-    ) {
-      notifyWorkEntryListChanged(workspaceId);
-    }
-  });
-  const settled = next
-    .catch(() => undefined)
-    .finally(() => {
-      if (mutationQueues.get(workspaceId) === settled) {
-        mutationQueues.delete(workspaceId);
-      }
-    });
-  mutationQueues.set(workspaceId, settled);
-  return next;
-}
-
 /** Whether the project's Work Entry registry file exists. Reads treat a
  * missing file as empty; callers that need proof a row was removed must not. */
 export async function workEntryRegistryExists(
   projectId: string,
 ): Promise<boolean> {
-  try {
-    await stat(
-      getWorkspaceWorkEntriesFilePath(resolveWorkEntryWorkspaceId(projectId)),
-    );
-    return true;
-  } catch (error) {
-    if (isErrnoException(error) && error.code === 'ENOENT') return false;
-    throw error;
-  }
+  return workEntryRepository.exists(resolveWorkEntryWorkspaceId(projectId));
 }
 
 /**
@@ -221,19 +126,7 @@ export async function workEntryRegistryExists(
 export async function readWorkEntriesFileStrict(
   workspaceId: string,
 ): Promise<CoworkWorkEntriesFile> {
-  return (await readWorkEntriesFileIfPresent(workspaceId)) ?? EMPTY_FILE;
-}
-
-async function readWorkEntriesFileIfPresent(
-  workspaceId: string,
-): Promise<CoworkWorkEntriesFile | null> {
-  const filePath = getWorkspaceWorkEntriesFilePath(workspaceId);
-  try {
-    return parseWorkEntriesFile(await readFile(filePath, 'utf8'));
-  } catch (error) {
-    if (isErrnoException(error) && error.code === 'ENOENT') return null;
-    throw error;
-  }
+  return workEntryRepository.readStrict(workspaceId);
 }
 
 /** A missing registry cannot prove that a previously registered row was removed. */
@@ -241,74 +134,10 @@ export async function readWorkEntryRegistryRowState(
   projectId: string,
   entryId: string,
 ): Promise<'present' | 'absent' | 'missing-registry'> {
-  const registry = await readWorkEntriesFileIfPresent(
+  return workEntryRepository.rowState(
     resolveWorkEntryWorkspaceId(projectId),
+    entryId,
   );
-  if (!registry) return 'missing-registry';
-  return registry.entries.some((entry) => entry.id === entryId)
-    ? 'present'
-    : 'absent';
-}
-
-async function writeWorkEntriesFile(
-  workspaceId: string,
-  data: CoworkWorkEntriesFile,
-  options?: WorkEntryRegistryWriteOptions,
-): Promise<void> {
-  const assertAdmitted = (): void => {
-    if (deletedWorkEntryWorkspaces.has(workspaceId))
-      throw new Error(`Work Entry project has been deleted: ${workspaceId}`);
-  };
-  assertAdmitted();
-  if (options?.sidebarItemGroupId && !workEntryRegistryReconciler)
-    throw new Error('Sidebar item group service is not initialized');
-  const reconciliation = workEntryRegistryReconciler
-    ? await workEntryRegistryReconciler(workspaceId, data.entries, options)
-    : undefined;
-  if (reconciliation) data = { ...data, entries: reconciliation.rows };
-  const filePath = getWorkspaceWorkEntriesFilePath(workspaceId);
-  const tempPath = join(dirname(filePath), `.work-entries-${randomUUID()}.tmp`);
-  let installed = false;
-  let prepared = false;
-  try {
-    await reconciliation?.beforeWrite?.();
-    prepared = true;
-    assertAdmitted();
-    await mkdir(dirname(filePath), { recursive: true });
-    await writeFile(tempPath, JSON.stringify(data, null, 2), 'utf8');
-    const assertCanInstall = (): void => {
-      assertAdmitted();
-      options?.assertCanCommit?.();
-    };
-    assertCanInstall();
-    await renameWithRetry(tempPath, filePath, {
-      beforeRetry: assertCanInstall,
-    });
-    installed = true;
-    assertAdmitted();
-  } catch (error) {
-    if (prepared && reconciliation?.rollback) {
-      try {
-        await reconciliation.rollback();
-      } catch (rollbackError) {
-        throw Object.assign(
-          new Error('Registry write and group rollback failed'),
-          { errors: [error, rollbackError] },
-        );
-      }
-    }
-    throw error;
-  } finally {
-    if (!installed) await unlink(tempPath).catch(() => undefined);
-  }
-  try {
-    await reconciliation?.afterWrite?.();
-    assertAdmitted();
-    publishSidebarItemGroupsChanged(workspaceId);
-  } catch (error) {
-    failedRegistryWriteInvalidations.add(workspaceId);
-    throw error;
-  }
 }
 
 function isChatKindTab(tab: PersistedChatTab): boolean {
@@ -808,14 +637,14 @@ async function hydrateMissingSummaries(
 async function backfillMissingSummaries(
   workspaceId: string,
 ): Promise<CoworkWorkEntriesFile> {
-  if (deletedWorkEntryWorkspaces.has(workspaceId)) return EMPTY_FILE;
+  if (workEntryRepository.isRetired(workspaceId)) return EMPTY_FILE;
   const existing = summaryBackfills.get(workspaceId);
   if (existing) return existing;
-  const backfill = withRegistryLock(workspaceId, async () => {
-    const current = await readWorkEntriesFileStrict(workspaceId);
+  const backfill = workEntryRepository.transact(workspaceId, async (tx) => {
+    const current = await tx.read();
     const hydrated = await hydrateMissingSummaries(workspaceId, current);
     if (hydrated.changed) {
-      await writeWorkEntriesFile(workspaceId, hydrated.file);
+      await tx.write(hydrated.file);
     }
     return hydrated.file;
   });
@@ -895,7 +724,7 @@ export async function syncWorkEntrySummaryFromWrite(
 ): Promise<void> {
   if (!isWorkEntryWorkspace(projectId)) return;
   const workspaceId = resolveWorkEntryWorkspaceId(projectId);
-  if (deletedWorkEntryWorkspaces.has(workspaceId)) return;
+  if (workEntryRepository.isRetired(workspaceId)) return;
   let sourceMtimeNs: string;
   try {
     const fileStats = await stat(
@@ -925,10 +754,10 @@ export async function syncWorkEntrySummaryFromWrite(
   const cacheKey = summaryCacheKey(workspaceId, entryId);
   liveSummaries.set(cacheKey, summary);
   try {
-    await withRegistryLock(workspaceId, async () => {
+    await workEntryRepository.transact(workspaceId, async (tx) => {
       await waitForE2eWorkEntrySummaryGate();
       if (!isCurrent()) return;
-      const file = await readWorkEntriesFileStrict(workspaceId);
+      const file = await tx.read();
       if (!isCurrent()) return;
       const index = file.entries.findIndex((entry) => entry.id === entryId);
       if (
@@ -943,8 +772,7 @@ export async function syncWorkEntrySummaryFromWrite(
       try {
         // Rechecked before each rename attempt: a newer revision can publish
         // mid-write or during a sharing-violation backoff.
-        await writeWorkEntriesFile(
-          workspaceId,
+        await tx.write(
           { version: 1, entries },
           {
             assertCanCommit: () => {
@@ -981,10 +809,10 @@ export async function refreshWorkEntrySummaryStamp(
 ): Promise<void> {
   if (!isWorkEntryWorkspace(projectId)) return;
   const workspaceId = resolveWorkEntryWorkspaceId(projectId);
-  if (deletedWorkEntryWorkspaces.has(workspaceId)) return;
+  if (workEntryRepository.isRetired(workspaceId)) return;
   try {
-    await withRegistryLock(workspaceId, async () => {
-      const file = await readWorkEntriesFileStrict(workspaceId);
+    await workEntryRepository.transact(workspaceId, async (tx) => {
+      const file = await tx.read();
       const index = file.entries.findIndex((entry) => entry.id === entryId);
       const entry = file.entries[index];
       if (entry?.summary?.sourceMtimeNs !== rotation.previousMtimeNs) return;
@@ -993,7 +821,7 @@ export async function refreshWorkEntrySummaryStamp(
         ...entry,
         summary: { ...entry.summary, sourceMtimeNs: rotation.mtimeNs },
       };
-      await writeWorkEntriesFile(workspaceId, { version: 1, entries });
+      await tx.write({ version: 1, entries });
     });
   } catch (error) {
     logMainProcessWarn('Failed to refresh cowork Work Entry summary stamp', {
@@ -1012,14 +840,13 @@ export async function clearWorkEntrySummariesForWorkspace(
   projectId: string,
 ): Promise<void> {
   const workspaceId = resolveWorkEntryWorkspaceId(projectId);
-  deletedWorkEntryWorkspaces.add(workspaceId);
+  const pendingMutation = workEntryRepository.retire(workspaceId);
   const prefix = `${workspaceId}/`;
   liveSummaries.forEach((_summary, key) => {
     if (key.startsWith(prefix)) {
       liveSummaries.delete(key);
     }
   });
-  const pendingMutation = mutationQueues.get(workspaceId);
   if (pendingMutation) {
     await pendingMutation;
   }
@@ -1031,7 +858,7 @@ export async function clearWorkEntrySummariesForWorkspace(
 
 /** Allows a deliberately re-created workspace id to own a fresh registry. */
 export function activateWorkEntryWorkspace(projectId: string): void {
-  deletedWorkEntryWorkspaces.delete(resolveWorkEntryWorkspaceId(projectId));
+  workEntryRepository.activate(resolveWorkEntryWorkspaceId(projectId));
 }
 
 /**
@@ -1188,9 +1015,9 @@ export async function createWorkEntry(
 ): Promise<{ entry: CoworkWorkEntryMeta; reusedExistingEmpty: boolean }> {
   const workspaceId = resolveWorkEntryWorkspaceId(projectId);
   await assertCoworkChatRootPresent(workspaceId, options?.id ?? 'home');
-  const result = await withRegistryLock(workspaceId, async () => {
+  const result = await workEntryRepository.transact(workspaceId, async (tx) => {
     options?.assertCanCommit?.();
-    let file = await readWorkEntriesFileStrict(workspaceId);
+    let file = await tx.read();
 
     if (!options?.title && !options?.id) {
       const hydrated = await hydrateMissingSummaries(workspaceId, file);
@@ -1271,8 +1098,7 @@ export async function createWorkEntry(
             lastTouchedAt: laterIso(reused.lastTouchedAt, new Date()),
           };
           delete row.status;
-          await writeWorkEntriesFile(
-            workspaceId,
+          await tx.write(
             {
               version: 1,
               entries: [
@@ -1326,8 +1152,7 @@ export async function createWorkEntry(
     };
     let installed = false;
     try {
-      await writeWorkEntriesFile(
-        workspaceId,
+      await tx.write(
         {
           version: 1,
           entries: [row, ...file.entries],
@@ -1364,7 +1189,7 @@ export async function createWorkEntry(
       }
       options?.assertCanCommit?.();
     } catch (error) {
-      if (installed) await writeWorkEntriesFile(workspaceId, file);
+      if (installed) await tx.write(file);
       throw error;
     }
     return {
@@ -1451,8 +1276,8 @@ async function updateWorkEntryWithoutActivity(
     return false;
   }
   const workspaceId = resolveWorkEntryWorkspaceId(projectId);
-  return withRegistryLock(workspaceId, async () => {
-    const file = await readWorkEntriesFileStrict(workspaceId);
+  return workEntryRepository.transact(workspaceId, async (tx) => {
+    const file = await tx.read();
     let updated = false;
     const entries = file.entries.map((entry) => {
       if (entry.id !== entryId) return entry;
@@ -1512,7 +1337,7 @@ async function updateWorkEntryWithoutActivity(
       return next;
     });
     if (!updated) return false;
-    await writeWorkEntriesFile(workspaceId, { version: 1, entries });
+    await tx.write({ version: 1, entries });
     return true;
   });
 }
@@ -1537,9 +1362,9 @@ export async function touchAllWorkEntries(
   }
   const normalized = new Date(timestamp).toISOString();
   const workspaceId = resolveWorkEntryWorkspaceId(projectId);
-  await withRegistryLock(workspaceId, async () => {
-    const file = await readWorkEntriesFileStrict(workspaceId);
-    await writeWorkEntriesFile(workspaceId, {
+  await workEntryRepository.transact(workspaceId, async (tx) => {
+    const file = await tx.read();
+    await tx.write({
       version: 1,
       entries: file.entries.map((entry) => ({
         ...entry,
@@ -1567,26 +1392,8 @@ export async function reorderWorkEntries(
   entryIds: string[],
 ): Promise<void> {
   const workspaceId = resolveCoworkWorkspaceId(projectId);
-  await withRegistryLock(workspaceId, async () => {
-    const file = await readWorkEntriesFileStrict(workspaceId);
-    const entriesById = new Map(file.entries.map((entry) => [entry.id, entry]));
-    if (
-      entryIds.length !== file.entries.length ||
-      new Set(entryIds).size !== entryIds.length ||
-      entryIds.some((entryId) => !entriesById.has(entryId))
-    ) {
-      throw new Error('Work entry reorder does not match entries');
-    }
-
-    const entries = entryIds.map((entryId) => {
-      const entry = entriesById.get(entryId);
-      if (!entry) {
-        throw new Error('Work entry reorder does not match entries');
-      }
-      return entry;
-    });
-    await writeWorkEntriesFile(workspaceId, { version: 1, entries });
-  });
+  // No expected revision: the IPC reorder stays last-writer-wins.
+  await workEntryRepository.reorder(workspaceId, entryIds);
   notifyWorkEntryListChanged(workspaceId);
 }
 
@@ -1598,25 +1405,22 @@ export async function updateWorkEntryRegistry(
 ): Promise<void> {
   const workspaceId = resolveWorkEntryWorkspaceId(projectId);
   let changed = false;
-  await withRegistryLock(workspaceId, async () => {
-    if (deletedWorkEntryWorkspaces.has(workspaceId))
-      throw new Error(`Work Entry project has been deleted: ${workspaceId}`);
-    const file = await readWorkEntriesFileStrict(workspaceId);
+  await workEntryRepository.transact(workspaceId, async (tx) => {
+    tx.assertAdmitted();
+    const file = await tx.read();
     const entries = await updater(file.entries);
-    if (deletedWorkEntryWorkspaces.has(workspaceId))
-      throw new Error(`Work Entry project has been deleted: ${workspaceId}`);
+    tx.assertAdmitted();
     if (entries !== file.entries) {
-      await writeWorkEntriesFile(workspaceId, { version: 1, entries }, options);
+      await tx.write({ version: 1, entries }, options);
       changed = true;
     }
     try {
       await options?.afterWrite?.();
     } catch (error) {
-      if (changed) failedRegistryWriteInvalidations.add(workspaceId);
+      if (changed) tx.invalidateOnSettle();
       throw error;
     }
-    if (deletedWorkEntryWorkspaces.has(workspaceId))
-      throw new Error(`Work Entry project has been deleted: ${workspaceId}`);
+    tx.assertAdmitted();
     publishSidebarItemGroupsChanged(workspaceId);
   });
   if (changed) notifyWorkEntryListChanged(workspaceId);
@@ -1632,13 +1436,7 @@ export async function removeWorkEntryRow(
   entryId: string,
 ): Promise<void> {
   const workspaceId = resolveWorkEntryWorkspaceId(projectId);
-  await withRegistryLock(workspaceId, async () => {
-    const file = await readWorkEntriesFileStrict(workspaceId);
-    await writeWorkEntriesFile(workspaceId, {
-      version: 1,
-      entries: file.entries.filter((entry) => entry.id !== entryId),
-    });
-  });
+  await workEntryRepository.removeRow(workspaceId, entryId);
   liveSummaries.delete(summaryCacheKey(workspaceId, entryId));
   // Removal shifts the registry index of every later sibling.
   notifyWorkEntryListChanged(workspaceId);
@@ -1650,21 +1448,7 @@ export async function appendWorkEntryRows(
   rows: CoworkWorkEntryData[],
 ): Promise<void> {
   const workspaceId = resolveWorkEntryWorkspaceId(projectId);
-  const appended = await withRegistryLock(workspaceId, async () => {
-    const file = await readWorkEntriesFileStrict(workspaceId);
-    const known = new Set(file.entries.map((entry) => entry.id));
-    const additions = rows.filter((row) => {
-      if (known.has(row.id)) return false;
-      known.add(row.id);
-      return true;
-    });
-    if (additions.length === 0) return false;
-    await writeWorkEntriesFile(workspaceId, {
-      version: 1,
-      entries: [...file.entries, ...additions],
-    });
-    return true;
-  });
+  const appended = await workEntryRepository.appendRows(workspaceId, rows);
   if (appended) notifyWorkEntryListChanged(workspaceId);
 }
 
@@ -1760,20 +1544,18 @@ export async function removeUnstartedWorkEntry(
   createdAt: string,
 ): Promise<void> {
   const workspaceId = resolveWorkEntryWorkspaceId(projectId);
-  await withRegistryLock(workspaceId, async () => {
-    const file = await readWorkEntriesFileStrict(workspaceId);
-    const row = file.entries.find((entry) => entry.id === entryId);
-    if (!row || row.createdAt !== createdAt) return;
-    const [tabs, archives] = await Promise.all([
-      readChatTabsFile(workspaceId, entryId),
-      readChatArchivesFile(workspaceId, entryId),
-    ]);
-    if (tabs.tabs.length || archives.archived.length) return;
-    await writeWorkEntriesFile(workspaceId, {
-      ...file,
-      entries: file.entries.filter((entry) => entry !== row),
-    });
-    liveSummaries.delete(summaryCacheKey(workspaceId, entryId));
-    notifyWorkEntryListChanged(workspaceId);
+  await workEntryRepository.removeIfUnstarted(workspaceId, entryId, createdAt, {
+    isEmpty: async () => {
+      const [tabs, archives] = await Promise.all([
+        readChatTabsFile(workspaceId, entryId),
+        readChatArchivesFile(workspaceId, entryId),
+      ]);
+      return !tabs.tabs.length && !archives.archived.length;
+    },
+    // Inside the queue, as before: the signal precedes the next write.
+    onRemoved: () => {
+      liveSummaries.delete(summaryCacheKey(workspaceId, entryId));
+      notifyWorkEntryListChanged(workspaceId);
+    },
   });
 }

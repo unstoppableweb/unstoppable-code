@@ -22,7 +22,7 @@ import {
   resolveBillingChargeDisplayStatus,
 } from '../lib/billing-charge-display';
 import { BillingStatusPill } from './BillingStatusPill';
-import { DataTable } from './DataTable';
+import { DataTable } from '../primitives/DataTable';
 
 /**
  * Browser-safe charge row shape. Mirrors the fields this component renders from

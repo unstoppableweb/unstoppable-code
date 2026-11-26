@@ -1,5 +1,5 @@
-import { ControlButton } from './Button';
-import { Stack, type SpaceRole } from './Stack';
+import { ControlButton } from '../primitives/Button';
+import { Stack, type SpaceRole } from '../primitives/Stack';
 import {
   Children,
   useRef,
@@ -13,19 +13,19 @@ import {
   type SelectableShareAudience,
   shareAudienceLabel,
 } from '../lib/share-audience-label';
-import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
-import { ChoiceMark } from './Choice';
+import { CenteredLoadingSpinner } from '../primitives/CenteredLoadingSpinner';
+import { ChoiceMark } from '../primitives/Choice';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
-import { DisplayAvatar } from './DisplayAvatar';
-import { Fieldset } from './Fieldset';
-import { OverlayScrollArea } from './OverlayScrollArea';
-import { SearchEmptyState, SearchField } from './SearchField';
+import { DisplayAvatar } from '../primitives/DisplayAvatar';
+import { Fieldset } from '../primitives/Fieldset';
+import { OverlayScrollArea } from '../primitives/OverlayScrollArea';
+import { SearchEmptyState, SearchField } from '../primitives/SearchField';
 import {
   SegmentedControl,
   type SegmentedControlOption,
-} from './SegmentedControl';
-import { ErrorBanner } from './StatusBlocks';
-import type { TooltipLink } from './Tooltip';
+} from '../primitives/SegmentedControl';
+import { ErrorBanner } from '../primitives/StatusBlocks';
+import type { TooltipLink } from '../primitives/Tooltip';
 
 export {
   type SelectableShareAudience,

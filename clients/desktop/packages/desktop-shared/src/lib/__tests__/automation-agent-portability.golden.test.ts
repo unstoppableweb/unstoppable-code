@@ -8,6 +8,8 @@ import { parseAgentDelegationSpawnRequest } from '@canopy/protocol/delegation';
 import { ManagedDelegationModelsListResultSchema as DelegationModelDiscoverySchema } from '@canopy/protocol/canopy-core';
 import type { DelegationModelChoice } from '@canopy/protocol/delegation/discovery';
 import { emptyPluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
+import { getTriggerTypes } from '@canopy/execution-engine/types/pipeline';
+import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type { ScheduledActivity } from '../../types';
 import { buildSharedAutomationDocument } from '../automation-sharing';
 import { buildInstallAutomationRequest } from '../automation-install';
@@ -284,6 +286,38 @@ describe('automations:shared:create and automations:shared:update portable wire 
       ),
     ).toMatchObject({ model });
   });
+
+  it('declares Workflow and Manual, and reads back either or both (CAN-5782)', () => {
+    const original = activity();
+    const converted = chatAutomationToPipeline(original);
+    const on = converted.pipeline.on;
+    if (typeof on !== 'object' || on === null)
+      throw new Error('expected a trigger object');
+    const inputs = on.dispatch?.inputs;
+    expect(Object.keys(on).sort()).toEqual(['dispatch', 'workflow']);
+    expect(on.workflow?.inputs).toEqual(inputs);
+    const readBack = (pipelineOn: typeof converted.pipeline.on): unknown =>
+      ownedPipelineToChatAction(
+        { ...converted.pipeline, on: pipelineOn },
+        converted.inputs,
+        () => false,
+        converted,
+      );
+    // Every shape conversion has written reads back as the chat action.
+    expect(readBack(on)).toEqual(original.action);
+    expect(readBack({ dispatch: { inputs } })).toEqual(original.action);
+    expect(readBack({ workflow: { inputs } })).toEqual(original.action);
+    // Another trigger or other inputs are a hand edit.
+    expect(readBack({ ...on, plan_ready: {} })).toBeNull();
+    expect(
+      readBack({ dispatch: { inputs }, workflow: { inputs: {} } }),
+    ).toBeNull();
+    // A regeneration keeps the stored set exactly.
+    expect(
+      chatAutomationToPipeline(original, { triggers: ['dispatch'] }).pipeline
+        .on,
+    ).toEqual({ dispatch: { inputs } });
+  });
 });
 
 describe('the server chat-form guard rule (CAN-6455)', () => {
@@ -418,6 +452,18 @@ describe('the server chat-form guard rule (CAN-6455)', () => {
       async () => {
         const workflow = await sharedWorkflowForm(chat(worktree()));
         if (workflow === null) throw new Error('expected a workflow form');
+        // CAN-5782: a shared conversion stays Manual-only, which curated
+        // records still require.
+        if (
+          workflow.action.type !== 'worktree_pipeline' ||
+          workflow.action.pipeline.source !== 'inline'
+        )
+          throw new Error('expected an inline workflow');
+        expect(
+          getTriggerTypes(
+            parsePipelineText(workflow.action.pipeline.rawPipeline).on,
+          ),
+        ).toEqual(['dispatch']);
         return workflow;
       },
     ],

@@ -1,6 +1,7 @@
 import { mkdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { pruneDamagedCopiesSync } from '../../damaged-copies';
+import { ownerFlipRecordFile } from '../../storage-records';
 import { createDurableAtomicInstall } from './atomic-install';
 import type {
   PipelineDefinitionStoreEnvironment,
@@ -68,5 +69,7 @@ export function createDaemonPipelineDefinitionStoreEnvironment(
     },
     defaultWriter: () => 'daemon',
     writerModule: DAEMON_PIPELINE_DEFINITION_STORE_MODULE,
+    ownerFlipRecordPath: () =>
+      ownerFlipRecordFile(options.dataRoot, 'pipeline_definitions'),
   };
 }

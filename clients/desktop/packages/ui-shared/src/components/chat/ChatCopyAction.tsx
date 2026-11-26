@@ -2,10 +2,13 @@ import { useCallback, type JSX, type MouseEvent } from 'react';
 import { CheckIcon } from '../../icons/CheckIcon';
 import { CopyIcon } from '../../icons/CopyIcon';
 import { stripOpaqueAgentCitationMarkers } from '../../lib/agent-citations';
-import { Button } from '../Button';
+import { Button } from '../../primitives/Button';
 import { CLEAN_ICON_BUTTON_VARIANT } from '../chat-look';
-import { CopyStatusRegion, useAnnouncedCopy } from '../copy-feedback';
-import { Tooltip } from '../Tooltip';
+import {
+  CopyStatusRegion,
+  useAnnouncedCopy,
+} from '../../primitives/copy-feedback';
+import { Tooltip } from '../../primitives/Tooltip';
 
 /**
  * A message's Copy action: one quiet icon button in its action row, the same

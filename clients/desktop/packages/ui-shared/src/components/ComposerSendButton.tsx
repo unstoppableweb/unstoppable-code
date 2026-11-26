@@ -1,20 +1,15 @@
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import type { JSX } from 'react';
 import { ArrowUp, StopFilledIcon } from '../icons/AppIcons';
-import { LoadingSpinner } from './LoadingSpinner';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
 import { TerminalRunButton } from './TerminalComposerMode';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 import {
   COMPOSER_STOPPING_LABEL,
   COMPOSER_STOPPING_WAITING_FOR_WAKE_LABEL,
 } from './composer-send-button-copy';
-
-/**
- * How large the control's hit area is. `compact` is the 32px pointer control;
- * `touch` keeps a 44px tap target below `lg` and returns to 32px from `lg`
- * up. A host picks this from its own input model, not from the viewport.
- */
-export type ComposerSendButtonTapTarget = 'compact' | 'touch';
+import type { ComposerSendButtonTapTarget } from '../primitives/control-button-shared';
+export type { ComposerSendButtonTapTarget } from '../primitives/control-button-shared';
 
 /**
  * The composer's trailing action, by priority:

@@ -1,5 +1,5 @@
 import { McpScopeControlFrame } from '@canopy/ui-shared/components';
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import {
   deleteDesktopMcpTarget,
   moveDesktopMcpTarget,

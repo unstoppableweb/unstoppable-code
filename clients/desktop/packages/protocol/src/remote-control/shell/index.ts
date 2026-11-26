@@ -14,6 +14,7 @@ import type {
 import type { AutoDeleteAttention } from './auto-delete-attention';
 import type { WorktreeRecoveryRequest } from './worktree-recovery';
 import type { CoworkFolderMissing } from '../../canopy-core/core/workspace/cowork-folder';
+import type { BotId } from '../../chat-targets';
 import { z } from 'zod';
 import type { ClaudeConnectorAvailability } from './claude-connector-availability';
 export * from './claude-connector-availability';
@@ -2535,6 +2536,10 @@ export interface RemoteControlChatDismissQuestionPayload extends RemoteControlCh
 // workspace, so a remote client cannot re-route the family at another chat
 // scope. UI-state snapshots relayed for this surface must continue to exclude
 // pairing codes and other portal secrets.
+//
+// The optional `botId` names a Bot, never a scope: missing or `app_advisor`
+// is the default Bot. Clients refuse any other Bot before sending, because no
+// host serves other Bots over Remote Control yet (CAN-7400).
 // ---------------------------------------------------------------------------
 
 /**
@@ -2545,6 +2550,8 @@ export interface RemoteControlChatDismissQuestionPayload extends RemoteControlCh
  * enforces the closed command enum and the body-size cap.
  */
 export interface RemoteControlAppAdvisorSendPayload {
+  /** The Bot this send addresses; see {@link RemoteControlAppAdvisorChatTarget.botId}. */
+  botId?: BotId;
   /**
    * Existing App Advisor Work Entry that should own a chat minted by this
    * send. Omit for the legacy behavior that creates a new Work Entry.
@@ -2570,6 +2577,12 @@ export interface RemoteControlAppAdvisorSendPayload {
  */
 export interface RemoteControlAppAdvisorChatTarget {
   chatId: string;
+  /**
+   * The Bot this command addresses. Omit, or pass `app_advisor`, for the
+   * default Bot. Clients refuse any other Bot until the paired computer
+   * serves Bots over Remote Control (CAN-7400).
+   */
+  botId?: BotId;
 }
 
 /** Payload for `portal.app_advisor.cancel`. */
@@ -3379,6 +3392,8 @@ export interface RemoteControlMarketplacePluginRow extends Pick<
   harnessRows?: readonly RemoteControlPluginHarnessRow[];
   /** True when the plugin has a populated local cache (or is bundled). */
   installed: boolean;
+  /** Desktop retains a recoverable Codex install even without an active harness. */
+  parked?: boolean;
   /**
    * True when the desktop can mint a public share link for this plugin (the
    * marketplace resolves to a shareable source). Computed desktop-side so the
@@ -4395,6 +4410,21 @@ export interface RemoteControlPipelineRunPayload {
   planId?: string;
   /** Local id of an already-fetched shared pipeline source, when applicable. */
   sharedPipeline?: { serverId: string; remoteId: string };
+  /**
+   * The {@link RemoteControlPipelineMetadata.revision} the run was chosen
+   * against (CAN-7513). The desktop refuses the run when the workflow it
+   * resolves for this worktree has another revision. Older desktops ignore
+   * it and run what they resolve, as before.
+   */
+  expectedRevision?: string;
+  /**
+   * The worktree whose copy of a project workflow the run was chosen
+   * against (CAN-7513). The desktop reads the workflow there, checks it
+   * against `expectedRevision`, and runs that copy in `worktreeId`, so a
+   * new worktree runs the version the person attached. Older desktops
+   * ignore it and run the copy in `worktreeId`, as before.
+   */
+  definitionWorktreeId?: string;
   /**
    * Where the run executes (CAN-6187, decision P6), apart from the task it
    * goes to. Absent runs on the desktop; the cloud target
@@ -7073,6 +7103,14 @@ export interface RemoteControlPipelineMetadata {
   shareScope?: 'private' | 'team' | 'organization';
   taskReadyInputs?: Record<string, RemoteControlPipelineInputDefinition>;
   planReadyInputs?: Record<string, RemoteControlPipelineInputDefinition>;
+  /**
+   * Digest of the workflow file, steps included. It changes whenever what the
+   * workflow runs changes, so a choice made against one revision can be
+   * checked before it runs (see
+   * {@link RemoteControlPipelineRunPayload.expectedRevision}). Absent for a
+   * workflow with no file, one too large to digest, and on older desktops.
+   */
+  revision?: string;
 }
 
 function isRemoteControlMetadataRecord(
@@ -7226,6 +7264,10 @@ export function projectRemoteControlPipelineMetadata(
   const planReadyInputs = projectRemoteControlPipelineInputs(
     raw.planReadyInputs,
   );
+  const revision =
+    typeof raw.revision === 'string' && raw.revision.length > 0
+      ? raw.revision
+      : undefined;
   return {
     ...(description ? { description } : {}),
     ...(source ? { source } : {}),
@@ -7235,6 +7277,7 @@ export function projectRemoteControlPipelineMetadata(
     ...(shareScope ? { shareScope } : {}),
     ...(Object.keys(taskReadyInputs).length > 0 ? { taskReadyInputs } : {}),
     ...(Object.keys(planReadyInputs).length > 0 ? { planReadyInputs } : {}),
+    ...(revision ? { revision } : {}),
   };
 }
 
@@ -9067,6 +9110,82 @@ export interface RemoteControlChatProviderAvailability {
   copilot?: boolean;
   antigravity?: boolean;
   opencode?: boolean;
+  /**
+   * Why each managed-runtime provider is or isn't ready on the desktop, so a
+   * picker can show a provider that has no model rows, with its reason,
+   * instead of leaving it out. A provider is omitted while the desktop has
+   * not checked it. Absent from older desktops; readers then keep their
+   * row-based behavior.
+   */
+  setup?: RemoteControlProviderSetupStatuses;
+}
+
+/** Providers whose rows depend on a managed runtime the desktop installs. */
+export type RemoteControlManagedProvider =
+  | 'antigravity'
+  | 'cursor'
+  | 'copilot'
+  | 'opencode';
+
+export const REMOTE_CONTROL_MANAGED_PROVIDERS = [
+  'antigravity',
+  'cursor',
+  'copilot',
+  'opencode',
+] as const satisfies readonly RemoteControlManagedProvider[];
+
+/**
+ * - `ready`: models can run.
+ * - `unsupported_host`: the desktop's operating system or architecture has no
+ *   supported runtime for this provider.
+ * - `not_installed`: supported, but the runtime is not installed.
+ * - `disabled`: the person turned the provider off on the desktop.
+ * - `signed_out`: installed and on, but no account is signed in.
+ * - `unavailable`: installed and on, but the last check found no usable
+ *   models (often a sign-in that has expired or never happened).
+ * - `flag_off`: the provider is not released to this account. Pickers hide it.
+ */
+export type RemoteControlProviderSetupState =
+  | 'ready'
+  | 'unsupported_host'
+  | 'not_installed'
+  | 'disabled'
+  | 'signed_out'
+  | 'unavailable'
+  | 'flag_off';
+
+export const REMOTE_CONTROL_PROVIDER_SETUP_STATES = [
+  'ready',
+  'unsupported_host',
+  'not_installed',
+  'disabled',
+  'signed_out',
+  'unavailable',
+  'flag_off',
+] as const satisfies readonly RemoteControlProviderSetupState[];
+
+export type RemoteControlProviderSetupStatuses = Partial<
+  Record<RemoteControlManagedProvider, RemoteControlProviderSetupState>
+>;
+
+/**
+ * Reads a wire `setup` map, keeping only known providers with known states,
+ * so a newer desktop's additions never reach a picker as an unknown value.
+ */
+export function readRemoteControlProviderSetupStatuses(
+  value: unknown,
+): RemoteControlProviderSetupStatuses | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    return undefined;
+  const statuses: RemoteControlProviderSetupStatuses = {};
+  for (const provider of REMOTE_CONTROL_MANAGED_PROVIDERS) {
+    const state: unknown = Reflect.get(value, provider);
+    const known = REMOTE_CONTROL_PROVIDER_SETUP_STATES.find(
+      (candidate) => candidate === state,
+    );
+    if (known) statuses[provider] = known;
+  }
+  return statuses;
 }
 
 /** Providers whose plan limits the `provider_usage` projection carries. */

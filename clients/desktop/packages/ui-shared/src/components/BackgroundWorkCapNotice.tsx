@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 import { StopwatchIcon } from '../icons/AppIcons';
 import { ComposerDrawerSection } from './ComposerDrawer';
-import { Notice, NoticeButton } from './Notice';
+import { Notice, NoticeButton } from '../primitives/Notice';
 
 export interface BackgroundWorkCapNoticeProps {
   /** Epoch ms at which the chat's background work stops for inactivity. */

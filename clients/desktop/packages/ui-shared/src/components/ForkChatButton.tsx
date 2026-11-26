@@ -1,8 +1,8 @@
 import type { AriaAttributes, JSX, MouseEventHandler } from 'react';
 import { ForkSplitIcon } from '../icons/AppIcons';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 import { CLEAN_ICON_BUTTON_VARIANT } from './chat-look';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 
 export interface ForkChatButtonProps extends Pick<
   AriaAttributes,

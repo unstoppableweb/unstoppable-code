@@ -34,6 +34,7 @@ import {
   type InstalledSharedSkillTarget,
 } from '@/lib/sharedSkillImport';
 import { extractIpcErrorMessage } from '@/lib/errors';
+import { modelPresetErrorMessage } from '@/lib/modelPresetErrors';
 import { findInstalledPipelineByContent } from '@/lib/publicShareInstallState';
 import { findInstalledAutomationByOrigin } from '@/lib/publicAutomationInstallState';
 import { buildSkillStarterPrompt } from '@/lib/publicShareExamplePrompt';
@@ -335,7 +336,7 @@ const SKILL_COPY_MISSING_MESSAGE =
 const SKILL_COPY_UNVERIFIED_MESSAGE =
   'Your installed copy of this skill could not be checked. Try again.';
 const AGENT_CHANGED_MESSAGE =
-  'This agent changed while you were reviewing it. Refresh and review it again.';
+  'This model preset changed while you were reviewing it. Refresh and review it again.';
 
 /**
  * The revision of a shared agent an in-app Install was clicked on: the hash
@@ -1592,7 +1593,7 @@ export function usePublicShareLanding(
             imported = response.agent;
             if (response.idChanged) {
               reportStatus(
-                `Agent installed as ${response.finalId} because ${response.requestedId} already exists locally.`,
+                `Model preset installed as ${response.finalId} because ${response.requestedId} already exists locally.`,
                 true,
               );
             }
@@ -1855,10 +1856,12 @@ export function usePublicShareLanding(
           setNeedsRefresh(true);
           setInstallError(extractIpcErrorMessage(error));
         } else {
-          const message =
+          const raw =
             error instanceof Error
               ? error.message
               : 'Failed to install this share.';
+          const message =
+            snapshot.entity === 'agent' ? modelPresetErrorMessage(raw) : raw;
           // Main recorded it; the banner records nothing but links it to this
           // session.
           linkRecordedError(error, 'public-share-install');
@@ -2321,7 +2324,9 @@ export function usePublicShareLanding(
       );
       return fail(
         error instanceof Error
-          ? error.message
+          ? installed.entity === 'agent'
+            ? modelPresetErrorMessage(error.message)
+            : error.message
           : 'Failed to uninstall this share.',
       );
     } finally {

@@ -138,22 +138,22 @@ export function ModelGatewayKeyBanner({
   // on the same line.
   const title =
     keyState.status === 'missing'
-      ? 'Gateway key needed'
+      ? 'Your AI gateway needs a key'
       : keyState.status === 'stale-endpoint'
-        ? 'Gateway endpoint changed'
-        : 'Gateway key rejected';
+        ? 'Your AI gateway moved'
+        : 'Your AI gateway rejected your key';
   const personalGateway = gateway.organizationId === personal?.organizationId;
   const message = personalGateway
     ? keyState.status === 'missing'
       ? `Add your ${gateway.organizationName} key in Providers to send this.`
       : keyState.status === 'stale-endpoint'
-        ? 'Add a key for your new AI gateway endpoint in Providers.'
-        : "Your AI gateway didn't accept this key. Save a current key in Providers."
+        ? 'Add a key for the new one in Providers.'
+        : 'Save a current key in Providers.'
     : keyState.status === 'missing'
       ? `${gateway.organizationName} routes your agents through its own AI gateway, so add your gateway key to send this.`
       : keyState.status === 'stale-endpoint'
         ? `${gateway.organizationName} moved its AI gateway, so add a key for the new one to send this.`
-        : `${gateway.organizationName} didn't accept your gateway key, so paste a current one or ask your admin for a new key.`;
+        : `${gateway.organizationName} didn't accept your gateway key, so paste a current one or ask an org admin for a new key.`;
 
   return (
     <Notice
@@ -175,7 +175,7 @@ export function ModelGatewayKeyBanner({
             )
           }
         >
-          Add your gateway key
+          Add gateway key
         </NoticeButton>
       }
     >

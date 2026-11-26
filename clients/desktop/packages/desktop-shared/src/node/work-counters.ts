@@ -357,6 +357,23 @@ export function recordScriptReadRoute(
   counters.route.add(`scripts.${operation}.${outcome}`, 1);
 }
 
+/** A `worker.pipeline.execution` read Electron main routes (CAN-7874). */
+export type PipelineReadRouteOperation = 'get';
+
+/**
+ * Where one routed pipeline execution read ran, counted once per read
+ * (CAN-7874): `daemon.served` when the daemon answered, `daemon.refused` when
+ * a reached daemon refused it, `daemon.fallback` when an unreachable daemon or
+ * a run the daemon doesn't know left it to Electron main, and `direct` when
+ * the host never selects the daemon.
+ */
+export function recordPipelineReadRoute(
+  operation: PipelineReadRouteOperation,
+  outcome: 'daemon.served' | 'daemon.refused' | 'daemon.fallback' | 'direct',
+): void {
+  counters.route.add(`pipelines.${operation}.${outcome}`, 1);
+}
+
 /** Electron main's agent code-graph reads the daemon route observes (CAN-5093). */
 export type CodeGraphReadRouteOperation = 'status' | 'languages';
 

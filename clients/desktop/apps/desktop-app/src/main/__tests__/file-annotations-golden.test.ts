@@ -54,6 +54,7 @@ jest.mock('../lib/paths', () => {
   const actual = jest.requireActual<typeof PathsModule>('../lib/paths');
   return {
     ...actual,
+    getDataDir: (): string => tempDir,
     getFileAnnotationsStateFilePath: (
       projectId: string,
       worktreeId: string,

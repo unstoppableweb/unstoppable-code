@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -12,17 +13,22 @@ import {
   type SessionViewModel,
 } from '@canopy/app-core';
 import {
+  offerLifecycleJournalQuarantine,
   offerWorktreeDiscard,
   registerArchiveRecoveryReview,
   useArchiveRecoveryReviewRequest,
 } from '@canopy/app-state';
 import {
+  activateWorktreeDiscardComputer,
   worktreeDiscardStoreFor,
   worktreeRecoveryHostOutdatedMessage,
 } from '@canopy/app-state/worktree-discard';
 import type { WorktreeRecoveryListResult } from '@canopy/protocol/canopy-core';
 import type { W5RecoveryStatus } from '@canopy/protocol/remote-control/shell';
-import { formatWorktreeRecoveryReason } from '@canopy/protocol/remote-control/shell/worktree-recovery';
+import {
+  formatWorktreeRecoveryReason,
+  worktreeRecoveryOfferedActions,
+} from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import {
   Button,
   CodeBlock,
@@ -33,7 +39,6 @@ import {
   ErrorBanner,
   Heading,
   ListRowStatic,
-  LoadingButton,
   Stack,
   type W5RecoveryNoticeProps,
 } from '@canopy/ui-shared/components';
@@ -48,6 +53,7 @@ import {
   dismissRecovery,
   hasRecoveryMaterial,
   needsRecoveryReview,
+  recoveryEvidenceUnavailable,
 } from './recovery-attention';
 import { WorkspaceRecoveryNotice } from './WorkspaceRecoveryNotice';
 import type { WorkspaceRecoveryDismissalStore } from './recovery-dismissal-store';
@@ -196,6 +202,7 @@ function RecoveryReference({
 
 /** Live archive records are available even when cold W5 recovery is unavailable. */
 export function WorktreeRecoveryPanel({
+  computerScopeKey = null,
   client,
   snapshot,
   status,
@@ -215,7 +222,13 @@ export function WorktreeRecoveryPanel({
   /** The background service notice shown with the blocked-changes notice. */
   readonly service?: W5RecoveryNoticeProps['service'];
   readonly dismissalStore: WorkspaceRecoveryDismissalStore;
+  readonly computerScopeKey?: string | null;
 }): JSX.Element {
+  const discardStore = worktreeDiscardStoreFor(client, computerScopeKey);
+  useLayoutEffect(
+    () => activateWorktreeDiscardComputer(client, computerScopeKey),
+    [client, computerScopeKey],
+  );
   // The list is read only (CAN-7439); every action needs live resolution.
   const supported = client.capabilities.worktreeRecoveryReads === true;
   const canResolve = client.capabilities.worktreeRecoveryResolution === true;
@@ -238,6 +251,8 @@ export function WorktreeRecoveryPanel({
   const answeredReview = useRef(reviewRequest);
   const active = useRef(0);
   const reading = useRef(false);
+  const refreshQueued = useRef(false);
+  const snapshotRefreshQueued = useRef(false);
   const mutating = useRef(false);
   const refusedList = useRef(false);
   const lastCompleted = useRef<number | null>(null);
@@ -250,15 +265,21 @@ export function WorktreeRecoveryPanel({
     snapshot === undefined ||
     (snapshot !== null && snapshot.workspaces.some(isRecoveryWorkspace));
   const refresh = useCallback(
-    async (explicit = false): Promise<void> => {
+    async (explicit = false, snapshotRefresh = false): Promise<void> => {
       if (
+        !discardStore.getState().isCurrentComputer() ||
         !supported ||
         refusedList.current ||
-        reading.current ||
-        (!explicit && mutating.current) ||
         shellSnapshot.current === null
       )
         return;
+      if (reading.current) {
+        // Only explicit refreshes supersede a running read; focus must not starve it.
+        if (explicit) refreshQueued.current = true;
+        else if (snapshotRefresh) snapshotRefreshQueued.current = true;
+        return;
+      }
+      if (!explicit && mutating.current) return;
       if (
         !explicit &&
         lastCompleted.current !== null &&
@@ -266,6 +287,10 @@ export function WorktreeRecoveryPanel({
       )
         return;
       const generation = active.current;
+      const readCancelled = (): boolean =>
+        generation !== active.current ||
+        !discardStore.getState().isCurrentComputer() ||
+        shellSnapshot.current === null;
       let didRead = shellSnapshot.current === undefined;
       reading.current = true;
       setChecking(true);
@@ -275,73 +300,93 @@ export function WorktreeRecoveryPanel({
         setMessage((current) => (current === shown ? null : current));
       }
       try {
-        // Only the hidden legacy desktop sidebar lacks a reusable shell snapshot.
-        const currentSnapshot =
-          shellSnapshot.current ?? (await client.query('session.snapshot', {}));
-        if (generation !== active.current) return;
-        const next: RecoveryProject[] = [];
-        let incomplete = false;
-        for (const workspace of currentSnapshot.workspaces) {
-          if (!isRecoveryWorkspace(workspace)) continue;
-          didRead = true;
+        do {
+          refreshQueued.current = false;
+          snapshotRefreshQueued.current = false;
           try {
-            const result = await client.command('worktree.recovery.list', {
-              workspaceId: workspace.localId,
-            });
-            next.push({
-              ...result,
-              workspaceId: workspace.localId,
-              name: workspace.name,
-              worktrees: currentSnapshot.worktrees.filter(
-                (worktree) => worktree.workspaceLocalId === workspace.localId,
-              ),
-            });
-            incomplete ||= result.check !== 'ok';
-          } catch (cause) {
-            if (isUnsupportedOperation(cause)) {
-              // Latched until the client or its support changes; a stale
-              // read must not latch the generation that replaced it.
-              if (generation === active.current) {
-                refusedList.current = true;
-                projectsClient.current = client;
-                setProjects([]);
-                setError(false);
-                setRefused(true);
-              }
-              return;
+            // Only the hidden legacy desktop sidebar lacks a reusable shell snapshot.
+            let currentSnapshot = shellSnapshot.current;
+            try {
+              currentSnapshot ??= await client.query('session.snapshot', {});
+            } catch {
+              currentSnapshot = undefined;
             }
-            incomplete = true;
-            next.push({
-              workspaceId: workspace.localId,
-              name: workspace.name,
-              worktrees: [],
-              entries: [],
-              check: 'list-unavailable',
-            });
+            if (readCancelled()) return;
+            if (refreshQueued.current) continue;
+            if (!currentSnapshot) {
+              setError(true);
+              continue;
+            }
+            const next: RecoveryProject[] = [];
+            let incomplete = false;
+            for (const workspace of currentSnapshot.workspaces) {
+              if (!isRecoveryWorkspace(workspace)) continue;
+              didRead = true;
+              try {
+                const result = await client.command('worktree.recovery.list', {
+                  workspaceId: workspace.localId,
+                });
+                next.push({
+                  ...result,
+                  workspaceId: workspace.localId,
+                  name: workspace.name,
+                  worktrees: currentSnapshot.worktrees.filter(
+                    (worktree) =>
+                      worktree.workspaceLocalId === workspace.localId,
+                  ),
+                });
+                incomplete ||= recoveryEvidenceUnavailable(result);
+              } catch (cause) {
+                if (readCancelled()) return;
+                if (isUnsupportedOperation(cause)) {
+                  refusedList.current = true;
+                  projectsClient.current = client;
+                  setProjects([]);
+                  setError(false);
+                  setRefused(true);
+                  return;
+                }
+                incomplete = true;
+                next.push({
+                  workspaceId: workspace.localId,
+                  name: workspace.name,
+                  worktrees: [],
+                  entries: [],
+                  check: 'list-unavailable',
+                });
+              }
+              if (readCancelled()) return;
+              if (refreshQueued.current) break;
+            }
+            if (generation === active.current && !refreshQueued.current) {
+              projectsClient.current = client;
+              setProjects(next);
+              setError(incomplete);
+            }
+          } catch {
+            if (!readCancelled() && !refreshQueued.current) setError(true);
           }
-          if (generation !== active.current) return;
-        }
-        if (generation === active.current) {
-          projectsClient.current = client;
-          setProjects(next);
-          setError(incomplete);
-        }
-      } catch {
-        if (generation === active.current) setError(true);
+        } while (
+          generation === active.current &&
+          (refreshQueued.current || snapshotRefreshQueued.current)
+        );
       } finally {
         if (generation === active.current) {
           reading.current = false;
-          // Measure from completion so a slow read cannot trigger a trailing run.
-          if (didRead) lastCompleted.current = Date.now();
+          // The passive gap starts after the latest requested read completes.
+          if (shellSnapshot.current === null) lastCompleted.current = null;
+          else if (didRead) lastCompleted.current = Date.now();
           setChecking(false);
         }
       }
     },
-    [client, supported],
+    [client, discardStore, supported],
   );
   useEffect(() => {
     active.current += 1;
     reading.current = false;
+    refreshQueued.current = false;
+    snapshotRefreshQueued.current = false;
     mutating.current = false;
     // A computer updated in place, or another one attached, is probed again.
     refusedList.current = false;
@@ -376,31 +421,32 @@ export function WorktreeRecoveryPanel({
       void refresh();
     };
     window.addEventListener('focus', onFocus);
-    // Settled dialog actions bypass the passive gap, but never an in-flight read.
-    const unsubscribe = worktreeDiscardStoreFor(client).subscribe(
-      (state, previous) => {
-        if (
-          (state.view.phase === 'closed' && previous.view.phase !== 'closed') ||
-          (state.view.phase === 'recovery' &&
-            state.view.outcome &&
-            (previous.view.phase !== 'recovery' ||
-              state.view.outcome !== previous.view.outcome))
-        )
-          void refresh(true);
-      },
-    );
+    // Settled actions bypass the passive gap and invalidate any in-flight list.
+    const unsubscribe = discardStore.subscribe((state, previous) => {
+      if (
+        (state.view.phase === 'closed' && previous.view.phase !== 'closed') ||
+        (state.setAsideResult &&
+          state.setAsideResult !== previous.setAsideResult) ||
+        (state.view.phase === 'recovery' &&
+          state.view.outcome &&
+          (previous.view.phase !== 'recovery' ||
+            state.view.outcome !== previous.view.outcome))
+      )
+        void refresh(true);
+    });
     return (): void => {
       active.current += 1;
       window.removeEventListener('focus', onFocus);
       unsubscribe();
     };
-  }, [client, refresh, supported]);
+  }, [client, discardStore, refresh, supported]);
   useEffect(() => {
     if (!snapshotReady) return;
     let mounted = true;
     // Cancel StrictMode's replayed bootstrap before starting backend work.
     void Promise.resolve().then((): void => {
-      if (mounted) void refresh();
+      // A newly ready snapshot gets a trailing read without hiding this pass.
+      if (mounted) void refresh(false, true);
     });
     return (): void => {
       mounted = false;
@@ -413,7 +459,7 @@ export function WorktreeRecoveryPanel({
       projects
         .filter(
           (project) =>
-            project.check !== 'ok' ||
+            recoveryEvidenceUnavailable(project) ||
             project.entries.length > 0 ||
             project.resolutions?.some(hasRecoveryMaterial),
         )
@@ -437,7 +483,14 @@ export function WorktreeRecoveryPanel({
     ): Promise<void> => {
       // Only a target that resolves archive recovery sends an action
       // (CAN-7444); a read-only list never does.
-      if (!canResolve || mutating.current || reading.current || error) return;
+      if (
+        !discardStore.getState().isCurrentComputer() ||
+        !canResolve ||
+        mutating.current ||
+        reading.current ||
+        error
+      )
+        return;
       const generation = active.current;
       mutating.current = true;
       setBusy(true);
@@ -471,7 +524,7 @@ export function WorktreeRecoveryPanel({
         }
       }
     },
-    [canResolve, client, error, refresh],
+    [canResolve, client, discardStore, error, refresh],
   );
   const finishCleanup = useCallback(
     async (
@@ -479,6 +532,7 @@ export function WorktreeRecoveryPanel({
       recovery: WorktreeRecoveryListResult['entries'][number],
     ): Promise<void> => {
       if (
+        !discardStore.getState().isCurrentComputer() ||
         !canResolve ||
         mutating.current ||
         reading.current ||
@@ -516,7 +570,7 @@ export function WorktreeRecoveryPanel({
         }
       }
     },
-    [canResolve, client, error, refresh],
+    [canResolve, client, discardStore, error, refresh],
   );
   const showArchiveRecovery =
     available && hasNewRecovery(client, projects, error);
@@ -586,6 +640,18 @@ export function WorktreeRecoveryPanel({
             onDelete={(hold) => {
               if (canResolve) setDeleting(hold);
             }}
+            canSetAside={client.capabilities.worktreeRecoverySetAside === true}
+            onReviewJournal={
+              client.capabilities.lifecycleJournalQuarantine === true
+                ? () => {
+                    setOpen(false);
+                    offerLifecycleJournalQuarantine(
+                      undefined,
+                      'unreadable-entry',
+                    );
+                  }
+                : undefined
+            }
             onFinishCleanup={(project, recovery) => {
               void finishCleanup(project, recovery);
             }}
@@ -639,6 +705,8 @@ export function WorktreeRecoveryListDialog({
   onResolve,
   onCancelDelete,
   onFinishCleanup,
+  canSetAside = false,
+  onReviewJournal,
 }: {
   /**
    * The target lists recovery but takes no recovery action (CAN-7439): rows
@@ -667,6 +735,10 @@ export function WorktreeRecoveryListDialog({
     project: RecoveryProject,
     recovery: WorktreeRecoveryListResult['entries'][number],
   ) => void;
+  /** Offers the same actions as the dialog each row opens. */
+  readonly canSetAside?: boolean;
+  /** CAN-5335's review, for a project whose records can't all be read (q-26 4a). */
+  readonly onReviewJournal?: () => void;
 }): JSX.Element {
   const count = projects.reduce(
     (total, project) =>
@@ -688,7 +760,7 @@ export function WorktreeRecoveryListDialog({
           maxWidth="lg"
           dataTestId="worktree-live-recovery-panel"
           footer={
-            <LoadingButton
+            <Button
               variant="primary"
               loading={checking}
               loadingLabel="Checking…"
@@ -696,7 +768,7 @@ export function WorktreeRecoveryListDialog({
               onClick={onRefresh}
             >
               Check again
-            </LoadingButton>
+            </Button>
           }
         >
           {readOnly ? (
@@ -733,6 +805,7 @@ export function WorktreeRecoveryListDialog({
                     projects: projects.map((project) => ({
                       workspaceId: project.workspaceId,
                       check: project.check,
+                      unreadableEvidence: project.unreadableEvidence,
                     })),
                   },
                   null,
@@ -760,94 +833,120 @@ export function WorktreeRecoveryListDialog({
               <Stack as="section" key={project.workspaceId} gap="inline">
                 {project.entries.length > 0 ||
                 project.resolutions?.some(hasRecoveryMaterial) ||
-                project.check !== 'ok' ? (
+                recoveryEvidenceUnavailable(project) ? (
                   <Heading level={3} variant="label">
                     <span className={REPLAY_MASK_CLASS}>{project.name}</span>
                   </Heading>
                 ) : null}
-                {project.check !== 'ok' ? (
+                {project.check === 'journal-evidence-unreadable' &&
+                !readOnly &&
+                onReviewJournal ? (
+                  <Stack gap="tight">
+                    <p className="text-pretty">
+                      Some archive records can't be read, so this project
+                      couldn't be checked. Review them to move unreadable
+                      records to quarantine.
+                    </p>
+                    <div>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={busy || checking}
+                        onClick={onReviewJournal}
+                        data-testid="worktree-recovery-review-journal"
+                      >
+                        Review records
+                      </Button>
+                    </div>
+                  </Stack>
+                ) : recoveryEvidenceUnavailable(project) ? (
                   <RecoveryReference
                     reason="Couldn't check this project. Keep its files in place. Check again later, or copy these details to share with support."
                     details={{
                       workspaceId: project.workspaceId,
                       check: project.check,
+                      unreadableEvidence: project.unreadableEvidence,
                     }}
                   />
                 ) : null}
-                {project.entries.map((recovery) => (
-                  <Stack
-                    data-testid="worktree-live-recovery-entry"
-                    data-worktree-id={recovery.subject.worktreeId}
-                    key={
-                      archiveReference(recovery) ?? recovery.subject.worktreeId
-                    }
-                    gap="tight"
-                  >
-                    <ListRowStatic
-                      size="lg"
-                      description={recoveryCreatedAt(
-                        recovery.subject.createdAt,
-                      )}
-                      trailing={shortArchiveReference(
-                        archiveReference(recovery),
-                        references,
-                      )}
-                      actions={
-                        readOnly ? undefined : (
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            disabled={
-                              busy ||
-                              checking ||
-                              (error &&
-                                recovery.diagnosis?.check ===
-                                  'completed-turn-diff-cleanup')
-                            }
-                            onClick={() =>
-                              recovery.diagnosis?.check ===
-                              'completed-turn-diff-cleanup'
-                                ? onFinishCleanup(project, recovery)
-                                : onReview(project, recovery)
-                            }
-                          >
-                            {recovery.diagnosis?.check ===
-                            'completed-turn-diff-cleanup'
-                              ? 'Finish cleanup'
-                              : recovery.check === 'completed-turn-diff-cleanup'
-                                ? 'View cleanup details'
-                                : 'Review archive'}
-                          </Button>
-                        )
+                {project.entries.map((recovery) => {
+                  const finishCleanup =
+                    recovery.diagnosis?.check ===
+                      'completed-turn-diff-cleanup' &&
+                    worktreeRecoveryOfferedActions(recovery, {
+                      canResolve: !readOnly,
+                      canSetAside,
+                    }).includes('finish');
+                  return (
+                    <Stack
+                      data-testid="worktree-live-recovery-entry"
+                      data-worktree-id={recovery.subject.worktreeId}
+                      key={
+                        archiveReference(recovery) ??
+                        recovery.subject.worktreeId
                       }
+                      gap="tight"
                     >
-                      <span className={REPLAY_MASK_CLASS}>
-                        {recoveryName(project, recovery)}
-                      </span>
-                    </ListRowStatic>
-                    <RecoveryReference
-                      operationId={archiveReference(recovery)}
-                      reason={
-                        recovery.check === 'completed-turn-diff-cleanup'
-                          ? recovery.diagnosis?.check ===
-                            'completed-turn-diff-cleanup'
-                            ? readOnly
-                              ? // Read only (CAN-7439): the cleanup runs on the computer.
-                                'The archive finished and the worktree was removed. Leftover saved change data can be cleaned up in the app on the connected computer.'
-                              : 'The archive finished and the worktree was removed. Finish cleanup to remove leftover saved change data.'
-                            : "The archive finished, but leftover saved change data couldn't be safely cleaned up. Copy the recovery details to share with support."
-                          : formatWorktreeRecoveryReason(recovery)
-                      }
-                      unfinished={
-                        recovery.diagnosis?.verdict !== 'cleanup-debt' &&
-                        (recovery.check !== 'completed-turn-diff-cleanup' ||
-                          recovery.diagnosis?.check !==
-                            'completed-turn-diff-cleanup')
-                      }
-                      details={recovery}
-                    />
-                  </Stack>
-                ))}
+                      <ListRowStatic
+                        size="lg"
+                        description={recoveryCreatedAt(
+                          recovery.subject.createdAt,
+                        )}
+                        trailing={shortArchiveReference(
+                          archiveReference(recovery),
+                          references,
+                        )}
+                        actions={
+                          readOnly ? undefined : (
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              disabled={
+                                busy || checking || (error && finishCleanup)
+                              }
+                              onClick={() =>
+                                finishCleanup
+                                  ? onFinishCleanup(project, recovery)
+                                  : onReview(project, recovery)
+                              }
+                            >
+                              {finishCleanup
+                                ? 'Finish cleanup'
+                                : recovery.check ===
+                                    'completed-turn-diff-cleanup'
+                                  ? 'View cleanup details'
+                                  : 'Review archive'}
+                            </Button>
+                          )
+                        }
+                      >
+                        <span className={REPLAY_MASK_CLASS}>
+                          {recoveryName(project, recovery)}
+                        </span>
+                      </ListRowStatic>
+                      <RecoveryReference
+                        operationId={archiveReference(recovery)}
+                        reason={
+                          recovery.check === 'completed-turn-diff-cleanup'
+                            ? recovery.diagnosis?.check ===
+                              'completed-turn-diff-cleanup'
+                              ? readOnly
+                                ? 'The archive finished and the worktree was removed. Leftover saved change data can be cleaned up in the app on the connected computer.'
+                                : 'The archive finished and the worktree was removed. Finish cleanup to remove leftover saved change data.'
+                              : "The archive finished, but leftover saved change data couldn't be safely cleaned up. Copy the recovery details to share with support."
+                            : formatWorktreeRecoveryReason(recovery)
+                        }
+                        unfinished={
+                          recovery.diagnosis?.verdict !== 'cleanup-debt' &&
+                          (recovery.check !== 'completed-turn-diff-cleanup' ||
+                            recovery.diagnosis?.check !==
+                              'completed-turn-diff-cleanup')
+                        }
+                        details={recovery}
+                      />
+                    </Stack>
+                  );
+                })}
                 {project.resolutions
                   ?.filter(hasRecoveryMaterial)
                   .map((hold) => (
@@ -875,7 +974,7 @@ export function WorktreeRecoveryListDialog({
                               Delete recovery material
                             </Button>
                           ) : (
-                            <LoadingButton
+                            <Button
                               variant="secondary"
                               size="sm"
                               loading={busy}
@@ -891,7 +990,7 @@ export function WorktreeRecoveryListDialog({
                               {hold.action === 'keep-worktree'
                                 ? 'Keep worktree'
                                 : 'Release'}
-                            </LoadingButton>
+                            </Button>
                           )
                         }
                       >

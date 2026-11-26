@@ -2572,12 +2572,10 @@ export const createMessagingSlice: StateCreator<
             });
             useGitHubStore
               .getState()
-              .addToast(
-                "Couldn't send your message. Try again.",
-                'error',
-                onClick,
-                { ...meta, caught: error },
-              );
+              .addToast("Couldn't send your message.", 'error', onClick, {
+                ...meta,
+                caught: error,
+              });
           }
           options?.onDispatchRejected?.();
           if (options?.throwOnDispatchFailure === true) {

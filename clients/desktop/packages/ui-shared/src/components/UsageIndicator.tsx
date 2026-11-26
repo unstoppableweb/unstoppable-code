@@ -16,16 +16,16 @@ import {
   type RefObject,
 } from 'react';
 import type { ModelLibraryAccess } from '@canopy/protocol/models';
-import { getDocument } from '../panels/window-registry';
+import { getDocument } from '../lib/window-registry';
 import { AI_CREDITS_LABEL } from './aiCreditsLabel';
 import { formatCost, formatUsageResetWhen } from '../lib/format-usage';
-import { ProgressRing, type ProgressTone } from './Progress';
+import { ProgressRing, type ProgressTone } from '../primitives/Progress';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import { InlineMeasuredSkeleton } from './Skeleton';
-import { ControlButton, Button } from './Button';
-import { BusyLabel } from './BusyLabel';
+import { InlineMeasuredSkeleton } from '../primitives/Skeleton';
+import { ControlButton, Button } from '../primitives/Button';
+import { BusyLabel } from '../primitives/BusyLabel';
 
-import { DisclosureChevron, DisclosureToggle } from './Disclosure';
+import { DisclosureChevron, DisclosureToggle } from '../primitives/Disclosure';
 import { UsageMeter, formatUsagePercent } from './usage-indicator-meter';
 export { USAGE_TOUCH_FLOOR_CLASS } from './usage-indicator-meter';
 import {

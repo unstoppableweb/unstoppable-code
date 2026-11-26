@@ -1,16 +1,24 @@
 'use client';
 
-import { SPACE_ROLE_GAP_CLASS, Stack, type SpaceRole } from '../Stack';
 import {
+  SPACE_ROLE_GAP_CLASS,
+  Stack,
+  type SpaceRole,
+} from '../../primitives/Stack';
+import {
+  useId,
   useRef,
   type JSX,
   type MouseEvent,
   type ReactNode,
   type RefObject,
 } from 'react';
-import { Heading } from '../Heading';
-import { NoticeShapeProvider } from '../Notice';
+import { Heading } from '../../primitives/Heading';
+import { NoticeShapeProvider } from '../../primitives/Notice';
 import { SETTINGS_GROUP_CLASS } from './SettingsCard';
+import { SettingsRowDescriptionContext } from '../../primitives/SettingsRowDescription';
+
+export { useSettingsRowDescriptionId } from '../../primitives/SettingsRowDescription';
 
 /**
  * The Settings row kit, the one copy desktop and web render: a section is a
@@ -297,6 +305,8 @@ function RowLine({
 }: RowLineProps): JSX.Element {
   const { controlRef, onRowClick } = useRowToggleClick();
   const rowLabelMarker = rowLabel ? '' : undefined;
+  const generatedDescriptionId = useId();
+  const descriptionId = description ? generatedDescriptionId : undefined;
   return (
     <div className={`flex flex-col ${gapClassName}`} data-testid={dataTestId}>
       {/* The control moves under its label only on a phone-width screen. */}
@@ -330,7 +340,10 @@ function RowLine({
             </div>
           )}
           {description ? (
-            <div className="text-xs text-pretty fg-secondary">
+            <div
+              id={descriptionId}
+              className="text-xs text-pretty fg-secondary"
+            >
               {description}
             </div>
           ) : null}
@@ -344,7 +357,10 @@ function RowLine({
                 : 'flex max-w-full shrink-0 items-center gap-2'
             }
           >
-            {control}
+            {/* The control adds the description to its `aria-describedby`. */}
+            <SettingsRowDescriptionContext.Provider value={descriptionId}>
+              {control}
+            </SettingsRowDescriptionContext.Provider>
           </div>
         ) : null}
       </div>

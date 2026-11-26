@@ -7,7 +7,7 @@ import { OperationLedgerRefusedError } from '../operations/ledger/errors';
 import type { OperationReceiptInput } from '../operations/ledger';
 import type {
   OperationRecovery,
-  OperationService,
+  OperationServicePort,
 } from '../operations/service';
 
 export const CORE_SUMMARY_DOMAIN = 'core.summary';
@@ -107,14 +107,14 @@ function summaryModeOf(operation: OperationRecord): SummaryMode | null {
  * a restart interrupted is never run again.
  */
 export class CoreSummarySchedule {
-  private readonly operations: OperationService;
+  private readonly operations: OperationServicePort;
   private readonly owner: { kind: 'system'; id: string };
   private readonly scopes = new Map<string, ScopeState>();
   private readonly chains = new Map<string, Promise<unknown>>();
   private readonly pendingRecoveries: PendingRecovery[] = [];
   private host: CoreSummaryScheduleHost | null = null;
 
-  constructor(options: { operations: OperationService; ownerId: string }) {
+  constructor(options: { operations: OperationServicePort; ownerId: string }) {
     this.operations = options.operations;
     this.owner = { kind: 'system', id: options.ownerId };
     this.operations.registerDomain({

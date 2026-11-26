@@ -1,6 +1,6 @@
 'use client';
 
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import { Toast } from '@base-ui/react/toast';
 import {
   useEffect,
@@ -14,7 +14,7 @@ import {
 } from 'react';
 import type { InAppNotificationPlacement } from '../lib/notification-placement';
 import { isPromiseLike } from '../lib/promise-like';
-import { NoticeButton, type NoticeIntent } from './Notice';
+import { NoticeButton, type NoticeIntent } from '../primitives/Notice';
 import { attachToastSwipe, type ToastSwipe } from './toast-swipe';
 
 /**
@@ -22,6 +22,12 @@ import { attachToastSwipe, type ToastSwipe } from './toast-swipe';
  * (Base UI's `data-limited`) and come back as newer ones leave.
  */
 export const TOAST_STACK_LIMIT = 3;
+
+/**
+ * A toast card's floating surface. `ToastCardNotice` draws the same card for
+ * a notice that stands in the notification corner outside the stack.
+ */
+export const TOAST_CARD_SURFACE_CLASS = 'rounded-2xl bg-quaternary shadow-xl';
 
 /** What the stack needs to know about a host toast. */
 export interface ToastStackItem {
@@ -358,7 +364,7 @@ function ToastStackCards<T extends ToastStackItem>({
             style={style}
             // Base UI moves focus to the next card when one closes; keyboard
             // focus shows the shared ring, never the browser default outline.
-            className="canopy-toast focus-ring pointer-events-auto rounded-2xl bg-quaternary shadow-xl"
+            className={`canopy-toast focus-ring pointer-events-auto ${TOAST_CARD_SURFACE_CLASS}`}
           >
             <Toast.Content className="canopy-toast-content">
               {renderToast(toast.data.item)}

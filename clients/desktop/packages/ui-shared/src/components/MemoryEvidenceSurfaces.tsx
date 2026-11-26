@@ -1,6 +1,6 @@
 import type { JSX, ReactNode, Ref } from 'react';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import { Dot } from './Badge';
+import { Dot } from '../primitives/Badge';
 
 export function MemoryEvidenceQuote({
   children,

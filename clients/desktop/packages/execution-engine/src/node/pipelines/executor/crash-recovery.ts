@@ -97,6 +97,14 @@ export async function recoverOrphanedPipelineExecutions(
         const loaded = await loadExecutionStateRevision(id, executionsDir);
         const state = loaded?.state ?? null;
         const expectedRevision = loaded?.revision;
+        // A host can die after checkpointing but before finalizing a cancel.
+        if (
+          state?.status === 'paused' &&
+          !settleCancellation &&
+          (await isKnownOrphanedExecution(state)) &&
+          (await isExecutionCancellationRequested(id, executionsDir))
+        )
+          settleCancellation = true;
         if (
           !state ||
           (!['pending', 'running'].includes(state.status) &&

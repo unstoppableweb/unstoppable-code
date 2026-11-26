@@ -32,6 +32,7 @@ import {
   backgroundFailureCode,
   reportBackgroundFailure,
 } from '../observability/background-failure-reporter';
+import { randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { writeFileAtomically } from '@canopy/execution-engine/node/lib/atomic-file';
@@ -111,11 +112,12 @@ export interface SharedItemSubscriptionLedgerAccount {
 export interface SharedItemSubscriptionLedger {
   version: 1;
   installs: SharedItemSubscriptionLedgerInstall[];
+  hashVersions: Record<string, string>;
   byAccount: Record<string, SharedItemSubscriptionLedgerAccount>;
 }
 
 function emptyLedger(): SharedItemSubscriptionLedger {
-  return { version: 1, installs: [], byAccount: {} };
+  return { version: 1, installs: [], hashVersions: {}, byAccount: {} };
 }
 
 function emptyAccount(): SharedItemSubscriptionLedgerAccount {
@@ -211,6 +213,11 @@ function normalizeLedger(value: unknown): SharedItemSubscriptionLedger {
     const existing = findInstall(ledger, sharedItemSubscriptionKey(parsed));
     if (existing === undefined) {
       ledger.installs.push(parsed);
+      const key = sharedItemSubscriptionKey(parsed);
+      const version = isRecord(value.hashVersions)
+        ? value.hashVersions[key]
+        : undefined;
+      if (isNonEmptyString(version)) ledger.hashVersions[key] = version;
     } else {
       existing.localIds = union(existing.localIds, parsed.localIds);
     }
@@ -241,12 +248,14 @@ async function readLedgerFile(): Promise<SharedItemSubscriptionLedger> {
 
 async function writeLedgerFile(
   ledger: SharedItemSubscriptionLedger,
+  durable = false,
 ): Promise<void> {
   const filePath = getSharedItemUpdateSubscriptionsFilePath();
   await mkdir(dirname(filePath), { recursive: true });
   await writeFileAtomically(filePath, JSON.stringify(ledger, null, 2), {
     encoding: 'utf8',
     mode: 0o600,
+    durable,
   });
 }
 
@@ -280,6 +289,49 @@ function updateLedger<T>(
   });
 }
 
+export function readCommittedInstallSubscriptionVersion(
+  record: Pick<SharedItemInstallRecord, 'kind' | 'sourceKind' | 'remoteId'>,
+): Promise<string | null> {
+  const key = sharedItemSubscriptionKey(record);
+  return serializeLedger(async () => {
+    const ledger = await readLedgerFile();
+    const install = findInstall(ledger, key);
+    return install ? subscriptionHashVersion(ledger, key, install) : null;
+  });
+}
+
+/** Confirm the local outbox before a committed install discards its journal. */
+export async function recordCommittedSharedItemInstall(
+  record: SharedItemInstallRecord,
+  recovery: 'live' | 'replay',
+  observedLedgerVersion?: string | null,
+): Promise<void> {
+  if (!isValidRecordIdentity(record))
+    throw new Error('Invalid workflow subscription.');
+  await serializeLedger(async () => {
+    const ledger = await readLedgerFile();
+    // An older intent can attach its local copy without replacing an
+    // intervening hash write. Intents without a version keep an existing hash.
+    const key = sharedItemSubscriptionKey(record);
+    const current =
+      recovery === 'replay' ? findInstall(ledger, key) : undefined;
+    applyInstall(ledger, {
+      ...record,
+      contentHash:
+        current &&
+        subscriptionHashVersion(ledger, key, current) !== observedLedgerVersion
+          ? current.contentHash
+          : record.contentHash,
+    });
+    await writeLedgerFile(ledger, true);
+  });
+  void flushSharedItemSubscriptions().catch((error: unknown) => {
+    logMainProcessWarn(`${LOG_PREFIX} Could not upload subscriptions.`, {
+      reason: describeError(error),
+    });
+  });
+}
+
 /** The current ledger, read after every change queued before this call. */
 export function readSharedItemSubscriptionLedger(): Promise<SharedItemSubscriptionLedger> {
   return serializeLedger(readLedgerFile).catch(() => emptyLedger());
@@ -304,6 +356,14 @@ function findInstall(
   return ledger.installs.find(
     (install) => sharedItemSubscriptionKey(install) === key,
   );
+}
+
+function subscriptionHashVersion(
+  ledger: SharedItemSubscriptionLedger,
+  key: string,
+  install: SharedItemSubscriptionLedgerInstall,
+): string {
+  return ledger.hashVersions[key] ?? `legacy:${install.contentHash ?? ''}`;
 }
 
 function accountState(
@@ -388,6 +448,7 @@ function applyInstall(
       contentHash,
       localIds: [record.localId],
     });
+    if (record.kind === 'pipeline') ledger.hashVersions[key] = randomUUID();
     markUnsyncedEverywhere(ledger, key);
     return true;
   }
@@ -397,6 +458,7 @@ function applyInstall(
   }
   if (existing.contentHash !== contentHash) {
     existing.contentHash = contentHash;
+    if (record.kind === 'pipeline') ledger.hashVersions[key] = randomUUID();
     markUnsyncedEverywhere(ledger, key);
     changed = true;
   }
@@ -443,6 +505,7 @@ function removeLocalCopy(
   existing.localIds = without(existing.localIds, localId);
   if (existing.localIds.length > 0) return true;
   ledger.installs = ledger.installs.filter((install) => install !== existing);
+  delete ledger.hashVersions[key];
   for (const account of Object.values(ledger.byAccount)) {
     if (!account.syncedKeys.includes(key) && !account.heldKeys.includes(key))
       continue;

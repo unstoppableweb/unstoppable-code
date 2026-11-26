@@ -5,10 +5,10 @@ import { AGENT_SECRET_NAME_PATTERN } from '@canopy/protocol/agent-secrets';
 import type { SecretSpan } from '@canopy/protocol/secret-redaction';
 import { CloseLargeIcon, KeyIcon } from '../../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
-import { Button } from '../Button';
-import { FormField } from '../FormField';
-import { TextInput } from '../Field';
-import { Notice } from '../Notice';
+import { Button } from '../../primitives/Button';
+import { FormField } from '../../primitives/FormField';
+import { TextInput } from '../../primitives/Field';
+import { Notice } from '../../primitives/Notice';
 import { ComposerIconButton } from './ComposerIconButton';
 
 /*

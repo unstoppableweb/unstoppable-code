@@ -2,7 +2,10 @@
 
 import type { JSX, Ref } from 'react';
 import type { SubagentRecipient } from '@canopy/agent-transcript';
-import { PickerTrigger, PickerTriggerChevron } from '../../../PickerMenu';
+import {
+  PickerTrigger,
+  PickerTriggerChevron,
+} from '../../../../primitives/PickerMenu';
 import { ChatIcon } from '../../../../icons/AppIcons';
 import { SubagentIcon } from '../../../../icons/SubagentIcon';
 import {

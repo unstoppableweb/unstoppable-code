@@ -4,9 +4,10 @@ import {
   retireW5BackupBootstrap,
   type W5BackupBootstrapProtection,
 } from './w5-backup-bootstrap';
+import { randomUUID } from 'node:crypto';
 import type { Dirent } from 'node:fs';
-import { readFile, readdir } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { readFile, readdir, rename } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import {
   publishW5RootEvidence,
   readW5RootEvidence,
@@ -15,6 +16,11 @@ import {
   w5RootEvidenceScope,
   type W5RootEvidenceScope,
 } from '@canopy/core-runtime/node/w5/service-history';
+import {
+  observeW5LogBeforeWriters,
+  w5LogMatchesObservation,
+  type W5PreWriterLog,
+} from '@canopy/core-runtime/node/w5/readonly-backup-position';
 import { CanopyClientError, toCanopyClientError } from '@canopy/core-client';
 import {
   canopyDaemonRefusal,
@@ -44,6 +50,10 @@ import {
   type W5BackupReadContext,
 } from './w5-backup';
 import type { W5HandoffFailure } from './w5-handoff-store';
+import {
+  BACKGROUND_SERVICE_BACKUP_WARNINGS,
+  type BackgroundServiceBackupWarning,
+} from '@canopy/desktop-shared/lib/background-service-status';
 
 /*
  * TRANSITIONAL (CAN-5543, GB12): fresh preparation before each claimed POSIX
@@ -98,7 +108,9 @@ function isMarker(value: unknown): value is W5FlipBackupMarker {
  */
 export async function readW5FlipBackupMarker(): Promise<W5FlipBackupMarker | null> {
   const completed = await readCompletion();
-  return completed ?? (await readCompatibilityMarker());
+  return completed.kind === 'verified'
+    ? completed.marker
+    : await readCompatibilityMarker();
 }
 
 async function readCompatibilityMarker(): Promise<W5FlipBackupMarker | null> {
@@ -183,73 +195,128 @@ async function publishCompletion(
     throw completionFailure();
 }
 
-async function verifyHistoricalCapture(
+/**
+ * Whether the backup a captured marker names still verifies. Only a root
+ * change refuses; any other failure is evidence that cannot be relied on.
+ */
+async function historicalCaptureVerifies(
   marker: CapturedMarker,
   scope: W5RootEvidenceScope,
-): Promise<void> {
-  if (marker.backup === 'empty-root') return;
-  const context = await desktopW5BackupContext();
+): Promise<boolean> {
+  if (marker.backup === 'empty-root') return true;
+  let context: W5BackupReadContext;
+  try {
+    context = await desktopW5BackupContext();
+  } catch {
+    throw completionFailure();
+  }
   const requireScope = async (): Promise<void> => {
-    if (
-      !sameW5RootEvidenceScope(
-        await w5RootEvidenceScope(context.dataRoot),
-        scope,
-      )
-    )
+    let current: W5RootEvidenceScope;
+    try {
+      current = await w5RootEvidenceScope(context.dataRoot);
+    } catch {
       throw completionFailure();
+    }
+    if (!sameW5RootEvidenceScope(current, scope)) throw completionFailure();
   };
   await requireScope();
-  const record = await verifyW5Backup(context, marker.backup);
-  if (record.position.commitId !== marker.commitId) throw completionFailure();
+  let verified: boolean;
+  try {
+    const record = await verifyW5Backup(context, marker.backup);
+    verified = record.position.commitId === marker.commitId;
+  } catch {
+    verified = false;
+  }
   await requireScope();
+  return verified;
 }
 
-/** Advisory metadata only: neither backup verification nor spawn admission. */
-async function readCompletionMetadata(): Promise<
+type CompletionMetadata =
+  | { readonly kind: 'missing' }
+  /** Present but unreadable or malformed. */
+  | { readonly kind: 'unverified'; readonly path: string }
   | {
+      readonly kind: 'found';
       readonly marker: CapturedMarker;
       readonly scope: W5RootEvidenceScope;
       readonly directoryScope: W5RootEvidenceScope;
-    }
-  | undefined
-> {
+      readonly path: string;
+    };
+
+/** Metadata only: neither backup verification nor spawn admission. */
+async function readCompletionMetadata(): Promise<CompletionMetadata> {
   let location: Awaited<ReturnType<typeof completionLocation>>;
   try {
     location = await completionLocation();
   } catch (error) {
-    if (isErrnoException(error) && error.code === 'ENOENT') return undefined;
+    if (isErrnoException(error) && error.code === 'ENOENT')
+      return { kind: 'missing' };
     throw completionFailure();
   }
+  const { scope, directoryScope, path } = location;
+  let value: unknown;
   try {
-    const { scope, directoryScope, path } = location;
-    const value = await readW5RootEvidence(path);
-    if (value === undefined) return undefined;
-    if (
-      !isRecord(value) ||
-      value.version !== 1 ||
-      !sameW5RootEvidenceScope(value.scope, scope) ||
-      !isMarker(value.marker) ||
-      value.marker.state !== 'captured'
-    )
-      throw completionFailure();
-    return { marker: value.marker, scope, directoryScope };
+    value = await readW5RootEvidence(path);
   } catch {
-    throw completionFailure();
+    return { kind: 'unverified', path };
   }
+  if (value === undefined) return { kind: 'missing' };
+  if (
+    !isRecord(value) ||
+    value.version !== 1 ||
+    !sameW5RootEvidenceScope(value.scope, scope) ||
+    !isMarker(value.marker) ||
+    value.marker.state !== 'captured'
+  )
+    return { kind: 'unverified', path };
+  return { kind: 'found', marker: value.marker, scope, directoryScope, path };
 }
 
-/** Old publishers replace the compatibility marker, but never this evidence. */
-async function readCompletion(): Promise<CapturedMarker | undefined> {
+/**
+ * Old publishers replace the compatibility marker, but never this evidence.
+ * Evidence that is unreadable, malformed or names a backup that no longer
+ * verifies counts as no completion (CAN-7849): the launch captures again
+ * instead of refusing every launch over the same file.
+ */
+type Completion =
+  | { readonly kind: 'verified'; readonly marker: CapturedMarker }
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'unverified'; readonly path: string };
+
+async function readCompletion(): Promise<Completion> {
   const completed = await readCompletionMetadata();
-  if (!completed) return undefined;
-  const { marker, scope, directoryScope } = completed;
+  if (completed.kind !== 'found') return completed;
+  const { marker, scope, directoryScope, path } = completed;
+  if (!(await historicalCaptureVerifies(marker, scope)))
+    return { kind: 'unverified', path };
   try {
-    await verifyHistoricalCapture(marker, scope);
     // Resolve an earlier directory-flush uncertainty before accepting completion.
     await publishCompletion(marker, scope, directoryScope);
-    return marker;
   } catch {
     throw completionFailure();
+  }
+  return { kind: 'verified', marker };
+}
+
+/**
+ * Keeps unverified evidence beside its name, never deleted or overwritten,
+ * right before a verified replacement publishes. Publication refuses over
+ * evidence it cannot validate, so the old file must move first.
+ */
+async function setAsideUnverifiedEvidence(
+  paths: readonly string[],
+  scope: W5RootEvidenceScope,
+): Promise<void> {
+  if (paths.length === 0) return;
+  if (!sameW5RootEvidenceScope(await w5RootEvidenceScope(getDataDir()), scope))
+    throw completionFailure();
+  for (const path of paths) {
+    try {
+      await rename(path, `${path}.unverified-${randomUUID()}`);
+    } catch (error) {
+      if (!isErrnoException(error) || error.code !== 'ENOENT') throw error;
+    }
+    await syncDirectory(dirname(path));
   }
 }
 
@@ -399,12 +466,24 @@ function daemonServedHere(scope: W5RootEvidenceScope): boolean {
   return true;
 }
 
+/**
+ * A capture refusal a launch may survive (CAN-7274 B2): the backup's own
+ * source or copy refused, never its root, host, claim, writer or peer.
+ * `failure` is the refusal the base threw, for a launch that must still refuse.
+ */
+interface CaptureRefusal {
+  readonly warning: BackgroundServiceBackupWarning;
+  readonly failure: CanopyClientError;
+}
+
+/** Resolves only after any bootstrap worker exited and released exclusion. */
 async function captureOnce(
   previous: W5FlipBackupMarker | null,
   buildVersion: string,
+  unverified: readonly string[],
   protection?: W5BackupBootstrapProtection,
   bootstrapContext?: W5BackupContext,
-): Promise<void> {
+): Promise<CaptureRefusal | undefined> {
   let backup: string;
   let commitId: number;
   let scope: W5RootEvidenceScope;
@@ -416,7 +495,7 @@ async function captureOnce(
       const context = createW5BackupBootstrapContext(
         rootScope.canonicalDataRoot,
       );
-      await withW5BackupBootstrap(
+      return await withW5BackupBootstrap(
         context,
         {
           claimHandle: protection.claimHandle,
@@ -432,9 +511,9 @@ async function captureOnce(
           },
           retainClaim: (): void => protection.retainClaim(),
         },
-        () => captureOnce(previous, buildVersion, undefined, context),
+        () =>
+          captureOnce(previous, buildVersion, unverified, undefined, context),
       );
-      return;
     }
     const context = bootstrapContext ?? (await desktopW5BackupContext());
     scope = await w5RootEvidenceScope(context.dataRoot);
@@ -443,13 +522,26 @@ async function captureOnce(
       commitId = (await requireVerifiedW5Backup(context, backup, 0)).position
         .commitId;
     } catch (error) {
+      if (!(error instanceof W5BackupRefusedError)) throw error;
       if (
-        !(error instanceof W5BackupRefusedError) ||
         error.reason !== 'missing-source' ||
         error.resource !== 'index.json' ||
         !(await isEmptyRoot(context))
-      )
-        throw error;
+      ) {
+        const warning = BACKGROUND_SERVICE_BACKUP_WARNINGS.find(
+          (reason) => reason === error.reason,
+        );
+        if (warning === undefined) throw error;
+        return {
+          warning,
+          failure: stepError(
+            'backup_refused',
+            'The workspace records backup failed.',
+            error.reason,
+            error,
+          ),
+        };
+      }
       backup = 'empty-root';
       commitId = 0;
     }
@@ -484,6 +576,7 @@ async function captureOnce(
       // Neither absent history nor commit zero proves no pre-artifact service.
       capture: 'captured-after-flip',
     };
+    await setAsideUnverifiedEvidence(unverified, scope);
     await publishCompletion(marker, scope);
     await writeMarker(marker);
   } catch (error) {
@@ -494,7 +587,89 @@ async function captureOnce(
       error,
     );
   }
+  return undefined;
 }
+
+/**
+ * First observation of each root's log in this process, before its writers.
+ * Kept for every root: returning to a root must not observe its own writes.
+ */
+const logsBeforeWriters: {
+  readonly scope: W5RootEvidenceScope;
+  readonly log: Promise<W5PreWriterLog>;
+}[] = [];
+
+function observeLogBeforeWriters(
+  scope: W5RootEvidenceScope,
+  protection?: W5BackupBootstrapProtection,
+): Promise<W5PreWriterLog> {
+  const known = logsBeforeWriters.find((entry) =>
+    sameW5RootEvidenceScope(entry.scope, scope),
+  );
+  if (known) return known.log;
+  const log = observeW5LogBeforeWriters(
+    scope.canonicalDataRoot,
+    syncDirectory,
+    () => admitLogSetAside(scope, protection),
+  );
+  logsBeforeWriters.push({ scope, log });
+  return log;
+}
+
+/**
+ * The one admission for moving an unopenable log aside, on every platform:
+ * this process's first check of the root, before any writer of this launch,
+ * with no in-process W5 worker or stopped host (a daemon may have served it)
+ * and the startup claim, where there is one, still held. Another process
+ * holding the log is excluded by the check's own locked read.
+ */
+async function admitLogSetAside(
+  scope: W5RootEvidenceScope,
+  protection?: W5BackupBootstrapProtection,
+): Promise<boolean> {
+  if (isW5CommitLogHostShutDown() || runningW5CommitLogWorkers() !== 0)
+    return false;
+  try {
+    await protection?.assertHeld();
+    return sameW5RootEvidenceScope(
+      await w5RootEvidenceScope(getDataDir()),
+      scope,
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A refused capture launches only over the log as found before this launch's
+ * first writer: none, one that passed the read-only check, or a damaged one
+ * whose bytes were copied first, and still that file. The decision follows
+ * that one observation, never what this launch's writers did to the log
+ * since, so every launch decides the same log the same way. Linked, newer
+ * or uncopied damaged logs keep the base refusal.
+ */
+function advisoryLogHolds(
+  scope: W5RootEvidenceScope,
+  log: W5PreWriterLog,
+): Promise<boolean> {
+  return w5LogMatchesObservation(scope.canonicalDataRoot, log);
+}
+
+/** This launch's advisory for a root; a crash respawn reuses it, never capture. */
+let advisoryLaunch:
+  | {
+      readonly scope: W5RootEvidenceScope;
+      readonly warning: BackgroundServiceBackupWarning;
+      readonly log: W5PreWriterLog;
+    }
+  | undefined;
+
+export type W5FlipPreparation =
+  | { readonly kind: 'prepared' }
+  | {
+      readonly kind: 'advisory';
+      readonly reason: BackgroundServiceBackupWarning;
+    };
 
 /**
  * Fresh evidence checks and confirmed ordinary-host shutdown for one spawn
@@ -505,7 +680,7 @@ async function captureOnce(
 export async function prepareW5FlipSpawn(
   buildVersion: string,
   protection?: W5BackupBootstrapProtection,
-): Promise<void> {
+): Promise<W5FlipPreparation> {
   let scope: W5RootEvidenceScope;
   try {
     scope = await w5RootEvidenceScope(getDataDir());
@@ -517,37 +692,89 @@ export async function prepareW5FlipSpawn(
       error,
     );
   }
+  let advisory: (CaptureRefusal & { readonly log: W5PreWriterLog }) | undefined;
+  /** A stopped host cannot capture; this launch's advisory may still respawn. */
+  const respawnAdvisory = (failure: CanopyClientError): void => {
+    const cached =
+      advisoryLaunch && sameW5RootEvidenceScope(advisoryLaunch.scope, scope)
+        ? advisoryLaunch
+        : undefined;
+    if (!cached) throw failure;
+    advisory = { warning: cached.warning, failure, log: cached.log };
+  };
+  /** Evidence a verified replacement moves aside before it publishes. */
+  const unverified: string[] = [];
+  const capture = async (
+    previous: W5FlipBackupMarker | null,
+  ): Promise<void> => {
+    // Before the capture starts the bootstrap, which opens the log.
+    const log = await observeLogBeforeWriters(scope, protection);
+    const refused = await captureOnce(
+      previous,
+      buildVersion,
+      unverified,
+      protection,
+    );
+    if (!refused) return;
+    // The bootstrap has exited; refusing here keeps the base retry, which captures.
+    if (!(await advisoryLogHolds(scope, log))) throw refused.failure;
+    advisory = { ...refused, log };
+  };
   const completed = await readCompletion();
-  const marker = completed ?? (await readCompatibilityMarker());
-  if (marker?.state === 'captured' && !completed) {
-    // A legacy empty-root marker has no bytes to independently verify.
-    if (marker.backup !== 'empty-root') {
+  if (completed.kind === 'unverified') unverified.push(completed.path);
+  const legacy =
+    completed.kind === 'verified' ? null : await readCompatibilityMarker();
+  let captured = completed.kind === 'verified';
+  // A legacy empty-root marker has no bytes to independently verify.
+  if (
+    !captured &&
+    legacy?.state === 'captured' &&
+    legacy.backup !== 'empty-root'
+  ) {
+    if (await historicalCaptureVerifies(legacy, scope)) {
       try {
-        await verifyHistoricalCapture(marker, scope);
-        await publishCompletion(marker, scope);
+        await setAsideUnverifiedEvidence(unverified, scope);
+        await publishCompletion(legacy, scope);
       } catch {
         throw completionFailure();
       }
-    } else if (!isW5CommitLogHostShutDown())
-      await captureOnce(marker, buildVersion, protection);
-    else if (!daemonServedHere(scope)) throw completionFailure();
+      captured = true;
+    } else unverified.push(getW5FlipBackupMarkerPath());
   }
-  if (marker?.state !== 'captured') {
-    if (!isW5CommitLogHostShutDown())
-      await captureOnce(marker, buildVersion, protection);
+  if (!captured) {
+    if (!isW5CommitLogHostShutDown()) await capture(legacy);
     // A respawn after this process stopped its log, as after a daemon crash,
-    // cannot capture; it proceeds only where a daemon already served W5, and
-    // the next launch captures.
+    // cannot capture; it proceeds only where a daemon already served W5 or
+    // this launch's advisory stands, and the next launch captures.
     else if (!daemonServedHere(scope))
-      throw stepError(
-        'backup_refused',
-        'The workspace records backup failed.',
-        'host-stopped',
+      respawnAdvisory(
+        legacy?.state === 'captured' || unverified.length > 0
+          ? completionFailure()
+          : stepError(
+              'backup_refused',
+              'The workspace records backup failed.',
+              'host-stopped',
+            ),
       );
   }
   await stopInProcessW5Host();
   if (!sameW5RootEvidenceScope(await w5RootEvidenceScope(getDataDir()), scope))
     throw completionFailure();
+  if (!advisory) return { kind: 'prepared' };
+  // Retired and stopped: the daemon opens the log next. No completion is written.
+  if (!(await advisoryLogHolds(scope, advisory.log))) throw advisory.failure;
+  try {
+    await protection?.assertHeld();
+  } catch (error) {
+    throw stepError(
+      'backup_refused',
+      'The workspace records backup failed.',
+      'host-unavailable',
+      error,
+    );
+  }
+  advisoryLaunch = { scope, warning: advisory.warning, log: advisory.log };
+  return { kind: 'advisory', reason: advisory.warning };
 }
 
 /** Fences in-process W5 use; refuses while a worker may still hold the log. */
@@ -593,7 +820,7 @@ async function deferMarker(buildVersion: string): Promise<void> {
  * Deferral records history, not successful service through this process.
  */
 export async function deferW5FlipBackup(buildVersion: string): Promise<void> {
-  if (await readCompletionMetadata()) return;
+  if ((await readCompletionMetadata()).kind !== 'missing') return;
   if ((await readCompatibilityMarker()) !== null) return;
   await deferMarker(buildVersion);
 }

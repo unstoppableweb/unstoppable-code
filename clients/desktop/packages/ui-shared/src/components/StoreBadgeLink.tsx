@@ -1,5 +1,5 @@
-import { TextLink } from './TextLink';
-import { ControlButton } from './Button';
+import { TextLink } from '../primitives/TextLink';
+import { ControlButton } from '../primitives/Button';
 import type { JSX } from 'react';
 
 /** The two mobile app stores Canopy brands can publish a listing to. */

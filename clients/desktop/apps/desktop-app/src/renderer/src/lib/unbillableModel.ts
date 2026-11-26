@@ -44,7 +44,6 @@ export interface UnbillableModelSwitch {
   readonly modelLabel: string;
   readonly reason: string;
   readonly switchModel: ChatModel;
-  readonly switchModelLabel: string;
 }
 
 /**
@@ -82,7 +81,6 @@ export function useUnbillableModelSwitch(
         getProviderLabel(provider),
       ),
       switchModel,
-      switchModelLabel: getModelDisplayName(switchModel),
     };
   }, [laneFactsVersion, modelFactsVersion, model]);
 }

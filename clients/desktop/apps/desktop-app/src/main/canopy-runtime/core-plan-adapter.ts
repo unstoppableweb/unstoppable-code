@@ -201,16 +201,19 @@ export function createCorePlanAdapter({
     max: 16,
   });
   // Each answers the whole detected list, and the channels key every call
-  // afresh, so only the recent outcomes a retry could replay are kept.
+  // afresh, so only the recent outcomes a retry could replay are kept. 256
+  // covers a same-key retry's window with room: the relay admits 32 calls per
+  // window, and the banner sends every pending dismissal at once, so many
+  // other detected writes can commit before a lost reply's retry lands.
   // shortcut: a count cap, not a byte budget; CAN-7633 adds one for all writes.
   const detectedScans = new KeyedOutcomes<{
     detected: DetectedPlan[];
     newlyDetected: DetectedPlan[];
-  }>({ reusedError: keyReused, forget, max: 16 });
+  }>({ reusedError: keyReused, forget, max: 256 });
   const detectedUpdates = new KeyedOutcomes<{ detected: DetectedPlan[] }>({
     reusedError: keyReused,
     forget,
-    max: 16,
+    max: 256,
   });
   const diagramRequests = new KeyedOutcomes<{
     status: 'started' | 'queued' | 'missing';

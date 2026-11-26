@@ -1,44 +1,44 @@
 'use client';
-import type { JSX } from 'react';
-import { Notice, NoticeButton } from './Notice';
+import { useState, type JSX } from 'react';
+import { Notice, NoticeButton } from '../primitives/Notice';
+import { FIRST_SEND_FAILED_CHOOSE_MODEL_LABEL } from './chat/FirstSendFailedNotice';
 
 export interface ModelUnavailableNoticeProps {
   /** The composer's current model, by display name. */
   readonly modelLabel: string;
   /** Why it can't run, as the picker row and chip say it. */
   readonly reason: string;
-  /** A model this account can run, by display name. */
-  readonly switchModelLabel: string;
-  /** Switch the composer to that model. */
-  readonly onSwitch: () => void;
+  /** Open the composer's model picker. */
+  readonly onChooseModel: () => void;
   readonly testId?: string;
 }
 
 /**
- * The composer's model can't run for this account, with a one-click switch to
- * one that can (CAN-6444). Shown before send, in the composer notice stack, so
- * a user whose only working models are on their own AI gateway isn't sent
- * into a billing dead end.
+ * The composer's model can't run for this account (CAN-6444). Shown before
+ * send, in the composer notice stack, with a button that opens the model
+ * picker beside it. Closing it hides it until the model changes.
  */
 export function ModelUnavailableNotice({
   modelLabel,
   reason,
-  switchModelLabel,
-  onSwitch,
+  onChooseModel,
   testId = 'model-unavailable-notice',
-}: ModelUnavailableNoticeProps): JSX.Element {
+}: ModelUnavailableNoticeProps): JSX.Element | null {
+  const [dismissedModel, setDismissedModel] = useState<string | null>(null);
+  if (dismissedModel === modelLabel) return null;
   return (
     <Notice
       intent="attention"
       title={`Can’t use ${modelLabel}`}
       data-testid={testId}
+      onDismiss={(): void => setDismissedModel(modelLabel)}
       actions={
         <NoticeButton
           variant="primary"
-          onClick={onSwitch}
-          data-testid={`${testId}-switch`}
+          onClick={onChooseModel}
+          data-testid={`${testId}-choose-model`}
         >
-          {`Use ${switchModelLabel}`}
+          {FIRST_SEND_FAILED_CHOOSE_MODEL_LABEL}
         </NoticeButton>
       }
     >

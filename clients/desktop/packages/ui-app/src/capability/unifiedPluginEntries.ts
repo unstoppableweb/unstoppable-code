@@ -125,6 +125,10 @@ import {
   WORKFLOW_ITEM_LABEL,
   workflowSearchAlias,
 } from '@canopy/ui-shared/lib/workflow-labels';
+import {
+  MODEL_PRESET_LABEL,
+  modelPresetSearchAlias,
+} from '@canopy/ui-shared/lib/model-preset-labels';
 
 // ---------------------------------------------------------------------------
 // Public types — verbatim per the task brief; later tasks depend on these
@@ -193,6 +197,8 @@ export interface UnifiedMarketplacePluginInput extends Pick<
   > | null;
   /** Browser summaries collapse provider-specific install state to one bit. */
   installed?: boolean;
+  /** Paired inventory's aggregate classification when harness rows are absent. */
+  compactInstallHint?: boolean;
   /** Whether this listing can use the host's existing Browse install action. */
   browseInstallAvailable?: boolean;
   /**
@@ -375,6 +381,10 @@ export interface UnifiedEntryInputs {
    * the plugin's own card so it stays reachable and installable.
    */
   foldSingleKeyPlugins?: boolean;
+  /** New Customize All search exposes plugins as their own install targets. */
+  customizeAllSearch?: boolean;
+  /** Confirmed browser-session changes for the selected computer's curated plugins. */
+  curatedPluginSessionInstalls?: ReadonlyMap<string, boolean>;
 }
 
 export interface RankedResults {
@@ -642,18 +652,50 @@ function pluginCuratedMcpKeys(entry: CuratedPluginEntry): string[] {
 
 /**
  * Whether the user installed this curated plugin. Provider install state is
- * the answer when the row carries it; the portal's collapsed bit otherwise.
- * The desktop marks every materialized curated plugin `installed` because
- * its content is on disk, which is not the same as the user having added it.
+ * the answer when the row carries it. Search also accepts recorded and synced
+ * harness installs. A cached listing alone can still open the legacy detail.
  */
 function curatedPluginInstalled(
   row: UnifiedMarketplacePluginInput | undefined,
+  requireInstallEvidence = false,
 ): boolean {
   if (!row) return false;
+  if (requireInstallEvidence)
+    return (
+      hasCuratedPluginInstallEvidence(row) || row.compactInstallHint === true
+    );
   if (row.parked) return true;
-  if (row.globalInstallStatus)
-    return builtInAnyProviderInstalled(row.globalInstallStatus);
-  return row.installed === true;
+  return row.globalInstallStatus
+    ? builtInAnyProviderInstalled(row.globalInstallStatus)
+    : row.installed === true;
+}
+
+/** Install facts shared by New Customize search, detail and inventory sync. */
+export function hasCuratedPluginInstallEvidence(
+  row: Pick<
+    UnifiedMarketplacePluginInput,
+    | 'globalInstallStatus'
+    | 'codexCompatDisabled'
+    | 'parked'
+    | 'harnessInstalls'
+    | 'harnessRows'
+  >,
+): boolean {
+  if (row.parked) return true;
+  const enabled = (harness: string): boolean =>
+    harness !== 'codex' || row.codexCompatDisabled !== true;
+  return (
+    row.globalInstallStatus?.claude?.installed === true ||
+    (enabled('codex') && row.globalInstallStatus?.codex?.installed === true) ||
+    itemInstalledHarnesses(row.harnessInstalls).some(enabled) ||
+    itemFailedHarnessInstalls(row.harnessInstalls).some(
+      ({ harness, outsideChange }) =>
+        enabled(harness) && outsideChange === 'changed',
+    ) ||
+    row.harnessRows?.some(
+      ({ id, installation }) => enabled(id) && installation === 'Installed',
+    ) === true
+  );
 }
 
 interface CuratedPluginProjection {
@@ -673,8 +715,18 @@ function buildCuratedPluginEntries(
   curatedPlugins: CuratedPluginEntry[],
   marketplaces: UnifiedMarketplaceInput[],
   curatedMcpByKey: ReadonlyMap<string, CuratedMcpServerEntry>,
-  foldSingleKeyPlugins: boolean,
-  appName: string | undefined,
+  {
+    foldSingleKeyPlugins,
+    customizeAllSearch,
+    curatedPluginSessionInstalls,
+    appName,
+  }: Pick<
+    UnifiedEntryInputs,
+    | 'foldSingleKeyPlugins'
+    | 'customizeAllSearch'
+    | 'curatedPluginSessionInstalls'
+    | 'appName'
+  >,
 ): CuratedPluginProjection {
   const curatedMarketplace = findCuratedMarketplace(marketplaces);
   // The curated marketplace's maker publishes a plugin with no author.
@@ -691,6 +743,11 @@ function buildCuratedPluginEntries(
   const entries: UnifiedPluginEntry[] = [];
   for (const entry of curatedPlugins) {
     const row = rowsByPluginName.get(entry.key);
+    const searchInstalled = customizeAllSearch
+      ? (curatedPluginSessionInstalls?.get(entry.key.toLowerCase()) ??
+        curatedPluginInstalled(row, true))
+      : undefined;
+    const installedRow = searchInstalled === false ? undefined : row;
     const name = pluginDisplayName({
       name: entry.name,
       displayName: row?.displayName,
@@ -710,22 +767,25 @@ function buildCuratedPluginEntries(
         key: entry.key,
         name,
         skills: entry.skills.length,
-        installed: curatedPluginInstalled(row),
+        installed: searchInstalled ?? curatedPluginInstalled(row),
         // Its record joins the card's, so its warnings and a harness set up
         // later reach it (CAN-6817).
-        ...pluginHarnessInstallsFact(row),
+        ...pluginHarnessInstallsFact(installedRow),
       });
       continue;
     }
-    const state: UnifiedEntryState = row
-      ? marketplacePluginState(row)
-      : 'available';
+    const state: UnifiedEntryState =
+      searchInstalled === undefined && row
+        ? marketplacePluginState(row)
+        : searchInstalled === true
+          ? 'installed'
+          : 'available';
     const providerSupport = row
       ? pluginProviderSupport(row)
       : NEUTRAL_PROVIDER_SUPPORT;
     const installedNames = [
       ...new Set(
-        (row?.harnessRows ?? [])
+        (installedRow?.harnessRows ?? [])
           .filter((harnessRow) => harnessRow.installation === 'Installed')
           .map((harnessRow) => harnessRow.name),
       ),
@@ -768,7 +828,7 @@ function buildCuratedPluginEntries(
       ...(installedNames.length > 0
         ? { installedHarnessNames: installedNames }
         : {}),
-      ...installedPluginFacts(row),
+      ...installedPluginFacts(installedRow),
       state,
       recommended: entry.recommended === true,
       catalogSortOrder: entry.sortOrder,
@@ -914,18 +974,18 @@ function mcpAppComponents(): UnifiedPluginEntry['components'] {
   return { ...emptyComponents(), mcpServers: 1 };
 }
 
-/** The card's state from everything bound to it: the best binding wins. */
-function integrationState(
+/** The MCP server's own state. A folded plugin may affect the card separately. */
+export function curatedMcpConnectionState(
   connections: readonly UnifiedEntryConnection[],
-  plugin: UnifiedEntryFoldedPlugin | undefined,
+  desktopOnly: boolean,
 ): UnifiedEntryState {
-  if (connections.some((connection) => connection.state === 'installed'))
+  const eligible = desktopOnly
+    ? connections.filter((connection) => connection.binding !== 'account')
+    : connections;
+  if (eligible.some((connection) => connection.state === 'installed'))
     return 'installed';
-  if (connections.some((connection) => connection.state === 'needs-auth'))
+  if (eligible.some((connection) => connection.state === 'needs-auth'))
     return 'needs-auth';
-  // The plugin is installed but has nothing to run against: the card asks
-  // for the connection rather than offering Add again.
-  if (plugin?.installed) return 'needs-auth';
   return 'available';
 }
 
@@ -1120,12 +1180,12 @@ function buildCuratedMcpEntry(
   // disconnect it, but it never decides the card's state: it cannot make the
   // card set up, ask for a cloud reconnect, or stand in for the device
   // server Add creates.
-  const state = integrationState(
-    desktopOnly
-      ? connections.filter((connection) => connection.binding !== 'account')
-      : connections,
-    plugin,
-  );
+  const serverState = curatedMcpConnectionState(connections, desktopOnly);
+  // An installed plugin with nothing to run against offers connection setup.
+  const state =
+    serverState === 'available' && plugin?.installed
+      ? 'needs-auth'
+      : serverState;
   const accountBound = connections.some(
     (connection) => connection.binding === 'account',
   );
@@ -1182,6 +1242,7 @@ function buildCuratedMcpEntry(
         : bindings.has('device')
           ? 'desktop'
           : undefined;
+  const mcpHarnessInstalls = harnessInstallsFact(...servers).harnessInstalls;
   return {
     id: `mcp-catalog:${entry.key}`,
     kind: 'app',
@@ -1201,7 +1262,7 @@ function buildCuratedMcpEntry(
     providerSupport: NEUTRAL_PROVIDER_SUPPORT,
     // The server's own catalog metadata; a folded plugin keeps its own.
     ...harnessCompatibilityFact(entry.harnessCompatibility),
-    ...cardHarnessInstallsFact(servers, plugin),
+    ...cardHarnessInstallsFact(mcpHarnessInstalls, plugin?.harnessInstalls),
     state,
     ...(surface ? { surface } : {}),
     ...(connection ? { connection } : {}),
@@ -1213,11 +1274,14 @@ function buildCuratedMcpEntry(
         0,
       ) + (connector?.connectedProviders.length ?? 0),
     ...(pendingSignIns > 0 ? { pendingSignIns } : {}),
+    accountProxyMcp:
+      entry.platformOAuth === true && !desktopOnly ? true : undefined,
     recommended: false,
     catalogSortOrder: entry.sortOrder,
     integration: {
       curatedKey: entry.key,
       ...(plugin ? { plugin } : {}),
+      ...(plugin && mcpHarnessInstalls ? { mcpHarnessInstalls } : {}),
       ...(connector
         ? {
             connector: {
@@ -1237,14 +1301,11 @@ function buildCuratedMcpEntry(
  * plugin's, merged by the shared rule (CAN-6817).
  */
 function cardHarnessInstallsFact(
-  servers: readonly McpServerIndexEntry[],
-  plugin: UnifiedEntryFoldedPlugin | undefined,
+  mcp: UnifiedEntryHarnessInstalls | undefined,
+  plugin: UnifiedEntryHarnessInstalls | undefined,
 ): Pick<UnifiedPluginEntry, 'harnessInstalls'> {
   const merged = mergeEntryHarnessInstalls(
-    [
-      harnessInstallsFact(...servers).harnessInstalls,
-      plugin?.harnessInstalls,
-    ].filter((result) => result !== undefined),
+    [mcp, plugin].filter((result) => result !== undefined),
   );
   return merged === undefined ? {} : { harnessInstalls: merged };
 }
@@ -2804,7 +2865,7 @@ function buildLocalAgentEntries(
       name: agent.name,
       description: agent.description,
       categories: [],
-      typeLabel: 'Agent',
+      typeLabel: MODEL_PRESET_LABEL,
       sourceLabel: 'Local',
       availabilityLabel: agent.available ? 'Installed' : 'Unavailable',
       components: { ...emptyComponents(), agents: 1 },
@@ -2843,10 +2904,10 @@ export function pendingLocalAgentEntry(
     id: entryId,
     kind: 'agent',
     origin: 'installed-standalone',
-    name: 'Agent',
+    name: MODEL_PRESET_LABEL,
     description: '',
     categories: [],
-    typeLabel: 'Agent',
+    typeLabel: MODEL_PRESET_LABEL,
     sourceLabel: 'Local',
     availabilityLabel: 'Installed',
     components: { ...emptyComponents(), agents: 1 },
@@ -2918,7 +2979,7 @@ function buildSharedAgentEntries(
       description: agent.instructionsPreview,
       categories: [],
       authorName: agent.createdBy.name ?? ownerDisplayName(agent.owner),
-      typeLabel: 'Agent',
+      typeLabel: MODEL_PRESET_LABEL,
       sourceLabel: 'Shared',
       ownershipLabel: sharedOwnershipLabel(agent.owner, agent.shareScope),
       ...sharedWithFromOwner(agent.owner),
@@ -3801,6 +3862,14 @@ function endpointClaimKey(endpoint: string, name: string): string {
   return `${endpoint}|${marketplaceBrowseNameKey(name)}`;
 }
 
+function provenanceEndpoint(
+  server: Parameters<typeof mcpEndpointKey>[0],
+  requireVerifiedEndpoint: boolean,
+): string | null {
+  if (!requireVerifiedEndpoint) return mcpEndpointKey(server);
+  return server.type === 'http' && server.url ? server.url : null;
+}
+
 /**
  * Whether a server a plugin bundled is listed as that plugin rather than on
  * its own row: not when it needs attention, since hiding it would also hide
@@ -3823,6 +3892,7 @@ export function bundledServerStandsBehindPlugin(
 function withBundledServers(
   entries: readonly UnifiedPluginEntry[],
   facts: ProvenanceFacts,
+  requireVerifiedEndpoint: boolean,
 ): UnifiedPluginEntry[] {
   const representing = new Map<string, string>();
   const represent = (
@@ -3841,13 +3911,16 @@ function withBundledServers(
       const catalog = facts.curatedMcp.get(entry.ref.key);
       if (catalog)
         represent(
-          mcpEndpointKey({ type: 'http', url: catalog.url }),
+          provenanceEndpoint(
+            { type: 'http', url: catalog.url },
+            requireVerifiedEndpoint,
+          ),
           catalog.name,
           entry.id,
         );
     } else if (entry.ref.type === 'local-mcp') {
       const server = facts.mcpServers.get(entry.ref.serverId);
-      if (server && server.type !== 'command')
+      if (!requireVerifiedEndpoint && server && server.type !== 'command')
         represent(mcpEndpointKey(server), server.name, entry.id);
     }
   }
@@ -3857,10 +3930,11 @@ function withBundledServers(
     if (entry.ref.type === 'marketplace-plugin') {
       return (facts.bundledServers.get(entry.id) ?? []).map((server) => {
         const endpoint = mcpEndpointKey(server);
+        const verified = provenanceEndpoint(server, requireVerifiedEndpoint);
         const entryId =
-          endpoint === null || server.type === 'command'
+          verified === null || server.type === 'command'
             ? undefined
-            : representing.get(endpointClaimKey(endpoint, server.name));
+            : representing.get(endpointClaimKey(verified, server.name));
         return {
           key: server.name,
           name: server.name,
@@ -3916,6 +3990,7 @@ function withBundledServers(
 function attachPluginProvenance(
   entries: readonly UnifiedPluginEntry[],
   facts: ProvenanceFacts,
+  requireVerifiedEndpoint = false,
 ): UnifiedPluginEntry[] {
   const claims = new Map<string, UnifiedEntryPluginLink>();
   // Claim key → the bundled server's manifest name and endpoint, for the
@@ -3938,7 +4013,7 @@ function attachPluginProvenance(
     };
     if (entry.ref.type === 'marketplace-plugin') {
       for (const server of facts.bundledServers.get(entry.id) ?? []) {
-        const endpoint = mcpEndpointKey(server);
+        const endpoint = provenanceEndpoint(server, requireVerifiedEndpoint);
         if (endpoint !== null) {
           claim(endpointClaimKey(endpoint, server.name), link, {
             name: server.name,
@@ -3953,7 +4028,8 @@ function attachPluginProvenance(
       }
     }
   }
-  if (claims.size === 0) return withBundledServers(entries, facts);
+  if (claims.size === 0)
+    return withBundledServers(entries, facts, requireVerifiedEndpoint);
 
   const claimOf = (
     key: string,
@@ -3966,7 +4042,10 @@ function attachPluginProvenance(
   ): { key: string; owner: UnifiedEntryPluginLink } | null => {
     if (entry.kind !== 'app') return null;
     if (entry.ref.type === 'local-mcp') {
-      if (entry.ref.curatedKey !== undefined) return null;
+      // Indexed device rows expose a host only, so search cannot verify that
+      // a matching name belongs to the endpoint the plugin declares.
+      if (requireVerifiedEndpoint || entry.ref.curatedKey !== undefined)
+        return null;
       const server = facts.mcpServers.get(entry.ref.serverId);
       if (
         !server ||
@@ -3994,7 +4073,10 @@ function attachPluginProvenance(
       }
       const viaKey = claimOf(`curated:${catalog.key}`);
       if (viaKey) return viaKey;
-      const endpoint = mcpEndpointKey({ type: 'http', url: catalog.url });
+      const endpoint = provenanceEndpoint(
+        { type: 'http', url: catalog.url },
+        requireVerifiedEndpoint,
+      );
       return endpoint === null
         ? null
         : claimOf(endpointClaimKey(endpoint, catalog.name));
@@ -4062,6 +4144,7 @@ function attachPluginProvenance(
       };
     }),
     facts,
+    requireVerifiedEndpoint,
   );
 }
 
@@ -4497,8 +4580,7 @@ export function buildUnifiedPluginEntries(
     inputs.curatedPlugins,
     inputs.marketplaces,
     curatedMcpByKey,
-    inputs.foldSingleKeyPlugins === true,
-    inputs.appName,
+    inputs,
   );
   // Installed listings are pinned through the collapse, so a shared plugin
   // folds into a listing id that survives it.
@@ -4598,7 +4680,11 @@ export function buildUnifiedPluginEntries(
   };
   const entries = withBundledSkillNames(
     withIntegrationKeys(
-      attachPluginProvenance(linkSameAppPlugins(assembled), provenanceFacts),
+      attachPluginProvenance(
+        linkSameAppPlugins(assembled),
+        provenanceFacts,
+        inputs.customizeAllSearch,
+      ),
       {
         ...provenanceFacts,
         marketplacePlugins: marketplacePluginsById(inputs.marketplaces),
@@ -4804,6 +4890,7 @@ function matchScore(
     [
       entry.typeLabel,
       workflowSearchAlias(entry.kind),
+      modelPresetSearchAlias(entry.kind),
       entry.sourceLabel,
       entry.ownershipLabel,
       entry.sharedWith?.name,

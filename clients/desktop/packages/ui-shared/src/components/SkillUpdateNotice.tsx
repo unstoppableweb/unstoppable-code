@@ -5,7 +5,7 @@ import type { SkillUpdateAction } from '../lib/skill-update-action';
 import { useMinuteClock } from '../lib/useMinuteClock';
 import type { DetailMoreMenuItem } from './DetailMoreMenu';
 import { RefreshSpinner } from './RefreshSpinner';
-import { Notice, NoticeButton } from './Notice';
+import { Notice, NoticeButton } from '../primitives/Notice';
 import {
   DetailVersionUpdateFact,
   type DetailUpdateState,
@@ -98,7 +98,7 @@ export function SkillUpdateNotice({
           </NoticeButton>
         }
       >
-        Try again.
+        {null}
       </Notice>
     );
   }

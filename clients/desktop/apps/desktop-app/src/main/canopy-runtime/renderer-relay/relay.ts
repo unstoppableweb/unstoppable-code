@@ -325,6 +325,61 @@ function raceDeadline<T>(
 
 type RelayFrame = CanopyClientStreamFrame<unknown, unknown>;
 
+/**
+ * A stream's pending pull. It holds one settlement handler; each read waits
+ * through its own waiter and removes it when it gives up, so a quiet stream
+ * read past many deadlines keeps one reaction on the pull.
+ */
+interface PendingPull {
+  outcome: PromiseSettledResult<IteratorResult<RelayFrame>> | null;
+  readonly waiters: Set<
+    (outcome: PromiseSettledResult<IteratorResult<RelayFrame>>) => void
+  >;
+}
+
+function startPull(iterator: AsyncIterator<RelayFrame>): PendingPull {
+  const pull: PendingPull = { outcome: null, waiters: new Set() };
+  const settle = (
+    outcome: PromiseSettledResult<IteratorResult<RelayFrame>>,
+  ): void => {
+    pull.outcome = outcome;
+    for (const waiter of pull.waiters) waiter(outcome);
+    pull.waiters.clear();
+  };
+  iterator.next().then(
+    (value) => settle({ status: 'fulfilled', value }),
+    (reason: unknown) => settle({ status: 'rejected', reason }),
+  );
+  return pull;
+}
+
+/** Waits for `pull` within the read's deadline; the pull itself stays pending. */
+async function awaitPull(
+  pull: PendingPull,
+  signal: AbortSignal,
+  deadlineMs: number,
+): Promise<IteratorResult<RelayFrame>> {
+  let waiter: (
+    outcome: PromiseSettledResult<IteratorResult<RelayFrame>>,
+  ) => void = () => undefined;
+  const settled = new Promise<PromiseSettledResult<IteratorResult<RelayFrame>>>(
+    (resolve) => {
+      waiter = resolve;
+    },
+  );
+  if (pull.outcome) waiter(pull.outcome);
+  else pull.waiters.add(waiter);
+  try {
+    const outcome = await raceDeadline(settled, signal, deadlineMs);
+    if (outcome.status === 'fulfilled') return outcome.value;
+    throw outcome.reason instanceof Error
+      ? outcome.reason
+      : new RelayFailure(toPayload(outcome.reason));
+  } finally {
+    pull.waiters.delete(waiter);
+  }
+}
+
 /** A reply value, and what runs once the reply carrying it is handed over. */
 interface Dispatched {
   readonly value: unknown;
@@ -338,7 +393,7 @@ interface RelayStream {
   readonly handle: CanopyClientStreamHandle<unknown, unknown>;
   readonly iterator: AsyncIterator<RelayFrame>;
   /** A read that passed its deadline leaves its pull here for the next read. */
-  next: Promise<IteratorResult<RelayFrame>> | null;
+  next: PendingPull | null;
   reading: boolean;
 }
 
@@ -899,10 +954,10 @@ export function createRendererRelay(
     const release = reserveCall(session);
     stream.reading = true;
     try {
-      stream.next ??= stream.iterator.next();
+      stream.next ??= startPull(stream.iterator);
       let result: IteratorResult<RelayFrame>;
       try {
-        result = await raceDeadline(
+        result = await awaitPull(
           stream.next,
           session.signal,
           limits.deadlineMs,

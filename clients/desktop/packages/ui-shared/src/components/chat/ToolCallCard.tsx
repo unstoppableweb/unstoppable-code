@@ -1,6 +1,6 @@
-import { CodeBlock } from '../CodeBlock';
+import { CodeBlock } from '../../primitives/CodeBlock';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
-import { Stack } from '../Stack';
+import { Stack } from '../../primitives/Stack';
 import { TURN_OUTCOME_UNKNOWN_IMPACT } from './turn-outcome-label';
 import { useState, type JSX, type ReactNode } from 'react';
 import { z } from 'zod';

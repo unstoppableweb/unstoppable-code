@@ -49,6 +49,8 @@ export function createRemoteControlApi(
       ipc.invoke(IPC_CHANNELS.remoteControlSetAllowIncoming, allow),
     setAllowRemoteUpdates: (allow) =>
       ipc.invoke(IPC_CHANNELS.remoteControlSetAllowRemoteUpdates, allow),
+    setAllowWebPreview: (allow) =>
+      ipc.invoke(IPC_CHANNELS.remoteControlSetAllowWebPreview, allow),
     setInventorySyncEnabled: (enabled) =>
       ipc.invoke(IPC_CHANNELS.remoteControlSetInventorySyncEnabled, enabled),
     openPairingWindow: () =>
@@ -93,6 +95,8 @@ export function createRemoteControlApi(
       ipc.invoke(IPC_CHANNELS.remoteControlPathPickerResolve, response),
     listDirectory: (request) =>
       ipc.invoke(IPC_CHANNELS.remoteControlListDirectory, request),
+    connectSlackThisComputer: () =>
+      ipc.invoke(IPC_CHANNELS.slackConnectThisComputer),
   };
 }
 

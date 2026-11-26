@@ -53,7 +53,9 @@ import type {
   PipelineDefinitionImportResult,
 } from '@canopy/protocol/canopy-core';
 import type { Pipeline } from '@canopy/execution-engine/types/pipeline';
+import { pipelineDefinitionOwnerKey } from '@canopy/core-runtime/node/pipeline';
 import type * as DispatchModule from '../pipeline-definition-dispatch';
+import type * as PendingOwnersModule from '../../pipelines/daemon-definition-pending-owners';
 import type {
   PipelineDefinitionWriteOperation,
   PipelineDefinitionWriteRoute,
@@ -70,6 +72,7 @@ let setPipelineDefinitionEnabled: Dispatch['setPipelineDefinitionEnabled'];
 let setPipelineDefinitionRouteProvider: Dispatch['setPipelineDefinitionRouteProvider'];
 // From the same fresh module registry as the dispatch, so `instanceof` holds.
 let CanopyOutcomeUnknownError: typeof OutcomeModule.CanopyOutcomeUnknownError;
+let pendingDefinitionOwner: typeof PendingOwnersModule.pendingDefinitionOwner;
 let CANOPY_OUTCOME_UNKNOWN_MESSAGE: string;
 
 jest.setTimeout(30_000);
@@ -129,6 +132,7 @@ function fakeRoute(
 ): FakeRoute {
   return {
     serves: (operation) => served.includes(operation),
+    clientInstanceId: 'owner-client',
     upsert: jest.fn(),
     delete: jest.fn(),
     duplicate: jest.fn(),
@@ -187,6 +191,8 @@ beforeEach(async () => {
   } = await import('../pipeline-definition-dispatch'));
   ({ CanopyOutcomeUnknownError, CANOPY_OUTCOME_UNKNOWN_MESSAGE } =
     await import('@canopy/core-client/outcome'));
+  ({ pendingDefinitionOwner } =
+    await import('../../pipelines/daemon-definition-pending-owners'));
 });
 
 afterEach(() => {
@@ -195,7 +201,14 @@ afterEach(() => {
 
 describe('pipeline definition writes over the daemon route (CAN-7507)', () => {
   it('keeps every write in process while no route provider is set', async () => {
-    mockRuntime.instruction.mockResolvedValue({ definition: definition('a') });
+    mockRuntime.instruction
+      .mockResolvedValue({ definition: definition('a') })
+      .mockResolvedValueOnce({ definition: definition('a') })
+      .mockResolvedValueOnce({ definitionId: 'a', deleted: true, revision: 2 })
+      .mockResolvedValueOnce({
+        definition: { ...definition('copy-1'), document: IMPORTED_DOCUMENT },
+        sourceDefinitionId: 'a',
+      });
     const saved = await saveUserPipeline({
       name: 'Release',
       description: '',
@@ -582,7 +595,7 @@ describe('pipeline definition writes over the daemon route (CAN-7507)', () => {
       revision: 3,
     });
     route.duplicate.mockResolvedValue({
-      definition: definition('copy-1'),
+      definition: { ...definition('copy-1'), document: IMPORTED_DOCUMENT },
       sourceDefinitionId: 'e',
     });
     route.setEnabled.mockResolvedValue({ definitionId: 'e', enabled: false });
@@ -704,5 +717,125 @@ describe('pipeline definition writes over the daemon route (CAN-7507)', () => {
     await expect(refusal).rejects.not.toBeInstanceOf(CanopyOutcomeUnknownError);
     expect(route.import).toHaveBeenCalledTimes(1);
     expect(mockRuntime.instruction).not.toHaveBeenCalled();
+  });
+
+  // CAN-7507: a routed create's id is the daemon's, so its owner is
+  // registered under the key the daemon derives from this route's client
+  // and the request's key, for the effect it raises before the commit.
+  describe("a routed create's owner (CAN-7507)", () => {
+    const OWNER = { owner: 'org:golden', agentAuthor: null };
+    const save = (
+      owner?: DispatchModule.PendingDefinitionOwnerSource,
+    ): ReturnType<Dispatch['saveUserPipeline']> =>
+      saveUserPipeline({
+        name: 'Release',
+        description: '',
+        icon: '',
+        content: CONTENT,
+        ...(owner === undefined ? {} : { owner }),
+      });
+
+    it('registers it under the sender-bound key while the routed write is out, and clears it when the write answers', async () => {
+      const route = fakeRoute(['upsert']);
+      let key = '';
+      let during: unknown;
+      route.upsert.mockImplementation((params) => {
+        key = pipelineDefinitionOwnerKey('owner-client', keyOf(params));
+        during = pendingDefinitionOwner(key);
+        return Promise.resolve({ definition: definition('a') });
+      });
+      setPipelineDefinitionRouteProvider(() => route);
+      await expect(save(OWNER)).resolves.toMatchObject({ success: true });
+      expect(during).toEqual(OWNER);
+      expect(
+        pendingDefinitionOwner(
+          pipelineDefinitionOwnerKey(
+            'another-client',
+            keyOf(route.upsert.mock.calls[0][0]),
+          ),
+        ),
+      ).toBeUndefined();
+      expect(pendingDefinitionOwner(key)).toBeUndefined();
+    });
+
+    it('keeps it after a lost reply ends as an unknown outcome, for an effect that arrives late, until it expires', async () => {
+      jest.useFakeTimers();
+      const route = fakeRoute(['upsert']);
+      let key = '';
+      const during: unknown[] = [];
+      route.upsert.mockImplementation((params) => {
+        key = pipelineDefinitionOwnerKey('owner-client', keyOf(params));
+        during.push(pendingDefinitionOwner(key));
+        return Promise.reject(lostReply());
+      });
+      setPipelineDefinitionRouteProvider(() => route);
+      const saving = save(() => Promise.resolve(OWNER));
+      await jest.advanceTimersByTimeAsync(60_000);
+      await expect(saving).resolves.toMatchObject({ outcome: 'unknown' });
+      expect(during.length).toBeGreaterThan(1);
+      expect(during.every((owner) => owner !== undefined)).toBe(true);
+      expect(pendingDefinitionOwner(key)).toEqual(OWNER);
+      await jest.advanceTimersByTimeAsync(5 * 60_000);
+      expect(pendingDefinitionOwner(key)).toBeUndefined();
+    });
+
+    it('refuses a routed create, typed and retryable, while every registration is unsettled, and keeps the oldest', async () => {
+      const route = fakeRoute(['upsert']);
+      const held: (() => void)[] = [];
+      const keys: string[] = [];
+      route.upsert.mockImplementation((params) => {
+        keys.push(pipelineDefinitionOwnerKey('owner-client', keyOf(params)));
+        return new Promise((resolve) => {
+          held.push(() => resolve({ definition: definition('a') }));
+        });
+      });
+      setPipelineDefinitionRouteProvider(() => route);
+      const out = Array.from({ length: 64 }, () => save(OWNER));
+      for (let turn = 0; keys.length < 64 && turn < 1_000; turn += 1)
+        await new Promise((resolve) => setImmediate(resolve));
+      expect(keys).toHaveLength(64);
+      const refused = save(OWNER);
+      for (let turn = 0; keys.length < 65 && turn < 50; turn += 1)
+        await new Promise((resolve) => setImmediate(resolve));
+      // A 65th routed create would be held like the others; it must never be sent.
+      expect(route.upsert).toHaveBeenCalledTimes(64);
+      await expect(refused).resolves.toMatchObject({
+        success: false,
+        error:
+          'Too many workflow changes are waiting to be saved. Try again in a moment.',
+      });
+      expect(pendingDefinitionOwner(keys[0])).toEqual(OWNER);
+      for (const settle of held) settle();
+      await Promise.all(out);
+      expect(pendingDefinitionOwner(keys[0])).toBeUndefined();
+    });
+
+    it('never reads the owner in process, and registers none for an edit', async () => {
+      const read = jest.fn(() => Promise.resolve(OWNER));
+      mockRuntime.instruction.mockResolvedValue({
+        definition: definition('a'),
+      });
+      await save(read);
+      expect(read).not.toHaveBeenCalled();
+      const route = fakeRoute(['upsert']);
+      let during: unknown = 'unread';
+      route.upsert.mockImplementation((params) => {
+        during = pendingDefinitionOwner(
+          pipelineDefinitionOwnerKey('owner-client', keyOf(params)),
+        );
+        return Promise.resolve({ definition: definition('a') });
+      });
+      setPipelineDefinitionRouteProvider(() => route);
+      await saveUserPipeline({
+        id: 'a',
+        name: 'Release',
+        description: '',
+        icon: '',
+        content: CONTENT,
+        owner: read,
+      });
+      expect(during).toBeUndefined();
+      expect(read).not.toHaveBeenCalled();
+    });
   });
 });

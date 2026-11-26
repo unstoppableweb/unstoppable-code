@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react';
-import { Dot } from './Badge';
+import { Dot } from '../primitives/Badge';
 
 export function PaymentHandoffNotice({
   children,

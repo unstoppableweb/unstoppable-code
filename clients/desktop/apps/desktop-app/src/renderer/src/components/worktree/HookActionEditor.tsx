@@ -1,4 +1,4 @@
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import { PipelineSourceLabel } from '@canopy/ui-shared/components/EntrySourceLabel';
 import {
   useCallback,

@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 import { QuestionMarkIcon } from '../icons/AppIcons';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 
 /**
  * A small muted question mark after a label that explains it (New

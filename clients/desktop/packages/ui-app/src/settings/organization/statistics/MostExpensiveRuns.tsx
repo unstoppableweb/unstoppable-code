@@ -4,7 +4,7 @@ import type { JSX } from 'react';
 import { ExternalLink } from '@canopy/ui-shared/icons/AppIcons';
 import type { TelemetryExpensiveRun } from '@canopy/protocol/telemetry';
 import { StatusBadge } from '@canopy/ui-shared';
-import { useSettingsPrivacy } from '../../host';
+import { SettingsLink, useSettingsPrivacy } from '../../host';
 import {
   formatDurationMs,
   formatRelativeTime,
@@ -21,6 +21,39 @@ import { TextLink, Surface } from '@canopy/ui-shared/components';
 
 interface MostExpensiveRunsProps {
   runs: readonly TelemetryExpensiveRun[];
+  /**
+   * Set only by the member profile, for an owner with the transcript browser
+   * on: each row links to its shared transcript, or says it has none. The
+   * Statistics page leaves it unset.
+   */
+  transcriptOrgId?: string;
+}
+
+function TranscriptLink({
+  orgId,
+  run,
+}: {
+  readonly orgId: string;
+  readonly run: TelemetryExpensiveRun;
+}): JSX.Element {
+  if (typeof run.transcriptSessionId !== 'string')
+    return (
+      <span
+        className="text-xs whitespace-nowrap fg-tertiary"
+        data-testid={`expensive-run-no-transcript-${run.sessionId}`}
+      >
+        No shared transcript
+      </span>
+    );
+  return (
+    <SettingsLink
+      href={`/organization/${orgId}/transcripts/sessions/${run.transcriptSessionId}`}
+      className="text-xs font-medium whitespace-nowrap fg-accent hover:underline"
+      data-testid={`expensive-run-transcript-${run.sessionId}`}
+    >
+      View transcript
+    </SettingsLink>
+  );
 }
 
 /** Join class names, dropping empty ones so no stray whitespace remains. */
@@ -41,6 +74,7 @@ function joinParts(parts: readonly (string | null | undefined)[]): string {
  */
 export function MostExpensiveRuns({
   runs,
+  transcriptOrgId,
 }: MostExpensiveRunsProps): JSX.Element {
   // Run titles and author names are user content: keep them out of replays.
   const { blockClassName } = useSettingsPrivacy();
@@ -138,6 +172,9 @@ export function MostExpensiveRuns({
                     PR
                     <ExternalLink size={12} aria-hidden="true" />
                   </TextLink>
+                )}
+                {transcriptOrgId === undefined ? null : (
+                  <TranscriptLink orgId={transcriptOrgId} run={run} />
                 )}
               </div>
             </div>

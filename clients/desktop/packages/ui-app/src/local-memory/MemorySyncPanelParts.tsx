@@ -24,7 +24,6 @@ import {
   ErrorState,
   Heading,
   ListRow,
-  LoadingButton,
   Markdown,
   Notice,
   ToggleSwitchField,
@@ -421,7 +420,7 @@ export function MemorySyncConflictsView({
                   testId="memory-sync-conflict-mine"
                 />
                 <div className="flex flex-wrap gap-2">
-                  <LoadingButton
+                  <Button
                     variant="secondary"
                     size="sm"
                     loading={busy === 'restore'}
@@ -431,8 +430,8 @@ export function MemorySyncConflictsView({
                     data-testid="memory-sync-restore-mine"
                   >
                     Restore my version
-                  </LoadingButton>
-                  <LoadingButton
+                  </Button>
+                  <Button
                     variant="ghost"
                     size="sm"
                     loading={busy === 'dismiss'}
@@ -442,7 +441,7 @@ export function MemorySyncConflictsView({
                     data-testid="memory-sync-dismiss-conflict"
                   >
                     Dismiss
-                  </LoadingButton>
+                  </Button>
                 </div>
               </>
             )}
@@ -617,14 +616,14 @@ export function MemorySyncHistoryView({
         )}
         {page?.ok === true && page.nextBefore !== null && (
           <div className="px-2.5 pt-2">
-            <LoadingButton
+            <Button
               variant="ghost"
               size="compact"
               loading={loadingMore}
               onClick={() => void loadMore()}
             >
               Show older versions
-            </LoadingButton>
+            </Button>
           </div>
         )}
       </div>
@@ -913,7 +912,7 @@ export function MemorySyncMergeReview({
           >
             Not now
           </Button>
-          <LoadingButton
+          <Button
             variant="primary"
             size="sm"
             loading={applying}
@@ -923,7 +922,7 @@ export function MemorySyncMergeReview({
             data-testid="memory-sync-merge-apply"
           >
             {APPLY_LABEL[preview?.kind ?? 'merge']}
-          </LoadingButton>
+          </Button>
         </div>
       }
     >

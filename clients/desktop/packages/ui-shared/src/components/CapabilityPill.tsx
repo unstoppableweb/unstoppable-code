@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 
-import { StatusPill } from './StatusPill';
+import { StatusPill } from '../primitives/StatusPill';
 
 /**
  * Renders one shared-container capability token as a friendly pill.

@@ -1,8 +1,8 @@
 'use client';
 
-import { CodeBlock } from './CodeBlock';
+import { CodeBlock } from '../primitives/CodeBlock';
 import { useEffect, useState, type JSX } from 'react';
-import { Notice, NoticeButton } from './Notice';
+import { Notice, NoticeButton } from '../primitives/Notice';
 
 // Browsers fire a longer `setTimeout` at once; a farther deadline is
 // re-checked after this delay instead.
@@ -143,9 +143,10 @@ export function UsageErrorNotice({
         ...(showingRetainedUsage
           ? [`These are the last numbers ${label} reported.`]
           : []),
-        ...(retrySentence ? [retrySentence] : []),
       ].join(' ')
     : headline;
+  // The retry time changes while the notice stays up, so it sits in `detail`.
+  const retryLine = isRateLimited ? retrySentence : undefined;
   const detail =
     info.detail && info.detail !== headline ? info.detail : undefined;
   const detailsId = `${testIdPrefix}-error-details`;
@@ -195,22 +196,27 @@ export function UsageErrorNotice({
               ),
             }
           : {})}
-        {...(detail && detailsOpen
+        {...(retryLine !== undefined || (detail && detailsOpen)
           ? {
               detail: (
-                <CodeBlock
-                  id={detailsId}
-                  data-testid={`${testIdPrefix}-error-details`}
-                  variant="error-detail"
-                  size="2xs"
-                  wrap="all"
-                  tone="tertiary"
-                  replay="inherit"
-                  selectable
-                  className="max-h-28"
-                >
-                  {detail}
-                </CodeBlock>
+                <>
+                  {retryLine !== undefined && <div>{retryLine}</div>}
+                  {detail && detailsOpen && (
+                    <CodeBlock
+                      id={detailsId}
+                      data-testid={`${testIdPrefix}-error-details`}
+                      variant="error-detail"
+                      size="2xs"
+                      wrap="all"
+                      tone="tertiary"
+                      replay="inherit"
+                      selectable
+                      className="max-h-28"
+                    >
+                      {detail}
+                    </CodeBlock>
+                  )}
+                </>
               ),
             }
           : {})}

@@ -8,18 +8,29 @@ import {
   BACKGROUND_SERVICE_COPY_DIAGNOSTICS_LABEL,
   BACKGROUND_SERVICE_RESTART_LABEL,
   BACKGROUND_SERVICE_RESTARTING_LABEL,
+  STARTUP_BACKUP_NOTICE_TITLE,
+  STARTUP_BACKUP_NOTICE_MESSAGE,
+  STARTUP_BACKUP_NOTICE_DISMISS_LABEL,
   backgroundServiceDiagnostics,
   backgroundServiceNoticeCopy,
 } from '../lib/background-service-copy';
-import { CopyButton } from './CopyButton';
-import { Notice, NoticeButton } from './Notice';
-import { TRY_AGAIN_LABEL, TRYING_AGAIN_LABEL } from './useRetry';
+import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
+import { CopyButton } from '../primitives/CopyButton';
+import { InlineCode } from '../primitives/InlineCode';
+import { NoticeButton } from '../primitives/Notice';
+import { ToastCardNotice } from '../primitives/ToastNotice';
+import { TRY_AGAIN_LABEL, TRYING_AGAIN_LABEL } from '../primitives/useRetry';
 
 export interface BackgroundServiceNoticeProps {
-  /** The owning computer's status; shown only while `unavailable`. */
+  /** The owning computer's health and independent startup-backup advisory. */
   readonly status?: BackgroundServiceStatus;
   /** The host's branded repair command, for `endpoint_repair_required`. */
   readonly repairCommand?: string;
+  /**
+   * This computer's data folder, for `data_folder_shared`: local text the
+   * host supplies, never part of the status Portal receives.
+   */
+  readonly dataFolder?: string;
   /**
    * Try again, where this host can run it. Without it, the copy points to
    * the app on the computer that runs the service.
@@ -40,9 +51,59 @@ export interface BackgroundServiceNoticeProps {
  * diagnostics. A closed notice stays closed until the service is reached
  * and lost again.
  */
-export function BackgroundServiceNotice({
+export function BackgroundServiceNotice(
+  props: BackgroundServiceNoticeProps,
+): JSX.Element {
+  return (
+    <>
+      <BackgroundServiceUnavailableNotice {...props} />
+      <StartupBackupNotice {...props} />
+    </>
+  );
+}
+
+function StartupBackupNotice({
+  status,
+  recovery,
+  onRetry,
+  writeClipboard,
+}: BackgroundServiceNoticeProps): JSX.Element | null {
+  const [closed, setClosed] = useState(false);
+  // An actual outage takes priority; never describe an unavailable service as healthy.
+  if (closed || status?.state !== 'ok' || status.backupWarning === undefined)
+    return null;
+  return (
+    <ToastCardNotice
+      intent="attention"
+      title={STARTUP_BACKUP_NOTICE_TITLE}
+      onDismiss={() => setClosed(true)}
+      dismissLabel={STARTUP_BACKUP_NOTICE_DISMISS_LABEL}
+      data-testid="startup-backup-notice"
+      actions={
+        <CopyButton
+          value={backgroundServiceDiagnostics({
+            status,
+            recovery,
+            place: onRetry === undefined ? 'remote-control' : 'this-computer',
+          })}
+          label={BACKGROUND_SERVICE_COPY_DIAGNOSTICS_LABEL}
+          variant="secondary"
+          // The toast\'s 32px action row, like the `NoticeButton`s beside it.
+          size="md"
+          dataTestId="startup-backup-notice-copy-diagnostics"
+          {...(writeClipboard === undefined ? {} : { write: writeClipboard })}
+        />
+      }
+    >
+      <p>{STARTUP_BACKUP_NOTICE_MESSAGE}</p>
+    </ToastCardNotice>
+  );
+}
+
+function BackgroundServiceUnavailableNotice({
   status,
   repairCommand,
+  dataFolder,
   onRetry,
   onRestart,
   recovery,
@@ -59,12 +120,14 @@ export function BackgroundServiceNotice({
   const restartApp = status.recovery === 'restart_app';
   const action = restartApp ? onRestart : onRetry;
   const elsewhere = action === undefined;
+  const dataFolderShared = status.reason === 'data_folder_shared';
   const copy = backgroundServiceNoticeCopy(
     status.retry,
     status.recovery,
     restartUnavailable,
     status.reason === 'endpoint_repair_required' ? repairCommand : undefined,
     elsewhere,
+    dataFolderShared,
   );
   const retry = (): void => {
     if (!onRetry || retrying) return;
@@ -86,10 +149,9 @@ export function BackgroundServiceNotice({
       .finally(() => setRestarting(false));
   };
   return (
-    <Notice
+    <ToastCardNotice
       intent="attention"
       title={copy.title}
-      className="pointer-events-auto"
       onDismiss={() => setClosed(true)}
       dismissLabel="Dismiss background service notice"
       data-testid="background-service-notice"
@@ -103,7 +165,8 @@ export function BackgroundServiceNotice({
             })}
             label={BACKGROUND_SERVICE_COPY_DIAGNOSTICS_LABEL}
             variant="secondary"
-            size="sm"
+            // The toast\'s 32px action row, like the `NoticeButton`s beside it.
+            size="md"
             dataTestId="background-service-notice-copy-diagnostics"
             {...(writeClipboard === undefined ? {} : { write: writeClipboard })}
           />
@@ -134,6 +197,15 @@ export function BackgroundServiceNotice({
     >
       {/* The repair command is one token; it wraps instead of running under the actions. */}
       <p className="break-words">{copy.message}</p>
-    </Notice>
+      {dataFolderShared && !elsewhere && dataFolder ? (
+        // The path names the account; replay records a placeholder.
+        <p
+          className={`break-all ${REPLAY_BLOCK_CLASS}`}
+          data-testid="background-service-notice-data-folder"
+        >
+          <InlineCode>{dataFolder}</InlineCode>
+        </p>
+      ) : null}
+    </ToastCardNotice>
   );
 }

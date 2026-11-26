@@ -6,7 +6,7 @@ import type {
   OperationOwner,
 } from '@canopy/protocol/canopy-core';
 
-import type { OperationService } from '../../operations';
+import type { OperationServicePort } from '../../operations';
 
 export const CORE_DEFERRED_TOOLS_DOMAIN = 'core.agent.deferredTools';
 export const CORE_DEFERRED_TOOLS_RELOAD_KIND =
@@ -206,7 +206,7 @@ export type DeferredToolReloadAcknowledgementKey =
   | { readonly scope: DeferredToolReloadScope; readonly requestId: string };
 
 export interface CoreDeferredToolReloadsOptions<P> {
-  operations: OperationService;
+  operations: OperationServicePort;
   host: DeferredToolReloadHost<P>;
   /** CAN-4131: read once at acknowledgement, never waited on. */
   display?: { hasLiveLease(): boolean } | null;

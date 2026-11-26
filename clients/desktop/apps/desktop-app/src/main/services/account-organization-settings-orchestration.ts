@@ -13,8 +13,12 @@ import { CanopyCloudClientError } from '../canopy-cloud/client';
 import type { PersonalOrganizationUpgradeService } from './personal-organization-upgrade';
 import type {
   OrganizationDefaultsSettingsCalls,
+  OrganizationTranscriptSettingsCalls,
   ProjectSetupSettingsCalls,
 } from '../organization-capabilities/web-core-calls';
+import { organizationTranscriptsOrchestration } from './organization-transcripts-settings';
+import { organizationConnectionsOrchestration } from './organization-connections-settings';
+import type { OrganizationConnectionsCalls } from '../shared-connections/organization-connections-calls';
 import {
   projectDefaultsOrchestration,
   projectDefaultsUpdateOrganizationId,
@@ -81,8 +85,8 @@ function settingsErrorFromCloud(error: unknown): Error {
  * Resolver for the settings service. `getService` is lazy so the upgrade
  * service loads only when a promotion is actually requested, and
  * `getProjectDefaultsCalls` and `getProjectSetupCalls` so the web core
- * client loads only when the Project defaults page (CAN-6237) or a project
- * setup panel (CAN-6239) is opened.
+ * client loads only when the Project defaults page (CAN-6237), a project
+ * setup panel (CAN-6239) or an organization Transcripts page is opened.
  */
 export function createSettingsOrchestratedOperations(
   getService: () => Promise<PersonalOrganizationUpgradeService> = async () =>
@@ -97,8 +101,23 @@ export function createSettingsOrchestratedOperations(
     (
       await import('../organization-capabilities/web-core-calls')
     ).createWebCoreProjectSetupSettingsCalls(),
+  getOrganizationConnectionsCalls: () => Promise<OrganizationConnectionsCalls> = async () =>
+    (
+      await import('../shared-connections/organization-connections-calls')
+    ).createWebCoreOrganizationConnectionsCalls(),
+  getOrganizationTranscriptCalls: () => Promise<OrganizationTranscriptSettingsCalls> = async () =>
+    (
+      await import('../organization-capabilities/web-core-calls')
+    ).createWebCoreOrganizationTranscriptSettingsCalls(),
 ): SettingsOrchestrationResolver {
   return (name, validatedInput): SettingsOrchestratedOperation | null => {
+    // The Connectors page (CAN-6245) through the web core.
+    const connections = organizationConnectionsOrchestration(
+      name,
+      validatedInput,
+      getOrganizationConnectionsCalls,
+    );
+    if (connections !== null) return connections;
     const projectDefaults = projectDefaultsOrchestration(
       name,
       validatedInput,
@@ -111,6 +130,12 @@ export function createSettingsOrchestratedOperations(
       getProjectSetupCalls,
     );
     if (projectSetup !== null) return projectSetup;
+    const transcripts = organizationTranscriptsOrchestration(
+      name,
+      validatedInput,
+      getOrganizationTranscriptCalls,
+    );
+    if (transcripts !== null) return transcripts;
     const organizationId = promotionOrganizationId(name, validatedInput);
     if (organizationId === null) return null;
     const body = UpgradePersonalOrganizationRequestSchema.safeParse(

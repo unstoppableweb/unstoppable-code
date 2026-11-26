@@ -7,7 +7,6 @@ import {
   FactList,
   FormField,
   ListRow,
-  LoadingButton,
   SegmentedControl,
   SettingsRowsGroup,
   SettingsRowsRow,
@@ -88,14 +87,14 @@ export function ButtonStage(): JSX.Element {
                 moves. */}
             <div className="flex items-center gap-2">
               <Button data-target="button-cancel">Cancel</Button>
-              <LoadingButton
+              <Button
                 data-target="button-create"
                 variant={s.done ? 'secondary' : 'primary'}
                 loading={s.busy}
                 loadingLabel="Creating…"
               >
                 {s.done ? 'View pull request' : 'Create pull request'}
-              </LoadingButton>
+              </Button>
               {layout === 'wide' ? (
                 <div className="flex flex-1 justify-end">
                   <Button variant="ghost" disabled>
@@ -548,14 +547,14 @@ export function FieldsStage(): JSX.Element {
               </FormField>
             </div>
             <div className="flex justify-end">
-              <LoadingButton
+              <Button
                 data-target="branch-create"
                 variant={s.done ? 'secondary' : 'primary'}
                 loading={s.busy}
                 loadingLabel="Creating…"
               >
                 {s.done ? 'Branch created' : 'Create branch'}
-              </LoadingButton>
+              </Button>
             </div>
           </div>
         </LabWindow>

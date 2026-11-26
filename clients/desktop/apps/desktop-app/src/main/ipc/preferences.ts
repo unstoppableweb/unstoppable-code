@@ -1,7 +1,11 @@
-import { applyGlobalPluginDefaultsSaveRule } from '@canopy/desktop-shared/node/preferences/global-plugin-defaults';
-import { applyTerminalSettingsSaveRule } from '@canopy/desktop-shared/node/preferences/terminal-settings';
+import {
+  applyPreferenceSaveRules,
+  mergeUsageDataPatch,
+  type PreferenceSaveRefusedKey,
+} from '@canopy/protocol/canopy-core/core';
 import {
   applyOnboardingTipsUpdate,
+  CLAUDE_CONNECTOR_NOTICE_DISMISSAL_ID,
   normalizeOnboardingTipDismissals,
   parseOnboardingTipsState,
   parseOnboardingTipsUpdate,
@@ -27,11 +31,18 @@ import {
   requireDataSharingPersonalOptInAuthority,
 } from '../lib/data-sharing-opt-in-authority';
 import { broadcastPreferencesChanged } from '../lib/preferences-broadcast';
+import { getMainWindow } from '../lib/main-window-focus';
+import { sendToWindow } from '../lib/window-send';
 import { notifyManagedDelegationLifetimePreferencesChanged } from '../agents/delegation/lifetime-status';
 import { notifyDesktopInventoryChanged } from '../services/desktop-inventory-sync-signals';
 import { personalCatalogPreferenceChanged } from '../services/personal-catalog-sync-host';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import {
+  createDirectoryDurably,
+  writeFileAtomically,
+  type AdmittedWriterTarget,
+} from '../lib/atomic-file';
 import { nativeTheme, shell } from 'electron';
 import { isCuratedCatalogKey } from '@canopy/protocol/plugin-catalog';
 import {
@@ -54,6 +65,7 @@ import {
 } from '@canopy/execution-engine/canopy-paths';
 import {
   acknowledgePreferencesLoadError,
+  arePreferencesUnconfirmed,
   readLatestPreferencesFile,
   projectPreferencesForRuntime,
   peekPreferencesLoadError,
@@ -80,13 +92,16 @@ import {
 import { getMcpHttpProxyService } from '../mcp/http-proxy-service';
 import { updatePerformanceLimitsFromPreferences } from '../lib/performance-limits';
 import { setAppAdvisorProjectAgentAccess } from '../lib/app-advisor-project-agent-access';
+import { applyOneWindowChoice } from '../lib/one-window-switch';
+import { resolveRemoteBridgeSender } from '../remote-control/host/bridge-window';
 import {
-  setCloseToTrayPreference,
-  syncActivationTray,
-} from '../lifecycle/background-presence';
-import { requestActivationRecompute } from '../notifications/campaigns/scheduler';
-import { getWakeLockService } from '../power/wake-lock-service';
-import { getUsageDataPolicy } from '../lib/usage-data-policy';
+  electronPreferenceNativeEffects,
+  type PreferenceNativeEffects,
+} from '../lib/preference-native-effects';
+import {
+  getUsageDataPolicy,
+  usageDataConsentStateOf,
+} from '../lib/usage-data-policy';
 import { nativeCrashAnnotation } from '../lib/native-crash-policy';
 import { getMemoryDiagnosticsService } from '../memory-diagnostics';
 import { getBrowserService } from '../browser/browser-service-registry';
@@ -120,13 +135,17 @@ import { broadcastModelRegistryUpdated } from '../models/model-registry';
 // `__CANOPY_CURSOR_CLI__` build constant it reads) internally, matching
 // `ipc/cursor-connection.ts`. A static import here is safe.
 import { refreshCursorRuntimeAvailability } from '../cursor/runtime-availability';
-import { getDefaultBrowserRegistrationService } from '../browser/default-browser-registration';
 import {
   detachedWorkCallback,
   trackDetachedWork,
 } from '@canopy/desktop-shared/node/lib/detached-work';
 
 const STORED_PIPELINE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+const DATA_DIR_ADOPTION_MARKER_WRITER: AdmittedWriterTarget = {
+  namespace: 'data_dir_adoption_marker',
+  writer: 'electron_main',
+  module: 'main/ipc/preferences',
+};
 const CODE_GRAPH_RECONCILIATION_RETRY_DELAYS_MS = [1_000, 5_000, 30_000];
 
 let codeGraphReconciliationRetryTimer: ReturnType<typeof setTimeout> | null =
@@ -229,20 +248,12 @@ async function latestPreferencesSaveResult(): Promise<PreferencesSaveResult> {
   }
 }
 
-let defaultBrowserRegistrationQueue: Promise<void> = Promise.resolve();
+let registeredNativeEffects: PreferenceNativeEffects | null = null;
 
-function enqueueDefaultBrowserRegistration(enabled: boolean): Promise<unknown> {
-  const operation = defaultBrowserRegistrationQueue.then(() =>
-    getDefaultBrowserRegistrationService().apply({
-      enabled,
-      promptForWindowsSettings: enabled,
-    }),
-  );
-  defaultBrowserRegistrationQueue = operation.then(
-    () => undefined,
-    () => undefined,
-  );
-  return operation;
+// Read at call time, never at module load: saves made before
+// registerPreferenceHandlers use the Electron composition.
+function nativeEffects(): PreferenceNativeEffects {
+  return registeredNativeEffects ?? electronPreferenceNativeEffects;
 }
 
 function cancelCodeGraphReconciliationRetry(): void {
@@ -404,7 +415,9 @@ async function applyPreferenceSideEffects(
   pendingManagedDelegationPolicyUpdate?: PendingManagedDelegationPolicyUpdate,
   defaultBrowserRegistration?: Promise<unknown>,
 ): Promise<void> {
-  getWakeLockService().setEnabled(normalized.keepSystemAwakeWhileAgentsActive);
+  nativeEffects().keepAwake.setEnabled(
+    normalized.keepSystemAwakeWhileAgentsActive,
+  );
   trackDetachedWork(() =>
     // Lazy: the default-model resolver reaches services that import this module.
     import('../agents/agent-default-model')
@@ -417,13 +430,7 @@ async function applyPreferenceSideEffects(
     normalized.inAppBrowserLocalServersOnly === true,
   );
   updatePerformanceLimitsFromPreferences(normalized);
-  setCloseToTrayPreference(normalized.closeToTray);
-  // Create or destroy the tray to match, and fall back to disabling
-  // close-to-tray if creation fails -- a resident app with no window and no
-  // tray icon is unreachable except through Task Manager.
-  if (!syncActivationTray()) {
-    setCloseToTrayPreference(false);
-  }
+  nativeEffects().backgroundPresence.applyCloseToTray(normalized.closeToTray);
   // Notification preferences are an event-driven suppression input: the
   // scheduler no longer polls for `notifications-disabled`/`category-disabled`,
   // so enabling them has to re-arm it here.
@@ -438,7 +445,7 @@ async function applyPreferenceSideEffects(
     'activationQuietHours' in changedPreferences ||
     'promotionalNotifications' in changedPreferences
   ) {
-    requestActivationRecompute();
+    nativeEffects().activationSchedule.notificationInputsChanged();
   }
   const { getObservabilityService } = await import('../observability');
   getObservabilityService().setRetentionDays(normalized.auditRetentionDays);
@@ -481,7 +488,10 @@ async function applyPreferenceSideEffects(
     // save, which renderer mirrors tolerate. A committed save must not look
     // failed because the corrective write did.
     try {
-      await syncGlobalFocusShortcutFromPreferences(normalized);
+      await syncGlobalFocusShortcutFromPreferences(
+        normalized,
+        nativeEffects().focusShortcut(),
+      );
     } catch {
       // The registration state is still broadcast on the next status push.
     }
@@ -492,7 +502,7 @@ async function applyPreferenceSideEffects(
     // separately for Settings to render recovery guidance.
     try {
       await (defaultBrowserRegistration ??
-        enqueueDefaultBrowserRegistration(
+        nativeEffects().defaultBrowser.requestRegistration(
           normalized.useAsSystemDefaultBrowser === true,
         ));
     } catch {
@@ -526,6 +536,21 @@ function rendererCodeCacheSchemeLoadFields(): Pick<
   };
 }
 
+const CLAUDE_MOD_REFUSAL =
+  'Claude Mod consent and the kill switch must be changed with the typed Claude Mod admission service.';
+
+/** The typed writer each key the save rules refuse belongs to. */
+const PREFERENCE_SAVE_REFUSALS: Record<PreferenceSaveRefusedKey, string> = {
+  approvalDefaults:
+    'Approval defaults must be saved with setApprovalDefaultPreference.',
+  claudeModAdmissions: CLAUDE_MOD_REFUSAL,
+  claudeModsDisabled: CLAUDE_MOD_REFUSAL,
+  accountProxyConnection:
+    'The account proxy connection must be changed with accountProxy.connect.',
+  copilotAccount:
+    'The Copilot account must be changed with copilotConnection.connect.',
+};
+
 /**
  * The window's preferences save: commits a patch with every side effect and
  * broadcast that follow it. `precondition` runs inside the serialized commit
@@ -537,80 +562,30 @@ export async function savePreferencesPatch(
   options?: PreferencesProjectionOptions,
   precondition?: (latest: PreferencesData) => void,
 ): Promise<PreferencesSaveResult | PreferencesData> {
-  if (Object.prototype.hasOwnProperty.call(input, 'approvalDefaults')) {
-    throw new Error(
-      'Approval defaults must be saved with setApprovalDefaultPreference.',
-    );
-  }
-  if (
-    Object.prototype.hasOwnProperty.call(input, 'claudeModAdmissions') ||
-    Object.prototype.hasOwnProperty.call(input, 'claudeModsDisabled')
-  ) {
-    throw new Error(
-      'Claude Mod consent and the kill switch must be changed with the typed Claude Mod admission service.',
-    );
-  }
-  if (Object.prototype.hasOwnProperty.call(input, 'accountProxyConnection')) {
-    throw new Error(
-      'The account proxy connection must be changed with accountProxy.connect.',
-    );
-  }
-  if (Object.prototype.hasOwnProperty.call(input, 'copilotAccount')) {
-    throw new Error(
-      'The Copilot account must be changed with copilotConnection.connect.',
-    );
-  }
-  const previous = await readPreferencesFile();
   const { usageData: usageDataPatch, ...otherPreferences } = input;
+  // The rules count the patch's keys as the side-effect view below holds
+  // them: `usageData` only when it is set, even to `{}`.
+  const saveRules = applyPreferenceSaveRules(
+    usageDataPatch
+      ? { ...otherPreferences, usageData: usageDataPatch }
+      : otherPreferences,
+  );
+  if ('refused' in saveRules)
+    throw new Error(PREFERENCE_SAVE_REFUSALS[saveRules.refused]);
+  const previous = await readPreferencesFile();
   // Generic side-effect helpers consume a complete preference shape. The
   // serialized write below still merges only the explicitly changed keys.
   const preferences: Partial<PreferencesData> = {
     ...otherPreferences,
     ...(usageDataPatch
-      ? { usageData: { ...previous.usageData, ...usageDataPatch } }
+      ? { usageData: mergeUsageDataPatch(previous.usageData, usageDataPatch) }
       : {}),
   };
-  // Main owns native account tracking (CAN-4200); a renderer copy can be
-  // older than main's latest record, so it never overwrites it.
+  // The shared rules drop main-owned records and shape-guarded keys a
+  // renderer snapshot may hold an older copy of (CAN-7935).
   const rendererPatch = { ...preferences };
-  // A wider Settings snapshot may predate a disconnect in another window.
-  // Only the explicit one-key connection intent may change this choice.
-  if (
-    Object.keys(preferences).length !== 1 ||
-    typeof preferences.googleSubscriptionDisconnected !== 'boolean'
-  ) {
-    delete rendererPatch.googleSubscriptionDisconnected;
-  }
-  // Main's Copilot connection owns the flag with its account pin (CAN-4880).
-  // Only the dedicated updateSuggestions command changes the master/dismissals.
-  // A generic Settings snapshot may predate a toggle in another window.
-  delete rendererPatch.suggestions;
-  // An older controller sends this exact one-key intent. A multi-field
-  // snapshot may be stale and cannot change the committed master.
-  const legacySuggestionIntent =
-    Object.keys(preferences).length === 1 &&
-    typeof preferences.repeatTaskAutomationSuggestionsEnabled === 'boolean';
-  if (!legacySuggestionIntent)
-    delete rendererPatch.repeatTaskAutomationSuggestionsEnabled;
-  delete rendererPatch.copilotEnabled;
-  delete rendererPatch.copilotVaultSelection;
-  delete rendererPatch.disabledInstalledItems;
-  delete rendererPatch.parkedCodexPlugins;
-  delete rendererPatch.pendingInstalledItemUninstalls;
-  delete rendererPatch.nativeProviderAccounts;
-  // Rule mutations belong to the approval authority, not renderer snapshots.
-  delete rendererPatch.globalApprovalRules;
-  // Follows the proxy's own strategy, which accountProxy.setRoutingStrategy
-  // changes first.
-  delete rendererPatch.accountProxyLocalRoutingStrategy;
-  // Shells and presets belong to core.terminal.settings (CAN-4148). An
-  // older controller sends this exact two-key intent; a wider snapshot may
-  // be stale and never changes them.
-  applyTerminalSettingsSaveRule(preferences, rendererPatch);
-  // Global plugin defaults also change through core.catalog (CAN-4123).
-  // Every writer sends them as a one-key save; a wider snapshot may hold
-  // a copy read before that change and never puts it back (CAN-5766).
-  applyGlobalPluginDefaultsSaveRule(preferences, rendererPatch);
+  for (const key of saveRules.dropped)
+    Reflect.deleteProperty(rendererPatch, key);
   const previousCodeGraph = getCodeGraphPreferencesSnapshot();
   const proxy = getMcpHttpProxyService();
   if (
@@ -638,10 +613,7 @@ export async function savePreferencesPatch(
         return usageDataPatch
           ? {
               ...rendererPatch,
-              usageData: {
-                ...latest.usageData,
-                ...usageDataPatch,
-              },
+              usageData: mergeUsageDataPatch(latest.usageData, usageDataPatch),
             }
           : rendererPatch;
       },
@@ -654,20 +626,32 @@ export async function savePreferencesPatch(
         // Apply inside the serialized commit so an older save that
         // finishes its side effects later cannot overwrite a newer value.
         setAppAdvisorProjectAgentAccess(committed.appAdvisorProjectAgentAccess);
+        // Main's read of the one-window switch follows each commit in order,
+        // before the window hears of the save.
+        applyOneWindowChoice(
+          committed.oneWindowEnabled,
+          arePreferencesUnconfirmed(),
+        );
         // The full merged-and-normalized object, never the partial patch,
         // applied in commit order like the values above. Applied on every
         // commit: a commit proves the stored file is real again, which
         // also ends a fail-closed startup read of unreadable preferences.
-        getUsageDataPolicy().setPreferences(committed.usageData);
+        // Consent from the same committed object, in one recompute: the
+        // accepting commit must never start a flow on the stale defaults.
+        getUsageDataPolicy().setStored(
+          committed.usageData,
+          usageDataConsentStateOf(committed),
+        );
         if (
           usageDataPatch?.errorReports === true &&
           committed.usageData.errorReports
         )
           nativeCrashAnnotation.resumeAfterOptIn();
         if ('useAsSystemDefaultBrowser' in preferences) {
-          defaultBrowserRegistration = enqueueDefaultBrowserRegistration(
-            committed.useAsSystemDefaultBrowser === true,
-          );
+          defaultBrowserRegistration =
+            nativeEffects().defaultBrowser.requestRegistration(
+              committed.useAsSystemDefaultBrowser === true,
+            );
         }
       },
     );
@@ -838,7 +822,10 @@ export async function savePreferencesPatch(
   return options?.view === 'persisted' ? normalized : saved;
 }
 
-export function registerPreferenceHandlers(): void {
+export function registerPreferenceHandlers(
+  effects: PreferenceNativeEffects = electronPreferenceNativeEffects,
+): void {
+  registeredNativeEffects = effects;
   managedDelegationRevocationIncomplete = false;
   preferencesSaveGeneration = 0;
   managedDelegationPolicyGeneration = 0;
@@ -867,19 +854,23 @@ export function registerPreferenceHandlers(): void {
   });
 
   registerIpcHandler(IPC_CHANNELS.preferencesCreatePrimaryDataDir, async () => {
-    // The adoption marker alone makes data-aware resolution select this
-    // directory over a data-bearing fallback after restart; no automatic
-    // startup path writes it. The first W5 commit on this root creates the
-    // workspace index.
+    // Only this explicit action writes the adoption marker (CAN-2271); its
+    // presence is all that is read (install-data detection). The first W5
+    // commit on this root creates the workspace index.
     const primaryDataDir = getPrimaryBrandDataDir();
-    await mkdir(primaryDataDir, { recursive: true });
-    await writeFile(
+    await createDirectoryDurably(primaryDataDir, { dataRoot: primaryDataDir });
+    await writeFileAtomically(
       join(primaryDataDir, DATA_DIR_ADOPTION_MARKER_FILENAME),
       JSON.stringify(
         { version: 1, adoptedAt: new Date().toISOString() },
         null,
         2,
       ),
+      {
+        encoding: 'utf8',
+        durable: true,
+        admittedWriter: DATA_DIR_ADOPTION_MARKER_WRITER,
+      },
     );
     return getCreatedPrimaryDataDirStatus();
   });
@@ -928,10 +919,18 @@ export function registerPreferenceHandlers(): void {
   registerIpcHandler(
     IPC_CHANNELS.preferencesSave,
     (
-      _event,
+      event,
       preferences: PreferencesSavePatch,
       options?: PreferencesProjectionOptions,
-    ) => savePreferencesPatch(preferences, options),
+    ) => {
+      if (resolveRemoteBridgeSender(event.sender) === null)
+        return savePreferencesPatch(preferences, options);
+      // The one-window switch belongs to the computer in front of the
+      // person (CAN-7755): a paired computer's save never changes it.
+      const fromPairedComputer = { ...preferences };
+      delete fromPairedComputer.oneWindowEnabled;
+      return savePreferencesPatch(fromPairedComputer, options);
+    },
   );
 
   registerIpcHandler(
@@ -1156,6 +1155,12 @@ export function registerPreferenceHandlers(): void {
         return { onboardingTipsDismissed: dismissed };
       });
       broadcastCommittedPreferences(normalized);
+      if (
+        update.action === 'dismiss' &&
+        update.tipId === CLAUDE_CONNECTOR_NOTICE_DISMISSAL_ID
+      ) {
+        sendToWindow(getMainWindow(), IPC_CHANNELS.preferencesChanged);
+      }
       return { dismissed };
     },
   );

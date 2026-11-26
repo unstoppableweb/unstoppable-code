@@ -47,6 +47,7 @@ import {
   type ChatFormat4SweepPassResult,
   type ChatFormat4SweepTarget,
 } from '../services/chat-format4-sweep';
+import { runChatFormat4PreHandoffPass } from '../services/chat-format4-pre-handoff';
 import { message, scopeSource } from './helpers/chat-delta-journal-harness';
 import {
   drainOpenRepositories,
@@ -287,6 +288,39 @@ async function runSweep(
   }
 }
 
+/**
+ * One bounded pre-handoff pass over `root` (CAN-7178 PR 3), through the same
+ * admission; then the repository drains. True when nothing is left below
+ * format 4.
+ */
+async function runPreHandoff(
+  root: string,
+  onBoundary?: (point: DeltaJournalBoundary) => Promise<void>,
+): Promise<boolean> {
+  const repository = repositoryAt(root, onBoundary);
+  try {
+    const result = await runChatFormat4PreHandoffPass({
+      dataDir: root,
+      repository,
+      resolveStore: () => storeAt(root),
+      deadlineAt: Number.MAX_SAFE_INTEGER,
+      report: () => undefined,
+    });
+    return result.remaining === 0;
+  } finally {
+    await repository.drainAll().catch(() => undefined);
+  }
+}
+
+/** A run that leaves nothing below format 4 answers true. */
+type Runner = (
+  root: string,
+  onBoundary?: (point: DeltaJournalBoundary) => Promise<void>,
+) => Promise<boolean>;
+
+const sweepRunner: Runner = async (root, onBoundary) =>
+  (await runSweep(root, onBoundary)).status === 'complete';
+
 function sweepAt(
   root: string,
   target: ChatFormat4SweepTarget,
@@ -373,90 +407,102 @@ describe('the seam is covered', () => {
   });
 });
 
-describe('a sweep crashed at each point', () => {
-  const faults: Fault[] = [
-    ...(Object.keys(SWEEP_BOUNDARIES) as Array<keyof typeof SWEEP_BOUNDARIES>),
-    ...HELPER_FAULTS,
-  ];
+const faults: Fault[] = [
+  ...(Object.keys(SWEEP_BOUNDARIES) as Array<keyof typeof SWEEP_BOUNDARIES>),
+  ...HELPER_FAULTS,
+];
 
+/**
+ * Crashes `run` at `fault`, then checks the image reopens twice with every
+ * row a clean run keeps, and that the next run finishes it.
+ */
+async function crashAndRecover(fault: Fault, run: Runner): Promise<void> {
+  const fixture: Fixture =
+    fault in SWEEP_BOUNDARIES
+      ? SWEEP_BOUNDARIES[fault as keyof typeof SWEEP_BOUNDARIES]
+      : 'pending';
+
+  const control = join(dataDir, 'control');
+  await seed(fixture, control);
+  await run(control);
+  const expectedRows = await rowsAt(control);
+
+  const live = join(dataDir, 'live');
+  const crash = join(dataDir, 'crash');
+  const store = await seed(fixture, live);
+  let injected = false;
+  let promoting = false;
+  const stop = async (): Promise<void> => {
+    injected = true;
+    await cp(live, crash, { recursive: true });
+    throw new Error(`fault:${fault}`);
+  };
+  const promote = writerModule.promoteToFormat4Journal;
+  jest
+    .spyOn(writerModule, 'promoteToFormat4Journal')
+    .mockImplementation(async (selected, options) => {
+      promoting = true;
+      return promote(selected, options);
+    });
+  const read = journalReader.readDeltaJournal;
+  jest
+    .spyOn(journalReader, 'readDeltaJournal')
+    .mockImplementation(async (...args) => {
+      if (fault === 'verify' && promoting && !injected) await stop();
+      return read(...args);
+    });
+  const remove = fs.rm;
+  jest.spyOn(fs, 'rm').mockImplementation(async (path, options) => {
+    if (
+      fault === 'v1-cleanup' &&
+      promoting &&
+      !injected &&
+      path === join(store.directory, DELTA_JOURNAL_FILE_NAME)
+    )
+      await stop();
+    return remove(path, options);
+  });
+  const open = ChatDeltaJournalWriter.open.bind(ChatDeltaJournalWriter);
+  jest
+    .spyOn(ChatDeltaJournalWriter, 'open')
+    .mockImplementation(async (selected, options) => {
+      if (
+        fault === 'reopen' &&
+        promoting &&
+        !injected &&
+        (await selected.format()) === 'v4'
+      )
+        await stop();
+      return open(selected, options);
+    });
+
+  await run(live, async (point) => {
+    if (!injected && point === fault) await stop();
+  });
+  expect(injected).toBe(true);
+  jest.restoreAllMocks();
+
+  expect(await storeAt(crash).format()).toBe(
+    PUBLISHED.has(fault) ? 'v4' : 'v3',
+  );
+  expect(await rowsAt(crash)).toEqual(expectedRows);
+  expect(await rowsAt(crash)).toEqual(expectedRows);
+
+  expect(await run(crash)).toBe(true);
+  expect(await storeAt(crash).format()).toBe('v4');
+  expect(await rowsAt(crash)).toEqual(expectedRows);
+}
+
+describe('a sweep crashed at each point', () => {
   it.each(faults)(
     'at %s reopens twice with every row a clean sweep keeps, then the next pass finishes it',
-    async (fault) => {
-      const fixture: Fixture =
-        fault in SWEEP_BOUNDARIES
-          ? SWEEP_BOUNDARIES[fault as keyof typeof SWEEP_BOUNDARIES]
-          : 'pending';
+    (fault) => crashAndRecover(fault, sweepRunner),
+  );
+});
 
-      const control = join(dataDir, 'control');
-      await seed(fixture, control);
-      await runSweep(control);
-      const expectedRows = await rowsAt(control);
-
-      const live = join(dataDir, 'live');
-      const crash = join(dataDir, 'crash');
-      const store = await seed(fixture, live);
-      let injected = false;
-      let promoting = false;
-      const stop = async (): Promise<void> => {
-        injected = true;
-        await cp(live, crash, { recursive: true });
-        throw new Error(`fault:${fault}`);
-      };
-      const promote = writerModule.promoteToFormat4Journal;
-      jest
-        .spyOn(writerModule, 'promoteToFormat4Journal')
-        .mockImplementation(async (selected, options) => {
-          promoting = true;
-          return promote(selected, options);
-        });
-      const read = journalReader.readDeltaJournal;
-      jest
-        .spyOn(journalReader, 'readDeltaJournal')
-        .mockImplementation(async (...args) => {
-          if (fault === 'verify' && promoting && !injected) await stop();
-          return read(...args);
-        });
-      const remove = fs.rm;
-      jest.spyOn(fs, 'rm').mockImplementation(async (path, options) => {
-        if (
-          fault === 'v1-cleanup' &&
-          promoting &&
-          !injected &&
-          path === join(store.directory, DELTA_JOURNAL_FILE_NAME)
-        )
-          await stop();
-        return remove(path, options);
-      });
-      const open = ChatDeltaJournalWriter.open.bind(ChatDeltaJournalWriter);
-      jest
-        .spyOn(ChatDeltaJournalWriter, 'open')
-        .mockImplementation(async (selected, options) => {
-          if (
-            fault === 'reopen' &&
-            promoting &&
-            !injected &&
-            (await selected.format()) === 'v4'
-          )
-            await stop();
-          return open(selected, options);
-        });
-
-      await runSweep(live, async (point) => {
-        if (!injected && point === fault) await stop();
-      });
-      expect(injected).toBe(true);
-      jest.restoreAllMocks();
-
-      expect(await storeAt(crash).format()).toBe(
-        PUBLISHED.has(fault) ? 'v4' : 'v3',
-      );
-      expect(await rowsAt(crash)).toEqual(expectedRows);
-      expect(await rowsAt(crash)).toEqual(expectedRows);
-
-      const finished = await runSweep(crash);
-      expect(finished.status).toBe('complete');
-      expect(await storeAt(crash).format()).toBe('v4');
-      expect(await rowsAt(crash)).toEqual(expectedRows);
-    },
+describe('a pre-handoff pass crashed at each point (CAN-7178 PR 3)', () => {
+  it.each(faults)(
+    'at %s through ensureFormat4 reopens twice with every row a clean pass keeps, then the next start’s pass finishes it',
+    (fault) => crashAndRecover(fault, runPreHandoff),
   );
 });

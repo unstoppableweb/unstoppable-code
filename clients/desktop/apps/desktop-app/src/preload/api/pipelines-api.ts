@@ -13,6 +13,8 @@ import type {
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
 import type {
   ActionDefinition,
+  ApprovePipelineForSchedulesRequest,
+  ApprovePipelineForSchedulesResult,
   PipelineAdvisorEvent,
   PipelineAdvisorReport,
   PipelineAdvisorSnapshot,
@@ -97,6 +99,14 @@ export interface PipelinesAPI {
   discoverProject(cwd: string): Promise<IPCResult<PipelineInfo[]>>;
   get(request: PipelineLookupRequest): Promise<IPCResult<PipelineData>>;
   save(input: PipelineSaveInput): Promise<IPCResultWithOutcome<PipelineInfo>>;
+  /**
+   * CAN-5782: a person's Approve for schedules of the saved content the page
+   * shows. Main refuses a stale revision or a digest the stored content
+   * doesn't have.
+   */
+  approveForSchedules(
+    request: ApprovePipelineForSchedulesRequest,
+  ): Promise<ApprovePipelineForSchedulesResult>;
   delete(id: string): Promise<IPCResultWithOutcome>;
   duplicate(
     request: PipelineLookupRequest,
@@ -723,6 +733,8 @@ export function createPipelinesAPI(): PipelinesAPI {
       ipcRenderer.invoke(PIPELINE_CHANNELS.DISCOVER_PROJECT, cwd),
     get: (request) => ipcRenderer.invoke(PIPELINE_CHANNELS.GET, request),
     save: (input) => ipcRenderer.invoke(PIPELINE_CHANNELS.SAVE, input),
+    approveForSchedules: (request) =>
+      ipcRenderer.invoke(PIPELINE_CHANNELS.APPROVE_FOR_SCHEDULES, request),
     delete: (id) => ipcRenderer.invoke(PIPELINE_CHANNELS.DELETE, id),
     duplicate: (request) =>
       ipcRenderer.invoke(PIPELINE_CHANNELS.DUPLICATE, request),

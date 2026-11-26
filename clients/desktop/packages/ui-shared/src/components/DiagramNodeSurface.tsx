@@ -1,5 +1,5 @@
 import type { ComponentPropsWithRef, JSX, ReactNode } from 'react';
-import { Surface } from './Surface';
+import { Surface } from '../primitives/Surface';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 
 type DiagramChange = 'added' | 'removed' | 'changed';

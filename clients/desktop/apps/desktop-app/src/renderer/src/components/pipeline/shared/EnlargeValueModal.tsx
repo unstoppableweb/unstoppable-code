@@ -8,6 +8,7 @@ import {
 } from '@canopy/ui-shared/components';
 import { DialogModal } from '../../shared/DialogModal';
 import type { PipelineScalar } from '@canopy/execution-engine/types/pipeline';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 type ValueType = 'string' | 'number' | 'boolean';
 
@@ -56,16 +57,17 @@ export function EnlargeValueModal({
   }
 
   return (
-    <DialogModal
-      onClose={onClose}
-      title={inputKey}
-      subtitle="Edit input value"
-      maxWidth="2xl"
-    >
+    <DialogModal onClose={onClose} title="Edit value" maxWidth="2xl">
       <div className="flex flex-col gap-4">
+        {/* The key is authored: never recorded. */}
+        <span
+          className={`text-xs font-medium fg-secondary ${REPLAY_BLOCK_CLASS}`}
+        >
+          {inputKey}
+        </span>
         {valueType === 'boolean' ? (
           <SegmentedControl
-            label={inputKey}
+            label="Value"
             value={boolValue ? 'true' : 'false'}
             options={BOOLEAN_OPTIONS}
             onChange={(next): void => setBoolValue(next === 'true')}
@@ -75,7 +77,7 @@ export function EnlargeValueModal({
           <TextInput
             type="number"
             mono
-            aria-label={inputKey}
+            aria-label="Value"
             value={localValue}
             onChange={(e): void => setLocalValue(e.target.value)}
             autoFocus
@@ -83,7 +85,7 @@ export function EnlargeValueModal({
         ) : (
           <TextArea
             mono
-            aria-label={inputKey}
+            aria-label="Value"
             value={localValue}
             onChange={(e): void => setLocalValue(e.target.value)}
             autoFocus

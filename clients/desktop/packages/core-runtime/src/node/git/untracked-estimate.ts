@@ -19,6 +19,7 @@ const MAX_INSERTIONS = 100_000;
 const BINARY_SNIFF_BYTES = 8000;
 
 const NO_CHANGE: GitUntrackedEstimate = { insertions: 0, binary: false };
+const CONFINED: GitUntrackedEstimate = { ...NO_CHANGE, confined: true };
 
 async function estimateOne(filePath: string): Promise<GitUntrackedEstimate> {
   const initialStats = await lstat(filePath);
@@ -113,12 +114,12 @@ export async function estimateGitUntrackedChanges(
         let count = NO_CHANGE;
         try {
           const filePath = join(root, file);
-          if (
-            realRoot === undefined ||
-            (realRoot !== null &&
-              isWithin(realRoot, await realpath(dirname(filePath))))
-          )
-            count = await estimateOne(filePath);
+          // An unresolvable root skips the file without claiming it escaped.
+          if (realRoot === undefined) count = await estimateOne(filePath);
+          else if (realRoot !== null)
+            count = isWithin(realRoot, await realpath(dirname(filePath)))
+              ? await estimateOne(filePath)
+              : CONFINED;
         } catch {
           // Unreadable files count as zero without failing the whole listing.
         }

@@ -21,7 +21,7 @@ export function WebCoreModelCatalogNotice({
     <Notice
       errorSource="cloud-model-catalog-load"
       intent="destructive"
-      title="Models didn't load"
+      title="Couldn't load models"
       data-testid="chat-input-cloud-models-failed"
       actions={
         <NoticeButton

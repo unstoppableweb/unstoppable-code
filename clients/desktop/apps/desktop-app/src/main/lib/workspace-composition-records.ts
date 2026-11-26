@@ -4,10 +4,7 @@ import {
   w5CompositionLocks,
 } from './w5-composition-operation';
 import { afterW5Apply, outsideW5CommitScope } from './w5-commit-scope';
-import {
-  removeWorkspaceNonW5Children,
-  removeWorkspaceDirectoryAfterRecordRemoval,
-} from './w5-workspace-directory-removal';
+import { getWorktreeItemStore } from './worktree-item-store';
 import type {
   MultiRepoSidebarItem,
   WorkspaceRepoData,
@@ -427,13 +424,22 @@ export async function cleanupCompositionDestination(
   }).catch(() => undefined);
   const removeDestinationRecords = async (): Promise<void> => {
     await outsideW5CommitScope(() =>
-      removeWorkspaceNonW5Children(request.workspaceId),
+      getWorktreeItemStore().purge({
+        scope: 'workspace',
+        workspaceId: request.workspaceId,
+        stage: 'items',
+      }),
     );
     await applyWorkspaceRecordsRemoval(request.workspaceId, {
       kind: 'composition.destination.records',
     });
     await afterW5Apply(() =>
-      removeWorkspaceDirectoryAfterRecordRemoval(request.workspaceId),
+      getWorktreeItemStore().purge({
+        scope: 'workspace',
+        workspaceId: request.workspaceId,
+        stage: 'folder',
+        worktreeIds: [],
+      }),
     );
   };
   await withStorageAdmission(

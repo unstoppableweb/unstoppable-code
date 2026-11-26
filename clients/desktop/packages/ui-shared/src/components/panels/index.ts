@@ -26,9 +26,7 @@ export {
   PanelChatTabQuestionMarker,
   PanelFillChatTabGlyph,
   PanelTabBar,
-  PanelTabNumber,
   PanelTabStyleProvider,
-  usePanelTabPosition,
   usePanelTabStyle,
 } from './PanelTabBar';
 export type {

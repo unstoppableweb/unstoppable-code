@@ -133,7 +133,14 @@ export function PersonalCatalogRows({
       {prefs.personalCatalogNotice ? (
         <Notice>{NOTICES[prefs.personalCatalogNotice]}</Notice>
       ) : null}
-      {error ? <Notice>Could not save your choice. Try again.</Notice> : null}
+      {error ? (
+        <Notice
+          errorSource="personal-catalog-settings-save"
+          intent="destructive"
+        >
+          Couldn&apos;t save your choice.
+        </Notice>
+      ) : null}
     </>
   );
   const row = (

@@ -18,15 +18,23 @@
 // so PostHog startup can never hang on it.
 //
 // An organization prohibition never rewrites the member's stored preference.
+//
+// Nothing sends before the first-run legal consent: while it is pending and
+// the stored preferences are readable, every key is off (`consentPending`),
+// with no `prohibitedBy` attribution. Consent and preferences change together
+// through `setStored`, so accepting with a flow off never starts it on the
+// stale defaults first.
 // ---------------------------------------------------------------------------
 
 import {
   ORG_PROHIBITABLE_USAGE_DATA_KEYS,
   USAGE_DATA_KEYS,
   type OrgProhibitableUsageDataKey,
+  type PreferencesData,
   type UsageDataPolicySnapshot,
   type UsageDataPreferences,
 } from '@canopy/desktop-shared/types';
+import { hasAcceptedLegalConsent } from '@canopy/desktop-shared/lib/legal-consent';
 import type { OrgUsageDataProhibition } from '@canopy/desktop-shared/lib/telemetry-enforcement';
 import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
@@ -43,6 +51,38 @@ export type UsageDataProhibitionState =
  */
 export type UsageDataPreferencesState = UsageDataPreferences | 'unreadable';
 
+/**
+ * The first-run consent facts the policy needs, kept beside (not inside) the
+ * usage-data preferences so the journal deny path can rebuild preferences
+ * from the snapshot unchanged.
+ */
+export interface UsageDataConsentState {
+  /** `legalConsentAcceptedAt` is recorded. */
+  readonly accepted: boolean;
+  /** Main-derived `usageAnalyticsDeclinedAtOnboarding`. */
+  readonly analyticsDeclinedAtOnboarding: boolean;
+}
+
+/** Nothing accepted yet: the default until stored preferences are read. */
+export const PENDING_USAGE_DATA_CONSENT: UsageDataConsentState = {
+  accepted: false,
+  analyticsDeclinedAtOnboarding: false,
+};
+
+/** Consent derived from the same committed object `usageData` comes from. */
+export function usageDataConsentStateOf(
+  preferences: Pick<
+    PreferencesData,
+    'legalConsentAcceptedAt' | 'usageAnalyticsDeclinedAtOnboarding'
+  >,
+): UsageDataConsentState {
+  return {
+    accepted: hasAcceptedLegalConsent(preferences),
+    analyticsDeclinedAtOnboarding:
+      preferences.usageAnalyticsDeclinedAtOnboarding === true,
+  };
+}
+
 export interface UsageDataPolicy {
   getEffectiveUsageDataPolicy(): UsageDataPreferences;
   getUsageDataPolicySnapshot(): UsageDataPolicySnapshot;
@@ -54,6 +94,13 @@ export interface UsageDataPolicy {
    * organization prohibition that is known never reports here.
    */
   isOrganizationPolicyUnreadable(): boolean;
+  /**
+   * True while legal consent is not recorded and the stored preferences are
+   * readable, so every flow is off. Unreadable preferences never report here.
+   */
+  isConsentPending(): boolean;
+  /** True when the member declined Usage analytics on the Welcome gate. */
+  wasAnalyticsDeclinedAtOnboarding(): boolean;
   /**
    * The effective value of `key`, also narrowed by the prohibition of the
    * organization that owns the work, when one is known. For per-item reports
@@ -69,8 +116,21 @@ export interface UsageDataPolicy {
     listener: (snapshot: UsageDataPolicySnapshot) => void,
     options?: { includeErrorReportsPreference?: boolean },
   ): () => void;
-  /** Replace the stored preferences with the full normalized object. */
+  /**
+   * Replace the stored preferences with the full normalized object, keeping
+   * the consent state. For the journal deny path only; committed saves use
+   * `setStored`.
+   */
   setPreferences(preferences: UsageDataPreferencesState): void;
+  /**
+   * Replace the stored preferences and the consent state in one recompute.
+   * Never set them in two calls: a consent flip seen before the choices would
+   * start flows on stale values.
+   */
+  setStored(
+    preferences: UsageDataPreferencesState,
+    consent: UsageDataConsentState,
+  ): void;
   /**
    * Replace the per-organization prohibitions. A successful probe always
    * replaces `'unreadable'`, even with an empty map. Returns whether the
@@ -89,7 +149,7 @@ export interface UsageDataPolicy {
 
 export const USAGE_DATA_POLICY_SETTLE_TIMEOUT_MS = 10_000;
 
-/** Every flow on: the default preferences and the fallback before init. */
+/** Every flow on: the default stored preferences (pre-checked, inactive until consent). */
 export function defaultUsageDataPreferences(): UsageDataPreferences {
   return {
     productAnalytics: true,
@@ -148,8 +208,19 @@ function resolveProhibitedBy(
   return prohibitedBy;
 }
 
+function isPending(
+  preferences: UsageDataPreferencesState,
+  consent: UsageDataConsentState,
+): boolean {
+  // Unreadable preferences keep today's fail-closed shape exactly (Skill
+  // safety check on); treating them as pending would turn it off for
+  // existing members in a latched recovery.
+  return preferences !== 'unreadable' && !consent.accepted;
+}
+
 function buildSnapshot(
   preferences: UsageDataPreferencesState,
+  consent: UsageDataConsentState,
   prohibitions: UsageDataProhibitionState,
   context: WorkspaceContext | null,
 ): UsageDataPolicySnapshot {
@@ -164,7 +235,18 @@ function buildSnapshot(
   if (!allowsAutomaticCall('telemetry.active-use-signal')) {
     effective.activeUseSignal = false;
   }
-  return { preferences: { ...stored }, effective, prohibitedBy };
+  const consentPending = isPending(preferences, consent);
+  // Nothing sends before consent, Skill safety check included. No
+  // `prohibitedBy` entry: no organization or unreadable file did this.
+  if (consentPending) {
+    for (const key of USAGE_DATA_KEYS) effective[key] = false;
+  }
+  return {
+    preferences: { ...stored },
+    effective,
+    prohibitedBy,
+    ...(consentPending ? { consentPending: true as const } : {}),
+  };
 }
 
 function sameSnapshotPolicy(
@@ -172,6 +254,7 @@ function sameSnapshotPolicy(
   right: UsageDataPolicySnapshot,
 ): boolean {
   return (
+    left.consentPending === right.consentPending &&
     USAGE_DATA_KEYS.every(
       (key) => left.effective[key] === right.effective[key],
     ) &&
@@ -189,15 +272,19 @@ function sameSnapshotPolicy(
 
 export function createUsageDataPolicy(options?: {
   preferences?: UsageDataPreferencesState;
+  /** Defaults to consent pending: nothing sends until consent is recorded. */
+  consent?: UsageDataConsentState;
   prohibitions?: UsageDataProhibitionState;
   settleTimeoutMs?: number;
 }): UsageDataPolicy {
   let preferences: UsageDataPreferencesState =
     options?.preferences ?? defaultUsageDataPreferences();
+  let consent: UsageDataConsentState =
+    options?.consent ?? PENDING_USAGE_DATA_CONSENT;
   let prohibitions: UsageDataProhibitionState =
     options?.prohibitions ?? new Map();
   let context: WorkspaceContext | null = null;
-  let snapshot = buildSnapshot(preferences, prohibitions, context);
+  let snapshot = buildSnapshot(preferences, consent, prohibitions, context);
   const listeners = new Map<
     (snapshot: UsageDataPolicySnapshot) => void,
     boolean
@@ -217,9 +304,15 @@ export function createUsageDataPolicy(options?: {
     resolveSettled();
   };
 
+  // The declined flag lives outside the snapshot; a change must still wake
+  // subscribers (the opt-out ping) like an effective change does.
+  let lastDeclined = consent.analyticsDeclinedAtOnboarding;
   const recompute = (): boolean => {
-    const next = buildSnapshot(preferences, prohibitions, context);
-    const changed = !sameSnapshotPolicy(snapshot, next);
+    const next = buildSnapshot(preferences, consent, prohibitions, context);
+    const declinedChanged =
+      lastDeclined !== consent.analyticsDeclinedAtOnboarding;
+    lastDeclined = consent.analyticsDeclinedAtOnboarding;
+    const changed = !sameSnapshotPolicy(snapshot, next) || declinedChanged;
     const errorReportsPreferenceChanged =
       snapshot.preferences.errorReports !== next.preferences.errorReports;
     snapshot = next;
@@ -241,6 +334,9 @@ export function createUsageDataPolicy(options?: {
     getEffectiveUsageDataPolicy: () => ({ ...snapshot.effective }),
     hasWorkspaceContext: () => context !== null,
     isOrganizationPolicyUnreadable: () => prohibitions === 'unreadable',
+    isConsentPending: () => snapshot.consentPending === true,
+    wasAnalyticsDeclinedAtOnboarding: () =>
+      consent.analyticsDeclinedAtOnboarding,
     allowsForOrganization(key, ownerOrganizationId): boolean {
       if (!snapshot.effective[key]) return false;
       if (prohibitions === 'unreadable') return false;
@@ -254,6 +350,7 @@ export function createUsageDataPolicy(options?: {
       preferences: { ...snapshot.preferences },
       effective: { ...snapshot.effective },
       prohibitedBy: { ...snapshot.prohibitedBy },
+      ...(snapshot.consentPending ? { consentPending: true as const } : {}),
     }),
     subscribe(listener, options): () => void {
       listeners.set(listener, options?.includeErrorReportsPreference === true);
@@ -263,6 +360,14 @@ export function createUsageDataPolicy(options?: {
     },
     setPreferences(next): void {
       preferences = next === 'unreadable' ? next : { ...next };
+      recompute();
+    },
+    setStored(nextPreferences, nextConsent): void {
+      preferences =
+        nextPreferences === 'unreadable'
+          ? nextPreferences
+          : { ...nextPreferences };
+      consent = { ...nextConsent };
       recompute();
     },
     setProhibitionsByOrganization(next): boolean {
@@ -284,20 +389,25 @@ export function createUsageDataPolicy(options?: {
 let singleton: UsageDataPolicy | null = null;
 
 /**
- * Seed the process-wide policy at startup. Reads that fail before this runs
- * see every flow on, which only `getUsageDataPolicy()` callers created before
- * startup could observe; startup initializes it before any gated flow starts.
+ * Seed the process-wide policy at startup. Reads before this runs see every
+ * flow off (consent pending), which only `getUsageDataPolicy()` callers
+ * created before startup could observe; startup initializes it before any
+ * gated flow starts.
  */
 export function initializeUsageDataPolicy(
   preferences: UsageDataPreferencesState,
+  consent: UsageDataConsentState,
   prohibitions: UsageDataProhibitionState,
 ): UsageDataPolicy {
   if (singleton) {
-    singleton.setPreferences(preferences);
+    // Prohibitions first: a pre-init singleton is consent pending (all off),
+    // so applying them first keeps every flow off until the stored choices
+    // land, instead of briefly enabling organization-prohibited flows.
     singleton.setProhibitionsByOrganization(prohibitions);
+    singleton.setStored(preferences, consent);
     return singleton;
   }
-  singleton = createUsageDataPolicy({ preferences, prohibitions });
+  singleton = createUsageDataPolicy({ preferences, consent, prohibitions });
   return singleton;
 }
 
@@ -310,6 +420,12 @@ export function getEffectiveUsageDataPolicy(): UsageDataPreferences {
   return getUsageDataPolicy().getEffectiveUsageDataPolicy();
 }
 
-export function __resetUsageDataPolicyForTests(): void {
-  singleton = null;
+/**
+ * Clear the singleton. With `seed`, replace it with a policy built from those
+ * options (pass `consent` to model a profile that accepted legal consent).
+ */
+export function __resetUsageDataPolicyForTests(
+  seed?: Parameters<typeof createUsageDataPolicy>[0],
+): void {
+  singleton = seed ? createUsageDataPolicy(seed) : null;
 }

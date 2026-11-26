@@ -1,11 +1,11 @@
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import type { JSX, ReactNode } from 'react';
 import type { UnifiedEntryKind } from '@canopy/protocol/unified-entry';
 import { CUSTOMIZE_ROW_GRID_CLASS } from '../lib/customize-grid';
 import { McpServerLogo } from './McpServerLogo';
 import { MarketplaceTypeLabel } from './MarketplaceTypeLabel';
-import { Heading } from './Heading';
-import { Badge } from './Badge';
+import { Heading } from '../primitives/Heading';
+import { Badge } from '../primitives/Badge';
 import { PipelineSourceLabel } from './EntrySourceLabel';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 

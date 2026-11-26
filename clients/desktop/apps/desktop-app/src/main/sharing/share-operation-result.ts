@@ -76,6 +76,22 @@ export class PackageAnalysisBlockedError extends ShareOperationError {
   }
 }
 
+/**
+ * The analysis expired, or the package service no longer holds it. Still
+ * `dependency-review` for shares; a collection commit tells it apart from an
+ * analysis whose files changed (CAN-4170).
+ */
+export class PackageAnalysisMissingError extends ShareOperationError {
+  constructor() {
+    super(
+      'dependency-review',
+      'Dependency analysis expired. Run the analysis again.',
+      'prepare',
+    );
+    this.name = 'PackageAnalysisMissingError';
+  }
+}
+
 /** Tags an error with the share stage it escaped from. */
 export class ShareStageError extends Error {
   constructor(

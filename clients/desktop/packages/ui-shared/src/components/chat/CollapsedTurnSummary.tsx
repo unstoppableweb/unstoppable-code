@@ -1,4 +1,4 @@
-import { ControlButton } from '../Button';
+import { ControlButton } from '../../primitives/Button';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   forwardRef,
@@ -39,8 +39,8 @@ import type {
   TurnOutcomeCounts,
   TurnOutcomeStepDetail,
 } from '@canopy/protocol/remote-control/shell';
-import { RichHoverTooltip } from '../RichHoverTooltip';
-import { useIsPhone } from '../useMediaQuery';
+import { RichHoverTooltip } from '../../primitives/RichHoverTooltip';
+import { useIsPhone } from '../../primitives/useMediaQuery';
 import { describeStepCounts, type StepKind } from './step-words';
 import { TurnOutcomeTooltip } from './TurnOutcomeTooltip';
 import { TurnOutcomeWords } from './TurnOutcomeWords';

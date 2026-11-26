@@ -95,6 +95,8 @@ export function failedPerformanceScenario(name, durationMs, error) {
       ? { mainWindowSelection: error.mainWindowSelection }
       : {}),
     ...(details.monitoring ? { monitoring: details.monitoring } : {}),
+    // `--remote-control`: the connection's evidence so far (CAN-7852).
+    ...(details.remoteControl ? { remoteControl: details.remoteControl } : {}),
     ...(details.gitAttribution
       ? { gitAttribution: details.gitAttribution }
       : {}),

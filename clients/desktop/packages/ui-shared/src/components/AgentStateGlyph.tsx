@@ -1,8 +1,8 @@
 import type { JSX } from 'react';
 import { useContinuousMotion } from '../lib/continuous-motion';
-import { Dot } from './Badge';
-import { ThinkingSpinner } from './ThinkingSpinner';
-import { Tooltip } from './Tooltip';
+import { Dot } from '../primitives/Badge';
+import { ThinkingSpinner } from '../primitives/ThinkingSpinner';
+import { Tooltip } from '../primitives/Tooltip';
 
 /**
  * What an agent is doing, as a row or tab shows it (turn-state D15): a turn

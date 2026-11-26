@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { Notice } from './Notice';
+import { Notice } from '../primitives/Notice';
 
 export const SHARED_CONTAINER_READ_ONLY_NOTICE =
   'Browse the chats, files and changes, or make your own copy to customize.';

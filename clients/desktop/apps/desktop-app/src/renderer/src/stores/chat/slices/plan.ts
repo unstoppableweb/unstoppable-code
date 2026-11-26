@@ -55,6 +55,10 @@ import { type WorktreeChatState } from '../types';
 import type { StateCreator } from 'zustand';
 import type { ChatState, ChatPlanSlice } from '../state';
 import { chatBackendFor, localChatBackend } from '../backend';
+import {
+  createTrackedPlan,
+  updateTrackedPlan,
+} from '@/client/desktop-plan-client';
 
 const pendingPlanMutationsByStore = new WeakMap<
   () => ChatState,
@@ -546,7 +550,7 @@ export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
         planId: string | undefined,
       ): Promise<TrackedPlanData | null> =>
         planId
-          ? window.api.activity.plans.update({
+          ? updateTrackedPlan({
               proposalRequestId: event.requestId,
               projectId: event.projectId,
               worktreeId: event.worktreeId,
@@ -559,7 +563,7 @@ export const createPlanSlice: StateCreator<ChatState, [], [], ChatPlanSlice> = (
               chatId: event.chatId,
               initiationSource: 'user',
             })
-          : window.api.activity.plans.create({
+          : createTrackedPlan({
               proposalRequestId: event.requestId,
               projectId: event.projectId,
               worktreeId: event.worktreeId,

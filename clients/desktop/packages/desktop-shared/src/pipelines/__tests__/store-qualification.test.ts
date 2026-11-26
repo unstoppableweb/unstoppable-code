@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type * as AtomicFile from '@canopy/execution-engine/node/lib/atomic-file';
+import type * as CoreStore from '@canopy/core-runtime/node/pipeline/store';
 import type {
   PipelineIndex,
   PipelineSaveInput,
@@ -41,6 +42,18 @@ jest.mock('@canopy/execution-engine/pipelines/config-paths', () => ({
     join(mockRoot, 'pipelines', 'index.json'),
   getBundledPipelinesDir: (): string => join(mockRoot, 'bundled'),
 }));
+// The store's owner record resolves under the test root, so a case can plant
+// one (CAN-7690).
+jest.mock('@canopy/core-runtime/node/pipeline/store', () => {
+  const actual = jest.requireActual<typeof CoreStore>(
+    '@canopy/core-runtime/node/pipeline/store',
+  );
+  return {
+    ...actual,
+    ownerFlipRecordFile: (_dataRoot: string, namespaceId: string): string =>
+      actual.ownerFlipRecordFile(mockRoot, namespaceId),
+  };
+});
 jest.mock('@canopy/execution-engine/node/lib/atomic-file', () => {
   const actual = jest.requireActual<typeof AtomicFile>(
     '@canopy/execution-engine/node/lib/atomic-file',
@@ -736,4 +749,27 @@ it('reports an indexed directory target instead of absence', () => {
   expect(inspectStoredPipelineDocument(id).kind).toBe('unreadable');
   expect(readStoredPipelinePresence(id)).toBe('unreadable');
   expect(bytes()).toBe(before);
+});
+
+it('reads the owner record under the test root, and refuses a save once it names the daemon (CAN-7690)', () => {
+  const record = join(
+    mockRoot,
+    'storage-records',
+    'pipeline_definitions',
+    'owner-flip.json',
+  );
+  fs.mkdirSync(join(record, '..'), { recursive: true });
+  fs.writeFileSync(
+    record,
+    JSON.stringify({
+      namespaceId: 'pipeline_definitions',
+      fromOwner: 'legacy',
+      toOwner: 'daemon',
+      workPackage: 'W6',
+      backupRecord: `storage-records/pipeline_definitions/namespace-backup.json#sha256:${'a'.repeat(64)}`,
+      flippedAt: '2026-11-24T10:00:00.000Z',
+    }),
+  );
+  expect(saveStoredPipeline(input('Refused')).success).toBe(false);
+  expect(fs.readdirSync(join(mockRoot, 'pipelines'))).toEqual([]);
 });

@@ -11,7 +11,7 @@ import {
   unpricedCostItemLabel,
 } from './cost-format';
 import { useCostCurrency } from './CostCurrencyContext';
-import { Fact, FactList } from '../FactList';
+import { Fact, FactList } from '../../primitives/FactList';
 
 export interface SubagentCostDetailsProps {
   /** The subagent's or delegate's cost row (`core.cost.chat.get` with a `subagentId`). */

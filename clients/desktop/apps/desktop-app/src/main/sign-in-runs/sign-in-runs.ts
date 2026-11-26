@@ -36,6 +36,18 @@ export interface SignInTerminalStartRequest {
   cols: number;
   rows: number;
   verifiedOpenCodeExecutable?: string;
+  /**
+   * Another computer started this sign-in through Remote Control. Flows that
+   * would open this computer's browser print their link and read a pasted
+   * code instead, so the person at the other computer can finish.
+   */
+  remote?: boolean;
+  /**
+   * Called with the session id just before the sign-in is created, so the
+   * caller knows whose session each output and exit event belongs to from
+   * the first one.
+   */
+  onSessionId?: (sessionId: string) => void;
 }
 
 let sender: AuthTerminalEventSender = (): void => {};
@@ -138,6 +150,8 @@ export async function startSignInTerminal(
     provider: request.provider,
     method: 'terminal',
     launch: async (signal) => {
+      // Before the sign-in exists, so its owner is known from its first event.
+      request.onSessionId?.(signInRunId);
       let terminal: SignInTerminal | AntigravitySignIn;
       try {
         terminal =
@@ -150,6 +164,7 @@ export async function startSignInTerminal(
                   exit: (event): void =>
                     sender(IPC_CHANNELS.authTerminalExit, event),
                 },
+                request.remote === true ? 'paste-code' : 'browser',
               )
             : new SignInTerminal(
                 {
@@ -157,6 +172,7 @@ export async function startSignInTerminal(
                   provider: request.provider,
                   cols: request.cols,
                   rows: request.rows,
+                  ...(request.remote === true ? { remote: true } : {}),
                   ...(request.verifiedOpenCodeExecutable !== undefined
                     ? {
                         verifiedOpenCodeExecutable:

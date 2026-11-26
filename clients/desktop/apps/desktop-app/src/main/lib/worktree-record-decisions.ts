@@ -1,15 +1,8 @@
+import type { W5LifecycleDecisionPort } from '@canopy/core-runtime/node/w5/lifecycle-ports';
 import type {
+  DesktopW5LifecycleTypes,
   WorktreeRecordTarget,
   WorktreeIncarnation,
-  WorkspaceAdditionDecision,
-  WorkspaceCreationDecision,
-  WorktreeCreationReservationDecision,
-  WorktreeCreationReservationPreconditions,
-  WorktreeCreationReservationOutcome,
-  ReservedWorktreeTarget,
-  WorktreeCreationPromoteDecision,
-  WorktreeCreationSetupDecision,
-  WorktreeCreationReservationRemovalDecision,
 } from '@canopy/desktop-shared/node/worktree-record-decisions';
 
 import type {
@@ -20,7 +13,6 @@ import type {
   CoworkWorkspaceSettings,
   DependentBaseBranchUpdate,
   SidebarItem,
-  SidebarItemsFile,
   WorkspaceConfigFile,
   WorkspaceIndexEntry,
   WorkspaceOwnerBinding,
@@ -263,9 +255,11 @@ export type WorktreeListDecisionOutcome =
  * `worktree-branch-rename-decision-port.ts`, the archive restore members in
  * `archived-container-restore-decision-port.ts`, the worktree creation
  * members in `worktree-creation-decision-port.ts`, and the archive journal
- * and cleanup members in `worktree-archive-record-decision-port.ts`.
+ * and cleanup members in `worktree-archive-record-decision-port.ts`. The
+ * workspace-service staging (W6a1) and worktree creation (W6b) members are
+ * core-runtime's `W5LifecycleDecisionPort`.
  */
-export interface W5RecordDecisionPort {
+export interface W5RecordDecisionPort extends W5LifecycleDecisionPort<DesktopW5LifecycleTypes> {
   applyWorktreeRowDecision(
     target: WorktreeRecordTarget,
     decision: WorktreeActivityWatermarkDecision,
@@ -407,14 +401,6 @@ export interface W5RecordDecisionPort {
   applyCoworkDiscardDecision(
     decision: CoworkDiscardDecision,
   ): Promise<CoworkDiscardStatus>;
-  // W6a1 (CAN-4815), in `workspace-creation-decision-port.ts`.
-  applyWorkspaceAdditionDecision(
-    decision: WorkspaceAdditionDecision,
-  ): Promise<SidebarItemsFile>;
-  applyWorkspaceCreationDecision(
-    decision: WorkspaceCreationDecision,
-    beforeEffects: () => void,
-  ): Promise<void>;
   // W6f1 (CAN-4836), in `worktree-branch-rename-decision-port.ts`.
   applyWorktreeBranchRenameDecision(
     target: WorktreeRecordTarget,
@@ -429,27 +415,6 @@ export interface W5RecordDecisionPort {
     workspaceId: string,
     decision: ArchiveRestoreRemovalDecision,
   ): Promise<ArchiveRestoreRemovalOutcome>;
-  // W6b (CAN-4947), in `worktree-creation-decision-port.ts`.
-  applyWorktreeCreationReservation(
-    workspaceId: string,
-    decision: WorktreeCreationReservationDecision,
-    preconditions: WorktreeCreationReservationPreconditions,
-  ): Promise<WorktreeCreationReservationOutcome>;
-  /** Whether the reserved incarnation was found. */
-  applyReservedWorktreeRecord(
-    target: ReservedWorktreeTarget,
-    decision: WorktreeCreationSetupDecision,
-  ): Promise<boolean>;
-  /** Whether a row with the id was found; any incarnation is promoted. */
-  applyWorktreeSetupRecord(
-    target: WorktreeRecordTarget,
-    decision: WorktreeCreationPromoteDecision,
-  ): Promise<boolean>;
-  /** Whether the reserved incarnation was removed. */
-  applyReservedWorktreeRemoval(
-    target: ReservedWorktreeTarget,
-    decision: WorktreeCreationReservationRemovalDecision,
-  ): Promise<boolean>;
   // W6c1 (CAN-4952), in `worktree-archive-record-decision-port.ts`.
   /** Whether a row with the id was found. */
   applyArchiveJournalRecord(

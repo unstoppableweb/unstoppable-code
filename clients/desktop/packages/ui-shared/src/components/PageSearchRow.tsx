@@ -17,11 +17,11 @@ import {
   DropdownMenuLabel,
   DropdownMenuRowStyleProvider,
   QUIET_MENU_ROW_STYLE,
-} from './DropdownMenu';
-import { FloatingMenu } from './FloatingMenu';
-import { NestedMenuFlyout } from './NestedMenuFlyout';
-import { PickerTrigger, PickerTriggerChevron } from './PickerMenu';
-import { SearchField, type SearchFieldProps } from './SearchField';
+} from '../primitives/DropdownMenu';
+import { FloatingMenu } from '../primitives/FloatingMenu';
+import { NestedMenuFlyout } from '../primitives/NestedMenuFlyout';
+import { PickerTrigger, PickerTriggerChevron } from '../primitives/PickerMenu';
+import { SearchField, type SearchFieldProps } from '../primitives/SearchField';
 
 /**
  * A page search row: one row 16px under the page header (or its tabs) and

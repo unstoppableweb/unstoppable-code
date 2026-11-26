@@ -578,7 +578,7 @@ const LAB_AGENT: UnifiedPluginEntry = {
   origin: 'installed-standalone',
   name: 'Code reviewer',
   description: 'Reviews diffs for correctness first, then style.',
-  typeLabel: 'Agent',
+  typeLabel: 'Model preset',
   sourceLabel: 'Local',
   ref: { type: 'local-agent', agentId: 'agent_model_code_reviewer' },
 };
@@ -605,12 +605,12 @@ function AgentPage(): JSX.Element {
           }
           primary={
             <CustomizeRowSplitButton
-              entryName="this agent"
+              entryName="this model preset"
               idPrefix="lab-agent"
               action={{
                 label: 'Installed',
                 tone: 'installed',
-                accessibleName: 'This agent is installed',
+                accessibleName: 'This model preset is installed',
               }}
               items={[]}
             />
@@ -663,7 +663,9 @@ function SharedAgentPage(): JSX.Element {
       baseModel="Claude Opus"
       items={[]}
       instructions=""
-      contentsNotice={<DetailFactError error="Couldn't load this agent" />}
+      contentsNotice={
+        <DetailFactError error="Couldn't load this model preset" />
+      }
     />
   );
 }
@@ -782,10 +784,13 @@ export function CustomizeDetailPagesSpecimen(): JSX.Element {
           <SpecimenCell label="Automation, shared" wide>
             <SharedAutomationPage />
           </SpecimenCell>
-          <SpecimenCell label="Agent, local" wide>
+          <SpecimenCell label="Model preset, local" wide>
             <AgentPage />
           </SpecimenCell>
-          <SpecimenCell label="Agent, shared (definition read failed)" wide>
+          <SpecimenCell
+            label="Model preset, shared (definition read failed)"
+            wide
+          >
             <SharedAgentPage />
           </SpecimenCell>
           <SpecimenCell label="Related" wide>

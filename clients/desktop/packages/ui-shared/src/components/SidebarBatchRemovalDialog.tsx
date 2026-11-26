@@ -10,17 +10,17 @@ import {
 } from 'react';
 import { CheckIcon, CloseIcon, InfoIcon, WarningIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
-import { Dot } from './Badge';
-import { Button } from './Button';
-import { DialogModal } from './DialogModal';
-import { LoadingSpinner } from './LoadingSpinner';
-import { OverlayScrollArea } from './OverlayScrollArea';
-import { RichHoverTooltip } from './RichHoverTooltip';
+import { Dot } from '../primitives/Badge';
+import { Button } from '../primitives/Button';
+import { DialogModal } from '../primitives/DialogModal';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
+import { OverlayScrollArea } from '../primitives/OverlayScrollArea';
+import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
 import {
   unitCountLabel,
   type SidebarBatchUnitLabel,
 } from './worktree-count-label';
-import { Heading } from './Heading';
+import { Heading } from '../primitives/Heading';
 import {
   KeepLocalBranchToggle,
   DEFAULT_KEEP_LOCAL_BRANCH,

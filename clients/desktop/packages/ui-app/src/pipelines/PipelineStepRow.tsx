@@ -57,12 +57,9 @@ export const PipelineStepRow = forwardRef<HTMLDivElement, PipelineStepRowProps>(
         </Badge>
       </span>
     );
-    // Action refs are recorded; a script's first line is blocked.
-    const description = (
-      <span className={kind === 'action' ? '' : REPLAY_BLOCK_CLASS}>
-        {summary}
-      </span>
-    );
+    // Never recorded: a script's first line, and an action ref, which can
+    // name a private repository path or project action (CAN-4224).
+    const description = <span className={REPLAY_BLOCK_CLASS}>{summary}</span>;
     return (
       <div ref={ref} style={style} data-testid={testId}>
         {onSelect ? (

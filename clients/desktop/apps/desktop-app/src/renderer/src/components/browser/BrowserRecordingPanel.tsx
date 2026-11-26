@@ -1,4 +1,4 @@
-import { Dot } from '@canopy/ui-shared/components/Badge';
+import { Dot } from '@canopy/ui-shared/primitives/Badge';
 import { useState, type JSX } from 'react';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import { ChatIcon, TrashIcon } from '@canopy/ui-shared/icons';

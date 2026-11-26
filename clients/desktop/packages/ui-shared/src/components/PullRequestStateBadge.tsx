@@ -7,7 +7,7 @@ import {
   type AppIcon,
 } from '../icons/AppIcons';
 import type { BadgeTone } from '../lib/badge';
-import { Badge } from './Badge';
+import { Badge } from '../primitives/Badge';
 
 export type PullRequestStateBadgeState = 'open' | 'merged' | 'closed' | 'draft';
 

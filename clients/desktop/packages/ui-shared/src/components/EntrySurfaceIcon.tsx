@@ -5,7 +5,7 @@ import {
   UNIFIED_ENTRY_SURFACE_LABELS,
   type UnifiedEntrySurface,
 } from '../lib/unified-plugin-entry';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 
 /**
  * Where an entry runs, as a small icon after its name on Customize rows and

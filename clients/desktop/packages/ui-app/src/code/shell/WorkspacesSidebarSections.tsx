@@ -275,6 +275,10 @@ const WORKTREE_ROW_OVERRIDE_KEYS = [
   'branchLabel',
   'branchName',
   'hasMismatch',
+  // A paired computer's task (CAN-7766): where it runs, and whether that
+  // computer can be reached right now.
+  'trailingIconSlot',
+  'unavailable',
   'approvalPopoverSlot',
   'unreadPopoverSlot',
   'toolApprovalPopoverSlot',

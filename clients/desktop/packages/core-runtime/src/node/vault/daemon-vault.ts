@@ -27,12 +27,21 @@ import {
 } from './repository/read-repository';
 import { openVaultStore, type VaultStore } from './repository/store';
 
-/** Closed custody table; reserving Copilot does not move its legacy writer. */
+/**
+ * Closed custody table; reserving a family does not move its legacy writer.
+ * `cloud-account` stays reserved unless trusted CAN-6997 composition selects
+ * the daemon's independent login record. No client writer is transferred.
+ */
 const DAEMON_VAULT_FAMILIES = Object.freeze({
   'github-pat': { state: 'active', owner: 'CAN-4415', instructionWriter: null },
   'copilot-account': {
     state: 'reserved',
     owner: 'CAN-4513',
+    instructionWriter: null,
+  },
+  'cloud-account': {
+    state: 'reserved',
+    owner: 'CAN-6997',
     instructionWriter: null,
   },
 } as const);
@@ -61,6 +70,8 @@ export interface DaemonVaultOptions {
   readonly slots: PlatformSecretProtectionServices | null;
   /** Why shipped protection did not load; only meaningful without slots. */
   readonly loadFailure?: VaultProtectionLoadFailure | null;
+  /** Trusted composition only; never an RPC grant or environment switch. */
+  readonly cloudAccountSelected?: boolean;
 }
 
 export function createDaemonVault(options: DaemonVaultOptions): DaemonVault {
@@ -157,6 +168,8 @@ export function createDaemonVault(options: DaemonVaultOptions): DaemonVault {
         kind: 'directory',
         mode: 'owner-only',
         action: createdRoot ? 'restrict' : 'verify',
+        // `secure-storage/` itself only; the vault's own folders stay strict (CAN-7915).
+        foreignTrustees: 'accept',
       });
       if (permissions.state !== 'private') throw refused();
       lifetime.signal.throwIfAborted();
@@ -273,7 +286,10 @@ export function createDaemonVault(options: DaemonVaultOptions): DaemonVault {
       );
     },
     writer: async (family): Promise<VaultFamilyWriter> => {
-      if (DAEMON_VAULT_FAMILIES[family]?.state !== 'active')
+      if (
+        DAEMON_VAULT_FAMILIES[family]?.state !== 'active' &&
+        !(family === 'cloud-account' && options.cloudAccountSelected === true)
+      )
         throw new CanopyOperationError(
           vaultError('core.vault.entry.writerRefused', {
             reason: 'managed_family',

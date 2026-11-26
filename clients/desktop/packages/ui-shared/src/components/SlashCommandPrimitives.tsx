@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
-import { Badge } from './Badge';
-import { LoadingSpinner } from './LoadingSpinner';
+import { Badge } from '../primitives/Badge';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
 
 /** Selecting this row explicitly enables it before insertion. */
 export function SlashCommandAvailabilityTag(): JSX.Element {

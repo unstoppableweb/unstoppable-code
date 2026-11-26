@@ -1,4 +1,4 @@
-import { TextLink } from './TextLink';
+import { TextLink } from '../primitives/TextLink';
 import type { JSX } from 'react';
 import type { SkillPublisherProvenance as Provenance } from '@canopy/protocol';
 

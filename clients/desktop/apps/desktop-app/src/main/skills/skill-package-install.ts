@@ -88,7 +88,19 @@ function assertSafeSkillFolderName(value: string, field: string): void {
     throw new Error(`Invalid ${field}`);
   }
 }
+/**
+ * A folder this install creates or updates. Dot-prefixed names are reserved
+ * for the skills folder's own staging; existing folders are still removable.
+ */
+function assertNewSkillFolderName(value: string, field: string): void {
+  assertSafeSkillFolderName(value, field);
+  if (value.startsWith('.')) throw new Error(`Invalid ${field}`);
+}
 const MAX_SUFFIX_ATTEMPTS = 100;
+/** One worst-case bounded cloud read (about 110 s) plus a margin. */
+export const MATERIALIZATION_CHECK_BUDGET_MS = 120_000;
+/** The serialized checks ran out of time; nothing was written. */
+export class MaterializationCheckTimeoutError extends Error {}
 
 export interface InstallSubjectCapabilityPackageRequest {
   owner: CapabilityPackageInstallOwner;
@@ -114,6 +126,18 @@ export interface InstallSubjectCapabilityPackageRequest {
    * import's own.
    */
   onSkillFolderReserved?(folder: ReservedSkillFolder): Promise<void>;
+  /**
+   * Runs the local materialization (reserve, copy, finalize, ledger and its
+   * rollback) after the package blobs are fetched. Collections pass the skill
+   * mutation lock; a caller that already holds it leaves this unset.
+   */
+  serializeMaterialization?: <T>(run: () => Promise<T>) => Promise<T>;
+  /**
+   * Re-checks the caller's authorization inside the serialized phase, before
+   * any folder is made, within MATERIALIZATION_CHECK_BUDGET_MS. `expired`
+   * reports that budget running out, so the check starts no cloud read after it.
+   */
+  checkBeforeMaterialization?(expired: () => boolean): Promise<void>;
   /** Skill imports already write their primary SKILL.md from the shared definition. */
   primarySkill?: {
     localName: string;
@@ -172,7 +196,8 @@ async function installSkillCapabilityPackageUnlocked(
   // These arrive from the renderer and reach `getSkillDir()`'s bare
   // `path.join`. The packaged `tree.rootName` is already constrained by the
   // manifest validator, but these two are not, so they are checked here.
-  assertSafeSkillFolderName(request.skillName, 'skillName');
+  assertNewSkillFolderName(request.skillName, 'skillName');
+  // A lookup key in the package, not a local folder.
   assertSafeSkillFolderName(request.primaryRootName, 'primaryRootName');
   const contextEnabled = skillResourceContextEnabled();
   const snapshot = contextEnabled ? await skillContextSnapshot() : undefined;
@@ -276,7 +301,7 @@ export async function installSubjectCapabilityPackage(
   try {
     primarySkill = request.primarySkill;
     if (primarySkill) {
-      assertSafeSkillFolderName(primarySkill.localName, 'skillName');
+      assertNewSkillFolderName(primarySkill.localName, 'skillName');
       assertSafeSkillFolderName(primarySkill.rootName, 'primaryRootName');
     }
     if (download.digest !== request.packageRef.digest) {
@@ -317,25 +342,44 @@ export async function installSubjectCapabilityPackage(
       manifest: download.manifest,
       fetchBlob: (sha256) => request.fetchBlob(sha256),
     });
-    await copyBoundResources();
-    if (snapshot !== undefined) await assertSkillContextSnapshot(snapshot);
-    const localContentHash = request.finalizeInstall
-      ? await request.finalizeInstall(result)
-      : request.localContentHash;
-    await upsertCapabilityPackageInstall(getPipelinePackageInstallStorePath(), {
-      owner: request.owner,
-      ...(request.originExternalId
-        ? { originExternalId: request.originExternalId }
-        : {}),
-      ...(localContentHash ? { localContentHash } : {}),
-      pipelineContentHash: download.manifest.pipelineContentHash,
-      packageDigest: download.digest,
-      installedAt: new Date().toISOString(),
-      ...(request.owner.kind === 'skill'
-        ? { supportingFilesComplete: result.keptLocalFiles.length === 0 }
-        : {}),
-    });
   } catch (error) {
+    return rollBack(error);
+  }
+  const serialize =
+    request.serializeMaterialization ??
+    (<T>(run: () => Promise<T>): Promise<T> => run());
+  // The rollback runs inside, so a failed install has undone its folders
+  // before the next skill writer starts.
+  await serialize(async () => {
+    try {
+      await copyBoundResources();
+      if (snapshot !== undefined) await assertSkillContextSnapshot(snapshot);
+      const localContentHash = request.finalizeInstall
+        ? await request.finalizeInstall(result)
+        : request.localContentHash;
+      await upsertCapabilityPackageInstall(
+        getPipelinePackageInstallStorePath(),
+        {
+          owner: request.owner,
+          ...(request.originExternalId
+            ? { originExternalId: request.originExternalId }
+            : {}),
+          ...(localContentHash ? { localContentHash } : {}),
+          pipelineContentHash: download.manifest.pipelineContentHash,
+          packageDigest: download.digest,
+          installedAt: new Date().toISOString(),
+          ...(request.owner.kind === 'skill'
+            ? { supportingFilesComplete: result.keptLocalFiles.length === 0 }
+            : {}),
+        },
+      );
+    } catch (error) {
+      await rollBack(error);
+    }
+  });
+  return result;
+
+  async function rollBack(error: unknown): Promise<never> {
     const rollbackResults = await Promise.allSettled([
       ...(request.rollbackFinalization
         ? [Promise.resolve().then(() => request.rollbackFinalization?.())]
@@ -369,8 +413,18 @@ export async function installSubjectCapabilityPackage(
     role: 'primary' | 'dependency' = 'dependency',
   ): Promise<void> {
     if (snapshot === undefined) return;
+    await assertStoredSkillContext(`${CUSTOM_SKILL_SOURCE_ID}/${name}`);
+    await recordSkillOrigin(name, localContentHash, role);
+  }
+
+  /** The local part of bindSkillOrigin, after its context check passed. */
+  async function recordSkillOrigin(
+    name: string,
+    localContentHash?: string,
+    role: 'primary' | 'dependency' = 'dependency',
+  ): Promise<void> {
+    if (snapshot === undefined) return;
     const localId = `${CUSTOM_SKILL_SOURCE_ID}/${name}`;
-    await assertStoredSkillContext(localId);
     if (detail) {
       // Dependency aliases carry their own SKILL.md baseline, never the
       // primary shared skill's hash.
@@ -393,7 +447,55 @@ export async function installSubjectCapabilityPackage(
     for (const rollback of receiptRollbacks.reverse()) await rollback();
   }
 
+  /**
+   * Pass 1 of a serialized install: picks every folder name and runs every
+   * check that can reach the cloud, writing nothing, so an install that runs
+   * out of time gives up before its first write. Keyed by resource id.
+   */
+  async function planBoundResources(
+    expired = (): boolean => false,
+  ): Promise<Map<string, { name: string; reused: boolean }>> {
+    const plans = new Map<string, { name: string; reused: boolean }>();
+    const planned: PlannedSkillNames = new Map();
+    for (const resource of bound) {
+      if (resource.kind !== 'standalone_skill') continue;
+      const tree = preferredTree(resource);
+      if (!tree) continue;
+      if (primarySkill && primaryResourceIds.has(resource.id)) continue;
+      const skillMd = tree.entries.find((entry) => entry.path === 'SKILL.md');
+      const folder = await planSkillName(
+        tree.rootName,
+        skillMd,
+        reusableIds,
+        planned,
+      );
+      planned.set(folder.name.toLowerCase(), {
+        name: folder.name,
+        sha256: skillMd?.sha256,
+      });
+      if (snapshot !== undefined) {
+        // A timed-out install starts no further lookup.
+        if (expired()) break;
+        await assertStoredSkillContext(
+          `${CUSTOM_SKILL_SOURCE_ID}/${folder.name}`,
+          undefined,
+          expired,
+        );
+      }
+      plans.set(resource.id, folder);
+    }
+    // Last, right before the first write, so it also covers the lookups.
+    if (!expired()) await request.checkBeforeMaterialization?.(expired);
+    return plans;
+  }
+
   async function copyBoundResources(): Promise<void> {
+    // A serialized install plans every name and runs its cloud checks first
+    // (pass 1), so this loop only writes; other callers reserve and check one
+    // resource at a time.
+    const plans = request.serializeMaterialization
+      ? await withinCheckBudget(planBoundResources)
+      : undefined;
     for (const resource of bound) {
       if (resource.kind !== 'standalone_skill') {
         result.uninstalledResourceLabels.push(resource.displayName);
@@ -431,11 +533,29 @@ export async function installSubjectCapabilityPackage(
         );
         continue;
       }
-      const reserved = await reserveSkillName(
-        tree.rootName,
-        tree.entries.find((entry) => entry.path === 'SKILL.md'),
-        reusableIds,
-      );
+      const plan = plans?.get(resource.id);
+      const plannedDir = plan && getSkillDir(CUSTOM_SKILL_SOURCE_ID, plan.name);
+      if (plan && plannedDir && !plan.reused)
+        await reserveSkillFolder(plannedDir, plan.name);
+      // A writer without the lock may have changed a folder planned for reuse
+      // during pass 1; refuse like a taken name so a retry plans again.
+      if (
+        plan?.reused &&
+        plannedDir &&
+        !undo.createdFolders.includes(plannedDir) &&
+        !(await skillMdMatches(
+          plannedDir,
+          tree.entries.find((entry) => entry.path === 'SKILL.md'),
+        ))
+      )
+        throw folderTakenError(plan.name);
+      const reserved =
+        plan ??
+        (await reserveSkillName(
+          tree.rootName,
+          tree.entries.find((entry) => entry.path === 'SKILL.md'),
+          reusableIds,
+        ));
       const destination = getSkillDir(CUSTOM_SKILL_SOURCE_ID, reserved.name);
       // A folder this install created is removed whole on failure; a reused one
       // is the recipient's, so only the files written into it are.
@@ -449,7 +569,8 @@ export async function installSubjectCapabilityPackage(
           sha256: entry.sha256,
         })),
       });
-      await bindSkillOrigin(
+      // Pass 1 already ran a planned name's context check.
+      await (plan ? recordSkillOrigin : bindSkillOrigin)(
         reserved.name,
         tree.entries.find((entry) => entry.path === 'SKILL.md')?.sha256,
       );
@@ -483,8 +604,6 @@ export async function installSubjectCapabilityPackage(
       });
     }
   }
-
-  return result;
 }
 
 /**
@@ -778,6 +897,7 @@ async function reserveSkillName(
   expectedSkillMd: { sha256: string } | undefined,
   reusableIds?: ReadonlySet<string>,
 ): Promise<{ name: string; reused: boolean }> {
+  assertNewSkillFolderName(baseName, 'rootName');
   // The source directory has to exist before a non-recursive mkdir can
   // distinguish "this name is taken" (EEXIST) from "nothing is here yet"
   // (ENOENT). Installing a dependency skill must not depend on some earlier
@@ -816,6 +936,103 @@ async function reserveSkillName(
   throw new Error(
     `Could not install packaged skill "${baseName}": exhausted ${MAX_SUFFIX_ATTEMPTS} name-suffix attempts.`,
   );
+}
+
+/**
+ * Picks an unused local skill folder name without creating it, walking the
+ * same numeric-suffix scheme the raw-write import uses. A name already taken
+ * holding a byte-identical SKILL.md (a re-import, or a Collection naming the
+ * same skill twice) is reused instead, and scoped imports also require the
+ * same receipt: identical personal content must remain unbound. `planned`
+ * holds the names this install already picked, keyed case-folded since the
+ * folders don't exist yet and the volume may ignore case; one of them is
+ * reused for the same spelling and SKILL.md alone, as this install creates it.
+ */
+async function planSkillName(
+  baseName: string,
+  expectedSkillMd: { sha256: string } | undefined,
+  reusableIds: ReadonlySet<string> | undefined,
+  planned: PlannedSkillNames,
+): Promise<{ name: string; reused: boolean }> {
+  assertNewSkillFolderName(baseName, 'rootName');
+  for (let attempt = 0; attempt < MAX_SUFFIX_ATTEMPTS; attempt += 1) {
+    const candidate = attempt === 0 ? baseName : `${baseName}-${attempt + 1}`;
+    const directory = getSkillDir(CUSTOM_SKILL_SOURCE_ID, candidate);
+    const reusable =
+      !reusableIds || reusableIds.has(`${CUSTOM_SKILL_SOURCE_ID}/${candidate}`);
+    const ours = planned.get(candidate.toLowerCase());
+    if (ours) {
+      // A case-only variant is another root: it gets its own folder.
+      if (
+        ours.name === candidate &&
+        expectedSkillMd &&
+        expectedSkillMd.sha256 === ours.sha256
+      )
+        return { name: candidate, reused: true };
+      continue;
+    }
+    const exists = await fs.lstat(directory).then(
+      () => true,
+      (error: unknown) => {
+        if (isErrnoCode(error, 'ENOENT')) return false;
+        throw error;
+      },
+    );
+    if (!exists) return { name: candidate, reused: false };
+    if (reusable && (await skillMdMatches(directory, expectedSkillMd)))
+      return { name: candidate, reused: true };
+  }
+  throw new Error(
+    `Could not install packaged skill "${baseName}": exhausted ${MAX_SUFFIX_ATTEMPTS} name-suffix attempts.`,
+  );
+}
+
+type PlannedSkillNames = Map<string, { name: string; sha256?: string }>;
+
+/**
+ * Creates a folder planSkillName picked. Non-recursive on purpose: a name
+ * another writer took since is refused, never written into.
+ */
+async function reserveSkillFolder(
+  directory: string,
+  name: string,
+): Promise<void> {
+  await fs.mkdir(getSourceDir(CUSTOM_SKILL_SOURCE_ID), { recursive: true });
+  try {
+    await fs.mkdir(directory, { recursive: false });
+  } catch (error) {
+    if (!isErrnoCode(error, 'EEXIST')) throw error;
+    throw folderTakenError(name);
+  }
+}
+
+function folderTakenError(name: string): Error {
+  return new Error(
+    `Couldn't reserve the folder name "${name}": another skill change took it. Try again.`,
+  );
+}
+
+/** Runs pass 1 within MATERIALIZATION_CHECK_BUDGET_MS. */
+async function withinCheckBudget<T>(
+  work: (expired: () => boolean) => Promise<T>,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      reject(
+        new MaterializationCheckTimeoutError(
+          "Couldn't re-check the package in time. Try again.",
+        ),
+      );
+    }, MATERIALIZATION_CHECK_BUDGET_MS);
+  });
+  try {
+    return await Promise.race([work(() => timedOut), expired]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function skillMdMatches(

@@ -1,9 +1,9 @@
 import { type JSX, useId, useRef, useState } from 'react';
 import { ChevronDownIcon } from '../icons/AppIcons';
 import type { UnifiedPluginEntry } from '../lib/unified-plugin-entry';
-import { Button } from './Button';
-import { DropdownMenuItem } from './DropdownMenu';
-import { FloatingMenu } from './FloatingMenu';
+import { Button } from '../primitives/Button';
+import { DropdownMenuItem } from '../primitives/DropdownMenu';
+import { FloatingMenu } from '../primitives/FloatingMenu';
 
 interface MarketplaceInstallButtonProps {
   readonly entry: UnifiedPluginEntry;

@@ -13,8 +13,8 @@
  * Consumers: the Automations page tables and the Pipelines management table.
  */
 import type { JSX, ReactNode } from 'react';
-import { Button } from './Button';
-import { Tooltip } from './Tooltip';
+import { Button } from '../primitives/Button';
+import { Tooltip } from '../primitives/Tooltip';
 
 export interface TableActionButtonProps {
   /** Accessible name and tooltip text. */

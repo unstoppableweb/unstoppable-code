@@ -9,7 +9,7 @@ import {
   type CoreCatalogHost,
   type CoreSkillCatalogHost,
 } from '@canopy/core-runtime/node/catalog';
-import type { OperationService } from '@canopy/core-runtime/node/operations';
+import type { OperationServicePort } from '@canopy/core-runtime/node/operations';
 import {
   createDesktopCatalogHost,
   installedCatalogRefs,
@@ -23,7 +23,7 @@ import type { DesktopDomainAdapter } from './desktop-runtime';
 
 /** `core.catalog.*` on the desktop dispatcher (CAN-4123) over Electron main's stores. */
 export function createCoreCatalogAdapter(options: {
-  operations: OperationService;
+  operations: OperationServicePort;
   host?: CoreCatalogHost;
   /** Host behind `core.catalog.skill.*` (CAN-4124); tests may inject one. */
   skillHost?: CoreSkillCatalogHost;
@@ -103,6 +103,11 @@ export function createCoreCatalogAdapter(options: {
         ),
       'core.catalog.entry.delete': (params, context) =>
         collectionEntries.instructions['core.catalog.entry.delete'](
+          params,
+          context,
+        ),
+      'core.catalog.entry.import': (params, context) =>
+        collectionEntries.instructions['core.catalog.entry.import'](
           params,
           context,
         ),

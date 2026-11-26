@@ -5,6 +5,7 @@ import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   ACCOUNT_MCP_LABEL_MAX_LENGTH,
   accountMcpDefaultConnection,
+  isAccountMcpAuthorizationPending,
   type AccountMcpConnection,
 } from '@canopy/protocol/mcp-servers';
 import {
@@ -15,6 +16,8 @@ import {
   DisclosureChevron,
   DisclosureToggle,
   ErrorBanner,
+  Notice,
+  NoticeButton,
   RenameDialog,
   SettingsRowsGroup,
   SettingsRowsRow,
@@ -122,7 +125,9 @@ function accountStatus(connection: AccountMcpConnection): string {
     case 'REAUTH_REQUIRED':
       return 'Needs reconnecting';
     case 'PENDING':
-      return 'Waiting for sign-in';
+      return isAccountMcpAuthorizationPending(connection)
+        ? 'Waiting for sign-in'
+        : 'Not connected';
     case 'DISCONNECTED':
       return 'Not connected';
   }
@@ -270,7 +275,8 @@ function McpAccountRow({
  * wherever the connection detail is; it renders nothing when the person
  * holds no account, unless their only connection is the copy on this device
  * (`deviceCopy`): the list then offers Add a cloud account beside its row, so
- * the connector can reach cloud chats and their other devices too.
+ * the connector can reach cloud chats and their other devices too. A saved
+ * Add can still offer recovery while there are no rows to show.
  */
 export function McpAccountControls({
   serverName,
@@ -284,6 +290,9 @@ export function McpAccountControls({
   deviceCopy = false,
   disabled = false,
   addPending = false,
+  addBusy = false,
+  addRecovery,
+  connectionRecovery,
 }: {
   /** The connector's name, for the default account and a new account's name. */
   serverName: string;
@@ -313,6 +322,22 @@ export function McpAccountControls({
    * waiting account cancels it.
    */
   addPending?: boolean;
+  /** The Add request is still submitting. */
+  addBusy?: boolean;
+  /** Account-list recovery while a previously saved Add still owns the lock. */
+  addRecovery?: {
+    readonly refreshing: boolean;
+    readonly unconfirmed?: true;
+    readonly refresh: () => void;
+    /** The saved account whose pending status is waiting for a new read. */
+    readonly stalePendingId?: string;
+  };
+  /** A completed sign-in whose account list still needs to be reconciled. */
+  connectionRecovery?: {
+    readonly refreshing: boolean;
+    readonly refresh: () => void;
+    readonly isPending: (configId: string) => boolean;
+  };
 }): JSX.Element | null {
   const [dialog, setDialog] = useState<OpenDialog | null>(null);
   const [busy, setBusy] = useState(false);
@@ -320,9 +345,32 @@ export function McpAccountControls({
   // The host recorded the failure the remove confirmation shows.
   const [errorRecorded, setErrorRecorded] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
+  const recovery = addRecovery ?? connectionRecovery;
+  const recoveryNotice = recovery ? (
+    <Notice
+      role="status"
+      actions={
+        <NoticeButton
+          aria-busy={recovery.refreshing}
+          busyLabel="Refreshing…"
+          disabled={recovery.refreshing}
+          onClick={recovery.refresh}
+        >
+          Refresh accounts
+        </NoticeButton>
+      }
+    >
+      {addRecovery
+        ? addRecovery.unconfirmed
+          ? 'Refresh the account list to check whether the new account was saved.'
+          : 'The new account was saved. Refresh the account list to check its sign-in status.'
+        : 'Sign-in finished. Refresh the account list to check its status.'}
+    </Notice>
+  ) : null;
   // Only a device copy: the first account is a cloud one, added beside it.
   const firstBesideDevice = connections.length === 0 && deviceCopy;
-  if (connections.length === 0 && !(firstBesideDevice && actions)) return null;
+  if (connections.length === 0 && !(firstBesideDevice && actions))
+    return recoveryNotice;
   const several = connections.length > 1;
   const addLabel = firstBesideDevice
     ? 'Add a cloud account'
@@ -411,7 +459,7 @@ export function McpAccountControls({
           },
         ]
       : [];
-  return (
+  const controls = (
     <SettingsRowsGroup dataTestId="mcp-account-controls" ariaLabel="Accounts">
       <SettingsRowsRow
         label="Accounts"
@@ -435,7 +483,7 @@ export function McpAccountControls({
             <Button
               variant="secondary"
               size="sm"
-              disabled={locked || addPending}
+              disabled={locked || addPending || addBusy || Boolean(addRecovery)}
               data-testid="mcp-account-add"
               onClick={(): void => {
                 setError(null);
@@ -443,7 +491,7 @@ export function McpAccountControls({
                 setDialog({ kind: 'add' });
               }}
             >
-              {addLabel}
+              {addBusy ? 'Adding account…' : addLabel}
             </Button>
           ) : undefined
         }
@@ -459,6 +507,9 @@ export function McpAccountControls({
       {ordered.map((connection) => {
         const isDefault = connection === defaultAccount;
         const name = listedAccountName(connection, serverName);
+        const stalePending =
+          connection.id === addRecovery?.stalePendingId ||
+          connectionRecovery?.isPending(connection.configId) === true;
         return (
           <McpAccountRow
             key={connection.id}
@@ -471,7 +522,11 @@ export function McpAccountControls({
                 </Badge>
               ) : null
             }
-            description={accountStatus(connection)}
+            description={
+              stalePending
+                ? 'Sign-in status needs a refresh'
+                : accountStatus(connection)
+            }
             open={connection === selectedAccount}
             collapsible={collapsible}
             disabled={locked}
@@ -488,9 +543,10 @@ export function McpAccountControls({
                   testId={`mcp-account-menu-${connection.id}`}
                 />
               );
-              const signInAction = signInAccount
-                ? accountSignInAction(connection)
-                : undefined;
+              const signInAction =
+                signInAccount && !stalePending
+                  ? accountSignInAction(connection)
+                  : undefined;
               if (!signInAccount || !signInAction) return menu;
               // A waiting or signed-out account signs in from its own row,
               // so a sign-in page that never opened, or was closed, is one
@@ -538,7 +594,7 @@ export function McpAccountControls({
           onOpen={(): void => onSelect?.({ kind: 'device' })}
         />
       ) : null}
-      {addAccount && dialog?.kind === 'add' ? (
+      {addAccount && dialog?.kind === 'add' && !addRecovery ? (
         <RenameDialog
           // The name tells this account apart from the others, for example
           // its workspace; the person can rename it later.
@@ -553,7 +609,7 @@ export function McpAccountControls({
           helperText={`Shown wherever this account is listed, such as its workspace name. You sign in to ${serverName} next.`}
           maxLength={ACCOUNT_MCP_LABEL_MAX_LENGTH}
           submitLabel="Continue"
-          busy={busy}
+          busy={busy || addBusy}
           error={error}
           dataTestId="mcp-account-add-dialog"
           onSubmit={(value): void => {
@@ -634,5 +690,11 @@ export function McpAccountControls({
         />
       ) : null}
     </SettingsRowsGroup>
+  );
+  return (
+    <>
+      {recoveryNotice}
+      {controls}
+    </>
   );
 }

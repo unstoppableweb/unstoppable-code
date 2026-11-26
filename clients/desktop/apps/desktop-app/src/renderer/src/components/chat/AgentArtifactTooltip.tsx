@@ -1,5 +1,5 @@
 import { Badge } from '@canopy/ui-shared/components';
-import { Badge as SharedBadge } from '@canopy/ui-shared/components/Badge';
+import { Badge as SharedBadge } from '@canopy/ui-shared/primitives/Badge';
 import { PipelineSourceLabel } from '@canopy/ui-shared/components/EntrySourceLabel';
 import { memo, type JSX, type ReactNode } from 'react';
 import type {

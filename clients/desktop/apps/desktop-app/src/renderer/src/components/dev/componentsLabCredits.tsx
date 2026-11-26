@@ -4,6 +4,7 @@ import {
   CreditsRecoveryNotice,
   NoticeButton,
   OUT_OF_CREDITS_TITLE,
+  queuedMessageCopy,
   retainedMessageCopy,
 } from '@canopy/ui-shared/components';
 import { SpecimenCell, SpecimenPanel } from './componentsLabParts';
@@ -46,7 +47,7 @@ export function CreditsNoticesSpecimen(): JSX.Element {
               contactAdmin
               onDismiss={noop}
             >
-              {retainedMessageCopy('queue', { canBuy: false })}
+              {queuedMessageCopy({ orgFunds: true, chooseProvider: false })}
             </CreditsRecoveryNotice>
           </div>
         </SpecimenCell>

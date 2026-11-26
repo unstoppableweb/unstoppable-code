@@ -42,16 +42,27 @@ export interface PipelineLocalMetadataFile<Entry extends object> {
   unreadable?: true;
 }
 
+/**
+ * How a write ended. Only `written` is a durable save: `unflushed` installed
+ * the file but couldn't flush its folder, so it may not survive a crash.
+ */
+export type PipelineLocalMetadataWriteOutcome =
+  | 'written'
+  | 'unreadable'
+  | 'failed'
+  | 'unflushed';
+
 /** The pipeline local metadata file over a host's environment (CAN-5092). */
 export interface PipelineLocalMetadataStore<Entry extends object> {
   /** The file as parsed, or empty and unreadable when it can't be read. */
   readonly read: () => PipelineLocalMetadataFile<Entry>;
   /**
-   * Writes the file without its empty entries and refreshes the parsed copy.
-   * An unreadable file is left unchanged, and a failed write is logged:
-   * metadata never fails the save or run that records it.
+   * Writes the file without its empty entries and reports the write outcome.
+   * An unreadable file is left unchanged, and a failed write is logged.
    */
-  readonly write: (file: PipelineLocalMetadataFile<Entry>) => void;
+  readonly write: (
+    file: PipelineLocalMetadataFile<Entry>,
+  ) => PipelineLocalMetadataWriteOutcome;
   /** Whether stored entries can be read; a missing file counts as readable. */
   readonly isReadable: () => boolean;
   /** A synchronous read-modify-write of one user pipeline's entry. */
@@ -59,6 +70,14 @@ export interface PipelineLocalMetadataStore<Entry extends object> {
     pipelineId: string,
     update: (entry: Entry) => Entry,
   ) => void;
+  /**
+   * The same read-modify-write, for a caller that must not proceed on a
+   * save it can't show: it reports how the write ended (CAN-7507).
+   */
+  readonly updateUserPipelineReported: (
+    pipelineId: string,
+    update: (entry: Entry) => Entry,
+  ) => PipelineLocalMetadataWriteOutcome;
   /** Removes a user pipeline's entry; a missing one writes nothing. */
   readonly deleteUserPipeline: (pipelineId: string) => void;
   readonly userPipelineKey: (pipelineId: string) => string;
@@ -161,11 +180,13 @@ export function createPipelineLocalMetadataStore<Entry extends object>(
     return file;
   };
 
-  const write = (file: PipelineLocalMetadataFile<Entry>): void => {
+  const install = (
+    file: PipelineLocalMetadataFile<Entry>,
+  ): PipelineLocalMetadataWriteOutcome => {
     // Rewriting a file that can't be read would drop every entry it holds.
     if (file.unreadable) {
       environment.warn('Metadata file is unreadable; leaving it unchanged.');
-      return;
+      return 'unreadable';
     }
     const entries: Record<string, Entry> = {};
     for (const [key, entry] of Object.entries(file.entries)) {
@@ -177,36 +198,46 @@ export function createPipelineLocalMetadataStore<Entry extends object>(
         `${JSON.stringify({ version: 1, entries }, null, 2)}\n`,
       );
       remember(location, { version: 1, entries });
+      return 'written';
     } catch (error) {
       if (isStorageOutcomeUnknownError(error)) {
-        remember(location, { version: 1, entries });
+        cached = undefined;
         environment.warn(
           'Metadata file installed, but its folder flush failed.',
         );
-        return;
+        return 'unflushed';
       }
       environment.warn(
         `Failed to write metadata file: ${error instanceof Error ? error.message : String(error)}`,
       );
+      return 'failed';
     }
+  };
+
+  const updateUserPipelineReported = (
+    pipelineId: string,
+    update: (entry: Entry) => Entry,
+  ): PipelineLocalMetadataWriteOutcome => {
+    const file = read();
+    const key = codec.userPipelineKey(pipelineId);
+    file.entries[key] = update({ ...file.entries[key] });
+    return install(file);
   };
 
   return {
     read,
-    write,
+    write: install,
     isReadable: () => read().unreadable !== true,
     updateUserPipeline: (pipelineId, update) => {
-      const file = read();
-      const key = codec.userPipelineKey(pipelineId);
-      file.entries[key] = update({ ...file.entries[key] });
-      write(file);
+      updateUserPipelineReported(pipelineId, update);
     },
+    updateUserPipelineReported,
     deleteUserPipeline: (pipelineId) => {
       const file = read();
       const key = codec.userPipelineKey(pipelineId);
       if (!file.entries[key]) return;
       delete file.entries[key];
-      write(file);
+      install(file);
     },
     userPipelineKey: codec.userPipelineKey,
   };

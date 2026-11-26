@@ -21,8 +21,8 @@
 // equivalent — a dollar sign next to it would invite someone to add it in.
 // ---------------------------------------------------------------------------
 
-import { Stack } from './Stack';
-import { Surface } from './Surface';
+import { Stack } from '../primitives/Stack';
+import { Surface } from '../primitives/Surface';
 import type { JSX, ReactNode } from 'react';
 import { formatUsd } from '../lib/money-format';
 import { formatCardLabel } from '../lib/card-display';
@@ -39,7 +39,7 @@ import {
 import { BADGE_BASE_CLASS, BADGE_TONE_CLASS } from '../lib/badge';
 import { BILLING_STATUS_TONE_CLASSES } from '../lib/billing-status-tone';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import { Heading } from './Heading';
+import { Heading } from '../primitives/Heading';
 
 /** One charge rendered as an invoice line item. Enums widened to `string`. */
 export interface InvoiceDetailLineItem {

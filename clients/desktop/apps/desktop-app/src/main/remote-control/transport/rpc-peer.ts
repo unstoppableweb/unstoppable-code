@@ -9,6 +9,7 @@ import {
   type CoworkFolderMissing,
 } from '@canopy/protocol/canopy-core';
 import {
+  ARGUMENTS_REFUSED_CODE,
   CHANNEL_UNAVAILABLE_CODE,
   CONTROLLER_REFUSED_CODE,
   REMOTE_FILE_TOO_LARGE_CODE,
@@ -146,6 +147,7 @@ function errorCode(error: unknown): string | undefined {
 const FIXED_TEXT_CODES: ReadonlySet<string> = new Set([
   UNKNOWN_METHOD_CODE,
   CHANNEL_UNAVAILABLE_CODE,
+  ARGUMENTS_REFUSED_CODE,
   REMOTE_PROTOCOL_MISMATCH_CODE,
   CONTROLLER_REFUSED_CODE,
   REMOTE_FILE_TOO_LARGE_CODE,
@@ -404,20 +406,26 @@ export class RpcPeer {
   ): Promise<void> {
     try {
       const value = await this.options.onRequest(method, params);
-      this.session.sendMessage({ kind: 'response', id, ok: true, value });
+      this.session.sendMessage(
+        { kind: 'response', id, ok: true, value },
+        { keepOnDiscard: true },
+      );
     } catch (error) {
       const coworkFolderMissing = readCoworkFolderMissing(error);
       const operationFailure = readRemoteOperationFailure(error);
-      this.session.sendMessage({
-        kind: 'response',
-        id,
-        ok: false,
-        error: {
-          ...wireError(error),
-          ...(coworkFolderMissing ? { coworkFolderMissing } : {}),
-          ...(operationFailure ? { operationFailure } : {}),
+      this.session.sendMessage(
+        {
+          kind: 'response',
+          id,
+          ok: false,
+          error: {
+            ...wireError(error),
+            ...(coworkFolderMissing ? { coworkFolderMissing } : {}),
+            ...(operationFailure ? { operationFailure } : {}),
+          },
         },
-      });
+        { keepOnDiscard: true },
+      );
     }
   }
 

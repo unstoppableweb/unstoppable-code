@@ -1,6 +1,8 @@
 import { capabilitySetupItemName } from '../../../capability/project-setup/project-setup-model';
 import {
   capabilitySetupItemKey,
+  type CapabilitySetupConnectorItem,
+  type CapabilitySetupConnectorRef,
   type CapabilitySetupItem,
   type CapabilitySetupItemRef,
 } from '@canopy/protocol/canopy-core';
@@ -37,6 +39,8 @@ export interface ProjectDefaultsState {
   /** The organization's own items an owner or admin can mark. */
   readonly candidates: readonly CapabilitySetupItem[];
   readonly canEdit: boolean;
+  /** The default connections (CAN-6246); null from a server before them. */
+  readonly connectors: ProjectDefaultConnectors | null;
 }
 
 function listedRef(
@@ -86,7 +90,7 @@ export function projectDefaultRows(
  * lowercasing gives a word-final Σ the final form, so `Σ` would otherwise
  * miss a name such as `ΕΛΕΓΧΟΣ`.
  */
-function searchFold(text: string): string {
+export function searchFold(text: string): string {
   return text.toLocaleLowerCase().replace(/ς/gu, 'σ');
 }
 
@@ -123,4 +127,81 @@ export function projectDefaultsWith(
     .map((item) => item.ref)
     .filter((stored) => capabilitySetupItemKey(stored) !== key);
   return on ? [...kept, ref] : kept;
+}
+
+// --- Default connections (CAN-6246, phase 07) --------------------------------
+
+/** The organization's default connections and the ones it could mark. */
+export interface ProjectDefaultConnectors {
+  readonly items: readonly CapabilitySetupConnectorItem[];
+  readonly candidates: readonly CapabilitySetupConnectorItem[];
+}
+
+/** One connection row: an organization connection and whether it is a default. */
+export interface ProjectDefaultConnectorRow {
+  readonly key: string;
+  readonly ref: CapabilitySetupConnectorRef;
+  readonly name: string;
+  /** False for a default whose connection was deleted. */
+  readonly available: boolean;
+  /** True when it must be signed in again before projects can use it. */
+  readonly needsSignIn: boolean;
+  readonly isDefault: boolean;
+}
+
+/**
+ * The connection rows: the organization's connections in the read's order,
+ * then any default the candidates no longer list, so an admin can still
+ * turn it off.
+ */
+export function projectDefaultConnectorRows(
+  connectors: ProjectDefaultConnectors,
+): ProjectDefaultConnectorRow[] {
+  const defaults = new Set(connectors.items.map((item) => item.ref.id));
+  const rows: ProjectDefaultConnectorRow[] = [];
+  const listed = new Set<string>();
+  const add = (
+    item: CapabilitySetupConnectorItem,
+    isDefault: boolean,
+  ): void => {
+    if (listed.has(item.ref.id)) return;
+    listed.add(item.ref.id);
+    rows.push({
+      key: `connector-${item.ref.id}`,
+      ref: item.ref,
+      name: item.available ? item.name : 'Removed connection',
+      available: item.available,
+      needsSignIn:
+        item.available &&
+        (item.status === 'needsSignIn' || item.status === 'disconnected'),
+      isDefault,
+    });
+  };
+  for (const item of connectors.candidates)
+    add(item, defaults.has(item.ref.id));
+  for (const item of connectors.items) add(item, true);
+  return rows;
+}
+
+/**
+ * The default connections to save after switching `ref` on or off: the
+ * available stored defaults in order, `ref` appended or removed. A default
+ * whose connection is gone is left out, as the service refuses to store it.
+ */
+export function defaultConnectorsWith(
+  items: readonly CapabilitySetupConnectorItem[],
+  ref: CapabilitySetupConnectorRef,
+  on: boolean,
+): CapabilitySetupConnectorRef[] {
+  const kept = items
+    .filter((item) => item.available && item.ref.id !== ref.id)
+    .map((item) => item.ref);
+  return on ? [...kept, ref] : kept;
+}
+
+/** The stored defaults of every other kind, unchanged, for a connection save. */
+export function availableDefaultRefs(
+  items: readonly CapabilitySetupItem[],
+): CapabilitySetupItemRef[] {
+  return items.filter((item) => item.available).map((item) => item.ref);
 }

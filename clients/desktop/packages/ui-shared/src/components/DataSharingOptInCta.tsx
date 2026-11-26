@@ -1,13 +1,14 @@
 'use client';
 
-import { ButtonLink } from './ButtonLink';
 import type { JSX } from 'react';
 import type { DataSharingOptInFeature } from '@canopy/protocol';
 import {
   DATA_SHARING_SCOPE_ORDER,
+  dataSharingOrganizationAccessNote,
   type DataSharingScopeKey,
 } from '../lib/data-sharing-features';
-import { Notice, NoticeButton } from './Notice';
+import { Notice, NoticeButton } from '../primitives/Notice';
+import { Button } from '../primitives/Button';
 
 // Every string below is the approved CAN-3383 copy (docs/ux-writing.md,
 // "Data-sharing opt-in hints"). Keep sentences short, keep dynamic names as
@@ -170,6 +171,18 @@ export function DataSharingOptInScopeSummary({
       text: `Shares your ${formatDataSharingScopeList(allowedScopes)} with ${organizationName} in ${productName}.`,
     });
   }
+  // What the organization's owners can do with it: the same disclosure the
+  // Privacy rows carry (`dataSharingOrganizationAccessNote`).
+  const ownerVisible = orderScopes([
+    ...allowedScopes,
+    ...additionalScopes,
+  ]).filter((scope) => dataSharingOrganizationAccessNote(scope) !== null);
+  if (ownerVisible.length > 0) {
+    lines.push({
+      key: 'owners',
+      text: `${organizationName}'s owners can view and download your shared ${formatDataSharingScopeList(ownerVisible)}.`,
+    });
+  }
   if (additionalScopes.length > 0) {
     lines.push({
       key: 'additional',
@@ -279,7 +292,7 @@ function FallbackLink({
   testId: string;
 }): JSX.Element {
   return (
-    <ButtonLink
+    <Button
       target={undefined}
       rel={undefined}
       href={href}
@@ -289,7 +302,7 @@ function FallbackLink({
       className="max-w-full whitespace-nowrap"
     >
       {FALLBACK_LINK}
-    </ButtonLink>
+    </Button>
   );
 }
 
@@ -369,13 +382,13 @@ function PersonalOptInNotice(
       onDismiss={onDismiss}
       dismissTestId={`${testId}-dismiss`}
       detail={error ? ERROR_TEXT[error] : undefined}
+      // The disclosure is a list, so the headline sits on its own line.
+      title={dataSharingOptInHeadline(feature)}
+      titleLayout="stacked"
     >
-      <p className="font-medium fg-primary">
-        {dataSharingOptInHeadline(feature)}
-      </p>
       <ul
         data-testid={`${testId}-summary`}
-        className="mt-0.5 flex flex-col gap-0.5 break-words fg-tertiary"
+        className="flex flex-col gap-0.5 break-words"
       >
         {lines.map((line) => (
           <li key={line.key} data-line={line.key}>
@@ -460,7 +473,7 @@ function OptInNotice(props: DataSharingOptInCtaProps): JSX.Element {
         title={dataSharingOptInHeadline(feature)}
         actions={
           webAction === null ? undefined : (
-            <ButtonLink
+            <Button
               target={undefined}
               rel={undefined}
               href={webAction.href}
@@ -473,7 +486,7 @@ function OptInNotice(props: DataSharingOptInCtaProps): JSX.Element {
               <span className="truncate">
                 {dataSharingOptInActionLabel(organizationName)}
               </span>
-            </ButtonLink>
+            </Button>
           )
         }
         onDismiss={onDismiss}
@@ -518,10 +531,10 @@ function OptInNotice(props: DataSharingOptInCtaProps): JSX.Element {
       onDismiss={onDismiss}
       dismissTestId={`${testId}-dismiss`}
       detail={error ? ERROR_TEXT[error] : undefined}
+      // The disclosure is a list, so the headline sits on its own line.
+      title={dataSharingOptInHeadline(feature)}
+      titleLayout="stacked"
     >
-      <p className="font-medium fg-primary">
-        {dataSharingOptInHeadline(feature)}
-      </p>
       <DataSharingOptInScopeSummary
         organizationName={organizationName}
         productName={productName}
@@ -529,7 +542,6 @@ function OptInNotice(props: DataSharingOptInCtaProps): JSX.Element {
         skippedScopes={summary.skippedScopes}
         additionalScopes={summary.additionalScopes}
         dataTestId={`${testId}-summary`}
-        className="mt-0.5"
       />
     </Notice>
   );

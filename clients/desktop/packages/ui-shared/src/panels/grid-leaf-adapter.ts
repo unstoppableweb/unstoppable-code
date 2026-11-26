@@ -13,8 +13,8 @@
  * This file is engine-layer code: no React, no stores, no runtime deps.
  */
 
-import { DisposableStore } from './disposable';
-import { Emitter, type Event } from './emitter';
+import { DisposableStore } from '../lib/disposable';
+import { Emitter, type Event } from '../lib/emitter';
 import { LayoutPriority } from './splitview';
 import type { ISerializableView, IViewSize } from './grid';
 

@@ -11,7 +11,13 @@ import {
   type RemotePluginProviderOutcome,
   type RemotePluginProviderOutcomes,
 } from '@canopy/protocol/plugins/remote-install';
+import { REMOTE_MEMBER_CHANNELS } from '@canopy/protocol/remote-control/channels';
 import { repositoryCloneErrorMessage } from '@canopy/protocol/remote-control/shell';
+import { homedir } from 'node:os';
+import {
+  getCanopyDataDir,
+  getCanopySecureDataDir,
+} from '@canopy/execution-engine/canopy-paths';
 
 /**
  * Host paths a browser controller does not receive (CAN-7433, CAN-7442). A clone job's
@@ -288,9 +294,230 @@ function browserWorktreeRecoveryFinishResult(value: unknown): unknown {
     : { ...value, check: BROWSER_FINISH_REFUSED_CHECK };
 }
 
+/**
+ * Host folders a browser-bound error names generically (CAN-6718 review
+ * S3), longest first so the data folders win over the home folder they sit
+ * in. A root too short to be a folder of its own (`/`) is never replaced.
+ */
+function hostRoots(): readonly (readonly [string, string])[] {
+  const roots: [string, string][] = [];
+  const add = (read: () => string, label: string): void => {
+    try {
+      const root = read().replace(/[\\/]+$/u, '');
+      if (root.length < 2) return;
+      roots.push([root, label]);
+      // Windows paths may be quoted with either separator.
+      if (root.includes('\\')) roots.push([root.replace(/\\/gu, '/'), label]);
+    } catch {
+      // A root that can't be read names nothing to replace.
+    }
+  };
+  add(getCanopyDataDir, "the app's data folder");
+  add(getCanopySecureDataDir, "the app's data folder");
+  add(homedir, '~');
+  return roots.sort(([a], [b]) => b.length - a.length);
+}
+
+/** A model layer's path in Ollama's store (`…/blobs/sha256-<digest>`). */
+const OLLAMA_BLOB_PATH =
+  /(?:[A-Za-z]:)?(?:[\\/][^\s'"`\\/]+)*[\\/]blobs[\\/]sha256[-:][0-9a-f]+/giu;
+
+/**
+ * `text` with this computer's home folder, app data folders and Ollama blob
+ * paths named generically: the backstop for every error string a browser
+ * receives from harness setup, after any fixed sentence was chosen.
+ */
+export function scrubHostPaths(text: string): string {
+  let scrubbed = text.replace(OLLAMA_BLOB_PATH, 'a model file');
+  for (const [root, label] of hostRoots())
+    scrubbed = scrubbed.split(root).join(label);
+  return scrubbed;
+}
+
+/** A path or an OS error code (ENOENT, ENOSPC, ...) marks a message as raw. */
+const RAW_FAILURE_TEXT = /[\\/]|\bE[A-Z]{3,}\b/u;
+
+const BROWSER_ANTIGRAVITY_INSTALL_FAILED =
+  'Antigravity CLI install failed. Try again.';
+
+/**
+ * The Antigravity runtime status without `executable`, the person's own
+ * copy's path on this computer (gap 1 of CAN-6718), and with a raw install
+ * error (a file system error naming the install folder) replaced by the
+ * fixed sentence. The computer logs the raw text when the install fails.
+ */
+function antigravityStatusWithoutPath(value: unknown): unknown {
+  const status = withoutKeys(value, ['executable']);
+  if (!isRecord(status) || typeof status.error !== 'string') return status;
+  return {
+    ...status,
+    error: RAW_FAILURE_TEXT.test(status.error)
+      ? BROWSER_ANTIGRAVITY_INSTALL_FAILED
+      : scrubHostPaths(status.error),
+  };
+}
+
+/** `value` without the named own keys; anything but a record passes. */
+function withoutKeys(value: unknown, keys: readonly string[]): unknown {
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value).filter(([key]) => !keys.includes(key)),
+  );
+}
+
+/**
+ * Claude's or Codex's sign-in status without `authFingerprint`, an opaque
+ * account-change marker, and `accountKind`: the browser reads neither, and
+ * its Codex login states drop the same two.
+ */
+function providerAuthStatusWithoutFingerprint(value: unknown): unknown {
+  return withoutKeys(value, ['authFingerprint', 'accountKind']);
+}
+
+/**
+ * A Codex login state as a browser sees it (CAN-6718 review S1): its
+ * account without `authFingerprint`, the opaque account-change marker, and
+ * `accountKind`, which no browser reads. Anything else passes.
+ */
+function codexLoginStateForBrowser(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.account)) return value;
+  return {
+    ...value,
+    account: withoutKeys(value.account, ['authFingerprint', 'accountKind']),
+  };
+}
+
+/**
+ * How many characters at the end of `text` could begin a host folder that
+ * the next output event completes: the longest suffix that is a proper
+ * prefix of one.
+ */
+function hostRootTailLength(text: string): number {
+  const roots = hostRoots().map(([root]) => root);
+  const longest = Math.max(0, ...roots.map((root) => root.length));
+  for (
+    let start = Math.max(0, text.length - longest + 1);
+    start < text.length;
+    start++
+  ) {
+    const tail = text.slice(start);
+    if (
+      roots.some((root) => root.length > tail.length && root.startsWith(tail))
+    )
+      return text.length - start;
+  }
+  return 0;
+}
+
+/**
+ * Where `text` can be cut, sending what is before and holding the rest: before
+ * a tail that could begin a host folder, and never inside a whole folder
+ * that tail would cut in two (a home folder at /home/home ending in /h).
+ */
+function safeSplit(text: string): number {
+  const roots = hostRoots().map(([root]) => root);
+  let split = text.length - hostRootTailLength(text);
+  for (let moved = true; moved; ) {
+    moved = false;
+    for (const root of roots) {
+      let at = text.indexOf(root);
+      while (at !== -1 && at < split) {
+        if (at + root.length > split) {
+          split = at;
+          moved = true;
+        }
+        at = text.indexOf(root, at + 1);
+      }
+    }
+  }
+  return split;
+}
+
+/**
+ * A browser session's sign-in text (CAN-6718 review): a raw error a sign-in
+ * prints, such as Antigravity's when it can't create its folder, can quote
+ * this computer's folders, so they are named generically. Output arrives in
+ * chunks, so a folder can be split across two events: text at the end of
+ * an event that could begin one is held back and sent with the next event,
+ * or just before the sign-in's exit.
+ */
+export class BrowserSignInTextScrubber {
+  private readonly held = new Map<string, string>();
+
+  /**
+   * The pushes a browser receives for one sign-in push, in order, or `null`
+   * for any other channel.
+   */
+  project(
+    channel: string,
+    args: readonly unknown[],
+  ): (readonly [string, unknown[]])[] | null {
+    const [event] = args;
+    if (channel === IPC_CHANNELS.authTerminalOutput) {
+      if (
+        !isRecord(event) ||
+        typeof event.sessionId !== 'string' ||
+        typeof event.data !== 'string'
+      )
+        return [[channel, [...args]]];
+      const text = `${this.held.get(event.sessionId) ?? ''}${event.data}`;
+      const held = text.length - safeSplit(text);
+      if (held > 0) this.held.set(event.sessionId, text.slice(-held));
+      else this.held.delete(event.sessionId);
+      const ready = text.slice(0, text.length - held);
+      if (ready === '') return [];
+      return [[channel, [{ ...event, data: scrubHostPaths(ready) }]]];
+    }
+    if (channel === IPC_CHANNELS.authTerminalExit) {
+      if (!isRecord(event) || typeof event.sessionId !== 'string')
+        return [[channel, [...args]]];
+      const rest = this.held.get(event.sessionId);
+      this.held.delete(event.sessionId);
+      return rest === undefined
+        ? [[channel, [...args]]]
+        : [
+            [
+              IPC_CHANNELS.authTerminalOutput,
+              [{ sessionId: event.sessionId, data: scrubHostPaths(rest) }],
+            ],
+            [channel, [...args]],
+          ];
+    }
+    return null;
+  }
+}
+
+/** The invoke channels of harness setup (gap 1 of CAN-6718). */
+const BROWSER_HARNESS_SETUP_CHANNELS: ReadonlySet<string> = new Set(
+  REMOTE_MEMBER_CHANNELS.harnessSetup.invoke,
+);
+
+/**
+ * A rejection's message as a browser sees it, for the harness setup
+ * channels: a handler's raw error can quote a host path, so every message
+ * gets the host-folder scrub. Other channels' messages pass unchanged.
+ */
+export function browserHarnessErrorMessage(
+  channel: string,
+  message: string,
+): string {
+  if (!BROWSER_HARNESS_SETUP_CHANNELS.has(channel)) return message;
+  return scrubHostPaths(message);
+}
+
 /** A tunnelled invoke's result as a browser controller may see it. */
 export function projectBrowserResult(channel: string, value: unknown): unknown {
   switch (channel) {
+    case IPC_CHANNELS.codexLoginStart:
+    case IPC_CHANNELS.codexLoginCancel:
+    case IPC_CHANNELS.codexLoginRetryVerification:
+      return codexLoginStateForBrowser(value);
+    case IPC_CHANNELS.antigravityRuntimeStatus:
+    case IPC_CHANNELS.antigravityRuntimeInstall:
+      return antigravityStatusWithoutPath(value);
+    case IPC_CHANNELS.settingsClaudeAuthStatus:
+    case IPC_CHANNELS.settingsCodexAuthStatus:
+      return providerAuthStatusWithoutFingerprint(value);
     case IPC_CHANNELS.cloneJobsList:
       return cloneJobsWithoutPaths(value);
     case PLUGINS_CHANNELS.INSTALL_PLUGIN:
@@ -315,6 +542,10 @@ export function projectBrowserPush(
   channel: string,
   args: readonly unknown[],
 ): unknown[] {
+  if (channel === IPC_CHANNELS.antigravityRuntimeProgress)
+    return [antigravityStatusWithoutPath(args[0])];
+  if (channel === IPC_CHANNELS.codexLoginState)
+    return [codexLoginStateForBrowser(args[0])];
   if (channel !== IPC_CHANNELS.cloneJobsChanged) return [...args];
   return [cloneJobsWithoutPaths(args[0])];
 }

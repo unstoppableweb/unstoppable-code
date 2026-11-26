@@ -37,6 +37,7 @@ export const ANNOTATION_ERROR_REASONS = [
   'REVISION_CONFLICT',
   'READ_ONLY_SCOPE',
   'DAMAGED_STATE',
+  'OUTCOME_UNKNOWN',
 ] as const;
 export type AnnotationErrorReason = (typeof ANNOTATION_ERROR_REASONS)[number];
 
@@ -49,12 +50,20 @@ export const ANNOTATION_ERROR_CODES = {
    * write is refused rather than replacing it (CAN-7094).
    */
   DAMAGED_STATE: 'core.annotation.damagedState',
+  /**
+   * The write was installed but its folder flush failed, so after a crash
+   * either the new or the previous state may remain (CAN-4735). Not
+   * acknowledged: re-read before deciding whether to repeat it.
+   */
+  OUTCOME_UNKNOWN: 'core.annotation.outcomeUnknown',
 } as const satisfies Record<AnnotationErrorReason, string>;
 
 export const AnnotationOperationErrorDetailsSchema = z.strictObject({
   reason: z.enum(ANNOTATION_ERROR_REASONS),
   /** The stored revision a conflicting write was compared with. */
   currentRevision: z.number().int().min(0).optional(),
+  /** Set when the write may or may not have taken effect. */
+  effects: z.literal('unknown').optional(),
 });
 export type AnnotationOperationErrorDetails = z.output<
   typeof AnnotationOperationErrorDetailsSchema
@@ -67,6 +76,7 @@ export const AnnotationOperationErrorSchema = CanopyErrorPayloadSchema.extend({
       ANNOTATION_ERROR_CODES.REVISION_CONFLICT,
       ANNOTATION_ERROR_CODES.READ_ONLY_SCOPE,
       ANNOTATION_ERROR_CODES.DAMAGED_STATE,
+      ANNOTATION_ERROR_CODES.OUTCOME_UNKNOWN,
     ])
     .optional(),
   details: AnnotationOperationErrorDetailsSchema.optional(),

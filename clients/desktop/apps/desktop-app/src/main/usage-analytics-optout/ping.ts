@@ -31,9 +31,19 @@ export type OptOutUnknownCause =
   | 'preferences-unconfirmed'
   | 'attribution-unknown';
 
+/**
+ * Why the ping stays silent although analytics is off. Unlike `unknown` this
+ * is a known answer: nothing is re-checked until the next UTC day or a policy
+ * change (consent recorded, or the flag cleared by turning analytics on).
+ */
+export type OptOutSuppressedCause =
+  | 'consent-pending'
+  | 'declined-at-onboarding';
+
 export type OptOutState =
   | { kind: 'on' }
   | { kind: 'off'; reason: OptOutReason }
+  | { kind: 'suppressed'; cause: OptOutSuppressedCause }
   | { kind: 'unknown'; cause: OptOutUnknownCause };
 
 /**
@@ -77,6 +87,8 @@ export interface UsageAnalyticsOptOutPingOptions {
     | 'getUsageDataPolicySnapshot'
     | 'hasWorkspaceContext'
     | 'isOrganizationPolicyUnreadable'
+    | 'isConsentPending'
+    | 'wasAnalyticsDeclinedAtOnboarding'
     | 'subscribe'
     | 'whenSettled'
   >;
@@ -153,6 +165,15 @@ export function readPolicyOptOutState(policy: PolicyReader): OptOutState {
   const prohibition = snapshot.prohibitedBy.productAnalytics;
   if (prohibition?.preferencesUnreadable === true) {
     return { kind: 'unknown', cause: 'preferences-unreadable' };
+  }
+  // Nothing sends before the first-run legal consent, this ping included.
+  if (policy.isConsentPending()) {
+    return { kind: 'suppressed', cause: 'consent-pending' };
+  }
+  // Declining Usage analytics on the Welcome gate is never counted as an
+  // opt-out, whatever else is true (an organization prohibition included).
+  if (policy.wasAnalyticsDeclinedAtOnboarding()) {
+    return { kind: 'suppressed', cause: 'declined-at-onboarding' };
   }
   // Before the selected context is known the org part is a conservative guess.
   if (!policy.hasWorkspaceContext()) {
@@ -391,8 +412,9 @@ export function startUsageAnalyticsOptOutPing(
       wait(OPT_OUT_PING_UNKNOWN_RECHECK_MS + jitter(), 'cycle', expected);
       return;
     }
-    // On: a policy change wakes this, otherwise the next day does.
-    if (state.kind === 'on') {
+    // On or suppressed: send nothing and write no marker. A policy change
+    // wakes this, otherwise the next day does.
+    if (state.kind === 'on' || state.kind === 'suppressed') {
       waitForNextUtcDay(expected);
       return;
     }

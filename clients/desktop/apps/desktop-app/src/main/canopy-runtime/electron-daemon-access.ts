@@ -1,4 +1,5 @@
 import { daemonCredentialRoute } from './daemon-credential-route';
+import { daemonCloudAccountRoute } from '../canopy-cloud/daemon-account-provisioning';
 import { app } from 'electron';
 import { CanopyClientError, toCanopyClientError } from '@canopy/core-client';
 import {
@@ -20,6 +21,7 @@ import {
 } from '@canopy/core-runtime/node/w5/service-history';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import {
+  CanopyRuntimeDescriptorSchema,
   CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
   CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
   WORKER_CODE_GRAPH_GENERATION_REPORT_CAPABILITY,
@@ -42,7 +44,10 @@ import {
 } from './electron-daemon-host';
 import { getElectronDaemonHealth } from './electron-daemon-health';
 import { reportDaemonSetupFailure } from './daemon-setup-failure-report';
-import type { BackgroundServiceHandoffFailure } from '@canopy/desktop-shared/lib/background-service-status';
+import type {
+  BackgroundServiceBackupWarning,
+  BackgroundServiceHandoffFailure,
+} from '@canopy/desktop-shared/lib/background-service-status';
 import { getDaemonCodeGraphQueue } from './daemon-code-graph-queue';
 import { getDaemonExecutionStatus } from './daemon-execution-status';
 import type { WorkspaceCommitEventBinding } from './workspace-commit-events';
@@ -57,6 +62,7 @@ let resolvedHost: ElectronDaemonHost | undefined;
 let lifetime: ElectronDaemonCallerLifetime | undefined;
 let stopped = false;
 let w5HandoffPhase: 'pending' | 'ready' | 'degraded' | 'cancelled' | undefined;
+let backupWarning: BackgroundServiceBackupWarning | undefined;
 let windowsPreparation:
   | { readonly scope: W5RootEvidenceScope; readonly pending: Promise<void> }
   | undefined;
@@ -76,13 +82,19 @@ function observeWorkspaceCommits(
     import('./workspace-commit-events'),
     import('./workspace-commit-event-handlers'),
     import('./w5-read-cache'),
-  ]).then(([events, handlers, readCache]) =>
+    import('../lib/worktrees-file-watcher'),
+  ]).then(([events, handlers, readCache, fileWatcher]) =>
     events.createWorkspaceCommitEventBinding({
       handlers: handlers.createDesktopWorkspaceCommitEventHandlers(),
       isOwnOrigin: (id) => ownClientInstances.has(id),
       readCache: (plan) => readCache.applyDesktopW5ReadCachePlan(plan),
-      onStreamChanged: (ready) =>
-        readCache.setDesktopW5ReadCacheStreamReady(ready),
+      onStreamChanged: (ready) => {
+        readCache.setDesktopW5ReadCacheStreamReady(ready);
+        // CAN-7156: the worktrees.json watcher is the fallback for W5e;
+        // closing the binding at quit starts none.
+        if (!stopped)
+          fileWatcher.setWorktreesFileWatchersCommitEventsLive(ready);
+      },
       onInvalidated: () => readCache.revokeDesktopW5ReadCache(),
     }),
   ));
@@ -111,11 +123,18 @@ function w5LaunchInputs(): Parameters<typeof createElectronDaemonHost>[0] {
     run: async (signal, protection): Promise<void> => {
       requireW5SpawnAllowed(signal);
       const { prepareW5FlipSpawn } = await import('../lib/w5-flip-backup');
-      await prepareW5FlipSpawn(app.getVersion(), protection);
+      const prepared = await prepareW5FlipSpawn(app.getVersion(), protection);
       requireW5SpawnAllowed(signal);
+      if (prepared.kind === 'advisory') backupWarning = prepared.reason;
     },
   };
   return { w5: { beforeSpawn } };
+}
+
+/** Health keeps the first warning of the launch; repeats are no-ops. */
+function publishBackupWarning(): void {
+  if (!stopped && backupWarning !== undefined)
+    getElectronDaemonHealth().noteBackupWarning(backupWarning);
 }
 
 function w5SpawnAllowed(): boolean {
@@ -167,7 +186,8 @@ async function prepareWindowsW5Spawn(
   } else {
     const pending = (async (): Promise<void> => {
       const { prepareW5FlipSpawn } = await import('../lib/w5-flip-backup');
-      await prepareW5FlipSpawn(app.getVersion());
+      const prepared = await prepareW5FlipSpawn(app.getVersion());
+      if (prepared.kind === 'advisory') backupWarning = prepared.reason;
     })();
     windowsPreparation = { scope, pending };
     try {
@@ -224,6 +244,23 @@ export function getElectronDaemonHost(): Promise<ElectronDaemonHost> {
 /** The resolved trusted host, or `undefined`; never starts one. */
 export function peekElectronDaemonHost(): ElectronDaemonHost | undefined {
   return resolvedHost;
+}
+
+/**
+ * The process id the published core daemon descriptor names, or null when
+ * no host is set up or no daemon is published. Never starts a host or a
+ * daemon. Remote Control web preview counts it as Canopy's own (CAN-7679).
+ */
+export async function publishedCoreDaemonPid(
+  signal: AbortSignal,
+): Promise<number | null> {
+  if (!resolvedHost) return null;
+  const raw = await resolvedHost.launch.ports.descriptor.read(signal);
+  if (raw === null) return null;
+  const parsed = CanopyRuntimeDescriptorSchema.safeParse(raw);
+  if (!parsed.success)
+    throw new Error('The core daemon descriptor is malformed.');
+  return parsed.data.pid;
 }
 
 /** Explicit migrated-consumer opt-in; construction does not open or start a daemon. */
@@ -288,13 +325,19 @@ export function getElectronDaemonConnections(): ElectronDaemonConnectionService<
       return client;
     },
     onSession: (session, caller) => {
+      publishBackupWarning();
       daemonCredentialRoute.observe(session);
+      // CAN-6997: provisions the daemon's own account record from this
+      // app's sign-in; inert until account authority is selected.
+      daemonCloudAccountRoute.observe(session);
       observeWorkspaceCommits(session, caller.clientInstanceId);
       // The resource monitor follows the daemon's status (CAN-5690).
       if (!stopped) getDaemonExecutionStatus().observe(session);
     },
     onReachability: (event) => {
       getElectronDaemonHealth().observe(event);
+      // A lease reconnect, as after a respawn, reaches without onSession.
+      if (event.kind === 'reached') publishBackupWarning();
     },
     onSetupFailure: reportDaemonSetupFailure,
     // The handoff waits a refused daemon out and settles any attach it

@@ -280,18 +280,32 @@ export async function isModelBlockedByStoredPolicy(
   return (await readModelPolicyDecision(modelId, owner)).blocked;
 }
 
-export async function isOrgModelPolicyActiveForStoredAccount(
+export interface OrgModelPolicyActivity {
+  readonly active: boolean;
+  /** This probe's own read failed, whatever later reads report. */
+  readonly degraded: boolean;
+}
+
+export async function readOrgModelPolicyActivityForStoredAccount(
   owner?: WorkOwner,
-): Promise<boolean> {
+): Promise<OrgModelPolicyActivity> {
   const decision = await readModelPolicyDecision(
     '__canopy_model_policy_active_probe__',
     owner,
   );
-  if (decision.degraded) return decision.blocked;
-  return (
-    modelPolicyForOwner(currentPolicyIndex, resolveEnforcementOwner(owner))
-      .size > 0
-  );
+  if (decision.degraded) return { active: decision.blocked, degraded: true };
+  return {
+    active:
+      modelPolicyForOwner(currentPolicyIndex, resolveEnforcementOwner(owner))
+        .size > 0,
+    degraded: false,
+  };
+}
+
+export async function isOrgModelPolicyActiveForStoredAccount(
+  owner?: WorkOwner,
+): Promise<boolean> {
+  return (await readOrgModelPolicyActivityForStoredAccount(owner)).active;
 }
 
 export function setCurrentModelPolicyAccount(

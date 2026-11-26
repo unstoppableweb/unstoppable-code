@@ -6,7 +6,10 @@ import {
 } from './worktree-create-recovery';
 import { readWorkspaceConfig } from './workspace-persistence';
 import { logMainProcessWarn } from './main-process-logging';
-import { reportDestructiveRecovery } from './w5-destructive-recovery';
+import {
+  reportDestructiveRecovery,
+  replayJournaledTerminalRetirements,
+} from './w5-destructive-recovery';
 import { rm, stat } from 'node:fs/promises';
 import type { BrowserWindow } from 'electron';
 import {
@@ -364,6 +367,8 @@ async function reconcileMissingReadyWorktree(
 export async function reconcileGitPendingWorktrees(
   getWindow: () => BrowserWindow | null = () => null,
 ): Promise<void> {
+  // Replay valid terminal intents even if an unrelated journal is unreadable.
+  await replayJournaledTerminalRetirements();
   const recovery = await reportDestructiveRecovery();
   for (const record of recovery) {
     if (!record.archiveRecoveryCleanup?.some((entry) => !entry.done)) continue;
@@ -507,8 +512,9 @@ export async function reconcileGitPendingWorktrees(
       },
     );
     if (pendingWorktrees.length > 0 || recoveredReadyWorktrees.some(Boolean)) {
-      // Startup no longer awaits recovery. Persistence suppresses self-write
-      // watcher echoes, so explicitly refresh the already visible inventory.
+      // Startup no longer awaits recovery. W5e skips this process's commits
+      // and the worktrees.json watcher is off while the daemon is live, so
+      // explicitly refresh the already visible inventory.
       sendToWindow(getWindow(), IPC_CHANNELS.worktreesFileChanged, {
         workspaceId: workspace.id,
       });

@@ -1,4 +1,4 @@
-import { Badge, type BadgeTone } from '@canopy/ui-shared/components/Badge';
+import { Badge, type BadgeTone } from '@canopy/ui-shared/primitives/Badge';
 import { useMemo, useState, type JSX } from 'react';
 import type { BrowserNetworkEntry } from '@canopy/desktop-shared/types';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';

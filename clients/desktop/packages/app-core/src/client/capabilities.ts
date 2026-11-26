@@ -93,6 +93,13 @@ export interface CanopyCapabilities {
   /** Host publishes current provider account quotas and accepts refresh. Default-deny. */
   readonly providerQuotas?: boolean;
   /**
+   * Host serves its agent harness setup (`CanopyClient.harnessSetup`, gap 1
+   * of CAN-6718): provider runtime status, install and progress, Claude's
+   * and Codex's sign-in status, the Codex device-code sign-in and the fixed
+   * sign-in text stream. Default-deny.
+   */
+  readonly harnessSetup?: boolean;
+  /**
    * Host lists its Add project clone jobs and accepts cancel and dismiss for
    * them (`cloneJobs.*`, CAN-7433). Hosts that leave it unset show no pending
    * clone rows. Default-deny.
@@ -360,7 +367,7 @@ export interface CanopyCapabilities {
    */
   readonly chatFailureRetry?: boolean;
   /**
-   * Host serves the External agents (MCP) pages through
+   * Host serves the External agents pages through
    * `CanopyClient.externalAgents`; absent is default-deny.
    */
   readonly externalAgents?: boolean;
@@ -388,6 +395,8 @@ export interface CanopyCapabilities {
   readonly terminalPty: boolean;
   /** Terminal tab names persist across reloads, so desktop panel hosts offer Rename. Unset is default-deny. */
   readonly terminalRename?: boolean;
+  /** Output-free terminal history probes. Unset/unavailable defaults to off. */
+  readonly terminalHistoryRefresh?: boolean;
   /** File-system reach for browse/read/edit. */
   readonly fileSystemAccess: FileSystemAccessLevel;
   /** On-device voice dictation (macOS desktop only). */
@@ -849,6 +858,11 @@ export interface CanopyCapabilities {
    * during project deletion. Independent of cold workspace recovery. Default-deny.
    */
   readonly worktreeRecoveryResolution?: boolean;
+  /**
+   * Host can move a reviewed, readable archive record aside (CAN-7014).
+   * Needs `worktreeRecoveryResolution` too. Default-deny.
+   */
+  readonly worktreeRecoverySetAside?: boolean;
   /**
    * Host lists its live archive recovery entries (CAN-7439). Read only: it
    * grants no Resolve, Finish or discard action. Every client that reports

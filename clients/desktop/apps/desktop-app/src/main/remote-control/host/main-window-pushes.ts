@@ -37,8 +37,41 @@ const ADDRESSED_CHANNELS: ReadonlySet<string> = new Set([
   IPC_CHANNELS.appAdvisorWindowUiStateChanged,
 ]);
 
-function isMirrored(channel: string): boolean {
-  return !PER_PAGE_CHANNELS.has(channel) && !ADDRESSED_CHANNELS.has(channel);
+/**
+ * Sign-in channels main addresses to the window that owns the attempt
+ * (`ipc/codex-login.ts`, `ipc/auth-terminal.ts`). They carry device codes,
+ * sign-in links and the session id that input is typed into, so a copy for
+ * this computer's own window must never reach a controller; a bridge that
+ * owns an attempt hears it through its own window.
+ */
+const SIGN_IN_CHANNELS: ReadonlySet<string> = new Set([
+  IPC_CHANNELS.codexLoginState,
+  IPC_CHANNELS.authTerminalOutput,
+  IPC_CHANNELS.authTerminalExit,
+]);
+
+/**
+ * Install progress main sends only to the windows waiting on that install
+ * (`ipc/antigravity-runtime.ts`). A controller that joined an install hears it
+ * through its own bridge; a copy for this computer's window must not reach
+ * controllers that never joined it.
+ */
+const INSTALL_PROGRESS_CHANNELS: ReadonlySet<string> = new Set([
+  IPC_CHANNELS.antigravityRuntimeProgress,
+  // Copilot's progress goes to the window running its setup
+  // (`ipc/copilot-connection.ts`) and carries its device code; a controller
+  // that runs it hears it through its own bridge (CAN-6718).
+  IPC_CHANNELS.copilotConnectionProgress,
+]);
+
+/** Whether a push main sends to this computer's app window reaches controllers. */
+export function isMirrored(channel: string): boolean {
+  return (
+    !PER_PAGE_CHANNELS.has(channel) &&
+    !ADDRESSED_CHANNELS.has(channel) &&
+    !SIGN_IN_CHANNELS.has(channel) &&
+    !INSTALL_PROGRESS_CHANNELS.has(channel)
+  );
 }
 
 export function createMainWindowPushSource(

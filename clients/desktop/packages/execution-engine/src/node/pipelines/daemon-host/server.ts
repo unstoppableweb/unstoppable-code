@@ -1171,14 +1171,37 @@ export function servePipelineHost(options: ServePipelineHostOptions): void {
         publish(executionId, cancelled);
         return respond(id, projectPipelineExecution(cancelled));
       }
-      if (live) void live.cancel().catch(() => undefined);
-      ownerRequests?.abort();
+      if (live) {
+        // Join a checkpoint already in flight before finalizing its durable
+        // pause. A stuck executor retains the existing recovered fallback.
+        const cancelling = live
+          .cancel()
+          .then(() => finishing.get(live))
+          .catch(() => undefined);
+        ownerRequests?.abort();
+        // Recovery must retain cancellation if the host exits during the join.
+        await requestExecutionCancellation(executionId, dir);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            cancelling,
+            new Promise<void>((resolve) => {
+              timer = setTimeout(resolve, DRAIN_TIMEOUT_MS);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      } else ownerRequests?.abort();
+      if (fenced()) return fail(id, 'closed');
       const cancelled = await cancelPipelineExecution(
         executionId,
         runtimeFor(dir, executionId),
       );
-      // A live run's executor reports its own cancellation.
-      if (!live) publish(executionId, cancelled);
+      // A live executor reports its own terminal state, but a pause finalized
+      // here needs its own terminal publication after the checkpoint event.
+      if (!live || !TERMINAL.has(live.getState().status))
+        publish(executionId, cancelled);
       return respond(id, projectPipelineExecution(cancelled));
     } catch (error) {
       if (error instanceof PipelineExecutionNotFoundError)

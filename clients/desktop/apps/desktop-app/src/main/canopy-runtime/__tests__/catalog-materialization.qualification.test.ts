@@ -50,6 +50,7 @@ import {
   mcpServerConfigRevision,
   type DescribedMcpServer,
 } from '../../mcp/mcp-materialization';
+import { pluginCatalogRevision } from '../../plugins/plugin-catalog-revision';
 
 jest.mock('../../lib/main-process-logging', () => ({
   logMainProcessWarn: jest.fn(),
@@ -266,6 +267,110 @@ afterEach(async () => {
 });
 
 describe('desktop catalog materialization (CAN-4123)', () => {
+  it('pins catalog A and materializes root A when the reconciliation index has advanced to B', async () => {
+    const f = fakes(root);
+    const a = join(root, 'plugin-cache', 'g-aaaaaaaa');
+    const b = join(root, 'plugin-cache', 'g-bbbbbbbb');
+    const commit = 'a'.repeat(40);
+    for (const dir of [a, b]) {
+      mkdirSync(join(dir, '.git'), { recursive: true });
+      mkdirSync(join(dir, '.claude-plugin'), { recursive: true });
+      writeFileSync(
+        join(dir, '.git', 'HEAD'),
+        dir === a ? commit : 'b'.repeat(40),
+      );
+      writeFileSync(join(dir, '.claude-plugin', 'plugin.json'), '{"name":"g"}');
+    }
+    const plugin = f.marketplaces[0].plugins[0];
+    const facet = plugin.facets.claude;
+    if (!facet) throw new Error('expected Claude facet');
+    facet.cachePath = a;
+    facet.sourcePath = a;
+    facet.installLocation = a;
+    facet.externalSource = { url: 'owner/g' };
+    facet.provenance = {
+      sourceUrl: 'owner/g',
+      commit,
+      installedAt: '',
+      marketplaceEntryName: 'g',
+    };
+    plugin.cachePath = a;
+    plugin.sourcePath = a;
+    plugin.externalSource = facet.externalSource;
+    plugin.provenance = facet.provenance;
+    const revision = pluginCatalogRevision(plugin, f.marketplaces[0]);
+    const catalogPath = join(root, 'plugins-cache.json');
+    const catalogBytes = JSON.stringify({
+      version: 2,
+      lastRefreshed: '',
+      marketplaces: f.marketplaces,
+    });
+    writeFileSync(catalogPath, catalogBytes);
+    // Pinning and the worker both select through the production cache-only loader.
+    f.deps.loadMarketplacesCacheOnly = async (): ReturnType<
+      DesktopMaterializationDeps['loadMarketplacesCacheOnly']
+    > =>
+      (
+        await import('../../plugins/plugin-service')
+      ).loadMarketplacesCacheOnly();
+    writeFileSync(
+      join(root, 'plugin-cache-index.json'),
+      JSON.stringify({
+        version: 1,
+        entries: {
+          'm/g': {
+            cachePath: b,
+            sourceUrl: 'owner/g',
+            cachedAt: '',
+            provenance: { ...facet.provenance, commit: 'b'.repeat(40) },
+          },
+        },
+      }),
+    );
+    const previousDataDir = process.env.CANOPY_DATA_DIR;
+    process.env.CANOPY_DATA_DIR = root;
+    try {
+      // Use the production root resolver, not this suite's directory-map fake.
+      f.deps.resolvePluginRoot = async (
+        selected,
+        marketplace,
+        provider,
+      ): Promise<string | null> =>
+        (await import('../../plugins/plugin-resolver')).resolvePluginInfoPath(
+          selected,
+          marketplace,
+          [],
+          false,
+          provider,
+        );
+      const pinned = await createDesktopMaterializationResolver(f.deps).resolve(
+        scope,
+      );
+      expect(pinned.items).toContainEqual(
+        expect.objectContaining({ pluginName: 'g', pluginRevision: revision }),
+      );
+      const desktop = start(f);
+      const outcome = await desktop.catalogMaterializations.materialize({
+        scope,
+        origin,
+        owner,
+      });
+      expect(outcome.state).toBe('ready');
+      const materialized = desktop.catalogMaterializationReader.resolve(
+        outcome.materializationId,
+      );
+      expect(materialized?.plugins[0]?.roots.claude).toBe(realpathSync(a));
+      expect(materialized?.plugins[0]?.roots.claude).not.toBe(realpathSync(b));
+      expect(await readFile(catalogPath, 'utf8')).toBe(catalogBytes);
+      expect(
+        readPluginCacheIndex(join(root, 'plugin-cache-index.json')),
+      ).toMatchObject({ data: { entries: { 'm/g': { cachePath: b } } } });
+    } finally {
+      if (previousDataDir === undefined) delete process.env.CANOPY_DATA_DIR;
+      else process.env.CANOPY_DATA_DIR = previousDataDir;
+    }
+  });
+
   it.each(
     ['catalog', 'index'].flatMap((file) =>
       ['damaged', 'unsupported'].flatMap((state) =>

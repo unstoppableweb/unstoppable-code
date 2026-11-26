@@ -1,13 +1,14 @@
 import {
-  destructiveStep,
-  lifecycleTreeRemoval,
-} from './w5-destructive-recovery';
+  beginDirectoryDeletion,
+  directoryRemovalOutcome,
+  drainDirectoryEffects,
+} from './directory-effect-admission';
+import { destructiveStep } from './w5-destructive-recovery';
 import { rm } from 'node:fs/promises';
 import { assertCodeReviewStorageWriter } from './code-review-storage-admission';
 import { join } from 'node:path';
 import { removeEntryCost } from '../cost-index/lifecycle';
 import { getCodeGraphWorktreeService } from '@canopy/desktop-shared/node/code-graph/service';
-import { removePersistedWorktreeDataDirectory } from '@canopy/desktop-shared/node/lib/worktree-data-cleanup';
 import { cancelBuild } from '../code-graph/build-runner';
 import {
   cancelCodeGraphReads,
@@ -43,8 +44,7 @@ import { deleteScriptRunLogsForWorktree } from './script-log-store';
 import { deleteSplitPrMapForWorktree } from './split-pr-persistence';
 import { getChatSearchService } from '../chat-search/service';
 import { validateId } from './validation';
-import { removeTreeWithoutAsar } from './remove-tree-without-asar';
-import { withLinuxWorktreeRemovalVerification } from './worktree-process-cleanup';
+import { getWorktreeItemStore } from './worktree-item-store';
 import { getChatStateService } from '../services/chat-state-service';
 import { releaseCodeReviewTasks } from './code-review-deletion-fence';
 import { runAsLocalFenceHolder } from '../app-advisor/local-fence-holder';
@@ -59,6 +59,8 @@ export interface CleanupPersistedWorktreeDataOptions {
   observabilityMode?: 'persisted-only' | 'live-service';
   chatSearchDisposition?: 'delete' | 'container-archived';
   deferLocalWatcherCancellationCommit?: boolean;
+  /** The parent workspace activates its captured retirement after W5 commits. */
+  deferTerminalRecordRetirement?: boolean;
   purgeObservabilityData?: (
     projectId: string,
     worktreeId: string,
@@ -68,6 +70,7 @@ export interface CleanupPersistedWorktreeDataOptions {
 interface NormalizedCleanupPersistedWorktreeDataOptions {
   observabilityMode: 'persisted-only' | 'live-service';
   chatSearchDisposition: 'delete' | 'container-archived';
+  deferTerminalRecordRetirement: boolean;
   purgeObservabilityData?: (
     projectId: string,
     worktreeId: string,
@@ -352,7 +355,7 @@ function buildCleanupTasks(
     },
     {
       label: 'worktree metadata',
-      run: (): Promise<void> => {
+      run: async (): Promise<void> => {
         assertCodeReviewStorageWriter(
           'code_review_state',
           'main/lib/worktree-data-cleanup',
@@ -362,21 +365,20 @@ function buildCleanupTasks(
         // the removed tree. Earlier cleanup tasks can run for seconds, so an
         // earlier cancel would miss saves that arrive while they run. Only the
         // timer is cancelled; the retrying tree removal deletes the file.
+        if (!options.deferTerminalRecordRetirement)
+          await terminalPersistenceStore.retireTerminalRecord({
+            projectId,
+            worktreeId,
+          });
         panelLayoutPersistenceStore.cancelPendingWrite(projectId, worktreeId);
-        terminalPersistenceStore.forgetWorktree(projectId, worktreeId);
-        // App-managed chat workspaces live under app-workspaces/, not
-        // workspaces/ — the resolved root keeps their metadata reclaimable.
-        return withLinuxWorktreeRemovalVerification(
+        await drainDirectoryEffects(
           join(getWorktreeDataRootDir(projectId), worktreeId),
-          () =>
-            removePersistedWorktreeDataDirectory(projectId, worktreeId, {
-              worktreeDataRootDir: getWorktreeDataRootDir(projectId),
-              removeTree: lifecycleTreeRemoval(
-                join(getWorktreeDataRootDir(projectId), worktreeId),
-                removeTreeWithoutAsar,
-              ),
-            }),
         );
+        return getWorktreeItemStore().purge({
+          scope: 'worktree',
+          workspaceId: projectId,
+          worktreeId,
+        });
       },
     },
     {
@@ -423,12 +425,27 @@ export async function cleanupPersistedWorktreeData(
   worktreeId: string,
   options?: CleanupPersistedWorktreeDataOptions,
 ): Promise<string[]> {
-  // A deferred commit leaves the scope fence with the caller's holder.
-  if (options?.deferLocalWatcherCancellationCommit)
-    return cleanupPersistedWorktreeDataAsHolder(projectId, worktreeId, options);
-  return runAsLocalFenceHolder(() =>
-    cleanupPersistedWorktreeDataAsHolder(projectId, worktreeId, options),
-  );
+  validateId(worktreeId, 'worktreeId');
+  const path = join(getWorktreeDataRootDir(projectId), worktreeId);
+  const directory = beginDirectoryDeletion(path);
+  try {
+    // Parent workspace deletion retains its wider exclusion until commit classification.
+    if (options?.deferLocalWatcherCancellationCommit)
+      return await cleanupPersistedWorktreeDataAsHolder(
+        projectId,
+        worktreeId,
+        options,
+      );
+    return await runAsLocalFenceHolder(() =>
+      cleanupPersistedWorktreeDataAsHolder(projectId, worktreeId, options),
+    );
+  } finally {
+    directory.settle(
+      options?.deferTerminalRecordRetirement
+        ? 'abandoned'
+        : await directoryRemovalOutcome(path),
+    );
+  }
 }
 
 async function cleanupPersistedWorktreeDataAsHolder(
@@ -465,6 +482,8 @@ async function cleanupPersistedWorktreeDataAsHolder(
           {
             observabilityMode: options?.observabilityMode ?? 'persisted-only',
             chatSearchDisposition: options?.chatSearchDisposition ?? 'delete',
+            deferTerminalRecordRetirement:
+              options?.deferTerminalRecordRetirement ?? false,
             purgeObservabilityData: options?.purgeObservabilityData,
           };
         const tasks = buildCleanupTasks(

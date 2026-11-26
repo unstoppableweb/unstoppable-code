@@ -10,11 +10,11 @@ import {
 } from 'react';
 import { CheckIcon } from '../../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
-import { Button } from '../Button';
+import { Button } from '../../primitives/Button';
 import { Markdown } from '../Markdown';
-import { Notice, NoticeButton } from '../Notice';
-import { OverlayScrollArea } from '../OverlayScrollArea';
-import { TextInput } from '../Field';
+import { Notice, NoticeButton } from '../../primitives/Notice';
+import { OverlayScrollArea } from '../../primitives/OverlayScrollArea';
+import { TextInput } from '../../primitives/Field';
 import {
   COMPOSER_PROMPT_ROW_GLYPH_CLASS,
   COMPOSER_PROMPT_ROWS_CLASS,

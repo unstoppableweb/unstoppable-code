@@ -6,8 +6,8 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
-import { Button, type ButtonVariant } from './Button';
-import { Tooltip } from './Tooltip';
+import { Button, type ButtonVariant } from '../primitives/Button';
+import { Tooltip } from '../primitives/Tooltip';
 
 export type HeaderActionButtonTone =
   | 'accent'

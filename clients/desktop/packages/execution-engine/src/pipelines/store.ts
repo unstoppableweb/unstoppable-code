@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import {
   createPipelineDefinitionStore,
+  ownerFlipRecordFile,
   type PipelineDefinitionStore,
 } from '@canopy/core-runtime/node/pipeline/store';
 import { flushDirectorySync } from '@canopy/core-platform/directory-flush';
@@ -15,12 +16,16 @@ import {
   ensurePrivateLockDirectorySync,
   withOwnerLockFileSync,
 } from '@canopy/execution-engine/node/lib/owner-lock-file';
-import { writeFileAtomicallySync } from '../node/lib/atomic-file';
+import {
+  syncDirectory,
+  writeFileAtomicallySync,
+} from '../node/lib/atomic-file';
 import { pruneDamagedCopiesSync } from '@canopy/execution-engine/node/lib/damaged-copies';
 import { unlinkSync } from 'node:fs';
 
 export type {
   StoredPipelinePath,
+  StoredPipelineInfo,
   StoredPipelineWriteRefusal,
   StoredPipelineWriteResult,
   StoredPipelineWriteOptions,
@@ -37,6 +42,11 @@ export type {
  */
 export function ensureStoredPipelineDirectory(): boolean {
   return ensureDir(getUserPipelinesDir());
+}
+
+/** Confirms published document and index directory entries together. */
+export function confirmStoredPipelineDirectoryDurability(): Promise<void> {
+  return syncDirectory(getUserPipelinesDir());
 }
 
 /**
@@ -88,12 +98,16 @@ export const pipelineDefinitionStore: PipelineDefinitionStore =
         ? 'electron_main'
         : 'desktop_cli',
     writerModule: 'packages/execution-engine/src/pipelines/store.ts',
+    ownerFlipRecordPath: () =>
+      ownerFlipRecordFile(getCanopyDataDir(), 'pipeline_definitions'),
   });
 
 export const {
   readStoredPipelineIndexStatus,
   withStoredPipelineWriter,
+  withStoredPipelineDefinitionLock,
   withStoredPipelineIndexSnapshot,
+  findStoredUserPipelineIdByFilename,
   listStoredPipelines,
   getStoredPipeline,
   getStoredPipelineBySource,

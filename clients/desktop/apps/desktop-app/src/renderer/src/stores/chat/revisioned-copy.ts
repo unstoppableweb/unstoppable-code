@@ -6,12 +6,11 @@
 export const CHAT_STATE_REFRESHING_TOAST = 'Chat state changed. Refreshing…';
 
 /** Inline error heading when the gap-recovery refresh fails. */
-export const CHAT_STATE_REFRESH_ERROR_HEADING =
-  'Chat state couldn’t be refreshed';
+export const CHAT_STATE_REFRESH_ERROR_HEADING = 'Couldn’t refresh this chat';
 
 /** Inline error helper below the heading. */
 export const CHAT_STATE_REFRESH_ERROR_HELPER =
-  'Your last loaded transcript is still shown. Try again to load the latest state.';
+  'Your last loaded transcript is still shown.';
 
 /** Heading when a task's chats never loaded, so there is no transcript to keep. */
 export const CHAT_STATE_LOAD_ERROR_HEADING = 'Couldn’t load this task’s chats';

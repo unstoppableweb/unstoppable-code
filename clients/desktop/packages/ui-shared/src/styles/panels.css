@@ -1201,7 +1201,7 @@
   max-width: var(--canopy-panel-tab-width);
   /* The floor: wide enough that a few letters of every title stay
      readable (pinned tiles keep their own square floor). Past it the strip
-     scrolls rather than squeezing tabs down to bare numbers. */
+     scrolls rather than squeezing tabs down to bare icons. */
   min-width: 96px;
   height: 28px;
   /* The 7px side insets are the line's own padding (see `-main`). On a tile
@@ -1272,14 +1272,6 @@
 /* As tall as the line, so an icon alone on it still centers vertically. */
 .canopy-panel-tab-icon:where([data-tab-style='fill'] *) {
   height: 24px;
-}
-
-/* A running chat's spinner takes its tab number's place, centered on the
-   number: the digits (13px Inter on the 18px line) center 0.4px above the
-   slot's middle, where the spinner's box centers, so it lifts by the same. */
-.canopy-panel-tab-icon:where([data-tab-style='fill'] *)
-  > [data-panel-tab-busy] {
-  transform: translateY(-0.4px);
 }
 
 .canopy-panel-tab-label:where([data-tab-style='fill'] *) {
@@ -2245,7 +2237,7 @@
 }
 
 /* A running chat's spinner, handed over by its glyph (which keeps the row's
-   number on the left), centred in the row's status slot: the 24px slot sits
+   chat icon on the left), centred in the row's status slot: the 24px slot sits
    4px in from the row's right edge. */
 .canopy-panel-tab-list-busy {
   position: absolute;
@@ -2288,7 +2280,7 @@
 
 /* Waiting input must stay reachable even when a fill label wraps away. The
    host supplies one marker; it is outside the clipped label and stays on the
-   right of a wide tab. A compact tile gives its number's place to the marker. */
+   right of a wide tab. A compact tile gives its icon's place to the marker. */
 .canopy-panel-tab:where([data-tab-style='fill'] *) {
   container-type: inline-size;
   container-name: panel-tab;

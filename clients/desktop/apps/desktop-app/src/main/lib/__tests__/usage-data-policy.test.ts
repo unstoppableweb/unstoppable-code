@@ -9,6 +9,8 @@ import {
   defaultUsageDataPreferences,
   getEffectiveUsageDataPolicy,
   getUsageDataPolicy,
+  usageDataConsentStateOf,
+  type UsageDataConsentState,
   type UsageDataProhibitionState,
 } from '../usage-data-policy';
 import {
@@ -35,6 +37,18 @@ jest.mock('../telemetry-enforcement-state', () => ({
 }));
 
 const ACME = '11111111-1111-4111-8111-111111111111';
+const ACCEPTED: UsageDataConsentState = {
+  accepted: true,
+  analyticsDeclinedAtOnboarding: false,
+};
+const ALL_OFF = {
+  productAnalytics: false,
+  sessionReplay: false,
+  errorReports: false,
+  activeUseSignal: false,
+  featureFlagIdentity: false,
+  skillSafetyCheck: false,
+};
 const OTHER = '22222222-2222-4222-8222-222222222222';
 
 function acmeProhibits(): UsageDataProhibitionState {
@@ -68,6 +82,7 @@ afterEach(() => {
 describe('usage-data policy resolution', () => {
   it('fails closed on an unreadable account, even in Personal, until a probe succeeds', () => {
     const policy = createUsageDataPolicy({
+      consent: ACCEPTED,
       prohibitions: 'unreadable',
       settleTimeoutMs: 50,
     });
@@ -91,7 +106,10 @@ describe('usage-data policy resolution', () => {
   });
 
   it('is conservative before the context is known, then resolves by context', () => {
-    const policy = createUsageDataPolicy({ prohibitions: acmeProhibits() });
+    const policy = createUsageDataPolicy({
+      consent: ACCEPTED,
+      prohibitions: acmeProhibits(),
+    });
     expect(policy.getEffectiveUsageDataPolicy().productAnalytics).toBe(false);
     expect(policy.getEffectiveUsageDataPolicy().errorReports).toBe(true);
 
@@ -117,7 +135,10 @@ describe('usage-data policy resolution', () => {
   });
 
   it('keeps the stored choice and notifies only on change', () => {
-    const policy = createUsageDataPolicy({ prohibitions: acmeProhibits() });
+    const policy = createUsageDataPolicy({
+      consent: ACCEPTED,
+      prohibitions: acmeProhibits(),
+    });
     policy.setWorkspaceContext({ kind: 'organization', organizationId: ACME });
     const listener = jest.fn();
     policy.subscribe(listener);
@@ -139,7 +160,10 @@ describe('usage-data policy resolution', () => {
   });
 
   it('observes Error reports opt-out and re-enable while organization policy is unreadable', () => {
-    const policy = createUsageDataPolicy({ prohibitions: 'unreadable' });
+    const policy = createUsageDataPolicy({
+      consent: ACCEPTED,
+      prohibitions: 'unreadable',
+    });
     policy.setWorkspaceContext({ kind: 'personal' });
     const effectivePolicyListener = jest.fn();
     const crashPolicyListener = jest.fn<void, [UsageDataPolicySnapshot]>();
@@ -170,7 +194,10 @@ describe('usage-data policy resolution', () => {
   });
 
   it('narrows a per-turn report by the organization that owns the work', () => {
-    const policy = createUsageDataPolicy({ prohibitions: acmeProhibits() });
+    const policy = createUsageDataPolicy({
+      consent: ACCEPTED,
+      prohibitions: acmeProhibits(),
+    });
     policy.setWorkspaceContext({ kind: 'personal' });
     expect(policy.getEffectiveUsageDataPolicy().activeUseSignal).toBe(true);
     expect(policy.allowsForOrganization('activeUseSignal', undefined)).toBe(
@@ -182,9 +209,128 @@ describe('usage-data policy resolution', () => {
     expect(policy.allowsForOrganization('errorReports', ACME)).toBe(true);
     expect(
       createUsageDataPolicy({
+        consent: ACCEPTED,
         prohibitions: 'unreadable',
       }).allowsForOrganization('activeUseSignal', undefined),
     ).toBe(false);
+  });
+
+  it('turns every flow off while legal consent is pending, with no attribution', () => {
+    const policy = createUsageDataPolicy({ prohibitions: new Map() });
+    policy.setWorkspaceContext({ kind: 'personal' });
+    expect(policy.getEffectiveUsageDataPolicy()).toEqual(ALL_OFF);
+    const snapshot = policy.getUsageDataPolicySnapshot();
+    expect(snapshot.consentPending).toBe(true);
+    expect(snapshot.prohibitedBy).toEqual({});
+    // The stored (pre-checked) choices are kept as is.
+    expect(snapshot.preferences).toEqual(defaultUsageDataPreferences());
+    expect(policy.isConsentPending()).toBe(true);
+    // The journal deny path keeps consent pending.
+    policy.setPreferences(defaultUsageDataPreferences());
+    expect(policy.isConsentPending()).toBe(true);
+    // The default singleton fails closed too.
+    expect(getEffectiveUsageDataPolicy()).toEqual(ALL_OFF);
+  });
+
+  it('applies consent and choices in one recompute', () => {
+    const policy = createUsageDataPolicy({ prohibitions: new Map() });
+    policy.setWorkspaceContext({ kind: 'personal' });
+    const seen: boolean[] = [];
+    policy.subscribe((snapshot) => {
+      seen.push(snapshot.effective.productAnalytics);
+    });
+    policy.setStored(
+      { ...defaultUsageDataPreferences(), productAnalytics: false },
+      ACCEPTED,
+    );
+    // Accepting with Usage analytics off never shows it on, even briefly.
+    expect(seen).toEqual([false]);
+    expect(policy.getEffectiveUsageDataPolicy()).toEqual({
+      ...defaultUsageDataPreferences(),
+      productAnalytics: false,
+    });
+    expect(policy.getUsageDataPolicySnapshot().consentPending).toBeUndefined();
+  });
+
+  it('notifies on accept even when every switch stays off', () => {
+    const policy = createUsageDataPolicy({
+      preferences: ALL_OFF,
+      prohibitions: new Map(),
+    });
+    const listener = jest.fn();
+    policy.subscribe(listener);
+    policy.setStored(ALL_OFF, ACCEPTED);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(policy.isConsentPending()).toBe(false);
+  });
+
+  it('returns to pending when consent is lost mid-session', () => {
+    const policy = createUsageDataPolicy({
+      consent: ACCEPTED,
+      prohibitions: new Map(),
+    });
+    policy.setWorkspaceContext({ kind: 'personal' });
+    const listener = jest.fn();
+    policy.subscribe(listener);
+    policy.setStored(defaultUsageDataPreferences(), {
+      accepted: false,
+      analyticsDeclinedAtOnboarding: false,
+    });
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(policy.getEffectiveUsageDataPolicy()).toEqual(ALL_OFF);
+    expect(policy.isConsentPending()).toBe(true);
+  });
+
+  it('keeps the unreadable-preferences snapshot unchanged while consent is pending', () => {
+    const pending = createUsageDataPolicy({
+      preferences: 'unreadable',
+      prohibitions: new Map(),
+    });
+    const accepted = createUsageDataPolicy({
+      preferences: 'unreadable',
+      consent: ACCEPTED,
+      prohibitions: new Map(),
+    });
+    expect(pending.getUsageDataPolicySnapshot()).toEqual(
+      accepted.getUsageDataPolicySnapshot(),
+    );
+    expect(pending.getEffectiveUsageDataPolicy().skillSafetyCheck).toBe(true);
+    expect(pending.isConsentPending()).toBe(false);
+  });
+
+  it('reports and notifies a change of the onboarding decline', () => {
+    const preferences = {
+      ...defaultUsageDataPreferences(),
+      productAnalytics: false,
+    };
+    const policy = createUsageDataPolicy({
+      preferences,
+      consent: ACCEPTED,
+      prohibitions: new Map(),
+    });
+    const listener = jest.fn();
+    policy.subscribe(listener);
+    policy.setStored(preferences, {
+      accepted: true,
+      analyticsDeclinedAtOnboarding: true,
+    });
+    expect(policy.wasAnalyticsDeclinedAtOnboarding()).toBe(true);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('derives consent from the committed preferences', () => {
+    expect(
+      usageDataConsentStateOf({
+        legalConsentAcceptedAt: '  ',
+        usageAnalyticsDeclinedAtOnboarding: false,
+      }),
+    ).toEqual({ accepted: false, analyticsDeclinedAtOnboarding: false });
+    expect(
+      usageDataConsentStateOf({
+        legalConsentAcceptedAt: '2026-11-24T00:00:00.000Z',
+        usageAnalyticsDeclinedAtOnboarding: true,
+      }),
+    ).toEqual({ accepted: true, analyticsDeclinedAtOnboarding: true });
   });
 
   it('settles on a context, on context failure, or on timeout', async () => {
@@ -199,6 +345,7 @@ describe('usage-data policy host wiring', () => {
   it('initializeStartupUsageDataPolicy fails closed when the account is unreadable', async () => {
     jest.mocked(readPreferencesFile).mockResolvedValue({
       usageData: { ...defaultUsageDataPreferences(), skillSafetyCheck: false },
+      legalConsentAcceptedAt: '2026-11-01T00:00:00.000Z',
     } as Awaited<ReturnType<typeof readPreferencesFile>>);
     jest
       .mocked(loadStoredUsageDataProhibitionByOrganization)
@@ -216,6 +363,7 @@ describe('usage-data policy host wiring', () => {
     // last-good rather than rejecting.
     jest.mocked(readPreferencesFile).mockResolvedValue({
       usageData: defaultUsageDataPreferences(),
+      legalConsentAcceptedAt: '2026-11-01T00:00:00.000Z',
     } as Awaited<ReturnType<typeof readPreferencesFile>>);
     jest.mocked(arePreferencesUnconfirmed).mockReturnValue(true);
     jest
@@ -235,11 +383,27 @@ describe('usage-data policy host wiring', () => {
     expect(
       policy.getUsageDataPolicySnapshot().prohibitedBy.errorReports,
     ).toEqual({ organizationName: null, preferencesUnreadable: true });
+    // Unreadable is never reported as consent pending.
+    expect(policy.isConsentPending()).toBe(false);
+    expect(policy.getUsageDataPolicySnapshot().consentPending).toBeUndefined();
     // A committed save of real preferences ends the fail-closed state.
-    policy.setPreferences(defaultUsageDataPreferences());
+    policy.setStored(defaultUsageDataPreferences(), ACCEPTED);
     expect(policy.getEffectiveUsageDataPolicy()).toEqual(
       defaultUsageDataPreferences(),
     );
+  });
+
+  it('initializeStartupUsageDataPolicy keeps a fresh profile consent-pending', async () => {
+    jest.mocked(readPreferencesFile).mockResolvedValue({
+      usageData: defaultUsageDataPreferences(),
+      usageAnalyticsDeclinedAtOnboarding: false,
+    } as Awaited<ReturnType<typeof readPreferencesFile>>);
+    jest
+      .mocked(loadStoredUsageDataProhibitionByOrganization)
+      .mockResolvedValue(new Map() as never);
+    await initializeStartupUsageDataPolicy();
+    expect(getUsageDataPolicy().isConsentPending()).toBe(true);
+    expect(getEffectiveUsageDataPolicy()).toEqual(ALL_OFF);
   });
 
   it('initializeStartupUsageDataPolicy retries a rejected preferences read once', async () => {
@@ -253,6 +417,7 @@ describe('usage-data policy host wiring', () => {
             ...defaultUsageDataPreferences(),
             productAnalytics: false,
           },
+          legalConsentAcceptedAt: '2026-11-01T00:00:00.000Z',
         } as Awaited<ReturnType<typeof readPreferencesFile>>);
       jest
         .mocked(loadStoredUsageDataProhibitionByOrganization)
@@ -273,6 +438,7 @@ describe('usage-data policy host wiring', () => {
   it('attachUsageDataPolicyToWorkspaceContext resolves by the selected context and its switches', async () => {
     jest.mocked(readPreferencesFile).mockResolvedValue({
       usageData: defaultUsageDataPreferences(),
+      legalConsentAcceptedAt: '2026-11-01T00:00:00.000Z',
     } as Awaited<ReturnType<typeof readPreferencesFile>>);
     jest
       .mocked(loadStoredUsageDataProhibitionByOrganization)
@@ -308,7 +474,10 @@ describe('usage-data policy host wiring', () => {
   });
 
   it('installPostHogMainLifecycle starts only while a PostHog flow is on and suspends when both turn off', async () => {
-    const policy = createUsageDataPolicy({ prohibitions: new Map() });
+    const policy = createUsageDataPolicy({
+      consent: ACCEPTED,
+      prohibitions: new Map(),
+    });
     policy.setPreferences({
       ...defaultUsageDataPreferences(),
       productAnalytics: false,
@@ -337,6 +506,7 @@ describe('usage-data policy host wiring', () => {
   });
 
   it('installUsageDataPolicyFeatureFlagRefresh re-identifies only when the identity choice flips', () => {
+    __resetUsageDataPolicyForTests({ consent: ACCEPTED });
     const policy = getUsageDataPolicy();
     let built = true;
     const refresh = jest.fn(() => {

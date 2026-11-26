@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react';
-import { Fact, FactList } from './FactList';
+import { Fact, FactList } from '../primitives/FactList';
 
 /**
  * The label and value columns of a detail page's facts (Website, Marketplace,

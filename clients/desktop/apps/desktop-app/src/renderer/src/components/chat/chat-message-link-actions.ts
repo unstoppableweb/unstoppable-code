@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, type MouseEvent } from 'react';
 import type {
   ChatMessageLinkActions,
   ChatMessageLookUpSelection,
@@ -11,6 +11,47 @@ import {
 } from '@/lib/remote-control/in-app-browser-availability';
 import { openAppLinkInWorktreeBrowser } from '@/stores/browserEventSubscription';
 import { isSyntheticChatTarget } from '@/stores/chat/surface';
+import { parseSettingsRoutePath } from '@canopy/protocol/settings';
+import { resolveHostedSettingsHref } from '@/components/settings/hosted/hosted-settings-location';
+
+async function openResponseWebLink(href: string): Promise<void> {
+  const url = new URL(href);
+  // Only possible Settings destinations need the configured cloud origin.
+  if (parseSettingsRoutePath(url.pathname, url.search) !== null) {
+    const cloudBaseUrl = await window.api
+      .getCanopyCloudBaseUrl()
+      .catch((error: unknown): null => {
+        reportClientAppError(error);
+        return null;
+      });
+    if (
+      cloudBaseUrl &&
+      resolveHostedSettingsHref(href, cloudBaseUrl, '/').kind === 'settings'
+    ) {
+      await window.api.browser.openLink({ url: href });
+      return;
+    }
+  }
+  await window.api.browser.openExternal({ url: href });
+}
+
+export function openOrchestratorResponseLink(
+  event: MouseEvent<HTMLAnchorElement>,
+): void {
+  if (
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  ) {
+    return;
+  }
+  const href = event.currentTarget.href;
+  event.preventDefault();
+  void openResponseWebLink(href).catch(reportClientAppError);
+}
 
 /**
  * The desktop chat message menu's link actions (CAN-2632). "Open in browser"

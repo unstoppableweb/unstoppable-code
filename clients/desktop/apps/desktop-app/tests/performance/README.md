@@ -54,6 +54,11 @@ pnpm run perf:desktop:compare:interleaved --release-like --baseline-root /path/t
 pnpm run perf:desktop:compare:interleaved --release-like --baseline-root /path/to/unchanged --candidate-root . --profile baseline --scenarios owned-automations-list
 pnpm run perf:desktop --profile smoke --scenarios w5-store-startup,w5-store-reload,w5-store-writes --w5-store daemon-record-port
 pnpm run perf:desktop:compare:interleaved --baseline-root . --candidate-root . --profile baseline --scenarios w5-store-startup,w5-store-reload,w5-store-writes --w5-store-arms in-process,daemon-record-port
+pnpm run perf:desktop:remote-control --repeat 20
+pnpm run perf:desktop:remote-control --baseline-root /path/to/unchanged --repeat 7
+pnpm run build:e2e && pnpm run perf:desktop:remote-access bench
+pnpm run perf:desktop:remote-access soak --minutes 15
+pnpm run perf:desktop:remote-access recovery
 ```
 
 `--w5-store` launches the E2E build with the `in-process` or the
@@ -256,6 +261,8 @@ exposes intermittent stalls that a burst can miss.
 | `mock-server.mjs`      | deterministic E2E service lifecycle                                                                        |
 | `daemon-*.mjs`         | daemon Files treatment admission, start/attach and Files populations, arm preparation, raw summaries       |
 | `w5-store-*.mjs`       | W5 store arms: arm parsing, launch env and treatment; the startup, reload and write scenarios              |
+| `remote-control/`      | Remote Control workload: two computers on worker threads over an in-memory relay pair, and its runner      |
+| `remote-access/`       | Remote Control relay benchmark, soak and recovery runs over E2E desktops and the real relay                |
 
 `work-metrics.json` (the counter registry) and `work-ceilings.json` (the
 per-platform ceilings) are checked-in inputs to `work-ratchet.mjs`; see

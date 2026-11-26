@@ -344,11 +344,7 @@ function ChatEnrichmentSection(): JSX.Element {
               <ErrorBanner
                 errorSource="chat-enrichment-section"
                 className=""
-                error={
-                  failed[provider]
-                    ? 'Could not save this setting. Try again.'
-                    : null
-                }
+                error={failed[provider] ? "Couldn't save this setting." : null}
               />
             </SettingsRow>
           );

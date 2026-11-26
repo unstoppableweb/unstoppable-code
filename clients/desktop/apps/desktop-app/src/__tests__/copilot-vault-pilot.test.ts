@@ -73,6 +73,7 @@ import type { AgentDelegationEvent } from '@canopy/protocol/delegation';
 import { readPreferencesFileDetailed } from '../main/lib/preferences-store';
 import { DEFAULT_PREFERENCES } from '@canopy/desktop-shared/node/preferences/defaults';
 import { DESKTOP_PREFERENCES_CODEC } from '@canopy/desktop-shared/node/preferences/desktop-preferences-codec';
+import type { DomainPreferencesData } from '@canopy/desktop-shared/node/preferences/client-local-preferences';
 import * as PreferencesEnvironment from '@canopy/desktop-shared/node/preferences/normalization-environment';
 import {
   createPreferencesRepository,
@@ -1679,7 +1680,7 @@ it.each([
         if (fail && slot === 'primary' && failure.includes('acknowledgement'))
           throw new Error('acknowledgement lost');
       });
-    const open = (): PreferencesRepository<PreferencesData> =>
+    const open = (): PreferencesRepository<DomainPreferencesData> =>
       createPreferencesRepository({
         document: () =>
           withUsageDataConsentJournal(

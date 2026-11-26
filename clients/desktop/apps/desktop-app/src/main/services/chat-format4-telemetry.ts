@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createDesktopInstrumentationOperationKey } from '@canopy/desktop-instrumentation';
 import {
   startDesktopOperation,
@@ -21,6 +22,8 @@ export const CHAT_FORMAT4_EVENTS = [
   'sweep_pass_completed',
   'sweep_paused',
   'sweep_scope_backed_off',
+  'prehandoff_completed',
+  'prehandoff_bound_exceeded',
 ] as const;
 export type ChatFormat4Event = (typeof CHAT_FORMAT4_EVENTS)[number];
 
@@ -99,6 +102,12 @@ export type ChatFormat4Outcome = (
       readonly event: 'sweep_scope_backed_off';
       readonly reason: ChatFormat4Reason;
     }
+  | {
+      readonly event: 'prehandoff_completed' | 'prehandoff_bound_exceeded';
+      readonly durationMs: number;
+      /** Unknown when the pass abandoned its scan; sent as `none`. */
+      readonly remaining: number | undefined;
+    }
 ) & {
   /** Set by whoever reports the outcome; see `chatFormat4TriggerLabel`. */
   readonly trigger?: ChatFormat4Trigger;
@@ -171,6 +180,7 @@ export function chatFormat4TriggerLabel(
     (value) => value === outcome.trigger,
   );
   if (trigger) return trigger;
+  if (outcome.event.startsWith('prehandoff_')) return 'pre-handoff';
   return outcome.event.startsWith('sweep_') ? 'sweep' : 'load';
 }
 
@@ -251,6 +261,19 @@ function outcomeLabels(
         format4_remaining_bucket: 'none',
         format4_pause_reason: 'none',
       };
+    case 'prehandoff_completed':
+    case 'prehandoff_bound_exceeded':
+      return {
+        format4_event: outcome.event,
+        format4_reason: 'none',
+        format4_attempt: 0,
+        format4_duration_bucket: chatFormat4DurationBucket(outcome.durationMs),
+        format4_remaining_bucket:
+          outcome.remaining === undefined
+            ? 'none'
+            : chatFormat4RemainingBucket(outcome.remaining),
+        format4_pause_reason: 'none',
+      };
   }
 }
 
@@ -264,6 +287,18 @@ function reasonLabel(reason: unknown): ChatFormat4Reason {
   return CHAT_FORMAT4_REASONS.find((value) => value === reason) ?? 'other';
 }
 
+const preHandoffWork = new AsyncLocalStorage<true>();
+
+/**
+ * Runs `work` so every format 4 outcome recorded while it runs, the
+ * repository's own promotion outcomes included, is labelled `pre-handoff`.
+ */
+export function withChatFormat4PreHandoffTrigger<T>(
+  work: () => Promise<T>,
+): Promise<T> {
+  return preHandoffWork.run(true, work);
+}
+
 /**
  * Records one format 4 outcome after the current task, so it never delays or
  * changes the storage work. Checkpoints under one second are not sent.
@@ -274,9 +309,13 @@ export function recordChatFormat4Outcome(outcome: ChatFormat4Outcome): void {
     !(outcome.durationMs >= CHAT_FORMAT4_SLOW_CHECKPOINT_MS)
   )
     return;
+  const recorded: ChatFormat4Outcome =
+    preHandoffWork.getStore() === true
+      ? { ...outcome, trigger: 'pre-handoff' }
+      : outcome;
   setImmediate(() => {
     try {
-      const context = chatFormat4Labels(outcome);
+      const context = chatFormat4Labels(recorded);
       const operationKey = createDesktopInstrumentationOperationKey(
         `${OPERATION}:${context.format4_event}:${Date.now()}`,
       );

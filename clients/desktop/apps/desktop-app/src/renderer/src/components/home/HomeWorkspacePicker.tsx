@@ -46,12 +46,19 @@ interface HomeWorkspacePickerProps {
   shortcutEnabled: boolean;
   /** Returns the caret to the Home composer once the picker closes. */
   onRestoreFocus?: () => void;
+  /**
+   * Keeps the chip visible while Home's notice about falling back from a
+   * project that failed to load shows, since its Change project opens this
+   * picker (CAN-7326).
+   */
+  seedFallbackActive?: boolean;
 }
 
 export function HomeWorkspacePicker({
   commandOpenSignal = 0,
   shortcutEnabled,
   onRestoreFocus,
+  seedFallbackActive = false,
 }: HomeWorkspacePickerProps): JSX.Element | null {
   const allProjects = useProjectsStore((s) => s.projects);
   const scope = useHomeScope();
@@ -132,7 +139,10 @@ export function HomeWorkspacePicker({
     };
   }, [mode, shortcutEnabled]);
 
-  if (!shouldShowHomeWorkspacePicker(scope, workspaceId) && !linkPreview) {
+  if (
+    !shouldShowHomeWorkspacePicker(scope, workspaceId, seedFallbackActive) &&
+    !linkPreview
+  ) {
     return null;
   }
 

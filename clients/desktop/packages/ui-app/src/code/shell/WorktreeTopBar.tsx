@@ -52,7 +52,7 @@ import type {
   RemoteControlScriptDescriptor,
   RemoteControlScriptRunProjection,
 } from '@canopy/protocol/remote-control/shell';
-import { Button } from '@canopy/ui-shared/components/Button';
+import { Button } from '@canopy/ui-shared/primitives/Button';
 import {
   BranchIcon,
   ChevronDownIcon,

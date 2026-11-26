@@ -47,6 +47,17 @@
 //     delegationEnabled: false,    // true: bootstrap lists Delegation and
 //                                  // /api/v1/settings/delegation answers
 //     delegation: { maxDepth, maxConcurrent }, // saved limits; default 3, 5
+//     slack: {                     // Account → Integrations → Slack (CAN-7606);
+//                                  // absent: page data slack false, read 404
+//       available: true, unavailableReason: null,
+//       links: [...],              // { linkId, workspaceName, workspaceId,
+//                                  //   computer: { remoteId, name, online,
+//                                  //     deviceId? },
+//                                  //   status, attentionReason, linkedAt }
+//       computers: [...],          // { remoteId, name, online, deviceId? };
+//                                  // deviceId is the relay device id a
+//                                  // desktop matches against its own
+//     },
 //     viewer: { id?, name?, email? },
 //     incomingInvitations: [...],  // { id, organization, role, invitedByName, createdAt, expiresAt }
 //     organizations: [...],        // defaultHostedSettingsOrganizations() shape
@@ -308,6 +319,14 @@ function initialState(config, scenario) {
     incomingInvitations,
     aiGatewayEnabled: config.aiGatewayEnabled === true,
     delegationEnabled: config.delegationEnabled === true,
+    slack: config.slack
+      ? {
+          available: config.slack.available !== false,
+          unavailableReason: config.slack.unavailableReason ?? null,
+          links: clone(config.slack.links ?? []),
+          computers: clone(config.slack.computers ?? []),
+        }
+      : null,
     delegation: {
       maxDepth: config.delegation?.maxDepth ?? 3,
       maxConcurrent: config.delegation?.maxConcurrent ?? 5,
@@ -616,6 +635,19 @@ function orgFor(ctx, match) {
   return org;
 }
 
+/** The viewer's Slack link named by the path, or a 404 already sent. */
+function slackLinkFor(ctx, match) {
+  const linkId = decodeURIComponent(match[1]);
+  const link = ctx.state.slack?.links.find(
+    (candidate) => candidate.linkId === linkId,
+  );
+  if (!link) {
+    respond(ctx, 404, { error: 'Not found' });
+    return null;
+  }
+  return link;
+}
+
 function editableOrgFor(ctx, match) {
   const org = orgFor(ctx, match);
   if (org === null) return null;
@@ -862,6 +894,66 @@ const OPERATION_ROUTES = [
       if (maxConcurrent !== undefined)
         ctx.state.delegation.maxConcurrent = maxConcurrent;
       respond(ctx, 200, clone(ctx.state.delegation));
+    },
+  },
+
+  /* Account → Integrations → Slack (CAN-7606) --------------------------- */
+  {
+    operation: 'account.slack.link.read',
+    method: 'GET',
+    path: /^\/api\/v1\/settings\/slack-links$/,
+    handle(ctx) {
+      if (!ctx.state.slack) return respond(ctx, 404, { error: 'Not found' });
+      respond(ctx, 200, clone(ctx.state.slack));
+    },
+  },
+  {
+    operation: 'account.slack.link.remove',
+    method: 'DELETE',
+    path: /^\/api\/v1\/settings\/slack-links\/([^/]+)$/,
+    handle(ctx, match) {
+      const link = slackLinkFor(ctx, match);
+      if (link === null) return;
+      ctx.state.slack.links = ctx.state.slack.links.filter(
+        (candidate) => candidate !== link,
+      );
+      respond(ctx, 200, { ok: true });
+    },
+  },
+  {
+    operation: 'account.slack.link.move',
+    method: 'PATCH',
+    path: /^\/api\/v1\/settings\/slack-links\/([^/]+)$/,
+    handle(ctx, match) {
+      const link = slackLinkFor(ctx, match);
+      if (link === null) return;
+      const remoteId = isRecord(ctx.body) ? ctx.body.remoteId : undefined;
+      const computer = ctx.state.slack.computers.find(
+        (candidate) => candidate.remoteId === remoteId,
+      );
+      if (!computer)
+        return respond(ctx, 200, { ok: false, reason: 'computer_not_paired' });
+      link.computer = clone(computer);
+      respond(ctx, 200, { ok: true });
+    },
+  },
+  {
+    operation: 'account.slack.link.intent',
+    method: 'POST',
+    path: /^\/api\/v1\/settings\/slack-links\/intents$/,
+    handle(ctx) {
+      if (!ctx.state.slack) return respond(ctx, 404, { error: 'Not found' });
+      const remoteId = isRecord(ctx.body) ? ctx.body.remoteId : undefined;
+      const paired = ctx.state.slack.computers.some(
+        (computer) => computer.remoteId === remoteId,
+      );
+      respond(
+        ctx,
+        200,
+        paired
+          ? { ok: true, intent: 'mock-slack-connect-intent-0000000000000000' }
+          : { ok: false, reason: 'computer_not_paired' },
+      );
     },
   },
 

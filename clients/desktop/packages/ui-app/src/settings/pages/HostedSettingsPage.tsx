@@ -16,7 +16,7 @@ import {
 import {
   TRY_AGAIN_LABEL,
   useRetry,
-} from '@canopy/ui-shared/components/useRetry';
+} from '@canopy/ui-shared/primitives/useRetry';
 import {
   AppErrorBoundary,
   type AppErrorBoundaryHost,
@@ -172,6 +172,14 @@ function RenderHostedPage({
     }
     case 'organization.memory.fact': {
       const Page = HOSTED_SETTINGS_PAGES['organization.memory.fact'];
+      return <Page route={route} page={page} />;
+    }
+    case 'organization.transcripts': {
+      const Page = HOSTED_SETTINGS_PAGES['organization.transcripts'];
+      return <Page route={route} page={page} />;
+    }
+    case 'organization.transcripts.session': {
+      const Page = HOSTED_SETTINGS_PAGES['organization.transcripts.session'];
       return <Page route={route} page={page} />;
     }
     case 'organization.settings': {

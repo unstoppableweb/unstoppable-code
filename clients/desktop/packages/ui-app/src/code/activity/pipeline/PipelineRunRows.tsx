@@ -342,10 +342,11 @@ export function pipelineRunDag(executionState: PipelineRunExecutionState): {
 export function PipelineRunDagProgressBar({
   executionState,
   muted = false,
-  onJobClick = (): void => undefined,
+  onJobClick,
 }: {
   executionState: PipelineRunExecutionState;
   muted?: boolean;
+  /** Omit when a job has nowhere to open: its dot then opens its card on press. */
   onJobClick?: (jobId: string) => void;
 }): JSX.Element {
   const { tiers, jobs } = pipelineRunDag(executionState);

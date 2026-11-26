@@ -2,21 +2,13 @@ import { createW5RecordImageRepositories } from '@canopy/core-runtime/node/w5/re
 import { withW5RepositoryLock } from './w5-repository-locks';
 import {
   withW5Commit,
-  W5FileWriteRefusedError,
-  W5RevisionConflictError,
+  isDefiniteW5Refusal,
   type W5CommitOptions,
 } from './w5-commit-log-file-store';
-import {
-  W5CommitLogError,
-  W5CommitRefusedError,
-  W5ProcessFileLockTimeoutError,
-} from '@canopy/core-runtime/node/w5/commit-log/errors';
 import {
   createW5ImageReadCache,
   deferUntilW5ReadViewCloses,
 } from './w5-read-view';
-import { equalW5Contents } from './w5-revision-diff';
-import { W5DaemonHandoffError } from './w5-handoff-store';
 import { afterW5Apply, afterW5Commit, onW5Abort } from './w5-commit-scope';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import {
@@ -276,32 +268,6 @@ const worktreeListRepository = withWorktreeDiscovery(
   getWorktreeDiscoveryFilePath,
 );
 
-const recentWorktreesSelfWrites = new Map<string, number>();
-/**
- * Per watched workspace: the last worktrees.json content the renderer is
- * known to hold (`null`: absent or unreadable). Until a baseline exists, that
- * is the rows the projects load delivered when it started the watcher
- * (`delivered`); a watcher started without them is
- * unaccounted. `self` is a write of ours built on known content, so its echo
- * carries nothing new; `absorbed` is a write of ours built on content the
- * renderer never received (e.g. a CLI append folded into a poller persist), so
- * its echo must still emit; `observed` is content the renderer received
- * (delivered or announced), which never suppresses an event. `writesStarted`
- * lets the watcher discard a read that overlapped one of our writes.
- */
-interface WorktreesContentTracking {
-  baseline?: {
-    content: string | null;
-    source: 'self' | 'absorbed' | 'observed';
-  };
-  delivered?: WorktreeData[];
-  writesStarted: number;
-}
-const worktreesContentTracking = new Map<string, WorktreesContentTracking>();
-const WORKTREES_SELF_WRITE_WINDOW_MS = 2_000;
-// The commit-log worker installs the file before main learns it applied, so
-// the watcher sees the echo while the write is still in flight.
-const inFlightWorktreesSelfWrites = new Map<string, number>();
 // Keep stale-snapshot tombstones for the process lifetime. The key includes
 // createdAt, so a newly-created worktree can reuse the same animal id without
 // being filtered, while delayed renderer saves cannot resurrect archived rows.
@@ -395,32 +361,10 @@ export function isWorkspaceWorktreeRecentlyRemoved(
 }
 
 /** @internal - exposed for testing only */
-/** Marks a list write in flight; the returned release is idempotent. */
-function beginWorktreesSelfWrite(workspaceId: string): () => void {
-  const tracking = worktreesContentTracking.get(workspaceId);
-  if (tracking) tracking.writesStarted += 1;
-  inFlightWorktreesSelfWrites.set(
-    workspaceId,
-    (inFlightWorktreesSelfWrites.get(workspaceId) ?? 0) + 1,
-  );
-  let released = false;
-  return (): void => {
-    if (released) return;
-    released = true;
-    const remaining = (inFlightWorktreesSelfWrites.get(workspaceId) ?? 1) - 1;
-    if (remaining > 0) inFlightWorktreesSelfWrites.set(workspaceId, remaining);
-    else inFlightWorktreesSelfWrites.delete(workspaceId);
-  };
-}
-
 export const workspacePersistenceTestExports: {
   markWorktreeRecentlyRemoved: typeof markWorktreeRecentlyRemoved;
-  beginWorktreesSelfWrite: typeof beginWorktreesSelfWrite;
-  recordWorktreesSelfWrite: typeof recordWorktreesSelfWrite;
 } = {
   markWorktreeRecentlyRemoved,
-  beginWorktreesSelfWrite,
-  recordWorktreesSelfWrite,
 };
 
 function markWorktreeRecentlyRemovedAt(
@@ -486,23 +430,9 @@ export function removeWorkspaceRecords(
               throw new WorkspaceConfigUnreadableError(manifest.error);
             if (list.state === 'unreadable')
               throw new WorktreeRegistryUnreadableError(list.error);
-            const release = beginWorktreesSelfWrite(workspaceId);
-            onW5Abort(release);
-            try {
-              await workspaceManifestRepository.remove(workspaceId);
-              await worktreeListRepository.remove(workspaceId);
-            } catch (error) {
-              release();
-              throw error;
-            }
+            await workspaceManifestRepository.remove(workspaceId);
+            await worktreeListRepository.remove(workspaceId);
             await afterW5Apply(() => {
-              recentWorktreesSelfWrites.set(workspaceId, Date.now());
-              recordWorktreesSelfWrite(
-                workspaceId,
-                list.state === 'present' ? list.raw : null,
-                null,
-              );
-              release();
               if (!options?.deferPluginDefaultsRefresh)
                 projectPluginDefaultsWritten({
                   configPath: w5RecordReadPaths.manifest(workspaceId),
@@ -590,13 +520,9 @@ async function writeAdmittedWorktreesFile(
   // Unscoped replace can decide internally; nested scopes decide after we return.
   let scopedDecisionNotSubmitted = Boolean(commit);
   let serialized: string;
-  let releaseSelfWrite = (): void => undefined;
   try {
     await reconciliation?.beforeWrite?.();
     prepared = true;
-    // A staged write stays in flight until its scope applies or aborts.
-    releaseSelfWrite = beginWorktreesSelfWrite(workspaceId);
-    onW5Abort(releaseSelfWrite);
     const replaceWorktreeList = (): Promise<string> =>
       worktreeListRepository.replace(workspaceId, worktrees, previous);
     serialized = commit
@@ -612,18 +538,9 @@ async function writeAdmittedWorktreesFile(
         )
       : await replaceWorktreeList();
   } catch (error) {
-    releaseSelfWrite();
     // Transport failure can follow application. Keep intent until the owner
     // can reconcile it; only a proven no-effect refusal permits rollback.
-    const refused =
-      scopedDecisionNotSubmitted ||
-      error instanceof W5RevisionConflictError ||
-      error instanceof W5FileWriteRefusedError ||
-      error instanceof W5CommitLogError ||
-      error instanceof W5ProcessFileLockTimeoutError ||
-      error instanceof W5DaemonHandoffError ||
-      (error instanceof W5CommitRefusedError &&
-        error.reason !== 'recovery-required');
+    const refused = scopedDecisionNotSubmitted || isDefiniteW5Refusal(error);
     if (prepared && refused && reconciliation?.rollback) {
       try {
         await reconciliation.rollback();
@@ -638,14 +555,9 @@ async function writeAdmittedWorktreesFile(
   }
   // Group reconciliation writes a snapshot taken under the list lock, so it
   // must finish before that lock is released to a concurrent group change.
-  // The list is already applied: record it as ours even if reconciliation fails.
   const reconcileAfterWrite = reconciliation?.afterWrite;
-  const previousRaw = previous.authority === 'ok' ? previous.raw : null;
   await afterW5Apply(async (): Promise<void> => {
     options?.afterApply?.();
-    recentWorktreesSelfWrites.set(workspaceId, Date.now());
-    recordWorktreesSelfWrite(workspaceId, previousRaw, serialized);
-    releaseSelfWrite();
     if (!reconcileAfterWrite) return;
     try {
       await reconcileAfterWrite();
@@ -683,32 +595,6 @@ async function writeAdmittedWorktreesFile(
   return worktrees.map((row) => ({ ...row, replica: replicas.get(row.id) }));
 }
 
-export function wasRecentWorktreesSelfWrite(workspaceId: string): boolean {
-  if (inFlightWorktreesSelfWrites.has(workspaceId)) {
-    return true;
-  }
-  const timestamp = recentWorktreesSelfWrites.get(workspaceId);
-  if (timestamp === undefined) {
-    return false;
-  }
-  if (Date.now() - timestamp <= WORKTREES_SELF_WRITE_WINDOW_MS) {
-    return true;
-  }
-  recentWorktreesSelfWrites.delete(workspaceId);
-  return false;
-}
-
-/** Byte or JSON equality; unparseable content never matches other bytes. */
-function sameWorktreesContent(a: string | null, b: string | null): boolean {
-  if (a === b) return true;
-  if (a === null || b === null) return false;
-  try {
-    return equalW5Contents(a, b);
-  } catch {
-    return false;
-  }
-}
-
 /** Rows without the `discovery` overlay, which the list never stores. */
 function storedWorktreeRows(rows: readonly WorktreeData[]): WorktreeData[] {
   return rows.map(({ discovery: _discovery, ...row }) => {
@@ -724,23 +610,24 @@ function storedWorktreeRows(rows: readonly WorktreeData[]): WorktreeData[] {
  */
 function comparableWorktreeRows(
   workspaceId: string,
-  rows: WorktreeData[],
+  rows: readonly WorktreeData[],
 ): unknown {
   const shown = storedWorktreeRows(
-    filterRecentlyRemovedWorktrees(workspaceId, rows),
+    filterRecentlyRemovedWorktrees(workspaceId, Array.from(rows)),
   );
   const comparable: unknown = JSON.parse(JSON.stringify(shown));
   return comparable;
 }
 
 /**
- * Whether list content holds the delivered rows. Absent or unreadable content
- * delivers no rows; a partial list delivers its readable rows.
+ * Whether worktrees.json content holds the rows a projects load delivered.
+ * Absent or unreadable content holds no rows; a partial list holds its
+ * readable rows.
  */
-function holdsDeliveredWorktrees(
+export function worktreesContentHoldsRows(
   workspaceId: string,
   content: string | null,
-  delivered: WorktreeData[],
+  delivered: readonly WorktreeData[],
 ): boolean {
   const expected = comparableWorktreeRows(workspaceId, delivered);
   if (content === null) return isDeepStrictEqual(expected, []);
@@ -752,119 +639,6 @@ function holdsDeliveredWorktrees(
       expected,
     )
   );
-}
-
-function setWorktreesBaseline(
-  tracking: WorktreesContentTracking,
-  baseline: NonNullable<WorktreesContentTracking['baseline']>,
-): void {
-  tracking.baseline = baseline;
-  tracking.delivered = undefined;
-}
-
-/**
- * Records a list write of ours while a watcher tracks the workspace. It is
- * `absorbed` unless the file it replaced was known to the renderer, including
- * carrying an earlier `absorbed` write forward until the watcher announces it.
- * JSON equality covers a write the repository skipped as unchanged, which
- * leaves the replaced bytes on disk.
- */
-function recordWorktreesSelfWrite(
-  workspaceId: string,
-  previousRaw: string | null,
-  written: string | null,
-): void {
-  const tracking = worktreesContentTracking.get(workspaceId);
-  if (!tracking) return;
-  const { baseline, delivered } = tracking;
-  const builtOnKnown =
-    baseline === undefined
-      ? delivered !== undefined &&
-        holdsDeliveredWorktrees(workspaceId, previousRaw, delivered)
-      : baseline.source !== 'absorbed' &&
-        sameWorktreesContent(baseline.content, previousRaw);
-  setWorktreesBaseline(tracking, {
-    content: written,
-    source: builtOnKnown ? 'self' : 'absorbed',
-  });
-}
-
-/**
- * Whether `content` is byte-identical to a write of ours that absorbed no
- * unannounced change. When true, a file-watcher event carries no new
- * information for the renderer (main-initiated writes already notify it
- * through their own IPC responses/events), so the watcher can drop it however
- * late it arrives. An external write (the CLI appending a worktree) produces
- * different content and is never matched.
- */
-export function isWorktreesSelfWriteContent(
-  workspaceId: string,
-  content: string,
-): boolean {
-  const baseline = worktreesContentTracking.get(workspaceId)?.baseline;
-  return baseline?.source === 'self' && baseline.content === content;
-}
-
-/**
- * Starts (or restarts) content tracking for a newly started watcher, from the
- * rows the renderer received when the projects load started it. Without them
- * the watcher stays unaccounted: its first write's echo reloads once.
- * Untracked writes are not recorded. Accepted cost: a write of ours between
- * the projects read and this call goes unrecorded, so the seed mismatches and
- * one reload is announced.
- */
-export function startWorktreesContentTracking(
-  workspaceId: string,
-  deliveredWorktrees?: readonly WorktreeData[],
-): void {
-  worktreesContentTracking.set(workspaceId, {
-    writesStarted: 0,
-    // Deep copy: the caller keeps and may change the delivered rows.
-    ...(deliveredWorktrees
-      ? { delivered: structuredClone(storedWorktreeRows(deliveredWorktrees)) }
-      : {}),
-  });
-}
-
-/**
- * Sets the watcher's starting content as the baseline when it holds the
- * delivered rows. Returns false when it does not, so the watcher announces it.
- * A write of ours recorded first already set the baseline; its echo decides.
- */
-export function seedWorktreesContentBaseline(
-  workspaceId: string,
-  content: string | null,
-): boolean {
-  const tracking = worktreesContentTracking.get(workspaceId);
-  if (!tracking || tracking.baseline || tracking.delivered === undefined)
-    return true;
-  if (!holdsDeliveredWorktrees(workspaceId, content, tracking.delivered))
-    return false;
-  setWorktreesBaseline(tracking, { content, source: 'observed' });
-  return true;
-}
-
-/** Changes whenever a list write of ours starts, while tracked. */
-export function worktreesSelfWritesStarted(workspaceId: string): number {
-  return worktreesContentTracking.get(workspaceId)?.writesStarted ?? 0;
-}
-
-/**
- * Records content the watcher announced. Replacing the self-write record means
- * a byte-exact external revert (desktop A → CLI B → CLI A) is never an echo.
- */
-export function recordObservedWorktreesContent(
-  workspaceId: string,
-  content: string | null,
-): void {
-  const tracking = worktreesContentTracking.get(workspaceId);
-  if (tracking) setWorktreesBaseline(tracking, { content, source: 'observed' });
-}
-
-/** Drops all tracking when a workspace's watcher is torn down. */
-export function clearWorktreesSelfWriteTracking(workspaceId: string): void {
-  recentWorktreesSelfWrites.delete(workspaceId);
-  worktreesContentTracking.delete(workspaceId);
 }
 
 export async function readWorkspaceConfig(

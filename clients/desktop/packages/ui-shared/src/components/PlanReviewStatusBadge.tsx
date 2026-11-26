@@ -4,9 +4,9 @@ import type {
   PlanDisplayStatus,
   PlanDisplayStatusKind,
 } from '../lib/planDisplayStatus';
-import { Badge } from './Badge';
-import { Button } from './Button';
-import { LoadingSpinner } from './LoadingSpinner';
+import { Badge } from '../primitives/Badge';
+import { Button } from '../primitives/Button';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
 
 const STATUS_TONES: Record<PlanDisplayStatusKind, BadgeTone> = {
   pending: 'warning',

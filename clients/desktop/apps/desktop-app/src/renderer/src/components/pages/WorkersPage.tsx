@@ -3,13 +3,13 @@ import {
   WorkerTerminalSurface,
 } from '@canopy/ui-shared/components';
 import { StatusIllustration } from '@canopy/ui-shared/components';
-import { Badge, type BadgeTone } from '@canopy/ui-shared/components/Badge';
-import { StatusGlyph } from '@canopy/ui-shared/components/StatusGlyph';
+import { Badge, type BadgeTone } from '@canopy/ui-shared/primitives/Badge';
+import { StatusGlyph } from '@canopy/ui-shared/primitives/StatusGlyph';
 import { Stack, Button, Heading, Surface } from '@canopy/ui-shared/components';
 import { type JSX, useCallback, useEffect, useMemo, useState } from 'react';
 import { PageTitlebar } from '../shared/PageTitlebar';
 import { PageContent } from '../shared/PageContent';
-import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
+import { PageHeader } from '@canopy/ui-shared/primitives/PageHeader';
 import type {
   AgentAuditLinkTarget,
   WorkerCardData,

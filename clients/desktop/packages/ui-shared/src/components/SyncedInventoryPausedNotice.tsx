@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
-import { Notice } from './Notice';
+import { Notice } from '../primitives/Notice';
 
 export interface SyncedInventoryPausedNoticeProps {
   /** The synced computer's name; `null` or blank reads "this computer". */

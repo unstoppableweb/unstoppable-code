@@ -1,5 +1,13 @@
 import { create } from 'zustand';
-import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
+import {
+  getTrackedPlan,
+  importTrackedPlan,
+  listDetectedPlans,
+  listTrackedPlans,
+  scanDetectedPlans,
+  updateDetectedPlan,
+  updateTrackedPlan,
+} from '@/client/desktop-plan-client';
 import { unwrapShareOperationResult } from '@/lib/sharing/share-operation-result';
 import {
   isWorkflowLaunchReceipt,
@@ -37,7 +45,6 @@ import type {
   ShareRunResponse,
   ShareTrackedPlanRequest,
   TrackedPlanData,
-  TrackedPlanListWithSkippedResult,
   UnshareRunResponse,
   WorktreeSummaryLoadBatchResponse,
   WorktreeSummaryData,
@@ -196,7 +203,14 @@ interface ActivityState {
   ) => void;
   setWorktreeSummary: (key: string, data: WorktreeSummaryData) => void;
   setTrackedPlans: (key: string, plans: TrackedPlanData[]) => void;
-  upsertTrackedPlan: (plan: TrackedPlanData) => void;
+  /**
+   * Insert or replace a plan unless the cache holds a newer one. A write's
+   * own answer (`fromWrite`) replaces it only when strictly newer.
+   */
+  upsertTrackedPlan: (
+    plan: TrackedPlanData,
+    options?: { fromWrite?: boolean },
+  ) => void;
   /**
    * Drop a plan the main process reports as deleted (CAN-1305). Portal-initiated
    * `portal.plan.delete` reaches this renderer only as a `trackedPlansUpdated`
@@ -437,6 +451,27 @@ const trackedPlanListsInFlight = new Map<string, number>();
 let trackedPlanListSequence = 0;
 const trackedPlanListsApplied = new Map<string, number>();
 
+function holdsDetectedPlans(key: string): boolean {
+  return key in useActivityStore.getState().detectedPlans;
+}
+
+/*
+ * A write's answer, kept only when the store held no list for the worktree
+ * when the write started and still holds none: a push in between (an empty
+ * one stores []) wins, and cleanupWorktree's removal during the write is not
+ * refilled.
+ */
+function fillDetectedPlans(
+  key: string,
+  heldAtStart: boolean,
+  entries: DetectedPlanEntry[],
+): void {
+  if (heldAtStart || holdsDetectedPlans(key)) return;
+  useActivityStore.setState((state) => ({
+    detectedPlans: { ...state.detectedPlans, [key]: entries },
+  }));
+}
+
 function recordTrackedPlanWrite(key: string, planId: string): void {
   trackedPlanWriteSequence += 1;
   if (!trackedPlanListsInFlight.get(key)) return;
@@ -488,6 +523,25 @@ const livenessInFlight = new Set<string>();
 
 function worktreeKey(projectId: string, worktreeId: string): string {
   return `${projectId}/${worktreeId}`;
+}
+
+/*
+ * A same-key replay of a plan write can answer an outcome older than a newer
+ * write's broadcast; it never replaces the newer record.
+ * shortcut: a replay after a delete can still re-add the plan, until a
+ * per-plan removal marker guards upserts too.
+ */
+function notOlder(next: TrackedPlanData, current: TrackedPlanData): boolean {
+  return Date.parse(next.updatedAt) >= Date.parse(current.updatedAt);
+}
+
+/*
+ * Every plan write bumps updatedAt, and its push reaches the window before its
+ * answer, so a write's answer as old as the cache is already there; a
+ * share-sync or diagram save since then kept updatedAt, so the cache wins.
+ */
+function newer(next: TrackedPlanData, current: TrackedPlanData): boolean {
+  return Date.parse(next.updatedAt) > Date.parse(current.updatedAt);
 }
 
 function pollingKey(
@@ -2317,26 +2371,6 @@ function applyTabMessagesToData(
   }
 }
 
-/**
- * A worktree's tracked plans and how many stored records were left out
- * (CAN-6666). A host on an older release refuses the newer read, so the
- * plain list stands in, with no count.
- */
-async function readTrackedPlans(request: {
-  projectId: string;
-  worktreeId: string;
-}): Promise<TrackedPlanListWithSkippedResult> {
-  const plans = window.api.activity.plans;
-  if (typeof plans.listWithSkipped !== 'function')
-    return { plans: await plans.list(request) };
-  try {
-    return await plans.listWithSkipped(request);
-  } catch (error) {
-    reportClientAppError(error);
-    return { plans: await plans.list(request) };
-  }
-}
-
 export const useActivityStore = create<ActivityState>((set, get) => ({
   panelExpanded: false,
   changedFiles: {},
@@ -2455,15 +2489,17 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
 
   loadDetectedPlans: async (projectId, worktreeId): Promise<void> => {
     const key = worktreeKey(projectId, worktreeId);
-    const entries = await window.api.activity.detectedPlans.list({
-      projectId,
-      worktreeId,
-    });
+    const entries = await listDetectedPlans({ projectId, worktreeId });
     set((state) => ({
       detectedPlans: { ...state.detectedPlans, [key]: entries },
     }));
   },
 
+  // A detected list carries no timestamp, so an answer may be older than a
+  // push that landed before it. Every writer's push arrives in commit order,
+  // so the store takes the list from pushes (the app-level
+  // useDetectedPlansSubscription) and a write's answer only fills a list it
+  // holds none of yet, as a restored chat's scan that adds nothing does.
   scanDetectedPlans: async (
     projectId,
     worktreeId,
@@ -2471,15 +2507,14 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
     candidatePaths,
   ): Promise<DetectedPlanEntry[]> => {
     const key = worktreeKey(projectId, worktreeId);
-    const response = await window.api.activity.detectedPlans.scan({
+    const heldAtStart = holdsDetectedPlans(key);
+    const response = await scanDetectedPlans({
       projectId,
       worktreeId,
       chatId,
       candidatePaths,
     });
-    set((state) => ({
-      detectedPlans: { ...state.detectedPlans, [key]: response.entries },
-    }));
+    fillDetectedPlans(key, heldAtStart, response.entries);
     return response.newlyDetected;
   },
 
@@ -2490,18 +2525,17 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
     patch,
   ): Promise<void> => {
     const key = worktreeKey(projectId, worktreeId);
-    const entries = await window.api.activity.detectedPlans.update({
+    const heldAtStart = holdsDetectedPlans(key);
+    const entries = await updateDetectedPlan({
       projectId,
       worktreeId,
       entryId,
       ...patch,
     });
-    set((state) => ({
-      detectedPlans: { ...state.detectedPlans, [key]: entries },
-    }));
+    fillDetectedPlans(key, heldAtStart, entries);
   },
 
-  upsertTrackedPlan: (plan): void => {
+  upsertTrackedPlan: (plan, options): void => {
     const key = worktreeKey(plan.projectId, plan.worktreeId);
     recordTrackedPlanWrite(key, plan.id);
     set((state) => {
@@ -2509,7 +2543,12 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
       const existingIndex = current.findIndex((entry) => entry.id === plan.id);
       const nextPlans =
         existingIndex >= 0
-          ? current.map((entry) => (entry.id === plan.id ? plan : entry))
+          ? current.map((entry) =>
+              entry.id === plan.id &&
+              (options?.fromWrite ? newer(plan, entry) : notOlder(plan, entry))
+                ? plan
+                : entry,
+            )
           : [plan, ...current];
       nextPlans.sort((left, right) =>
         right.updatedAt.localeCompare(left.updatedAt),
@@ -2663,7 +2702,7 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
     let listed: TrackedPlanData[];
     let skipped: number;
     try {
-      const read = await readTrackedPlans({ projectId, worktreeId });
+      const read = await listTrackedPlans({ projectId, worktreeId });
       listed = read.plans;
       skipped = read.skipped ?? 0;
     } catch (error) {
@@ -2719,7 +2758,7 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
   },
 
   commitTrackedPlanUpdate: (plan): void => {
-    get().upsertTrackedPlan(plan);
+    get().upsertTrackedPlan(plan, { fromWrite: true });
   },
 
   noteTrackedPlanWrite: (projectId, worktreeId, planId): void => {
@@ -2745,11 +2784,7 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
     }
     const load = (async (): Promise<TrackedPlanData | null> => {
       try {
-        const plan = await window.api.activity.plans.get({
-          projectId,
-          worktreeId,
-          planId,
-        });
+        const plan = await getTrackedPlan({ projectId, worktreeId, planId });
         if (!plan) {
           return null;
         }
@@ -2779,7 +2814,7 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
   },
 
   togglePlanHidden: async (plan): Promise<void> => {
-    const result = await window.api.activity.plans.update({
+    const result = await updateTrackedPlan({
       projectId: plan.projectId,
       worktreeId: plan.worktreeId,
       planId: plan.id,
@@ -2792,7 +2827,15 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
         return {
           trackedPlans: {
             ...state.trackedPlans,
-            [key]: current.map((p) => (p.id === plan.id ? result : p)),
+            // An answer as old as the cache carries no newer fields but its
+            // own: a share-sync write keeps updatedAt, so only hidden applies.
+            [key]: current.map((p) =>
+              p.id !== plan.id || !notOlder(result, p)
+                ? p
+                : result.updatedAt === p.updatedAt
+                  ? { ...p, hidden: result.hidden }
+                  : result,
+            ),
           },
         };
       });
@@ -2900,15 +2943,14 @@ export const useActivityStore = create<ActivityState>((set, get) => ({
     filePath,
     repoId,
   ): Promise<TrackedPlanData | null> => {
-    const response = await window.api.activity.plans.import({
+    const plan = await importTrackedPlan({
       projectId,
       worktreeId,
       ...(filePath ? { filePath } : {}),
       ...(repoId ? { repoId } : {}),
     });
-    const plan = response.plan;
     if (plan) {
-      get().upsertTrackedPlan(plan);
+      get().commitTrackedPlanUpdate(plan);
       await get().loadTrackedPlans(projectId, worktreeId);
     }
     return plan;

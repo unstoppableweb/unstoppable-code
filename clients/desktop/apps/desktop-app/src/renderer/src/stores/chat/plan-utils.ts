@@ -22,6 +22,7 @@ import type {
   WorktreeChatState,
 } from './types';
 import { chatBackendFor, reportUnlessUnavailable } from './backend';
+import { updateTrackedPlan } from '@/client/desktop-plan-client';
 
 type PlanDispatchTarget = Pick<
   TrackedPlanData,
@@ -387,7 +388,7 @@ export async function updateTrackedPlanReview(
   const now = new Date().toISOString();
   let plan: TrackedPlanData | null = null;
   try {
-    plan = await window.api.activity.plans.update({
+    plan = await updateTrackedPlan({
       projectId: target.projectId,
       worktreeId: target.worktreeId,
       planId,

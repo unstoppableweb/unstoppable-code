@@ -25,8 +25,8 @@ import {
   DisposableStore,
   type IDisposable,
   toDisposable,
-} from '../disposable';
-import { Emitter, Event, Relay } from '../emitter';
+} from '../../lib/disposable';
+import { Emitter, Event, Relay } from '../../lib/emitter';
 import { rot } from '../numbers';
 import { type IBoundarySashes, Orientation, type Sash } from '../sash';
 import {

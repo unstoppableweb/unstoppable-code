@@ -23,6 +23,7 @@ import {
   PlusIcon as AppCatalogPlusIcon,
 } from '@canopy/ui-shared/icons/AppIcons';
 import { EmptyStateRow } from '@canopy/ui-shared/components';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 interface JobCardProps {
   jobId: string;
@@ -113,7 +114,10 @@ export function JobCard({
         </Button>
 
         {/* Job name */}
-        <span className="text-s font-medium fg-primary truncate flex-1">
+        {/* Job names are authored, as in the Designer: never recorded. */}
+        <span
+          className={`text-s font-medium fg-primary truncate flex-1 ${REPLAY_BLOCK_CLASS}`}
+        >
           {job.name || jobId}
         </span>
 

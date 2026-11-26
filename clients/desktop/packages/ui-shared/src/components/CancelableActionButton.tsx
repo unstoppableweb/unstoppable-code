@@ -1,4 +1,4 @@
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 /**
  * Running-action chrome shared by the worktree top bar's git actions and any
  * other long-running button that should become its own cancel control: the
@@ -13,9 +13,11 @@ import { ControlButton } from './Button';
  */
 import type { JSX } from 'react';
 import { CloseMediumIcon } from '../icons/AppIcons';
-import type { SpinnerTone } from './spinner-tone';
-import { ThinkingSpinner } from './ThinkingSpinner';
-import { Tooltip } from './Tooltip';
+import type { SpinnerTone } from '../primitives/spinner-tone';
+import { ThinkingSpinner } from '../primitives/ThinkingSpinner';
+import { Tooltip } from '../primitives/Tooltip';
+import type { CancelActionButtonTone } from '../primitives/control-button-shared';
+export type { CancelActionButtonTone } from '../primitives/control-button-shared';
 
 export interface RunningActionIconProps {
   /**
@@ -51,20 +53,6 @@ export function RunningActionSpinnerSlot({
     </span>
   );
 }
-
-/**
- * The pill's own tone: the `HeaderActionButton` intents plus `merged`, the
- * Merge PR button's status ink. The ✕ replaces the pill's leading glyph, so
- * it wears the same ink as the text beside it instead of a generic grey, and
- * its direct-hover wash is the same hue: it stacks on the pill's group-hover
- * tint, so even the same opacity reads one step deeper — which is exactly the
- * direct-hover cue.
- */
-export type CancelActionButtonTone =
-  | 'accent'
-  | 'warning'
-  | 'destructive'
-  | 'merged';
 
 export interface CancelActionButtonProps {
   onCancel: () => void;

@@ -1,6 +1,6 @@
 import type { JSX, ReactNode } from 'react';
-import { DisclosureChevron, DisclosureToggle } from './Disclosure';
-import { SIDEBAR_ROW_TRAILING_CELL_CLASSNAME } from './sidebar-item-classes';
+import { DisclosureChevron, DisclosureToggle } from '../primitives/Disclosure';
+import { SIDEBAR_ROW_TRAILING_CELL_CLASSNAME } from '../primitives/sidebar-item-classes';
 
 export interface SidebarToggleRowProps {
   readonly label: ReactNode;

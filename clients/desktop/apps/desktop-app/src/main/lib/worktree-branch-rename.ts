@@ -1,4 +1,5 @@
 import { decodeW5WorktreeBranchRenameOutcome } from '@canopy/core-runtime/node/w5/worktree-outcome';
+import { classifyError } from '@canopy/protocol/app-errors/classification';
 import {
   checkW5ExpectedRevision,
   runW5BoundaryOperation,
@@ -13,7 +14,7 @@ import {
   WORKSPACE_ROOT_REPO_ID,
   type WorktreeData,
 } from '@canopy/desktop-shared/types';
-import { isBranchNameAvailable, validateBranchName } from './git';
+import { checkBranchNameForRename } from './git';
 import { w5RecordReadPaths, getWorkspaceWorktreeRepoDir } from './paths';
 import { isWritableScope, READ_ONLY_SCOPE_ERROR } from './read-only-scope';
 import { resolveWorktreeCwd } from './resolve-worktree';
@@ -82,6 +83,10 @@ export class WorktreeBranchRenameRefusedError extends Error {
     message: string,
   ) {
     super(message);
+    // CAN-7293: a name Git refuses, or one another branch holds, is the
+    // person's input to change, never a defect asking them to reload.
+    if (reason === 'invalid-branch-name' || reason === 'branch-unavailable')
+      classifyError(this, 'input.not_accepted');
   }
 }
 
@@ -104,7 +109,7 @@ function resolveRenameCheckout(request: WorktreeBranchRenameRequest): string {
  * `core.worktree.branch.rename` (CAN-3820), the typed in-process command
  * behind `worktree:rename-branch`. Admission (ids, the read-only
  * shared-container scope, the repository id) runs before any Git work; the
- * branch name is checked through the existing Git helpers, unchanged, and the
+ * branch name is checked through Git in the target checkout, and the
  * checkout's branch renamed through the injected `git` port
  * (`worker.git.branch.rename`, CAN-5516); then the row is recorded under the
  * worktree list lock in one write, as a `worktree.branch.rename` decision
@@ -150,13 +155,17 @@ export async function renameWorktreeBranch(
           expectedRevision,
         );
         const checkout = resolveRenameCheckout(request);
-        if (!(await validateBranchName(checkout, newBranchName))) {
+        const nameRefusal = await checkBranchNameForRename(
+          checkout,
+          newBranchName,
+        );
+        if (nameRefusal === 'invalid-branch-name') {
           refuse(
             'invalid-branch-name',
             `Invalid branch name: "${newBranchName}"`,
           );
         }
-        if (!(await isBranchNameAvailable(checkout, newBranchName))) {
+        if (nameRefusal === 'branch-unavailable') {
           refuse(
             'branch-unavailable',
             `Branch name "${newBranchName}" is already in use`,

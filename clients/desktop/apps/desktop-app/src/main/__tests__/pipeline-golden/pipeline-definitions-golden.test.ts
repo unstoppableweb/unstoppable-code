@@ -46,7 +46,7 @@ import {
 } from '@canopy/execution-engine/types/pipeline';
 import {
   readPipelineLocalMetadata,
-  setUserPipelineAgentAuthor,
+  setUserPipelineAgentAuthorIfCurrent,
   setUserPipelineNativeGrant,
   setUserPipelineOwnerAutomation,
 } from '../../pipelines/pipeline-local-metadata-store';
@@ -77,6 +77,7 @@ import {
 } from '../../lib/paths';
 import * as advisorAccess from '../../lib/app-advisor-project-agent-access';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
+import { getTriggerTypes } from '@canopy/execution-engine/types/pipeline';
 import { PIPELINE_CHANNELS } from '@canopy/desktop-shared/constants/ipc-channels';
 import { AGENT_PIPELINE_NEW_CHAT_PLUGINS_POLICY_ERROR } from '@canopy/desktop-shared/lib/agent-pipeline-policy';
 import {
@@ -575,6 +576,77 @@ describe('core definition writes', () => {
 });
 
 // CAN-5368: duplicates, enablement and replay go through core too.
+// CAN-5782: a timed fire of a workflow-only definition needs a person's
+// approval of its exact content. A person's save stamps it, an agent's
+// write clears it, and Approve for schedules stamps the saved content only
+// at the revision and digest the page shows.
+describe('person approval for schedules', () => {
+  it("stamps a person's save, clears on an agent's write and approves only the shown content", async () => {
+    const runtime = goldenWorktreeActionRuntime(world.worktreePath);
+    const metadata = (
+      id: string,
+    ): ReturnType<typeof readPipelineLocalMetadata> =>
+      readPipelineLocalMetadata({ type: 'stored', source: 'user', value: id });
+    const storedDigest = (id: string): string => {
+      const stored = getStoredPipelineBySource('user', id);
+      return nativeGrantContentHash(stored.data?.content);
+    };
+    const saved = (await invokeIpc(PIPELINE_CHANNELS.SAVE, {
+      name: 'Golden approval',
+      description: '',
+      icon: '',
+      content: parsePipelineText(GOLDEN_USER_PIPELINE_YAML),
+    })) as IPCResult<PipelineInfo>;
+    const id = saved.data?.id ?? '';
+    expect(metadata(id).personApprovedDigest).toEqual({
+      contentHash: storedDigest(id),
+      revision: 1,
+    });
+    expect(
+      await dispatchAgentAction(
+        { type: 'pipeline.update', pipelineId: id, name: 'Agent approval' },
+        runtime,
+      ),
+    ).toMatchObject({ isError: false });
+    expect(metadata(id).agentAuthor).toBeDefined();
+    expect(metadata(id).personApprovedDigest).toBeUndefined();
+    const approve = (
+      revision: number,
+      contentDigest: string,
+    ): Promise<unknown> =>
+      invokeIpc(PIPELINE_CHANNELS.APPROVE_FOR_SCHEDULES, {
+        pipelineId: id,
+        revision,
+        contentDigest,
+        packageDigest: null,
+      });
+    expect(await approve(1, storedDigest(id))).toMatchObject({
+      success: false,
+      refusal: 'stale_revision',
+    });
+    expect(
+      await approve(
+        2,
+        nativeGrantContentHash(parsePipelineText(GOLDEN_NO_JOBS_YAML)),
+      ),
+    ).toMatchObject({ success: false, refusal: 'content_mismatch' });
+    expect(metadata(id).personApprovedDigest).toBeUndefined();
+    expect(await approve(2, storedDigest(id))).toEqual({
+      success: true,
+      data: { contentHash: storedDigest(id), revision: 2 },
+    });
+    expect(metadata(id).personApprovedDigest).toEqual({
+      contentHash: storedDigest(id),
+      revision: 2,
+    });
+    // The person took the agent's content over, so it now counts as theirs.
+    expect(metadata(id).agentAuthor).toBeUndefined();
+    expect(await invokeIpc(PIPELINE_CHANNELS.DELETE, id)).toEqual({
+      success: true,
+    });
+  });
+});
+
 describe('core definition copies, enablement and replay', () => {
   it('copies a bundled definition under an id core assigns, as a user definition', async () => {
     const before = new Set(
@@ -1559,8 +1631,9 @@ describe('workflow trigger (CAN-5782)', () => {
         await captureAll({
           list: rows,
           get: () => invokeIpc(PIPELINE_CHANNELS.GET, workflowOnlyId),
-          // Refused before any cloud request: web can't store the trigger.
-          // Without resource contexts, so the refusal isn't a context check.
+          // Shared like any other pipeline (CAN-5782 writer, phase 02): the
+          // request is sent (the golden cloud answers writes with a 404).
+          // Without resource contexts, so no context check is involved.
           shareCreate: async () => {
             const contexts = jest
               .spyOn(resourceLanes, 'pipelineResourceContextEnabled')
@@ -1574,8 +1647,8 @@ describe('workflow trigger (CAN-5782)', () => {
               contexts.mockRestore();
             }
           },
-          // The share dialog's review blocks a workflow pipeline, and the
-          // packaged share refuses it before any upload.
+          // The share dialog's review no longer blocks a workflow pipeline:
+          // it is ready to package, with no blocker.
           packagedShare: async () => {
             const contexts = jest
               .spyOn(resourceLanes, 'pipelineResourceContextEnabled')
@@ -1593,11 +1666,6 @@ describe('workflow trigger (CAN-5782)', () => {
                 analysis.data !== null
                   ? analysis.data
                   : {};
-              const analysisId =
-                'analysisId' in summary &&
-                typeof summary.analysisId === 'string'
-                  ? summary.analysisId
-                  : '';
               return {
                 state: 'state' in summary ? summary.state : undefined,
                 blockers:
@@ -1610,14 +1678,6 @@ describe('workflow trigger (CAN-5782)', () => {
                           : blocker,
                       )
                     : [],
-                create: await invokeIpc(
-                  PIPELINE_CHANNELS.SHARED_CREATE_PACKAGED,
-                  {
-                    analysisId,
-                    rawPipeline: WORKFLOW_AND_DISPATCH_YAML,
-                    shareScope: 'private',
-                  },
-                ),
               };
             } finally {
               contexts.mockRestore();
@@ -2035,8 +2095,13 @@ describe('workflow schedules (CAN-5782)', () => {
       );
       const grantedOwner = agentOwner.ok ? (agentOwner.activity?.id ?? '') : '';
       setUserPipelineOwnerAutomation(grantedId, grantedOwner);
-      setUserPipelineAgentAuthor(grantedId, author);
       const stored = getStoredPipelineBySource('user', grantedId);
+      const revision = stored.data?.info.revision;
+      if (revision === undefined)
+        throw new Error('Expected a saved workflow revision');
+      expect(
+        setUserPipelineAgentAuthorIfCurrent(grantedId, author, { revision }),
+      ).toBe('written');
       setUserPipelineNativeGrant(grantedId, {
         automationId: grantedOwner,
         pipelineRevision: stored.data?.info.revision ?? 0,
@@ -2354,7 +2419,9 @@ describe('workflow schedules (CAN-5782)', () => {
     }
   });
 
-  it('counts the workflow pages that call a pipeline through run-pipeline', async () => {
+  // One page for every user workflow (Hassan Ali, 2026-11-24): a converted
+  // caller and one made as a workflow both count.
+  it('counts every user workflow that calls a pipeline through run-pipeline', async () => {
     const saveYaml = async (yaml: string): Promise<string> => {
       const content = parsePipelineText(yaml);
       const result = await invokeIpc(PIPELINE_CHANNELS.SAVE, {
@@ -2411,9 +2478,439 @@ describe('workflow schedules (CAN-5782)', () => {
         child: callers(childId),
         page: callers(pageId),
         plain: callers(plainId),
-      }).toEqual({ saved: true, child: 1, page: null, plain: null });
+      }).toEqual({ saved: true, child: 2, page: null, plain: null });
     } finally {
       for (const id of [childId, pageId, plainId])
+        if (id && getStoredPipeline(id).success) deleteStoredPipeline(id);
+    }
+  });
+
+  it('checks a schedule that names no source, as the scheduler runs it (CAN-5782 phase 05)', async () => {
+    const yaml = (on: string[]): string =>
+      [
+        'pipeline:',
+        '  name: Golden sourceless',
+        '  scope: global',
+        '  on:',
+        ...on,
+        '  jobs:',
+        '    run:',
+        '      steps:',
+        '        - run: echo scheduled',
+        '',
+      ].join('\n');
+    const first = parsePipelineText(
+      yaml([
+        '    dispatch:',
+        '      inputs:',
+        '        topic:',
+        '          type: string',
+      ]),
+    );
+    const saved = (await invokeIpc(PIPELINE_CHANNELS.SAVE, {
+      name: first.name,
+      description: '',
+      icon: '',
+      content: first,
+    })) as IPCResult<PipelineInfo>;
+    const id = saved.data?.id ?? '';
+    let scheduleId = '';
+    try {
+      const created = await invokeIpc(IPC_CHANNELS.automationsCreate, {
+        ...schedule(id, { topic: 'news' }),
+        enabled: true,
+        action: {
+          type: 'worktree_pipeline',
+          target: { kind: 'global' },
+          pipelineId: id,
+          pipelineName: 'Golden sourceless',
+          inputs: { topic: 'news' },
+        },
+      });
+      scheduleId = createdId(created);
+      expect(scheduleId).not.toBe('');
+      const next = parsePipelineText(yaml(['    workflow: {}']));
+      const stored = getStoredPipelineBySource('user', id);
+      expect(
+        await invokeIpc(PIPELINE_CHANNELS.SAVE, {
+          id,
+          expectedRevision: stored.data?.info.revision ?? 0,
+          name: next.name,
+          description: '',
+          icon: '',
+          content: next,
+        }),
+      ).toMatchObject({ success: false, scheduleRefusal: 'blocked' });
+    } finally {
+      if (scheduleId)
+        await invokeIpc(IPC_CHANNELS.automationsDelete, { id: scheduleId });
+      if (id && getStoredPipelineBySource('user', id).success)
+        deleteStoredPipeline(id);
+    }
+  });
+
+  it('refuses a save that would break or stop its enabled schedules (CAN-5782 phase 05)', async () => {
+    const yamlWith = (on: string[]): string =>
+      [
+        'pipeline:',
+        '  name: Golden save guard',
+        '  scope: global',
+        '  on:',
+        ...on,
+        '  jobs:',
+        '    run:',
+        '      steps:',
+        '        - run: echo scheduled',
+        '',
+      ].join('\n');
+    const BOTH = yamlWith([
+      '    dispatch:',
+      '      inputs:',
+      '        topic:',
+      '          type: string',
+      '    workflow: {}',
+    ]);
+    const content = parsePipelineText(BOTH);
+    const saved = (await invokeIpc(PIPELINE_CHANNELS.SAVE, {
+      name: content.name,
+      description: '',
+      icon: '',
+      content,
+    })) as IPCResult<PipelineInfo>;
+    const id = saved.data?.id ?? '';
+    const created: string[] = [];
+    const resave = (
+      yaml: string,
+      extra: Record<string, unknown> = {},
+    ): Promise<
+      IPCResult<PipelineInfo> & {
+        scheduleRefusal?: string;
+        stoppingScheduleIds?: string[];
+      }
+    > => {
+      const next = parsePipelineText(yaml);
+      const stored = getStoredPipelineBySource('user', id);
+      return invokeIpc(PIPELINE_CHANNELS.SAVE, {
+        id,
+        expectedRevision: stored.data?.info.revision ?? 0,
+        name: next.name,
+        description: '',
+        icon: '',
+        content: next,
+        ...extra,
+      }) as Promise<IPCResult<PipelineInfo> & { scheduleRefusal?: string }>;
+    };
+    try {
+      const person = await invokeIpc(IPC_CHANNELS.automationsCreate, {
+        ...schedule(id, { topic: 'news' }),
+        enabled: true,
+      });
+      created.push(createdId(person));
+      expect(createdId(person)).not.toBe('');
+      // Dropping Manual leaves its saved input undeclared under Workflow.
+      const dropped = await resave(yamlWith(['    workflow: {}']));
+      expect(dropped).toMatchObject({
+        success: false,
+        scheduleRefusal: 'blocked',
+      });
+      expect(dropped.error).toContain('“Golden schedule”');
+      // With the schedule's edited inputs, which the page writes right after
+      // the pipeline, the same trigger change saves.
+      expect(
+        await resave(yamlWith(['    workflow: {}']), {
+          pendingScheduleInputs: { [createdId(person)]: {} },
+        }),
+      ).toMatchObject({ success: true });
+      expect(await resave(BOTH)).toMatchObject({ success: true });
+      // Leaving neither Manual nor Workflow is refused too.
+      expect(await resave(yamlWith(['    plan_ready: {}']))).toMatchObject({
+        success: false,
+        scheduleRefusal: 'blocked',
+      });
+      // The stored definition is unchanged, and an unrelated edit saves.
+      expect(
+        getTriggerTypes(getStoredPipelineBySource('user', id).data?.content.on),
+      ).toEqual(['dispatch', 'workflow']);
+      expect(await resave(BOTH)).toMatchObject({ success: true });
+      // An agent's enabled schedule would stop without Manual: the person
+      // is asked first, and their confirmation saves.
+      const agent = await getAutomationsService().create(
+        {
+          name: 'Golden agent schedule',
+          schedule: {
+            kind: 'cron',
+            expression: '0 9 * * 1-5',
+            timezone: 'local',
+          },
+          action: {
+            type: 'worktree_pipeline',
+            target: { kind: 'global' },
+            pipelineId: id,
+            pipelineSource: 'user',
+            pipelineName: 'Golden save guard',
+            inputs: { topic: 'news' },
+          },
+          enabled: true,
+          executionContext: 'personal',
+        },
+        {
+          agentAuthor: {
+            chat: {
+              projectId: 'golden-agent-project',
+              worktreeId: 'golden-agent-worktree',
+              chatId: 'golden-agent-chat',
+            },
+            recordedAt: '2026-11-09T00:00:00.000Z',
+          },
+        },
+      );
+      created.push(createdId(agent));
+      expect(createdId(agent)).not.toBe('');
+      // The agent's schedule stops without Manual, so its input, which only
+      // Manual declares, isn't checked against Workflow: the person is
+      // asked, not blocked.
+      expect(
+        await resave(yamlWith(['    workflow: {}']), {
+          pendingScheduleInputs: { [createdId(person)]: {} },
+        }),
+      ).toMatchObject({
+        success: false,
+        scheduleRefusal: 'needs_confirmation',
+        stoppingScheduleIds: [createdId(agent)],
+      });
+      const WORKFLOW_ONLY = yamlWith([
+        '    workflow:',
+        '      inputs:',
+        '        topic:',
+        '          type: string',
+      ]);
+      expect(await resave(WORKFLOW_ONLY)).toMatchObject({
+        success: false,
+        scheduleRefusal: 'needs_confirmation',
+        stoppingScheduleIds: [createdId(agent)],
+      });
+      // A confirmation that names other schedules than would stop asks again.
+      expect(
+        await resave(WORKFLOW_ONLY, { confirmAgentSchedulesStop: ['other'] }),
+      ).toMatchObject({
+        success: false,
+        scheduleRefusal: 'needs_confirmation',
+      });
+      expect(
+        await resave(WORKFLOW_ONLY, {
+          confirmAgentSchedulesStop: [createdId(agent)],
+        }),
+      ).toMatchObject({ success: true });
+    } finally {
+      for (const activity of created)
+        if (activity)
+          await invokeIpc(IPC_CHANNELS.automationsDelete, { id: activity });
+      if (id && getStoredPipelineBySource('user', id).success)
+        deleteStoredPipeline(id);
+    }
+  });
+
+  it('schedules a workflow-only pipeline a person approved, and keeps agents on dispatch (CAN-5782)', async () => {
+    const workflowYaml = (on: string[]): string =>
+      [
+        'pipeline:',
+        '  name: Golden workflow only',
+        '  scope: global',
+        '  on:',
+        ...on,
+        '  jobs:',
+        '    run:',
+        '      steps:',
+        '        - run: echo scheduled',
+        '',
+      ].join('\n');
+    const WORKFLOW_ONLY = workflowYaml([
+      '    workflow:',
+      '      inputs:',
+      '        topic:',
+      '          type: string',
+      '          required: true',
+    ]);
+    const PLAN_ONLY = workflowYaml(['    plan_ready: {}']);
+    const save = async (yaml: string): Promise<string> => {
+      const content = parsePipelineText(yaml);
+      const result = (await invokeIpc(PIPELINE_CHANNELS.SAVE, {
+        name: content.name,
+        description: '',
+        icon: '',
+        content,
+      })) as IPCResult<PipelineInfo>;
+      return result.data?.id ?? '';
+    };
+    const author = {
+      chat: {
+        projectId: 'golden-agent-project',
+        worktreeId: 'golden-agent-worktree',
+        chatId: 'golden-agent-chat',
+      },
+      recordedAt: '2026-11-09T00:00:00.000Z',
+    };
+    const errorOf = (response: unknown): unknown =>
+      typeof response === 'object' && response !== null && 'error' in response
+        ? response.error
+        : null;
+    const workflowId = await save(WORKFLOW_ONLY);
+    const planId = await save(PLAN_ONLY);
+    const created: string[] = [];
+    try {
+      // A person saved it: their schedule saves.
+      const person = await invokeIpc(
+        IPC_CHANNELS.automationsCreate,
+        schedule(workflowId, { topic: 'news' }),
+      );
+      created.push(createdId(person));
+      expect(createdId(person)).not.toBe('');
+      // An input its Workflow trigger doesn't declare is refused up front.
+      expect(
+        errorOf(
+          await invokeIpc(
+            IPC_CHANNELS.automationsCreate,
+            schedule(workflowId, { other: 'x' }),
+          ),
+        ),
+      ).toBe(
+        "This schedule's input \"other\" isn't one the workflow's Workflow trigger declares. Remove it, or add it to the trigger.",
+      );
+      // So is one the executor would refuse: a required input left out.
+      expect(
+        errorOf(
+          await invokeIpc(
+            IPC_CHANNELS.automationsCreate,
+            schedule(workflowId, {}),
+          ),
+        ),
+      ).toContain('Workflow input "topic" is required');
+      // An agent's update that keeps the target, a cron change only, would
+      // make the agent its author, so it is refused too.
+      expect(
+        await dispatchAgentAction(
+          {
+            type: 'automation.update',
+            id: createdId(person),
+            patch: {
+              schedule: {
+                kind: 'cron',
+                expression: '0 10 * * 1-5',
+                timezone: 'local',
+              },
+            },
+          },
+          goldenWorktreeActionRuntime(world.worktreePath),
+        ),
+      ).toMatchObject({
+        result: {
+          ok: false,
+          error: { message: 'Workflow does not support dispatch triggers.' },
+        },
+      });
+      // An agent's Run now of it is refused, and the agent is told so.
+      expect(
+        await dispatchAgentAction(
+          { type: 'automation.run_now', id: createdId(person) },
+          goldenWorktreeActionRuntime(world.worktreePath),
+        ),
+      ).toMatchObject({ result: { ok: false } });
+      // The same holds for a schedule whose action names no source: its
+      // stored target is resolved as the scheduler resolves it.
+      const unsourced = await invokeIpc(IPC_CHANNELS.automationsCreate, {
+        ...schedule(workflowId, { topic: 'news' }),
+        action: {
+          type: 'worktree_pipeline',
+          target: { kind: 'global' },
+          pipelineId: workflowId,
+          pipelineName: 'Golden workflow only',
+          inputs: { topic: 'news' },
+        },
+      });
+      created.push(createdId(unsourced));
+      expect(createdId(unsourced)).not.toBe('');
+      expect(
+        await dispatchAgentAction(
+          {
+            type: 'automation.update',
+            id: createdId(unsourced),
+            patch: {
+              schedule: {
+                kind: 'cron',
+                expression: '0 11 * * 1-5',
+                timezone: 'local',
+              },
+            },
+          },
+          goldenWorktreeActionRuntime(world.worktreePath),
+        ),
+      ).toMatchObject({
+        result: {
+          ok: false,
+          error: { message: 'Workflow does not support dispatch triggers.' },
+        },
+      });
+      // An agent's schedule runs only as dispatch.
+      const agent = await getAutomationsService().create(
+        {
+          name: 'Golden schedule',
+          schedule: {
+            kind: 'cron',
+            expression: '0 9 * * 1-5',
+            timezone: 'local',
+          },
+          action: {
+            type: 'worktree_pipeline',
+            target: { kind: 'global' },
+            pipelineId: workflowId,
+            pipelineSource: 'user',
+            pipelineName: 'Golden workflow only',
+            inputs: { topic: 'news' },
+          },
+          enabled: false,
+          executionContext: 'personal',
+        },
+        { agentAuthor: author },
+      );
+      expect(errorOf(agent)).toBe(
+        'Workflow does not support dispatch triggers.',
+      );
+      // After an agent's edit, a person's schedule waits for a person: it
+      // saves paused, and turning it on is refused.
+      const editedRevision = getStoredPipelineBySource('user', workflowId).data
+        ?.info.revision;
+      if (editedRevision === undefined) throw new Error('Workflow missing');
+      expect(
+        setUserPipelineAgentAuthorIfCurrent(workflowId, author, {
+          revision: editedRevision,
+        }),
+      ).toBe('written');
+      const paused = await invokeIpc(
+        IPC_CHANNELS.automationsCreate,
+        schedule(workflowId, { topic: 'news' }),
+      );
+      created.push(createdId(paused));
+      expect(createdId(paused)).not.toBe('');
+      expect(
+        errorOf(
+          await invokeIpc(IPC_CHANNELS.automationsUpdate, {
+            id: createdId(paused),
+            enabled: true,
+          }),
+        ),
+      ).toBe(
+        "This workflow's only trigger is Workflow, and its current version wasn't saved by a person. Save or approve it on its page before it runs on a schedule.",
+      );
+      // A pipeline with neither trigger is still refused.
+      expect(
+        errorOf(
+          await invokeIpc(IPC_CHANNELS.automationsCreate, schedule(planId, {})),
+        ),
+      ).toBe('Workflow does not support dispatch triggers.');
+    } finally {
+      for (const id of created)
+        if (id) await invokeIpc(IPC_CHANNELS.automationsDelete, { id });
+      for (const id of [workflowId, planId])
         if (id && getStoredPipeline(id).success) deleteStoredPipeline(id);
     }
   });

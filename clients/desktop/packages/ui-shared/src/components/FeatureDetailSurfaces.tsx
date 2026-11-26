@@ -1,6 +1,6 @@
-import { Badge } from './Badge';
-import { ListRowFrame } from './ListRow';
-import { NOTICE_TRAY_SURFACE_CLASS } from './Notice';
+import { Badge } from '../primitives/Badge';
+import { ListRowFrame } from '../primitives/ListRow';
+import { NOTICE_TRAY_SURFACE_CLASS } from '../primitives/Notice';
 import type { ComponentPropsWithRef, JSX, ReactNode } from 'react';
 
 export function UnresolvedCollectionMember(

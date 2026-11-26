@@ -17,7 +17,7 @@ import {
   DisposableStore,
   type IDisposable,
   toDisposable,
-} from './disposable';
+} from '../lib/disposable';
 import {
   addDisposableListener,
   addDisposableWindowListener,
@@ -26,8 +26,8 @@ import {
   stopEvent,
 } from './dom';
 import { ABOVE_BROWSER_ATTRIBUTE } from '../lib/above-browser';
-import { Emitter, type Event } from './emitter';
-import { getWindow, scheduleWindowTimeout } from './window-registry';
+import { Emitter, type Event } from '../lib/emitter';
+import { getWindow, scheduleWindowTimeout } from '../lib/window-registry';
 
 /**
  * Allow the sashes to be visible at runtime.

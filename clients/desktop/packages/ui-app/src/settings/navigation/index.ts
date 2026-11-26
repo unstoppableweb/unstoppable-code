@@ -30,7 +30,10 @@ export {
   type SettingsNavIcon,
   type SettingsNavRow,
 } from './settings-nav-model';
-export { settingsNavModelFromBootstrap } from './settings-nav-bootstrap';
+export {
+  organizationVisibleTabsFromBootstrap,
+  settingsNavModelFromBootstrap,
+} from './settings-nav-bootstrap';
 export { parseSettingsPathname, pathSegments } from './settings-path';
 export {
   SettingsNavGroups,

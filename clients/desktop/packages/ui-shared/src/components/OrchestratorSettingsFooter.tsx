@@ -1,6 +1,6 @@
 import type { JSX, ReactNode } from 'react';
-import { LoadingButton } from './LoadingButton';
-import { Surface } from './Surface';
+import { Surface } from '../primitives/Surface';
+import { Button } from '../primitives/Button';
 
 export function OrchestratorSettingsFooter({
   disabled,
@@ -27,7 +27,7 @@ export function OrchestratorSettingsFooter({
     >
       {error}
       <div className="flex items-center justify-end">
-        <LoadingButton
+        <Button
           variant="primary"
           size="compact"
           loading={busy}
@@ -37,7 +37,7 @@ export function OrchestratorSettingsFooter({
           data-testid={testId}
         >
           {label}
-        </LoadingButton>
+        </Button>
       </div>
     </Surface>
   );

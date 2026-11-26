@@ -12,8 +12,6 @@ import {
   normalizeClaudeMaxTurns,
   DEFAULT_GITHUB_CHAT_ENRICHMENT_MODE,
   DEFAULT_LINEAR_CHAT_ENRICHMENT_MODE,
-  SIDEBAR_MAX_WIDTH,
-  SIDEBAR_MIN_WIDTH,
 } from '../../constants/preferences';
 import {
   normalizeManagedDelegationMode,
@@ -35,8 +33,6 @@ import {
   DEFAULT_LOCAL_MEMORY_MODEL,
   defaultLocalMemoryModel,
   defaultSummaryModel,
-  MAX_TERMINAL_DRAWER_HEIGHT,
-  MIN_TERMINAL_DRAWER_HEIGHT,
   isNavigationMode,
   isWorkspaceLayoutMode,
   clampThinkingLevelForModel,
@@ -50,19 +46,17 @@ import { normalizeStringArray } from '../../lib/string-array';
 import { normalizePromotionalNotifications } from '../../lib/promotional-notifications';
 import { normalizeSuggestionsState } from '@canopy/protocol/suggestions';
 import { normalizeOnboardingTipDismissals } from '@canopy/protocol/onboarding-tips';
-import { clampUiScale } from '../../lib/ui-scale';
 import { DEFAULT_PREFERENCES } from './defaults';
 import { normalizeTerminalSettingsRevision } from './terminal-settings';
+import {
+  normalizeClientLocalPreferences,
+  type DomainPreferencesData,
+} from './client-local-preferences';
 import {
   normalizeLastActiveContext,
   isBrowserDrawerTabId,
   isBranchNamePrefixMode,
   isPrInstructionMode,
-  isThemeName,
-  isColorMode,
-  isSidebarAppearance,
-  isWorktreeDiffStatsStyle,
-  isScrollbarBehavior,
   isChatEnrichmentMode,
   buildOnboardingProfileFields,
   isAiCreditsRoutingMode,
@@ -95,13 +89,10 @@ import {
   normalizeFiniteNumber,
   clampNumber,
   normalizeCodeGraphPreferences,
-  normalizeLayoutPreferences,
   normalizeProviderDefaults,
   normalizeRuntimeLimits,
 } from './model-normalizers';
 import {
-  normalizeWindowBounds,
-  normalizeAppAdvisorDialogBounds,
   normalizeBranchDisplayMappings,
   normalizeChatTabPluginSelections,
   normalizeInAppNotifications,
@@ -171,11 +162,43 @@ function normalizeAccountProxyEnabled(
   );
 }
 
+/**
+ * Organization ID → required-scope signature. Keeps only non-empty string
+ * keys and values; keeps an empty object, since "map present" means the
+ * member's existing requirements were already seeded.
+ */
+export function normalizeOrgSharingNoticesSeen(
+  value: unknown,
+): Record<string, string> | undefined {
+  if (!isRecord(value)) return undefined;
+  const seen: Record<string, string> = {};
+  for (const [organizationId, signature] of Object.entries(value)) {
+    if (organizationId.trim().length === 0) continue;
+    if (typeof signature !== 'string' || signature.length === 0) continue;
+    seen[organizationId] = signature;
+  }
+  return seen;
+}
+
+/** The whole preferences value: the domain document plus the client-local one. */
 export function normalizePreferences(
   data: Partial<PreferencesData> | Record<string, unknown> | undefined,
   modelSelectionValidation: ModelSelectionValidation = 'runtime',
 ): PreferencesData {
-  const layout = normalizeLayoutPreferences(data);
+  return {
+    ...normalizeDomainPreferences(data, modelSelectionValidation),
+    ...normalizeClientLocalPreferences(data),
+  };
+}
+
+/**
+ * The domain document. Client-local keys (CAN-4472) have no default, field or
+ * merge here, so no domain save can write them.
+ */
+export function normalizeDomainPreferences(
+  data: Partial<PreferencesData> | Record<string, unknown> | undefined,
+  modelSelectionValidation: ModelSelectionValidation = 'runtime',
+): DomainPreferencesData {
   const providerDefaults = normalizeProviderDefaults(
     data,
     modelSelectionValidation,
@@ -254,6 +277,10 @@ export function normalizePreferences(
     data?.handoffSummaryThinkingLevel,
     'off',
   );
+  const usageData = normalizeUsageData(data?.usageData);
+  const orgSharingNoticesSeen = normalizeOrgSharingNoticesSeen(
+    data?.orgSharingNoticesSeen,
+  );
 
   return {
     cursorEnabled: data?.cursorEnabled === true,
@@ -271,6 +298,11 @@ export function normalizePreferences(
     opencodeEnabled: data?.opencodeEnabled === true,
     accountProxyEnabled: normalizeAccountProxyEnabled(data),
     accountProxyEnabledSetByUser: data?.accountProxyEnabledSetByUser === true,
+    // Only a choice is stored. Without one the build default applies at
+    // read time, so a later default change reaches people who never chose.
+    ...(typeof data?.oneWindowEnabled === 'boolean'
+      ? { oneWindowEnabled: data.oneWindowEnabled }
+      : {}),
     accountProxyConnection: normalizeAccountProxyConnection(
       data?.accountProxyConnection,
     ),
@@ -315,62 +347,10 @@ export function normalizePreferences(
     navigationMode: isNavigationMode(data?.navigationMode)
       ? data.navigationMode
       : DEFAULT_PREFERENCES.navigationMode,
-    worktreePanelPercent: layout.worktreePanelPercent,
-    activityPanelExpanded:
-      typeof data?.activityPanelExpanded === 'boolean'
-        ? data.activityPanelExpanded
-        : DEFAULT_PREFERENCES.activityPanelExpanded,
-    activityPanelWidthPercent: layout.activityPanelWidthPercent,
-    kanbanWorktreePanelPercent: layout.kanbanWorktreePanelPercent,
-    kanbanActivityPanelExpanded:
-      typeof data?.kanbanActivityPanelExpanded === 'boolean'
-        ? data.kanbanActivityPanelExpanded
-        : DEFAULT_PREFERENCES.kanbanActivityPanelExpanded,
-    kanbanActivityPanelWidthPercent: layout.kanbanActivityPanelWidthPercent,
-    kanbanChatPanelVisible:
-      typeof data?.kanbanChatPanelVisible === 'boolean'
-        ? data.kanbanChatPanelVisible
-        : DEFAULT_PREFERENCES.kanbanChatPanelVisible,
-    pipelineChatPanelVisible:
-      typeof data?.pipelineChatPanelVisible === 'boolean'
-        ? data.pipelineChatPanelVisible
-        : DEFAULT_PREFERENCES.pipelineChatPanelVisible,
-    pipelineChatPanelWidthPercent: clampNumber(
-      normalizeFiniteNumber(
-        data?.pipelineChatPanelWidthPercent,
-        DEFAULT_PREFERENCES.pipelineChatPanelWidthPercent ?? 30,
-      ),
-      20,
-      65,
-    ),
-    sidebarCollapsed:
-      typeof data?.sidebarCollapsed === 'boolean'
-        ? data.sidebarCollapsed
-        : DEFAULT_PREFERENCES.sidebarCollapsed,
     sidebarProjectSortMode:
       data?.sidebarProjectSortMode === 'last-updated'
         ? 'last-updated'
         : 'manual',
-    sidebarWidth: clampNumber(
-      normalizeFiniteNumber(
-        data?.sidebarWidth,
-        DEFAULT_PREFERENCES.sidebarWidth,
-      ),
-      SIDEBAR_MIN_WIDTH,
-      SIDEBAR_MAX_WIDTH,
-    ),
-    sidebarCodeSectionCollapsed:
-      typeof data?.sidebarCodeSectionCollapsed === 'boolean'
-        ? data.sidebarCodeSectionCollapsed
-        : DEFAULT_PREFERENCES.sidebarCodeSectionCollapsed,
-    sidebarCoworkSectionCollapsed:
-      typeof data?.sidebarCoworkSectionCollapsed === 'boolean'
-        ? data.sidebarCoworkSectionCollapsed
-        : DEFAULT_PREFERENCES.sidebarCoworkSectionCollapsed,
-    sidebarOrchestratorCollapsed:
-      typeof data?.sidebarOrchestratorCollapsed === 'boolean'
-        ? data.sidebarOrchestratorCollapsed
-        : DEFAULT_PREFERENCES.sidebarOrchestratorCollapsed,
     sidebarNavLayout:
       typeof data?.sidebarNavLayout === 'object' &&
       data?.sidebarNavLayout !== null
@@ -624,14 +604,6 @@ export function normalizePreferences(
     pipelineEditorPluginSelections: normalizeChatTabPluginSelections(
       data?.pipelineEditorPluginSelections,
     ),
-    appAdvisorDialogBounds: normalizeAppAdvisorDialogBounds(
-      data?.appAdvisorDialogBounds,
-    ),
-    // Optional: only persisted once the user has toggled the App Advisor
-    // popout nav (absent = expanded default).
-    ...(typeof data?.appAdvisorNavCollapsed === 'boolean'
-      ? { appAdvisorNavCollapsed: data.appAdvisorNavCollapsed }
-      : {}),
     codexMultiAgentAppAdvisorEnabled: normalizeBoolean(
       data?.codexMultiAgentAppAdvisorEnabled,
       DEFAULT_PREFERENCES.codexMultiAgentAppAdvisorEnabled,
@@ -835,21 +807,6 @@ export function normalizePreferences(
       : DEFAULT_PREFERENCES.worktreeFilterHiddenWorkspaceIds,
     auditRetentionDays: runtimeLimits.auditRetentionDays,
     automationRunRetentionDays: runtimeLimits.automationRunRetentionDays,
-    theme: isThemeName(data?.theme) ? data.theme : DEFAULT_PREFERENCES.theme,
-    colorMode: isColorMode(data?.colorMode)
-      ? data.colorMode
-      : DEFAULT_PREFERENCES.colorMode,
-    sidebarAppearance: isSidebarAppearance(data?.sidebarAppearance)
-      ? data.sidebarAppearance
-      : DEFAULT_PREFERENCES.sidebarAppearance,
-    worktreeDiffStatsStyle: isWorktreeDiffStatsStyle(
-      data?.worktreeDiffStatsStyle,
-    )
-      ? data.worktreeDiffStatsStyle
-      : DEFAULT_PREFERENCES.worktreeDiffStatsStyle,
-    scrollbarBehavior: isScrollbarBehavior(data?.scrollbarBehavior)
-      ? data.scrollbarBehavior
-      : DEFAULT_PREFERENCES.scrollbarBehavior,
     singleDollarMath:
       typeof data?.singleDollarMath === 'boolean'
         ? data.singleDollarMath
@@ -868,12 +825,6 @@ export function normalizePreferences(
     )
       ? data.githubChatEnrichmentMode
       : DEFAULT_GITHUB_CHAT_ENRICHMENT_MODE,
-    // Clamped and snapped through the shared helper the Display slider and
-    // the View-menu zoom items also use, so no surface can offer a scale the
-    // store would rewrite behind it.
-    uiScale: clampUiScale(
-      typeof data?.uiScale === 'number' ? data.uiScale : undefined,
-    ),
     // Always a boolean, on unless the user turned it off: preferences written
     // before the setting existed keep agents recording in the Ledger.
     ledgerAgentRecordingEnabled:
@@ -900,15 +851,6 @@ export function normalizePreferences(
     rendererCodeCacheSchemeEnabled:
       data?.rendererCodeCacheSchemeEnabled === true,
     chatDetail: normalizeChatDetailPreference(data),
-    windowBounds: normalizeWindowBounds(data?.windowBounds),
-    windowMaximized:
-      typeof data?.windowMaximized === 'boolean'
-        ? data.windowMaximized
-        : DEFAULT_PREFERENCES.windowMaximized,
-    windowFullScreen:
-      typeof data?.windowFullScreen === 'boolean'
-        ? data.windowFullScreen
-        : DEFAULT_PREFERENCES.windowFullScreen,
     ollamaServerPort:
       typeof data?.ollamaServerPort === 'number' &&
       Number.isFinite(data.ollamaServerPort) &&
@@ -977,21 +919,6 @@ export function normalizePreferences(
       data?.inAppNotifications,
       data?.osNotifications,
     ),
-    terminalDrawerCollapsed:
-      typeof data?.terminalDrawerCollapsed === 'boolean'
-        ? data.terminalDrawerCollapsed
-        : DEFAULT_PREFERENCES.terminalDrawerCollapsed,
-    terminalDrawerHeight:
-      typeof data?.terminalDrawerHeight === 'number' &&
-      Number.isFinite(data.terminalDrawerHeight)
-        ? Math.min(
-            MAX_TERMINAL_DRAWER_HEIGHT,
-            Math.max(
-              MIN_TERMINAL_DRAWER_HEIGHT,
-              Math.round(data.terminalDrawerHeight),
-            ),
-          )
-        : DEFAULT_PREFERENCES.terminalDrawerHeight,
     terminalDrawerActiveTabId: isBrowserDrawerTabId(
       data?.terminalDrawerActiveTabId,
     )
@@ -1123,6 +1050,16 @@ export function normalizePreferences(
     data.legalConsentTosVersion.trim().length > 0
       ? { legalConsentTosVersion: data.legalConsentTosVersion }
       : {}),
+    ...(typeof data?.dataChoicesConfirmedAt === 'string' &&
+    data.dataChoicesConfirmedAt.trim().length > 0
+      ? { dataChoicesConfirmedAt: data.dataChoicesConfirmedAt }
+      : {}),
+    // Only meaningful while Usage analytics stays off: the first commit that
+    // turns it on clears the flag, so a later Settings opt-out pings as usual.
+    usageAnalyticsDeclinedAtOnboarding:
+      data?.usageAnalyticsDeclinedAtOnboarding === true &&
+      !usageData.productAnalytics,
+    ...(orgSharingNoticesSeen ? { orgSharingNoticesSeen } : {}),
     personalWorkspaceCatalogSync:
       data?.personalWorkspaceCatalogSync === 'private' ? 'private' : 'off',
     personalCatalogOfferSeen: data?.personalCatalogOfferSeen === true,
@@ -1136,7 +1073,7 @@ export function normalizePreferences(
     ...(dataSharingOptInHints ? { dataSharingOptInHints } : {}),
     ...(dataSharingOptInHistory ? { dataSharingOptInHistory } : {}),
     ...(nativeProviderAccounts ? { nativeProviderAccounts } : {}),
-    usageData: normalizeUsageData(data?.usageData),
+    usageData,
     telemetrySharing: normalizeTelemetrySharing(data?.telemetrySharing),
     // Legacy tier marker: kept as read so older files round-trip; nothing
     // writes it, and plan changes never rewrite `telemetrySharing`.

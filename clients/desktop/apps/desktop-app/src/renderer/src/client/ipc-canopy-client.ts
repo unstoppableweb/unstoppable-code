@@ -66,6 +66,11 @@ import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { createDesktopFeedbackReportClient } from './feedback-report-client';
 import { ipcTranscriptReadClient } from './ipc-transcript-read-client';
+import {
+  deleteTrackedPlan,
+  getTrackedPlan,
+  updateTrackedPlan,
+} from './desktop-plan-client';
 import { createIpcMarketplaceSourcesClient } from './ipc-marketplace-sources-client';
 import {
   createCanopyCloudAccountIdSource,
@@ -174,6 +179,8 @@ function createNormalDesktopCapabilities(
     feedbackDiagnostics: true,
     workspaceRecovery: true,
     sharedMultiRepo: true,
+    // The Settings provider rows (gap 1 of CAN-6718).
+    harnessSetup: true,
     workEntryAutoDelete: 'manage',
     githubConnection: true,
     localExecution: true,
@@ -306,6 +313,7 @@ function createNormalDesktopCapabilities(
     worktreeDiscard: true,
     worktreeRecovery: true,
     worktreeRecoveryResolution: true,
+    worktreeRecoverySetAside: true,
     // Every host with live resolution also lists recovery (CAN-7439).
     worktreeRecoveryReads: true,
     // `workspace:delete-discard-describe` and the supersede field (CAN-5337).
@@ -631,6 +639,11 @@ export function createDesktopCanopyClient(
       recordTerminalOutputApplied(event.terminalId, event.seq, startedAt);
     },
     transcripts: ipcTranscriptReadClient,
+    plans: {
+      get: getTrackedPlan,
+      update: updateTrackedPlan,
+      delete: deleteTrackedPlan,
+    },
     feedback: createDesktopFeedbackReportClient(),
     ...(marketplaceSources ? { marketplaceSources } : {}),
     ...(settings ? { settings } : {}),

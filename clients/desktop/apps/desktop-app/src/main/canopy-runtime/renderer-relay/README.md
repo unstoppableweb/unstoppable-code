@@ -1,7 +1,9 @@
 # Electron renderer relay
 
 `window.canopyCore.invoke` uses the single `canopy-core:relay` IPC channel.
-It coexists with legacy preload APIs. No domain caller has moved to this path.
+It coexists with legacy preload APIs. The main window's feature flag store
+follows `core.featureFlag.events` on it, the first local stream a renderer
+reads (CAN-4181 F5).
 
 Main checks the tracked WebContents, its attached main frame, and the exact
 main or App Advisor page on every call. The renderer cannot supply identity,
@@ -21,7 +23,8 @@ and capability registration. Initialization and client leases stay host-owned.
 Requests and delivered frames have a 1 MiB cap. Each renderer connection has
 32 call slots, 16 streams, one pending pull per stream, and 30-second setup,
 request, open, and read deadlines. A timed-out read retains its pending frame
-for the next pull. Request/open reservations last until the underlying work
+for the next pull, which holds one settlement handler however many reads time
+out on it. Request/open reservations last until the underlying work
 settles. The K1 client also bounds buffered stream frames and bytes.
 
 The relay accepts an injected `RelayBindingProvider`. The isolated

@@ -1,10 +1,9 @@
 import { FailedQueuedRunSurface } from '@canopy/ui-shared/components';
 import type { JSX } from 'react';
-import { Button } from '@canopy/ui-shared/components';
+import { Button, NoticeButton } from '@canopy/ui-shared/components';
 import { HookIcon } from '@canopy/ui-shared/icons';
 import { formatTimingTimestamp } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
-import { StatusLabel } from '@canopy/ui-shared/components';
 import { Surface, Tooltip } from '@canopy/ui-shared/components';
 
 export interface PipelineHookTriggerSource {
@@ -45,6 +44,8 @@ export interface FailedPendingExecutionCardEntry {
   readonly localId: string;
   readonly pipelineName: string;
   readonly error: string;
+  /** False when starting the same run again cannot succeed. */
+  readonly retryable?: boolean;
 }
 
 export interface QueuedHookPipelineCardProps {
@@ -65,6 +66,8 @@ export interface PendingExecutionCardProps {
 export interface FailedPendingExecutionCardProps {
   readonly entry: FailedPendingExecutionCardEntry;
   readonly onDismiss: (localId: string) => void;
+  /** Starts the run again as it was queued (Try again); omitted when the host cannot. */
+  readonly onRetry?: (localId: string) => void;
 }
 
 function getHookTriggerTooltip(source: PipelineHookTriggerSource): string {
@@ -130,29 +133,21 @@ export function FailedQueuedHookPipelineCard({
   onDismiss,
 }: FailedQueuedHookPipelineCardProps): JSX.Element {
   return (
-    <FailedQueuedRunSurface>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5">
-          <span className="truncate text-s font-medium fg-primary">
-            {entry.pipelineName}
-          </span>
+    <FailedQueuedRunSurface
+      title={
+        <>
+          {entry.pipelineName}{' '}
           <HookTriggerIndicator triggerSource={entry.trigger_source} />
-        </div>
-        <div
-          className={`whitespace-pre-wrap wrap-anywhere ${REPLAY_BLOCK_CLASS}`}
-        >
-          <StatusLabel size="2xs">Queue failed: {entry.error}</StatusLabel>
-        </div>
-      </div>
-      <Button
-        type="button"
-        variant="secondary"
-        size="compact"
-        onClick={() => onDismiss(entry.queueId)}
-        aria-label="Dismiss failed queued workflow"
+        </>
+      }
+      onDismiss={() => onDismiss(entry.queueId)}
+      dismissLabel="Dismiss failed queued workflow"
+    >
+      <span
+        className={`whitespace-pre-wrap wrap-anywhere ${REPLAY_BLOCK_CLASS}`}
       >
-        Dismiss
-      </Button>
+        Queue failed: {entry.error}
+      </span>
     </FailedQueuedRunSurface>
   );
 }
@@ -193,28 +188,31 @@ export function PendingExecutionCard({
 export function FailedPendingExecutionCard({
   entry,
   onDismiss,
+  onRetry,
 }: FailedPendingExecutionCardProps): JSX.Element {
   return (
-    <FailedQueuedRunSurface>
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-s font-medium fg-primary">
-          {entry.pipelineName}
-        </div>
-        <div
-          className={`whitespace-pre-wrap wrap-anywhere ${REPLAY_BLOCK_CLASS}`}
-        >
-          <StatusLabel size="2xs">Queue failed: {entry.error}</StatusLabel>
-        </div>
-      </div>
-      <Button
-        type="button"
-        variant="secondary"
-        size="compact"
-        onClick={() => onDismiss(entry.localId)}
-        aria-label="Dismiss failed queued workflow"
+    <FailedQueuedRunSurface
+      title={entry.pipelineName}
+      onDismiss={() => onDismiss(entry.localId)}
+      dismissLabel="Dismiss failed queued workflow"
+      {...(onRetry !== undefined && entry.retryable !== false
+        ? {
+            actions: (
+              <NoticeButton
+                onClick={() => onRetry(entry.localId)}
+                aria-label={`Try again for ${entry.pipelineName}`}
+              >
+                Try again
+              </NoticeButton>
+            ),
+          }
+        : {})}
+    >
+      <span
+        className={`whitespace-pre-wrap wrap-anywhere ${REPLAY_BLOCK_CLASS}`}
       >
-        Dismiss
-      </Button>
+        Queue failed: {entry.error}
+      </span>
     </FailedQueuedRunSurface>
   );
 }

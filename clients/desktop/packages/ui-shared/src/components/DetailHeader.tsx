@@ -1,6 +1,6 @@
-import { Stack } from './Stack';
+import { Stack } from '../primitives/Stack';
 import type { JSX, ReactNode } from 'react';
-import { Heading } from './Heading';
+import { Heading } from '../primitives/Heading';
 import { DetailEntityType } from './MarketplaceTypeLabel';
 
 export interface DetailHeaderProps {

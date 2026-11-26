@@ -296,8 +296,8 @@ beforeAll(async () => {
   const registry = await import('../lib/workspace-registry');
   registry.registerWorkspaceTypes(new Map([[WORKSPACE_ID, 'single-repo']]));
   const { registerRunsHandlers } = await import('../ipc/runs');
-  // These goldens never mark comments seen, the one channel that dispatches.
-  registerRunsHandlers({ instruction: jest.fn() }, jest.fn());
+  // These goldens never call the comment channels, the ones that dispatch.
+  registerRunsHandlers({ query: jest.fn(), instruction: jest.fn() }, jest.fn());
   const updater = (
     await import('../services/shared-run-auto-updater')
   ).getSharedRunAutoUpdater();

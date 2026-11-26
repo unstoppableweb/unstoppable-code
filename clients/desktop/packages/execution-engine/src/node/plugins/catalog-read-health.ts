@@ -1,8 +1,14 @@
 import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { observePluginCopyReferences } from './plugin-copy-references';
 import { isResourceOwner } from '@canopy/protocol/resource-owner';
 import type { ResourceOwner } from '@canopy/protocol/resource-owner';
-import { parseHarnessCompatibility } from '@canopy/protocol/plugins';
+import {
+  parseHarnessCompatibility,
+  type PluginCopyProvenance,
+} from '@canopy/protocol/plugins';
 import type { PluginsCache, PluginsCacheV1 } from '../../types/plugins';
 
 export type PluginReadProblem = 'damaged' | 'unsupported' | 'unreadable';
@@ -26,8 +32,14 @@ export interface PluginCacheIndex {
   version: 1;
   entries: Record<
     string,
-    { cachePath: string; sourceUrl: string; cachedAt: string }
+    {
+      cachePath: string;
+      sourceUrl: string;
+      cachedAt: string;
+      provenance?: PluginCopyProvenance;
+    }
   >;
+  retired?: Array<{ cachePath: string; retiredAt: string }>;
 }
 
 // Validate known fields without discarding provider extensions on republish.
@@ -117,6 +129,17 @@ const externalSource = z.looseObject({
   url: optionalText,
   sha: optionalText,
 });
+const provenance = z.looseObject({
+  sourceUrl: text,
+  sourceIdentityComplete: z.boolean().optional(),
+  commit: optionalText,
+  manifestRequired: z.boolean().optional(),
+  installedAt: text,
+  marketplaceEntryName: optionalText,
+  installedName: optionalText,
+  reinstalled: z.boolean().optional(),
+  remoteSourceRestricted: z.boolean().optional(),
+});
 const metadata = {
   name: text,
   displayName: displayText,
@@ -130,6 +153,8 @@ const metadata = {
   externalSource: externalSource.optional(),
   cachePath: optionalText,
   cachedAt: optionalText,
+  provenance: provenance.optional(),
+  sourceChanged: z.boolean().optional(),
   details: details.optional(),
 };
 const facet = z.looseObject({
@@ -269,10 +294,13 @@ const indexEntry = z.looseObject({
   cachePath: text,
   sourceUrl: text,
   cachedAt: text,
+  provenance: provenance.optional(),
 });
+const retiredEntry = z.looseObject({ cachePath: text, retiredAt: text });
 const index: z.ZodType<PluginCacheIndex> = z.looseObject({
   version: z.literal(1),
   entries: z.record(text, indexEntry),
+  retired: z.array(retiredEntry).optional(),
 });
 const versioned = z.looseObject({ version: z.number().int().nonnegative() });
 
@@ -396,6 +424,9 @@ function recoverIndex(
         ([, entry]) => indexEntry.safeParse(entry).success,
       ),
     ),
+    retired: Array.isArray(record.retired)
+      ? record.retired.filter((entry) => retiredEntry.safeParse(entry).success)
+      : undefined,
   });
   return {
     state: 'valid',
@@ -428,7 +459,7 @@ function noteReadProblem(
 type ReadBytes = (filePath: string) => Uint8Array;
 type RawRead =
   | { state: 'absent' }
-  | { state: 'parsed'; value: unknown }
+  | { state: 'parsed'; value: unknown; bytes: Uint8Array }
   | { state: 'failed'; problem: 'damaged' | 'unreadable' };
 
 function readPluginJson(filePath: string, read: ReadBytes): RawRead {
@@ -447,11 +478,14 @@ function readPluginJson(filePath: string, read: ReadBytes): RawRead {
     const value: unknown = JSON.parse(
       new TextDecoder('utf-8', { fatal: true }).decode(bytes),
     );
-    return { state: 'parsed', value };
+    return { state: 'parsed', value, bytes };
   } catch {
     return { state: 'failed', problem: 'damaged' };
   }
 }
+
+// Observation is sticky for this lifetime. Keep one digest, not catalog DTOs or raw bytes.
+let lastObservedCatalog: { filePath: string; digest: string } | undefined;
 
 export function readPluginCatalog(
   filePath: string,
@@ -465,6 +499,19 @@ export function readPluginCatalog(
   if (raw.state === 'failed') {
     noteReadProblem(filePath, raw.problem);
     return recoverCatalog(undefined, raw.problem);
+  }
+  // Include recoverable references even when malformed rows are dropped below.
+  const resolvedPath = path.resolve(filePath);
+  const digest = createHash('sha256').update(raw.bytes).digest('hex');
+  if (
+    lastObservedCatalog?.filePath !== resolvedPath ||
+    lastObservedCatalog?.digest !== digest
+  ) {
+    observePluginCopyReferences(
+      raw.value,
+      path.resolve(path.dirname(filePath), 'plugin-cache'),
+    );
+    lastObservedCatalog = { filePath: resolvedPath, digest };
   }
   const decoded = decodePluginCatalog(raw.value);
   if (decoded.state === 'valid' || decoded.state === 'legacy') {
@@ -495,4 +542,31 @@ export function readPluginCacheIndex(
   }
   noteReadProblem(filePath, decoded.state);
   return recoverIndex(raw.value, decoded.state);
+}
+
+async function readAsync<T>(
+  filePath: string,
+  decode: (filePath: string, read: ReadBytes) => T,
+): Promise<T> {
+  let bytes: Uint8Array;
+  try {
+    bytes = await fs.promises.readFile(filePath);
+  } catch (error) {
+    return decode(filePath, () => {
+      throw error;
+    });
+  }
+  return decode(filePath, () => bytes);
+}
+
+export function readPluginCatalogAsync(
+  filePath: string,
+): Promise<ReturnType<typeof readPluginCatalog>> {
+  return readAsync(filePath, readPluginCatalog);
+}
+
+export function readPluginCacheIndexAsync(
+  filePath: string,
+): Promise<ReturnType<typeof readPluginCacheIndex>> {
+  return readAsync(filePath, readPluginCacheIndex);
 }

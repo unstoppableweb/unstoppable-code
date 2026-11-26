@@ -61,6 +61,10 @@ export interface CanopyDaemonPublication {
   close(): Promise<void>;
 }
 
+/**
+ * Every caller names the data root, `runtime/` or a file in it, so other
+ * accounts' entries are admitted like the launching host admits them (CAN-7915).
+ */
 async function privatePath(
   platform: PlatformServices,
   path: string,
@@ -72,6 +76,7 @@ async function privatePath(
     kind,
     action,
     mode: 'owner-only',
+    foreignTrustees: 'accept',
   });
   if (permissions.state !== 'private')
     throw new Error('Runtime permissions are not private.');

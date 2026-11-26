@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react';
-import { Surface, Button, LoadingButton } from '@canopy/ui-shared/components';
+import { Surface, Button } from '@canopy/ui-shared/components';
 
 /** A second footer action between Cancel and the primary. */
 export interface ShareFooterSecondaryAction {
@@ -116,7 +116,7 @@ export function ShareFooter({
           </Button>
         )}
         {showPrimary && (
-          <LoadingButton
+          <Button
             variant="primary"
             size="compact"
             data-testid={submitTestId ?? `${testIdPrefix}-submit`}
@@ -127,7 +127,7 @@ export function ShareFooter({
             spinnerTestId={`${testIdPrefix}-submit-spinner`}
           >
             {submitLabel}
-          </LoadingButton>
+          </Button>
         )}
       </div>
     </Surface>

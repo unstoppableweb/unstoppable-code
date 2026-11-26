@@ -296,7 +296,7 @@ export const CHANGED_FILES_REFERENCE = {
   actionLabel: 'Review changes',
   rows: [
     'src/renderer/src/components/sidebar/WorktreeRow.tsx',
-    'packages/ui-shared/src/components/PanelSection.tsx',
+    'packages/ui-shared/src/primitives/PanelSection.tsx',
     'docs/sidebar-worktree-status.md',
   ],
 } as const;

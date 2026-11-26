@@ -19,7 +19,6 @@ import {
   DataTable,
   ErrorBanner,
   Button,
-  ExternalTextLink,
   DelayedLoadingPlaceholder,
   McpServerLogo,
   Notice,
@@ -27,6 +26,7 @@ import {
   PluginConnectionRouteSection,
   Heading,
   Skeleton,
+  TextLink,
 } from '@canopy/ui-shared/components';
 import { McpPlacementSlotProvider } from './McpServerManagement';
 import {
@@ -138,6 +138,7 @@ export interface CuratedMcpDetailProps<
   publisher?: ReactNode;
   /** New Customize: when the installed server last changed, formatted. */
   updated?: string;
+  otherVersions?: ReactNode;
   /** New Customize: the collapsed Configuration section. */
   configuration?: ReactNode;
   /** New Customize: the Works with table, as the tile's chips read it. */
@@ -166,6 +167,7 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
   logo,
   publisher,
   updated,
+  otherVersions,
   configuration,
   worksWith,
   related,
@@ -235,6 +237,7 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
         routes={routes}
         tools={tools}
         updated={updated}
+        otherVersions={otherVersions}
         worksWith={worksWith}
         configuration={configuration}
         related={related}
@@ -270,10 +273,14 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
             <p className="mt-0.5 text-xs fg-secondary">
               By{' '}
               {entry.authorUrl ? (
-                <ExternalTextLink
+                <TextLink
                   href={entry.authorUrl}
-                  label={entry.authorName}
-                />
+                  size="xs"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {entry.authorName}
+                </TextLink>
               ) : (
                 <span>{entry.authorName}</span>
               )}
@@ -302,7 +309,15 @@ export function CuratedMcpDetail<T extends McpDetailEntry>({
       {links.length > 0 && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           {links.map((link) => (
-            <ExternalTextLink key={link.label} {...link} />
+            <TextLink
+              key={link.label}
+              href={link.href}
+              size="xs"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {link.label}
+            </TextLink>
           ))}
         </div>
       )}
@@ -372,6 +387,7 @@ function McpLayoutDetail<T extends McpDetailEntry>({
   routes,
   tools,
   updated,
+  otherVersions,
   worksWith,
   configuration,
   related,
@@ -391,6 +407,7 @@ function McpLayoutDetail<T extends McpDetailEntry>({
   | 'availability'
   | 'routes'
   | 'updated'
+  | 'otherVersions'
   | 'worksWith'
   | 'configuration'
   | 'related'
@@ -464,6 +481,7 @@ function McpLayoutDetail<T extends McpDetailEntry>({
             website: website ? (
               <DetailWebsiteFact href={website} testId="mcp-detail-website" />
             ) : undefined,
+            otherVersions,
             updated: updated ? (
               <DetailFact label="Updated" testId="mcp-detail-updated">
                 {updated}
@@ -474,7 +492,15 @@ function McpLayoutDetail<T extends McpDetailEntry>({
                 <DetailFact label="Links" testId="mcp-detail-links">
                   <span className="inline-flex flex-wrap items-center gap-x-3">
                     {otherLinks.map((link) => (
-                      <ExternalTextLink key={link.label} {...link} />
+                      <TextLink
+                        key={link.label}
+                        href={link.href}
+                        size="xs"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {link.label}
+                      </TextLink>
                     ))}
                   </span>
                 </DetailFact>

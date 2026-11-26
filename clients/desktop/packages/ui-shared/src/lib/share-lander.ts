@@ -2,7 +2,7 @@
  * The squared control every public `/share/*` lander uses instead of the app
  * pill: those pages are anonymous, marketing-adjacent surfaces rather than
  * app chrome. One recipe serves a lander's plain buttons and links and the
- * busy `LoadingButton` (`presentation="share-lander"`), so the two cannot
+ * busy `ControlButton` (`presentation="share-lander-primary"` with `loading`), so the two cannot
  * drift. Lives on the component-free `lib` subpath because the landers'
  * server-rendered pages read it too.
  */

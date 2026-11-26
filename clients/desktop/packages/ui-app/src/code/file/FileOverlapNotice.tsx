@@ -1,6 +1,6 @@
 'use client';
 
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import { ControlButton } from '@canopy/ui-shared/components';
 import {
   FileOverlapChoiceSurface,

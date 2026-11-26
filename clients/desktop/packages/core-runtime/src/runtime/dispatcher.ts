@@ -18,6 +18,7 @@ import {
   type CanopyRetryDirective,
   type CanopyStreamCursor,
 } from '@canopy/protocol/canopy-core';
+import { operationAddressesPairedComputer } from '@canopy/protocol/authority-qualified-id';
 
 import {
   CanopyOperationError,
@@ -330,6 +331,9 @@ export function createCanopyDispatcher(
     const parsedParams = safeParseCanopySchema(definition.params, params);
     if (!parsedParams.success)
       throw canopyInvalidArgumentError('Invalid operation parameters.');
+    // A core serves only its own ids, which are never qualified (CAN-7757).
+    if (operationAddressesPairedComputer(parsedParams.data))
+      throw canopyInvalidArgumentError('The parameters name another computer.');
     const parsedCaller = CanopyCallerDescriptorSchema.safeParse(
       callOptions?.caller,
     );

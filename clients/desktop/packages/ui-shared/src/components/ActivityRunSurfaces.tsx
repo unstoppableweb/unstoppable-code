@@ -1,6 +1,7 @@
 import type { JSX, ReactNode } from 'react';
-import { Dot } from './Badge';
-import { CometSpinner } from './CometSpinner';
+import { Dot } from '../primitives/Badge';
+import { Notice } from '../primitives/Notice';
+import { CometSpinner } from '../primitives/CometSpinner';
 
 const RESULT_TONES = {
   neutral: 'bg-fg-primary/[0.015]',
@@ -26,15 +27,32 @@ export function CompletedRunSurface({
   );
 }
 
+/** A queued run that failed: a destructive notice the close icon dismisses. */
 export function FailedQueuedRunSurface({
+  title,
   children,
+  onDismiss,
+  dismissLabel,
+  actions,
 }: {
+  readonly title: ReactNode;
   readonly children: ReactNode;
+  readonly onDismiss: () => void;
+  readonly dismissLabel: string;
+  /** Recovery actions, such as Try again, as `NoticeButton`s. */
+  readonly actions?: ReactNode;
 }): JSX.Element {
   return (
-    <div className="flex items-start justify-between gap-2 rounded-md border border-line-destructive/30 bg-destructive/5 px-2.5 py-1.5">
+    <Notice
+      errorSource="failed-queued-run"
+      intent="destructive"
+      title={title}
+      onDismiss={onDismiss}
+      dismissLabel={dismissLabel}
+      actions={actions}
+    >
       {children}
-    </div>
+    </Notice>
   );
 }
 

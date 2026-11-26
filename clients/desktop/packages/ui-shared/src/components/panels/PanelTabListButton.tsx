@@ -1,6 +1,6 @@
 'use client';
 
-import { ControlButton } from '../Button';
+import { ControlButton } from '../../primitives/Button';
 import {
   createContext,
   useContext,
@@ -19,8 +19,8 @@ import {
   CloseMediumIcon,
 } from '../../icons/AppIcons';
 import type { PanelTabModel } from '../../panels/registry-types';
-import { PickListSearch, usePickListKeys } from '../PickList';
-import { FloatingMenu } from '../FloatingMenu';
+import { PickListSearch, usePickListKeys } from '../../primitives/PickList';
+import { FloatingMenu } from '../../primitives/FloatingMenu';
 import {
   PickerMenuList,
   PickerMenuOption,
@@ -28,7 +28,7 @@ import {
   PickerMenuOptionLabel,
   PickerMenuOptionLeading,
   PickerMenuSearchHeader,
-} from '../PickerMenu';
+} from '../../primitives/PickerMenu';
 import { TitlebarIconButton } from '../TitlebarIconButton';
 import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
 
@@ -42,8 +42,8 @@ export interface PanelTabListButtonProps {
   readonly onSelectTab: (groupId: string, panelId: string) => void;
   readonly onCloseTab: (groupId: string, panelId: string) => void;
   readonly canCloseTab?: (tab: PanelTabModel) => boolean;
-  /** The tab's status glyph, drawn as the strip draws it at `position`. */
-  readonly renderIcon: (tab: PanelTabModel, position: number) => ReactNode;
+  /** The tab's status glyph, drawn as the strip draws it. */
+  readonly renderIcon: (tab: PanelTabModel) => ReactNode;
   readonly renderLabel: (tab: PanelTabModel) => ReactNode;
   readonly renderTrailing?: (tab: PanelTabModel) => ReactNode;
   readonly getTitle: (tab: PanelTabModel) => string;
@@ -116,12 +116,9 @@ export function PanelTabListButton({
   const rows = useMemo(() => {
     // A query only filters while its field is there to show it.
     const needle = searchable ? query.trim().toLowerCase() : '';
-    return tabs
-      .map((tab, index) => ({ tab, position: index + 1 }))
-      .filter(
-        ({ tab }) =>
-          needle === '' || getTitle(tab).toLowerCase().includes(needle),
-      );
+    return tabs.filter(
+      (tab) => needle === '' || getTitle(tab).toLowerCase().includes(needle),
+    );
   }, [tabs, query, searchable, getTitle]);
 
   // A closed or filtered-out row never leaves the highlight past the end:
@@ -129,7 +126,7 @@ export function PanelTabListButton({
   const current = Math.min(highlight, Math.max(rows.length - 1, 0));
   const currentRow = rows[current];
   const activeDescendant =
-    currentRow === undefined ? undefined : rowId(currentRow.tab.panelId);
+    currentRow === undefined ? undefined : rowId(currentRow.panelId);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -173,11 +170,11 @@ export function PanelTabListButton({
   };
 
   const keyboard = {
-    keys: rows.map(({ tab }) => tab.panelId),
-    activeKey: currentRow?.tab.panelId ?? null,
+    keys: rows.map((tab) => tab.panelId),
+    activeKey: currentRow?.panelId ?? null,
     onActiveKeyChange: (key: string): void => {
       setKeyboardMoved(true);
-      setHighlight(rows.findIndex(({ tab }) => tab.panelId === key));
+      setHighlight(rows.findIndex((tab) => tab.panelId === key));
     },
     onPick: select,
   };
@@ -265,7 +262,7 @@ export function PanelTabListButton({
                 No matching tabs
               </div>
             ) : null}
-            {rows.map(({ tab, position }, index) => {
+            {rows.map((tab, index) => {
               const title = getTitle(tab);
               const privateTitle = isTitlePrivate?.(tab) === true;
               const closeLabelId = `${idBase}-close-${tab.panelId}`;
@@ -297,7 +294,7 @@ export function PanelTabListButton({
                   >
                     <PickerMenuOptionLeading tone="tertiary">
                       <PanelTabListRowContext.Provider value>
-                        {renderIcon(tab, position)}
+                        {renderIcon(tab)}
                       </PanelTabListRowContext.Provider>
                     </PickerMenuOptionLeading>
                     <PickerMenuOptionContent>

@@ -13,10 +13,13 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
+import { readdir, rename, writeFile } from 'node:fs/promises';
+import type * as FsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import {
   IPC_CHANNELS,
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
@@ -24,6 +27,13 @@ import {
   type TrackedPlanData,
   type TrackedPlansUpdatedEvent,
 } from '@canopy/desktop-shared/types';
+import {
+  detectedPlanScanParams,
+  detectedPlanUpdateParams,
+  trackedPlanCreateParams,
+  trackedPlanImportParams,
+  trackedPlanUpdateParams,
+} from '@canopy/desktop-shared/lib/tracked-plan-params';
 import { getRemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import type {
   CanopyCallerDescriptor,
@@ -40,6 +50,13 @@ import type * as HostWriters from '../canopy-runtime/plan-host-writers';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { controllerMayInvoke } from '../remote-control/host/controller-profile';
 import { relayAllows } from '../canopy-runtime/renderer-relay/surface-allowlist';
+import { RENDERER_RELAY_GRANTS } from '../ipc/canopy-core-relay';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+import { createInterimInMemoryBindingProvider } from '../canopy-runtime/renderer-relay/interim-in-memory-binding';
+import {
+  createRendererRelay,
+  type RendererRelayEvent,
+} from '../canopy-runtime/renderer-relay/relay';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import type * as MainProcessLogging from '../lib/main-process-logging';
 
@@ -53,6 +70,15 @@ jest.mock('../ipc/register', () => ({
     handlers.set(channel, handler);
   },
 }));
+// Pass-through, so one case can fail a save partway (CAN-4165 PR 7c).
+jest.mock('node:fs/promises', () => {
+  const actual = jest.requireActual<typeof FsPromises>('node:fs/promises');
+  return {
+    ...actual,
+    rename: jest.fn(actual.rename),
+    writeFile: jest.fn(actual.writeFile),
+  };
+});
 const windowSends: { channel: string; payload: unknown }[] = [];
 jest.mock('../lib/main-process-logging', () => ({
   ...jest.requireActual<typeof MainProcessLogging>(
@@ -61,12 +87,16 @@ jest.mock('../lib/main-process-logging', () => ({
   logMainProcessWarn: jest.fn(),
 }));
 const broadcasts: { channel: string; payload: unknown }[] = [];
+/** Every push to a window, in the order sent. */
+const pushes: { channel: string; payload: unknown }[] = [];
 jest.mock('../lib/window-send', () => ({
   sendToWindow: (_window: unknown, channel: string, payload: unknown): void => {
     windowSends.push({ channel, payload });
+    pushes.push({ channel, payload });
   },
   sendToAllWindows: (channel: string, payload: unknown): void => {
     broadcasts.push({ channel, payload });
+    pushes.push({ channel, payload });
   },
 }));
 
@@ -835,6 +865,42 @@ describe('tracked plan lifecycle (CAN-4165 golden)', () => {
 // desktop dispatcher. These cases pin what the move keeps and what it adds.
 describe('tracked plans on core.plan (CAN-4165 equivalence)', () => {
   const other = { projectId: WORKSPACE_ID, worktreeId: 'golden-wt-dispatch' };
+  // The main window's relay over the desktop dispatcher, as the window gets it.
+  function mainWindowRelay(): {
+    event: RendererRelayEvent;
+    relay: ReturnType<typeof createRendererRelay>;
+  } {
+    const frame = {
+      url: 'canopy://app',
+      detached: false,
+      isDestroyed: (): boolean => false,
+    };
+    const event: RendererRelayEvent = {
+      sender: {
+        id: 9,
+        mainFrame: frame,
+        getURL: (): string => frame.url,
+        isDestroyed: (): boolean => false,
+        on: () => undefined,
+        removeListener: () => undefined,
+      },
+      senderFrame: frame,
+    };
+    const relay = createRendererRelay({
+      bindingProvider: createInterimInMemoryBindingProvider(dispatcher),
+      resolveSurface: () => ({
+        surface: 'main',
+        caller: {
+          principalId: 'local-desktop-renderer:main',
+          clientInstanceId: 'electron-web-contents:9',
+          authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+          interfaceKind: 'desktop',
+          grants: [...RENDERER_RELAY_GRANTS],
+        },
+      }),
+    });
+    return { event, relay };
+  }
   const writer = (
     key: string,
   ): {
@@ -1009,7 +1075,8 @@ describe('tracked plans on core.plan (CAN-4165 equivalence)', () => {
 
   it('serves only plan reads to a read-only relay, and nothing to App Advisor', () => {
     const lifecycle = {
-      query: ['core.plan.list', 'core.plan.get'],
+      // The main window's reads (CAN-4165 PR 7a) include the detected list.
+      query: ['core.plan.list', 'core.plan.get', 'core.plan.detected.list'],
       instruction: ['core.plan.create', 'core.plan.update', 'core.plan.delete'],
     } as const;
     for (const method of lifecycle.query) {
@@ -1026,6 +1093,374 @@ describe('tracked plans on core.plan (CAN-4165 equivalence)', () => {
       );
       expect(relayAllows('app-advisor', 'instruction', method)).toBe(false);
     }
+  });
+
+  // The main window reads plans through the local relay (CAN-4165 PR 7a), whose
+  // replies are capped; the channels are not. Its plan client re-reads such a
+  // scope over the channel, so this pins the refusal it keys on.
+  it('refuses a plan list or plan over the relay cap for its size, which the channels still answer', async () => {
+    const big = { projectId: WORKSPACE_ID, worktreeId: 'golden-wt-big' };
+    // A plan stores its body twice (content and first revision): over 1 MiB.
+    const created = await invoke<TrackedPlanData>(
+      IPC_CHANNELS.trackedPlansCreate,
+      { ...big, source: 'claude', content: `# Big\n\n${'x'.repeat(600_000)}` },
+    );
+    const { event, relay } = mainWindowRelay();
+    const sizeRefusal = {
+      ok: false,
+      error: {
+        kind: 'resource_exhausted',
+        retry: { kind: 'after_refresh', resource: 'reply' },
+      },
+    };
+    try {
+      await expect(
+        relay.invoke(event, {
+          kind: 'request',
+          method: 'core.plan.list',
+          params: { scope: big },
+        }),
+      ).resolves.toMatchObject(sizeRefusal);
+      await expect(
+        relay.invoke(event, {
+          kind: 'request',
+          method: 'core.plan.get',
+          params: { scope: big, planId: created.id },
+        }),
+      ).resolves.toMatchObject(sizeRefusal);
+    } finally {
+      relay.dispose();
+    }
+    const listed = await invoke<{ plans: TrackedPlanData[] }>(
+      IPC_CHANNELS.trackedPlansListWithSkipped,
+      big,
+    );
+    expect(listed.plans.map(({ id }) => id)).toEqual([created.id]);
+  });
+
+  // The main window writes plans through the relay (CAN-4165 PR 7b): keyed, so
+  // a lost reply replays, and announced to every window, the writer included,
+  // because no IPC projection wraps the write.
+  // The renderer builds its relay params with the shared builders, and the
+  // relay refuses a param it cannot carry as JSON, such as an undefined value.
+  it('takes the params the renderer builds for a create, update and import through the relay', async () => {
+    const built = { projectId: WORKSPACE_ID, worktreeId: 'golden-wt-built' };
+    const { resolveWorktreeCwd } = await import('../lib/resolve-worktree');
+    const builtRoot = resolveWorktreeCwd(built.projectId, built.worktreeId);
+    mkdirSync(builtRoot, { recursive: true });
+    writeFileSync(join(builtRoot, 'BUILT.md'), '# Built import');
+    const { event, relay } = mainWindowRelay();
+    // Cloned as IPC delivers it: a structured clone keeps undefined values.
+    const write = (
+      method: string,
+      params: Record<string, unknown>,
+      key: string,
+    ): Promise<unknown> =>
+      relay.invoke(
+        event,
+        structuredClone({
+          kind: 'request' as const,
+          method,
+          params: { ...params, _meta: { idempotencyKey: key } },
+        }),
+      );
+    try {
+      const created = await write(
+        'core.plan.create',
+        trackedPlanCreateParams(built, {
+          ...built,
+          id: 'built-plan',
+          source: 'claude',
+          content: '# Built',
+        }),
+        'built-c-1',
+      );
+      expect(created).toMatchObject({ ok: true, value: { plan: built } });
+      await expect(
+        write(
+          'core.plan.update',
+          trackedPlanUpdateParams(built, {
+            ...built,
+            planId: 'built-plan',
+            hidden: true,
+            approvedAt: null,
+          }),
+          'built-u-1',
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        value: { plan: { id: 'built-plan', hidden: true } },
+      });
+      await expect(
+        write(
+          'core.plan.import',
+          trackedPlanImportParams(built, {
+            ...built,
+            filePath: 'BUILT.md',
+            repoId: WORKSPACE_ROOT_REPO_ID,
+          }),
+          'built-i-1',
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        value: { plan: { sourceFilePath: 'BUILT.md' } },
+      });
+    } finally {
+      relay.dispose();
+    }
+  });
+
+  // The main window's detected-plan writes go through the relay too (CAN-4165
+  // PR 7c), with params from the shared builders, so the publisher announces
+  // each stored change to every window.
+  it('takes the detected-plan params the renderer builds through the relay, keyed and announced once each to every window', async () => {
+    const scope = {
+      projectId: WORKSPACE_ID,
+      worktreeId: 'golden-wt-relay-detected',
+    };
+    const { event, relay } = mainWindowRelay();
+    // Cloned as IPC delivers it: a structured clone keeps undefined values.
+    const write = (
+      method: string,
+      params: Record<string, unknown>,
+      key: string,
+    ): Promise<unknown> =>
+      relay.invoke(
+        event,
+        structuredClone({
+          kind: 'request' as const,
+          method,
+          params: { ...params, _meta: { idempotencyKey: key } },
+        }),
+      );
+    try {
+      const scan = detectedPlanScanParams(scope, {
+        ...scope,
+        chatId: 'golden-chat-7c',
+        candidatePaths: ['plan.md', '', 'x'.repeat(4_097)],
+      });
+      const scanned = (await write(
+        'core.plan.detected.scan',
+        scan,
+        'relay-ds-1',
+      )) as { value: { detected: { id: string }[] } };
+      expect(scanned).toMatchObject({
+        ok: true,
+        value: { newlyDetected: [{ sourceFilePath: 'plan.md' }] },
+      });
+      // A lost reply re-sent under its key answers the first outcome.
+      await expect(
+        write('core.plan.detected.scan', scan, 'relay-ds-1'),
+      ).resolves.toEqual(scanned);
+      // A scan that stores nothing new announces nothing.
+      await expect(
+        write('core.plan.detected.scan', scan, 'relay-ds-2'),
+      ).resolves.toMatchObject({ ok: true, value: { newlyDetected: [] } });
+      const entryId = must(scanned.value.detected[0]).id;
+      const updated = (await write(
+        'core.plan.detected.update',
+        detectedPlanUpdateParams(scope, {
+          ...scope,
+          entryId,
+          status: undefined,
+          bannerSeen: true,
+          importedPlanId: undefined,
+        }),
+        'relay-du-1',
+      )) as { value: { detected: unknown[] } };
+      expect(updated).toMatchObject({
+        ok: true,
+        value: {
+          detected: [{ id: entryId, status: 'detected', bannerSeen: true }],
+        },
+      });
+      // A recipient scope stays read-only on this path too.
+      const viewer = {
+        projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
+        worktreeId: WORKTREE_ID,
+      };
+      await expect(
+        write(
+          'core.plan.detected.update',
+          detectedPlanUpdateParams(viewer, {
+            ...viewer,
+            entryId,
+            bannerSeen: true,
+          }),
+          'relay-du-2',
+        ),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: { kind: 'permission_denied' },
+      });
+      expect(broadcasts).toEqual([
+        {
+          channel: IPC_CHANNELS.detectedPlansUpdated,
+          payload: { ...scope, entries: scanned.value.detected },
+        },
+        {
+          channel: IPC_CHANNELS.detectedPlansUpdated,
+          payload: { ...scope, entries: updated.value.detected },
+        },
+      ]);
+      expect(windowSends).toEqual([]);
+    } finally {
+      relay.dispose();
+    }
+  });
+
+  // A scan over the relay's 1 MiB request cap is refused before dispatch, so
+  // nothing is stored or announced, and the plan client scans it over the
+  // channel instead (CAN-4165 PR 7c, R2).
+  it('refuses a scan over the request cap before dispatch, storing and announcing nothing', async () => {
+    const scope = {
+      projectId: WORKSPACE_ID,
+      worktreeId: 'golden-wt-relay-oversize',
+    };
+    const { event, relay } = mainWindowRelay();
+    try {
+      const candidatePaths = [
+        'plan.md',
+        ...Array.from(
+          { length: 1_550 },
+          (_, index) => `docs/${'p'.repeat(720)}-${index}.md`,
+        ),
+      ];
+      await expect(
+        relay.invoke(event, {
+          kind: 'request',
+          method: 'core.plan.detected.scan',
+          params: {
+            ...detectedPlanScanParams(scope, {
+              ...scope,
+              chatId: 'golden-chat-7c',
+              candidatePaths,
+            }),
+            _meta: { idempotencyKey: 'relay-oversize-1' },
+          },
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: {
+          kind: 'resource_exhausted',
+          retry: { kind: 'after_refresh', resource: 'request' },
+        },
+      });
+      expect(dispatched()).toEqual([]);
+      expect(broadcasts).toEqual([]);
+      await expect(
+        dispatcher.query(
+          'core.plan.detected.list',
+          { scope },
+          { caller: { ...RENDERER, grants: ['core.plan.read'] } },
+        ),
+      ).resolves.toEqual({ detected: [] });
+    } finally {
+      relay.dispose();
+    }
+  });
+
+  it("serves the main window's plan writes through the relay, keyed and announced once each to every window", async () => {
+    const writes = { projectId: WORKSPACE_ID, worktreeId: 'golden-wt-relay' };
+    const { resolveWorktreeCwd } = await import('../lib/resolve-worktree');
+    const writesRoot = resolveWorktreeCwd(writes.projectId, writes.worktreeId);
+    mkdirSync(writesRoot, { recursive: true });
+    writeFileSync(join(writesRoot, 'PLAN.md'), '# Relay import');
+    const { event, relay } = mainWindowRelay();
+    const write = (
+      method: string,
+      params: Record<string, unknown>,
+      key: string,
+    ): Promise<unknown> =>
+      relay.invoke(event, {
+        kind: 'request',
+        method,
+        params: { ...params, _meta: { idempotencyKey: key } },
+      });
+    try {
+      const create = {
+        scope: writes,
+        source: 'claude',
+        content: '# Relay',
+      };
+      const created = await write('core.plan.create', create, 'relay-c-1');
+      // A lost reply re-sent under its key answers the first outcome.
+      await expect(
+        write('core.plan.create', create, 'relay-c-1'),
+      ).resolves.toEqual(created);
+      expect(created).toMatchObject({ ok: true, value: { plan: writes } });
+      const planId = must(
+        (created as { value?: { plan?: TrackedPlanData } }).value?.plan,
+      ).id;
+      await expect(
+        write(
+          'core.plan.create',
+          { ...create, content: '# Other' },
+          'relay-c-1',
+        ),
+      ).resolves.toMatchObject({ ok: false, error: { kind: 'conflict' } });
+      await expect(
+        write(
+          'core.plan.update',
+          { scope: writes, planId, content: '# Relay, v2' },
+          'relay-u-1',
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        value: { plan: { id: planId, content: '# Relay, v2' } },
+      });
+      await expect(
+        write(
+          'core.plan.import',
+          { scope: writes, repoId: WORKSPACE_ROOT_REPO_ID, path: 'PLAN.md' },
+          'relay-i-1',
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        value: { plan: { source: 'imported', sourceFilePath: 'PLAN.md' } },
+      });
+      await expect(
+        write('core.plan.delete', { scope: writes, planId }, 'relay-d-1'),
+      ).resolves.toEqual({ ok: true, value: { deleted: true } });
+      // A recipient scope stays read-only on this path too.
+      await expect(
+        write(
+          'core.plan.create',
+          {
+            scope: {
+              projectId: SHARED_CONTAINER_VIEWER_PROJECT_ID,
+              worktreeId: WORKTREE_ID,
+            },
+            source: 'claude',
+            content: 'x',
+          },
+          'relay-viewer-1',
+        ),
+      ).resolves.toMatchObject({
+        ok: false,
+        error: {
+          kind: 'permission_denied',
+          code: 'core.plan.readOnlyScope',
+          message: 'Shared-container recipient workspaces are read-only',
+        },
+      });
+    } finally {
+      relay.dispose();
+    }
+    const announced = broadcasts.map(({ payload }) =>
+      isPlansUpdatedEvent(payload) ? payload.change : payload,
+    );
+    expect(announced).toEqual(['upsert', 'upsert', 'upsert', 'remove']);
+    expect(
+      broadcasts.every(
+        ({ channel }) => channel === IPC_CHANNELS.trackedPlansUpdated,
+      ),
+    ).toBe(true);
+    expect(windowSends).toEqual([]);
+    const importing = ['instruction', 'core.plan.import'] as const;
+    expect(relayAllows('main', ...importing, 'authority')).toBe(true);
+    expect(relayAllows('main', ...importing, 'read-only')).toBe(false);
+    expect(relayAllows('app-advisor', ...importing)).toBe(false);
   });
 
   it('refuses a recipient scope and a scope with no plans as typed errors', async () => {
@@ -2541,7 +2976,49 @@ describe('detected plans on core.plan (CAN-4165 PR 5b)', () => {
     ]);
   });
 
-  it('keeps only the 16 most recent scan and update outcomes for replay', async () => {
+  it("replays a detected update's lost reply after 40 other updates landed, without re-applying it over a newer status (PR 7c)", async () => {
+    // The relay admits 32 calls, so a same-key retry can follow many other
+    // committed writes; its stored outcome must still be there.
+    const scope = at('golden-wt-detected-replay-window');
+    const scanned = await dispatcher.instruction(
+      'core.plan.detected.scan',
+      { scope, chatId: 'golden-chat-5b', candidatePaths: ['docs/plan.md'] },
+      caller('detected-window-scan'),
+    );
+    const entryId = must(scanned.newlyDetected[0]).id;
+    const lost = { scope, entryId, status: 'dismissed' as const };
+    const first = await dispatcher.instruction(
+      'core.plan.detected.update',
+      lost,
+      caller('detected-window-lost'),
+    );
+    for (let index = 0; index < 39; index += 1)
+      await dispatcher.instruction(
+        'core.plan.detected.update',
+        { scope, entryId, bannerSeen: index % 2 === 0 },
+        caller(`detected-window-other-${index}`),
+      );
+    await dispatcher.instruction(
+      'core.plan.detected.update',
+      { scope, entryId, status: 'imported', importedPlanId: 'plan-imported' },
+      caller('detected-window-import'),
+    );
+    await expect(
+      dispatcher.instruction(
+        'core.plan.detected.update',
+        lost,
+        caller('detected-window-lost'),
+      ),
+    ).resolves.toEqual(first);
+    const saved = await dispatcher.query(
+      'core.plan.detected.list',
+      { scope },
+      reader(),
+    );
+    expect(saved.detected.map((entry) => entry.status)).toEqual(['imported']);
+  });
+
+  it('keeps only the 256 most recent scan and update outcomes for replay (16 before PR 7c)', async () => {
     const scope = at('golden-wt-detected-evict');
     const scan = {
       scope,
@@ -2558,7 +3035,7 @@ describe('detected plans on core.plan (CAN-4165 PR 5b)', () => {
       entryId: must(first.newlyDetected[0]).id,
       bannerSeen: true,
     };
-    for (let index = 0; index <= 16; index += 1) {
+    for (let index = 0; index <= 256; index += 1) {
       if (index > 0)
         await dispatcher.instruction(
           'core.plan.detected.scan',
@@ -2571,13 +3048,13 @@ describe('detected plans on core.plan (CAN-4165 PR 5b)', () => {
         caller(`detected-evict-update-${index}`),
       );
     }
-    // The newest keys still refuse other parameters; the oldest, now 17th,
+    // The newest keys still refuse other parameters; the oldest, now 257th,
     // are forgotten and run again.
     await expect(
       dispatcher.instruction(
         'core.plan.detected.scan',
         { ...scan, candidatePaths: ['other/plan.md'] },
-        caller('detected-evict-scan-16'),
+        caller('detected-evict-scan-256'),
       ),
     ).rejects.toMatchObject({ payload: { kind: 'conflict' } });
     await expect(
@@ -2692,7 +3169,8 @@ describe('detected plans on core.plan (CAN-4165 PR 5b)', () => {
     const file = detectedFile(scope);
     const before = readFileSync(file, 'utf8');
     // Readable but not writable: the save fails, which is not damaged state.
-    chmodSync(file, 0o444);
+    // The directory is read-only, since a save installs a sibling (PR 7c).
+    chmodSync(dirname(file), 0o555);
     try {
       await expect(
         dispatcher.instruction(
@@ -2702,9 +3180,125 @@ describe('detected plans on core.plan (CAN-4165 PR 5b)', () => {
         ),
       ).rejects.toMatchObject({ payload: { kind: 'internal' } });
     } finally {
-      chmodSync(file, 0o600);
+      chmodSync(dirname(file), 0o755);
     }
     expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+
+  it("announces two writers' detected-plan changes in commit order, so the last push is the saved list (PR 7c)", async () => {
+    // The main window applies pushes only, so they must arrive in the order
+    // the writes committed: two relay writes, and a channel write beside a
+    // relay write.
+    const scope = at('golden-wt-detected-order');
+    const scanned = await dispatcher.instruction(
+      'core.plan.detected.scan',
+      {
+        scope,
+        chatId: 'golden-chat-5b',
+        candidatePaths: ['a/plan.md', 'b/plan.md', 'c/plan.md'],
+      },
+      caller('detected-order-scan'),
+    );
+    const [first, second, third] = scanned.newlyDetected.map((entry) =>
+      must(entry),
+    );
+    const announced = (): unknown[] =>
+      pushes
+        .filter(
+          (push) =>
+            push.channel === IPC_CHANNELS.detectedPlansUpdated &&
+            JSON.stringify(push.payload).includes(scope.worktreeId),
+        )
+        .map((push) => push.payload);
+    const saved = async (): Promise<unknown> => ({
+      ...scope,
+      entries: (
+        await dispatcher.query('core.plan.detected.list', { scope }, reader())
+      ).detected,
+    });
+    pushes.length = 0;
+    await Promise.all([
+      dispatcher.instruction(
+        'core.plan.detected.update',
+        { scope, entryId: must(first).id, status: 'dismissed' },
+        caller('detected-order-update-1'),
+      ),
+      dispatcher.instruction(
+        'core.plan.detected.update',
+        { scope, entryId: must(second).id, bannerSeen: true },
+        caller('detected-order-update-2'),
+      ),
+    ]);
+    expect(announced()).toHaveLength(2);
+    expect(announced().at(-1)).toEqual(await saved());
+    pushes.length = 0;
+    await Promise.all([
+      invoke(IPC_CHANNELS.detectedPlansUpdate, {
+        ...scope,
+        entryId: must(third).id,
+        status: 'dismissed',
+      }),
+      dispatcher.instruction(
+        'core.plan.detected.update',
+        { scope, entryId: must(first).id, bannerSeen: true },
+        caller('detected-order-update-3'),
+      ),
+    ]);
+    expect(announced()).toHaveLength(2);
+    expect(announced().at(-1)).toEqual(await saved());
+  });
+
+  it('keeps the last saved detected plans when a save fails partway, and leaves no temporary file (PR 7c)', async () => {
+    const scope = at('golden-wt-detected-torn');
+    const scanned = await dispatcher.instruction(
+      'core.plan.detected.scan',
+      { scope, chatId: 'golden-chat-5b', candidatePaths: ['docs/plan.md'] },
+      caller('detected-torn-scan'),
+    );
+    const entryId = must(scanned.newlyDetected[0]).id;
+    const file = detectedFile(scope);
+    const before = readFileSync(file, 'utf8');
+    const actual = jest.requireActual<typeof FsPromises>('node:fs/promises');
+    const failure = Object.assign(new Error('EIO: i/o error, write'), {
+      code: 'EIO',
+    });
+    // The disk fails mid-save: a write in place leaves half the file behind,
+    // and a write to a sibling never gets renamed over it.
+    jest.mocked(writeFile).mockImplementation(async (path, data) => {
+      if (path !== file) return actual.writeFile(path, data);
+      await actual.writeFile(
+        file,
+        typeof data === 'string' ? data.slice(0, 10) : '',
+      );
+      throw failure;
+    });
+    jest.mocked(rename).mockImplementation(async (from, to) => {
+      if (to !== file) return actual.rename(from, to);
+      throw failure;
+    });
+    try {
+      await expect(
+        dispatcher.instruction(
+          'core.plan.detected.update',
+          { scope, entryId, status: 'dismissed' },
+          caller('detected-torn-update'),
+        ),
+      ).rejects.toMatchObject({ payload: { kind: 'internal' } });
+    } finally {
+      jest.mocked(writeFile).mockImplementation(actual.writeFile);
+      jest.mocked(rename).mockImplementation(actual.rename);
+    }
+    expect(readFileSync(file, 'utf8')).toBe(before);
+    // Each save installs a new file, owner-only like the rest of the data root.
+    if (process.platform !== 'win32')
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+    await expect(
+      dispatcher.query('core.plan.detected.list', { scope }, reader()),
+    ).resolves.toEqual({ detected: scanned.detected });
+    const siblings = await readdir(dirname(file));
+    expect(siblings.filter((name) => name.includes(basename(file)))).toEqual([
+      basename(file),
+    ]);
   });
 
   it('refuses a directory where the detected-plans file belongs as damaged state', async () => {

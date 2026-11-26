@@ -1,8 +1,11 @@
 import { type JSX, useRef, useState } from 'react';
-import { DropdownMenuItem, DropdownMenuItemIcon } from './DropdownMenu';
-import { FloatingMenu } from './FloatingMenu';
-import { ActionMenuRowStyle } from './ActionMenuItems';
-import { Button } from './Button';
+import {
+  DropdownMenuItem,
+  DropdownMenuItemIcon,
+} from '../primitives/DropdownMenu';
+import { FloatingMenu } from '../primitives/FloatingMenu';
+import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
+import { Button } from '../primitives/Button';
 import { menuDismissalSwallowsClick } from '../lib/menu-open-body-flag';
 import {
   AgentIcon,
@@ -168,7 +171,7 @@ export function PluginsAddCustomMenu({
               <DropdownMenuItemIcon data-testid="plugins-add-custom-agent-icon">
                 <AgentIcon />
               </DropdownMenuItemIcon>
-              New agent…
+              New model preset…
             </DropdownMenuItem>
           )}
         </ActionMenuRowStyle>

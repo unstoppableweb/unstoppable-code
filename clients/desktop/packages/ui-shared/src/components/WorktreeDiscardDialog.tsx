@@ -7,7 +7,10 @@ import {
   worktreeDiscardCopy,
   type WorktreeDiscardPathRow,
 } from '../lib/worktree-discard-copy';
-import { ConfirmDialog, type ConfirmDialogErrorProps } from './ConfirmDialog';
+import {
+  ConfirmDialog,
+  type ConfirmDialogErrorProps,
+} from '../primitives/ConfirmDialog';
 
 export const WORKTREE_DISCARD_DIALOG_TEST_ID = 'worktree-discard-dialog';
 

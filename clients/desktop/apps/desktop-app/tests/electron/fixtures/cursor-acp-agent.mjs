@@ -532,26 +532,39 @@ if (process.argv.includes('login')) {
       .replace(/[^a-zA-Z0-9]/g, '-')
       .replace(/-+/g, '-')
       .replace(/^-+|-+$/g, '');
+    const projectDir = path.join(
+      process.env.CURSOR_DATA_DIR,
+      'projects',
+      encoded,
+    );
     const config = JSON.parse(
-      await readFile(
-        path.join(
-          process.env.CURSOR_DATA_DIR,
-          'projects',
-          encoded,
-          '.cursor',
-          'hooks.json',
-        ),
-        'utf8',
-      ),
+      await readFile(path.join(projectDir, '.cursor', 'hooks.json'), 'utf8'),
     );
     const definition = config.hooks[options.event ?? 'preToolUse']?.[0];
     if (!definition) return {};
     return new Promise((resolve) => {
-      const child = spawn(definition.command, {
-        shell: true,
+      // The pinned CLI starts the hook shell in project storage, not the chat
+      // workspace. On Windows CreateProcess applies its cwd limit here.
+      const spawnOptions = {
+        cwd: projectDir,
         stdio: ['pipe', 'pipe', 'ignore'],
-        env: process.env,
-      });
+      };
+      const child =
+        process.platform === 'win32'
+          ? spawn(
+              'powershell.exe',
+              [
+                '-NoProfile',
+                '-NonInteractive',
+                '-Command',
+                '& ' + definition.command,
+              ],
+              spawnOptions,
+            )
+          : spawn(definition.command, {
+              ...spawnOptions,
+              shell: true,
+            });
       let output = '';
       child.stdout.on('data', (chunk) => {
         output += chunk.toString();

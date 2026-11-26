@@ -39,9 +39,16 @@ export interface ColorSwatchPickerProps {
   label?: string;
 }
 
+// On a coarse pointer each swatch's hit area grows to 44px, and the row's gap
+// grows to match, so neighboring hit areas meet without overlapping.
 const SWATCH_SIZE_CLASS_NAMES = {
-  default: 'h-6 w-6',
-  compact: 'h-5 w-5',
+  default: 'h-6 w-6 pointer-coarse:before:-inset-2.5',
+  compact: 'h-5 w-5 pointer-coarse:before:-inset-3',
+} as const;
+
+const ROW_GAP_CLASS_NAMES = {
+  default: 'gap-2 pointer-coarse:gap-5',
+  compact: 'gap-2 pointer-coarse:gap-6',
 } as const;
 
 // The app checkmark's compact tier, as in a checkbox.
@@ -185,7 +192,7 @@ export function ColorSwatchPicker({
       role="radiogroup"
       aria-label={label}
       aria-disabled={disabled || undefined}
-      className="flex flex-wrap gap-2"
+      className={`flex flex-wrap ${ROW_GAP_CLASS_NAMES[size]}`}
       data-testid={testId}
     >
       {options.map((option, index) => {
@@ -204,7 +211,7 @@ export function ColorSwatchPicker({
             disabled={disabled}
             onClick={() => onChange(option.value)}
             onKeyDown={(event) => onKeyDown(event, index)}
-            className={`focus-ring inline-flex shrink-0 items-center justify-center rounded-full text-white transition-colors disabled:opacity-60 ${SWATCH_SIZE_CLASS_NAMES[size]} ${
+            className={`focus-ring relative inline-flex shrink-0 before:absolute before:inset-0 before:content-[''] items-center justify-center rounded-full text-white transition-[opacity,scale] duration-150 ease-out active:scale-97 disabled:scale-100 disabled:opacity-60 ${SWATCH_SIZE_CLASS_NAMES[size]} ${
               selected ? '' : 'hover:opacity-80'
             }`}
             style={{ backgroundColor: option.color, color: option.ink }}

@@ -12,9 +12,12 @@ import {
 } from '../lib/format-usage';
 import { UsageActionRow, UsageExpandableRow } from './UsageIndicatorActions';
 import { CONTEXT_SERIES_COLORS } from '../lib/usage-series-colors';
-import { SegmentsBar, type BarSegment } from './Progress';
-import { SegmentedControl } from './SegmentedControl';
-import { COMPOSER_ROW_MENU_GAP, FloatingMenu } from './FloatingMenu';
+import { SegmentsBar, type BarSegment } from '../primitives/Progress';
+import { SegmentedControl } from '../primitives/SegmentedControl';
+import {
+  COMPOSER_ROW_MENU_GAP,
+  FloatingMenu,
+} from '../primitives/FloatingMenu';
 import { UsageMeter, formatUsagePercent } from './usage-indicator-meter';
 import { ValueRow, ValueRows } from './settings/ValueRows';
 import { useCostCurrency } from './cost/CostCurrencyContext';

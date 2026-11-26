@@ -2,7 +2,7 @@ import type { JSX } from 'react';
 import {
   SegmentedControl,
   type SegmentedControlOption,
-} from './SegmentedControl';
+} from '../primitives/SegmentedControl';
 
 export interface StatusCountItem<TStatus extends string> {
   readonly status: TStatus;

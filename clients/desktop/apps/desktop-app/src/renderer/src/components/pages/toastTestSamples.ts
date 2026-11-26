@@ -40,7 +40,7 @@ export const TOAST_TEST_SAMPLES: readonly ToastSample[] = [
     label: 'With title',
     type: 'success',
     message: 'You can close the browser tab.',
-    meta: { category: 'Account', title: 'Sign in successful' },
+    meta: { category: 'Account', title: 'Signed in' },
   },
   {
     id: 'action',

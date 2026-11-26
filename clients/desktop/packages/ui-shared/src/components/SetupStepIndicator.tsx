@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 import { CircleCheckIcon } from '../icons/AppIcons';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
-import { LoadingSpinner } from './LoadingSpinner';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
 
 export type SetupStepStatus = 'completed' | 'active' | 'pending';
 

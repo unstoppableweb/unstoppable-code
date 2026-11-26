@@ -285,7 +285,6 @@ export function CanopyCloudAccountSection({
         {!loading && accountUnreadable && (
           <div data-testid="settings-account-canopy-cloud-recovery">
             <CloudAccountRecoveryNotice
-              cloudName={cloudName}
               resetting={repairing}
               errorMessage={errorMessage}
               onReset={auth.resetUnreadableAccount}

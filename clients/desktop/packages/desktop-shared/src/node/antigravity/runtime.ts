@@ -19,14 +19,17 @@ import type {
 
 import { ANTIGRAVITY_RUNTIME_VERSION } from './runtime-metadata';
 import {
-  assertAntigravityExecutableUnchanged,
+  antigravityExecutableIdentityForLaunch,
   verifyAntigravityExecutable,
 } from './runtime-integrity';
 import {
   assertAntigravityWorkspaceConfigurationIsolated,
   writesAntigravityProfile,
 } from './workspace-configuration';
-import { antigravityNativeOperation } from './tool-approval';
+import {
+  antigravityNativeOperation,
+  isRoutedAntigravityMcpCall,
+} from './tool-approval';
 import {
   antigravityEnvironment,
   resolveAntigravityExecutable,
@@ -448,6 +451,13 @@ export function antigravityArguments(profile: string): string[] {
 
 export interface AntigravityRuntime {
   client: AcpClient;
+  /**
+   * The verified file this runtime launched, which passed every launch check
+   * and reported the pinned version, and that file's identity when it was
+   * spawned. Set by openAntigravityRuntime.
+   */
+  executable?: string;
+  executableIdentity?: string;
   close(): Promise<void>;
   /**
    * After close: whether the stop proved its escaped descendants gone
@@ -497,7 +507,8 @@ export async function openAntigravityRuntime(input: {
   const profile = await prepareAntigravityProfile(input.profile);
   input.signal?.throwIfAborted();
   await input.assertEnabled();
-  await assertAntigravityExecutableUnchanged(executable);
+  const executableIdentity =
+    await antigravityExecutableIdentityForLaunch(executable);
   const child = input.spawnProcess({
     command: executable,
     args: antigravityArguments(profile),
@@ -548,6 +559,10 @@ export async function openAntigravityRuntime(input: {
         return input.onUpdate(update, resourceGeneration);
       },
       onPermission: async (request) => {
+        if (request.signal.aborted) return 'deny';
+        // Routed MCP tools authorize in the host at execution.
+        if (isRoutedAntigravityMcpCall(request, input.mcpServerNames ?? []))
+          return 'allow';
         // The opener knows the actual profile, including execution-scoped
         // profiles used by the CLI and workflows. Guard it before any host
         // approval; an outside-workspace approval must not rewrite this gate.
@@ -573,11 +588,13 @@ export async function openAntigravityRuntime(input: {
     ) {
       client.close();
       throw new Error(
-        'This version of Antigravity has not been verified. Use Antigravity CLI 1.5.1.',
+        `This version of Antigravity has not been verified. Use Antigravity CLI ${ANTIGRAVITY_RUNTIME_VERSION}.`,
       );
     }
     return {
       client,
+      executable,
+      executableIdentity,
       close: async (): Promise<void> => {
         input.signal?.removeEventListener('abort', abort);
         client.close();

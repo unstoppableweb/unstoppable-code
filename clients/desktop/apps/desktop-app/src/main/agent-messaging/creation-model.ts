@@ -229,9 +229,11 @@ export async function assertCreationThinkingLevel(
     projectId: target.projectId,
     worktreeId: target.taskId,
   });
-  // The same catalog models.list advertises, OpenCode included.
+  // The same catalog models.list advertises, OpenCode and Antigravity
+  // included: the new chat is a worktree chat, which runs both.
   const entry = buildProjectedModelCatalog(undefined, {
     cursor: true,
+    antigravity: true,
     copilot: true,
     opencode: true,
     owner,

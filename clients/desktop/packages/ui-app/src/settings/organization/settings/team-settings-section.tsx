@@ -22,6 +22,7 @@ import { useOrganizationSettingsSubtabSlots } from './organization-settings-subt
 import { canManageOrganizationExternalAgents } from './external-agents-policy';
 import { TeamBillingSection } from '../../billing/team-billing-section';
 import { ProjectDefaultsSection } from './project-defaults-section';
+import { ConnectorsSection } from './connectors-section';
 import { TeamDangerZone } from '../team-danger-zone';
 
 interface TeamSettingsSectionProps {
@@ -59,7 +60,7 @@ interface TeamSettingsSectionProps {
 
 /**
  * One organization Settings page (General, Policies, Project defaults,
- * Integrations, Usage, AI gateway or Billing). Each is its own settings rail row, deep-linkable as `?tab=`, so
+ * Connectors, Integrations, Usage, AI gateway or Billing). Each is its own settings rail row, deep-linkable as `?tab=`, so
  * an admin lands on a short themed page instead of scrolling past unrelated
  * sections to reach the one they came for.
  */
@@ -183,6 +184,8 @@ export function TeamSettingsSection({
             )}
           </>
         );
+      case 'connectors':
+        return <ConnectorsSection detail={detail} />;
       case 'project-defaults':
         return (
           <ProjectDefaultsSection

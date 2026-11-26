@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react';
-import { Surface } from './Surface';
+import { Surface } from '../primitives/Surface';
 
 export function ProductPreviewWindowControls(): JSX.Element {
   return (

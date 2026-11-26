@@ -1,9 +1,17 @@
 'use client';
 
 import { useRef, useState, type JSX, type RefObject } from 'react';
-import { ErrorBanner, Heading } from '@canopy/ui-shared/components';
+import { Divider, ErrorBanner } from '@canopy/ui-shared/components';
+import {
+  SETTINGS_CARD_CLASS,
+  SETTINGS_CARD_GROUP_CLASS,
+} from '@canopy/ui-shared/components/settings/SettingsCard';
+import { GitHubIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { SettingsConfirmDialog, useSettingsBrand } from '../host';
-import { SettingsCard } from '@canopy/ui-shared/components/settings/SettingsCard';
+import {
+  ProviderSectionHeader,
+  type ProviderSectionStatus,
+} from '../layout/ProviderSectionHeader';
 import type {
   GitHubCloudConnectIntent,
   GitHubCloudConnectionDto,
@@ -69,6 +77,31 @@ const PERSONAL_OWNER: ReviewApprovalOwner = { kind: 'personal' };
 
 const UNLINK_MESSAGE =
   "Your reviews won't approve pull requests and cloud projects can't use your repositories until you link it again. Signing in with GitHub isn't affected. Worktrees already running in the cloud keep working.";
+
+/**
+ * The header dot, as Slack and the "On this computer" rows show theirs: a
+ * hollow ring when not linked, red when GitHub needs a step from you, green
+ * once linked, and grey while setup finishes. Nothing until the first read.
+ */
+function gitHubStatus(
+  connection: GitHubCloudConnectionDto | null,
+): ProviderSectionStatus | null {
+  if (connection === null) return null;
+  switch (connection.state) {
+    case 'DISCONNECTED':
+      return { tone: 'signed-out', label: 'Not linked' };
+    case 'NEEDS_REAUTH':
+      return { tone: 'failed', label: 'Sign in again' };
+    case 'NEEDS_INSTALL':
+      return isBlockedOnGitHub(connection)
+        ? { tone: 'failed', label: 'Needs attention' }
+        : { tone: 'connected', label: 'Linked' };
+    case 'ACTIVE':
+      return connection.readyForProjects
+        ? { tone: 'connected', label: 'Linked' }
+        : { tone: 'idle', label: 'Finishing setup' };
+  }
+}
 
 function primaryAction(
   connection: GitHubCloudConnectionDto,
@@ -275,39 +308,49 @@ export function GitHubCloudConnectionCard({
     connection.targets.length > 0;
 
   return (
-    <SettingsCard
-      title={
-        <Heading level={2} variant="section" ref={headingRef} tabIndex={-1}>
-          {CARD_TITLE}
-        </Heading>
-      }
-      subtitle={`Link GitHub to ${brand.displayName} for review approvals and cloud projects.`}
-      testId="github-cloud-card"
-    >
-      <div className="flex flex-col gap-4">
-        <ConnectionLoadingView controller={controller} />
-        {status !== null || controller.loading ? (
-          <StatusView status={status} />
-        ) : null}
-        <NoticeView controller={controller} press={press} />
-        {cardError ? (
-          <ErrorView controller={controller} error={cardError} press={press} />
-        ) : null}
-        {connection?.githubLogin ? (
-          <Identity login={connection.githubLogin} labelled={false} />
-        ) : null}
-        {showTargets ? <TargetList targets={connection.targets} /> : null}
-        {connection ? (
-          <CardActions
-            controller={controller}
-            connection={connection}
-            press={press}
-            onDisconnect={() => setConfirming(true)}
-          />
-        ) : null}
-        {connection?.state === 'ACTIVE' ? (
-          <CodeReviewApprovalsSection owner={PERSONAL_OWNER} />
-        ) : null}
+    <section className={SETTINGS_CARD_CLASS} data-testid="github-cloud-card">
+      <div className={SETTINGS_CARD_GROUP_CLASS}>
+        <ProviderSectionHeader
+          icon={
+            <GitHubIcon size="md" className="shrink-0 fg-primary" aria-hidden />
+          }
+          title={CARD_TITLE}
+          status={gitHubStatus(connection)}
+          subtitle={`Link GitHub to ${brand.displayName} for review approvals and cloud projects.`}
+          headingRef={headingRef}
+          testId="github-cloud-header"
+          statusTestId="github-cloud-status-dot"
+        />
+        <Divider />
+        <div className="flex flex-col gap-4 py-4">
+          <ConnectionLoadingView controller={controller} />
+          {status !== null || controller.loading ? (
+            <StatusView status={status} />
+          ) : null}
+          <NoticeView controller={controller} press={press} />
+          {cardError ? (
+            <ErrorView
+              controller={controller}
+              error={cardError}
+              press={press}
+            />
+          ) : null}
+          {connection?.githubLogin ? (
+            <Identity login={connection.githubLogin} labelled={false} />
+          ) : null}
+          {showTargets ? <TargetList targets={connection.targets} /> : null}
+          {connection ? (
+            <CardActions
+              controller={controller}
+              connection={connection}
+              press={press}
+              onDisconnect={() => setConfirming(true)}
+            />
+          ) : null}
+          {connection?.state === 'ACTIVE' ? (
+            <CodeReviewApprovalsSection owner={PERSONAL_OWNER} />
+          ) : null}
+        </div>
       </div>
 
       {confirming ? (
@@ -318,6 +361,6 @@ export function GitHubCloudConnectionCard({
           restoreFocusRef={headingRef}
         />
       ) : null}
-    </SettingsCard>
+    </section>
   );
 }

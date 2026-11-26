@@ -108,6 +108,7 @@ function normalizeServer(server: CuratedMcpServerEntry): CuratedMcpServerEntry {
     url: server.url,
     transport: 'http',
     ...(oauthHints ? { oauthHints } : {}),
+    ...(server.platformOAuth === true ? { platformOAuth: true } : {}),
     ...(providerConnector ? { providerConnector } : {}),
     // Named here for the same reason as `providerConnector`: a field this
     // rebuild omits is dropped, and Add would then route a desktop-only

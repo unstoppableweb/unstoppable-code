@@ -1,7 +1,11 @@
 import { matchesRecordedDirectoryIdentity } from '@canopy/core-runtime/node/w5/recorded-directory-identity';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { recordMetadataWork } from '@canopy/desktop-shared/node/work-counters';
-import { readArchiveRecoveryHolds } from './archive-recovery-refs';
+import {
+  archiveRecoveryStore,
+  assertNoArchiveResolution,
+  readArchiveRecoveryHolds,
+} from './archive-recovery-refs';
 import {
   isCompletedTurnDiffCleanup,
   inspectCompletedTurnDiffCleanup,
@@ -13,23 +17,22 @@ import type {
 import { lstat } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { readArchiveJournalOperations } from './stranded-archive-journals';
+import {
+  readArchiveJournalOperations,
+  type ArchiveJournalOperation,
+} from './stranded-archive-journals';
 import { validateId } from './validation';
 import {
   unavailableWorktreeRecovery,
   worktreeRecoveryStoppingPoint,
+  type WorktreeRecoveryAction,
   type WorktreeRecoveryDescription,
   type WorktreeRecoveryRequest,
   type WorktreeRecoveryAsset,
 } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import type { WorktreeDiscardDescription } from '@canopy/protocol/remote-control/shell/worktree-discard';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
-import { assertWorktreeCanBeRemoved } from '../agents/background-work';
-import {
-  assertNotSplitLocked,
-  hasWorkspaceDeletionLease,
-  assertNotSplitDestinationWorktreeClaimed,
-} from '../services/split-lock-service';
+import { hasWorkspaceDeletionLease } from '../services/split-lock-service';
 import { destructiveFailureRecord } from './destructive-failure-context';
 import {
   canAdmitInterruptedArchive,
@@ -41,14 +44,23 @@ import {
   isRecoveryProjectUnreplaced,
   isUnverifiableReleaseCandidate,
   isDestructiveRecoveryOwnerless,
+  needsDestructiveRecovery,
   isVerifiedProtectedPathIdentity,
   journalDirectoryUnreadable,
   areOwnedPathsUnreplaced,
   readBlockingDestructiveRecoveries,
+  filterBlockingDestructiveRecoveries,
   readDirectoryStatIdentity,
   type DestructiveRecoveryRecord,
 } from './w5-destructive-recovery';
 import { findWorktreeArchiveSourceRefusal } from './worktree-service';
+import {
+  assertWorktreeDiscardAdmitted,
+  assertWorktreeRemovalAdmitted,
+} from './worktree-discard-admission';
+import { admitArchiveResolutionOffer } from './worktree-archive-resolution-admission';
+import { checkArchiveFinishAdmission } from './worktree-recovery-finish-admission';
+import type { ArchiveRecoveryReceipt } from '@canopy/desktop-shared/node/archive-recovery-store';
 import { readArchivedContainerManifestIncludingExpired } from './archived-containers';
 import {
   getArchivedContainerDir,
@@ -281,35 +293,121 @@ export function describeWorktreeRecovery(
   request: WorktreeRecoveryContext,
   discard: WorktreeDiscardDescription | undefined,
   error?: unknown,
+  resolutionInspection: 'metadata' | 'contents' = 'contents',
 ): Promise<WorktreeRecoveryDescription> {
-  return describeWorktreeRecoveryFromInspection(request, discard, error);
+  return describeWorktreeRecoveryFromInspection(
+    request,
+    discard,
+    resolutionInspection,
+    error,
+  );
 }
 
-function discardAction(
+async function discardAction(
   request: WorktreeRecoveryContext,
   discard: WorktreeDiscardDescription | undefined,
-): WorktreeRecoveryDescription['actions']['discard'] {
+  readReceipts: () => Promise<ArchiveRecoveryReceipt[]>,
+): Promise<WorktreeRecoveryDescription['actions']['discard']> {
   if (discard?.refusal?.reason === 'evidence-unreadable')
     return { eligible: false, reason: 'unavailable' };
-  return request.expectedCreatedAt !== null &&
-    discard?.workspaceId === request.workspaceId &&
-    discard.worktreeId === request.worktreeId &&
-    discard.createdAt === request.expectedCreatedAt &&
-    discard.status === 'discardable'
-    ? { eligible: true }
-    : { eligible: false, reason: 'not-admitted' };
+  if (
+    request.expectedCreatedAt === null ||
+    discard?.workspaceId !== request.workspaceId ||
+    discard.worktreeId !== request.worktreeId ||
+    discard.createdAt !== request.expectedCreatedAt ||
+    discard.status !== 'discardable'
+  )
+    return { eligible: false, reason: 'not-admitted' };
+  try {
+    assertWorktreeDiscardAdmitted(request.workspaceId, request.worktreeId);
+    await assertNoArchiveResolution(
+      request.workspaceId,
+      request.worktreeId,
+      undefined,
+      readReceipts,
+    );
+    return { eligible: true };
+  } catch {
+    return { eligible: false, reason: 'not-admitted' };
+  }
+}
+
+/**
+ * CAN-7014: whether a single, consistent, readable record may be moved aside.
+ * CAN-7284 owns multi-copy admission and a durable per-operation intent record.
+ * Journal facts only, so a running agent or another gate never withdraws it.
+ * A project deletion's child stays for the parent's resume, as does a record
+ * bound to unfinished Keep/Release. Execution re-checks it under the journal lock.
+ */
+export async function setAsideAction(
+  request: Pick<WorktreeRecoveryContext, 'workspaceId' | 'worktreeId'>,
+  operation: ArchiveJournalOperation,
+  operations: readonly ArchiveJournalOperation[],
+): Promise<WorktreeRecoveryAction> {
+  const { workspaceId, worktreeId } = request;
+  const refused: WorktreeRecoveryAction = {
+    eligible: false,
+    reason: 'not-admitted',
+  };
+  if (
+    operation.copies !== 1 ||
+    !operation.consistent ||
+    !operation.records.some(needsDestructiveRecovery) ||
+    !operation.records.every(
+      (record) =>
+        record.operation === 'worktree-archive' &&
+        record.workspaceId === workspaceId &&
+        record.worktreeId === worktreeId &&
+        record.parentOperation === undefined &&
+        isDestructiveRecoveryOwnerless(record),
+    ) ||
+    inFlightDestructiveOperationIds().has(operation.record.operationId) ||
+    !isWritableScope(workspaceId) ||
+    hasWorkspaceDeletionLease(workspaceId) ||
+    operations.some((entry) =>
+      entry.records.some(
+        (record) =>
+          record.workspaceId === workspaceId &&
+          record.operation === 'workspace-delete' &&
+          (record.state !== 'completed' || record.cleanupRequired),
+      ),
+    )
+  )
+    return refused;
+  try {
+    const receipt = await archiveRecoveryStore().read(
+      workspaceId,
+      operation.record.operationId,
+    );
+    return receipt && !receipt.cancelled && receipt.stage !== 'completed'
+      ? refused
+      : { eligible: true };
+  } catch {
+    return { eligible: false, reason: 'unavailable' };
+  }
 }
 
 async function describeWorktreeRecoveryFromInspection(
   request: WorktreeRecoveryContext,
   discard: WorktreeDiscardDescription | undefined,
+  resolutionInspection: 'metadata' | 'contents',
   error?: unknown,
   inspection?: Awaited<ReturnType<typeof readArchiveJournalOperations>>,
+  assertReceiptsNormalizable: () => Promise<void> = () =>
+    archiveRecoveryStore().assertWorkspaceNormalizable(request.workspaceId),
+  readReceipts: () => Promise<ArchiveRecoveryReceipt[]> = () =>
+    readArchiveRecoveryHolds(request.workspaceId),
+  readBlockingInspection: () => Promise<DestructiveRecoveryRecord[]> = () =>
+    readBlockingDestructiveRecoveries(request.workspaceId, undefined, true),
 ): Promise<WorktreeRecoveryDescription> {
   const description = recoveryFromRefusal(request, error);
   if (description.destination.kind === 'journal-review') return description;
   // Discard admission is independent of lifecycle evidence and row presence.
-  description.actions.discard = discardAction(request, discard);
+  description.actions.discard = await discardAction(
+    request,
+    discard,
+    readReceipts,
+  );
   try {
     validateId(request.workspaceId, 'workspaceId');
     validateId(request.worktreeId, 'worktreeId');
@@ -369,6 +467,12 @@ async function describeWorktreeRecoveryFromInspection(
       diagnosis.check = 'operation-evidence-conflict';
       return description;
     }
+    // Before every shape and removal gate below, so no early return withdraws it.
+    description.actions.setAside = await setAsideAction(
+      request,
+      operation,
+      scan.operations,
+    );
     if (!operation.consistent) {
       diagnosis.check = 'conflicting-journal-copies';
       return description;
@@ -391,7 +495,11 @@ async function describeWorktreeRecoveryFromInspection(
             : 'other-incarnation';
       return description;
     }
-    if (record.operation !== 'worktree-archive' || record.state === 'active') {
+    // q-26 2a: an ownerless `active` journal is a crash; it reads as recovery-required.
+    if (
+      record.operation !== 'worktree-archive' ||
+      (record.state === 'active' && !isDestructiveRecoveryOwnerless(record))
+    ) {
       diagnosis.check =
         record.state === 'active' ? 'raw-active' : 'not-archive';
       return description;
@@ -401,8 +509,20 @@ async function describeWorktreeRecoveryFromInspection(
       return description;
     }
     if (isCompletedTurnDiffCleanup(record)) {
-      const cleanup = await inspectCompletedTurnDiffCleanup(operation);
+      const cleanup = await inspectCompletedTurnDiffCleanup(
+        operation,
+        readReceipts,
+        scan,
+      );
       if (cleanup.eligible) {
+        const refused = await checkArchiveFinishAdmission(
+          operation,
+          readReceipts,
+        );
+        if (refused) {
+          diagnosis.check = refused;
+          return description;
+        }
         // Retained manifests keep the existing Finish diagnosis below.
         description.check = 'completed-turn-diff-cleanup';
         diagnosis.verdict = 'cleanup-debt';
@@ -526,11 +646,12 @@ async function describeWorktreeRecoveryFromInspection(
       manifest.originalWorktree.createdAt === expectedCreatedAt
         ? manifest
         : null;
+    const blockingInspection = await readBlockingInspection();
     // Finish retains its admission policy; Keep/Release use W5's current pending-deletion classification.
     if (
       matchingManifest
         ? recordedDeletionPending
-        : (await readBlockingDestructiveRecoveries(workspaceId)).some(
+        : (await filterBlockingDestructiveRecoveries(blockingInspection)).some(
             (entry) => entry.operation === 'workspace-delete',
           )
     ) {
@@ -598,15 +719,17 @@ async function describeWorktreeRecoveryFromInspection(
         matchingManifest,
       );
 
-    assertNotSplitLocked(workspaceId, worktreeId, 'archiving the worktree');
-    assertNotSplitDestinationWorktreeClaimed(
+    assertWorktreeRemovalAdmitted(
       workspaceId,
       worktreeId,
       'archiving the worktree',
     );
-    assertWorktreeCanBeRemoved(workspaceId, worktreeId);
     const blocking = (
-      await readBlockingDestructiveRecoveries(workspaceId, worktreeId, true)
+      await filterBlockingDestructiveRecoveries(
+        blockingInspection,
+        worktreeId,
+        true,
+      )
     ).filter(
       (entry) =>
         matchingManifest ||
@@ -655,6 +778,14 @@ async function describeWorktreeRecoveryFromInspection(
         matchingManifest.version,
       ))
     ) {
+      const refused = await checkArchiveFinishAdmission(
+        operation,
+        readReceipts,
+      );
+      if (refused) {
+        diagnosis.check = refused;
+        return description;
+      }
       diagnosis.verdict =
         record.state === 'completed'
           ? record.cleanupRequired && !row
@@ -716,14 +847,30 @@ async function describeWorktreeRecoveryFromInspection(
           ? 'identity-unverified'
           : 'quarantine-unqualified';
       } else if (
-        row &&
-        description.retained.checkout.verification === 'verified'
+        (row && description.retained.checkout.verification === 'verified') ||
+        (!row && checkoutIdentity === null)
       ) {
-        diagnosis.verdict = 'keep-worktree';
-        diagnosis.check = 'pre-quarantine-listed-live';
-      } else if (!row && checkoutIdentity === null) {
-        diagnosis.verdict = 'release';
-        diagnosis.check = 'pre-quarantine-row-and-checkout-absent';
+        try {
+          // Resolution normalizes every receipt, not just this operation's.
+          await assertReceiptsNormalizable();
+          try {
+            await admitArchiveResolutionOffer(
+              operation,
+              row ? 'keep-worktree' : 'release',
+              resolutionInspection,
+              readReceipts,
+              { journals: scan, blocking: blockingInspection },
+            );
+            diagnosis.verdict = row ? 'keep-worktree' : 'release';
+            diagnosis.check = row
+              ? 'pre-quarantine-listed-live'
+              : 'pre-quarantine-row-and-checkout-absent';
+          } catch {
+            diagnosis.check = 'resolution-not-admitted';
+          }
+        } catch {
+          diagnosis.check = 'recovery-receipts-unreadable';
+        }
       } else diagnosis.check = 'mixed-or-unverified-occupancy';
     }
     if (record.state === 'completed' || record.cleanupRepair !== undefined) {
@@ -753,11 +900,21 @@ async function describeWorktreeRecoveryFromInspection(
         createdAt: expectedCreatedAt,
       }))
     ) {
-      description.actions.retry = { eligible: true };
-      description.code = 'external.worktree_recovery_retryable';
-      if (diagnosis.verdict === 'refused') {
-        diagnosis.verdict = 'retry';
-        diagnosis.check = 'existing-retry-admission';
+      try {
+        await assertNoArchiveResolution(
+          workspaceId,
+          worktreeId,
+          undefined,
+          readReceipts,
+        );
+        description.actions.retry = { eligible: true };
+        description.code = 'external.worktree_recovery_retryable';
+        if (diagnosis.verdict === 'refused') {
+          diagnosis.verdict = 'retry';
+          diagnosis.check = 'existing-retry-admission';
+        }
+      } catch {
+        description.actions.retry = { eligible: false, reason: 'not-admitted' };
       }
     } else
       description.actions.retry = { eligible: false, reason: 'not-admitted' };
@@ -789,6 +946,9 @@ async function describeWorktreeRecoveryFromInspection(
     }
     const unreadable = recoveryFromRefusal(request, inspectionError);
     if (unreadable.destination.kind === 'journal-review') return unreadable;
+    // Set aside rests on journal facts alone; only a journal read failure withdraws it.
+    if (unreadable.code === 'external.worktree_recovery_unreadable')
+      description.actions.setAside = { eligible: false, reason: 'unavailable' };
     // Retain facts already observed, but withdraw actions on an incomplete read.
     description.actions.retry = { eligible: false, reason: 'unavailable' };
     description.actions.finishArchive = {
@@ -815,6 +975,8 @@ export async function listWorktreeRecovery(
       includeRecoveryDiagnosis: false;
     },
   ) => Promise<WorktreeDiscardDescription>,
+  // Set aside opts in to exact contents for its selected operation.
+  resolutionInspection: 'metadata' | 'contents' = 'metadata',
 ): Promise<WorktreeRecoveryListResult> {
   recordMetadataWork('recovery.list');
   // CAN-6948: a running archive is `active` on disk but needs no review. An
@@ -827,6 +989,29 @@ export async function listWorktreeRecovery(
   let discardRows:
     | ReturnType<typeof readWorkspaceWorktreesDetailed>
     | undefined;
+  // Share success and refusal only within this list, never across calls.
+  let receiptPreflight: Promise<void> | undefined;
+  let receipts: Promise<ArchiveRecoveryReceipt[]> | undefined;
+  let blockingInspection: Promise<DestructiveRecoveryRecord[]> | undefined;
+  const readBlockingInspection = (): Promise<DestructiveRecoveryRecord[]> => {
+    // Offers share evidence only for this refresh; writers still rescan under fences.
+    blockingInspection ??= readBlockingDestructiveRecoveries(
+      request.workspaceId,
+      undefined,
+      true,
+    );
+    return blockingInspection;
+  };
+  const readReceipts = (): Promise<ArchiveRecoveryReceipt[]> => {
+    receipts ??= readArchiveRecoveryHolds(request.workspaceId);
+    return receipts;
+  };
+  const assertReceiptsNormalizable = (): Promise<void> => {
+    receiptPreflight ??= archiveRecoveryStore().assertWorkspaceNormalizable(
+      request.workspaceId,
+    );
+    return receiptPreflight;
+  };
   for (const operation of scan.operations) {
     // A caller that names the operation still gets its description.
     if (!request.operationId && running.has(operation.record.operationId))
@@ -837,7 +1022,7 @@ export async function listWorktreeRecovery(
         entry.workspaceId === request.workspaceId &&
         entry.operation === 'worktree-archive' &&
         entry.worktreeId &&
-        (entry.state !== 'completed' || entry.cleanupRequired) &&
+        needsDestructiveRecovery(entry) &&
         (!request.operationId || entry.operationId === request.operationId),
     );
     if (!record?.worktreeId) continue;
@@ -851,8 +1036,12 @@ export async function listWorktreeRecovery(
     const description = await describeWorktreeRecoveryFromInspection(
       context,
       undefined,
+      resolutionInspection,
       undefined,
       scan,
+      assertReceiptsNormalizable,
+      readReceipts,
+      readBlockingInspection,
     );
     entries.push(description);
     if (
@@ -889,13 +1078,17 @@ export async function listWorktreeRecovery(
           },
         },
       );
-      description.actions.discard = discardAction(context, discard);
+      description.actions.discard = await discardAction(
+        context,
+        discard,
+        readReceipts,
+      );
     } catch {
       description.actions.discard = { eligible: false, reason: 'unavailable' };
     }
   }
   try {
-    const resolutions = (await readArchiveRecoveryHolds(request.workspaceId))
+    const resolutions = (await readReceipts())
       .filter(
         (receipt) =>
           !receipt.cancelled &&
@@ -925,6 +1118,10 @@ export async function listWorktreeRecovery(
       check: scan.readable ? 'ok' : 'journal-evidence-unreadable',
     };
   } catch {
-    return { entries, check: 'journal-evidence-unreadable' };
+    return {
+      entries,
+      check: scan.readable ? 'ok' : 'journal-evidence-unreadable',
+      unreadableEvidence: 'receipts',
+    };
   }
 }

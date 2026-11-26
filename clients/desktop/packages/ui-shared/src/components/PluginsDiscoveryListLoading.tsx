@@ -1,4 +1,4 @@
-import { Stack } from './Stack';
+import { Stack } from '../primitives/Stack';
 import type { JSX } from 'react';
 import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
 

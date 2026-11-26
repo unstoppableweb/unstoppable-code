@@ -6,7 +6,6 @@ import {
   DialogModal,
   ErrorBanner,
   Heading,
-  LoadingButton,
   OverlayScrollArea,
 } from '@canopy/ui-shared/components';
 import {
@@ -199,7 +198,7 @@ export function CloudCopyConsentDialog({
             <Button variant="ghost" disabled={adding} onClick={onClose}>
               Cancel
             </Button>
-            <LoadingButton
+            <Button
               variant="primary"
               disabled={!ready}
               loading={adding}
@@ -210,7 +209,7 @@ export function CloudCopyConsentDialog({
               data-testid="cloud-copy-consent-add"
             >
               {action}
-            </LoadingButton>
+            </Button>
           </div>
         </div>
       }

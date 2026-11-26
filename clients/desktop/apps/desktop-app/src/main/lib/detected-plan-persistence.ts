@@ -1,11 +1,12 @@
 import { isUtf8 } from 'node:buffer';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type {
   DetectedPlanEntry,
   DetectedPlanStatus,
   DetectedPlansFile,
 } from '@canopy/desktop-shared/types';
+import { writeFileAtomically } from './atomic-file';
 import { resolveDetectedPlansFilePath } from './resolve-worktree';
 import { isErrnoException, isRecord } from './type-guards';
 
@@ -108,7 +109,12 @@ async function writeDetectedPlansFile(
   }
 
   await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, JSON.stringify(file, null, 2), 'utf8');
+  // Install a complete sibling, so a failed save never leaves a torn file
+  // that the display read takes for an empty list.
+  await writeFileAtomically(filePath, JSON.stringify(file, null, 2), {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
 }
 
 export async function readDetectedPlans(

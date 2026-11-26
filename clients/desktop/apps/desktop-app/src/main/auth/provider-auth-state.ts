@@ -33,6 +33,10 @@ import {
 } from '../lib/e2e-mock-control-plane';
 import { readClaudeOauthPlanMetadata } from './claude-oauth-credentials';
 import { peekCursorRuntimeAvailability } from '../cursor/runtime-availability';
+import {
+  peekRemoteControlProviderSetup,
+  providerSetupForDestination,
+} from '../remote-projection/provider-setup-status';
 import { invalidateProviderAuthSessions } from '../agents/session-manager';
 import { invalidateCodexSpeedCatalog } from '../model-routing/codex-account-models';
 import { getObservabilityService } from '../observability';
@@ -1352,7 +1356,8 @@ export function peekClaudeAuthInconclusiveWithoutSignIn(): boolean {
 /**
  * Provider availability as projected to Portal worktree, App Advisor, and
  * Cowork chat surfaces: the native auth peek plus the managed Cursor runtime
- * state.
+ * state, and `setup`, the reason each managed-runtime provider is or isn't
+ * ready.
  *
  * Cursor is not an auth probe. The key reports whether the managed runtime is
  * connected (supported, enabled, installed) as last observed by the shared
@@ -1360,8 +1365,14 @@ export function peekClaudeAuthInconclusiveWithoutSignIn(): boolean {
  * of {@link peekProviderNativeAuthAvailability} on purpose: that peek is read
  * by provider-keyed billing/routing code that treats `false` as a confirmed
  * native logout.
+ *
+ * `destination` says whether the catalog projected beside it carries
+ * Antigravity; one that doesn't (App Advisor, bot projects) gets no
+ * Antigravity setup reason.
  */
-export function peekRemoteControlProviderAvailability(): RemoteControlChatProviderAvailability {
+export function peekRemoteControlProviderAvailability(
+  destination: { readonly antigravity: boolean } = { antigravity: true },
+): RemoteControlChatProviderAvailability {
   const availability = peekProviderNativeAuthAvailability();
   availability.antigravity = getAntigravityModelEntries().length > 0;
   const opencode = peekOpenCodeRuntimeAvailability();
@@ -1370,6 +1381,12 @@ export function peekRemoteControlProviderAvailability(): RemoteControlChatProvid
   if (copilot !== undefined) availability.copilot = copilot;
   const cursor = peekCursorRuntimeAvailability();
   if (cursor !== undefined) availability.cursor = cursor;
+  // Why a managed provider without rows is missing, so pickers can say so.
+  const setup = providerSetupForDestination(
+    peekRemoteControlProviderSetup(availability),
+    destination,
+  );
+  if (Object.keys(setup).length > 0) availability.setup = setup;
   return availability;
 }
 

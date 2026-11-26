@@ -5,6 +5,14 @@ import type { ChatTabsFile } from '@canopy/desktop-shared/types';
 import type * as DesktopSharedTypesModule from '@canopy/desktop-shared/types';
 import type { ChildToolLiveness } from '@canopy/agent-transcript';
 import type * as AiCreditsRoutingModule from '../agents/ai-credits-routing';
+import type {
+  GatewayModelEntry,
+  WorkOwner,
+} from '@canopy/protocol/llm-gateway';
+import {
+  managedAiCreditsChildValues,
+  managedAiCreditsAttributionHeaders,
+} from '@canopy/core-runtime/node/pipeline/host';
 import type * as ClaudeModAdmissionLaunchModule from '../agents/claude-mod-admission-launch';
 import type * as LedgerToolsRuntimeModule from '../canopy-tools/ledger-tools-runtime';
 import type * as PreferencesStoreModule from '../lib/preferences-store';
@@ -15,6 +23,12 @@ import {
   updatePreferencesFile,
 } from '../lib/preferences-store';
 import type * as WorkOwnerModule from '../agents/work-owner';
+import * as preferencesStore from '../lib/preferences-store';
+import * as modelPolicyState from '../lib/model-policy-state';
+import * as modelGatewayState from '../lib/model-gateway-state';
+import * as cloudAccountStore from '../lib/canopy-cloud-account-store';
+import * as gatewayAvailability from '@canopy/execution-engine/lib/gateway-model-availability';
+import { getCodexGatewayProxyService } from '../agents/codex-gateway-proxy-service';
 import type { AccountProxySessionRoute } from '../account-proxy/routing';
 import type { CanopyWorktreeSessionRoute } from '../mcp/http-proxy-service';
 import type {
@@ -90,12 +104,17 @@ jest.mock('../account-proxy/switch-events', () => ({
 jest.mock('../account-proxy/routing', () => ({
   resolveAccountProxySessionRoute:
     (): Promise<AccountProxySessionRoute | null> => Promise.resolve(null),
+  previewAccountProxySessionRoute: (): Promise<null> => Promise.resolve(null),
 }));
 jest.mock('../lib/preferences-store', () => ({
   ...jest.requireActual<typeof PreferencesStoreModule>(
     '../lib/preferences-store',
   ),
   readLocalMemoryEnabledPreference: jest.fn(() => Promise.resolve(false)),
+  readPreferencesFileDetailed: jest.fn<
+    ReturnType<typeof PreferencesStoreModule.readPreferencesFileDetailed>,
+    Parameters<typeof PreferencesStoreModule.readPreferencesFileDetailed>
+  >(),
   readLatestPreferencesFile: jest.fn(() =>
     Promise.resolve(
       jest.requireActual<typeof PreferencesStoreModule>(
@@ -528,6 +547,291 @@ afterEach(() => {
   mockSpawnClaudeCodeProcessOffMain.mockReset();
   mockApprovalCheck.mockReset();
   mockResolveClaudeCompatibleInvocation.mockReset();
+});
+
+describe('daemon AI Credits child configuration parity (CAN-6997)', () => {
+  const desktop = jest.requireActual<typeof AiCreditsRoutingModule>(
+    '../agents/ai-credits-routing',
+  );
+  const baseUrl = 'http://127.0.0.1:12345/codex-gateway/fixture';
+  const token = 'canopy-loopback-broker';
+  const routeSecret = 'fixture-route-secret';
+  const entry = (gatewayId: string): GatewayModelEntry => ({
+    modelId: 'fixture-model',
+    gatewayId,
+    family: 'anthropic',
+    recommendedHarness: 'claude',
+    gatewayOnly: false,
+    contextWindow: 200000,
+    supportsPromptCaching: true,
+    supportedThinkingLevels: [],
+    toolSchemaProfile: 'standard',
+  });
+
+  for (const guest of [false, true]) {
+    for (const model of ['anthropic/claude-sonnet', 'openai/gpt-fixture']) {
+      it(`matches desktop Claude settings (${model}, guest=${guest}) with attribution injected by the daemon`, () => {
+        const upstream = desktop.buildClaudeProxyEnvForBaseUrl(
+          entry(model),
+          token,
+          baseUrl,
+          undefined,
+          { guestPrincipal: guest },
+        );
+        const { ANTHROPIC_CUSTOM_HEADERS, ...env } = upstream;
+        expect(ANTHROPIC_CUSTOM_HEADERS).toBeTruthy();
+        expect(
+          managedAiCreditsChildValues({
+            harness: 'claude',
+            runtimeModel: model,
+            baseUrl,
+            authToken: token,
+            routeSecret,
+            guest,
+          }),
+        ).toEqual({
+          env: {
+            ...env,
+            ANTHROPIC_CUSTOM_HEADERS: `x-canopy-broker-secret: ${routeSecret}`,
+          },
+        });
+      });
+    }
+  }
+
+  it('matches the desktop Codex provider block, with no upstream key or child-controlled attribution', () => {
+    const upstream = desktop.buildCodexProxyConfigObject(
+      entry('openai/gpt-fixture'),
+      baseUrl,
+    );
+    const providers = upstream.model_providers;
+    if (!providers || typeof providers !== 'object' || Array.isArray(providers))
+      throw new Error('Desktop model providers were not configured.');
+    const provider = providers.canopy_ai_credits;
+    if (
+      !provider ||
+      typeof provider !== 'object' ||
+      Array.isArray(provider) ||
+      typeof provider.name !== 'string'
+    )
+      throw new Error('Desktop AI Credits provider was not configured.');
+    const { http_headers, ...providerSettings } = provider;
+    expect(http_headers).toBeTruthy();
+    expect(
+      managedAiCreditsChildValues({
+        harness: 'codex',
+        runtimeModel: 'openai/gpt-fixture',
+        baseUrl,
+        authToken: token,
+        routeSecret,
+        guest: false,
+        providerName: provider.name,
+      }),
+    ).toEqual({
+      env: { CANOPY_MODEL_BROKER_SECRET: routeSecret },
+      codexConfig: {
+        ...upstream,
+        model_providers: {
+          canopy_ai_credits: {
+            ...providerSettings,
+            env_key: 'CANOPY_MODEL_BROKER_SECRET',
+          },
+        },
+      },
+    });
+  });
+
+  it.each<WorkOwner>([
+    { kind: 'personal' },
+    {
+      kind: 'organization',
+      organizationId: '11111111-2222-4333-8444-555555555555',
+    },
+  ])('matches desktop attribution for %j, including Unicode names', (owner) => {
+    const attribution = {
+      workspaceName: 'Work / España',
+      worktreeName: 'branch & notes',
+      organizationProjectId: 'project-1',
+    };
+    const serializedOwner =
+      owner.kind === 'personal' ? 'personal' : `org:${owner.organizationId}`;
+    expect(
+      managedAiCreditsAttributionHeaders(serializedOwner, attribution),
+    ).toEqual(
+      Object.fromEntries(
+        desktop.attributionHeaderPairs({ ...attribution, workOwner: owner }),
+      ),
+    );
+  });
+
+  describe('managed launch inspection uses the desktop decision path', () => {
+    let mode: 'off' | 'on' | 'on-quota';
+    let unreadable: boolean;
+    let blocked: boolean;
+    let degraded: boolean;
+    let gatewayOnly: boolean;
+    beforeEach(() => {
+      mode = 'on';
+      unreadable = false;
+      blocked = false;
+      degraded = false;
+      gatewayOnly = false;
+      jest
+        .mocked(preferencesStore.readPreferencesFileDetailed)
+        .mockImplementation(() =>
+          Promise.resolve({
+            authority: unreadable ? 'unreadable' : 'ok',
+            preferences: {
+              ...preferencesStore.DEFAULT_PREFERENCES,
+              aiCreditsRoutingMode: mode,
+            },
+          }),
+        );
+      jest
+        .spyOn(modelGatewayState, 'getModelGatewayRequirementForOwner')
+        .mockResolvedValue({ kind: 'unrestricted' });
+      jest
+        .spyOn(modelGatewayState, 'readLocalModelGatewayProjectionStatus')
+        .mockResolvedValue({ ok: true, projection: null });
+      jest
+        .spyOn(modelGatewayState, 'checkModelGatewayRoute')
+        .mockResolvedValue({ ok: true, orgRoute: false });
+      jest
+        .spyOn(modelPolicyState, 'readModelPolicyDecision')
+        .mockImplementation(() => Promise.resolve({ blocked, degraded }));
+      jest
+        .spyOn(modelPolicyState, 'isStoredModelPolicyReadDegraded')
+        .mockReturnValue(false);
+      jest
+        .spyOn(modelPolicyState, 'readOrgModelPolicyActivityForStoredAccount')
+        .mockResolvedValue({ active: true, degraded: false });
+      jest
+        .spyOn(cloudAccountStore, 'isCanopyCloudAccountReadDegraded')
+        .mockReturnValue(false);
+      jest
+        .spyOn(gatewayAvailability, 'resolveGatewayModelEntry')
+        .mockImplementation(() => ({
+          ...entry('anthropic/claude-sonnet'),
+          gatewayOnly,
+        }));
+      jest
+        .spyOn(gatewayAvailability, 'isUnavailableModelSelection')
+        .mockReturnValue(false);
+    });
+    afterEach(() => {
+      jest.restoreAllMocks();
+      desktop.clearAiCreditsRoutingModeCache();
+    });
+    const inspect = (
+      managed = true,
+      cachedMode = mode,
+    ): ReturnType<typeof desktop.inspectPipelineNativeRouting> => {
+      desktop.setAiCreditsRoutingModeCache(cachedMode);
+      return desktop.inspectPipelineNativeRouting(
+        'fixture-model',
+        'claude',
+        { workOwner: { kind: 'personal' }, environmentRuntime: 'pipeline' },
+        managed,
+      );
+    };
+    it('admits explicit every-attempt credits, with the resolved gateway model and governance', async () => {
+      await expect(inspect()).resolves.toEqual({
+        kind: 'ai-credits',
+        runtimeModel: 'anthropic/claude-sonnet',
+        governed: true,
+      });
+      await expect(inspect(false)).resolves.toEqual({
+        kind: 'app-dependent',
+        reason: 'ai-credits',
+      });
+    });
+    it('preserves governed native launches when credits are off', async () => {
+      mode = 'off';
+      await expect(inspect()).resolves.toEqual({
+        kind: 'native',
+        governed: true,
+      });
+    });
+    it('does not freeze conditional on-quota consent into a surviving paid route', async () => {
+      mode = 'on-quota';
+      await expect(inspect()).resolves.toEqual({
+        kind: 'app-dependent',
+        reason: 'ai-credits',
+      });
+    });
+    it('does not admit unreadable consent', async () => {
+      unreadable = true;
+      await expect(inspect()).resolves.toEqual({
+        kind: 'app-dependent',
+        reason: 'unknown',
+      });
+      expect(preferencesStore.readPreferencesFileDetailed).toHaveBeenCalled();
+    });
+    it('does not reuse cached paid consent after the authoritative choice is off', async () => {
+      mode = 'off';
+      await expect(inspect(true, 'on')).resolves.toEqual({
+        kind: 'native',
+        governed: true,
+      });
+      jest.mocked(getCodexGatewayProxyService).mockClear();
+      await expect(
+        desktop.resolveAiCreditsRoutingOverride(
+          'fixture-model',
+          'claude',
+          undefined,
+          'native-admission',
+          { workOwner: { kind: 'personal' }, environmentRuntime: 'pipeline' },
+        ),
+      ).resolves.toBeNull();
+      expect(getCodexGatewayProxyService).not.toHaveBeenCalled();
+    });
+    it('honors authoritative paid consent despite a stale off cache', async () => {
+      await expect(inspect(true, 'off')).resolves.toEqual({
+        kind: 'ai-credits',
+        runtimeModel: 'anthropic/claude-sonnet',
+        governed: true,
+      });
+    });
+    it.each(['blocked', 'unknown'] as const)(
+      'does not admit %s policy',
+      async (state) => {
+        blocked = state === 'blocked';
+        degraded = state === 'unknown';
+        await expect(inspect()).resolves.toEqual({
+          kind: 'app-dependent',
+          reason: 'policy',
+        });
+      },
+    );
+    it('does not admit policy whose activity re-read fails after the first read succeeds', async () => {
+      mode = 'off';
+      // A concurrent successful read may already have cleared the shared
+      // degraded flag; the probe's own failed read still counts.
+      jest
+        .mocked(modelPolicyState.readOrgModelPolicyActivityForStoredAccount)
+        .mockResolvedValue({ active: false, degraded: true });
+      await expect(inspect()).resolves.toEqual({
+        kind: 'app-dependent',
+        reason: 'policy',
+      });
+    });
+    it('keeps a mandatory gateway app-dependent rather than bypassing it', async () => {
+      jest
+        .mocked(modelGatewayState.getModelGatewayRequirementForOwner)
+        .mockResolvedValue({ kind: 'enforced', organizationIds: ['org-1'] });
+      await expect(inspect()).resolves.toEqual({
+        kind: 'app-dependent',
+        reason: 'gateway',
+      });
+    });
+    it('does not mislabel a gateway-only model as a managed credits route', async () => {
+      gatewayOnly = true;
+      await expect(inspect()).resolves.toEqual({
+        kind: 'app-dependent',
+        reason: 'gateway',
+      });
+    });
+  });
 });
 
 describe.each(['claude', 'ollama'] as const)(

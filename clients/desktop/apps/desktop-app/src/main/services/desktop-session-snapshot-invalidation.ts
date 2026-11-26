@@ -47,6 +47,7 @@ const STALE_REQUEST_KEYS = {
   'renderer.invalidate': 'request.renderer.invalidate',
   'worktree-setup.begin': 'request.worktree-setup.begin',
   'worktree-setup.end': 'request.worktree-setup.end',
+  'provider-setup.facts': 'request.provider-setup.facts',
 } as const;
 
 export type StaleSignalSource = keyof typeof STALE_REQUEST_KEYS;

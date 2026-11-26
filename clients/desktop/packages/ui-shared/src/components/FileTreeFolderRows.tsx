@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 import { FileTreeRow } from './FileTreeRow';
-import { Skeleton } from './Skeleton';
+import { Skeleton } from '../primitives/Skeleton';
 import {
   LOADING_PLACEHOLDER_DELAY_MS,
   useDelayedFlag,

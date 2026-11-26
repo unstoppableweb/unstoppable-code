@@ -7,6 +7,7 @@ import {
 } from '@canopy/desktop-shared/node';
 import { AUTOMATION_PIPELINE_LOCAL_CHANGES_MESSAGE } from '@canopy/desktop-shared/lib/automation-install';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
+import type { StoredPipelineInfo } from '@canopy/execution-engine/pipelines/store';
 import type {
   AutomationCapabilityPackageRequest,
   AutomationExistingPipelineInstall,
@@ -52,7 +53,7 @@ import {
   downloadAutomationCapabilityPackage,
   findReusableUnlinkedPipeline,
   listPackageInstalls,
-  recordInstalledPipelineMetadata,
+  recordInstalledPipelineOwner,
 } from './pipeline-package-service';
 import * as localPipelineService from './pipeline-service';
 
@@ -360,11 +361,18 @@ export async function installAutomationPipelines(
     request.packageRef.digest,
   );
   try {
+    const committed: StoredPipelineInfo[] = [];
     const response = await installPlannedAutomationPipelines(
       intent,
       await planAutomationPipelines(request, options),
+      committed,
     );
-    await intent.finish();
+    await intent.finish(
+      committed.map(({ id: definitionId, revision }) => ({
+        definitionId,
+        revision,
+      })),
+    );
     return response;
   } catch (error) {
     await intent.rollBack().catch((rollbackError: unknown) => {
@@ -387,6 +395,7 @@ interface AutomationPipelineInstallSession {
   readonly resources: ReadonlyMap<string, PackagedPipelineResource>;
   /** The keys Stage A planned to rewrite in place; others are only linked. */
   readonly rewrites: ReadonlySet<string>;
+  readonly committed: StoredPipelineInfo[];
 }
 
 const automationPipelineInstalls =
@@ -395,6 +404,7 @@ const automationPipelineInstalls =
 async function installPlannedAutomationPipelines(
   intent: PipelineInstallIntent,
   { packageDigest, packagePath, documents, plans }: PlannedAutomationPipelines,
+  committed: StoredPipelineInfo[],
 ): Promise<InstallAutomationPipelinesResponse> {
   const { importRemotePipeline } =
     await import('../canopy-runtime/pipeline-definition-dispatch');
@@ -402,6 +412,7 @@ async function installPlannedAutomationPipelines(
     intent,
     packageDigest,
     packagePath,
+    committed,
     resources: new Map(documents.map((document) => [document.key, document])),
     rewrites: new Set(
       documents
@@ -487,7 +498,8 @@ export async function readPackagedPipelineRemote(
     rawPipeline: document.rawPipeline,
     remoteVersion: document.pipelineContentHash,
     install: async (write) => {
-      const localPipelineId = await materializePipeline(
+      const localPipelineId = write.definitionId;
+      const written = await materializePipeline(
         document,
         write,
         session.rewrites.has(document.key),
@@ -515,6 +527,10 @@ export async function readPackagedPipelineRemote(
         getPipelinePackageInstallStorePath(),
         record,
       );
+      if (written) {
+        session.committed.push(written);
+        return written;
+      }
       const stored = localPipelineService.getPipeline(localPipelineId);
       if (!stored.success || !stored.data)
         throw new Error(
@@ -548,6 +564,10 @@ async function planPipelineInstall(
       // The recorded pipeline belongs to this automation's earlier install;
       // it must still be usable in the current context.
       await assertStoredPipelineContext(recorded.localPipelineId);
+      if (isPipelineDefinitionClaimed(recorded.localPipelineId))
+        throw new Error(
+          'An install for this workflow is still pending. Wait for it to finish or restart the app.',
+        );
       return current === document.pipelineContentHash
         ? { outcome: 'kept', localPipelineId: recorded.localPipelineId }
         : {
@@ -571,12 +591,15 @@ async function planPipelineInstall(
       install.packageDigest !== packageDigest ||
       install.pipelineContentHash !== document.pipelineContentHash ||
       taken.has(install.localPipelineId) ||
-      isPipelineDefinitionClaimed(install.localPipelineId) ||
       currentPipelineHash(install.localPipelineId) !==
         document.pipelineContentHash ||
       !(await canUsePipeline(install.localPipelineId))
     )
       continue;
+    if (isPipelineDefinitionClaimed(install.localPipelineId))
+      throw new Error(
+        'An install for this workflow is still pending. Wait for it to finish or restart the app.',
+      );
     return {
       outcome: 'reused',
       localPipelineId: install.localPipelineId,
@@ -611,7 +634,7 @@ async function materializePipeline(
    * exact-bytes check instead.
    */
   installFiles: (localPipelineId: string) => Promise<void>,
-): Promise<string> {
+): Promise<StoredPipelineInfo | null> {
   const localPipelineId = write.definitionId;
   if (write.replaces) {
     // Kept, or reused as it is: only linked, so an edit made since Stage A
@@ -625,7 +648,7 @@ async function materializePipeline(
       // No document is saved here, so the check comes before any file.
       assertStoredAsShared(localPipelineId, document);
       await installFiles(localPipelineId);
-      return localPipelineId;
+      return null;
     }
     // Rewrite in place, keeping the recipient's name, description and icon.
     const existing = localPipelineService.getPipeline(localPipelineId);
@@ -648,13 +671,13 @@ async function materializePipeline(
       content: write.pipeline,
       rawContent: write.text,
     });
-    if (!saved.success) {
+    if (!saved.success || !saved.data) {
       throw new Error(
         saved.error ?? `"${document.displayName}" could not be updated`,
       );
     }
-    await recordInstalledPipelineMetadata(localPipelineId, false, true);
-    return localPipelineId;
+    await recordInstalledPipelineOwner(localPipelineId, false);
+    return saved.data;
   }
   await intent.noteDefinition({
     definitionId: localPipelineId,
@@ -678,6 +701,6 @@ async function materializePipeline(
       saved.error ?? `"${document.displayName}" could not be saved`,
     );
   }
-  await recordInstalledPipelineMetadata(saved.data.id, true, true);
-  return saved.data.id;
+  await recordInstalledPipelineOwner(saved.data.id, true);
+  return saved.data;
 }

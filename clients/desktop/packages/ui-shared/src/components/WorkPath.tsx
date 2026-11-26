@@ -1,7 +1,7 @@
 import { Fragment } from 'react';
 import type { JSX } from 'react';
 import { ForwardIcon } from '../icons/AppIcons';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 
 export interface WorkPathPart {
   /** Stable React key. */

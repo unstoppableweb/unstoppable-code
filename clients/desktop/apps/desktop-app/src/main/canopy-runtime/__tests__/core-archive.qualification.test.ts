@@ -11,7 +11,10 @@ import {
   type CanopyCallerDescriptor,
   type WorktreeRecoveryFinishResult,
 } from '@canopy/protocol/canopy-core';
-import { worktreeRecoveryResolutionAction } from '@canopy/protocol/remote-control/shell/worktree-recovery';
+import {
+  worktreeRecoveryOfferedActions,
+  worktreeRecoveryResolutionAction,
+} from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import type {
   ArchivedContainerSummary,
   ArchivedContainerSummaryV1,
@@ -49,6 +52,9 @@ const caller = (
   interfaceKind: 'mcp',
   grants,
 });
+function unreachable(): never {
+  throw new Error('Expected a recovery entry');
+}
 const READ = caller([ARCHIVE_GRANTS.read]);
 const WRITE = caller([ARCHIVE_GRANTS.write]);
 const meta = (key: string): { idempotencyKey: string } => ({
@@ -953,8 +959,27 @@ persistenceIt(
         copies: 1,
         slot: 'absent',
         verdict: 'refused',
-        check: 'raw-active',
+        // CAN-7014 (q-26 2a): an ownerless `active` journal is a crash and is
+        // diagnosed like recovery-required; this fixture has no worktree list.
+        check: 'list-unreadable',
       });
+      // Nothing else can continue it, so the record can be set aside.
+      const [entry] = result.entries;
+      if (!entry) throw new Error('No entry');
+      expect(
+        worktreeRecoveryOfferedActions(entry, {
+          canResolve: true,
+          canSetAside: true,
+        }),
+      ).toEqual(['set-aside']);
+      // The adapter requires both capabilities, even if a host reports only
+      // Set aside. Never advertise a button that it would refuse locally.
+      expect(
+        worktreeRecoveryOfferedActions(entry, {
+          canResolve: false,
+          canSetAside: true,
+        }),
+      ).toEqual([]);
       expect(JSON.parse(await readFile(history, 'utf8'))).toEqual(journal);
       const slot = join(
         directory,
@@ -976,6 +1001,15 @@ persistenceIt(
         verdict: 'refused',
         check: 'conflicting-journal-copies',
       });
+      // q-31 a / CAN-7284: conflicting archive copies are explicitly excluded.
+      expect(
+        conflict.entries.map((entry) =>
+          worktreeRecoveryOfferedActions(entry, {
+            canResolve: true,
+            canSetAside: true,
+          }),
+        ),
+      ).toEqual([[]]);
       // Copy relevance is not decided by whichever filename sorts first.
       const firstCopy = history < slot ? history : slot;
       const secondCopy = history < slot ? slot : history;
@@ -996,6 +1030,16 @@ persistenceIt(
           verdict: 'refused',
           check: 'conflicting-journal-copies',
         });
+        // Explicit exclusions: settled/unfinished archive copies and mixed
+        // archive/delete copies, with the non-active copy first (CAN-7284).
+        expect(
+          listed.entries.map((entry) =>
+            worktreeRecoveryOfferedActions(entry, {
+              canResolve: true,
+              canSetAside: true,
+            }),
+          ),
+        ).toEqual([[]]);
         expect(JSON.parse(await readFile(firstCopy, 'utf8'))).toEqual(hidden);
         expect(JSON.parse(await readFile(secondCopy, 'utf8'))).toEqual(journal);
       }
@@ -1178,6 +1222,13 @@ persistenceIt(
         verdict: 'cleanup-debt',
         slot: 'other-operation',
       });
+      // CAN-7014: a child of a project deletion is never set aside.
+      expect(
+        worktreeRecoveryOfferedActions(before.entries[0] ?? unreachable(), {
+          canResolve: true,
+          canSetAside: true,
+        }),
+      ).toEqual(['finish']);
       const revision = before.entries[0]?.diagnosis?.revision;
       expect(revision).toBeDefined();
       const finish = (review: string): Promise<WorktreeRecoveryFinishResult> =>
@@ -1364,15 +1415,20 @@ persistenceIt(
   },
 );
 
-it.each([
-  { version: 2, listed: true, captureRefused: false },
-  { version: 2, listed: false, captureRefused: false },
-  { version: 3, listed: true, captureRefused: true },
-  { version: 3, listed: false, captureRefused: true },
-  { version: 3, listed: false, captureRefused: false },
-])(
-  'finishes a committed v$version cleanup tail with listed row=$listed and capture refusal=$captureRefused',
-  ({ version, listed, captureRefused }) =>
+it.each(
+  [
+    { version: 2, listed: true, captureRefused: false },
+    { version: 2, listed: false, captureRefused: false },
+    { version: 3, listed: true, captureRefused: true },
+    { version: 3, listed: false, captureRefused: true },
+    { version: 3, listed: false, captureRefused: false },
+  ].flatMap((shape) => [
+    { ...shape, state: 'recovery-required' },
+    { ...shape, state: 'active' },
+  ]),
+)(
+  'finishes a committed v$version cleanup tail with listed row=$listed and capture refusal=$captureRefused ($state)',
+  ({ version, listed, captureRefused, state }) =>
     runPersistenceFixture(async () => {
       const { mkdtemp, mkdir } = await import('node:fs/promises');
       const fixtureRoot = await mkdtemp(join(tmpdir(), 'finish-tail-'));
@@ -1410,7 +1466,8 @@ it.each([
         const { lifecycleJournalSlotName } =
           await import('../../lib/w5-destructive-recovery');
         const workspaceId = 'ws';
-        const worktreeId = `tail-v${version}-${listed}-${captureRefused}`;
+        // Tombstones live for the process lifetime, independent of the fixture data root.
+        const worktreeId = `tail-v${version}-${listed}-${captureRefused}-${state}`;
         const project = paths.getWorkspaceDir(workspaceId);
         await mkdir(project, { recursive: true });
         await writeFixtureFile(
@@ -1515,7 +1572,7 @@ it.each([
           worktreeId,
           createdAt: row.createdAt,
           directoryIdentity: `${stat.dev}:${stat.ino}:${stat.birthtimeMs}`,
-          state: 'recovery-required',
+          state,
           ownedPaths: [],
           steps: [
             ...(version === 3 && captureRefused
@@ -1767,6 +1824,38 @@ persistenceIt(
       const before = await query();
       expect(before.entries[0]?.diagnosis?.check).toBe(
         'completed-turn-diff-cleanup',
+      );
+      expect(
+        worktreeRecoveryOfferedActions(before.entries[0] ?? unreachable(), {
+          canResolve: true,
+          canSetAside: true,
+        }),
+      ).toEqual(['finish']);
+      // CAN-7014: refused cleanup (its worktree is listed again) still offers a button.
+      await writeFixtureFile(
+        paths.getWorkspaceWorktreesFilePath(workspaceId),
+        JSON.stringify({
+          version: 1,
+          worktrees: [
+            {
+              id: worktreeId,
+              branchName: 'feature/x',
+              createdAt: record.createdAt,
+            },
+          ],
+        }),
+      );
+      const refused = (await query()).entries[0] ?? unreachable();
+      expect(refused.diagnosis?.check).not.toBe('completed-turn-diff-cleanup');
+      expect(
+        worktreeRecoveryOfferedActions(refused, {
+          canResolve: true,
+          canSetAside: true,
+        }).length,
+      ).toBeGreaterThan(0);
+      await writeFixtureFile(
+        paths.getWorkspaceWorktreesFilePath(workspaceId),
+        JSON.stringify({ version: 1, worktrees: [] }),
       );
       const params = {
         workspaceId,
@@ -2368,6 +2457,28 @@ test('core.worktree.recovery.resolve grants no agent, foreign or ungranted resol
   ).rejects.toMatchObject({ payload: { kind: 'permission_denied' } });
 });
 
+test('core.worktree.recovery.setAside grants no agent or foreign authority (CAN-7014)', async () => {
+  const runtime = runtimeWith(fakeHost().host);
+  const request = {
+    workspaceId: 'ws',
+    operationId: '00000000-0000-4000-8000-000000007014',
+    revision: 'a'.repeat(64),
+  };
+  // An agent action caller holding the write grant.
+  await expect(
+    runtime.instruction('core.worktree.recovery.setAside', request, {
+      caller: caller(['core.worktree.write']),
+    }),
+  ).rejects.toMatchObject({ payload: { kind: 'permission_denied' } });
+  await expect(
+    runtime.instruction('core.worktree.recovery.setAside', request, {
+      caller: {
+        ...caller(['core.worktree.write'], 'foreign'),
+        interfaceKind: 'desktop',
+      },
+    }),
+  ).rejects.toMatchObject({ payload: { kind: 'permission_denied' } });
+});
 const RECOVERY_REVIEW_TARGET = {
   workspaceId: 'ws',
   operationId: '00000000-0000-4000-8000-000000006479',
@@ -2389,7 +2500,8 @@ const LOCAL_DESKTOP_REVIEWER: CanopyCallerDescriptor = {
 };
 type RecoveryReviewOperation =
   | 'core.worktree.recovery.resolve'
-  | 'core.worktree.recovery.finish';
+  | 'core.worktree.recovery.finish'
+  | 'core.worktree.recovery.setAside';
 type SettledReview =
   | { readonly settled: 'resolved'; readonly value: unknown }
   | { readonly settled: 'rejected'; readonly payload: unknown };
@@ -2424,6 +2536,7 @@ async function settleRecoveryReview(
 test.each([
   'core.worktree.recovery.resolve',
   'core.worktree.recovery.finish',
+  'core.worktree.recovery.setAside',
 ] as const)(
   '%s admits a granted remote bridge reviewer like the local desktop user (CAN-7444)',
   async (operation) => {
@@ -2482,6 +2595,7 @@ const NON_REVIEWER_BRIDGE_LOOKALIKES: ReadonlyArray<
 describe.each([
   'core.worktree.recovery.resolve',
   'core.worktree.recovery.finish',
+  'core.worktree.recovery.setAside',
 ] as const)('%s refuses remote-device callers off the bridge', (operation) => {
   test.each(NON_REVIEWER_BRIDGE_LOOKALIKES)(
     'refuses %s',

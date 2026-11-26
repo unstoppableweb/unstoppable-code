@@ -822,6 +822,13 @@ const narrowCollapsedSidePanels = new Map<
 /** True while the layout itself collapses or expands a Side Panel to fit. */
 let fittingSidePanelToWidth = false;
 /**
+ * How much wider than the width it folded at the grid must get before a
+ * folded Side Panel opens again. Without the gap a window held near that
+ * width, or a drag that wobbles by a pixel, opened and closed the panel on
+ * alternate frames.
+ */
+export const SIDE_PANEL_REOPEN_HYSTERESIS_PX = 48;
+/**
  * The grid width each layout was last fitted at. The Side Panel folds only as
  * the window narrows past the point the panels fit, so one opened in a narrow
  * window (by hand, or by a page opened into it) stays open. A maximized
@@ -862,7 +869,10 @@ function fitSidePanelToWidth(worktreeKey: string, width: number): void {
           narrowCollapsedSidePanels.delete(worktreeKey);
         }
       }
-    } else if (fold !== undefined && width >= fold.fitsAt) {
+    } else if (
+      fold !== undefined &&
+      width >= fold.fitsAt + SIDE_PANEL_REOPEN_HYSTERESIS_PX
+    ) {
       narrowCollapsedSidePanels.delete(worktreeKey);
       if (fold.reopen) {
         store.expandGroup(worktreeKey, FIXED_SIDE_PANEL_GROUP_ID, {
@@ -900,6 +910,16 @@ export function setSidePanelReopenWhenWide(
 ): void {
   const fold = narrowCollapsedSidePanels.get(worktreeKey);
   if (fold) fold.reopen = reopen;
+}
+
+/**
+ * The element an open or close animates, or none while the window's width is
+ * what folds or opens the Side Panel: that change follows the drag at once.
+ */
+function layoutAnimationRoot(
+  layout: WorktreePanelLayout | undefined,
+): HTMLElement | undefined {
+  return fittingSidePanelToWidth ? undefined : layout?.grid.element;
 }
 
 function forgetNarrowCollapse(worktreeKey: string, groupId: string): void {
@@ -3650,10 +3670,13 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
     },
 
     // Opening and closing a group slides the panels to their new places
-    // rather than jumping (`animatePanelLayoutChange`).
+    // rather than jumping (`animatePanelLayoutChange`), except when a window
+    // resize folds or opens the Side Panel: the grid lays out again on every
+    // frame of the drag, so a slide from the frame it started in ran against
+    // the window and sprang back when it ended.
     collapseGroup: (worktreeKey, groupId, options): boolean =>
       animatePanelLayoutChange(
-        get().layouts[worktreeKey]?.grid.element,
+        layoutAnimationRoot(get().layouts[worktreeKey]),
         (): boolean => {
           forgetNarrowCollapse(worktreeKey, groupId);
           const layout = get().layouts[worktreeKey];
@@ -3748,7 +3771,7 @@ export const usePanelLayoutStore = create<PanelLayoutState>((set, get) => {
 
     expandGroup: (worktreeKey, groupId, options): boolean =>
       animatePanelLayoutChange(
-        get().layouts[worktreeKey]?.grid.element,
+        layoutAnimationRoot(get().layouts[worktreeKey]),
         (): boolean => {
           forgetNarrowCollapse(worktreeKey, groupId);
           const layout = get().layouts[worktreeKey];

@@ -1,4 +1,5 @@
 import type { DeviceKind, DevicePlatform } from '@canopy/protocol/device-relay';
+import type { CloudProjectBinding } from '@canopy/protocol/memory-sync';
 import type { RemoteHostUpdateStatus } from '@canopy/protocol/remote-control';
 
 export type { RemoteHostUpdateStatus } from '@canopy/protocol/remote-control';
@@ -149,7 +150,7 @@ export type RemoteControlPairingEvent =
       deviceId: string;
       name: string;
       kind: DeviceKind;
-      method: 'link' | 'code';
+      method: 'link' | 'code' | 'expected';
     };
 
 /** `remote-control:install-id`: this computer's stable install identifier. */
@@ -171,6 +172,21 @@ export interface RemoteControlState {
   allowIncoming: boolean;
   /** Paired computers that control this one may install its updates. */
   allowRemoteUpdates: boolean;
+  /**
+   * Paired desktop computers that control this one may open its local web
+   * servers on localhost (CAN-7712). Off until turned on; an opt-out holds
+   * even if its save failed, and an opt-in counts once saved. It applies only while Allow incoming
+   * and the `canopy-remote-web-preview` flag are on.
+   */
+  allowWebPreview: boolean;
+  /**
+   * The saved web preview choice couldn't be read (a read error, a damaged
+   * file, or a directory in its place), and no choice has been made since:
+   * preview reads off, but the file may still hold an opt-in that a later
+   * read would find, so Settings offers to save off (CAN-7712). Local only;
+   * absent reads as false.
+   */
+  webPreviewChoiceUnread?: boolean;
   /**
    * This computer syncs its plugin, MCP and pipeline lists to the web while
    * Allow incoming is on (CAN-5986). Optional on the wire: hosts that
@@ -260,6 +276,52 @@ export const REMOTE_UPLOAD_MAX_BYTES = 240 * 1024 * 1024;
 export const REMOTE_UPLOAD_TOO_LARGE_MESSAGE =
   'File is too large to send to the other computer.';
 
+/**
+ * Why Connect Slack on this computer (`slack:connect-this-computer`,
+ * CAN-7606) did not finish.
+ *
+ * - `not_enabled`: Slack mentions are off for this app or account (always in
+ *   a local-only build); nothing was changed or sent.
+ * - `signed_out`: no account (or a guest) is signed in; nothing was sent.
+ * - `identity_changed`: the account changed while connecting.
+ * - The hosted Remote Control admission refusals, from the web:
+ *   `entitlement_denied`, `personal_account_required`, `feature_disabled`,
+ *   `hosted_pairing_busy`, `hosted_capacity`, `entitlement_unavailable`,
+ *   `device_relay_not_configured`, `forbidden` (this computer's relay device
+ *   is not this account's).
+ * - Pairing failures: `denied`, `offline`, `host_unsupported`, `timeout`
+ *   (also the 2-minute overall deadline), `failed`, `link_failed`.
+ * - `too_many_attempts`: too many unfinished connects for this account.
+ * - `browser_failed`: the signed-in Slack page could not be opened.
+ *
+ * A failure after Listen for Slack mentions and Allow incoming were turned
+ * on leaves both on.
+ */
+export type SlackConnectThisComputerFailure =
+  | 'not_enabled'
+  | 'signed_out'
+  | 'identity_changed'
+  | 'entitlement_denied'
+  | 'personal_account_required'
+  | 'feature_disabled'
+  | 'hosted_pairing_busy'
+  | 'hosted_capacity'
+  | 'entitlement_unavailable'
+  | 'device_relay_not_configured'
+  | 'forbidden'
+  | 'denied'
+  | 'offline'
+  | 'host_unsupported'
+  | 'timeout'
+  | 'failed'
+  | 'link_failed'
+  | 'too_many_attempts'
+  | 'browser_failed';
+
+export type SlackConnectThisComputerResult =
+  | { ok: true }
+  | { ok: false; reason: SlackConnectThisComputerFailure };
+
 export interface RemoteControlApi {
   /** Synchronous: which computer this window shows. */
   getContext(): RemoteControlContext;
@@ -273,6 +335,13 @@ export interface RemoteControlApi {
    */
   setAllowIncoming(allow: boolean): Promise<RemoteControlState>;
   setAllowRemoteUpdates(allow: boolean): Promise<RemoteControlState>;
+  /**
+   * This computer's web preview consent (CAN-7712). Turning it off resets
+   * every preview stream at once and ends, without resume, each session
+   * that carried preview data. Frames already handed to the relay may still
+   * drain until CAN-7715.
+   */
+  setAllowWebPreview(allow: boolean): Promise<RemoteControlState>;
   /**
    * This computer's inventory sync switch. Turning it off (after the user
    * confirms) deletes this computer's synced lists from the web for the
@@ -308,4 +377,169 @@ export interface RemoteControlApi {
   listDirectory(
     request: RemoteDirectoryListRequest,
   ): Promise<RemoteDirectoryListing>;
+  /**
+   * Connect Slack on this computer (CAN-7606): one click turns on Listen for
+   * Slack mentions and Allow incoming, pairs this computer for agents with no
+   * prompt when it isn't yet, and opens the browser signed in at Slack's
+   * sign-in. A second call while one runs joins it. Never throws for a
+   * refusal; resolves to its reason.
+   */
+  connectSlackThisComputer(): Promise<SlackConnectThisComputerResult>;
+}
+
+/** A computer's remote-control version, as the other computer sees it. */
+export interface PairedComputerVersion {
+  protocolVersion: number;
+  /** Shown to the user only. */
+  appVersion: string;
+}
+
+/**
+ * Why a paired computer and this one cannot work together in the main
+ * window until one of them updates (CAN-7761):
+ *
+ * - `computer-too-old`: the paired computer is below the one-window floor,
+ *   or predates the version check;
+ * - `computer-without-one-window`: it is at or above the floor but does not
+ *   serve the one-window mode on another protocol than this computer's;
+ * - `this-computer-older`: the paired computer is newer and no longer
+ *   serves this computer's protocol.
+ */
+export type PairedComputerUpdateReason =
+  | 'computer-too-old'
+  | 'computer-without-one-window'
+  | 'this-computer-older';
+
+/**
+ * Why a paired computer can't be reached from the main window right now,
+ * other than its version:
+ *
+ * - `not-paired`: this computer has no pairing with that device;
+ * - `remote-control-off`: Remote Control isn't running on this computer
+ *   (turned off, signed out);
+ * - `one-window-off`: the one-window switch is off on this computer;
+ * - `offline`: the computer isn't on the relay;
+ * - `ended`: it ended the session or withdrew access; nothing retries until
+ *   it is held again;
+ * - `error`: the connection failed and is being retried.
+ */
+export type PairedComputerUnavailableReason =
+  | 'not-paired'
+  | 'remote-control-off'
+  | 'one-window-off'
+  | 'offline'
+  | 'ended'
+  | 'error';
+
+/**
+ * A paired computer's connection as the main window sees it (CAN-7761).
+ * State only: the window decides what to show (CAN-7766, CAN-7770).
+ */
+export type PairedComputerState =
+  /** Nothing in this computer holds a connection to it. */
+  | { status: 'idle' }
+  | { status: 'connecting' }
+  | {
+      status: 'connected';
+      version: PairedComputerVersion;
+      /**
+       * The one-window capabilities it serves to this computer
+       * (`ONE_WINDOW_CAPABILITY_CHANNELS`); a feature whose capability is
+       * missing is off for that computer.
+       */
+      capabilities: string[];
+    }
+  | {
+      status: 'needs-update';
+      reason: PairedComputerUpdateReason;
+      /** Null when it predates the version check. */
+      computerVersion: PairedComputerVersion | null;
+      /** Its app version as it reports it, shown to the user. */
+      computerAppVersion: string;
+      thisComputerVersion: PairedComputerVersion;
+      /** The update one of the two can run, as the separate window shows it. */
+      update: RemoteHostUpdateStatus | null;
+    }
+  | {
+      status: 'unavailable';
+      reason: PairedComputerUnavailableReason;
+      message: string | null;
+    };
+
+/** What a paired computer sent, on its own subscription. */
+export type PairedComputerUpdate =
+  /** A push on one of the one-window channels, with that computer's ids. */
+  | { type: 'push'; channel: string; args: unknown[] }
+  /**
+   * A new handshake replaced a dropped session: pushes may have been
+   * missed, so read again what was read from it.
+   */
+  | { type: 'reconnected' };
+
+/** One window's hold on a paired computer's connection. */
+export interface PairedComputerHoldResult {
+  /** Pass to `release`; dead once the connection closes under it. */
+  holdId: string;
+  state: PairedComputerState;
+}
+
+/**
+ * Main → window: one paired computer's update or state change, sent only to
+ * windows that hold it. The preload splits these per computer.
+ */
+export type PairedComputerWindowEvent =
+  | ({ deviceId: string } & PairedComputerUpdate)
+  | { deviceId: string; type: 'state'; state: PairedComputerState };
+
+/**
+ * What this computer knows about one of its projects beyond its sidebar row,
+ * for matching it with a paired computer's copy (CAN-7766): the stored cloud
+ * binding, and each repository's address as a credential-free
+ * `https://<host>/<path>.git` (null for a repository with no usable origin).
+ */
+export interface PairedComputerLocalProjectFacts {
+  cloudBinding: CloudProjectBinding | null;
+  repositoryRemotes: (string | null)[];
+}
+
+/**
+ * The main window's API for a named paired computer (CAN-7761), beside the
+ * local IPC it keeps using unchanged. Each call names the computer by its
+ * relay device id and carries that computer's own local ids: strip a
+ * `computer-<deviceId>:` qualifier before calling (see
+ * `pairedComputerAddress` in the renderer). Main offers only the reviewed
+ * one-window channels the computer announced and refuses anything else.
+ * Installed in this computer's own windows only, never in a window showing
+ * another computer; the renderer reads it through its one-window switch.
+ */
+export interface PairedComputersApi {
+  /**
+   * Keeps the computer's connection open until released, the window closes,
+   * the computer is unpaired or the one-window switch turns off. Refused
+   * when the computer isn't paired or the switch is off.
+   */
+  hold(deviceId: string): Promise<PairedComputerHoldResult>;
+  release(holdId: string): Promise<void>;
+  /** Calls a one-window channel on a computer this window holds. */
+  invoke(deviceId: string, channel: string, args: unknown[]): Promise<unknown>;
+  /** Sends on a one-window channel; dropped when main refuses it. */
+  send(deviceId: string, channel: string, args: unknown[]): void;
+  getState(deviceId: string): Promise<PairedComputerState>;
+  /**
+   * This computer's facts for the projects named, by project id (CAN-7766);
+   * a project main can't read is left out. A local read, cached in main.
+   */
+  localProjectFacts(
+    projectIds: string[],
+  ): Promise<Record<string, PairedComputerLocalProjectFacts>>;
+  /** That computer's pushes and reconnects, and nothing from any other. */
+  onUpdate(
+    deviceId: string,
+    listener: (update: PairedComputerUpdate) => void,
+  ): () => void;
+  /** That computer's connection state changes. */
+  onStateChanged(
+    deviceId: string,
+    listener: (state: PairedComputerState) => void,
+  ): () => void;
 }

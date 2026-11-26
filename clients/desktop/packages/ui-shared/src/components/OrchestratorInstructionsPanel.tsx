@@ -2,9 +2,9 @@
 
 import type { JSX } from 'react';
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
-import { Heading } from './Heading';
-import { Stack } from './Stack';
-import { TextArea } from './Field';
+import { Heading } from '../primitives/Heading';
+import { Stack } from '../primitives/Stack';
+import { TextArea } from '../primitives/Field';
 
 export function OrchestratorInstructionsPanel({
   value,

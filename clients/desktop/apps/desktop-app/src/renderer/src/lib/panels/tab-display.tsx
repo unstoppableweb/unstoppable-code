@@ -37,7 +37,7 @@
  * render seams ARE the export surface (same posture as registry.tsx).
  */
 /* eslint-disable react-refresh/only-export-components */
-import { Dot } from '@canopy/ui-shared/components/Badge';
+import { Dot } from '@canopy/ui-shared/primitives/Badge';
 import { useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
 import type { PanelTabModel } from '@canopy/ui-shared/panels';
 import {
@@ -46,7 +46,6 @@ import {
   PanelChatTabQuestionMarker,
   PanelFillChatTabGlyph,
   PANEL_TAB_UNREAD_ATTRIBUTE,
-  usePanelTabPosition,
   usePanelTabStyle,
 } from '@canopy/ui-shared/components/panels';
 import {
@@ -457,7 +456,6 @@ function ChatPanelTabLeadingContent({
   // Read from the bar itself: a collapsed group's icon strip has no right
   // side, so it keeps the classic icon states.
   const fillTabs = usePanelTabStyle() === 'fill';
-  const tabPosition = usePanelTabPosition();
   const unread = tab?.unread === true;
   const unreadProps = unread
     ? {
@@ -485,7 +483,7 @@ function ChatPanelTabLeadingContent({
     );
   }
   // Fill tabs show the question on their right, so the slot keeps the
-  // tab's number rather than a busy spinner.
+  // chat icon rather than a busy spinner.
   if (
     showsBackgroundGlyph({
       backgroundTasks: background.tasks,
@@ -560,19 +558,14 @@ function ChatPanelTabLeadingContent({
       </span>
     );
   }
-  // Fill tabs (early access) number their chats by place in the strip
-  // instead of repeating the provider glyph on every tab.
-  if (fillTabs && tabPosition !== null) {
+  // Fill tabs (early access) show one chat icon on every chat tab instead of
+  // a provider glyph per tab.
+  if (fillTabs) {
     return <PanelFillChatTabGlyph busy={false} {...unreadProps} />;
   }
   const provider = resolveChatTabProvider(tab, defaultWorktreeModel);
   // Classic tabs color the glyph: status-amber is their unread indicator.
-  // Fill tabs show unread, plan review, and tool approval on the tab's right
-  // (see ChatPanelTabTrailing), and the glyph inherits the tab's ink:
-  // secondary at rest, primary when the tab is selected or hovered.
-  const glyphClassName = fillTabs
-    ? 'shrink-0'
-    : `shrink-0 ${unread ? OPERATIONAL_STATUS_COLORS.unread.foreground : 'fg-secondary'}`;
+  const glyphClassName = `shrink-0 ${unread ? OPERATIONAL_STATUS_COLORS.unread.foreground : 'fg-secondary'}`;
   return (
     <span
       className="inline-flex shrink-0 items-center"
@@ -584,7 +577,7 @@ function ChatPanelTabLeadingContent({
         <ModelProviderIcon
           provider={provider}
           size="xs"
-          tone={fillTabs ? 'inherit' : unread ? 'unread' : 'secondary'}
+          tone={unread ? 'unread' : 'secondary'}
           className="shrink-0"
         />
       ) : (

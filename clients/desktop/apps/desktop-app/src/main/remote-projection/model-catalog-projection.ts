@@ -52,6 +52,7 @@ import {
   resolveModelAlias,
 } from '@canopy/desktop-shared/types';
 import { isCursorHarnessEnabled } from '../cursor/feature-flag';
+import { peekProviderSetupFacts } from './provider-setup-status';
 import { isModelBlockedByCurrentPolicy } from '../lib/model-policy-state';
 import { getLastProjectedDefaultModel } from '../lib/default-model-lane-resolver';
 import { isModelExcludedByCurrentGatewayRequirement } from '../lib/model-gateway-state';
@@ -190,7 +191,14 @@ export function buildProjectedModelCatalog(
     for (const id of ANTIGRAVITY_MODELS)
       if (!excluded(id)) push(id, 'antigravity');
   }
-  if (options.cursor === true && isCursorHarnessEnabled()) {
+  // A host with no pinned Cursor runtime cannot connect it, so its
+  // placeholder row would ask for a connect that cannot happen. The provider
+  // availability's `setup.cursor` carries the reason instead.
+  if (
+    options.cursor === true &&
+    isCursorHarnessEnabled() &&
+    peekProviderSetupFacts('cursor')?.supported !== false
+  ) {
     for (const id of CURSOR_MODELS) {
       if (!excluded(id)) push(id, 'cursor');
     }

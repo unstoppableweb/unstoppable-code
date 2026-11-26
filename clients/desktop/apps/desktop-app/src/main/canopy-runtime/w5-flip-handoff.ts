@@ -2,6 +2,7 @@ import { toCanopyClientError } from '@canopy/core-client';
 import {
   canopyLaunchDetails,
   canopyDaemonRefusal,
+  canopyPathSharedWithAnotherAccount,
 } from '@canopy/core-client/node';
 import { getLinuxDaemonStartDiagnostics } from './electron-daemon-host';
 import { w5FailureDiagnostics } from '@canopy/core-runtime/node/w5/error-diagnostics';
@@ -160,15 +161,22 @@ export function startW5FlipHandoff(input: W5FlipHandoffInput): Promise<void> {
           reason: failure.reason,
           ...(failure.detail !== undefined && { detail: failure.detail }),
         };
+        const launchError =
+          failure.underlying instanceof W5AuthorityUnreachableError
+            ? (failure.underlying.cause ?? failure.underlying)
+            : (failure.underlying ?? failure);
         if (failure.reason === 'cancelled') noteElectronW5Handoff('cancelled');
         else
-          noteElectronW5Handoff('degraded', handoffFailureCode(failure.reason));
+          noteElectronW5Handoff(
+            'degraded',
+            // A restart alone can't help while another account can reach the folder.
+            canopyPathSharedWithAnotherAccount(launchError)
+              ? 'data_folder_shared'
+              : handoffFailureCode(failure.reason),
+          );
         if (failure.reason !== 'cancelled') {
-          const launchError =
-            failure.underlying instanceof W5AuthorityUnreachableError
-              ? (failure.underlying.cause ?? failure.underlying)
-              : (failure.underlying ?? failure);
-          // Content-free on every platform: the failing step, errno and port kind (CAN-7137).
+          // Content-free on every platform: the failing step, errno, port kind
+          // (CAN-7137) and any private-path cause (CAN-7917).
           const launch = {
             stage: failure.stage,
             errorKind: toCanopyClientError(launchError).payload.kind,

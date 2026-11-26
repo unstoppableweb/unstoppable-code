@@ -1,6 +1,6 @@
 import type { JSX, KeyboardEvent, MouseEvent } from 'react';
 import { RevertIcon } from '../icons/RevertIcon';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 
 export interface FileRevertButtonProps {
   onClick: () => void;

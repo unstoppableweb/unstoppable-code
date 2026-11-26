@@ -1,9 +1,9 @@
 import type { JSX, RefObject } from 'react';
-import { DialogModal } from './DialogModal';
-import { LoadingButton } from './LoadingButton';
-import { Surface } from './Surface';
+import { DialogModal } from '../primitives/DialogModal';
+import { Surface } from '../primitives/Surface';
 import { SharedContainerAcceptSummary } from './SharedContainerAcceptSummary';
 import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
+import { Button } from '../primitives/Button';
 
 export const SHARED_CONTAINER_INVITATION_ACCEPT_FAILED =
   "Couldn't accept this share. Try again.";
@@ -87,7 +87,7 @@ export function SharedContainerInvitationDialog({
         direction="row"
         className="items-center"
       >
-        <LoadingButton
+        <Button
           variant="ghost"
           size="sm"
           onClick={onRemove}
@@ -97,9 +97,9 @@ export function SharedContainerInvitationDialog({
           data-testid={`${TEST_ID}-remove`}
         >
           Remove share
-        </LoadingButton>
+        </Button>
         <span className="ml-auto flex items-center gap-2">
-          <LoadingButton
+          <Button
             variant="primary"
             size="sm"
             onClick={onAccept}
@@ -109,7 +109,7 @@ export function SharedContainerInvitationDialog({
             data-testid={`${TEST_ID}-accept`}
           >
             Accept and open
-          </LoadingButton>
+          </Button>
         </span>
       </Surface>
     </DialogModal>

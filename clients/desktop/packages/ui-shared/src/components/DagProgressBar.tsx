@@ -1,9 +1,10 @@
-import { ControlButton } from './Button';
-import { Badge, type BadgeTone } from './Badge';
+import { ControlButton } from '../primitives/Button';
+import { Badge, type BadgeTone } from '../primitives/Badge';
 import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -15,9 +16,13 @@ import {
   runStatusGlyphState,
   type StatusGlyphState,
 } from '../lib/status-glyph';
-import { StatusGlyph } from './StatusGlyph';
-import { ProgressSteps } from './Progress';
-import { RichHoverTooltip } from './RichHoverTooltip';
+import { StatusGlyph } from '../primitives/StatusGlyph';
+import {
+  ProgressStageRule,
+  ProgressStepMark,
+  ProgressSteps,
+} from '../primitives/Progress';
+import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
 
 /**
  * Closed enumeration of DAG job statuses understood by the shared progress
@@ -283,35 +288,42 @@ function JobDot({
     </div>
   );
 
+  // The press stops here, past the card's own press handler, so it opens
+  // the job (or its card) without also reaching the row around the strip.
   return (
-    <RichHoverTooltip
-      content={detail}
-      // The job's card: the menu's corners and shadow, above the dot and
-      // below it when there is no room.
-      elevation="menu"
-      surfacePadding="card"
-      surfaceClassName="min-w-45 max-w-55"
-      dataTestId={`dag-job-detail-${job.jobId}`}
+    <span
+      className="contents"
+      onClick={(e: MouseEvent<HTMLSpanElement>): void => e.stopPropagation()}
     >
-      <ControlButton
-        type="button"
-        data-job-id={job.jobId}
-        onClick={(e: MouseEvent<HTMLButtonElement>): void => {
-          e.stopPropagation();
-          onJobClick?.(job.jobId);
-        }}
-        onKeyDown={(e: KeyboardEvent<HTMLButtonElement>): void => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.stopPropagation();
-          }
-        }}
-        presentation="dag-job-dot"
-        data-status-glyph-state={jobGlyphState(job.status)}
-        aria-label={`${job.name}: ${job.status ?? 'pending'}`}
+      <RichHoverTooltip
+        content={detail}
+        // The job's card: the menu's corners and shadow, above the dot and
+        // below it when there is no room.
+        elevation="menu"
+        surfacePadding="card"
+        surfaceClassName="min-w-45 max-w-55"
+        dataTestId={`dag-job-detail-${job.jobId}`}
+        // A strip with nowhere to go (the read-only web run list) opens the
+        // card on press too, since a tap neither hovers nor, on iOS, focuses.
+        showOnPress={onJobClick === undefined}
       >
-        <StatusGlyph state={jobGlyphState(job.status)} size={12} />
-      </ControlButton>
-    </RichHoverTooltip>
+        <ControlButton
+          type="button"
+          data-job-id={job.jobId}
+          onClick={(): void => onJobClick?.(job.jobId)}
+          onKeyDown={(e: KeyboardEvent<HTMLButtonElement>): void => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.stopPropagation();
+            }
+          }}
+          presentation="dag-job-dot"
+          data-status-glyph-state={jobGlyphState(job.status)}
+          aria-label={`${job.name}: ${job.status ?? 'pending'}`}
+        >
+          <ProgressStepMark state={jobGlyphState(job.status)} />
+        </ControlButton>
+      </RichHoverTooltip>
+    </span>
   );
 }
 
@@ -345,6 +357,19 @@ function DagProgressBarInner({
     }
     return ids.join(',');
   }, [tiers, jobs]);
+
+  // A mark's width follows its state (the running comet is wider than a
+  // dot), so a status change can resize the strip without resizing the
+  // scroller or changing its tiers.
+  const markStateKey = useMemo(
+    (): string =>
+      tiers
+        .map((tier) =>
+          tier.map((jobId) => jobGlyphState(jobs[jobId]?.status)).join(','),
+        )
+        .join('|'),
+    [tiers, jobs],
+  );
 
   const recalcOverflow = useCallback((): void => {
     const el = scrollRef.current;
@@ -389,7 +414,15 @@ function DagProgressBarInner({
   useEffect(() => {
     scheduleOverflowMeasurement(recalcOverflow);
     return (): void => cancelOverflowMeasurement(recalcOverflow);
-  }, [tierStructureKey, recalcOverflow]);
+  }, [tierStructureKey, markStateKey, recalcOverflow]);
+
+  // The same change moves every mark after the one that changed, without
+  // resizing anything an open job card watches. Announce it as a scroll of
+  // the strip: the card re-anchors on scroll (it listens in the capture
+  // phase), so it stays on its mark while the run goes on.
+  useLayoutEffect(() => {
+    scrollRef.current?.dispatchEvent(new Event('scroll'));
+  }, [markStateKey]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -428,25 +461,24 @@ function DagProgressBarInner({
         {overflow.left && (
           <ScrollArrow direction="left" onClick={handleScrollLeft} />
         )}
+        {/* The same dots, spacing and stage rules as the drawer's
+            `DagProgressDots` (`ProgressSteps` dots), with each job a button
+            that opens its card. The 4px inset keeps focus rings and the
+            hover scale inside the scroller's clip. */}
         <div
           ref={scrollRef}
-          className="scrollbar-hide flex min-w-0 flex-1 items-center overflow-x-auto"
+          // min-h-5 fits the 12px running comet and the inset, so the strip
+          // keeps its height as jobs start and finish.
+          className="scrollbar-hide flex min-h-5 min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1"
         >
           {tiers.map((tier, tierIndex) => (
-            <div key={tierIndex} className="contents">
-              {tierIndex > 0 && (
-                <span className="px-px text-3xs leading-none fg-primary/15 select-none">
-                  &middot;
-                </span>
-              )}
-              <div
-                data-testid="dag-progress-tier"
-                // The tier chip is 18px tall (12px status glyphs inside 3px of
-                // padding), and its corner keeps the 24px `rounded-md`
-                // control's proportion at that height: `--radius-md` less 2px.
-                // The round glyphs inside carry no corner of their own to nest.
-                className="flex items-center gap-1.25 rounded-[calc(var(--radius-md)-2px)] bg-fg-primary/[0.025] px-1.5 py-0.75"
-              >
+            <span
+              key={tierIndex}
+              data-testid="dag-progress-tier"
+              className="inline-flex shrink-0 items-center gap-1.5"
+            >
+              {tierIndex > 0 && <ProgressStageRule />}
+              <span className="inline-flex items-center gap-1.5">
                 {tier.map((jobId) => {
                   const job = jobs[jobId] ?? {
                     jobId,
@@ -457,8 +489,8 @@ function DagProgressBarInner({
                     <JobDot key={jobId} job={job} onJobClick={onJobClick} />
                   );
                 })}
-              </div>
-            </div>
+              </span>
+            </span>
           ))}
         </div>
         {overflow.right && (
@@ -473,9 +505,9 @@ export const DagProgressBar = memo(DagProgressBarInner);
 
 /**
  * The progress bar inline, for the composer's background drawer rows: the
- * run's tiers as the shared {@link ProgressSteps}, with no tier chips,
- * popovers or clicks. Decorative: the row names the run's state, and its
- * inspector holds the full bar.
+ * same dots as {@link DagProgressBar}, drawn by the shared
+ * {@link ProgressSteps}, with no popovers or clicks. Decorative: the row is
+ * itself the control and names the run's state.
  */
 export const DagProgressDots = memo(function DagProgressDots({
   tiers,

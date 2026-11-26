@@ -1,7 +1,7 @@
-import { Stack } from './Stack';
+import { Stack } from '../primitives/Stack';
 import { useId, type JSX, type ReactNode } from 'react';
 import { PluginDetailSectionHeading } from './PluginDetailSectionHeading';
-import { Divider } from './Surface';
+import { Divider } from '../primitives/Surface';
 
 export interface PluginConnectionRouteSectionProps {
   /** Names the route, such as "<App> MCP server" or "Provider connections". */

@@ -18,6 +18,8 @@ import type {
   WorktreeRecoveryResolveResult,
   WorktreeRecoveryFinishParams,
   WorktreeRecoveryFinishResult,
+  WorktreeRecoverySetAsideParams,
+  WorktreeRecoverySetAsideResult,
   CatalogInvocableRow,
   CatalogInvocablesListParams,
   CoreChatVisualReadResult,
@@ -30,6 +32,7 @@ import type {
 } from '@canopy/protocol';
 import type { FeedbackReportClient } from '@canopy/protocol/feedback-report';
 import type { ProviderKeysClient } from './provider-keys-client';
+import type { HarnessSetupClient } from './harness-setup-client';
 import type { SharedMultiRepoClient } from './shared-multi-repo-client';
 import type {
   OnboardingTipsCommandMap,
@@ -144,6 +147,7 @@ import type {
   TurnFeedbackRateRequest,
 } from '@canopy/protocol/turn-feedback';
 import type { InstallUpdateEmailPreference } from '@canopy/protocol/account-notifications';
+import type { BotId } from '@canopy/protocol/chat-targets';
 import type { StarSourceRepositoryResult } from '@canopy/protocol/onboarding';
 import type {
   GitHubOriginRepository,
@@ -483,10 +487,12 @@ export interface QueryMap
    * The paired computer's Orchestrator chats, one row per tab in Work Entry
    * order, with each chat's open questions (CAN-5985). Served by clients
    * whose capabilities report `appAdvisorChats`; the Portal session carries
-   * the same rows in its shell state instead.
+   * the same rows in its shell state instead. `botId` names the Bot whose
+   * chats to list; missing or `app_advisor` is the Orchestrator, and adapters
+   * refuse any other Bot until the paired computer serves Bots (CAN-7400).
    */
   'appAdvisor.chats': {
-    args: Record<string, never>;
+    args: { readonly botId?: BotId };
     result: {
       readonly chats: readonly RemoteControlAppAdvisorChatSummary[];
       /**
@@ -733,6 +739,16 @@ export interface CommandMap
     result: ManagedDelegationExtendLifetimeLimitResult;
   };
   /**
+   * Re-check the selected computer's providers: it probes each one's runtime
+   * and sign-in, then pushes its fresh model catalog and provider
+   * availability (with each provider's setup state) to every surface. The
+   * reply carries nothing; the projections update.
+   */
+  'models.refresh': {
+    args: { readonly workspaceLocalId?: string };
+    result: void;
+  };
+  /**
    * Refresh the current provider account on the explicitly selected host and
    * answer its fresh quota projection (CAN-7433).
    */
@@ -970,6 +986,11 @@ export interface CommandMap
   'worktree.recovery.finish': {
     args: WorktreeRecoveryFinishParams;
     result: WorktreeRecoveryFinishResult;
+  };
+  /** CAN-7014: user-only; gated by `worktreeRecoverySetAside`. */
+  'worktree.recovery.setAside': {
+    args: WorktreeRecoverySetAsideParams;
+    result: WorktreeRecoverySetAsideResult;
   };
   'worktree.discard.describe': {
     args: RemoteControlWorktreeDiscardDescribePayload;
@@ -1257,7 +1278,7 @@ export interface CanopyClient {
    */
   readonly transcripts?: TranscriptReadClient;
   /**
-   * The External agents (MCP) pages' operations. Absent on hosts that do not
+   * The External agents pages' operations. Absent on hosts that do not
    * offer those pages; shared UI renders nothing for them when absent.
    */
   readonly externalAgents?: ExternalAgentsClient;
@@ -1276,6 +1297,12 @@ export interface CanopyClient {
    * the host reports `capabilities.providerApiKeys`.
    */
   readonly providerKeys?: ProviderKeysClient;
+  /**
+   * The computer's agent harness setup: provider runtimes, sign-ins and
+   * their progress (gap 1 of CAN-6718). Present only when the host reports
+   * `capabilities.harnessSetup`.
+   */
+  readonly harnessSetup?: HarnessSetupClient;
   /** Fixed capability set describing what this host can do. */
   readonly capabilities: CanopyCapabilities;
 

@@ -13,8 +13,9 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -46,6 +47,7 @@ import { RENDERER_GONE_MARKER } from './renderer-gone-marker.mjs';
 const currentFilePath = fileURLToPath(import.meta.url);
 const currentDirPath = path.dirname(currentFilePath);
 const repoRoot = path.resolve(currentDirPath, '../../../..');
+const execFileAsync = promisify(execFile);
 const REMOVE_OPTIONS = {
   recursive: true,
   force: true,
@@ -793,6 +795,324 @@ function readSupervisedPosixGroups(
   } catch {
     return null;
   }
+}
+
+export function w5StartupClaimIsQuiescent(userDataDir, stat = lstatSync) {
+  // Release removes the record under the guard (CAN-7161): order matters.
+  for (const name of ['startup-claim.json', 'startup-claim.guard']) {
+    try {
+      stat(path.join(userDataDir, 'runtime', name));
+      return false;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+  return true;
+}
+
+const PROCESS_STATE_ROW = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/;
+
+/** `ps` rows with run state; the environment matches `listPosixProcesses` so start times compare equal with the sidecar. */
+export async function listPosixProcessStates() {
+  const { stdout } = await execFileAsync(
+    'ps',
+    ['-axo', 'pid=,ppid=,pgid=,stat=,lstart='],
+    {
+      encoding: 'utf8',
+      env: { ...process.env, LC_ALL: 'C', LANG: 'C', TZ: 'UTC' },
+      timeout: 5_000,
+    },
+  );
+  return String(stdout)
+    .split('\n')
+    .flatMap((line) => {
+      const match = line.match(PROCESS_STATE_ROW);
+      if (!match) return [];
+      const [, pid, parentPid, pgid, state, startTime] = match;
+      return [
+        {
+          pid: Number(pid),
+          parentPid: Number(parentPid),
+          pgid: Number(pgid),
+          state,
+          startTime,
+        },
+      ];
+    });
+}
+
+const isStoppedOrExited = (row) => /^[TZ]/.test(row.state);
+const isZombie = (row) => row.state.startsWith('Z');
+
+/**
+ * Electron's process tree in one snapshot: its descendants by parent chain,
+ * every process seen in it before (`known`, by PID and start time, updated in
+ * place), every current process of a signalled group, and their descendants.
+ * A group is signalled when its leader is a member or it is an owned recorded
+ * group; any other member is signalled by PID, so a group the runtime does
+ * not own is never signalled. `null` once the root is not the recorded, live
+ * Electron.
+ */
+export function w5RuntimeTree(rows, tracking, known) {
+  const rootPid = tracking.root.pgid;
+  const rootRow = rows.find((row) => row.pid === rootPid);
+  if (
+    rootRow?.pgid !== rootPid ||
+    rootRow.startTime !== tracking.root.leaderStart ||
+    isZombie(rootRow)
+  )
+    return null;
+  const ownedGroups = new Set([rootPid]);
+  for (const group of tracking.groups)
+    if (posixProcessGroupIsOwned(group, rows)) ownedGroups.add(group.pgid);
+  // Every process a group signal reaches is a member, so it is verified too.
+  let members;
+  let byPid;
+  let groups;
+  for (;;) {
+    members = retainedTreeRows(
+      rows,
+      { pid: rootPid, startTime: rootRow.startTime },
+      known,
+    );
+    byPid = new Map(members.map((row) => [row.pid, row]));
+    groups = new Set(ownedGroups);
+    for (const row of members)
+      if (row.pgid === row.pid && row.pgid > 1) groups.add(row.pgid);
+    const joined = rows.filter(
+      (row) => groups.has(row.pgid) && !byPid.has(row.pid),
+    );
+    if (joined.length === 0) break;
+    for (const row of joined) known.set(row.pid, row.startTime);
+  }
+  const depths = new Map();
+  const depthOf = (row) => {
+    if (depths.has(row.pid)) return depths.get(row.pid);
+    depths.set(row.pid, 0);
+    const parent = row.pid === rootPid ? undefined : byPid.get(row.parentPid);
+    const depth = parent ? depthOf(parent) + 1 : 0;
+    depths.set(row.pid, depth);
+    return depth;
+  };
+  const targets = new Map();
+  for (const row of members) {
+    const byGroup = groups.has(row.pgid);
+    const key = byGroup ? `group:${row.pgid}` : `pid:${row.pid}`;
+    const target = targets.get(key) ?? {
+      key,
+      id: byGroup ? -row.pgid : row.pid,
+      isRoot: byGroup && row.pgid === rootPid,
+      depth: Infinity,
+      rows: [],
+    };
+    target.depth = Math.min(target.depth, depthOf(row));
+    target.rows.push(row);
+    targets.set(key, target);
+  }
+  return {
+    members,
+    targets: [...targets.values()],
+    identity: members
+      .map((row) => `${row.pid}:${row.startTime}`)
+      .sort()
+      .join(','),
+  };
+}
+
+/**
+ * W5 crash semantics (POSIX): no graceful daemon stop after Electron
+ * disconnects. Freezes the runtime tree (`w5RuntimeTree`) to a fixpoint,
+ * checks the startup claim while every claim-taker is stopped, then SIGKILLs
+ * the closed frozen set deepest target first, root group last, to keep a
+ * stopped group from being orphaned (and resumed by the kernel) before its
+ * own SIGKILL.
+ * Resolves once no frozen member is alive (zombies count as exited) and the
+ * claim is still absent. Any failure before the kill resumes every target it
+ * stopped and rethrows. Out of scope, as for `closeCanopy`'s reaper: a
+ * process that left the parent chain before any snapshot saw it and is in no
+ * signalled group.
+ */
+export async function crashW5SupervisedRuntime(
+  supervisedTreePid,
+  {
+    userDataDir,
+    trackedGroupsFile,
+    runNonce,
+    platform = process.platform,
+    // A negative id signals a process group.
+    signal = (id, name) => process.kill(id, name),
+    listProcessStates = listPosixProcessStates,
+    readFile = readFileSync,
+    claimIsQuiescent = () => w5StartupClaimIsQuiescent(userDataDir),
+    delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now = () => Date.now(),
+    deadlineMs = 5_000,
+    claimDeadlineMs = 10_000,
+    pollIntervalMs = 50,
+  },
+) {
+  // Windows taskkill /T already targets the descendant tree; it has no POSIX sidecar.
+  if (platform === 'win32')
+    return killProcessTree(supervisedTreePid, 'SIGKILL');
+
+  const fatal = new WeakSet();
+  const fail = (message, options) => {
+    const error = new Error(`W5 coordinated crash: ${message}`, options);
+    fatal.add(error);
+    return error;
+  };
+  // A rejected probe (a transient `ps` failure) is "not yet", never authority.
+  const until = async (check, message, timeoutMs = deadlineMs) => {
+    const deadline = now() + timeoutMs;
+    let lastError;
+    for (;;) {
+      try {
+        const value = await check();
+        if (value) return value;
+      } catch (error) {
+        if (fatal.has(error)) throw error;
+        lastError = error;
+      }
+      if (now() >= deadline)
+        throw new Error(
+          `W5 coordinated crash: ${typeof message === 'function' ? message() : message}`,
+          { cause: lastError },
+        );
+      await delay(Math.min(pollIntervalMs, deadline - now()));
+    }
+  };
+  const readTracking = () =>
+    readSupervisedPosixGroups(
+      supervisedTreePid,
+      trackedGroupsFile,
+      runNonce,
+      readFile,
+    );
+  const publishedDaemonPid = () => {
+    try {
+      const { pid } = JSON.parse(
+        readFile(path.join(userDataDir, 'runtime', 'core.json'), 'utf8'),
+      );
+      return Number.isInteger(pid) && pid > 1 ? pid : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const known = new Map();
+  // One snapshot of the tree, with the published daemon as a live member.
+  const snapshot = async () => {
+    const tracking = readTracking();
+    if (!tracking) return null;
+    const daemonPid = publishedDaemonPid();
+    const rows = await listProcessStates();
+    const tree = w5RuntimeTree(rows, tracking, known);
+    if (!tree) return null;
+    const daemon = tree.members.find((row) => row.pid === daemonPid);
+    return { tracking, rows, tree, daemon };
+  };
+  const noDaemon = 'published daemon is not a live descendant of Electron';
+
+  let unmet;
+  const first = await until(
+    async () => {
+      unmet = 'startup claim did not become quiescent';
+      if (!claimIsQuiescent()) return null;
+      unmet = noDaemon;
+      const current = await snapshot();
+      return current?.daemon && !isZombie(current.daemon) ? current : null;
+    },
+    () => unmet,
+    claimDeadlineMs,
+  );
+  const rootIdentity = {
+    pid: supervisedTreePid,
+    startTime: first.tracking.root.leaderStart,
+  };
+
+  // Every target this helper stopped, in signal order, for the rollback.
+  const stopped = new Map();
+  let frozen;
+  try {
+    let previousIdentity;
+    frozen = await until(async () => {
+      const current = await snapshot();
+      if (!current) return null;
+      const self = current.rows.find((row) => row.pid === process.pid);
+      if (
+        current.tree.targets.some(
+          (target) =>
+            target.rows.some((row) => row.pid === process.pid) ||
+            (self !== undefined && target.id === -self.pgid),
+        )
+      )
+        throw fail('the runtime tree holds the test process');
+      // Parents first: a running parent can exit and orphan a stopped
+      // child's group, which the kernel then resumes.
+      for (const target of [...current.tree.targets].sort(
+        (a, b) => a.depth - b.depth,
+      )) {
+        // Re-sent to a target with a running member: one may have joined it.
+        if (target.rows.every(isStoppedOrExited)) continue;
+        try {
+          signal(target.id, 'SIGSTOP');
+        } catch (error) {
+          if (error?.code !== 'ESRCH')
+            throw fail('SIGSTOP was refused', { cause: error });
+        }
+        if (!stopped.has(target.key)) stopped.set(target.key, target.id);
+      }
+      // Two consecutive snapshots with the same, all-stopped members: Linux
+      // reads /proc non-atomically, and completes a group stop on the
+      // target's own threads after kill() returns. A snapshot with a running
+      // member resets the count.
+      const allStopped = current.tree.members.every(isStoppedOrExited);
+      const settled = allStopped && current.tree.identity === previousIdentity;
+      previousIdentity = allStopped ? current.tree.identity : undefined;
+      return settled ? current : null;
+    }, 'runtime tree did not freeze');
+    if (!frozen.daemon || isZombie(frozen.daemon)) throw fail(noDaemon);
+    if (!claimIsQuiescent()) throw fail('startup claim held while frozen');
+  } catch (error) {
+    // No `ps` here: SIGCONT is a no-op for a running process, and each
+    // target was identity-checked just before its SIGSTOP.
+    for (const id of [...stopped.values()].reverse()) {
+      try {
+        signal(id, 'SIGCONT');
+      } catch (resumeError) {
+        if (
+          resumeError?.code !== 'ESRCH' &&
+          error instanceof Error &&
+          error.cleanupError === undefined
+        )
+          error.cleanupError = resumeError;
+      }
+    }
+    throw error;
+  }
+
+  // Point of no return, never resumed: one synchronous burst over the
+  // closed set, deepest first and the root group last.
+  const signalErrors = [];
+  for (const target of frozen.tree.targets
+    .filter((target) => !target.rows.every(isZombie))
+    .sort((a, b) => Number(a.isRoot) - Number(b.isRoot) || b.depth - a.depth)) {
+    try {
+      signal(target.id, 'SIGKILL');
+    } catch (error) {
+      if (error?.code !== 'ESRCH') signalErrors.push(error);
+    }
+  }
+  if (signalErrors.length > 0)
+    throw new AggregateError(
+      signalErrors,
+      'W5 coordinated crash: SIGKILL was refused',
+    );
+  await until(async () => {
+    const rows = await listProcessStates();
+    return retainedTreeRows(rows, rootIdentity, known).every(isZombie);
+  }, 'runtime survived SIGKILL');
+  if (!claimIsQuiescent())
+    throw new Error('W5 coordinated crash: startup claim held after the kill');
 }
 
 /**
@@ -2232,7 +2552,28 @@ export function packagedMainWindowRendererUrl(
 export function seedCaptureColorMode(userDataDir, env = process.env) {
   const colorMode = env.CANOPY_E2E_CAPTURE_COLOR_MODE;
   if (colorMode !== 'light' && colorMode !== 'dark') return;
-  const preferencesPath = path.join(userDataDir, 'preferences.json');
+  // A profile seeded since CAN-4472 reads colorMode from its client-local
+  // document, which wins over preferences.json.
+  seedPreferencesColorMode(
+    userDataDir,
+    path.join(userDataDir, 'client-preferences.json'),
+    colorMode,
+    { onlyIfPresent: true },
+  );
+  seedPreferencesColorMode(
+    userDataDir,
+    path.join(userDataDir, 'preferences.json'),
+    colorMode,
+  );
+}
+
+function seedPreferencesColorMode(
+  userDataDir,
+  preferencesPath,
+  colorMode,
+  { onlyIfPresent = false } = {},
+) {
+  if (onlyIfPresent && !existsSync(preferencesPath)) return;
   let persisted = {};
   if (existsSync(preferencesPath)) {
     try {
@@ -2281,8 +2622,12 @@ export function launchCanopy(options = {}) {
   );
 }
 
+export const DAEMON_LANE_RUNTIME_ROOT_ENV = 'CANOPY_E2E_LANE_RUNTIME_ROOT';
+
 export function resolveLaunchRuntimeRoot(rootPath) {
-  return path.resolve(rootPath ?? repoRoot);
+  return path.resolve(
+    rootPath ?? process.env[DAEMON_LANE_RUNTIME_ROOT_ENV] ?? repoRoot,
+  );
 }
 
 /**
@@ -2606,6 +2951,13 @@ async function launchCanopyUnmeasured(options) {
     killAbruptly: endingWithDaemonDryRunEvidence(
       electronApp,
       createAbruptTreeKiller(supervisedTreePid),
+    ),
+    crashW5Runtime: endingWithDaemonDryRunEvidence(electronApp, () =>
+      crashW5SupervisedRuntime(supervisedTreePid, {
+        userDataDir,
+        trackedGroupsFile: supervisedGroupsFile,
+        runNonce: supervisedRunNonce,
+      }),
     ),
   };
 }

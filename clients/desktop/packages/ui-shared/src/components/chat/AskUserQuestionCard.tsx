@@ -4,8 +4,8 @@
 // This module is display-only: NO stores, IPC, fetching, Electron, or Next
 // imports — hosts thread in the projected protocol state plus submit/dismiss
 // callbacks.
-import { ListRowFrame } from '../ListRow';
-import { Dot } from '../Badge';
+import { ListRowFrame } from '../../primitives/ListRow';
+import { Dot } from '../../primitives/Badge';
 import {
   memo,
   useCallback,
@@ -24,13 +24,18 @@ import type {
 } from '@canopy/protocol/remote-control/shell';
 import { validateQuestionControlAnswers } from '@canopy/protocol/remote-control/shell';
 import { MessagesSquare, ChevronDownMediumIcon } from '../../icons/AppIcons';
-import { ControlButton, Button } from '../Button';
-import { ChoiceField, ChoiceMark } from '../Choice';
-import { Kbd } from '../Kbd';
-import { Select, TextArea, TextInput, FieldError } from '../Field';
-import { Notice } from '../Notice';
-import { surfaceClassName } from '../Surface';
-import { isCoarsePointerNow } from '../useMediaQuery';
+import { ControlButton, Button } from '../../primitives/Button';
+import { ChoiceField, ChoiceMark } from '../../primitives/Choice';
+import { Kbd } from '../../primitives/Kbd';
+import {
+  Select,
+  TextArea,
+  TextInput,
+  FieldError,
+} from '../../primitives/Field';
+import { Notice } from '../../primitives/Notice';
+import { surfaceClassName } from '../../primitives/Surface';
+import { isCoarsePointerNow } from '../../primitives/useMediaQuery';
 import { QuestionProgress } from './QuestionProgress';
 import { QuestionOptionText } from './QuestionOptionText';
 import {
@@ -698,6 +703,8 @@ function AskUserQuestionCardImpl({
         handleSubmit();
       }}
       onKeyDown={(event) => {
+        // A TextArea that already submitted on Cmd+Enter prevents the default.
+        if (event.defaultPrevented) return;
         if (controlsDisabled || event.nativeEvent.isComposing || event.repeat)
           return;
         const target = event.target;

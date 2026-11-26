@@ -21,7 +21,7 @@ the notice and the archived state in.
 
 | Stage             | Story                                                                                                                    | Poster                     |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
-| button            | Cancel hovered, Create pull request hovered and pressed, busy (`LoadingButton`), done                                    | Busy                       |
+| button            | Cancel hovered, Create pull request hovered and pressed, busy (`Button loading`), done                                   | Busy                       |
 | list-row          | Hover travels down the chat list, a click moves the selection                                                            | New selection              |
 | markers           | No cursor: a run finishes, its `StatusGlyph` and `Badge` turn from running to passed                                     | Passed                     |
 | chip              | Chip hover, its remove control hovered, the chip folds out of the row                                                    | Remove hovered             |
@@ -99,7 +99,7 @@ Gate lines met and fixed on the way:
 Candidates left standing, all real component behavior, not stage faults (to
 be routed as follow-ups, not fixed in the lab):
 
-- `LoadingButton` swaps its idle, busy and done labels in one frame
+- `Button loading` swaps its idle, busy and done labels in one frame
   (`appears with no entrance` / `vanishes with no exit`) and shifts its label
   2 to 4px on press (button, fields, failures).
 - `CopyButton` with a label changes width by 35px on Copied in one frame, and

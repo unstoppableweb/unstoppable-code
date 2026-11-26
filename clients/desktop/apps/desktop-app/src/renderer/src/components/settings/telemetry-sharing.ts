@@ -7,11 +7,11 @@ import type {
 } from '@canopy/desktop-shared/types';
 // Narrow subpath, not the root barrel: this module is pure data consumed by the
 // settings tab's initial render, and the barrel drags every shared component
-// into the graph behind three constants.
+// into the graph behind a few small exports.
 import {
-  DATA_SHARING_SCOPE_DESCRIPTIONS,
   DATA_SHARING_SCOPE_LABELS,
   DATA_SHARING_SCOPE_ORDER,
+  dataSharingScopeRowHint,
 } from '@canopy/ui-shared/lib/data-sharing-features';
 
 /**
@@ -117,10 +117,7 @@ export const TELEMETRY_DATA_TYPES: readonly TelemetryDataTypeMeta[] =
     (key): TelemetryDataTypeMeta => ({
       key,
       label: DATA_SHARING_SCOPE_LABELS[key],
-      // Row hints on the Privacy page are fragments without a closing period,
-      // matching the Usage data rows above them. The shared vocabulary keeps
-      // its sentences for the org admin card.
-      description: DATA_SHARING_SCOPE_DESCRIPTIONS[key].replace(/\.$/, ''),
+      description: dataSharingScopeRowHint(key),
     }),
   );
 

@@ -173,7 +173,7 @@ export interface ModelAliasValidationContext {
 }
 
 export const AGENT_ALIAS_MODEL_SELECTION_ERROR =
-  "Choose a model or use the agent's model.";
+  "Choose a model or use the preset's model.";
 
 /**
  * Validate a resolved effective preference. Returns a human-readable error
@@ -185,7 +185,7 @@ export function validateEffectiveAliasPreference(
 ): string | undefined {
   const pref = effective.preference;
   if (!pref) {
-    return 'Choose a model or Agent for this alias.';
+    return 'Choose a model or model preset for this alias.';
   }
   if (pref.mode === 'inline') {
     if (!pref.base || pref.base.trim() === '') {
@@ -202,18 +202,18 @@ export function validateEffectiveAliasPreference(
   }
   // Agent mode.
   if (!pref.agent_id || pref.agent_id.trim() === '') {
-    return 'Agent is required.';
+    return 'Model preset is required.';
   }
   const agentId =
     parseAgentRouteModelId(pref.agent_id)?.agentId ?? pref.agent_id;
   if (!ctx.availableAgentIds.has(agentId)) {
-    return 'Agent is not available locally.';
+    return 'Model preset is not available locally.';
   }
   const parsed = parsePipelineAgentAliasRoute(pref);
   if (!parsed.ok) return AGENT_ALIAS_MODEL_SELECTION_ERROR;
   const route = parsed.route;
   if (ctx.isAgentRouteAvailable && !ctx.isAgentRouteAvailable(route))
-    return 'Agent model is not available locally.';
+    return "This preset's model is not available locally.";
   return undefined;
 }
 

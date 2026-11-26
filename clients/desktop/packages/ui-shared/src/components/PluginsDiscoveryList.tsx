@@ -6,7 +6,7 @@ import {
   memo,
   useCallback,
 } from 'react';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 import { TableActionButton } from './TableActions';
 import { DownloadIcon } from '../icons';
 import { ChevronRightMediumIcon } from '../icons/AppIcons';
@@ -34,9 +34,9 @@ import {
   marketplaceShareMenuItems,
   type CustomizeRowMenuItem,
 } from './CustomizeRowMenu';
-import { Heading } from './Heading';
-import { EmptyStateText } from './StatusBlocks';
-import { Divider } from './Surface';
+import { Heading } from '../primitives/Heading';
+import { EmptyStateText } from '../primitives/StatusBlocks';
+import { Divider } from '../primitives/Surface';
 
 /**
  * Sectioned discovery grid for the capability marketplace.
@@ -117,11 +117,11 @@ export interface PluginsEntryStatusBinding {
    */
   readonly removalScope?: string;
   /**
-   * Identifies the machine and project status changes act on, whatever the
-   * removal consent. A tile's failed status change and its Retry belong to
-   * it and are dropped when it changes. Omit when the scope cannot change.
+   * Dispatch authority for status outcomes and Retry. Hosts that can withdraw
+   * and regain authority should supply a fresh identity, not a reused key.
+   * Omit when the scope cannot change.
    */
-  readonly statusScope?: string;
+  readonly statusScope?: string | object;
 }
 
 interface PluginsEntryCardProps {

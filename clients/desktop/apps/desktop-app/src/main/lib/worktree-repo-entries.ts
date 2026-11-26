@@ -22,25 +22,35 @@ interface WorkspaceRepoEntries {
   entries: WorktreeRepoEntry[];
 }
 
+/** Reads one workspace's normalized manifest. */
+export type WorkspaceConfigReader = (
+  workspaceId: string,
+) => Promise<WorkspaceConfigFile>;
+
 async function loadWorkspaceWorktreeRepoEntries(
   workspaceId: string,
   worktreePath: string,
+  signal?: AbortSignal,
+  readConfig: WorkspaceConfigReader = readWorkspaceConfig,
 ): Promise<WorkspaceRepoEntries> {
   const emptyConfig: WorkspaceConfigFile = {
     version: 1,
     type: 'multi-repo',
     repos: [],
   };
-  const config = await readWorkspaceConfig(workspaceId).catch(
+  const config = await readConfig(workspaceId).catch(
     (): WorkspaceConfigFile => emptyConfig,
   );
-  return enumerateWorkspaceWorktreeRepoEntries(worktreePath, config);
+  return enumerateWorkspaceWorktreeRepoEntries(worktreePath, config, signal);
 }
 
+/** A `signal` stops the listing before each later read or Git launch. */
 async function enumerateWorkspaceWorktreeRepoEntries(
   worktreePath: string,
   config: WorkspaceConfigFile,
+  signal?: AbortSignal,
 ): Promise<WorkspaceRepoEntries> {
+  signal?.throwIfAborted();
   const repoNameById = new Map(
     config.repos.map((repo) => [repo.id, repo.name]),
   );
@@ -51,7 +61,14 @@ async function enumerateWorkspaceWorktreeRepoEntries(
       hasSourceRepo:
         config.type === 'multi-repo' && Boolean(config.sourceRepoPath),
     },
-    isGitRepo,
+    signal
+      ? async (directory): Promise<boolean> => {
+          signal.throwIfAborted();
+          const repo = await isGitRepo(directory, signal);
+          signal.throwIfAborted();
+          return repo;
+        }
+      : isGitRepo,
   );
   const repoEntries = repositories.map(
     (repository): WorktreeRepoEntry => ({
@@ -67,12 +84,25 @@ async function enumerateWorkspaceWorktreeRepoEntries(
   return { config, entries: repoEntries };
 }
 
+/**
+ * `readConfig` defaults to today's manifest read; only the read-cache
+ * readers (CAN-7835) pass their own. Worktree health keeps the default on
+ * purpose: it must agree with the daemon's reader on disk.
+ */
 export async function listWorkspaceWorktreeRepoEntries(
   workspaceId: string,
   worktreePath: string,
+  signal?: AbortSignal,
+  readConfig?: WorkspaceConfigReader,
 ): Promise<WorktreeRepoEntry[]> {
-  return (await loadWorkspaceWorktreeRepoEntries(workspaceId, worktreePath))
-    .entries;
+  return (
+    await loadWorkspaceWorktreeRepoEntries(
+      workspaceId,
+      worktreePath,
+      signal,
+      readConfig,
+    )
+  ).entries;
 }
 
 /** Stats phase enumeration uses its own normalized local config, not effective repos. */

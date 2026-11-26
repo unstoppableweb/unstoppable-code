@@ -1,6 +1,6 @@
 import { memo, useId, type JSX } from 'react';
-import { DownloadIcon, FileIcon } from '../../icons';
-import { ControlButton, Button } from '../Button';
+import { DownloadIcon, FileTypeIcon } from '../../icons';
+import { ControlButton, Button } from '../../primitives/Button';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 
 export interface FileDeliverableCardProps {
@@ -79,7 +79,12 @@ export const FileDeliverableCard = memo(function FileDeliverableCard({
   const descriptionId = useId();
   const details = (
     <>
-      <FileIcon size="xl" aria-hidden="true" />
+      {/* The type comes from the name, so it is blocked with it. */}
+      <FileTypeIcon
+        filename={filename}
+        size="xl"
+        className={REPLAY_BLOCK_CLASS}
+      />
       <span className="min-w-0 flex-1">
         <span
           id={nameId}

@@ -1,5 +1,5 @@
 import type { JSX, KeyboardEvent, MouseEvent, ReactNode } from 'react';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 
 export interface PlanActionButtonRowItem {
   /** Visible label. */

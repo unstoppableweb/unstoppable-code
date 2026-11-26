@@ -1,8 +1,8 @@
 import { useId, type JSX, type MouseEventHandler, type ReactNode } from 'react';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import { ControlButton } from './Button';
-import { Surface } from './Surface';
-import { Inline } from './Stack';
+import { ControlButton } from '../primitives/Button';
+import { Surface } from '../primitives/Surface';
+import { Inline } from '../primitives/Stack';
 
 export interface AttachmentItemRowContentProps {
   readonly filename: string;

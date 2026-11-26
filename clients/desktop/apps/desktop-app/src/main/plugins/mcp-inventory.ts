@@ -54,6 +54,7 @@ import type {
   McpServerRef,
 } from '@canopy/execution-engine/types/mcp-servers';
 import { normalizeMcpServerFile } from '@canopy/execution-engine/types/mcp-servers';
+import { accountMcpAccountName } from '@canopy/protocol/mcp-servers';
 import type {
   MarketplaceInfo,
   PluginInfo,
@@ -183,7 +184,9 @@ async function buildAccountEntry(
     type: 'http',
     serverId: connection.serverKey,
     configId: connection.configId,
-    configName: 'Default',
+    // The account's own name, so rows for several accounts of one server
+    // say which account each acts as.
+    configName: accountMcpAccountName(connection),
     collectionId: ref.collectionId,
     bundleId: ref.bundleId,
     enabled: true,
@@ -787,6 +790,10 @@ export async function listDetectedMcpServersForSelections(
   >();
 
   for (const ref of selections.mcpServerRefs ?? []) {
+    // A project's shared connection (CAN-6246) binds through its claim and
+    // the hosted proxy, never the person's own sign-ins, so it has no row
+    // here; the card lists it from the organization layer.
+    if (ref.owner?.type === 'organization') continue;
     standaloneRefs.set(`${ref.serverId}:${ref.configId}`, {
       ...ref,
       source: 'standalone',

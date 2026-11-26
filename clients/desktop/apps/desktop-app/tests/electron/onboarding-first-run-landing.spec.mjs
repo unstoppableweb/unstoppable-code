@@ -71,6 +71,25 @@ test('fresh user reaches the ordinary Home composer after the first-run page', a
 
     // Fresh launch shows the blocking first-run legal gate before the shell.
     await app.acceptLegalConsent();
+    // Accepting the pre-checked defaults saves the choices with the terms:
+    // Usage data on, activity sync left off, no onboarding decline.
+    const accepted = await window.evaluate(() => window.api.loadPreferences());
+    expect(accepted.dataChoicesConfirmedAt).toEqual(expect.any(String));
+    expect(accepted.usageData).toMatchObject({
+      productAnalytics: true,
+      sessionReplay: true,
+      errorReports: true,
+      activeUseSignal: true,
+      featureFlagIdentity: true,
+      skillSafetyCheck: true,
+    });
+    expect(accepted.usageAnalyticsDeclinedAtOnboarding).toBe(false);
+    expect(accepted.telemetrySharing).toEqual({
+      metadata: 'off',
+      plans: 'off',
+      summaries: 'off',
+      transcripts: 'off',
+    });
     await app.waitForShell();
     for (const directory of [fixture.gitApp, fixture.notes]) {
       await expect(
@@ -203,6 +222,81 @@ test('fresh user reaches the ordinary Home composer after the first-run page', a
     ).toHaveCount(0);
   } finally {
     await closeCanopy(second.electronApp, second.userDataDir);
+  }
+});
+
+// The Welcome gate's "What you share" card: Usage data pre-checked, activity
+// sync off, both saved with the terms in one Agree & continue.
+test('Welcome gate saves the What you share choices with the terms', async () => {
+  test.setTimeout(60_000);
+  const userDataDir = mkdtempSync(path.join(os.tmpdir(), 'canopy-electron-'));
+  const { electronApp } = await launchCanopy({
+    userDataDir,
+    freshOnboarding: true,
+  });
+  try {
+    const window = await electronApp.firstWindow();
+    const gate = window.getByTestId('legal-consent-gate');
+    await expect(gate).toBeVisible({ timeout: 30_000 });
+    const card = window.getByTestId('legal-consent-data-choices');
+    await expect(card).toBeVisible();
+    await expect(window.getByTestId('legal-consent-opt-in')).toBeVisible();
+    await expect(
+      window.getByTestId('legal-consent-group-usage-toggle'),
+    ).toHaveAttribute('aria-checked', 'true');
+    await expect(
+      window.getByTestId('legal-consent-group-activity-toggle'),
+    ).toHaveAttribute('aria-checked', 'false');
+    await expect(
+      window.getByTestId('legal-consent-activity-features'),
+    ).toBeVisible();
+
+    // Customize opens the Settings rows in place, with Skill safety check
+    // outside the group and one plain switch per activity type.
+    await window.getByTestId('legal-consent-customize').click();
+    await expect(card).toHaveAttribute('data-expanded', 'true');
+    await expect(
+      window.getByTestId('legal-consent-usage-data-row-skillSafetyCheck'),
+    ).toBeVisible();
+    await expect(
+      window.getByTestId('legal-consent-activity-row-transcripts'),
+    ).toBeVisible();
+
+    // Decline Usage analytics only: the group reads "Some on".
+    await window
+      .getByTestId('legal-consent-usage-data-toggle-productAnalytics')
+      .click();
+    await expect(
+      window.getByTestId('legal-consent-group-usage-toggle-mixed'),
+    ).toBeVisible();
+    // Turn activity sync on for every type.
+    await window.getByTestId('legal-consent-group-activity-toggle').click();
+    await expect(
+      window.getByTestId('legal-consent-group-activity-toggle'),
+    ).toHaveAttribute('aria-checked', 'true');
+
+    await window.getByTestId('legal-consent-checkbox').check();
+    await window.getByTestId('legal-consent-accept').click();
+    await expect(gate).toBeHidden({ timeout: 30_000 });
+
+    const saved = await window.evaluate(() => window.api.loadPreferences());
+    expect(saved.legalConsentAcceptedAt).toEqual(expect.any(String));
+    expect(saved.dataChoicesConfirmedAt).toBe(saved.legalConsentAcceptedAt);
+    expect(saved.usageData).toMatchObject({
+      productAnalytics: false,
+      errorReports: true,
+      skillSafetyCheck: true,
+    });
+    // Main derives the decline from the consent-accepting commit.
+    expect(saved.usageAnalyticsDeclinedAtOnboarding).toBe(true);
+    expect(saved.telemetrySharing).toEqual({
+      metadata: 'organization',
+      plans: 'organization',
+      summaries: 'organization',
+      transcripts: 'organization',
+    });
+  } finally {
+    await closeCanopy(electronApp, userDataDir);
   }
 });
 

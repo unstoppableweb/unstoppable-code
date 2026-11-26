@@ -56,7 +56,14 @@ export async function savePipelineEditorSnapshot(
     content: pipeline,
   });
   if (!result.success)
-    return { ok: false, error: result.error ?? 'Failed to save workflow' };
+    return {
+      ok: false,
+      // CAN-5782: only a person can confirm, on the workflow's page.
+      error:
+        result.scheduleRefusal === 'needs_confirmation'
+          ? `${result.error ?? ''} Ask the person to make this change from the workflow's page, where they can confirm it.`
+          : (result.error ?? 'Failed to save workflow'),
+    };
   return result.data
     ? { ok: true, saved: { kind: 'stored', info: result.data } }
     : { ok: true };

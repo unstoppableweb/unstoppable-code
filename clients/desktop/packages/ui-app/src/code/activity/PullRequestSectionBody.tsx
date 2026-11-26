@@ -1,11 +1,11 @@
 'use client';
 
 import { TextLink, ControlButton } from '@canopy/ui-shared/components';
-import { Badge, type BadgeTone } from '@canopy/ui-shared/components/Badge';
+import { Badge, type BadgeTone } from '@canopy/ui-shared/primitives/Badge';
 import {
   SPACE_ROLE_GAP_CLASS,
   type SpaceRole,
-} from '@canopy/ui-shared/components/Stack';
+} from '@canopy/ui-shared/primitives/Stack';
 import { useMemo, useState, type JSX, type ReactNode } from 'react';
 import {
   Stack,

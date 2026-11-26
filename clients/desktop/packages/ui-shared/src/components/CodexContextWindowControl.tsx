@@ -1,7 +1,7 @@
 import { useId, useRef, useState, type JSX } from 'react';
-import { FieldError, TextInput } from './Field';
-import { Notice, NoticeButton } from './Notice';
-import { SegmentedControl } from './SegmentedControl';
+import { FieldError, TextInput } from '../primitives/Field';
+import { Notice, NoticeButton } from '../primitives/Notice';
+import { SegmentedControl } from '../primitives/SegmentedControl';
 import { formatTokenCount } from '../lib/format-usage';
 
 /** `272k`: a window in the composer's lower-case `k`. */

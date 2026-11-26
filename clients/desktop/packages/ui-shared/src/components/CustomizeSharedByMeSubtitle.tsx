@@ -3,8 +3,8 @@ import { GlobeIcon } from '../icons/AppIcons';
 import type { CustomizeSharedByMeLine } from '../lib/customize-row-copy';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { SHARED_BY_YOU_PUBLIC_LINK_LABEL } from '../lib/shared-by-you';
-import { Badge } from './Badge';
-import { Tooltip } from './Tooltip';
+import { Badge } from '../primitives/Badge';
+import { Tooltip } from '../primitives/Tooltip';
 
 const SEPARATOR = ' · ';
 

@@ -1,7 +1,7 @@
 'use client';
 
 import type { JSX } from 'react';
-import { Button, type ButtonSize } from './Button';
+import { Button, type ButtonSize } from '../primitives/Button';
 import { useItemStateMarks } from './ItemStateMark';
 
 interface PluginConfigurationButtonProps {

@@ -16,15 +16,15 @@ import type {
   LedgerStatus,
 } from '@canopy/protocol/canopy-core';
 import { countLedgerCodePoints } from '../../lib/ledger-display';
-import { Button } from '../Button';
-import { TextArea, TextInput } from '../Field';
-import { Fieldset } from '../Fieldset';
-import { FORM_FIELD_LABEL_CLASS, FormField } from '../FormField';
-import { Notice } from '../Notice';
+import { Button } from '../../primitives/Button';
+import { TextArea, TextInput } from '../../primitives/Field';
+import { Fieldset } from '../../primitives/Fieldset';
+import { FORM_FIELD_LABEL_CLASS, FormField } from '../../primitives/FormField';
+import { Notice } from '../../primitives/Notice';
 import { LedgerEntryTypePicker } from './LedgerEntryTypePicker';
 import { LedgerStatusControl } from './LedgerStatusControl';
-import { Heading } from '../Heading';
-import { useMediaQuery } from '../useMediaQuery';
+import { Heading } from '../../primitives/Heading';
+import { useMediaQuery } from '../../primitives/useMediaQuery';
 
 /** The Ledger's limits, in code points and items. */
 export const LEDGER_FORM_LIMITS = {

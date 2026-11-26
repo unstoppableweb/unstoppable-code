@@ -45,6 +45,21 @@ export function createCoreWorktreeRecoveryAdapter(): DesktopDomainAdapter {
         await refreshRecoveryJournals().catch(() => undefined);
         return result;
       },
+      'core.worktree.recovery.setAside': async (params, context) => {
+        if (!isArchiveRecoveryReviewer(context.caller, { portal: true }))
+          throw new CanopyOperationError({
+            kind: 'permission_denied',
+            message: 'Setting an archive record aside requires a user review.',
+            retry: { kind: 'never' },
+          });
+        validateId(params.workspaceId, 'workspaceId');
+        assertWritableScope(params.workspaceId);
+        const result = await (
+          await import('../lib/worktree-recovery-set-aside')
+        ).setAsideWorktreeRecovery(params);
+        await refreshRecoveryJournals().catch(() => undefined);
+        return result;
+      },
     },
     queries: {
       'core.worktree.recovery.list': async (params, context) => {

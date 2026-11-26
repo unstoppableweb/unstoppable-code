@@ -101,6 +101,8 @@ export async function readAppAdvisorSettingsView(): Promise<RemoteControlAppAdvi
     instructions,
     archiveRetentionDays: settings.archiveRetentionDays ?? null,
     autoArchiveDays: settings.autoArchiveDays ?? null,
+    // Antigravity is left out on purpose: it cannot run App Advisor turns
+    // (the chat summaries and runtime admission exclude it the same way).
     availableModels: buildProjectedModelCatalog(preferences.appAdvisorModel, {
       cursor: true,
       owner: { kind: 'personal' },
@@ -111,7 +113,9 @@ export async function readAppAdvisorSettingsView(): Promise<RemoteControlAppAdvi
         APP_ADVISOR_PROJECT_ID,
       ),
     }),
-    providerAvailability: peekRemoteControlProviderAvailability(),
+    providerAvailability: peekRemoteControlProviderAvailability({
+      antigravity: false,
+    }),
     pluginCatalog,
     approvalsUpgradeNoticeDismissed:
       preferences.approvalsUpgradeNoticeDismissed,

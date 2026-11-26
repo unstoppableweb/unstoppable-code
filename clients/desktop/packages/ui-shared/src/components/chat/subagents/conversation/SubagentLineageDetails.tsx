@@ -1,4 +1,4 @@
-import { Button } from '../../../Button';
+import { Button } from '../../../../primitives/Button';
 import type { JSX } from 'react';
 import { type SubagentNode, type SubagentTree } from '@canopy/agent-transcript';
 import { ChatIcon, ChevronRightIcon } from '../../../../icons/AppIcons';
@@ -9,7 +9,7 @@ import {
   subagentStatusDetail,
 } from '../subagent-copy';
 import { REPLAY_MASK_CLASS } from '../../../../lib/replay-privacy';
-import { Heading } from '../../../Heading';
+import { Heading } from '../../../../primitives/Heading';
 
 export type SubagentLineageTarget =
   | { readonly kind: 'root'; readonly id: string; readonly title: string }

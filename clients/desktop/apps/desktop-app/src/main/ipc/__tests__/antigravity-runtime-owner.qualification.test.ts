@@ -1,8 +1,9 @@
 /**
  * The managed Antigravity CLI installs, verifies and reports its status
  * through one owner (antigravity-runtime:status, :host-support, :install,
- * :cancel and the :progress event), and install stays local-only under
- * remote control. Host support answers from the manifest alone. The
+ * :cancel and the :progress event), and all five tunnel under remote control,
+ * so a controller installs on the controlled computer. Host support answers
+ * from the manifest alone. The
  * download is the real installer against a fake GitHub release: a tiny tgz
  * whose sha256 and sha512 this test computes and pins into the artifact.
  */
@@ -25,6 +26,7 @@ import type { AntigravityRuntimeStatus } from '@canopy/desktop-shared/types/anti
 import { IPC_REMOTE_DISPOSITIONS } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import type * as Verification from '@canopy/desktop-shared/node/managed-runtime/verification';
 import { verifyManagedExecutable } from '@canopy/desktop-shared/node/managed-runtime/verification';
+import { isMirrored } from '../../remote-control/host/main-window-pushes';
 
 type Handler = (event: unknown, ...args: unknown[]) => unknown;
 const handlers = new Map<string, Handler>();
@@ -100,7 +102,7 @@ jest.mock('@canopy/desktop-shared/node/antigravity/runtime-resolution', () => ({
   resolveAntigravityExecutable: (): Promise<string> => {
     mockResolutions += 1;
     return Promise.reject(
-      new Error('Install Antigravity CLI 1.5.1, then refresh Google models.'),
+      new Error('Install Antigravity CLI 1.5.14, then refresh Google models.'),
     );
   },
 }));
@@ -308,7 +310,7 @@ afterEach(async () => {
 
 describe('Antigravity managed runtime owner', () => {
   it('installs the managed runtime and reports installed managed', async () => {
-    const served = await archive('#!/bin/sh\necho agy 1.5.1\n');
+    const served = await archive('#!/bin/sh\necho agy 1.5.14\n');
     pin(served);
     body = (): BodyInit => served.bytes;
 
@@ -320,7 +322,7 @@ describe('Antigravity managed runtime owner', () => {
       supported: true,
       installed: false,
       managed: false,
-      version: '1.5.1',
+      version: '1.5.14',
       phase: 'idle',
     });
 
@@ -333,10 +335,10 @@ describe('Antigravity managed runtime owner', () => {
       supported: true,
       installed: true,
       managed: true,
-      version: '1.5.1',
+      version: '1.5.14',
       phase: 'installed',
     });
-    expect(status.executable?.endsWith('/1.5.1/antigravity')).toBe(true);
+    expect(status.executable?.endsWith('/1.5.14/antigravity')).toBe(true);
     expect(phases()).toEqual(['downloading', 'verifying', 'installed']);
     expect(downloads).toBe(1);
 
@@ -372,7 +374,7 @@ describe('Antigravity managed runtime owner', () => {
 
     // No half-installed version directory or staging left behind, and the
     // first copy is untouched.
-    expect(readdirSync(mockRoot)).toEqual(['1.5.1']);
+    expect(readdirSync(mockRoot)).toEqual(['1.5.14']);
     await expect(
       verifyManagedExecutable(
         executable,
@@ -470,7 +472,160 @@ describe('Antigravity managed runtime owner', () => {
       managed: true,
       phase: 'installed',
     });
-    await expect(joined).resolves.toMatchObject({ phase: 'installed' });
+    // The gone window's own call ended when it went away (detached).
+    await expect(joined).resolves.toMatchObject({ detached: true });
+    expect(downloads).toBe(1);
+  });
+
+  // CAN-6718 review: install and cancel tunnel, so a controller that joined
+  // another window's install could abort it. A joined window's Cancel only
+  // detaches it: its own call answers at once, and the download continues
+  // for the window that started it.
+  it('a joined window’s cancel detaches it without stopping the install', async () => {
+    const served = await archive('#!/bin/sh\necho shared\n');
+    pin(served);
+    const release = stalledRelease(served);
+    const joiner = new FakeContents(nextWindow++);
+    mockWindows.add(joiner);
+    const started = invoke<AntigravityRuntimeStatus>(
+      IPC_CHANNELS.antigravityRuntimeInstall,
+      main,
+      'op-origin-2',
+    );
+    await release.requested;
+    // Registration joins synchronously after attaching the window listener.
+    // Wait for that event so Cancel cannot overtake the joining install call.
+    const watched = new Promise<void>((resolve) => {
+      joiner.on('newListener', (name) => {
+        if (name === 'destroyed') resolve();
+      });
+    });
+    const joined = invoke<AntigravityRuntimeStatus>(
+      IPC_CHANNELS.antigravityRuntimeInstall,
+      joiner,
+      'op-joiner-2',
+    );
+    await watched;
+
+    await invoke(IPC_CHANNELS.antigravityRuntimeCancel, joiner, 'op-joiner-2');
+    // The joined window's own install answers without the download ending,
+    // and says it detached, so its card leaves its progress state.
+    await expect(joined).resolves.toMatchObject({
+      installed: false,
+      detached: true,
+    });
+    release.finish();
+    await expect(started).resolves.toMatchObject({
+      installed: true,
+      managed: true,
+      phase: 'installed',
+    });
+    expect(downloads).toBe(1);
+  });
+
+  // CAN-6718 review round 7: an operation ID belongs to the window that
+  // registered it. Another window that sends the origin's ID, as a cancel or
+  // by joining with it, can't stop the download.
+  it('another window can’t cancel the install with the origin’s operation ID', async () => {
+    const served = await archive('#!/bin/sh\necho owned\n');
+    pin(served);
+    const release = stalledRelease(served);
+    const other = new FakeContents(nextWindow++);
+    mockWindows.add(other);
+    const started = invoke<AntigravityRuntimeStatus>(
+      IPC_CHANNELS.antigravityRuntimeInstall,
+      main,
+      'op-origin-3',
+    );
+    await release.requested;
+
+    await invoke(IPC_CHANNELS.antigravityRuntimeCancel, other, 'op-origin-3');
+    // Joining with the origin's ID doesn't take it over either.
+    await expect(
+      invoke(IPC_CHANNELS.antigravityRuntimeInstall, other, 'op-origin-3'),
+    ).rejects.toThrow('Antigravity operation id is already in use.');
+    await invoke(IPC_CHANNELS.antigravityRuntimeCancel, other, 'op-origin-3');
+    other.emit('destroyed');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    release.finish();
+    await expect(started).resolves.toMatchObject({
+      installed: true,
+      managed: true,
+      phase: 'installed',
+    });
+    expect(downloads).toBe(1);
+  });
+
+  // CAN-6718 review round 9: an operation ID names one waiting call. A
+  // repeated one from the same window would replace the first call's detach,
+  // leaving it waiting after Cancel.
+  it('refuses an operation ID that is already waiting, even from the same window', async () => {
+    const served = await archive('#!/bin/sh\necho once\n');
+    pin(served);
+    const release = stalledRelease(served);
+    const started = invoke<AntigravityRuntimeStatus>(
+      IPC_CHANNELS.antigravityRuntimeInstall,
+      main,
+      'op-repeat',
+    );
+    await release.requested;
+    const repeated = invoke<AntigravityRuntimeStatus>(
+      IPC_CHANNELS.antigravityRuntimeInstall,
+      main,
+      'op-repeat',
+    ).then(
+      () => 'answered',
+      (error: unknown) => (error instanceof Error ? error.message : 'failed'),
+    );
+    const outcome = await Promise.race([
+      repeated,
+      new Promise((resolve) => setTimeout(() => resolve('waiting'), 200)),
+    ]);
+    release.finish();
+    await started;
+    expect(outcome).toBe('Antigravity operation id is already in use.');
+  });
+
+  // CAN-6718 review round 9: progress goes to the windows waiting on the
+  // install. A copy sent to this computer's window isn't mirrored to every
+  // controller.
+  it('keeps install progress off the controller mirror', () => {
+    expect(isMirrored(IPC_CHANNELS.antigravityRuntimeProgress)).toBe(false);
+  });
+
+  // CAN-6718 review round 12: a joined window that goes away ends its own
+  // waiting call and progress, as its Cancel does; the download continues
+  // for the window that started it.
+  it('a joined window going away ends its waiting call without stopping the install', async () => {
+    const served = await archive('#!/bin/sh\necho gone\n');
+    pin(served);
+    const release = stalledRelease(served);
+    const joiner = new FakeContents(nextWindow++);
+    mockWindows.add(joiner);
+    const started = invoke<AntigravityRuntimeStatus>(
+      IPC_CHANNELS.antigravityRuntimeInstall,
+      main,
+      'op-origin-gone',
+    );
+    await release.requested;
+    const joined = invoke<AntigravityRuntimeStatus>(
+      IPC_CHANNELS.antigravityRuntimeInstall,
+      joiner,
+      'op-joiner-gone',
+    );
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    joiner.emit('destroyed');
+    const outcome = await Promise.race([
+      joined,
+      new Promise((resolve) => setTimeout(() => resolve('waiting'), 200)),
+    ]);
+    release.finish();
+    await expect(started).resolves.toMatchObject({
+      installed: true,
+      phase: 'installed',
+    });
+    expect(outcome).toMatchObject({ installed: false, detached: true });
     expect(downloads).toBe(1);
   });
 
@@ -519,7 +674,7 @@ describe('Antigravity managed runtime owner', () => {
   });
 
   it('host support answers from the manifest without resolving or hashing the CLI', async () => {
-    const served = await archive('#!/bin/sh\necho agy 1.5.1\n');
+    const served = await archive('#!/bin/sh\necho agy 1.5.14\n');
     pin(served);
     body = (): BodyInit => served.bytes;
     await invoke(IPC_CHANNELS.antigravityRuntimeInstall, main, 'op-1');
@@ -558,10 +713,10 @@ describe('Antigravity managed runtime owner', () => {
     expect(readdirSync(mockRoot)).toEqual([]);
   });
 
-  it('remote disposition for install and cancel is local', () => {
-    expect(IPC_REMOTE_DISPOSITIONS.antigravityRuntimeInstall).toBe('local');
-    expect(IPC_REMOTE_DISPOSITIONS.antigravityRuntimeCancel).toBe('local');
-    expect(IPC_REMOTE_DISPOSITIONS.antigravityRuntimeProgress).toBe('local');
+  it('tunnels status, install, cancel and progress to the controlled computer', () => {
+    expect(IPC_REMOTE_DISPOSITIONS.antigravityRuntimeInstall).toBe('tunnel');
+    expect(IPC_REMOTE_DISPOSITIONS.antigravityRuntimeCancel).toBe('tunnel');
+    expect(IPC_REMOTE_DISPOSITIONS.antigravityRuntimeProgress).toBe('tunnel');
     expect(IPC_REMOTE_DISPOSITIONS.antigravityRuntimeStatus).toBe('tunnel');
     // A controller's picker follows the controlled computer's pin.
     expect(IPC_REMOTE_DISPOSITIONS.antigravityRuntimeHostSupport).toBe(

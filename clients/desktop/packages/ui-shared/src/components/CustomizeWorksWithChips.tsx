@@ -17,7 +17,7 @@ import { ClaudeLogo } from '../icons/ClaudeLogo';
 import { CodexLogo } from '../icons/CodexLogo';
 import { CursorLogo } from '../icons/CursorLogo';
 import { OpenCodeLogo } from '../icons/OpenCodeLogo';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 import {
   PluginWorksWith,
   type PluginWorksWithRow,

@@ -4,9 +4,9 @@ import {
   type GuestModelGateCopyInput,
   type GuestModelGateCopy,
 } from './guestModelGate';
-import { Button } from './Button';
-import { LoadingSpinner } from './LoadingSpinner';
-import { ErrorBanner } from './StatusBlocks';
+import { Button } from '../primitives/Button';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
+import { ErrorBanner } from '../primitives/StatusBlocks';
 
 /** Refusals without a display label retain their existing generic copy. */
 export type GuestModelGateSubject =

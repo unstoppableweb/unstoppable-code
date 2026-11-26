@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { SegmentsBar } from '../Progress';
+import { SegmentsBar } from '../../primitives/Progress';
 import { formatCostSegmentIn, type CostSegment } from './cost-format';
 import { useCostCurrency } from './CostCurrencyContext';
 

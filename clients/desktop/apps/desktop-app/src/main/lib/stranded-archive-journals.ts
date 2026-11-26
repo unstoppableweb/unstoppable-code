@@ -26,6 +26,8 @@ export interface ArchiveJournalOperation {
   revision: string;
   copies: number;
   sources: { name: string; contents: string; digest: string }[];
+  /** Exact bytes for Set aside; sources retains the existing receipt text contract. */
+  rawSources: { name: string; bytes: Buffer }[];
   slot: 'same-operation' | 'other-operation' | 'absent';
 }
 
@@ -72,13 +74,15 @@ export function readArchiveJournalOperations(workspaceId: string): Promise<{
         );
         const hash = createHash('sha256');
         const sources: ArchiveJournalOperation['sources'] = [];
+        const rawSources: ArchiveJournalOperation['rawSources'] = [];
         let consistent = true;
         let firstValue: unknown;
         for (const [index, entry] of group.entries()) {
-          const contents = await readFile(
+          const bytes = await readFile(
             join(getW5DestructiveLifecycleDir(), entry.name),
-            'utf8',
           );
+          const contents = bytes.toString('utf8');
+          rawSources.push({ name: entry.name, bytes });
           sources.push({
             name: entry.name,
             contents,
@@ -96,7 +100,8 @@ export function readArchiveJournalOperations(workspaceId: string): Promise<{
           )
             consistent = false;
           if (!isDeepStrictEqual(entry.record, record)) consistent = false;
-          hash.update(entry.name).update('\0').update(contents).update('\0');
+          // Raw UTF-8 has the same digest as before; invalid encodings no longer alias.
+          hash.update(entry.name).update('\0').update(bytes).update('\0');
         }
         operations.push({
           record,
@@ -106,6 +111,7 @@ export function readArchiveJournalOperations(workspaceId: string): Promise<{
           revision: hash.digest('hex'),
           copies: group.length,
           sources,
+          rawSources,
           slot: !slot
             ? 'absent'
             : slot.record.operationId === record.operationId

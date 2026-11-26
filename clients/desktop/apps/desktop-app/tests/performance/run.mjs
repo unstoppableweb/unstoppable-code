@@ -34,7 +34,12 @@ import {
   assertReleaseLikeCloudOrigin,
   runPerformanceScenario,
 } from './scenarios.mjs';
+import { startRemoteControlRuntime } from './remote-control-connected/runtime.mjs';
 import { pruneSmokeDiagnosticArtifacts } from './smoke-artifact-retention.mjs';
+import {
+  remoteControlCaveat,
+  remoteControlSummaryLines,
+} from './remote-control-connected/summary.mjs';
 import { formatWorkRatchetVerdict, judgeWorkRatchet } from './work-ratchet.mjs';
 import { w5StoreCaveats, w5StoreTreatment } from './w5-store-arms.mjs';
 
@@ -221,6 +226,8 @@ function printScenarioSummary(scenario) {
       `working-set max ${response?.totalWorkingSetMb?.max?.toFixed(1) ?? 'n/a'}MB`,
   );
   printRendererCrashLines(scenario);
+  for (const line of remoteControlSummaryLines(scenario.remoteControl))
+    console.log(line);
   for (const line of frameAreaLines(scenario.frameBudgets)) console.log(line);
   for (const violation of scenario.responsiveness?.violations ?? []) {
     const unit = violation.unit === 'count' ? '' : (violation.unit ?? 'ms');
@@ -441,6 +448,9 @@ async function main() {
           ]
         : []),
       ...(options.w5Store ? w5StoreCaveats(options.w5Store) : []),
+      ...(options.config.remoteControl
+        ? [remoteControlCaveat(options.config.remoteControl)]
+        : []),
     ],
     scenarios: [],
   };
@@ -457,7 +467,20 @@ async function main() {
   console.log(
     `[perf] Mock server ${mockServers[0].reused ? 'reused' : 'started'}; profile=${options.profile}`,
   );
+  // `--remote-control`: one device relay and scripted-computer bundle for
+  // the whole run; each scenario starts and stops its own computers.
+  let remoteControlRuntime = null;
   try {
+    if (options.config.remoteControl) {
+      remoteControlRuntime = await startRemoteControlRuntime({
+        buildRoot: measuredBuild?.root ?? repoRoot,
+        role: options.config.remoteControl.role,
+      });
+      options.remoteControlRuntime = remoteControlRuntime;
+      console.log(
+        `[perf] Remote Control relay started on ${remoteControlRuntime.relay.url}; ${String(options.config.remoteControl.peers)} scripted computer(s) per scenario`,
+      );
+    }
     for (let sample = 0; sample < options.repeat; sample += 1) {
       const sampleRecord = repeated
         ? {
@@ -484,6 +507,7 @@ async function main() {
       }
     }
   } finally {
+    await remoteControlRuntime?.stop();
     for (const mockServer of mockServers.reverse()) {
       await mockServer.stop();
     }

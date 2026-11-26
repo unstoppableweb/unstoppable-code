@@ -1,6 +1,6 @@
 'use client';
 
-import { Stack } from '@canopy/ui-shared/components/Stack';
+import { Stack } from '@canopy/ui-shared/primitives/Stack';
 
 import {
   SETTINGS_CARD_CLASS,
@@ -34,7 +34,7 @@ import {
   type OrgModelCatalogEntry,
 } from './team-api';
 import type { SettingsFailure } from '../errors';
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 
 const MODEL_POLICY_ERROR_SCOPE = 'settings.organization.model-policy';
 

@@ -779,7 +779,7 @@ async function filesUnder(root: string): Promise<string[]> {
   return out.sort();
 }
 
-describe('what the sweep touches (CAN-7178 PR 1b, security rulings S4 and S5)', () => {
+describe('what the sweep touches (CAN-7178 PR 1b; S4 and S5 are check:chat-format4-sweep-boundary)', () => {
   it('a pass writes only inside the scopes it promotes, plus its own state and done marker files', async () => {
     await seedV3(WORKTREE);
     await seedV2(COWORK);
@@ -799,45 +799,6 @@ describe('what the sweep touches (CAN-7178 PR 1b, security rulings S4 and S5)', 
         path !== 'chat-format4-sweep-state.json',
     );
     expect(outside).toEqual([]);
-  });
-
-  it('opens no IPC channel, network socket or child process of its own', async () => {
-    const source = await readFile(
-      join(__dirname, '..', 'chat-format4-sweep.ts'),
-      'utf8',
-    );
-    const imports = Array.from(
-      source.matchAll(/(?:from|import\()\s*'([^']+)'/g),
-      (match) => match[1],
-    );
-    for (const banned of [
-      'node:net',
-      'node:http',
-      'node:https',
-      'node:dgram',
-      'node:child_process',
-      'node:worker_threads',
-    ])
-      expect(imports).not.toContain(banned);
-    expect(source).not.toMatch(/\bipcMain\b|\bwebContents\b|\bfetch\(/);
-  });
-
-  it('the desktop CLI and the core daemon never import the desktop chat store', async () => {
-    const repo = join(__dirname, '..', '..', '..', '..', '..', '..');
-    const offenders: string[] = [];
-    for (const app of ['desktop-cli', 'core-daemon']) {
-      const root = join(repo, 'apps', app, 'src');
-      for (const file of await filesUnder(root)) {
-        if (!/\.(ts|tsx|mts|cts)$/.test(file) || file.includes('__tests__'))
-          continue;
-        const text = await readFile(join(root, file), 'utf8');
-        if (
-          /from '[^']*(chat-storage-v2|desktop-app\/src\/main)[^']*'/.test(text)
-        )
-          offenders.push(`${app}/${file}`);
-      }
-    }
-    expect(offenders).toEqual([]);
   });
 });
 

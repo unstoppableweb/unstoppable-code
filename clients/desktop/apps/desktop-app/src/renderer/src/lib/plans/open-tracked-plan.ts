@@ -29,6 +29,10 @@ import { waitForWorktreeHydration } from '@/stores/chat/hydration';
 import { useChatStore } from '@/stores/chatStore';
 import { useGitHubStore } from '@/stores/githubStore';
 import { useNavigationStore } from '@/stores/navigationStore';
+import {
+  createTrackedPlan,
+  getTrackedPlan,
+} from '@/client/desktop-plan-client';
 import { useProjectsStore } from '@/stores/projectsStore';
 
 /** A tracked plan and the worktree that owns it. */
@@ -210,8 +214,8 @@ export async function openPendingPlanExit(
 ): Promise<OpenTrackedPlanResult> {
   const { projectId, worktreeId } = exit;
   const plan =
-    (await window.api.activity.plans.get({ projectId, worktreeId, planId })) ??
-    (await window.api.activity.plans.create({
+    (await getTrackedPlan({ projectId, worktreeId, planId })) ??
+    (await createTrackedPlan({
       projectId,
       worktreeId,
       id: planId,
@@ -220,7 +224,7 @@ export async function openPendingPlanExit(
       reviewStatus: 'pending',
       chatId: exit.chatId,
     }));
-  useActivityStore.getState().upsertTrackedPlan(plan);
+  useActivityStore.getState().commitTrackedPlanUpdate(plan);
   return openTrackedPlan(
     { projectId, worktreeId, planId: plan.id },
     { navigate: false, origin: { chatTabId: exit.chatId } },

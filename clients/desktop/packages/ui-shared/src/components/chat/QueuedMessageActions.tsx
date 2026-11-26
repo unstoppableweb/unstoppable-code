@@ -6,8 +6,8 @@ import type {
 } from '@canopy/protocol/remote-control/shell';
 import { PlayCircleIcon, RetryIcon, SteerIcon } from '../../icons';
 import { StopIcon, TrashIcon } from '../../icons/AppIcons';
-import { ActionTooltip } from '../ActionTooltip';
-import { Button } from '../Button';
+import { ActionTooltip } from '../../primitives/ActionTooltip';
+import { Button } from '../../primitives/Button';
 import { MessageEditBadge, type MessageEditHandler } from './MessageEditEntry';
 import { QueuedMessageSettingsHeldWarning } from './QueuedMessageSettingsHeldWarning';
 

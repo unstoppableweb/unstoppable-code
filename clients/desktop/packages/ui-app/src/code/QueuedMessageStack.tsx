@@ -163,6 +163,7 @@ export function QueuedMessageStack({
   'data-testid': testId = 'queued-message-stack',
 }: QueuedMessageStackProps): JSX.Element {
   const drawer = surface === 'drawer';
+  const rootRef = useRef<HTMLDivElement>(null);
   const [lifted, setLifted] = useState<string | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -215,6 +216,7 @@ export function QueuedMessageStack({
   };
   return (
     <div
+      ref={rootRef}
       className={`flex flex-col gap-2 empty:hidden ${drawer ? '' : 'px-5'}`}
       data-testid={testId}
     >
@@ -249,7 +251,15 @@ export function QueuedMessageStack({
               onDragCancel={(): void => setLifted(null)}
               onDragEnd={({ active, over }): void => {
                 setLifted(null);
-                if (!over || active.id === over.id) return;
+                // A keyboard drag outlives a drawer card closed or switched
+                // under it, which hides the lifted row with the list: a drop
+                // nobody can see changes nothing.
+                if (
+                  !over ||
+                  active.id === over.id ||
+                  rootRef.current?.closest('[inert], [hidden]')
+                )
+                  return;
                 move(
                   order.indexOf(String(active.id)),
                   order.indexOf(String(over.id)),

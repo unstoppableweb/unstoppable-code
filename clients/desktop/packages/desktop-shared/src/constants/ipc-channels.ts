@@ -8,6 +8,8 @@ export const PIPELINE_CHANNELS = {
   DISCOVER_PROJECT: REMOTE_IPC_CHANNELS.pipelinesDiscoverProject,
   GET: REMOTE_IPC_CHANNELS.pipelinesGet,
   SAVE: 'pipelines:save',
+  // A person's Approve for schedules of a workflow's saved content (CAN-5782).
+  APPROVE_FOR_SCHEDULES: 'pipelines:approve-for-schedules',
   DELETE: 'pipelines:delete',
   DUPLICATE: 'pipelines:duplicate',
   RESOLVE_ACTION: 'pipelines:resolve-action',

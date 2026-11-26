@@ -20,13 +20,13 @@ export function getSecureStorageNotice(
   if (!failure) return null;
   const outcome =
     failure.operation === 'read'
-      ? 'Saved credentials could not be read. Your saved credentials have not been removed.'
+      ? "Couldn't read your saved sign-in. It hasn't been removed."
       : failure.operation === 'write'
-        ? 'Your credentials were not saved. Existing saved credentials have not been removed.'
-        : 'Secure storage could not be checked. Existing saved credentials have not been removed.';
+        ? "Couldn't save your sign-in. Your saved sign-in hasn't been removed."
+        : "Couldn't check secure storage. Your saved sign-in hasn't been removed.";
   const recovery = failure.retryable
-    ? 'Start or unlock your system’s credential store, then retry.'
-    : 'Start or configure your system’s credential store, then reopen the app.';
+    ? "Start or unlock your system's secure storage, then try again."
+    : "Start or set up your system's secure storage, then reopen the app.";
   if (failure.state === 'locked') {
     return {
       state: 'locked',
@@ -46,7 +46,7 @@ export function getSecureStorageNotice(
   return {
     state: 'failed',
     title: 'Couldn’t access secure storage.',
-    description: `${outcome} ${failure.retryable ? 'Try again when secure storage is available.' : 'Start or configure your system’s credential store, then reopen the app.'}`,
+    description: `${outcome} ${failure.retryable ? 'Try again when secure storage is available.' : "Start or set up your system's secure storage, then reopen the app."}`,
     retryable: failure.retryable,
   };
 }

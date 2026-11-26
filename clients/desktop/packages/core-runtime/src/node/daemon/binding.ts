@@ -180,6 +180,8 @@ export async function recoverStaleCanopyDaemonEndpoint({
       kind: 'directory',
       action: 'verify',
       mode: 'owner-only',
+      // The launching host admitted the same folders (CAN-7915).
+      foreignTrustees: 'accept',
     });
     if (permissions.state !== 'private')
       throw new Error('Runtime permissions are not private.');

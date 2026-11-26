@@ -38,9 +38,14 @@ export async function getSharedSkillWithInstallState(
   return { ...detail, installedCopyIds: Array.from(copies).sort() };
 }
 
+/**
+ * `expired` lets a caller that has already given up (a serialized install past
+ * its check budget) fail before the cloud read instead of starting it.
+ */
 export async function assertStoredSkillContext(
   localId: string,
   projectId?: string,
+  expired?: () => boolean,
 ): Promise<void> {
   if (!skillResourceContextEnabled()) return;
   const account = await readCanopyCloudAccountWithStatus();
@@ -61,6 +66,9 @@ export async function assertStoredSkillContext(
   if (!accountId || binding.accountId !== accountId) {
     throw new Error('Skill unavailable (access-removed)');
   }
+  // Fail closed: a skipped lookup must never read as a passed check.
+  if (expired?.())
+    throw new Error("Couldn't check the skill in time. Try again.");
   // An install receipt is provenance, never a grant: reauthorize the remote id.
   const detail = await getSharedSkill(binding.receipt.remoteId);
   await assertSkillContext(
@@ -327,15 +335,16 @@ export async function hasSkillInstallReceipt(
   return binding !== undefined;
 }
 
+/** Returns an undo for a save that fails before it commits. */
 export async function copySkillInstallOrigin(
   source: string,
   destination: string,
-): Promise<void> {
-  if (!skillResourceContextEnabled()) return;
+): Promise<(() => Promise<void>) | undefined> {
+  if (!skillResourceContextEnabled()) return undefined;
   await assertStoredSkillContext(source);
   const account = await readCanopyCloudAccountWithStatus();
   const id = account.status === 'ok' ? account.entry?.account?.id : undefined;
-  if (!id) return;
+  if (!id) return undefined;
   const store = createResourceInstallReceiptsStore(id);
   const binding = await store.findLocal('skills', source);
   if (binding) {
@@ -347,7 +356,7 @@ export async function copySkillInstallOrigin(
       )
         ? 'primary'
         : 'dependency');
-    await store.record({
+    const receipt = {
       ...binding.receipt,
       localResourceIds: [destination],
       // The new copy is live; removal markers belong to their original aliases.
@@ -356,8 +365,11 @@ export async function copySkillInstallOrigin(
         : {}),
       localContentHashes: hash ? { [destination]: hash } : undefined,
       localResourceRoles: { [destination]: role },
-    });
+    };
+    await store.record(receipt);
+    return (): Promise<void> => store.rollbackInstall(receipt, binding.receipt);
   }
+  return undefined;
 }
 
 const STORED_SKILL_FILTER_PASSES = 3;

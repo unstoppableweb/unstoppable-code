@@ -9,6 +9,7 @@ import type { AppAdvisorActionResponse } from '@canopy/desktop-shared/types';
 import { executeDesktopAgentActionTool } from '../agent-actions/desktop-surface';
 import { dispatchDesktopEditorSetupReview } from '../agent-actions/desktop-editor-setup-port';
 import { dispatchDesktopCloudChats } from '../agent-actions/desktop-cloud-chats-port';
+import { dispatchDesktopSlackThread } from '../agent-actions/desktop-slack-thread-port';
 import { dispatchDesktopScriptPreferences } from '../agent-actions/desktop-script-preferences-port';
 import { getActiveDesktopRuntimeIfAccepting } from '../canopy-runtime/desktop-runtime';
 import type { CanopyInjectedToolTextResult } from '../canopy-tools/core';
@@ -313,6 +314,29 @@ export async function routeAppAdvisorAction(
         ...(signal ? { signal } : {}),
       });
       return { text: jsonText(response), isError: response.ok !== true };
+    }
+    if (
+      action.type === 'slack_thread.read' ||
+      action.type === 'slack_thread.open_file'
+    ) {
+      // CAN-7749: the tab comes from the turn, never the model. This is the
+      // only Orchestrator branch that returns an image; every other branch
+      // stays text only.
+      const destination = runtime.watcherDestination;
+      const imageBudgetBytes = call.context?.imageBudgetBytes;
+      const { toolImageDataUrl, ...response } =
+        await dispatchDesktopSlackThread(action, {
+          requestId,
+          worktreeId: destination.worktreeId,
+          chatId: destination.chatId,
+          ...(imageBudgetBytes !== undefined ? { imageBudgetBytes } : {}),
+          ...(signal ? { signal } : {}),
+        });
+      return {
+        text: jsonText(response),
+        isError: response.ok !== true,
+        ...(toolImageDataUrl ? { imageDataUrl: toolImageDataUrl } : {}),
+      };
     }
     if (presentation) {
       const presented = appAdvisorActionSchema.safeParse(action);

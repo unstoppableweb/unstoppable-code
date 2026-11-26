@@ -100,6 +100,7 @@ import {
   createRemoteControlApi,
   uploadFilesToRemote,
 } from './api/remote-control-api';
+import { createPairedComputersApi } from './api/paired-computers-api';
 import { electronAPI } from '@electron-toolkit/preload';
 import {
   CLIENT_FEATURE_FLAGS,
@@ -295,6 +296,7 @@ import {
   type WorkspaceContextBroadcast,
   type WorkspaceContextState,
   readAppAdvisorInitialLayout,
+  type CursorSignInClient,
 } from '@canopy/desktop-shared/types';
 import {
   isOrgProjectSummary,
@@ -501,6 +503,9 @@ function serializeAppAdvisorWindowUiState(
     ...(batchRemovalDialog === undefined ? {} : { batchRemovalDialog }),
   };
 }
+
+/** Cursor Connect and Change account: this app shows a remote sign-in's link. */
+const CURSOR_CLIENT: CursorSignInClient = { signInLink: true };
 
 // A window that shows another computer reports that computer's platform, so
 // path handling in the renderer matches the paths it receives.
@@ -2649,6 +2654,8 @@ const canopyApi: CanopyApi = {
     ipcRenderer.invoke(IPC_CHANNELS.worktreeRecoveryResolve, request),
   finishWorktreeRecovery: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.worktreeRecoveryFinish, request),
+  setAsideWorktreeRecovery: (request) =>
+    ipcRenderer.invoke(IPC_CHANNELS.worktreeRecoverySetAside, request),
   listWorktreeRecovery: (request) =>
     ipcRenderer.invoke(IPC_CHANNELS.worktreeRecoveryList, request),
   describeWorktreeDiscard: (request) =>
@@ -4233,13 +4240,19 @@ const canopyApi: CanopyApi = {
   cursorConnection: {
     listModels: () => ipcRenderer.invoke(IPC_CHANNELS.cursorConnectionModels),
     status: () => ipcRenderer.invoke(IPC_CHANNELS.cursorConnectionStatus),
-    connect: () => ipcRenderer.invoke(IPC_CHANNELS.cursorConnectionConnect),
+    // This app shows a remote sign-in's link (CursorSignInClient).
+    connect: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.cursorConnectionConnect, CURSOR_CLIENT),
     cancel: () => ipcRenderer.invoke(IPC_CHANNELS.cursorConnectionCancel),
     disconnect: () =>
       ipcRenderer.invoke(IPC_CHANNELS.cursorConnectionDisconnect),
     account: () => ipcRenderer.invoke(IPC_CHANNELS.cursorConnectionAccount),
     changeAccount: (intent) =>
-      ipcRenderer.invoke(IPC_CHANNELS.cursorConnectionChangeAccount, intent),
+      ipcRenderer.invoke(
+        IPC_CHANNELS.cursorConnectionChangeAccount,
+        intent,
+        CURSOR_CLIENT,
+      ),
     onProgress: (callback) => {
       const handler = (
         _event: Electron.IpcRendererEvent,
@@ -5195,6 +5208,11 @@ const canopyApi: CanopyApi = {
   },
   panelLayout: createPanelLayoutApi(ipcRenderer),
   remoteControl: createRemoteControlApi(ipcRenderer, remoteWindowContext),
+  // This computer's own windows only: a window showing another computer
+  // never reaches a third one (CAN-7761).
+  ...(remoteWindowContext
+    ? {}
+    : { pairedComputers: createPairedComputersApi(ipcRenderer) }),
   codexSpeed: createCodexSpeedApi(ipcRenderer),
   overlayLayer: {
     setBounds: (request) =>

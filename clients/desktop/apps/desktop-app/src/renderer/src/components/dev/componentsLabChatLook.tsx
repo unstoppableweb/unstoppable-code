@@ -1,4 +1,4 @@
-import { useState, type JSX, type ReactNode } from 'react';
+import { useId, useState, type JSX, type ReactNode } from 'react';
 import { CHAT_DETAILS, type ChatDetail } from '@canopy/protocol/chat-detail';
 import type { AutoResumeMetadata } from '@canopy/protocol/remote-control/shell';
 import {
@@ -14,6 +14,8 @@ import {
   StepRow,
   StepTenseProvider,
   buildPlanModeChip,
+  buildWorkflowChip,
+  WorkflowChipDescription,
   buildQuestionReadyChip,
   useChatAppName,
   useChatDetail,
@@ -373,6 +375,37 @@ function DismissibleChipDemo({
   );
 }
 
+function WorkflowChipDemo({
+  workflowName,
+  compact,
+  disabled,
+}: {
+  readonly workflowName: string | null;
+  readonly compact?: boolean;
+  readonly disabled: boolean;
+}): JSX.Element {
+  const [on, setOn] = useState(true);
+  const nameId = useId();
+  return on ? (
+    <>
+      <ChatComposerToolbarChip
+        {...buildWorkflowChip({
+          workflowName,
+          descriptionId: nameId,
+          disabled,
+          onDisable: () => setOn(false),
+          ...(compact === undefined ? {} : { compact }),
+        })}
+      />
+      <WorkflowChipDescription id={nameId} workflowName={workflowName} />
+    </>
+  ) : (
+    <Button size="compact" variant="secondary" onClick={() => setOn(true)}>
+      Turn on again
+    </Button>
+  );
+}
+
 export function PlanChipSpecimen(): JSX.Element {
   return (
     <div className="flex flex-col gap-6">
@@ -438,6 +471,48 @@ export function PlanChipSpecimen(): JSX.Element {
           <SpecimenCell label="Disabled, on">
             <ComposerBox>
               <ToggleChipDemo initial disabled />
+            </ComposerBox>
+          </SpecimenCell>
+        </SpecimenGrid>
+      </SpecimenPanel>
+      <SpecimenPanel
+        title="Workflow chip"
+        hint="buildWorkflowChip: shown only while workflow mode is on; names the workflow Send runs; click turns it off"
+      >
+        <SpecimenGrid min={340}>
+          <SpecimenCell label="A workflow picked" wide>
+            <ComposerBox>
+              <WorkflowChipDemo
+                workflowName="Bug fix with repro"
+                disabled={false}
+              />
+            </ComposerBox>
+          </SpecimenCell>
+          <SpecimenCell label="Choose when sending" wide>
+            <ComposerBox>
+              <WorkflowChipDemo workflowName={null} disabled={false} />
+            </ComposerBox>
+          </SpecimenCell>
+          <SpecimenCell label="Compact: the glyph alone, in a circle">
+            <ComposerBox narrow>
+              <WorkflowChipDemo
+                workflowName="Bug fix with repro"
+                compact
+                disabled={false}
+              />
+            </ComposerBox>
+          </SpecimenCell>
+          <SpecimenCell label="Disabled while the send target loads">
+            <ComposerBox>
+              <WorkflowChipDemo workflowName="Bug fix with repro" disabled />
+            </ComposerBox>
+          </SpecimenCell>
+          <SpecimenCell label="Long name truncates">
+            <ComposerBox>
+              <WorkflowChipDemo
+                workflowName="Implementation plan, autopilot build, tests and a pull request for review"
+                disabled={false}
+              />
             </ComposerBox>
           </SpecimenCell>
         </SpecimenGrid>

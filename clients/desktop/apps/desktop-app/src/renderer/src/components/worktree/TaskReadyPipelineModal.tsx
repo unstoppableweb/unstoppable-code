@@ -1,4 +1,5 @@
-import type { JSX } from 'react';
+import type { ComponentProps, JSX } from 'react';
+import { ATTACH_WORKFLOW_COPY, CreateWorkflowButton } from '@canopy/ui-app';
 import {
   PipelineTriggerModal,
   type PipelineRepoChoice,
@@ -6,7 +7,10 @@ import {
 } from '@/components/activity/PipelineTriggerModal';
 import type { PipelineExecutionScope } from '@canopy/protocol/pipelines';
 import type { PipelineWatcherSelection } from '@/components/activity/usePipelineRunWatcher';
-import type { PipelineData } from '@canopy/execution-engine/types/pipeline';
+import type {
+  PipelineData,
+  PipelineInfo,
+} from '@canopy/execution-engine/types/pipeline';
 import type { WatcherRecipientGroup } from '@/components/watchers/WatcherRecipientPicker';
 
 interface TaskReadyPipelineModalProps {
@@ -22,6 +26,8 @@ interface TaskReadyPipelineModalProps {
   executionScope?: PipelineExecutionScope;
   /** Preselects this pipeline in the list when present. */
   initialPipelineId?: string;
+  /** See `PipelineTriggerModal`'s `initialPipelineSource`. */
+  initialPipelineSource?: PipelineInfo['source'];
   /** Input seeds applied only while `initialPipelineId` is selected. */
   initialInputs?: Record<string, string>;
   onClose: () => void;
@@ -38,6 +44,22 @@ interface TaskReadyPipelineModalProps {
   onWatcherSelectionChange?: (
     selection: PipelineWatcherSelection | null,
   ) => void;
+  /**
+   * The composer's Attach a workflow dialog (CAN-7513): the main action
+   * inserts the configured workflow (`onRun`) instead of running it, and
+   * Create a workflow (`onCreateWorkflow`) leads the footer.
+   */
+  attach?: { onCreateWorkflow: () => void };
+  /**
+   * An attached workflow Send could not run as inserted, opened for review:
+   * its working directory and the settings it was inserted with.
+   */
+  review?: {
+    selectedRepoId: string | undefined;
+    settings: NonNullable<
+      ComponentProps<typeof PipelineTriggerModal>['initialRunSettings']
+    >;
+  };
 }
 
 export function TaskReadyPipelineModal({
@@ -45,6 +67,7 @@ export function TaskReadyPipelineModal({
   repoChoices,
   executionScope: executionScopeOverride,
   initialPipelineId,
+  initialPipelineSource,
   initialInputs,
   onClose,
   onRun,
@@ -52,6 +75,8 @@ export function TaskReadyPipelineModal({
   runError = null,
   watcherRecipientGroups,
   onWatcherSelectionChange,
+  attach,
+  review,
 }: TaskReadyPipelineModalProps): JSX.Element {
   // Task pipelines run against a worktree; a resolved worktree cwd makes this a
   // `worktree` surface (which also lists `directory`/legacy pipelines via the
@@ -65,15 +90,41 @@ export function TaskReadyPipelineModal({
     <PipelineTriggerModal
       triggerType="task_ready"
       labels={{
-        title: 'Run task workflow',
-        selectSubtitle: 'Select a workflow with task_ready trigger',
+        title: attach ? ATTACH_WORKFLOW_COPY.title : 'Run task workflow',
+        selectSubtitle: attach
+          ? ATTACH_WORKFLOW_COPY.subtitle
+          : 'Select a workflow with task_ready trigger',
         emptyMessage: 'No workflows with task_ready trigger found',
       }}
+      {...(attach
+        ? {
+            runLabel: ATTACH_WORKFLOW_COPY.insertLabel,
+            // Insert records the choices; only a run saves them as defaults.
+            saveModelDefaultsOnSubmit: false,
+            leadingAction: (
+              <CreateWorkflowButton
+                onCreate={attach.onCreateWorkflow}
+                dataTestId="pipeline-trigger-modal-create"
+              />
+            ),
+          }
+        : {})}
       cwd={cwd}
       repoChoices={repoChoices}
       executionScope={executionScope}
       initialPipelineId={initialPipelineId}
+      {...(initialPipelineSource === undefined
+        ? {}
+        : { initialPipelineSource })}
       initialInputs={initialInputs}
+      {...(review
+        ? {
+            initialRunSettings: review.settings,
+            ...(review.selectedRepoId === undefined
+              ? {}
+              : { defaultRepoId: review.selectedRepoId }),
+          }
+        : {})}
       onClose={onClose}
       onRun={onRun}
       isRunning={isRunning}

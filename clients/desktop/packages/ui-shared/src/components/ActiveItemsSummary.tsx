@@ -4,11 +4,11 @@ import type { JSX } from 'react';
 import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
 import { formatRelativeTime } from '../lib/format-relative-time';
 import type { ActiveInstalledItemCounts } from '../lib/installed-item-status';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 import { SettingsRowsRow } from './settings/SettingsRows';
-import { Skeleton } from './Skeleton';
-import { EmptyStateText } from './StatusBlocks';
-import { StatusLabel } from './StatusLabel';
+import { Skeleton } from '../primitives/Skeleton';
+import { EmptyStateText } from '../primitives/StatusBlocks';
+import { StatusLabel } from '../primitives/StatusLabel';
 
 /**
  * Settings summary of what loads into every new chat (CAN-4255). Counts come

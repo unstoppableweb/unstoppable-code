@@ -28,10 +28,12 @@ export interface DesktopPullRequestReviewPortDeps {
 /**
  * `pull_request.review.publish` on desktop: the same web core call as the
  * `github-publish-review` pipeline step, as the signed-in account, for the
- * calling chat's project owner (never the payload). The web core authorizes
- * the caller, the owner, the installation and the repository, so this port
- * does no access check of its own. Chats outside a project have no owner and
- * can't publish.
+ * calling chat's or workflow step's project owner (never the payload). The
+ * web core authorizes the caller, the owner, the installation and the
+ * repository, so this port does no access check of its own. Chats outside a
+ * project have no owner and can't publish. A pipeline agent step's runtime
+ * carries its execution id, which becomes the publication's `executionRef`
+ * as the builtin step's does; a chat's is `agent-chat:<chatId>`.
  */
 export function createDesktopPullRequestReviewPort(
   deps: DesktopPullRequestReviewPortDeps = {},
@@ -45,7 +47,7 @@ export function createDesktopPullRequestReviewPort(
       if (!scoped || chatId === undefined)
         throw new AgentPortError(
           'invalid_target',
-          'Only a project chat can post a code review as the GitHub App.',
+          'Only a project chat or workflow step can post a code review as the GitHub App.',
         );
       const owner = await ownerContext({
         projectId: scoped.projectId,
@@ -62,7 +64,7 @@ export function createDesktopPullRequestReviewPort(
             reviewedUncommitted: request.reviewedUncommitted,
             payload: request.payload,
             approvalFacts: request.approvalFacts,
-            executionRef: `agent-chat:${chatId}`,
+            executionRef: scoped.pipelineExecutionId ?? `agent-chat:${chatId}`,
             idempotencyKey,
           },
           deps.hostDeps ?? {},

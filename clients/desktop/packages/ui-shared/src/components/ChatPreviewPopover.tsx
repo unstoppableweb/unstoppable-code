@@ -2,9 +2,9 @@ import type { JSX } from 'react';
 import { PlanModeIcon } from '../icons';
 import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { ModelProviderIcon } from '../icons/ModelProviderIcon';
-import { RichHoverCard } from './RichHoverTooltip';
-import { Stack } from './Stack';
-import { EmptyStateText } from './StatusBlocks';
+import { RichHoverCard } from '../primitives/RichHoverTooltip';
+import { Stack } from '../primitives/Stack';
+import { EmptyStateText } from '../primitives/StatusBlocks';
 
 export type ChatPreviewProviderType =
   | 'claude'

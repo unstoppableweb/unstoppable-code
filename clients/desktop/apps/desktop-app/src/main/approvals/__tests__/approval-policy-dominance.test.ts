@@ -567,6 +567,7 @@ describe('standalone native workflow policy withdrawal', () => {
         await host.open({
           profile: join(root, 'profile'),
           signal: new AbortController().signal,
+          mcpServerNames: [],
           onUpdate() {},
           onPermission: (): Promise<'deny'> => Promise.resolve('deny'),
         });

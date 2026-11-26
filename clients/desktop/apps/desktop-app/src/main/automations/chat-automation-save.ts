@@ -32,6 +32,7 @@ import {
   setUserPipelineOwnerAutomation,
 } from '../pipelines/pipeline-local-metadata-store';
 import { getStoredPipelineBySource } from '../pipelines/pipeline-service';
+import { agentDispatchTargetRefusal } from './agent-dispatch-target';
 import {
   convertsToOwnedChatPipeline,
   impliedChatTargetRequirement,
@@ -52,7 +53,6 @@ import {
 import { projectOwnedChatAutomation } from './owned-chat-projection';
 import {
   isSharedByOtherSchedules,
-  isWorkflowPagePipeline,
   scheduledUserPipelineId,
   sharedPipelineRelease,
 } from './workflow-schedules';
@@ -90,9 +90,13 @@ async function convertSaved(
   if (!saved.ok) return saved;
   const { activity } = saved;
   if (!activity || !convertsToOwnedChatPipeline(activity)) return saved;
+  // Only the revision this save wrote converts: a revision another writer
+  // stored meanwhile is theirs to convert (each save converts its own), so
+  // the response never carries another writer's changes.
   const converted = await service.replaceWithOwnedPipeline(
     activity.id,
     saveOwnedChatPipeline,
+    { expectedUpdatedAt: activity.updatedAt },
   );
   if (converted.ok) return converted;
   logMainProcessWarn('Kept a chat automation native; it could not convert', {
@@ -343,10 +347,7 @@ export async function updateAutomationFromForm(
       : undefined;
   // CAN-5782: a person's edit of a workflow schedule keeps its author.
   const scheduled = stored ? scheduledUserPipelineId(stored) : undefined;
-  const writer =
-    scheduled !== undefined && isWorkflowPagePipeline(activities, scheduled)
-      ? SCHEDULE_EDITOR
-      : PERSON_WRITER;
+  const writer = scheduled !== undefined ? SCHEDULE_EDITOR : PERSON_WRITER;
   const loaded =
     owned === undefined ? undefined : getStoredPipelineBySource('user', owned);
   const current = loaded?.success ? loaded.data : undefined;
@@ -422,13 +423,20 @@ export async function updateAutomationFromForm(
     if (replacesInstalled) setUserPipelineOwnerAutomation(owned, null);
     else await deleteOwnedPipeline(stored, current?.info.revision ?? null);
   }
-  // Only an edit of the action converts; switching it on or off doesn't.
-  if (
-    request.action !== undefined &&
-    ownedPipelineId(updated.activity) === undefined
-  )
+  // A convertible chat action runs only as its workflow (deferred item 2), so
+  // any save that leaves one stored converts it, including one that only
+  // switches it on and so clears the agent marker D11 kept it native for.
+  if (ownedPipelineId(updated.activity) === undefined)
     return projected(await convertSaved(updated, service), service);
   return projected(updated, service);
+}
+
+/** An agent's create or update, refused when its target can't be its. */
+function agentTargetRefusal(
+  action: unknown,
+): AutomationMutationResponse | null {
+  const error = agentDispatchTargetRefusal(action);
+  return error === null ? null : { ok: false, error };
 }
 
 /**
@@ -442,6 +450,8 @@ export async function createAutomationForAgent(
   trusted: AutomationTrustedCreate,
   service: AutomationsService = getAutomationsService(),
 ): Promise<AutomationMutationResponse> {
+  // The service refuses an agent's target without `dispatch` after its
+  // access check, so a refusal never reveals a workflow's triggers.
   const created = await service.create(request, trusted);
   if (!created.ok || !created.activity) return created;
   if (!convertsToOwnedChatPipeline(created.activity)) return created;
@@ -455,7 +465,8 @@ export const OWNED_PIPELINE_HAND_EDITED =
   'This automation runs a workflow that was changed by hand. Edit that workflow with pipeline.update, or send the automation’s worktree_pipeline action.';
 
 /**
- * An agent's update (CAN-4551, 7c). A native automation updates as before.
+ * An agent's update (CAN-4551, 7c). A native automation updates as before,
+ * then converts if the edit made it convertible (deferred item 2).
  * One that owns its pipeline is re-checked as agent-authored: while it still
  * converts, its pipeline is regenerated with the agent's marker. An update
  * that changes the plugins, approval mode or Orchestrator model its native
@@ -475,13 +486,27 @@ export async function updateAutomationForAgent(
     ? await service.listForContext(writer.callerContext)
     : await service.list();
   const stored = snapshot.activities.find((entry) => entry.id === request.id);
+  // The update makes the agent its author, so the target it keeps, when it
+  // sends none, must declare `dispatch` too.
+  const refused = agentTargetRefusal(request.action ?? stored?.action);
+  if (refused) return refused;
   const owned = stored ? ownedPipelineId(stored) : undefined;
   if (
     !stored ||
     owned === undefined ||
     stored.action.type !== 'worktree_pipeline'
-  )
-    return writeUpdate(request, writer, service);
+  ) {
+    const updated = await writeUpdate(request, writer, service);
+    // A native action the edit made convertible runs only as its workflow
+    // (deferred item 2), so it converts, as an agent's create does.
+    if (
+      updated.ok &&
+      updated.activity &&
+      convertsToOwnedChatPipeline(updated.activity)
+    )
+      return convertSaved(updated, service);
+    return updated;
+  }
   // CAN-5782: while other schedules share the pipeline, a chat action would
   // regenerate the steps they run. An update without one is applied as sent,
   // never derived from the pipeline, so it rewrites nothing there.

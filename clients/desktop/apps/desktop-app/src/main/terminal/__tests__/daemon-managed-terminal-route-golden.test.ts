@@ -38,6 +38,10 @@ import type {
 import type * as ConfigPathsModule from '@canopy/execution-engine/pipelines/config-paths';
 import type * as PathsModule from '../../lib/paths';
 import { markUnreachable } from '../../canopy-runtime/electron-daemon-connection';
+import { TerminalRecordAdmissionDeferred } from '../record-admission';
+import { terminalPersistenceStore } from '../persistence';
+
+let mockRecordCapability = false;
 
 type Frame = { kind: 'item'; item: WorkerTerminalAttachItem };
 
@@ -179,6 +183,7 @@ jest.mock('../../canopy-runtime/electron-daemon-health', () => ({
 }));
 jest.mock('../persistence', () => ({
   terminalPersistenceStore: {
+    recordClientFor: (): null => null,
     getPersistedTerminalEntry: (): null => null,
     registerLiveSession: (session: TerminalSession): void => {
       mockState.registered.push(session);
@@ -218,6 +223,10 @@ jest.mock('../../canopy-runtime/electron-daemon-access', () => ({
           throw mockState.failure;
         return {
           client: {
+            manifest: {
+              has: (): boolean => mockRecordCapability,
+              schemaRevisions: new Map([['worker.terminal.create', 2]]),
+            },
             signal: new AbortController().signal,
             query: (operation: string): Promise<unknown> =>
               Promise.resolve().then(() => {
@@ -386,6 +395,7 @@ afterAll(async () => {
   rmSync(mockState.root, { recursive: true, force: true });
 });
 beforeEach(() => {
+  mockRecordCapability = false;
   resetDaemonManagedTerminalSweepForTests();
   mockState.platform = 'darwin';
   mockState.latched = false;
@@ -405,6 +415,25 @@ beforeEach(() => {
 });
 
 describe('Claude terminals on the daemon terminal route (CAN-5097)', () => {
+  it('R3 deferred custody opens a managed shell in process before daemon dispatch', async () => {
+    mockRecordCapability = true;
+    const admission = jest
+      .spyOn(terminalPersistenceStore, 'recordClientFor')
+      .mockImplementation(() => {
+        throw new TerminalRecordAdmissionDeferred();
+      });
+    try {
+      await expect(
+        spawnPlacedManagedTerminal(request()),
+      ).resolves.toMatchObject({ kind: 'claude-code' });
+      expect(admission).toHaveBeenCalledTimes(1);
+      expect(mockState.creates).toEqual([]);
+      expect(mockState.spawned).toHaveLength(1);
+      expect(mockState.latched).toBe(false);
+    } finally {
+      admission.mockRestore();
+    }
+  });
   it('an eligible terminal-mode launch runs in the daemon terminal host', async () => {
     const session = await spawnPlacedManagedTerminal(request());
 

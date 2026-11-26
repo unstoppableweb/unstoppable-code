@@ -40,7 +40,7 @@ export const SHARED_RESOURCE_ERROR_COPY = {
   NETWORK_ERROR: `Could not reach ${CLOUD_NAME}. Check your connection and try again.`,
   SKILLS_UNSUPPORTED: `${CLOUD_NAME} does not support shared skills.`,
   COLLECTIONS_UNSUPPORTED: `${CLOUD_NAME} does not support shared collections.`,
-  AGENTS_UNSUPPORTED: `${CLOUD_NAME} does not support shared agents.`,
+  AGENTS_UNSUPPORTED: `${CLOUD_NAME} does not support shared model presets.`,
   AUTOMATIONS_UNSUPPORTED: `${CLOUD_NAME} does not support shared automations.`,
   SKILL_DELETE_CONFLICT:
     'This skill is used by one or more collections. Remove it from those collections before deleting it.',

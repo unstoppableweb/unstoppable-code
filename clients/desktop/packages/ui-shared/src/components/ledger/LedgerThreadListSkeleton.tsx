@@ -4,7 +4,7 @@ import type {
   LedgerActorRef,
   LedgerEntrySearchItem,
 } from '@canopy/protocol/canopy-core';
-import { Skeleton } from '../Skeleton';
+import { Skeleton } from '../../primitives/Skeleton';
 import { LedgerThreadList } from './LedgerThreadList';
 import type { LedgerDensity } from './ledger-entry-slots';
 

@@ -14,6 +14,10 @@ import {
   type DetectedPlansScanRequest,
   type DetectedPlansScanResponse,
 } from '@canopy/desktop-shared/types';
+import {
+  detectedPlanScanParams,
+  detectedPlanUpdateParams,
+} from '@canopy/desktop-shared/lib/tracked-plan-params';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { withTrackedPlansIpcProjection } from '../canopy-runtime/plan-update-publisher';
 import { legacyError } from '../canopy-runtime/tracked-plan-projection';
@@ -26,14 +30,12 @@ import { registerIpcHandler } from './register';
 
 /*
  * The detected-plans channels project `core.plan.detected.*` (CAN-4165 PR
- * 5b). The main window keeps hearing of a channel write from the channel, as
- * before; the publisher announces a write from another binding (PR 7c).
+ * 5b), which remote windows and Remote Control still use. A channel write's
+ * window hears of it from the channel, as before; the publisher announces a
+ * write from another binding, the main window's relay included (PR 7c).
  */
 
 type PlanDispatcher = Pick<DesktopCanopyDispatcher, 'query' | 'instruction'>;
-
-/** The operation's longest candidate path; a longer one can't match a rule. */
-const MAX_CANDIDATE_PATH = 4_096;
 
 /**
  * The channel always answered the writer's own refusal of a damaged file,
@@ -83,13 +85,10 @@ export async function scanDetectedPlansForIpc(
   // Nothing is detected where nothing is stored (worktree-only feature).
   if (isCoworkWorkspace(scope.projectId))
     return { entries: [], newlyDetected: [] };
-  const candidatePaths = request.candidatePaths.filter(
-    (path) => path.length > 0 && path.length <= MAX_CANDIDATE_PATH,
-  );
   return projected(async () => {
     const { detected, newlyDetected } = await dispatcher.instruction(
       'core.plan.detected.scan',
-      { scope, chatId: request.chatId, candidatePaths },
+      detectedPlanScanParams(scope, request),
       {
         caller: planCaller(caller, 'write'),
         metadata: { idempotencyKey: randomUUID() },
@@ -114,17 +113,7 @@ export async function updateDetectedPlanForIpc(
       (
         await dispatcher.instruction(
           'core.plan.detected.update',
-          {
-            scope,
-            entryId: request.entryId,
-            ...(request.status ? { status: request.status } : {}),
-            ...(request.bannerSeen !== undefined
-              ? { bannerSeen: request.bannerSeen }
-              : {}),
-            ...(request.importedPlanId
-              ? { importedPlanId: request.importedPlanId }
-              : {}),
-          },
+          detectedPlanUpdateParams(scope, request),
           {
             caller: planCaller(caller, 'write'),
             metadata: { idempotencyKey: randomUUID() },

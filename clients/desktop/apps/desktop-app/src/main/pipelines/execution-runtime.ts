@@ -1,3 +1,12 @@
+import {
+  isPipelineDefinitionClaimed,
+  pipelineDefinitionRecoveryRefusal,
+} from './pipeline-install-intents';
+import {
+  PIPELINE_DEFINITION_INSTALLING_MESSAGE,
+  PIPELINE_DEFINITION_REMOVED_MESSAGE,
+} from '@canopy/core-runtime/node/pipeline/store';
+import { pipelineMarkerRefusalMessage } from './pipeline-local-metadata-store';
 import { assertOrganizationPipelineAllowed } from '../organization-capabilities/pipeline-gate';
 import {
   authorizeProjectPipelineRequest,
@@ -7,7 +16,14 @@ import {
   validateDependencyGraph,
   type ResourceContextInput,
 } from '@canopy/execution-engine/lib/resource-context-policy';
-import { getStoredPipelinePathWithSource } from '@canopy/execution-engine/pipelines/store';
+import {
+  findStoredUserPipelineIdByFilename,
+  getStoredPipelinePathWithSource,
+  readStoredPipelineDocument,
+  withStoredPipelineDefinitionLock,
+} from '@canopy/execution-engine/pipelines/store';
+import { realpath } from 'node:fs/promises';
+import type { ResolvedChildPipeline } from '@canopy/execution-engine/node/pipelines/executor/child-pipeline-resolver';
 import {
   getSharedPipeline,
   getSharedPipelineForExecutionContext,
@@ -32,6 +48,7 @@ import {
   getProjectActionsDirCandidates,
   getProjectPipelinesDir,
   getProjectPipelinesDirCandidates,
+  getUserPipelinesDir,
 } from './config-paths';
 import type {
   AgentPromptWorkerResult,
@@ -123,6 +140,55 @@ import {
   createDesktopPipelineOwnershipPort,
 } from './pipeline-owner-policy';
 
+async function resolveStoredChildFile(
+  filePath: string,
+): Promise<ResolvedChildPipeline | undefined> {
+  const userRoot = await realpath(getUserPipelinesDir()).catch(() => undefined);
+  if (userRoot === undefined) return undefined;
+  const resolvedPath = await realpath(filePath);
+  if (!isPathInside(userRoot, resolvedPath)) return undefined;
+  const filename = path.relative(userRoot, resolvedPath);
+  const id = findStoredUserPipelineIdByFilename(filename);
+  if (id === undefined)
+    throw new Error('Couldn’t run an unpublished workflow.');
+  return resolveReadyUserChild(id, { filePath, filename });
+}
+
+async function resolveReadyUserChild(
+  id: string,
+  file?: { filePath: string; filename: string },
+): Promise<ResolvedChildPipeline> {
+  const refusal = await pipelineDefinitionRecoveryRefusal(id);
+  if (refusal) throw new Error(refusal.error);
+  const checked = withStoredPipelineDefinitionLock(() => {
+    // A new install can claim this definition after the recovery wait settles.
+    if (isPipelineDefinitionClaimed(id))
+      throw new Error(PIPELINE_DEFINITION_INSTALLING_MESSAGE);
+    const markerRefusal = pipelineMarkerRefusalMessage(id);
+    if (markerRefusal) throw new Error(markerRefusal);
+    const document = readStoredPipelineDocument(id, 'user');
+    if (document.kind === 'unreadable') throw new Error(document.message);
+    if (
+      document.kind === 'missing' ||
+      (file && document.entry.filename !== file.filename)
+    )
+      throw new Error(PIPELINE_DEFINITION_REMOVED_MESSAGE);
+    return { ok: true, value: document };
+  });
+  if (!checked.ok) throw new Error(checked.message);
+  const { entry, rawContent } = checked.value;
+  return {
+    pipeline: parsePipelineText(rawContent),
+    pipelineId: file ? path.basename(file.filePath) : id,
+    pipelineFileDir: path.dirname(
+      file?.filePath ?? path.join(getUserPipelinesDir(), entry.filename),
+    ),
+    preferenceLocator: file
+      ? { type: 'file', value: file.filePath }
+      : { type: 'stored', source: 'user', value: id },
+  };
+}
+
 export function createElectronExecutionRuntime(
   getWindow?: () => BrowserWindow | null,
 ): ExecutionRuntime {
@@ -200,7 +266,14 @@ export function createElectronExecutionRuntime(
       target,
       executionContext,
     ) => {
-      if (!pipelineResourceContextEnabled()) return undefined;
+      // The final target pass authorizes the child the resolver already read.
+      if (!pipelineResourceContextEnabled()) {
+        if (target) return undefined;
+        if (file) return resolveStoredChildFile(file.filePath);
+        if (getStoredPipelinePathWithSource(reference).data?.source === 'user')
+          return resolveReadyUserChild(reference);
+        return undefined;
+      }
       if (target) {
         if (!parent)
           throw new Error('Workflow unavailable (unknown-provenance)');
@@ -240,7 +313,7 @@ export function createElectronExecutionRuntime(
         );
         if (!decision.allow)
           throw new Error(`Workflow unavailable (${decision.reason})`);
-        return undefined;
+        return target ? undefined : resolveStoredChildFile(file.filePath);
       }
       const shared = parseSharedPipelineLocalId(reference);
       if (!shared && !getStoredPipelinePathWithSource(reference).success)
@@ -273,6 +346,12 @@ export function createElectronExecutionRuntime(
       ]);
       if (!decision.allow)
         throw new Error(`Workflow unavailable (${decision.reason})`);
+      if (target) return undefined;
+      if (
+        !shared &&
+        getStoredPipelinePathWithSource(reference).data?.source === 'user'
+      )
+        return resolveReadyUserChild(reference);
       if (detail) {
         return {
           pipeline: parsePipelineText(detail.rawPipeline),
@@ -417,6 +496,14 @@ export function createElectronExecutionRuntime(
             ledgerTools: getPipelineLedgerAttemptTools(
               request.ledgerAttemptKey,
             ),
+            // Posting a review as the GitHub App (CAN-7742): only a
+            // `dangerous_all` step in a real project. The worker request has
+            // no preset, and `mapWorkerPermission` gives only that preset the
+            // full-access approval mode. The worker rechecks its launch
+            // permission and scope.
+            pipelineAgentActions:
+              request.approvalMode === 'full-access' &&
+              request.projectId !== undefined,
             projectId: request.projectId,
             worktreeId: request.worktreeId,
             pipelineExecutionId: request.executionId,

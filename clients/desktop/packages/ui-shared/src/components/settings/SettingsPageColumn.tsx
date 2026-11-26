@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, type JSX, type ReactNode } from 'react';
-import { NoticeShapeProvider } from '../Notice';
+import { NoticeShapeProvider } from '../../primitives/Notice';
 
 /**
  * The one column every settings page and every loading, error and

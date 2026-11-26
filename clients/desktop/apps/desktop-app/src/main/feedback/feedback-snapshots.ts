@@ -22,7 +22,10 @@ import {
   releaseTemporaryFeedbackBundle,
 } from './feedback-bundle';
 import { buildFeedbackPrepareRequest } from './feedback-scope';
-import { FeedbackArchiveSizeLimitError } from './feedback-archive';
+import {
+  FeedbackArchiveSizeLimitError,
+  MAX_FEEDBACK_MANIFEST_BYTES,
+} from './feedback-archive';
 
 const PrepareSchema = z
   .object({
@@ -32,6 +35,13 @@ const PrepareSchema = z
   .strict();
 const ManifestSchema = z.object({
   skippedFiles: z.array(z.object({ path: z.string(), reason: z.string() })),
+  inventorySummary: z
+    .object({
+      includedFilesOmitted: z.number().int().nonnegative(),
+      skippedFilesOmitted: z.number().int().nonnegative(),
+      skippedFileReasons: z.record(z.string(), z.number().int().nonnegative()),
+    })
+    .optional(),
 });
 const LIFETIME_MS = 15 * 60 * 1000;
 const MAX_SNAPSHOTS = 8;
@@ -187,14 +197,36 @@ export async function prepareFeedbackDiagnostics(
         allowEmptyDescription: true,
         bounded: true,
         includeCrashDumps: false,
+      }).catch((retryError: unknown) => {
+        if (!(retryError instanceof FeedbackArchiveSizeLimitError))
+          throw retryError;
+        return prepareFeedbackBundle(prepareRequest, {
+          destination: 'temp',
+          allowEmptyDescription: true,
+          bounded: true,
+          includeCrashDumps: false,
+          oversizedRetryContext: request.context,
+        });
       });
     });
     bundlePath = bundle.absolutePath;
     const entries = await inventory(bundlePath);
     const manifest = new TextDecoder('utf-8', { fatal: true }).decode(
-      await readEntry(bundlePath, 'feedback.json', 1024 * 1024),
+      await readEntry(bundlePath, 'feedback.json', MAX_FEEDBACK_MANIFEST_BYTES),
     );
     const parsed = ManifestSchema.parse(JSON.parse(manifest));
+    const skippedEntries = parsed.skippedFiles;
+    if (parsed.inventorySummary) {
+      const summary = parsed.inventorySummary;
+      const reasons = Object.entries(summary.skippedFileReasons)
+        .map(([reason, count]) => `${reason}: ${count}`)
+        .join(', ');
+      // Names omitted from the manifest still appear in the ZIP inventory.
+      skippedEntries.push({
+        path: 'Inventory summary',
+        reason: `List shortened: ${summary.includedFilesOmitted} included file names and ${summary.skippedFilesOmitted} skipped-path records omitted from the manifest lists. Full included file list is in the archive. Skip reason totals: ${reasons || 'none'}.`,
+      });
+    }
     const id = randomUUID();
     const expiresAt = new Date(Date.now() + LIFETIME_MS).toISOString();
     const metadata: FeedbackDiagnosticsSnapshot = {
@@ -206,7 +238,7 @@ export async function prepareFeedbackDiagnostics(
         path: entry.fileName,
         sizeBytes: entry.uncompressedSize,
       })),
-      skippedEntries: parsed.skippedFiles,
+      skippedEntries,
       manifest,
     };
     const snapshot: Snapshot = {

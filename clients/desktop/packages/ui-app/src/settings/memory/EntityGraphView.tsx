@@ -313,7 +313,7 @@ export function EntityGraphView({ orgId }: EntityGraphViewProps): JSX.Element {
         if (cancelled) return;
         setSelectedFacts(payload.facts);
         if (payload.facts.length === 0) {
-          setSelectedFactsError({ copy: 'Unable to load facts' });
+          setSelectedFactsError({ copy: "Couldn't load facts" });
         } else if (payload.facts.length < ids.length) {
           setSelectedFactsError({ copy: 'Some facts could not be loaded' });
         } else {

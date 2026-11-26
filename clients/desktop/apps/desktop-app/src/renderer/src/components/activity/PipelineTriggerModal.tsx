@@ -7,6 +7,7 @@ import {
   pipelineOriginLabel,
 } from '@canopy/ui-shared/components/EntrySourceLabel';
 import { pipelineSupportsExecutionScope } from '@/lib/pipelineExecutionScope';
+import { loadDisabledPipelineIdsBestEffort } from '@/lib/pipelineEnablement';
 import {
   Stack,
   DialogActionFooter,
@@ -40,6 +41,7 @@ import { useSkillList } from '@/hooks/useSkillList';
 import { useSharedPipelineList } from '@/hooks/useSharedPipelineList';
 import { brandText } from '@/lib/brand';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import {
   getAgentModelAvailability,
   WORKSPACE_ROOT_REPO_ID,
@@ -60,9 +62,13 @@ import type {
   PipelinePreferenceLocator,
   PipelineTriggerType,
   ResolvePluginCollectionsResponse,
+  SharedPipelineDetail,
 } from '@canopy/execution-engine/types/pipeline';
 import { DEFAULT_PIPELINE_SCOPES } from '@canopy/execution-engine/pipelines/scope';
-import { isSharedPipelineLocalId } from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
+import {
+  isSharedPipelineLocalId,
+  parseSharedPipelineLocalId,
+} from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
 import type { PluginsCache } from '@canopy/execution-engine/types/plugins';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
 import { getTriggerTypes } from '@canopy/execution-engine/types/pipeline';
@@ -160,6 +166,34 @@ interface TriggerLabels {
   emptyMessage: string;
 }
 
+/** A shared workflow's detail as the picker's pipeline data. */
+function sharedPipelineData(
+  detail: SharedPipelineDetail,
+  localId: string,
+): PipelineData {
+  const info: PipelineInfo = {
+    id: localId,
+    name: detail.name,
+    filename: '',
+    description: detail.description,
+    icon: detail.icon,
+    createdAt: detail.createdAt,
+    updatedAt: detail.updatedAt,
+    triggerTypes: detail.triggerTypes,
+    scopes: detail.scopes ?? [...DEFAULT_PIPELINE_SCOPES],
+    source: 'shared',
+    readonly: !detail.canUpdate,
+    serverId: CANOPY_CLOUD_SERVER_ID,
+    remoteId: detail.id,
+    canUpdate: detail.canUpdate,
+    canDelete: detail.canDelete,
+    shareScope: detail.shareScope ?? 'private',
+    distributionMode: detail.distributionMode ?? 'definition_only',
+    ...(detail.owner ? { owner: detail.owner } : {}),
+  };
+  return { info, content: parsePipelineText(detail.rawPipeline) };
+}
+
 /**
  * Plugin-collection draft snapshot carried out of the trigger modal alongside
  * the run payload. The executor receives both fields so a draft (unsaved)
@@ -228,6 +262,15 @@ export interface PipelineTriggerModalProps {
    */
   initialPipelineId?: string;
   /**
+   * Set when `initialPipelineId` is a pick remembered from earlier (the New
+   * task + menu, CAN-7261), not an explicit request: the source of the
+   * definition that was picked. It is preselected only while this runner
+   * lists that exact definition (same id and source), turned on and able to
+   * run here. An explicit id, such as the editor's Run, leaves this unset
+   * and is preselected even when turned off.
+   */
+  initialPipelineSource?: PipelineInfo['source'];
+  /**
    * Seed values for the configure step's inputs, applied only while the
    * selected pipeline is `initialPipelineId` and only for input names that
    * pipeline declares; the user can still change everything before running.
@@ -258,6 +301,28 @@ export interface PipelineTriggerModalProps {
   runErrorRecorded?: boolean;
   onClearError?: () => void;
   runLabel?: string;
+  /** Leads the footer, before Cancel: a secondary way out of the dialog. */
+  leadingAction?: ReactNode;
+  /**
+   * Whether the main action saves the model choices as the workflow's
+   * defaults once it is done, as a run does. An action that only records the
+   * settings (Attach a workflow's Insert, CAN-7513) passes `false`.
+   */
+  saveModelDefaultsOnSubmit?: boolean;
+  /**
+   * Settings chosen earlier for `initialPipelineId` (an attached workflow
+   * under review): its model overrides and plugin-collection choices over the
+   * saved ones, its Fast mode, and its watcher.
+   */
+  initialRunSettings?: {
+    modelAliasPreferences?: Record<string, PipelineModelAliasPreference>;
+    pluginCollectionPreferences?: Record<
+      string,
+      PipelinePluginCollectionPreference
+    >;
+    modelConfig?: AgentModelConfig;
+    watcher?: PipelineWatcherSelection | null;
+  };
   /**
    * The repositories a code review run here may publish to, under the run's
    * owner (CAN-7162). A selected workflow that publishes a review shows the
@@ -619,6 +684,7 @@ export function PipelineTriggerModal({
   runContextReview,
   reloadToken = 0,
   initialPipelineId,
+  initialPipelineSource,
   initialInputs,
   startOnSettings = false,
   onClose,
@@ -629,6 +695,9 @@ export function PipelineTriggerModal({
   runErrorRecorded = false,
   onClearError,
   runLabel = 'Run',
+  leadingAction,
+  saveModelDefaultsOnSubmit = true,
+  initialRunSettings,
   runLoadingLabel = 'Running…',
   reviewApprovalInputs,
   ownerDocument,
@@ -663,10 +732,18 @@ export function PipelineTriggerModal({
   const [fastMode, setFastMode] = useState(false);
 
   // Watcher toggle state (only relevant when `watcherRecipientGroups` is set).
-  const [watcherEnabled, setWatcherEnabled] = useState(false);
+  // Read once: the settings an attached workflow was inserted with.
+  const earlierRunSettings = useRef(initialRunSettings);
+  const [watcherEnabled, setWatcherEnabled] = useState(
+    () => (initialRunSettings?.watcher ?? null) !== null,
+  );
   const [watcherRecipient, setWatcherRecipient] =
-    useState<AppAdvisorWatcherDestination | null>(null);
-  const [watcherFollowUp, setWatcherFollowUp] = useState('');
+    useState<AppAdvisorWatcherDestination | null>(
+      () => initialRunSettings?.watcher?.destination ?? null,
+    );
+  const [watcherFollowUp, setWatcherFollowUp] = useState(
+    () => initialRunSettings?.watcher?.followUpInstruction ?? '',
+  );
 
   // Plugin-collection state
   const [collectionDraft, setCollectionDraft] = useState<
@@ -726,7 +803,8 @@ export function PipelineTriggerModal({
       .then((preferences) => {
         if (cancelled) return;
         setFastMode(
-          preferences.providerModelConfigDefaults?.codex?.fastMode ??
+          earlierRunSettings.current?.modelConfig?.fastMode ??
+            preferences.providerModelConfigDefaults?.codex?.fastMode ??
             preferences.codexFastModeDefaultEnabled ??
             false,
         );
@@ -854,11 +932,15 @@ export function PipelineTriggerModal({
     async function load(): Promise<void> {
       if (contextPending) return;
       try {
-        const [listResult, projectResult] = await Promise.all([
+        const [listResult, projectResult, disabledAtLoad] = await Promise.all([
           window.pipelines.list(),
           cwd
             ? window.pipelines.discoverProject(cwd)
             : Promise.resolve({ success: true, data: [] }),
+          // Read with the list, so a remembered pick is checked against them.
+          initialPipelineId && initialPipelineSource !== undefined
+            ? loadDisabledPipelineIdsBestEffort()
+            : Promise.resolve(new Set<string>()),
         ]);
         if (cancelled) return;
 
@@ -900,9 +982,20 @@ export function PipelineTriggerModal({
           pipelines: loaded,
           curated: allInfos.filter((info) => info.source === 'curated'),
         });
+        // A remembered pick must be one this runner lists: turned on and
+        // able to run here (CAN-7261: it may since have been turned off, or
+        // not fit a Cowork folder). Otherwise none is preselected and the
+        // person chooses.
         if (
           initialPipelineId &&
-          loaded.some((p) => p.info.id === initialPipelineId)
+          loaded.some(
+            (p) =>
+              p.info.id === initialPipelineId &&
+              (initialPipelineSource === undefined ||
+                (p.info.source === initialPipelineSource &&
+                  !disabledAtLoad.has(initialPipelineId) &&
+                  supportsSurface(p.info))),
+          )
         ) {
           setSelectedId((prev) => prev ?? initialPipelineId);
         } else if (
@@ -952,6 +1045,44 @@ export function PipelineTriggerModal({
             if (!cancelled && generation === selectionGeneration.current)
               setSharedHydrating(null);
           }
+        } else if (initialPipelineId && initialPipelineSource === 'shared') {
+          // An attached shared workflow, opened again or for review
+          // (CAN-7513): hydrated here as a manual pick would be, so it opens
+          // selected with the settings it was inserted with.
+          const shared = parseSharedPipelineLocalId(initialPipelineId);
+          if (shared === null) return;
+          const generation = ++selectionGeneration.current;
+          setSharedHydrating(initialPipelineId);
+          try {
+            const result = await window.pipelines.getShared({
+              remoteId: shared.remoteId,
+            });
+            if (cancelled || generation !== selectionGeneration.current) return;
+            if (!result.success || !result.data)
+              throw new Error(result.error ?? 'Failed to load shared workflow');
+            const data = sharedPipelineData(result.data, initialPipelineId);
+            if (
+              !getTriggerTypes(data.content.on).includes(triggerType) ||
+              !supportsSurface(data.info)
+            )
+              return;
+            setSharedHydratedById((prev) => ({
+              ...prev,
+              [initialPipelineId]: data,
+            }));
+            setSelectedId((prev) => prev ?? initialPipelineId);
+          } catch (err) {
+            reportClientAppError(err);
+            if (cancelled || generation !== selectionGeneration.current) return;
+            setSharedHydrateError(
+              err instanceof Error
+                ? err.message
+                : 'Failed to load shared workflow',
+            );
+          } finally {
+            if (!cancelled && generation === selectionGeneration.current)
+              setSharedHydrating(null);
+          }
         }
       } catch (err: unknown) {
         if (!cancelled) {
@@ -973,6 +1104,7 @@ export function PipelineTriggerModal({
     cwd,
     contextPending,
     initialPipelineId,
+    initialPipelineSource,
     sharedCloudAccount,
     supportsSurface,
     reloadToken,
@@ -1286,29 +1418,7 @@ export function PipelineTriggerModal({
             );
             return;
           }
-          const detail = result.data;
-          const content = parsePipelineText(detail.rawPipeline);
-          const info: PipelineInfo = {
-            id: localId,
-            name: detail.name,
-            filename: '',
-            description: detail.description,
-            icon: detail.icon,
-            createdAt: detail.createdAt,
-            updatedAt: detail.updatedAt,
-            triggerTypes: detail.triggerTypes,
-            scopes: detail.scopes ?? [...DEFAULT_PIPELINE_SCOPES],
-            source: 'shared',
-            readonly: !detail.canUpdate,
-            serverId: CANOPY_CLOUD_SERVER_ID,
-            remoteId: detail.id,
-            canUpdate: detail.canUpdate,
-            canDelete: detail.canDelete,
-            shareScope: detail.shareScope ?? 'private',
-            distributionMode: detail.distributionMode ?? 'definition_only',
-            ...(detail.owner ? { owner: detail.owner } : {}),
-          };
-          const data: PipelineData = { info, content };
+          const data = sharedPipelineData(result.data, localId);
           setSharedHydratedById((prev) => ({ ...prev, [localId]: data }));
         } catch (err: unknown) {
           if (generation !== selectionGeneration.current) return;
@@ -1424,8 +1534,26 @@ export function PipelineTriggerModal({
           setCollectionDraftSeededFor(selectedPipelineId);
           return;
         }
-        setCollectionDraft(result.data.effectivePreferences);
-        setCollectionDefaultsBaseline(result.data.effectivePreferences);
+        const effective = result.data.effectivePreferences;
+        // Choices made earlier for this workflow sit over the saved ones,
+        // for the collections it still has; the saved ones stay the baseline.
+        const earlier =
+          selectedPipelineId === initialPipelineId
+            ? earlierRunSettings.current?.pluginCollectionPreferences
+            : undefined;
+        setCollectionDraft(
+          earlier === undefined
+            ? effective
+            : {
+                ...effective,
+                ...Object.fromEntries(
+                  Object.entries(earlier).filter(
+                    ([collectionId]) => collectionId in effective,
+                  ),
+                ),
+              },
+        );
+        setCollectionDefaultsBaseline(effective);
         setCollectionPreview(result.data.previewItems);
         setCollectionValidation(result.data.validation);
         setCollectionDraftSeededFor(selectedPipelineId);
@@ -1451,7 +1579,12 @@ export function PipelineTriggerModal({
     return (): void => {
       cancelled = true;
     };
-  }, [selectedPipeline, hasCollections, selectedPipelineLocator]);
+  }, [
+    selectedPipeline,
+    hasCollections,
+    selectedPipelineLocator,
+    initialPipelineId,
+  ]);
 
   // Seed the model-alias draft from stored per-pipeline preferences whenever
   // the selected pipeline (or its locator) changes. Mirrors the plugin-
@@ -1485,7 +1618,23 @@ export function PipelineTriggerModal({
           result.success && result.data ? result.data.preferences : {},
           selectedPipelineAliases,
         );
-        setAliasDraft(preferences);
+        // Overrides chosen earlier for this workflow sit over the saved
+        // ones; the saved ones stay the baseline.
+        const earlier =
+          selectedPipelineId === initialPipelineId
+            ? earlierRunSettings.current?.modelAliasPreferences
+            : undefined;
+        setAliasDraft(
+          earlier === undefined
+            ? preferences
+            : {
+                ...preferences,
+                ...filterAliasPreferencesToAliases(
+                  earlier,
+                  selectedPipelineAliases,
+                ),
+              },
+        );
         setAliasDefaultsBaseline(preferences);
         setAliasDraftSeededFor(selectedPipelineId);
       } catch {
@@ -1500,7 +1649,12 @@ export function PipelineTriggerModal({
     return (): void => {
       cancelled = true;
     };
-  }, [selectedPipeline, hasAliases, selectedPipelineLocator]);
+  }, [
+    selectedPipeline,
+    hasAliases,
+    selectedPipelineLocator,
+    initialPipelineId,
+  ]);
 
   // Re-resolve preview when the user edits the draft.
   // Also re-resolve when local catalogs change; the main process owns matching
@@ -1973,10 +2127,11 @@ export function PipelineTriggerModal({
         selectedRepoId,
         collectionContext,
       );
-      await saveModelAliasPreferencesAfterRun(
-        collectionContext.modelAliasPreferences,
-        generation,
-      );
+      if (saveModelDefaultsOnSubmit)
+        await saveModelAliasPreferencesAfterRun(
+          collectionContext.modelAliasPreferences,
+          generation,
+        );
     })();
   };
 
@@ -2515,6 +2670,7 @@ export function PipelineTriggerModal({
             )}
           </div>
           <DialogActionFooter padding="none" separated={false}>
+            {leadingAction}
             <Button
               size="compact"
               onClick={onClose}

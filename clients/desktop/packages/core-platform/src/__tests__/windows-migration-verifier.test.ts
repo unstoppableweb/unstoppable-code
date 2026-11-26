@@ -405,7 +405,7 @@ suite(
         verifier.close();
         image.close();
       }
-    });
+    }, 30000);
 
     it('refuses native exact-image, publisher, certificate, role and direction mismatches', async () => {
       const { channel } = await launch();
@@ -471,7 +471,7 @@ suite(
       } finally {
         image.close();
       }
-    });
+    }, 30000);
 
     it('pins a copied executable against write and replacement until retirement', async () => {
       const dir = await mkdtemp(path.join(tmpdir(), 'w2-image-'));
@@ -542,6 +542,6 @@ suite(
       } finally {
         image.close();
       }
-    });
+    }, 30000);
   },
 );

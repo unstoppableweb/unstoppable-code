@@ -15,6 +15,8 @@ import type {
 } from '@canopy/desktop-shared/node/w5-commit-log';
 import {
   createW5CommitLogFileStore as createCoreW5CommitLogFileStore,
+  W5FileWriteRefusedError,
+  W5RevisionConflictError,
   type W5CommitLogFileStore,
   type W5CommitLogHostPort,
 } from '@canopy/core-runtime/node/w5/commit-log-file-store';
@@ -25,6 +27,10 @@ import { logMainProcessWarn } from './main-process-logging';
 import { markE2eStartup } from './e2e-startup-marks';
 import { admitStorageWrite } from '@canopy/execution-engine/node/lib/storage-admission';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
+import {
+  W5CommitLogError,
+  W5ProcessFileLockTimeoutError,
+} from '@canopy/core-runtime/node/w5/commit-log/errors';
 import { readWorkspaceIndex } from '@canopy/core-runtime/node';
 import { W5_AGGREGATE_KEYS, w5RecordFileClass } from './w5-work-counters';
 import {
@@ -55,6 +61,23 @@ export {
   w5ResourceKey,
   type W5CommitLogFileStore,
 } from '@canopy/core-runtime/node/w5/commit-log-file-store';
+
+/**
+ * A W5 failure that proves no application (CAN-4477's rollback set).
+ * `recovery-required` can follow a saved decision; unknown errors may have
+ * committed.
+ */
+export function isDefiniteW5Refusal(error: unknown): boolean {
+  return (
+    error instanceof W5RevisionConflictError ||
+    error instanceof W5FileWriteRefusedError ||
+    error instanceof W5CommitLogError ||
+    error instanceof W5ProcessFileLockTimeoutError ||
+    error instanceof W5DaemonHandoffError ||
+    (error instanceof W5CommitRefusedError &&
+      error.reason !== 'recovery-required')
+  );
+}
 
 /**
  * The core store bound to desktop main's logger, direct reads and storage

@@ -4,6 +4,7 @@ import {
   reduceChatTurn,
   reduceChatTurnHostEvent,
   serializeChatTurnState,
+  settleChatTurnForStop,
 } from '@canopy/agent-transcript/turn';
 import type {
   ChatTurnEffect,
@@ -73,6 +74,32 @@ export interface ChatTurnStateHandoffSnapshot {
   readonly lifecycle?: readonly TurnLifecycleOwnership[];
   /** Latest retained record per T, including intermediate executions. */
   readonly turnRecords?: readonly ChatTurnRecord[];
+  /** Set on a staged Stop's snapshot; only that exact stage may adopt it. */
+  readonly stageToken?: number;
+}
+
+/**
+ * An explicit Stop reduced into a draft that only its owning transaction can
+ * see. It is published only when that transaction's repository commit
+ * applies; otherwise it is discarded and leaves no trace for a fallback.
+ */
+export interface ChatTurnStopStage {
+  readonly key: string;
+  readonly identity: number;
+  readonly generation: number;
+  readonly token: number;
+  readonly scope: ChatTurnStateHandoffScope;
+}
+
+interface StagedStop {
+  readonly token: number;
+  readonly generation: number;
+  readonly state: ChatTurnState;
+  readonly effects: readonly ChatTurnEffect[];
+  readonly journal: JournalGeneration;
+  /** Resolves once the stage is published or dropped. */
+  readonly settled: Promise<void>;
+  readonly release: () => void;
 }
 
 interface PauseRequest {
@@ -114,6 +141,12 @@ interface HandoffEntry {
   committedGeneration: number;
   timer?: ReturnType<typeof setTimeout>;
   flushing?: Promise<void>;
+  /**
+   * A Stop awaiting its repository commit. While set, receipts queue
+   * unreduced, the fallback is suspended, and neither the live state nor a
+   * snapshot is exposed to anyone but the stage's owner.
+   */
+  stagedStop?: StagedStop;
   disposed: boolean;
 }
 
@@ -195,6 +228,7 @@ export class ChatTurnStateHandoff {
   private readonly onError: (error: unknown) => void;
   private nextIdentity = 1;
   private nextResetSequence = 1;
+  private nextStageToken = 1;
   private disposed = false;
 
   public constructor(private readonly options: ChatTurnStateHandoffOptions) {
@@ -245,13 +279,105 @@ export class ChatTurnStateHandoff {
     this.enqueuePause(entry, observation);
   }
 
-  /** Read the installed reducer state without starting an asynchronous load. */
+  /**
+   * Read the installed reducer state without starting an asynchronous load.
+   * Withheld while a Stop is staged: the pre-Stop state would be stale beside
+   * a repository that may already hold the Stop optimistically, and the Stop
+   * itself is speculative until its commit applies. Callers fall back to the
+   * canonical `runtime.turn`; the stage's owner reads {@link stagedSnapshot}.
+   */
   public getState(
     scope: ChatTurnStateHandoffScope,
   ): PersistedChatTurnState | undefined {
     const entry = this.entries.get(keyFor(scope));
-    if (!entry || entry.disposed || !entry.loaded) return undefined;
+    if (!entry || entry.disposed || !entry.loaded || entry.stagedStop)
+      return undefined;
     return serializeChatTurnState(entry.state);
+  }
+
+  /**
+   * Reduce an explicit Stop into a draft without touching the live entry.
+   * Returns undefined when nothing settles, the entry cannot take a Stop, or
+   * another Stop is already staged for the chat. The owner must resolve the
+   * stage: {@link acknowledge} of its {@link stagedSnapshot} with an applied
+   * commit publishes it, and {@link discardStop} drops it. Until then later receipts queue, so a discarded Stop rolls back
+   * nothing else and they reduce, in order, on whichever state wins.
+   */
+  public stageStop(
+    scope: ChatTurnStateHandoffScope,
+    turnId: string,
+    endedAt: number,
+    persisted: unknown,
+  ): ChatTurnStopStage | undefined {
+    if (this.disposed) return undefined;
+    const entry = this.getOrCreate(scope, persisted, true);
+    this.seedFromState(scope, persisted);
+    if (
+      !entry.loaded ||
+      entry.disposed ||
+      entry.restartPending ||
+      entry.invalidating ||
+      entry.stagedStop
+    )
+      return undefined;
+    const before = entry.state;
+    const { state, effects } = settleChatTurnForStop(before, turnId, endedAt);
+    if (effects.length === 0) return undefined;
+    const generation = entry.generation + 1;
+    const token = this.nextStageToken++;
+    let release: () => void = () => undefined;
+    const settled = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    entry.stagedStop = {
+      token,
+      generation,
+      state,
+      effects: effects.map((effect) => ({ ...effect })),
+      journal: this.journalItem(generation, before, state, effects),
+      settled,
+      release,
+    };
+    // A fallback must not commit around the draft while its write is open.
+    this.cancelFallback(entry);
+    return {
+      key: entry.key,
+      identity: entry.identity,
+      generation,
+      token,
+      scope: { ...entry.scope },
+    };
+  }
+
+  /** The owner's view of its draft; undefined once published, dropped or stale. */
+  public stagedSnapshot(
+    stage: ChatTurnStopStage,
+  ): ChatTurnStateHandoffSnapshot | undefined {
+    const entry = this.stagedEntry(stage);
+    const staged = entry?.stagedStop;
+    if (!entry || !staged) return undefined;
+    return {
+      key: entry.key,
+      identity: entry.identity,
+      generation: staged.generation,
+      scope: entry.scope,
+      turn: serializeChatTurnState(staged.state),
+      ...this.journalPrefix(entry, staged.generation, [staged.journal]),
+      stageToken: staged.token,
+    };
+  }
+
+  /**
+   * Drop a Stop whose commit failed, did not apply, or did not carry its
+   * snapshot; a no-op once published. Call it unconditionally when the
+   * owning transaction settles.
+   */
+  public discardStop(stage: ChatTurnStopStage): void {
+    const entry = this.stagedEntry(stage);
+    const staged = entry?.stagedStop;
+    if (!entry || !staged) return;
+    entry.stagedStop = undefined;
+    this.resumeAfterStage(entry, staged);
   }
 
   /** Stop a stale fallback from racing the repository's restart settlement. */
@@ -302,6 +428,9 @@ export class ChatTurnStateHandoff {
       this.trimEntries(entry);
     } else {
       this.cancelFallback(entry);
+      // The restart transaction is ordered after any Stop write, so its
+      // persisted turn already holds that Stop when the write applied.
+      this.dropStage(entry);
       entry.state = persistedTurn(persisted);
       entry.hostSequence = Math.max(
         entry.hostSequence,
@@ -348,6 +477,7 @@ export class ChatTurnStateHandoff {
     if (
       entry.disposed ||
       entry.restartPending ||
+      entry.stagedStop !== undefined ||
       this.entries.get(entry.key) !== entry ||
       entry.generation <= entry.durableGeneration
     ) {
@@ -363,7 +493,6 @@ export class ChatTurnStateHandoff {
     };
   }
 
-  /** Reduced, unacknowledged state for a transaction that cannot await. */
   /** Hydrates a still-loading entry from a transaction's committed turn, then reduces its queue. */
   public seedFromState(
     scope: ChatTurnStateHandoffScope,
@@ -382,6 +511,13 @@ export class ChatTurnStateHandoff {
     this.drainPending(entry);
   }
 
+  /**
+   * Reduced, unacknowledged state for a transaction that cannot await.
+   * Undefined while a Stop is staged: the repository admits later
+   * transactions before the Stop is durable, and they already carry it in
+   * their optimistic state, so only the owner attaches it (via
+   * {@link stagedSnapshot}).
+   */
   public snapshotNow(
     scope: ChatTurnStateHandoffScope,
   ): ChatTurnStateHandoffSnapshot | undefined {
@@ -391,6 +527,7 @@ export class ChatTurnStateHandoff {
       !entry ||
       entry.disposed ||
       entry.restartPending ||
+      entry.stagedStop !== undefined ||
       !entry.loaded ||
       entry.generation <= entry.durableGeneration
     ) {
@@ -424,6 +561,26 @@ export class ChatTurnStateHandoff {
     autoRoutedModels?: Readonly<Record<string, string>>,
   ): void {
     const entry = this.entries.get(snapshot.key);
+    let published: StagedStop | undefined;
+    if (snapshot.stageToken !== undefined) {
+      // Only the owner's applied commit of its own staged Stop publishes it,
+      // before the acknowledgement below finds the Stop in the live journal.
+      // A commit that did not apply leaves the stage for its owner to
+      // discard, and a dropped or superseded stage's snapshot (whose retry
+      // can reuse its generation) acknowledges nothing.
+      if (
+        !applied ||
+        entry === undefined ||
+        entry.disposed ||
+        entry.invalidating ||
+        entry.identity !== snapshot.identity ||
+        entry.stagedStop?.token !== snapshot.stageToken ||
+        entry.stagedStop.generation !== snapshot.generation
+      )
+        return;
+      published = this.adoptStage(entry);
+      if (!published) return;
+    }
     if (
       !applied ||
       entry === undefined ||
@@ -465,6 +622,8 @@ export class ChatTurnStateHandoff {
     if (entry.generation > entry.durableGeneration)
       this.scheduleFallback(entry);
     else this.cancelFallback(entry);
+    // Receipts queued behind the Stop reduce on the published state.
+    if (published) this.resumeAfterStage(entry, published);
     this.trimEntries(entry);
   }
 
@@ -502,6 +661,7 @@ export class ChatTurnStateHandoff {
       this.trimEntries(entry);
     }
     this.cancelFallback(entry);
+    this.dropStage(entry);
     entry.invalidating = true;
     entry.restartPending = false;
     entry.state = initialChatTurnState();
@@ -537,6 +697,7 @@ export class ChatTurnStateHandoff {
     this.disposed = true;
     for (const entry of Array.from(this.entries.values())) {
       this.cancelFallback(entry);
+      this.dropStage(entry);
       entry.disposed = true;
       entry.pendingEvents.length = 0;
       entry.journal.length = 0;
@@ -606,6 +767,7 @@ export class ChatTurnStateHandoff {
           !candidate.disposed &&
           !candidate.invalidating &&
           !candidate.restartPending &&
+          candidate.stagedStop === undefined &&
           candidate.pendingEvents.length === 0 &&
           candidate.generation <= candidate.durableGeneration &&
           candidate.flushing === undefined,
@@ -619,6 +781,7 @@ export class ChatTurnStateHandoff {
   private evict(entry: HandoffEntry): void {
     if (this.entries.get(entry.key) !== entry) return;
     this.cancelFallback(entry);
+    this.dropStage(entry);
     entry.disposed = true;
     entry.pendingEvents.length = 0;
     entry.journal.length = 0;
@@ -676,8 +839,10 @@ export class ChatTurnStateHandoff {
     else void this.processPending(entry);
   }
 
+  /** Waits for a staged Stop to resolve, so receipts reduce in order after it. */
   private async processPending(entry: HandoffEntry): Promise<void> {
     await entry.loading;
+    while (entry.stagedStop) await entry.stagedStop.settled;
     this.drainPending(entry);
   }
 
@@ -686,6 +851,7 @@ export class ChatTurnStateHandoff {
       entry.disposed ||
       entry.restartPending ||
       entry.invalidating ||
+      entry.stagedStop !== undefined ||
       this.entries.get(entry.key) !== entry
     )
       return;
@@ -760,7 +926,18 @@ export class ChatTurnStateHandoff {
     before: ChatTurnState,
     effects: readonly ChatTurnEffect[],
   ): void {
-    const state = serializeChatTurnState(entry.state);
+    entry.journal.push(
+      this.journalItem(entry.generation, before, entry.state, effects),
+    );
+  }
+
+  private journalItem(
+    generation: number,
+    before: ChatTurnState,
+    after: ChatTurnState,
+    effects: readonly ChatTurnEffect[],
+  ): JournalGeneration {
+    const state = serializeChatTurnState(after);
     const records = [state.lastEnded, state.current].filter(
       (record): record is ChatTurnRecord => record !== undefined,
     );
@@ -771,7 +948,7 @@ export class ChatTurnStateHandoff {
     ): void => {
       lifecycle.push({
         turnId: record.id,
-        generation: entry.generation,
+        generation,
         transition,
         inputIds: [
           ...(record.inputIds ??
@@ -795,22 +972,23 @@ export class ChatTurnStateHandoff {
     ) {
       recordOwnership(state.current, 'binding');
     }
-    entry.journal.push({
-      generation: entry.generation,
+    return {
+      generation,
       effects: effects.map((effect) => ({ ...effect })),
       lifecycle,
       turnRecords: records,
-    });
+    };
   }
 
   private journalPrefix(
     entry: HandoffEntry,
     throughGeneration = entry.generation,
+    staged: readonly JournalGeneration[] = [],
   ): Pick<
     ChatTurnStateHandoffSnapshot,
     'effects' | 'lifecycle' | 'turnRecords'
   > {
-    const prefix = entry.journal.filter(
+    const prefix = [...entry.journal, ...staged].filter(
       (item) =>
         item.generation > entry.durableGeneration &&
         item.generation <= throughGeneration,
@@ -843,6 +1021,7 @@ export class ChatTurnStateHandoff {
       entry.disposed ||
       entry.restartPending ||
       entry.invalidating ||
+      entry.stagedStop !== undefined ||
       entry.timer !== undefined ||
       (entry.generation <= entry.durableGeneration &&
         !(includePending && entry.pendingEvents.length > 0))
@@ -857,6 +1036,7 @@ export class ChatTurnStateHandoff {
         entry.disposed ||
         entry.restartPending ||
         entry.invalidating ||
+        entry.stagedStop !== undefined ||
         entry.identity !== identity ||
         this.entries.get(entry.key) !== entry
       ) {
@@ -867,6 +1047,53 @@ export class ChatTurnStateHandoff {
       return this.flushEntry(entry);
     }, this.fallbackDelayMs);
     entry.timer.unref?.();
+  }
+
+  /** The live entry a stage token still owns, if any. */
+  private stagedEntry(stage: ChatTurnStopStage): HandoffEntry | undefined {
+    if (this.disposed) return undefined;
+    const entry = this.entries.get(stage.key);
+    if (
+      !entry ||
+      entry.disposed ||
+      entry.invalidating ||
+      entry.identity !== stage.identity ||
+      entry.stagedStop?.token !== stage.token
+    )
+      return undefined;
+    return entry;
+  }
+
+  /** Install a committed Stop as the live state; receipts stay queued. */
+  private adoptStage(entry: HandoffEntry): StagedStop | undefined {
+    const staged = entry.stagedStop;
+    if (!staged) return undefined;
+    entry.stagedStop = undefined;
+    // Nothing else advances the generation while a Stop is staged.
+    if (entry.generation >= staged.generation) {
+      this.resumeAfterStage(entry, staged);
+      return undefined;
+    }
+    entry.state = staged.state;
+    entry.generation = staged.generation;
+    entry.journal.push(staged.journal);
+    this.notifyChange(entry, 'lifecycle', staged.effects);
+    return staged;
+  }
+
+  /** Release waiters and reduce the receipts queued behind a resolved stage. */
+  private resumeAfterStage(entry: HandoffEntry, staged: StagedStop): void {
+    staged.release();
+    this.drainPending(entry);
+    this.scheduleFallback(entry, true);
+  }
+
+  /** Forget a stage whose entry is reset, restarted, evicted or disposed. */
+  private dropStage(entry: HandoffEntry): void {
+    const staged = entry.stagedStop;
+    if (!staged) return;
+    entry.stagedStop = undefined;
+    staged.release();
   }
 
   private cancelFallback(entry: HandoffEntry): void {

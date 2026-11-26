@@ -1,8 +1,8 @@
 'use client';
 
-import { ControlButton } from '../Button';
+import { ControlButton } from '../../primitives/Button';
 import { useId, type JSX } from 'react';
-import { Tooltip } from '../Tooltip';
+import { Tooltip } from '../../primitives/Tooltip';
 import { LedgerActorAvatar } from './LedgerActorAvatar';
 import type { LedgerDensity } from './ledger-entry-slots';
 

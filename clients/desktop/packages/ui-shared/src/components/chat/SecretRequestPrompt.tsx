@@ -15,15 +15,15 @@ import {
 import { AGENT_SECRET_VALUE_MAX_LENGTH } from '@canopy/protocol/agent-secrets';
 import { ArrowUpRightIcon, EyeIcon, EyeOffIcon } from '../../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
-import { Button } from '../Button';
-import { ConfirmDialog } from '../ConfirmDialog';
-import { FormField } from '../FormField';
-import { TextArea, TextInput } from '../Field';
-import { Notice } from '../Notice';
-import { OverlayScrollArea } from '../OverlayScrollArea';
-import { TextLink } from '../TextLink';
+import { Button } from '../../primitives/Button';
+import { ConfirmDialog } from '../../primitives/ConfirmDialog';
+import { FormField } from '../../primitives/FormField';
+import { TextArea, TextInput } from '../../primitives/Field';
+import { Notice } from '../../primitives/Notice';
+import { OverlayScrollArea } from '../../primitives/OverlayScrollArea';
+import { TextLink } from '../../primitives/TextLink';
 import { useChatAppName } from '../chat-look';
-import { isCoarsePointerNow } from '../useMediaQuery';
+import { isCoarsePointerNow } from '../../primitives/useMediaQuery';
 import { ComposerIconButton } from './ComposerIconButton';
 import {
   ComposerPromptHeader,

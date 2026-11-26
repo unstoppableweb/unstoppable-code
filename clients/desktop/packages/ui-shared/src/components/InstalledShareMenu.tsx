@@ -6,9 +6,9 @@ import {
   ActionMenuItems,
   ActionMenuRowStyle,
   type ActionMenuItem,
-} from './ActionMenuItems';
-import { Button } from './Button';
-import { FLOATING_MENU_GAP, FloatingMenu } from './FloatingMenu';
+} from '../primitives/ActionMenuItems';
+import { Button } from '../primitives/Button';
+import { FLOATING_MENU_GAP, FloatingMenu } from '../primitives/FloatingMenu';
 import { UninstallConfirmDialog } from './UninstallConfirmDialog';
 
 /**

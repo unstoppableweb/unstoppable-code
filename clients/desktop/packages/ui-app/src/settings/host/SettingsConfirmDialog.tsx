@@ -4,7 +4,7 @@ import type { JSX, ReactNode, RefObject } from 'react';
 import {
   ConfirmDialog,
   type ConfirmDialogErrorProps,
-} from '@canopy/ui-shared/components/ConfirmDialog';
+} from '@canopy/ui-shared/primitives/ConfirmDialog';
 
 interface SettingsConfirmDialogBaseProps {
   readonly title: ReactNode;

@@ -22,13 +22,8 @@ import { useChatStore } from '@/stores/chatStore';
 import { requestFilePanelPlacementBesideChat } from '@/lib/panels/chat-panel-sync';
 import { TurnDiffPopover } from './TurnDiffPopover';
 import { TurnFileControl } from './TurnFiles';
-import {
-  InlineReplyFilePreview,
-  isInlineReplyOutput,
-  readInlineReplyDocument,
-} from '@canopy/ui-app';
-import { resolveDesktopDocumentBytes } from '@/lib/file-viewer/desktop-document-bytes';
-import { resolveDesktopPdfPreviewAssets } from '@/lib/pdf-preview-assets';
+import { InlineReplyFilePreview, isInlineReplyOutput } from '@canopy/ui-app';
+import { FileTypeIcon } from '@canopy/ui-shared/icons';
 import { workspaceFileSourceFor } from '@/lib/files/workspace-file-source';
 import { openFileInDiff } from '@/lib/panels/open-file-diff';
 import {
@@ -93,41 +88,17 @@ function DesktopInlineReplyPreview({
   readonly projectId: string;
   readonly worktreeId: string;
 }): JSX.Element {
-  const readPreview = useCallback(
-    async (signal: AbortSignal) => {
-      const extension = file.path.split('.').pop()?.toLowerCase();
-      const fileSource = workspaceFileSourceFor(worktreeId);
-      if (!fileSource.onThisComputer) return null;
-      if (extension === 'pdf' || extension === 'xlsx') {
-        const result = await resolveDesktopDocumentBytes(
-          () =>
-            window.api.readFileDocumentBytes({
-              absolutePath: file.absolutePath,
-              workspaceTarget: { projectId, worktreeId },
-            }),
-          signal,
-        );
-        if (result.status !== 'ready') return null;
-        const { createDesktopOfficeWorker } =
-          await import('@/lib/file-viewer/desktop-office-worker');
-        return readInlineReplyDocument({
-          kind: extension,
-          bytes: result.bytes,
-          signal,
-          createOfficeWorker: createDesktopOfficeWorker,
-          resolvePdfAssets: resolveDesktopPdfPreviewAssets,
-        });
-      }
-      const response = await fileSource.readFileContent({
-        absolutePath: file.absolutePath,
-        workspaceTarget: { projectId, worktreeId },
-      });
-      return response.kind === 'missing' || response.kind === 'unsupported'
-        ? null
-        : { content: response.content, truncated: response.truncated };
-    },
-    [file.absolutePath, file.path, projectId, worktreeId],
-  );
+  const readPreview = useCallback(async () => {
+    const fileSource = workspaceFileSourceFor(worktreeId);
+    if (!fileSource.onThisComputer) return null;
+    const response = await fileSource.readFileContent({
+      absolutePath: file.absolutePath,
+      workspaceTarget: { projectId, worktreeId },
+    });
+    return response.kind === 'missing' || response.kind === 'unsupported'
+      ? null
+      : { content: response.content, truncated: response.truncated };
+  }, [file.absolutePath, projectId, worktreeId]);
   return (
     <InlineReplyFilePreview
       path={file.path}
@@ -211,14 +182,19 @@ const FileCard = memo(function FileCard({
       presentation="turn-file-row"
       aria-label={file.path}
     >
-      <span className="flex min-w-0 flex-1 items-baseline">
-        {(folder !== '' || file.repoName) && (
-          <span className="min-w-0 truncate fg-tertiary">
-            {file.repoName ? `${file.repoName}: ` : ''}
-            {folder}
+      <span className="flex min-w-0 flex-1 items-center gap-2">
+        <FileTypeIcon filename={baseName} />
+        <span className="flex min-w-0 flex-1 items-baseline">
+          {(folder !== '' || file.repoName) && (
+            <span className="min-w-0 truncate fg-tertiary">
+              {file.repoName ? `${file.repoName}: ` : ''}
+              {folder}
+            </span>
+          )}
+          <span className="max-w-full shrink-0 truncate fg-primary">
+            {baseName}
           </span>
-        )}
-        <span className="shrink-0 fg-primary">{baseName}</span>
+        </span>
       </span>
       <LineCounts insertions={file.insertions} deletions={file.deletions} />
     </ControlButton>
@@ -522,6 +498,10 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
         )),
       ]
     : [];
+  // The card's one file, git change or output, names its type in the tile.
+  const soleFilePath =
+    singleFile?.path ??
+    (totalCount === 1 ? (extraFiles[0] ?? visiblePending[0])?.path : undefined);
   const singleContent = singleFile ? (
     <SingleDiffFile
       file={singleFile}
@@ -547,6 +527,11 @@ export const TurnDiffSummary = memo(function TurnDiffSummary({
       <TurnFilesSummaryView
         heading={cleanTitle}
         singleFile={singleContent}
+        fileIcon={
+          soleFilePath ? (
+            <FileTypeIcon filename={soleFilePath} size="md" />
+          ) : undefined
+        }
         changedFileCount={diffCount}
         turnId={turnId}
         expanded={isExpanded}

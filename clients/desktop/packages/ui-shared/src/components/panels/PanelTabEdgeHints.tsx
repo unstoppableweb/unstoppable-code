@@ -1,6 +1,6 @@
 'use client';
 
-import { ControlButton } from '../Button';
+import { ControlButton } from '../../primitives/Button';
 import {
   useCallback,
   useEffect,
@@ -11,8 +11,8 @@ import {
   type RefObject,
 } from 'react';
 import { prefersReducedMotion } from '../../lib/reduced-motion';
-import { ThinkingSpinner } from '../ThinkingSpinner';
-import { Tooltip } from '../Tooltip';
+import { ThinkingSpinner } from '../../primitives/ThinkingSpinner';
+import { Tooltip } from '../../primitives/Tooltip';
 
 /**
  * How far in from a strip edge a tab must sit to clear the "N running" hint

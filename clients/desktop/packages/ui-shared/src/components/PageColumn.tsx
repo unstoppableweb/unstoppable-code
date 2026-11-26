@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react';
-import { SPACE_ROLE_GAP_CLASS } from './Stack';
+import { SPACE_ROLE_GAP_CLASS } from '../primitives/Stack';
 
 /**
  * The page widths, as maximum widths of the column box (gutter included).

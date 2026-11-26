@@ -2,7 +2,7 @@ import {
   Button,
   type ButtonSize,
   type ButtonVariant,
-} from '@canopy/ui-shared/components/Button';
+} from '@canopy/ui-shared/primitives/Button';
 import {
   useCallback,
   useEffect,

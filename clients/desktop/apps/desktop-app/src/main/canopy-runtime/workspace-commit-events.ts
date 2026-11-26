@@ -1,5 +1,6 @@
 import {
   createCanopyWorkspaceEventBridge,
+  planCanopyWorkspaceInvalidation,
   type CanopyClientLeaseState,
   type CanopyEventsConnection,
   type CanopyWorkspaceInvalidationPlan,
@@ -9,6 +10,7 @@ import {
   CoreWorkspaceCommittedPayloadSchema,
   type CanopyEvent,
 } from '@canopy/protocol/canopy-core';
+import type { WorktreeData } from '@canopy/desktop-shared/types';
 import type { WorktreeMembershipRow } from '../lib/worktree-lifecycle-signals';
 import {
   logMainProcessInfo,
@@ -21,10 +23,14 @@ import {
  * the daemon) onto the caches Electron's own writers refresh after their
  * commits. Electron's own commits, which W6g routes through the daemon under
  * this process's client instance ids, keep publishing locally and are
- * skipped here. It records no self-write: the worktrees.json watcher's
- * external path still runs for a list another origin wrote (W8 owns both).
- * It only attaches to a daemon session that already exists, so production,
- * whose daemon withholds `core.events.*`, never subscribes.
+ * skipped here. A list another origin committed also gets the outside-change
+ * handling the worktrees.json watcher ran before CAN-7156; that watcher now
+ * runs only while this stream is not live. A broad plan on a live stream
+ * gives it to each list whose bytes moved since this subscriber last read
+ * them, other than by an own commit. It only
+ * attaches to a daemon session that already exists. A flip build spawns every
+ * daemon with the W5 host, which composes W5e and grants `core.events.read`,
+ * so main subscribes on each daemon session it holds.
  */
 
 /**
@@ -34,7 +40,7 @@ import {
  */
 export interface WorktreeListRead {
   readonly authority: 'ok' | 'absent' | 'partial' | 'unreadable';
-  readonly worktrees: readonly WorktreeMembershipRow[];
+  readonly worktrees: readonly WorktreeData[];
 }
 
 /**
@@ -59,12 +65,23 @@ export interface WorkspaceCommitEventHandlers {
   /** Every workspace the registries know, for a broad reconcile. */
   listWorkspaceIds(): readonly string[];
   readWorktreeList(workspaceId: string): Promise<WorktreeListRead>;
+  /**
+   * The list file's bytes (`null`: absent or unreadable), read locally with
+   * no capture; the broad compare's change check. Never throws.
+   */
+  readWorktreeListContent(workspaceId: string): Promise<string | null>;
   publishWorktreeListWrite(
     previous: readonly WorktreeMembershipRow[],
     next: readonly WorktreeMembershipRow[],
   ): void;
   /** Membership may have changed in ways no remembered list can tell. */
   publishWorktreeMembershipChange(): void;
+  /**
+   * Another origin committed this list, or a broad compare found it moved:
+   * reconciles main's per-worktree state from a complete read and reloads the
+   * renderer's projects. Never throws.
+   */
+  handleExternalWorktreeList(workspaceId: string, read: WorktreeListRead): void;
 }
 
 /** What the binding reads from an existing daemon session; it opens none. */
@@ -85,8 +102,9 @@ export interface WorkspaceCommitEventBindingOptions {
   /** Whether a `publishedBy` client instance id is this process's own. */
   readonly isOwnOrigin: (clientInstanceId: string) => boolean;
   /**
-   * The read cache's step (CAN-7155), run before every handler so they read
-   * what it captured; it rejects when its capture failed.
+   * The live cache's step (CAN-7155), ordered before independent store-backed
+   * handlers. Live capture failures reject for retry; retirement is a no-op,
+   * including an interrupted step, and never suppresses those handlers.
    */
   readonly readCache?: (plan: CanopyWorkspaceInvalidationPlan) => Promise<void>;
   readonly onStreamChanged?: (live: boolean) => void;
@@ -157,6 +175,55 @@ export function createWorkspaceCommitEventBinding({
 }: WorkspaceCommitEventBindingOptions): WorkspaceCommitEventBinding {
   // Each list's membership as this subscriber last read it.
   const memberships = new Map<string, readonly WorktreeMembershipRow[]>();
+  // Each list file's bytes as this subscriber last read them on a live
+  // stream, for the broad compare, which takes an unknown one silently. An
+  // own commit of the list forgets it, so own writes are never announced. A
+  // drop forgets all and no outage plan compares: the restarted watcher
+  // covers the outage, and its final read covers the broad plan the next
+  // open owes. Retire with the watcher at W5 worktree_list activation.
+  const listBytes = new Map<string, string | null>();
+  // Bumped wherever a baseline is forgotten, so a read that overlapped the
+  // forget never becomes one (a recovery's re-read runs beside deliveries).
+  const forgotten = new Map<string, number>();
+  let live = false;
+  let streamDrops = 0;
+  /** The list's baseline epoch; undefined while the stream is not live. */
+  const baselineEpoch = (workspaceId: string): string | undefined =>
+    live ? `${streamDrops}:${forgotten.get(workspaceId) ?? 0}` : undefined;
+  const noteDelivered = noteFirstCommittedDelivery(isOwnOrigin);
+  const onDelivered = (event: CanopyEvent): void => {
+    noteDelivered(event);
+    if (event.name !== CORE_WORKSPACE_COMMITTED_EVENT) return;
+    const payload = CoreWorkspaceCommittedPayloadSchema.safeParse(
+      event.payload,
+    );
+    const publishedBy = payload.success ? payload.data.publishedBy : undefined;
+    if (publishedBy === undefined || !isOwnOrigin(publishedBy)) return;
+    const plan = planCanopyWorkspaceInvalidation(event, () => false);
+    for (const workspaceId of plan?.worktreeLists ?? []) {
+      listBytes.delete(workspaceId);
+      forgotten.set(workspaceId, (forgotten.get(workspaceId) ?? 0) + 1);
+    }
+  };
+  const streamChanged = (next: boolean): void => {
+    if (!next) {
+      listBytes.clear();
+      streamDrops += 1;
+    }
+    live = next;
+    onStreamChanged?.(next);
+  };
+  /** Keeps `content` as the baseline when nothing forgot it since `epoch`. */
+  const keepBaseline = (
+    workspaceId: string,
+    epoch: string | undefined,
+    content: string | null,
+  ): boolean => {
+    if (epoch === undefined || baselineEpoch(workspaceId) !== epoch)
+      return false;
+    listBytes.set(workspaceId, content);
+    return true;
+  };
   /** Runs one handler; a failure is collected and its siblings still run. */
   const stepper =
     (failures: unknown[]): Step =>
@@ -173,16 +240,44 @@ export function createWorkspaceCommitEventBinding({
     };
 
   const refreshList = async (workspaceId: string): Promise<void> => {
+    // Bytes first: a commit between the two reads is announced again, never lost.
+    const epoch = baselineEpoch(workspaceId);
+    const content =
+      epoch === undefined
+        ? null
+        : await handlers.readWorktreeListContent(workspaceId);
     const read = await handlers.readWorktreeList(workspaceId);
     const previous = memberships.get(workspaceId);
     if (read.authority !== 'ok' && read.authority !== 'absent') {
       memberships.delete(workspaceId);
       handlers.publishWorktreeMembershipChange();
+    } else {
+      memberships.set(workspaceId, read.worktrees);
+      if (previous === undefined) handlers.publishWorktreeMembershipChange();
+      else handlers.publishWorktreeListWrite(previous, read.worktrees);
+    }
+    keepBaseline(workspaceId, epoch, content);
+    handlers.handleExternalWorktreeList(workspaceId, read);
+  };
+
+  /**
+   * A broad plan's change check: one local byte read per list, and the
+   * list's authoritative read only when its bytes moved. A failed read keeps
+   * the old baseline, so the bridge's retry finds the change again.
+   */
+  const compareList = async (workspaceId: string): Promise<void> => {
+    const epoch = baselineEpoch(workspaceId);
+    if (epoch === undefined) return;
+    const content = await handlers.readWorktreeListContent(workspaceId);
+    const previous = listBytes.get(workspaceId);
+    if (previous === undefined || previous === content) {
+      keepBaseline(workspaceId, epoch, content);
       return;
     }
-    memberships.set(workspaceId, read.worktrees);
-    if (previous === undefined) handlers.publishWorktreeMembershipChange();
-    else handlers.publishWorktreeListWrite(previous, read.worktrees);
+    const read = await handlers.readWorktreeList(workspaceId);
+    // Forgotten meanwhile: the move may be an own commit; the watcher covers a drop.
+    if (keepBaseline(workspaceId, epoch, content))
+      handlers.handleExternalWorktreeList(workspaceId, read);
   };
 
   /** Rejects when any handler failed, so the bridge never acknowledges it. */
@@ -212,6 +307,12 @@ export function createWorkspaceCommitEventBinding({
       await step('scheduleDesktopStructureChanged', () =>
         handlers.scheduleDesktopStructureChanged(),
       );
+      // After the registries, so a workspace the index gained is read too.
+      const workspaceIds = handlers.listWorkspaceIds();
+      for (const workspaceId of Array.from(listBytes.keys()))
+        if (!workspaceIds.includes(workspaceId)) listBytes.delete(workspaceId);
+      for (const workspaceId of workspaceIds)
+        await step('compareWorktreeList', () => compareList(workspaceId));
       await step('publishWorktreeMembershipChange', () =>
         handlers.publishWorktreeMembershipChange(),
       );
@@ -240,8 +341,8 @@ export function createWorkspaceCommitEventBinding({
     isOwnOrigin,
     apply,
     ...(retryDelayMs !== undefined && { retryDelayMs }),
-    onDelivered: noteFirstCommittedDelivery(isOwnOrigin),
-    ...(onStreamChanged && { onStreamChanged }),
+    onDelivered,
+    onStreamChanged: streamChanged,
     ...(onInvalidated && { onInvalidated }),
     onError: (error) =>
       logMainProcessWarn(

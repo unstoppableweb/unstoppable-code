@@ -2,13 +2,18 @@ import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import type { PlatformOperatingSystem } from '../../../platform/platform-services';
 import {
+  WORKER_PIPELINE_OWNER_AGENT_ACTION_NOT_SENT_TEXT,
+  WORKER_PIPELINE_OWNER_AGENT_ACTION_OUTCOME_UNKNOWN_TEXT,
   WorkerPipelineStartSetupSchema,
   WorkerPipelinePluginSelectionsSchema,
   WorkerPipelineSurvivalAssessmentSchema,
   resolveNativePipelineModel,
+  resolvePipelineGovernedModelId,
   pipelineModelCatalogIdentity,
+  type WorkerPipelineHostRequest,
   type WorkerPipelineNativeRouteEvidence,
   type WorkerPipelineOwnerResult,
+  type WorkerPipelineSurvivalAssessment,
   type WorkerPipelineSetupFact,
   type WorkerPipelineSetupFailure,
 } from '@canopy/protocol/canopy-core';
@@ -18,6 +23,11 @@ import type {
   PipelineOwnerRunIdentity,
 } from './supervisor';
 import { prepareNativePipelineOwnerRun } from './native-owner';
+import {
+  isManagedPipelineEvidence,
+  prepareManagedPipelineOwnerRun,
+  type ManagedPipelineOwnerPorts,
+} from './managed-owner';
 import {
   preparePipelineOwnerSetupLeases,
   type PipelineOwnerSetupLease,
@@ -35,6 +45,18 @@ import {
   localPipelineSelectionsMatch,
   readLocalPipelineAgentStore,
 } from './local-agent-setup';
+
+type SurvivalBlockerCode =
+  WorkerPipelineSurvivalAssessment['blockers'][number]['code'];
+
+/** The model answers a closed launch is admitted with, native or managed. */
+interface PreparedModelAnswers {
+  readonly authority: PipelineOwnerRunAuthority;
+  readonly routes: WorkerPipelineNativeRouteEvidence['routes'];
+  readonly credentialFamilies: WorkerPipelineSurvivalAssessment['credentialFamilies'];
+  readonly epochs: WorkerPipelineSurvivalAssessment['epochs'];
+  readonly assumption: string;
+}
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -172,6 +194,14 @@ export async function prepareNativePipelineSurvival(
   signal: AbortSignal,
   operatingSystem: PlatformOperatingSystem | null,
   onDecline?: (reason: WorkerPipelineSetupFailure) => void,
+  /**
+   * The daemon's Cloud account services, only where account authority is
+   * selected (CAN-6997): governed-native and AI Credits evidence is then
+   * answered from them. Without it such evidence stays app-dependent.
+   */
+  managed?: ManagedPipelineOwnerPorts & {
+    readonly onBlockers?: (blockers: readonly SurvivalBlockerCode[]) => void;
+  },
 ): Promise<PipelineOwnerRunAuthority | undefined> {
   const decline = (reason: WorkerPipelineSetupFailure): undefined => {
     onDecline?.(reason);
@@ -206,12 +236,22 @@ export async function prepareNativePipelineSurvival(
               route.selection,
               start.launch.modelCatalog,
             );
+      // Credits invoke the policy id, not the native selector. Independently
+      // validate it too: approving sonnet cannot authorize a different model.
+      const credits = route.effectiveRoute === 'ai-credits';
       return (
         !resolved ||
         resolved.requestModel !== route.requestModel ||
-        resolved.runtimeModel !== route.runtimeModel ||
+        (credits
+          ? resolvePipelineGovernedModelId(
+              route.requestModel,
+              start.launch.modelCatalog,
+            ) !== route.runtimeModel
+          : resolved.runtimeModel !== route.runtimeModel) ||
         resolved.harness !== route.harness ||
-        resolved.source !== route.source
+        (credits
+          ? route.source !== 'ai-gateway'
+          : resolved.source !== route.source)
       );
     })
   )
@@ -290,17 +330,21 @@ export async function prepareNativePipelineSurvival(
   }
   if (required.some((id) => !facts.has(id))) return decline('daemon-facts');
   let closed = false;
+  let frozenAiCreditsConsent = false;
+  const liveVersions = new Map(
+    [...facts.values()].map((fact) => [fact.id, fact.version]),
+  );
+  const factCurrent = async (fact: WorkerPipelineSetupFact): Promise<boolean> =>
+    (await readPipelineSetupFactVersion(
+      roots[fact.root],
+      fact,
+      operatingSystem,
+      { frozenAiCreditsConsent },
+    )) === liveVersions.get(fact.id);
   const current = async (): Promise<boolean> => {
     if (closed) return false;
     for (const fact of facts.values())
-      if (
-        (await readPipelineSetupFactVersion(
-          roots[fact.root],
-          fact,
-          operatingSystem,
-        )) !== fact.version
-      )
-        return false;
+      if (!(await factCurrent(fact))) return false;
     return !closed;
   };
   if (!(await current()) || signal.aborted || setup.facts.length > 255)
@@ -391,14 +435,94 @@ export async function prepareNativePipelineSurvival(
     }
     if (!(await current())) return decline('daemon-facts');
   }
-  const native = prepareNativePipelineOwnerRun(identity, evidence, {
-    // This is a frozen observation identity, not a claim of live settings.
-    // Independent disk validation is awaited before any answer below.
-    isConfigurationCurrent: (epoch) =>
-      !closed && epoch === evidence.configurationEpoch,
-    recordPolicyRefusal: (): void => undefined,
-  });
-  if (native.kind !== 'native-model-answers') return decline('daemon-route');
+  // This is a frozen observation identity, not a claim of live settings.
+  // Independent disk validation is awaited before any answer below.
+  const isConfigurationCurrent = (epoch: string): boolean =>
+    !closed && epoch === evidence.configurationEpoch;
+  const preferences = facts.get('data:preferences.json:preferences');
+  // The "on" consent the launch observed, read live: any other mode, or
+  // another preferences observation, is no consent.
+  const aiCreditsConsent = async (): Promise<string | undefined> =>
+    preferences &&
+    readPipelineSetupFactVersion(roots.data, preferences, operatingSystem, {
+      frozenAiCreditsConsent: true,
+      requireAiCreditsConsent: true,
+      expectedPreferencesVersion: preferences.version,
+    });
+  let native: PreparedModelAnswers;
+  if (managed && isManagedPipelineEvidence(evidence)) {
+    const prepared = await prepareManagedPipelineOwnerRun(
+      identity,
+      evidence,
+      {
+        ...managed,
+        governedModelId: (model) =>
+          resolvePipelineGovernedModelId(model, start.launch.modelCatalog),
+      },
+      {
+        isConfigurationCurrent,
+        isAiCreditsConsentCurrent: async () =>
+          (await aiCreditsConsent()) !== undefined,
+        signal,
+      },
+    );
+    if (prepared.kind !== 'managed-model-answers') {
+      if (prepared.decision.kind === 'pauses')
+        managed.onBlockers?.(prepared.decision.blockers);
+      return undefined;
+    }
+    native = {
+      authority: prepared.authority,
+      routes: evidence.routes,
+      // V1 observers reject new enum values and unknown fields. Keep Cloud
+      // custody in the existing epoch record until a revision is negotiated.
+      credentialFamilies: prepared.decision.credentialFamilies.filter(
+        (family) => family !== 'cloud-account',
+      ),
+      epochs: [
+        {
+          authority: 'cloud-account-credential',
+          version: String(prepared.decision.credentialGeneration),
+        },
+      ],
+      assumption:
+        'Organization policy and AI Credits are read from the account this service holds before every model step; an unknown or blocking answer pauses the run. AI Credits steps use routes this service opened when they started, and their children never receive the account credential.',
+    };
+  } else {
+    const prepared = prepareNativePipelineOwnerRun(identity, evidence, {
+      isConfigurationCurrent,
+      recordPolicyRefusal: (): void => undefined,
+    });
+    if (prepared.kind !== 'native-model-answers')
+      return decline('daemon-route');
+    native = {
+      authority: prepared.authority,
+      routes: [...prepared.assessment.routes],
+      credentialFamilies: [
+        ...new Set(
+          evidence.routes
+            .map((route) => route.authentication)
+            .filter((family) => family !== 'unknown'),
+        ),
+      ],
+      epochs: [],
+      assumption:
+        'Account and policy route decisions are frozen from the trusted desktop launch observation once the starting app disconnects, and stay frozen until the run settles: a reopened app has no context for the run. No Cloud or gateway credentials are held by this authority.',
+    };
+  }
+  if (managed && evidence.aiCredits === 'required') {
+    // q-43 C: validate the live mode at admission, then freeze spending
+    // consent for survival: opting out ends no step, and each new AI Credits
+    // route re-reads it. Other preferences and setup content remain live
+    // dependencies.
+    const version = await aiCreditsConsent();
+    if (!preferences || !version || !(await current())) {
+      native.authority.dispose();
+      return decline('daemon-facts');
+    }
+    liveVersions.set(preferences.id, version);
+    frozenAiCreditsConsent = true;
+  }
   const leases: PipelineOwnerSetupLease[] = [];
   for (const lease of setup.leases) {
     const request = lease.request;
@@ -438,11 +562,7 @@ export async function prepareNativePipelineSurvival(
             return (
               spec !== undefined &&
               spec.version === fact.version &&
-              (await readPipelineSetupFactVersion(
-                roots[spec.root],
-                spec,
-                operatingSystem,
-              )) === fact.version
+              (await factCurrent(spec))
             );
           },
         })
@@ -457,14 +577,8 @@ export async function prepareNativePipelineSurvival(
     identity,
     assessedAt: new Date().toISOString(),
     disposition: 'continues',
-    routes: native.assessment.routes,
-    credentialFamilies: [
-      ...new Set(
-        evidence.routes
-          .map((route) => route.authentication)
-          .filter((family) => family !== 'unknown'),
-      ),
-    ],
+    routes: native.routes,
+    credentialFamilies: native.credentialFamilies,
     coveredOwnerKinds: [
       'model.invocation',
       'model.routing',
@@ -481,22 +595,37 @@ export async function prepareNativePipelineSurvival(
     ),
     blockers: [],
     ledgerAfterQuit: 'unavailable',
-    assumptions: [
-      'Account and policy route decisions are frozen from the trusted desktop launch observation once the starting app disconnects, and stay frozen until the run settles: a reopened app has no context for the run. No Cloud or gateway credentials are held by this authority.',
-    ],
+    assumptions: [native.assumption],
     epochs: [
       {
         authority: 'frozen-desktop-route-observation',
         version: evidence.configurationEpoch,
       },
+      ...native.epochs,
       ...setup.facts.map((fact) => ({
         authority: `content:${reference({ id: fact.id, version: '' })}`,
         version: fact.version,
       })),
     ],
   });
+  const answersFirst = native.authority.answersFirst;
   return {
     survivalAssessment,
+    ...(native.authority.bindCheckpoint && {
+      bindCheckpoint: native.authority.bindCheckpoint,
+    }),
+    retire: (): void => {
+      native.authority.retire?.();
+      setupAuthority?.retire?.();
+    },
+    discardAnswer: (request): void => {
+      native.authority.discardAnswer?.(request);
+      setupAuthority?.discardAnswer?.(request);
+    },
+    ...(answersFirst !== undefined && {
+      answersFirst: (request: WorkerPipelineHostRequest): boolean =>
+        !closed && answersFirst(request),
+    }),
     answer: async (request, requestSignal) => {
       if (
         closed ||
@@ -521,6 +650,23 @@ export async function prepareNativePipelineSurvival(
           break;
         case 'owner.ledger.codexToolsDispose':
           degraded = { kind: 'ledger.codexToolsDispose' };
+          break;
+        // A step's agent action tools need the app (CAN-7742): none for a
+        // new attempt. The supervisor also asks here for a call it withdrew
+        // from an app that left mid-call and may have posted, so a dispatch
+        // reads outcome unknown, never "nothing was posted".
+        case 'owner.agentActions.open':
+          degraded = { kind: 'agentActions.open', tools: null };
+          break;
+        case 'owner.agentActions.call':
+          degraded = {
+            kind: 'agentActions.call',
+            text:
+              request.request.key === 'dispatch_action'
+                ? WORKER_PIPELINE_OWNER_AGENT_ACTION_OUTCOME_UNKNOWN_TEXT
+                : WORKER_PIPELINE_OWNER_AGENT_ACTION_NOT_SENT_TEXT,
+            isError: true,
+          };
           break;
       }
       if (degraded) return { result: { status: 'owner', value: degraded } };

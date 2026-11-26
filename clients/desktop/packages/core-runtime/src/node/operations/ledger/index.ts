@@ -17,6 +17,8 @@ export {
   type OperationNonTerminalStatus,
   type OperationReceiptInput,
   type OperationReceiptLookup,
+  type OperationUnfinishedPage,
+  type OperationUnfinishedQuery,
 } from './ledger';
 export {
   OPERATION_LEDGER_SCHEMA_VERSION,

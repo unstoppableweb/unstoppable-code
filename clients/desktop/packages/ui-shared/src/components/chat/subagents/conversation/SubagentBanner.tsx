@@ -1,4 +1,4 @@
-import { ControlButton } from '../../../Button';
+import { ControlButton } from '../../../../primitives/Button';
 import {
   REPLAY_BLOCK_CLASS,
   REPLAY_MASK_CLASS,

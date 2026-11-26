@@ -407,6 +407,12 @@ export interface DesktopInventoryStoredDocument extends ParsedDesktopInventoryDo
   syncedAt: string;
 }
 
+/** The authenticated browser reader verified this install's relay binding. */
+export interface DesktopInventoryRelayMatch {
+  relayDeviceId: string;
+  clientDeviceId: string;
+}
+
 /**
  * Response of `GET /api/account/desktop-inventory`. The older
  * `GET /api/v1/[brandNamespace]/portal/browser/inventory` returns the same
@@ -415,6 +421,8 @@ export interface DesktopInventoryStoredDocument extends ParsedDesktopInventoryDo
 export interface DesktopInventoryReadResponse {
   /** `null` when the user has no synced device yet. */
   device: DesktopInventoryDeviceSummary | null;
+  /** Absent for account fallback, unscoped reads, or an unproven binding. */
+  relayMatch?: DesktopInventoryRelayMatch;
   documents: DesktopInventoryStoredDocument[];
   /**
    * True when the read bounds ({@link MAX_DESKTOP_INVENTORY_READ_DOCUMENTS},

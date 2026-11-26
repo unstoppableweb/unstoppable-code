@@ -25,6 +25,10 @@ import { PREVIEW_VISUAL_UNAVAILABLE_TEXT } from '../../canopy-tools/preview-visu
 import type { CoreChatVisualStageHost } from '../core-chat-visual-stage-adapter';
 import { createCoreOperationAdapter } from '../core-operation-adapter';
 import { INTERFACE_RELAY_ALLOWLIST } from '../renderer-relay/interface-allowlist.generated';
+import {
+  RENDERER_RELAY_SURFACES,
+  relayAllows,
+} from '../renderer-relay/surface-allowlist';
 import type { WorkerVisualHost } from '../worker-visual-adapter';
 import {
   createDesktopRuntime,
@@ -319,6 +323,33 @@ describe('worker.visual.render on the desktop dispatcher (CAN-6040)', () => {
     expect(Object.keys(CANOPY_QUERY_DEFINITIONS)).not.toContain(
       'worker.visual.render',
     );
+  });
+
+  it('R30 keeps every terminal record operation off every renderer relay surface', () => {
+    const methods = [
+      'worker.terminal.record.apply',
+      'worker.terminal.record.open',
+      'worker.terminal.record.retire',
+      'worker.terminal.record.shutdown',
+      'worker.terminal.record.history.read',
+    ];
+    for (const mode of [
+      'authority',
+      'replica',
+      'delegated-execution',
+      'read-only',
+    ] as const)
+      for (const kind of ['query', 'instruction', 'stream'] as const) {
+        const operations = INTERFACE_RELAY_ALLOWLIST[mode][kind];
+        expect(
+          operations.filter((name) =>
+            name.startsWith('worker.terminal.record.'),
+          ),
+        ).toEqual([]);
+        for (const surface of RENDERER_RELAY_SURFACES)
+          for (const method of methods)
+            expect(relayAllows(surface, kind, method, mode)).toBe(false);
+      }
   });
 
   it("matches the offscreen service's limits", () => {

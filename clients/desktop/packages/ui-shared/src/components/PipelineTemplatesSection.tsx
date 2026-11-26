@@ -1,22 +1,22 @@
 'use client';
 
-import { Stack } from './Stack';
+import { Stack } from '../primitives/Stack';
 import { useRef, useState, type JSX } from 'react';
 import type { CuratedPipelineSummary } from '@canopy/protocol/pipeline-catalog';
 import {
   CuratedPipelineCatalog,
   type CuratedPipelineCatalogProps,
 } from './CuratedPipelineCatalog';
-import { Button } from './Button';
-import { DialogModal } from './DialogModal';
-import { Notice, NoticeButton } from './Notice';
-import { TRY_AGAIN_LABEL } from './useRetry';
+import { Button } from '../primitives/Button';
+import { DialogModal } from '../primitives/DialogModal';
+import { Notice, NoticeButton } from '../primitives/Notice';
+import { TRY_AGAIN_LABEL } from '../primitives/useRetry';
 import { curatedPipelineFiltersActive } from '../lib/curated-pipeline-search';
-import { Heading } from './Heading';
-import { Tooltip } from './Tooltip';
-import { Surface } from './Surface';
+import { Heading } from '../primitives/Heading';
+import { Tooltip } from '../primitives/Tooltip';
+import { Surface } from '../primitives/Surface';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
-import { Skeleton } from './Skeleton';
+import { Skeleton } from '../primitives/Skeleton';
 
 export interface PipelineTemplatesSectionProps {
   catalog: CuratedPipelineCatalogProps;

@@ -9,9 +9,9 @@ import {
   type BotColorTheme,
   type BotHsv,
 } from '../../lib/bot-colors';
-import { FieldError, TextInput } from '../Field';
-import { DialogFormField } from '../DialogFormField';
-import { Slider } from '../Slider';
+import { FieldError, TextInput } from '../../primitives/Field';
+import { DialogFormField } from '../../primitives/DialogFormField';
+import { Slider } from '../../primitives/Slider';
 
 export interface BotCustomColorProps {
   readonly color: BotColor;

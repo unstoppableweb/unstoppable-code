@@ -13,7 +13,7 @@ import { ControlButton } from '@canopy/ui-shared/components';
 // Workflows edit shell (CAN-4072).
 /* eslint-disable react-refresh/only-export-components */
 
-import { Count } from '@canopy/ui-shared/components/Badge';
+import { Count } from '@canopy/ui-shared/primitives/Badge';
 import {
   useCallback,
   useEffect,
@@ -97,6 +97,7 @@ import {
   DataTableRow,
   Dot,
   type DotTone,
+  CopyDetailsButton,
   FloatingPickerMenu,
   Notice,
   PickerMenuOption,
@@ -791,7 +792,7 @@ export function AutomationsPage({
             <div className="flex flex-col gap-3 pt-3">
               {error && (
                 <Notice errorSource="automations-page" intent="destructive">
-                  Could not load automations.
+                  Couldn&apos;t load automations.
                 </Notice>
               )}
               {mutationError && (
@@ -799,8 +800,14 @@ export function AutomationsPage({
                   errorSource="automations-mutation-error"
                   intent="destructive"
                   data-testid="automations-mutation-error"
+                  actions={
+                    <CopyDetailsButton
+                      details={mutationError}
+                      data-testid="automations-mutation-error-copy-details"
+                    />
+                  }
                 >
-                  {mutationError}
+                  Couldn&apos;t update automations.
                 </Notice>
               )}
             </div>

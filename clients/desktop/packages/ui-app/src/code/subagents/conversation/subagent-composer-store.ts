@@ -15,6 +15,8 @@ export interface SubagentQueuedDraft {
   readonly text: string;
   readonly state: SubagentQueuedDraftState;
   readonly error?: string;
+  /** The host's raw reason for `error`, offered through Copy details. */
+  readonly errorDetails?: string;
   readonly retryOnStatusChange?: boolean;
   readonly retryOperation?: 'follow_up' | 'steer' | 'interrupt';
   /** An accepted steer awaiting its delivery outcome on the delegate. */
@@ -30,6 +32,8 @@ export interface SubagentComposerDraftState {
   readonly queue: readonly SubagentQueuedDraft[];
   readonly inFlight: boolean;
   readonly error: string | null;
+  /** The host's raw reason for `error`, offered through Copy details. */
+  readonly errorDetails: string | null;
   /**
    * Do not send the next queued follow-up until the accepted run is seen,
    * live or already settled in a later run generation.
@@ -57,7 +61,7 @@ interface SubagentComposerStoreState {
   removeQueuedDraft: (key: string, id: string) => void;
   beginOperation: (key: string) => boolean;
   endOperation: (key: string) => void;
-  setError: (key: string, error: string | null) => void;
+  setError: (key: string, error: string | null, details?: string) => void;
   setWaitForLiveAfterFollowUp: (
     key: string,
     wait: boolean,
@@ -72,6 +76,7 @@ const EMPTY_DRAFT: SubagentComposerDraftState = {
   queue: [],
   inFlight: false,
   error: null,
+  errorDetails: null,
   waitForLiveAfterFollowUp: false,
   followUpFromRunGeneration: null,
 };
@@ -173,8 +178,13 @@ export const useSubagentComposerStore = create<SubagentComposerStoreState>()(
     endOperation: (key): void => {
       set((state) => ({ drafts: patchDraft(state, key, { inFlight: false }) }));
     },
-    setError: (key, error): void => {
-      set((state) => ({ drafts: patchDraft(state, key, { error }) }));
+    setError: (key, error, details): void => {
+      set((state) => ({
+        drafts: patchDraft(state, key, {
+          error,
+          errorDetails: details ?? null,
+        }),
+      }));
     },
     setWaitForLiveAfterFollowUp: (key, wait, fromRunGeneration): void => {
       set((state) => ({

@@ -40,6 +40,7 @@ import { syncDirectory } from '@canopy/execution-engine/node/lib/atomic-file';
 import { writeFileAtomically } from './atomic-file';
 import {
   getW5DestructiveLifecycleDir,
+  getW5QuarantinedLifecycleDir,
   getWorkspaceDir,
   getWorkspaceWorktreeDir,
   getWorktreeDataDir,
@@ -100,6 +101,15 @@ function current(): Lifecycle | undefined {
 }
 /** Lifecycles this process is running, across async contexts. */
 const running = new Set<Lifecycle>();
+const lifecycleGenerations = new Map<string, number>();
+
+function advanceLifecycleGeneration(lifecycle: Lifecycle): void {
+  const workspaceId = lifecycle.record.workspaceId;
+  lifecycleGenerations.set(
+    workspaceId,
+    (lifecycleGenerations.get(workspaceId) ?? 0) + 1,
+  );
+}
 /**
  * An unfinished journal is stranded unless this process is still running it.
  * The in-memory state decides: a resumed cleanup tail is `active` before its
@@ -971,20 +981,117 @@ export async function hasUnresolvedDestructiveRecovery(
   workspaceId: string,
   worktreeId?: string,
 ): Promise<boolean> {
+  return (await readDestructiveRecoveryProtection(workspaceId)).protects(
+    worktreeId,
+  );
+}
+
+export interface DestructiveRecoveryProtection {
+  protects(worktreeId?: string): boolean;
+}
+
+/** Sweep-local retention evidence, not admission for a lifecycle writer. */
+export async function readDestructiveRecoveryProtection(
+  workspaceId: string,
+): Promise<DestructiveRecoveryProtection> {
+  const generation = lifecycleGenerations.get(workspaceId);
+  const lifecycleWasRunning = Array.from(running).some(
+    (lifecycle) => lifecycle.record.workspaceId === workspaceId,
+  );
   try {
-    for (const record of await readWorkspaceDestructiveRecoveries(workspaceId))
-      if (
-        (worktreeId === undefined ||
-          record.worktreeId === undefined ||
-          record.worktreeId === worktreeId) &&
-        (record.state !== 'completed' || record.cleanupRequired === true) &&
-        !(await isSupersedableDeletion(record))
-      )
-        return true;
-    return false;
+    // Keep live and quarantined reads in one access window across Set aside's rename.
+    return await withSharedJournalAccess(async () => {
+      const worktreeKeys = new Set<string>();
+      let workspaceProtected = false;
+      for (const record of await readWorkspaceDestructiveRecoveries(
+        workspaceId,
+      ))
+        if (
+          needsDestructiveRecovery(record) &&
+          !(await isSupersedableDeletion(record))
+        ) {
+          if (record.worktreeId === undefined) workspaceProtected = true;
+          else
+            worktreeKeys.add(retentionScopeKey(workspaceId, record.worktreeId));
+        }
+      for (const key of await readSetAsideRetentionHoldKeys(workspaceId))
+        worktreeKeys.add(key);
+      return {
+        protects: (worktreeId?: string): boolean =>
+          // Project deletion can publish intent before taking the archive lock.
+          lifecycleWasRunning ||
+          lifecycleGenerations.get(workspaceId) !== generation ||
+          workspaceProtected ||
+          (worktreeId === undefined
+            ? worktreeKeys.size > 0
+            : worktreeKeys.has(retentionScopeKey(workspaceId, worktreeId))),
+      };
+    });
   } catch {
-    return true;
+    return { protects: (): boolean => true };
   }
+}
+
+export function needsDestructiveRecovery(
+  record: DestructiveRecoveryRecord,
+): boolean {
+  return record.state !== 'completed' || record.cleanupRequired === true;
+}
+
+/** A renamed journal is itself the durable hold; CAN-5335 entries stay untagged. */
+const SET_ASIDE_LIFECYCLE_JOURNAL_PREFIX = 'set-aside-';
+const SET_ASIDE_LIFECYCLE_JOURNAL_SCOPE =
+  /^set-aside-([a-f0-9]{64})-([a-f0-9]{64})-/;
+
+function retentionScopeKey(workspaceId: string, worktreeId?: string): string {
+  return lifecycleJournalSlotName(workspaceId, worktreeId).slice(
+    0,
+    -'.json'.length,
+  );
+}
+
+/** Bind scope before reserving the destination, even if a crash leaves it empty. */
+export function setAsideLifecycleJournalPrefix(
+  workspaceId: string,
+  worktreeId: string,
+): string {
+  return `${SET_ASIDE_LIFECYCLE_JOURNAL_PREFIX}${retentionScopeKey(workspaceId)}-${retentionScopeKey(workspaceId, worktreeId)}-`;
+}
+
+async function readSetAsideRetentionHoldKeys(
+  workspaceId: string,
+): Promise<Set<string>> {
+  const worktreeKeys = new Set<string>();
+  const directory = getW5QuarantinedLifecycleDir();
+  const stat = await lstat(directory).catch((error: unknown) => {
+    if (missing(error)) return null;
+    throw error;
+  });
+  if (!stat) return worktreeKeys;
+  if (!stat.isDirectory() || stat.isSymbolicLink())
+    throw new Error('The lifecycle quarantine directory cannot be verified.');
+  const workspaceKey = retentionScopeKey(workspaceId);
+  for (const name of await readdir(directory)) {
+    if (!name.startsWith(SET_ASIDE_LIFECYCLE_JOURNAL_PREFIX)) continue;
+    const scope = SET_ASIDE_LIFECYCLE_JOURNAL_SCOPE.exec(name);
+    if (scope) {
+      // Names hold retention even when bytes are unreadable, truncated or replaced.
+      if (scope[1] === workspaceKey && scope[2]) worktreeKeys.add(scope[2]);
+      continue;
+    }
+    // Unscoped/unknown tagged evidence still fails closed when its subject is unreadable.
+    const path = join(directory, name);
+    const entry = await lstat(path);
+    if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1)
+      throw new Error('The set-aside retention hold cannot be verified.');
+    const record = await readDestructiveJournal(path);
+    if (record.operation !== 'worktree-archive' || !record.worktreeId)
+      throw new Error('The set-aside retention hold is not an archive record.');
+    // All copies must leave quarantine before retention resumes, even if debt was edited away.
+    if (record.workspaceId === workspaceId)
+      worktreeKeys.add(retentionScopeKey(workspaceId, record.worktreeId));
+  }
+  return worktreeKeys;
 }
 
 /**
@@ -1311,7 +1418,7 @@ export function isUnverifiableReleaseCandidate(
 ): boolean {
   return (
     record.operation === 'worktree-archive' &&
-    record.state === 'recovery-required' &&
+    (record.state === 'recovery-required' || isCrashed(record)) &&
     record.cleanupRepair === undefined &&
     hasUnverifiableProjectIdentity(record) &&
     record.steps.every((step) => PRE_GIT_CAPTURE_ARCHIVE_PHASES.has(step.phase))
@@ -1341,6 +1448,34 @@ function isInterruptedPreGitCaptureArchive(
         PRE_GIT_CAPTURE_ARCHIVE_PHASES.has(step.phase) &&
         step.state !== 'failed',
     )
+  );
+}
+
+/**
+ * CAN-6776: an ownerless archive that stopped in its Git capture, after only
+ * the pre-capture phases completed. Builds before CAN-6776 left a snapshot
+ * refusal there, under any step code. Capture changes no checkout file, and a
+ * redo releases a partial `capturing` descriptor before capturing again, so an
+ * Archive retry may redo it; the lifecycle rechecks its identities first.
+ */
+export function isInterruptedArchiveGitCapture(
+  record: DestructiveRecoveryRecord,
+): boolean {
+  const capture = record.steps[record.steps.length - 1];
+  return (
+    record.operation === 'worktree-archive' &&
+    record.parentOperation === undefined &&
+    isOwnerless(record) &&
+    (record.state === 'recovery-required' || isCrashed(record)) &&
+    capture?.phase === 'git-capture' &&
+    capture.state === 'pending' &&
+    record.steps
+      .slice(0, -1)
+      .every(
+        (step) =>
+          PRE_GIT_CAPTURE_ARCHIVE_PHASES.has(step.phase) &&
+          step.state === 'done',
+      )
   );
 }
 
@@ -1387,7 +1522,8 @@ const DELETE_CHECKOUT_REMOVAL_PHASES: ReadonlySet<string> = new Set([
 /**
  * A standalone Archive or Delete retry, including Auto Delete, redoes an
  * ownerless archive left `active` or `recovery-required` before Git capture,
- * with no failed step. The lifecycle rechecks its identities before takeover.
+ * with no failed step. An Archive retry also redoes one stopped in its Git
+ * capture (CAN-6776). The lifecycle rechecks its identities before takeover.
  * Pending Git removal after all ordered capture and quarantine steps are done
  * is also admitted (CAN-5717), including an ownerless crashed active journal.
  * Admission only permits revalidation through the lifecycle and verified
@@ -1424,7 +1560,8 @@ export function canResumeInterruptedArchive(
   return (
     record.operation === 'worktree-archive' &&
     (isInterruptedArchiveGitRemoval(record) ||
-      isInterruptedPreGitCaptureArchive(record))
+      isInterruptedPreGitCaptureArchive(record) ||
+      isInterruptedArchiveGitCapture(record))
   );
 }
 
@@ -1948,6 +2085,7 @@ export async function withDestructiveLifecycle<T>(
   }
   return context.run(lifecycle, async () => {
     running.add(lifecycle);
+    advanceLifecycleGeneration(lifecycle);
     try {
       if (resumingArchiveCleanup)
         await assertNoDestructiveRecovery(input.workspaceId, input.worktreeId);
@@ -1998,6 +2136,80 @@ export async function withDestructiveLifecycle<T>(
     } finally {
       lifecycle.active = false;
       running.delete(lifecycle);
+      advanceLifecycleGeneration(lifecycle);
+    }
+  });
+}
+
+/** Stage in the next existing step's durable save, without adding an effect. */
+export function journalTerminalRecordRetirement(
+  retirement: NonNullable<
+    DestructiveRecoveryRecord['terminalRecordRetirement']
+  >,
+): void {
+  const lifecycle = current();
+  if (!lifecycle)
+    throw new Error('Terminal retirement requires the deletion journal.');
+  lifecycle.record.terminalRecordRetirement = retirement;
+}
+
+/** Transfers journaled-applied deletion intents; nothing else retires records. */
+export async function replayJournaledTerminalRetirements(): Promise<void> {
+  await withExclusiveLifecycleJournalAccess(async () => {
+    let names: string[];
+    try {
+      names = await readdir(journalDirectory());
+    } catch (error) {
+      if (missing(error)) return;
+      logMainProcessWarn(
+        'Could not read journaled terminal retirements; keeping intents',
+        { code: destructiveFailureCode(error) },
+      );
+      return;
+    }
+    const { terminalPersistenceStore } =
+      await import('../terminal/persistence');
+    for (const name of names) {
+      if (!LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN.test(name)) continue;
+      const path = join(journalDirectory(), name);
+      try {
+        const record = journalSchema.parse(
+          JSON.parse(await readFile(path, 'utf8')),
+        );
+        const retirement = record.terminalRecordRetirement;
+        if (
+          !retirement ||
+          retirement.projectId !== record.workspaceId ||
+          record.operation !== 'workspace-delete'
+        )
+          continue;
+        // Only the removal step's completion save, written after W5 applied,
+        // proves the removal: absent records can follow a refusal. A crash
+        // before that save leaks the intent rather than risk a live workspace.
+        if (
+          !record.steps.some(
+            (step) =>
+              step.phase === 'canonical-index-removal' && step.state === 'done',
+          )
+        )
+          continue;
+        if (
+          !(await terminalPersistenceStore.replayTerminalRecordRetirement(
+            retirement,
+          ))
+        )
+          continue;
+        delete record.terminalRecordRetirement;
+        await writeFileAtomically(path, JSON.stringify(record), {
+          durable: true,
+          mode: 0o600,
+        });
+      } catch (error) {
+        logMainProcessWarn(
+          'Could not transfer journaled terminal retirement; keeping intent',
+          { name, code: destructiveFailureCode(error) },
+        );
+      }
     }
   });
 }
@@ -3069,6 +3281,7 @@ export async function withWorktreeDiscardLifecycle<T>(
   };
   return context.run(lifecycle, async () => {
     running.add(lifecycle);
+    advanceLifecycleGeneration(lifecycle);
     try {
       if (!resumed) {
         // Copy aside first: a crash before the claim leaves both files with
@@ -3112,6 +3325,7 @@ export async function withWorktreeDiscardLifecycle<T>(
     } finally {
       lifecycle.active = false;
       running.delete(lifecycle);
+      advanceLifecycleGeneration(lifecycle);
     }
   });
 }

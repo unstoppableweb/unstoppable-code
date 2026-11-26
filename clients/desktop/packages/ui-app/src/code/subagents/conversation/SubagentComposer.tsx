@@ -41,7 +41,6 @@ import {
   SUBAGENT_SEND_FAILED_LABEL,
   subagentComposerPlaceholder,
   subagentComposerSendAndOpenLabel,
-  subagentFailureWithReason,
 } from '@canopy/ui-shared';
 import type {
   SubagentCommandResult,
@@ -58,6 +57,7 @@ import {
 } from './subagent-composer-store';
 import { useSubagentMessageQueue } from './useSubagentMessageQueue';
 import {
+  CopyDetailsButton,
   ErrorBanner,
   Notice,
   NoticeButton,
@@ -263,21 +263,13 @@ export function SubagentComposer({
             }
             store.setError(key, null);
           } else {
-            store.setError(
-              key,
-              subagentFailureWithReason(
-                SUBAGENT_SEND_FAILED_LABEL,
-                result.error,
-              ),
-            );
+            store.setError(key, SUBAGENT_SEND_FAILED_LABEL, result.error);
           }
         } catch (error: unknown) {
           store.setError(
             key,
-            subagentFailureWithReason(
-              SUBAGENT_SEND_FAILED_LABEL,
-              reasonFromError(error),
-            ),
+            SUBAGENT_SEND_FAILED_LABEL,
+            reasonFromError(error),
           );
         } finally {
           store.endOperation(key);
@@ -305,21 +297,13 @@ export function SubagentComposer({
         if (result.ok) {
           store.setError(key, null);
         } else {
-          store.setError(
-            key,
-            subagentFailureWithReason(
-              SUBAGENT_INTERRUPT_FAILED_LABEL,
-              result.error,
-            ),
-          );
+          store.setError(key, SUBAGENT_INTERRUPT_FAILED_LABEL, result.error);
         }
       } catch (error: unknown) {
         store.setError(
           key,
-          subagentFailureWithReason(
-            SUBAGENT_INTERRUPT_FAILED_LABEL,
-            reasonFromError(error),
-          ),
+          SUBAGENT_INTERRUPT_FAILED_LABEL,
+          reasonFromError(error),
         );
       }
     })();
@@ -465,12 +449,19 @@ export function SubagentComposer({
                     intent="destructive"
                     liveRegionScope="content"
                     actions={
-                      <NoticeButton
-                        onClick={(): void => queueActions.retryDraft(queued.id)}
-                        data-testid="subagent-queue-retry"
-                      >
-                        {SUBAGENT_QUEUE_RETRY_LABEL}
-                      </NoticeButton>
+                      <>
+                        {queued.errorDetails?.trim() ? (
+                          <CopyDetailsButton details={queued.errorDetails} />
+                        ) : null}
+                        <NoticeButton
+                          onClick={(): void =>
+                            queueActions.retryDraft(queued.id)
+                          }
+                          data-testid="subagent-queue-retry"
+                        >
+                          {SUBAGENT_QUEUE_RETRY_LABEL}
+                        </NoticeButton>
+                      </>
                     }
                   >
                     {queued.error}
@@ -560,6 +551,9 @@ export function SubagentComposer({
               errorSource="subagent-composer-draft"
               className=""
               error={draft.error}
+              {...(draft.errorDetails?.trim()
+                ? { details: draft.errorDetails }
+                : {})}
             />
           </div>
           <SubagentRecipientMenu

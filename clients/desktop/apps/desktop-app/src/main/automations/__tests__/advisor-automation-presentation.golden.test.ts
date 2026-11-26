@@ -13,7 +13,7 @@
 // service itself now opens no window: none before the send, none after it,
 // and a refused send leaves the window alone. Everything else here is
 // unchanged from the capture.
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
@@ -25,6 +25,7 @@ import type * as WorkEntries from '../../lib/cowork-work-entries';
 import type * as Paths from '../../lib/paths';
 import type * as ResourceContext from '../../lib/resource-context';
 import type * as AutomationSend from '../automation-send';
+import type * as NativeChatDispatch from '../native-chat-dispatch';
 import type { AutomationsService } from '../service';
 
 let mockDirectory = '';
@@ -75,6 +76,21 @@ jest.mock('../automation-send', () => ({
     });
   },
 }));
+// #7337 (CAN-5479 deferred item 2) refuses the native chat dispatch to a chat
+// automation that converts to a workflow. These fixtures convert, but the
+// native path they pin still serves the automations that stay native (D4
+// sends, D11 agent settings, an Agent-route pin), so the gate is open unless
+// a test closes it.
+const mockGate: { open: boolean } = { open: true };
+jest.mock('../native-chat-dispatch', () => {
+  const actual = jest.requireActual<typeof NativeChatDispatch>(
+    '../native-chat-dispatch',
+  );
+  return {
+    refusesNativeChatDispatch: (activity: ScheduledActivity): boolean =>
+      !mockGate.open && actual.refusesNativeChatDispatch(activity),
+  };
+});
 jest.setTimeout(30_000);
 
 const NOW = '2026-11-16T12:00:00.000Z';
@@ -157,6 +173,7 @@ beforeEach(async () => {
   delete mockPort.refuse;
   mockPort.workEntryIds = [];
   mockWindow.selectionFails = false;
+  mockGate.open = true;
   mockDirectory = await mkdtemp(join(tmpdir(), 'advisor-automation-golden-'));
   const { AutomationsService: Service } = await import('../service');
   service = new Service();
@@ -197,6 +214,33 @@ describe('App Advisor automation runs and the App Advisor window (CAN-4174 captu
         },
       },
     });
+  });
+
+  it('refuses Run now of a chat automation that converts before any run exists, sending nothing and opening no window', async () => {
+    mockGate.open = false;
+    const marker = join(mockDirectory, 'if-command-ran');
+    await seed({
+      ...advisorActivity(),
+      ifCommand: `node -e "require('fs').writeFileSync(process.argv[1], '')" ${JSON.stringify(marker)}`,
+    });
+    configure();
+
+    const started = await service.runNow({ id: ID });
+
+    expect(started).toEqual({
+      ok: false,
+      error:
+        'This automation has to move to a workflow before it can run. Restart the app to move it, then run it again.',
+    });
+    expect(mockEvents).toEqual([]);
+    // No run was recorded, so no occurrence is spent, and its If command
+    // never ran.
+    const stored: unknown = JSON.parse(
+      await readFile(join(mockDirectory, 'automations.json'), 'utf8'),
+    );
+    expect(stored).toMatchObject({ recentRuns: [] });
+    expect(stored).not.toHaveProperty('activities.0.lastScheduledFor');
+    await expect(access(marker)).rejects.toThrow();
   });
 
   it('opens a new chat in an existing Work Entry the same way', async () => {

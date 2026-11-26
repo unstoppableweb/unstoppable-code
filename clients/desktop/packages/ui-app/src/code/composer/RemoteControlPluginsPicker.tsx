@@ -1,7 +1,7 @@
 'use client';
 
 import { toggledAccountSelection } from '../../capability/accountMcpRows';
-import { Count } from '@canopy/ui-shared/components/Badge';
+import { Count } from '@canopy/ui-shared/primitives/Badge';
 import {
   memo,
   useCallback,
@@ -17,8 +17,8 @@ import {
   ErrorBanner,
   ErrorState,
   Button,
-  ExternalTextLink,
   SecurityAuditSummary,
+  TextLink,
 } from '@canopy/ui-shared/components';
 import { recordSurfacedError } from '@canopy/ui-shared/lib';
 import { isGitHubTreeUrl } from '@canopy/ui-shared/lib/github-tree-url';
@@ -1536,10 +1536,14 @@ const RemoteControlPluginsPickerContent = memo(
                     </span>
                   )}
                   {isGitHubTreeUrl(detailEntry.sourceUrl) && (
-                    <ExternalTextLink
+                    <TextLink
                       href={detailEntry.sourceUrl}
-                      label="View source"
-                    />
+                      size="xs"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      View source
+                    </TextLink>
                   )}
                   {detailSecurityAudit !== null && (
                     <SecurityAuditSummary

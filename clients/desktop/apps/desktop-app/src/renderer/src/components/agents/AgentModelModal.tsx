@@ -60,13 +60,13 @@ interface FieldErrors {
 }
 
 const NAME_REQUIRED = 'Name is required.';
-const NAME_DUPLICATE = 'An agent with this name already exists.';
+const NAME_DUPLICATE = 'A model preset with this name already exists.';
 const MODEL_ID_REQUIRED = 'Model ID is required.';
 const MODEL_ID_INVALID =
   'Model ID can only contain lowercase letters, numbers, and single underscores.';
-const MODEL_ID_DUPLICATE = 'An agent with this model ID already exists.';
+const MODEL_ID_DUPLICATE = 'A model preset with this model ID already exists.';
 const BASE_MODEL_REQUIRED = 'Choose a default model.';
-const BASE_MODEL_IS_AGENT = 'Default model cannot be another agent.';
+const BASE_MODEL_IS_AGENT = 'Default model cannot be another model preset.';
 const INSTRUCTIONS_TOO_LONG = 'Instructions are too long.';
 
 function byteLength(value: string): number {
@@ -345,7 +345,9 @@ export function AgentModelModal({
       setSubmitError(
         inlineFailure(
           appError,
-          isEdit ? 'Couldn’t save this agent.' : 'Couldn’t create this agent.',
+          isEdit
+            ? "Couldn't save this model preset."
+            : "Couldn't create this model preset.",
         ),
       );
     }
@@ -354,7 +356,7 @@ export function AgentModelModal({
   return (
     <DialogModal
       onClose={submitting ? (): void => {} : onClose}
-      title={isEdit ? 'Edit agent' : 'New agent'}
+      title={isEdit ? 'Edit model preset' : 'New model preset'}
       maxWidth="2xl"
       closeOnBackdrop={!submitting}
       dataTestId="agent-model-modal"
@@ -364,7 +366,7 @@ export function AgentModelModal({
         <FormField
           id={nameFieldId}
           label="Name"
-          description="Shown in model pickers. The model ID is created when the agent is first saved."
+          description="Shown in model pickers. The model ID is created when the preset is first saved."
           error={errors.name}
           dataTestId="agent-model-name-field"
         >
@@ -386,7 +388,7 @@ export function AgentModelModal({
           label="Model ID"
           description={
             isEdit
-              ? 'Model IDs cannot be changed after an agent is created.'
+              ? 'Model IDs cannot be changed after a preset is created.'
               : 'Used in workflows and model pickers. It must be unique and can only contain lowercase letters, numbers, and underscores.'
           }
           error={errors.modelIdSlug}
@@ -477,13 +479,13 @@ export function AgentModelModal({
                       allowCopilot
                       placeholderLabel="Select a default model…"
                       onModelChange={handleBaseModelChange}
-                      triggerTooltip="Default model for this agent"
+                      triggerTooltip="Default model for this preset"
                     />
                   </div>
                 </Surface>
                 <p className={FORM_FIELD_DESCRIPTION_CLASS}>
                   Choose a default model, including Cursor. Each chat can choose
-                  a different model for this agent.
+                  a different model for this preset.
                 </p>
               </div>
             )}
@@ -512,7 +514,7 @@ export function AgentModelModal({
               disabled={submitting}
               rows={5}
               onChange={(e): void => setInstructions(e.target.value)}
-              placeholder="Add instructions that should be appended to the system prompt whenever this agent is used."
+              placeholder="Add instructions to append to the system prompt whenever this preset is used."
               data-testid="agent-model-instructions"
             />
           )}
@@ -560,8 +562,8 @@ export function AgentModelModal({
             </div>
           ) : (
             <p className="text-2xs fg-secondary">
-              No plugins added. This agent uses only the chat or workflow plugin
-              selections.
+              No plugins added. This preset uses only the chat or workflow
+              plugin selections.
             </p>
           )}
         </Stack>
@@ -589,7 +591,7 @@ export function AgentModelModal({
             disabled={submitting}
             data-testid="agent-model-submit"
           >
-            {isEdit ? 'Save changes' : 'Create agent'}
+            {isEdit ? 'Save changes' : 'Create model preset'}
           </Button>
         </div>
       </div>

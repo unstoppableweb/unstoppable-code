@@ -35,6 +35,7 @@ import {
   type PipelineDefinitionSummary,
   type PipelineDefinitionUpsertParams,
   type PipelineDefinitionValidateResult,
+  type CanopyJsonValue,
 } from '@canopy/protocol/canopy-core';
 import {
   isSharedPipelineLocalId,
@@ -225,8 +226,16 @@ export interface PipelineDefinitionWrite {
  * (CAN-7497). A resend whose receipt was lost finds the definition at that id
  * and is answered with it only when it is what this request writes.
  */
-export interface PipelineDefinitionCreateReplay {
+export interface PipelineDefinitionCreateReplay extends PipelineDefinitionOwnerReplay {
   readonly createId: string;
+}
+
+/**
+ * What a keyed write tells its owner (CAN-7507): the sender-bound key under
+ * which the app registered the write's owner before sending it.
+ */
+export interface PipelineDefinitionOwnerReplay {
+  readonly ownerKey?: string;
 }
 
 /** A copy for the writable source to create under the id core assigned. */
@@ -328,14 +337,21 @@ export interface PipelineDefinitionPendingEnablement {
 
 /** A definition write the owner checks or applies effects for (CAN-7522). */
 export interface PipelineDefinitionOwnerWrite {
-  readonly op: 'upsert' | 'delete' | 'duplicate';
+  readonly op: 'upsert' | 'delete' | 'duplicate' | 'import';
   /** The definition written; a copy's own id once it has one. */
   readonly definitionId: string | null;
   /** A copy's source. */
   readonly origin?: PipelineDefinitionCopy['origin'];
   /** The request's replay key, so its owner requests keep their ids. */
   readonly replayKey?: string;
+  /** The routed write's owner key (CAN-7507), for an owner that serves it. */
+  readonly ownerKey?: string;
 }
+
+/** A write the owner checks before the commit; an import has no check. */
+export type PipelineDefinitionOwnerCheck = PipelineDefinitionOwnerWrite & {
+  readonly op: Exclude<PipelineDefinitionOwnerWrite['op'], 'import'>;
+};
 
 /**
  * The owner's side of a definition write (CAN-7522), for a core that commits
@@ -350,10 +366,16 @@ export interface PipelineDefinitionOwnerEffectsPort {
    * owner answers; nothing is committed either way.
    */
   precheck(
-    write: PipelineDefinitionOwnerWrite,
+    write: PipelineDefinitionOwnerCheck,
     scope: CanopyWorkspaceScope,
     signal: AbortSignal,
   ): Promise<void>;
+  /**
+   * Whether the owner records a routed write's owner before its commit
+   * (CAN-7507): it is sent the write's owner key and an import's effects.
+   * Absent or false, it gets neither, as before.
+   */
+  servesOwnerKeys?(): boolean;
   /** The owner's effects of the write on one side of its commit. */
   effects(
     write: PipelineDefinitionOwnerWrite & { readonly definitionId: string },
@@ -373,6 +395,8 @@ export class PipelineDefinitionSourceError extends Error {
     readonly code: PipelineDefinitionImportErrorCode,
     message: string,
     readonly sourceCause?: unknown,
+    /** Carried to the operation error, such as the owner that keeps a store. */
+    readonly details?: CanopyJsonValue,
   ) {
     super(message);
     this.name = 'PipelineDefinitionSourceError';
@@ -441,6 +465,7 @@ export function pipelineDefinitionError(
   code: PipelineDefinitionImportErrorCode,
   message: string,
   cause?: unknown,
+  details?: CanopyJsonValue,
 ): CanopyOperationError {
   const kind = ERROR_KINDS[code];
   return new CanopyOperationError(
@@ -448,6 +473,7 @@ export function pipelineDefinitionError(
       kind,
       code,
       message: message.slice(0, 4_096) || 'The workflow could not be read.',
+      ...(details === undefined ? {} : { details }),
       retry:
         kind === 'unavailable'
           ? { kind: 'same_request' }
@@ -462,7 +488,12 @@ export function pipelineDefinitionError(
 function toOperationError(error: unknown, fallback: string): unknown {
   if (error instanceof CanopyOperationError) return error;
   if (error instanceof PipelineDefinitionSourceError)
-    return pipelineDefinitionError(error.code, error.message, error);
+    return pipelineDefinitionError(
+      error.code,
+      error.message,
+      error,
+      error.details,
+    );
   return pipelineDefinitionError(
     'core.pipeline.sourceUnavailable',
     fallback,
@@ -657,6 +688,7 @@ export interface PipelineDefinitionService {
   import(
     params: Omit<PipelineDefinitionImportParams, '_meta'>,
     signal: AbortSignal,
+    replay?: PipelineDefinitionOwnerReplay,
   ): Promise<PipelineDefinitionImportResult>;
   /**
    * Records the enabled state an upsert committed without, unless a later
@@ -849,7 +881,7 @@ export function createPipelineDefinitionService(
   // always answered, and are left to the owner's next reconcile.
   const owner = options.ownerEffects;
   const beforeOwnerCommit = async (
-    check: PipelineDefinitionOwnerWrite,
+    check: PipelineDefinitionOwnerCheck,
     write: PipelineDefinitionOwnerWrite & { readonly definitionId: string },
     scope: CanopyWorkspaceScope,
     signal: AbortSignal,
@@ -862,6 +894,23 @@ export function createPipelineDefinitionService(
       throw toOperationError(
         error,
         'The app could not check this workflow change.',
+      );
+    }
+  };
+  // A routed create or import has no check: the owner records its owner
+  // before the commit (CAN-7507), and a write it can't record is refused.
+  const ownerKeyed = (): boolean => owner?.servesOwnerKeys?.() === true;
+  const beforeOwnerRecord = async (
+    write: PipelineDefinitionOwnerWrite & { readonly definitionId: string },
+    signal: AbortSignal,
+  ): Promise<void> => {
+    if (!owner || !ownerKeyed()) return;
+    try {
+      await owner.effects(write, 'beforeCommit', signal);
+    } catch (error) {
+      throw toOperationError(
+        error,
+        'The app could not record this workflow change.',
       );
     }
   };
@@ -1089,14 +1138,24 @@ export function createPipelineDefinitionService(
         // A replayed create answers the enabled state the definition has now:
         // any later setEnabled is the user's, so the request's is not reapplied.
         const enabled = replayed ? undefined : params.enabled;
-        // An edit is checked by the owner first; a create needs no check.
+        // An edit is checked by the owner first; a create needs no check,
+        // and a routed one has its owner recorded before the commit.
         if (params.definitionId !== null) {
           const edit = {
             op: 'upsert',
             definitionId: params.definitionId,
           } as const;
           await beforeOwnerCommit(edit, edit, params.scope, signal);
-        }
+        } else if (create?.ownerKey !== undefined && !replayed)
+          await beforeOwnerRecord(
+            {
+              op: 'upsert',
+              definitionId: create.createId,
+              replayKey: create.createId,
+              ownerKey: create.ownerKey,
+            },
+            signal,
+          );
         let written: PipelineDefinitionSourceDocument;
         try {
           written =
@@ -1302,7 +1361,9 @@ export function createPipelineDefinitionService(
           }
           await beforeOwnerCommit(
             { ...copied, definitionId: null },
-            copied,
+            replay?.ownerKey !== undefined && ownerKeyed()
+              ? { ...copied, ownerKey: replay.ownerKey }
+              : copied,
             params.scope,
             signal,
           );
@@ -1338,7 +1399,11 @@ export function createPipelineDefinitionService(
       };
     },
 
-    async import(params, signal): Promise<PipelineDefinitionImportResult> {
+    async import(
+      params,
+      signal,
+      replay,
+    ): Promise<PipelineDefinitionImportResult> {
       const named = params.definitionId ?? null;
       writerFor(named);
       const source = pipelineDefinitionRemoteSourceForId(
@@ -1462,10 +1527,21 @@ export function createPipelineDefinitionService(
       const installed = remote;
       const definitionId =
         replaced ?? (options.createDefinitionId ?? randomUUID)();
-      return withDefinitionLock(replaced, async () => {
+      // Inside the owner's write gate, so a reconcile never runs while an
+      // import's owner is recorded and not yet committed.
+      return withWriteLock(replaced, async () => {
         // Read before the install commits, so nothing after it can fail the
         // request and free its key while the definition stays stored.
         const disabled = await disabledIds();
+        // Only an import that creates its definition records an owner; one
+        // that replaces an earlier install keeps that definition's.
+        const imported = {
+          op: 'import',
+          definitionId,
+          ...(replay?.ownerKey !== undefined &&
+            replaced === null && { ownerKey: replay.ownerKey }),
+        } as const;
+        await beforeOwnerRecord(imported, signal);
         let written: PipelineDefinitionSourceDocument;
         try {
           written = await installed.install(
@@ -1488,6 +1564,8 @@ export function createPipelineDefinitionService(
             'core.pipeline.sourceUnavailable',
             'The workflow was installed under another id.',
           );
+        if (ownerKeyed())
+          await afterOwnerCommit({ op: 'import', definitionId }, signal);
         return {
           definition: await definitionFrom(written, {}, disabled),
           remoteDefinitionId: params.remoteDefinitionId,

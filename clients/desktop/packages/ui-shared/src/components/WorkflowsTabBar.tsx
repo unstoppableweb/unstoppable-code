@@ -9,7 +9,11 @@ import {
   WORKFLOWS_TABS,
   type WorkflowsTabId,
 } from '../lib/workflows-tabs';
-import { TabBar, type TabBarChangeSource, type TabBarItem } from './TabBar';
+import {
+  TabBar,
+  type TabBarChangeSource,
+  type TabBarItem,
+} from '../primitives/TabBar';
 
 const TAB_ICONS: Readonly<Record<WorkflowsTabId, JSX.Element>> = {
   workflows: <PlayCircleIcon size="sm" />,

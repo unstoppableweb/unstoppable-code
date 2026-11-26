@@ -1,5 +1,5 @@
 import { ControlButton } from '@canopy/ui-shared/components';
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import { memo, useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { useShallow } from 'zustand/shallow';
 import { fileViewerKey, useFileViewerStore } from '@canopy/app-state';

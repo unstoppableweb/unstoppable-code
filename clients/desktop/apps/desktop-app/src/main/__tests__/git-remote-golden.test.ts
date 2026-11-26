@@ -5,13 +5,16 @@
 // is mocked. Results are recorded as JSON text, so key order is pinned too.
 import { execFileSync } from 'node:child_process';
 import {
+  type PathLike,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import type * as FsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { IpcMainInvokeEvent } from 'electron';
@@ -25,6 +28,14 @@ const mockHandlers = new Map<
   string,
   (event: unknown, request: unknown) => Promise<unknown>
 >();
+// Pass-through, so a test can hold the destination probe (stat).
+let mockStat: ((path: PathLike) => Promise<unknown>) | undefined;
+jest.mock('node:fs/promises', () => {
+  const actual = jest.requireActual<typeof FsPromises>('node:fs/promises');
+  const stat = (...args: Parameters<typeof actual.stat>): Promise<unknown> =>
+    mockStat && args.length === 1 ? mockStat(args[0]) : actual.stat(...args);
+  return { ...actual, stat };
+});
 jest.mock('../ipc/register', () => ({
   registerIpcHandler: (
     channel: string,
@@ -591,6 +602,137 @@ describe('a file URL origin', () => {
         defaultBranch: 'main',
       }),
     });
+  });
+});
+
+// CAN-4096 Capture (CAN-7937), explicit expectations on the unchanged
+// handlers: both channels name a destination with a stat-only probe, so two
+// calls that probe before either creates it share one path.
+describe('repo:add-remote and repo:init-local', () => {
+  const realStat =
+    jest.requireActual<typeof FsPromises>('node:fs/promises').stat;
+  afterEach(() => {
+    mockStat = undefined;
+  });
+
+  function invoke(channel: string, request: unknown): Promise<Outcome> {
+    const handler = mockHandlers.get(channel);
+    if (!handler) throw new Error(`${channel} was not registered`);
+    return settle(() => handler({}, request));
+  }
+
+  /**
+   * Two calls whose probes of `path` both run before the first call creates
+   * it; the second call goes on only once the first has settled.
+   */
+  async function overlapProbes(
+    path: string,
+    call: () => Promise<Outcome>,
+  ): Promise<[Outcome, Outcome]> {
+    const [reached, probed, settled] = [0, 1, 2].map(() =>
+      Promise.withResolvers<void>(),
+    );
+    let calls = 0;
+    mockStat = async (target): Promise<unknown> => {
+      if (target !== path || calls === 2) return realStat(target);
+      calls += 1;
+      const isFirst = calls === 1;
+      if (isFirst) reached.resolve();
+      const result = await realStat(target).then(
+        (stats) => ({ stats }),
+        (error: unknown) => ({ error }),
+      );
+      if (!isFirst) probed.resolve();
+      await (isFirst ? probed : settled).promise;
+      if ('error' in result) throw result.error;
+      return result.stats;
+    };
+    const first = call().finally(settled.resolve);
+    await reached.promise;
+    const second = call();
+    return [await first, await second];
+  }
+
+  it('repo:add-remote clones into the next free name and removes a clone whose HEAD it refuses', async () => {
+    const origin = join(dir, 'origins', 'single.git');
+    const destinationDir = join(dir, 'add-remote');
+    const add = (): Promise<Outcome> =>
+      invoke(IPC_CHANNELS.repoAddRemote, { remoteUrl: origin, destinationDir });
+    expect(await add()).toEqual({
+      json: '{"name":"single","path":"<root>/add-remote/single"}',
+    });
+    expect(await add()).toEqual({
+      json: '{"name":"single-2","path":"<root>/add-remote/single-2"}',
+    });
+
+    const hostile = join(dir, 'origins', 'hostile.git');
+    execFileSync('git', ['clone', '-q', '--bare', origin, hostile]);
+    git(hostile, ['update-ref', 'refs/heads/-a', 'refs/heads/main']);
+    git(hostile, ['symbolic-ref', 'HEAD', 'refs/heads/-a']);
+    expect(
+      await invoke(IPC_CHANNELS.repoAddRemote, {
+        remoteUrl: hostile,
+        destinationDir,
+      }),
+    ).toMatchObject({
+      error: {
+        name: 'InvalidRemoteHeadCloneError',
+        code: 'invalid-remote-default-branch',
+      },
+    });
+    expect(readdirSync(destinationDir).sort()).toEqual(['single', 'single-2']);
+  });
+
+  it('repo:add-remote calls that probe one name together leave the second to fail in the first clone', async () => {
+    const origin = join(dir, 'origins', 'single.git');
+    const destinationDir = join(dir, 'add-remote-race');
+    const add = (): Promise<Outcome> =>
+      invoke(IPC_CHANNELS.repoAddRemote, { remoteUrl: origin, destinationDir });
+    const [first, second] = await overlapProbes(
+      join(destinationDir, 'single'),
+      add,
+    );
+    expect(first).toEqual({
+      json: '{"name":"single","path":"<root>/add-remote-race/single"}',
+    });
+    expect('error' in second && String(second.error.message)).toContain(
+      "destination path '<root>/add-remote-race/single' already exists and is not an empty directory",
+    );
+    expect(readdirSync(destinationDir)).toEqual(['single']);
+    expect(git(join(destinationDir, 'single'), ['log', '--format=%s'])).toBe(
+      'initial',
+    );
+  });
+
+  it('repo:init-local calls that probe one name together share its directory, and the second fails to commit; a later call takes the next name', async () => {
+    const init = (name: string): Promise<Outcome> =>
+      invoke(IPC_CHANNELS.repoInitLocal, { name });
+    const [first, second] = await overlapProbes(
+      join(dataDir, 'repos', 'scratch'),
+      () => init('scratch'),
+    );
+    expect(first).toEqual({
+      json: '{"name":"scratch","path":"<root>/data/repos/scratch"}',
+    });
+    // The second re-initializes the same checkout and finds nothing to commit.
+    expect(second).toMatchObject({ error: { code: 1 } });
+    expect('error' in second && String(second.error.message)).toContain(
+      'commit -m',
+    );
+    expect(await init(' scratch ')).toEqual({
+      json: '{"name":"scratch-2","path":"<root>/data/repos/scratch-2"}',
+    });
+    const created = join(dataDir, 'repos', 'scratch');
+    expect(git(created, ['log', '--format=%s'])).toBe('Initial commit');
+    expect(git(created, ['ls-files']).split('\n').sort()).toEqual([
+      '.gitignore',
+      'README.md',
+      'canopy.json',
+    ]);
+    expect(readdirSync(join(dataDir, 'repos')).sort()).toEqual([
+      'scratch',
+      'scratch-2',
+    ]);
   });
 });
 

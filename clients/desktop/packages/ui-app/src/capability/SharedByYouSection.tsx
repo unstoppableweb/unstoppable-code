@@ -9,7 +9,7 @@ import {
   type ReactNode,
   type Ref,
 } from 'react';
-import { Button } from '@canopy/ui-shared/components/Button';
+import { Button } from '@canopy/ui-shared/primitives/Button';
 import { ComponentSection } from '@canopy/ui-shared/components/ComponentSection';
 import {
   DataTableBody,
@@ -18,7 +18,7 @@ import {
   DataTableHead,
   DataTableHeaderCell,
   DataTableRow,
-} from '@canopy/ui-shared/components/DataTable';
+} from '@canopy/ui-shared/primitives/DataTable';
 import { CopyLinkButton } from '@canopy/ui-shared/components/CopyLinkButton';
 import { ShareAudienceLabel } from '@canopy/ui-shared/components/ShareAudienceLabel';
 import { MARKETPLACE_UNSHARE_LABEL } from '@canopy/ui-shared/lib/marketplace-unshare';

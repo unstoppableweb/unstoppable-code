@@ -1,3 +1,5 @@
+import { classifyError } from '@canopy/protocol/app-errors/classification';
+import { hasLiveClaudeTerminalTurn } from '../lib/terminal-driven-chat';
 import { turnAccountResolution } from '../agents/turn-account-resolution';
 import {
   assertAntigravityHarnessEnabled,
@@ -50,7 +52,11 @@ import type { BrowserWindow, IpcMainInvokeEvent } from 'electron';
 import { BRAND } from '@canopy/brand/current';
 import { registerIpcHandler } from './register';
 import { noteChatDriver } from '../remote-control/host/chat-drivers';
-import { resolveRemoteBridgeSender } from '../remote-control/host/bridge-window';
+import {
+  remoteBridgeCommitGuard,
+  remoteBridgeIsOneWindow,
+  resolveRemoteBridgeSender,
+} from '../remote-control/host/bridge-window';
 import type { WindowAccessors } from './index';
 import {
   IPC_CHANNELS,
@@ -235,6 +241,7 @@ import {
   createCoreChatSettingsHost,
   isModelChangeSuperseded,
 } from '../services/chat-settings-host';
+import { chatTurnApprovalRevision } from '../agent-runs/turn-approval-revision';
 import type { ChatSettingsLiveEffects } from '../services/chat-settings-host';
 import {
   CoreChatLifecycleResultSchema,
@@ -3050,6 +3057,13 @@ export function registerChatHandlers(
         const sessionPluginSelections = await normalizeAccountMcpSelections(
           runtime?.pluginSelections ?? pluginSelections,
         );
+        // Read before the approval below: a change from here to begin moves
+        // it, and the turn then carries no launch (CAN-6995).
+        const approvalRevision = chatTurnApprovalRevision({
+          projectId,
+          worktreeId,
+          chatId,
+        });
         // The saved chat's authority as the session is created; the request
         // can only narrow it (CAN-4469).
         const turnApprovalTarget = {
@@ -3395,6 +3409,17 @@ export function registerChatHandlers(
           initiationSource: 'user',
           settleOn: 'root-terminal',
           codexRootThreadId,
+          launch: {
+            surface: 'cowork',
+            options: sessionOptions,
+            approvalRevision,
+            // Attachments cross as canonical ids, not paths: not yet.
+            prompt:
+              (fileReferences?.length ?? 0) > 0 ||
+              (attachmentPaths?.length ?? 0) > 0
+                ? null
+                : text,
+          },
         });
         coworkTurnRun = turnRun;
         const session = await turnRun.execute(() =>
@@ -4142,15 +4167,50 @@ export function registerChatHandlers(
 
   registerIpcHandler<[ChatCancelIpcRequest], ChatCancelResult>(
     IPC_CHANNELS.chatCancel,
-    async (_event, req) => {
+    async (event, req) => {
       if (req.expectedUserMessageId !== undefined) {
+        // A one-window session's Stop ends only the running turn; it never
+        // withdraws a queued message, which would drain the queue (CAN-7854).
+        const runningTurnOnly = remoteBridgeIsOneWindow(event.sender);
+        if (runningTurnOnly) {
+          const stillAuthorized = remoteBridgeCommitGuard(event.sender);
+          validateId(req.projectId, 'projectId');
+          validateId(req.worktreeId, 'worktreeId');
+          validateId(req.chatId, 'chatId');
+          // A turn its managed terminal runs is outside the chat queue, in a
+          // worktree or a Work Entry, so this Stop could not reach it: refuse
+          // it rather than answer that it is not running. Read from the live
+          // terminals only, so a Stop for a deleted chat opens no storage.
+          if (await hasLiveClaudeTerminalTurn(req))
+            throw classifyError(
+              new Error(
+                'This chat runs in a terminal on the other computer. Stop it there.',
+              ),
+              'input.not_accepted',
+            );
+          // That check awaited: stop only while the session's pairing still
+          // holds. A Stop sends no input; holding the rest of the stop and
+          // the queue it releases to the pairing comes with CAN-7877.
+          if (stillAuthorized?.() !== true)
+            throw new Error('This session is no longer paired.');
+          // A Work Entry's exact Stop loads its chat state before it checks
+          // the turn, which could bring back a deleted Work Entry's storage.
+          // Check the named turn from live state first.
+          if (
+            isCoworkWorkspace(req.projectId) &&
+            captureChatTurnStopWithTurn(req).userMessageId !==
+              req.expectedUserMessageId
+          )
+            return { outcome: 'turn_not_active' };
+        }
         // Only that turn, never a newer one (CAN-5985).
         return stopExactChatTurn(req, req.expectedUserMessageId, {
           validateId,
           isCoworkWorkspace,
           stopActiveTurn: (request, expected) =>
             stopChatForUser(request, getWindow, expected),
-          cancelWorktreeTurn: cancelWorktreeChatTurn,
+          cancelWorktreeTurn: (request) =>
+            cancelWorktreeChatTurn(request, { runningTurnOnly }),
         });
       }
       const result = await stopChatForUser(req, getWindow);

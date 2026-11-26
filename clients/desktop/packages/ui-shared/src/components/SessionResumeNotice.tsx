@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { Notice, NoticeButton } from './Notice';
+import { Notice, NoticeButton } from '../primitives/Notice';
 
 export const SESSION_RESUME_NOTICE_COPY = {
   title: "Couldn't resume this chat",

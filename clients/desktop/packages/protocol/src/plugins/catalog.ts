@@ -241,6 +241,23 @@ export interface MarketplacePluginExternalSource {
   sha?: string;
 }
 
+export interface PluginCopyProvenance {
+  sourceUrl: string;
+  /** True only when display provenance preserves the original clone identity. */
+  sourceIdentityComplete?: boolean;
+  /** Actual cloned HEAD, not the manifest's requested sha. */
+  commit?: string;
+  /** False when the downloaded source was already usable without a manifest. */
+  manifestRequired?: boolean;
+  installedAt: string;
+  marketplaceEntryName?: string;
+  /** Saved-selection identity, retained even when the downloaded bytes are lost. */
+  installedName?: string;
+  reinstalled?: boolean;
+  /** Remote installs must revalidate public HTTPS and refuse clone redirects on repair. */
+  remoteSourceRestricted?: boolean;
+}
+
 /**
  * A single per-provider facet of a plugin.
  *
@@ -269,6 +286,8 @@ export interface PluginProviderFacet {
   externalSource?: MarketplacePluginExternalSource;
   cachePath?: string;
   cachedAt?: string;
+  provenance?: PluginCopyProvenance;
+  sourceChanged?: boolean;
   details?: PluginDetails | null;
 }
 
@@ -391,6 +410,8 @@ export interface PluginInfo {
   cachePath?: string;
   /** ISO timestamp of when the cache was last populated. */
   cachedAt?: string;
+  provenance?: PluginCopyProvenance;
+  sourceChanged?: boolean;
 
   /** Per-provider support summary for this plugin. */
   providerSupport: PluginProviderSupport;

@@ -52,7 +52,7 @@ export function createSecureFileServices(
             );
       } catch (error) {
         const code = errorCode(error) ?? 'error';
-        return fail('unverifiable', `check failed: ${code}`);
+        return fail('unverifiable', `check failed: ${code}`, 'unverifiable');
       }
     },
     rename: (request) =>

@@ -39,6 +39,30 @@ export const STORAGE_OWNERSHIP = [
     ]
   },
   {
+    "id": "app_managed_home_migration_state",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": "none",
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/lib/app-managed-workspaces"
+    ]
+  },
+  {
+    "id": "client_preferences",
+    "transitionOwner": "interface-local",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/lib/client-preferences-store"
+    ]
+  },
+  {
     "id": "code_review_chats_dir",
     "transitionOwner": "legacy",
     "currentWriters": [
@@ -99,6 +123,18 @@ export const STORAGE_OWNERSHIP = [
     ],
     "schemaVersion": 1,
     "backupPolicy": "none"
+  },
+  {
+    "id": "cowork_migration_map",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/lib/cowork-migration-map"
+    ]
   },
   {
     "id": "daemon_github_credential_fence",
@@ -167,6 +203,27 @@ export const STORAGE_OWNERSHIP = [
       "packages/core-runtime/src/node/vault/repository/store.ts",
       "packages/core-runtime/src/node/vault/repository/store-database.ts"
     ]
+  },
+  {
+    "id": "data_dir_adoption_marker",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/ipc/preferences"
+    ]
+  },
+  {
+    "id": "file_annotations",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none"
   },
   {
     "id": "mcp_removal_evidence",
@@ -311,7 +368,9 @@ export const STORAGE_OWNERSHIP = [
       "electron_main"
     ],
     "schemaVersion": 1,
-    "backupPolicy": "none",
+    "backupPolicy": "required_before_flip",
+    "workPackage": "W5",
+    "backupShape": "namespace_backup",
     "admittedWriters": [
       "main/lib/preferences-store"
     ]
@@ -348,6 +407,30 @@ export const STORAGE_OWNERSHIP = [
     "backupPolicy": "none",
     "admittedWriters": [
       "main/terminal/persistence"
+    ]
+  },
+  {
+    "id": "terminal_record",
+    "transitionOwner": "daemon",
+    "currentWriters": [
+      "daemon"
+    ],
+    "schemaVersion": 3,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "packages/core-runtime/src/node/terminal/record/repository.ts"
+    ]
+  },
+  {
+    "id": "terminal_record_outbox",
+    "transitionOwner": "legacy",
+    "currentWriters": [
+      "electron_main"
+    ],
+    "schemaVersion": 1,
+    "backupPolicy": "none",
+    "admittedWriters": [
+      "main/terminal/record-outbox"
     ]
   },
   {

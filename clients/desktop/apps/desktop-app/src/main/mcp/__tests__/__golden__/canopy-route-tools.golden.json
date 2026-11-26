@@ -27,7 +27,7 @@
       ],
       [
         "SearchActions",
-        "5a44ad17ffecfb6cc8708fe21ad6db6d0fd7ed2b6f4c315423aae535571c715b"
+        "478c4b57e61ad67b9a5356097f44615ace00b47421f5d060ef038dca7d309e99"
       ],
       [
         "GetCurrentUiState",
@@ -35,7 +35,7 @@
       ],
       [
         "DispatchAction",
-        "c01ad6abdcffae7f20bd0d77ede2bb20e001b53069bfdeec9c2cfb8160b560d1"
+        "df35a37c393f06a155752384367678ed0e5b13846c994b9b6f3fd0a2f2ace58a"
       ],
       [
         "GetPipelineDebugContext",
@@ -137,7 +137,7 @@
       ],
       [
         "SearchActions",
-        "5a44ad17ffecfb6cc8708fe21ad6db6d0fd7ed2b6f4c315423aae535571c715b"
+        "478c4b57e61ad67b9a5356097f44615ace00b47421f5d060ef038dca7d309e99"
       ],
       [
         "GetCurrentUiState",
@@ -145,7 +145,7 @@
       ],
       [
         "DispatchAction",
-        "c01ad6abdcffae7f20bd0d77ede2bb20e001b53069bfdeec9c2cfb8160b560d1"
+        "df35a37c393f06a155752384367678ed0e5b13846c994b9b6f3fd0a2f2ace58a"
       ],
       [
         "GetPipelineDebugContext",
@@ -897,7 +897,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -1011,7 +1011,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -1215,7 +1215,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -1337,7 +1337,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -1491,7 +1491,7 @@
       ],
       [
         "DispatchAction",
-        "ed43b52732436afaa3a6f7cb216ea08310f9ed4b7b75f45832eb9d30ac531e7c"
+        "02ccba869c6586e6eb2e4dd534e08c59fcd3b8b045444f750e4c1c549f443aea"
       ],
       [
         "SearchWatchers",
@@ -1601,7 +1601,7 @@
       ],
       [
         "DispatchAction",
-        "ed43b52732436afaa3a6f7cb216ea08310f9ed4b7b75f45832eb9d30ac531e7c"
+        "02ccba869c6586e6eb2e4dd534e08c59fcd3b8b045444f750e4c1c549f443aea"
       ],
       [
         "SearchWatchers",
@@ -1707,7 +1707,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -1821,7 +1821,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -1955,7 +1955,7 @@
       ],
       [
         "DispatchAction",
-        "ed43b52732436afaa3a6f7cb216ea08310f9ed4b7b75f45832eb9d30ac531e7c"
+        "02ccba869c6586e6eb2e4dd534e08c59fcd3b8b045444f750e4c1c549f443aea"
       ],
       [
         "SearchWatchers",
@@ -2061,7 +2061,7 @@
       ],
       [
         "DispatchAction",
-        "ed43b52732436afaa3a6f7cb216ea08310f9ed4b7b75f45832eb9d30ac531e7c"
+        "02ccba869c6586e6eb2e4dd534e08c59fcd3b8b045444f750e4c1c549f443aea"
       ],
       [
         "SearchWatchers",
@@ -2151,7 +2151,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -2266,7 +2266,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -2372,6 +2372,52 @@
       ]
     ]
   },
+  "ledger-subprocess-pipeline-agent": {
+    "main": [
+      [
+        "AddFeedEntry",
+        "94e5e5a412337d64269ee4bd8a747f9d6beb99aa176ba3c8c84cf914eefd0ecb"
+      ],
+      [
+        "SearchFeedEntries",
+        "7a61eb04900b8ce9461dd53158885e4e858ea2085400358c282e16c2db12c018"
+      ],
+      [
+        "UpdateFeedEntry",
+        "afae682bb8ba33b8570bce8cb07a3914eacfe5d3344680569e233f273b14b742"
+      ],
+      [
+        "SearchActions",
+        "d2e6ae644e4c8884bff168c5bb8b7a05b6c1aa7e820d9746ae2dd4a04f19bac7"
+      ],
+      [
+        "DispatchAction",
+        "0f101e2480eee53061b54840501da30c977f81684d08c1408bfe552f68cab61f"
+      ]
+    ],
+    "ui": [
+      [
+        "AddFeedEntry",
+        "94e5e5a412337d64269ee4bd8a747f9d6beb99aa176ba3c8c84cf914eefd0ecb"
+      ],
+      [
+        "SearchFeedEntries",
+        "7a61eb04900b8ce9461dd53158885e4e858ea2085400358c282e16c2db12c018"
+      ],
+      [
+        "UpdateFeedEntry",
+        "afae682bb8ba33b8570bce8cb07a3914eacfe5d3344680569e233f273b14b742"
+      ],
+      [
+        "SearchActions",
+        "d2e6ae644e4c8884bff168c5bb8b7a05b6c1aa7e820d9746ae2dd4a04f19bac7"
+      ],
+      [
+        "DispatchAction",
+        "0f101e2480eee53061b54840501da30c977f81684d08c1408bfe552f68cab61f"
+      ]
+    ]
+  },
   "managed-delegate-app-advisor-bare": {
     "main": [
       [
@@ -2436,7 +2482,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -2546,7 +2592,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -2704,7 +2750,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -2814,7 +2860,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -2924,7 +2970,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -3082,7 +3128,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -3240,7 +3286,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -3370,7 +3416,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -3560,7 +3606,7 @@
       ],
       [
         "DispatchAction",
-        "ed43b52732436afaa3a6f7cb216ea08310f9ed4b7b75f45832eb9d30ac531e7c"
+        "02ccba869c6586e6eb2e4dd534e08c59fcd3b8b045444f750e4c1c549f443aea"
       ],
       [
         "SearchWatchers",
@@ -3678,7 +3724,7 @@
       ],
       [
         "DispatchAction",
-        "ed43b52732436afaa3a6f7cb216ea08310f9ed4b7b75f45832eb9d30ac531e7c"
+        "02ccba869c6586e6eb2e4dd534e08c59fcd3b8b045444f750e4c1c549f443aea"
       ],
       [
         "SearchWatchers",
@@ -3824,7 +3870,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -3954,7 +4000,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -4140,7 +4186,7 @@
       ],
       [
         "DispatchAction",
-        "ed43b52732436afaa3a6f7cb216ea08310f9ed4b7b75f45832eb9d30ac531e7c"
+        "02ccba869c6586e6eb2e4dd534e08c59fcd3b8b045444f750e4c1c549f443aea"
       ],
       [
         "SearchWatchers",
@@ -4258,7 +4304,7 @@
       ],
       [
         "DispatchAction",
-        "ed43b52732436afaa3a6f7cb216ea08310f9ed4b7b75f45832eb9d30ac531e7c"
+        "02ccba869c6586e6eb2e4dd534e08c59fcd3b8b045444f750e4c1c549f443aea"
       ],
       [
         "SearchWatchers",
@@ -4360,7 +4406,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -4568,7 +4614,7 @@
       ],
       [
         "DispatchAction",
-        "a35f715b41cf2d7e5327ae8cf98827d90c641a7faf192a2f92c093acb0ee3757"
+        "420257b9aa30ed41642292ee0f25a00acdf74d454838a8f862921a4fb911bb3f"
       ],
       [
         "SearchWatchers",
@@ -4744,6 +4790,44 @@
       ]
     ]
   },
+  "worker-ro-pipeline-agent": {
+    "main": [
+      [
+        "SearchMemory",
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
+      ],
+      [
+        "ReadMemory",
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
+      ]
+    ],
+    "ui": [
+      [
+        "SearchMemory",
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
+      ],
+      [
+        "ReadMemory",
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
+      ]
+    ]
+  },
   "worker-rw-ledger": {
     "main": [
       [
@@ -4819,6 +4903,92 @@
       [
         "UpdateFeedEntry",
         "afae682bb8ba33b8570bce8cb07a3914eacfe5d3344680569e233f273b14b742"
+      ]
+    ]
+  },
+  "worker-rw-pipeline-agent": {
+    "main": [
+      [
+        "SaveMemory",
+        "863ed2b921cca167114e617332b6b1c65dda230648c1b11673623908d9eb0b7a"
+      ],
+      [
+        "SearchMemory",
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
+      ],
+      [
+        "ReadMemory",
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
+      ],
+      [
+        "AddFeedEntry",
+        "94e5e5a412337d64269ee4bd8a747f9d6beb99aa176ba3c8c84cf914eefd0ecb"
+      ],
+      [
+        "SearchFeedEntries",
+        "7a61eb04900b8ce9461dd53158885e4e858ea2085400358c282e16c2db12c018"
+      ],
+      [
+        "UpdateFeedEntry",
+        "afae682bb8ba33b8570bce8cb07a3914eacfe5d3344680569e233f273b14b742"
+      ],
+      [
+        "SearchActions",
+        "d2e6ae644e4c8884bff168c5bb8b7a05b6c1aa7e820d9746ae2dd4a04f19bac7"
+      ],
+      [
+        "DispatchAction",
+        "0f101e2480eee53061b54840501da30c977f81684d08c1408bfe552f68cab61f"
+      ]
+    ],
+    "ui": [
+      [
+        "SaveMemory",
+        "863ed2b921cca167114e617332b6b1c65dda230648c1b11673623908d9eb0b7a"
+      ],
+      [
+        "SearchMemory",
+        "72b52fe019cd2d62f6e4448faecaebcbc7810ab2f35497961891ec34334a4cd3"
+      ],
+      [
+        "SearchChats",
+        "9eb8726678d711b4e2d6f25dd2d0185c97a0e76c50703d337d2947ef7c5656eb"
+      ],
+      [
+        "ReadChatExcerpt",
+        "1fd88334d41c547e8a7c4f15b5e4ba26214b8c6555c66d06d483ec396415d0fe"
+      ],
+      [
+        "ReadMemory",
+        "d1b1df0f194f93e3ea38ef51d2fc68f8b75fed00f14d8c292b2918905f3ef56a"
+      ],
+      [
+        "AddFeedEntry",
+        "94e5e5a412337d64269ee4bd8a747f9d6beb99aa176ba3c8c84cf914eefd0ecb"
+      ],
+      [
+        "SearchFeedEntries",
+        "7a61eb04900b8ce9461dd53158885e4e858ea2085400358c282e16c2db12c018"
+      ],
+      [
+        "UpdateFeedEntry",
+        "afae682bb8ba33b8570bce8cb07a3914eacfe5d3344680569e233f273b14b742"
+      ],
+      [
+        "SearchActions",
+        "d2e6ae644e4c8884bff168c5bb8b7a05b6c1aa7e820d9746ae2dd4a04f19bac7"
+      ],
+      [
+        "DispatchAction",
+        "0f101e2480eee53061b54840501da30c977f81684d08c1408bfe552f68cab61f"
       ]
     ]
   }

@@ -4,6 +4,11 @@ import type { PipelineReadPort } from '@canopy/desktop-shared/lib/automation-sha
 import type { PipelineRunLocationRequest } from '@canopy/desktop-shared/types/pipeline-cloud-runs';
 import { buildPipelineSecretBindings } from '../execution-secrets/bindings';
 import {
+  PIPELINE_REVISION_CHANGED_MESSAGE,
+  pipelineDocumentRevision,
+  readPipelineFileWithRevision,
+} from './pipeline-file-revision';
+import {
   executionSecretUnavailableError,
   type RedeemedExecutionSecrets,
 } from '@canopy/core-runtime/node/execution-secrets';
@@ -104,6 +109,8 @@ import type {
   RemoteControlPipelineSummary,
 } from '@canopy/protocol/remote-control/shell';
 import type {
+  ApprovePipelineForSchedulesRequest,
+  ApprovePipelineForSchedulesResult,
   ListPipelineCapabilityRefsRequest,
   ListPipelineCapabilityRefsResponse,
   ListSharedOrganizationsRequest,
@@ -158,6 +165,26 @@ import {
   encodeMatrixIpcErrorMessage,
   getTriggerTypes,
 } from '@canopy/execution-engine/types/pipeline';
+import { withPipelineScheduleGuard } from './pipeline-schedule-guard';
+import { isPersonApprovedUserPipeline } from './pipeline-person-approval';
+import type { ScheduledActivity } from '@canopy/desktop-shared/types';
+import { isRecord } from '../lib/type-guards';
+import {
+  isSourcelessProjectSchedule,
+  saveChangesScheduleTriggers,
+  scheduleSaveRefusal,
+  type ScheduleSaveRefusal,
+} from '../automations/schedule-save-check';
+import { scheduleRunEvent } from '@canopy/desktop-shared/lib/schedule-run-event';
+import {
+  SCHEDULE_DISPATCH_REQUIRED_MESSAGE,
+  SCHEDULE_LIVE_SHARE_WORKFLOW_MESSAGE,
+  SCHEDULE_PROJECT_WORKFLOW_MESSAGE,
+  SCHEDULE_AUTOMATION_PACKAGE_WORKFLOW_MESSAGE,
+  SCHEDULE_UNAPPROVED_WORKFLOW_MESSAGE,
+  SCHEDULED_WORKFLOW_REFUSAL_CODE,
+  ScheduledWorkflowRefusal,
+} from '../automations/scheduled-workflow-refusal';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import { buildSharedPipelineId } from '@canopy/desktop-shared/pipelines/shared-pipeline-id';
 import {
@@ -222,11 +249,15 @@ import {
   savePipelinePluginCollectionPreferences,
 } from '@canopy/execution-engine/node/pipelines/plugin-collection-store';
 import {
+  pipelineMarkerRefusalMessage,
   isPipelineLocalMetadataReadable,
   readPipelineLocalMetadata,
   recordUserPipelineOwner,
-  setUserPipelineAgentAuthor,
 } from './pipeline-local-metadata-store';
+import {
+  approvePipelineForSchedules,
+  stampPersonApproval,
+} from './pipeline-person-approval';
 import {
   WORKFLOW_DUPLICATE_FAILED,
   copyWorkflowNameToSchedules,
@@ -574,6 +605,15 @@ type InstallRecoveryRefusal = PipelineDefinitionRecoveryRefusal & {
   success: false;
 };
 
+function markerRecoveryRefusal(
+  definitionId: string,
+): InstallRecoveryRefusal | undefined {
+  const error = pipelineMarkerRefusalMessage(definitionId);
+  return error
+    ? { success: false, error, errorCode: 'pipeline_definition_unconfirmed' }
+    : undefined;
+}
+
 /**
  * CAN-7308: a run never starts against a definition an interrupted install
  * is still restoring, or couldn't restore in this process. It waits for the
@@ -864,6 +904,90 @@ function isYamlPipelinePath(filePath: string): boolean {
   return extension === '.yaml' || extension === '.yml';
 }
 
+/**
+ * Reads a project workflow from another worktree of the run's project once,
+ * and returns it only if those bytes are the expected revision (CAN-7513).
+ * The file is located and authorized as that project's file before it is
+ * read, so a refusal never depends on its contents for a caller without
+ * access; authorization failures throw.
+ */
+async function readCheckedDefinitionFromWorktree(request: {
+  projectId: string | undefined;
+  worktreeId: string;
+  pipelineId: string;
+  filePath: string | undefined;
+  expectedRevision: string | undefined;
+  sharedPipeline: boolean;
+}): Promise<
+  | {
+      pipeline: Pipeline;
+      sourceCwd: string;
+      filePath: string;
+      /** The authorized project resource, when resource context is on. */
+      resource: ResourceContextInput['resource'] | undefined;
+    }
+  | { error: string }
+> {
+  if (
+    !request.projectId ||
+    !request.filePath ||
+    request.expectedRevision === undefined ||
+    request.sharedPipeline ||
+    !request.pipelineId.startsWith('project--')
+  ) {
+    return { error: PIPELINE_REVISION_CHANGED_MESSAGE };
+  }
+  validateId(request.projectId, 'projectId');
+  validateId(request.worktreeId, 'worktreeId');
+  const sourceCwd = resolveWorktreeCwd(request.projectId, request.worktreeId);
+  const validated = await validateProjectPipelineAccess({
+    id: request.pipelineId,
+    cwd: sourceCwd,
+    filePath: request.filePath,
+  });
+  if (!validated.success) return { error: validated.error };
+  const [realRoot, realFile] = await Promise.all([
+    realpath(validated.data.rootDir),
+    realpath(validated.data.filePath),
+  ]);
+  if (!isPathInside(realRoot, realFile))
+    throw new Error('Workflow unavailable (unsupported-target)');
+  let resource: ResourceContextInput['resource'] | undefined;
+  if (pipelineResourceContextEnabled()) {
+    const authorized = await authorizeProjectPipelineRequest({
+      id: request.pipelineId,
+      cwd: sourceCwd,
+      filePath: validated.data.filePath,
+    });
+    if (authorized.projectId !== request.projectId)
+      throw new Error('Workflow unavailable (unsupported-target)');
+    try {
+      await assertPipelineContext(
+        { owner: authorized.owner },
+        request.projectId,
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === 'Workflow unavailable (unsupported-target)'
+      )
+        throw new Error('Workflow unavailable (context-mismatch)');
+      throw error;
+    }
+    resource = { owner: authorized.owner };
+  }
+  // Only now, authorized, are the bytes read and checked.
+  const read = await readPipelineFileWithRevision(validated.data.filePath);
+  if (read.revision !== request.expectedRevision)
+    return { error: PIPELINE_REVISION_CHANGED_MESSAGE };
+  return {
+    pipeline: parsePipelineText(read.text),
+    sourceCwd,
+    filePath: validated.data.filePath,
+    resource,
+  };
+}
+
 export async function validateProjectPipelineAccess(
   request: ProjectPipelineRequest,
 ): Promise<
@@ -1044,6 +1168,68 @@ function persistPipelineRemoteMetadata(
  * validates it and refuses a stale revision. The Pipeline Editor's agent
  * saves run this too (CAN-5822), so they keep its owner rules.
  */
+/** The renderer's pending schedule inputs, as plain strings only. */
+function pendingScheduleInputsOf(
+  value: unknown,
+): Record<string, Record<string, string>> | undefined {
+  if (!isRecord(value)) return undefined;
+  const result: Record<string, Record<string, string>> = {};
+  for (const [id, inputs] of Object.entries(value)) {
+    if (!isRecord(inputs)) continue;
+    result[id] = Object.fromEntries(
+      Object.entries(inputs).filter(
+        (entry): entry is [string, string] => typeof entry[1] === 'string',
+      ),
+    );
+  }
+  return result;
+}
+
+/** The schedule refusal for saving `next` over the stored pipeline (CAN-5782). */
+async function scheduleSaveRefusalFor(
+  pipelineId: string,
+  next: Pipeline,
+  confirmed: readonly string[] | undefined,
+  pendingInputs: Readonly<Record<string, Record<string, string>>> | undefined,
+): Promise<ScheduleSaveRefusal | null> {
+  const stored = service.getStoredPipelineBySource('user', pipelineId);
+  if (!stored.success || !stored.data) return null;
+  // A save that leaves how schedules run alone (a rename, a step edit)
+  // never reads them.
+  if (!saveChangesScheduleTriggers(stored.data.content, next)) return null;
+  let activities: ScheduledActivity[];
+  const findsProjectPipeline = new Set<string>();
+  try {
+    const { getAutomationsService } = await import('../automations/service');
+    const automations = getAutomationsService();
+    activities = await automations.allActivities();
+    // A sourceless schedule in a project runs this pipeline only when its
+    // fire finds no project workflow with the same ID first.
+    for (const activity of activities) {
+      if (
+        isSourcelessProjectSchedule(activity, pipelineId) &&
+        (await automations.sourcelessScheduleFindsProjectPipeline(activity))
+      )
+        findsProjectPipeline.add(activity.id);
+    }
+  } catch {
+    return {
+      kind: 'blocked',
+      message:
+        "This change to the workflow's triggers couldn't be checked against its schedules, which couldn't be read. Try again.",
+    };
+  }
+  return scheduleSaveRefusal(
+    activities,
+    pipelineId,
+    stored.data.content,
+    next,
+    confirmed,
+    pendingInputs,
+    findsProjectPipeline,
+  );
+}
+
 export async function saveEditorPipeline(
   input: PipelineSaveInput,
 ): Promise<IPCResultWithOutcome<PipelineInfo>> {
@@ -1062,32 +1248,54 @@ export async function saveEditorPipeline(
       ? await getUserPipelineOwner(existingUserPipelineId)
       : await selectedOwnerContext();
   // Saving in the editor as the user records the owner of a new pipeline
-  // and clears any agent marker.
-  const recordUserSave = (savedId: string): void => {
+  // and clears any agent marker. CAN-5782: the save is the person's, so it
+  // stamps their approval of the content it committed, under the pipeline's
+  // schedule guard and only while the pipeline is still at that revision.
+  const recordUserSave = async (
+    saved: Pick<PipelineInfo, 'id' | 'revision'>,
+  ): Promise<void> => {
     if (existingUserPipelineId === undefined)
-      recordUserPipelineOwner(savedId, ownerContext);
-    setUserPipelineAgentAuthor(savedId, null);
+      recordUserPipelineOwner(saved.id, ownerContext);
+    const { revision } = saved;
+    if (revision !== undefined)
+      await withPipelineScheduleGuard(saved.id, () =>
+        stampPersonApproval(saved.id, revision),
+      );
   };
+  // An existing pipeline's write and stamp hold its guard together, so a
+  // timed fire never checks the approval between them.
+  const guardedWrite = <T>(write: () => Promise<T>): Promise<T> =>
+    input.id ? withPipelineScheduleGuard(input.id, write) : write();
+  const newOwner =
+    existingUserPipelineId === undefined
+      ? { owner: ownerContext, agentAuthor: null }
+      : undefined;
   if (input.sourceRemoteId) {
+    const sourceRemoteId = input.sourceRemoteId;
     // Core reads and validates the share itself, never the renderer's
     // copy, and installs it with its receipt (with resource contexts on)
     // and subscription.
-    try {
-      validateId(input.sourceRemoteId, 'sourceRemoteId');
-      const installed = await importRemotePipeline({
-        remoteDefinitionId: buildSharedPipelineId(
-          CANOPY_CLOUD_SERVER_ID,
-          input.sourceRemoteId,
-        ),
-        expectedRemoteVersion: null,
-        nameOverride: input.name,
-        ...(input.id ? { definitionId: input.id } : {}),
-      });
-      recordUserSave(installed.id);
-      return { success: true, data: installed };
-    } catch (error) {
-      return { success: false, error: pipelineWriteErrorMessage(error) };
-    }
+    return guardedWrite(
+      async (): Promise<IPCResultWithOutcome<PipelineInfo>> => {
+        try {
+          validateId(sourceRemoteId, 'sourceRemoteId');
+          const installed = await importRemotePipeline({
+            remoteDefinitionId: buildSharedPipelineId(
+              CANOPY_CLOUD_SERVER_ID,
+              sourceRemoteId,
+            ),
+            expectedRemoteVersion: null,
+            nameOverride: input.name,
+            ...(input.id ? { definitionId: input.id } : {}),
+            ...(newOwner && { owner: newOwner }),
+          });
+          await recordUserSave(installed);
+          return { success: true, data: installed };
+        } catch (error) {
+          return { success: false, error: pipelineWriteErrorMessage(error) };
+        }
+      },
+    );
   }
   const ownerRefusal = await validatePipelineOwnerTargetsOnSave(
     input.content,
@@ -1096,29 +1304,60 @@ export async function saveEditorPipeline(
   if (ownerRefusal !== null) return { success: false, error: ownerRefusal };
   // Core validates, refuses a stale revision, and runs the store's
   // effects; this projection keeps the legacy result and owner records.
-  const result = await withPipelineCrudTelemetry(
-    {
-      action: input.id ? 'update' : 'create',
-      source: 'user',
-      hasPipelineId: Boolean(input.id),
-    },
-    (): Promise<IPCResultWithOutcome<PipelineInfo>> =>
-      saveUserPipeline({
-        ...(input.id ? { id: input.id } : {}),
-        ...(input.expectedRevision === undefined
-          ? {}
-          : { expectedRevision: input.expectedRevision }),
-        name: input.name,
-        description: input.description,
-        icon: input.icon,
-        content: input.content,
-        ...(input.rawContent === undefined
-          ? {}
-          : { rawContent: input.rawContent }),
-      }),
-  );
+  const result = await guardedWrite(async () => {
+    // CAN-5782: under the guard, so a schedule enabled meanwhile is either
+    // checked here or checks against the committed definition.
+    if (existingUserPipelineId !== undefined) {
+      const refusal = await scheduleSaveRefusalFor(
+        existingUserPipelineId,
+        input.content,
+        Array.isArray(input.confirmAgentSchedulesStop)
+          ? input.confirmAgentSchedulesStop.filter(
+              (id): id is string => typeof id === 'string',
+            )
+          : undefined,
+        pendingScheduleInputsOf(input.pendingScheduleInputs),
+      );
+      if (refusal)
+        return {
+          success: false,
+          error: refusal.message,
+          scheduleRefusal: refusal.kind,
+          ...(refusal.kind === 'needs_confirmation'
+            ? { stoppingScheduleIds: [...refusal.scheduleIds] }
+            : {}),
+        };
+    }
+    const saved = await withPipelineCrudTelemetry(
+      {
+        action: input.id ? 'update' : 'create',
+        source: 'user',
+        hasPipelineId: Boolean(input.id),
+      },
+      (): Promise<IPCResultWithOutcome<PipelineInfo>> =>
+        saveUserPipeline(
+          {
+            ...(input.id ? { id: input.id } : {}),
+            ...(input.expectedRevision === undefined
+              ? {}
+              : { expectedRevision: input.expectedRevision }),
+            name: input.name,
+            description: input.description,
+            icon: input.icon,
+            content: input.content,
+            ...(input.rawContent === undefined
+              ? {}
+              : { rawContent: input.rawContent }),
+            ...(newOwner && { owner: newOwner }),
+          },
+          PIPELINE_DEFINITION_DESKTOP_CALLER,
+          { author: null, owner: newOwner?.owner },
+        ),
+    );
+    if (saved.success && saved.data) await recordUserSave(saved.data);
+    return saved;
+  });
   if (result.success && result.data) {
-    recordUserSave(result.data.id);
     // Decision 6 (CAN-5782): a workflow page's schedules take its name.
     if (existingUserPipelineId !== undefined) {
       await copyWorkflowNameToSchedules(result.data.id, input.name);
@@ -1129,7 +1368,10 @@ export async function saveEditorPipeline(
         .catch(() => undefined);
     }
   }
-  return result;
+  return ('revisionRefused' in result && result.revisionRefused) ||
+    ('markerRefused' in result && result.markerRefused)
+    ? { success: false, error: result.error }
+    : result;
 }
 
 /** Updates a shared pipeline the editor holds, as the editor's Save button does. */
@@ -1393,12 +1635,55 @@ export function registerPipelineHandlers(): void {
   registerIpcHandler(PIPELINE_CHANNELS.SAVE, (_, input: PipelineSaveInput) =>
     saveEditorPipeline(input),
   );
+  // CAN-5782: a person's **Approve for schedules**. Person-only: no agent
+  // action or workflow assistant tool reaches it.
+  registerIpcHandler(
+    PIPELINE_CHANNELS.APPROVE_FOR_SCHEDULES,
+    async (
+      _event,
+      request: ApprovePipelineForSchedulesRequest,
+    ): Promise<ApprovePipelineForSchedulesResult> => {
+      try {
+        validateId(request?.pipelineId, 'pipelineId');
+      } catch (error) {
+        return { success: false, error: toErrorMessage(error) };
+      }
+      if (
+        !Number.isInteger(request.revision) ||
+        typeof request.contentDigest !== 'string' ||
+        request.contentDigest.length === 0 ||
+        !(
+          request.packageDigest === null ||
+          (typeof request.packageDigest === 'string' &&
+            request.packageDigest.length > 0)
+        )
+      )
+        return { success: false, error: 'The approval request is not valid.' };
+      // The same context and access check as the editor's Save.
+      try {
+        await assertStoredPipelineContext(request.pipelineId);
+      } catch (error) {
+        return { success: false, error: toErrorMessage(error) };
+      }
+      return approvePipelineForSchedules({
+        pipelineId: request.pipelineId,
+        revision: request.revision,
+        contentDigest: request.contentDigest,
+        packageDigest: request.packageDigest,
+      });
+    },
+  );
   // Core deletes the definition with its preferences, local metadata,
   // subscription ledger entry and package install.
   registerIpcHandler(PIPELINE_CHANNELS.DELETE, (_, id: string) => {
     return withPipelineCrudTelemetry(
       { action: 'delete', source: 'user', hasPipelineId: true },
-      (): Promise<IPCResultWithOutcome> => deleteUserPipeline(id, null),
+      async (): Promise<IPCResultWithOutcome> => {
+        const result = await deleteUserPipeline(id, null);
+        return result.revisionRefused
+          ? { success: false, error: result.error }
+          : result;
+      },
     );
   });
   registerIpcHandler(
@@ -1444,8 +1729,12 @@ export function registerPipelineHandlers(): void {
             const refusal = await workflowPageDuplicateRefusal(sourceId);
             if (refusal) return { success: false, error: refusal };
           }
-          if (sourceId !== undefined)
-            return duplicatePipelineDefinition(sourceId, {});
+          if (sourceId !== undefined) {
+            const result = await duplicatePipelineDefinition(sourceId, {});
+            return result.revisionRefused
+              ? { success: false, error: result.error }
+              : result;
+          }
           if (!isProjectPipelineRequest(request))
             return {
               success: false,
@@ -2376,6 +2665,15 @@ function sanitizeRendererExecuteOptions(
   if (options.pipelineFilePath !== undefined) {
     sanitized.pipelineFilePath = options.pipelineFilePath;
   }
+  if (typeof options.expectedRevision === 'string') {
+    sanitized.expectedRevision = options.expectedRevision;
+  }
+  if (options.requireSentDefinition === true) {
+    sanitized.requireSentDefinition = true;
+  }
+  if (typeof options.definitionWorktreeId === 'string') {
+    sanitized.definitionWorktreeId = options.definitionWorktreeId;
+  }
   if (options.sharedPipeline !== undefined) {
     sanitized.sharedPipeline = options.sharedPipeline;
   }
@@ -2469,6 +2767,14 @@ export async function startPipelineExecutionFromMain(args: {
   if (speedError) return { success: false, error: speedError };
   const recoveryRefusal = await installRecoveryRefusal(args.options.pipelineId);
   if (recoveryRefusal) return recoveryRefusal;
+  if (
+    args.options.pipelineFilePath === undefined &&
+    args.options.sharedPipeline === undefined &&
+    isLocalUserPipeline(args.options.pipelineId)
+  ) {
+    const markerRefusal = markerRecoveryRefusal(args.options.pipelineId);
+    if (markerRefusal) return markerRefusal;
+  }
   // CAN-7347: a deleted workflow never runs from a copy its caller still
   // holds.
   if (
@@ -2587,6 +2893,13 @@ async function replayThroughLocalWorker(
     if (stored) {
       const refusal = await installRecoveryRefusal(stored.pipeline_id);
       if (refusal) return refusal;
+      if (
+        stored.shared_pipeline_source === undefined &&
+        isLocalUserPipeline(stored.pipeline_id)
+      ) {
+        const markerRefusal = markerRecoveryRefusal(stored.pipeline_id);
+        if (markerRefusal) return markerRefusal;
+      }
       // CAN-7347: a retry or start-over of a deleted workflow's run.
       if (isRunOfRemovedSavedDefinition(stored))
         return DEFINITION_REMOVED_REFUSAL;
@@ -3175,12 +3488,44 @@ async function startPipelineExecutionFromMainInternal(args: {
       executionId,
     );
     const {
-      pipelineFilePath,
+      pipelineFilePath: requestedPipelineFilePath,
       sharedPipeline,
       automationPipelinePackage,
       requestedOwner,
+      expectedRevision: requestedExpectedRevision,
+      requireSentDefinition,
+      definitionWorktreeId,
       ...executionOptions
     } = options;
+    // A share has no local document to check (CAN-7513).
+    if (
+      requestedExpectedRevision !== undefined &&
+      sharedPipeline !== undefined
+    ) {
+      return { success: false, error: PIPELINE_REVISION_CHANGED_MESSAGE };
+    }
+    // A run chosen against another worktree's copy of a project workflow
+    // runs that copy, checked as it is read (CAN-7513). It then runs as the
+    // definition, with no file of its own in this worktree, as a queued
+    // Home run does.
+    const fromCheckout =
+      definitionWorktreeId === undefined
+        ? null
+        : await readCheckedDefinitionFromWorktree({
+            projectId: args.options.projectId,
+            worktreeId: definitionWorktreeId,
+            pipelineId: executionOptions.pipelineId,
+            filePath: requestedPipelineFilePath,
+            expectedRevision: requestedExpectedRevision,
+            sharedPipeline: sharedPipeline !== undefined,
+          });
+    if (fromCheckout !== null && 'error' in fromCheckout) {
+      return { success: false, error: fromCheckout.error };
+    }
+    const pipelineFilePath =
+      fromCheckout === null ? requestedPipelineFilePath : undefined;
+    const expectedRevision =
+      fromCheckout === null ? requestedExpectedRevision : undefined;
     const resourceContextSnapshot = pipelineResourceContextEnabled()
       ? await pipelineContextSnapshot()
       : undefined;
@@ -3222,7 +3567,8 @@ async function startPipelineExecutionFromMainInternal(args: {
       pipelineResourceContextEnabled() &&
       args.options.pipelineId &&
       !sharedPipeline &&
-      !pipelineFilePath
+      !pipelineFilePath &&
+      fromCheckout === null
         ? args.options.pipelineId
         : undefined;
     const storedCurated =
@@ -3236,15 +3582,25 @@ async function startPipelineExecutionFromMainInternal(args: {
       if (foregroundOrgDispatch && !storedCurated)
         executionResource = await readStoredPipelineContext(storedPipelineId);
     }
-    let pipelineContent = args.pipeline;
+    let pipelineContent = fromCheckout?.pipeline ?? args.pipeline;
     let authorizedPipeline = args.pipeline;
-    let pipelineFileDir: string | undefined;
+    // A checked copy keeps its own file's context: child workflows, assets
+    // and preferences resolve next to the file attached, and the run's
+    // worktree is only its working directory (CAN-7513).
+    let pipelineFileDir: string | undefined =
+      fromCheckout === null ? undefined : path.dirname(fromCheckout.filePath);
     let pipelinePreferenceLocator =
       executionOptions.pipelinePreferenceLocator ??
       (pipelineFilePath
         ? { type: 'file' as const, value: path.resolve(pipelineFilePath) }
-        : undefined);
-    let projectPipelineSourcePath: string | undefined;
+        : fromCheckout !== null
+          ? {
+              type: 'file' as const,
+              value: path.resolve(fromCheckout.filePath),
+            }
+          : undefined);
+    let projectPipelineSourcePath: string | undefined =
+      fromCheckout === null ? undefined : path.resolve(fromCheckout.filePath);
     let curatedPipelineSource: ExecutionOptions['curatedPipelineSource'];
     let curatedPipelinePackage: ExecutionOptions['pipelinePackage'];
     let sharedPipelineSource: SharedPipelineExecutionSource | undefined;
@@ -3257,6 +3613,9 @@ async function startPipelineExecutionFromMainInternal(args: {
         : executionOptions.pipelineId.startsWith('curated:')
           ? executionOptions.pipelineId
           : undefined;
+    if (curatedId && expectedRevision !== undefined) {
+      return { success: false, error: PIPELINE_REVISION_CHANGED_MESSAGE };
+    }
     if (curatedId) {
       // A curated run executes the revision core reads and validates, with
       // the package that same read installed, never the caller's copy.
@@ -3395,6 +3754,13 @@ async function startPipelineExecutionFromMainInternal(args: {
       );
     }
 
+    // A checked copy from another worktree is that worktree's project file:
+    // it is authorized as one, in the run's project (CAN-7513).
+    if (fromCheckout !== null && fromCheckout.resource !== undefined) {
+      if (args.options.projectId !== targetProjectId)
+        throw new Error('Workflow unavailable (unsupported-target)');
+      executionResource = fromCheckout.resource;
+    }
     if (!curatedId && !sharedPipeline && pipelineFilePath) {
       if (pipelineResourceContextEnabled()) {
         const { owner, projectId } = await authorizeProjectPipelineRequest({
@@ -3478,9 +3844,15 @@ async function startPipelineExecutionFromMainInternal(args: {
         }
       }
 
-      pipelineContent = await loadProjectPipelineFromDisk(
-        validated.data.filePath,
-      );
+      // One read: the bytes checked are the bytes that run (CAN-7513).
+      const read = await readPipelineFileWithRevision(validated.data.filePath);
+      if (
+        expectedRevision !== undefined &&
+        read.revision !== expectedRevision
+      ) {
+        return { success: false, error: PIPELINE_REVISION_CHANGED_MESSAGE };
+      }
+      pipelineContent = parsePipelineText(read.text);
       pipelineFileDir = path.dirname(validated.data.filePath);
       projectPipelineSourcePath = path.resolve(validated.data.filePath);
     }
@@ -3493,7 +3865,9 @@ async function startPipelineExecutionFromMainInternal(args: {
         executionResource?.owner ?? { shareScope: 'private' },
         {
           cwd: executionOptions.cwd,
-          repoPath: executionOptions.repoPath,
+          // A checked copy's children resolve in its own checkout, as the
+          // executor resolves them from its source (CAN-7513).
+          repoPath: fromCheckout?.sourceCwd ?? executionOptions.repoPath,
           getProjectPipelinesDirCandidates,
           pipelineId: executionOptions.pipelineId,
           pipelineFileDir,
@@ -3566,7 +3940,7 @@ async function startPipelineExecutionFromMainInternal(args: {
         );
       executionOptions.childPipelineAuthorizations = authorizations;
     };
-    const userPipelineId = curatedId
+    let userPipelineId = curatedId
       ? undefined
       : localUserPipelineIdForRequest({
           pipelineId: executionOptions.pipelineId,
@@ -3622,6 +3996,12 @@ async function startPipelineExecutionFromMainInternal(args: {
       if (admitted) {
         pipelineContent = admitted.pipeline;
         admittedDocument = admitted.definition.document;
+        if (admitted.definition.source === 'user')
+          userPipelineId = executionOptions.pipelineId;
+      } else if (requireSentDefinition === true) {
+        // A checked stored workflow that no longer exists doesn't run from
+        // the copy queued for it (CAN-7513).
+        return { success: false, error: PIPELINE_REVISION_CHANGED_MESSAGE };
       } else if (
         // A delete since the check above, as between a hook or automation's
         // read of the workflow and this start.
@@ -3632,6 +4012,25 @@ async function startPipelineExecutionFromMainInternal(args: {
       ) {
         throw new PipelineDefinitionRemovedError();
       }
+    }
+    // A run chosen at a revision runs only that revision: a project file was
+    // checked as it was read; a stored run is checked on the document core
+    // admitted, and an inline one has nothing to check (CAN-7513).
+    if (
+      expectedRevision !== undefined &&
+      !pipelineFilePath &&
+      (admittedDocument === undefined ||
+        pipelineDocumentRevision(admittedDocument) !== expectedRevision)
+    ) {
+      return { success: false, error: PIPELINE_REVISION_CHANGED_MESSAGE };
+    }
+    // The caller checked the definition it sent; one main admits in its
+    // place must be the same (CAN-7513).
+    if (
+      requireSentDefinition === true &&
+      JSON.stringify(pipelineContent) !== JSON.stringify(args.pipeline)
+    ) {
+      return { success: false, error: PIPELINE_REVISION_CHANGED_MESSAGE };
     }
     if (storedPipelineId !== undefined && topLevelGlobal) {
       const resource = await readStoredPipelineContext(
@@ -3683,6 +4082,10 @@ async function startPipelineExecutionFromMainInternal(args: {
       executionOptions.initiator ??
       initiatorFromSource(executionOptions.initiationSource);
     executionOptions.initiator = initiator;
+    if (userPipelineId !== undefined) {
+      const markerRefusal = markerRecoveryRefusal(userPipelineId);
+      if (markerRefusal) return markerRefusal;
+    }
     executionOptions.agentOrigin ??=
       (initiator.kind === 'agent' || initiator.kind === 'app_advisor'
         ? initiator.chat
@@ -3707,6 +4110,86 @@ async function startPipelineExecutionFromMainInternal(args: {
       throw new Error(backgroundExecutionDeniedMessage('unknown-provenance'));
     }
 
+    // CAN-5782: the installed package a timed `workflow`-only fire's
+    // approval was checked against, resolved under the schedule guard and
+    // run as resolved, so a reinstall after the check can't swap it.
+    let approvedPackage:
+      | {
+          resolved: Awaited<
+            ReturnType<typeof resolveInstalledPipelinePackageForExecution>
+          >;
+        }
+      | undefined;
+    // CAN-5782: an automation's run starts from the event the definition
+    // admitted here declares, chosen here, after the last replacement of
+    // `pipelineContent`, for timed fires and Run now alike. An agent's run
+    // names `dispatch` and is refused unless this definition declares it.
+    if (executionOptions.initiationSource === 'automation') {
+      const triggers = getTriggerTypes(pipelineContent.on);
+      if (executionOptions.eventName !== undefined) {
+        if (!triggers.includes(executionOptions.eventName))
+          throw new ScheduledWorkflowRefusal(
+            SCHEDULE_DISPATCH_REQUIRED_MESSAGE,
+          );
+      } else {
+        const event = scheduleRunEvent(triggers);
+        if (event === 'unsupported')
+          throw new ScheduledWorkflowRefusal(
+            SCHEDULE_DISPATCH_REQUIRED_MESSAGE,
+          );
+        if (event === 'workflow') {
+          // Only a saved copy a person approved runs a `workflow`-only
+          // definition on a schedule; a person's Run now runs what they see.
+          if (sharedPipeline || curatedId)
+            throw new ScheduledWorkflowRefusal(
+              SCHEDULE_LIVE_SHARE_WORKFLOW_MESSAGE,
+            );
+          if (
+            pipelineFilePath ||
+            executionOptions.pipelineId.startsWith('project--')
+          )
+            throw new ScheduledWorkflowRefusal(
+              SCHEDULE_PROJECT_WORKFLOW_MESSAGE,
+            );
+          // A bundled definition ships with the app and needs no stamp, as
+          // the scheduler's own check allows; anything else needs one.
+          const timedFire =
+            initiator.kind === 'automation' && initiator.background === true;
+          const bundled =
+            pipelinePreferenceLocator?.type === 'stored' &&
+            pipelinePreferenceLocator.source === 'bundled';
+          const approvedId = executionOptions.pipelineId;
+          if (
+            timedFire &&
+            !bundled &&
+            !(await withPipelineScheduleGuard(approvedId, async () => {
+              const resolved =
+                await resolveInstalledPipelinePackageForExecution(
+                  approvedId,
+                  admittedDocument,
+                );
+              approvedPackage = { resolved };
+              // The package the worker runs: an automation's own package
+              // comes first, as the start below passes it.
+              return isPersonApprovedUserPipeline(
+                approvedId,
+                pipelineContent,
+                (automationPipelinePackage ?? resolved)?.digest,
+              );
+            }))
+          )
+            // A person's approval names the workflow's own package; one an
+            // automation install brought isn't approvable yet.
+            throw new ScheduledWorkflowRefusal(
+              automationPipelinePackage
+                ? SCHEDULE_AUTOMATION_PACKAGE_WORKFLOW_MESSAGE
+                : SCHEDULE_UNAPPROVED_WORKFLOW_MESSAGE,
+            );
+        }
+        executionOptions.eventName = event;
+      }
+    }
+
     const preferences = await readPreferencesFile();
     const baseBranchEnv = await buildPipelineBaseBranchEnv({
       cwd: executionOptions.cwd,
@@ -3718,8 +4201,9 @@ async function startPipelineExecutionFromMainInternal(args: {
     );
     // An installed package binds the document core admitted, so a store
     // edit after admission never pairs it with another revision.
-    const pipelinePackage =
-      !curatedId && !sharedPipeline && !pipelineFilePath
+    const pipelinePackage = approvedPackage
+      ? approvedPackage.resolved
+      : !curatedId && !sharedPipeline && !pipelineFilePath
         ? await resolveInstalledPipelinePackageForExecution(
             executionOptions.pipelineId,
             admittedDocument,
@@ -3743,6 +4227,15 @@ async function startPipelineExecutionFromMainInternal(args: {
     // Core records the run and dispatches its start to the local worker.
     const handle = await startPipelineThroughLocalWorker(pipelineContent, {
       ...executionOptions,
+      // The checked copy's own checkout and file, for its child workflows.
+      ...(fromCheckout !== null
+        ? {
+            pipelineSource: {
+              cwd: fromCheckout.sourceCwd,
+              filePath: fromCheckout.filePath,
+            },
+          }
+        : {}),
       executionContext: ownerResult.owner,
       ...assetResolution.options,
       pipelinePreferenceLocator,
@@ -3809,7 +4302,9 @@ async function startPipelineExecutionFromMainInternal(args: {
         : error instanceof PipelineNowOwnedError ||
             error instanceof PipelineDefinitionRemovedError
           ? { errorCode: error.code }
-          : {}),
+          : error instanceof ScheduledWorkflowRefusal
+            ? { errorCode: SCHEDULED_WORKFLOW_REFUSAL_CODE }
+            : {}),
     };
   } finally {
     releaseResourceGuard?.();

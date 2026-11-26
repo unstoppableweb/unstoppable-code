@@ -9,6 +9,7 @@ import {
   Divider,
   Heading,
   Notice,
+  NoticeButton,
   Surface,
   ToggleSwitch,
 } from '@canopy/ui-shared/components';
@@ -94,6 +95,20 @@ export interface PipelineTriggerSchedules {
   readonly addBlockedReason?: string;
 }
 
+/**
+ * CAN-5782: a pipeline whose only trigger is Workflow runs on its schedules
+ * only from content a person approved. Present when it isn't approved.
+ */
+export interface PipelineTriggerWorkflowApproval {
+  /** Approves the saved content; absent while it can't be approved. */
+  readonly onApprove?: () => void;
+  /** Why it can't be approved now, such as unsaved edits. */
+  readonly blockedReason?: string;
+  readonly busy?: boolean;
+  /** Why the last approval was refused. */
+  readonly error?: string;
+}
+
 export interface PipelineTriggersProps {
   /** The triggers the pipeline declares. */
   readonly starts: readonly PipelineStartKind[];
@@ -108,6 +123,39 @@ export interface PipelineTriggersProps {
    * Automations section: each schedule is one of the ways it starts.
    */
   readonly schedules?: PipelineTriggerSchedules;
+  /** Present when the Workflow trigger's schedules wait for an approval. */
+  readonly workflowApproval?: PipelineTriggerWorkflowApproval;
+}
+
+function WorkflowApprovalNotice({
+  approval,
+}: {
+  readonly approval: PipelineTriggerWorkflowApproval;
+}): JSX.Element {
+  return (
+    <Notice
+      intent={approval.error ? 'destructive' : 'attention'}
+      errorSource="pipeline-trigger-workflow-approval"
+      data-testid="pipeline-trigger-workflow-approval"
+      title="Its schedules won't run this version yet."
+      actions={
+        approval.onApprove ? (
+          <NoticeButton
+            variant="primary"
+            disabled={approval.busy}
+            onClick={approval.onApprove}
+            data-testid="pipeline-trigger-workflow-approve"
+          >
+            Approve for schedules
+          </NoticeButton>
+        ) : undefined
+      }
+    >
+      {approval.error ??
+        approval.blockedReason ??
+        'An agent wrote or changed it since a person last saved it. Review it, then approve it so its schedules run it.'}
+    </Notice>
+  );
 }
 
 function Section({
@@ -312,10 +360,24 @@ export function PipelineTriggers({
   onOpenAutomation,
   onEditStarts,
   schedules,
+  workflowApproval,
 }: PipelineTriggersProps): JSX.Element {
   const manual = starts.includes('manual');
-  // Schedules start the pipeline through its Manual trigger (CAN-5782).
+  // CAN-5782: a workflow page's schedules belong to its Workflow row when it
+  // declares one, else to Manual. The note counts every schedule, on this
+  // computer and in the cloud; it doesn't claim the event a run starts as.
   const scheduleCount = schedules?.rows.length ?? 0;
+  const scheduleTrigger: PipelineStartKind = starts.includes('workflow')
+    ? 'workflow'
+    : 'manual';
+  // A workflow page lists Plan approved and Task ready only when on.
+  const shownKinds = schedules
+    ? PIPELINE_START_KINDS.filter(
+        (kind) =>
+          (kind !== 'plan-approved' && kind !== 'task-ready') ||
+          starts.includes(kind),
+      )
+    : PIPELINE_START_KINDS;
   return (
     <div className="flex flex-col gap-6" data-testid="pipeline-triggers">
       <Section
@@ -336,7 +398,7 @@ export function PipelineTriggers({
       >
         <Surface variant="outline">
           <ul className="divide-y" data-testid="pipeline-trigger-starts">
-            {PIPELINE_START_KINDS.map((kind) => {
+            {shownKinds.map((kind) => {
               const on = starts.includes(kind);
               return (
                 <li
@@ -353,7 +415,7 @@ export function PipelineTriggers({
                   </span>
                   <span className="min-w-0 flex-1 truncate fg-secondary">
                     {PIPELINE_START_DESCRIPTIONS[kind]}
-                    {kind === 'manual' && on && scheduleCount > 0
+                    {kind === scheduleTrigger && on && scheduleCount > 0
                       ? ` · Used by ${String(scheduleCount)} ${scheduleCount === 1 ? 'schedule' : 'schedules'}`
                       : null}
                   </span>
@@ -369,6 +431,9 @@ export function PipelineTriggers({
             })}
           </ul>
         </Surface>
+        {workflowApproval && starts.includes('workflow') ? (
+          <WorkflowApprovalNotice approval={workflowApproval} />
+        ) : null}
       </Section>
 
       <Section id="hooks" title="Hooks">

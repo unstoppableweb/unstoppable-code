@@ -33,6 +33,7 @@ import {
   defaultUsageDataPreferences,
   getUsageDataPolicy,
   initializeUsageDataPolicy,
+  type UsageDataConsentState,
   type UsageDataPolicy,
   type UsageDataPreferencesState,
   type UsageDataProhibitionState,
@@ -51,6 +52,12 @@ import {
   type OptOutFetch,
   type UsageAnalyticsOptOutPingHandle,
 } from '../ping';
+
+/** A profile that accepted legal consent and kept analytics as stored. */
+const ACCEPTED_CONSENT: UsageDataConsentState = {
+  accepted: true,
+  analyticsDeclinedAtOnboarding: false,
+};
 
 // The real denial journal check reads `preferences.json.usage-data-denied.json`
 // beside the preferences file: point it at a temp directory.
@@ -146,6 +153,8 @@ type StoredChoice =
 
 interface HarnessOptions {
   preferences?: UsageDataPreferencesState;
+  /** Default: consent recorded, analytics not declined at onboarding. */
+  consent?: UsageDataConsentState;
   prohibitions?: UsageDataProhibitionState;
   /** `null`: the context is never set. */
   context?: Parameters<UsageDataPolicy['setWorkspaceContext']>[0] | null;
@@ -179,6 +188,7 @@ function startHarness(options: HarnessOptions = {}): {
   setStored: (choice: StoredChoice) => void;
 } {
   const policy = createUsageDataPolicy({
+    consent: options.consent ?? ACCEPTED_CONSENT,
     preferences: options.preferences ?? optedOut(),
     prohibitions: options.prohibitions ?? new Map(),
     settleTimeoutMs: 1_000,
@@ -266,6 +276,77 @@ afterEach(async () => {
   await Promise.all(handles.map((handle) => handle.stop()));
   handles = [];
   jest.useRealTimers();
+});
+
+describe('usage analytics opt-out ping: consent and onboarding', () => {
+  it('sends nothing, writes no marker and does not re-check while consent is pending', async () => {
+    const onStoredRead = jest.fn();
+    const { fetchMock, markerWrites } = track(
+      startHarness({
+        consent: { accepted: false, analyticsDeclinedAtOnboarding: false },
+        onStoredRead,
+      }),
+    );
+    await jest.advanceTimersByTimeAsync(12 * HOUR);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(markerWrites).toEqual([]);
+    // Suppressed is a known answer: no 10-minute unknown re-check reads.
+    expect(onStoredRead).not.toHaveBeenCalled();
+  });
+
+  it('pings after consent is recorded with Usage analytics off', async () => {
+    const { fetchMock, policy } = track(
+      startHarness({
+        preferences: defaultUsageDataPreferences(),
+        consent: { accepted: false, analyticsDeclinedAtOnboarding: false },
+        stored: 'denied',
+      }),
+    );
+    await jest.advanceTimersByTimeAsync(HOUR);
+    expect(fetchMock).not.toHaveBeenCalled();
+    // Accepted on the gate with analytics left on, then opted out in Settings.
+    policy.setStored(optedOut(), ACCEPTED_CONSENT);
+    await jest.advanceTimersByTimeAsync(10 * 60_000);
+    expect(bodyOf(fetchMock)).toEqual({
+      reason: 'personal',
+      channel: 'stable',
+    });
+  });
+
+  it('never pings for a member who declined analytics at onboarding, even under an org prohibition', async () => {
+    const onStoredRead = jest.fn();
+    const { fetchMock, markerWrites } = track(
+      startHarness({
+        consent: { accepted: true, analyticsDeclinedAtOnboarding: true },
+        prohibitions: acmeProhibits(),
+        context: { kind: 'organization', organizationId: ACME },
+        onStoredRead,
+      }),
+    );
+    await jest.advanceTimersByTimeAsync(2 * DAY);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(markerWrites).toEqual([]);
+    expect(onStoredRead).not.toHaveBeenCalled();
+  });
+
+  it('pings as today after a declined member opts in and then out again', async () => {
+    const { fetchMock, policy } = track(
+      startHarness({
+        consent: { accepted: true, analyticsDeclinedAtOnboarding: true },
+      }),
+    );
+    await jest.advanceTimersByTimeAsync(HOUR);
+    expect(fetchMock).not.toHaveBeenCalled();
+    // Turning analytics on clears the flag (normalization), then a Settings
+    // opt-out is an ordinary personal opt-out.
+    policy.setStored(defaultUsageDataPreferences(), ACCEPTED_CONSENT);
+    policy.setStored(optedOut(), ACCEPTED_CONSENT);
+    await jest.advanceTimersByTimeAsync(10 * 60_000);
+    expect(bodyOf(fetchMock)).toEqual({
+      reason: 'personal',
+      channel: 'stable',
+    });
+  });
 });
 
 describe('usage analytics opt-out ping: sending', () => {
@@ -649,7 +730,10 @@ describe('usage analytics opt-out ping: nothing is sent', () => {
   });
 
   it('treats a stored-choice read that fails as unconfirmed', async () => {
-    const policy = createUsageDataPolicy({ preferences: optedOut() });
+    const policy = createUsageDataPolicy({
+      consent: ACCEPTED_CONSENT,
+      preferences: optedOut(),
+    });
     policy.setWorkspaceContext({ kind: 'personal' });
     const fetchMock = jest.fn<ReturnType<OptOutFetch>, Parameters<OptOutFetch>>(
       () => Promise.resolve({ status: 204 }),
@@ -883,7 +967,10 @@ describe('usage analytics opt-out ping: failures', () => {
   });
 
   it('does not repeat in this process when the marker write fails after a 2xx', async () => {
-    const policy = createUsageDataPolicy({ preferences: optedOut() });
+    const policy = createUsageDataPolicy({
+      consent: ACCEPTED_CONSENT,
+      preferences: optedOut(),
+    });
     policy.setWorkspaceContext({ kind: 'personal' });
     const fetchMock = jest.fn<ReturnType<OptOutFetch>, Parameters<OptOutFetch>>(
       () => Promise.resolve({ status: 204 }),
@@ -997,7 +1084,10 @@ describe('usage analytics opt-out ping: real denial journal', () => {
     storedReads: () => number;
   } {
     jest.useFakeTimers({ now: Date.parse(START) });
-    const policy = createUsageDataPolicy({ preferences: optedOut() });
+    const policy = createUsageDataPolicy({
+      consent: ACCEPTED_CONSENT,
+      preferences: optedOut(),
+    });
     policy.setWorkspaceContext({ kind: 'personal' });
     const fetchMock = jest.fn<ReturnType<OptOutFetch>, Parameters<OptOutFetch>>(
       () => Promise.resolve({ status: 204 }),
@@ -1090,7 +1180,10 @@ describe('usage analytics opt-out ping: failing dependencies never stick the sch
   ): {
     fetchMock: jest.Mock<ReturnType<OptOutFetch>, Parameters<OptOutFetch>>;
   } {
-    const policy = createUsageDataPolicy({ preferences: optedOut() });
+    const policy = createUsageDataPolicy({
+      consent: ACCEPTED_CONSENT,
+      preferences: optedOut(),
+    });
     policy.setWorkspaceContext({ kind: 'personal' });
     const fetchMock = jest.fn<ReturnType<OptOutFetch>, Parameters<OptOutFetch>>(
       () => Promise.resolve({ status: 204 }),
@@ -1185,7 +1278,10 @@ describe('usage analytics opt-out ping: damaged marker', () => {
         ReturnType<OptOutFetch>,
         Parameters<OptOutFetch>
       > => {
-        const policy = createUsageDataPolicy({ preferences: optedOut() });
+        const policy = createUsageDataPolicy({
+          consent: ACCEPTED_CONSENT,
+          preferences: optedOut(),
+        });
         policy.setWorkspaceContext({ kind: 'personal' });
         const fetchMock = jest.fn<
           ReturnType<OptOutFetch>,
@@ -1241,7 +1337,10 @@ describe('usage analytics opt-out ping: marker after a 2xx', () => {
       ReturnType<OptOutFetch>,
       Parameters<OptOutFetch>
     > => {
-      const policy = createUsageDataPolicy({ preferences: optedOut() });
+      const policy = createUsageDataPolicy({
+        consent: ACCEPTED_CONSENT,
+        preferences: optedOut(),
+      });
       policy.setWorkspaceContext({ kind: 'personal' });
       const fetchMock = jest.fn<
         ReturnType<OptOutFetch>,
@@ -1315,7 +1414,10 @@ describe('usage analytics opt-out ping: marker after a 2xx', () => {
   });
 
   it('settles stop() when the marker write fails, and again when called twice', async () => {
-    const policy = createUsageDataPolicy({ preferences: optedOut() });
+    const policy = createUsageDataPolicy({
+      consent: ACCEPTED_CONSENT,
+      preferences: optedOut(),
+    });
     policy.setWorkspaceContext({ kind: 'personal' });
     const handle = startUsageAnalyticsOptOutPing({
       channel: 'stable',
@@ -1456,7 +1558,10 @@ describe('usage analytics opt-out ping: marker after a 2xx', () => {
     it('does not start when a quit begins while the policy settles', async () => {
       let quitting = false;
       let settle: () => void = () => undefined;
-      const policy = createUsageDataPolicy({ preferences: optedOut() });
+      const policy = createUsageDataPolicy({
+        consent: ACCEPTED_CONSENT,
+        preferences: optedOut(),
+      });
       policy.setWorkspaceContext({ kind: 'personal' });
       const fetchMock = jest.fn<
         ReturnType<OptOutFetch>,
@@ -1473,6 +1578,9 @@ describe('usage analytics opt-out ping: marker after a 2xx', () => {
             hasWorkspaceContext: () => policy.hasWorkspaceContext(),
             isOrganizationPolicyUnreadable: () =>
               policy.isOrganizationPolicyUnreadable(),
+            isConsentPending: () => policy.isConsentPending(),
+            wasAnalyticsDeclinedAtOnboarding: () =>
+              policy.wasAnalyticsDeclinedAtOnboarding(),
             subscribe: (listener) => policy.subscribe(listener),
             whenSettled: () =>
               new Promise<void>((resolve) => {
@@ -1559,7 +1667,7 @@ describe('usage analytics opt-out ping: production wiring (host.ts)', () => {
     );
     resetCanopyCloudBaseUrlCacheForTest();
     __resetUsageDataPolicyForTests();
-    initializeUsageDataPolicy(optedOut(), new Map());
+    initializeUsageDataPolicy(optedOut(), ACCEPTED_CONSENT, new Map());
     getUsageDataPolicy().setWorkspaceContext({ kind: 'personal' });
     fetchSpy = jest
       .spyOn(globalThis, 'fetch')
@@ -1715,7 +1823,11 @@ describe('usage analytics opt-out ping: production wiring (host.ts)', () => {
   // own choice is on, as `org` needs.
   const useAcmeProhibition = (): void => {
     __resetUsageDataPolicyForTests();
-    initializeUsageDataPolicy(defaultUsageDataPreferences(), acmeProhibits());
+    initializeUsageDataPolicy(
+      defaultUsageDataPreferences(),
+      ACCEPTED_CONSENT,
+      acmeProhibits(),
+    );
     getUsageDataPolicy().setWorkspaceContext({
       kind: 'organization',
       organizationId: ACME,

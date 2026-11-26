@@ -341,6 +341,14 @@ export class GoldenHost {
       terminalId: string,
     ): PersistedTerminalEntry | null =>
       this.persistedEntries.get(terminalId) ?? null,
+    // CAN-7051: main seeds a restore's history from the record first; the
+    // fake already holds every persisted entry.
+    prefetchPersistedEntry: (): Promise<() => void> =>
+      Promise.resolve(() => undefined),
+    getTerminalMetadata: (
+      terminalId: string,
+    ): Omit<PersistedTerminalEntry, 'scrollbackLines'> | null =>
+      this.persistedEntries.get(terminalId) ?? null,
   };
 
   public resolveWorktreeCwd(

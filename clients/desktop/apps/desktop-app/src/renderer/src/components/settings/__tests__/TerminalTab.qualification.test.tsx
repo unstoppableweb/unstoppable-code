@@ -89,9 +89,7 @@ describe('Terminal settings in every window (CAN-4148)', () => {
       jest.fn().mockRejectedValue(new Error('unavailable')),
       updateSettings,
     );
-    expect(container.textContent).toContain(
-      'Could not load Terminal settings.',
-    );
+    expect(container.textContent).toContain("Couldn't load Terminal settings.");
     const shell = button('terminal-shell-toggle-zsh');
     expect(shell.disabled).toBe(true);
     expect(button('terminal-preset-add').disabled).toBe(true);

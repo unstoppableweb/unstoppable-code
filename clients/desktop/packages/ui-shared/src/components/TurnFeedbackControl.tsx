@@ -8,9 +8,12 @@ import {
 import type { TurnFeedbackRating } from '@canopy/protocol/turn-feedback';
 import { ThumbsDownIcon } from '../icons/ThumbsDownIcon';
 import { ThumbsUpIcon } from '../icons/ThumbsUpIcon';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 import { CLEAN_ICON_BUTTON_VARIANT } from './chat-look';
-import { DropdownMenuItem, DropdownMenuItemIcon } from './DropdownMenu';
+import {
+  DropdownMenuItem,
+  DropdownMenuItemIcon,
+} from '../primitives/DropdownMenu';
 
 /**
  * Set by a menu that hosts the thumbs (the clean chat look's "•••" menu):

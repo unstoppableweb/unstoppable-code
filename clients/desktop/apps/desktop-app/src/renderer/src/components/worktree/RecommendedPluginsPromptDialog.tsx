@@ -1,4 +1,4 @@
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import { Stack, Button, Heading, Surface } from '@canopy/ui-shared/components';
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
 import type {

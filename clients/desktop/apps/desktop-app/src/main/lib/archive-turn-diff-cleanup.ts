@@ -5,6 +5,7 @@ import {
 import { lstat } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { readArchiveRecoveryHolds } from './archive-recovery-refs';
+import type { ArchiveRecoveryReceipt } from '@canopy/desktop-shared/node/archive-recovery-store';
 import { cleanupPersistedTurnDiffTreeRefs, getGitCommonDir } from './git';
 import {
   getArchivedContainerDir,
@@ -78,6 +79,9 @@ type CleanupInspection =
 /** No historical Git authority: this repairs only the app-owned worktree-id namespace. */
 export async function inspectCompletedTurnDiffCleanup(
   operation: ArchiveJournalOperation,
+  readReceipts: () => Promise<ArchiveRecoveryReceipt[]> = () =>
+    readArchiveRecoveryHolds(operation.record.workspaceId),
+  journalInspection?: Awaited<ReturnType<typeof readArchiveJournalOperations>>,
 ): Promise<CleanupInspection> {
   const { record } = operation;
   const { workspaceId, worktreeId } = record;
@@ -107,7 +111,8 @@ export async function inspectCompletedTurnDiffCleanup(
       'finishing archive cleanup',
     );
     assertWorktreeCanBeRemoved(workspaceId, worktreeId);
-    const scan = await readArchiveJournalOperations(workspaceId);
+    const scan =
+      journalInspection ?? (await readArchiveJournalOperations(workspaceId));
     const current = scan.operations.find(
       (entry) => entry.record.operationId === record.operationId,
     );
@@ -136,11 +141,7 @@ export async function inspectCompletedTurnDiffCleanup(
       rows.worktrees.some((row) => row.id === worktreeId)
     )
       return refuse('cleanup-worktree-listed');
-    if (
-      (await readArchiveRecoveryHolds(workspaceId)).some(
-        (hold) => hold.worktreeId === worktreeId,
-      )
-    )
+    if ((await readReceipts()).some((hold) => hold.worktreeId === worktreeId))
       return refuse('cleanup-recovery-held');
     for (const path of new Set([
       ...record.ownedPaths.map((entry) => entry.path),

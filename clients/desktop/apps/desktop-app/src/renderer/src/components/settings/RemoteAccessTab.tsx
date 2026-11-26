@@ -17,6 +17,7 @@ import {
   type RemoteControlIncomingDevices,
 } from '@canopy/ui-app/remote-control';
 import { useRemoteControlStore } from '@/stores/remoteControlStore';
+import { useRemoteWebPreviewEnabled } from '@/hooks/useRemoteWebPreviewEnabled';
 import { ALLOW_INCOMING_LABEL } from '@/components/remote-access/remote-access-copy';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
@@ -65,6 +66,27 @@ const INVENTORY_SYNC_PAUSED =
 // main: keep main/agent-actions/desktop-inventory-sync-port.ts in step.
 const INVENTORY_SYNC_TURN_OFF_MESSAGE =
   "This computer's synced plugin, MCP server and pipeline lists are removed from the web. Turn it back on to sync them again.";
+/**
+ * Web preview consent (CAN-7712): off until turned on, and the helper
+ * says so first, since turning it on lets another computer in. "Local web
+ * servers" names what people run; "(localhost)" says which ones, since only
+ * this computer's own addresses are reachable, not the network's. "Paired
+ * computers" matches the pairing list below; only paired desktop computers
+ * can use it.
+ */
+const WEB_PREVIEW_LABEL =
+  "Let paired computers open this computer's local web servers (localhost)";
+const WEB_PREVIEW_HELPER =
+  'Off by default. When on, a paired computer can open sites this computer serves on localhost, such as a dev server, in its own browser. Other addresses on your network stay out of reach, and servers this app runs for itself are never shared.';
+/**
+ * The saved web preview choice couldn't be read, so preview is off for now,
+ * but an earlier opt-in may still be in the file and come back after a
+ * restart. The switch shows off, so it could only turn preview on; this
+ * notice's button is how the person saves off.
+ */
+const WEB_PREVIEW_UNREAD_TITLE = "Couldn't read your saved web preview choice";
+const WEB_PREVIEW_UNREAD_MESSAGE =
+  'Web preview is off for now, but an earlier choice to allow it may come back after a restart. Turn it off to save that.';
 // One status covers both failure paths: a transient failure retries on a
 // timer, and a refused one (401/403) retries once you sign in again, so the
 // copy names both instead of promising an automatic retry.
@@ -83,6 +105,7 @@ export function RemoteAccessTab(): JSX.Element {
     state,
     setAllowIncoming,
     setAllowRemoteUpdates,
+    setAllowWebPreview,
     setInventorySyncEnabled,
     openMachine,
     forgetDevice,
@@ -93,6 +116,7 @@ export function RemoteAccessTab(): JSX.Element {
       state: store.state,
       setAllowIncoming: store.setAllowIncoming,
       setAllowRemoteUpdates: store.setAllowRemoteUpdates,
+      setAllowWebPreview: store.setAllowWebPreview,
       setInventorySyncEnabled: store.setInventorySyncEnabled,
       openMachine: store.openMachine,
       forgetDevice: store.forgetDevice,
@@ -104,6 +128,8 @@ export function RemoteAccessTab(): JSX.Element {
   );
   const [savingAllow, setSavingAllow] = useState(false);
   const [savingUpdates, setSavingUpdates] = useState(false);
+  const [savingWebPreview, setSavingWebPreview] = useState(false);
+  const webPreviewEnabled = useRemoteWebPreviewEnabled();
   const [savingInventorySync, setSavingInventorySync] = useState(false);
   const [confirmingTurnOff, setConfirmingTurnOff] = useState(false);
   const [confirmingInventoryOff, setConfirmingInventoryOff] = useState(false);
@@ -167,26 +193,6 @@ export function RemoteAccessTab(): JSX.Element {
     return page(<SettingsLoading variant="spinner" />);
   }
 
-  if (!state.signedIn) {
-    return page(
-      <Notice
-        intent="attention"
-        title="Sign in to pair devices"
-        data-testid="settings-remote-access-signed-out"
-        actions={
-          <NoticeButton
-            variant="primary"
-            onClick={() => openCloudAccountSettings()}
-          >
-            Open account settings
-          </NoticeButton>
-        }
-      >
-        Every device you pair must be signed in to the same account.
-      </Notice>,
-    );
-  }
-
   const saveAllow = (next: boolean): Promise<void> => {
     setSavingAllow(true);
     setError(null);
@@ -209,6 +215,18 @@ export function RemoteAccessTab(): JSX.Element {
           setError(inlineFailure(appError, "Couldn't save the setting."));
       })
       .finally(() => setSavingUpdates(false));
+  };
+
+  const toggleWebPreview = (next: boolean): void => {
+    setSavingWebPreview(true);
+    setError(null);
+    void setAllowWebPreview(next)
+      .catch((cause: unknown) => {
+        const appError = toAppError(resolveClientAppError(cause));
+        if (appError)
+          setError(inlineFailure(appError, "Couldn't save the setting."));
+      })
+      .finally(() => setSavingWebPreview(false));
   };
 
   const saveInventorySync = (next: boolean): Promise<void> => {
@@ -246,6 +264,61 @@ export function RemoteAccessTab(): JSX.Element {
     setConfirmingTurnOff(true);
   };
 
+  // Shown whatever the flag, and signed out too: an opt-in left in the file
+  // would come back once the flag and the read both work, so saving off
+  // can't wait for either.
+  const unreadNotice =
+    state.webPreviewChoiceUnread === true ? (
+      <Notice
+        intent="attention"
+        title={WEB_PREVIEW_UNREAD_TITLE}
+        data-testid="settings-remote-access-web-preview-unread"
+        actions={
+          <NoticeButton
+            variant="primary"
+            data-testid="settings-remote-access-web-preview-turn-off"
+            disabled={savingWebPreview}
+            onClick={() => toggleWebPreview(false)}
+          >
+            Turn off
+          </NoticeButton>
+        }
+      >
+        {WEB_PREVIEW_UNREAD_MESSAGE}
+      </Notice>
+    ) : null;
+
+  if (!state.signedIn) {
+    return page(
+      <>
+        <Notice
+          intent="attention"
+          title="Sign in to pair devices"
+          data-testid="settings-remote-access-signed-out"
+          actions={
+            <NoticeButton
+              variant="primary"
+              onClick={() => openCloudAccountSettings()}
+            >
+              Open account settings
+            </NoticeButton>
+          }
+        >
+          Every device you pair must be signed in to the same account.
+        </Notice>
+        {unreadNotice}
+        {/* A failed save from the notice shows here too. */}
+        <DesktopErrorBanner
+          errorSource="settings-remote-access-error"
+          className=""
+          error={error?.error}
+          {...(error?.details === undefined ? {} : { details: error.details })}
+          testId="settings-remote-access-error"
+        />
+      </>,
+    );
+  }
+
   return page(
     <>
       {state.relayStatus === 'unavailable' ? (
@@ -273,6 +346,7 @@ export function RemoteAccessTab(): JSX.Element {
         />
       ) : null}
 
+      {unreadNotice}
       <SettingsSection>
         <SettingsGroup>
           <SettingsRow
@@ -307,6 +381,24 @@ export function RemoteAccessTab(): JSX.Element {
               />
             }
           />
+          {webPreviewEnabled ? (
+            <SettingsRow
+              label={WEB_PREVIEW_LABEL}
+              description={WEB_PREVIEW_HELPER}
+              htmlFor="settings-remote-access-allow-web-preview"
+              dataTestId="settings-remote-access-allow-web-preview-row"
+              control={
+                <ToggleSwitch
+                  id="settings-remote-access-allow-web-preview"
+                  checked={state.allowIncoming && state.allowWebPreview}
+                  label={WEB_PREVIEW_LABEL}
+                  dataTestId="settings-remote-access-allow-web-preview"
+                  disabled={savingWebPreview || !state.allowIncoming}
+                  onChange={toggleWebPreview}
+                />
+              }
+            />
+          ) : null}
           <SettingsRow
             label={INVENTORY_SYNC_LABEL}
             description={

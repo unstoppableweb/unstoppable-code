@@ -1,9 +1,11 @@
 import {
   AppErrorSchema,
+  toAppError,
   type AppError,
   type AppErrorReport,
   type SurfacedErrorInput,
 } from '@canopy/protocol/app-errors';
+import { rememberUserVisibleError } from './recent-user-visible-error';
 
 /**
  * The host's recorder for errors shown through shared UI. Shared components
@@ -38,12 +40,32 @@ export function setSurfacedErrorRecorder(sink: SurfacedErrorSink): () => void {
 export function recordSurfacedError(
   input: SurfacedErrorInput,
 ): AppErrorReport | undefined {
+  let report: AppErrorReport | undefined;
   try {
-    return registration?.sink(input);
+    report = registration?.sink(input);
   } catch {
     // Recording is best effort and must not report its own failure.
-    return undefined;
   }
+  return report;
+}
+
+/** Called by the displaying surface, never by telemetry-only links. */
+export function recordUserVisibleError(
+  input: SurfacedErrorInput,
+): AppErrorReport | undefined {
+  const report = recordSurfacedError(input);
+  try {
+    if (
+      input.surface !== undefined &&
+      Object.prototype.hasOwnProperty.call(input, 'error')
+    ) {
+      const error = report?.error ?? toAppError(input.error);
+      if (error) rememberUserVisibleError(error);
+    }
+  } catch {
+    // Remembering a displayed failure is independent of telemetry delivery.
+  }
+  return report;
 }
 
 /**

@@ -57,12 +57,6 @@ export type BrowserThemeMode = 'system' | 'light' | 'dark';
 export type BrowserLoadStatus = 'idle' | 'loading' | 'ready' | 'failed';
 
 /**
- * Compatibility discriminator retained by the current-UI-state wire shape.
- * `'browser'` identifies a relevant visible Browser panel.
- */
-export type BrowserDrawerTabId = 'terminal' | 'browser';
-
-/**
  * Authoritative wire snapshot of a single embedded browser view. Emitted by
  * the main process over {@link BrowserEvent} (`snapshot` / `load-failed`) and
  * returned by most `window.api.browser.*` mutators so the renderer can replace

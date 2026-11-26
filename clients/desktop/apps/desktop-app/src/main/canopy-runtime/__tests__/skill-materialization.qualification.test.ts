@@ -40,10 +40,7 @@ import {
   createDesktopWorkerCatalogHost,
   type DesktopMaterializationDeps,
 } from '../catalog-materialization-host';
-import {
-  createCoreOperationAdapter,
-  type CoreOperationAdapter,
-} from '../core-operation-adapter';
+import { createCoreOperationAdapter } from '../core-operation-adapter';
 import {
   createDesktopRuntime,
   type DesktopCanopyDispatcher,
@@ -154,7 +151,7 @@ function fakes(): Fakes {
 }
 
 let root: string;
-let operations: CoreOperationAdapter;
+let operations: ReturnType<typeof createCoreOperationAdapter>;
 let runtime: DesktopCanopyDispatcher | null;
 
 function start(

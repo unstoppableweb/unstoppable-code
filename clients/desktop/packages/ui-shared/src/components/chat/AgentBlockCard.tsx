@@ -1,5 +1,5 @@
-import { CodeBlock } from '../CodeBlock';
-import { ControlButton } from '../Button';
+import { CodeBlock } from '../../primitives/CodeBlock';
+import { ControlButton } from '../../primitives/Button';
 import {
   THINKING_LEVEL_LABELS,
   isThinkingLevel,

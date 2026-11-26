@@ -1,4 +1,4 @@
-import { CodeBlock } from '../CodeBlock';
+import { CodeBlock } from '../../primitives/CodeBlock';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import {
   memo,
@@ -35,10 +35,10 @@ import {
   hasDelegatedAgentCapabilityEntries,
 } from './delegated-agent-copy';
 import { TaskStopButton } from './TaskStopButton';
-import { Button } from '../Button';
-import { Disclosure } from '../Disclosure';
-import { StatusLabel } from '../StatusLabel';
-import { Fact, FactList } from '../FactList';
+import { Button } from '../../primitives/Button';
+import { Disclosure } from '../../primitives/Disclosure';
+import { StatusLabel } from '../../primitives/StatusLabel';
+import { Fact, FactList } from '../../primitives/FactList';
 
 /** Header status while the delegate's request waits in its parent's queue. */
 export const DELEGATED_AGENT_WAITING_ON_PARENT_LABEL = 'Waiting for the parent';

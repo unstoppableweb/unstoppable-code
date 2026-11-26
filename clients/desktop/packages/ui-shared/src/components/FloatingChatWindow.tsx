@@ -1,4 +1,4 @@
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import {
   useRef,
   useState,
@@ -13,12 +13,12 @@ import {
   ExternalIcon,
   MinusIcon,
 } from '../icons/AppIcons';
-import { DropdownMenuItem } from './DropdownMenu';
-import { FloatingMenu } from './FloatingMenu';
-import { PickerTriggerChevron } from './PickerMenu';
+import { DropdownMenuItem } from '../primitives/DropdownMenu';
+import { FloatingMenu } from '../primitives/FloatingMenu';
+import { PickerTriggerChevron } from '../primitives/PickerMenu';
 import { TitlebarIconButton } from './TitlebarIconButton';
-import { Heading } from './Heading';
-import { ListRow } from './ListRow';
+import { Heading } from '../primitives/Heading';
+import { ListRow } from '../primitives/ListRow';
 
 /**
  * Where the floating chat sits. `panel` fills a transparent native panel its

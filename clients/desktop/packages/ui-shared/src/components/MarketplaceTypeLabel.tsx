@@ -15,7 +15,8 @@ import {
 } from '../icons/AppIcons';
 import { UnstoppableDomainsIcon } from '../icons/UnstoppableDomainsIcon';
 import { WORKFLOW_ITEM_LABEL } from '../lib/workflow-labels';
-import { Tooltip } from './Tooltip';
+import { MODEL_PRESET_LABEL } from '../lib/model-preset-labels';
+import { Tooltip } from '../primitives/Tooltip';
 import { useItemStateMarks } from './ItemStateMark';
 
 interface MarketplaceTypeLabelProps {
@@ -50,7 +51,7 @@ const DETAIL_ENTITY_TYPE_LABELS: Partial<Record<UnifiedEntryKind, string>> = {
   plugin: 'Plugin',
   app: 'MCP server',
   skill: 'Skill',
-  agent: 'Agent',
+  agent: MODEL_PRESET_LABEL,
   collection: 'Collection',
   blueprint: 'Template',
 };

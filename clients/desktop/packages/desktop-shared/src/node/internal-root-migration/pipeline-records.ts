@@ -76,6 +76,7 @@ function rebaseRecord(
   fields(state.shared_pipeline_source, ['cachedPipelinePath']);
   fields(state.curated_pipeline_source, ['cachedPipelinePath']);
   fields(state.pipeline_package_snapshot, ['cachedPackagePath']);
+  fields(state.pipeline_source, ['cwd', 'filePath']);
   if (isRecord(state.pipeline_assets)) {
     fields(state.pipeline_assets, ['pipeline_data_dir', 'assets_dir']);
     if (isRecord(state.pipeline_assets.asset_paths))

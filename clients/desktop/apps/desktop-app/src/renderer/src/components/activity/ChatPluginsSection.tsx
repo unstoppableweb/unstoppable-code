@@ -82,12 +82,16 @@ function selectedRows(
       source: 'Collection',
       selection: { ...empty, collectionIds: [id] },
     })),
-    ...(selections.mcpServerRefs ?? []).map((ref) => ({
-      id: `mcp:${ref.serverId}/${ref.configId}`,
-      name: ref.serverId,
-      source: ref.configId,
-      selection: { ...empty, mcpServerRefs: [ref] },
-    })),
+    // A project's shared connection is listed in the MCP servers card, with
+    // its state, instead (CAN-6246).
+    ...(selections.mcpServerRefs ?? [])
+      .filter((ref) => ref.owner?.type !== 'organization')
+      .map((ref) => ({
+        id: `mcp:${ref.serverId}/${ref.configId}`,
+        name: ref.serverId,
+        source: ref.configId,
+        selection: { ...empty, mcpServerRefs: [ref] },
+      })),
   ];
 }
 

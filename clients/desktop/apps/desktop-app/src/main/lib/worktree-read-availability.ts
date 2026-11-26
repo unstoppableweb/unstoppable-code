@@ -5,6 +5,10 @@ import {
 } from '@canopy/desktop-shared/node/lib/working-directory';
 import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types';
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
+import {
+  readThroughDesktopW5Cache,
+  w5WorkspaceFileRequest,
+} from '../canopy-runtime/w5-read-cache-server';
 import { getDataDir } from './paths';
 import {
   resolveWorktreeCwd,
@@ -13,6 +17,29 @@ import {
 import { readWorkspaceWorktreesUnlocked } from './workspace-persistence';
 import { isCoworkWorkspace } from './workspace-registry';
 import { isWorkspaceTargetRemovalPending } from './workspace-target-exclusion';
+
+/**
+ * The list names the worktree as a settled row. Never throws, so a served
+ * failure is a refusal the cache read confirms against today's read.
+ */
+async function isListedWorktree(
+  projectId: string,
+  worktreeId: string,
+): Promise<boolean> {
+  try {
+    const list = await readWorkspaceWorktreesUnlocked(projectId);
+    if (
+      list.authority !== 'ok' &&
+      list.authority !== 'partial' &&
+      list.authority !== 'absent'
+    )
+      return false;
+    const row = list.worktrees.find((entry) => entry.id === worktreeId);
+    return !!row && row.setupPhase !== 'git-pending';
+  } catch {
+    return false;
+  }
+}
 
 /** Observation membership admission, before health checks probe the folder. */
 export async function isWorktreeObservationTarget(
@@ -28,20 +55,16 @@ export async function isWorktreeObservationTarget(
     if (
       !isBotProjectId(target.projectId) &&
       target.projectId !== SHARED_CONTAINER_VIEWER_PROJECT_ID &&
-      !isCoworkWorkspace(target.projectId)
-    ) {
-      const list = await readWorkspaceWorktreesUnlocked(target.projectId);
-      if (
-        list.authority !== 'ok' &&
-        list.authority !== 'partial' &&
-        list.authority !== 'absent'
-      )
-        return false;
-      const row = list.worktrees.find(
-        (entry) => entry.id === target.worktreeId,
-      );
-      if (!row || row.setupPhase === 'git-pending') return false;
-    }
+      !isCoworkWorkspace(target.projectId) &&
+      !(await readThroughDesktopW5Cache(
+        w5WorkspaceFileRequest('worktrees', target.projectId),
+        () => isListedWorktree(target.projectId, target.worktreeId),
+        // A served refusal reads again: another origin's new row may not
+        // have reached the cache yet, and today's read would admit it.
+        { acceptServed: (listed) => listed },
+      ))
+    )
+      return false;
     return !retiring();
   } catch {
     return false;

@@ -30,11 +30,17 @@ import {
 /**
  * The host lifecycle a creation runs with: deferred Git setup, post-create
  * setup scripts, readiness callbacks, repair handling and sidebar grouping.
- * These stay in the existing host and worker seam.
+ * These stay in the existing host and worker seam. The restore-only default
+ * start points are not part of it: only an archive restore's checked refs
+ * may replace the default branch lookup.
  */
 export type WorktreeCreationLifecycle = Omit<
   CreateWorktreeServiceOptions,
-  keyof WorktreeSelectionFields | 'workspaceId' | 'w5KeyedCreation'
+  | keyof WorktreeSelectionFields
+  | 'workspaceId'
+  | 'w5KeyedCreation'
+  | 'defaultStartPoint'
+  | 'defaultStartPointsByRepo'
 >;
 
 /** The trusted host callers that record keyed worktree creation receipts. */

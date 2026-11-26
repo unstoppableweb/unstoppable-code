@@ -197,6 +197,7 @@ export interface DomainEventMap {
   'terminal.running-changed': TerminalRunningChangedEvent & DomainEventBase;
   'connection.status': ConnectionStatusEvent;
   'session.snapshot-stale': SessionSnapshotStaleEvent;
+  'onboardingTips.changed': DomainEventBase;
   'chat.message': ChatMessageEvent;
   'chat.transientRetry': ChatTransientRetryEvent;
   'workspace-context.changed': WorkspaceContextChangedEvent;

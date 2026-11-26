@@ -21,9 +21,12 @@ import {
   DataTableHead,
   DataTableHeaderCell,
   DataTableRow,
-} from '../../../DataTable';
-import { ControlButton, Button } from '../../../Button';
-import { DisclosureChevron, DisclosureToggle } from '../../../Disclosure';
+} from '../../../../primitives/DataTable';
+import { ControlButton, Button } from '../../../../primitives/Button';
+import {
+  DisclosureChevron,
+  DisclosureToggle,
+} from '../../../../primitives/Disclosure';
 import { formatSubagentElapsed } from '../common/subagent-format';
 import { SubagentChangesLabel } from '../common/SubagentChangesLabel';
 import { SubagentHarnessMark } from '../common/SubagentHarnessMark';

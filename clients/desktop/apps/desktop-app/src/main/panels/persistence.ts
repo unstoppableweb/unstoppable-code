@@ -19,6 +19,11 @@ import {
   migratePanelLayout,
   type SerializablePanelLayoutFile,
 } from '@canopy/protocol/panels';
+import {
+  captureDirectoryEffects,
+  directoryEffectsAdmitted,
+  type DirectoryEffectAdmission,
+} from '../lib/directory-effect-admission';
 import { getWorktreePanelLayoutFilePath } from '../lib/paths';
 
 const WORKTREE_WRITE_DEBOUNCE_MS = 100;
@@ -29,6 +34,7 @@ function worktreeKey(projectId: string, worktreeId: string): string {
 
 interface PendingPanelLayoutWrite {
   filePath: string;
+  admission: DirectoryEffectAdmission;
   layout: SerializablePanelLayoutFile & { readonly hasUserChanges: boolean };
   timer: ReturnType<typeof setTimeout>;
 }
@@ -77,8 +83,12 @@ export class PanelLayoutPersistenceStore {
 
     const key = worktreeKey(projectId, worktreeId);
     this.clearPendingWrite(key);
+    const filePath = getWorktreePanelLayoutFilePath(projectId, worktreeId);
+    const admission = captureDirectoryEffects(dirname(filePath));
+    if (!directoryEffectsAdmitted(admission)) return;
     this.pendingWrites.set(key, {
-      filePath: getWorktreePanelLayoutFilePath(projectId, worktreeId),
+      admission,
+      filePath,
       layout: { ...validated, hasUserChanges },
       timer: setTimeout((): void => {
         this.flushWorktreeSync(key);
@@ -125,6 +135,7 @@ export class PanelLayoutPersistenceStore {
 
     clearTimeout(pending.timer);
     this.pendingWrites.delete(key);
+    if (!directoryEffectsAdmitted(pending.admission)) return;
     mkdirSync(dirname(pending.filePath), { recursive: true });
     writeFileSync(
       pending.filePath,

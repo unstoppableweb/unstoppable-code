@@ -77,6 +77,7 @@ import {
   type SettingsUiHost,
 } from '../settings/host/settings-host';
 import { ExternalAgentSkeleton } from './external-agents-skeletons';
+import { settingsRouteToPath } from '@canopy/protocol/settings/route-paths';
 import { EXTERNAL_AGENTS_PATH } from './paths';
 import { useMountedStore } from './use-mounted-store';
 
@@ -317,6 +318,9 @@ function ExternalAgentDetailView({
     state.pending === null;
   const disabled = state.pending !== null;
   const editorDisabled = disabled || detail.status === 'expired';
+  // A connection the product owns (CAN-7606: Slack) has fixed access: no
+  // editor, no Save; Pause and Remove still work.
+  const firstParty = detail.firstPartyClient !== undefined;
   // Pausing or resuming reloads the agent, so it waits until edits are saved
   // or discarded rather than dropping them silently.
   const hasUnsavedEdits =
@@ -549,7 +553,7 @@ function ExternalAgentDetailView({
                 {detail.clientName},{' '}
                 {detail.verified ? 'verified' : 'unverified'}
               </FactRow>
-              {detail.status === 'expired' ? null : (
+              {detail.status === 'expired' || firstParty ? null : (
                 <SettingsRow
                   label="Your name for it"
                   description={`Shows as “Your name (${detail.clientName})”. Clear it to show ${detail.clientName} alone.`}
@@ -599,11 +603,13 @@ function ExternalAgentDetailView({
                   ? 'Not used yet'
                   : formatRelativeTime(detail.lastUsedAt)}
               </FactRow>
-              {detail.status === 'expired' ? (
+              {detail.status === 'expired' || firstParty ? (
                 <FactRow label="Access ends">
                   {detail.expiresAt === null
                     ? 'When I remove it'
-                    : `Ended ${formatDate(detail.expiresAt)}`}
+                    : detail.status === 'expired'
+                      ? `Ended ${formatDate(detail.expiresAt)}`
+                      : formatDate(detail.expiresAt)}
                 </FactRow>
               ) : (
                 <SettingsRow
@@ -635,7 +641,7 @@ function ExternalAgentDetailView({
                   }
                 />
               )}
-              {detail.server === 'tasks' ? (
+              {detail.server === 'tasks' && !firstParty ? (
                 <SettingsRow
                   label={EXPOSE_NAMES_LABEL}
                   description={
@@ -661,141 +667,153 @@ function ExternalAgentDetailView({
           </SettingsSection>
         </div>
 
-        <AccessEditorSections
-          source={source}
-          draft={draft}
-          organizations={detail.organizations}
-          initialOrganizationIds={detail.current.organizations.organizationIds}
-          remoteControlEnabled={detail.remoteControlEnabled}
-          cloudName={cloudName}
-          disabled={editorDisabled}
-          setOrganizationMode={setOrganizationMode}
-          setOrganizationEnabled={setOrganizationEnabled}
-          desktops={desktops}
-          setManagedHost={(managed): void =>
-            setDraft((current) => setAccessManagedHost(current, managed))
-          }
-          setDeviceChoice={(choice): void =>
-            setDraft((current) => setAccessDeviceChoice(current, choice))
-          }
-          setDeviceSelected={(remoteId, selected): void =>
-            setDraft((current) =>
-              setAccessDeviceSelected(current, remoteId, selected),
-            )
-          }
-          onRetryDesktops={(): void => void store.getState().loadDesktops()}
-          renderEditor={(): JSX.Element => (
-            <AgentAccessEditor
-              preset={draft.preset}
-              onPresetChange={(preset): void =>
-                setDraft((current) =>
-                  applyAccessPreset(current, source, presets, preset),
-                )
+        {firstParty ? (
+          <FirstPartyAccessNotice onOpenPath={onOpenPath} />
+        ) : (
+          <>
+            <AccessEditorSections
+              source={source}
+              draft={draft}
+              organizations={detail.organizations}
+              initialOrganizationIds={
+                detail.current.organizations.organizationIds
               }
-              groups={editorGroups}
-              onLevelChange={(groupId, level): void => {
-                if (!isExternalAgentToolGroup(groupId)) return;
-                setDraft((current) =>
-                  setAccessGroupLevel(current, source, groupId, level),
-                );
-              }}
-              onDestructiveChange={(groupId, enabled): void =>
-                setDraft((current) =>
-                  setAccessDestructive(current, source, groupId, enabled),
-                )
-              }
-              onToolChange={handleToolChange}
-              toolCount={{
-                enabled: enabledTools,
-                total: countAccessTools(source),
-                max: detail.maxTools,
-              }}
+              remoteControlEnabled={detail.remoteControlEnabled}
+              cloudName={cloudName}
               disabled={editorDisabled}
+              setOrganizationMode={setOrganizationMode}
+              setOrganizationEnabled={setOrganizationEnabled}
+              desktops={desktops}
+              setManagedHost={(managed): void =>
+                setDraft((current) => setAccessManagedHost(current, managed))
+              }
+              setDeviceChoice={(choice): void =>
+                setDraft((current) => setAccessDeviceChoice(current, choice))
+              }
+              setDeviceSelected={(remoteId, selected): void =>
+                setDraft((current) =>
+                  setAccessDeviceSelected(current, remoteId, selected),
+                )
+              }
+              onRetryDesktops={(): void => void store.getState().loadDesktops()}
+              renderEditor={(): JSX.Element => (
+                <AgentAccessEditor
+                  preset={draft.preset}
+                  onPresetChange={(preset): void =>
+                    setDraft((current) =>
+                      applyAccessPreset(current, source, presets, preset),
+                    )
+                  }
+                  groups={editorGroups}
+                  onLevelChange={(groupId, level): void => {
+                    if (!isExternalAgentToolGroup(groupId)) return;
+                    setDraft((current) =>
+                      setAccessGroupLevel(current, source, groupId, level),
+                    );
+                  }}
+                  onDestructiveChange={(groupId, enabled): void =>
+                    setDraft((current) =>
+                      setAccessDestructive(current, source, groupId, enabled),
+                    )
+                  }
+                  onToolChange={handleToolChange}
+                  toolCount={{
+                    enabled: enabledTools,
+                    total: countAccessTools(source),
+                    max: detail.maxTools,
+                  }}
+                  disabled={editorDisabled}
+                />
+              )}
             />
-          )}
-        />
-        {detail.confirmationClasses.length > 0 ? (
-          <SettingsSection
-            title="Changes"
-            description="Ask first sends each change to you to confirm before it happens. Deleting or removing always asks."
-            testId="external-agent-confirmation-settings"
-          >
-            <SettingsGroup disabled={editorDisabled}>
-              {detail.confirmationClasses.map((confirmationClass) => {
-                const label =
-                  EXTERNAL_AGENT_CONFIRMATION_CLASS_LABELS[confirmationClass];
-                const testId = `external-agent-confirmation-${confirmationClass}`;
-                return (
-                  <SettingsRow
-                    key={confirmationClass}
-                    label={label}
-                    control={
-                      <SegmentedControl
+            {detail.confirmationClasses.length > 0 ? (
+              <SettingsSection
+                title="Changes"
+                description="Ask first sends each change to you to confirm before it happens. Deleting or removing always asks."
+                testId="external-agent-confirmation-settings"
+              >
+                <SettingsGroup disabled={editorDisabled}>
+                  {detail.confirmationClasses.map((confirmationClass) => {
+                    const label =
+                      EXTERNAL_AGENT_CONFIRMATION_CLASS_LABELS[
+                        confirmationClass
+                      ];
+                    const testId = `external-agent-confirmation-${confirmationClass}`;
+                    return (
+                      <SettingsRow
+                        key={confirmationClass}
                         label={label}
-                        value={confirmationDraft[confirmationClass]}
-                        options={[
-                          {
-                            value: 'act',
-                            label: 'Act',
-                            dataTestId: `${testId}-act`,
-                          },
-                          {
-                            value: 'ask_first',
-                            label: 'Ask first',
-                            dataTestId: `${testId}-ask_first`,
-                          },
-                        ]}
-                        onChange={(mode: ExternalAgentConfirmationMode): void =>
-                          setConfirmationDraft((current) => ({
-                            ...current,
-                            [confirmationClass]: mode,
-                          }))
+                        control={
+                          <SegmentedControl
+                            label={label}
+                            value={confirmationDraft[confirmationClass]}
+                            options={[
+                              {
+                                value: 'act',
+                                label: 'Act',
+                                dataTestId: `${testId}-act`,
+                              },
+                              {
+                                value: 'ask_first',
+                                label: 'Ask first',
+                                dataTestId: `${testId}-ask_first`,
+                              },
+                            ]}
+                            onChange={(
+                              mode: ExternalAgentConfirmationMode,
+                            ): void =>
+                              setConfirmationDraft((current) => ({
+                                ...current,
+                                [confirmationClass]: mode,
+                              }))
+                            }
+                            semantics="toggle"
+                            width="control"
+                            disabled={editorDisabled}
+                            dataTestId={`${testId}-control`}
+                          />
                         }
-                        semantics="toggle"
-                        width="control"
-                        disabled={editorDisabled}
-                        dataTestId={`${testId}-control`}
                       />
-                    }
-                  />
-                );
-              })}
-            </SettingsGroup>
-          </SettingsSection>
-        ) : null}
-        <SettingsSection
-          title={TEXT_CONTENT_COMPATIBILITY_COPY.title}
-          testId="external-agent-compatibility"
-        >
-          <TextContentCompatibilityChoice
-            idPrefix="external-agent"
-            checked={textContentCompatibility}
-            disabled={editorDisabled}
-            onChange={setTextContentCompatibility}
-          />
-        </SettingsSection>
-        {detail.status !== 'expired' ? (
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <Button
-              variant="secondary"
-              size="compact"
-              disabled={disabled}
-              data-testid="external-agent-discard"
-              onClick={discard}
+                    );
+                  })}
+                </SettingsGroup>
+              </SettingsSection>
+            ) : null}
+            <SettingsSection
+              title={TEXT_CONTENT_COMPATIBILITY_COPY.title}
+              testId="external-agent-compatibility"
             >
-              Discard
-            </Button>
-            <Button
-              variant="secondary"
-              size="compact"
-              disabled={!canSave}
-              data-testid="external-agent-save"
-              onClick={save}
-            >
-              Save
-            </Button>
-          </div>
-        ) : null}
+              <TextContentCompatibilityChoice
+                idPrefix="external-agent"
+                checked={textContentCompatibility}
+                disabled={editorDisabled}
+                onChange={setTextContentCompatibility}
+              />
+            </SettingsSection>
+            {detail.status !== 'expired' ? (
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Button
+                  variant="secondary"
+                  size="compact"
+                  disabled={disabled}
+                  data-testid="external-agent-discard"
+                  onClick={discard}
+                >
+                  Discard
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="compact"
+                  disabled={!canSave}
+                  data-testid="external-agent-save"
+                  onClick={save}
+                >
+                  Save
+                </Button>
+              </div>
+            ) : null}
+          </>
+        )}
 
         <OutcomeNotice state={state} maxTools={detail.maxTools} />
 
@@ -823,7 +841,11 @@ function ExternalAgentDetailView({
       {confirmingRemoval ? (
         <ConfirmDialog
           title={`Remove ${externalAgentDisplayName(detail)}?`}
-          message={`${externalAgentDisplayName(detail)} stops working with your account at once. Every sign-in it holds stops working. This cannot be undone.`}
+          message={
+            firstParty
+              ? `${externalAgentDisplayName(detail)} stops working with your account at once, and Slack is disconnected from your account. This cannot be undone.`
+              : `${externalAgentDisplayName(detail)} stops working with your account at once. Every sign-in it holds stops working. This cannot be undone.`
+          }
           confirmLabel="Remove"
           destructive
           onConfirm={(): void => void confirmRemove()}
@@ -838,6 +860,40 @@ function ExternalAgentDetailView({
         />
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Where a first-party connection's access is managed instead of here. Slack
+ * (CAN-7606) is the only one: Connect Slack sets which computer it reaches.
+ */
+function FirstPartyAccessNotice({
+  onOpenPath,
+}: {
+  readonly onOpenPath: (path: string) => void;
+}): JSX.Element {
+  return (
+    <Notice
+      intent="neutral"
+      title="Access is set by Connect Slack."
+      actions={
+        <NoticeButton
+          variant="secondary"
+          onClick={(): void =>
+            onOpenPath(
+              settingsRouteToPath({ scope: 'account', page: 'integrations' }),
+            )
+          }
+        >
+          Open integrations
+        </NoticeButton>
+      }
+      data-testid="external-agent-first-party-notice"
+      shape="settings"
+    >
+      Slack reaches only the computer you chose when you connected it. To choose
+      another, connect Slack again from Integrations.
+    </Notice>
   );
 }
 

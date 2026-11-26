@@ -4,6 +4,10 @@ import { basename, dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { BRAND } from '@canopy/brand/current';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+import {
+  parseGitBranchName,
+  parseRemoteDefaultBranch,
+} from '@canopy/core-runtime/node/git';
 import { normalizeRepositoryCloneUrl } from '@canopy/protocol/remote-control/shell';
 import { getGitExecutableCommand } from '../../lib/git-executable';
 import type { CanopyJsonFile } from '../../types';
@@ -17,13 +21,26 @@ import { linkAgentsMdToClaudeMd } from '../lib/workspace-source-repo';
 
 const execute = promisify(execFile);
 
-async function workspaceGit(args: string[], cwd?: string): Promise<string> {
+async function workspaceGitOutput(
+  args: string[],
+  cwd?: string,
+): Promise<string> {
   const { stdout } = await execute(getGitExecutableCommand(process.env), args, {
     cwd,
     maxBuffer: 8 * 1024 * 1024,
     windowsHide: hostOperatingSystem() === 'win32',
   });
-  return stdout.trim();
+  return stdout;
+}
+
+async function workspaceGit(args: string[], cwd?: string): Promise<string> {
+  return (await workspaceGitOutput(args, cwd)).trim();
+}
+
+function gitExitCode(error: unknown): unknown {
+  return typeof error === 'object' && error !== null
+    ? Reflect.get(error, 'code')
+    : undefined;
 }
 
 export async function workspaceRemote(
@@ -136,6 +153,21 @@ export async function acquireWorkspacePath(
   await mkdir(folder);
 }
 
+/**
+ * CAN-7209: Git couldn't read the branch a fresh clone's HEAD names. Thrown
+ * into provisioning's existing failure path; the clone is left as evidence.
+ */
+export class ClonedHeadUnreadableError extends Error {
+  readonly code = 'invalid-remote-default-branch';
+
+  constructor(folder: string) {
+    super(
+      `Couldn't use the repository cloned to ${folder}. Git can't read the branch it checked out.`,
+    );
+    this.name = 'ClonedHeadUnreadableError';
+  }
+}
+
 export async function cloneWorkspaceSource(
   url: string,
   folder: string,
@@ -143,6 +175,80 @@ export async function cloneWorkspaceSource(
 ): Promise<void> {
   signal.throwIfAborted();
   await workspaceGit(['clone', '--', normalizeRepositoryCloneUrl(url), folder]);
+  // No abort check here: a finished clone is always checked before it is kept.
+  await neutralizeClonedHead(folder);
+}
+
+/**
+ * CAN-7209: checks the branch a clone checked out with the shared validator.
+ * Clone drops or fails on names Git's ref format refuses, so a refused name
+ * here is one Git accepts (a leading '-', or HEAD) and the clone still
+ * succeeds. An option-like name is taken off HEAD so HEAD reads never return it.
+ */
+async function neutralizeClonedHead(folder: string): Promise<void> {
+  let head: string;
+  try {
+    head = (
+      await workspaceGitOutput(['symbolic-ref', '--quiet', 'HEAD'], folder)
+    ).replace(/\r?\n$/, '');
+  } catch (error) {
+    // 1: a detached HEAD. 128: Git can't read HEAD's target, as every later
+    // command that reads it would also find.
+    if (gitExitCode(error) === 1) return;
+    if (gitExitCode(error) === 128) throw new ClonedHeadUnreadableError(folder);
+    throw error;
+  }
+  const prefix = 'refs/heads/';
+  if (!head.startsWith(prefix)) return;
+  const branch = head.slice(prefix.length);
+  if (parseRemoteDefaultBranch(branch, 'clone-head') || !branch.startsWith('-'))
+    return;
+  if (await clonedHeadHasCommit(folder)) {
+    // Detached at the same commit; the tree and the local branch are kept.
+    await workspaceGit(
+      [
+        'update-ref',
+        '--no-deref',
+        '-m',
+        'clone: detach from an option-like branch name',
+        'HEAD',
+        'HEAD',
+      ],
+      folder,
+    );
+    return;
+  }
+  // An unborn HEAD can't detach; it takes the branch `git init` would use.
+  await workspaceGit(
+    [
+      'symbolic-ref',
+      '-m',
+      'clone: replace an option-like branch name',
+      'HEAD',
+      `refs/heads/${await initialBranchName(folder)}`,
+    ],
+    folder,
+  );
+}
+
+async function clonedHeadHasCommit(folder: string): Promise<boolean> {
+  try {
+    await workspaceGit(['rev-parse', '--verify', '--quiet', 'HEAD'], folder);
+    return true;
+  } catch (error) {
+    if (gitExitCode(error) === 1) return false;
+    throw error;
+  }
+}
+
+async function initialBranchName(folder: string): Promise<string> {
+  // What `git init` reads on every Git version; older Git has no
+  // `git var GIT_DEFAULT_BRANCH`. 'master' is Git's built-in default.
+  const configured = await workspaceGit(
+    ['config', '--get', 'init.defaultBranch'],
+    folder,
+  ).catch(() => '');
+  return parseGitBranchName(configured) ?? 'master';
 }
 
 export async function initializeWorkspaceSource(

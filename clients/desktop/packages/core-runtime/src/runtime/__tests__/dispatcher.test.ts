@@ -599,6 +599,44 @@ describe('createCanopyDispatcher', () => {
     expect(rootHandler).not.toHaveBeenCalled();
   });
 
+  it("refuses a paired computer's ids before the handler, never serving them as local (CAN-7757)", async () => {
+    const handler = jest.fn(() => new Promise<never>(() => {}));
+    const dispatcher = createChatSendDispatcher(handler);
+    const paired = 'computer-AbCdEfGhIjKlMnOpQrStUv:';
+    const send = (ids: {
+      workspaceId: string;
+      worktreeId: string;
+      chatId: string;
+    }): Promise<unknown> =>
+      dispatcher.instruction(
+        'core.chat.message.send',
+        {
+          scope: { workspaceId: ids.workspaceId, worktreeId: ids.worktreeId },
+          commandId: 'command-1',
+          _meta: { idempotencyKey: 'command-1' },
+          chatId: ids.chatId,
+          messageId: 'message-1',
+          text: `${paired}canopy in message text is not an address`,
+        },
+        {
+          caller: { ...caller, grants: ['core.chat.write'] },
+          metadata: { idempotencyKey: 'command-1' },
+        },
+      );
+    for (const ids of [
+      { workspaceId: `${paired}canopy`, worktreeId: 'camel', chatId: 'chat-1' },
+      { workspaceId: 'canopy', worktreeId: `${paired}camel`, chatId: 'chat-1' },
+      { workspaceId: 'canopy', worktreeId: 'camel', chatId: `${paired}chat-1` },
+    ])
+      await expect(send(ids)).rejects.toMatchObject({
+        payload: {
+          kind: 'invalid_argument',
+          message: 'The parameters name another computer.',
+        },
+      });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it('rejects pre-aborted calls and already-expired deadlines before invoking handlers', async () => {
     const rootHandler = jest.fn(() => rootsResult);
     const dispatcher = createDispatcher(rootHandler);

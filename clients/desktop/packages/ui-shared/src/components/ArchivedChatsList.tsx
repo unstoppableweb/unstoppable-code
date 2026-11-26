@@ -26,21 +26,21 @@ import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { useMinuteClock } from '../lib/useMinuteClock';
 import type { ArchivedChatsCardItem } from './ArchivedChatsCard';
-import { Count, Dot } from './Badge';
-import { Button } from './Button';
-import { ListRow } from './ListRow';
-import { LoadingSpinner } from './LoadingSpinner';
+import { Count, Dot } from '../primitives/Badge';
+import { Button } from '../primitives/Button';
+import { ListRow } from '../primitives/ListRow';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
 import {
   PageSearchControls,
   PageSearchField,
   PageSearchRow,
   SortDropdown,
 } from './PageSearchRow';
-import { RowActionButton } from './RowActions';
-import { SearchEmptyState } from './SearchField';
-import { SegmentedControl } from './SegmentedControl';
-import { EmptyState } from './StatusBlocks';
-import { Tooltip } from './Tooltip';
+import { RowActionButton } from '../primitives/RowActions';
+import { SearchEmptyState } from '../primitives/SearchField';
+import { SegmentedControl } from '../primitives/SegmentedControl';
+import { EmptyState } from '../primitives/StatusBlocks';
+import { Tooltip } from '../primitives/Tooltip';
 
 /** One archived chat, as its row in the full list shows it. */
 export interface ArchivedChatsListItem extends ArchivedChatsCardItem {

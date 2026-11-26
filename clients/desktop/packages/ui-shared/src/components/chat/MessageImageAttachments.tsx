@@ -10,9 +10,9 @@ import {
 import { flushSync } from 'react-dom';
 import { PlayIcon } from '../../icons/AppIcons';
 import { FileTypeIcon } from '../../icons/FileTypeIcon';
-import { ControlButton } from '../Button';
-import { TILE_PRESENTATION_CLASS } from '../control-button-shared';
-import { Tooltip } from '../Tooltip';
+import { ControlButton } from '../../primitives/Button';
+import { TILE_PRESENTATION_CLASS } from '../../primitives/control-button-shared';
+import { Tooltip } from '../../primitives/Tooltip';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 
 export interface MessageImageAttachment {

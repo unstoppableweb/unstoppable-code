@@ -39,7 +39,7 @@ export function MarketplaceSourceStatusNotice({
       title={
         legacy
           ? 'This marketplace is not available.'
-          : 'This marketplace could not be loaded.'
+          : "Couldn't load this marketplace."
       }
       onClick={(event) => event.stopPropagation()}
       detail={
@@ -58,6 +58,16 @@ export function MarketplaceSourceStatusNotice({
               Remove marketplace
             </NoticeButton>
           )}
+          {onRefresh && (
+            <NoticeButton
+              variant="secondary"
+              disabled={refreshing}
+              onClick={onRefresh}
+              data-testid="marketplace-source-invalid-refresh"
+            >
+              Refresh status
+            </NoticeButton>
+          )}
           {source.actions.update && (
             <NoticeButton
               variant="primary"
@@ -74,16 +84,6 @@ export function MarketplaceSourceStatusNotice({
                 : updating
                   ? 'Updating…'
                   : 'Update'}
-            </NoticeButton>
-          )}
-          {onRefresh && (
-            <NoticeButton
-              variant="secondary"
-              disabled={refreshing}
-              onClick={onRefresh}
-              data-testid="marketplace-source-invalid-refresh"
-            >
-              Refresh status
             </NoticeButton>
           )}
         </>

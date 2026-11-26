@@ -49,6 +49,14 @@ export function canManageProjects(role: OrganizationRole): boolean {
   return roleRank(role) >= roleRank('ADMIN');
 }
 
+/**
+ * Browse, download and export the transcripts members share with the
+ * organization. OWNER only: admins never qualify.
+ */
+export function canViewOrgTranscripts(role: OrganizationRole): boolean {
+  return role === 'OWNER';
+}
+
 /** Invite members / add existing by email. OWNER + ADMIN. */
 export function canManageMembers(role: OrganizationRole): boolean {
   return roleRank(role) >= roleRank('ADMIN');
@@ -170,6 +178,8 @@ export interface OrganizationSettingsSubtabAccess {
  * - Integrations stays while lapsed only to disconnect an existing connection,
  *   since connecting is refused.
  * - Policies stays while lapsed only for the outside-agents card.
+ * - Connectors shows to owners and admins only (CAN-6245): they manage the
+ *   connections the organization holds; members use them through projects.
  * - Project defaults shows to every member: owners and admins change them,
  *   members read them (CAN-6237). It stays while lapsed, since the defaults
  *   keep loading and an admin must still be able to turn one off.
@@ -187,6 +197,7 @@ export function visibleOrganizationSettingsSubtabs(
   )
     visible.push('policies');
   visible.push('project-defaults');
+  if (canEdit) visible.push('connectors');
   if (canEdit && (healthy || access.githubConnected !== false))
     visible.push('integrations');
   if (

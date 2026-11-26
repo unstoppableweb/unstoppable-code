@@ -14,22 +14,67 @@ import {
   decodePluginCatalog,
   decodePluginCacheIndex,
   readPluginCatalog,
+  readPluginCatalogAsync,
   readPluginCacheIndex,
+  readPluginCacheIndexAsync,
   type PluginCacheIndex,
 } from '@canopy/execution-engine/node/plugins/catalog-read-health';
 import type { PluginsCache } from '@canopy/execution-engine/types/plugins';
+import { stripPluginSourceCredentials } from '@canopy/execution-engine/node/plugins/plugin-copy';
+import { observePluginCopyReferences } from '@canopy/execution-engine/node/plugins/plugin-copy-references';
 import { getDataDir } from '../lib/paths';
+import { taintPluginCopyEvidence } from './plugin-copy-provider-evidence';
 
 export function readPluginCatalogHealth(): ReturnType<
   typeof readPluginCatalog
 > {
-  return readPluginCatalog(join(getDataDir(), 'plugins-cache.json'));
+  const result = readPluginCatalog(join(getDataDir(), 'plugins-cache.json'));
+  if (
+    result.state !== 'absent' &&
+    (result.state !== 'valid' || result.recovered)
+  )
+    taintPluginCopyEvidence();
+  if (result.state === 'valid') redactPluginCatalogProvenance(result.data);
+  return result;
+}
+
+export async function readPluginCatalogHealthAsync(): ReturnType<
+  typeof readPluginCatalogAsync
+> {
+  const result = await readPluginCatalogAsync(
+    join(getDataDir(), 'plugins-cache.json'),
+  );
+  if (
+    result.state !== 'absent' &&
+    (result.state !== 'valid' || result.recovered)
+  )
+    taintPluginCopyEvidence();
+  if (result.state === 'valid') redactPluginCatalogProvenance(result.data);
+  return result;
 }
 
 export function readPluginIndexHealth(): ReturnType<
   typeof readPluginCacheIndex
 > {
-  return readPluginCacheIndex(join(getDataDir(), 'plugin-cache-index.json'));
+  const result = readPluginCacheIndex(
+    join(getDataDir(), 'plugin-cache-index.json'),
+  );
+  if (
+    result.state !== 'absent' &&
+    (result.state !== 'valid' || result.recovered)
+  )
+    taintPluginCopyEvidence();
+  return result;
+}
+
+export async function readPluginIndexHealthAsync(): ReturnType<
+  typeof readPluginCacheIndexAsync
+> {
+  const result = await readPluginCacheIndexAsync(
+    join(getDataDir(), 'plugin-cache-index.json'),
+  );
+  if (result.state !== 'absent' && result.recovered) taintPluginCopyEvidence();
+  return result;
 }
 
 const MODULE = 'main/plugins/plugin-catalog-store';
@@ -98,6 +143,20 @@ export function assertPluginCatalogObservation(
   }
 }
 
+/**
+ * Validates a catalog read taken after this call. Within a scan, the scan's
+ * own provider effects keep it valid; any other catalog change voids it.
+ */
+export function pluginCatalogReadValidator(): () => boolean {
+  const currentScan = scan.getStore();
+  if (currentScan?.active)
+    return () =>
+      currentScan.active &&
+      isPluginCatalogObservationCurrent(currentScan.observation);
+  const observation = observePluginCatalog();
+  return () => isPluginCatalogObservationCurrent(observation);
+}
+
 /** Discovery may intentionally deregister a rejected provider; never replay that effect to rescan. */
 export async function withPluginCatalogScan<T>(
   work: () => Promise<T>,
@@ -150,7 +209,17 @@ export function assertPluginPayloadAdmission(): void {
 
 /** Only a legacy catalog waits for its explicit revalidation. Damaged, newer and unreadable files are read best-effort and rewritten by the next change (CAN-4481). */
 export function assertPluginCatalogHealth(allowLegacy = false): void {
-  if (allowLegacy || readPluginCatalogHealth().state !== 'legacy') return;
+  if (!allowLegacy) assertCurrentCatalogVersion(readPluginCatalogHealth());
+}
+
+export async function assertPluginCatalogHealthAsync(): Promise<void> {
+  assertCurrentCatalogVersion(await readPluginCatalogHealthAsync());
+}
+
+function assertCurrentCatalogVersion(
+  health: ReturnType<typeof readPluginCatalog>,
+): void {
+  if (health.state !== 'legacy') return;
   throw new Error(
     "Couldn't use the plugin catalog because it is legacy. Plugin changes and execution are blocked.",
   );
@@ -180,11 +249,27 @@ export function updatePluginCatalog<T>(work: () => Promise<T> | T): Promise<T> {
   return result;
 }
 
+/** Apply to fresh decoded documents so old catalogs are safe before any publication. */
+function redactPluginCatalogProvenance(cache: PluginsCache): void {
+  for (const marketplace of cache.marketplaces)
+    for (const plugin of marketplace.plugins)
+      for (const provenance of [
+        plugin.provenance,
+        plugin.facets.claude?.provenance,
+        plugin.facets.codex?.provenance,
+        plugin.facets.codexCompatibility?.provenance,
+      ])
+        if (provenance)
+          provenance.sourceUrl = stripPluginSourceCredentials(
+            provenance.sourceUrl,
+          );
+}
+
 export function normalizePluginCatalog(
   cache: PluginsCache,
   advanceProviderStamp = false,
 ): PluginsCache {
-  const previous = readPluginCatalog(join(getDataDir(), 'plugins-cache.json'));
+  const previous = readPluginCatalogHealth();
   const latest = previous.state === 'valid' ? previous.data : undefined;
   const outgoing = decodePluginCatalog({
     ...latest,
@@ -197,6 +282,8 @@ export function normalizePluginCatalog(
     throw new Error(
       "Couldn't save the plugin catalog because the updated data doesn't match the supported format. The existing file hasn't changed.",
     );
+  // Every catalog writer redacts provenance, including retained rows in pair writes.
+  redactPluginCatalogProvenance(outgoing.data);
   const serializable: unknown = JSON.parse(JSON.stringify(outgoing.data));
   const committed = decodePluginCatalog(serializable);
   if (committed.state !== 'valid')
@@ -250,6 +337,8 @@ async function installDocument(
     };
     const bytes = JSON.stringify(data, null, 2);
     if (document === 'plugins_cache') {
+      // Observe before install: an uncertain directory flush may still expose it.
+      observePluginCopyReferences(data, join(root, 'plugin-cache'));
       // eslint-disable-next-line admitted-writers/no-unadmitted-write -- Only replaces metadata JSON, never plugin_cache payloads; remove when namespace matching distinguishes plugin-cache from plugin-cache-index.json.
       await writeFileAtomically(
         join(root, 'plugins-cache.json'),

@@ -80,6 +80,8 @@ export interface BuiltinModelCatalogPayload {
   version: 1;
   claudeModels: string[];
   codexModels: string[];
+  /** Native invocation ID to policy ID, independent of live gateway routes. */
+  policyModelIds?: Record<string, string>;
   ollamaModels: string[];
   aiGatewayModels: string[];
   gatewayRoutes: Array<{

@@ -150,6 +150,9 @@ export function PipelineRunsSection({
   const dismissFailedPendingExecution = usePipelineRunsStore(
     (s) => s.dismissFailedPendingExecution,
   );
+  const retryFailedPendingExecution = usePipelineRunsStore(
+    (s) => s.retryFailedPendingExecution,
+  );
   const pendingExecutionsByWorktree = usePipelineRunsStore(
     (s) => s.pendingExecutions,
   );
@@ -395,6 +398,7 @@ export function PipelineRunsSection({
           onDismissFailedQueuedExecution={dismissFailedQueuedExecution}
           onCancelPendingExecution={cancelPendingExecution}
           onDismissFailedPendingExecution={dismissFailedPendingExecution}
+          onRetryFailedPendingExecution={retryFailedPendingExecution}
           runRowProps={{
             expandedIds,
             onToggleExpand: handleToggleExpand,

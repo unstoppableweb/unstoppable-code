@@ -1,6 +1,10 @@
 import { useEffect, type JSX } from 'react';
 import { useStore } from 'zustand';
-import { Notice, NoticeButton } from '@canopy/ui-shared/components';
+import {
+  CopyDetailsButton,
+  Notice,
+  NoticeButton,
+} from '@canopy/ui-shared/components';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { webCoreLocalId } from '@/lib/chat-authority';
 import { copyTextToClipboard } from '@/lib/clipboard';
@@ -37,22 +41,22 @@ export function CloudTaskCreationNotice({
 }): JSX.Element | null {
   const workspaceId = webCoreLocalId(projectId);
   const taskId = webCoreLocalId(worktreeId);
-  const reason = useStore(cloudCoworkStore, (state) => {
-    if (workspaceId === null || taskId === null) return undefined;
-    const task = state.tasksByProject[`web-core:${workspaceId}`]?.find(
-      (each) => each.worktreeId === taskId,
-    );
-    if (task?.creation === 'unknown') return CLOUD_TASK_CREATION_UNKNOWN;
-    return task?.creation === 'failed'
-      ? (task.creationError ?? 'This task was not created.')
-      : undefined;
-  });
+  const task = useStore(cloudCoworkStore, (state) =>
+    workspaceId === null || taskId === null
+      ? undefined
+      : state.tasksByProject[`web-core:${workspaceId}`]?.find(
+          (each) => each.worktreeId === taskId,
+        ),
+  );
+  const creation = task?.creation;
+  // The web core's reason goes behind Copy details, never in the copy.
+  const details = creation === 'failed' ? task?.creationError : undefined;
   // The composer of a task just opened is usable from its first render.
   useEffect(() => {
     if (taskId !== null) markCloudTaskShown(taskId, 'composerUsable');
   }, [taskId]);
-  if (reason === undefined) return null;
-  const unknown = reason === CLOUD_TASK_CREATION_UNKNOWN;
+  if (creation !== 'unknown' && creation !== 'failed') return null;
+  const unknown = creation === 'unknown';
   return (
     <Notice
       {...(unknown
@@ -64,7 +68,7 @@ export function CloudTaskCreationNotice({
         : {
             errorSource: 'chat-input-cloud-task-creation-failed',
             intent: 'destructive' as const,
-            title: "This task wasn't created",
+            title: "Couldn't create this task",
             'data-testid': 'chat-input-cloud-task-creation-failed',
           })}
       actions={
@@ -82,6 +86,12 @@ export function CloudTaskCreationNotice({
               Copy draft
             </NoticeButton>
           )}
+          {details === undefined ? null : (
+            <CopyDetailsButton
+              details={details}
+              data-testid="chat-input-cloud-task-creation-copy-details"
+            />
+          )}
           <NoticeButton
             variant="secondary"
             onClick={(): void => {
@@ -94,7 +104,11 @@ export function CloudTaskCreationNotice({
         </>
       }
     >
-      {reason}
+      {unknown
+        ? CLOUD_TASK_CREATION_UNKNOWN
+        : draftText === ''
+          ? null
+          : 'Your draft is still here.'}
     </Notice>
   );
 }

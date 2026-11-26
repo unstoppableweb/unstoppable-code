@@ -71,7 +71,6 @@ import type {
   Pipeline,
   PipelineAgentAuthor,
   PipelineData,
-  IPCResult,
   PipelineInfo,
   SharedPipelineDetail,
 } from '@canopy/execution-engine/types/pipeline';
@@ -123,6 +122,8 @@ import {
   pipelineSourceFailure,
   readDesktopPipelineSnapshot,
   saveUserPipeline,
+  type RequiredUserPipelineMarker,
+  type UserPipelineWriteResult,
   setPipelineDefinitionEnabled,
 } from '../canopy-runtime/pipeline-definition-dispatch';
 import {
@@ -139,10 +140,6 @@ import {
   withPipelineCrudTelemetry,
   type PipelineCrudTelemetryContext,
 } from '../pipelines/instrumentation';
-import {
-  recordUserPipelineOwner,
-  setUserPipelineAgentAuthor,
-} from '../pipelines/pipeline-local-metadata-store';
 import {
   agentPipelineOwnerContext,
   getUserPipelineOwner,
@@ -238,20 +235,6 @@ export function isAgentResourceAction(action: {
   return RESOURCE_ACTION_TYPES.has(action.type);
 }
 
-/**
- * Mark a user pipeline as written by this agent chat, recording the owner of
- * a pipeline it just created.
- */
-function recordAgentPipelineWrite(
-  pipelineId: string,
-  runtime: AgentResourceActionRuntime,
-  createdOwner?: string,
-): void {
-  if (createdOwner !== undefined)
-    recordUserPipelineOwner(pipelineId, createdOwner);
-  setUserPipelineAgentAuthor(pipelineId, agentAuthorForRuntime(runtime));
-}
-
 function definitionScope(runtime: AgentResourceActionRuntime): {
   workspaceId?: string;
 } {
@@ -276,7 +259,8 @@ async function saveAgentProjectCopy(
   info: PipelineInfo,
   runtime: AgentResourceActionRuntime,
   input: { name: string; description: string; icon: string; content: Pipeline },
-): Promise<IPCResult<PipelineInfo>> {
+  marker: RequiredUserPipelineMarker,
+): Promise<UserPipelineWriteResult> {
   if (pipelineResourceContextEnabled()) {
     if (!info.filePath)
       return {
@@ -294,7 +278,7 @@ async function saveAgentProjectCopy(
         error: 'Workflow unavailable (context-mismatch)',
       };
   }
-  return saveUserPipeline(input, PIPELINE_DEFINITION_AGENT_CALLER);
+  return saveUserPipeline(input, PIPELINE_DEFINITION_AGENT_CALLER, marker);
 }
 
 function json(value: unknown): AppAdvisorJson {
@@ -1441,10 +1425,14 @@ async function pipelineAction(
           const saved = await saveUserPipeline(
             saveData,
             PIPELINE_DEFINITION_AGENT_CALLER,
+            { author: agentAuthorForRuntime(runtime), owner: owner.owner },
           );
-          if (!saved.success || !saved.data)
-            return ipcFailure(saved.error ?? 'Failed to create pipeline.');
-          recordAgentPipelineWrite(saved.data.id, runtime, owner.owner);
+          if (!saved.success || !saved.data) {
+            const message = saved.error ?? 'Failed to create pipeline.';
+            return saved.markerRefused || saved.revisionRefused
+              ? failure('stale_content_hash', message)
+              : ipcFailure(message);
+          }
           const pipeline: PipelineData = {
             info: saved.data,
             content: saveData.content,
@@ -1495,10 +1483,14 @@ async function pipelineAction(
               expectedRevision: current.info.revision ?? 0,
             },
             PIPELINE_DEFINITION_AGENT_CALLER,
+            { author: agentAuthorForRuntime(runtime) },
           );
-          if (!saved.success || !saved.data)
-            return ipcFailure(saved.error ?? 'Failed to update pipeline.');
-          recordAgentPipelineWrite(action.pipelineId, runtime);
+          if (!saved.success || !saved.data) {
+            const message = saved.error ?? 'Failed to update pipeline.';
+            return saved.markerRefused || saved.revisionRefused
+              ? failure('stale_content_hash', message)
+              : ipcFailure(message);
+          }
           const pipeline: PipelineData = {
             info: saved.data,
             content: saveData.content,
@@ -1576,9 +1568,18 @@ async function pipelineAction(
           // provenance. A project file found from this runtime's directory is
           // saved through core from the content read here, as core reads
           // project definitions by worktree scope.
+          const marker = {
+            author: agentAuthorForRuntime(runtime),
+            owner: owner.owner,
+          };
           const saved =
             current.info.source === 'project'
-              ? await saveAgentProjectCopy(current.info, runtime, saveData)
+              ? await saveAgentProjectCopy(
+                  current.info,
+                  runtime,
+                  saveData,
+                  marker,
+                )
               : await duplicatePipelineDefinition(
                   action.pipelineId,
                   {
@@ -1589,10 +1590,14 @@ async function pipelineAction(
                       : { expectedChecksum: snapshot.checksum }),
                   },
                   PIPELINE_DEFINITION_AGENT_CALLER,
+                  marker,
                 );
-          if (!saved.success || !saved.data)
-            return ipcFailure(saved.error ?? 'Failed to duplicate pipeline.');
-          recordAgentPipelineWrite(saved.data.id, runtime, owner.owner);
+          if (!saved.success || !saved.data) {
+            const message = saved.error ?? 'Failed to duplicate pipeline.';
+            return saved.markerRefused || saved.revisionRefused
+              ? failure('stale_content_hash', message)
+              : ipcFailure(message);
+          }
           const pipeline: PipelineData = {
             info: saved.data,
             content: saveData.content,
@@ -2448,9 +2453,13 @@ async function automationAction(
         return guardRefusal === undefined;
       };
       const runRequest = { id: action.id };
-      const response = callerContext
-        ? await service.runNow(runRequest, authorize, callerContext)
-        : await service.runNow(runRequest, authorize);
+      // An agent's Run now starts as `dispatch` (CAN-5782).
+      const response = await service.runNow(
+        runRequest,
+        authorize,
+        callerContext,
+        { agent: true },
+      );
       if (guardRefusal) return guardRefusal;
       if (!response.ok && response.error === 'Activity not found.') {
         return hiddenAutomationNotFound(action.id);

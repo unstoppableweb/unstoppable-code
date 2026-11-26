@@ -12,8 +12,36 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { type PluginCacheIndex } from '@canopy/execution-engine/node/plugins/catalog-read-health';
+import type { PluginCacheIndex } from '@canopy/execution-engine/node/plugins/catalog-read-health';
+import {
+  isUsablePluginCopyAsync,
+  matchPluginSources,
+  stripPluginSourceCredentials,
+} from '@canopy/execution-engine/node/plugins/plugin-copy';
+import {
+  pluginCopyPathIdentity,
+  pluginCopyProtectionIdentity,
+} from '@canopy/execution-engine/node/plugins/plugin-copy-references';
+import {
+  retirePluginCopies,
+  sweepRetiredPluginCopies as sweepUnreferencedPluginCopies,
+} from './plugin-copy-retirement';
+import {
+  pluginCopyProviderEvidence,
+  openPluginCopySweepEvidence,
+  admitsPluginCopySweep,
+  readClaudeMarketplaceRegistryEvidence,
+  taintPluginCopyEvidence,
+  readPluginCopyJson,
+  readPluginCopyJsonWithRecovery,
+  readRegistryNamedJsonWithRecovery,
+  readPluginCopyProviderFile,
+  isPluginCopyInstallMetadata,
+  isPluginCopyEvidenceRecord,
+  isPluginCopyManifest,
+} from './plugin-copy-provider-evidence';
 import { BRAND } from '@canopy/brand/current';
+import { StorageOutcomeUnknownError } from '@canopy/core-runtime/storage';
 import {
   claudeMarketplaceNames,
   type InheritedPluginMarketplace,
@@ -27,9 +55,11 @@ import {
   assertPluginCatalogAdmission,
   assertPluginPayloadAdmission,
   assertPluginCatalogHealth,
+  assertPluginCatalogHealthAsync,
   observePluginCatalog,
   isPluginCatalogObservationCurrent,
   assertPluginCatalogObservation,
+  pluginCatalogReadValidator,
   notePluginCatalogEffects,
   setPluginCatalogChangeListener,
   normalizePluginCatalog,
@@ -38,7 +68,9 @@ import {
   publishPluginCachePair,
   updatePluginCatalog,
   readPluginCatalogHealth,
+  readPluginCatalogHealthAsync,
   readPluginIndexHealth,
+  readPluginIndexHealthAsync,
   withPluginCatalogScan,
 } from './plugin-catalog-store';
 import { pruneInstalledItemRefs } from '../installed-items/installed-item-ref-prune';
@@ -94,7 +126,7 @@ import {
 import { mapWithConcurrency } from '../lib/concurrency';
 import { broadcastPreferencesSynced } from '../lib/preferences-broadcast';
 import { unionPluginSelections } from '@canopy/desktop-shared/lib/effective-plugin-selections';
-import { safeReadJson } from '../lib/fs-utils';
+import { safeReadJson, safeReadJsonAsync } from '../lib/fs-utils';
 import {
   claudeInstalledPluginsMap,
   installPathOf,
@@ -134,6 +166,7 @@ import { scanPluginDetails } from './plugin-scanner';
 import { materializeCodexPluginsOffMain } from './codex-plugin-materialization-runner';
 import type { MaterializedCodexPlugin } from './codex-plugin-materialization-protocol';
 import { pruneMarketplacePluginRefsFromValue } from './marketplace-plugin-ref-prune';
+import { restrictedPluginSourceRefusal } from './remote-install-source-gate';
 import {
   updateWorkspacePlugins,
   WorkspacePluginsRefusedError,
@@ -148,6 +181,7 @@ import {
 import {
   invalidateCuratedMarketplaceScanCache,
   mergeCuratedMarketplace,
+  curatedCodexManifestPath,
   scanCuratedMarketplace,
   type CuratedMarketplaceScanDeps,
 } from './curated-plugin-marketplace';
@@ -281,6 +315,26 @@ function assertPluginPayloadPathAdmission(candidate: string): void {
     !isPathInside(resolvedRoot, resolvedTarget)
   )
     throw new Error('Plugin cache is outside its managed directory.');
+}
+
+/** Sweep policy stays separate; payload writes remain with the admitted owner. */
+export async function sweepRetiredPluginCopies(): Promise<void> {
+  await runSerializedPluginMutation(() =>
+    sweepUnreferencedPluginCopies(
+      async (candidate) => {
+        assertPluginPayloadPathAdmission(candidate);
+        try {
+          await fs.promises.rm(candidate, { recursive: true, force: true });
+        } finally {
+          notePluginCatalogEffects();
+        }
+      },
+      {
+        installedPlugins: getClaudeInstalledPluginsPath(),
+        knownMarketplaces: getKnownMarketplacesPath(),
+      },
+    ),
+  );
 }
 
 async function execPluginCli(
@@ -504,6 +558,789 @@ async function uninstallClaudeInstalledItemUnlocked(id: string): Promise<void> {
   );
 }
 
+interface ClaudeEntryIdentity {
+  marketplaceId: string;
+  entryName: string;
+  sourceUrl?: string;
+}
+
+function claudeManifestIdentities(
+  marketplaceId: string,
+  manifest: { plugins?: unknown } | null,
+): ClaudeEntryIdentity[] {
+  const entries: unknown[] = Array.isArray(manifest?.plugins)
+    ? manifest.plugins
+    : [];
+  return entries.flatMap((entry) =>
+    isRecord(entry) &&
+    typeof entry.name === 'string' &&
+    entry.name.length > 0 &&
+    isRecord(entry.source) &&
+    typeof entry.source.url === 'string'
+      ? [
+          {
+            marketplaceId,
+            entryName: entry.name,
+            sourceUrl: entry.source.url,
+          },
+        ]
+      : [],
+  );
+}
+
+interface ClaudeEntryIdentityLookup {
+  entries: readonly ClaudeEntryIdentity[];
+  joinedKeyOwners: ReadonlyMap<string, ClaudeEntryIdentity | undefined>;
+  legacyOwnershipKnown: boolean;
+}
+
+function indexClaudeEntryIdentities(
+  entries: readonly ClaudeEntryIdentity[],
+): ClaudeEntryIdentityLookup {
+  const joinedKeyOwners = new Map<string, ClaudeEntryIdentity | undefined>();
+  for (const entry of entries) {
+    const key = cacheKey(entry.marketplaceId, entry.entryName);
+    if (!joinedKeyOwners.has(key)) {
+      joinedKeyOwners.set(key, entry);
+      continue;
+    }
+    const owner = joinedKeyOwners.get(key);
+    if (
+      !owner ||
+      owner.marketplaceId !== entry.marketplaceId ||
+      owner.entryName !== entry.entryName
+    )
+      joinedKeyOwners.set(key, undefined);
+  }
+  return { entries, joinedKeyOwners, legacyOwnershipKnown: true };
+}
+
+async function readClaudeEntryIdentities(
+  knownCache?: AnyPluginsCache | null,
+): Promise<ClaudeEntryIdentityLookup> {
+  const { known, complete } = await readKnownMarketplacesRegistry();
+  const manifests = await mapWithConcurrency(
+    Object.entries(known),
+    MARKETPLACE_REFRESH_CONCURRENCY,
+    async ([id, entry]): Promise<{
+      id: string;
+      entries: ClaudeEntryIdentity[];
+    } | null> => {
+      if (!isRecord(entry) || typeof entry.installLocation !== 'string')
+        return null;
+      const manifest = await readClaudeRegistryJson(
+        path.join(entry.installLocation, '.claude-plugin', 'marketplace.json'),
+      ).catch(() => undefined);
+      const located = isRecord(manifest) && Array.isArray(manifest.plugins);
+      // A registration names this manifest: unreadable is not an empty inventory.
+      if (!located) taintPluginCopyEvidence();
+      return located
+        ? { id, entries: claudeManifestIdentities(id, manifest) }
+        : null;
+    },
+  );
+  const cache = knownCache === undefined ? await readCacheAsync() : knownCache;
+  // An unreadable registry or registration could own any legacy key.
+  let legacyOwnershipKnown =
+    complete && manifests.every((registration) => registration !== null);
+  const normalized = manifests.flatMap((registration) => {
+    if (!registration) return [];
+    const owners = (cache?.version === 2 ? cache.marketplaces : []).filter(
+      (candidate) =>
+        candidate.id === registration.id ||
+        candidate.providerStatus.claude.marketplaceName === registration.id,
+    );
+    // Unresolved registration mappings defer removal, not unrelated legacy
+    // operations. Checked per registration: an empty or local-only manifest
+    // still hides which legacy keys it once owned.
+    if (owners.length !== 1) legacyOwnershipKnown = false;
+    return registration.entries.flatMap((entry) =>
+      owners.length
+        ? owners.map((owner) => ({ ...entry, marketplaceId: owner.id }))
+        : [entry],
+    );
+  });
+  // Recorded catalog tuples can reveal collisions even after a provider disappears.
+  const recorded = (cache?.version === 2 ? cache.marketplaces : []).flatMap(
+    (marketplace) =>
+      marketplace.plugins.flatMap((plugin): ClaudeEntryIdentity[] => {
+        const entryName = recordedClaudeEntryName(plugin);
+        return plugin.facets.claude && entryName !== undefined
+          ? [{ marketplaceId: marketplace.id, entryName }]
+          : [];
+      }),
+  );
+  return {
+    ...indexClaudeEntryIdentities([...normalized, ...recorded]),
+    legacyOwnershipKnown,
+  };
+}
+
+const CLAUDE_REGISTRY_FILE_MAX_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Registry and manifest reads run inside the plugin mutation queue. Open
+ * without blocking and read only a bounded regular file, so a FIFO or device
+ * cannot stall every mutation; callers treat a rejection as unknown ownership.
+ */
+async function readClaudeRegistryJson(file: string): Promise<unknown> {
+  const handle = await fs.promises.open(
+    file,
+    fs.constants.O_RDONLY | fs.constants.O_NONBLOCK,
+  );
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > CLAUDE_REGISTRY_FILE_MAX_BYTES)
+      throw new Error(`Skipped a non-regular or oversized file: ${file}`);
+    const parsed: unknown = JSON.parse(await handle.readFile('utf8'));
+    return parsed;
+  } finally {
+    await handle.close();
+  }
+}
+
+function isMarketplaceEvidence(value: unknown): value is MarketplaceManifest {
+  return isPluginCopyManifest(value);
+}
+
+async function readClaudeMarketplaceManifest(
+  file: string,
+): Promise<MarketplaceManifest | null> {
+  return readPluginCopyJsonWithRecovery(file, isMarketplaceEvidence);
+}
+
+/** For manifests a Claude registration names; curated and bundled ones may be absent. */
+async function readRegisteredClaudeMarketplaceManifest(
+  file: string,
+): Promise<MarketplaceManifest | null> {
+  return readRegistryNamedJsonWithRecovery(file, isMarketplaceEvidence);
+}
+
+async function readCodexMarketplaceManifest(
+  file: string,
+): Promise<CodexMarketplaceManifest | null> {
+  const accepts = (value: unknown): value is CodexMarketplaceManifest =>
+    isPluginCopyEvidenceRecord(value) && Array.isArray(value.plugins);
+  return readPluginCopyJsonWithRecovery(file, accepts);
+}
+
+function recordedClaudeEntryName(
+  plugin: PluginInfo | undefined,
+): string | undefined {
+  return (
+    plugin?.facets.claude?.provenance?.marketplaceEntryName ??
+    plugin?.provenance?.marketplaceEntryName
+  );
+}
+
+interface ResolvedClaudeEntryIdentity {
+  entryName: string;
+  bindingOwned: boolean;
+}
+
+/** The recorded entry name, else the requested literal name, as on develop. */
+function resolveClaudeEntryIdentity(
+  identities: ClaudeEntryIdentityLookup,
+  marketplaceId: string,
+  input: { entryName?: string; requestedName?: string },
+  index: PluginCacheIndex,
+): ResolvedClaudeEntryIdentity | undefined {
+  const entryName = input.entryName ?? input.requestedName;
+  if (entryName === undefined) return undefined;
+  const key = cacheKey(marketplaceId, entryName);
+  const recorded = index.entries[key]?.provenance?.marketplaceEntryName;
+  if (recorded !== undefined)
+    return { entryName, bindingOwned: recorded === entryName };
+  // Joined keys do not encode tuple boundaries. Keep known collisions unclaimed.
+  const owner = identities.joinedKeyOwners.get(key);
+  const conflicting =
+    identities.joinedKeyOwners.has(key) &&
+    (!owner ||
+      owner.marketplaceId !== marketplaceId ||
+      owner.entryName !== entryName);
+  return { entryName, bindingOwned: !conflicting };
+}
+
+/**
+ * Mutation identity. Install, Update and uninstall never infer an entry from a
+ * source URL: a reassigned URL would move them into another entry's slot. A
+ * legacy row bound under an alias keeps that key, as on develop.
+ */
+function resolveInstalledClaudeEntryIdentity(
+  identities: ClaudeEntryIdentityLookup,
+  index: PluginCacheIndex,
+  marketplaceId: string,
+  plugin: PluginInfo | undefined,
+  requestedName?: string,
+): ResolvedClaudeEntryIdentity | undefined {
+  const facet = plugin?.facets.claude;
+  if (!facet && requestedName === undefined) return undefined;
+  return resolveClaudeEntryIdentity(
+    identities,
+    marketplaceId,
+    {
+      entryName: facet ? recordedClaudeEntryName(plugin) : undefined,
+      requestedName,
+    },
+    index,
+  );
+}
+
+function marketplacePluginRows(
+  cache: AnyPluginsCache | null,
+  marketplaceId: string,
+): PluginInfo[] {
+  return cache?.version === 2
+    ? (cache.marketplaces.find((entry) => entry.id === marketplaceId)
+        ?.plugins ?? [])
+    : [];
+}
+
+interface PluginInstallTarget {
+  currentPlugin: PluginInfo | undefined;
+  identity: ResolvedClaudeEntryIdentity | undefined;
+  repairEntryName: string | undefined;
+  marketplaceEntryName: string;
+  key: string;
+  /** The binding the install replaces. */
+  prev: PluginCacheIndex['entries'][string] | undefined;
+}
+
+/** The row an install replaces and the index slot it binds. */
+function resolvePluginInstallTarget(
+  identities: ClaudeEntryIdentityLookup,
+  index: PluginCacheIndex,
+  plugins: readonly PluginInfo[],
+  marketplaceId: string,
+  pluginName: string,
+  sourceUrl: string,
+  repairIdentity: PluginRepairIdentity | undefined,
+): PluginInstallTarget {
+  const currentPlugin = findRequestedClaudePlugin(plugins, pluginName, {
+    sourceUrl,
+    listedSourceUrl: identities.entries.find(
+      (entry) =>
+        entry.marketplaceId === marketplaceId && entry.entryName === pluginName,
+    )?.sourceUrl,
+  });
+  const identity = repairIdentity
+    ? resolveClaudeEntryIdentity(
+        identities,
+        marketplaceId,
+        { entryName: repairIdentity.entryName },
+        index,
+      )
+    : resolveInstalledClaudeEntryIdentity(
+        identities,
+        index,
+        marketplaceId,
+        currentPlugin,
+        pluginName,
+      );
+  const repairEntryName = repairIdentity
+    ? undefined
+    : rowRepairEntryName(identities, index, marketplaceId, currentPlugin);
+  const marketplaceEntryName = identity?.entryName ?? pluginName;
+  // Last writer wins the slot, as on develop; the recorded entry name keeps
+  // ownership exact. Only a slot this entry owns has a copy to replace.
+  // A legacy row bound under an alias keeps that key, as on develop.
+  const key = cacheKey(marketplaceId, marketplaceEntryName);
+  const prev = identity?.bindingOwned ? index.entries[key] : undefined;
+  return {
+    currentPlugin,
+    identity,
+    repairEntryName,
+    marketplaceEntryName,
+    key,
+    prev,
+  };
+}
+
+/**
+ * Whether an automatic repair clones under the restricted policy: the session's
+ * row, the current row, an index binding the repair replaces or yields to, or
+ * any copy of this source in the marketplace was installed restricted. The
+ * index can be ahead of the catalog (index-first publication) under any key a
+ * user install chose, and nothing in-process records that across a restart.
+ */
+async function automaticRepairRestricted(
+  marketplaceId: string,
+  pluginName: string,
+  sourceUrl: string,
+  options: {
+    disableRedirects?: boolean;
+    repairIdentity?: PluginRepairIdentity & { sourceUrl: string };
+  },
+): Promise<boolean> {
+  const expected = options.repairIdentity;
+  if (
+    options.disableRedirects === true ||
+    expected?.binding.remoteSourceRestricted === true
+  )
+    return true;
+  const index = await readCacheIndex();
+  const plugins = marketplacePluginRows(await readCacheAsync(), marketplaceId);
+  const identities = await readClaudeEntryIdentities();
+  const target = resolvePluginInstallTarget(
+    identities,
+    index,
+    plugins,
+    marketplaceId,
+    pluginName,
+    sourceUrl,
+    expected,
+  );
+  const rows = [
+    target.currentPlugin,
+    plugins.find((row) => row.name.toLowerCase() === pluginName.toLowerCase()),
+  ].filter((row): row is PluginInfo => row !== undefined);
+  const keys = new Set<string>();
+  const copies = new Set([target.prev?.cachePath]);
+  for (const row of rows) {
+    const entryName = (
+      await resolvePluginRepairIdentity(
+        marketplaceId,
+        row,
+        expected?.userMutationGeneration,
+      )
+    )?.entryName;
+    if (entryName !== undefined) keys.add(cacheKey(marketplaceId, entryName));
+    copies.add(row.facets.claude?.cachePath);
+    copies.add(row.cachePath);
+  }
+  if (expected) {
+    keys.add(cacheKey(marketplaceId, expected.entryName));
+    copies.add(userInstalledCopy(index, expected)?.cachePath);
+  }
+  return (
+    rows.some((row) => pluginRepairBinding(row).remoteSourceRestricted) ||
+    Object.entries(index.entries).some(
+      ([key, binding]) =>
+        binding.provenance?.remoteSourceRestricted === true &&
+        (keys.has(key) ||
+          copies.has(binding.cachePath) ||
+          (key.startsWith(`${marketplaceId}/`) &&
+            bindsPluginSource(binding, sourceUrl))),
+    )
+  );
+}
+
+/**
+ * Read-side identity for damaged-index recovery and metadata-only history. A
+ * row without a recorded entry matches its source to one manifest entry, as
+ * develop's recovery did, and only while that entry's slot is empty or holds
+ * the row's copy.
+ */
+function resolveSourceClaudeEntryIdentity(
+  identities: ClaudeEntryIdentityLookup,
+  index: PluginCacheIndex,
+  marketplaceId: string,
+  plugin: PluginInfo,
+): ResolvedClaudeEntryIdentity | undefined {
+  const facet = plugin.facets.claude;
+  if (!facet) return undefined;
+  const recorded = recordedClaudeEntryName(plugin);
+  if (recorded !== undefined)
+    return resolveClaudeEntryIdentity(
+      identities,
+      marketplaceId,
+      { entryName: recorded },
+      index,
+    );
+  const provenance = facet.provenance ?? plugin.provenance;
+  // Catalog reads redact provenance URLs; prefer lossless or raw source text.
+  const lossless =
+    provenance?.sourceIdentityComplete === true
+      ? provenance.sourceUrl
+      : undefined;
+  const raw = lossless ?? (facet.externalSource?.url || undefined);
+  const sourceUrl = raw ?? provenance?.sourceUrl;
+  if (!sourceUrl) return undefined;
+  const compared = identities.entries
+    .filter((entry) => entry.marketplaceId === marketplaceId)
+    .map((entry) => ({
+      entry,
+      match:
+        entry.sourceUrl === undefined
+          ? 'different'
+          : matchPluginSources(sourceUrl, entry.sourceUrl, raw !== undefined),
+    }));
+  const exact = compared.filter(({ match }) => match === 'exact');
+  const matches =
+    exact.length > 0
+      ? exact
+      : compared.filter(({ match }) => match === 'alias');
+  const names = new Set(matches.map(({ entry }) => entry.entryName));
+  if (names.size !== 1) return undefined;
+  const entryName = matches[0].entry.entryName;
+  const holdsCopy = (
+    binding: PluginCacheIndex['entries'][string] | undefined,
+  ): boolean =>
+    !!binding &&
+    (binding.cachePath === facet.cachePath ||
+      binding.cachePath === plugin.cachePath);
+  const slot = index.entries[cacheKey(marketplaceId, entryName)];
+  // A copy still bound under another key already has its owner there.
+  if (
+    slot
+      ? !holdsCopy(slot)
+      : Object.entries(index.entries).some(
+          ([key, binding]) =>
+            key.startsWith(`${marketplaceId}/`) && holdsCopy(binding),
+        )
+  )
+    return undefined;
+  return resolveClaudeEntryIdentity(
+    identities,
+    marketplaceId,
+    { entryName },
+    index,
+  );
+}
+
+/** Base deleted a request's literal-key copies; skip keys another entry owns. */
+function isLiteralKeyForeign(
+  identities: ClaudeEntryIdentityLookup,
+  index: PluginCacheIndex,
+  marketplaceId: string,
+  entryName: string,
+  selectedEntryName: string | undefined,
+): boolean {
+  if (
+    entryName !== selectedEntryName &&
+    identities.entries.some(
+      (entry) =>
+        entry.marketplaceId === marketplaceId && entry.entryName === entryName,
+    )
+  )
+    return true;
+  return (
+    resolveClaudeEntryIdentity(identities, marketplaceId, { entryName }, index)
+      ?.bindingOwned !== true
+  );
+}
+
+function findRequestedClaudePlugin(
+  plugins: readonly PluginInfo[],
+  requestedName: string,
+  install?: {
+    sourceUrl: string;
+    /** The source of the listed entry whose name is the requested name. */
+    listedSourceUrl: string | undefined;
+  },
+): PluginInfo | undefined {
+  const sourceOf = (plugin: PluginInfo): string | undefined =>
+    (plugin.facets.claude?.externalSource ?? plugin.externalSource)?.url;
+  // Callers name catalog rows by their installed name, not their entry name.
+  const named = plugins.filter(
+    (plugin) => plugin.name.toLowerCase() === requestedName.toLowerCase(),
+  );
+  // An installed name can equal another listed entry's name. Installs and
+  // Updates pass the row's own source, which tells the rows apart.
+  const sourced = named.filter(
+    (plugin) => install !== undefined && sourceOf(plugin) === install.sourceUrl,
+  );
+  const row = named.length > 1 && sourced.length === 1 ? sourced[0] : named[0];
+  const recorded = recordedClaudeEntryName(row);
+  const requestsListedEntry =
+    !!row &&
+    !!install &&
+    recorded !== undefined &&
+    recorded !== requestedName &&
+    install.listedSourceUrl === install.sourceUrl &&
+    sourceOf(row) !== install.sourceUrl;
+  // That entry's exact source names it, not the row its installed name merged into.
+  return requestsListedEntry
+    ? plugins.find(
+        (plugin) => recordedClaudeEntryName(plugin) === requestedName,
+      )
+    : (row ??
+        plugins.find(
+          (plugin) => recordedClaudeEntryName(plugin) === requestedName,
+        ));
+}
+
+/** Uninstall keeps marketplace checkout paths, which inline plugins resolve from. */
+function checkoutPathOrEmpty(
+  value: string,
+  marketplace: MarketplaceInfo,
+): string {
+  if (!path.isAbsolute(value)) return value;
+  const inside = (roots: readonly (string | undefined)[]): boolean =>
+    roots.some((root) => !!root && isPathInside(root, value));
+  return !inside([getPluginCacheDir(), getCodexCompatibilityCacheRootDir()]) &&
+    inside([
+      marketplace.installLocation,
+      marketplace.providerStatus.claude.installLocation,
+      marketplace.providerStatus.codex.installLocation,
+    ])
+    ? value
+    : '';
+}
+
+interface PluginRepairBinding {
+  cachePath?: string;
+  installedAt?: string;
+  remoteSourceRestricted: boolean;
+}
+
+type PluginRepairIdentity = Pick<
+  ClaudeEntryIdentity,
+  'marketplaceId' | 'entryName'
+> & { userMutationGeneration: number; binding: PluginRepairBinding };
+
+function pluginRepairBinding(plugin: PluginInfo): PluginRepairBinding {
+  const facet = plugin.facets.claude;
+  const provenance = facet?.provenance ?? plugin.provenance;
+  return {
+    cachePath: facet?.cachePath ?? plugin.cachePath,
+    installedAt: provenance?.installedAt,
+    remoteSourceRestricted: provenance?.remoteSourceRestricted === true,
+  };
+}
+
+/** Refresh may drop a missing copy's path or backfill legacy provenance; installs replace both. */
+function samePluginRepairBinding(
+  selected: PluginRepairBinding,
+  current: PluginRepairBinding,
+): boolean {
+  return (
+    (current.cachePath === undefined ||
+      current.cachePath === selected.cachePath) &&
+    (selected.installedAt === undefined ||
+      current.installedAt === selected.installedAt) &&
+    current.remoteSourceRestricted === selected.remoteSourceRestricted
+  );
+}
+
+let userMutationGeneration = 0;
+const entryUserMutationGenerations = new Map<string, number>();
+
+export function getPluginUserMutationGeneration(): number {
+  return userMutationGeneration;
+}
+
+function notePluginUserMutation(
+  marketplaceId: string,
+  entryName: string,
+): void {
+  entryUserMutationGenerations.set(
+    JSON.stringify([marketplaceId, entryName]),
+    ++userMutationGeneration,
+  );
+}
+
+function entryChangedSince(
+  marketplaceId: string,
+  entryName: string,
+  generation: number,
+): boolean {
+  return (
+    (entryUserMutationGenerations.get(
+      JSON.stringify([marketplaceId, entryName]),
+    ) ?? 0) > generation
+  );
+}
+
+/** The index slot and fresh copy a user install published, by each entry it noted. */
+const userInstalledCopies = new Map<
+  string,
+  { entryName: string; cachePath: string }
+>();
+
+/**
+ * Index-first publication can land a user install's copy without its catalog
+ * row. Every install clones a fresh folder, so a slot still holding that exact
+ * path is the user's copy; a removed or rebound slot never matches. In-process
+ * only: after a restart repair is ordinary, as on develop; revisit if a durable
+ * marker is added.
+ */
+function notePluginUserInstall(
+  marketplaceId: string,
+  notedEntryNames: readonly (string | undefined)[],
+  copy: { entryName: string; cachePath: string },
+): void {
+  for (const entryName of new Set(notedEntryNames)) {
+    if (entryName === undefined) continue;
+    userInstalledCopies.set(JSON.stringify([marketplaceId, entryName]), copy);
+    notePluginUserMutation(marketplaceId, entryName);
+  }
+}
+
+/** The copy the entry's last user install left in its index slot, as the requested plugin. */
+function userInstalledCopy(
+  index: PluginCacheIndex,
+  expected: PluginRepairIdentity & { sourceUrl: string },
+): PluginCacheIndex['entries'][string] | undefined {
+  const copy = userInstalledCopies.get(
+    JSON.stringify([expected.marketplaceId, expected.entryName]),
+  );
+  const indexed = copy
+    ? index.entries[cacheKey(expected.marketplaceId, copy.entryName)]
+    : undefined;
+  return copy &&
+    indexed?.cachePath === copy.cachePath &&
+    isRequestedPluginCopy(indexed, copy.entryName, expected.sourceUrl)
+    ? indexed
+    : undefined;
+}
+
+/**
+ * Automatic repair only. Mutations never infer an entry from a source URL; a
+ * repair without a recorded entry matches its source to one manifest entry and
+ * claims that entry's key only with this installation's copy as evidence.
+ */
+function inferRepairClaudeEntryName(
+  identities: ClaudeEntryIdentityLookup,
+  index: PluginCacheIndex,
+  marketplaceId: string,
+  input: {
+    sourceUrl?: string;
+    /** The name whose literal key a pre-provenance installation was bound under. */
+    literalName?: string;
+    /** The installation's recorded copies, the evidence for an inferred binding. */
+    cachePaths?: readonly (string | undefined)[];
+    /** Whether an occupied inferred entry is still claimed. */
+    claimsOccupiedEntry?: (entryName: string) => boolean;
+  },
+): string | undefined {
+  const sourceUrl = input.sourceUrl;
+  if (!sourceUrl) return undefined;
+  const candidates = identities.entries.filter(
+    (entry) => entry.marketplaceId === marketplaceId,
+  );
+  const compared = candidates.map((entry) => ({
+    entry,
+    match:
+      entry.sourceUrl === undefined
+        ? 'different'
+        : matchPluginSources(
+            entry.sourceUrl,
+            sourceUrl,
+            // Raw manifest matching recovers entry ownership only. Copy
+            // replacement separately requires qualified provenance.
+            true,
+          ),
+  }));
+  const exact = compared.filter(({ match }) => match === 'exact');
+  const matches =
+    exact.length > 0
+      ? exact
+      : compared.filter(({ match }) => match === 'alias');
+  const names = new Set(matches.map(({ entry }) => entry.entryName));
+  const inferred = names.size === 1 ? matches[0].entry.entryName : undefined;
+  if (inferred === undefined) return undefined;
+  const holdsThisCopy = (name: string | undefined): boolean => {
+    const binding =
+      name === undefined
+        ? undefined
+        : index.entries[cacheKey(marketplaceId, name)];
+    return !!binding && !!input.cachePaths?.includes(binding.cachePath);
+  };
+  // Refresh reads only manifest entries' keys, so only a listed literal
+  // entry holding this installation's copy outranks an empty inferred slot.
+  // Only manifest identities carry a source URL.
+  const literalListed = candidates.some(
+    (entry) =>
+      entry.sourceUrl !== undefined && entry.entryName === input.literalName,
+  );
+  if (holdsThisCopy(inferred)) return inferred;
+  if (literalListed && holdsThisCopy(input.literalName))
+    return input.literalName;
+  return !index.entries[cacheKey(marketplaceId, inferred)] ||
+    input.claimsOccupiedEntry?.(inferred)
+    ? inferred
+    : undefined;
+}
+
+/** The entry automatic repair binds for a row: its recorded entry, else a source match. */
+function repairClaudeEntryName(
+  identities: ClaudeEntryIdentityLookup,
+  index: PluginCacheIndex,
+  marketplaceId: string,
+  plugin: PluginInfo,
+  claimsOccupiedEntry?: (entryName: string) => boolean,
+): string | undefined {
+  const facet = plugin.facets.claude;
+  return (
+    recordedClaudeEntryName(plugin) ??
+    inferRepairClaudeEntryName(identities, index, marketplaceId, {
+      // Redaction leaves '' for a URL it cannot parse.
+      sourceUrl:
+        facet?.provenance?.sourceUrl ||
+        plugin.provenance?.sourceUrl ||
+        facet?.externalSource?.url ||
+        plugin.externalSource?.url,
+      literalName: plugin.name,
+      // An occupied inferred key needs this installation's copy as evidence,
+      cachePaths: [facet?.cachePath, plugin.cachePath],
+      // or a user change since the snapshot that unbound the copy; the in-slot
+      // check then yields to that change.
+      claimsOccupiedEntry,
+    })
+  );
+}
+
+/**
+ * User mutations name a legacy row by its literal key, not the entry repair
+ * infers for it. Resolve that entry before the mutation changes the index and
+ * note it too, so a stale repair of the row cannot undo the mutation.
+ */
+function rowRepairEntryName(
+  identities: ClaudeEntryIdentityLookup,
+  index: PluginCacheIndex,
+  marketplaceId: string,
+  plugin: PluginInfo | undefined,
+): string | undefined {
+  return plugin
+    ? repairClaudeEntryName(identities, index, marketplaceId, plugin)
+    : undefined;
+}
+
+function noteUserMutationEntries(
+  marketplaceId: string,
+  entryNames: readonly (string | undefined)[],
+): void {
+  for (const entryName of new Set(entryNames))
+    if (entryName !== undefined)
+      notePluginUserMutation(marketplaceId, entryName);
+}
+
+export async function resolvePluginRepairIdentity(
+  marketplaceId: string,
+  plugin: PluginInfo,
+  generation = userMutationGeneration,
+): Promise<PluginRepairIdentity | undefined> {
+  const index = await readCacheIndex();
+  const identities = await readClaudeEntryIdentities();
+  const copies = [plugin.facets.claude?.cachePath, plugin.cachePath];
+  const copyBound = Object.values(index.entries).some((entry) =>
+    copies.includes(entry.cachePath),
+  );
+  // Automatic repair needs entry evidence; an installed name alone is not an owner.
+  const entryName = repairClaudeEntryName(
+    identities,
+    index,
+    marketplaceId,
+    plugin,
+    (name) => !copyBound && entryChangedSince(marketplaceId, name, generation),
+  );
+  const identity = resolveClaudeEntryIdentity(
+    identities,
+    marketplaceId,
+    { entryName },
+    index,
+  );
+  return identity
+    ? {
+        marketplaceId,
+        entryName: identity.entryName,
+        userMutationGeneration: generation,
+        binding: pluginRepairBinding(plugin),
+      }
+    : undefined;
+}
+
 /** Remove only cache directories owned by Canopy, never an external source tree. */
 async function removeInstalledPluginCacheUnlocked(
   marketplaceId: string,
@@ -511,54 +1348,78 @@ async function removeInstalledPluginCacheUnlocked(
 ): Promise<void> {
   await withCacheLock(async () => {
     assertCatalogHealth();
-    const index = readCacheIndex();
-    const prefix = `${marketplaceId}/`;
-    const entries = Object.entries(index.entries).filter(
-      ([key]) =>
-        key.startsWith(prefix) &&
-        key.slice(prefix.length).toLowerCase() === pluginName.toLowerCase(),
-    );
+    const index = await readCacheIndex();
     const cache = readCache();
-    const plugin =
+    const plugins =
       cache?.version === 2
-        ? cache.marketplaces
-            .find((marketplace) => marketplace.id === marketplaceId)
-            ?.plugins.find(
-              (candidate) =>
-                candidate.name.toLowerCase() === pluginName.toLowerCase(),
-            )
-        : undefined;
-    const managedPaths = new Map<string, string>();
+        ? (cache.marketplaces.find((entry) => entry.id === marketplaceId)
+            ?.plugins ?? [])
+        : [];
+    const identities = await readClaudeEntryIdentities();
+    const plugin = findRequestedClaudePlugin(plugins, pluginName);
+    // A recorded entry name wins; fold case only for the literal-key fallback.
+    let identity = resolveInstalledClaudeEntryIdentity(
+      identities,
+      index,
+      marketplaceId,
+      plugin,
+    );
+    if (!identity) {
+      const requestedKey = cacheKey(marketplaceId, pluginName).toLowerCase();
+      const storedKeys = Object.keys(index.entries).filter(
+        (key) =>
+          key.startsWith(`${marketplaceId}/`) &&
+          key.toLowerCase() === requestedKey,
+      );
+      identity = resolveInstalledClaudeEntryIdentity(
+        identities,
+        index,
+        marketplaceId,
+        plugin,
+        storedKeys.length === 1
+          ? storedKeys[0].slice(marketplaceId.length + 1)
+          : pluginName,
+      );
+      // Installed Items folds names; ambiguous stored spellings cannot authorize deletion.
+      if (identity && storedKeys.length > 1) identity.bindingOwned = false;
+    }
+    const repairEntryName = rowRepairEntryName(
+      identities,
+      index,
+      marketplaceId,
+      plugin,
+    );
+    const key = identity?.bindingOwned
+      ? cacheKey(marketplaceId, identity.entryName)
+      : undefined;
+    // Retire base's case-folded keys and the matched row, minus keys another
+    // entry owns. Bindings follow identity.
+    const prefix = `${marketplaceId}/`;
+    const managedPaths = new Set<string>();
+    for (const [storedKey, entry] of Object.entries(index.entries))
+      if (
+        entry.cachePath &&
+        storedKey.startsWith(prefix) &&
+        storedKey.slice(prefix.length).toLowerCase() ===
+          pluginName.toLowerCase() &&
+        !isLiteralKeyForeign(
+          identities,
+          index,
+          marketplaceId,
+          storedKey.slice(prefix.length),
+          identity?.entryName,
+        )
+      )
+        managedPaths.add(entry.cachePath);
     for (const candidate of [
-      ...entries.map(([, entry]) => entry.cachePath),
+      key === undefined ? undefined : index.entries[key]?.cachePath,
       plugin?.cachePath,
       plugin?.facets.claude?.cachePath,
     ]) {
-      if (candidate) managedPaths.set(candidate, getPluginCacheDir());
+      if (candidate) managedPaths.add(candidate);
     }
-    if (plugin?.facets.codexCompatibility?.cachePath)
-      managedPaths.set(
-        plugin.facets.codexCompatibility.cachePath,
-        getCodexCompatibilityCacheRootDir(),
-      );
-    for (const [candidate, ownedRoot] of Array.from(managedPaths)) {
-      if (!fs.existsSync(candidate)) continue;
-      const root = fs.realpathSync(ownedRoot);
-      const target = fs.realpathSync(candidate);
-      if (target === root || !isPathInside(root, target))
-        throw new Error('Plugin cache is outside its managed directory.');
-      if (ownedRoot === getPluginCacheDir())
-        assertPluginPayloadPathAdmission(candidate);
-      try {
-        fs.rmSync(target, { recursive: true, force: true });
-      } finally {
-        notePluginCatalogEffects();
-      }
-    }
-    if (entries.length) {
-      for (const [key] of entries) delete index.entries[key];
-      // Published together below after both candidates are assembled.
-    }
+    const hadBinding = key !== undefined && key in index.entries;
+    if (key !== undefined) delete index.entries[key];
     const nextCache: PluginsCache | undefined =
       cache?.version === 2
         ? {
@@ -568,30 +1429,35 @@ async function removeInstalledPluginCacheUnlocked(
                 ? marketplace
                 : {
                     ...marketplace,
-                    plugins: marketplace.plugins.map((plugin) =>
-                      plugin.name.toLowerCase() !== pluginName.toLowerCase()
-                        ? plugin
+                    plugins: marketplace.plugins.map((row) =>
+                      row !== plugin
+                        ? row
                         : {
-                            ...plugin,
+                            ...row,
+                            sourcePath: checkoutPathOrEmpty(
+                              row.sourcePath,
+                              marketplace,
+                            ),
                             cachePath: undefined,
                             cachedAt: undefined,
                             details: undefined,
-                            globalInstallStatus: plugin.globalInstallStatus
+                            provenance: undefined,
+                            globalInstallStatus: row.globalInstallStatus
                               ? {
-                                  ...plugin.globalInstallStatus,
-                                  ...(plugin.globalInstallStatus.claude
+                                  ...row.globalInstallStatus,
+                                  ...(row.globalInstallStatus.claude
                                     ? {
                                         claude: {
-                                          ...plugin.globalInstallStatus.claude,
+                                          ...row.globalInstallStatus.claude,
                                           installed: false,
                                           installError: undefined,
                                         },
                                       }
                                     : {}),
-                                  ...(plugin.globalInstallStatus.codex
+                                  ...(row.globalInstallStatus.codex
                                     ? {
                                         codex: {
-                                          ...plugin.globalInstallStatus.codex,
+                                          ...row.globalInstallStatus.codex,
                                           installed: false,
                                           installError: undefined,
                                         },
@@ -600,19 +1466,36 @@ async function removeInstalledPluginCacheUnlocked(
                                 }
                               : undefined,
                             facets: {
-                              ...plugin.facets,
+                              ...row.facets,
                               codexCompatibility: undefined,
-                              claude: plugin.facets.claude
+                              claude: row.facets.claude
                                 ? {
-                                    ...plugin.facets.claude,
+                                    ...row.facets.claude,
+                                    sourcePath: checkoutPathOrEmpty(
+                                      row.facets.claude.sourcePath,
+                                      marketplace,
+                                    ),
+                                    installLocation: checkoutPathOrEmpty(
+                                      row.facets.claude.installLocation,
+                                      marketplace,
+                                    ),
                                     cachePath: undefined,
                                     cachedAt: undefined,
                                     details: undefined,
+                                    provenance: undefined,
                                   }
                                 : undefined,
-                              codex: plugin.facets.codex
+                              codex: row.facets.codex
                                 ? {
-                                    ...plugin.facets.codex,
+                                    ...row.facets.codex,
+                                    sourcePath: checkoutPathOrEmpty(
+                                      row.facets.codex.sourcePath,
+                                      marketplace,
+                                    ),
+                                    installLocation: checkoutPathOrEmpty(
+                                      row.facets.codex.installLocation,
+                                      marketplace,
+                                    ),
                                     cachePath: undefined,
                                     cachedAt: undefined,
                                     details: undefined,
@@ -625,8 +1508,19 @@ async function removeInstalledPluginCacheUnlocked(
             ),
           }
         : undefined;
-    if (entries.length > 0) await publishPluginCachePair(index, nextCache);
-    else if (nextCache) await writeCache(nextCache);
+    // Uninstall clears ownership now; only refresh may reclaim downloaded bytes.
+    // Separately owned compatibility bytes deliberately remain with their owner.
+    retirePluginCopies(index, managedPaths);
+    try {
+      if (hadBinding || managedPaths.size)
+        await publishCatalogRetiringCopies(index, nextCache, hadBinding);
+      else if (nextCache) await writeCache(nextCache);
+    } finally {
+      noteUserMutationEntries(marketplaceId, [
+        identity?.entryName,
+        repairEntryName,
+      ]);
+    }
     invalidateManagedMarketplaceScanCache(marketplaceId);
   });
 }
@@ -655,6 +1549,11 @@ function assertCatalogHealth(options?: { allowLegacy?: boolean }): void {
   assertPluginCatalogAdmission();
 }
 
+async function assertCatalogHealthAsync(): Promise<void> {
+  await assertPluginCatalogHealthAsync();
+  assertPluginCatalogAdmission();
+}
+
 function scheduleCatalogConsumerRefresh(): void {
   trackDetachedWork(() =>
     (async (): Promise<void> => {
@@ -680,6 +1579,11 @@ function readCache(): AnyPluginsCache | null {
   return result.state === 'absent' ? null : result.data;
 }
 
+async function readCacheAsync(): Promise<AnyPluginsCache | null> {
+  const result = await readPluginCatalogHealthAsync();
+  return result.state === 'absent' ? null : result.data;
+}
+
 function validateCachePayload(cache: PluginsCache): PluginsCache {
   return normalizePluginCatalog(cache);
 }
@@ -694,6 +1598,38 @@ function writeCache(
     allowLegacy: revalidatedLegacy,
     advanceProviderStamp,
     observation,
+  });
+}
+
+/**
+ * Publish an index change with its catalog. When the index change only records
+ * retirements, leak the unrecorded copies rather than fail the catalog change.
+ * A changed binding still fails it.
+ */
+function publishCatalogRetiringCopies(
+  index: PluginCacheIndex,
+  cache: PluginsCache | undefined,
+  bindingChanged: boolean,
+): Promise<PluginsCache | undefined> {
+  // One slot keeps the pair's errors unwrapped for the uncertainty check.
+  return withCacheLock(async () => {
+    const observation = observePluginCatalog();
+    try {
+      return (await publishPluginCachePair(index, cache, observation)).catalog;
+    } catch (error) {
+      if (bindingChanged) throw error;
+      // An uncertain index install advanced the generation exactly once; any
+      // other change since the observation is foreign and fails the change.
+      const fence =
+        error instanceof StorageOutcomeUnknownError
+          ? { ...observation, generation: observation.generation + 1 }
+          : observation;
+      if (!isPluginCatalogObservationCurrent(fence)) throw error;
+      process.stderr.write(
+        `[plugins] Publishing the catalog without a confirmed index write; unrecorded retired copies stay on disk: ${errorMessage(error)}\n`,
+      );
+      return cache ? writeCache(cache, false, false, fence) : undefined;
+    }
   });
 }
 
@@ -722,45 +1658,52 @@ interface MarketplaceRefreshSource {
   sourceType?: string;
 }
 
-function readCacheIndex(): PluginCacheIndex {
+async function readCacheIndex(
+  knownIdentities?: ClaudeEntryIdentityLookup,
+  knownCache?: AnyPluginsCache | null,
+): Promise<PluginCacheIndex> {
   const result = readPluginIndexHealth();
   if (result.state === 'absent') return { version: 1, entries: {} };
   if (!result.recovered) return result.data;
   // A recovered index is refilled from the catalog's install facets, so the
   // next scan keeps installed plugins bound. The next index write persists it.
-  const cache = readCache();
+  const cache = knownCache === undefined ? await readCacheAsync() : knownCache;
   const entries = { ...result.data.entries };
+  const identities =
+    knownIdentities ?? (await readClaudeEntryIdentities(cache));
   for (const marketplace of cache?.version === 2 ? cache.marketplaces : []) {
-    const manifest = safeReadJson<MarketplaceManifest>(
-      path.join(
-        marketplace.installLocation,
-        '.claude-plugin',
-        'marketplace.json',
-      ),
-    );
-    const marketplacePlugins = Array.isArray(manifest?.plugins)
-      ? manifest.plugins
-      : [];
     for (const plugin of marketplace.plugins) {
       const facet = plugin.facets.claude;
-      const sourceUrl = facet?.externalSource?.url;
-      if (facet?.cachePath && sourceUrl) {
-        // The index uses the marketplace entry name, not the installed manifest name.
-        const entry = marketplacePlugins.find(
-          (candidate) =>
-            typeof candidate?.name === 'string' &&
-            isRecord(candidate.source) &&
-            candidate.source.url === sourceUrl,
-        );
-        entries[cacheKey(marketplace.id, entry?.name ?? plugin.name)] ??= {
+      const provenance = { ...plugin.provenance, ...facet?.provenance };
+      // Redaction leaves '' for a URL it cannot parse.
+      const sourceUrl = provenance.sourceUrl || facet?.externalSource?.url;
+      const identity = resolveSourceClaudeEntryIdentity(
+        identities,
+        { ...result.data, entries },
+        marketplace.id,
+        plugin,
+      );
+      if (facet?.cachePath && sourceUrl && identity?.bindingOwned) {
+        const entryName = identity.entryName;
+        entries[cacheKey(marketplace.id, entryName)] ??= {
           cachePath: facet.cachePath,
           sourceUrl,
           cachedAt: facet.cachedAt ?? '',
+          provenance: {
+            ...provenance,
+            sourceUrl: stripPluginSourceCredentials(sourceUrl),
+            installedAt: provenance.installedAt ?? facet.cachedAt ?? '',
+            installedName: provenance.installedName ?? facet.name,
+            marketplaceEntryName: entryName,
+            remoteSourceRestricted:
+              facet.provenance?.remoteSourceRestricted ??
+              plugin.provenance?.remoteSourceRestricted,
+          },
         };
       }
     }
   }
-  return { version: 1, entries };
+  return { ...result.data, version: 1, entries };
 }
 
 function validateCacheIndexPayload(index: PluginCacheIndex): PluginCacheIndex {
@@ -923,6 +1866,13 @@ function recordManagedMarketplaceRegistration(
 export function reconcileManagedMarketplaceReceiptsAtStartup(): ManagedMarketplaceReceiptWrite {
   return reconcileManagedMarketplaceReceipts(
     claudeManagedMarketplaceObservations(readKnownMarketplaces()),
+  );
+}
+
+/** Folded: matching a retirement against a kept copy may only keep more. */
+function legacyCopyKey(cachePath: string): string {
+  return pluginCopyProtectionIdentity(
+    pluginCopyPathIdentity(cachePath) ?? cachePath,
   );
 }
 
@@ -1126,20 +2076,19 @@ function knownMarketplaceSourceType(
   );
 }
 
-function readCodexMarketplaceInstallSource(
+async function readCodexMarketplaceInstallSource(
   installedRoot: string | undefined,
-): { sourceUrl: string; sourceType: string } | null {
+): Promise<{ sourceUrl: string; sourceType: string } | null> {
   if (!installedRoot) {
     return null;
   }
 
-  const metadata = safeReadJson<{
-    source?: unknown;
-    source_type?: unknown;
-  }>(path.join(installedRoot, '.codex-marketplace-install.json'));
-  if (!metadata || typeof metadata.source !== 'string') {
-    return null;
-  }
+  const evidence = await readPluginCopyJson(
+    path.join(installedRoot, '.codex-marketplace-install.json'),
+    isPluginCopyInstallMetadata,
+  );
+  const metadata = evidence.state === 'present' ? evidence.value : null;
+  if (!isRecord(metadata) || typeof metadata.source !== 'string') return null;
 
   return {
     sourceUrl: normalizeMarketplaceSourceUrl(metadata.source),
@@ -1150,11 +2099,12 @@ function readCodexMarketplaceInstallSource(
   };
 }
 
-function codexDiscoveredMarketplaceSource(
+async function codexDiscoveredMarketplaceSource(
   entry: PluginMarketplaceEntry,
-): CodexDiscoveredMarketplaceSource {
+): Promise<CodexDiscoveredMarketplaceSource> {
   const installedRoot = codexMarketplaceRootFromPath(entry.path) ?? undefined;
-  const installedSource = readCodexMarketplaceInstallSource(installedRoot);
+  const installedSource =
+    await readCodexMarketplaceInstallSource(installedRoot);
   const sourceUrl = installedSource?.sourceUrl ?? entry.name;
   const hasClaudeMarketplaceManifest = installedRoot
     ? fs.existsSync(
@@ -1276,6 +2226,57 @@ function readKnownMarketplaces(): KnownMarketplacesFile {
   return safeReadJson<KnownMarketplacesFile>(getKnownMarketplacesPath()) ?? {};
 }
 
+function isKnownMarketplacesEvidence(
+  value: unknown,
+): value is KnownMarketplacesFile {
+  return (
+    isRecord(value) &&
+    Object.values(value).every(
+      (entry) =>
+        isRecord(entry) &&
+        isRecord(entry.source) &&
+        typeof entry.source.source === 'string' &&
+        typeof entry.installLocation === 'string',
+    )
+  );
+}
+
+/**
+ * Mutation-path identity read. `complete` is false when the registry exists
+ * but could not be read as an object.
+ */
+async function readKnownMarketplacesRegistry(): Promise<{
+  known: Record<string, unknown>;
+  complete: boolean;
+}> {
+  try {
+    const parsed = await readClaudeRegistryJson(getKnownMarketplacesPath());
+    return isRecord(parsed)
+      ? { known: parsed, complete: true }
+      : { known: {}, complete: false };
+  } catch (error) {
+    return {
+      known: {},
+      complete: isErrnoException(error) && error.code === 'ENOENT',
+    };
+  }
+}
+
+/** Discovery read; it also enrols the registry as sweep evidence during a refresh. */
+async function readKnownMarketplacesForDiscovery(): Promise<KnownMarketplacesFile> {
+  const evidence = await readPluginCopyJson(
+    getKnownMarketplacesPath(),
+    isKnownMarketplacesEvidence,
+  );
+  if (evidence.state === 'present') return evidence.value;
+  if (evidence.state === 'absent') return {};
+  // A registry the evidence check rejects keeps the legacy recovery read.
+  const recovered = await safeReadJsonAsync<KnownMarketplacesFile>(
+    getKnownMarketplacesPath(),
+  );
+  return isRecord(recovered) ? recovered : {};
+}
+
 function findKnownMarketplaceBySource(
   known: KnownMarketplacesFile,
   sourceUrl: string,
@@ -1301,14 +2302,56 @@ function manifestAuthor(value: unknown): string | undefined {
       : undefined;
 }
 
-function readClaudePluginFacet(args: {
+function priorClaudeInstallationOwners(
+  marketplaceId: string,
+  previousMarketplaces: readonly MarketplaceInfo[],
+  identities: ClaudeEntryIdentityLookup,
+  cacheIndex: PluginCacheIndex,
+): ReadonlyMap<string, PluginInfo | undefined> {
+  // Resolve installation owners once per scan, not for every uninstalled entry.
+  const owners = new Map<string, PluginInfo | undefined>();
+  for (const marketplace of previousMarketplaces) {
+    if (marketplace.id !== marketplaceId) continue;
+    for (const plugin of marketplace.plugins) {
+      // Uninstalled rows cannot own history or make installation ownership ambiguous.
+      if (
+        !plugin.facets.claude ||
+        (plugin.facets.claude.provenance?.sourceUrl === undefined &&
+          plugin.provenance?.sourceUrl === undefined)
+      )
+        continue;
+      const identity = resolveSourceClaudeEntryIdentity(
+        identities,
+        cacheIndex,
+        marketplaceId,
+        plugin,
+      );
+      if (identity)
+        owners.set(
+          identity.entryName,
+          owners.has(identity.entryName) ? undefined : plugin,
+        );
+    }
+  }
+  return owners;
+}
+
+async function readClaudePluginFacet(args: {
   marketplaceId: string;
   marketplaceInstallDir: string;
   pluginEntry: MarketplaceManifest['plugins'][number];
   cacheIndex: PluginCacheIndex;
-}): PluginProviderFacet | null {
-  const { marketplaceId, marketplaceInstallDir, pluginEntry, cacheIndex } =
-    args;
+  identities: ClaudeEntryIdentityLookup;
+  priorInstallationOwners: ReadonlyMap<string, PluginInfo | undefined>;
+}): Promise<PluginProviderFacet | null> {
+  const {
+    marketplaceId,
+    marketplaceInstallDir,
+    pluginEntry,
+    cacheIndex,
+    identities,
+    priorInstallationOwners,
+  } = args;
   if (
     !pluginEntry ||
     typeof pluginEntry.name !== 'string' ||
@@ -1345,6 +2388,8 @@ function readClaudePluginFacet(args: {
   let pluginDir: string | null = null;
   let cachePath: string | undefined;
   let cachedAt: string | undefined;
+  let provenance: PluginProviderFacet['provenance'];
+  let sourceChanged: boolean | undefined;
 
   if (sourcePath) {
     pluginDir = path.resolve(marketplaceInstallDir, sourcePath);
@@ -1355,8 +2400,81 @@ function readClaudePluginFacet(args: {
       path.join(pluginDir, '.claude-plugin', 'plugin.json'),
     );
   } else if (typeof externalSource?.url === 'string') {
-    const cached =
+    const binding =
       cacheIndex.entries[cacheKey(marketplaceId, pluginEntry.name)];
+    const identity = resolveClaudeEntryIdentity(
+      identities,
+      marketplaceId,
+      { entryName: pluginEntry.name },
+      cacheIndex,
+    );
+    const entryName = identity?.bindingOwned ? identity.entryName : undefined;
+    const cached =
+      identity?.bindingOwned !== true ||
+      (binding?.provenance?.marketplaceEntryName !== undefined &&
+        binding.provenance.marketplaceEntryName !== pluginEntry.name)
+        ? undefined
+        : binding;
+    // Only an owned index wins partial publication. A slot a colliding entry
+    // holds must not undo a published catalog install.
+    const prior = cached
+      ? undefined
+      : priorInstallationOwners.get(pluginEntry.name);
+    if (cached) {
+      provenance = {
+        ...cached.provenance,
+        installedAt: cached.provenance?.installedAt ?? cached.cachedAt,
+        ...(entryName === undefined ? {} : { marketplaceEntryName: entryName }),
+        sourceUrl: stripPluginSourceCredentials(
+          cached.provenance?.sourceUrl ?? cached.sourceUrl,
+        ),
+      };
+    } else if (prior) {
+      const recorded = {
+        ...prior.provenance,
+        ...prior.facets.claude?.provenance,
+      };
+      if (recorded.sourceUrl !== undefined) {
+        provenance = {
+          ...recorded,
+          sourceUrl: stripPluginSourceCredentials(recorded.sourceUrl),
+          installedAt: recorded.installedAt ?? '',
+          ...(entryName === undefined
+            ? {}
+            : { marketplaceEntryName: entryName }),
+        };
+        const priorCopy = prior.facets.claude?.cachePath ?? prior.cachePath;
+        // The loser of a shared slot keeps its copy. It goes metadata-only, with
+        // its bytes left on disk, once the winner's marketplace removal unbinds
+        // the slot, or at once when its row recorded no source (legacy); only a
+        // copy the winner's Update retired is swept. Develop deleted those bytes
+        // when the winner took the slot. Accepted: revisit if users hit it.
+        if (
+          identity?.bindingOwned === false &&
+          priorCopy &&
+          (await fs.promises.stat(priorCopy).then(
+            (stat) => stat.isDirectory(),
+            () => false,
+          ))
+        ) {
+          pluginDir = priorCopy;
+          cachePath = priorCopy;
+          cachedAt = prior.facets.claude?.cachedAt ?? prior.cachedAt;
+          pluginManifest = safeReadJson<PluginManifest>(
+            path.join(priorCopy, '.claude-plugin', 'plugin.json'),
+          );
+        }
+      }
+    }
+    if (provenance)
+      sourceChanged =
+        matchPluginSources(
+          provenance.sourceUrl,
+          externalSource.url,
+          provenance.sourceIdentityComplete === true,
+        ) === 'different';
+    // Resolution alone verifies kept copies, so a same-source refresh cannot
+    // drop the path that later keeps a damaged copy through source drift.
     if (cached && fs.existsSync(cached.cachePath)) {
       pluginDir = cached.cachePath;
       cachePath = cached.cachePath;
@@ -1373,6 +2491,8 @@ function readClaudePluginFacet(args: {
   return {
     provider: 'claude',
     mode: 'native',
+    // A row without bytes keeps its entry name: an installed alias could name
+    // another entry and merge both rows.
     name: manifestText(pluginManifest?.name) || pluginEntry.name,
     displayName:
       typeof pluginEntry.displayName === 'string'
@@ -1405,14 +2525,18 @@ function readClaudePluginFacet(args: {
     externalSource,
     cachePath,
     cachedAt,
+    provenance,
+    sourceChanged,
     details,
   };
 }
 
-function scanClaudeMarketplace(input: {
+async function scanClaudeMarketplace(input: {
   id: string;
   entry: KnownMarketplaceEntry | null;
-}): {
+  claudeEntryIdentities?: ClaudeEntryIdentityLookup;
+  catalog?: AnyPluginsCache | null;
+}): Promise<{
   facets: PluginProviderFacet[];
   status: MarketplaceProviderStatus;
   name?: string;
@@ -1421,7 +2545,7 @@ function scanClaudeMarketplace(input: {
   sourceUrl?: string;
   installLocation?: string;
   lastUpdated?: string;
-} {
+}> {
   const { id, entry } = input;
   if (!entry?.installLocation || !fs.existsSync(entry.installLocation)) {
     return {
@@ -1440,7 +2564,7 @@ function scanClaudeMarketplace(input: {
     '.claude-plugin',
     'marketplace.json',
   );
-  const manifest = safeReadJson<MarketplaceManifest>(manifestPath);
+  const manifest = await readRegisteredClaudeMarketplaceManifest(manifestPath);
   if (!manifest || !Array.isArray(manifest.plugins)) {
     return {
       facets: [],
@@ -1457,17 +2581,36 @@ function scanClaudeMarketplace(input: {
     };
   }
 
-  const cacheIndex = readCacheIndex();
-  const facets = manifest.plugins
-    .map((pluginEntry) =>
-      readClaudePluginFacet({
-        marketplaceId: id,
-        marketplaceInstallDir: entry.installLocation,
-        pluginEntry,
-        cacheIndex,
-      }),
+  const catalog =
+    input.catalog === undefined ? await readCacheAsync() : input.catalog;
+  const identities = indexClaudeEntryIdentities([
+    ...(
+      input.claudeEntryIdentities ?? (await readClaudeEntryIdentities(catalog))
+    ).entries,
+    ...claudeManifestIdentities(id, manifest),
+  ]);
+  const cacheIndex = await readCacheIndex(identities, catalog);
+  const priorInstallationOwners = priorClaudeInstallationOwners(
+    id,
+    catalog?.version === 2 ? catalog.marketplaces : [],
+    identities,
+    cacheIndex,
+  );
+  const facets = (
+    await mapWithConcurrency(
+      manifest.plugins,
+      MARKETPLACE_REFRESH_CONCURRENCY,
+      (pluginEntry) =>
+        readClaudePluginFacet({
+          marketplaceId: id,
+          marketplaceInstallDir: entry.installLocation,
+          pluginEntry,
+          cacheIndex,
+          identities,
+          priorInstallationOwners,
+        }),
     )
-    .filter((facet): facet is PluginProviderFacet => facet !== null);
+  ).filter((facet): facet is PluginProviderFacet => facet !== null);
 
   return {
     facets,
@@ -1962,7 +3105,7 @@ async function readCuratedClaudeListings(): Promise<unknown[]> {
   const root = path.resolve(getCuratedPluginsMarketplaceDir());
   if (
     claudeRegisteredMarketplaceRoot(
-      readKnownMarketplaces(),
+      await readKnownMarketplacesForDiscovery(),
       getCuratedPluginMarketplaceName(),
     ) !== root
   )
@@ -1988,7 +3131,7 @@ async function readCuratedClaudeListings(): Promise<unknown[]> {
 async function refreshLegacyCuratedClaudeCopies(): Promise<void> {
   const rows = await readCuratedClaudeListings();
   const marketplaceName = getCuratedPluginMarketplaceName();
-  const manifest = safeReadJson<MarketplaceManifest>(
+  const manifest = await readClaudeMarketplaceManifest(
     path.join(
       getCuratedPluginsMarketplaceDir(),
       '.claude-plugin',
@@ -2035,10 +3178,10 @@ const BUILT_IN_INSTALL_PROVIDERS: readonly PluginProvider[] = [
  * apps, which know nothing of the attempt, so the recorded failure is carried
  * over from the cache while the plugin remains uninstalled there.
  */
-function carryOverBuiltInPluginInstallErrors(
+async function carryOverBuiltInPluginInstallErrors(
   plugins: PluginInfo[],
-): PluginInfo[] {
-  const cache = readCache();
+): Promise<PluginInfo[]> {
+  const cache = await readCacheAsync();
   if (cache?.version !== 2) return plugins;
   const previous = new Map<string, BuiltInPluginInstallStatus>();
   for (const marketplace of cache.marketplaces) {
@@ -2345,7 +3488,24 @@ export function resetBuiltInMarketplaceScanCacheForTests(): void {
   invalidateCuratedMarketplaceScanCache();
 }
 
-async function scanBuiltInMarketplace(): Promise<MarketplaceInfo | null> {
+/** A catalog read shared by one discovery pass's managed marketplace scans. */
+interface ManagedScanSnapshot {
+  catalog: AnyPluginsCache | null;
+  /** From `pluginCatalogReadValidator`, taken before the catalog read. */
+  isCurrent: () => boolean;
+  claudeEntryIdentities?: ClaudeEntryIdentityLookup;
+}
+
+/** Scans retry after catalog writes; a retry rereads rather than reuse a stale read. */
+function currentManagedScanSnapshot(
+  snapshot: ManagedScanSnapshot | undefined,
+): ManagedScanSnapshot | undefined {
+  return snapshot?.isCurrent() ? snapshot : undefined;
+}
+
+async function scanBuiltInMarketplace(
+  snapshot?: ManagedScanSnapshot,
+): Promise<MarketplaceInfo | null> {
   if (
     builtInMarketplaceScanCache &&
     isPluginCatalogObservationCurrent(
@@ -2360,7 +3520,11 @@ async function scanBuiltInMarketplace(): Promise<MarketplaceInfo | null> {
   for (;;) {
     const generation = builtInScanGeneration;
     const observation = observePluginCatalog();
-    const marketplace = await scanBuiltInMarketplaceUncached();
+    const current = currentManagedScanSnapshot(snapshot);
+    const marketplace = await scanBuiltInMarketplaceUncached(
+      current?.claudeEntryIdentities,
+      current?.catalog,
+    );
     if (
       generation !== builtInScanGeneration ||
       !isPluginCatalogObservationCurrent(observation)
@@ -2375,32 +3539,53 @@ async function scanBuiltInMarketplace(): Promise<MarketplaceInfo | null> {
   }
 }
 
-async function scanBuiltInMarketplaceUncached(): Promise<MarketplaceInfo | null> {
-  const cacheIndex = readCacheIndex();
+async function scanBuiltInMarketplaceUncached(
+  claudeEntryIdentities?: ClaudeEntryIdentityLookup,
+  knownCatalog?: AnyPluginsCache | null,
+): Promise<MarketplaceInfo | null> {
   const claudeManifestPath = getBundledClaudePluginMarketplaceManifestPath();
-  const claudeManifest =
-    safeReadJson<MarketplaceManifest>(claudeManifestPath) ?? null;
-  const codexManifest =
-    safeReadJson<CodexMarketplaceManifest>(
+  const [claudeManifest, codexManifest] = await Promise.all([
+    readClaudeMarketplaceManifest(claudeManifestPath),
+    readCodexMarketplaceManifest(
       getBundledCodexPluginMarketplaceManifestPath(),
-    ) ?? null;
+    ),
+  ]);
+  const catalog =
+    knownCatalog === undefined ? await readCacheAsync() : knownCatalog;
+  const identities = indexClaudeEntryIdentities([
+    ...(claudeEntryIdentities ?? (await readClaudeEntryIdentities(catalog)))
+      .entries,
+    ...claudeManifestIdentities(BUILTIN_PLUGIN_MARKETPLACE_ID, claudeManifest),
+  ]);
+  const cacheIndex = await readCacheIndex(identities, catalog);
   const hasClaudeManifest = !!claudeManifest;
   const hasCodexManifest = !!codexManifest;
   if (!hasClaudeManifest && !hasCodexManifest) {
     return null;
   }
+  const priorInstallationOwners = priorClaudeInstallationOwners(
+    BUILTIN_PLUGIN_MARKETPLACE_ID,
+    catalog?.version === 2 ? catalog.marketplaces : [],
+    identities,
+    cacheIndex,
+  );
   const claudeFacets =
     claudeManifest && Array.isArray(claudeManifest.plugins)
-      ? claudeManifest.plugins
-          .map((pluginEntry) =>
-            readClaudePluginFacet({
-              marketplaceId: BUILTIN_PLUGIN_MARKETPLACE_ID,
-              marketplaceInstallDir: getBundledPluginsDir(),
-              pluginEntry,
-              cacheIndex,
-            }),
+      ? (
+          await mapWithConcurrency(
+            claudeManifest.plugins,
+            MARKETPLACE_REFRESH_CONCURRENCY,
+            (pluginEntry) =>
+              readClaudePluginFacet({
+                marketplaceId: BUILTIN_PLUGIN_MARKETPLACE_ID,
+                marketplaceInstallDir: getBundledPluginsDir(),
+                pluginEntry,
+                cacheIndex,
+                identities,
+                priorInstallationOwners,
+              }),
           )
-          .filter((facet): facet is PluginProviderFacet => facet !== null)
+        ).filter((facet): facet is PluginProviderFacet => facet !== null)
       : [];
   const claudeStatus = providerStatus('claude', {
     accepted: hasClaudeManifest,
@@ -2452,12 +3637,52 @@ async function scanBuiltInMarketplaceUncached(): Promise<MarketplaceInfo | null>
 
 async function mergeBuiltInMarketplace(
   marketplaces: MarketplaceInfo[],
+  snapshot?: ManagedScanSnapshot,
 ): Promise<MarketplaceInfo[]> {
-  const scanned = await scanBuiltInMarketplace();
+  const scanned = await scanBuiltInMarketplace(snapshot);
   const withoutBuiltIn = marketplaces.filter(
     (marketplace) => marketplace.id !== BUILTIN_PLUGIN_MARKETPLACE_ID,
   );
   return scanned ? [...withoutBuiltIn, scanned] : withoutBuiltIn;
+}
+
+async function readCuratedClaudeFacets(
+  {
+    marketplaceId,
+    marketplaceInstallDir,
+    pluginEntries,
+  }: Parameters<CuratedMarketplaceScanDeps['readClaudeFacets']>[0],
+  claudeEntryIdentities?: ClaudeEntryIdentityLookup,
+  knownCatalog?: AnyPluginsCache | null,
+): Promise<PluginProviderFacet[]> {
+  const catalog =
+    knownCatalog === undefined ? await readCacheAsync() : knownCatalog;
+  const identities = indexClaudeEntryIdentities([
+    ...(claudeEntryIdentities ?? (await readClaudeEntryIdentities(catalog)))
+      .entries,
+    ...claudeManifestIdentities(marketplaceId, { plugins: pluginEntries }),
+  ]);
+  const cacheIndex = await readCacheIndex(identities, catalog);
+  const priorInstallationOwners = priorClaudeInstallationOwners(
+    marketplaceId,
+    catalog?.version === 2 ? catalog.marketplaces : [],
+    identities,
+    cacheIndex,
+  );
+  const facets = await mapWithConcurrency(
+    pluginEntries,
+    MARKETPLACE_REFRESH_CONCURRENCY,
+    (pluginEntry) =>
+      readClaudePluginFacet({
+        marketplaceId,
+        marketplaceInstallDir,
+        pluginEntry,
+        cacheIndex,
+        identities,
+        priorInstallationOwners,
+      }),
+  );
+  return facets.filter((facet): facet is PluginProviderFacet => facet !== null);
 }
 
 /**
@@ -2466,23 +3691,7 @@ async function mergeBuiltInMarketplace(
  * relationship with an import (see that module's header).
  */
 const curatedMarketplaceScanDeps: CuratedMarketplaceScanDeps = {
-  readClaudeFacets: ({
-    marketplaceId,
-    marketplaceInstallDir,
-    pluginEntries,
-  }) => {
-    const cacheIndex = readCacheIndex();
-    return pluginEntries
-      .map((pluginEntry) =>
-        readClaudePluginFacet({
-          marketplaceId,
-          marketplaceInstallDir,
-          pluginEntry,
-          cacheIndex,
-        }),
-      )
-      .filter((facet): facet is PluginProviderFacet => facet !== null);
-  },
+  readClaudeFacets: readCuratedClaudeFacets,
   readCodexFacets: ({ marketplaceRoot, marketplacePath, pluginEntries }) =>
     pluginEntries
       .map((pluginEntry) =>
@@ -2506,10 +3715,21 @@ const curatedMarketplaceScanDeps: CuratedMarketplaceScanDeps = {
  */
 async function mergeManagedMarketplaces(
   marketplaces: MarketplaceInfo[],
+  snapshot: ManagedScanSnapshot,
 ): Promise<MarketplaceInfo[]> {
   return mergeCuratedMarketplace(
-    await mergeBuiltInMarketplace(marketplaces),
-    curatedMarketplaceScanDeps,
+    await mergeBuiltInMarketplace(marketplaces, snapshot),
+    {
+      ...curatedMarketplaceScanDeps,
+      readClaudeFacets: (input) => {
+        const current = currentManagedScanSnapshot(snapshot);
+        return readCuratedClaudeFacets(
+          input,
+          current?.claudeEntryIdentities,
+          current?.catalog,
+        );
+      },
+    },
   );
 }
 
@@ -2670,6 +3890,9 @@ export function mergeProviderPluginFacets(input: {
           facets.claude?.externalSource ?? facets.codex?.externalSource,
         cachePath: facets.claude?.cachePath ?? facets.codex?.cachePath,
         cachedAt: facets.claude?.cachedAt ?? facets.codex?.cachedAt,
+        provenance: facets.claude?.provenance ?? facets.codex?.provenance,
+        sourceChanged:
+          facets.claude?.sourceChanged ?? facets.codex?.sourceChanged,
         providerSupport: {
           claude: facets.claude ? 'native' : 'none',
           codex: codexSupport,
@@ -2695,10 +3918,14 @@ async function assembleMarketplace(input: {
   codexListedMarketplace?: PluginMarketplaceEntry;
   codexAddResult?: CodexMarketplaceOperationResult;
   claudeResult?: ClaudeMarketplaceOperationResult;
+  claudeEntryIdentities?: ClaudeEntryIdentityLookup;
+  catalog?: AnyPluginsCache | null;
 }): Promise<MarketplaceInfo> {
-  const claude = scanClaudeMarketplace({
+  const claude = await scanClaudeMarketplace({
     id: input.id,
     entry: input.knownEntry,
+    claudeEntryIdentities: input.claudeEntryIdentities,
+    catalog: input.catalog,
   });
   const codex = await scanCodexMarketplace({
     marketplaceName:
@@ -2919,8 +4146,9 @@ async function buildMarketplaces(
   progress?: MarketplaceProgressReporter,
   options?: { providerUpdates?: boolean },
 ): Promise<MarketplaceInfo[]> {
-  const known = readKnownMarketplaces();
-  const cache = readCache();
+  const known = await readKnownMarketplacesForDiscovery();
+  const isCatalogCurrent = pluginCatalogReadValidator();
+  const cache = await readCacheAsync();
   const sources = new Map<string, MarketplaceRefreshSource>();
   const sourceKeyToSourceId = new Map<string, string>();
 
@@ -3043,7 +4271,7 @@ async function buildMarketplaces(
       if (entry.name === LEGACY_CODEX_CHAT_PLUGIN_MARKETPLACE_NAME) {
         continue;
       }
-      const discovered = codexDiscoveredMarketplaceSource(entry);
+      const discovered = await codexDiscoveredMarketplaceSource(entry);
       const managedRoot = managedMarketplaceRootsByName.get(
         discovered.marketplaceName,
       );
@@ -3114,11 +4342,13 @@ async function buildMarketplaces(
       return { source, recheck };
     },
   );
+  // Rechecks may change manifests; share identities and the existing catalog snapshot.
+  const claudeEntryIdentities = await readClaudeEntryIdentities(cache);
   const marketplaces = await mapWithConcurrency(
     checkedSources,
     MARKETPLACE_REFRESH_CONCURRENCY,
     async ({ source, recheck }) => {
-      const refreshedKnown = readKnownMarketplaces();
+      const refreshedKnown = await readKnownMarketplacesForDiscovery();
       const refreshedKnownMatch =
         source.codexScanOnly === true || source.sourceType === 'codex'
           ? null
@@ -3142,10 +4372,16 @@ async function buildMarketplaces(
         codexListedMarketplace: source.codexListedMarketplace,
         claudeResult: recheck.claude,
         codexAddResult: recheck.codex,
+        claudeEntryIdentities,
+        catalog: cache,
       });
     },
   );
-  return mergeManagedMarketplaces(marketplaces);
+  return mergeManagedMarketplaces(marketplaces, {
+    catalog: cache,
+    isCurrent: isCatalogCurrent,
+    claudeEntryIdentities,
+  });
 }
 
 export async function loadMarketplaces(
@@ -3239,6 +4475,7 @@ async function loadMarketplacesWithoutDefaults(
 ): Promise<IPCResult<PluginsCache>> {
   try {
     assertCatalogHealth();
+    const isCatalogCurrent = pluginCatalogReadValidator();
     const cache = readCache();
     if (cache?.version === 2 && cache.lastRefreshed !== '') {
       const filteredCachedMarketplaces = cache.marketplaces.filter(
@@ -3252,6 +4489,7 @@ async function loadMarketplacesWithoutDefaults(
       }
       const marketplaces = await mergeManagedMarketplaces(
         filteredCachedMarketplaces,
+        { catalog: cache, isCurrent: isCatalogCurrent },
       );
       const nextCache: PluginsCache = {
         ...cache,
@@ -3382,13 +4620,13 @@ export interface RefreshMarketplacesOptions {
   providerUpdates?: 'always' | 'if-stale';
 }
 
-function shouldRunProviderUpdates(
+async function shouldRunProviderUpdates(
   options: RefreshMarketplacesOptions | undefined,
-): boolean {
+): Promise<boolean> {
   if ((options?.providerUpdates ?? 'if-stale') === 'always') {
     return true;
   }
-  const cache = readCache();
+  const cache = await readCacheAsync();
   const lastProviderRefreshAt =
     cache?.version === 2 ? cache.lastProviderRefreshAt : undefined;
   const lastAt = lastProviderRefreshAt
@@ -3423,7 +4661,7 @@ async function nudgeManagedProviderMarketplace(
   if (
     managedRoot !== undefined &&
     claudeRegisteredMarketplaceRoot(
-      readKnownMarketplaces(),
+      await readKnownMarketplacesForDiscovery(),
       marketplaceName,
     ) === managedRoot
   ) {
@@ -3526,9 +4764,9 @@ async function syncCuratedPluginsForRefreshUnlocked(options?: {
   providerNudge?: 'await' | 'background';
 }): Promise<CuratedPluginSyncResult | null> {
   try {
-    assertCatalogHealth();
+    await assertCatalogHealthAsync();
     const result = await withPluginEffects(() => syncCuratedPlugins(options));
-    assertCatalogHealth();
+    await assertCatalogHealthAsync();
     if (result.status === 'synced') invalidateCuratedMarketplaceScanCache();
     // A no-op sync can be an existing user's first run with curated defaults.
     if (result.status !== 'skipped') {
@@ -3592,12 +4830,23 @@ export async function refreshMarketplaces(
   options?: RefreshMarketplacesOptions,
 ): Promise<IPCResult<PluginsCache>> {
   try {
-    assertCatalogHealth({ allowLegacy: true });
     return await runSerializedPluginMutation(() =>
       withMarketplaceRefreshLock(() =>
-        providerRevalidation.run(true, () =>
-          refreshMarketplacesUnlocked(progress, options),
-        ),
+        providerRevalidation.run(true, () => {
+          const evidence = openPluginCopySweepEvidence({
+            marketplaceName: getCuratedPluginMarketplaceName(),
+            manifestPath: curatedCodexManifestPath(),
+          });
+          return pluginCopyProviderEvidence.run(evidence, async () => {
+            try {
+              assertCatalogHealth({ allowLegacy: true });
+              return await refreshMarketplacesUnlocked(progress, options);
+            } finally {
+              // Detached children must not reuse a completed refresh's proof.
+              evidence.closed = true;
+            }
+          });
+        }),
       ),
     );
   } catch (error) {
@@ -3621,7 +4870,14 @@ async function refreshMarketplacesUnlocked(
       message: 'Checking installed marketplaces...',
     });
     assertCatalogHealth({ allowLegacy: true });
-    const providerUpdates = shouldRunProviderUpdates(options);
+    // Enroll provider files before discovery/publication can reduce or replace them.
+    await Promise.all([
+      readPluginCatalogHealthAsync(),
+      readPluginIndexHealthAsync(),
+      readClaudeMarketplaceRegistryEvidence(getKnownMarketplacesPath()),
+      readPluginCopyProviderFile(getClaudeInstalledPluginsPath()),
+    ]);
+    const providerUpdates = await shouldRunProviderUpdates(options);
     const curatedSync = await syncCuratedPluginsForRefreshUnlocked();
     if (providerUpdates) {
       // Nudge before the scan, mirroring the source loop's update-then-scan
@@ -3637,7 +4893,7 @@ async function refreshMarketplacesUnlocked(
         }),
     );
     const result = await withCacheLock<IPCResult<PluginsCache>>(async () => {
-      const previousCache = readCache();
+      const previousCache = await readCacheAsync();
       const externalMarketplaces = marketplaces.filter(
         (marketplace) =>
           marketplace.id !== BUILTIN_PLUGIN_MARKETPLACE_ID &&
@@ -3683,6 +4939,7 @@ async function refreshMarketplacesUnlocked(
     if (!result.success) {
       return result;
     }
+    if (admitsPluginCopySweep()) await sweepRetiredPluginCopies();
     reportMarketplaceProgress(progress, 'refresh', {
       status: 'complete',
       currentStep: 1,
@@ -3798,7 +5055,7 @@ async function addMarketplaceUnlocked(
     repo: sourceUrl,
     message: 'Scanning detected plugins...',
   });
-  const known = readKnownMarketplaces();
+  const known = await readKnownMarketplacesForDiscovery();
   const knownMatch = findKnownMarketplaceBySource(known, sourceUrl);
   const { value: marketplace, observation } = await withPluginCatalogScan(() =>
     assembleMarketplace({
@@ -3928,7 +5185,7 @@ async function updateMarketplaceUnlocked(
         ? (cache.marketplaces.find((marketplace) => marketplace.id === id) ??
           null)
         : null;
-    const known = readKnownMarketplaces();
+    const known = await readKnownMarketplacesForDiscovery();
     const knownMatch =
       (existing
         ? findKnownMarketplaceBySource(known, existing.sourceUrl)
@@ -4001,7 +5258,7 @@ async function updateMarketplaceUnlocked(
             ? Promise.resolve(alreadySatisfiedCodexResult)
             : addCodexMarketplace(sourceUrl),
     ]);
-    const refreshedKnown = readKnownMarketplaces();
+    const refreshedKnown = await readKnownMarketplacesForDiscovery();
     const refreshedKnownMatch = findKnownMarketplaceBySource(
       refreshedKnown,
       sourceUrl,
@@ -4116,9 +5373,20 @@ export async function updateMarketplace(
   progress?: MarketplaceProgressReporter,
 ): Promise<IPCResultWithAppError<MarketplaceInfo>> {
   try {
-    const result = await runSerializedPluginMutation(() =>
-      withMarketplaceRefreshLock(() => updateMarketplaceUnlocked(id, progress)),
-    );
+    const result = await runSerializedPluginMutation(async () => {
+      const before = await readClaudeEntryIdentities().catch(() => undefined);
+      return withMarketplaceRefreshLock(() =>
+        updateMarketplaceUnlocked(id, progress),
+      ).finally(async () => {
+        const after = await readClaudeEntryIdentities().catch(() => undefined);
+        for (const entry of [
+          ...(before?.entries ?? []),
+          ...(after?.entries ?? []),
+        ])
+          if (entry.marketplaceId === id)
+            notePluginUserMutation(id, entry.entryName);
+      });
+    });
     assertCatalogHealth();
     return result;
   } catch (error) {
@@ -4802,10 +6070,11 @@ async function removeMarketplaceUnlocked(
     marketplaceId: id,
     message: 'Removing marketplace from providers...',
   });
+  const claudeMarketplaceName =
+    marketplace.providerStatus.claude.marketplaceName ?? marketplace.id;
+  const identities = await readClaudeEntryIdentities(cache);
   if (requested.has('claude')) {
-    outcomes.claude = await removeClaudeMarketplace(
-      marketplace.providerStatus.claude.marketplaceName ?? marketplace.id,
-    );
+    outcomes.claude = await removeClaudeMarketplace(claudeMarketplaceName);
   }
   if (requested.has('codex')) {
     const result = await removeCodexMarketplace(
@@ -4884,16 +6153,82 @@ async function removeMarketplaceUnlocked(
     if (!deleteMarketplace) {
       marketplaces.push(updated);
     }
-    const committed = await writeCache({
+    const unbindCopies =
+      deleteMarketplace || removedProviders.includes('claude');
+    const index = await readCacheIndex();
+    let indexChanged = false;
+    let unbound = false;
+    if (unbindCopies) {
+      const copies = latestMarketplace.plugins
+        .flatMap((plugin) => [
+          plugin.cachePath,
+          plugin.facets.claude?.cachePath,
+        ])
+        .filter((entry): entry is string => !!entry);
+      const entryNames = new Set([
+        ...identities.entries
+          .filter((entry) => entry.marketplaceId === id)
+          .map((entry) => entry.entryName),
+        ...latestMarketplace.plugins.flatMap((plugin) => {
+          const entryName = recordedClaudeEntryName(plugin);
+          return plugin.facets.claude && entryName !== undefined
+            ? [entryName]
+            : [];
+        }),
+        ...Object.entries(index.entries).flatMap(([key, entry]) => {
+          const name = entry.provenance?.marketplaceEntryName;
+          return name !== undefined && key === cacheKey(id, name) ? [name] : [];
+        }),
+      ]);
+      // Unknown legacy ownership keeps every unnamed binding's copy, discoverable or not.
+      const legacyKept = new Set(
+        identities.legacyOwnershipKnown
+          ? []
+          : Object.values(index.entries).flatMap((entry) =>
+              entry.provenance?.marketplaceEntryName === undefined
+                ? [legacyCopyKey(entry.cachePath)]
+                : [],
+            ),
+      );
+      for (const entryName of entryNames) {
+        if (
+          !resolveClaudeEntryIdentity(identities, id, { entryName }, index)
+            ?.bindingOwned
+        )
+          continue;
+        const key = cacheKey(id, entryName);
+        const entry = index.entries[key];
+        if (!entry) continue;
+        if (
+          !identities.legacyOwnershipKnown &&
+          entry.provenance?.marketplaceEntryName === undefined
+        )
+          continue;
+        copies.push(entry.cachePath);
+        delete index.entries[key];
+        unbound = true;
+      }
+      // Unknown legacy ownership defers retirement too, even of a removed row's copy.
+      const retiring = copies.filter(
+        (copy) => !legacyKept.has(legacyCopyKey(copy)),
+      );
+      if (retiring.length > 0) retirePluginCopies(index, retiring);
+      indexChanged = unbound || retiring.length > 0;
+    }
+    const nextCache: PluginsCache = {
       version: 2,
       lastRefreshed: nowIso(),
       marketplaces,
-    });
+    };
+    // An unneeded index write could fail and block the catalog removal.
+    const committed = indexChanged
+      ? await publishCatalogRetiringCopies(index, nextCache, unbound)
+      : await writeCache(nextCache);
     return {
       shouldDelete: deleteMarketplace,
       marketplace: deleteMarketplace
         ? null
-        : (committed.marketplaces.find((entry) => entry.id === id) ?? updated),
+        : (committed?.marketplaces.find((entry) => entry.id === id) ?? updated),
     };
   });
   const { shouldDelete } = cacheUpdate;
@@ -5196,7 +6531,7 @@ async function applyCodexCompatDisabledOverlay(
     return result;
   }
   const preferences = await readPreferencesFile();
-  assertCatalogHealth();
+  await assertCatalogHealthAsync();
   const disabled = new Set<string>(
     preferences.codexCompatDisabledPlugins ?? [],
   );
@@ -5474,7 +6809,7 @@ async function ensureClaudeLocalManagedMarketplaceRegistered(
   error?: string;
 }> {
   const { marketplaceName, root: sourceRoot } = target;
-  const known = readKnownMarketplaces();
+  const known = await readKnownMarketplacesForDiscovery();
   const existing = known[marketplaceName];
   if (existing) {
     const evaluated = await evaluateClaudeBuiltInMarketplaceConflict(
@@ -5501,7 +6836,9 @@ async function ensureClaudeLocalManagedMarketplaceRegistered(
   } catch (error) {
     const message = errorMessage(error);
     if (isAlreadyRegisteredMessage(message)) {
-      const refreshedExisting = readKnownMarketplaces()[marketplaceName];
+      const refreshedExisting = (await readKnownMarketplacesForDiscovery())[
+        marketplaceName
+      ];
       if (!refreshedExisting) {
         return {
           accepted: false,
@@ -5655,6 +6992,7 @@ async function installBuiltInPluginUnlocked(
     isRecord(request) && typeof request.marketplaceId === 'string'
       ? request.marketplaceId
       : undefined;
+  let mutationEntryName: string | undefined;
   try {
     assertCatalogHealth();
     if (
@@ -5700,6 +7038,8 @@ async function installBuiltInPluginUnlocked(
       return { success: false, error: PLUGIN_NOT_IN_MARKETPLACE_MESSAGE };
     }
 
+    mutationEntryName =
+      recordedClaudeEntryName(plugin) ?? plugin.facets.claude?.name;
     const providerOutcomes: InstallBuiltInPluginResult['providerOutcomes'] = {};
     reportMarketplaceProgress(progress, 'install-built-in-plugin', {
       status: 'running',
@@ -5802,6 +7142,9 @@ async function installBuiltInPluginUnlocked(
       error: errorMessage(error),
       ...reportInstallFailure(error, 'plugin.install_built_in'),
     };
+  } finally {
+    if (marketplaceId && mutationEntryName !== undefined)
+      notePluginUserMutation(marketplaceId, mutationEntryName);
   }
 }
 
@@ -5867,6 +7210,11 @@ async function installPluginUnlocked(
      * `installRemoteControlExternalPlugin`). Default fires the refresh as before.
      */
     skipRefresh?: boolean;
+    repairIdentity?: PluginRepairIdentity & {
+      sourceUrl: string;
+    };
+    /** An automatic repair, including one without a provable entry. */
+    automaticRepair?: boolean;
   },
 ): Promise<IPCResultWithAppError<PluginInfo>> {
   try {
@@ -5886,6 +7234,14 @@ async function installPluginUnlocked(
       });
     });
 
+    let commit: string | null | undefined;
+    try {
+      commit = await getHeadCommitSha(cacheDir);
+    } catch (error) {
+      process.stderr.write(
+        `[plugins] Could not record downloaded HEAD: ${errorMessage(error)}\n`,
+      );
+    }
     assertCatalogHealth();
     const observation = observePluginCatalog();
     const pluginManifest = safeReadJson<PluginManifest>(
@@ -5895,14 +7251,64 @@ async function installPluginUnlocked(
     const cachedAt = nowIso();
 
     const committedPlugin = await withCacheLock(async () => {
-      const index = readCacheIndex();
-      const key = cacheKey(marketplaceId, pluginName);
-      const prev = index.entries[key];
+      const index = await readCacheIndex();
+      const cache = readCache();
+      const plugins = marketplacePluginRows(cache, marketplaceId);
+      const identities = await readClaudeEntryIdentities();
+      const {
+        currentPlugin,
+        identity,
+        repairEntryName,
+        marketplaceEntryName,
+        key,
+        prev,
+      } = resolvePluginInstallTarget(
+        identities,
+        index,
+        plugins,
+        marketplaceId,
+        pluginName,
+        sourceUrl,
+        options?.repairIdentity,
+      );
+      const provenance = {
+        sourceUrl: stripPluginSourceCredentials(sourceUrl),
+        sourceIdentityComplete:
+          stripPluginSourceCredentials(sourceUrl) === sourceUrl,
+        commit: commit || undefined,
+        manifestRequired:
+          !!pluginManifest &&
+          typeof pluginManifest === 'object' &&
+          !Array.isArray(pluginManifest),
+        installedAt: cachedAt,
+        marketplaceEntryName,
+        installedName: manifestText(pluginManifest?.name) || pluginName,
+        reinstalled: !!prev,
+        remoteSourceRestricted:
+          options?.disableRedirects === true ? true : undefined,
+      };
       index.entries[key] = {
         cachePath: cacheDir,
         sourceUrl,
         cachedAt,
+        provenance,
       };
+      const previousPaths = new Set([
+        prev?.cachePath,
+        currentPlugin?.cachePath,
+        currentPlugin?.facets.claude?.cachePath,
+      ]);
+      for (const previousPath of previousPaths) {
+        if (!previousPath || previousPath === cacheDir) continue;
+        try {
+          assertPluginPayloadPathAdmission(previousPath);
+          retirePluginCopies(index, [previousPath]);
+        } catch (error) {
+          process.stderr.write(
+            `[plugins] Leaving previous plugin copy outside managed storage (${previousPath}): ${errorMessage(error)}\n`,
+          );
+        }
+      }
 
       const facet: PluginProviderFacet = {
         provider: 'claude',
@@ -5918,43 +7324,46 @@ async function installPluginUnlocked(
         externalSource: { source: 'github', url: sourceUrl },
         cachePath: cacheDir,
         cachedAt,
+        provenance,
         details,
       };
-      const cache = readCache();
-      const currentPlugin =
-        cache?.version === 2
-          ? cache.marketplaces
-              .find((entry) => entry.id === marketplaceId)
-              ?.plugins.find(
-                (entry) =>
-                  entry.name.toLowerCase() === pluginName.toLowerCase(),
-              )
-          : undefined;
-      const existingCodexFacet = currentPlugin?.facets.codex;
-      const pluginInfo = mergeProviderPluginFacets({
+      // Rows are selected by name. Another entry's row with the installed name
+      // gives way, as refresh's merge by name does.
+      const replaced = new Set(
+        plugins.filter(
+          (row) =>
+            row === currentPlugin ||
+            row.name.toLowerCase() === facet.name.toLowerCase(),
+        ),
+      );
+      const codexFacets = [...replaced].flatMap((row) =>
+        row.facets.codex ? [row.facets.codex] : [],
+      );
+      // Differing Claude and Codex names merge into separate rows; keep both.
+      const merged = mergeProviderPluginFacets({
         marketplaceId,
         claudePlugins: [facet],
-        codexPlugins: existingCodexFacet ? [existingCodexFacet] : [],
-      })[0];
+        codexPlugins: codexFacets,
+      });
+      const pluginInfo =
+        merged.find((row) => row.facets.claude === facet) ?? merged[0];
 
       // Publish before returning; the detached refresh rehydrates from this index.
       let persisted: PluginsCache | undefined;
       if (cache?.version === 2) {
-        const target = pluginName.toLowerCase();
         persisted = {
           ...cache,
-          marketplaces: cache.marketplaces.map((entry) =>
-            entry.id !== marketplaceId
-              ? entry
-              : {
-                  ...entry,
-                  plugins: entry.plugins.map((existing) =>
-                    existing.name.toLowerCase() === target
-                      ? pluginInfo
-                      : existing,
-                  ),
-                },
-          ),
+          marketplaces: cache.marketplaces.map((entry) => {
+            if (entry.id !== marketplaceId) return entry;
+            let placed = false;
+            const rows = entry.plugins.flatMap((existing) => {
+              if (!replaced.has(existing)) return [existing];
+              if (placed) return [];
+              placed = true;
+              return merged;
+            });
+            return { ...entry, plugins: placed ? rows : [...rows, pluginInfo] };
+          }),
         };
       }
 
@@ -5964,31 +7373,38 @@ async function installPluginUnlocked(
       const validatedCache = persisted
         ? validateCachePayload(persisted)
         : undefined;
+      const notedEntryNames = [identity?.entryName, repairEntryName];
+      const userCopy = { entryName: marketplaceEntryName, cachePath: cacheDir };
       const committed = await publishPluginCachePair(
         validatedIndex,
         validatedCache,
         observation,
+      ).then(
+        (published) => {
+          if (!options?.repairIdentity)
+            notePluginUserInstall(marketplaceId, notedEntryNames, userCopy);
+          return published;
+        },
+        async (error: unknown) => {
+          if (options?.repairIdentity) throw error;
+          // Only a copy that landed in the index is a user change to protect.
+          const landed = await readCacheIndex().then(
+            (published) => published.entries[key]?.cachePath === cacheDir,
+            () => undefined,
+          );
+          if (landed)
+            notePluginUserInstall(marketplaceId, notedEntryNames, userCopy);
+          else if (landed === undefined)
+            noteUserMutationEntries(marketplaceId, notedEntryNames);
+          throw error;
+        },
       );
-      if (
-        prev?.cachePath &&
-        prev.cachePath !== cacheDir &&
-        fs.existsSync(prev.cachePath)
-      ) {
-        assertPluginPayloadPathAdmission(prev.cachePath);
-        try {
-          fs.rmSync(prev.cachePath, { recursive: true, force: true });
-        } finally {
-          notePluginCatalogEffects();
-        }
-      }
 
       return (
         committed.catalog?.marketplaces
           .find((entry) => entry.id === marketplaceId)
-          ?.plugins.find(
-            (entry) =>
-              entry.name.toLowerCase() === pluginInfo.name.toLowerCase(),
-          ) ?? pluginInfo
+          ?.plugins.find((entry) => entry.cachePath === pluginInfo.cachePath) ??
+        pluginInfo
       );
     });
 
@@ -6034,13 +7450,64 @@ export function installPlugin(
   return runSerializedPluginMutation(async () => {
     try {
       assertCatalogHealth();
-      if (await pluginUninstallPending(args[0], args[1])) {
+      const [marketplaceId, pluginName, sourceUrl, options] = args;
+      const expected = options?.repairIdentity;
+      let disableRedirects = options?.disableRedirects;
+      if (expected) {
+        // Validation runs before this slot; re-registration can reuse both names with a new source.
+        const cache = await readCacheAsync();
+        const current =
+          cache?.version === 2
+            ? cache.marketplaces
+                .find((entry) => entry.id === marketplaceId)
+                ?.plugins.find(
+                  (entry) =>
+                    entry.name.toLowerCase() === pluginName.toLowerCase(),
+                )
+            : undefined;
+        const repair = await pluginRepairStatus(
+          marketplaceId,
+          expected,
+          current,
+        );
+        if (repair.status === 'replaced') return { success: true };
+        if (repair.status === 'rebound') {
+          if (await pluginUninstallPending(marketplaceId, pluginName))
+            return { success: true };
+          const copy = await verifiedClaudeCopy(current, repair.copy);
+          if (copy) return { success: true, data: copy };
+          // Never skip what develop repaired; the clone below keeps the
+          // user's stricter policy.
+          if (!repair.slotBound) return { success: true };
+        }
+      }
+      if (await pluginUninstallPending(marketplaceId, pluginName)) {
         return {
           success: false,
           error: PLUGIN_UNINSTALL_PENDING_MESSAGE,
         };
       }
-      const result = await installPluginUnlocked(...args);
+      if (
+        (expected || options?.automaticRepair === true) &&
+        (await automaticRepairRestricted(
+          marketplaceId,
+          pluginName,
+          sourceUrl,
+          options ?? {},
+        ))
+      ) {
+        // Rechecked here: the caller may have read an unrestricted snapshot, or
+        // checked before waiting for this slot. A refusal fails this repair only.
+        const refusal = await restrictedPluginSourceRefusal(sourceUrl);
+        if (refusal !== undefined) return { success: false, error: refusal };
+        disableRedirects = true;
+      }
+      const result = await installPluginUnlocked(
+        marketplaceId,
+        pluginName,
+        sourceUrl,
+        options && { ...options, disableRedirects },
+      );
       assertCatalogHealth();
       return result;
     } catch (error) {
@@ -6081,6 +7548,128 @@ export function installBuiltInPlugin(
       };
     }
   });
+}
+
+type PluginCopyBinding = Pick<
+  PluginCacheIndex['entries'][string],
+  'cachePath' | 'provenance'
+>;
+
+interface PluginRepairRebound {
+  status: 'rebound';
+  /** The user's copy; otherwise the session loads the current row's. */
+  copy?: PluginCopyBinding;
+  slotBound: boolean;
+}
+
+/**
+ * `replaced`: the row is now another entry or source. `rebound`: the same entry
+ * gained a newer user change or another copy, which the session loads instead;
+ * when that copy does not verify, a still-bound slot gets the ordinary repair.
+ */
+async function pluginRepairStatus(
+  marketplaceId: string,
+  expected: PluginRepairIdentity & { sourceUrl: string },
+  current: PluginInfo | undefined,
+): Promise<{ status: 'current' | 'replaced' } | PluginRepairRebound> {
+  const identity = current
+    ? await resolvePluginRepairIdentity(marketplaceId, current)
+    : undefined;
+  const source =
+    current?.facets.claude?.externalSource ?? current?.externalSource;
+  // Only stale automatic repairs yield to newer user intent; user installs bypass this guard.
+  const userChanged = entryChangedSince(
+    expected.marketplaceId,
+    expected.entryName,
+    expected.userMutationGeneration,
+  );
+  if (
+    !identity ||
+    identity.marketplaceId !== expected.marketplaceId ||
+    !source?.url ||
+    expected.sourceUrl !== source.url
+  )
+    return { status: 'replaced' };
+  const index = await readCacheIndex();
+  const slots = [expected.entryName, identity.entryName].map(
+    (entryName) => index.entries[cacheKey(marketplaceId, entryName)],
+  );
+  const rebound = (copy?: PluginCopyBinding): PluginRepairRebound => ({
+    status: 'rebound',
+    copy,
+    // An uninstall empties the slot; anything else still bound gets repaired.
+    // The user's copy is bound under the key its install wrote, which a legacy
+    // row's inferred entry need not have.
+    slotBound: !!copy || slots.every((slot) => slot !== undefined),
+  });
+  const userCopy = userInstalledCopy(index, expected);
+  if (userCopy) return rebound(userCopy);
+  // A user reinstall of a legacy row binds its literal key, not the inferred
+  // entry; the same row and source is that user's rebinding.
+  if (identity.entryName !== expected.entryName)
+    return userChanged ? rebound() : { status: 'replaced' };
+  // A snapshot can predate a user install that landed before its generation read.
+  return userChanged ||
+    !samePluginRepairBinding(expected.binding, identity.binding)
+    ? rebound()
+    : { status: 'current' };
+}
+
+/**
+ * An index copy stands in for the repair only as the requested plugin: the
+ * entry its install bound and the repair's clone URL or a source matching it (a
+ * redacted one never does). Otherwise the ordinary repair restores the selected
+ * source. Clone restriction is not identity: adoption fetches nothing, and a
+ * newer unmarked installation clears the recorded policy, as refresh does.
+ */
+function isRequestedPluginCopy(
+  indexed: PluginCacheIndex['entries'][string],
+  entryName: string,
+  sourceUrl: string,
+): boolean {
+  return (
+    indexed.provenance?.marketplaceEntryName === entryName &&
+    bindsPluginSource(indexed, sourceUrl)
+  );
+}
+
+/** Whether the binding's copy came from `sourceUrl` (a redacted source never matches). */
+function bindsPluginSource(
+  indexed: PluginCacheIndex['entries'][string],
+  sourceUrl: string,
+): boolean {
+  const provenance = indexed.provenance;
+  return (
+    indexed.sourceUrl === sourceUrl ||
+    (provenance !== undefined &&
+      matchPluginSources(
+        provenance.sourceUrl,
+        sourceUrl,
+        provenance.sourceIdentityComplete === true,
+      ) !== 'different')
+  );
+}
+
+/** The copy a fresh session would load for the row, when it verifies. */
+async function verifiedClaudeCopy(
+  plugin: PluginInfo | undefined,
+  binding: PluginCopyBinding | undefined = plugin?.facets.claude?.cachePath
+    ? {
+        cachePath: plugin.facets.claude.cachePath,
+        provenance: plugin.facets.claude.provenance,
+      }
+    : undefined,
+): Promise<PluginInfo | undefined> {
+  const copy = binding?.cachePath;
+  return plugin &&
+    copy &&
+    (await fs.promises.stat(copy).then(
+      (stat) => stat.isDirectory(),
+      () => false,
+    )) &&
+    (await isUsablePluginCopyAsync(copy, binding.provenance))
+    ? { ...plugin, cachePath: copy }
+    : undefined;
 }
 
 async function pluginUninstallPending(

@@ -1,5 +1,6 @@
 import { useEffect, useState, type JSX } from 'react';
 import { useOnboardingTipsStore } from '@canopy/app-state';
+import { ONBOARDING_TIP_IDS } from '@canopy/protocol/onboarding-tips';
 import { Button, ErrorBanner } from '@canopy/ui-shared/components';
 import { useStore } from 'zustand';
 import { getPlanModeHintStore, resetPlanModeHint } from '@/lib/planModeHint';
@@ -25,7 +26,9 @@ export function ShowTipsAgainRow(): JSX.Element | null {
     load();
   }, [load]);
 
-  const hasDismissed = Object.keys(dismissed).length > 0;
+  const hasDismissed = ONBOARDING_TIP_IDS.some(
+    (id) => dismissed[id] !== undefined,
+  );
   if (
     status !== 'ready' ||
     (!hasDismissed && !planHintRetired && error === null)

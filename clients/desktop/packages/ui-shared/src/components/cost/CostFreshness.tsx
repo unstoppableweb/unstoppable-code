@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 import { RefreshButton } from '../RefreshButton';
-import { Tooltip } from '../Tooltip';
+import { Tooltip } from '../../primitives/Tooltip';
 import { formatCostDay, formatCostUpdated } from './cost-format';
 
 export interface CostFreshnessProps {

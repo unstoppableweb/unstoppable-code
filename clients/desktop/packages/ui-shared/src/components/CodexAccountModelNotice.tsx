@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 import type { CodexAccountModelAccessFailure } from '@canopy/protocol/auth-recovery';
-import { Notice, NoticeButton } from './Notice';
+import { Notice, NoticeButton } from '../primitives/Notice';
 
 export interface CodexAccountModelNoticeProps {
   failure: CodexAccountModelAccessFailure;

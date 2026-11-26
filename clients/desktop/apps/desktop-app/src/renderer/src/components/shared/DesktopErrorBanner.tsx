@@ -20,16 +20,17 @@ type Props = Omit<
  * that reconnects the service, unless the caller passed its own action.
  */
 export function DesktopErrorBanner(props: Props): JSX.Element | null {
-  const { error, secondaryAction } = props;
+  const { error, secondaryAction, primaryAction } = props;
   const restart =
     secondaryAction === undefined &&
+    primaryAction === undefined &&
     typeof error === 'object' &&
     error !== null &&
     error.code === 'external.background_service_unavailable';
   return (
     <ErrorBanner
       {...props}
-      {...(restart ? { secondaryAction: <DesktopRestartAppAction /> } : {})}
+      {...(restart ? { primaryAction: <DesktopRestartAppAction /> } : {})}
       displayPolicy={rendererAppErrorDisplayPolicy}
       reportAction={(defect): JSX.Element => (
         <DesktopReportThisAction error={defect} appName={brandText.appName} />

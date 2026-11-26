@@ -1,5 +1,14 @@
+import type { WorkerTerminalRecordRetireParams } from '@canopy/protocol/canopy-core';
+import { join } from 'node:path';
+import { getWorktreeDataRootDir, getWorkspaceDir } from './paths';
+import {
+  beginDirectoryDeletion,
+  directoryRemovalOutcome,
+  drainDirectoryEffects,
+} from './directory-effect-admission';
 import type { WorktreeHealthIssue } from '@canopy/desktop-shared/types';
-import { removePersistedWorktreeDataDirectory } from '@canopy/desktop-shared/node/lib/worktree-data-cleanup';
+import { settleAll } from '@canopy/desktop-shared/node/lib/detached-work';
+import { terminalPersistenceStore } from '../terminal/persistence';
 import {
   type W5CommitOptions,
   afterW5Apply,
@@ -7,15 +16,12 @@ import {
   outsideW5CommitScope,
 } from './w5-commit-scope';
 import { PROJECT_W5_STORAGE, withStorageAdmission } from './w5-storage';
-import {
-  removeWorkspaceNonW5Children,
-  removeWorkspaceDirectoryAfterRecordRemoval,
-} from './w5-workspace-directory-removal';
+import { isDefiniteW5Refusal } from './w5-commit-log-file-store';
+import { getWorktreeItemStore } from './worktree-item-store';
 import {
   commitW5BoundaryStep,
   w5CompositionLocks,
 } from './w5-composition-operation';
-import { removeTreeWithoutAsar } from './remove-tree-without-asar';
 import { IdentifierValidationError, validateId } from './validation';
 import { WorkspaceIndexUnreadableError } from './workspace-index-repository';
 import { WorktreeRegistryUnreadableError } from './worktree-list-repository';
@@ -258,6 +264,10 @@ export async function removeSplitCreatedWorkspace(request: {
 }): Promise<boolean> {
   admit(request);
   request.worktreeIds.forEach((id) => admit({ ...request, worktreeId: id }));
+  let directory: ReturnType<typeof beginDirectoryDeletion> | undefined;
+  let staged = false;
+  let committed = false;
+  const retirements: WorkerTerminalRecordRetireParams[] = [];
   const removeEmptySplitRecords = async (): Promise<boolean> => {
     let empty = false;
     await updateWorkspaceWorktrees(
@@ -271,27 +281,54 @@ export async function removeSplitCreatedWorkspace(request: {
       { ...EXISTING_LIST, shouldWrite: (): boolean => false },
     );
     if (!empty) return false;
+    directory = beginDirectoryDeletion(getWorkspaceDir(request.workspaceId));
+    await settleAll(
+      request.worktreeIds.map(async (worktreeId) => {
+        // Capture every worktree even if a sibling's capture fails.
+        retirements.push(
+          await terminalPersistenceStore.prepareTerminalRecordRetirement({
+            projectId: request.workspaceId,
+            worktreeId,
+          }),
+        );
+      }),
+    );
     // The outer boundary retains the list lock; do not reenter its active updater.
     await applyWorkspaceIndexRemoval(request.workspaceId, {
       kind: 'split.created-workspace.cleanup',
     });
     await outsideW5CommitScope(() =>
-      removeWorkspaceNonW5Children(request.workspaceId),
+      getWorktreeItemStore().purge({
+        scope: 'workspace',
+        workspaceId: request.workspaceId,
+        stage: 'items',
+      }),
     );
     await applyWorkspaceRecordsRemoval(request.workspaceId, {
       kind: 'split.created-workspace.records',
     });
+    staged = true;
     let cleanupFailure: { error: unknown } | undefined;
     await afterW5Apply(async () => {
+      committed = true;
       try {
-        for (const worktreeId of request.worktreeIds) {
-          await removePersistedWorktreeDataDirectory(
-            request.workspaceId,
-            worktreeId,
-            { removeTree: removeTreeWithoutAsar },
+        for (const retirement of retirements) {
+          const worktreeId = retirement.worktreeId;
+          if (worktreeId === undefined) continue;
+          // The worktree's terminal record goes with its data (CAN-7051).
+          await terminalPersistenceStore.retirePreparedTerminalRecord(
+            retirement,
+          );
+          await drainDirectoryEffects(
+            join(getWorktreeDataRootDir(request.workspaceId), worktreeId),
           );
         }
-        await removeWorkspaceDirectoryAfterRecordRemoval(request.workspaceId);
+        await getWorktreeItemStore().purge({
+          scope: 'workspace',
+          workspaceId: request.workspaceId,
+          stage: 'folder',
+          worktreeIds: request.worktreeIds,
+        });
       } catch (error: unknown) {
         cleanupFailure = { error };
       }
@@ -315,6 +352,15 @@ export async function removeSplitCreatedWorkspace(request: {
       ),
     );
   } catch (error) {
-    translateRefusal(error);
+    if (!committed && isDefiniteW5Refusal(error)) staged = false;
+    return translateRefusal(error);
+  } finally {
+    directory?.settle(
+      committed
+        ? await directoryRemovalOutcome(getWorkspaceDir(request.workspaceId))
+        : staged
+          ? 'uncertain'
+          : 'abandoned',
+    );
   }
 }

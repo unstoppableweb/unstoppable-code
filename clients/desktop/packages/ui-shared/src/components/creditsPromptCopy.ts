@@ -54,11 +54,12 @@ export const AI_CREDITS_HANDOFF_COPY = {
   },
   uncovered: {
     title: 'No credits yet',
-    message: "If you've paid, they can take a minute to arrive.",
+    message: "If you've paid, they may still be on the way.",
   },
+  // The notice's Check again button is the next step, so no message.
   checkFailed: {
     title: "Couldn't check your balance",
-    message: 'Try again in a moment.',
+    message: '',
   },
 } as const;
 
@@ -67,12 +68,16 @@ export function aiCreditsHandoffSentence(entry: {
   readonly title: string;
   readonly message: string;
 }): string {
-  return `${entry.title}. ${entry.message}`;
+  return entry.message === ''
+    ? `${entry.title}.`
+    : `${entry.title}. ${entry.message}`;
 }
 
 /** Paid, but the credits haven't arrived yet (docs/ux-writing/sign-in.md). */
-export const AI_CREDITS_PROCESSING_COPY =
-  "Payment received. Your credits are still processing. You won't be charged again.";
+export const AI_CREDITS_PROCESSING_TITLE = 'Payment received';
+export const AI_CREDITS_PROCESSING_MESSAGE =
+  "Your credits are still processing. You won't be charged again.";
+export const AI_CREDITS_PROCESSING_COPY = `${AI_CREDITS_PROCESSING_TITLE}. ${AI_CREDITS_PROCESSING_MESSAGE}`;
 
 /**
  * What the transcript says where a message stopped because nothing could pay
@@ -80,7 +85,7 @@ export const AI_CREDITS_PROCESSING_COPY =
  * transcript only explains the stop and offers no action of its own.
  */
 export const AI_CREDITS_STOP_COPY =
-  'Chat stopped. Choose a provider to keep going.';
+  'Message not sent. This chat needs a provider.';
 
 // ---------------------------------------------------------------------------
 // Recovery (CAN-4764): out of credits, held messages, dead ends
@@ -98,28 +103,44 @@ export interface CreditsRecoveryCopy {
  * banner shows this instead of a purchase CTA.
  */
 export const CONTACT_ORG_ADMIN_COPY =
-  'Contact your org admin to increase your spend quota.';
+  'Ask an org admin to raise your spending limit.';
 
 /** The title while a queued message waits on credits. */
 export const MESSAGE_QUEUED_TITLE = 'Message queued';
 
 /**
- * The message while a queued message waits on credits, for someone who can
- * buy (a guest signs in first). The notice's own button carries the purchase,
- * and not every host shows a Try again control, so the line names neither.
+ * The message while a queued message waits on credits. It names no button,
+ * because the notices that show it differ in what they offer.
  */
-export const QUEUED_MESSAGE_RETAINED_COPY =
-  'Your queued message is saved, so try it again after you buy more.';
+const QUEUED_MESSAGE_WAITING_COPY = 'It sends once you have credits.';
 
-/** The same, for someone who can't buy: an admin funds the pool. */
-const QUEUED_MESSAGE_SAVED_COPY = 'Your queued message is saved.';
+/** The same, for an org member who can't buy: an admin funds the pool. */
+const QUEUED_MESSAGE_ORG_WAITING_COPY =
+  'It sends once your organization has credits.';
+
+/** The same, on a notice whose button reads Choose provider. */
+const QUEUED_MESSAGE_CHOOSE_PROVIDER_COPY = `${QUEUED_MESSAGE_WAITING_COPY} Buy them under Choose provider.`;
+
+/** Queue status while the account needs credits, where nothing else is known. */
+export const CREDIT_HELD_MESSAGE_WARNING_COPY = QUEUED_MESSAGE_WAITING_COPY;
 
 /**
- * Saved queue status while the account needs credits. Queued notices offer
- * no purchase (provider choice lives on the composer's notice, CAN-6860),
- * so the line only says the message is saved.
+ * A held queued message's line. `orgFunds`: an org member whose admin buys
+ * the credits. `chooseProvider`: the notice's own button reads Choose
+ * provider, and its list holds the purchase.
  */
-export const CREDIT_HELD_MESSAGE_WARNING_COPY = QUEUED_MESSAGE_SAVED_COPY;
+export function queuedMessageCopy({
+  orgFunds,
+  chooseProvider,
+}: {
+  readonly orgFunds: boolean;
+  readonly chooseProvider: boolean;
+}): string {
+  if (orgFunds) return QUEUED_MESSAGE_ORG_WAITING_COPY;
+  return chooseProvider
+    ? QUEUED_MESSAGE_CHOOSE_PROVIDER_COPY
+    : QUEUED_MESSAGE_WAITING_COPY;
+}
 
 /** The out-of-credits recovery notice's title. */
 export const OUT_OF_CREDITS_TITLE = "You're out of credits";
@@ -131,12 +152,9 @@ export const OUT_OF_CREDITS_TITLE = "You're out of credits";
  * off) only says the message is safe: no line tells someone to buy who can't.
  */
 export function retainedMessageCopy(
-  origin: 'composer' | 'queue' | 'create' | 'first',
+  origin: 'composer' | 'create' | 'first',
   { canBuy = true }: { readonly canBuy?: boolean } = {},
 ): string {
-  if (origin === 'queue') {
-    return canBuy ? QUEUED_MESSAGE_RETAINED_COPY : QUEUED_MESSAGE_SAVED_COPY;
-  }
   if (origin === 'first') {
     // A new cloud worktree held its first message until setup could pay.
     return canBuy
@@ -153,35 +171,66 @@ export function retainedMessageCopy(
     : 'Your message is saved.';
 }
 
+/** The title of every state where this chat has nothing that can pay. */
+const NO_PROVIDER_TITLE = 'This chat needs a provider';
+
 /** The organization's model policy allows nothing the user can run. */
 export const POLICY_ONLY_DEAD_END_COPY: CreditsRecoveryCopy = {
-  title: 'No model available',
-  message: `Your organization's model policy doesn't allow any model you can run right now, so ask your organization admin to allow a model you can use.`,
+  title: 'No model allowed',
+  message:
+    'Your organization blocks every model you can use. Ask an org admin to allow one.',
 };
 
 /** The organization only allows models paid for with credits. */
 export const CREDITS_ONLY_DEAD_END_COPY: CreditsRecoveryCopy = {
-  title: 'Credits required',
-  message: 'Your organization only allows models that run on credits.',
+  title: 'This chat needs credits',
+  message: 'Your organization allows only models that run on credits.',
 };
 
-/** Every model the organization allows needs a billing source. */
+/**
+ * Every model the organization allows needs a provider or credits the user
+ * doesn't have yet. It names no provider: the constant has none to name.
+ */
 export const POLICY_BILLING_DEAD_END_COPY: CreditsRecoveryCopy = {
-  title: 'No model available',
-  message: `Your organization's allowed models all need a billing source you don't have yet.`,
+  title: NO_PROVIDER_TITLE,
+  message:
+    'Connect one or buy credits to use a model your organization allows.',
 };
 
-/** No available model can be paid for. */
-export const DISPATCH_DEAD_END_COPY: CreditsRecoveryCopy = {
-  title: 'No billing source',
-  message: 'No available model can be paid for right now.',
+/**
+ * Before sending: nothing this chat can use will pay for it, whether no
+ * provider is connected, the chat's provider is signed out, or no available
+ * model can be paid for. Keep the twin sentences in `buildNoBillingSourceError`
+ * and `buildSignedOutNoBillingSourceError` (`@canopy/desktop-shared`, which
+ * this package may not import) the same by hand.
+ */
+export const NO_PROVIDER_COPY: CreditsRecoveryCopy = {
+  title: NO_PROVIDER_TITLE,
+  message: 'Choose one to send your message.',
 };
 
-/** A turn already failed because credits didn't cover it. */
+/**
+ * A turn already failed because nothing could pay for it. It never says the
+ * person's credits ran short: many who see it never had any.
+ */
 export const FAILED_TURN_COPY: CreditsRecoveryCopy = {
   title: 'Message not sent',
-  message: "Your credits didn't cover that message.",
+  message: 'This chat needs a provider. Choose one, then send it again.',
 };
+
+/**
+ * The message for {@link NO_PROVIDER_COPY} or {@link FAILED_TURN_COPY} when
+ * exactly one source is ready. `continueLabel` is that source's button text
+ * (`continueWithLabel`), so credits read "credits".
+ */
+export function readyProviderMessage(
+  continueLabel: string,
+  { failedTurn }: { readonly failedTurn: boolean },
+): string {
+  return failedTurn
+    ? `${continueLabel}, then send it again.`
+    : `${continueLabel}, or choose another.`;
+}
 
 /**
  * CAN-4766 — the action that connects a provider account, on every recovery
@@ -189,39 +238,6 @@ export const FAILED_TURN_COPY: CreditsRecoveryCopy = {
  */
 export function connectProviderLabel(providerLabel: string): string {
   return `Connect ${providerLabel}`;
-}
-
-/** Before sending: no provider connected and no credits to fall back on. */
-export function notSignedInCopy({
-  providerLabel,
-}: {
-  readonly providerLabel: string;
-}): CreditsRecoveryCopy {
-  return {
-    title: `Not connected to ${providerLabel}`,
-    message: 'You have no credits to cover this chat either.',
-  };
-}
-
-/**
- * Before sending: the provider this chat used is confirmed signed out, routing
- * mode is `off`, and the chat has no explicit credits choice (CAN-7062). Credits
- * may be spendable, so unlike {@link notSignedInCopy} this never says there are
- * none; the user picks a billing source in the banner.
- *
- * The message repeats the second sentence of `buildSignedOutNoBillingSourceError`
- * in `@canopy/desktop-shared`, which this package may not import. Keep the two
- * identical by hand so the banner and the send refusal say the same thing.
- */
-export function signedOutCopy({
-  providerLabel,
-}: {
-  readonly providerLabel: string;
-}): CreditsRecoveryCopy {
-  return {
-    title: `Signed out of ${providerLabel}`,
-    message: `Connect ${providerLabel} again, or choose another provider for this chat.`,
-  };
 }
 
 /** An organization pool with nothing in it yet, for someone who can fund it. */
@@ -253,7 +269,7 @@ export const MODEL_LIBRARY_UNLOCK_HINTS: Readonly<
 
 // Names no minimum price and no model families or providers (CAN-7493), so it
 // stays true when the checkout minimum or the catalog changes.
-const PURCHASE_SCOPE_BODY = 'Advanced models use AI Credits.';
+const PURCHASE_SCOPE_BODY = 'Advanced models use credits.';
 
 /**
  * Recovery copy. "Advanced models", never "every model": provider, policy, and
@@ -262,7 +278,7 @@ const PURCHASE_SCOPE_BODY = 'Advanced models use AI Credits.';
  */
 export const MODEL_LIBRARY_UNLOCK_COPY = {
   title: 'Unlock advanced models',
-  purchaseBody: `${PURCHASE_SCOPE_BODY} We'll switch to your selected model once the purchase is complete.`,
+  purchaseBody: `${PURCHASE_SCOPE_BODY} We'll switch to your model once you've paid.`,
   // Billing links and proxy recovery can open checkout without a pending model.
   purchaseBodyWithoutSelection: PURCHASE_SCOPE_BODY,
   guestBody: 'Sign in, then buy credits.',
@@ -272,11 +288,11 @@ export const MODEL_LIBRARY_UNLOCK_COPY = {
   signInThenPurchaseLabel: AI_CREDITS_GUEST_PURCHASE_LABEL,
   dismissAction: 'Not now',
   confirmed: 'Advanced models are unlocked.',
-  selectionFailed: 'Your model could not be selected. Try selecting it again.',
+  selectionFailed: "Couldn't select your model.",
   retrySelection: 'Try again',
   waitingInBrowser: `${AI_CREDITS_HANDOFF_COPY.waiting.title}. We'll check when the payment goes through.`,
   pendingTitle: AI_CREDITS_HANDOFF_COPY.waiting.title,
-  timedOutTitle: 'Automatic payment checks have stopped',
+  timedOutTitle: 'We stopped checking for your payment',
   timedOutBody: `Your purchase may still be in progress. ${AI_CREDITS_CHECK_AGAIN_LABEL} once it's complete.`,
   newPurchaseHelp: "Starting a new purchase won't cancel the previous one.",
   dismissHelp:
@@ -294,10 +310,10 @@ export const MODEL_LIBRARY_UNLOCK_COPY = {
    * charged; without a usable balance the notice says `confirmed` instead.
    */
   confirmedCredits: (credits: number): string =>
-    `Your ${formatCredits(credits)} AI Credits are now available.`,
+    `You have ${formatCredits(credits)} AI Credits.`,
   /** Only while the chat's current model is the one the unlock was for. */
   confirmedModelSelected: (modelLabel: string): string =>
-    `${modelLabel} is selected for this chat.`,
+    `${modelLabel} is selected. Send your message again.`,
   dismissConfirmation: 'Dismiss unlock confirmation',
 } as const;
 
@@ -432,13 +448,13 @@ const CREDITS_PROMPT_COPY: Readonly<
     'org-member': { action: null, message: CONTACT_ORG_ADMIN_COPY },
     unknown: { ...BUYER, message: MODEL_LIBRARY_UNLOCK_COPY.purchaseBody },
   },
-  // Every audience gets the saved-only line: a held message's notice never
-  // carries the purchase for "after you buy more" to refer to (CAN-6860).
+  // The line names no button: a held message's notice may carry none
+  // (CAN-6860). `CreditsNotice` names Choose provider when it shows one.
   queued_held: {
-    buyer: { ...BUYER, message: QUEUED_MESSAGE_SAVED_COPY },
-    guest: { ...GUEST, message: QUEUED_MESSAGE_SAVED_COPY },
-    'org-member': { action: null, message: QUEUED_MESSAGE_SAVED_COPY },
-    unknown: { ...BUYER, message: QUEUED_MESSAGE_SAVED_COPY },
+    buyer: { ...BUYER, message: QUEUED_MESSAGE_WAITING_COPY },
+    guest: { ...GUEST, message: QUEUED_MESSAGE_WAITING_COPY },
+    'org-member': { action: null, message: QUEUED_MESSAGE_ORG_WAITING_COPY },
+    unknown: { ...BUYER, message: QUEUED_MESSAGE_WAITING_COPY },
   },
   // The cap gets one sentence and the purchase; the host adds the reset day.
   own_key_limit: {
@@ -471,11 +487,13 @@ export function outOfAiCreditsCopy(
   return {
     title: APP_ERROR_CATALOG['external.ai_credits_required'].copy.title,
     message: orgPoolUnavailable
-      ? "Your team's credits aren't available right now. Buy your own or ask a team admin."
+      ? canConnectClaude
+        ? "Your organization's credits aren't available. Buy your own, connect Claude, or ask an org admin."
+        : "Your organization's credits aren't available. Buy your own, or ask an org admin."
       : canConnectClaude
-        ? 'Buy more credits or connect Claude to keep going.'
-        : (APP_ERROR_CATALOG['external.ai_credits_required'].copy.description ??
-          ''),
+        ? 'Buy more, or connect Claude.'
+        : // The notice's purchase button is the next step, so no message.
+          '',
   };
 }
 
@@ -489,8 +507,8 @@ export function sendFundingShortfallMessage(owed: string): string {
 }
 
 /** A held send whose funding read failed. The draft stays in the composer. */
-export const SEND_FUNDING_READ_FAILED_MESSAGE =
-  "We couldn't check your credits. Your message is still here.";
+export const SEND_FUNDING_READ_FAILED_TITLE = "Couldn't check your credits";
+export const SEND_FUNDING_READ_FAILED_MESSAGE = 'Your message is still here.';
 
 /** A held send whose checkout closed with no payment. */
 export const SEND_FUNDING_CHECKOUT_CLOSED_MESSAGE = `Your message is still here. ${AI_CREDITS_PURCHASE_LABEL} to send it.`;

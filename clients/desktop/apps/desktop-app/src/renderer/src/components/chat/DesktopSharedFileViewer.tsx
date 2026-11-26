@@ -3,6 +3,7 @@ import { FileCommentPositionMarker } from '@canopy/ui-shared/components/chat';
 import {
   LoadingRegion,
   Button,
+  CopyDetailsButton,
   DiffComparisonToggle,
   DiffTurnUnavailableState,
   DiffViewModeToggle,
@@ -1817,16 +1818,22 @@ function DesktopSharedFileViewerImpl({
                       errorSource="desktop-shared-file-viewer-diff"
                       intent="destructive"
                       className=""
+                      title="Couldn't load changes"
                       actions={
-                        <NoticeButton
-                          variant="primary"
-                          onClick={() => setDiffRevision((value) => value + 1)}
-                        >
-                          Try again
-                        </NoticeButton>
+                        <>
+                          <CopyDetailsButton details={diffError} />
+                          <NoticeButton
+                            variant="primary"
+                            onClick={() =>
+                              setDiffRevision((value) => value + 1)
+                            }
+                          >
+                            Try again
+                          </NoticeButton>
+                        </>
                       }
                     >
-                      {diffError}
+                      {null}
                     </Notice>
                   </div>
                 ) : !diffContext ? (

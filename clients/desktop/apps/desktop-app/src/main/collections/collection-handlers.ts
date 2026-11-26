@@ -52,6 +52,7 @@ import {
 } from '../pipelines/pipeline-package-service';
 import { serializeSharedCollectionForHash } from '@canopy/protocol/collections';
 import { installSubjectCapabilityPackage } from '../skills/skill-package-install';
+import { runSkillMutation } from '../skills/skill-mutations';
 import {
   getMcpServerStatusByCatalogId,
   getMcpServerStatusByName,
@@ -300,6 +301,7 @@ export async function installCollectionPackageForCaller(
       originExternalId: request.collectionId,
       packageRef: request.packageRef,
       download,
+      serializeMaterialization: runSkillMutation,
       fetchBlob: (sha256) =>
         request.fromPublicShare
           ? getPublicCollectionPackageBlob(

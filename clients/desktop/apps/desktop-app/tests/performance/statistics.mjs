@@ -28,14 +28,16 @@ export function summarize(values) {
   }
 
   const total = finite.reduce((sum, value) => sum + value, 0);
+  // Folded, not spread: a long run can hold more samples than a call takes
+  // as arguments.
   return {
     count: finite.length,
-    min: Math.min(...finite),
+    min: finite.reduce((low, value) => Math.min(low, value), Infinity),
     mean: total / finite.length,
     p50: percentile(finite, 0.5),
     p95: percentile(finite, 0.95),
     p99: percentile(finite, 0.99),
-    max: Math.max(...finite),
+    max: finite.reduce((high, value) => Math.max(high, value), -Infinity),
   };
 }
 

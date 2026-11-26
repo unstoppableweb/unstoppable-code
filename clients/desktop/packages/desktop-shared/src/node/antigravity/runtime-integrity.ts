@@ -210,12 +210,36 @@ export async function verifyAntigravityExecutable(
 
 /**
  * Re-checks a verified executable just before it is spawned, narrowing the
- * re-execution window to the spawn itself.
+ * re-execution window to the spawn itself, and returns the identity it
+ * confirmed: the exact file this launch runs. A caller that spawns that file
+ * again later holds it to this identity (assertAntigravityExecutableIdentity),
+ * since the shared verdict for the path can change in between.
  */
-export async function assertAntigravityExecutableUnchanged(
+export async function antigravityExecutableIdentityForLaunch(
   file: string,
-): Promise<void> {
+): Promise<string> {
   const identity = await identityNow(file);
   if (identity === undefined || verified.get(file) !== identity)
     throw changedDuringLaunch('executable changed before launch');
+  return identity;
+}
+
+/** antigravityExecutableIdentityForLaunch, for a caller that spawns at once. */
+export async function assertAntigravityExecutableUnchanged(
+  file: string,
+): Promise<void> {
+  await antigravityExecutableIdentityForLaunch(file);
+}
+
+/**
+ * Requires the file at `file` to be exactly the one a launch confirmed
+ * earlier (`identity`). Doesn't consult the shared verdict: another launch
+ * may have verified a different file at the same path since.
+ */
+export async function assertAntigravityExecutableIdentity(
+  file: string,
+  identity: string,
+): Promise<void> {
+  if ((await identityNow(file)) !== identity)
+    throw changedDuringLaunch('executable changed since it was confirmed');
 }

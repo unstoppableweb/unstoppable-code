@@ -11,7 +11,11 @@ import {
   assertCanopyCloudCapability,
   CanopyCloudClientError,
   requestCanopyCloudJson,
+  type CanopyCloudJsonRequestInit,
 } from '../canopy-cloud/client';
+
+/** `beforeRequest` runs just before the write leaves the process. */
+type CommentWriteInit = Pick<CanopyCloudJsonRequestInit, 'beforeRequest'>;
 
 const API_PREFIX = `/api/v1/${BRAND.web.apiNamespace}`;
 const RUNS_CAPABILITY = 'runs-crud-v1';
@@ -58,16 +62,26 @@ export async function supportsRunComments(): Promise<boolean> {
   }
 }
 
+/**
+ * Throws unless the connected Canopy Cloud advertises run comments: the
+ * capability's own refusal when it doesn't, or the probe's failure.
+ */
+export async function assertRunCommentsCapability(): Promise<void> {
+  await assertCanopyCloudCapability(RUN_COMMENTS_CAPABILITY);
+}
+
 /** Author a new comment thread on a shared run (whole-run or message-anchored). */
 export async function createRunCommentThread(
   remoteId: string,
   body: string,
   anchor?: SharedRunCommentAnchor,
+  init?: CommentWriteInit,
 ): Promise<SharedRunDetail> {
   await assertCanopyCloudCapability(RUN_COMMENTS_CAPABILITY);
   return requestCanopyCloudJson<SharedRunDetail>(
     `${API_PREFIX}/runs/${encodeURIComponent(remoteId)}/comments`,
     {
+      ...init,
       method: 'POST',
       body: JSON.stringify({ body, ...(anchor ? { anchor } : {}) }),
     },
@@ -79,13 +93,14 @@ export async function replyToRunCommentThread(
   remoteId: string,
   threadId: string,
   body: string,
+  init?: CommentWriteInit,
 ): Promise<SharedRunDetail> {
   await assertCanopyCloudCapability(RUN_COMMENTS_CAPABILITY);
   return requestCanopyCloudJson<SharedRunDetail>(
     `${API_PREFIX}/runs/${encodeURIComponent(remoteId)}/comments/${encodeURIComponent(
       threadId,
     )}`,
-    { method: 'POST', body: JSON.stringify({ body }) },
+    { ...init, method: 'POST', body: JSON.stringify({ body }) },
   );
 }
 
@@ -94,13 +109,14 @@ export async function setRunCommentThreadStatus(
   remoteId: string,
   threadId: string,
   status: SharedRunCommentThreadStatus,
+  init?: CommentWriteInit,
 ): Promise<SharedRunDetail> {
   await assertCanopyCloudCapability(RUN_COMMENTS_CAPABILITY);
   return requestCanopyCloudJson<SharedRunDetail>(
     `${API_PREFIX}/runs/${encodeURIComponent(remoteId)}/comments/${encodeURIComponent(
       threadId,
     )}`,
-    { method: 'PATCH', body: JSON.stringify({ status }) },
+    { ...init, method: 'PATCH', body: JSON.stringify({ status }) },
   );
 }
 

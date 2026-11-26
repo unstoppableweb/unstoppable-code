@@ -1,6 +1,6 @@
 import { useEffect, useRef, type JSX } from 'react';
-import { Button } from '../components/Button';
-import { Notice } from '../components/Notice';
+import { Button } from '../primitives/Button';
+import { Notice } from '../primitives/Notice';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 
 export interface SharedContainerForkResultProps {

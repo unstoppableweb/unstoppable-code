@@ -7,7 +7,7 @@ const route = z.strictObject({
   harness: z.enum(['claude', 'codex']),
   /** Null means the caller omitted the model; it is not a wildcard. */
   selection: id.nullable(),
-  /** Exact policy/invocation identity; selection remains authored/display data. */
+  /** Invocation identity; policy identity is resolved from the launch catalog. */
   requestModel: id,
   runtimeModel: id,
   source: z.enum([
@@ -46,6 +46,19 @@ export const WorkerPipelineNativeRouteEvidenceSchema = z.strictObject({
   configurationEpoch: id,
   catalogFingerprint: id,
   policy: z.enum(['account-independent-personal', 'required', 'unknown']),
+  /** Missing on older launches: union is the conservative default. */
+  policyScope: z.enum(['owner', 'union']).optional(),
+  /** Required for managed admission; absent on legacy native-only launches. */
+  expectedAccountIdentity: id.optional(),
+  /** Decorative attribution captured by the trusted launch host, not a worker. */
+  aiCreditsAttribution: z
+    .strictObject({
+      workspaceName: id.optional(),
+      worktreeName: id.optional(),
+      organizationProjectId: id.optional(),
+      providerName: id.optional(),
+    })
+    .optional(),
   gateway: dependency,
   accountProxy: dependency,
   aiCredits: dependency,
@@ -67,6 +80,39 @@ const harnessAssignments = z.object({
   revision: z.number(),
   assignments: z.array(z.object({ modelId: id, harness: id, source: id })),
 });
+
+const governedCatalog = nativeCatalog.extend({
+  gatewayRoutes: z.array(z.object({ modelId: id, gatewayId: id })),
+  policyModelIds: z.record(z.string(), id).optional(),
+});
+
+/** Native invocation ids and Cloud policy ids need not match (e.g. sonnet). */
+export function resolvePipelineGovernedModelId(
+  requestModel: string,
+  snapshot: Readonly<Record<string, string | undefined>> | undefined,
+): string | undefined {
+  try {
+    const catalog = governedCatalog.parse(
+      JSON.parse(snapshot?.MODEL_CATALOG ?? ''),
+    );
+    if (
+      !catalog.claudeModels.includes(requestModel) &&
+      !catalog.codexModels.includes(requestModel)
+    )
+      return undefined;
+    const routes = catalog.gatewayRoutes.filter(
+      (candidate) => candidate.modelId === requestModel,
+    );
+    if (routes.length > 1) return undefined;
+    return (
+      routes[0]?.gatewayId ??
+      catalog.policyModelIds?.[requestModel] ??
+      requestModel
+    );
+  } catch {
+    return undefined;
+  }
+}
 
 /** Stable input for host-local catalog digests and active-host compatibility. */
 export function pipelineModelCatalogIdentity(
@@ -155,6 +201,7 @@ export const WorkerPipelineSurvivalAssessmentSchema = z
     assessedAt: z.string().datetime({ offset: true }),
     disposition: z.enum(['continues', 'pauses']),
     routes: z.array(route).max(256),
+    /** V1 stays native-only; daemon Cloud custody is recorded in epochs. */
     credentialFamilies: z
       .array(z.enum(['vendor-profile', 'explicit-environment']))
       .max(2),

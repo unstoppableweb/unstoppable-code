@@ -15,6 +15,7 @@ import {
   PIPELINE_HOST_DEFINITIONS,
   createPipelineHostModule,
   prepareNativePipelineSurvival,
+  type ManagedPipelineOwnerPorts,
   type PipelineHostLaunch,
   type PipelineHostModuleOptions,
   type PipelineHostProcess,
@@ -85,6 +86,12 @@ export interface DaemonPipelineOptions {
    * (CAN-6102). The daemon's own composition never sets it.
    */
   readonly remoteOwner?: PipelineRemoteOwner;
+  /**
+   * The daemon's Cloud account services where account authority is selected
+   * (CAN-6997): governed-native and AI Credits launches are then admitted
+   * from them. Absent, those runs keep pausing at quit.
+   */
+  readonly managed?: ManagedPipelineOwnerPorts;
 }
 
 /** Whether `child` is `parent` or inside it. */
@@ -281,6 +288,18 @@ export function createDaemonPipelineModule(
         hostOperatingSystem(),
         (reason): void => {
           start.launch.nativeSetupFailure = reason;
+        },
+        options.managed && {
+          ...options.managed,
+          // The pause explains the account blocker, not a setup failure.
+          onBlockers: (blockers): void => {
+            start.launch.nativeRouteBlockers = [
+              ...new Set([
+                ...(start.launch.nativeRouteBlockers ?? []),
+                ...blockers,
+              ]),
+            ];
+          },
         },
       ).catch(() => {
         start.launch.nativeSetupFailure ??= 'daemon-validation';

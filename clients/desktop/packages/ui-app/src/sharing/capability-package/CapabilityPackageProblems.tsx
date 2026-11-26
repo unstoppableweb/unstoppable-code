@@ -243,12 +243,11 @@ export function CapabilityPackageProblems({
           errorSource="capability-package-problems"
           intent="destructive"
           surface="none"
+          title={problemCountTitle(problems.length)}
           {...(fixWithAI !== undefined ? { actions: fixWithAI } : {})}
           data-testid={noticeTestId}
         >
-          <span className="font-medium">
-            {problemCountTitle(problems.length)}
-          </span>
+          {null}
         </Notice>
       ) : (
         <Notice

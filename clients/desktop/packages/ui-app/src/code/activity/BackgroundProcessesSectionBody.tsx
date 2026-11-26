@@ -1,7 +1,7 @@
 'use client';
 
 import { CompositeListRow } from '@canopy/ui-shared/components';
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import { useState, type JSX } from 'react';
 import type { BackgroundTaskStopRequest } from '@canopy/app-core';
 import type { BackgroundTask } from '@canopy/protocol/background-tasks';

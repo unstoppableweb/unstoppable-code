@@ -186,29 +186,8 @@ export interface HostHelperModelResult {
   structured?: unknown;
 }
 
-export function parseRouterRoutes(raw: string | undefined): string[] {
-  if (!raw || raw.trim().length === 0) {
-    throw new Error('router requires routes');
-  }
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (
-      Array.isArray(parsed) &&
-      parsed.every((value) => typeof value === 'string')
-    ) {
-      return parsed;
-    }
-  } catch {
-    const values = raw
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean);
-    if (values.length > 0) {
-      return values;
-    }
-  }
-  throw new Error('routes must be a JSON string array or comma-separated list');
-}
+// One copy of the router's routes rule, which the workflow designer reads too.
+export { parseRouterRoutes } from '@canopy/pipeline-interop/router-step';
 
 export function buildRouterModelRequest(input: {
   text: string;

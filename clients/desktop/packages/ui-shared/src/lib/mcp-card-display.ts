@@ -20,7 +20,8 @@ export interface McpCardDisplayServer {
     | 'collection'
     | 'bundle'
     | 'plugin'
-    | 'account';
+    | 'account'
+    | 'shared';
   readonly configName?: string;
   readonly collectionId?: string;
   readonly bundleId?: string;
@@ -30,6 +31,11 @@ export interface McpCardDisplayServer {
    * not selected directly (web, REG-3030).
    */
   readonly viaPluginName?: string;
+  /**
+   * Who shared a `shared` row's connection (CAN-6246): the organization, by
+   * default for its projects, or the project itself.
+   */
+  readonly sharedBy?: 'organization' | 'project';
 }
 
 /**
@@ -180,6 +186,30 @@ export function mcpRowSecondaryText(server: McpCardDisplayServer): string {
       return server.configName
         ? `Account connection · ${server.configName}`
         : 'Account connection';
+    case 'shared':
+      return server.sharedBy === 'organization'
+        ? 'Shared by your organization'
+        : 'Shared with this project';
+  }
+}
+
+/**
+ * Whether {@link mcpRowSecondaryText} carries a name the person gave an
+ * account or configuration, which can be an email or login.
+ */
+export function mcpRowSecondaryTextNamesAccount(
+  server: McpCardDisplayServer,
+): boolean {
+  switch (server.source) {
+    case 'standalone':
+      return true;
+    case 'account':
+      return !server.viaPluginName && !!server.configName;
+    case 'collection':
+    case 'bundle':
+    case 'plugin':
+    case 'shared':
+      return false;
   }
 }
 

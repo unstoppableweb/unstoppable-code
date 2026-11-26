@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { CanopyOperationError } from '@canopy/core-runtime';
 import type { BackgroundServiceUnreachableReason } from '@canopy/desktop-shared/lib/background-service-status';
-import type { WorkerGitBranchListResult } from '@canopy/protocol/canopy-core';
 import type {
   DaemonGitQueryClient,
   DaemonGitRoute,
@@ -11,7 +10,7 @@ import { daemonUnreachableReason } from './electron-daemon-connection';
 import type { DaemonRouteReason } from './daemon-route-telemetry';
 
 /**
- * The shared background-service rule (CAN-5541) for daemon branch lists
+ * The shared background-service rule (CAN-5541) for daemon Git reads
  * (CAN-4729), one layer outside the route: a selected read falls back to the
  * in-process reader once, and only when the daemon was never reached and no
  * result arrived. Anything a reached daemon answers stays typed.
@@ -44,7 +43,7 @@ export interface ReachableDaemonGitRouteOptions {
 }
 
 interface Attempt {
-  /** The route resolved a repository: it selected the daemon. */
+  /** The route took its first daemon step: it selected the daemon. */
   selected: boolean;
   bypassed: boolean;
   /** The route asked for the host, its first step toward the daemon. */
@@ -60,7 +59,7 @@ interface Attempt {
 class DaemonGitBypass extends Error {
   constructor() {
     super(
-      'Branch lists read in-process while the background service is unavailable.',
+      'Git reads run in-process while the background service is unavailable.',
     );
     this.name = 'DaemonGitBypass';
   }
@@ -95,21 +94,29 @@ export function createReachableDaemonGitRoute(
   const { inputs, reachability, record } = options;
   const attempts = new AsyncLocalStorage<Attempt>();
 
+  /** The latch is read once, at a request's first daemon step. */
+  const select = (attempt: Attempt): void => {
+    if (attempt.selected) return;
+    attempt.selected = true;
+    if (!reachability.isLatched()) return;
+    attempt.bypassed = true;
+    throw new DaemonGitBypass();
+  };
+
   const watched: DaemonGitRouteInputs = {
-    repositoryPath: (params) => {
+    // Branch lists resolve a repository first.
+    repositoryPath: async (params) => {
       const attempt = attempts.getStore();
-      if (attempt) {
-        attempt.selected = true;
-        if (reachability.isLatched()) {
-          attempt.bypassed = true;
-          return Promise.reject(new DaemonGitBypass());
-        }
-      }
+      if (attempt) select(attempt);
       return inputs.repositoryPath(params);
     },
+    // Health checks start here.
     hostContext: async () => {
       const attempt = attempts.getStore();
-      if (attempt) attempt.contacting = true;
+      if (attempt) {
+        select(attempt);
+        attempt.contacting = true;
+      }
       try {
         return await inputs.hostContext();
       } catch (error) {
@@ -164,52 +171,68 @@ export function createReachableDaemonGitRoute(
     record(fallbackRecord(reason));
   };
 
-  return {
-    branchList: (params, context, request, direct) => {
-      const attempt: Attempt = {
-        selected: false,
-        bypassed: false,
-        contacting: false,
-        notReached: null,
-        client: null,
-        answered: false,
-        result: false,
-        fellBack: false,
-      };
-      // A route that reads in-process itself after trying the daemon (a
-      // pre-contact budget, CAN-6803) counts as not reached here, once.
-      const routedDirect = (): Promise<WorkerGitBranchListResult> => {
-        if (attempt.contacting && !attempt.result && !attempt.fellBack)
-          fallBack(attempt, attempt.notReached ?? 'connect_timeout');
-        return direct();
-      };
-      return attempts.run(attempt, async () => {
-        try {
-          const result = await route.branchList(
-            params,
-            context,
-            request,
-            routedDirect,
-          );
-          if (attempt.result) record('served');
-          return result;
-        } catch (error) {
-          // Unselected, or the in-process read the route chose already failed.
-          if (!attempt.selected || attempt.fellBack) throw error;
-          if (attempt.bypassed) {
-            record('latched');
-            return direct();
-          }
-          const reason = notReachedReason(attempt);
-          if (reason === null || endedByCaller(error)) {
-            record('refused');
-            throw error;
-          }
-          fallBack(attempt, reason);
+  const guarded = <T>(
+    read: (routedDirect: () => Promise<T>) => Promise<T>,
+    direct: () => Promise<T>,
+  ): Promise<T> => {
+    const attempt: Attempt = {
+      selected: false,
+      bypassed: false,
+      contacting: false,
+      notReached: null,
+      client: null,
+      answered: false,
+      result: false,
+      fellBack: false,
+    };
+    // A route that reads in-process itself after trying the daemon (a
+    // pre-contact budget, CAN-6803) counts as not reached here, once.
+    const routedDirect = (): Promise<T> => {
+      if (attempt.contacting && !attempt.result && !attempt.fellBack)
+        fallBack(attempt, attempt.notReached ?? 'connect_timeout');
+      return direct();
+    };
+    return attempts.run(attempt, async () => {
+      try {
+        const result = await read(routedDirect);
+        if (attempt.result) record('served');
+        return result;
+      } catch (error) {
+        // Unselected, or the in-process read the route chose already failed.
+        if (!attempt.selected || attempt.fellBack) throw error;
+        if (attempt.bypassed) {
+          record('latched');
           return direct();
         }
-      });
-    },
+        const reason = notReachedReason(attempt);
+        // A setup stage's own timeout is tagged unreachable; the request's
+        // deadline or cancel reaches here untagged.
+        if (
+          reason === null ||
+          (endedByCaller(error) && attempt.notReached === null)
+        ) {
+          record('refused');
+          throw error;
+        }
+        fallBack(attempt, reason);
+        return direct();
+      }
+    });
+  };
+
+  return {
+    branchList: (params, context, request, direct) =>
+      guarded(
+        (routedDirect) =>
+          route.branchList(params, context, request, routedDirect),
+        direct,
+      ),
+    worktreeHealth: (params, context, request, direct, settle) =>
+      guarded(
+        (routedDirect) =>
+          route.worktreeHealth(params, context, request, routedDirect, settle),
+        direct,
+      ),
     dispose: () => route.dispose(),
   };
 }

@@ -22,8 +22,11 @@ import { WorktreeRecoveryDialog } from './WorktreeRecoveryDialog';
 export function openWorktreeDiscard(
   client: CanopyClient,
   offer: WorktreeDiscardOffer,
+  computerScopeKey: string | null = null,
 ): Promise<boolean> {
-  return worktreeDiscardStoreFor(client).getState().open(offer);
+  return worktreeDiscardStoreFor(client, computerScopeKey)
+    .getState()
+    .open(offer);
 }
 
 function errorText(
@@ -47,26 +50,24 @@ function errorText(
 /** CAN-5336: the confirmation and its store, loaded by `WorktreeDiscardHost`. */
 export function WorktreeDiscardPanel({
   client,
+  computerScopeKey = null,
   onDiscarded,
 }: {
   client: CanopyClient;
+  computerScopeKey?: string | null;
   onDiscarded: (discarded: WorktreeDiscarded) => void;
 }): JSX.Element | null {
-  const store = worktreeDiscardStoreFor(client);
+  const store = worktreeDiscardStoreFor(client, computerScopeKey);
   const view = store((state) => state.view);
+  const setAsideResult = store((state) => state.setAsideResult);
   const active = useRef<CanopyClient | null>(client);
   useEffect(() => {
     active.current = client;
     return (): void => {
       active.current = null;
-      // Strict Mode immediately reattaches the same client; real detach and
-      // client changes invalidate late answers without losing that opening.
-      queueMicrotask(() => {
-        if (active.current !== client) store.getState().deactivate();
-      });
     };
   }, [client, store]);
-  const { discard, retry, close, recover, confirmDiscard, refresh } =
+  const { discard, retry, close, recover, confirmDiscard, setAside, refresh } =
     store.getState();
   if (view.phase === 'recovery')
     return (
@@ -83,7 +84,9 @@ export function WorktreeDiscardPanel({
         }
         hostOutdated={view.hostOutdated}
         outcome={view.outcome}
+        setAsideResult={setAsideResult}
         canResolve={client.capabilities.worktreeRecoveryResolution === true}
+        canSetAside={client.capabilities.worktreeRecoverySetAside === true}
         onAction={(action) => {
           void recover(action).then((result) => {
             if (result && active.current === client)
@@ -96,6 +99,9 @@ export function WorktreeDiscardPanel({
         }}
         onDiscard={() => {
           void confirmDiscard();
+        }}
+        onSetAside={(target) => {
+          void setAside(target);
         }}
         onRefresh={() => {
           void refresh();

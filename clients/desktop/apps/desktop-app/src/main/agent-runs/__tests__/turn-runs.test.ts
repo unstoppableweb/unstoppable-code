@@ -1,11 +1,31 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type {
-  CanopyCallerDescriptor,
-  OperationRecord,
+import {
+  WorkerAgentTurnRunParamsSchema,
+  type CanopyCallerDescriptor,
+  type OperationRecord,
+  type WorkerAgentTurnRunParams,
 } from '@canopy/protocol/canopy-core';
 import type { TurnEventSink } from '@canopy/core-runtime/node/agent/turns';
+import {
+  readFilesystemScope,
+  type FilesystemRoot,
+  type FilesystemScopeCatalog,
+} from '@canopy/core-runtime/node';
+import {
+  getApprovalDefaultsRevision,
+  getChatApprovalStateRevision,
+  getGlobalApprovalRulesRevision,
+  getGlobalApprovalRulesSaveGeneration,
+  getWorkspaceApprovalRulesRevision,
+  getWorkspaceApprovalRulesSaveGeneration,
+  markApprovalDefaultsChanged,
+  markChatApprovalStateChanged,
+  markWorkspaceApprovalRulesChanged,
+  trackWorkspaceApprovalRulesSave,
+} from '../../approvals/rule-revisions';
+import { logMainProcessWarn } from '../../lib/main-process-logging';
 import {
   createCoreOperationAdapter,
   type CoreOperationAdapter,
@@ -33,6 +53,18 @@ import {
 } from '../turn-runs';
 import { windowAgentInterfacePort } from '../../agents/agent-interface-port';
 
+jest.mock('@canopy/core-runtime/node', () => ({
+  ...jest.requireActual<object>('@canopy/core-runtime/node'),
+  readFilesystemScope: jest.fn(),
+}));
+jest.mock('../../canopy-runtime/daemon-scope-resolver', () => ({
+  getDaemonScopeResolver: (): Promise<() => Promise<object>> =>
+    Promise.resolve((): Promise<object> => Promise.resolve({})),
+}));
+jest.mock('../../lib/main-process-logging', () => ({
+  ...jest.requireActual<object>('../../lib/main-process-logging'),
+  logMainProcessWarn: jest.fn(),
+}));
 jest.mock('../../canopy-runtime/chat-turn-stop', () => ({
   stopChatTurnExactly: jest.fn(() => Promise.resolve(null)),
 }));
@@ -49,7 +81,10 @@ jest.mock('../../services/chat-queue-service', () => ({
 }));
 jest.mock('../../services/chat-state-service', () => ({
   getChatStateService: (): object => ({
-    ingestProviderEvent: jest.fn(() => Promise.resolve()),
+    journalIdleStop: jest.fn(() => Promise.resolve()),
+    ingestProviderEventWithResult: jest.fn(() =>
+      Promise.resolve({ outcome: 'applied' }),
+    ),
     getCompatibilityArchives: jest.fn(() => Promise.resolve({ archived: [] })),
   }),
 }));
@@ -553,5 +588,258 @@ describe('Copilot sessions on a replayed dispatch (CAN-4119)', () => {
     expect(createSession).toHaveBeenCalledTimes(1);
     run.settle('completed');
     await settledRecords();
+  });
+});
+
+describe('a cowork turn carries its portable launch, served as today (CAN-6995)', () => {
+  const cowork = {
+    workspaceId: 'cowork-ws',
+    worktreeId: 'home',
+    chatId: 'cowork-chat',
+  };
+  const coworkChat = {
+    projectId: cowork.workspaceId,
+    worktreeId: cowork.worktreeId,
+    chatId: cowork.chatId,
+  };
+  const rules: NonNullable<AgentSessionOptions['sessionApprovalRules']> = [
+    {
+      id: 'rule',
+      behavior: 'allow',
+      target: { kind: 'command', pattern: 'git status' },
+      createdAt: '2026-11-24T00:00:00.000Z',
+      origin: 'settings',
+    },
+  ];
+  const routing = { active: true, scope: 'session', activatedAt: 1 } as const;
+  const roots = jest.mocked(readFilesystemScope);
+  const warn = jest.mocked(logMainProcessWarn);
+  const HARNESSES = [
+    'claude',
+    'codex',
+    'cursor',
+    'copilot',
+    'opencode',
+    'antigravity',
+  ] as const;
+
+  function catalog(absolutePath: string | null): FilesystemScopeCatalog {
+    const found: FilesystemRoot[] =
+      absolutePath === null
+        ? []
+        : [
+            {
+              id: 'cowork-root',
+              name: 'Cowork',
+              kind: 'standalone',
+              absolutePath,
+              gitAware: false,
+              excludedDescendantRoots: [],
+            },
+          ];
+    return {
+      roots: found,
+      byId: new Map(found.map((entry) => [entry.id, entry])),
+      containerCreatedAt: null,
+      attachmentSource: {
+        absolutePath: join(root, 'attachments'),
+        visible: false,
+      },
+    };
+  }
+
+  /** The per-chat revision, pinned: six counters, none of another chat's or workspace's. */
+  function pinnedRevision(): number {
+    return (
+      getApprovalDefaultsRevision() +
+      getChatApprovalStateRevision(coworkChat) +
+      getWorkspaceApprovalRulesRevision(cowork.workspaceId) +
+      getWorkspaceApprovalRulesSaveGeneration(cowork.workspaceId) +
+      getGlobalApprovalRulesRevision() +
+      getGlobalApprovalRulesSaveGeneration()
+    );
+  }
+
+  /** Session options as the cowork send builds them, unset members included. */
+  function coworkOptions(
+    harness: (typeof HARNESSES)[number],
+  ): AgentSessionOptions {
+    return {
+      cwd: root,
+      projectId: cowork.workspaceId,
+      worktreeId: cowork.worktreeId,
+      chatId: cowork.chatId,
+      planMode: false,
+      approvalMode: 'ask',
+      sessionApprovalRules: rules,
+      codexProposalMode: undefined,
+      thinkingLevel: 'medium',
+      modelConfig: { thinkingLevel: 'medium' },
+      model: 'model',
+      selectedModel: 'model',
+      sdkSessionId: undefined,
+      applyGlobalPluginDefaults: true,
+      deferredToolsAllowed: true,
+      systemPromptAppend: 'cowork',
+      globalInstructionsBlock: 'block',
+      globalInstructionsSnapshot: undefined,
+      providerType: harness,
+      executionHarness: harness,
+      codexAppServerIdleTimeoutMinutes: harness === 'codex' ? 10 : undefined,
+      codexMaxConcurrentSubagents: harness === 'codex' ? 4 : undefined,
+      codexMultiAgentEnabled: harness === 'codex' ? true : undefined,
+      rtkEnabled: harness !== 'codex' && harness !== 'antigravity',
+    };
+  }
+
+  /** Begins a cowork turn, serves it and returns what core dispatched. */
+  async function serve(
+    options: AgentSessionOptions,
+    patch: { approvalRevision?: number; prompt?: string | null } = {},
+  ): Promise<{
+    params: WorkerAgentTurnRunParams;
+    status: string | undefined;
+    turnRunId: string;
+  }> {
+    const dispatch = jest.spyOn(runtime.localWorker, 'dispatch');
+    const run = await beginChatTurnRun({
+      ...request,
+      scope: cowork,
+      providerId: options.providerType ?? 'claude',
+      launch: {
+        surface: 'cowork',
+        options,
+        approvalRevision: patch.approvalRevision ?? pinnedRevision(),
+        prompt: patch.prompt === undefined ? 'Fix it' : patch.prompt,
+      },
+    });
+    await run.execute(() => undefined);
+    run.settle('completed');
+    const { parent } = await settledRecords();
+    const params = WorkerAgentTurnRunParamsSchema.parse(
+      dispatch.mock.calls[0]?.[0].params,
+    );
+    dispatch.mockRestore();
+    return { params, status: parent?.status, turnRunId: run.turnRunId };
+  }
+
+  const mismatches = (): unknown[] =>
+    warn.mock.calls.filter(
+      ([message]) => message === '[turn-worker] launch shadow mismatch',
+    );
+
+  beforeEach(() => {
+    warn.mockClear();
+    roots.mockReset();
+    roots.mockResolvedValue(catalog(root));
+  });
+
+  it('every harness dispatches a launch that resolves to the options it serves', async () => {
+    const served: unknown[] = [];
+    for (const harness of HARNESSES) {
+      const { params, status } = await serve(coworkOptions(harness));
+      served.push([harness, params.launch?.surface, status]);
+    }
+    expect(served).toEqual(
+      HARNESSES.map((harness) => [harness, 'cowork', 'completed']),
+    );
+    expect(mismatches()).toEqual([]);
+  });
+
+  it("another chat's approval change during begin leaves the launch in place", async () => {
+    const approvalRevision = pinnedRevision();
+    roots.mockImplementation(() => {
+      markChatApprovalStateChanged({
+        projectId: cowork.workspaceId,
+        worktreeId: cowork.worktreeId,
+        chatId: 'another-chat',
+      });
+      return Promise.resolve(catalog(root));
+    });
+    const { params } = await serve(coworkOptions('claude'), {
+      approvalRevision,
+    });
+    expect(params.launch?.approval.policyRevision).toBe(approvalRevision);
+    expect(pinnedRevision()).toBe(approvalRevision);
+  });
+
+  it("another workspace's rule change during begin leaves this chat's launch in place", async () => {
+    const approvalRevision = pinnedRevision();
+    roots.mockImplementation(() => {
+      markWorkspaceApprovalRulesChanged('another-ws');
+      return Promise.resolve(catalog(root));
+    });
+    const { params } = await serve(coworkOptions('claude'), {
+      approvalRevision,
+    });
+    expect(params.launch?.approval.policyRevision).toBe(approvalRevision);
+    expect(pinnedRevision()).toBe(approvalRevision);
+  });
+
+  it("this chat's approval change, a rule save or a defaults change before begin sends no launch and serves the run", async () => {
+    const outcomes: unknown[] = [];
+    for (const change of [
+      (): void => markChatApprovalStateChanged(coworkChat),
+      (): void => markApprovalDefaultsChanged(),
+      (): void => {
+        void trackWorkspaceApprovalRulesSave(
+          cowork.workspaceId,
+          Promise.resolve(),
+        );
+      },
+    ]) {
+      const approvalRevision = pinnedRevision();
+      roots.mockImplementation(() => {
+        change();
+        return Promise.resolve(catalog(root));
+      });
+      const { params, status } = await serve(coworkOptions('claude'), {
+        approvalRevision,
+      });
+      outcomes.push(['launch' in params, status]);
+    }
+    expect(outcomes).toEqual([
+      [false, 'completed'],
+      [false, 'completed'],
+      [false, 'completed'],
+    ]);
+  });
+
+  it('a launch that resolves differently from the staged run is logged by member name and the run is served', async () => {
+    // The same directory through a symlink: one canonical path, another text.
+    const link = join(root, 'cowork-link');
+    symlinkSync(root, link);
+    roots.mockResolvedValue(catalog(link));
+    const { params, status, turnRunId } = await serve(coworkOptions('claude'));
+    expect(['launch' in params, status]).toEqual([true, 'completed']);
+    expect(mismatches()).toEqual([
+      ['[turn-worker] launch shadow mismatch', { turnRunId, members: ['cwd'] }],
+    ]);
+  });
+
+  it('automation, uncrossable, routed, attachment and rootless turns send no launch and run as today', async () => {
+    const outcomes: unknown[] = [];
+    const cases: [AgentSessionOptions, string | null, string | null][] = [
+      [
+        { ...coworkOptions('claude'), accountResolution: 'unattended' },
+        'Fix it',
+        root,
+      ],
+      [{ ...coworkOptions('claude'), approvalMode: undefined }, 'Fix it', root],
+      [
+        { ...coworkOptions('claude'), aiCreditsRouting: routing },
+        'Fix it',
+        root,
+      ],
+      [coworkOptions('claude'), null, root],
+      [coworkOptions('claude'), 'Fix it', null],
+    ];
+    for (const [options, prompt, rootPath] of cases) {
+      roots.mockResolvedValue(catalog(rootPath));
+      const { params, status } = await serve(options, { prompt });
+      outcomes.push(['launch' in params, status]);
+    }
+    expect(outcomes).toEqual(cases.map(() => [false, 'completed']));
+    expect(mismatches()).toEqual([]);
   });
 });

@@ -222,6 +222,7 @@ export async function getPublicPluginShareSnapshot(
 
 export async function getPublicCollectionShareSnapshot(
   externalId: string,
+  signal?: AbortSignal,
 ): Promise<PublicCollectionShareSnapshot> {
   const path = publicShareSnapshotApiPath(
     BRAND.web.apiNamespace,
@@ -231,6 +232,7 @@ export async function getPublicCollectionShareSnapshot(
   return withPackageVersionNegotiation((version) =>
     requestCanopyCloudPublicJson<PublicCollectionShareSnapshot>(path, {
       headers: { [PIPELINE_PACKAGE_VERSION_HEADER]: String(version) },
+      ...(signal ? { signal } : {}),
     }),
   );
 }

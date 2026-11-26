@@ -9,8 +9,8 @@ import {
   PickerMenuOptionLabel,
   PickerMenuOptionLeading,
   PickerMenuOptionTrailing,
-} from './PickerMenu';
-import { Tooltip } from './Tooltip';
+} from '../primitives/PickerMenu';
+import { Tooltip } from '../primitives/Tooltip';
 
 /** Disabled fork-PR row tooltip — worktrees need a branch in this repo. */
 export const FORK_PR_DISABLED_TOOLTIP = "Can't create a worktree from a fork";

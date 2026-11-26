@@ -1,5 +1,5 @@
 import { useState, type JSX, type ReactNode } from 'react';
-import { Surface } from '../Surface';
+import { Surface } from '../../primitives/Surface';
 import { StepRow } from './StepRow';
 
 export function TranscriptEventRow({

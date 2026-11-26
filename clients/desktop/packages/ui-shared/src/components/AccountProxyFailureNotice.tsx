@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { Notice, NoticeButton } from './Notice';
+import { Notice, NoticeButton } from '../primitives/Notice';
 
 export interface AccountProxyFailureNoticeProps {
   /** The desktop's own message: why no proxy account could run the chat. */
@@ -26,7 +26,7 @@ export function AccountProxyFailureNotice({
       intent="destructive"
       role="none"
       data-chat-notice=""
-      title="The account proxy can't run this chat."
+      title="The multi-account proxy can't run this chat."
       data-testid={dataTestId}
       actions={
         onOpenSettings ? (

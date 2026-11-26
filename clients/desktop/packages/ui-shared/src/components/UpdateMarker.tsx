@@ -1,8 +1,8 @@
-import { Dot } from './Badge';
+import { Dot } from '../primitives/Badge';
 import type { JSX } from 'react';
 import { updateMenuLabel } from '../lib/customize-row-copy';
 import { updateMarkerLabel } from '../lib/display-version';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 
 export { displayVersion, updateMarkerLabel } from '../lib/display-version';
 

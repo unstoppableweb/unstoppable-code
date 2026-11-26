@@ -5,6 +5,7 @@ import {
   type WorktreesFileChangedEvent,
 } from '@canopy/desktop-shared/types';
 import type { BackgroundServiceStatus } from '@canopy/desktop-shared/lib/background-service-status';
+import { projectRemoteBackgroundService } from '@canopy/protocol/remote-control/shell/background-service';
 import { getElectronDaemonHealth } from '../canopy-runtime/electron-daemon-health';
 import { retryDesktopDaemonFilesConnection } from '../canopy-runtime/electron-daemon-files-access';
 import { sendToAllWindows } from '../lib/window-send';
@@ -30,13 +31,14 @@ export function registerBackgroundServiceHandlers(
     (event) =>
       retryDesktopDaemonFilesConnection(event.sender, resolveCaller(event)),
   );
-  let previous = health.getStatus().state;
+  let previous = health.getStatus();
   return health.onStatusChanged((status) => {
-    const recovered = previous !== 'ok' && status.state === 'ok';
-    // Remote Control carries only a shown failure.
+    const recovered = previous.state !== 'ok' && status.state === 'ok';
+    // Remote Control carries outages and the independent backup advisory.
     const remoteChanged =
-      previous === 'unavailable' || status.state === 'unavailable';
-    previous = status.state;
+      projectRemoteBackgroundService(previous) !== undefined ||
+      projectRemoteBackgroundService(status) !== undefined;
+    previous = status;
     sendToAllWindows(IPC_CHANNELS.backgroundServiceStatusChanged, status);
     if (remoteChanged)
       void import('../services/desktop-structure-signal')

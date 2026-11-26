@@ -2,11 +2,13 @@ import { homeModelRecoveryTarget } from '@/lib/composerModelRecoveryTarget';
 import { useSuggestionsClaimApi } from '@canopy/ui-app/suggestions';
 import { isPlanModeReadOnly } from '@canopy/ui-shared/lib/plan-mode-suggestion';
 import {
+  buildWorkflowMenuItem,
   PendingAttachmentRow,
   usePlanModeSuggestion,
   useComposerHintActivity,
   type PlanModeSuggestion,
 } from '@canopy/ui-app';
+import { useNavigationStore } from '@/stores/navigationStore';
 import { getPlanModeHintStore } from '@/lib/planModeHint';
 import { trackPlanModeHintAction } from '@/lib/planModeHintTelemetry';
 import { useDesktopFilesGuestGate } from '@/hooks/useDesktopFilesGuestGate';
@@ -24,6 +26,7 @@ import { isCursorModel } from '@canopy/execution-engine/lib/cursor-models';
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -41,7 +44,6 @@ import type {
   SlashCommandData,
 } from '@canopy/desktop-shared/types';
 import {
-  PipelineIcon,
   PlanModeIcon,
   PluginsIcon,
   ScheduleIcon,
@@ -70,6 +72,7 @@ import {
   resolveHomeAttachmentWorktreeId,
   resolveHomeSpeed,
   useHomeComposerStore,
+  type HomeSelectedWorkflow,
 } from '@/stores/homeComposerStore';
 import { useContextualCodexSpeedControl } from '@/hooks/useContextualCodexSpeedControl';
 import { useCodexSpeedDowngrade } from '@/hooks/useCodexSpeedDowngrade';
@@ -86,7 +89,9 @@ import { VoiceRecordingRow } from '@/components/chat/VoiceRecordingRow';
 import { useComposerChipsCompact } from '@/components/chat/ComposerLayout';
 import {
   buildPlanModeChip,
+  buildWorkflowChip,
   ChatComposerToolbarChip,
+  WorkflowChipDescription,
   ComposerSendButton,
   ThinkingLevelPanelPicker,
   nextCodexSpeed,
@@ -106,6 +111,8 @@ import { ComposerPlusMenu } from '@/components/shared/ComposerPlusMenu';
 import { LinearTicketPickerModal } from '@/components/shared/linear/LinearTicketPickerModal';
 import { isHomeCloudTarget } from './homeScope';
 import { useHomeEffectiveModelSettings } from './useHomeEffectiveModelSettings';
+import { useDropUnfitWorkflowPick } from './useHomeTaskWorkflows';
+import type { PipelineExecutionScope } from '@canopy/protocol/pipelines';
 
 interface HomeComposerActionMenuProps {
   composerMenu?: ComposerMenuController;
@@ -118,9 +125,10 @@ interface HomeComposerActionMenuProps {
   planMode: boolean;
   /** Cursor and Copilot present Plan mode as read-only mode. */
   planReadOnly: boolean;
-  /** Pipeline mode: Send runs a pipeline instead of starting a chat. */
-  pipelineMode: boolean;
-  onTogglePipeline: () => void;
+  /** The workflow attached to the next Send, or null. */
+  selectedWorkflow: HomeSelectedWorkflow | null;
+  /** Opens the Attach a workflow dialog. */
+  onAttachWorkflow: () => void;
   /** The + trigger, for the Plan mode onboarding highlight. */
   triggerRef: RefObject<HTMLButtonElement | null>;
   hasPluginSelections: boolean;
@@ -154,8 +162,8 @@ function HomeComposerActionMenu({
   isChatMode,
   planMode,
   planReadOnly,
-  pipelineMode,
-  onTogglePipeline,
+  selectedWorkflow,
+  onAttachWorkflow,
   triggerRef,
   hasPluginSelections,
   commands,
@@ -182,20 +190,13 @@ function HomeComposerActionMenu({
     onSelectCommand(cmd);
   }
 
-  // Pipeline stays offered in pipeline mode, the way back to a chat.
-  const pipelineItem = {
-    id: 'pipeline',
-    group: 'settings' as const,
-    label: 'Workflow',
-    description: pipelineMode
-      ? 'Turn workflow mode off'
-      : 'Run the task through predefined automated steps',
-    value: pipelineMode ? 'On' : undefined,
-    icon: <PipelineIcon size="sm" />,
-    onSelect: onTogglePipeline,
-    ariaChecked: pipelineMode,
+  // The Workflow row opens the Attach a workflow dialog (CAN-7513); with a
+  // workflow attached it changes it, and the chip beside + removes it.
+  const pipelineItem = buildWorkflowMenuItem({
+    attachedName: selectedWorkflow?.name ?? null,
+    onOpen: onAttachWorkflow,
     dataTestId: 'home-pipeline-mode-button',
-  };
+  });
   const chatItems = isChatMode
     ? [
         // Plugins stay available for every harness: Cursor loads the MCP
@@ -258,16 +259,16 @@ function HomeComposerActionMenu({
         onSelectCommand={handleCommandSelect}
         isRefreshing={discoveryLoading}
         additionalItems={additionalItems}
+        // Plan and Workflow each show their own chip beside +.
         capsuleTrigger
-        // Plan shows its own tile beside +; + lights only for Pipeline.
-        active={pipelineMode}
-        activeLabel="Workflow mode active"
       />
     </div>
   );
 }
 
 export interface HomeComposerControlsProps {
+  /** Opens the Attach a workflow dialog, which `HomeSurface` hosts. */
+  onAttachWorkflow: () => void;
   /** Text-only replacements reset the hint without invalidating attachment imports. */
   hintDraftRevision?: number;
   composerMenu?: ComposerMenuController;
@@ -345,6 +346,7 @@ export type HomeSpeechModelPrompt = Pick<
  * Project and branch context remain above—not inside—the composer.
  */
 export function HomeComposerControls({
+  onAttachWorkflow,
   hintDraftRevision = 0,
   composerMenu,
   searchFiles,
@@ -372,6 +374,7 @@ export function HomeComposerControls({
     workspaceId,
     draftGeneration,
     mode,
+    selectedWorkflow,
     model,
     modelSelectionMode,
     setModelSelectionMode,
@@ -408,6 +411,7 @@ export function HomeComposerControls({
       workspaceId: s.workspaceId,
       draftGeneration: s.draftGeneration,
       mode: s.mode,
+      selectedWorkflow: s.selectedWorkflow,
       model: s.model,
       modelSelectionMode: s.modelSelectionMode,
       setModelSelectionMode: s.setModelSelectionMode,
@@ -791,7 +795,7 @@ export function HomeComposerControls({
       ...(scheduleDisabled
         ? {}
         : { schedule: (): void => setScheduleModalOpen(true) }),
-      pipeline: () => useHomeComposerStore.getState().setMode('pipeline'),
+      pipeline: onAttachWorkflow,
     },
     // Every action here is this computer's (CAN-6757).
     !disabled && isChatMode && !cloudTarget,
@@ -989,6 +993,31 @@ export function HomeComposerControls({
           },
         })
       : null;
+  // Cowork runs task workflows in its folder, not a worktree.
+  const workflowScope: PipelineExecutionScope =
+    workspaceId !== null && isCoworkChatTarget(workspaceId)
+      ? 'directory'
+      : 'worktree';
+  // Home stays mounted while hidden: coming back from Workflows checks the
+  // attached workflow again.
+  const activePage = useNavigationStore((s) => s.activePage);
+  useDropUnfitWorkflowPick(selectedWorkflow, workflowScope, activePage);
+  // Workflow mode names the workflow Send runs, beside + (CAN-7261).
+  const workflowChipNameId = useId();
+  const workflowChip =
+    mode === 'pipeline' && !cloudTarget
+      ? buildWorkflowChip({
+          workflowName: selectedWorkflow?.name ?? null,
+          compact: chipsCompact,
+          disabled,
+          descriptionId: workflowChipNameId,
+          dataTestId: 'home-workflow-chip',
+          onDisable: (): void => {
+            useHomeComposerStore.getState().setMode('chat');
+            focusEditor(editor);
+          },
+        })
+      : null;
 
   return (
     <>
@@ -1058,12 +1087,8 @@ export function HomeComposerControls({
               isCodex={isCodex}
               planMode={planMode}
               planReadOnly={planReadOnly}
-              pipelineMode={mode === 'pipeline'}
-              onTogglePipeline={(): void =>
-                useHomeComposerStore
-                  .getState()
-                  .setMode(mode === 'pipeline' ? 'chat' : 'pipeline')
-              }
+              selectedWorkflow={selectedWorkflow}
+              onAttachWorkflow={onAttachWorkflow}
               triggerRef={plusTriggerRef}
               hasPluginSelections={
                 (pluginSelections?.collectionIds.length ?? 0) > 0 ||
@@ -1100,6 +1125,15 @@ export function HomeComposerControls({
           {planChip ? (
             <div className="flex shrink-0 items-center">
               <ChatComposerToolbarChip {...planChip} />
+            </div>
+          ) : null}
+          {workflowChip ? (
+            <div className="flex min-w-0 shrink items-center">
+              <ChatComposerToolbarChip {...workflowChip} />
+              <WorkflowChipDescription
+                id={workflowChipNameId}
+                workflowName={selectedWorkflow?.name ?? null}
+              />
             </div>
           ) : null}
 

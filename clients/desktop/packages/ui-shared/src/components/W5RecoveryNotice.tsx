@@ -10,7 +10,8 @@ import {
   BackgroundServiceNotice,
   type BackgroundServiceNoticeProps,
 } from './BackgroundServiceNotice';
-import { Notice, NoticeButton } from './Notice';
+import { NoticeButton } from '../primitives/Notice';
+import { ToastCardNotice } from '../primitives/ToastNotice';
 
 export interface W5RecoveryNoticeProps {
   readonly status?: W5RecoveryStatus;
@@ -71,7 +72,7 @@ function BlockedChangesNotice({
   const restart = cold?.state === 'restart-required';
   const complete = cold?.state === 'complete';
   return (
-    <Notice
+    <ToastCardNotice
       intent={complete && !archiveRecovery ? 'positive' : 'attention'}
       title={
         !cold
@@ -86,7 +87,6 @@ function BlockedChangesNotice({
                 ? 'Workspace recovery needs attention'
                 : 'Some workspace changes are blocked'
       }
-      className="pointer-events-auto"
       onDismiss={
         (cold && onDismiss) || archiveRecovery?.onDismiss
           ? () => {
@@ -186,6 +186,6 @@ function BlockedChangesNotice({
           )}
         </>
       ) : null}
-    </Notice>
+    </ToastCardNotice>
   );
 }

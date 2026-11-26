@@ -210,7 +210,8 @@ export async function backupOperationLedger(
   const source = readFacts(ledger.connection);
   ledger.connection.prepare('VACUUM INTO ?').run(target);
   syncFile(target);
-  await options.syncDirectory(dirname(target));
+  if ((await options.syncDirectory(dirname(target))) !== 'flushed')
+    throw new OperationLedgerError('BACKUP_UNVERIFIED', 'Backup not flushed.');
   verifyCopy(target, source);
   const digest = sha256(target);
   restoreTest(target, source);

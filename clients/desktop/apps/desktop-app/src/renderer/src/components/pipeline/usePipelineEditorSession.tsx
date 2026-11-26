@@ -16,6 +16,7 @@ import type {
 import {
   usePipelineEditor,
   type MainView,
+  type ReadView,
   type UsePipelineEditorReturn,
 } from '../../hooks/usePipelineEditor';
 import { useCurrentUiStateReporter } from '../../hooks/useCurrentUiStateReporter';
@@ -156,9 +157,9 @@ export interface PipelineEditorSession {
   rawYamlText: string;
   setRawYamlText: (text: string) => void;
   rawYamlError: string | null;
-  /** Read-only pipelines show Flow or Details instead of the editor. */
-  readDetailView: 'flowchart' | 'details';
-  setReadDetailView: (view: 'flowchart' | 'details') => void;
+  /** Read-only pipelines show the Designer, the Map or Details. */
+  readDetailView: ReadView;
+  setReadDetailView: (view: ReadView) => void;
   /** Set for a read-only pipeline: what the read detail renders. */
   readDefinition: RemoteControlPipelineDefinitionViewModel | null;
   flowSource: PipelineFlowSource | null;
@@ -166,7 +167,10 @@ export interface PipelineEditorSession {
   validationErrors: ValidationIssue[];
   validationWarnings: ValidationIssue[];
 
-  /** Add Job is offered: editable and not in Raw. */
+  /**
+   * Add Job is offered: editable, and not in Raw or the Designer, whose own
+   * insertion arrives in CAN-4224 phase 02 (a new root job would split it).
+   */
   canAddJob: boolean;
   addJob: () => void;
   settingsOpen: boolean;
@@ -250,10 +254,9 @@ export function usePipelineEditorSession(
   const { requestShare, shareGateModal } = useShareAccess();
   const [duplicating, setDuplicating] = useState(false);
   const [duplicateError, setDuplicateError] = useState<string | null>(null);
-  // A read-only workflow opens on its flow, like an editable one (CAN-4319).
-  const [readDetailView, setReadDetailView] = useState<'flowchart' | 'details'>(
-    'flowchart',
-  );
+  // A read-only workflow opens in the Designer, like an editable one
+  // (CAN-4224 phase 05).
+  const [readDetailView, setReadDetailView] = useState<ReadView>('designer');
   const [relatedDataRevision, setRelatedDataRevision] = useState(0);
 
   // Raw YAML view state
@@ -271,7 +274,14 @@ export function usePipelineEditorSession(
     dirty: isRawMode ? isRawYamlDirty || editor.isDirty : editor.isDirty,
     readonly: editor.readonly,
     ...(editor.readonly
-      ? { activeView: readDetailView === 'flowchart' ? 'flow' : 'details' }
+      ? {
+          activeView:
+            readDetailView === 'map'
+              ? 'flow'
+              : readDetailView === 'details'
+                ? 'details'
+                : 'designer',
+        }
       : {}),
   });
 
@@ -282,8 +292,8 @@ export function usePipelineEditorSession(
     setRawYamlText('');
     rawYamlBaselineRef.current = '';
     setRawYamlError(null);
-    setReadDetailView('flowchart');
-    setEditorMainView('flowchart');
+    setReadDetailView('designer');
+    setEditorMainView('designer');
     setEditorTarget({
       pipelineId,
       draftKey,
@@ -571,12 +581,54 @@ export function usePipelineEditorSession(
     [],
   );
 
+  // CAN-5782: a save that would stop schedules an agent created asks the
+  // person, and saves again with their confirmation.
+  const [scheduleStopMessage, setScheduleStopMessage] = useState<string | null>(
+    null,
+  );
+  const scheduleStopResolverRef = useRef<((confirmed: boolean) => void) | null>(
+    null,
+  );
+  const resolveScheduleStop = useCallback((confirmed: boolean): void => {
+    const resolve = scheduleStopResolverRef.current;
+    scheduleStopResolverRef.current = null;
+    setScheduleStopMessage(null);
+    resolve?.(confirmed);
+  }, []);
+  useEffect(
+    (): (() => void) => (): void => {
+      scheduleStopResolverRef.current?.(false);
+      scheduleStopResolverRef.current = null;
+    },
+    [],
+  );
+
   const saveWithImpactConfirm = useCallback((): Promise<SaveOutcome> => {
     const pending = saveWithImpactPromiseRef.current;
     if (pending) return pending;
     const next = (async (): Promise<SaveOutcome> => {
       if (!(await confirmSharedSaveImpact())) return { ok: false };
-      return await saveCurrentPipeline();
+      // A save that never reaches main (a Raw YAML parse failure) must not
+      // read an earlier save's refusal.
+      editor.clearScheduleRefusal();
+      let outcome = await saveCurrentPipeline();
+      // The confirmation names the schedules shown. When the set changed
+      // while the dialog was open, main asks again with the new list, and
+      // the dialog shows it in the same save (a few times at most).
+      for (let asked = 0; asked < 3; asked += 1) {
+        const refusal = editor.scheduleRefusal();
+        if (outcome.ok || refusal?.kind !== 'needs_confirmation')
+          return outcome;
+        const confirmed = await new Promise<boolean>((resolve) => {
+          scheduleStopResolverRef.current = resolve;
+          // Main's own message: which schedules stop, and why.
+          setScheduleStopMessage(refusal.message);
+        });
+        if (!confirmed) return { ok: false };
+        editor.confirmAgentSchedulesStopOnNextSave(refusal.scheduleIds ?? []);
+        outcome = await saveCurrentPipeline();
+      }
+      return outcome;
     })();
     saveWithImpactPromiseRef.current = next;
     const clearPending = (): void => {
@@ -586,7 +638,7 @@ export function usePipelineEditorSession(
     };
     void next.then(clearPending, clearPending);
     return next;
-  }, [confirmSharedSaveImpact, saveCurrentPipeline]);
+  }, [confirmSharedSaveImpact, editor, saveCurrentPipeline]);
 
   const save = useCallback(async (): Promise<UnsavedChangesSaveResult> => {
     const outcome = await saveWithImpactConfirm();
@@ -824,6 +876,19 @@ export function usePipelineEditorSession(
       )
     ) : null;
 
+  const scheduleStopDialog: ReactNode =
+    scheduleStopMessage !== null ? (
+      <ConfirmDialog
+        title="Stop these schedules?"
+        message={scheduleStopMessage}
+        confirmLabel="Save anyway"
+        onConfirm={(): void => resolveScheduleStop(true)}
+        onCancel={(): void => resolveScheduleStop(false)}
+        dataTestId="workflow-schedule-stop-dialog"
+        confirmTestId="workflow-schedule-stop-confirm"
+      />
+    ) : null;
+
   const saveImpactDialog: ReactNode = saveImpactConfirmOpen ? (
     <ConfirmDialog
       title="Save changes?"
@@ -880,7 +945,7 @@ export function usePipelineEditorSession(
     validationErrors: editor.validation.filter((v) => v.type === 'error'),
     validationWarnings: editor.validation.filter((v) => v.type === 'warning'),
 
-    canAddJob: editable,
+    canAddJob: editable && editor.mainView !== 'designer',
     addJob: editor.addJob,
     settingsOpen: editor.activePanel === 'settings',
     toggleSettings,
@@ -904,6 +969,13 @@ export function usePipelineEditorSession(
     duplicating,
     duplicateError,
 
-    saveImpactDialog,
+    // The schedule-stop confirmation (CAN-5782) shows where the shared
+    // save's does.
+    saveImpactDialog: (
+      <>
+        {saveImpactDialog}
+        {scheduleStopDialog}
+      </>
+    ),
   };
 }

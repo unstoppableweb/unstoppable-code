@@ -18,10 +18,10 @@ import { isFocusReturnTarget } from '../lib/focusable';
 import {
   copyTextToClipboard,
   DEFAULT_COPIED_DURATION_MS,
-} from './copy-to-clipboard';
-import { DropdownMenuStatusRow } from './DropdownMenu';
-import { RichHoverCard } from './RichHoverTooltip';
-import { ErrorBanner } from './StatusBlocks';
+} from '../primitives/copy-to-clipboard';
+import { DropdownMenuStatusRow } from '../primitives/DropdownMenu';
+import { RichHoverCard } from '../primitives/RichHoverTooltip';
+import { ErrorBanner } from '../primitives/StatusBlocks';
 import { selectionTextWithMathSource } from './markdown-math-copy';
 import { TabContextMenu, type TabContextMenuItem } from './TabContextMenu';
 import { lookUpMenuLabel } from '../lib/look-up-label';

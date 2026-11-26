@@ -622,9 +622,7 @@ function UsageLimitResumeModalContent(): JSX.Element | null {
       void window.api.codexLogin
         .cancel()
         .then(close)
-        .catch(() =>
-          setError("Couldn't finish cancelling sign-in. Try again."),
-        );
+        .catch(() => setError("Couldn't finish canceling sign-in. Try again."));
       return;
     }
     close();

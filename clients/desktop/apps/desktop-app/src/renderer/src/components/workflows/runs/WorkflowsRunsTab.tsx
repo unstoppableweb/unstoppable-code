@@ -101,8 +101,7 @@ export function WorkflowsRunsTab({
       )}
       {feed.cloudError !== null && (
         <Notice intent="attention" data-testid="workflows-runs-cloud-error">
-          Cloud runs could not be loaded. Runs on this computer are still
-          listed.
+          Couldn&apos;t load cloud runs. Runs on this computer are still listed.
         </Notice>
       )}
       {rowActions.actionFeedback}

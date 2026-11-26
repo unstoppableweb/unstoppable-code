@@ -70,6 +70,38 @@ export function antigravityNativeOperation(
   return operation;
 }
 
+/**
+ * Whether a permission request is for a tool on one of the turn's host-routed
+ * MCP servers (`mcp_<server>_<tool>`, the approval hook's rule). Antigravity
+ * 1.5.14 asks ACP permission for MCP calls, which 1.5.1 ran without asking.
+ * Every routed server authorizes each call in the host immediately before
+ * execution, so this request is answered without a second approval. As in the
+ * hook, a server name may contain `_`; that is safe only because no unrouted
+ * server can be present (see antigravityToolGateHeader in runtime.ts).
+ */
+export function isRoutedAntigravityMcpCall(
+  request: AcpPermissionRequest,
+  routedServers: readonly string[],
+): boolean {
+  const call = request.request.toolCall;
+  const name =
+    'name' in call && typeof call.name === 'string' ? call.name : undefined;
+  if (
+    !name ||
+    Array.from(name).some(
+      (character) =>
+        character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+    )
+  )
+    return false;
+  return routedServers.some(
+    (server) =>
+      /^[A-Za-z0-9_-]+$/.test(server) &&
+      name.startsWith(`mcp_${server}_`) &&
+      name.length > `mcp_${server}_`.length,
+  );
+}
+
 /** Plan mode refuses every mutating native call without a prompt. */
 export const ANTIGRAVITY_PLAN_MODE_DENIED_MESSAGE =
   'Plan mode is read-only; the command was not run.';

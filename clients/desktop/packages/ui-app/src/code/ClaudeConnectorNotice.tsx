@@ -1,6 +1,8 @@
 'use client';
 
-import { useSyncExternalStore, type JSX } from 'react';
+import { useEffect, useSyncExternalStore, type JSX } from 'react';
+import { useOnboardingTipsStore } from '@canopy/app-state';
+import { CLAUDE_CONNECTOR_NOTICE_DISMISSAL_ID } from '@canopy/protocol/onboarding-tips';
 import type { ClaudeConnectorAvailability } from '@canopy/protocol/remote-control/shell';
 import { Notice, NoticeButton } from '@canopy/ui-shared/components';
 
@@ -30,7 +32,7 @@ function readDismissal(chatKey: string): string | undefined {
   return undefined;
 }
 
-function dismiss(chatKey: string, launchId: string): void {
+function dismissLocally(chatKey: string, launchId: string): void {
   const entries = new Map<string, string>();
   try {
     const raw = globalThis.localStorage?.getItem(STORAGE_KEY);
@@ -82,7 +84,7 @@ function subscribe(listener: () => void): () => void {
 }
 
 export interface ClaudeConnectorNoticeProps {
-  /** Stable worker/workspace/worktree/chat identity, independent of navigation. */
+  /** Stable workspace/worktree/chat identity for legacy and older-host storage. */
   readonly chatKey: string;
   readonly availability?: ClaudeConnectorAvailability;
   readonly appName: string;
@@ -96,12 +98,12 @@ export function ClaudeConnectorNotice({
   appName,
   onManageConnections,
 }: ClaudeConnectorNoticeProps): JSX.Element | null {
-  const dismissed = useSyncExternalStore(
-    subscribe,
-    () =>
-      availability !== undefined &&
-      readDismissal(chatKey) === availability.launchId,
-    () => false,
+  const status = useOnboardingTipsStore((state) => state.status);
+  const load = useOnboardingTipsStore((state) => state.load);
+  const dismiss = useOnboardingTipsStore((state) => state.dismiss);
+  const dismissed = useOnboardingTipsStore(
+    (state) =>
+      state.dismissed[CLAUDE_CONNECTOR_NOTICE_DISMISSAL_ID] !== undefined,
   );
   const cause =
     availability?.status === 'suppressed'
@@ -109,7 +111,31 @@ export function ClaudeConnectorNotice({
       : availability?.status === 'unknown'
         ? availability.launchRoute
         : undefined;
-  if (!availability || !cause || dismissed) return null;
+  const localDismissal = useSyncExternalStore(
+    subscribe,
+    () =>
+      availability !== undefined &&
+      readDismissal(chatKey) === availability.launchId,
+    () => false,
+  );
+  useEffect(() => {
+    if (cause || localDismissal) load();
+  }, [cause, localDismissal, load]);
+  useEffect(() => {
+    // Local records belong to one chat and one admitted launch. Importing an
+    // unrelated record could dismiss the notice on another paired computer.
+    if (status === 'ready' && localDismissal && !dismissed) {
+      dismiss(CLAUDE_CONNECTOR_NOTICE_DISMISSAL_ID);
+    }
+  }, [dismiss, dismissed, localDismissal, status]);
+  if (
+    !availability ||
+    !cause ||
+    status !== 'ready' ||
+    dismissed ||
+    localDismissal
+  )
+    return null;
   const confirmed = availability.status === 'suppressed';
   const route =
     cause === 'account_proxy'
@@ -131,7 +157,12 @@ export function ClaudeConnectorNotice({
           : 'claude.ai connectors may be unavailable in this chat'
       }
       data-testid="claude-connector-notice"
-      onDismiss={(): void => dismiss(chatKey, availability.launchId)}
+      onDismiss={(): void => {
+        // Older hosts reject this ID. Keep the existing chat/launch record
+        // before the host write so a rejection or reload cannot lose dismissal.
+        dismissLocally(chatKey, availability.launchId);
+        dismiss(CLAUDE_CONNECTOR_NOTICE_DISMISSAL_ID);
+      }}
       dismissLabel="Dismiss connector notice"
       actions={
         <NoticeButton variant="primary" onClick={onManageConnections}>

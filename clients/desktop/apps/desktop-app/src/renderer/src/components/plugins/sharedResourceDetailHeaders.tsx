@@ -27,7 +27,7 @@ export function sharedAgentDetailHeader(
   options?: SharedResourceProvenanceMetaOptions,
 ): MarketplaceDetailPageHeader {
   return {
-    description: `Agent using ${describeAgentBaseModel(agent.baseModel, getModelDisplayName)}`,
+    description: `Model preset using ${describeAgentBaseModel(agent.baseModel, getModelDisplayName)}`,
     meta: sharedResourceProvenanceMeta(
       sharedResourceProvenance(
         agent,

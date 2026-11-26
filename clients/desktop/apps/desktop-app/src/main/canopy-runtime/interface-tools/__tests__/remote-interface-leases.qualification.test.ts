@@ -111,6 +111,8 @@ class FakeSession {
   closeAfterDelivery(reason: string): void {
     this.close(reason);
   }
+  /** Every message is handed over as it is sent: nothing waits to drop. */
+  discardUnsent(): void {}
   close(reason: string): void {
     if (this.closed) return;
     this.closed = true;

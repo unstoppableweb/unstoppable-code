@@ -1,5 +1,5 @@
 import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
-import { Dot } from '@canopy/ui-shared/components/Badge';
+import { Dot } from '@canopy/ui-shared/primitives/Badge';
 import {
   AccountMenuComputersItem,
   SidebarMachinePicker,

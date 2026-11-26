@@ -1,8 +1,8 @@
 'use client';
 
 import type { JSX } from 'react';
-import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import { Notice } from './Notice';
+import { Notice } from '../primitives/Notice';
+import { CopyDetailsButton } from '../primitives/CopyDetailsButton';
 
 export interface ModelSelectionFailure {
   message: string;
@@ -12,20 +12,27 @@ export interface ModelSelectionFailure {
 
 export function ModelSelectionNotice({
   failure,
+  onDismiss,
 }: {
   failure: ModelSelectionFailure | undefined;
+  /** Close icon; the host shows the next failure again. */
+  onDismiss?: () => void;
 }): JSX.Element | null {
   if (!failure) return null;
   return (
     <Notice
       data-testid="model-selection-failure"
       intent="attention"
+      {...(onDismiss !== undefined ? { onDismiss } : {})}
+      // The caught message can quote paths, so it rides behind Copy details.
+      actions={<CopyDetailsButton details={failure.message} />}
       title={
-        failure.reported ? 'Model change failed' : 'Model change not confirmed'
+        failure.reported
+          ? "Couldn't change the model"
+          : 'Model change not confirmed'
       }
     >
-      {/* A caught message can quote paths: replay skips it (CAN-7102). */}
-      <span className={REPLAY_BLOCK_CLASS}>{failure.message}</span>
+      {null}
     </Notice>
   );
 }

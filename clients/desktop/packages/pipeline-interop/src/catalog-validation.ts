@@ -8,7 +8,10 @@ import { PORTABLE_PIPELINE_TRIGGER_TYPES } from '@canopy/protocol/pipelines';
 import type { PipelinePackageManifestV1 } from '@canopy/protocol/pipelines';
 import { normalizePipeline } from './normalize-pipeline';
 import { getTriggerTypes } from './document';
-import { LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE } from './portability';
+import {
+  LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
+  pipelineDeclaresLocalOnlyTrigger,
+} from './portability';
 import { parsePipelineText } from './parse-pipeline';
 
 export class PipelineCatalogValidationError extends Error {
@@ -370,6 +373,11 @@ export function validateCuratedPipeline(
         );
     }
   const pipeline = parsePipelineText(rawPipeline);
+  // An inline child (`with.pipeline_yaml`) that declares `workflow` is
+  // refused like the root (CAN-5782): curated entries stay readable by
+  // desktops that don't know the trigger.
+  if (pipelineDeclaresLocalOnlyTrigger(pipeline))
+    fail('on', 'invalid_trigger', LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE);
   try {
     const normalized = normalizePipeline(pipeline);
     return {

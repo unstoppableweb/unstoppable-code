@@ -16,7 +16,7 @@ export function requestAgentEditor(agentId: string): void {
       .getState()
       .isEnabled(CLIENT_FEATURE_FLAGS.canopySharedCustomAgents.key)
   ) {
-    throw new Error('Agents are not available.');
+    throw new Error('Model presets are not available.');
   }
   const availability = getPageAvailability('plugins');
   if (!availability.available) {

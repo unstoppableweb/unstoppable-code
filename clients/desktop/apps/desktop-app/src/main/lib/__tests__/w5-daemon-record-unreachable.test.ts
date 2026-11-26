@@ -1,4 +1,11 @@
 import { createW5RecordHostPort } from '@canopy/core-runtime/node/w5/record-port';
+import { createW5CommittedReadCache } from '@canopy/core-runtime/node/w5/committed-read-cache';
+import { createCanopyClient } from '@canopy/core-client';
+import {
+  CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
+  CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
+  CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
+} from '@canopy/protocol/canopy-core';
 import { WorkspaceConfigUnreadableError } from '@canopy/core-runtime/node/w5/file-store';
 // GB4 (CAN-5542) PR 1: Electron main's daemon-backed W5 store when its
 // record-port connection drops, on a real commit-log worker and real files.
@@ -118,7 +125,8 @@ function recording(transport: W5RecordPortTransport): W5RecordPortTransport {
     return call();
   };
   return {
-    capture: (request) => record('capture', () => transport.capture(request)),
+    capture: (request, ...args) =>
+      record('capture', () => transport.capture(request, ...args)),
     recovery: () => record('recovery', () => transport.recovery()),
     commit: (request) => record('commit', () => transport.commit(request)),
     lookupReceipt: (receipt) =>
@@ -335,3 +343,159 @@ it('keeps safe SQLite startup diagnostics after a real worker open failure', asy
     await failed.shutdown();
   }
 });
+
+it.each(['recovery', 'client', 'response'] as const)(
+  'retirement during capture %s wait preserves shared recovery, lease and fallback',
+  async (wait) => {
+    const client = await createCanopyClient({
+      connection: await harness.serve({
+        clientInstanceId: 'cache-cancellation',
+        interfaceKind: 'desktop',
+      }),
+      clientName: 'cache-cancellation',
+      clientVersion: '1',
+      definitions: {
+        queries: CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
+        instructions: {
+          ...CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
+          'core.client.lease.acquire':
+            CORE_TRANSPORT_INSTRUCTION_DEFINITIONS['core.client.lease.acquire'],
+        },
+        streams: {},
+      },
+    });
+    await client.instruction('core.client.lease.acquire', {
+      clientInstanceId: 'cache-cancellation',
+      interfaceKind: 'desktop',
+      label: 'Cache retirement golden',
+      interactive: false,
+      foreground: false,
+      renewalIntervalMs: 300_000,
+      _meta: { idempotencyKey: 'cache-cancellation-lease' },
+    });
+    const wire = client.connection;
+    const sends = jest.spyOn(wire, 'send');
+    let enter = (): void => undefined;
+    let release = (): void => undefined;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let finishRemote = (): void => undefined;
+    const remoteFinished = new Promise<void>((resolve) => {
+      finishRemote = resolve;
+    });
+    const capture = host.capture.bind(host);
+    const heldCapture =
+      wait === 'response'
+        ? jest
+            .spyOn(host, 'capture')
+            .mockImplementationOnce(async (request) => {
+              enter();
+              await gate;
+              try {
+                return await capture(request);
+              } finally {
+                finishRemote();
+              }
+            })
+        : undefined;
+    let blocked = wait === 'recovery';
+    const guarded = guardW5RecordPortCalls({
+      owner: owner.signal,
+      connect: async () => {
+        if (wait === 'client' && blocked) {
+          enter();
+          await gate;
+        }
+        return client;
+      },
+    });
+    const transport = w5RecordPortTransportOver(guarded);
+    let recoveries = 0;
+    const store = createW5DaemonRecordStore({
+      root,
+      transport: {
+        ...transport,
+        recovery: async () => {
+          recoveries += 1;
+          if (wait === 'recovery' && blocked) {
+            enter();
+            await gate;
+          }
+          return transport.recovery();
+        },
+      },
+    });
+    restore = installW5DaemonRecordStoreForTests(store);
+    if (wait === 'client') {
+      await store.readRevisions([]);
+      blocked = true;
+    }
+    let finish = (): void => undefined;
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const cache = createW5CommittedReadCache({
+      capture: async (request, signal) => {
+        try {
+          const result = await store.capture?.(request, signal);
+          if (!result) throw new Error('Capture required');
+          return result.capture;
+        } finally {
+          finish();
+        }
+      },
+    });
+    const pending = cache.refillBroad();
+    try {
+      await entered;
+      cache.revoke(true);
+      // Retirement settles the cache step even while shared/remote work is blocked.
+      await expect(pending).resolves.toBeUndefined();
+      release();
+      blocked = false;
+      await finished;
+      if (wait === 'response') await remoteFinished;
+      await settleDetachedWork();
+      const captures = (): number =>
+        sends.mock.calls.filter(
+          ([frame]) =>
+            'method' in frame &&
+            frame.method === 'core.workspaceRecords.capture',
+        ).length;
+      const dispatched = wait === 'response' ? 1 : 0;
+      expect(captures()).toBe(dispatched);
+      expect(owner.signal.aborted).toBe(false);
+      expect(client.signal.aborted).toBe(false);
+      // Ordinary reads do not inherit the cache's signal.
+      await expect(
+        store.capture?.({
+          files: [{ kind: 'index' }],
+          discoverWorkspaces: false,
+        }),
+      ).resolves.toBeDefined();
+      expect(captures()).toBe(dispatched + 1);
+      expect(recoveries).toBe(1);
+      await expect(rename('after-cache-retirement')).resolves.toEqual([
+        expect.objectContaining({ branchName: 'after-cache-retirement' }),
+        expect.objectContaining({ branchName: 'after-cache-retirement' }),
+      ]);
+      await expect(
+        readWorkspaceWorktrees('a', { persistRemovalCleanup: false }),
+      ).resolves.toEqual([
+        expect.objectContaining({ branchName: 'after-cache-retirement' }),
+        expect.objectContaining({ branchName: 'after-cache-retirement' }),
+      ]);
+      expect(recoveries).toBe(1);
+    } finally {
+      release();
+      await pending.catch(() => undefined);
+      heldCapture?.mockRestore();
+      await client.close();
+      sends.mockRestore();
+    }
+  },
+);

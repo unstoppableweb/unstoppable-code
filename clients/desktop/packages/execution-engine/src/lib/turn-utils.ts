@@ -26,6 +26,7 @@ import type {
   TurnToolResult,
   TurnBlock,
   TurnMessage,
+  TurnGroup,
   TurnGroupOrMessage,
   TurnOutcomeStep,
 } from '@canopy/agent-transcript/turn-messages';
@@ -157,6 +158,17 @@ export function groupIntoTurns(
   const result: TurnGroupOrMessage[] = [];
   let currentUserMessage: TurnMessage | null = null;
   let currentAssistantMessages: TurnMessage[] = [];
+  // The turn a real timer row closed, which the current run of trailing
+  // timers follows, and its index in `result`. A legacy result row's
+  // synthesized timer also closes a turn, but its time is when that row
+  // arrived, not a recorded execution.
+  let trailingOwner: {
+    group: TurnGroup;
+    index: number;
+    // The run's folded ids, attached to the group on the first fold and
+    // appended to in place, so a long run costs linear time.
+    folded?: string[];
+  } | null = null;
 
   const flushIncomplete = (reason: 'next_user' | 'end'): void => {
     if (!currentUserMessage) {
@@ -204,6 +216,8 @@ export function groupIntoTurns(
     const turnTimerMessage = isTurnTimer
       ? message
       : legacyClaudeTerminalTimerMessage;
+    // Any other row ends the run of timers trailing a turn.
+    if (!isTurnTimer) trailingOwner = null;
 
     if (isUserTurnBoundary(message) || isWakeBoundaryMessage(message)) {
       flushIncomplete('next_user');
@@ -214,20 +228,53 @@ export function groupIntoTurns(
 
     if (turnTimerMessage && currentUserMessage) {
       const timerBlock = turnTimerMessage.blocks[0];
-      result.push({
+      const group: TurnGroup = {
         kind: 'turn-group',
         userMessage: currentUserMessage,
         assistantMessages: currentAssistantMessages,
         timerMessage: turnTimerMessage,
         isComplete:
           timerBlock.type === 'turn_timer' && timerBlock.completedAt !== null,
-      });
+      };
+      result.push(group);
+      trailingOwner = isTurnTimer ? { group, index: result.length - 1 } : null;
       currentUserMessage = null;
       currentAssistantMessages = [];
       continue;
     }
 
     if (isTurnTimer) {
+      // An earlier, finished execution of the turn just closed, which
+      // `reorderMessagesForDisplay` places after the timer that owns it. The
+      // turn's header and stamp already speak for it, and on its own row it
+      // would be a bare timestamp. A completion newer than the owner's keeps
+      // its row, so the latest time is never hidden, and every timer in the
+      // run is compared with the owner, not with a row kept before it. Only
+      // a real timer row speaks for it: a turn closed by a legacy result row,
+      // whose time is when that row arrived, keeps this timer's own row.
+      // The turn records the folded row's id, so a fork point or jump target
+      // on it still finds the turn.
+      const timerBlock = message.blocks[0];
+      const ownerBlock = trailingOwner?.group.timerMessage.blocks[0];
+      if (
+        trailingOwner !== null &&
+        ownerBlock?.type === 'turn_timer' &&
+        timerBlock?.type === 'turn_timer' &&
+        timerBlock.completedAt !== null &&
+        (ownerBlock.completedAt === null ||
+          timerBlock.completedAt <= ownerBlock.completedAt)
+      ) {
+        if (trailingOwner.folded === undefined) {
+          const folded: string[] = [];
+          result[trailingOwner.index] = {
+            ...trailingOwner.group,
+            foldedTimerIds: folded,
+          };
+          trailingOwner.folded = folded;
+        }
+        trailingOwner.folded.push(message.id);
+        continue;
+      }
       result.push({ kind: 'standalone', message });
       continue;
     }

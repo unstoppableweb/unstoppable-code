@@ -6,7 +6,7 @@ import {
   aiCreditsArrivalTitle,
   type AiCreditsArrivalEvidence,
 } from './aiCreditsArrival';
-import { Notice, type NoticeProps } from './Notice';
+import { Notice, type NoticeProps } from '../primitives/Notice';
 
 export interface AiCreditsArrivedNoticeProps
   extends

@@ -1369,7 +1369,9 @@ export async function saveWorkflowEdit(page, { timeout = 30_000 } = {}) {
   const shell = page.getByTestId('workflow-edit-shell');
   await expect(shell).toBeVisible();
   const draft = isWorkflowEditDraftTarget(await workflowEditTarget(page));
-  const save = shell.locator(WORKFLOW_EDIT_SAVE_SELECTOR).first();
+  // A pipeline's actions render in the page's toolbar, outside the shell
+  // (CAN-4319), so Save is found on the page.
+  const save = page.locator(WORKFLOW_EDIT_SAVE_SELECTOR).first();
   await expect(save).toBeEnabled();
   await save.click();
   if (draft) {

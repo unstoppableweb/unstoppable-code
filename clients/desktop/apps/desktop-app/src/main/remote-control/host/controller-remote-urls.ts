@@ -571,15 +571,20 @@ const OUT_ONLY_GIT_URL_FIELDS: Readonly<Record<string, readonly string[]>> = {
   ],
   // `url` here is a canopy.json repository entry's clone URL.
   url: [IPC_CHANNELS.canopyJsonRead, IPC_CHANNELS.workspaceInitGit],
-  // A plugin marketplace's source, which can be a Git URL with a token.
+  // A plugin marketplace's source, or the source a plugin copy was cloned from
+  // (its provenance), either of which can be a Git URL with a token.
   sourceUrl: [
     IPC_CHANNELS.appAdvisorSettingsView,
     IPC_CHANNELS.pluginCatalogList,
     PLUGINS_CHANNELS.ADD,
+    PLUGINS_CHANNELS.INSTALL_BUILT_IN_PLUGIN,
+    PLUGINS_CHANNELS.INSTALL_PLUGIN,
     PLUGINS_CHANNELS.LOAD,
     PLUGINS_CHANNELS.LOAD_CACHE_ONLY,
+    PLUGINS_CHANNELS.PREPARE_CODEX_COMPATIBILITY,
     PLUGINS_CHANNELS.REFRESH,
     PLUGINS_CHANNELS.REMOVE,
+    PLUGINS_CHANNELS.SET_CODEX_COMPAT_DISABLED,
     PLUGINS_CHANNELS.UPDATE,
   ],
 };

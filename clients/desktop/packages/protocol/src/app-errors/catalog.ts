@@ -54,7 +54,7 @@ export const APP_ERROR_CATALOG = {
     kind: 'external',
     recovery: 'fix_first',
     copy: {
-      title: 'Out of AI Credits',
+      title: "You're out of credits",
       description: 'Buy more credits to keep going.',
     },
     summary: 'AI Credits billing source unavailable',
@@ -64,7 +64,8 @@ export const APP_ERROR_CATALOG = {
     kind: 'external',
     recovery: 'fix_first',
     copy: {
-      title: 'Chat stopped. This session has used its AI Credits budget.',
+      title: 'This chat reached its credits limit.',
+      description: 'A new chat starts with a fresh one.',
     },
     summary: 'AI Credits session budget exhausted',
     status: 402,
@@ -73,7 +74,8 @@ export const APP_ERROR_CATALOG = {
     kind: 'external',
     recovery: 'fix_first',
     copy: {
-      title: 'Chat stopped. This model is not available for this request.',
+      title: 'Chat stopped.',
+      description: 'This model is not available for this request.',
     },
     summary: 'AI Credits model access required',
     status: 403,
@@ -82,8 +84,9 @@ export const APP_ERROR_CATALOG = {
     kind: 'external',
     recovery: 'fix_first',
     copy: {
-      title:
-        'Chat stopped. You no longer have access to this organization’s AI Credits.',
+      title: "You're no longer in this organization.",
+      description:
+        "Its credits can't pay for this chat. Ask an org admin to add you back.",
     },
     summary: 'AI Credits work owner membership required',
     status: 403,

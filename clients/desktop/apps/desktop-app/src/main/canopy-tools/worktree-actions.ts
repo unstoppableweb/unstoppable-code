@@ -690,6 +690,12 @@ export interface WorktreeActionRuntime {
    * other type before any handler runs. Omit it for the full surface.
    */
   allowedActionTypes?: readonly string[];
+  /**
+   * Set only on a pipeline agent step's restricted runtime (CAN-7742): the
+   * step's execution, from the host's own run state. A review the step posts
+   * as the GitHub App is attributed to it, as the builtin publish step's is.
+   */
+  pipelineExecutionId?: string;
   pipelineInitiationSource?: 'automation' | 'portal';
   /** Who a tracked plan import is attributed to; App Advisor passes its own. */
   planInitiationSource?: 'app_advisor';

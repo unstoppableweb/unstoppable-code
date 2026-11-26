@@ -20,6 +20,7 @@ import {
   reorderWorkEntries,
 } from '../lib/cowork-work-entries';
 import { validateId } from '../lib/validation';
+import { assertWritableScope } from '../lib/read-only-scope';
 import { getActiveDesktopRuntime } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { preserveRuntimeCauseError } from '../canopy-runtime/runtime-cause-error';
@@ -97,9 +98,11 @@ export function registerWorkEntryHandlers(): void {
   registerIpcHandler<
     [CoworkWorkEntryDeleteRequest],
     CoworkWorkEntryDeleteResponse
-  >(IPC_CHANNELS.workEntriesDelete, async (_event, request) =>
-    deleteWorkEntryMutation(request),
-  );
+  >(IPC_CHANNELS.workEntriesDelete, async (_event, request) => {
+    // A read-only scope deletes nothing, for every caller (CAN-7446).
+    assertWritableScope(request.projectId);
+    return deleteWorkEntryMutation(request);
+  });
 
   registerIpcHandler<
     [CoworkWorkEntryResolveChatRequest],

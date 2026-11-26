@@ -1,8 +1,11 @@
 import { type JSX, Fragment, useRef, useState } from 'react';
-import { Button } from './Button';
-import { DropdownMenuDivider, DropdownMenuItem } from './DropdownMenu';
-import { FloatingMenu } from './FloatingMenu';
-import { Tooltip } from './Tooltip';
+import { Button } from '../primitives/Button';
+import {
+  DropdownMenuDivider,
+  DropdownMenuItem,
+} from '../primitives/DropdownMenu';
+import { FloatingMenu } from '../primitives/FloatingMenu';
+import { Tooltip } from '../primitives/Tooltip';
 import { menuDismissalSwallowsClick } from '../lib/menu-open-body-flag';
 import { MoreHorizontalIcon } from '../icons/AppIcons';
 import type { UnifiedPluginEntry } from '../lib/unified-plugin-entry';

@@ -1,10 +1,10 @@
 import { useId, type JSX } from 'react';
 import type { SharedContainerOwnerDepartureNotice } from '@canopy/protocol/shared-containers';
 import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
-import { Notice } from './Notice';
-import { ListRow } from './ListRow';
+import { Notice } from '../primitives/Notice';
+import { ListRow } from '../primitives/ListRow';
 import { RailIconButton } from './RailIconButton';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 import { TrashIcon } from '../icons/AppIcons';
 
 export interface SharedContainerOwnerDepartureNoticesProps {

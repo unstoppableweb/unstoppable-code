@@ -1,8 +1,8 @@
 import type { JSX, MouseEvent } from 'react';
 import { ShareIcon } from '../icons/AppIcons';
 import type { MarketplaceShareAction } from '../lib/marketplace-share';
-import { Button, type ButtonVariant } from './Button';
-import { Tooltip } from './Tooltip';
+import { Button, type ButtonVariant } from '../primitives/Button';
+import { Tooltip } from '../primitives/Tooltip';
 
 /**
  * The one Share action: the share glyph, labelled `Share`, wherever a

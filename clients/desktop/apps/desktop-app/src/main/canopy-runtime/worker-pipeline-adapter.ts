@@ -44,11 +44,22 @@ export function createWorkerPipelineAdapter(
     }));
   return {
     queries: {
-      'worker.pipeline.execution.get': async (params, context) =>
-        (await handlers()).queries['worker.pipeline.execution.get'](
-          params,
-          context,
-        ),
+      // Main reads a run on the daemon, else in process (CAN-7874).
+      'worker.pipeline.execution.get': async (params, context) => {
+        const reads = await import('../lib/daemon-pipeline-read-route');
+        return reads.readPipelineExecutionInDaemon(
+          'get',
+          (session) =>
+            session.query('worker.pipeline.execution.get', params, {
+              signal: context.signal,
+            }),
+          async () =>
+            (await handlers()).queries['worker.pipeline.execution.get'](
+              params,
+              context,
+            ),
+        );
+      },
       'worker.pipeline.execution.list': async (params, context) =>
         (await handlers()).queries['worker.pipeline.execution.list'](
           params,

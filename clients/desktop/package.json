@@ -838,31 +838,31 @@
     }
   },
   "antigravity-cli": {
-    "version": "1.5.1",
+    "version": "1.5.14",
     "artifacts": {
       "darwin-arm64": {
-        "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.1/agy_cli_mac_arm64.tar.gz",
-        "integrity": "sha512-B4OZs5LDv85wvF2fsaRHpLCiomvUDDYUj0lEAouPIeNYiQ1bm+3N5pKWZ3sdosAmtOKDrpGII0KcE7kd3LkTzg==",
-        "archiveBytes": 63804999,
-        "executableSha256": "5ce7fbe126eb9abdc78634332a0a1bdd428327fba37ef7d1aeba7553eec55f3f"
+        "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.14/agy_cli_mac_arm64.tar.gz",
+        "integrity": "sha512-JoMP1Gv7kgDQc88+cb+UtwdVJVe0OA7AGv1umfOisDDmVCLasYZ/dzGAeGkt78hZp1R9F+xLCx6TafE8nDyupg==",
+        "archiveBytes": 85943943,
+        "executableSha256": "e8c2959bf4744580d0e5b8f938ec2dc3918a942b620a6262e53856400f14e5fb"
       },
       "darwin-x64": {
-        "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.1/agy_cli_mac_x64.tar.gz",
-        "integrity": "sha512-c2oPEhC0LtxuwpLh+EOGlvYWv2kGrV6HjUFbGKpTrMxZpnggXDMuWvVk+rjTLKWsW0HJuq2M7Qp7wiSgzPzDtQ==",
-        "archiveBytes": 69355865,
-        "executableSha256": "1f72c9a1c29b768fedd6d33150ebe5baa0f0692242c6286bd1669a1d183ec2d9"
+        "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.14/agy_cli_mac_x64.tar.gz",
+        "integrity": "sha512-G2ofxtvka6bZ0EBdG2CVGJ816/xMPDPOsf0bbQyf1wK1KsELZLi1Ku0NjXGuAsXfPP/V4+PTdUnC2v/M4qhTxw==",
+        "archiveBytes": 91613810,
+        "executableSha256": "5f3832bb8e391820bb895a08d1f837bb9e1714d48cd5ba31edf9286af6e9ea21"
       },
       "linux-arm64": {
-        "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.1/agy_cli_linux_arm64.tar.gz",
-        "integrity": "sha512-/fikY+W/Ts2KAbaKU+AG564CVueuNRo545xm4E4nXG0ItLk/QjzFctI0hx97+FLEUj4BcVak756n3qGq/7Cixg==",
-        "archiveBytes": 68424392,
-        "executableSha256": "d2b02615f4d0f8619966653a74b8f89160d12996ce763752ccc5e27a58029565"
+        "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.14/agy_cli_linux_arm64.tar.gz",
+        "integrity": "sha512-ybKbukdfY6GoAWGuk7pysiHHpYbZhR5NAGFUZwS6tm1rJ2CyXXFtGRck/HVk8yRkVu4VHiiqN69I281yvcbEYw==",
+        "archiveBytes": 92116379,
+        "executableSha256": "702b888abddc7d482ee30592fa153cda5785afae3188179d38b511b6ec360286"
       },
       "linux-x64": {
-        "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.1/agy_cli_linux_x64.tar.gz",
-        "integrity": "sha512-9wQGZU69lm8hFCQzglni040JnEhzTpAdwGl1Bj5aATfVW265Nmt1mDxpCLvCCukqJhdla7GR2O1v5CnWVLyk9Q==",
-        "archiveBytes": 72209583,
-        "executableSha256": "72738cf0445918483956a5f0da33abdfcfb21a12dd9a421fd57d063782826669"
+        "url": "https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.14/agy_cli_linux_x64.tar.gz",
+        "integrity": "sha512-gzEdPzVFZ2EtwWwa4uqbUD1vaDOqThONOaoinaPzu5mw5NfMoLzkeWsAYNalHYET63RJ7V3A55AL8hcQfqW/+Q==",
+        "archiveBytes": 101195950,
+        "executableSha256": "37873b8062391b6202a3d3199ec012abc9e53aab720d26cd65699441497d8c94"
       }
     }
   }

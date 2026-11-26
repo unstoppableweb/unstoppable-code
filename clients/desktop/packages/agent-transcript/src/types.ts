@@ -21,6 +21,10 @@ import type { PersistedToolOutputReference } from '@canopy/protocol/canopy-core/
 import type { ThinkingLevel } from '@canopy/protocol/thinking';
 import type { AgentSentInfo } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import type { ClaudeAiCreditsFallbackErrorCode } from '@canopy/protocol/llm-gateway';
+import type {
+  AgentProviderType,
+  ChatInterfaceMode,
+} from '@canopy/protocol/agent-providers';
 import type { CursorReportedUsage } from './lib/cursor-usage';
 /**
  * Serializable transcript/chat data types shared by the desktop app and the
@@ -43,23 +47,16 @@ export type {
   ChatWatcherFiredInfo,
 } from '@canopy/protocol/remote-control/shell';
 
-/** Model identifier string (canonical model IDs, aliases, and Ollama IDs). */
-export type ChatModel = string;
+export type { ChatModel } from '@canopy/protocol/chat-models';
 
 // ---------------------------------------------------------------------------
 // Provider types
 // ---------------------------------------------------------------------------
 
-export type AgentProviderType =
-  | 'claude'
-  | 'codex'
-  | 'ollama'
-  | 'cursor'
-  | 'opencode'
-  | 'copilot'
-  | 'antigravity';
-
-export type ChatInterfaceMode = 'canopy' | 'claude-code' | 'auto';
+export type {
+  AgentProviderType,
+  ChatInterfaceMode,
+} from '@canopy/protocol/agent-providers';
 
 // ---------------------------------------------------------------------------
 // File references / attachments

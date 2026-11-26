@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 import { ClaudeLogo, CodexLogo } from '../icons';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 
 export type ProviderSupportScope = 'claude' | 'codex' | 'mixed';
 

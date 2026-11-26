@@ -15,6 +15,8 @@ import { TextField } from '../shared/TextField';
 import { ToggleField } from '../shared/ToggleField';
 import { KeyValueEditor } from '../shared/KeyValueEditor';
 import { PipelineDetailPanelShell } from './PipelinePanelPrimitives';
+import type { WorkflowJobStructure } from '@canopy/pipeline-interop/workflow-designer-job-edits';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 interface JobDetailPanelProps {
   jobId: string;
@@ -29,6 +31,29 @@ interface JobDetailPanelProps {
   onRemove?: (jobId: string) => void;
   onClose: () => void;
   readonly?: boolean;
+  /**
+   * Set in the Designer (CAN-4224 phase 08): what it holds back on the job's
+   * dependencies. Its ID, outputs and Remove job stay out of reach there,
+   * since workflows that run this one read them by name. Absent elsewhere,
+   * where every field edits freely.
+   */
+  structure?: WorkflowJobStructure;
+  /**
+   * Keeps the condition read-only and says why. The Designer sets it on a
+   * split's path, whose condition is the split's route guard.
+   */
+  conditionLockedReason?: string;
+}
+
+/**
+ * A job's `if` as the field's text. YAML can hold a boolean or a number
+ * there (`if: true`), which the field shows as written.
+ */
+function conditionText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  return typeof value === 'boolean' || typeof value === 'number'
+    ? String(value)
+    : '';
 }
 
 function blurInputOnEnter(event: KeyboardEvent<HTMLInputElement>): void {
@@ -46,10 +71,18 @@ export function JobDetailPanel({
   onRemove,
   onClose,
   readonly = false,
+  structure,
+  conditionLockedReason,
 }: JobDetailPanelProps): JSX.Element {
+  // A path's condition is its route guard, wherever the split is drawn.
+  const conditionLock =
+    conditionLockedReason ??
+    (structure?.splitPath
+      ? 'A path runs on its route. Change its route from the split, or in YAML.'
+      : undefined);
   const [localJobId, setLocalJobId] = useState(jobId);
   const [localName, setLocalName] = useState(job.name ?? '');
-  const [localCondition, setLocalCondition] = useState(job.if ?? '');
+  const [localCondition, setLocalCondition] = useState(conditionText(job.if));
   const [localTimeout, setLocalTimeout] = useState(
     job.timeout_minutes !== undefined ? String(job.timeout_minutes) : '',
   );
@@ -67,7 +100,7 @@ export function JobDetailPanel({
     prevJobIdRef.current = jobId;
     setLocalJobId(jobId);
     setLocalName(job.name ?? '');
-    setLocalCondition(job.if ?? '');
+    setLocalCondition(conditionText(job.if));
     setLocalTimeout(
       job.timeout_minutes !== undefined ? String(job.timeout_minutes) : '',
     );
@@ -78,6 +111,37 @@ export function JobDetailPanel({
       job.max_iterations !== undefined ? String(job.max_iterations) : '',
     );
     setJobIdError(null);
+  }
+
+  // The same when the job changes under the panel, from the assistant or a
+  // replaced draft: a field the person hasn't edited follows it, so leaving
+  // that field can't write the old value back.
+  const fromJob = {
+    name: job.name ?? '',
+    condition: conditionText(job.if),
+    timeout:
+      job.timeout_minutes !== undefined ? String(job.timeout_minutes) : '',
+    retries: job.max_retries !== undefined ? String(job.max_retries) : '',
+    iterations:
+      job.max_iterations !== undefined ? String(job.max_iterations) : '',
+  };
+  const syncedRef = useRef(fromJob);
+  const synced = syncedRef.current;
+  if (
+    synced.name !== fromJob.name ||
+    synced.condition !== fromJob.condition ||
+    synced.timeout !== fromJob.timeout ||
+    synced.retries !== fromJob.retries ||
+    synced.iterations !== fromJob.iterations
+  ) {
+    syncedRef.current = fromJob;
+    if (localName === synced.name) setLocalName(fromJob.name);
+    if (localCondition === synced.condition)
+      setLocalCondition(fromJob.condition);
+    if (localTimeout === synced.timeout) setLocalTimeout(fromJob.timeout);
+    if (localMaxRetries === synced.retries) setLocalMaxRetries(fromJob.retries);
+    if (localMaxIterations === synced.iterations)
+      setLocalMaxIterations(fromJob.iterations);
   }
 
   const currentNeeds: string[] = normalizeNeeds(job.needs);
@@ -107,36 +171,49 @@ export function JobDetailPanel({
   }
 
   function handleNameBlur(): void {
+    // Untouched, it writes nothing, even where trimming would change it.
+    if (localName === syncedRef.current.name) return;
     const trimmed: string = localName.trim();
+    // The field then holds what the job does, so it reads as untouched and
+    // follows the next change made under the panel.
+    setLocalName(trimmed);
     if (trimmed !== (job.name ?? '')) {
       onChange(jobId, { name: trimmed || undefined });
     }
   }
 
   function handleConditionBlur(): void {
+    if (localCondition === syncedRef.current.condition) return;
     const trimmed: string = localCondition.trim();
-    if (trimmed !== (job.if ?? '')) {
+    setLocalCondition(trimmed);
+    if (trimmed !== conditionText(job.if)) {
       onChange(jobId, { if: trimmed || undefined });
     }
   }
 
   function handleTimeoutBlur(): void {
+    if (localTimeout === syncedRef.current.timeout) return;
     const trimmed: string = localTimeout.trim();
     if (!trimmed) {
+      setLocalTimeout('');
       if (job.timeout_minutes !== undefined) {
         onChange(jobId, { timeout_minutes: undefined });
       }
       return;
     }
     const num: number = parseInt(trimmed, 10);
-    if (!Number.isNaN(num) && num > 0 && num !== job.timeout_minutes) {
+    if (Number.isNaN(num) || num <= 0) return;
+    setLocalTimeout(String(num));
+    if (num !== job.timeout_minutes) {
       onChange(jobId, { timeout_minutes: num });
     }
   }
 
   function handleMaxRetriesBlur(): void {
+    if (localMaxRetries === syncedRef.current.retries) return;
     const trimmed: string = localMaxRetries.trim();
     if (!trimmed) {
+      setLocalMaxRetries('');
       if (job.max_retries !== undefined) {
         onChange(jobId, { max_retries: undefined });
       }
@@ -149,20 +226,24 @@ export function JobDetailPanel({
     }
 
     if (num === 0) {
+      setLocalMaxRetries('');
       if (job.max_retries !== undefined) {
         onChange(jobId, { max_retries: undefined });
       }
       return;
     }
 
+    setLocalMaxRetries(String(num));
     if (num !== job.max_retries) {
       onChange(jobId, { max_retries: num });
     }
   }
 
   function handleMaxIterationsBlur(): void {
+    if (localMaxIterations === syncedRef.current.iterations) return;
     const parsedValue = parseMaxIterationsInput(localMaxIterations);
     if (parsedValue === undefined) {
+      setLocalMaxIterations('');
       if (job.max_iterations !== undefined) {
         onChange(jobId, { max_iterations: undefined });
       }
@@ -173,6 +254,7 @@ export function JobDetailPanel({
       return;
     }
 
+    setLocalMaxIterations(String(parsedValue));
     if (parsedValue !== job.max_iterations) {
       onChange(jobId, { max_iterations: parsedValue });
     }
@@ -196,14 +278,22 @@ export function JobDetailPanel({
   return (
     <PipelineDetailPanelShell title="Job settings" onClose={onClose}>
       {/* Job ID */}
-      <FormField label="Job ID" error={jobIdError ?? undefined}>
+      <FormField
+        label="Job ID"
+        error={jobIdError ?? undefined}
+        {...(structure
+          ? {
+              hint: 'Other jobs and workflows can read this ID, so change it in YAML or with the assistant.',
+            }
+          : {})}
+      >
         <TextField
           value={localJobId}
           onChange={(e) => setLocalJobId(e.target.value)}
           onBlur={handleJobIdBlur}
           onKeyDown={blurInputOnEnter}
           placeholder="job_id"
-          disabled={readonly}
+          disabled={readonly || structure !== undefined}
         />
       </FormField>
 
@@ -223,16 +313,35 @@ export function JobDetailPanel({
 
       {/* Dependencies (needs) */}
       {otherJobIds.length > 0 && (
-        <FormField label="Dependencies" hint="Jobs that must complete first">
+        <FormField
+          label="Dependencies"
+          hint={
+            structure?.splitPath
+              ? 'A path runs after its split. Change paths from the split.'
+              : structure &&
+                  (structure.readNeeds.size > 0 ||
+                    structure.dependents.size > 0)
+                ? 'Jobs that must complete first. A job it reads by name stays, and a job that waits on it or a split’s path can’t be added.'
+                : 'Jobs that must complete first'
+          }
+        >
           <ChoiceList aria-label="Dependencies">
             {otherJobIds.map((otherId: string) => (
               <ChoiceListRow
                 key={otherId}
                 selected={currentNeeds.includes(otherId)}
                 onClick={() => handleNeedsToggle(otherId)}
-                disabled={readonly}
+                disabled={
+                  readonly ||
+                  structure?.splitPath === true ||
+                  (currentNeeds.includes(otherId)
+                    ? (structure?.readNeeds.has(otherId) ?? false)
+                    : (structure?.dependents.has(otherId) ?? false) ||
+                      (structure?.pathJobs.has(otherId) ?? false))
+                }
               >
-                {otherId}
+                {/* Job IDs are authored: never recorded. */}
+                <span className={REPLAY_BLOCK_CLASS}>{otherId}</span>
               </ChoiceListRow>
             ))}
           </ChoiceList>
@@ -240,7 +349,10 @@ export function JobDetailPanel({
       )}
 
       {/* Condition (if) */}
-      <FormField label="Condition" hint="Expression that must be truthy to run">
+      <FormField
+        label="Condition"
+        hint={conditionLock ?? 'Expression that must be truthy to run'}
+      >
         <TextField
           value={localCondition}
           onChange={(e) => setLocalCondition(e.target.value)}
@@ -249,7 +361,7 @@ export function JobDetailPanel({
             e.key === 'Enter' && (e.target as HTMLInputElement).blur()
           }
           placeholder="e.g. ${{ needs.build.result == 'success' }}"
-          disabled={readonly}
+          disabled={readonly || conditionLock !== undefined}
         />
       </FormField>
 
@@ -267,7 +379,14 @@ export function JobDetailPanel({
       </FormField>
 
       {/* Outputs */}
-      <FormField label="Outputs" hint="Values exposed to downstream jobs">
+      <FormField
+        label="Outputs"
+        hint={
+          structure
+            ? 'Other jobs and workflows can read these outputs, so change them in YAML or with the assistant.'
+            : 'Values exposed to downstream jobs'
+        }
+      >
         <KeyValueEditor
           value={job.outputs ?? {}}
           onChange={(outputs) =>
@@ -279,7 +398,7 @@ export function JobDetailPanel({
             })
           }
           stringOnly
-          readonly={readonly}
+          readonly={readonly || structure !== undefined}
         />
       </FormField>
 
@@ -347,7 +466,7 @@ export function JobDetailPanel({
             {job.steps.length} step{job.steps.length !== 1 ? 's' : ''} in this
             job
           </p>
-          {onRemove && !readonly ? (
+          {onRemove && !readonly && structure === undefined ? (
             <Button
               variant="ghost-destructive"
               size="compact"

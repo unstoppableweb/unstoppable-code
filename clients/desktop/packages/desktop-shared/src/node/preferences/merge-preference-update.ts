@@ -23,7 +23,12 @@ import {
   normalizePersistableModelSelection,
 } from './model-normalizers';
 import { normalizeOptInTimestamp } from './record-normalizers';
-import { normalizePreferences } from './normalize-preferences';
+import {
+  normalizeOrgSharingNoticesSeen,
+  normalizeDomainPreferences,
+} from './normalize-preferences';
+import type { DomainPreferencesData } from './client-local-preferences';
+import { hasAcceptedLegalConsent } from '../../lib/legal-consent';
 import { preferencesNormalizationEnvironment } from './normalization-environment';
 
 export interface PreferenceMergeContext {
@@ -59,11 +64,15 @@ const MODEL_SELECTION_PREFERENCE_KEYS = [
   'localMemoryModel',
 ] as const satisfies readonly (keyof PreferencesData)[];
 
+/**
+ * Merges a domain save. A client-local key in `patch` has no field here, so
+ * normalization drops it (CAN-4472).
+ */
 export function mergePreferenceUpdate(
-  existing: PreferencesData,
-  patch: Partial<PreferencesData>,
+  existing: DomainPreferencesData,
+  patch: Partial<DomainPreferencesData>,
   context: PreferenceMergeContext,
-): PreferencesData {
+): DomainPreferencesData {
   // A present-but-corrupt hint has no normalized record. Refuse even an
   // unrelated save rather than dropping the original record and remigrating
   // it on reload. Genuine missing preferences normalize to the initial marker.
@@ -153,6 +162,24 @@ export function mergePreferenceUpdate(
       incoming,
     );
   }
+  // Main derives the onboarding decline below; a caller can never set it, so
+  // no save can suppress the opt-out ping on its own say-so.
+  merged.usageAnalyticsDeclinedAtOnboarding =
+    existing.usageAnalyticsDeclinedAtOnboarding;
+  if ('orgSharingNoticesSeen' in patch) {
+    // Per-key merge: a stale window cannot drop another window's entry. An
+    // incoming key replaces that organization's signature.
+    const incoming = normalizeOrgSharingNoticesSeen(
+      patch.orgSharingNoticesSeen,
+    );
+    if (incoming === undefined) {
+      throw new Error('Invalid organization sharing notice preferences.');
+    }
+    merged.orgSharingNoticesSeen = {
+      ...existing.orgSharingNoticesSeen,
+      ...incoming,
+    };
+  }
   // No new checklist writes. Preserve legacy input for hint migration.
   merged.homeOnboardingSuggestions = existing.homeOnboardingSuggestions;
   // Preserve a read-derived legacy answer before a checklist reset can erase
@@ -177,7 +204,18 @@ export function mergePreferenceUpdate(
     // (the legacy summary-model migration records an inferred flag).
     if (modelKey in patch && !(flagKey in patch)) merged[flagKey] = true;
   }
-  const normalized = normalizePreferences(merged, 'persisted');
+  const normalized = normalizeDomainPreferences(merged, 'persisted');
+  // The commit that first records legal consent marks a Welcome gate decline
+  // of Usage analytics (stored on, saved off). Normalization keeps the flag
+  // only while Usage analytics stays off.
+  if (
+    !hasAcceptedLegalConsent(existing) &&
+    hasAcceptedLegalConsent(normalized)
+  ) {
+    normalized.usageAnalyticsDeclinedAtOnboarding =
+      existing.usageData.productAnalytics &&
+      !normalized.usageData.productAnalytics;
+  }
   // Check the current disk value inside the main-owned write queue. A stale
   // renderer/remount must never roll back an already recorded release.
   if ('releaseHighlightsLastSeenVersion' in patch) {
@@ -192,9 +230,9 @@ export function mergePreferenceUpdate(
       normalized.releaseHighlightsLastSeenVersion = previous;
     }
   }
-  let available: PreferencesData | undefined;
-  const validateChanges = (): PreferencesData =>
-    (available ??= normalizePreferences(merged));
+  let available: DomainPreferencesData | undefined;
+  const validateChanges = (): DomainPreferencesData =>
+    (available ??= normalizeDomainPreferences(merged));
 
   for (const key of MODEL_SELECTION_PREFERENCE_KEYS) {
     if (

@@ -23,6 +23,10 @@ import {
   snapshotChatTurnPreparations,
   type PendingChatTurnPreparation,
 } from './chat-turn-preparation';
+import {
+  getChatTurnOwnership,
+  type ChatTurnOwnershipSnapshot,
+} from '../services/chat-turn-ownership';
 
 export { beginChatTurnPreparation } from './chat-turn-preparation';
 
@@ -30,8 +34,94 @@ export interface ChatTurnStopContext {
   readonly target: ChatCancelRequest;
   readonly session: AgentSession | undefined;
   readonly fence: ClaudeStopFence | undefined;
+  readonly turn?: ChatTurnStopIdentity;
+  readonly unstartedDispatch?: UnstartedDispatch;
   /** Sends being prepared at capture; Stop owns these when no turn runs. */
   readonly preparations?: ReadonlySet<PendingChatTurnPreparation>;
+}
+
+export interface ChatTurnStopIdentity {
+  readonly userMessageId: string;
+  readonly executionTurnId?: string;
+}
+
+interface UnstartedDispatch {
+  readonly userMessageId: string;
+  readonly token: symbol;
+  readonly operationEpoch: number;
+  readonly serviceEpoch: symbol;
+}
+
+function stopOwnershipSnapshot(
+  target: ChatCancelRequest,
+): ChatTurnOwnershipSnapshot | undefined {
+  const ownership = getChatTurnOwnership();
+  return ownership.isBound() ? ownership.getSnapshot(target) : undefined;
+}
+
+function isUnstartedDispatchPhase(
+  snapshot: ChatTurnOwnershipSnapshot | undefined,
+): snapshot is ChatTurnOwnershipSnapshot {
+  return (
+    snapshot?.knowledge === 'known' &&
+    snapshot.receipt !== undefined &&
+    snapshot.committed !== undefined &&
+    snapshot.receipt.state.current === undefined &&
+    snapshot.committed.state.current === undefined &&
+    snapshot.unacknowledgedLifecycle.length === 0
+  );
+}
+
+function uniqueUnstartedDispatch(
+  snapshot: ChatTurnOwnershipSnapshot | undefined,
+): UnstartedDispatch | undefined {
+  if (
+    !isUnstartedDispatchPhase(snapshot) ||
+    snapshot.dispatchOwners.length !== 1
+  )
+    return;
+  const [owner] = snapshot.dispatchOwners;
+  if (!owner?.userMessageId || owner.turnId !== undefined) return;
+  return {
+    userMessageId: owner.userMessageId,
+    token: owner.token,
+    operationEpoch: owner.operationEpoch,
+    serviceEpoch: snapshot.serviceEpoch,
+  };
+}
+
+function capturedStopTurn(
+  snapshot: ChatTurnOwnershipSnapshot | undefined,
+  fence: ClaudeStopFence | undefined,
+): ChatTurnStopIdentity | undefined {
+  const live = (snapshot?.receipt ?? snapshot?.committed)?.state.current;
+  if (!fence) {
+    return live?.userMessageId === undefined
+      ? undefined
+      : { userMessageId: live.userMessageId, executionTurnId: live.id };
+  }
+  if (fence.userMessageId === undefined) return undefined;
+  const bound = [
+    snapshot?.receipt?.state.current,
+    snapshot?.receipt?.state.lastEnded,
+    snapshot?.committed?.state.current,
+    snapshot?.committed?.state.lastEnded,
+  ].find(
+    (record) => record?.id === fence.turnId && record?.userMessageId,
+  )?.userMessageId;
+  const owners = (snapshot?.dispatchOwners ?? []).filter(
+    (owner) => owner.userMessageId !== undefined,
+  );
+  const dispatch =
+    owners.find((owner) => owner.turnId === fence.turnId) ??
+    (owners.length === 1 && owners[0]?.turnId === undefined
+      ? owners[0]
+      : undefined);
+  const userMessageId =
+    fence.userMessageId === fence.turnId
+      ? (bound ?? dispatch?.userMessageId ?? fence.userMessageId)
+      : fence.userMessageId;
+  return { userMessageId, executionTurnId: fence.turnId };
 }
 
 export interface ChatTurnCancelOutcome {
@@ -54,10 +144,26 @@ export function captureChatTurnStop(
     target.worktreeId,
     target.chatId,
   );
+  const fence = captureClaudeStopFence(session);
+  const snapshot = stopOwnershipSnapshot(target);
+  const unstartedDispatch =
+    fence === undefined &&
+    session !== undefined &&
+    getSessionProviderType(
+      target.projectId,
+      target.worktreeId,
+      target.chatId,
+    ) === 'codex'
+      ? uniqueUnstartedDispatch(snapshot)
+      : undefined;
   return {
     target,
     session,
-    fence: captureClaudeStopFence(session),
+    fence,
+    turn: unstartedDispatch
+      ? { userMessageId: unstartedDispatch.userMessageId }
+      : capturedStopTurn(snapshot, fence),
+    ...(unstartedDispatch ? { unstartedDispatch } : {}),
     preparations: snapshotChatTurnPreparations(target),
   };
 }
@@ -96,8 +202,6 @@ export function adoptPreparingSendSession(
     return context;
   const fresh = captureChatTurnStop(context.target);
   if (fresh.session === undefined) return context;
-  // Providers without native turn identity keep whole-chat Stop.
-  if (fresh.fence === undefined) return fresh;
   const ownedIds = new Set<string>();
   for (const preparation of Array.from(captured))
     if (preparation.userMessageId !== undefined)
@@ -110,8 +214,19 @@ export function adoptPreparingSendSession(
           ownedIds.has(preparation.userMessageId)),
     ),
   );
+  if (fresh.fence === undefined) {
+    if (
+      fresh.turn
+        ? !ownedIds.has(fresh.turn.userMessageId)
+        : preparations.size === 0
+    )
+      return context;
+    return { ...fresh, preparations };
+  }
   const { turnId, userMessageId } = fresh.fence;
-  const ownsTurn = userMessageId !== undefined && ownedIds.has(userMessageId);
+  const boundUserMessageId = fresh.turn?.userMessageId ?? userMessageId;
+  const ownsTurn =
+    boundUserMessageId !== undefined && ownedIds.has(boundUserMessageId);
   const idle = turnId === undefined && userMessageId === undefined;
   // Never take a newer send's or a wake's turn.
   if (!ownsTurn && !(idle && preparations.size > 0)) return context;
@@ -129,9 +244,22 @@ export function isChatTurnStopCurrent(context: ChatTurnStopContext): boolean {
   ) {
     return false;
   }
+  if (context.fence !== undefined)
+    return isClaudeStopFenceCurrent(context.session, context.fence);
+  const snapshot = stopOwnershipSnapshot(context.target);
+  const queued = context.unstartedDispatch;
+  if (queued) {
+    const current = uniqueUnstartedDispatch(snapshot);
+    return (
+      current?.token === queued.token &&
+      current.operationEpoch === queued.operationEpoch &&
+      current.serviceEpoch === queued.serviceEpoch &&
+      current.userMessageId === queued.userMessageId
+    );
+  }
+  const live = capturedStopTurn(snapshot, undefined);
   return (
-    context.fence === undefined ||
-    isClaudeStopFenceCurrent(context.session, context.fence)
+    live === undefined || live.executionTurnId === context.turn?.executionTurnId
   );
 }
 
@@ -194,7 +322,12 @@ function cancelOwnedPreparations(
   let idleSendsCancelled = false;
   let anyCancelled = false;
   const owns = (preparation: PendingChatTurnPreparation): boolean => {
-    if (intent === 'teardown' || context.fence === undefined) return true;
+    if (intent === 'teardown') return true;
+    if (context.unstartedDispatch)
+      return (
+        preparation.userMessageId === context.unstartedDispatch.userMessageId
+      );
+    if (context.fence === undefined) return true;
     if (userMessageId !== undefined)
       return preparation.userMessageId === userMessageId;
     const owned =
@@ -246,6 +379,10 @@ export async function cancelChatTurn(
   ) {
     return { context, outcome: 'not-found' };
   }
+  const queued = intent === 'stop' ? context.unstartedDispatch : undefined;
+  const queuedStopEpoch = queued
+    ? stopOwnershipSnapshot(req)?.operationEpoch
+    : undefined;
   suppressCodexAuthenticationRecovery(req);
   // A RunWithSecrets command must not outlive the turn: every Stop entry
   // point (the window, the Portal, a turn-specific cancel) ends it here.
@@ -268,13 +405,47 @@ export async function cancelChatTurn(
     import('../services/chat-state-service'),
     import('../services/chat-queue-service'),
   ]);
+  const getChatStateService = stateModule.getChatStateService;
+  const getChatQueueService = queueModule.getChatQueueService;
+  const finishCancellation = (
+    outcome: ChatTurnCancelOutcome['outcome'],
+  ): ChatTurnCancelOutcome => {
+    let preparationsCancelled = false;
+    if (preparations.anyCancelled) {
+      preparationsCancelled = isCancellationCurrent(context, intent);
+      if (
+        queued &&
+        !preparationsCancelled &&
+        isContextSessionRegistered(context)
+      ) {
+        // The preparation may retire its dispatch during cancellation. The
+        // same epoch with no successor still permits settling just that send.
+        const snapshot = stopOwnershipSnapshot(req);
+        preparationsCancelled =
+          isUnstartedDispatchPhase(snapshot) &&
+          snapshot.serviceEpoch === queued.serviceEpoch &&
+          snapshot.operationEpoch === queuedStopEpoch &&
+          snapshot.dispatchOwners.length === 0;
+      }
+      if (queued && preparationsCancelled) {
+        // Only the untagged terminal releases the queue's cancelled
+        // preparation reservation. Do this while it still belongs to Stop.
+        getChatQueueService().onTurnTerminal(req, 'cancelled');
+      }
+    }
+    return {
+      context,
+      outcome,
+      ...(preparationsCancelled ? { preparationsCancelled: true } : {}),
+    };
+  };
   // The session object can survive several turns. Check its captured native
   // turn epoch again after imports, before touching queue/input state.
   if (!isCancellationCurrent(context, intent)) {
-    return { context, outcome: 'not-found' };
+    if (!queued) return { context, outcome: 'not-found' };
+    await preparations.settled;
+    return finishCancellation('not-found');
   }
-  const getChatStateService = stateModule.getChatStateService;
-  const getChatQueueService = queueModule.getChatQueueService;
   getChatQueueService().invalidatePendingInputOperations(req);
   await preparations.settled;
   // The queue holds a Stop reservation for a send whose preparation Stop
@@ -350,15 +521,7 @@ export async function cancelChatTurn(
       // Preserve cancellation's non-throwing compatibility contract.
     }
   }
-  // Only a Stop that still owns the chat after every await may release the
-  // queue for the sends it cancelled.
-  return {
-    context,
-    outcome,
-    ...(preparations.anyCancelled && isCancellationCurrent(context, intent)
-      ? { preparationsCancelled: true }
-      : {}),
-  };
+  return finishCancellation(outcome);
 }
 
 /** Queued Interrupt preserves Claude's query and waits for its real result. */

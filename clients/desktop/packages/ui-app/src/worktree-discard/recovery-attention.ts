@@ -8,6 +8,14 @@ type Project = Omit<WorktreeRecoveryListResult, 'check'> & {
   check: WorktreeRecoveryListResult['check'] | 'list-unavailable';
 };
 
+export function recoveryEvidenceUnavailable(
+  result: Pick<WorktreeRecoveryListResult, 'unreadableEvidence'> & {
+    check: string;
+  },
+): boolean {
+  return result.check !== 'ok' || result.unreadableEvidence === 'receipts';
+}
+
 export function needsRecoveryReview(hold: Hold): boolean {
   return (
     hold.retention !== 'deleted' &&
@@ -37,7 +45,9 @@ function attentionKeys(projects: readonly Project[], error: boolean): string[] {
   return [
     ...(error ? ['check-unavailable'] : []),
     ...projects.flatMap((project) => [
-      ...(project.check !== 'ok' ? [`${project.workspaceId}:unavailable`] : []),
+      ...(recoveryEvidenceUnavailable(project)
+        ? [`${project.workspaceId}:unavailable`]
+        : []),
       ...project.entries.map((entry) => entryKey(entry)),
       ...(project.resolutions
         ?.filter(needsRecoveryReview)

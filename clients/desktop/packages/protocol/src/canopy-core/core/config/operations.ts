@@ -12,7 +12,7 @@ import {
   defineCanopyQueryRegistry,
 } from '../../definitions';
 import {
-  ONBOARDING_TIP_IDS,
+  ONBOARDING_DISMISSAL_IDS,
   type OnboardingTipsState,
 } from '../../../onboarding-tips';
 import { PROFILE_ROLES } from '../../../plugin-catalog';
@@ -26,6 +26,10 @@ import {
 export const CONFIG_GRANTS = {
   read: 'core.config.read',
   write: 'core.config.write',
+  /** `core.config.document.update`: open to interface principals; the core runs the save rules. */
+  documentWrite: 'core.config.document.write',
+  /** The owner path: `core.config.document.ownerUpdate` and `core.config.loadError.acknowledge`. */
+  documentOwn: 'core.config.document.own',
 } as const;
 
 export const ConfigGetParamsSchema = z.strictObject({
@@ -90,7 +94,7 @@ export const CONFIG_ONBOARDING_TIPS_NAMESPACE = 'onboardingTips';
 
 /** `value` of the `onboardingTips` namespace: when each dismissed tip was dismissed. */
 export const ConfigOnboardingTipsValueSchema = z.strictObject({
-  dismissed: z.partialRecord(z.enum(ONBOARDING_TIP_IDS), z.string()),
+  dismissed: z.partialRecord(z.enum(ONBOARDING_DISMISSAL_IDS), z.string()),
 });
 export type ConfigOnboardingTipsValue = MutuallyAssignable<
   z.output<typeof ConfigOnboardingTipsValueSchema>,

@@ -60,6 +60,8 @@ export function buildWorktreeSessionPromptAction(args: {
   approvalMode?: ApprovalMode;
   plugins?: ShareablePluginRef[];
   pluginSelections?: ChatTabPluginSelections;
+  /** Allowed writes on the project's shared connections (CAN-6252). */
+  sharedConnectionWrites?: Record<string, string[]>;
   fileReferences?: FileReference[];
   attachmentPaths?: string[];
   attachmentPromptContexts?: ChatAttachmentPromptContext[];
@@ -131,6 +133,9 @@ export function buildWorktreeSessionPromptAction(args: {
     ...(args.plugins?.length ? { plugins: args.plugins } : {}),
     ...(args.pluginSelections !== undefined
       ? { pluginSelections: args.pluginSelections }
+      : {}),
+    ...(args.sharedConnectionWrites !== undefined
+      ? { sharedConnectionWrites: args.sharedConnectionWrites }
       : {}),
     ...(fileReferences.length > 0 ? { fileReferences } : {}),
     ...(attachmentPaths.length > 0 ? { attachmentPaths } : {}),

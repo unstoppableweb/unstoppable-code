@@ -252,7 +252,15 @@ export async function readPreferencesApprovalAuthority<T>(
 /** A surface's persisted default approval mode is changing or changed. */
 export function markApprovalDefaultsChanged(): void {
   approvalSettingsRevision++;
+  approvalDefaultsRevision++;
   advanceApprovalAuthorityRevision();
+}
+
+let approvalDefaultsRevision = 0;
+
+/** Changes only when a surface's persisted default approval mode changes. */
+export function getApprovalDefaultsRevision(): number {
+  return approvalDefaultsRevision;
 }
 
 /**

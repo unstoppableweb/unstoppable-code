@@ -1,7 +1,7 @@
 'use client';
 
-import { ControlButton, Button } from './Button';
-import { OverlayScrollArea } from './OverlayScrollArea';
+import { ControlButton, Button } from '../primitives/Button';
+import { OverlayScrollArea } from '../primitives/OverlayScrollArea';
 import {
   useId,
   useState,
@@ -21,9 +21,9 @@ import {
   SlashCommandGroupHeading,
   SlashCommandPendingSpinner,
 } from './SlashCommandPrimitives';
-import { Notice } from './Notice';
-import { Tooltip } from './Tooltip';
-import { EmptyStateRow, ErrorBanner } from './StatusBlocks';
+import { Notice } from '../primitives/Notice';
+import { Tooltip } from '../primitives/Tooltip';
+import { EmptyStateRow, ErrorBanner } from '../primitives/StatusBlocks';
 
 export interface ComposerActionRow {
   id: string;

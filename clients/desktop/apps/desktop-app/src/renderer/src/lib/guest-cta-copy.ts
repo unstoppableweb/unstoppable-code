@@ -126,18 +126,6 @@ export function guestModelGateTitle(): string {
 }
 
 /**
- * Body of the hosted proxy's guest-model refusal, shown when a guest's turn is
- * rejected because the chat is pinned to a model outside the allowlist.
- *
- * Distinct from the gate body (`guestModelGateCopy`): that one is offered
- * BEFORE the fact, for a model the user just picked and can still name. This one is after the fact,
- * where the only thing known for certain is that the current model is not
- * available without an account.
- */
-export const GUEST_MODEL_NOT_ALLOWED_BODY: string =
-  'This chat is set to a model that needs an account.';
-
-/**
  * Success toast fired when the guest connects. Signing in closes the gate
  * immediately, so this is the only confirmation the user gets.
  */

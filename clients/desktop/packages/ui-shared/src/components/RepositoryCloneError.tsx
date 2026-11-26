@@ -3,7 +3,7 @@ import type {
   AppError,
   AppErrorDisplayPolicy,
 } from '@canopy/protocol/app-errors';
-import { ErrorBanner } from './StatusBlocks';
+import { ErrorBanner } from '../primitives/StatusBlocks';
 
 export interface RepositoryCloneErrorProps {
   /** Safe clone copy, or the structured error when it is classified. */

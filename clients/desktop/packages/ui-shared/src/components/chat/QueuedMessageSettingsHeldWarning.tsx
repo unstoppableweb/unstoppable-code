@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 import type { SettingsHeldChange } from '@canopy/protocol/remote-control/shell';
 import { WarningIcon } from '../../icons/AppIcons';
-import { ActionTooltip } from '../ActionTooltip';
+import { ActionTooltip } from '../../primitives/ActionTooltip';
 
 export const QUEUED_MESSAGE_SETTINGS_HELD_TITLE = 'New settings are waiting';
 

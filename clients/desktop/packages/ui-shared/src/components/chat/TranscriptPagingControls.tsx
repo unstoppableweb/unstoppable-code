@@ -3,8 +3,8 @@
 import { memo, useEffect, useRef, type JSX } from 'react';
 import { HistoryIcon } from '../../icons/AppIcons';
 import { StepRow } from './StepRow';
-import { Notice, NoticeButton } from '../Notice';
-import { TRY_AGAIN_LABEL } from '../useRetry';
+import { Notice, NoticeButton } from '../../primitives/Notice';
+import { TRY_AGAIN_LABEL } from '../../primitives/useRetry';
 
 export interface TranscriptPagingControlsProps {
   loading: boolean;

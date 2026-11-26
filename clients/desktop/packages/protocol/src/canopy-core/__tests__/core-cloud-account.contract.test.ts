@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { CANOPY_INSTRUCTION_DEFINITIONS, CANOPY_QUERY_DEFINITIONS } from '..';
 import {
   CLOUD_ACCOUNT_INTEGRATION_ID,
+  CLOUD_ACCOUNT_TRUSTED_CONNECTION_GRANT,
   CORE_CLOUD_ACCOUNT_INSTRUCTION_DEFINITIONS,
   CloudAccountStatusSchema,
   CoreIntegrationSchema,
@@ -50,10 +51,19 @@ describe('core.integration.cloudAccount contract (CAN-4168)', () => {
     );
     for (const name of NAMES) {
       const definition = CORE_CLOUD_ACCOUNT_INSTRUCTION_DEFINITIONS[name];
-      expect(definition.requiredGrants).toEqual(['core.integration.write']);
+      expect(definition.requiredGrants).toEqual([
+        'core.integration.write',
+        ...(name.includes('.signIn.')
+          ? []
+          : [CLOUD_ACCOUNT_TRUSTED_CONNECTION_GRANT]),
+      ]);
       expect(definition.placement).toBe('core-only');
       expect(definition.idempotency).toBe(
-        KEYED.has(name) ? 'keyed' : 'inherent',
+        KEYED.has(name)
+          ? 'keyed'
+          : name === 'core.integration.cloudAccount.disconnect'
+            ? 'none'
+            : 'inherent',
       );
       const retry = KEYED.has(name) ? 'same_idempotency_key' : 'same_request';
       expect(

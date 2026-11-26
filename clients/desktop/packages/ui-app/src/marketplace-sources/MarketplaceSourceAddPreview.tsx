@@ -5,10 +5,10 @@ import type {
 } from '@canopy/app-core/client';
 import {
   ErrorBanner,
-  ExternalTextLink,
   SecurityAuditSummary,
   StatusLabel,
   Heading,
+  TextLink,
 } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { Surface } from '@canopy/ui-shared/components';
@@ -43,7 +43,14 @@ function MarketplaceSourceAddPluginPreview({
             )}
             {plugin.sourceUrl !== null && (
               <span className={REPLAY_BLOCK_CLASS}>
-                <ExternalTextLink href={plugin.sourceUrl} label="View source" />
+                <TextLink
+                  href={plugin.sourceUrl}
+                  size="xs"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  View source
+                </TextLink>
               </span>
             )}
             {plugin.securityAudit !== null && (

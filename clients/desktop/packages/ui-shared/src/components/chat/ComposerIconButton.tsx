@@ -1,28 +1,14 @@
 'use client';
 
-import { ControlButton } from '../Button';
+import { ControlButton } from '../../primitives/Button';
 import {
   forwardRef,
   type ButtonHTMLAttributes,
   type JSX,
   type ReactNode,
 } from 'react';
-
-/**
- * Ink and hover surface. `default` rests in the secondary ink with a subtle
- * hover; `strong` rests in the primary ink, for a control that sits beside
- * the composer's primary-ink + (the microphone). `warning` and `destructive`
- * carry an intent; a destructive control
- * rests at 70% and comes to full strength under the pointer. `pending` is a
- * control mid-transition (a microphone starting): the secondary ink with no
- * hover feedback, since the click will interrupt rather than act.
- */
-export type ComposerIconButtonTone =
-  | 'default'
-  | 'strong'
-  | 'pending'
-  | 'warning'
-  | 'destructive';
+import type { ComposerIconButtonTone } from '../../primitives/control-button-shared';
+export type { ComposerIconButtonTone } from '../../primitives/control-button-shared';
 
 /**
  * The pressed state of a tone: the wash stays on and the ink at full

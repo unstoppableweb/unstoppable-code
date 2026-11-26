@@ -8,18 +8,18 @@ import {
 } from 'react';
 import { OverviewListRow } from './ArchivedOverviewRow';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
-import { LoadingButton } from './LoadingButton';
-import { OverlayScrollArea } from './OverlayScrollArea';
+import { OverlayScrollArea } from '../primitives/OverlayScrollArea';
 import { PageSearchField, PageSearchRow } from './PageSearchRow';
-import { Skeleton } from './Skeleton';
-import { SearchEmptyState } from './SearchField';
-import { Stack } from './Stack';
-import { EmptyState } from './StatusBlocks';
-import { Notice, NoticeButton } from './Notice';
-import { TRY_AGAIN_LABEL } from './useRetry';
+import { Skeleton } from '../primitives/Skeleton';
+import { SearchEmptyState } from '../primitives/SearchField';
+import { Stack } from '../primitives/Stack';
+import { EmptyState } from '../primitives/StatusBlocks';
+import { Notice, NoticeButton } from '../primitives/Notice';
+import { TRY_AGAIN_LABEL } from '../primitives/useRetry';
 import { formatDateOrEmpty } from '../lib/format-date';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import { Heading } from './Heading';
+import { Heading } from '../primitives/Heading';
+import { Button } from '../primitives/Button';
 
 /** One share in the Past shares list, removed or accepted. */
 export interface PastShareItem {
@@ -124,7 +124,7 @@ function RemovedGroup({
               dateTooltip={`Removed ${formatDateOrEmpty(item.dismissedAt)}`}
               actionsReserve="inline"
               actions={
-                <LoadingButton
+                <Button
                   variant="ghost"
                   size="sm"
                   loading={restoring}
@@ -134,7 +134,7 @@ function RemovedGroup({
                   data-testid={`${TEST_ID}-restore-${item.id}`}
                 >
                   Restore
-                </LoadingButton>
+                </Button>
               }
             />
           );

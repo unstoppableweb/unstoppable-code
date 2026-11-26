@@ -1,8 +1,12 @@
-import { ControlButton } from '../Button';
+import { ControlButton } from '../../primitives/Button';
 import { memo, useId, type JSX } from 'react';
 import { FolderIcon } from '../../icons/AppIcons';
+import { FileTypeIcon } from '../../icons/FileTypeIcon';
 import { TitlebarIconButton } from '../TitlebarIconButton';
-import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
+import {
+  REPLAY_BLOCK_CLASS,
+  REPLAY_MASK_CLASS,
+} from '../../lib/replay-privacy';
 import { TOOL_APPROVAL_WAITING_LABEL } from './tool-approval-wait';
 import { TURN_FILE_ROW_CLASS_NAME } from './turn-file-styles';
 
@@ -56,7 +60,13 @@ function FileReveal({
   );
 }
 
-function FileLabel({ filename }: { filename: string }): JSX.Element {
+function FileLabel({
+  filename,
+  icon,
+}: {
+  filename: string;
+  icon: boolean;
+}): JSX.Element {
   const characters = Array.from(
     filenameSegments.segment(filename),
     ({ segment }) => segment,
@@ -64,7 +74,11 @@ function FileLabel({ filename }: { filename: string }): JSX.Element {
   const middle = Math.ceil(characters.length / 2);
   return (
     <span className="flex w-full min-w-0 items-center gap-3">
-      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+      <span className="flex min-w-0 flex-1 items-center gap-2">
+        {/* The type comes from the name, so replay blocks it as the name is masked. */}
+        {icon && (
+          <FileTypeIcon filename={filename} className={REPLAY_BLOCK_CLASS} />
+        )}
         <span className={`${REPLAY_MASK_CLASS} flex min-w-0 fg-primary`}>
           <span className="min-w-0 truncate whitespace-pre">
             {characters.slice(0, middle).join('')}
@@ -149,7 +163,8 @@ export const TurnFileChipView = memo(function TurnFileChipView({
           presentation: presentation === 'summary' ? 'summary' : 'detail',
         }}
       >
-        <FileLabel filename={filename} />
+        {/* A one-file summary shows the type in the card's tile instead. */}
+        <FileLabel filename={filename} icon={presentation !== 'summary'} />
       </ControlButton>
       {status && (
         <span

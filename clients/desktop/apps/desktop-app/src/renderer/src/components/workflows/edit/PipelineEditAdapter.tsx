@@ -1,4 +1,5 @@
 import { ControlButton } from '@canopy/ui-shared/components';
+import { tryParseAndValidateYaml } from '@/lib/pipeline-yaml';
 import { Surface } from '@canopy/ui-shared/components';
 import { hasOnlyLocalPipelineTriggers } from '@canopy/protocol/pipelines';
 import {
@@ -31,10 +32,12 @@ import {
 } from '@canopy/ui-shared/components';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
+import { useAutomationsStore } from '@/stores/automationsStore';
 import {
   hooksRunningPipeline,
   pipelineStartKinds,
   pipelineUserCount,
+  sharedPipelineDuplicateOffered,
 } from '@/lib/workflows/pipeline-automations';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { pipelineInfoToDocumentLocator } from '@/lib/pipelineDocument';
@@ -54,7 +57,9 @@ import type { PipelinesPageListApi } from '../../pages/PipelinesPage';
 import {
   PipelineEditorBody,
   PipelineEditorNotices,
+  type DesignerTriggerHost,
 } from '../../pipeline/PipelineEditorBody';
+import { automationsRunningPipeline } from '@/lib/workflows/pipeline-automations';
 import {
   PipelineAddJobButton,
   PipelineHistoryControls,
@@ -201,16 +206,42 @@ export function PipelineEditAdapter({
   // The pipeline the last save stored, read by a related-row link right
   // after its save, before the session's own info has rendered.
   const savedInfoRef = useRef<PipelineInfo | null>(null);
+  // A schedule the Designer's trigger card queued for after the next save
+  // (CAN-4224). It lives here, not in the card, because a draft's first save
+  // swaps the editor for the saved target, remounting the card.
+  const scheduleAfterSaveRef = useRef<'schedule' | 'once' | null>(null);
   const handleSaved = useCallback(
     (saved: PipelineInfo, { wasDraft }: { wasDraft: boolean }): void => {
       savedInfoRef.current = saved;
-      if (!wasDraft) return;
-      replaceSavedDraft(targetKey, {
+      const queued = scheduleAfterSaveRef.current;
+      scheduleAfterSaveRef.current = null;
+      const savedTarget: WorkflowEditTarget = {
         kind: 'pipeline',
         ...pipelineEditLinkFromLocator(
           pipelineInfoToDocumentLocator(saved, target.cwd),
         ),
-      });
+      };
+      if (wasDraft) replaceSavedDraft(targetKey, savedTarget);
+      // After the swap, and only while the saved workflow is still shown: a
+      // save from the unsaved-changes prompt goes where the person chose,
+      // and the queued schedule is dropped. A schedule starts the workflow
+      // as a run, which the saved workflow must allow.
+      if (queued !== null && (saved.triggerTypes ?? []).includes('dispatch')) {
+        const expected = wasDraft ? workflowEditKey(savedTarget) : targetKey;
+        setTimeout(() => {
+          const navigation = useNavigationStore.getState();
+          const shown = navigation.workflowEdit;
+          if (shown === undefined || workflowEditKey(shown) !== expected)
+            return;
+          navigation.openAutomationDraft(
+            {
+              name: saved.name,
+              trigger: queued === 'once' ? 'one_time' : 'cron',
+            },
+            shown,
+          );
+        }, 0);
+      }
     },
     [target.cwd, targetKey],
   );
@@ -250,17 +281,31 @@ export function PipelineEditAdapter({
     (state) => state.projectsLoadCount,
   );
   // CAN-6933: hook-triggered automations can differ by branch, so the editor
-  // reads every worktree's own hooks when it opens and after each load.
+  // reads every worktree's own hooks when it opens and after each load. The
+  // Designer's trigger card counts hooks only once every read succeeded for
+  // the current load (CAN-4224): a pending or failed read may hide one.
+  const [hooksReadForLoad, setHooksReadForLoad] = useState<number | null>(null);
   useEffect(() => {
     const { projects: current, ensureWorktreeEffective } =
       useProjectsStore.getState();
+    const reads: Promise<boolean>[] = [];
     for (const project of current) {
       if (project.type === 'cowork' || project.worktrees.length === 0) continue;
-      void ensureWorktreeEffective(
-        project.id,
-        project.worktrees.map((worktree) => worktree.id),
+      reads.push(
+        ensureWorktreeEffective(
+          project.id,
+          project.worktrees.map((worktree) => worktree.id),
+        ),
       );
     }
+    let live = true;
+    void Promise.all(reads).then((results) => {
+      if (live && results.every(Boolean))
+        setHooksReadForLoad(projectsLoadCount);
+    });
+    return (): void => {
+      live = false;
+    };
   }, [projectsLoadCount]);
   // CAN-6065: Remove on an installed workflow's last schedule opens the
   // page's Delete confirmation.
@@ -344,7 +389,12 @@ export function PipelineEditAdapter({
   const sessionSave = session.save;
   const sessionDirty = session.isDirty;
   const sessionDuplicate = session.duplicate;
-  const { agentGranted, saveAll: saveSchedules } = schedules;
+  const {
+    agentGranted,
+    saveAll: saveSchedules,
+    pendingScheduleInputs,
+  } = schedules;
+  const { setPendingScheduleInputs } = session.editor;
   const { save: saveSendAs } = sendAs;
   const { getSavedPipeline } = session.editor;
   const sessionInfo = session.pipelineInfo;
@@ -357,10 +407,11 @@ export function PipelineEditAdapter({
       schedules: withSchedules = true,
     }: { schedules?: boolean } = {}): Promise<UnsavedChangesSaveResult> => {
       setSaveFailure(null);
+      let pendingSent = false;
       // Raw text is read only when saved, so a send step typed there is
       // applied first and checked for "Send as" before the next Save.
       if (isRawMode && rawYamlText.includes(SEND_AGENT_MESSAGE_USES)) {
-        setMainView('flowchart');
+        setMainView('designer');
         const message =
           'Check “Send as” on the send steps, then save this workflow.';
         setSaveFailure(message);
@@ -383,7 +434,22 @@ export function PipelineEditAdapter({
           if (choice === 'duplicate') sessionDuplicate();
           if (choice !== 'save') return { ok: false };
         }
-        const result = await sessionSave();
+        // CAN-5782: the schedule check reads the schedules' edited inputs,
+        // which this Save writes right after the pipeline.
+        // Judged against the definition this save sends: the Raw YAML
+        // text when that's the view, as the session parses it.
+        const parsedRaw = isRawMode
+          ? tryParseAndValidateYaml(rawYamlText)
+          : undefined;
+        const candidate = parsedRaw?.success ? parsedRaw.pipeline : null;
+        const pending = withSchedules
+          ? await pendingScheduleInputs(candidate)
+          : null;
+        pendingSent = pending !== null && Object.keys(pending).length > 0;
+        setPendingScheduleInputs(pending);
+        const result = await sessionSave().finally(() =>
+          setPendingScheduleInputs(null),
+        );
         if (!result.ok) {
           if (result.message !== undefined) {
             setSaveFailure(result.message);
@@ -395,14 +461,20 @@ export function PipelineEditAdapter({
           return result;
         }
       }
+      // CAN-5782: a failure after the workflow saved on the schedules'
+      // edited inputs says the schedules weren't written yet.
+      const unwritten = (failure: string): UnsavedChangesSaveResult => {
+        const message = pendingSent
+          ? `${failure} The workflow is saved, but its schedules aren't yet: save again before they run, or they keep their old inputs.`
+          : failure;
+        setSaveFailure(message);
+        return { ok: false, message };
+      };
       // The pipeline first, then its send steps' accounts on this machine,
       // which need its saved identity, then each changed schedule, under the
       // name the pipeline save stored.
       const sentAs = await saveSendAs(savedInfoRef.current ?? sessionInfo);
-      if (!sentAs.ok) {
-        setSaveFailure(sentAs.message);
-        return sentAs;
-      }
+      if (!sentAs.ok) return unwritten(sentAs.message);
       if (!withSchedules) return { ok: true };
       // Checked again right before each schedule is written, since a
       // schedule can still change while the save reads preferences.
@@ -410,11 +482,7 @@ export function PipelineEditAdapter({
         latestSendAsTargetKey.current === sendAsTargetKey
           ? null
           : { ok: false, message: SEND_AS_TARGET_CHANGED };
-      const changed = targetChanged();
-      if (changed) {
-        setSaveFailure(SEND_AS_TARGET_CHANGED);
-        return changed;
-      }
+      if (targetChanged()) return unwritten(SEND_AS_TARGET_CHANGED);
       const savedName = sessionDirty ? savedInfoRef.current?.name : undefined;
       const savedPipeline = sessionDirty ? getSavedPipeline() : null;
       const scheduled = await saveSchedules({
@@ -423,7 +491,12 @@ export function PipelineEditAdapter({
         check: targetChanged,
       });
       if (!scheduled.ok && scheduled.message !== undefined) {
-        setSaveFailure(scheduled.message);
+        // CAN-5782: the workflow saved on the schedules' edited inputs; one
+        // that didn't save keeps inputs its trigger may no longer accept.
+        const message = pendingSent
+          ? `${scheduled.message} The workflow is saved, so fix this schedule before it runs: until then it keeps its old inputs.`
+          : scheduled.message;
+        setSaveFailure(message);
         const shown = useNavigationStore.getState().workflowEdit;
         if (shown !== undefined && workflowEditKey(shown) === targetKey) {
           setSection('trigger');
@@ -435,6 +508,8 @@ export function PipelineEditAdapter({
       agentGranted,
       askGrant,
       getSavedPipeline,
+      pendingScheduleInputs,
+      setPendingScheduleInputs,
       saveSchedules,
       isRawMode,
       rawYamlText,
@@ -491,6 +566,7 @@ export function PipelineEditAdapter({
   // With only the draft unsaved, Save keeps the draft and writes nothing: a
   // clean pipeline has nothing to save.
   const sessionIsDirty = session.isDirty || schedules.dirty || sendAs.dirty;
+  const automationsHydrated = useAutomationsStore((s) => s.hydrated);
   const guardSave = useCallback(
     (): Promise<UnsavedChangesSaveResult> =>
       sessionIsDirty ? save() : Promise.resolve({ ok: true }),
@@ -523,11 +599,173 @@ export function PipelineEditAdapter({
   const [toggling, setToggling] = useState(false);
 
   const info = session.pipelineInfo;
+  // CAN-5782: a Workflow-only page's schedules run only content a person
+  // approved; the list says whether the saved content is approved.
+  const [approval, setApproval] = useState<{
+    busy: boolean;
+    error?: string;
+  }>({ busy: false });
+  const scheduleApproval = listedInfo?.workflowPage?.scheduleApproval;
+  const approveForSchedules = useCallback(async (): Promise<void> => {
+    if (!info || !scheduleApproval) return;
+    setApproval({ busy: true });
+    const result = await window.pipelines.approveForSchedules({
+      pipelineId: info.id,
+      revision: scheduleApproval.revision,
+      contentDigest: scheduleApproval.contentDigest,
+      packageDigest: scheduleApproval.packageDigest,
+    });
+    // The schedules' agent notes come from the automations list, so it
+    // reloads with the pipeline list once a person takes the content over.
+    await Promise.all([pipelines.refresh(), automations.reload()]);
+    setApproval(
+      result.success
+        ? { busy: false }
+        : {
+            busy: false,
+            error: result.error ?? "This version couldn't be approved.",
+          },
+    );
+  }, [automations, info, pipelines, scheduleApproval]);
+  const workflowApproval =
+    scheduleApproval && !scheduleApproval.approved
+      ? {
+          busy: approval.busy,
+          ...(approval.error ? { error: approval.error } : {}),
+          ...(scheduleApproval.automationPackage
+            ? {
+                blockedReason:
+                  'Its schedules run it with a package installed with the automation, which an approval doesn’t cover yet. Ask its publisher for a version with a Manual trigger, then reinstall it.',
+              }
+            : session.isDirty ||
+                (info?.revision ?? 0) !== scheduleApproval.revision
+              ? {
+                  blockedReason:
+                    'Save your changes first, then approve the saved version.',
+                }
+              : {
+                  onApprove: (): void => {
+                    void approveForSchedules();
+                  },
+                }),
+        }
+      : undefined;
+  // CAN-5782: Settings' trigger list reads the list row's facts: a package
+  // install (the row's, or a schedule's own package) and its callers.
+  const triggerFacts = useMemo(
+    () => ({
+      packageInstalled:
+        listedInfo?.distributionMode === 'package' ||
+        schedules.records.some(
+          (record) => record.installedFrom?.capabilityPackage !== undefined,
+        ),
+      // Callers that declare Workflow, page or not: a run of theirs as
+      // Workflow passes the event on to this step.
+      workflowCallers: listedInfo?.workflowTriggerCallers ?? 0,
+    }),
+    [listedInfo, schedules.records],
+  );
   const listedPipelines = useMemo(
     () => [...pipelines.pipelines, ...pipelines.shared.rows],
     [pipelines.pipelines, pipelines.shared.rows],
   );
   const enabled = info ? !pipelines.disabledPipelineIds.has(info.id) : true;
+  // CAN-4224 phase 04: the Designer's trigger card lists what schedules the
+  // pipeline, and edits and adds them where each is edited today: a workflow
+  // page's Trigger tab, or the automation editor.
+  const pageSchedules = schedules.triggers;
+  const addPageSchedule = schedules.addSchedule;
+  // A hook runs the pipeline as a run, which needs Run to stay on.
+  const startedByHooks = info
+    ? hooksRunningPipeline(projects, info).length > 0
+    : false;
+  const startersKnown =
+    !automations.loading &&
+    automations.error === null &&
+    projectsLoadCount > 0 &&
+    hooksReadForLoad === projectsLoadCount;
+  const designerTrigger = useMemo((): DesignerTriggerHost => {
+    if (pageSchedules)
+      return {
+        startedByHooks,
+        startersKnown,
+        schedules: pageSchedules.rows.map((row) => ({
+          key: row.key,
+          summary: row.summary,
+          enabled: row.enabled,
+        })),
+        addsInPlace: true,
+        onEditSchedule: (key): void => {
+          pageSchedules.onExpand(key);
+          setSection('trigger');
+        },
+        ...(pageSchedules.onAdd
+          ? {
+              onAddSchedule: (kind): void => {
+                setSection('trigger');
+                addPageSchedule(kind);
+              },
+            }
+          : {}),
+        ...(pageSchedules.addBlockedReason !== undefined
+          ? { addBlockedReason: pageSchedules.addBlockedReason }
+          : {}),
+      };
+    // Every source an automation can target, as the Trigger tab lists them:
+    // a shared workflow someone can edit has schedules too. The open
+    // workflow resolves its own schedules, whether or not the Library rows
+    // have loaded.
+    const running = info
+      ? automationsRunningPipeline(automations.activities, info, {
+          pipelines: [info, ...listedPipelines],
+        })
+      : [];
+    return {
+      schedules: running.map((row) => ({
+        key: row.activity.id,
+        summary: row.scheduleText,
+        name: row.activity.name,
+        enabled: row.enabled,
+      })),
+      addsInPlace: false,
+      startedByHooks,
+      startersKnown,
+      onEditSchedule: (key): void =>
+        useNavigationStore.getState().openAutomationEdit({
+          activityId: key,
+          returnTo: target,
+        }),
+      // The body calls this only once the workflow is saved. The draft
+      // carries the schedule's name and kind; the person picks the workflow
+      // in the form's own picker, which sets up its inputs, model aliases
+      // and plugins, and Save waits for that pick.
+      onAddSchedule: (kind): void => {
+        const saved = savedInfoRef.current ?? session.pipelineInfo;
+        if (!saved) return;
+        // Back from the draft returns to this workflow.
+        useNavigationStore.getState().openAutomationDraft(
+          {
+            name: saved.name,
+            trigger: kind === 'once' ? 'one_time' : 'cron',
+          },
+          target,
+        );
+      },
+      onQueueScheduleAfterSave: (kind): void => {
+        scheduleAfterSaveRef.current = kind;
+      },
+    };
+  }, [
+    addPageSchedule,
+    automations.activities,
+    info,
+    listedPipelines,
+    pageSchedules,
+    session.pipelineInfo,
+    startedByHooks,
+    startersKnown,
+    target,
+  ]);
   const scheduleIds = useMemo(
     () => new Set(schedules.records.map((record) => record.id)),
     [schedules.records],
@@ -567,7 +805,7 @@ export function PipelineEditAdapter({
     dirty: sessionIsDirty,
     readonly: session.readOnly,
     draft,
-    ...(schedules.isWorkflowPage ? { scheduleIds: [...scheduleIds] } : {}),
+    ...(schedules.schedulable ? { scheduleIds: [...scheduleIds] } : {}),
   });
 
   const run = useCallback((): void => {
@@ -769,6 +1007,15 @@ export function PipelineEditAdapter({
         hookCount: hooksRunningPipeline(projects, countedInfo).length,
       })
     : 0;
+  // Only a list main returned counts: a failed or reset load leaves it
+  // empty and unhydrated, which can't show that no install owns the page.
+  const offerSharedDuplicate =
+    !session.readOnly &&
+    countedInfo !== null &&
+    sharedPipelineDuplicateOffered(countedInfo, {
+      activities: automations.activities,
+      activitiesLoaded: automationsHydrated && !automations.loading,
+    });
 
   const renderSection = (id: WorkflowEditSection): ReactNode => {
     if (id === 'definition') {
@@ -779,6 +1026,8 @@ export function PipelineEditAdapter({
             session={session}
             showDuplicateAction={false}
             sharedUserCount={sharedUserCount}
+            offerSharedDuplicate={offerSharedDuplicate}
+            pageDirty={sessionIsDirty}
           >
             <Surface
               variant="outline"
@@ -793,7 +1042,9 @@ export function PipelineEditAdapter({
                 {...(schedules.firstScheduleInputs
                   ? { inputValues: schedules.firstScheduleInputs }
                   : {})}
+                designerTrigger={designerTrigger}
                 stepSendAs={sendAs.step}
+                triggerFacts={triggerFacts}
               />
             </Surface>
           </PipelineEditorNotices>
@@ -830,13 +1081,14 @@ export function PipelineEditAdapter({
           }
           {...(onEditTriggers ? { onEditTriggers } : {})}
           {...(schedules.triggers ? { schedules: schedules.triggers } : {})}
+          {...(workflowApproval ? { workflowApproval } : {})}
         />
       ) : (
         <PipelineRunsSection
           pipeline={info}
           pipelines={listedPipelines}
           automations={automations}
-          {...(schedules.isWorkflowPage ? { scheduleIds } : {})}
+          {...(schedules.schedulable ? { scheduleIds } : {})}
         />
       );
     return <div className="min-h-0 flex-1 overflow-auto pb-8">{content}</div>;

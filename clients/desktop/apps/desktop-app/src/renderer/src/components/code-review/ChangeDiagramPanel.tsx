@@ -4,7 +4,7 @@ import {
   CodeReviewDiagramsPanel,
   type DiagramNodeRevealRequest,
 } from './CodeReviewDiagramsPanel';
-import { Notice } from '@canopy/ui-shared';
+import { CopyDetailsButton, Notice } from '@canopy/ui-shared';
 import { useDiagramFind, type DiagramSearchHandle } from '@canopy/ui-app/find';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
@@ -34,7 +34,11 @@ export function ChangeDiagramPanel({
     () => reviewForFingerprint(artifacts.review ?? null, artifacts.fingerprint),
     [artifacts.fingerprint, artifacts.review],
   );
-  const [error, setError] = useState<string | null>(null);
+  // Our sentence, with the raw failure kept for Copy details.
+  const [error, setError] = useState<{
+    message: string;
+    details?: string;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [reveal, setReveal] = useState<DiagramNodeRevealRequest | null>(null);
@@ -96,18 +100,29 @@ export function ChangeDiagramPanel({
       if (result.status === 'fresh' || result.status === 'empty') {
         showFreshNotice();
       } else if (result.status === 'error') {
-        setError(result.error ?? 'Unable to generate diagrams.');
+        setError({
+          message: "Couldn't generate diagrams.",
+          ...(result.error ? { details: result.error } : {}),
+        });
       } else if (result.status === 'stopped') {
-        setError('Unable to refresh diagrams while this project is closing.');
+        setError({
+          message: "Couldn't refresh diagrams while this project is closing.",
+        });
       }
     } catch (error) {
-      setError(
-        error instanceof Error ? error.message : 'Unable to generate diagrams.',
-      );
+      setError({
+        message: "Couldn't generate diagrams.",
+        ...(error instanceof Error ? { details: error.message } : {}),
+      });
     } finally {
       setBusy(false);
     }
   };
+  const shownError =
+    error ??
+    (artifacts.error
+      ? { message: "Couldn't load diagrams.", details: artifacts.error }
+      : null);
   return (
     <div
       ref={root}
@@ -121,13 +136,21 @@ export function ChangeDiagramPanel({
         error={comments.error}
         hasUnsavedChanges={comments.hasUnsavedChanges}
       />
-      {(error || artifacts.error || notice) && (
+      {(shownError || notice) && (
         <div
           className={`flex shrink-0 flex-col gap-4 px-2 pt-2 ${notice ? '' : 'pb-2'}`}
         >
-          {(error || artifacts.error) && (
-            <Notice errorSource="change-diagram-panel" intent="destructive">
-              {error ?? artifacts.error}
+          {shownError && (
+            <Notice
+              errorSource="change-diagram-panel"
+              intent="destructive"
+              {...(shownError.details === undefined
+                ? {}
+                : {
+                    actions: <CopyDetailsButton details={shownError.details} />,
+                  })}
+            >
+              {shownError.message}
             </Notice>
           )}
           {notice && <Notice intent="positive">{notice}</Notice>}

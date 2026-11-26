@@ -31,7 +31,6 @@ import {
   SearchEmptyState,
   Dot,
   StatusGlyph,
-  TextLinkButton,
   Tooltip,
 } from '@canopy/ui-shared/components';
 import type { FeedItem, FeedItemType } from '@canopy/protocol';
@@ -633,12 +632,14 @@ export function TeamFeedSection({
         )}
         {hasActiveFilters && (
           <span className="shrink-0 whitespace-nowrap text-s">
-            <TextLinkButton
+            <Button
               onClick={clearFilters}
               data-testid="team-feed-clear-filters"
+              variant="link"
+              data-settings-control="link"
             >
               Clear filters
-            </TextLinkButton>
+            </Button>
           </span>
         )}
       </PageSearchRow>

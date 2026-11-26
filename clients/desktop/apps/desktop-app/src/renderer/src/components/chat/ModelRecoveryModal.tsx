@@ -1,5 +1,4 @@
-import { Button } from '@canopy/ui-shared/components/Button';
-import { LoadingButton } from '@canopy/ui-shared/components/LoadingButton';
+import { Button } from '@canopy/ui-shared/primitives/Button';
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import type {
   AiCreditsScopeRequest,
@@ -1208,7 +1207,7 @@ function ModelRecoveryAttempt({
   ): JSX.Element | null => {
     if (!signInProvider) return null;
     return (
-      <LoadingButton
+      <Button
         size="compact"
         variant={weight}
         className="w-full"
@@ -1218,12 +1217,12 @@ function ModelRecoveryAttempt({
         onClick={handleSignIn}
       >
         {label}
-      </LoadingButton>
+      </Button>
     );
   };
 
   const renderRetry = (): JSX.Element => (
-    <LoadingButton
+    <Button
       size="compact"
       variant="primary"
       className="w-full"
@@ -1233,7 +1232,7 @@ function ModelRecoveryAttempt({
       onClick={handleRetry}
     >
       Try again
-    </LoadingButton>
+    </Button>
   );
 
   const handleDismiss = (): void => {
@@ -1348,7 +1347,7 @@ function ModelRecoveryAttempt({
         </span>
       </span>,
       <>
-        <LoadingButton
+        <Button
           size="compact"
           variant="primary"
           className="w-full"
@@ -1367,7 +1366,7 @@ function ModelRecoveryAttempt({
           }}
         >
           Try again
-        </LoadingButton>
+        </Button>
       </>,
     );
   }

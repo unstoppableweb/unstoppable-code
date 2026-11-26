@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { ButtonLink } from '@canopy/ui-shared/components';
+import { Button } from '@canopy/ui-shared/components';
 import { Surface } from '@canopy/ui-shared/components';
 
 export interface SidebarGuestProjectsCardProps {
@@ -33,7 +33,7 @@ export function SidebarGuestProjectsCard({
             Run agents on your own repos and keep every chat across your
             devices.
           </p>
-          <ButtonLink
+          <Button
             href={signInHref}
             data-testid={`${testId}-action`}
             onClick={onActivate}
@@ -47,7 +47,7 @@ export function SidebarGuestProjectsCard({
             className="max-w-full"
           >
             Create an account
-          </ButtonLink>
+          </Button>
         </div>
       </Surface>
     </div>

@@ -59,6 +59,7 @@ import {
 } from './componentsLabUsage';
 
 const SRC = 'packages/ui-shared/src/components';
+const PRIMITIVES_SRC = 'packages/ui-shared/src/primitives';
 
 /** The column every specimen sheet stacks its panels in. */
 function Panels({ children }: { readonly children: ReactNode }): JSX.Element {
@@ -218,7 +219,7 @@ export const REGROUPED_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     name: 'Menus',
     group: 'Unified',
     note: 'The row every right-click and … menu shares: a leading icon, groups split by a separator, submenus beside their row, and removal rows in their own group at the bottom.',
-    source: `${SRC}/{ActionMenuItems,DropdownMenu,SpaceNotificationMenu}.tsx`,
+    source: `${PRIMITIVES_SRC}/ActionMenuItems.tsx, ${PRIMITIVES_SRC}/DropdownMenu.tsx, ${SRC}/SpaceNotificationMenu.tsx`,
     prs: [],
     View: MenusSpecimen,
   },
@@ -245,7 +246,7 @@ export const REGROUPED_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     name: 'Agent state and status labels',
     group: 'Unified',
     note: 'What an agent is doing, as a row or tab shows it (a turn running, or only background work), and a row’s status in its state’s ink.',
-    source: `${SRC}/{AgentStateGlyph,StatusLabel}.tsx`,
+    source: `${SRC}/AgentStateGlyph.tsx, ${PRIMITIVES_SRC}/StatusLabel.tsx`,
     prs: [],
     View: AgentStateSpecimen,
   },

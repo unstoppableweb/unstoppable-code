@@ -554,6 +554,18 @@ export class SharedContainerReplicaManager {
     return this.authorizationGeneration;
   }
 
+  /** Whether an organization snapshot or purge-all transition is running. */
+  isAuthorizationTransitioning(): boolean {
+    return this.authorizationTransitionFence !== null;
+  }
+
+  /** Resolves once no authorization transition is running. */
+  async settleAuthorizationTransition(): Promise<void> {
+    while (this.authorizationTransitionFence) {
+      await this.authorizationTransitionFence;
+    }
+  }
+
   /**
    * `scopeKey` is the listing's recipient scope: an organization id, or the
    * direct-share scope key for the organization-independent direct listing.

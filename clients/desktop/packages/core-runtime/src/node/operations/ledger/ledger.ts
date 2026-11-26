@@ -153,6 +153,20 @@ export interface OperationListPage {
   next: { createdAt: string; operationId: string } | null;
 }
 
+/** Unfinished work of some kinds or under one parent, in accept order. */
+export interface OperationUnfinishedQuery {
+  kinds?: readonly string[];
+  parentOperationId?: string;
+  limit: number;
+  /** The previous page's `next`. */
+  after?: number;
+}
+
+export interface OperationUnfinishedPage {
+  items: OperationRecord[];
+  next: number | null;
+}
+
 /** What one identity retention batch did; never names an operation. */
 export type OperationLedgerRetentionResult =
   | { status: 'pruned'; operations: number }
@@ -328,8 +342,8 @@ interface OperationPatch {
  */
 export class OperationLedger {
   readonly ledgerId: string;
-  /** This process's run; records it runs carry it. */
-  readonly runEpoch: string;
+  /** This run's epoch; records it runs carry it. */
+  private epoch: string;
   private writesSinceCompaction = 0;
   /** A retention batch asked for inside a transaction, run once it commits. */
   private identityRetentionPending = false;
@@ -345,7 +359,51 @@ export class OperationLedger {
       | undefined,
   ) {
     this.ledgerId = this.meta('ledger_id');
-    this.runEpoch = randomUUID();
+    this.epoch = randomUUID();
+  }
+
+  /** This run's epoch; records it runs carry it. */
+  get runEpoch(): string {
+    return this.epoch;
+  }
+
+  /**
+   * The run of the ledger owner's process that last claimed this ledger
+   * (CAN-6986 L3), or null. It is kept with the ledger identity, so a
+   * restored ledger, which takes a new identity, has none.
+   */
+  get ownerRun(): string | null {
+    return this.ownerClaim()?.ownerRun ?? null;
+  }
+
+  private ownerClaim(): { ownerRun: string; claimId: string } | null {
+    const value = this.db
+      .prepare("SELECT value FROM operation_meta WHERE key = 'owner_run'")
+      .get()?.value;
+    const match = typeof value === 'string' && /^(\S+) (.+) (\S+)$/.exec(value);
+    return match && match[1] === this.ledgerId
+      ? { ownerRun: match[2], claimId: match[3] }
+      : null;
+  }
+
+  /**
+   * Run as the ledger owner's process `ownerRun` (CAN-6986 L3): its work
+   * carries that run. A new owner process records its run first, with a new
+   * claim id, so work the earlier one left unfinished reads as interrupted;
+   * the same process resumes its run and claim, and its work stays its own.
+   */
+  runAsOwner(ownerRun: string): string {
+    const claim = this.ownerClaim();
+    const claimId = claim?.ownerRun === ownerRun ? claim.claimId : randomUUID();
+    if (claimId !== claim?.claimId)
+      this.db
+        .prepare(
+          `INSERT INTO operation_meta (key, value) VALUES ('owner_run', ?)
+            ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+        )
+        .run(`${this.ledgerId} ${ownerRun} ${claimId}`);
+    this.epoch = ownerRun;
+    return claimId;
   }
 
   static open(
@@ -1111,14 +1169,20 @@ export class OperationLedger {
       : asStatus(previous);
   }
 
+  /**
+   * Unfinished work of earlier runs, oldest first. The ledger owner's
+   * current run is not one: its process decides when it next claims the
+   * ledger (CAN-6986 L3).
+   */
   listInterrupted(): OperationRecord[] {
     return this.db
       .prepare(
         `SELECT * FROM operations
-          WHERE status IN ('queued', 'running', 'paused') AND run_epoch != ?
+          WHERE status IN ('queued', 'running', 'paused')
+            AND run_epoch != ? AND run_epoch != ?
           ORDER BY rowid`,
       )
-      .all(this.runEpoch)
+      .all(this.runEpoch, this.ownerRun ?? this.runEpoch)
       .map(toRecord);
   }
 
@@ -1134,6 +1198,42 @@ export class OperationLedger {
       )
       .all(...kinds)
       .map(toRecord);
+  }
+
+  /**
+   * One page of unfinished work of some kinds or under one parent, in
+   * accept order (CAN-6986 L3), resuming after `after`, the previous
+   * page's `next`.
+   */
+  listUnfinishedPage(query: OperationUnfinishedQuery): OperationUnfinishedPage {
+    const where = ["status IN ('queued', 'running', 'paused')"];
+    const values: SQLInputValue[] = [];
+    if (query.kinds) {
+      where.push(`kind IN (${query.kinds.map(() => '?').join(', ')})`);
+      values.push(...query.kinds);
+    }
+    if (query.parentOperationId !== undefined) {
+      where.push('parent_operation_id = ?');
+      values.push(query.parentOperationId);
+    }
+    if (query.after !== undefined) {
+      where.push('rowid > ?');
+      values.push(query.after);
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT rowid AS accept_position, * FROM operations
+          WHERE ${where.join(' AND ')}
+          ORDER BY rowid LIMIT ?`,
+      )
+      .all(...values, query.limit + 1);
+    const page = rows.slice(0, query.limit);
+    const last = page[page.length - 1];
+    return {
+      items: page.map(toRecord),
+      next:
+        rows.length > query.limit && last ? Number(last.accept_position) : null,
+    };
   }
 
   list(query: OperationListQuery): OperationListPage {

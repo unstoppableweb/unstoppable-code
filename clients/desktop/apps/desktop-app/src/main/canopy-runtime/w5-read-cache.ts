@@ -29,20 +29,20 @@ import { createW5ReadCacheCoverage } from './w5-read-cache-coverage';
 import {
   registerDesktopW5ReadCacheServer,
   type W5ReadCacheServe,
-} from './w5-cached-workspace-services';
+} from './w5-read-cache-server';
 
 export { isDesktopW5ReadCacheSelected } from './w5-cached-workspace-services';
 
 /*
  * TRANSITIONAL (CAN-7155, W5 readers S-9): Electron main's per-workspace read
  * cache, a compatibility path in this process only; W10's core read model
- * (CAN-7153) replaces it. Selection is off on every build until the CAN-7155
- * follow-up. When selected, it is fed
- * by the daemon-backed store's own decisions, each W5e plan before its
+ * (CAN-7153) replaces it. Selected on flip builds outside Windows (CAN-7646),
+ * it is fed by the daemon-backed store's own decisions, each W5e plan before its
  * handlers, and broad refills, and warmed once the startup handoff is ready.
- * Seam A (PR 3): the dispatcher's workspace and worktree reads can be served
- * from it (`w5-cached-workspace-services.ts`); Seam B's direct readers
- * (PR 4) still read through the store.
+ * Seam A (PR 3, serving enabled by CAN-7646): workspace and worktree reads
+ * are served from it (`w5-cached-workspace-services.ts`). Seam B (PRs 4a and
+ * 4b, CAN-7835): main's direct readers and the Git-read admission check
+ * serve through `w5-read-cache-server.ts`.
  */
 
 /** An owed refill's first retry delay, doubling to the ceiling. */
@@ -87,7 +87,7 @@ export interface DesktopW5ReadCache {
   markDirty(files: readonly W5CaptureFile[]): void;
   /** The handoff is ready: captures go through `store`; resolves once warmed or owed. */
   activate(store: W5CommitLogFileStore): Promise<void>;
-  /** The W5e step; rejects when its capture failed, so the bridge retries. */
+  /** The W5e step; live failures reject for retry, retirement resolves benignly. */
   apply(plan: W5ReadCacheInvalidation): Promise<void>;
   /**
    * The serving token is armed and no test store is installed. Entry freshness
@@ -130,7 +130,7 @@ export function createDesktopW5ReadCache(
   const schedule = options.schedule ?? unrefTimer;
   const clock = options.now ?? ((): number => performance.now());
   let store: W5CommitLogFileStore | undefined;
-  let disposed = false;
+  let unsubscribe: (() => void) | undefined;
   let streamLive = false;
   let cancelRetry: (() => void) | undefined;
   let delay = retryFirst;
@@ -146,7 +146,7 @@ export function createDesktopW5ReadCache(
     | undefined;
   const coverage = createW5ReadCacheCoverage(
     (files) => {
-      if (disposed) return;
+      if (cache.signal.aborted) return;
       cache.markDirty(files);
       if (store && cache.warmed()) scheduleOwnRefill();
     },
@@ -160,7 +160,7 @@ export function createDesktopW5ReadCache(
       if (
         streamLive &&
         store &&
-        !disposed &&
+        !cache.signal.aborted &&
         !cache.serving() &&
         !cache.rebuilding()
       )
@@ -168,7 +168,7 @@ export function createDesktopW5ReadCache(
     },
   );
   const reconcileCoverage = (prune = false): void => {
-    if (root !== undefined)
+    if (!cache.signal.aborted && root !== undefined)
       coverage.reconcile(
         root,
         cache.projection().image({ kind: 'index' }),
@@ -176,34 +176,40 @@ export function createDesktopW5ReadCache(
       );
   };
   const cache = createW5CommittedReadCache({
-    capture: async (request) => {
+    capture: async (request, signal) => {
+      signal.throwIfAborted();
       if (!store?.capture) throw new Error('The W5 read cache is not active.');
       // Pin before any file read, including discovery and split captures.
       const captureRoot = root ?? getWorkspacesRootDir();
       try {
         const resolved = await realpath(captureRoot);
+        signal.throwIfAborted();
         const { dev, ino } = await stat(captureRoot, { bigint: true });
+        signal.throwIfAborted();
         if (
           rootIdentity &&
           (rootIdentity.realpath !== resolved ||
             rootIdentity.dev !== dev ||
             rootIdentity.ino !== ino)
         )
-          cache.revoke(true);
+          revokeTerminal();
         else rootIdentity ??= { realpath: resolved, dev, ino };
       } catch {
-        cache.revoke(true);
+        revokeTerminal();
       }
+      // Root probes yield; retirement must be checked before forwarding.
+      signal.throwIfAborted();
       reconcileCoverage();
-      const captured = await store.capture(request);
+      const captured = await store.capture(request, signal);
+      signal.throwIfAborted();
       if (root === undefined) root = captured.root;
       if (captureRoot !== captured.root) {
-        cache.revoke(true);
+        revokeTerminal();
         logMainProcessWarn('[w5-read-cache] data root changed; serving stops');
       }
       // Enroll discovery's entire index, before visibility filtering. Newly
       // enrolled files are fenced; this capture cannot bless pre-watch bytes.
-      if (!disposed && root === captured.root)
+      if (!cache.signal.aborted && root === captured.root)
         coverage.reconcile(
           captured.root,
           captured.capture.files.find((file) => file.kind === 'index'),
@@ -213,11 +219,13 @@ export function createDesktopW5ReadCache(
     },
     servingCoverage: async (projection) => {
       reconcileCoverage(true);
-      if (disposed || !options.usable() || root === undefined) return undefined;
+      if (cache.signal.aborted || !options.usable() || root === undefined)
+        return undefined;
       const files = coverage.certify(projection.files());
       if (files === undefined) return undefined;
       try {
         const resolved = await realpath(root);
+        if (cache.signal.aborted) return undefined;
         const { dev, ino } = await stat(root, { bigint: true });
         if (
           !rootIdentity ||
@@ -225,20 +233,20 @@ export function createDesktopW5ReadCache(
           rootIdentity.dev !== dev ||
           rootIdentity.ino !== ino
         ) {
-          cache.revoke(true);
+          revokeTerminal();
           return undefined;
         }
-        return disposed || !options.usable()
+        return cache.signal.aborted || !options.usable()
           ? undefined
           : coverage.certify(projection.files());
       } catch {
-        cache.revoke(true);
+        revokeTerminal();
         return undefined;
       }
     },
   });
   const active = (): boolean =>
-    store !== undefined && !disposed && options.usable();
+    store !== undefined && !cache.signal.aborted && options.usable();
 
   /** Retries what is still owed with backoff; a latched daemon waits for W5e. */
   const settle = (): void => {
@@ -283,6 +291,7 @@ export function createDesktopW5ReadCache(
   });
   /** One trailing refill for a burst of own decisions or external changes. */
   const scheduleOwnRefill = (): void => {
+    if (!active()) return;
     const now = clock();
     if (cancelOwn === undefined) ownSince = now;
     else if (now - ownSince >= ownRefillMs * OWN_REFILL_MAX_DELAYS) return;
@@ -330,6 +339,7 @@ export function createDesktopW5ReadCache(
       });
   });
   const scheduleRefresh = (files: readonly W5CaptureFile[]): void => {
+    if (!active()) return;
     for (const file of files) {
       const key = w5ProjectionFileKey(file);
       if (!refreshInFlight.has(key)) refreshing.set(key, file);
@@ -340,23 +350,34 @@ export function createDesktopW5ReadCache(
     );
   };
 
-  const unsubscribe = options.onUnavailable?.(
+  const retire = (): void => {
+    // Retire only this cache: W5e handlers and fallback reads keep their store.
+    cancelRetry?.();
+    cancelRetry = undefined;
+    cancelOwn?.();
+    cancelOwn = undefined;
+    cancelRefresh?.();
+    cancelRefresh = undefined;
+    refreshing.clear();
+    unsubscribe?.();
+    unsubscribe = undefined;
+    coverage.dispose();
+  };
+  cache.signal.addEventListener('abort', retire, { once: true });
+  const revokeTerminal = (): void => cache.revoke(true);
+
+  unsubscribe = options.onUnavailable?.(
     () => cache.revoke(),
     () => {
       // Retry-detail changes can report ok without any loss of serving.
-      if (
-        active() &&
-        streamLive &&
-        !cache.serving() &&
-        !cache.terminallyRevoked()
-      )
-        scheduleOwnRefill();
+      if (active() && streamLive && !cache.serving()) scheduleOwnRefill();
     },
   );
 
   return {
     cache,
     setStreamReady(ready): void {
+      if (cache.signal.aborted) return;
       streamLive = ready;
       cache.setStreamReady(ready);
     },
@@ -367,26 +388,27 @@ export function createDesktopW5ReadCache(
         (error.details.capture === 'root-unavailable' ||
           error.details.capture === 'root-changed')
       )
-        cache.revoke(true);
+        revokeTerminal();
     },
     markDirty(files): void {
-      if (disposed || !files.length) return;
+      if (cache.signal.aborted || !files.length) return;
       cache.markDirty(files);
       if (store) scheduleOwnRefill();
     },
     noteOwnDecision(root, decision): void {
+      if (cache.signal.aborted) return;
       cache.noteOwnDecision(root, decision);
       reconcileCoverage(true);
       // Before the warm, its trailing plan and `settle` cover the decision.
-      if (store && !disposed && cache.warmed()) scheduleOwnRefill();
+      if (store && !cache.signal.aborted && cache.warmed()) scheduleOwnRefill();
     },
     activate(next): Promise<void> {
-      if (disposed || store) return Promise.resolve();
+      if (cache.signal.aborted || store) return Promise.resolve();
       store = next;
       return refill();
     },
     async apply(plan): Promise<void> {
-      if (!store || disposed) return;
+      if (!store || cache.signal.aborted) return;
       if (!options.usable()) {
         cache.revoke();
         return;
@@ -414,9 +436,9 @@ export function createDesktopW5ReadCache(
             identity.dev !== rootIdentity.dev ||
             identity.ino !== rootIdentity.ino
           )
-            cache.revoke(true);
+            revokeTerminal();
         } catch {
-          cache.revoke(true);
+          revokeTerminal();
         }
       }
       reconcileCoverage();
@@ -452,17 +474,7 @@ export function createDesktopW5ReadCache(
       return undefined;
     },
     dispose(): void {
-      disposed = true;
-      cache.revoke(true);
-      unsubscribe?.();
-      coverage.dispose();
-      cancelRetry?.();
-      cancelRetry = undefined;
-      cancelOwn?.();
-      cancelOwn = undefined;
-      cancelRefresh?.();
-      cancelRefresh = undefined;
-      refreshing.clear();
+      revokeTerminal();
     },
   };
 }

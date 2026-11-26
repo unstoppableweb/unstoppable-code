@@ -27,6 +27,14 @@ export const ONBOARDING_TIP_IDS = [
 
 export type OnboardingTipId = (typeof ONBOARDING_TIP_IDS)[number];
 
+export const CLAUDE_CONNECTOR_NOTICE_DISMISSAL_ID = 'claude-connector-notice';
+export const ONBOARDING_DISMISSAL_IDS = [
+  ...ONBOARDING_TIP_IDS,
+  CLAUDE_CONNECTOR_NOTICE_DISMISSAL_ID,
+] as const;
+
+export type OnboardingDismissalId = (typeof ONBOARDING_DISMISSAL_IDS)[number];
+
 const TIP_ID_SET: ReadonlySet<string> = new Set(ONBOARDING_TIP_IDS);
 
 export function isOnboardingTipId(value: unknown): value is OnboardingTipId {
@@ -35,7 +43,7 @@ export function isOnboardingTipId(value: unknown): value is OnboardingTipId {
 
 /** When each dismissed tip was dismissed (ISO 8601). */
 export type OnboardingTipDismissals = Readonly<
-  Partial<Record<OnboardingTipId, string>>
+  Partial<Record<OnboardingDismissalId, string>>
 >;
 
 /** The shared dismissal state. */
@@ -43,9 +51,9 @@ export interface OnboardingTipsState {
   readonly dismissed: OnboardingTipDismissals;
 }
 
-/** Dismiss one tip, or bring every tip back ("Show tips again"). */
+/** Dismiss one tip or notice, or bring resettable tips back ("Show tips again"). */
 export type OnboardingTipsUpdate =
-  | { readonly action: 'dismiss'; readonly tipId: OnboardingTipId }
+  | { readonly action: 'dismiss'; readonly tipId: OnboardingDismissalId }
   | { readonly action: 'reset' };
 
 export const EMPTY_ONBOARDING_TIPS_STATE: OnboardingTipsState = {
@@ -64,8 +72,8 @@ export function normalizeOnboardingTipDismissals(
   value: unknown,
 ): OnboardingTipDismissals {
   if (!isRecord(value)) return {};
-  const dismissed: Partial<Record<OnboardingTipId, string>> = {};
-  for (const id of ONBOARDING_TIP_IDS) {
+  const dismissed: Partial<Record<OnboardingDismissalId, string>> = {};
+  for (const id of ONBOARDING_DISMISSAL_IDS) {
     const at = value[id];
     if (typeof at === 'string' && !Number.isNaN(Date.parse(at))) {
       dismissed[id] = at;
@@ -88,10 +96,23 @@ export function parseOnboardingTipsUpdate(
 ): OnboardingTipsUpdate | null {
   if (!isRecord(value)) return null;
   if (value.action === 'reset') return { action: 'reset' };
-  if (value.action === 'dismiss' && isOnboardingTipId(value.tipId)) {
+  if (
+    value.action === 'dismiss' &&
+    (isOnboardingTipId(value.tipId) ||
+      value.tipId === CLAUDE_CONNECTOR_NOTICE_DISMISSAL_ID)
+  ) {
     return { action: 'dismiss', tipId: value.tipId };
   }
   return null;
+}
+
+export function retainPermanentOnboardingDismissals(
+  current: OnboardingTipDismissals,
+): OnboardingTipDismissals {
+  const dismissedAt = current[CLAUDE_CONNECTOR_NOTICE_DISMISSAL_ID];
+  return dismissedAt === undefined
+    ? {}
+    : { [CLAUDE_CONNECTOR_NOTICE_DISMISSAL_ID]: dismissedAt };
 }
 
 /**
@@ -103,7 +124,8 @@ export function applyOnboardingTipsUpdate(
   update: OnboardingTipsUpdate,
   now: Date,
 ): OnboardingTipDismissals {
-  if (update.action === 'reset') return {};
+  if (update.action === 'reset')
+    return retainPermanentOnboardingDismissals(current);
   if (current[update.tipId] !== undefined) return current;
   return { ...current, [update.tipId]: now.toISOString() };
 }

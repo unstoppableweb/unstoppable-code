@@ -1,5 +1,6 @@
 import { logMainProcessError } from '../lib/main-process-logging';
 import { classifyError } from '@canopy/protocol/app-errors/classification';
+import { isSharedConnectionWriteList } from '@canopy/desktop-shared/lib/automations';
 import {
   TrackedPlanImplementationInputSchema,
   ChatPlanReviewApprovalSchema,
@@ -79,6 +80,7 @@ import {
   createChatCommandDispatchOptions,
   dispatchChatCommandForLegacyIpc,
 } from '../canopy-runtime/core-chat-command-adapter';
+import { remoteBridgeCommitGuard } from '../remote-control/host/bridge-window';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { isPersistedChatTab } from '../lib/chat-tabs-reader';
 import { validateId, validateMessageAnchorId } from '../lib/validation';
@@ -133,6 +135,17 @@ export { recordedChatInterest } from './chat-interest-registry';
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Whether a `chat:command` request is a send that approves a plan review. */
+function approvesPlanReview(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const command = value.command;
+  return (
+    isRecord(command) &&
+    command.type === 'chat.send_message' &&
+    command.planReviewApproval !== undefined
+  );
 }
 
 function isInterestSubscriber(
@@ -1171,6 +1184,7 @@ const AUTOMATION_DISPATCH_KEYS: ReadonlySet<string> = new Set([
   'executionContext',
   'presentation',
   'packageOverlay',
+  'sharedConnectionWrites',
 ]);
 
 /** The main-only automation send block's exact shape (CAN-4549). */
@@ -1207,6 +1221,13 @@ function validateAutomationDispatch(value: unknown): void {
   )
     failInvalidRequest(
       'command.automationDispatch.packageOverlay is malformed.',
+    );
+  if (
+    value.sharedConnectionWrites !== undefined &&
+    !isSharedConnectionWriteList(value.sharedConnectionWrites)
+  )
+    failInvalidRequest(
+      'command.automationDispatch.sharedConnectionWrites is malformed.',
     );
 }
 
@@ -3537,15 +3558,31 @@ export function registerChatStateHandlers(
   registerIpcHandler<[unknown], ChatCommandResult>(
     IPC_CHANNELS.chatCommand,
     async (event, value) => {
+      // A remote controller's send or new chat commits only while its
+      // pairing holds, so one in flight when it is removed never goes out
+      // (CAN-7872). This computer's own windows have no such guard. A send
+      // that approves a plan review is left as it was: its approval is a
+      // separate write before the send commits, which the check cannot hold
+      // (CAN-7877).
+      const canCommit = approvesPlanReview(value)
+        ? undefined
+        : remoteBridgeCommitGuard(event.sender);
       try {
-        return await dispatchChatCommandForLegacyIpc(
-          value,
-          createChatCommandDispatchOptions(
+        return await dispatchChatCommandForLegacyIpc(value, {
+          ...createChatCommandDispatchOptions(
             port,
             runtime.dispatcher,
             runtime.resolveCaller(event),
           ),
-        );
+          ...(canCommit === undefined
+            ? {}
+            : {
+                executionOptions: {
+                  canCommitSend: canCommit,
+                  canCommitCreate: canCommit,
+                },
+              }),
+        });
       } catch (error) {
         if (error instanceof InvalidChatStateRequestError)
           throw classifyError(error, 'input.not_accepted');

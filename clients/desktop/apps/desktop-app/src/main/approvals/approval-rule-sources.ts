@@ -25,7 +25,7 @@ import {
   createPreferencesLastGoodPath,
   preferencesBackupPathPattern,
 } from '../lib/preferences-file-paths';
-import { getMigrationsFilePath, getPreferencesFilePath } from '../lib/paths';
+import { getMigrationsFilePath, preferencesReadPaths } from '../lib/paths';
 import {
   createMigrationsLastGoodPath,
   migrationsDamagedPathPattern,
@@ -146,12 +146,20 @@ function withConfirmedAllows(
  * the migrations ledger and its recovery copies, whose loss re-runs
  * approval-mode migrations. Preferences backups and kept damaged ledgers are
  * file-rule globs, since recovery names each one when it creates it.
+ *
+ * Also the preferences owner records, since a junk or foreign one refuses
+ * every preferences save, and the preferences backups and the restore
+ * folders beside them, whose files sit one level down (CAN-7924). Their
+ * folders, and `storage-records` and `backups`, count as files: a file there
+ * makes the records unreadable, and moving one away loses them.
  */
 export async function protectedApprovalFileWritePaths(
   workspaceId: string,
   basePath: string,
 ): Promise<string[]> {
-  const preferencesPath = getPreferencesFilePath();
+  const preferencesPath = preferencesReadPaths.document();
+  const ownerRecords = preferencesReadPaths.ownerRecords();
+  const backups = preferencesReadPaths.backups();
   const backupPattern = preferencesBackupPathPattern(preferencesPath);
   const migrationsPath = getMigrationsFilePath();
   const paths = await Promise.all([
@@ -173,6 +181,9 @@ export async function protectedApprovalFileWritePaths(
       createMigrationsLastGoodPath(migrationsPath),
       basePath,
     ),
+    ...[dirname(ownerRecords), ownerRecords, dirname(backups), backups].map(
+      (folder) => resolveExistingAncestorPath(folder, basePath),
+    ),
     // The folder, not the glob: a file literally named like the glob must not
     // redirect the pattern through a symlink.
     ...[backupPattern, migrationsDamagedPathPattern(migrationsPath)].map(
@@ -181,6 +192,15 @@ export async function protectedApprovalFileWritePaths(
           (folder) =>
             folder === undefined ? undefined : join(folder, basename(pattern)),
         ),
+    ),
+    ...[
+      { folder: ownerRecords, glob: ['*'] },
+      { folder: backups, glob: ['*'] },
+      { folder: backups, glob: ['*', '*'] },
+    ].map(({ folder, glob }) =>
+      resolveExistingAncestorPath(folder, basePath).then((resolved) =>
+        resolved === undefined ? undefined : join(resolved, ...glob),
+      ),
     ),
   ]);
   return Array.from(

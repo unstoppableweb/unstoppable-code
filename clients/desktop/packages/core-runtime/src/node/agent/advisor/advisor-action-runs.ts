@@ -10,7 +10,7 @@ import { OperationLedgerRefusedError } from '../../operations/ledger/errors';
 import type { OperationAcceptResult } from '../../operations/ledger/ledger';
 import {
   OperationCancelRefusedError,
-  type OperationService,
+  type OperationServicePort,
 } from '../../operations/service';
 
 /*
@@ -62,13 +62,13 @@ const sha256Hex = (text: string): string =>
   createHash('sha256').update(text, 'utf8').digest('hex');
 
 export class AdvisorActionRuns {
-  private readonly operations: OperationService;
+  private readonly operations: OperationServicePort;
   private readonly onError: (error: unknown, context: string) => void;
   /** Terminal outcomes whose ledger write failed, by operation id. */
   private readonly unrecorded = new Map<string, TerminalOutcome>();
 
   constructor(options: {
-    operations: OperationService;
+    operations: OperationServicePort;
     onError?: (error: unknown, context: string) => void;
   }) {
     this.operations = options.operations;

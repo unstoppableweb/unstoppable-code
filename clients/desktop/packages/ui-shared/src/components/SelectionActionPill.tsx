@@ -11,10 +11,13 @@ import {
   type ReactNode,
 } from 'react';
 import { CheckIcon, CopyIcon } from '../icons/AppIcons';
-import { Button } from './Button';
-import { FloatingMenu, FloatingMenuPointAnchor } from './FloatingMenu';
-import type { PopoverAnchorRect } from './Popover';
-import { Tooltip } from './Tooltip';
+import { Button } from '../primitives/Button';
+import {
+  FloatingMenu,
+  FloatingMenuPointAnchor,
+} from '../primitives/FloatingMenu';
+import type { PopoverAnchorRect } from '../primitives/Popover';
+import { Tooltip } from '../primitives/Tooltip';
 
 const COPIED_DURATION_MS = 1500;
 /** Clear of the selection, and of the window's edges. */

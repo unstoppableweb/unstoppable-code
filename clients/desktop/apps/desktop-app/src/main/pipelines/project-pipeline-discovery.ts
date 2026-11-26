@@ -424,8 +424,13 @@ export async function discoverProjectPipelinesBounded(
 export async function readProjectPipelinesWithinBounds(
   cwd: string,
   limits: DiscoverProjectPipelinesLimits,
+  /**
+   * `full` lists only documents that pass the run's own normalization, as
+   * the scheduler's discovery does, still writing nothing (CAN-5782).
+   */
+  validation: DiscoveryValidation = 'scope',
 ): Promise<BoundedProjectPipelineDiscovery> {
-  const { pipelines, truncated } = await discover(cwd, limits, 'scope');
+  const { pipelines, truncated } = await discover(cwd, limits, validation);
   return { pipelines, truncated };
 }
 

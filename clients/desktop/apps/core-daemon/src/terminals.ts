@@ -9,11 +9,20 @@ import {
   readFilesystemScope,
   type FilesystemScopeResolver,
 } from '@canopy/core-runtime/node';
+import { TRUNCATION_MARKER_BYTES } from '@canopy/core-runtime/node/terminal';
 import {
   createWorkerTerminalHandlers,
   TerminalHostSupervisor,
   type TerminalHostProcess,
 } from '@canopy/core-runtime/node/terminal/host';
+import {
+  TerminalRecordAuthority,
+  TerminalRecordRepository,
+  terminalRecordDir,
+  terminalRecordProjectDir,
+  validateTerminalRecordOp,
+  type TerminalRecordRegistration,
+} from '@canopy/core-runtime/node/terminal/record';
 import type {
   ExecutionHostBudget,
   OwnedExecutionHostPort,
@@ -21,6 +30,11 @@ import type {
 import {
   WORKER_TERMINAL_INSTRUCTION_DEFINITIONS,
   WORKER_TERMINAL_QUERY_DEFINITIONS,
+  WORKER_TERMINAL_RECORD_INSTRUCTION_DEFINITIONS,
+  WORKER_TERMINAL_RECORD_LIFECYCLE_INSTRUCTION_DEFINITIONS,
+  WORKER_TERMINAL_RECORD_QUERY_DEFINITIONS,
+  WORKER_TERMINAL_RECORD_WATERMARK_KEY_MAX_LENGTH,
+  WORKER_TERMINAL_SCHEMA_REVISIONS,
   WORKER_TERMINAL_SESSION_INSTRUCTION_DEFINITIONS,
   WORKER_TERMINAL_STREAM_DEFINITIONS,
 } from '@canopy/protocol/canopy-core';
@@ -40,12 +54,20 @@ export const DAEMON_TERMINAL_HOST_BUDGET: ExecutionHostBudget = {
   rssMb: 1536,
 };
 
-/** Every `worker.terminal.*` operation the daemon serves (CAN-5088). */
+/**
+ * Every `worker.terminal.*` operation the daemon serves (CAN-5088), with
+ * the worktree terminal record (CAN-7051).
+ */
 export const DAEMON_TERMINAL_DEFINITIONS = {
-  queries: WORKER_TERMINAL_QUERY_DEFINITIONS,
+  queries: {
+    ...WORKER_TERMINAL_QUERY_DEFINITIONS,
+    ...WORKER_TERMINAL_RECORD_QUERY_DEFINITIONS,
+  },
   instructions: {
     ...WORKER_TERMINAL_INSTRUCTION_DEFINITIONS,
     ...WORKER_TERMINAL_SESSION_INSTRUCTION_DEFINITIONS,
+    ...WORKER_TERMINAL_RECORD_LIFECYCLE_INSTRUCTION_DEFINITIONS,
+    ...WORKER_TERMINAL_RECORD_INSTRUCTION_DEFINITIONS,
   },
   streams: WORKER_TERMINAL_STREAM_DEFINITIONS,
 };
@@ -67,6 +89,11 @@ export interface DaemonTerminalOptions {
     readonly code: number;
     readonly lost: number;
   }) => void;
+  /** The daemon's data root, which holds `terminal-records/` (CAN-7051). */
+  readonly dataRoot: string;
+  /** The host's directory flush after each record install. */
+  readonly flushDirectorySync: (directory: string) => void;
+  readonly log?: (message: string, details: Record<string, unknown>) => void;
 }
 
 function rootNotFound(): CanopyOperationError {
@@ -120,8 +147,118 @@ export function createDaemonTerminalModule(
         options.onHostLost?.({ code, lost: lost.length });
     },
   });
-  const handlers = createWorkerTerminalHandlers({
+  // The one writer of every worktree terminal record (CAN-7051): in this
+  // module, never in the PTY host, which only reports.
+  const authority = new TerminalRecordAuthority({
+    repository: new TerminalRecordRepository({
+      dataRoot: options.dataRoot,
+      flushDirectorySync: options.flushDirectorySync,
+      ...(options.log && { log: options.log }),
+    }),
+    ...(options.log && { log: options.log }),
+  });
+  const outputProgress = new Map<
+    TerminalRecordRegistration,
+    { nextOffset: number; reportedOffset: number }
+  >();
+  let recordWritesFenced = false;
+  let fenceExitFailed = false;
+  // Even history reads can retry attribution and schedule installs. Only the
+  // lifecycle's final flush and disposal may bypass this admission fence.
+  const activeRecord = (): TerminalRecordAuthority | null =>
+    recordWritesFenced ? null : authority;
+  const unsubscribeReports = supervisor.onReport((report, registration) => {
+    if (report.type === 'firstOutput') return;
+    const record = activeRecord();
+    if (!record || registration === undefined) return;
+    const progress = outputProgress.get(registration);
+    if (!progress) return;
+    if (report.type === 'offset') {
+      progress.reportedOffset = Math.max(
+        progress.reportedOffset,
+        report.outputOffset,
+      );
+      return;
+    }
+    const fromOffset = report.toOffset - report.data.byteLength;
+    if (fromOffset !== progress.nextOffset)
+      record.output(registration, TRUNCATION_MARKER_BYTES);
+    progress.nextOffset = report.toOffset;
+    record.output(registration, report.data);
+  });
+  const recordExit = (
+    registration: TerminalRecordRegistration,
+    exitCode: number | null,
+    signal: string | null,
+    finalOffset = 0,
+  ): void => {
+    const progress = outputProgress.get(registration);
+    if (!progress) return;
+    // Offset reports and host replies can outrun byte reports.
+    if (Math.max(finalOffset, progress.reportedOffset) > progress.nextOffset)
+      authority.output(registration, TRUNCATION_MARKER_BYTES);
+    outputProgress.delete(registration);
+    authority.exited(registration, exitCode, signal);
+  };
+  const unsubscribeExit = supervisor.onEvent((event, registration) => {
+    if (event.type !== 'exit') return;
+    const record = activeRecord();
+    if (!record || registration === undefined) return;
+    recordExit(registration, event.exitCode, event.signal, event.outputOffset);
+  });
+  const fenceRecordWrites = (): void => {
+    if (recordWritesFenced) return;
+    recordWritesFenced = true;
+    // No later host exit can reach the record after this admission fence.
+    for (const {
+      registration,
+      exitCode,
+      signal,
+      outputOffset,
+    } of supervisor.pendingRecordExits()) {
+      if (!outputProgress.has(registration)) continue;
+      try {
+        recordExit(registration, exitCode, signal, outputOffset);
+      } catch {
+        // Finish fencing every lifetime; phase 6 reports the durability failure.
+        fenceExitFailed = true;
+      }
+    }
+    unsubscribeReports();
+    unsubscribeExit();
+    outputProgress.clear();
+  };
+  const validateTarget = (target: {
+    projectId: string;
+    worktreeId?: string;
+  }): void => {
+    if (target.worktreeId === undefined)
+      terminalRecordProjectDir(options.dataRoot, target.projectId);
+    else
+      terminalRecordDir(options.dataRoot, target.projectId, target.worktreeId);
+  };
+  const terminalHandlers = createWorkerTerminalHandlers({
     supervisor,
+    record: {
+      attribute: (attribution): TerminalRecordRegistration | undefined =>
+        activeRecord()?.attribute(attribution),
+      restoreHistoryTail: (
+        client,
+        terminalId,
+        maxChars,
+      ): { scrollback: string; signal: string | null } | null =>
+        activeRecord()?.restoreHistoryTail(client, terminalId, maxChars) ??
+        null,
+    },
+    validateRecordTarget: validateTarget,
+    onOutputStart: (_terminal, fromOffset, registration): void => {
+      if (!activeRecord()) return;
+      outputProgress.set(registration, {
+        nextOffset: fromOffset,
+        reportedOffset: fromOffset,
+      });
+    },
+    ...(options.log && { log: options.log }),
     resolveRoot: async (scope, rootId) => {
       let root;
       try {
@@ -141,6 +278,58 @@ export function createDaemonTerminalModule(
       return root.absolutePath;
     },
   });
+  // Record failures are the caller's to retry: an `apply` outcome is then
+  // unknown, and its producer keeps the batch.
+  const recorded = <T>(run: () => T): Promise<T> => {
+    try {
+      return Promise.resolve(run());
+    } catch (error) {
+      if (error instanceof CanopyOperationError) return Promise.reject(error);
+      options.log?.('Terminal record operation failed', {
+        name: error instanceof Error ? error.name : 'error',
+      });
+      return Promise.reject(
+        new CanopyOperationError({
+          kind: 'unavailable',
+          message: 'The terminal record is unavailable.',
+          retry: { kind: 'same_request', delayMs: 1_000 },
+        }),
+      );
+    }
+  };
+  const recordOperation = <T>(
+    run: (record: TerminalRecordAuthority) => T,
+  ): Promise<T> =>
+    recorded(() => {
+      const record = activeRecord();
+      if (!record)
+        throw new CanopyOperationError({
+          kind: 'unavailable',
+          message: 'The terminal record is unavailable.',
+          retry: { kind: 'same_request', delayMs: 1_000 },
+        });
+      return run(record);
+    });
+  // Only deliberate, side-effect-free input checks are permanent failures.
+  // Authority execution may already have published: retain same-request retry.
+  const preflight = <T>(
+    validate: () => void,
+    run: (record: TerminalRecordAuthority) => T,
+  ): Promise<T> => {
+    try {
+      validate();
+    } catch {
+      return Promise.reject(
+        new CanopyOperationError({
+          kind: 'invalid_argument',
+          message:
+            "Couldn't use this terminal record request. Check its IDs and layout keys.",
+          retry: { kind: 'never' },
+        }),
+      );
+    }
+    return recordOperation(run);
+  };
   return defineRuntimeModule({
     name: 'worker.terminal',
     plane: 'worker',
@@ -149,15 +338,94 @@ export function createDaemonTerminalModule(
         name: 'worker.terminal.host',
         plane: 'worker',
         stop: {
-          5: async (): Promise<void> => {
-            await supervisor.stop();
+          5: async (signal): Promise<void> => {
+            // A phase timeout advances shutdown without awaiting this hook.
+            // Fence synchronously on abort, before flush can release ownership.
+            signal.addEventListener('abort', fenceRecordWrites, { once: true });
+            if (signal.aborted) fenceRecordWrites();
+            try {
+              await supervisor.stop(signal);
+            } finally {
+              fenceRecordWrites();
+              signal.removeEventListener('abort', fenceRecordWrites);
+            }
             await options.hosts.shutdown();
             await options.shutdown?.();
           },
         },
       },
+      {
+        // Phase 5 drained the host or fenced reports at its deadline.
+        // Install every accepted report, even when host drain was unconfirmed.
+        name: 'worker.terminal.record',
+        plane: 'worker',
+        stop: {
+          6: (): Promise<void> => {
+            fenceRecordWrites();
+            return recorded(() => {
+              authority.finalFlushSync();
+              if (fenceExitFailed)
+                throw new Error('Terminal record shutdown exits failed.');
+            });
+          },
+          // A failed final flush must not leave background publication retries.
+          7: (): void => {
+            fenceRecordWrites();
+            authority.dispose();
+          },
+        },
+      },
     ],
     definitions: DAEMON_TERMINAL_DEFINITIONS,
-    handlers,
+    handlers: {
+      queries: {
+        ...terminalHandlers.queries,
+        'worker.terminal.record.history.read': (params) =>
+          preflight(
+            () => validateTarget(params.client),
+            (record) => record.historyRead(params),
+          ),
+      },
+      instructions: {
+        ...terminalHandlers.instructions,
+        'worker.terminal.record.open': (params) =>
+          preflight(
+            () => validateTarget(params.client),
+            (record) => record.open(params.client),
+          ),
+        'worker.terminal.record.apply': (params) =>
+          preflight(
+            () => {
+              validateTarget(params.client);
+              const component = (value: string): string =>
+                value.replace(/%/g, '%25').replace(/\//g, '%2F');
+              const producer = `${component(params.producer.id)}/${component(params.producer.runId)}`;
+              if (
+                producer.length >
+                WORKER_TERMINAL_RECORD_WATERMARK_KEY_MAX_LENGTH
+              )
+                throw new Error(
+                  'The terminal producer watermark key is too long.',
+                );
+              for (const op of params.ops)
+                validateTerminalRecordOp(op, params.client);
+            },
+            (record) => record.apply(params),
+          ),
+        'worker.terminal.record.shutdown': (params) =>
+          recordOperation((record) => record.shutdown(params.signal)),
+        'worker.terminal.record.retire': (params) =>
+          preflight(
+            () => {
+              validateTarget(params);
+              for (const worktreeId of params.worktreeIds ?? [])
+                validateTarget({ projectId: params.projectId, worktreeId });
+            },
+            (record) => record.retire(params),
+          ),
+      },
+      streams: terminalHandlers.streams,
+    },
+    schemaRevisions: WORKER_TERMINAL_SCHEMA_REVISIONS,
   });
 }

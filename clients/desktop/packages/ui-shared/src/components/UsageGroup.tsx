@@ -3,16 +3,16 @@
 import { useId, type JSX, type ReactNode } from 'react';
 import { USAGE_ALERT_WARNING_THRESHOLD } from '@canopy/protocol/provider-usage';
 import { ModelProviderIcon } from '../icons/ModelProviderIcon';
-import { NoticeShapeProvider } from './Notice';
+import { NoticeShapeProvider } from '../primitives/Notice';
 import { formatRelativeTime } from '../lib/format-relative-time';
-import { Button } from './Button';
-import { ProgressBar, type ProgressTone } from './Progress';
+import { Button } from '../primitives/Button';
+import { ProgressBar, type ProgressTone } from '../primitives/Progress';
 import { RefreshSpinner } from './RefreshSpinner';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 import { formatCreditsLeft } from './UsageIndicator';
 import { formatUsagePercent } from './usage-indicator-meter';
-import { Heading } from './Heading';
-import { Stack, type SpaceRole } from './Stack';
+import { Heading } from '../primitives/Heading';
+import { Stack, type SpaceRole } from '../primitives/Stack';
 
 /** One displayable plan limit window, as every usage surface receives it. */
 export interface UsageLimitCard {

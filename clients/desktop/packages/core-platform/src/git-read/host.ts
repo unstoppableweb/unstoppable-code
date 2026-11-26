@@ -19,6 +19,7 @@ import {
   type GitRepositoryReadRequest,
 } from '@canopy/core-runtime/node/git';
 import {
+  GIT_LAZY_FETCH_DISABLED_WARNING,
   gitRepositoryCommandFor,
   GitReadError,
   type GitReadEnvironment,
@@ -471,6 +472,9 @@ export function createGitReadHostWith(
         throw new GitReadError('exit_status', {
           exitCode: output.code,
           signal: output.signal,
+          lazyFetchBlocked: output.stderr.includes(
+            GIT_LAZY_FETCH_DISABLED_WARNING,
+          ),
         });
       return output.stdout;
     } catch (error) {
@@ -478,7 +482,10 @@ export function createGitReadHostWith(
       const code = codeOf(error);
       // The exit code alone: `rev-parse --verify` exits 1 for an absent object.
       if (code === 'exit_status' && error instanceof GitReadError)
-        throw new GitRepositoryReadError(code, { exitCode: error.exitCode });
+        throw new GitRepositoryReadError(code, {
+          exitCode: error.exitCode,
+          lazyFetchBlocked: error.lazyFetchBlocked,
+        });
       return failRead(code);
     } finally {
       clearTimeout(timer);

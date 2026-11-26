@@ -5,7 +5,7 @@
 // hangs. The interrupted-work scan and the chat services are stubs. It asserts
 // observable behaviour only: whether startup recovery and an install settle,
 // what startup recovery reports, and the warning a failed recovery logs.
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import type * as FsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,6 +23,10 @@ interface MockState {
   holdIntentsRead: boolean;
   held: Held | null;
   intentsReads: number;
+  /** Set to hold the next read of the intents row's owner record. */
+  holdOwnerRead: boolean;
+  ownerHeld: { release: (record: string | null) => void } | null;
+  ownerReads: number;
   scanErrors: string[];
   warnings: string[];
 }
@@ -32,14 +36,43 @@ const mockState: MockState = {
   holdIntentsRead: false,
   held: null,
   intentsReads: 0,
+  holdOwnerRead: false,
+  ownerHeld: null,
+  ownerReads: 0,
   scanErrors: [],
   warnings: [],
 };
 
 jest.mock('node:fs/promises', () => {
   const actual = jest.requireActual<typeof FsPromises>('node:fs/promises');
+  const absent = (): Error =>
+    Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
   return {
     ...actual,
+    // The intents row's owner record (CAN-7690) is served here like the
+    // intents directory: absent by default, holdable. Other reads are real.
+    readFile: (
+      ...args: Parameters<typeof actual.readFile>
+    ): Promise<unknown> => {
+      const [path] = args;
+      if (
+        typeof path !== 'string' ||
+        path !==
+          `${mockState.root}/storage-records/pipeline_install_intents/owner-flip.json`
+      )
+        return actual.readFile(...args);
+      mockState.ownerReads += 1;
+      if (!mockState.holdOwnerRead) return Promise.reject(absent());
+      mockState.holdOwnerRead = false;
+      return new Promise((resolve, reject) => {
+        mockState.ownerHeld = {
+          release: (record): void => {
+            if (record === null) reject(absent());
+            else resolve(record);
+          },
+        };
+      });
+    },
     readdir: (...args: Parameters<typeof actual.readdir>): Promise<unknown> => {
       if (String(args[0]) !== `${mockState.root}/intents`)
         return actual.readdir(...args);
@@ -180,12 +213,16 @@ beforeEach(async () => {
   mockState.holdIntentsRead = false;
   mockState.held = null;
   mockState.intentsReads = 0;
+  mockState.holdOwnerRead = false;
+  mockState.ownerHeld = null;
+  mockState.ownerReads = 0;
   mockState.scanErrors = [];
   mockState.warnings = [];
 });
 
 afterEach(async () => {
   mockState.held?.release();
+  mockState.ownerHeld?.release(null);
   jest.useRealTimers();
   await rm(mockState.root, { recursive: true, force: true });
 });
@@ -236,5 +273,51 @@ describe('desktop startup recovery and pipeline install recovery (CAN-7302)', ()
     await expect(startup.recoverInterruptedWorkAtStartup()).rejects.toThrow(
       'Chat workspace-1/worktree-1: unreadable',
     );
+  });
+
+  it('install recovery starts no rollback before the owner check answers, and a record naming the daemon fences the interrupted install, writing nothing (CAN-7690)', async () => {
+    const first = await launch();
+    const intent = await first.installs.beginPipelineInstallIntent('shared');
+    await intent.noteDefinition({
+      definitionId: 'half-installed',
+      change: 'linked',
+      contentHash: 'a'.repeat(64),
+    });
+    // The process exits here, its intent still on disk.
+    const intents = `${mockState.root}/intents`;
+    const before = await readdir(intents);
+    expect(before.filter((name) => name.endsWith('.json'))).toHaveLength(1);
+    const bytes = await Promise.all(
+      before.map((name) => readFile(join(intents, name))),
+    );
+    mockState.intentsReads = 0;
+    mockState.holdOwnerRead = true;
+    const { startup, installs } = await launch();
+    const recovered = track(startup.recoverInterruptedWorkAtStartup());
+    await elapse(HOUR);
+    // Held owner check: the intents are not read and nothing is rolled back.
+    expect(mockState.ownerHeld).not.toBeNull();
+    expect(mockState.intentsReads).toBe(0);
+    expect(recovered.settled()).toBe(true);
+    mockState.ownerHeld?.release(
+      JSON.stringify({
+        namespaceId: 'pipeline_install_intents',
+        fromOwner: 'legacy',
+        toOwner: 'daemon',
+        workPackage: 'W6',
+        backupRecord: `storage-records/pipeline_install_intents/namespace-backup.json#sha256:${'a'.repeat(64)}`,
+        flippedAt: '2026-11-24T10:00:00.000Z',
+      }),
+    );
+    mockState.ownerHeld = null;
+    await elapse(0);
+    await expect(
+      installs.pipelineDefinitionRecoveryRefusal('half-installed'),
+    ).resolves.toMatchObject({ errorCode: 'pipeline_definition_unconfirmed' });
+    const after = await readdir(intents);
+    expect(after).toEqual(before);
+    await expect(
+      Promise.all(after.map((name) => readFile(join(intents, name)))),
+    ).resolves.toEqual(bytes);
   });
 });

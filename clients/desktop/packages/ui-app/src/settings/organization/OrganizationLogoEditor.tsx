@@ -68,6 +68,7 @@ export function OrganizationLogoEditor({
           data-testid="org-logo-edit"
           onClick={() => inputRef.current?.click()}
           disabled={busy}
+          aria-busy={busy || undefined}
           aria-label="Change organization logo"
           presentation="organization-logo-replace"
           style={{ width: px, height: px }}
@@ -87,6 +88,7 @@ export function OrganizationLogoEditor({
           data-testid="org-logo-edit"
           onClick={() => inputRef.current?.click()}
           disabled={busy}
+          aria-busy={busy || undefined}
           aria-label="Add organization logo"
           style={{ width: px, height: px }}
           presentation="organization-logo-add"

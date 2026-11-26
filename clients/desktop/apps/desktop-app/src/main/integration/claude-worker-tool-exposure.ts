@@ -56,15 +56,22 @@ export function resolveClaudeWorkerMemoryToolExposure(
  * `claude-worker` route with the given memory-tool exposure. The Agent Ledger
  * tools exist only on a pipeline agent's route, whose session passed the
  * Ledger exposure gate (`ledgerTools`); a background helper's never lists
- * them (E05). Other tools are unaffected.
+ * them (E05). `SearchActions` and `DispatchAction` exist only on a pipeline
+ * agent's route whose host set `pipelineAgentActions` after its own exposure
+ * check (CAN-7742); every other worker route fails closed. Other tools are
+ * unaffected.
  */
 export function isClaudeWorkerToolExposed(
   key: CanopyInjectedToolKey,
   exposure: ClaudeWorkerMemoryToolExposure,
   ledgerTools = false,
+  pipelineAgentActions = false,
 ): boolean {
   if (isLedgerInjectedToolKey(key)) {
     return ledgerTools;
+  }
+  if (key === 'search_actions' || key === 'dispatch_action') {
+    return pipelineAgentActions;
   }
   if (key === 'save_memory') {
     return exposure === 'read-write';

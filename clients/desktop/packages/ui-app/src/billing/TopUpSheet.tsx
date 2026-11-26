@@ -16,7 +16,6 @@ import {
 } from '@canopy/protocol/billing';
 import type { ModelLibraryAccess } from '@canopy/protocol/models';
 import {
-  ButtonLink,
   AI_CREDITS_PROCESSING_COPY,
   AI_CREDITS_PURCHASE_LABEL,
   Button,
@@ -415,7 +414,7 @@ export function TopUpSheet({
               </Button>
             ) : null}
             {desktopReturnHref !== null ? (
-              <ButtonLink
+              <Button
                 href={desktopReturnHref}
                 data-testid={tid('credits-top-up-desktop-return')}
                 variant="primary"
@@ -424,7 +423,7 @@ export function TopUpSheet({
                 rel={undefined}
               >
                 {`Back to ${appName}`}
-              </ButtonLink>
+              </Button>
             ) : null}
             <Button
               type="button"

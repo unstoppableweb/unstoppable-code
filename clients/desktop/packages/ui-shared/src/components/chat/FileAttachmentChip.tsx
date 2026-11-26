@@ -1,4 +1,4 @@
-import { ControlButton } from '../Button';
+import { ControlButton } from '../../primitives/Button';
 import {
   memo,
   useId,
@@ -6,7 +6,7 @@ import {
   type MouseEventHandler,
   type ReactNode,
 } from 'react';
-import { DownloadIcon, FileIcon } from '../../icons';
+import { DownloadIcon, FileTypeIcon } from '../../icons';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 
 export interface FileAttachmentChipProps {
@@ -32,7 +32,10 @@ export const FileAttachmentChip = memo(function FileAttachmentChip({
   const nameId = useId();
   const label = (
     <>
-      {icon ?? <FileIcon className="shrink-0" aria-hidden="true" />}
+      {icon ?? (
+        // The type comes from the name, so it is blocked with it.
+        <FileTypeIcon filename={filename} className={REPLAY_BLOCK_CLASS} />
+      )}
       <span
         id={nameId}
         className={`${REPLAY_BLOCK_CLASS} truncate`}

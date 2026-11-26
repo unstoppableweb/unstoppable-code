@@ -69,6 +69,21 @@ export interface PastedSecretGuard {
   readonly notice: JSX.Element | null;
 }
 
+const GUARD_FLAG = CLIENT_FEATURE_FLAGS.canopySharedAgentSecretRequests.key;
+
+/**
+ * The guard's gate fails closed (CAN-4181 F5): on while the displayed value
+ * or main's IPC copy is, so a fresh core false whose stream item lags never
+ * lets a paste through unscanned.
+ */
+export function pastedSecretGuardEnabled(
+  state: ReturnType<typeof useFeatureFlagsStore.getState>,
+): boolean {
+  return (
+    state.isEnabled(GUARD_FLAG) || state.ipcSnapshot.values[GUARD_FLAG] === true
+  );
+}
+
 /**
  * The paste guard for a local chat's composer. `scope` is undefined for
  * cloud chats (U5 keeps their secrets in the cloud) and while no chat is
@@ -86,9 +101,7 @@ export function usePastedSecretGuard({
   /** Called after text was inserted, to sync the composer's value. */
   readonly onInserted: () => void;
 }): PastedSecretGuard {
-  const enabled = useFeatureFlagsStore((state) =>
-    state.isEnabled(CLIENT_FEATURE_FLAGS.canopySharedAgentSecretRequests.key),
-  );
+  const enabled = useFeatureFlagsStore(pastedSecretGuardEnabled);
   const [held, setHeldState] = useState<HeldPaste | null>(null);
   // The paste held now, for replies that settle after it changed.
   const heldRef = useRef<HeldPaste | null>(null);

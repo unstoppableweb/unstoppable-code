@@ -63,6 +63,26 @@ import { resolveWorktreeCwd } from '../lib/resolve-worktree';
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { buildStandaloneChatLinkTarget } from '../lib/standalone-link-target';
 
+/** A terminal that is not live, replayed from its record's history. */
+async function replayFromRecord(
+  terminalId: string,
+): Promise<TerminalAttachResponse> {
+  const release =
+    await terminalPersistenceStore.prefetchPersistedEntry(terminalId);
+  try {
+    const indexed = terminalPersistenceStore.getTerminalMetadata(terminalId);
+    if (indexed)
+      assertNotSplitLocked(
+        indexed.session.projectId,
+        indexed.session.worktreeId,
+        'attaching to a terminal',
+      );
+    return workerTerminal.replay(terminalId);
+  } finally {
+    release();
+  }
+}
+
 function validateTerminalDimension(value: number, label: string): void {
   if (!Number.isInteger(value) || value <= 0) {
     throw new Error(`Invalid ${label}: must be a positive integer`);
@@ -248,9 +268,15 @@ export function registerTerminalHandlers(
     },
   );
 
-  registerIpcHandler<[TerminalAttachRequest], TerminalAttachResponse>(
+  registerIpcHandler<
+    [TerminalAttachRequest],
+    TerminalAttachResponse | Promise<TerminalAttachResponse>
+  >(
     IPC_CHANNELS.terminalAttach,
-    (_event, request): TerminalAttachResponse => {
+    (
+      _event,
+      request,
+    ): TerminalAttachResponse | Promise<TerminalAttachResponse> => {
       validateId(request.terminalId, 'terminalId');
       const session = workerTerminal
         .list()
@@ -261,8 +287,10 @@ export function registerTerminalHandlers(
           session.worktreeId,
           'attaching to a terminal',
         );
+        return workerTerminal.replay(request.terminalId);
       }
-      return workerTerminal.replay(request.terminalId);
+      // Not live: its history is read from the record (CAN-7051).
+      return replayFromRecord(request.terminalId);
     },
   );
 
@@ -276,7 +304,7 @@ export function registerTerminalHandlers(
         workerTerminal
           .list()
           .find((entry) => entry.id === request.terminalId) ??
-        terminalPersistenceStore.getPersistedTerminalEntry(request.terminalId)
+        terminalPersistenceStore.getTerminalMetadata(request.terminalId)
           ?.session;
       if (session) {
         assertNotSplitLocked(
@@ -354,15 +382,16 @@ export function registerTerminalHandlers(
 
   registerIpcHandler<
     [LoadWorktreeTerminalStateRequest],
-    LoadWorktreeTerminalStateResponse
+    Promise<LoadWorktreeTerminalStateResponse>
   >(
     IPC_CHANNELS.terminalLoadWorktreeState,
-    (_event, request): LoadWorktreeTerminalStateResponse => {
+    (_event, request): Promise<LoadWorktreeTerminalStateResponse> => {
       validateId(request.projectId, 'projectId');
       validateId(request.worktreeId, 'worktreeId');
       return terminalPersistenceStore.loadWorktreeState(
         request.projectId,
         request.worktreeId,
+        request.historyStatusOnly === true,
       );
     },
   );

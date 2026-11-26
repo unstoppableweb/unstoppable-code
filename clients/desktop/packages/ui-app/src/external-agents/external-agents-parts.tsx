@@ -1,6 +1,6 @@
 'use client';
 
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import { ControlButton } from '@canopy/ui-shared/components';
 import { useState, type JSX, type ReactNode } from 'react';
 import type {
@@ -49,7 +49,7 @@ import {
 } from '@canopy/ui-shared/icons';
 import { formatRelativeTime } from '@canopy/ui-shared/lib/format-relative-time';
 import {
-  accessSummaryLine,
+  connectionAccessLine,
   activityTargetsLine,
   connectionStatusLabel,
   claudeCodeAddCommand,
@@ -430,7 +430,7 @@ export function AgentRow({
             {`${serverTitle} · ${lastUsed}`}
           </span>
           <span className="block text-xs text-pretty fg-secondary">
-            {accessSummaryLine(connection.access)}
+            {connectionAccessLine(connection)}
           </span>
         </span>
         <ChevronRightIcon

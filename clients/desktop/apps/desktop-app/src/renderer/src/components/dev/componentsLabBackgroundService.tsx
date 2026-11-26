@@ -9,7 +9,10 @@ import {
   W5RecoveryNotice,
   type W5RecoveryNoticeProps,
 } from '@canopy/ui-shared/components';
-import { backgroundServiceRepairCommand } from '@canopy/ui-shared/lib';
+import {
+  STARTUP_BACKUP_NOTICE_DISMISS_LABEL,
+  backgroundServiceRepairCommand,
+} from '@canopy/ui-shared/lib';
 import { SpecimenCell, SpecimenPanel } from './componentsLabParts';
 
 /**
@@ -36,14 +39,15 @@ function ActOnMount({
   readonly children: ReactNode;
 }): JSX.Element {
   const ref = useRef<HTMLDivElement>(null);
-  const { kind, testId } = act;
+  const { kind, testId, buttonLabel } = act;
   useEffect(() => {
-    const target = ref.current?.querySelector<HTMLButtonElement>(
-      `[data-testid="${testId}"]`,
-    );
+    const selector = buttonLabel
+      ? `[data-testid="${testId}"] button[aria-label="${buttonLabel}"]`
+      : `[data-testid="${testId}"]`;
+    const target = ref.current?.querySelector<HTMLButtonElement>(selector);
     if (kind === 'press') target?.click();
     else target?.focus({ preventScroll: true });
-  }, [kind, testId]);
+  }, [kind, testId, buttonLabel]);
   return (
     <div ref={ref} className="w-full">
       {children}
@@ -56,6 +60,13 @@ const outage: BackgroundServiceStatus = {
   reason: 'connection_lost',
   retry: 'idle',
   sequence: 4,
+};
+
+const backupWarning: BackgroundServiceStatus = {
+  state: 'ok',
+  backupWarning: 'source-unreadable',
+  retry: 'idle',
+  sequence: 3,
 };
 
 const degradedHandoff: BackgroundServiceStatus = {
@@ -73,6 +84,15 @@ const endpointRepair: BackgroundServiceStatus = {
   retry: 'idle',
   sequence: 3,
 };
+
+const dataFolderShared: BackgroundServiceStatus = {
+  state: 'unavailable',
+  reason: 'data_folder_shared',
+  retry: 'idle',
+  sequence: 4,
+};
+// Sample text; the desktop host supplies this computer's real folder.
+const DATA_FOLDER = 'C:\\Users\\Sample\\.canopy';
 
 const blocked: W5RecoveryStatus = {
   state: 'blocked',
@@ -97,17 +117,55 @@ const local = {
 interface Case {
   readonly label: string;
   readonly props: W5RecoveryNoticeProps;
+  readonly narrow?: boolean;
   /** A notice button to press or focus on mount, by test id. */
   readonly act?: {
     readonly kind: 'press' | 'focus';
     readonly testId: string;
+    /** A nested notice button selected by its accessible name. */
+    readonly buttonLabel?: string;
   };
 }
 
 const RETRY = 'background-service-notice-retry';
 const RESTART = 'background-service-notice-restart';
+const BACKUP_NOTICE = 'startup-backup-notice';
 
 const desktopCases: readonly Case[] = [
+  {
+    label: 'Startup backup warning alone: service available, saves enabled',
+    props: { service: { ...local, status: backupWarning } },
+  },
+  {
+    label: 'Startup backup warning above blocked changes',
+    props: {
+      status: blocked,
+      canRecover: true,
+      service: { ...local, status: backupWarning },
+    },
+  },
+  {
+    label: 'Startup backup warning dismissed: blocked changes remain',
+    props: {
+      status: blocked,
+      canRecover: true,
+      service: { ...local, status: backupWarning },
+    },
+    act: {
+      kind: 'press',
+      testId: BACKUP_NOTICE,
+      buttonLabel: STARTUP_BACKUP_NOTICE_DISMISS_LABEL,
+    },
+  },
+  {
+    label: 'Outage with a backup warning: only the outage notice shows',
+    props: {
+      service: {
+        ...local,
+        status: { ...outage, backupWarning: backupWarning.backupWarning },
+      },
+    },
+  },
   {
     label: 'Outage with no blocked changes: the notice alone, Try again',
     props: { service: { ...local, status: outage } },
@@ -199,11 +257,65 @@ const desktopCases: readonly Case[] = [
       service: { ...local, status: { ...endpointRepair, retry: 'failed' } },
     },
   },
+  {
+    label: 'Data folder shared: names the folder, then Try again',
+    props: {
+      service: { ...local, dataFolder: DATA_FOLDER, status: dataFolderShared },
+    },
+  },
+  {
+    label: 'Data folder shared after a degraded handoff: then Restart app',
+    props: {
+      service: {
+        ...local,
+        dataFolder: DATA_FOLDER,
+        status: {
+          ...dataFolderShared,
+          recovery: 'restart_app',
+          handoff: 'data_folder_shared',
+        },
+      },
+    },
+  },
 ];
 
+// No onRetry: diagnostics use place: 'remote-control', as in the web host.
 const remote = { repairCommand: REPAIR_COMMAND };
 
 const remoteControlCases: readonly Case[] = [
+  {
+    label: 'Startup backup warning alone on the paired computer',
+    props: { service: { ...remote, status: backupWarning } },
+  },
+  {
+    label:
+      'Startup backup warning above blocked changes on the paired computer',
+    props: {
+      status: projectRemoteW5Recovery(blocked),
+      service: { ...remote, status: backupWarning },
+    },
+  },
+  {
+    label: 'Startup backup warning dismissed here: blocked changes remain',
+    props: {
+      status: projectRemoteW5Recovery(blocked),
+      service: { ...remote, status: backupWarning },
+    },
+    act: {
+      kind: 'press',
+      testId: BACKUP_NOTICE,
+      buttonLabel: STARTUP_BACKUP_NOTICE_DISMISS_LABEL,
+    },
+  },
+  {
+    label: 'Outage on the paired computer takes priority over a backup warning',
+    props: {
+      service: {
+        ...remote,
+        status: { ...outage, backupWarning: backupWarning.backupWarning },
+      },
+    },
+  },
   {
     label: 'Outage: Copy diagnostics only, Try again on the paired computer',
     props: {
@@ -244,9 +356,36 @@ const remoteControlCases: readonly Case[] = [
       'Endpoint repair without a repair command from the host: generic copy',
     props: { service: { status: endpointRepair } },
   },
+  {
+    label: 'Data folder shared on the paired computer: generic copy',
+    props: { service: { ...remote, status: dataFolderShared } },
+  },
 ];
 
 const longTextCases: readonly Case[] = [
+  {
+    label: 'Narrow startup backup warning above long blocked changes',
+    narrow: true,
+    props: {
+      status: {
+        ...blocked,
+        entries: [
+          {
+            id: 'journals:long',
+            operation: 'core.workspace.update',
+            detail: 'Long diagnostic detail. '.repeat(12),
+          },
+        ],
+      },
+      canRecover: true,
+      service: { ...local, status: backupWarning },
+    },
+  },
+  {
+    label: 'Narrow startup backup warning on the paired computer',
+    narrow: true,
+    props: { service: { ...remote, status: backupWarning } },
+  },
   {
     label: 'Long unbroken repair command with six long blocked entries',
     props: {
@@ -288,17 +427,17 @@ const longTextCases: readonly Case[] = [
 function Cases({ cases }: { readonly cases: readonly Case[] }): JSX.Element {
   return (
     <>
-      {cases.map(({ label, props, act }) => (
+      {cases.map(({ label, props, act, narrow }) => (
         <SpecimenCell key={label} label={label} wide>
-          {act ? (
-            <ActOnMount act={act}>
+          <div className={narrow ? 'w-full max-w-80' : 'w-full'}>
+            {act ? (
+              <ActOnMount act={act}>
+                <W5RecoveryNotice {...props} />
+              </ActOnMount>
+            ) : (
               <W5RecoveryNotice {...props} />
-            </ActOnMount>
-          ) : (
-            <div className="w-full">
-              <W5RecoveryNotice {...props} />
-            </div>
-          )}
+            )}
+          </div>
         </SpecimenCell>
       ))}
     </>

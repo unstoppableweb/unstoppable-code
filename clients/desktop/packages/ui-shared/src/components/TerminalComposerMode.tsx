@@ -1,10 +1,10 @@
 'use client';
 
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import type { JSX } from 'react';
 import { TerminalIcon } from '../icons/AppIcons';
-import { Tooltip } from './Tooltip';
-import { ErrorBanner } from './StatusBlocks';
+import { Tooltip } from '../primitives/Tooltip';
+import { ErrorBanner } from '../primitives/StatusBlocks';
 
 /**
  * Added to the default composer shell in terminal mode (a draft starting with

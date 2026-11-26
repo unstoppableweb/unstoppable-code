@@ -2,6 +2,10 @@ import { randomUUID } from 'node:crypto';
 import type { AutoDeleteAttention } from '@canopy/protocol/remote-control/shell/auto-delete-attention';
 import { AutoDeleteInspectionError } from '../auto-delete-inspection-error';
 import {
+  autoArchiveAppError,
+  autoArchiveFailureMessage,
+} from '../auto-archive-error';
+import {
   listAutoDeleteAttention,
   subscribeAutoDeleteAttention,
 } from '../auto-delete-attention';
@@ -844,10 +848,10 @@ async function evaluate(
       idleSince.set(key, Date.now());
       return;
     }
+    // Before any await: the account fence dates the failure by occurredAt.
+    const appError = autoArchiveAppError(error);
     await replaceArm(workspaceId, undefined, arm.targetId);
-    const detail = (
-      error instanceof Error ? error.message : String(error)
-    ).slice(-4000);
+    const detail = autoArchiveFailureMessage(error);
     const teardownFailed =
       error instanceof Error && error.name === 'AutoArchiveTeardownFailedError';
     const recovery =
@@ -869,6 +873,7 @@ async function evaluate(
         mode: arm.mode,
         status: 'failure',
         error: text,
+        appError,
       });
   }
 }

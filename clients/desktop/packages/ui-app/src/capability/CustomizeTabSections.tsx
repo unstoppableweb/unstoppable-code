@@ -13,6 +13,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -361,7 +362,17 @@ export interface CustomizeTabSectionsProps {
   readonly entryShareStates?: MarketplaceEntryShareStates;
   /** Plugin shares eligible for Shared by me on the MCP servers tab. */
   readonly mcpSharedEntryIds?: ReadonlySet<string>;
-  readonly entryStatus?: PluginsEntryStatusBinding;
+  readonly entryStatus?: PluginsEntryStatusBinding & {
+    /** Opt in to current-row eligibility and optional read-only recovery. */
+    readonly statusRetry?: { readonly refresh?: () => void };
+    /** Opt in to retaining a submitted outcome without authorizing a retry. */
+    readonly removalOutcome?: {
+      /** Identity changes when this target's outcome no longer belongs here. */
+      readonly scopeFor: (target: InstalledItemUninstallTarget) => object;
+      /** Exact targets that can be confirmed now; dispatch rechecks authority. */
+      readonly canConfirm: (target: InstalledItemUninstallTarget) => boolean;
+    };
+  };
   /**
    * Narrows Installed; ignored on tabs whose rows carry no status, and
    * `update-available` on tabs that do not offer it.
@@ -513,6 +524,7 @@ interface PendingRemoval {
   readonly description?: string;
   /** The host's `removalScope` when it opened; another scope never confirms it. */
   readonly scope: string | undefined;
+  readonly outcomeScope?: object;
 }
 
 /**
@@ -541,6 +553,49 @@ function statusFailureCopy(
       return unhandled;
     }
   }
+}
+
+type StatusOutcome = Parameters<
+  NonNullable<Parameters<typeof customizeRowAction>[0]['onStatusOutcome']>
+>[0];
+type StatusFailure = Extract<StatusOutcome, { ok: false }>;
+
+function rowOwnsStatusFailure(
+  entry: UnifiedPluginEntry,
+  section: CustomizeSectionId,
+  failure: StatusFailure,
+): boolean {
+  return (
+    !isBundledSkill(entry) &&
+    !(section === 'browse' && entry.installedVia !== undefined) &&
+    (entry.marketplaceListings ?? [entry]).some(
+      (listing) =>
+        listing.id === failure.listingId &&
+        (listing.installedEntryId ?? listing.id) === failure.statusEntryId,
+    )
+  );
+}
+
+function statusFailureAction(
+  binding: CustomizeTabSectionsProps['entryStatus'],
+  entry: UnifiedPluginEntry,
+  section: CustomizeSectionId,
+  failure: StatusFailure,
+): 'retry' | 'refresh' | null {
+  if (binding?.statusRetry === undefined) return 'retry';
+  if (!binding.onSetStatus || !rowOwnsStatusFailure(entry, section, failure))
+    return null;
+  const key = installedItemTargetKey(failure.target);
+  if (binding.pendingKeys.has(key)) return null;
+  const state = binding.states[failure.statusEntryId];
+  if (state?.kind === 'ready')
+    return state.item.status !== null &&
+      installedItemTargetKey(state.item.target) === key
+      ? 'retry'
+      : null;
+  return state?.kind === 'read-only' && binding.statusRetry.refresh
+    ? 'refresh'
+    : null;
 }
 
 /** Why an MCP row's Delete is off; loading or unknown states give no reason. */
@@ -1043,51 +1098,136 @@ function CustomizeTabSectionsBody(
 
   // New Customize (Sergii's QA): a failed status change shows on its own
   // tile, never in a page banner. Keyed by row id; a success clears it.
-  // Failures belong to the host scope they happened in (the Portal's desktop
-  // and project): a scope change drops them, and a late outcome or a Retry
-  // from an older scope does nothing.
-  const [statusFailures, setStatusFailures] = useState<
-    ReadonlyMap<string, CustomizeRowFailure>
-  >(() => new Map());
+  // Failures belong to the authority that sent the command. Drop them in
+  // the render that changes scope and ignore callbacks from earlier commits.
   const statusScope =
     entryStatus?.statusScope ?? entryStatus?.removalScope ?? '';
-  const statusScopeRef = useRef(statusScope);
-  statusScopeRef.current = statusScope;
-  useEffect(() => {
-    setStatusFailures((current) => (current.size === 0 ? current : new Map()));
-  }, [statusScope]);
+  const [statusFailureState, setStatusFailureState] = useState<{
+    scope: typeof statusScope;
+    byEntry: ReadonlyMap<string, StatusFailure>;
+  }>(() => ({ scope: statusScope, byEntry: new Map() }));
+  if (statusFailureState.scope !== statusScope) {
+    setStatusFailureState({ scope: statusScope, byEntry: new Map() });
+  }
+  const statusFailures = statusFailureState.byEntry;
+  const committedStatus = useRef<{
+    scope: typeof statusScope;
+    failures: typeof statusFailures;
+    binding: typeof entryStatus;
+    sections: typeof model.sections;
+    discoveryEnabled: boolean;
+  } | null>(null);
+  useLayoutEffect(() => {
+    committedStatus.current = {
+      scope: statusScope,
+      failures: statusFailures,
+      binding: entryStatus,
+      sections: model.sections,
+      discoveryEnabled,
+    };
+    return (): void => {
+      committedStatus.current = null;
+    };
+  }, [
+    statusScope,
+    statusFailures,
+    entryStatus,
+    model.sections,
+    discoveryEnabled,
+  ]);
   const recordStatusOutcome = useCallback(
     (
       entryId: string,
-      scope: string,
-      outcome: Parameters<
-        NonNullable<Parameters<typeof customizeRowAction>[0]['onStatusOutcome']>
-      >[0],
+      scope: typeof statusScope,
+      outcome: StatusOutcome,
     ): void => {
-      if (scope !== statusScopeRef.current) return;
-      setStatusFailures((current) => {
-        if (outcome.ok && !current.has(entryId)) return current;
-        const next = new Map(current);
+      if (scope !== committedStatus.current?.scope) return;
+      setStatusFailureState((current) => {
+        if (
+          current.scope !== scope ||
+          (outcome.ok && !current.byEntry.has(entryId))
+        )
+          return current;
+        const next = new Map(current.byEntry);
         if (outcome.ok) next.delete(entryId);
-        else
-          next.set(entryId, {
-            ...statusFailureCopy(outcome.next),
-            reason: outcome.message,
-            tone: 'attention',
-            retry: (): void => {
-              if (scope !== statusScopeRef.current) return;
-              setStatusFailures((latest) => {
-                const without = new Map(latest);
-                without.delete(entryId);
-                return without;
-              });
-              outcome.retry();
-            },
-          });
-        return next;
+        else next.set(entryId, outcome);
+        return { scope, byEntry: next };
       });
     },
     [],
+  );
+  const statusFailureFor = useCallback(
+    (
+      entry: UnifiedPluginEntry,
+      section: CustomizeSectionId,
+    ): CustomizeRowFailure | undefined => {
+      const failure = statusFailures.get(entry.id);
+      if (
+        failure === undefined ||
+        (entryStatus?.statusRetry !== undefined &&
+          !rowOwnsStatusFailure(entry, section, failure))
+      )
+        return undefined;
+      const action = statusFailureAction(entryStatus, entry, section, failure);
+      return {
+        ...statusFailureCopy(failure.next),
+        reason: failure.message,
+        tone: 'attention',
+        ...(action === null
+          ? {}
+          : {
+              // The same tile slot offers a read, not another status write.
+              ...(action === 'refresh' ? { retryLabel: 'Refresh status' } : {}),
+              retry: (): void => {
+                const current = committedStatus.current;
+                if (
+                  current?.scope !== statusScope ||
+                  current.failures.get(entry.id) !== failure
+                )
+                  return;
+                const binding = current.binding;
+                if (entryStatus?.statusRetry !== undefined) {
+                  if (!binding?.statusRetry || !current.discoveryEnabled)
+                    return;
+                  const part = current.sections.find(
+                    (candidate) => candidate.id === section,
+                  );
+                  const matches = (row: UnifiedPluginEntry): boolean =>
+                    row.id === entry.id &&
+                    statusFailureAction(binding, row, section, failure) ===
+                      action;
+                  const stillOffered = part?.groups
+                    ? part.groups.some((group) => group.entries.some(matches))
+                    : part?.entries.some(matches);
+                  if (!stillOffered) return;
+                }
+                if (action === 'refresh') {
+                  binding?.statusRetry?.refresh?.();
+                  return;
+                }
+                // Consume before dispatch so a second click before commit
+                // cannot report a duplicate rejection as another failure.
+                const without = new Map(current.failures);
+                without.delete(entry.id);
+                committedStatus.current = { ...current, failures: without };
+                setStatusFailureState((latest) => {
+                  if (
+                    latest.scope !== statusScope ||
+                    latest.byEntry.get(entry.id) !== failure
+                  )
+                    return latest;
+                  const remaining = new Map(latest.byEntry);
+                  remaining.delete(entry.id);
+                  return { scope: statusScope, byEntry: remaining };
+                });
+                failure.retry(
+                  binding?.statusRetry ? binding.onSetStatus : undefined,
+                );
+              },
+            }),
+      };
+    },
+    [entryStatus, statusFailures, statusScope],
   );
 
   // Refs guard against double submission before React re-renders.
@@ -1111,15 +1251,41 @@ function CustomizeTabSectionsBody(
   // A pending confirmation belongs to the host scope it was opened in. When
   // the host withdraws removal (web consent turned off) or moves to another
   // desktop or project, it stops rendering at once, and the effect drops it
-  // so it cannot reappear by itself later.
+  // so it cannot reappear by itself later. Hosts can keep an already-sent
+  // outcome in the same scope without keeping its authority to confirm.
   const removalAvailable = entryStatus?.onUninstall !== undefined;
   const removalScope = entryStatus?.removalScope;
+  const removalOutcome = entryStatus?.removalOutcome;
+  const [submittedRemoval, setSubmittedRemoval] =
+    useState<PendingRemoval | null>(null);
   const activeRemoval =
-    removal !== null && removalAvailable && removal.scope === removalScope
+    removal !== null &&
+    (removalOutcome === undefined
+      ? removal.outcomeScope === undefined &&
+        removalAvailable &&
+        removal.scope === removalScope
+      : removal.outcomeScope === removalOutcome.scopeFor(removal.target) &&
+        (removal === submittedRemoval ||
+          (removalAvailable && removalOutcome.canConfirm(removal.target))))
       ? removal
       : null;
+  const committedRemoval = useRef<{
+    pending: PendingRemoval | null;
+    binding: CustomizeTabSectionsProps['entryStatus'];
+  } | null>(null);
+  const tracksRemovalOutcome = removalOutcome !== undefined;
+  useLayoutEffect(() => {
+    if (!tracksRemovalOutcome) return;
+    committedRemoval.current = { pending: activeRemoval, binding: entryStatus };
+    return (): void => {
+      committedRemoval.current = null;
+    };
+  }, [activeRemoval, entryStatus, tracksRemovalOutcome]);
   useEffect(() => {
-    if (removal !== null && activeRemoval === null) setRemoval(null);
+    if (removal !== null && activeRemoval === null) {
+      setRemoval(null);
+      setSubmittedRemoval(null);
+    }
   }, [removal, activeRemoval]);
 
   const runUpdate = useCallback(
@@ -1570,22 +1736,42 @@ function CustomizeTabSectionsBody(
       if (state?.kind !== 'ready') return null;
       const { item } = state;
       const target = item.uninstallTarget;
-      if (!item.removable || target === undefined) return null;
+      if (
+        !item.removable ||
+        target === undefined ||
+        removalOutcome?.canConfirm(target) === false
+      )
+        return null;
+      const disabled = entryStatus.pendingKeys.has(
+        installedItemTargetKey(target),
+      );
       return {
         id: 'remove',
         label: removalMenuLabel(entry, target),
         destructive: true,
-        disabled: entryStatus.pendingKeys.has(installedItemTargetKey(target)),
-        onSelect: () =>
+        disabled,
+        onSelect: (): void => {
+          if (removalOutcome !== undefined) {
+            const current = committedRemoval.current;
+            if (
+              disabled ||
+              current === null ||
+              current.binding !== entryStatus ||
+              current.pending !== null
+            )
+              return;
+          }
           setRemoval({
             entry,
             target,
             description: item.uninstallDescription,
             scope: removalScope,
-          }),
+            outcomeScope: removalOutcome?.scopeFor(target),
+          });
+        },
       };
     },
-    [entryStatus, removalScope],
+    [entryStatus, removalScope, removalOutcome],
   );
 
   const menuItems = useCallback(
@@ -1942,7 +2128,7 @@ function CustomizeTabSectionsBody(
   // Only a ready, removable status with a target offers removal (CAN-4840).
   function renderRemovalDialog(): ReactNode {
     const onUninstall = entryStatus?.onUninstall;
-    if (!activeRemoval || !onUninstall) return null;
+    if (!activeRemoval) return null;
     const { entry, target, description } = activeRemoval;
     const verb = removalVerb(entry, target);
     return (
@@ -1957,14 +2143,35 @@ function CustomizeTabSectionsBody(
             : (description ?? `This removes ${entry.name}.`)
         }
         confirmLabel={verb}
+        confirmDisabled={
+          onUninstall === undefined ||
+          removalOutcome?.canConfirm(target) === false
+        }
         busyLabel={removalBusyLabel(verb)}
         fallbackErrorMessage={removalFallbackError(verb)}
         dataTestId="customize-row-remove-dialog"
         confirmTestId="customize-row-remove-confirm"
         cancelTestId="customize-row-remove-cancel"
         onConfirm={async (): Promise<string | null> => {
+          if (!onUninstall) return removalFallbackError(verb);
+          if (removalOutcome !== undefined) {
+            const current = committedRemoval.current;
+            if (
+              current === null ||
+              current.pending !== activeRemoval ||
+              current.binding !== entryStatus ||
+              !removalOutcome.canConfirm(target)
+            )
+              return removalFallbackError(verb);
+            setSubmittedRemoval(activeRemoval);
+          }
           const reportCleanup = captureMcpDeleteCleanupReporter();
           const outcome = await onUninstall(target);
+          if (
+            removalOutcome !== undefined &&
+            committedRemoval.current?.pending !== activeRemoval
+          )
+            return removalFallbackError(verb);
           // A rejection main recorded stays on the outcome's `cause`.
           setRemovalRecorded(
             !outcome.ok &&
@@ -1988,10 +2195,29 @@ function CustomizeTabSectionsBody(
             ? null
             : (outcome.message ?? removalFallbackError(verb));
         }}
-        onCancel={(): void => setRemoval(null)}
-        onUninstalled={(): void => {
+        onCancel={(): void => {
+          if (
+            removalOutcome !== undefined &&
+            committedRemoval.current?.pending !== activeRemoval
+          )
+            return;
           setRemoval(null);
-          entryStatus.onUninstalled?.(entry);
+          setSubmittedRemoval(null);
+        }}
+        onUninstalled={(): void => {
+          const current = committedRemoval.current;
+          if (
+            removalOutcome !== undefined &&
+            current?.pending !== activeRemoval
+          )
+            return;
+          setRemoval(null);
+          setSubmittedRemoval(null);
+          // Proof and authorization can change during the command without
+          // retiring this confirmation. Use the mounted host's refresh.
+          const binding =
+            removalOutcome === undefined ? entryStatus : current?.binding;
+          binding?.onUninstalled?.(entry);
         }}
       />
     );
@@ -2654,6 +2880,12 @@ function CustomizeTabSectionsBody(
             dimmingState.item.status === 'disabled'
           }
           skillMatch={model.skillMatches.get(entry.id)}
+          recommended={
+            discoveryEnabled &&
+            tab === 'all' &&
+            searchActive &&
+            entry.accountProxyMcp
+          }
           discovery={discoveryEnabled}
           onRetryHarnessInstall={onRetryHarnessInstall}
           splitAction={splitAction}
@@ -2661,7 +2893,7 @@ function CustomizeTabSectionsBody(
           update={rowUpdate}
           failure={
             discoveryEnabled
-              ? (statusFailures.get(entry.id) ?? mcpHealth?.unreachable)
+              ? (statusFailureFor(entry, section.id) ?? mcpHealth?.unreachable)
               : undefined
           }
           actions={
@@ -2719,7 +2951,9 @@ function CustomizeTabSectionsBody(
       renderUpdateAction,
       renderSharedActions,
       discoveryEnabled,
-      statusFailures,
+      searchActive,
+      tab,
+      statusFailureFor,
       recordStatusOutcome,
       statusScope,
       supportedUpdateKinds,
@@ -3033,7 +3267,7 @@ function CustomizeTabSectionsBody(
               >
                 {batchRunning ? 'Updating…' : 'Update all'}
               </Button>
-            ) : section.id === 'installed' ? (
+            ) : section.id === 'installed' || section.id === 'results' ? (
               <div className="flex items-center gap-2">
                 {discoveryEnabled && (
                   <CustomizeUpdateAllLink
@@ -3051,7 +3285,7 @@ function CustomizeTabSectionsBody(
                     onUpdateAll={(entries) => void runBatch(entries)}
                   />
                 )}
-                {installedActions}
+                {section.id === 'installed' && installedActions}
                 {tab === 'collection' && onCreateCollection && (
                   <Button
                     size="compact"
@@ -3077,7 +3311,19 @@ function CustomizeTabSectionsBody(
             <CustomizeInstalledList
               sectionId={section.id}
               entries={section.entries}
-              renderRow={(entry) => renderRow(entry, section)}
+              renderRow={(entry) =>
+                renderRow(
+                  entry,
+                  section.id === 'results'
+                    ? {
+                        id: section.installedResultIds?.has(entry.id)
+                          ? 'installed'
+                          : 'browse',
+                        showEntryTypes: section.showEntryTypes,
+                      }
+                    : section,
+                )
+              }
             />
           )}
         </CustomizeSection>

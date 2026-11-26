@@ -90,7 +90,20 @@ handle and verifies a native ACL/identity receipt; unavailable native checks
 return `unverifiable`. Windows verifies current-user ownership and the
 DACL without repairing it. SYSTEM and Administrators are permitted privileged
 trustees. Unsupported ACL forms, unavailable identity and read failures fail
-closed. Elevated files owned by Administrators are refused.
+closed. Elevated files owned by Administrators are refused. Every refusal
+also carries a closed `cause` (such as `foreign_trustee`, `foreign_owner` or
+`unverifiable`) that diagnostics may report; its `reason` text can name a path
+or SID and stays out of telemetry and shared logs.
+
+A request may set `foreignTrustees: 'accept'` (CAN-7915). On Windows that
+admits allow entries for other accounts and returns `private` with `accepted`:
+the closed cause `accepted_foreign_trustee`, which telemetry may report, and the
+accepted SIDs, for the local log only. Ownership by another account, reparse
+points, null DACLs, unsupported or malformed entries and every shape check
+still refuse, and nothing on disk changes. POSIX ignores the field. Only the
+app's own data root, `runtime/` and its files, `secure-storage/` and the
+internal-root migration folder opt in; every other caller keeps the default
+`refuse`.
 
 `secureFiles.rename` requires singly-linked regular sources and supports
 replacement or atomic no-replace publication by hard link, with bounded Windows

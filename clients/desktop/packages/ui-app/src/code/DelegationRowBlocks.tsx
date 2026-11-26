@@ -22,7 +22,7 @@ import {
   useDelegationPagesStore,
   useWorkspaceCapabilities,
 } from '@canopy/app-state';
-import { Button, Notice } from '@canopy/ui-shared/components';
+import { Button, Notice, NoticeButton } from '@canopy/ui-shared/components';
 import {
   DeferredToolOutput,
   ToolOutputReaderContext,
@@ -597,22 +597,23 @@ function BlockWindow({
             </div>
           )}
           {failure && (
-            <Notice intent="neutral" surface="none">
-              <span>
-                {failure === 'unavailable'
-                  ? "Couldn't load messages in this view."
-                  : "Couldn't load messages."}
-              </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={loading}
-                onClick={() => {
-                  void load(lastRequest.current.direction, true);
-                }}
-              >
-                Try again
-              </Button>
+            <Notice
+              intent="neutral"
+              surface="none"
+              actions={
+                <NoticeButton
+                  disabled={loading}
+                  onClick={() => {
+                    void load(lastRequest.current.direction, true);
+                  }}
+                >
+                  Try again
+                </NoticeButton>
+              }
+            >
+              {failure === 'unavailable'
+                ? "Couldn't load messages in this view."
+                : "Couldn't load messages."}
             </Notice>
           )}
           {runTruncated && (

@@ -1,6 +1,6 @@
 'use client';
 
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import { ControlButton } from '@canopy/ui-shared/components';
 import { CompletedRunSurface } from '@canopy/ui-shared/components';
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
@@ -27,7 +27,7 @@ import {
 } from '@canopy/ui-shared/icons/AppIcons';
 import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { PAUSED_HOOK_LABEL_CLASSES } from '@canopy/ui-shared/lib';
-import { Notice } from '@canopy/ui-shared/components/Notice';
+import { Notice } from '@canopy/ui-shared/primitives/Notice';
 import { Surface } from '@canopy/ui-shared/components';
 
 export type HooksSectionTarget =

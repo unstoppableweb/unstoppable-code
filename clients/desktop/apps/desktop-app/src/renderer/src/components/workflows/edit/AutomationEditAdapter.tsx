@@ -34,7 +34,13 @@ import {
 } from '../../automations/form/automationFormState';
 import { SHARED_PIPELINE_REVIEW_NEEDED_MESSAGE } from '../../automations/ReviewSharedPipelineChangeModal';
 import type { AutomationsPageBodyApi } from '../../pages/AutomationsPage';
+import { openPipelineExecutionFromUi } from '@/lib/panels/open-pipeline-execution';
+import { AutomationDesignerSection } from './AutomationDesignerSection';
 import { AutomationRunsSection } from './AutomationRunsSection';
+import {
+  automationActionCard,
+  automationTriggerTitle,
+} from './automationDesignerModel';
 import { replaceSavedDraft } from './replaceSavedDraft';
 import {
   useScheduleDrafts,
@@ -328,7 +334,32 @@ function AutomationEditor({
           : { handleRef: triggerRef })}
       />
     );
-    return body;
+    if (id !== 'definition') return body;
+    // Definition is the Designer: the trigger, the one action and its fields
+    // (CAN-4224 phase 06). The trigger's fields stay in Trigger.
+    const card = automationActionCard(state, activity, projects);
+    const { workflow, executionId } = card;
+    return (
+      <AutomationDesignerSection
+        card={card}
+        triggerTitle={automationTriggerTitle(state)}
+        onOpenTrigger={(): void => setSection('trigger')}
+        {...(workflow
+          ? {
+              onOpenWorkflow: (): void =>
+                useNavigationStore.getState().openPipelineEdit(workflow),
+            }
+          : {})}
+        {...(executionId !== undefined
+          ? {
+              onOpenRun: (): void =>
+                void openPipelineExecutionFromUi({ executionId }),
+            }
+          : {})}
+      >
+        {body}
+      </AutomationDesignerSection>
+    );
   };
 
   // A refused request is not about one field, so it shows above the

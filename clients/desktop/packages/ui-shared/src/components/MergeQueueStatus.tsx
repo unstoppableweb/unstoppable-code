@@ -1,7 +1,7 @@
 'use client';
 
-import { ListRowLinkFrame } from './ListRow';
-import { TextLink } from './TextLink';
+import { ListRowLinkFrame } from '../primitives/ListRow';
+import { TextLink } from '../primitives/TextLink';
 import {
   forwardRef,
   useId,
@@ -16,7 +16,7 @@ import {
   GitMergeQueueIcon,
   WarningIcon,
 } from '../icons/AppIcons';
-import { EmptyStateText } from './StatusBlocks';
+import { EmptyStateText } from '../primitives/StatusBlocks';
 import { formatRelativeTime } from '../lib/format-relative-time';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import {
@@ -27,11 +27,11 @@ import {
   type MergeQueueLabel,
   type MergeQueueStep,
 } from '../lib/merge-queue-display';
-import { ControlButton, Button } from './Button';
-import { FloatingMenu } from './FloatingMenu';
-import { Notice } from './Notice';
+import { ControlButton, Button } from '../primitives/Button';
+import { FloatingMenu } from '../primitives/FloatingMenu';
+import { Notice } from '../primitives/Notice';
 import { RunSpinner } from './RunSpinner';
-import { Stack } from './Stack';
+import { Stack } from '../primitives/Stack';
 
 /** One pull request in a queue list. */
 export interface MergeQueuePopoverEntry {

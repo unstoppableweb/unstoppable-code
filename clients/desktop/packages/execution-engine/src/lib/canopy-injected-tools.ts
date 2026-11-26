@@ -1500,6 +1500,11 @@ function getBrandedAppToolKey(toolName: string): CanopyInjectedToolKey | null {
  *   background helpers, and a pipeline agent action's own Ledger route. Only a
  *   pipeline agent's session carries Ledger tools; helper roles are excluded
  *   by purpose, not by transport label, so a helper's route never lists them.
+ *   `SearchActions` and `DispatchAction` are listed only when the route's
+ *   host set `pipelineAgentActions` after its own exposure check (a
+ *   `dangerous_all` Claude or Codex step in a real project), restricted to
+ *   `pull_request.review.publish` (CAN-7742). Every other worker route
+ *   neither lists nor dispatches them.
  * - `managed-delegate-cowork` — managed Cowork children. Exposes the shared
  *   directory/chat tools, memory, pipeline YAML, and non-Git watcher tools.
  * - `managed-delegate-app-advisor` — managed App Advisor children. Exposes
@@ -1760,6 +1765,10 @@ export const CANOPY_INJECTED_TOOL_SURFACE_ALLOWLISTS: Readonly<
     'add_ledger_entry',
     'search_ledger_entries',
     'update_ledger_entry',
+    // Listed only on a pipeline agent route whose host set
+    // `pipelineAgentActions` (CAN-7742), restricted to publishing a review.
+    'search_actions',
+    'dispatch_action',
   ],
   'cursor-acp': [
     ...ACP_WORKTREE_INJECTED_TOOL_KEYS,

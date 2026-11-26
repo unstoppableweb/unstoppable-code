@@ -15,11 +15,11 @@ import {
   DISMISS_CHORD,
   formatChord,
 } from '../lib/shortcut-platform';
-import { Button } from './Button';
-import { DialogModal } from './DialogModal';
-import { DialogFormField } from './DialogFormField';
-import { TextInput } from './Field';
-import { LoadingSpinner } from './LoadingSpinner';
+import { Button } from '../primitives/Button';
+import { DialogModal } from '../primitives/DialogModal';
+import { DialogFormField } from '../primitives/DialogFormField';
+import { TextInput } from '../primitives/Field';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
 
 export interface RenameDialogProps {
   readonly title: string;

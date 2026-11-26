@@ -6,6 +6,7 @@ import {
   type CanopyCallerDescriptor,
   type WorkerAgentSubagentRunResult,
   type WorkerAgentTurnEvent,
+  type WorkerAgentTurnLaunch,
   type WorkerAgentTurnRunParams,
   type WorkerAgentTurnRunResult,
 } from '@canopy/protocol/canopy-core';
@@ -16,13 +17,17 @@ import { createWorkerExecutorReceipts } from '../../../../runtime/worker-executo
 import { LocalWorkerExecution, OperationService } from '../../../operations';
 import { OperationLedger } from '../../../operations/ledger';
 import {
+  AdmittedTurnApprovals,
   CORE_AGENT_SUBAGENT_RUN_KIND,
+  CORE_CHAT_APPROVAL_ADMISSION_MISMATCH,
+  CORE_CHAT_APPROVAL_POLICY_STALE,
   CORE_CHAT_TURN_RUN_KIND,
   CoreChatTurnRuns,
   CoreSubagentRuns,
   TurnEventOutOfOrderError,
   createWorkerAgentRunHandlers,
   type ChatTurnTranscriptPort,
+  type CoreChatTurnApprovalAuthority,
   type CoreChatTurnBeginRequest,
   type SubagentExecutionWorker,
   type TurnEventSink,
@@ -44,7 +49,7 @@ type TranscriptEnvelope = Parameters<ChatTurnTranscriptPort>[0];
 interface Harness {
   operations: OperationService;
   localWorker: LocalWorkerExecution;
-  turns: CoreChatTurnRuns;
+  turns: CoreChatTurnRuns<string>;
   subagents: CoreSubagentRuns;
   close(): void;
 }
@@ -58,8 +63,11 @@ function compose(
         status: 'completed',
       }),
   },
+  approvals?: CoreChatTurnApprovalAuthority<string>,
 ): Harness {
-  const runsRef: { current: CoreChatTurnRuns | null } = { current: null };
+  const runsRef: { current: CoreChatTurnRuns<string> | null } = {
+    current: null,
+  };
   const receipts = createWorkerExecutorReceipts(instructions);
   const handlers = createWorkerAgentRunHandlers({
     turns,
@@ -87,7 +95,11 @@ function compose(
       receipts,
     }),
   });
-  const runs = new CoreChatTurnRuns({ operations, localWorker });
+  const runs = new CoreChatTurnRuns<string>({
+    operations,
+    localWorker,
+    ...(approvals ? { approvals } : {}),
+  });
   runsRef.current = runs;
   return {
     operations,
@@ -540,6 +552,243 @@ describe('a completed worker result reporting cancelled settles the child cancel
         status: 'cancelled',
         outcome: { subagentRunId: 'sub', status: 'cancelled' },
       });
+    } finally {
+      h.close();
+    }
+  });
+});
+
+describe('a launch names the approval core admitted it against (CAN-6995)', () => {
+  const launch: WorkerAgentTurnLaunch = {
+    format: 'canopy.agent-turn-launch.v1',
+    cwdRootId: 'root',
+    repoId: null,
+    surface: 'worktree',
+    executionHarness: 'claude',
+    model: {
+      selectedModelId: null,
+      thinkingLevel: 'high',
+      speed: null,
+      contextWindow: null,
+    },
+    mode: { planMode: false, codexProposalMode: null },
+    approval: { mode: 'ask', policyRevision: 3, admissionId: 'admission' },
+    session: {
+      providerSessionId: null,
+      reconstructionSeedId: null,
+      fork: null,
+    },
+    instructions: {
+      systemPromptAppend: null,
+      globalInstructionsBlock: null,
+      globalInstructionsSnapshot: null,
+    },
+    capabilities: {
+      applyGlobalPluginDefaults: true,
+      deferredToolsAllowed: true,
+      codeGraphToolsAdvertised: false,
+      rtkEnabled: false,
+    },
+    delegation: {
+      surface: 'worktree-chat',
+      mode: 'explicit-only',
+      maxConcurrent: 3,
+      maxDepth: 2,
+      lifetimeLimit: null,
+    },
+    codex: null,
+    executionContext: null,
+    billing: {
+      routes: [{ kind: 'ai_credits', routeId: 'route' }],
+      subscriptionOverride: false,
+      accountProxy: null,
+      requiredAccountProxyConnectionId: null,
+    },
+    prompt: {
+      messageId: 'message',
+      blocks: [{ type: 'text', text: 'Fix the bug' }],
+    },
+  };
+  const admitted = {
+    admissionId: 'admission',
+    policyRevision: 3,
+    admitted: 'rules',
+  };
+  function authority(
+    revision: () => number,
+  ): CoreChatTurnApprovalAuthority<string> {
+    return {
+      currentRevision: revision,
+      admitted: new AdmittedTurnApprovals<string>(),
+    };
+  }
+  const completes: TurnExecutionWorker = {
+    run: (run) =>
+      Promise.resolve({
+        turnRunId: run.turnRunId,
+        eventCount: 0,
+        status: 'completed',
+      }),
+  };
+  async function parentRuns(h: Harness): Promise<unknown[]> {
+    const { items } = await h.operations.list({ limit: 10 });
+    return items.filter((item) => item.kind === CORE_CHAT_TURN_RUN_KIND);
+  }
+
+  it('the serving host reads the admitted approval only for its own turn, until the run settles', async () => {
+    const approvals = authority(() => 3);
+    const reads: (string | null)[] = [];
+    const h = compose(
+      join(root, 'ledger.sqlite'),
+      {
+        run: (run, signal, sink) => {
+          reads.push(
+            approvals.admitted.read('admission', {
+              turnRunId: run.turnRunId,
+              scope: run.scope,
+            }),
+            approvals.admitted.read('admission', {
+              turnRunId: 'another-run',
+              scope: run.scope,
+            }),
+          );
+          return completes.run(run, signal, sink);
+        },
+      },
+      undefined,
+      approvals,
+    );
+    try {
+      const run = await h.turns.begin({
+        ...request(undefined, { launch }),
+        approval: admitted,
+      });
+      await expect(run.settled).resolves.toMatchObject({ status: 'completed' });
+      expect(reads).toEqual(['rules', null]);
+      expect(approvals.admitted.size).toBe(0);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('a stale policy revision is refused before any operation is admitted or dispatched', async () => {
+    const approvals = authority(() => 4);
+    const worker = controlledWorker();
+    const h = compose(
+      join(root, 'ledger.sqlite'),
+      worker.worker,
+      undefined,
+      approvals,
+    );
+    try {
+      await expect(
+        h.turns.begin({
+          ...request(undefined, { launch }),
+          approval: admitted,
+        }),
+      ).rejects.toMatchObject({
+        payload: { code: CORE_CHAT_APPROVAL_POLICY_STALE },
+      });
+      await expect(parentRuns(h)).resolves.toEqual([]);
+      expect(worker.calls()).toBe(0);
+      expect(approvals.admitted.size).toBe(0);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('a revision that moves while the turn is admitted fails the turn before dispatch', async () => {
+    let reads = 0;
+    const approvals = authority(() => (reads++ === 0 ? 3 : 4));
+    const worker = controlledWorker();
+    const h = compose(
+      join(root, 'ledger.sqlite'),
+      worker.worker,
+      undefined,
+      approvals,
+    );
+    try {
+      await expect(
+        h.turns.begin({
+          ...request(undefined, { launch }),
+          approval: admitted,
+        }),
+      ).rejects.toMatchObject({
+        payload: { code: CORE_CHAT_APPROVAL_POLICY_STALE },
+      });
+      await expect(parentRuns(h)).resolves.toMatchObject([
+        { status: 'failed', error: { code: CORE_CHAT_APPROVAL_POLICY_STALE } },
+      ]);
+      expect(worker.calls()).toBe(0);
+      expect(approvals.admitted.size).toBe(0);
+    } finally {
+      h.close();
+    }
+  });
+
+  it('with dispatch-without, a stale launch is dispatched without it, before or after admission (CAN-6995)', async () => {
+    let reads = 0;
+    const movesWhileAdmitted = (): number => (reads++ === 0 ? 3 : 4);
+    const outcomes: unknown[] = [];
+    for (const revision of [(): number => 4, movesWhileAdmitted]) {
+      const approvals: CoreChatTurnApprovalAuthority<string> = {
+        ...authority(revision),
+        onStaleLaunch: 'dispatch-without',
+      };
+      const served: unknown[] = [];
+      const h = compose(
+        join(root, `ledger-${outcomes.length}.sqlite`),
+        {
+          run: (run, signal, sink) => {
+            served.push({
+              launch: 'launch' in run,
+              admitted: approvals.admitted.size,
+            });
+            return completes.run(run, signal, sink);
+          },
+        },
+        undefined,
+        approvals,
+      );
+      try {
+        const run = await h.turns.begin({
+          ...request(undefined, { launch }),
+          approval: admitted,
+        });
+        outcomes.push({ ...(await run.settled), served });
+      } finally {
+        h.close();
+      }
+    }
+    expect(outcomes).toMatchObject([
+      { status: 'completed', served: [{ launch: false, admitted: 0 }] },
+      { status: 'completed', served: [{ launch: false, admitted: 0 }] },
+    ]);
+  });
+
+  it('a launch without its admitted approval, or naming another, is refused', async () => {
+    const approvals = authority(() => 3);
+    const h = compose(
+      join(root, 'ledger.sqlite'),
+      completes,
+      undefined,
+      approvals,
+    );
+    try {
+      await expect(
+        h.turns.begin(request(undefined, { launch })),
+      ).rejects.toMatchObject({
+        payload: { code: CORE_CHAT_APPROVAL_ADMISSION_MISMATCH },
+      });
+      await expect(
+        h.turns.begin({
+          ...request(undefined, { launch }),
+          approval: { ...admitted, admissionId: 'another-admission' },
+        }),
+      ).rejects.toMatchObject({
+        payload: { code: CORE_CHAT_APPROVAL_ADMISSION_MISMATCH },
+      });
+      await expect(parentRuns(h)).resolves.toEqual([]);
     } finally {
       h.close();
     }

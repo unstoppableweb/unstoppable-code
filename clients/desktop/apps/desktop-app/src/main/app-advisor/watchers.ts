@@ -113,6 +113,7 @@ interface ChatWatcherRecord extends AppAdvisorWatcher {
   pendingChatEvent?: CanonicalChatEvent;
   inlineReservationId?: string;
   inlineDeferredTerminal?: CanonicalChatTerminalEvent;
+  inlineDeferredStop?: true;
   /** Retained authority receipt survives outbox acknowledgement for queued drain. */
   chatDeliveryId?: string;
   deniedChatEventsThrough?: string;
@@ -266,6 +267,7 @@ import type {
 } from '@canopy/desktop-shared/types/github-watchers';
 import type { PersistedChatMessage } from '@canopy/agent-transcript/types';
 import { resumedTurns } from '../lib/chat-turn-succession';
+import type { CommittedChatTurnCancellation } from '../services/provider-event-admission';
 import {
   isPrMergeQueuePhase,
   type PrMergeQueueCursor,
@@ -5023,6 +5025,11 @@ type HeldChatDelivery =
   | { kind: 'completion'; event: AppAdvisorChatTerminalEvent }
   | { kind: 'canonical_terminal'; event: CanonicalChatTerminalEvent }
   | {
+      kind: 'stopped_turn';
+      event: CanonicalChatTerminalEvent;
+      watcherId: string;
+    }
+  | {
       kind: 'catch_up';
       watcherId: string;
       destination: WatcherDestinationFilter;
@@ -5052,7 +5059,9 @@ function stageHeldDelivery(
       ? `terminal:${rawChatEventInputId(delivery.event) ?? JSON.stringify([delivery.event.receivedAt, delivery.event.status])}`
       : delivery.kind === 'canonical_terminal'
         ? `terminal:${delivery.event.sourceInputId}`
-        : `catch_up:${delivery.watcherId}`;
+        : delivery.kind === 'stopped_turn'
+          ? `stop:${delivery.event.sourceInputId}:${delivery.watcherId}`
+          : `catch_up:${delivery.watcherId}`;
   held.deliveries.set(key, delivery);
 }
 
@@ -5089,6 +5098,7 @@ function canonicalChatHoldKey(
 interface CanonicalTerminalDispatch {
   /** Match only this watcher: a settled-turn catch-up. */
   onlyWatcherId?: string;
+  stoppedInputOnly?: boolean;
   /** What a hold stages instead of the terminal itself. */
   stage?: (held: HeldChatFiring) => void;
   /**
@@ -5096,6 +5106,21 @@ interface CanonicalTerminalDispatch {
    * false to skip correlation. By default the terminal's legacy spelling.
    */
   automation?: AppAdvisorChatTerminalEvent | false;
+}
+
+function watcherBoundToStoppedInput(
+  row: ChatWatcherRecord,
+  inputId: string,
+): boolean {
+  if (
+    row.trigger !== 'project_task_chat_completion' &&
+    row.trigger !== 'bot_task_chat_completion' &&
+    row.trigger !== 'worktree_chat_completion' &&
+    row.trigger !== 'standalone_chat_completion'
+  )
+    return false;
+  const binding = effectiveChatBinding(row);
+  return !binding.blocked && binding.inputId === inputId;
 }
 
 /** Completion time first, so a `next` cursor binds the earliest end. */
@@ -6233,7 +6258,10 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           throw new Error(
             'Inline watcher acceptance does not match the reserved input.',
           );
-        const events: CanonicalChatTerminalEvent[] = [];
+        const events: {
+          event: CanonicalChatTerminalEvent;
+          stoppedWatcherId?: string;
+        }[] = [];
         // Keep the deferred event until the normal matcher durably creates its outbox.
         for (const receipt of reservation.receipts) {
           const row = file.watchers.find(
@@ -6242,7 +6270,10 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           if (!row) continue;
           delete row.inlineReservationId;
           if (row.inlineDeferredTerminal)
-            events.push(row.inlineDeferredTerminal);
+            events.push({
+              event: row.inlineDeferredTerminal,
+              stoppedWatcherId: row.inlineDeferredStop ? row.id : undefined,
+            });
         }
         reservation.state = 'confirmed';
         await this.writeFile(file);
@@ -6255,8 +6286,11 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         scope: this.inlineReservationOwner(reservationId),
       },
     );
-    for (const event of confirmed.events)
-      await this.handleCanonicalChatTerminalEvent(event);
+    for (const { event, stoppedWatcherId } of confirmed.events) {
+      if (stoppedWatcherId)
+        void (await this.dispatchStoppedTerminal(event, stoppedWatcherId));
+      else await this.handleCanonicalChatTerminalEvent(event);
+    }
     return confirmed.receipts;
   }
 
@@ -7020,6 +7054,65 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     void (await this.dispatchCanonicalTerminal(event));
   }
 
+  async reconcileStoppedTurn(
+    target: { projectId: string; worktreeId: string; chatId: string },
+    turn: CommittedChatTurnCancellation,
+  ): Promise<void> {
+    const candidates = (await this.readSharedWatchers()).filter(
+      (row) =>
+        row.status === 'active' &&
+        watcherBoundToStoppedInput(row, turn.userMessageId),
+    );
+    if (candidates.length === 0) return;
+    const { captureCanonicalChatProducerContext } =
+      await import('../services/active-chat-input');
+    const context = await captureCanonicalChatProducerContext(target);
+    if (!context) return;
+    const matching = candidates.filter((row) =>
+      rawChatAddressMatches(row, context.address),
+    );
+    if (matching.length === 0) return;
+    // Resume may already have reused the input and removed its old turn end.
+    // The Stop commit supplied this evidence before any detached work began.
+    const occurredAt = new Date(turn.endedAt).toISOString();
+    const event: CanonicalChatTerminalEvent = {
+      kind: 'terminal',
+      eventId: JSON.stringify([
+        'terminal',
+        context.address,
+        turn.userMessageId,
+      ]),
+      ...context,
+      sourceInputId: turn.userMessageId,
+      sourceInputAcceptedAt: '',
+      occurredAt,
+      observedAt: new Date().toISOString(),
+      disposition: 'interrupted',
+    };
+    await Promise.all(
+      matching.map(async (row) => {
+        try {
+          await Promise.all(await this.dispatchStoppedTerminal(event, row.id));
+        } catch (error) {
+          logMainProcessWarn('Stopped chat watcher delivery failed.', error);
+        }
+      }),
+    );
+  }
+
+  private async dispatchStoppedTerminal(
+    event: CanonicalChatTerminalEvent,
+    watcherId: string,
+  ): Promise<Array<Promise<void>>> {
+    return this.dispatchCanonicalTerminal(event, {
+      onlyWatcherId: watcherId,
+      stoppedInputOnly: true,
+      automation: false,
+      stage: (held) =>
+        stageHeldDelivery(held, { kind: 'stopped_turn', event, watcherId }),
+    });
+  }
+
   /**
    * Stamps a producer's terminal with the interrupted roots it resumed (from
    * its chat's `interruptedTurns`), so a watcher bound to an interrupted
@@ -7093,7 +7186,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     if (held) {
       // Stage before any await: a release meanwhile must replay this.
       stageCanonicalTerminal(held, event, options);
-      await this.deferReservedInlineTerminal(event);
+      await this.deferReservedInlineTerminal(event, options);
       return [];
     }
     // Coalesce simultaneously observed terminals before claiming a `next`
@@ -7111,7 +7204,9 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           for (const item of pending) {
             try {
               const tasks = await this.handleCanonicalChatEvent(
-                await this.withResumedInputs(item.event),
+                item.options.stoppedInputOnly
+                  ? item.event
+                  : await this.withResumedInputs(item.event),
                 item.options,
               );
               if (item.options.automation !== false) {
@@ -7133,6 +7228,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
   /** Keeps a reserved inline watcher's own terminal until confirmation. */
   private async deferReservedInlineTerminal(
     event: CanonicalChatTerminalEvent,
+    options: CanonicalTerminalDispatch,
   ): Promise<void> {
     await this.enqueueMutation(
       async () => {
@@ -7143,6 +7239,10 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           if (
             row.inlineReservationId &&
             row.status === 'active' &&
+            (options.onlyWatcherId === undefined ||
+              row.id === options.onlyWatcherId) &&
+            (!options.stoppedInputOnly ||
+              watcherBoundToStoppedInput(row, event.sourceInputId)) &&
             rawChatAddressMatches(row, event.address) &&
             !binding.blocked &&
             binding.inputId !== undefined &&
@@ -7150,6 +7250,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
             !row.inlineDeferredTerminal
           ) {
             row.inlineDeferredTerminal = event;
+            if (options.stoppedInputOnly) row.inlineDeferredStop = true;
             changed = true;
           }
         }
@@ -7210,6 +7311,12 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           continue;
         if (!rawChatAddressMatches(row, event.address)) continue;
         const binding = effectiveChatBinding(row);
+        if (
+          options.stoppedInputOnly &&
+          (event.kind !== 'terminal' ||
+            !watcherBoundToStoppedInput(row, event.sourceInputId))
+        )
+          continue;
         if (row.inlineReservationId) {
           if (
             event.kind === 'terminal' &&
@@ -7219,6 +7326,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
             !row.inlineDeferredTerminal
           ) {
             row.inlineDeferredTerminal = event;
+            if (options.stoppedInputOnly) row.inlineDeferredStop = true;
             changed = true;
           }
           continue;
@@ -7392,7 +7500,8 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
           observedAt: event.observedAt,
           ...(event.kind === 'terminal'
             ? {
-                ...(typeof options.automation === 'object' ||
+                ...(event.disposition === 'interrupted' ||
+                typeof options.automation === 'object' ||
                 followsTurnSuccession(row)
                   ? {
                       status:
@@ -7458,6 +7567,7 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         if (recipientDelegationId(row) === undefined)
           this.unsubmittedChatDeliveries.add(deliveryId);
         delete row.inlineDeferredTerminal;
+        delete row.inlineDeferredStop;
         row.status = 'firing';
         row.updatedAt = new Date().toISOString();
         deliveries.push(row);
@@ -7533,7 +7643,13 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
     }
     const evidence = recorded ?? accessEvidence(access);
     if (row.inlineDeferredTerminal) {
-      await this.handleCanonicalChatTerminalEvent(row.inlineDeferredTerminal);
+      if (row.inlineDeferredStop)
+        void (await this.dispatchStoppedTerminal(
+          row.inlineDeferredTerminal,
+          row.id,
+        ));
+      else
+        await this.handleCanonicalChatTerminalEvent(row.inlineDeferredTerminal);
       return;
     }
     if ('chatId' in resolved.entry.target) {
@@ -11680,6 +11796,15 @@ class AppAdvisorWatcherService implements InlineChatWatcherReservationPort {
         await this.handleChatTerminalEvent(delivery.event);
       } else if (delivery.kind === 'canonical_terminal') {
         await this.handleCanonicalChatTerminalEvent(delivery.event);
+      } else if (delivery.kind === 'stopped_turn') {
+        try {
+          void (await this.dispatchStoppedTerminal(
+            delivery.event,
+            delivery.watcherId,
+          ));
+        } catch (error) {
+          logMainProcessWarn('Stopped chat watcher replay failed.', error);
+        }
       } else {
         await this.fireIfTurnSettled(
           delivery.watcherId,

@@ -1486,7 +1486,11 @@ async function measureMissingDelete(run, id, iteration) {
     );
   await run.electronApp.evaluate(
     ({ BrowserWindow }, event) => {
-      const [mainWindow] = BrowserWindow.getAllWindows();
+      // Not a hidden Remote Control bridge window (a `data:` page that
+      // `--remote-control host` opens and getAllWindows may list first).
+      const mainWindow = BrowserWindow.getAllWindows().find(
+        (candidate) => !candidate.webContents.getURL().startsWith('data:'),
+      );
       if (!mainWindow) throw new Error('Missing main window');
       mainWindow.webContents.send('workspace:worktrees-updated', event);
     },

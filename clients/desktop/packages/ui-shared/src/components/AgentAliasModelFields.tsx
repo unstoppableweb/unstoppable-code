@@ -2,10 +2,10 @@
 
 import type { JSX, ReactNode } from 'react';
 import { parseAgentRouteModelId } from '@canopy/protocol/agents';
-import { FormField, type FormFieldControlProps } from './FormField';
-import { SettingsSelect } from './SettingsSelect';
-import { Stack } from './Stack';
-import { Button } from './Button';
+import { FormField, type FormFieldControlProps } from '../primitives/FormField';
+import { SettingsSelect } from '../primitives/SettingsSelect';
+import { Stack } from '../primitives/Stack';
+import { Button } from '../primitives/Button';
 
 export interface AgentAliasModelValue {
   agent_id: string;
@@ -45,8 +45,8 @@ export function AgentAliasModelFields({
   return (
     <Stack gap="item">
       <FormField
-        label="Agent"
-        description="Uses the agent's instructions and plugins."
+        label="Model preset"
+        description="Uses the preset's instructions and plugins."
         error={agentError}
       >
         {(control) => (
@@ -65,8 +65,8 @@ export function AgentAliasModelFields({
             }))}
             placeholder={
               agents.length === 0
-                ? 'No local agents available'
-                : 'Select an agent'
+                ? 'No local model presets available'
+                : 'Select a model preset'
             }
             disabled={disabled || agents.length === 0}
           />
@@ -75,7 +75,9 @@ export function AgentAliasModelFields({
       <FormField
         label="Model (optional)"
         error={modelError}
-        description={base === undefined ? "Uses the agent's model." : undefined}
+        description={
+          base === undefined ? "Uses the preset's model." : undefined
+        }
         trailingAction={
           base !== undefined ? (
             <Button
@@ -84,7 +86,7 @@ export function AgentAliasModelFields({
               disabled={disabled}
               onClick={() => onChange({ agent_id: agentId })}
             >
-              Use agent's model
+              Use preset's model
             </Button>
           ) : undefined
         }
@@ -96,7 +98,7 @@ export function AgentAliasModelFields({
             placeholderLabel:
               modelError && base !== undefined
                 ? "Saved model can't be used"
-                : "Use agent's model",
+                : "Use preset's model",
             onChange: (model) => onChange({ agent_id: agentId, base: model }),
             disabled,
           })

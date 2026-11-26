@@ -2,7 +2,7 @@
 
 import type { JSX, ReactNode } from 'react';
 import { EmptyState, TabBar } from '@canopy/ui-shared/components';
-import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
+import { PageHeader } from '@canopy/ui-shared/primitives/PageHeader';
 import type { OrganizationTeamPageData } from '@canopy/protocol/settings';
 import { canEditOrgEnforcedSettings } from '@canopy/protocol/settings/organization-permissions';
 import { SettingsLink, useSettingsRouter } from '../host';

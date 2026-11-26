@@ -40,7 +40,7 @@ import { toAppError } from '@canopy/protocol/app-errors';
 import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
 import { inlineFailure, type InlineFailure } from '@/lib/inline-app-error';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { Tooltip } from '@canopy/ui-shared/components/Tooltip';
+import { Tooltip } from '@canopy/ui-shared/primitives/Tooltip';
 import {
   Button,
   SettingsSelect,
@@ -412,7 +412,7 @@ export function TerminalTab(): JSX.Element {
           errorSource="terminal-settings-load-error"
           className=""
           // The Terminal settings golden reads this exact sentence.
-          error={loadError ? 'Could not load Terminal settings.' : null}
+          error={loadError ? "Couldn't load Terminal settings." : null}
           testId="terminal-settings-load-error"
         />
         {error?.section === 'shells' ? (

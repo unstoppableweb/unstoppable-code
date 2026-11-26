@@ -63,22 +63,10 @@ import {
   ASK_USER_QUESTION_DESCRIPTION,
   startSplitAgentSchema,
 } from '../canopy-tools/definitions';
+// Image-capable: only slack_thread.open_file sets an image on an
+// Orchestrator result (CAN-7749); every other action stays text only.
+import { toMcpToolResult } from '../mcp/canopy-route-tools';
 import type { AppAdvisorToolRuntime } from './runtime';
-
-interface McpTextContent {
-  type: 'text';
-  text: string;
-}
-
-function toMcpToolResult(result: { text: string; isError?: boolean }): {
-  content: McpTextContent[];
-  isError?: boolean;
-} {
-  const item: McpTextContent = { type: 'text', text: result.text };
-  return result.isError
-    ? { content: [item], isError: true }
-    : { content: [item] };
-}
 
 function appAdvisorTool<Schema extends z.ZodRawShape>(
   key: AppAdvisorToolKey,

@@ -14,8 +14,11 @@ import { sendToWebContents } from '../lib/web-contents-send';
 
 /**
  * The one owner of the managed Antigravity CLI install: status, install,
- * cancel and the progress event. Install and cancel are local-only under
- * remote control; status and host support are readable remotely.
+ * cancel and the progress event. All of them, with host support, are tunneled
+ * under remote control, so a controller installs on this computer. The remote
+ * bridge is a real hidden window whose main frame makes the calls, so it
+ * passes the owner check like the app window; progress sent to it reaches its
+ * controller, and the bridge closing cancels an install it started.
  */
 let shuttingDown = false;
 
@@ -52,19 +55,23 @@ async function install(
   // A window that goes away cancels the install it started; one that only
   // joined it detaches, leaving the download to the window that started it.
   const stop = (): void => {
-    void releaseAntigravityRuntimeInstall(operationId);
+    void releaseAntigravityRuntimeInstall(operationId, owner);
   };
   owner.once('destroyed', stop);
   owner.once('render-process-gone', stop);
   try {
-    const status = await installAntigravityRuntime(operationId, (progress) => {
-      if (!owner.isDestroyed())
-        sendToWebContents(
-          owner,
-          IPC_CHANNELS.antigravityRuntimeProgress,
-          progress,
-        );
-    });
+    const status = await installAntigravityRuntime(
+      operationId,
+      owner,
+      (progress) => {
+        if (!owner.isDestroyed())
+          sendToWebContents(
+            owner,
+            IPC_CHANNELS.antigravityRuntimeProgress,
+            progress,
+          );
+      },
+    );
     if (status.phase === 'installed' && status.managed) {
       // A probe that failed before the install would otherwise be served
       // from the 15-second availability cache, so the card's refresh right
@@ -123,7 +130,11 @@ export function registerAntigravityRuntimeHandlers(runtime: {
       assertOwner(event);
       const { cancelAntigravityRuntimeInstall } =
         await import('../antigravity/connection');
-      await cancelAntigravityRuntimeInstall(parseOperationId(operationId));
+      // Only the window that registered the operation can cancel it.
+      await cancelAntigravityRuntimeInstall(
+        parseOperationId(operationId),
+        event.sender,
+      );
     },
   );
 }

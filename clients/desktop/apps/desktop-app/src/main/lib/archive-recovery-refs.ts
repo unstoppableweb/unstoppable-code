@@ -106,9 +106,28 @@ export async function assertNoArchiveResolution(
   workspaceId: string,
   worktreeId?: string,
   parentOperation?: 'workspace-delete',
+  readReceipts: () => Promise<ArchiveRecoveryReceipt[]> = () =>
+    readArchiveRecoveryHolds(workspaceId),
 ): Promise<void> {
-  const holds = await readArchiveRecoveryHolds(workspaceId);
-  const pending = holds.find(
+  const holds = await readReceipts();
+  const pending = findBlockingArchiveResolution(
+    holds,
+    worktreeId,
+    parentOperation,
+  );
+  if (pending)
+    throw new ArchiveRecoveryRefusedError(
+      `Archive resolution ${pending.operationId} at ${pending.stage} must be resumed before another removal.`,
+    );
+}
+
+/** Shared receipt fence for read-only action admission and lifecycle writers. */
+export function findBlockingArchiveResolution(
+  holds: readonly ArchiveRecoveryReceipt[],
+  worktreeId?: string,
+  parentOperation?: 'workspace-delete',
+): ArchiveRecoveryReceipt | undefined {
+  return holds.find(
     (receipt) =>
       !isConfirmedPendingArchiveRecovery(receipt) &&
       (worktreeId === undefined || parentOperation === 'workspace-delete'
@@ -116,8 +135,4 @@ export async function assertNoArchiveResolution(
         : classifyArchiveRecovery(receipt).worktreeFence) &&
       (worktreeId === undefined || worktreeId === receipt.worktreeId),
   );
-  if (pending)
-    throw new ArchiveRecoveryRefusedError(
-      `Archive resolution ${pending.operationId} at ${pending.stage} must be resumed before another removal.`,
-    );
 }

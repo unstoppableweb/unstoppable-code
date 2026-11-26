@@ -1,6 +1,6 @@
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 import type { JSX, ReactNode } from 'react';
-import { Dot } from './Badge';
+import { Dot } from '../primitives/Badge';
 
 export interface ActivityPingDotProps {
   /** Accessible label and native tooltip text for the dot. */

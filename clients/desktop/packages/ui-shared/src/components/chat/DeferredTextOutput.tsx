@@ -1,15 +1,18 @@
-import { CodeBlock } from '../CodeBlock';
+import { CodeBlock } from '../../primitives/CodeBlock';
 import { memo, useEffect, useRef, type JSX } from 'react';
-import { Button } from '../Button';
-import { LoadingSpinner } from '../LoadingSpinner';
-import { Notice, NoticeButton } from '../Notice';
-import { TRY_AGAIN_LABEL } from '../useRetry';
+import { Button } from '../../primitives/Button';
+import { LoadingSpinner } from '../../primitives/LoadingSpinner';
+import { Notice, NoticeButton } from '../../primitives/Notice';
+import { CopyDetailsButton } from '../../primitives/CopyDetailsButton';
+import { TRY_AGAIN_LABEL } from '../../primitives/useRetry';
 
 interface DeferredTextOutputProps {
   preview: string;
   text?: string;
   loading: boolean;
   error?: string;
+  /** The raw failure behind `error`, offered through Copy details. */
+  details?: string;
   opened: boolean;
   hasPrevious: boolean;
   hasNext: boolean;
@@ -29,6 +32,7 @@ export const DeferredTextOutput = memo(function DeferredTextOutput({
   text,
   loading,
   error,
+  details,
   opened,
   hasPrevious,
   hasNext,
@@ -140,12 +144,17 @@ export const DeferredTextOutput = memo(function DeferredTextOutput({
             intent="destructive"
             liveRegionScope="content"
             actions={
-              <NoticeButton
-                data-testid="chat-tool-output-retry"
-                onClick={onRetry}
-              >
-                {TRY_AGAIN_LABEL}
-              </NoticeButton>
+              <>
+                {details === undefined ? null : (
+                  <CopyDetailsButton details={details} />
+                )}
+                <NoticeButton
+                  data-testid="chat-tool-output-retry"
+                  onClick={onRetry}
+                >
+                  {TRY_AGAIN_LABEL}
+                </NoticeButton>
+              </>
             }
           >
             {error}

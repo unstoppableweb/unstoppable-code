@@ -1,8 +1,8 @@
-import { CodeBlock } from '../CodeBlock';
+import { CodeBlock } from '../../primitives/CodeBlock';
 import type { JSX, RefObject } from 'react';
 import type { ApprovalFileChange } from '@canopy/protocol/approvals';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
-import { DialogModal } from '../DialogModal';
+import { DialogModal } from '../../primitives/DialogModal';
 import { ApprovalFileChangePreview } from './ApprovalFileChangePreview';
 
 /** What the dialog body shows: plain text, or a proposed file change. */

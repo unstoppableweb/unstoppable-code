@@ -26,6 +26,7 @@ import type {
   McpServerConfigData,
   McpServerDefinitionData,
 } from '@canopy/execution-engine/types/mcp-servers';
+import { reserveLoopbackPort } from '../lib/loopback-listeners';
 import {
   DEFAULT_MCP_PROXY_PORT,
   IPC_CHANNELS,
@@ -286,6 +287,8 @@ export function getDevMcpProxyPortOverride(): number | null {
 
 export class McpHttpProxyService {
   private server: Server | null = null;
+  /** Lets go of the listening port's Remote Control deny reservation. */
+  private releasePort: (() => void) | null = null;
   private startPromise: Promise<void> | null = null;
   private currentPort: number | null = null;
   private sockets = new Set<Socket>();
@@ -747,22 +750,30 @@ export class McpHttpProxyService {
       });
     });
 
-    await new Promise<void>((resolve, reject) => {
-      const onError = (error: Error): void => {
-        server.off('listening', onListening);
-        reject(error);
-      };
-      const onListening = (): void => {
-        server.off('error', onError);
-        resolve();
-      };
-      server.once('error', onError);
-      server.once('listening', onListening);
-      server.listen(port, DESKTOP_INTEGRATION_SERVER_HOST);
-    });
+    // Remote Control never tunnels to the proxy (CAN-7679).
+    const releasePort = reserveLoopbackPort(port);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error): void => {
+          server.off('listening', onListening);
+          reject(error);
+        };
+        const onListening = (): void => {
+          server.off('error', onError);
+          resolve();
+        };
+        server.once('error', onError);
+        server.once('listening', onListening);
+        server.listen(port, DESKTOP_INTEGRATION_SERVER_HOST);
+      });
+    } catch (error) {
+      releasePort();
+      throw error;
+    }
 
     this.server = server;
     this.currentPort = port;
+    this.releasePort = releasePort;
   }
 
   private async closeServer(): Promise<void> {
@@ -773,6 +784,8 @@ export class McpHttpProxyService {
 
     this.server = null;
     this.currentPort = null;
+    this.releasePort?.();
+    this.releasePort = null;
     await new Promise<void>((resolve, reject) => {
       server.close((error) => {
         if (error) {

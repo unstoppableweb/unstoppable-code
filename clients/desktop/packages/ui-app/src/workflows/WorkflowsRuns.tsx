@@ -1,6 +1,6 @@
 'use client';
 
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import { CUSTOMIZE_LABEL } from '@canopy/protocol/ui-labels';
 import { memo, useEffect, useState, type JSX, type ReactNode } from 'react';
 import {

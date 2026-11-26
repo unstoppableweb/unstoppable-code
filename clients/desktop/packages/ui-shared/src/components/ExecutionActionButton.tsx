@@ -6,9 +6,9 @@ import type {
   ReactNode,
   Ref,
 } from 'react';
-import { Button, type ButtonVariant } from './Button';
+import { Button, type ButtonVariant } from '../primitives/Button';
+import { Tooltip } from '../primitives/Tooltip';
 import { MorphLabel } from './MorphLabel';
-import { Tooltip } from './Tooltip';
 
 export type ExecutionActionButtonVariant =
   | 'default'

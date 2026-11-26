@@ -499,6 +499,7 @@ export function settleInputExecution(
   rootUserMessageId: string | undefined,
   status: string,
   now: number,
+  onlyUnsettled = false,
 ): InputLedger {
   if (!rootUserMessageId) return ledger;
   let turnOutcome: NonNullable<ChatInputAttempt['turnOutcome']>;
@@ -519,6 +520,7 @@ export function settleInputExecution(
       if (
         attempt.rootUserMessageId !== rootUserMessageId ||
         attempt.pickedUpAt === undefined ||
+        (onlyUnsettled && attempt.turnSettledAt !== undefined) ||
         attempt.turnOutcome === turnOutcome
       )
         return attempt;

@@ -19,13 +19,9 @@ import {
   matchCodexSpeedCatalogModel,
   type CodexSpeedRouteFacts,
 } from './codex-speed-availability';
+import type { CodexContextWindowSetting } from '@canopy/protocol/agent-model-config';
 
-/** What a person chooses; resolved per model and route at thread start. */
-export type CodexContextWindowSetting =
-  | 'model-default'
-  | 'standard-pricing'
-  | 'maximum'
-  | number;
+export type { CodexContextWindowSetting } from '@canopy/protocol/agent-model-config';
 
 /** The smallest custom window Canopy sends. Codex itself sets none. */
 export const CODEX_CONTEXT_WINDOW_FLOOR = 128_000;

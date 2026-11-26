@@ -114,6 +114,27 @@ describe('secure files: POSIX permissions', () => {
     ]);
     expect(await modeOf(loose)).toBe(0o644);
   });
+
+  posixIt('ignores the Windows foreign-trustee opt-in (CAN-7915)', async () => {
+    const [loose, sub] = [await make('a', 0o644), await make('b', 0o755, null)];
+    const foreignTrustees = 'accept';
+    expect(
+      await states(services, [
+        { path: loose, foreignTrustees },
+        { path: sub, kind: 'directory', foreignTrustees },
+      ]),
+    ).toEqual(insecure(2));
+    expect(
+      await services.permissions({
+        ...BASE,
+        path: sub,
+        kind: 'directory',
+        action: 'restrict',
+        foreignTrustees,
+      }),
+    ).toEqual({ state: 'private' });
+    expect(await modeOf(sub)).toBe(0o700);
+  });
 });
 
 describe('secure files: rename', () => {

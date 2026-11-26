@@ -7,8 +7,11 @@ import {
   projectDeletionDiscardCopy,
   type ProjectDeletionDiscardItemProgress,
 } from '../lib/project-deletion-discard-copy';
-import { Button } from './Button';
-import { ConfirmDialog, type ConfirmDialogErrorProps } from './ConfirmDialog';
+import { Button } from '../primitives/Button';
+import {
+  ConfirmDialog,
+  type ConfirmDialogErrorProps,
+} from '../primitives/ConfirmDialog';
 import { WorktreeDiscardPathList } from './WorktreeDiscardDialog';
 
 export const PROJECT_DELETION_DISCARD_DIALOG_TEST_ID =

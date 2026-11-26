@@ -7,6 +7,8 @@ import type { ExternalScriptRuns } from './script-runner';
 
 export interface DaemonScriptRunEntry {
   readonly signal: AbortSignal;
+  /** A stop or drain reached the run, or its worktree is draining: it must not run anywhere. */
+  fenced(): boolean;
   /** Shows the run in the running-script views. */
   markStarted(): void;
   settle(result: WorkerScriptExecuteResult): void;
@@ -21,6 +23,10 @@ interface Entry {
   result: WorkerScriptExecuteResult | null;
   readonly ended: Promise<void>;
   finish(): void;
+}
+
+function worktreeKey(projectId: string, worktreeId: string): string {
+  return JSON.stringify([projectId, worktreeId]);
 }
 
 function sameScript(
@@ -39,6 +45,7 @@ function sameScript(
 export class DaemonScriptRuns implements ExternalScriptRuns {
   private readonly entries = new Set<Entry>();
   private readonly listeners = new Set<() => void>();
+  private readonly draining = new Map<string, number>();
 
   constructor(
     private readonly options: {
@@ -61,6 +68,9 @@ export class DaemonScriptRuns implements ExternalScriptRuns {
     this.entries.add(entry);
     return {
       signal: entry.abort.signal,
+      fenced: (): boolean =>
+        entry.abort.signal.aborted ||
+        this.draining.has(worktreeKey(tracking.projectId, tracking.worktreeId)),
       markStarted: (): void => {
         if (entry.started || !this.entries.has(entry)) return;
         entry.started = true;
@@ -124,8 +134,16 @@ export class DaemonScriptRuns implements ExternalScriptRuns {
    * entries, including runs not started yet.
    */
   async drainWorktree(projectId: string, worktreeId: string): Promise<void> {
-    await this.options.sweep(projectId, worktreeId);
-    await this.stopEntries(this.inWorktree(projectId, worktreeId));
+    const key = worktreeKey(projectId, worktreeId);
+    this.draining.set(key, (this.draining.get(key) ?? 0) + 1);
+    try {
+      await this.options.sweep(projectId, worktreeId);
+      await this.stopEntries(this.inWorktree(projectId, worktreeId));
+    } finally {
+      const remaining = (this.draining.get(key) ?? 1) - 1;
+      if (remaining > 0) this.draining.set(key, remaining);
+      else this.draining.delete(key);
+    }
   }
 
   stopAll(): void {

@@ -16,6 +16,7 @@ import {
   type createWorkerOperationReceiptQuery,
   type createWorkerOperationReceiptSeal,
 } from '../runtime/worker-operation-receipts';
+import { peerScopedDispatchTag } from '../runtime/dispatch-tag-scope';
 import { peerScopedIdempotencyKey } from './peer-scoped-idempotency';
 import type { RuntimeModule } from './runtime-profile-graph';
 
@@ -86,35 +87,7 @@ export function operationReceiptModule(
   };
 }
 
-/**
- * Forwarded instructions with each request's report-only dispatch tag
- * scoped to its interface caller, as CAN-5629 scopes idempotency keys: the
- * bundled worker sees every caller as the owning core.
- */
-export function scopeForwardedDispatchTags(
-  instructions: Readonly<Record<string, Handler>>,
-): Readonly<Record<string, Handler>> {
-  return Object.fromEntries(
-    Object.entries(instructions).map(([name, forward]) => [
-      name,
-      (params: unknown, context: CanopyHandlerContext): unknown => {
-        const tag = context.metadata.dispatchId;
-        return forward(
-          params,
-          tag === undefined
-            ? context
-            : {
-                ...context,
-                metadata: {
-                  ...context.metadata,
-                  dispatchId: peerScopedIdempotencyKey(context.caller, tag),
-                },
-              },
-        );
-      },
-    ]),
-  );
-}
+export { scopeForwardedDispatchTags } from '../runtime/dispatch-tag-scope';
 
 interface RouteOptions {
   instructions: CanopyInstructionDefinitionMap;
@@ -211,7 +184,7 @@ export function routeOperationReceiptLookups(
         'dispatchId' in params
           ? {
               ...params,
-              dispatchId: peerScopedIdempotencyKey(
+              dispatchId: peerScopedDispatchTag(
                 context.caller,
                 params.dispatchId,
               ),
@@ -266,7 +239,7 @@ export function routeOperationReceiptSeals(
         throw epochChanged(current);
       const scoped = {
         ...params,
-        dispatchId: peerScopedIdempotencyKey(context.caller, params.dispatchId),
+        dispatchId: peerScopedDispatchTag(context.caller, params.dispatchId),
       };
       return await forwardScoped(
         forward,

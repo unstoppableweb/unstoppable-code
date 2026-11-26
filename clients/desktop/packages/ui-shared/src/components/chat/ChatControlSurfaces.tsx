@@ -1,5 +1,5 @@
 import type { ComponentPropsWithoutRef, JSX, ReactNode } from 'react';
-import { Button } from '../Button';
+import { Button } from '../../primitives/Button';
 
 export function TerminalChatControls({
   children,

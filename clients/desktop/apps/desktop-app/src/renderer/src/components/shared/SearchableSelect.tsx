@@ -15,6 +15,7 @@ import {
   PickerMenuOptionLeading,
   Tooltip,
 } from '@canopy/ui-shared';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 
 const SEARCHABLE_SELECT_MENU_WIDTH = '320px';
 
@@ -31,6 +32,8 @@ export interface SearchableSelectOption {
   label: string;
   subtitle?: string;
   badge?: ReactNode;
+  /** The label is a user-authored title, masked in session replay. */
+  maskInReplay?: boolean;
 }
 
 export interface SearchableSelectProps {
@@ -111,7 +114,7 @@ export function SearchableSelect({
             {selected?.badge}
             <span className="flex min-w-0 flex-1 flex-col">
               <span
-                className={`truncate ${selected ? 'font-medium' : 'fg-secondary'}`}
+                className={`truncate ${selected ? 'font-medium' : 'fg-secondary'}${selected?.maskInReplay ? ` ${REPLAY_MASK_CLASS}` : ''}`}
               >
                 {triggerLabel}
               </span>
@@ -163,7 +166,13 @@ export function SearchableSelect({
                 </PickerMenuOptionLeading>
               ) : null}
               <PickerMenuOptionContent>
-                <PickerMenuOptionLabel>{option.label}</PickerMenuOptionLabel>
+                <PickerMenuOptionLabel
+                  {...(option.maskInReplay
+                    ? { className: REPLAY_MASK_CLASS }
+                    : {})}
+                >
+                  {option.label}
+                </PickerMenuOptionLabel>
                 {option.subtitle ? (
                   <PickerMenuOptionDescription>
                     {option.subtitle}

@@ -104,6 +104,11 @@ import {
 import type { InterfaceToolRequests } from './interface-tool-requests';
 import type { InterfaceToolName } from '@canopy/protocol/canopy-core';
 import { hasInterfaceTool } from '../agents/interface-tool-binding';
+import {
+  isPipelineAgentActionToolKey,
+  pipelineAgentActionChatId,
+  pipelineAgentActionRuntime,
+} from '../canopy-tools/pipeline-agent-actions';
 
 export interface CanopyMcpRequestContext {
   onAskUserRequestCreated?: (requestId: string) => void;
@@ -149,6 +154,14 @@ export interface CanopyWorktreeSessionRoute {
    * UpdateLedgerEntry. Never restored from a persisted route.
    */
   ledgerTools?: LedgerToolsRuntime;
+  /**
+   * Host-only: set only by a pipeline agent step's host after its own
+   * exposure check (a `dangerous_all` Claude or Codex step in a real project,
+   * CAN-7742). The route then lists SearchActions and DispatchAction
+   * restricted to `pull_request.review.publish`, attributed to this
+   * execution. Never restored from a persisted route.
+   */
+  pipelineAgentActions?: { readonly executionId: string };
   appAdvisorRuntime?: AppAdvisorToolRuntime;
   pipelineEditorRuntime?: PipelineEditorToolRuntime;
   model?: ChatModel;
@@ -220,6 +233,8 @@ const KEYED_BY_TOOL_CALL: ReadonlySet<string> = new Set([
   'worktree.run_script',
   'pipeline.execution_cancel',
   'pipeline.execution_resume',
+  // Every route, chats included: a review posted as the GitHub App (CAN-7742).
+  'pull_request.review.publish',
 ]);
 
 export interface CanopyToolRouterOptions {
@@ -512,6 +527,14 @@ export class CanopyToolRouter {
           ...(canonicalKey === 'set_auto_archive'
             ? this.ledgerInvocationContext(route, id, params._meta)
             : {}),
+          // CAN-7749: a DispatchAction image (only slack_thread.open_file
+          // returns one) gets no budget where preview_visual sends none.
+          ...(canonicalKey === 'dispatch_action' &&
+          (route.providerType === 'cursor' ||
+            (route.providerType === 'opencode' &&
+              route.supportsPreviewImages !== true))
+            ? { imageBudgetBytes: VISUAL_PREVIEW_BUDGETS.acpImageBytes }
+            : {}),
         };
         const result = await executeAppAdvisorTool(
           canonicalKey,
@@ -696,6 +719,7 @@ export class CanopyToolRouter {
         canonicalKey,
         route.workerMemoryToolExposure ?? 'none',
         route.ledgerTools !== undefined,
+        route.pipelineAgentActions !== undefined,
       )
     ) {
       // Workers run with bypassPermissions, so an unadvertised tool must
@@ -1024,51 +1048,76 @@ export class CanopyToolRouter {
           resolve,
           getWindow: () => this.options.interfaceRequests.legacyWindow(),
         }),
-      ...(canonicalKey === 'dispatch_action' ||
-      canonicalKey === 'search_actions' ||
-      canonicalKey === 'watch_github_items' ||
-      canonicalKey === 'watch_command' ||
-      canonicalKey === 'set_base_branch' ||
-      canonicalKey === 'start_forked_agent' ||
-      canonicalKey === 'start_branched_agent'
+      ...(route.pipelineAgentActions &&
+      isPipelineAgentActionToolKey(canonicalKey)
         ? {
-            worktreeActionRuntime: {
-              ...(route.turnSignal && requestContext?.signal
-                ? { signal: requestContext.signal }
-                : {}),
+            // A pipeline agent step may only post a review as the GitHub App,
+            // attributed to its execution, and arms no watchers. Its calls
+            // run under no real chat on every host, a worker's route
+            // included, so no chat's turn or state is looked up for them.
+            worktreeActionRuntime: pipelineAgentActionRuntime({
               projectId: route.projectId,
               worktreeId: route.worktreeId,
-              chatId: route.chatId,
+              chatId: pipelineAgentActionChatId(
+                route.pipelineAgentActions.executionId,
+              ),
               cwd:
                 route.cwd ??
                 resolveWorktreeCwd(route.projectId, route.worktreeId),
-              ...(route.repoId ? { repoId: route.repoId } : {}),
-              // Cowork chats run directory-scoped: pipeline listing/dispatch
-              // targets the workspace folder and worktree-only actions
-              // (tracked-plan/hook) are filtered/rejected.
-              ...(isCoworkWorkspace(route.projectId)
-                ? { executionScope: 'directory' as const }
+              executionId: route.pipelineAgentActions.executionId,
+              ...(requestContext?.signal
+                ? { signal: requestContext.signal }
                 : {}),
-              getWindow,
-              interfacePort: windowAgentInterfacePort(getWindow),
-            },
+            }),
           }
-        : {}),
-      ...(canonicalKey === 'search_watchers' ||
-      canonicalKey === 'get_script_output' ||
-      canonicalKey === 'watch_command' ||
-      canonicalKey === 'schedule_wakeup' ||
-      canonicalKey === 'setup_watchers' ||
-      canonicalKey === 'delete_watchers' ||
-      canonicalKey === 'watch_github_items' ||
-      // dispatch_action needs the watcher destination too: pipeline.run and
-      // automation.create/run_now accept inline `watchers` arrays that arm
-      // watchers for the calling chat.
-      canonicalKey === 'dispatch_action' ||
-      // set_auto_archive reads the chat identity to say when the archive waits
-      // for the chat's live delegates.
-      canonicalKey === 'set_auto_archive' ||
-      canonicalKey === 'set_work_entry_auto_delete'
+        : canonicalKey === 'dispatch_action' ||
+            canonicalKey === 'search_actions' ||
+            canonicalKey === 'watch_github_items' ||
+            canonicalKey === 'watch_command' ||
+            canonicalKey === 'set_base_branch' ||
+            canonicalKey === 'start_forked_agent' ||
+            canonicalKey === 'start_branched_agent'
+          ? {
+              worktreeActionRuntime: {
+                ...(route.turnSignal && requestContext?.signal
+                  ? { signal: requestContext.signal }
+                  : {}),
+                projectId: route.projectId,
+                worktreeId: route.worktreeId,
+                chatId: route.chatId,
+                cwd:
+                  route.cwd ??
+                  resolveWorktreeCwd(route.projectId, route.worktreeId),
+                ...(route.repoId ? { repoId: route.repoId } : {}),
+                // Cowork chats run directory-scoped: pipeline listing/dispatch
+                // targets the workspace folder and worktree-only actions
+                // (tracked-plan/hook) are filtered/rejected.
+                ...(isCoworkWorkspace(route.projectId)
+                  ? { executionScope: 'directory' as const }
+                  : {}),
+                getWindow,
+                interfacePort: windowAgentInterfacePort(getWindow),
+              },
+            }
+          : {}),
+      ...(!(
+        route.pipelineAgentActions && isPipelineAgentActionToolKey(canonicalKey)
+      ) &&
+      (canonicalKey === 'search_watchers' ||
+        canonicalKey === 'get_script_output' ||
+        canonicalKey === 'watch_command' ||
+        canonicalKey === 'schedule_wakeup' ||
+        canonicalKey === 'setup_watchers' ||
+        canonicalKey === 'delete_watchers' ||
+        canonicalKey === 'watch_github_items' ||
+        // dispatch_action needs the watcher destination too: pipeline.run and
+        // automation.create/run_now accept inline `watchers` arrays that arm
+        // watchers for the calling chat.
+        canonicalKey === 'dispatch_action' ||
+        // set_auto_archive reads the chat identity to say when the archive waits
+        // for the chat's live delegates.
+        canonicalKey === 'set_auto_archive' ||
+        canonicalKey === 'set_work_entry_auto_delete')
         ? {
             worktreeWatcherRuntime: {
               projectId: route.projectId,

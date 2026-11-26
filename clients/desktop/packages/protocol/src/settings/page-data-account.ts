@@ -216,10 +216,18 @@ export const accountDelegationPageDataSchema = z.looseObject({
   data: z.looseObject({}),
 });
 
-/** `/account/integrations` → `GitHubCloudSettings` props. */
+/**
+ * `/account/integrations` → GitHub for cloud work and Slack. Both section
+ * flags are optional for version skew: a missing `githubCloud` means on (the
+ * page only had GitHub before CAN-7606), a missing `slack` means off.
+ */
 export const accountIntegrationsPageDataSchema = z.looseObject({
   kind: z.literal('account.integrations'),
-  data: z.looseObject({ userId: z.string().min(1) }),
+  data: z.looseObject({
+    userId: z.string().min(1),
+    githubCloud: z.boolean().optional(),
+    slack: z.boolean().optional(),
+  }),
 });
 
 /** `/account/security` → `SecurityPanel` props. */

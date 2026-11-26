@@ -30,7 +30,10 @@ import {
 import { retitleChatAutomationEntry } from '@canopy/desktop-shared/lib/chat-automation-conversion';
 
 export type ActivePanel = 'steps' | 'settings';
-export type MainView = 'list' | 'flowchart' | 'raw';
+export type MainView = 'designer' | 'map' | 'list' | 'raw';
+
+/** A read-only pipeline's views: the stack, its map, or its details. */
+export type ReadView = 'designer' | 'map' | 'details';
 
 export type Selection = PipelineEditorSelection;
 
@@ -81,10 +84,41 @@ export interface UsePipelineEditorReturn {
   canRedo: boolean;
   undo: () => void;
   redo: () => void;
+  /**
+   * Bumped by each undo and redo. Either can put a different step at the
+   * selected position, so views keyed by the selection add it to their key.
+   */
+  historyRevision: number;
 
   isDirty: boolean;
   saving: boolean;
   save: (pipelineOverride?: Pipeline) => Promise<PipelineInfo | null>;
+  /**
+   * CAN-5782: why the last save was refused because of the workflow's
+   * schedules, if it was: `needs_confirmation` when it would stop schedules
+   * an agent created, which the next save may confirm.
+   */
+  scheduleRefusal: () =>
+    | {
+        kind: 'blocked' | 'needs_confirmation';
+        message: string;
+        scheduleIds?: readonly string[];
+      }
+    | undefined;
+  /** Forgets the last save's schedule refusal (CAN-5782). */
+  clearScheduleRefusal: () => void;
+  /**
+   * The page's unsaved schedule inputs its saves send for the schedule
+   * check until cleared with `null` (CAN-5782).
+   */
+  setPendingScheduleInputs: (
+    inputs: Record<string, Record<string, string>> | null,
+  ) => void;
+  /**
+   * The next save confirms that these schedules an agent created stop, as
+   * the refusal named them (CAN-5782).
+   */
+  confirmAgentSchedulesStopOnNextSave: (scheduleIds: readonly string[]) => void;
   /**
    * Shows a pipeline core saved for this editor elsewhere (an agent's save,
    * CAN-5822) as its saved state. The current draft is kept, so edits made
@@ -152,11 +186,13 @@ export function usePipelineEditor({
   const savingRef = useRef(false);
   const [selection, setSelection] = useState<Selection>({ type: 'none' });
   const [activePanel, setActivePanel] = useState<ActivePanel>('steps');
-  const [mainView, setMainView] = useState<MainView>('flowchart');
+  // Every pipeline opens in the Designer (CAN-4224 phase 05).
+  const [mainView, setMainView] = useState<MainView>('designer');
 
   // History for undo/redo
   const pastRef = useRef<Pipeline[]>([]);
   const futureRef = useRef<Pipeline[]>([]);
+  const [historyRevision, setHistoryRevision] = useState(0);
 
   // Baseline for dirty tracking (last saved state)
   const baselineRef = useRef<string>('');
@@ -547,6 +583,7 @@ export function usePipelineEditor({
       futureRef.current = [...futureRef.current, current];
       return prev;
     });
+    setHistoryRevision((revision: number): number => revision + 1);
   }, []);
 
   const redo = useCallback((): void => {
@@ -557,7 +594,49 @@ export function usePipelineEditor({
       pastRef.current = [...pastRef.current, current];
       return next;
     });
+    setHistoryRevision((revision: number): number => revision + 1);
   }, []);
+
+  // CAN-5782: a save refused because of the workflow's schedules, and the
+  // person's confirmation the next save carries.
+  const scheduleRefusalRef = useRef<
+    | {
+        kind: 'blocked' | 'needs_confirmation';
+        message: string;
+        scheduleIds?: readonly string[];
+      }
+    | undefined
+  >(undefined);
+  const confirmAgentStopRef = useRef<readonly string[] | null>(null);
+  const pendingScheduleInputsRef = useRef<Record<
+    string,
+    Record<string, string>
+  > | null>(null);
+  const setPendingScheduleInputs = useCallback(
+    (inputs: Record<string, Record<string, string>> | null): void => {
+      pendingScheduleInputsRef.current = inputs;
+    },
+    [],
+  );
+  const scheduleRefusal = useCallback(
+    ():
+      | {
+          kind: 'blocked' | 'needs_confirmation';
+          message: string;
+          scheduleIds?: readonly string[];
+        }
+      | undefined => scheduleRefusalRef.current,
+    [],
+  );
+  const clearScheduleRefusal = useCallback((): void => {
+    scheduleRefusalRef.current = undefined;
+  }, []);
+  const confirmAgentSchedulesStopOnNextSave = useCallback(
+    (scheduleIds: readonly string[]): void => {
+      confirmAgentStopRef.current = scheduleIds;
+    },
+    [],
+  );
 
   // Save
   const save = useCallback(
@@ -614,6 +693,9 @@ export function usePipelineEditor({
               ...deferredRetitleRef.current,
             ])
           : pipelineToSave;
+        const confirmAgentSchedulesStop = confirmAgentStopRef.current;
+        confirmAgentStopRef.current = null;
+        scheduleRefusalRef.current = undefined;
         const result = await window.pipelines.save({
           id: persistedIdRef.current,
           ...(expectedRevision === undefined ? {} : { expectedRevision }),
@@ -621,9 +703,24 @@ export function usePipelineEditor({
           description: toStore.description ?? '',
           icon: toStore.icon ?? '',
           content: toStore,
+          ...(confirmAgentSchedulesStop
+            ? { confirmAgentSchedulesStop: [...confirmAgentSchedulesStop] }
+            : {}),
+          ...(pendingScheduleInputsRef.current
+            ? { pendingScheduleInputs: pendingScheduleInputsRef.current }
+            : {}),
         });
 
         if (!result.success) {
+          scheduleRefusalRef.current = result.scheduleRefusal
+            ? {
+                kind: result.scheduleRefusal,
+                message: result.error ?? 'Failed to save workflow',
+                ...(result.stoppingScheduleIds
+                  ? { scheduleIds: result.stoppingScheduleIds }
+                  : {}),
+              }
+            : undefined;
           setError(result.error ?? 'Failed to save workflow');
           return null;
         }
@@ -743,10 +840,15 @@ export function usePipelineEditor({
     canRedo,
     undo,
     redo,
+    historyRevision,
 
     isDirty,
     saving,
     save,
+    scheduleRefusal,
+    clearScheduleRefusal,
+    setPendingScheduleInputs,
+    confirmAgentSchedulesStopOnNextSave,
     adoptSaved,
     getSavedPipeline,
     deferRetitleFrom,

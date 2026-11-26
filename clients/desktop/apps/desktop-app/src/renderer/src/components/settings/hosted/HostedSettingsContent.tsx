@@ -1,4 +1,4 @@
-import { useEffect, useRef, type JSX, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, type JSX, type ReactNode } from 'react';
 import {
   useSettingsBootstrap,
   useSettingsStoreApi,
@@ -24,6 +24,7 @@ import {
   preloadOrganizationTabPages,
   SettingsPageNoticeProvider,
 } from '@canopy/ui-app/settings/pages';
+import { organizationVisibleTabsFromBootstrap } from '@canopy/ui-app/settings/navigation';
 import { lazyLoadErrorBoundaryHost } from '@/lib/desktop-error-boundary-host';
 import { openAuthenticatedCloudPage } from '@/lib/openAuthenticatedCloudPage';
 import { useNavigationStore } from '@/stores/navigationStore';
@@ -121,7 +122,9 @@ function AccountScopeShell({
       data-hosted-settings-state={state === 'ready' ? undefined : state}
       data-hosted-settings-page={pageKey}
     >
-      <AccountSettingsFrame after={<AccountDeviceSettings page={route.page} />}>
+      <AccountSettingsFrame
+        after={<AccountDeviceSettings page={route.page} hostState={state} />}
+      >
         {children}
       </AccountSettingsFrame>
     </div>
@@ -256,10 +259,17 @@ function SignedInHostedSettingsContent({
 
   // Entering an organization loads the chunks behind its tabs, so moving
   // between them waits only on page data.
-  const organizationTabs =
+  const bootstrapOrganization =
     bootstrap.data?.organization?.id === organizationId
-      ? bootstrap.data?.organization?.visibleTabs
+      ? bootstrap.data.organization
       : undefined;
+  const organizationTabs = useMemo(
+    () =>
+      bootstrapOrganization === undefined
+        ? undefined
+        : organizationVisibleTabsFromBootstrap(bootstrapOrganization),
+    [bootstrapOrganization],
+  );
   useEffect(() => {
     if (organizationId === null || organizationTabs === undefined) return;
     preloadOrganizationTabPages(organizationId, organizationTabs);

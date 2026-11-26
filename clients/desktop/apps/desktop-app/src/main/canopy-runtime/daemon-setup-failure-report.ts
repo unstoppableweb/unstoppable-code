@@ -9,22 +9,22 @@ import { createAppError } from '@canopy/protocol/app-errors';
 
 /**
  * The allowlisted app-error source for a failed daemon setup:
- * `daemon.<reason>[.<refusal | claim cause | native stage | root cause>]
- * [.exit_<n>][.<SIGNAL>][.<ERRNO>]`. Every token is a closed value, so no
- * message, path or native diagnostic can reach telemetry.
+ * `daemon.<reason>[.<refusal | claim cause | privacy cause | native stage |
+ * root cause>][.exit_<n>][.<SIGNAL>][.<ERRNO>]`. Every token is a closed
+ * value, so no message, path, SID or native diagnostic can reach telemetry.
  */
 export function daemonSetupFailureSource(
   error: unknown,
   reason: BackgroundServiceUnreachableReason,
 ): string {
-  const { errno, exitCode, signal, nativeStage, cause } =
+  const { errno, exitCode, signal, nativeStage, cause, privacy } =
     canopyLaunchDetails(error);
   const rootCause =
     error instanceof LocalAuthorityIdentityError ? error.rootCause : undefined;
   return [
     'daemon',
     reason,
-    canopyDaemonRefusal(error) ?? cause ?? nativeStage ?? rootCause,
+    canopyDaemonRefusal(error) ?? cause ?? privacy ?? nativeStage ?? rootCause,
     exitCode === undefined ? undefined : `exit_${exitCode}`,
     signal,
     errno,

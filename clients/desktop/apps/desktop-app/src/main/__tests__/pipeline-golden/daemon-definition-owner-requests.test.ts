@@ -13,7 +13,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import type { WorkerPipelineHostRequest } from '@canopy/protocol/canopy-core';
+import { pipelineDefinitionOwnerKey } from '@canopy/core-runtime/node/pipeline';
+import { StorageOutcomeUnknownError } from '@canopy/core-runtime/storage';
 import { hashPipelinePackageYaml } from '@canopy/desktop-shared/node';
+import * as atomicFile from '@canopy/execution-engine/node/lib/atomic-file';
 import {
   GOLDEN_BUNDLED_PIPELINE_ID,
   GOLDEN_BUNDLED_PIPELINE_YAML,
@@ -31,15 +34,21 @@ import {
   readSharedItemSubscriptionLedger,
   recordSharedItemInstall,
 } from '../../canopy-cloud/shared-item-subscriptions';
-import { getPipelinePackageInstallStorePath } from '../../lib/paths';
+import {
+  getPipelineLocalMetadataFilePath,
+  getPipelinePackageInstallStorePath,
+} from '../../lib/paths';
 import { answerDaemonDefinitionOwnerRequest } from '../../pipelines/daemon-definition-owner-requests';
+import { registerPendingDefinitionOwner } from '../../pipelines/daemon-definition-pending-owners';
 import * as installContext from '../../pipelines/pipeline-install-context';
 import {
+  deleteUserPipelineLocalMetadata,
   readPipelineLocalMetadata,
   recordUserPipelineOwner,
 } from '../../pipelines/pipeline-local-metadata-store';
 import {
   listPipelinePackageInstalls,
+  removePipelinePackageInstall,
   upsertPipelinePackageInstall,
 } from '../../pipelines/pipeline-package-install-store';
 import * as packageService from '../../pipelines/pipeline-package-service';
@@ -350,6 +359,40 @@ describe('daemon definition owner requests (CAN-7522)', () => {
     for (const id of [live, crashedEdit]) deleteStoredPipeline(id);
   });
 
+  // CAN-7590: a package-installed copy records its install before it
+  // commits, so a crash between the two leaves a record naming an id no
+  // store holds; the reconcile removes it and keeps the source's.
+  it('a reconcile removes the install record of a copy that never committed', async () => {
+    const installs = getPipelinePackageInstallStorePath();
+    const source = await world.saveUserPipeline(
+      yaml('Owner effects packaged source'),
+      'pipeline:owner-effects-packaged-source',
+    );
+    await upsertPipelinePackageInstall(installs, {
+      localPipelineId: source,
+      pipelineContentHash: hashPipelinePackageYaml(
+        getStoredPipelineText(source).data ?? '',
+      ),
+      distributionMode: 'package',
+      packageDigest: `pp:v1:${'a'.repeat(43)}`,
+      installedAt: new Date().toISOString(),
+    });
+    const uncommitted = randomUUID();
+    await packageService.copyPackageInstall(source, uncommitted);
+    const recorded = async (id: string): Promise<boolean> =>
+      (await listPipelinePackageInstalls(installs)).some(
+        (install) => install.localPipelineId === id,
+      );
+    expect(await recorded(uncommitted)).toBe(true);
+
+    await expect(answer(RECONCILE)).resolves.toEqual(APPLIED);
+
+    expect(await recorded(uncommitted)).toBe(false);
+    expect(await recorded(source)).toBe(true);
+    await removePipelinePackageInstall(installs, source);
+    deleteStoredPipeline(source);
+  });
+
   it('a reconcile over an index that is not sound reconciles nothing and fails', async () => {
     const live = await withSidecars('Owner effects unsound index');
     await settled(live, ALL);
@@ -619,5 +662,237 @@ describe('daemon definition owner requests (CAN-7522)', () => {
         scope: {},
       }),
     ).resolves.toEqual(ALLOWED);
+  });
+});
+
+// CAN-7507: main records a routed create's, import's or copy's owner when
+// the daemon raises the write's effect before its commit, matched by the
+// key bound to the client that sent it, and a reconcile keeps that record
+// while the commit is in flight.
+describe('the owner of a routed write, recorded before its commit (CAN-7507)', () => {
+  const AUTHOR = {
+    chat: {
+      projectId: 'golden-project',
+      worktreeId: 'golden-worktree',
+      chatId: 'golden-chat',
+    },
+    recordedAt: '2026-11-24T00:00:00.000Z',
+  };
+  const beforeCommit = (
+    op: 'upsert' | 'import' | 'duplicate',
+    definitionId: string,
+    ownerKey: string,
+  ): DefinitionAction => ({
+    action: 'owner.definition.effects',
+    op,
+    phase: 'beforeCommit',
+    definitionId,
+    ownerKey,
+    ...(op === 'duplicate' && {
+      origin: { source: 'bundled', definitionId: GOLDEN_BUNDLED_PIPELINE_ID },
+    }),
+  });
+  const ownerOf = (id: string): string | null =>
+    readPipelineLocalMetadata(locator(id)).owner ?? null;
+
+  it('records the owner and agent author a routed create, import or copy registered', async () => {
+    for (const op of ['upsert', 'import', 'duplicate'] as const) {
+      const id = randomUUID();
+      const ownerKey = pipelineDefinitionOwnerKey('owner-client', `key-${op}`);
+      const release = registerPendingDefinitionOwner(ownerKey, {
+        owner: 'org:golden',
+        agentAuthor: AUTHOR,
+      });
+      await expect(answer(beforeCommit(op, id, ownerKey))).resolves.toEqual(
+        APPLIED,
+      );
+      release('settled');
+      expect({
+        op,
+        owner: ownerOf(id),
+        author: readPipelineLocalMetadata(locator(id)).agentAuthor ?? null,
+      }).toEqual({ op, owner: 'org:golden', author: AUTHOR });
+      deleteUserPipelineLocalMetadata(id);
+    }
+  });
+
+  it('records nothing for a key with no registered owner, such as a CLI create, or the same key from another client', async () => {
+    const release = registerPendingDefinitionOwner(
+      pipelineDefinitionOwnerKey('owner-client', 'shared-key'),
+      { owner: 'org:golden', agentAuthor: null },
+    );
+    const cli = randomUUID();
+    const other = randomUUID();
+    await answer(
+      beforeCommit(
+        'upsert',
+        cli,
+        pipelineDefinitionOwnerKey('cli', 'cli-save'),
+      ),
+    );
+    await answer(
+      beforeCommit(
+        'upsert',
+        other,
+        pipelineDefinitionOwnerKey('cli', 'shared-key'),
+      ),
+    );
+    release('settled');
+    expect([ownerOf(cli), ownerOf(other)]).toEqual([null, null]);
+  });
+
+  it('a reconcile keeps an owner recorded before a commit still in flight, and removes it once that commit settles without the definition', async () => {
+    const id = randomUUID();
+    const ownerKey = pipelineDefinitionOwnerKey('owner-client', 'in-flight');
+    const release = registerPendingDefinitionOwner(ownerKey, {
+      owner: 'org:golden',
+      agentAuthor: null,
+    });
+    await answer(beforeCommit('upsert', id, ownerKey));
+    release('settled');
+    await expect(answer(RECONCILE)).resolves.toEqual(APPLIED);
+    expect(ownerOf(id)).toBe('org:golden');
+    await answer({
+      action: 'owner.definition.effects',
+      op: 'upsert',
+      phase: 'afterCommit',
+      definitionId: id,
+    });
+    await expect(answer(RECONCILE)).resolves.toEqual(APPLIED);
+    expect(ownerOf(id)).toBeNull();
+  });
+
+  /** The metadata file's writes, failed as `fail` says; every other write is real. */
+  function failMetadataWrites(fail: (install: () => void) => void): {
+    restore: () => void;
+  } {
+    const real = atomicFile.writeFileAtomicallySync;
+    const spy = jest
+      .spyOn(atomicFile, 'writeFileAtomicallySync')
+      .mockImplementation((file, data, options) => {
+        if (String(file) !== getPipelineLocalMetadataFilePath())
+          return real(file, data, options);
+        fail(() => real(file, data, options));
+      });
+    return { restore: () => spy.mockRestore() };
+  }
+
+  const SAVE_REFUSED = {
+    name: 'PipelineDefinitionSourceError',
+    code: 'core.pipeline.sourceUnavailable',
+  };
+
+  it('refuses a routed write whose owner write fails, records nothing, and records both on the same-key resend', async () => {
+    const id = randomUUID();
+    const ownerKey = pipelineDefinitionOwnerKey('owner-client', 'disk-full');
+    const release = registerPendingDefinitionOwner(ownerKey, {
+      owner: 'org:golden',
+      agentAuthor: AUTHOR,
+    });
+    const failing = failMetadataWrites(() => {
+      throw Object.assign(new Error('ENOSPC: no space left on device'), {
+        code: 'ENOSPC',
+      });
+    });
+    try {
+      await expect(
+        answer(beforeCommit('upsert', id, ownerKey)),
+      ).rejects.toMatchObject(SAVE_REFUSED);
+    } finally {
+      failing.restore();
+    }
+    expect(readPipelineLocalMetadata(locator(id))).toEqual({});
+    await expect(answer(beforeCommit('upsert', id, ownerKey))).resolves.toEqual(
+      APPLIED,
+    );
+    release('settled');
+    expect({
+      owner: ownerOf(id),
+      author: readPipelineLocalMetadata(locator(id)).agentAuthor ?? null,
+    }).toEqual({ owner: 'org:golden', author: AUTHOR });
+    deleteUserPipelineLocalMetadata(id);
+  });
+
+  it('refuses a routed write when the metadata file cannot be read, leaving the file as it was', async () => {
+    const id = randomUUID();
+    const ownerKey = pipelineDefinitionOwnerKey('owner-client', 'unreadable');
+    const release = registerPendingDefinitionOwner(ownerKey, {
+      owner: 'org:golden',
+      agentAuthor: null,
+    });
+    const held = randomUUID();
+    const heldOwner = `org:${randomUUID()}`;
+    recordUserPipelineOwner(held, heldOwner);
+    const file = getPipelineLocalMetadataFilePath();
+    const kept = readFileSync(file, 'utf8');
+    writeFileSync(file, '{ not json');
+    try {
+      await expect(
+        answer(beforeCommit('import', id, ownerKey)),
+      ).rejects.toMatchObject(SAVE_REFUSED);
+      expect(readFileSync(file, 'utf8')).toBe('{ not json');
+    } finally {
+      writeFileSync(file, kept);
+      release('settled');
+    }
+    expect([ownerOf(id), ownerOf(held)]).toEqual([null, heldOwner]);
+    deleteUserPipelineLocalMetadata(held);
+  });
+
+  it('refuses a routed write whose owner was installed but whose folder flush failed, and a reconcile then drops that owner', async () => {
+    const id = randomUUID();
+    const ownerKey = pipelineDefinitionOwnerKey('owner-client', 'unflushed');
+    const release = registerPendingDefinitionOwner(ownerKey, {
+      owner: 'org:golden',
+      agentAuthor: null,
+    });
+    const failing = failMetadataWrites((install) => {
+      install();
+      throw new StorageOutcomeUnknownError('directory_flush', new Error('EIO'));
+    });
+    try {
+      await expect(
+        answer(beforeCommit('duplicate', id, ownerKey)),
+      ).rejects.toMatchObject(SAVE_REFUSED);
+    } finally {
+      failing.restore();
+      release('settled');
+    }
+    // Refused, so nothing commits: the owner no longer waits on a commit.
+    await expect(answer(RECONCILE)).resolves.toEqual(APPLIED);
+    expect(ownerOf(id)).toBeNull();
+  });
+
+  it("records a write's own owner from an effect that arrives after its delivery ended unknown, and nothing after it settled", async () => {
+    const late = randomUUID();
+    const lateKey = pipelineDefinitionOwnerKey('owner-client', 'late-effect');
+    const lateOwner = `org:${randomUUID()}`;
+    registerPendingDefinitionOwner(lateKey, {
+      owner: lateOwner,
+      agentAuthor: AUTHOR,
+    })('unknown');
+    // The same idempotency key from another client, with another owner.
+    const other = registerPendingDefinitionOwner(
+      pipelineDefinitionOwnerKey('other-client', 'late-effect'),
+      { owner: `org:${randomUUID()}`, agentAuthor: null },
+    );
+    await expect(
+      answer(beforeCommit('upsert', late, lateKey)),
+    ).resolves.toEqual(APPLIED);
+    other('settled');
+    expect({
+      owner: ownerOf(late),
+      author: readPipelineLocalMetadata(locator(late)).agentAuthor ?? null,
+    }).toEqual({ owner: lateOwner, author: AUTHOR });
+    deleteUserPipelineLocalMetadata(late);
+
+    const settled = randomUUID();
+    const settledKey = pipelineDefinitionOwnerKey('owner-client', 'settled');
+    registerPendingDefinitionOwner(settledKey, {
+      owner: lateOwner,
+      agentAuthor: null,
+    })('settled');
+    await answer(beforeCommit('upsert', settled, settledKey));
+    expect(ownerOf(settled)).toBeNull();
   });
 });

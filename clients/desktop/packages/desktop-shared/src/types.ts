@@ -17,6 +17,8 @@ import type {
 import type {
   WorktreeRecoveryFinishParams,
   WorktreeRecoveryFinishResult,
+  WorktreeRecoverySetAsideParams,
+  WorktreeRecoverySetAsideResult,
   WorktreeRecoveryListParams,
   WorktreeRecoveryListResult,
   WorktreeRecoveryResolveParams,
@@ -29,6 +31,8 @@ import type {
   PipelineSchedule,
   PipelineScheduleDestination,
   DictationModelStatus,
+  PublicationCommentListResult,
+  PublicationCommentMutationResult,
 } from '@canopy/protocol/canopy-core';
 import type {
   FeedbackReportContext,
@@ -504,7 +508,10 @@ import {
 import { type CodexContextWindowSetting } from '@canopy/execution-engine/lib/codex-context-window';
 import type { CodexSpeedApi } from '@canopy/execution-engine/types/codex-speed-capabilities';
 import type { OverlayLayerApi } from './types/overlay-layer';
-import type { RemoteControlApi } from './types/remote-control';
+import type {
+  PairedComputersApi,
+  RemoteControlApi,
+} from './types/remote-control';
 import type { BrowserProfileErrorCode } from '@canopy/protocol/browser-profiles';
 import type { FileDiffContext } from './types/code-review';
 import type { OrgProjectDeepLinkOpenEvent } from '@canopy/protocol/org-projects';
@@ -877,7 +884,6 @@ import type {
   RunShareScope,
   SharedRunCommentAnchor,
   SharedRunCommentThreadStatus,
-  SharedRunDetail,
 } from '@canopy/protocol/runs';
 import type { TelemetryShareScope } from '@canopy/protocol/telemetry';
 import type {
@@ -1117,6 +1123,7 @@ export {
   PLAN_DIAGRAM_SCHEMA_VERSION,
   isPlanDiagramArtifacts,
   isPlanCommentThreadArray,
+  isTrackedPlanData,
   isParsedPlanGraph,
   isLogicDiffDiagram,
   isDataModelDiffDiagram,
@@ -1858,7 +1865,33 @@ export interface AccountOrganizationSettingsApi {
   }): Promise<SettingsPaymentHandoffAvailability>;
   /** Main asks the renderer to open a hosted settings route (agent actions). */
   onOpenRequest(listener: (route: SettingsRoute) => void): () => void;
+  /**
+   * Save an organization transcript download: main validates `path` against
+   * the two transcript download routes, asks where to save, and fetches with
+   * the account's own credential. Local only.
+   */
+  downloadTranscriptFile(request: {
+    accountId: string;
+    path: string;
+    suggestedName: string;
+  }): Promise<SettingsTranscriptDownloadResult>;
 }
+
+/** What an organization transcript download did; `saved: false` is a cancelled dialog. */
+export type SettingsTranscriptDownloadResult =
+  | { ok: true; saved: boolean }
+  | {
+      ok: false;
+      reason:
+        | 'invalid'
+        | 'unauthenticated'
+        | 'forbidden'
+        | 'not_found'
+        | 'gone'
+        | 'too_large'
+        | 'busy'
+        | 'failed';
+    };
 
 /** One stream event, tagged with the window-local subscription it belongs to. */
 export interface AccountOrganizationSettingsEventMessage {
@@ -7387,6 +7420,13 @@ export interface PreferencesData extends TerminalDrawerPreferences {
    */
   accountProxyEnabledSetByUser?: boolean;
   /**
+   * The person's choice for the one-window work (CAN-7750), Settings → Labs
+   * → One window for all computers. Absent until they choose; the build
+   * then decides (see `resolveOneWindowEnabled`). Belongs to this computer:
+   * saves from a paired computer drop it.
+   */
+  oneWindowEnabled?: boolean;
+  /**
    * The proxy this device connects to. Written by the main process only (the
    * management key lives in secure storage, keyed by `id`); renderer saves
    * that include it are rejected.
@@ -8324,6 +8364,26 @@ export interface PreferencesData extends TerminalDrawerPreferences {
    */
   legalConsentTosVersion?: string;
   /**
+   * ISO-8601 timestamp of when the member confirmed the Welcome gate's "What
+   * you share" choices. Absent until the gate saves it, so profiles that
+   * accepted consent before the choices were shown can be told apart.
+   */
+  dataChoicesConfirmedAt?: string;
+  /**
+   * Main-derived: true when the commit that first recorded legal consent
+   * turned Usage analytics from on to off. While true, the daily anonymous
+   * opt-out ping does not send. Incoming patch values are ignored;
+   * normalization clears it once Usage analytics is on.
+   */
+  usageAnalyticsDeclinedAtOnboarding: boolean;
+  /**
+   * Organization ID → signature of the required data-sharing scope set last
+   * shown in the one-time organization requirement notice. Merged per key by
+   * the main-owned writer. An empty map is meaningful: the member's existing
+   * requirements were seeded and later changes should show the notice.
+   */
+  orgSharingNoticesSeen?: Record<string, string>;
+  /**
    * Per-data-type visibility for desktop→server telemetry sync. The persisted
    * fallback is `'off'` on every plan; nothing rewrites it when the plan
    * changes.
@@ -8434,6 +8494,19 @@ export interface PreferencesProjectionOptions {
 export interface PreferencesLoadResult extends PreferencesData {
   __dataDir?: ResolvedCanopyDataDir;
   __error?: PreferencesLoadErrorDetails;
+  /**
+   * A failed recovery is latched, so these values are defaults or a
+   * last-good copy, not proven to be the person's saved choices. Holds until
+   * restart, after `__error` is acknowledged too.
+   */
+  __preferencesUnconfirmed?: boolean;
+  /**
+   * Main's current read of the one-window switch (CAN-7755), the value its
+   * `isOneWindowEnabled()` returns. Windows read this rather than resolving
+   * `oneWindowEnabled` themselves, so they never show a value main hasn't
+   * applied (a save whose commit didn't complete, a latched recovery).
+   */
+  __oneWindowEnabled?: boolean;
   __managedDelegationRevocationIncomplete?: boolean;
   /** This launch loads its windows over the renderer scheme. */
   __rendererCodeCacheSchemeActive?: boolean;
@@ -9035,7 +9108,12 @@ export interface CreateWorktreeRequest extends SidebarItemGroupCreationOptions {
 }
 
 export interface ArchiveWorktreeRequest {
-  repoPath: string;
+  /**
+   * The repository the worktree belongs to, compared with the worktree's own
+   * when sent. Hosted controllers omit it: their DTOs carry no host paths
+   * (CAN-7446).
+   */
+  repoPath?: string;
   projectId: string;
   worktreeId: string;
   expectedCreatedAt?: string;
@@ -11203,6 +11281,15 @@ export interface FileAnnotationsSaveRequest extends FileAnnotationsScopeRequest 
   expectedRevision?: number;
 }
 
+/** A save's answer: the stored document, plus `outcome` when it isn't known. */
+export interface FileAnnotationsSaveAnswer extends FileAnnotationDocument {
+  /**
+   * The save was installed but its folder flush failed, so it may not survive
+   * a crash; the document is the one stored now. Absent when the save is done.
+   */
+  outcome?: 'unknown';
+}
+
 export interface FileAnnotationsAppendRequest extends FileAnnotationsScopeRequest {
   filePath: string;
   annotations: ReviewAnnotation[];
@@ -11220,7 +11307,7 @@ export interface FileAnnotationsUpdatedEvent extends FileAnnotationsScopeRequest
 
 export interface FileAnnotationsApi {
   get(request: FileAnnotationsGetRequest): Promise<FileAnnotationDocument>;
-  save(request: FileAnnotationsSaveRequest): Promise<FileAnnotationDocument>;
+  save(request: FileAnnotationsSaveRequest): Promise<FileAnnotationsSaveAnswer>;
   append(
     request: FileAnnotationsAppendRequest,
   ): Promise<FileAnnotationDocument>;
@@ -12318,6 +12405,11 @@ export interface ChatSendAutomationDispatch {
   presentation: 'foreground' | 'background';
   packageOverlay?: PipelinePackageCapabilityOverlay;
   /**
+   * The automation's allowed writes on its project's shared connections
+   * (CAN-6252), tool names by connection id; absent allows none.
+   */
+  sharedConnectionWrites?: Record<string, string[]>;
+  /**
    * What started the send and what an attached client should do with the
    * chat once it is accepted (CAN-4174), set by the send and creation
    * orchestrations from what the send's path does today. Committed as the
@@ -13104,7 +13196,8 @@ export interface ArchivedContainerManifestV1 extends ArchivedContainerManifestBa
 
 /** Backend-only Git snapshot metadata needed to reconstruct archived diffs. */
 export interface ArchivedGitState {
-  version: 1;
+  /** 2 when a repository carries an `attributePolicy` (CAN-6776). */
+  version: 1 | 2;
   diffFormatVersion: 1;
   repositories: ArchivedGitRepositoryState[];
 }
@@ -13133,7 +13226,15 @@ export interface ArchivedGitRepositoryState {
   indexSnapshotCommit: string;
   worktreeSnapshotCommit: string;
   snapshotRef: string;
+  /**
+   * CAN-6776: the snapshots were captured with Git reading `.gitattributes`
+   * from the empty tree, so every restore and verification must do the same.
+   * Omitted: Git's normal attribute lookup (no transforming attribute applied).
+   */
+  attributePolicy?: ArchivedGitAttributePolicy;
 }
+
+export type ArchivedGitAttributePolicy = 'ignore-in-tree-attributes';
 
 /** Renderer-safe base-branch identity captured for one archived repository. */
 export type ArchivedGitBaseBranchSummary =
@@ -14057,6 +14158,15 @@ export interface CursorAccount {
  * refuses rather than signing out when the runtime disagrees.
  */
 export type CursorAccountIntent = 'change' | 'sign-in';
+/**
+ * What the app calling Cursor Connect or Change account can do, sent after
+ * the call's own arguments. `signInLink`: it shows the progress status's
+ * `signInUrl`, so a computer it controls may sign in without opening its own
+ * browser (CAN-6718). Older apps send nothing.
+ */
+export interface CursorSignInClient {
+  signInLink?: boolean;
+}
 export interface CursorConnectionStatus {
   supported: boolean;
   installed: boolean;
@@ -14078,6 +14188,12 @@ export interface CursorConnectionStatus {
    * the cheap status read never runs the runtime.
    */
   account?: CursorAccount | null;
+  /**
+   * The Cursor sign-in link, on `signing-in` progress of a sign-in another
+   * computer started through Remote Control. That computer opens it in its
+   * own browser; this computer's browser is not opened.
+   */
+  signInUrl?: string;
 }
 export interface CursorConnectionApi {
   listModels(): Promise<CursorModelEntry[]>;
@@ -14723,9 +14839,9 @@ export interface UnshareRunResponse {
 // Shared-run comments (CAN-397).
 //
 // Comments are server-authoritative: there is no desktop-local comment store
-// and no merge algorithm. Every one of these requests is a thin pass-through to
-// the Canopy Cloud REST surface, and every response is the full authoritative
-// `SharedRunDetail` the server returned.
+// and no merge algorithm. These channels project core.publication.comment.*
+// (CAN-4169), which answers the comment state built from the server's run
+// detail, without its transcript, messages, diff or plans.
 // ---------------------------------------------------------------------------
 
 /** Identifies the shared chat a comment operation targets. */
@@ -14739,16 +14855,12 @@ export interface RunCommentSessionRef {
 export type ListRunCommentsRequest = RunCommentSessionRef;
 
 /**
- * Result of a comment read. `detail` is `null` when the chat is not shared, the
- * grant is gone server-side, or the connected Canopy Cloud does not advertise
- * `run-comments-v1` — all of which degrade to "no comments" rather than an
- * error, so an older server never breaks the chat UI.
+ * Result of a comment read. `comments` is `null` when the chat is not shared
+ * or the connected Canopy Cloud does not advertise `run-comments-v1`, which
+ * degrade to "no comments" rather than an error, so an older server never
+ * breaks the chat UI.
  */
-export interface ListRunCommentsResponse {
-  detail: SharedRunDetail | null;
-  /** Comment revision the user has already seen for this run, if any. */
-  lastSeenCommentRevision: number;
-}
+export type ListRunCommentsResponse = PublicationCommentListResult;
 
 /** Request for `IPC_CHANNELS.runsCommentsCreate`. */
 export interface CreateRunCommentThreadRequest extends RunCommentSessionRef {
@@ -14769,10 +14881,8 @@ export interface SetRunCommentThreadStatusRequest extends RunCommentSessionRef {
   status: SharedRunCommentThreadStatus;
 }
 
-/** Result of any comment mutation: the fresh server-authoritative detail. */
-export interface RunCommentMutationResponse {
-  detail: SharedRunDetail;
-}
+/** Result of any comment mutation: the fresh server-authoritative comments. */
+export type RunCommentMutationResponse = PublicationCommentMutationResult;
 
 /** Request for `IPC_CHANNELS.runsCommentsMarkSeen`. */
 export interface MarkRunCommentsSeenRequest extends RunCommentSessionRef {
@@ -17802,7 +17912,7 @@ export const NO_BILLING_SOURCE_ERROR_CODE = 'no_billing_source' as const;
  * @param providerLabel User-facing provider name, e.g. `'Claude'` / `'Codex'`.
  */
 export function buildNoBillingSourceError(providerLabel: string): string {
-  return `You're not connected to ${providerLabel} and have no credits. Connect ${providerLabel} or choose another provider to start chatting.`;
+  return `You're not connected to ${providerLabel}. This chat needs a provider. Choose one to send your message.`;
 }
 
 /**
@@ -17816,16 +17926,16 @@ export function buildNoBillingSourceError(providerLabel: string): string {
  * billing source banner, never an automatic fallback. The Portal transcript
  * prints this sentence on its own, so it must read as a complete statement.
  *
- * The desktop picker's locked reason reuses this sentence. The banner body in
- * `signedOutCopy` (`@canopy/ui-shared/components`, which may not import this
- * package) repeats its second sentence; keep the two identical by hand.
+ * The desktop picker's locked reason reuses this sentence. `NO_PROVIDER_COPY`
+ * (`@canopy/ui-shared/components`, which may not import this package) is the
+ * banner's title and message after the lead-in; keep them identical by hand.
  *
  * @param providerLabel User-facing provider name, e.g. `'Claude'` / `'Codex'`.
  */
 export function buildSignedOutNoBillingSourceError(
   providerLabel: string,
 ): string {
-  return `You're signed out of ${providerLabel}. Connect ${providerLabel} again, or choose another provider for this chat.`;
+  return `You're signed out of ${providerLabel}. This chat needs a provider. Choose one to send your message.`;
 }
 
 /**
@@ -18376,6 +18486,12 @@ export type AutomationAction =
       thinking?: ThinkingLevel;
       /** Full local plugin selections used by runtime picker surfaces. */
       pluginSelections?: ChatTabPluginSelections;
+      /**
+       * The writes a run may make on its project's shared connections
+       * (CAN-6252), tool names by connection id; reads are always allowed and
+       * absent allows no writes.
+       */
+      sharedConnectionWrites?: Record<string, string[]>;
       /** @deprecated Portable recommendation refs retained for compatibility. */
       plugins?: ShareablePluginRef[];
       /**
@@ -18407,6 +18523,12 @@ export type AutomationAction =
       thinking?: ThinkingLevel;
       /** Full local plugin selections used by runtime picker surfaces. */
       pluginSelections?: ChatTabPluginSelections;
+      /**
+       * The writes a run may make on its project's shared connections
+       * (CAN-6252), tool names by connection id; reads are always allowed and
+       * absent allows no writes.
+       */
+      sharedConnectionWrites?: Record<string, string[]>;
       /** @deprecated Portable recommendation refs retained for compatibility. */
       plugins?: ShareablePluginRef[];
       /**
@@ -18452,6 +18574,12 @@ export type AutomationAction =
       thinking?: ThinkingLevel;
       /** Full local plugin selections used by runtime picker surfaces. */
       pluginSelections?: ChatTabPluginSelections;
+      /**
+       * The writes a run may make on its project's shared connections
+       * (CAN-6252), tool names by connection id; reads are always allowed and
+       * absent allows no writes.
+       */
+      sharedConnectionWrites?: Record<string, string[]>;
       /** @deprecated Portable recommendation refs retained for compatibility. */
       plugins?: ShareablePluginRef[];
       planMode?: boolean;
@@ -18486,6 +18614,8 @@ export type AutomationAction =
       planMode?: boolean;
       approvalMode?: ApprovalMode;
       pluginSelections?: ChatTabPluginSelections;
+      /** As the other prompt actions (CAN-6252). */
+      sharedConnectionWrites?: Record<string, string[]>;
       plugins?: ShareablePluginRef[];
       fileReferences?: FileReference[];
       attachmentPaths?: string[];
@@ -19825,6 +19955,8 @@ export interface AutoArchiveNotification {
   inactivityDays: number;
   status: 'success' | 'failure';
   error?: string;
+  /** The typed failure behind `error`, redacted before crossing the bridge. */
+  appError?: AppError;
   warnings?: string[];
 }
 
@@ -20320,6 +20452,9 @@ export interface CanopyApi {
   finishWorktreeRecovery: (
     request: WorktreeRecoveryFinishParams,
   ) => Promise<WorktreeRecoveryFinishResult>;
+  setAsideWorktreeRecovery: (
+    request: WorktreeRecoverySetAsideParams,
+  ) => Promise<WorktreeRecoverySetAsideResult>;
   listWorktreeRecovery: (
     request: WorktreeRecoveryListParams,
   ) => Promise<WorktreeRecoveryListResult>;
@@ -21354,6 +21489,11 @@ export interface CanopyApi {
   panelLayout: PanelLayoutApi;
   /** Device-to-device remote control: machine picker, pairing, remote windows. */
   remoteControl: RemoteControlApi;
+  /**
+   * A named paired computer, for the main window's one-window work
+   * (CAN-7761). Absent in a window that shows another computer.
+   */
+  pairedComputers?: PairedComputersApi;
   /**
    * Workspace items — Notes/Prompts/Attachments shared activity cards for
    * Code and Cowork workspaces. See {@link WorkspaceItemsApi}.
@@ -22663,6 +22803,19 @@ export interface AppAdvisorUiStateSnapshot {
     queued: number;
   };
   /**
+   * One-time notice that an organization requires some activity sharing for
+   * its own projects beyond the member's choice, reported through the
+   * `orgSharingNotice` component slice while it is open. Organization id and
+   * scope keys only; dismissing it changes no sharing setting.
+   */
+  orgSharingNotice?: {
+    open: boolean;
+    organizationId: string;
+    requiredScopes: TelemetryScopeKey[];
+    /** Further organization notices waiting until this one closes. */
+    queued: number;
+  };
+  /**
    * Sanitized state for the "Invite a teammate" shared-container modal
    * (CAN-2546). Reported through the `sharedContainers.inviteModal` component
    * slice. Identifiers, counts, the container display name, and up to 50 loaded
@@ -22992,7 +23145,8 @@ export interface AppAdvisorUiStateSnapshot {
     editorOpen?: boolean;
     dirty?: boolean;
     readonly?: boolean;
-    activeView?: 'flow' | 'details';
+    /** A read-only pipeline's view: `flow` is the Map (CAN-4224). */
+    activeView?: 'designer' | 'flow' | 'details';
   };
   /** Metadata-only state for the curated pipeline preview modal. */
   curatedPipelinePreview?: {
@@ -27876,9 +28030,20 @@ export interface CodexLoginState {
   activeWorkCount: number;
   method?: 'chatgpt' | 'chatgptDeviceCode';
   userCode?: string;
+  /**
+   * The page where the device code is entered, while a `chatgptDeviceCode`
+   * attempt waits. A computer controlling this one opens it in its own
+   * browser. Never set for the browser method.
+   */
+  verificationUrl?: string;
   outcome?: 'success' | 'cancelled' | 'failed';
   account?: AgentProviderAuthStatus;
   error?: string;
+  /**
+   * Set only on a start's answer when nothing started: another window's
+   * attempt is running, or is still being cancelled.
+   */
+  refusal?: 'already-running';
 }
 export interface CodexLoginStartRequest {
   confirmPause: boolean;
@@ -27978,23 +28143,25 @@ export const IPC_CHANNELS = {
   copilotConnectionUsage: 'copilot-connection:usage',
   copilotConnectionModels: 'copilot-connection:models',
   opencodeConnectionModels: 'opencode-connection:models',
-  copilotConnectionStatus: 'copilot-connection:status',
-  opencodeConnectionStatus: 'opencode-connection:status',
-  copilotConnectionConnect: 'copilot-connection:connect',
-  opencodeConnectionConnect: 'opencode-connection:connect',
-  copilotConnectionCancel: 'copilot-connection:cancel',
-  opencodeConnectionCancel: 'opencode-connection:cancel',
-  copilotConnectionDisconnect: 'copilot-connection:disconnect',
-  opencodeConnectionDisconnect: 'opencode-connection:disconnect',
-  copilotConnectionAccount: 'copilot-connection:account',
-  copilotConnectionChangeAccount: 'copilot-connection:change-account',
-  copilotConnectionProgress: 'copilot-connection:progress',
-  opencodeConnectionProgress: 'opencode-connection:progress',
-  antigravityRuntimeStatus: 'antigravity-runtime:status',
+  copilotConnectionStatus: REMOTE_IPC_CHANNELS.copilotConnectionStatus,
+  opencodeConnectionStatus: REMOTE_IPC_CHANNELS.opencodeConnectionStatus,
+  copilotConnectionConnect: REMOTE_IPC_CHANNELS.copilotConnectionConnect,
+  opencodeConnectionConnect: REMOTE_IPC_CHANNELS.opencodeConnectionConnect,
+  copilotConnectionCancel: REMOTE_IPC_CHANNELS.copilotConnectionCancel,
+  opencodeConnectionCancel: REMOTE_IPC_CHANNELS.opencodeConnectionCancel,
+  copilotConnectionDisconnect: REMOTE_IPC_CHANNELS.copilotConnectionDisconnect,
+  opencodeConnectionDisconnect:
+    REMOTE_IPC_CHANNELS.opencodeConnectionDisconnect,
+  copilotConnectionAccount: REMOTE_IPC_CHANNELS.copilotConnectionAccount,
+  copilotConnectionChangeAccount:
+    REMOTE_IPC_CHANNELS.copilotConnectionChangeAccount,
+  copilotConnectionProgress: REMOTE_IPC_CHANNELS.copilotConnectionProgress,
+  opencodeConnectionProgress: REMOTE_IPC_CHANNELS.opencodeConnectionProgress,
+  antigravityRuntimeStatus: REMOTE_IPC_CHANNELS.antigravityRuntimeStatus,
   antigravityRuntimeHostSupport: 'antigravity-runtime:host-support',
-  antigravityRuntimeInstall: 'antigravity-runtime:install',
-  antigravityRuntimeCancel: 'antigravity-runtime:cancel',
-  antigravityRuntimeProgress: 'antigravity-runtime:progress',
+  antigravityRuntimeInstall: REMOTE_IPC_CHANNELS.antigravityRuntimeInstall,
+  antigravityRuntimeCancel: REMOTE_IPC_CHANNELS.antigravityRuntimeCancel,
+  antigravityRuntimeProgress: REMOTE_IPC_CHANNELS.antigravityRuntimeProgress,
   accountProxyStatus: 'account-proxy:status',
   accountProxyConnect: 'account-proxy:connect',
   accountProxyDisconnect: 'account-proxy:disconnect',
@@ -28008,13 +28175,14 @@ export const IPC_CHANNELS = {
   /** Main → renderer push after any status change. */
   accountProxyChanged: 'account-proxy:changed',
   cursorConnectionModels: 'cursor-connection:models',
-  cursorConnectionStatus: 'cursor-connection:status',
-  cursorConnectionConnect: 'cursor-connection:connect',
-  cursorConnectionCancel: 'cursor-connection:cancel',
-  cursorConnectionDisconnect: 'cursor-connection:disconnect',
-  cursorConnectionAccount: 'cursor-connection:account',
-  cursorConnectionChangeAccount: 'cursor-connection:change-account',
-  cursorConnectionProgress: 'cursor-connection:progress',
+  cursorConnectionStatus: REMOTE_IPC_CHANNELS.cursorConnectionStatus,
+  cursorConnectionConnect: REMOTE_IPC_CHANNELS.cursorConnectionConnect,
+  cursorConnectionCancel: REMOTE_IPC_CHANNELS.cursorConnectionCancel,
+  cursorConnectionDisconnect: REMOTE_IPC_CHANNELS.cursorConnectionDisconnect,
+  cursorConnectionAccount: REMOTE_IPC_CHANNELS.cursorConnectionAccount,
+  cursorConnectionChangeAccount:
+    REMOTE_IPC_CHANNELS.cursorConnectionChangeAccount,
+  cursorConnectionProgress: REMOTE_IPC_CHANNELS.cursorConnectionProgress,
   cursorApprovalCheckAvailable: 'cursor-approval-check:available',
   cursorApprovalCheckRun: 'cursor-approval-check:run',
   cursorApprovalCheckCancel: 'cursor-approval-check:cancel',
@@ -28162,6 +28330,7 @@ export const IPC_CHANNELS = {
   worktreeEffectiveGet: 'worktree:effective-get',
   worktreeRecoveryResolve: REMOTE_IPC_CHANNELS.worktreeRecoveryResolve,
   worktreeRecoveryFinish: REMOTE_IPC_CHANNELS.worktreeRecoveryFinish,
+  worktreeRecoverySetAside: REMOTE_IPC_CHANNELS.worktreeRecoverySetAside,
   worktreeDiscardDescribe: REMOTE_IPC_CHANNELS.worktreeDiscardDescribe,
   worktreeDiscard: REMOTE_IPC_CHANNELS.worktreeDiscard,
   workspaceDeleteDiscardDescribe:
@@ -28519,8 +28688,8 @@ export const IPC_CHANNELS = {
   workEntriesReorder: 'work-entries:reorder',
   workEntriesDelete: REMOTE_IPC_CHANNELS.workEntriesDelete,
   workEntriesResolveChat: 'work-entries:resolve-chat',
-  settingsClaudeAuthStatus: 'settings:claude-auth-status',
-  settingsCodexAuthStatus: 'settings:codex-auth-status',
+  settingsClaudeAuthStatus: REMOTE_IPC_CHANNELS.settingsClaudeAuthStatus,
+  settingsCodexAuthStatus: REMOTE_IPC_CHANNELS.settingsCodexAuthStatus,
   settingsProviderCarryover: 'settings:provider-carryover',
   settingsGitHubCliStatus: 'settings:github-cli-status',
   settingsStarSourceRepository:
@@ -28849,17 +29018,17 @@ export const IPC_CHANNELS = {
   // Auth-login terminal — ephemeral PTY backing the Accounts settings login
   // modal. Only one session is live per app instance. Lifecycle is bound to
   // the modal: opening starts a session, closing stops it.
-  codexLoginStart: 'codex-login:start',
-  codexLoginCancel: 'codex-login:cancel',
-  codexLoginRetryVerification: 'codex-login:retry-verification',
+  codexLoginStart: REMOTE_IPC_CHANNELS.codexLoginStart,
+  codexLoginCancel: REMOTE_IPC_CHANNELS.codexLoginCancel,
+  codexLoginRetryVerification: REMOTE_IPC_CHANNELS.codexLoginRetryVerification,
   codexLoginOpenBrowser: 'codex-login:open-browser',
-  codexLoginState: 'codex-login:state',
-  authTerminalStart: 'auth-terminal:start',
-  authTerminalWrite: 'auth-terminal:write',
+  codexLoginState: REMOTE_IPC_CHANNELS.codexLoginState,
+  authTerminalStart: REMOTE_IPC_CHANNELS.authTerminalStart,
+  authTerminalWrite: REMOTE_IPC_CHANNELS.authTerminalWrite,
   authTerminalResize: 'auth-terminal:resize',
-  authTerminalStop: 'auth-terminal:stop',
-  authTerminalOutput: 'auth-terminal:output',
-  authTerminalExit: 'auth-terminal:exit',
+  authTerminalStop: REMOTE_IPC_CHANNELS.authTerminalStop,
+  authTerminalOutput: REMOTE_IPC_CHANNELS.authTerminalOutput,
+  authTerminalExit: REMOTE_IPC_CHANNELS.authTerminalExit,
   // In-app browser — request channels (renderer → main `invoke`) plus the
   // single `browserEvent` push channel (main → renderer). See the browser
   // transport types in `./types/browser`.
@@ -28975,6 +29144,8 @@ export const IPC_CHANNELS = {
   accountOrganizationSettingsPaymentHandoffAvailability:
     'account-organization-settings:payment-handoff-availability',
   accountOrganizationSettingsOpen: 'account-organization-settings:open', // main → renderer event
+  accountOrganizationSettingsDownloadTranscript:
+    'account-organization-settings:download-transcript',
   referencePreviewGitHubScope: REMOTE_IPC_CHANNELS.referencePreviewGitHubScope,
   referencePreviewGitHubOrigin:
     REMOTE_IPC_CHANNELS.referencePreviewGitHubOrigin,
@@ -29256,6 +29427,7 @@ export const IPC_CHANNELS = {
   remoteControlOpenMachine: 'remote-control:open-machine',
   remoteControlSetAllowIncoming: 'remote-control:set-allow-incoming',
   remoteControlSetAllowRemoteUpdates: 'remote-control:set-allow-remote-updates',
+  remoteControlSetAllowWebPreview: 'remote-control:set-allow-web-preview',
   remoteControlSetInventorySyncEnabled:
     'remote-control:set-inventory-sync-enabled',
   remoteControlStartPairing: 'remote-control:start-pairing',
@@ -29272,6 +29444,20 @@ export const IPC_CHANNELS = {
   remoteControlPathPickerRequest: 'remote-control:path-picker-request',
   remoteControlPathPickerResolve: 'remote-control:path-picker-resolve',
   remoteControlListDirectory: 'remote-control:list-directory',
+  // The main window's per-computer API (CAN-7761): hold a paired computer's
+  // windowless session, call and send on its one-window channels, read its
+  // state. This computer's own windows only; main refuses bridges and
+  // windows showing another computer.
+  remoteControlComputerHold: 'remote-control:computer-hold',
+  remoteControlComputerRelease: 'remote-control:computer-release',
+  remoteControlComputerInvoke: 'remote-control:computer-invoke',
+  remoteControlComputerSend: 'remote-control:computer-send',
+  remoteControlComputerState: 'remote-control:computer-state',
+  // This computer's own project facts for matching them with paired copies
+  // (CAN-7766); a local read, never sent to another computer.
+  remoteControlComputerProjectFacts: 'remote-control:computer-project-facts',
+  // main → window: PairedComputerWindowEvent, only to windows holding it.
+  remoteControlComputerEvent: 'remote-control:computer-event',
   // Opens (or replaces) the ten-minute, single-use pairing link window.
   remoteControlOpenPairingWindow: 'remote-control:open-pairing-window',
   remoteControlClosePairingWindow: 'remote-control:close-pairing-window',
@@ -29282,6 +29468,10 @@ export const IPC_CHANNELS = {
   // Served by the controlled machine: its stable install identifier, read
   // through the Portal state store's identity boundary.
   remoteControlInstallId: 'remote-control:install-id',
+  // Connect Slack on this computer (CAN-7606): turns on Listen for Slack
+  // mentions and Allow incoming, pairs this computer for agents with no
+  // prompt when needed, and opens the browser to Slack's sign-in. Local only.
+  slackConnectThisComputer: 'slack:connect-this-computer',
 } as const;
 
 export type {
@@ -29579,6 +29769,7 @@ export type {
 export type {
   LoadWorktreeTerminalStateRequest,
   LoadWorktreeTerminalStateResponse,
+  TerminalRecordHistoryStatus,
   ManagedTerminalCommand,
   PersistedTerminalEntry,
   PersistedWorktreeTerminalStateFile,

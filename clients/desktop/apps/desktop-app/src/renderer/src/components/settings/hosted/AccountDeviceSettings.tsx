@@ -12,7 +12,6 @@ import { ProviderAuthPanel } from '@/components/auth/ProviderAuthPanel';
 import { brandText } from '@/lib/brand';
 import { CanopyCloudAccountSection } from '../CanopyCloudAccountSection';
 import { LinearKeyRow } from '../LinearKeyRow';
-import { SlackMentionsSection } from '../SlackMentionsRow';
 import {
   CategoryRows,
   InAppNotificationRows,
@@ -23,12 +22,17 @@ import {
 import { useNotificationSettings } from '../notification-settings';
 import { PersonalCatalogRows } from '../PersonalCatalogSettings';
 import { SettingsRow } from '../SettingsLayout';
+import {
+  SlackMentionsFallback,
+  type SlackFallbackHostState,
+} from './DesktopSlackSettings';
 
 /**
  * Desktop-only "On this computer" sections under a hosted account page
  * (rendered through the shared frame's `after` region). They hold what the
  * hosted page cannot: this computer's cloud sign-in, notification
- * preferences, GitHub sign-in, Linear key, Slack mentions switch and
+ * preferences, GitHub sign-in, Linear key, the Slack mentions turn-off
+ * fallback (the switch itself sits in the shared Slack section) and
  * personal-catalog choice.
  *
  * The sections read and write through `window.api` only, never the hosted
@@ -231,7 +235,11 @@ function NotificationsPageDeviceSettings(): JSX.Element {
   );
 }
 
-function IntegrationsPageDeviceSettings(): JSX.Element {
+function IntegrationsPageDeviceSettings({
+  hostState,
+}: {
+  readonly hostState: SlackFallbackHostState;
+}): JSX.Element {
   return (
     <DeviceSettingsRegion page="integrations">
       <SettingsCard title="On this computer" testId="account-device-card-tools">
@@ -246,7 +254,7 @@ function IntegrationsPageDeviceSettings(): JSX.Element {
             <LinearKeyRow />
           </DeviceCardRows>
         </div>
-        <SlackMentionsSection />
+        <SlackMentionsFallback hostState={hostState} />
       </SettingsCard>
     </DeviceSettingsRegion>
   );
@@ -255,6 +263,11 @@ function IntegrationsPageDeviceSettings(): JSX.Element {
 export interface AccountDeviceSettingsProps {
   /** The hosted account page the sections sit under. */
   readonly page: AccountSettingsPage;
+  /**
+   * Where the hosted page above stands; Integrations shows the Slack
+   * turn-off fallback only once it has settled without the Slack section.
+   */
+  readonly hostState: SlackFallbackHostState;
 }
 
 /**
@@ -265,6 +278,7 @@ export interface AccountDeviceSettingsProps {
  */
 export function AccountDeviceSettings({
   page,
+  hostState,
 }: AccountDeviceSettingsProps): JSX.Element | null {
   switch (page) {
     case 'account':
@@ -274,7 +288,7 @@ export function AccountDeviceSettings({
     case 'notifications':
       return <NotificationsPageDeviceSettings />;
     case 'integrations':
-      return <IntegrationsPageDeviceSettings />;
+      return <IntegrationsPageDeviceSettings hostState={hostState} />;
     case 'digests':
     case 'security':
     case 'model-providers':

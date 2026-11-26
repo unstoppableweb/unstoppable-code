@@ -9,14 +9,24 @@ import type { PipelineEditDeepLink } from '@/stores/navigationStore';
  * What a "New" automation starts from (CAN-4072). The worktree side panel
  * seeds its project, and the worktree the automation targets when it has one.
  */
-export interface AutomationDraftSeed {
-  readonly projectId: string;
-  readonly isCowork: boolean;
-  readonly existingWorktreeId?: string;
-  /** Prefill from a repeated Home task (CAN-4009). */
-  readonly name?: string;
-  readonly prompt?: string;
-}
+export type AutomationDraftSeed =
+  | {
+      readonly projectId: string;
+      readonly isCowork: boolean;
+      readonly existingWorktreeId?: string;
+      /** Prefill from a repeated Home task (CAN-4009). */
+      readonly name?: string;
+      readonly prompt?: string;
+    }
+  /**
+   * A schedule from the Designer's trigger card (CAN-4224): its name and
+   * whether it repeats or runs once. The person picks the workflow in the
+   * form's own picker, which sets up its inputs, model aliases and plugins.
+   */
+  | {
+      readonly name: string;
+      readonly trigger: 'cron' | 'one_time';
+    };
 
 /** Fields every edit target carries, whatever it edits. */
 export interface WorkflowEditTargetCommon {
@@ -179,10 +189,8 @@ export function pipelineEditLinkFromLocator(
 
 /**
  * The Workflow page that edits a schedule (CAN-5782): the user pipeline a
- * workflow schedule runs, when that page can edit everything about the
- * record. A schedule whose action names where it runs in its run values
- * (a `global` target) qualifies; one bound to a project or task keeps the
- * Automation page until the Workflow page has a per-schedule Where it runs.
+ * workflow schedule runs. The page edits where each schedule runs (its
+ * project and Run in, or no project), so every target opens there.
  */
 export function workflowPageIdForActivity(
   activity: Pick<
@@ -193,7 +201,6 @@ export function workflowPageIdForActivity(
   if (activity.workflowSchedule === undefined) return undefined;
   const stored = activity.ownedPipeline?.storedAction ?? activity.action;
   if (stored.type !== 'worktree_pipeline') return undefined;
-  if (stored.target?.kind !== 'global') return undefined;
   return activity.workflowSchedule.pipelineId;
 }
 

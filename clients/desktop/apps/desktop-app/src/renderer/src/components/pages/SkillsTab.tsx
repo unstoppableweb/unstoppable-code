@@ -1,4 +1,4 @@
-import { Count } from '@canopy/ui-shared/components/Badge';
+import { Count } from '@canopy/ui-shared/primitives/Badge';
 import { SharedByYou } from '../plugins/SharedByYou';
 import { useCloudOrigin } from '@/lib/cloud-origin';
 import {

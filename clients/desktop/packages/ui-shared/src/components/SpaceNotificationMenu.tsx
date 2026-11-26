@@ -1,10 +1,15 @@
 import { useId, type JSX, type MouseEvent } from 'react';
 import { BellIcon, CheckIcon } from '../icons/AppIcons';
-import { LoadingSpinner } from './LoadingSpinner';
-import { LoadingIndicator } from './LoadingIndicatorStyle';
-import { DropdownMenuItem, DropdownMenuItemIcon } from './DropdownMenu';
-import { NestedMenuFlyout } from './NestedMenuFlyout';
-import { Notice } from './Notice';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
+import {
+  DropdownMenuItem,
+  DropdownMenuItemIcon,
+} from '../primitives/DropdownMenu';
+import { NestedMenuFlyout } from '../primitives/NestedMenuFlyout';
+import {
+  ActionMenuStatusLine,
+  type ActionMenuStatus,
+} from '../primitives/ActionMenuItems';
 
 /** Mirrors the wire levels without importing a contract package. */
 export type SpaceNotificationMenuLevel = 'all' | 'attention' | 'mute';
@@ -147,16 +152,8 @@ export function SpaceNotificationMenuChoiceIndicator({
   return null;
 }
 
-export interface SpaceNotificationMenuStatus {
-  readonly tone: 'default' | 'failure';
-  /** Unset while `loading`: the shared loading copy stands in. */
-  readonly text?: string;
-  /**
-   * The first read is still running. The line shows the loading copy under
-   * the `text` loading style, or a spinner under `spinner`.
-   */
-  readonly loading?: true;
-}
+/** The status line under the notification choices. */
+export type SpaceNotificationMenuStatus = ActionMenuStatus;
 
 /**
  * The status beside the choices: a first read, a failure, or why it is
@@ -264,41 +261,7 @@ export function SpaceNotificationMenuItems({
   );
 }
 
-export function SpaceNotificationMenuStatusLine({
-  status,
-  testId,
-}: {
-  readonly status: SpaceNotificationMenuStatus;
-  readonly testId?: string;
-}): JSX.Element {
-  if (status.tone === 'failure' && !status.loading) {
-    // A failure in the menu's own terms: the warning glyph in the rows' icon
-    // column and the copy where their labels start, wrapping as needed. No
-    // tray: a banner's corners are larger than the menu's and cannot nest in
-    // it, and the menu is already the surface.
-    return (
-      <Notice
-        intent="destructive"
-        shape="menu"
-        surface="none"
-        errorSource="space-notification-menu-status-line"
-        data-testid={testId}
-      >
-        {status.text}
-      </Notice>
-    );
-  }
-  // A plain row, not `DropdownMenuLabel`: the label truncates to one line and
-  // owns its ink, and this line must wrap.
-  return (
-    <div
-      role="status"
-      data-testid={testId}
-      className="px-2 py-1 text-xs font-normal text-pretty fg-secondary"
-    >
-      {status.loading ? <LoadingIndicator /> : status.text}
-    </div>
-  );
-}
+/** The notification group's status line: the shared menu status line. */
+export const SpaceNotificationMenuStatusLine = ActionMenuStatusLine;
 
 export { SpaceNotificationMenuChoiceIndicator as SpaceNotificationMenuRowIcon };

@@ -98,7 +98,11 @@ import {
   classifyW5RevisionEligibility,
 } from '@canopy/core-runtime/node/w5/commit-log/eligibility';
 import type { W5CommitLogFileStore } from '@canopy/core-runtime/node/w5/commit-log-file-store';
-import { W5_READ_CACHE_IDLE_RETRIES } from '@canopy/core-runtime/node/w5/committed-read-cache';
+import { W5CommitRefusedError } from '@canopy/core-runtime/node/w5/commit-log/errors';
+import {
+  createW5CommittedReadCache,
+  W5_READ_CACHE_IDLE_RETRIES,
+} from '@canopy/core-runtime/node/w5/committed-read-cache';
 import {
   CORE_WORKSPACE_INVALIDATED_EVENT,
   CORE_WORKSPACE_RECORDS_LIMITS,
@@ -160,6 +164,7 @@ import { getWorkspaceIndexRepository } from '../sidebar-items';
 import { createWorktreeWatch } from '../worktree-watch-recovery';
 import { sendToWindow } from '../window-send';
 import {
+  setWorktreesFileWatchersCommitEventsLive,
   stopWorktreesFileWatchers,
   syncWorktreesFileWatchers,
 } from '../worktrees-file-watcher';
@@ -265,6 +270,7 @@ let acks: number[];
 let stepGate: Deferred | undefined;
 let handlerGate: Deferred | undefined;
 let handlerFailure: boolean;
+let handlerRead: (() => Promise<void>) | undefined;
 let bridgeRetryMs: number;
 let beforeOpen: (() => Promise<void>) | undefined;
 let afterOpen: (() => Promise<void>) | undefined;
@@ -462,6 +468,7 @@ beforeEach(() => {
   stepGate = undefined;
   handlerGate = undefined;
   handlerFailure = false;
+  handlerRead = undefined;
   bridgeRetryMs = NEVER_MS;
   beforeOpen = undefined;
   afterOpen = undefined;
@@ -544,7 +551,7 @@ async function prepare(
     root: harness.root,
     transport: {
       ...transport,
-      capture: (request) => {
+      capture: (request, ...args) => {
         if (captureRefusal)
           return Promise.reject(
             new CanopyClientError({
@@ -555,7 +562,7 @@ async function prepare(
               details: { capture: captureRefusal },
             }),
           );
-        return transport.capture(request);
+        return transport.capture(request, ...args);
       },
     },
     projection: readCache,
@@ -564,7 +571,7 @@ async function prepare(
   restore = installW5DaemonRecordStoreForTests(store);
   const counted: W5CommitLogFileStore = {
     ...store,
-    capture: async (request) => {
+    capture: async (request, ...args) => {
       captures.push(request);
       coverageAtCapture.push(
         Array.from(directoryWatches.entries()).flatMap(([path, watch]) =>
@@ -576,7 +583,7 @@ async function prepare(
       if (request.discoverWorkspaces) await discoveryGate?.promise;
       if (failing?.(request)) throw new Error('The capture failed');
       if (!store.capture) throw new Error('The daemon-backed store captures');
-      const result = await store.capture(request);
+      const result = await store.capture(request, ...args);
       if (unresolved === undefined && !abandoned) return result;
       const { log } = result.capture;
       return {
@@ -616,6 +623,7 @@ async function prepare(
     handlers: {
       scheduleDesktopStructureChanged: note('scheduleDesktopStructureChanged'),
       refreshWorkspaceRegistries: async () => {
+        await handlerRead?.();
         note('refreshWorkspaceRegistries')();
         await handlerGate?.promise;
         if (handlerFailure) throw new Error('Registry refresh failed');
@@ -626,6 +634,8 @@ async function prepare(
         Promise.resolve({ authority: 'absent', worktrees: [] }),
       publishWorktreeListWrite: () => undefined,
       publishWorktreeMembershipChange: note('publishWorktreeMembershipChange'),
+      handleExternalWorktreeList: () => undefined,
+      readWorktreeListContent: () => Promise.resolve(null),
     },
   });
   return counted;
@@ -1120,6 +1130,7 @@ describe('the read cache over W5e (CAN-7155)', () => {
       const store = await prepare();
       const saved = `${harness.root}-saved`;
       let replaced = false;
+      let warmWatches: DirectoryWatch[] = [];
       try {
         await readCache.activate({
           ...store,
@@ -1128,6 +1139,7 @@ describe('the read cache over W5e (CAN-7155)', () => {
             const captured = await store.capture(request);
             // Enrollment fences discovery; its trailing capture is the last warm read.
             if (!request.discoverWorkspaces && !replaced) {
+              warmWatches = Array.from(directoryWatches.values());
               renameSync(harness.root, saved);
               mkdirSync(harness.root);
               writeFileSync(
@@ -1141,10 +1153,9 @@ describe('the read cache over W5e (CAN-7155)', () => {
         });
         expect(replaced).toBe(true);
         expect(captures.at(-1)?.discoverWorkspaces).toBe(false);
-        // Watches still follow the old inodes: no notification can hide the race.
-        directoryWatch();
-        directoryWatch('a');
-        directoryWatch('b');
+        // No watch notification hid the race; certification retires those watches.
+        expect(warmWatches).toHaveLength(3);
+        expect(warmWatches.every((watch) => watch.closed)).toBe(true);
         expect(readCache.cache.serving()).toBe(false);
         expect(ready()).toBe(false);
         expect(await serve([{ kind: 'index' }])).toBe(false);
@@ -1275,11 +1286,12 @@ describe('the read cache over W5e (CAN-7155)', () => {
             rmSync(original, { recursive: true });
           renameSync(saved, original);
         }
-        // Restoring the original path and a successful refill cannot unlatch it.
+        // Restoring the path cannot revive the retired projection.
+        const projection = readCache.cache.projection();
+        const beforeRetry = captures.length;
         await readCache.apply(BROAD);
-        expect(readCache.cache.projection().serve(request).status).toBe(
-          'served',
-        );
+        expect(readCache.cache.projection()).toBe(projection);
+        expect(captures).toHaveLength(beforeRetry);
         expect(await serve(request.files)).toBe(false);
       },
     );
@@ -1504,27 +1516,427 @@ describe('the read cache over W5e (CAN-7155)', () => {
             manifests: ['a'],
             worktreeLists: [],
           }),
-        ).rejects.toMatchObject({
-          reason: 'invalid-state',
-          details: {
-            capture:
-              failure === 'missing' ? 'root-unavailable' : 'root-changed',
-          },
-        });
+        ).resolves.toBeUndefined();
+        expect(readCache.cache.terminallyRevoked()).toBe(true);
         expect(await readCache.serve(request)).toBeUndefined();
         if (moved) {
           renameSync(`${harness.root}-saved`, harness.root);
           moved = false;
         }
         captureRefusal = undefined;
+        const projection = readCache.cache.projection();
+        const beforeRetry = captures.length;
         await readCache.apply(BROAD);
-        expect(readCache.cache.projection().serve(request).status).toBe(
-          'served',
-        );
+        expect(readCache.cache.projection()).toBe(projection);
+        expect(captures).toHaveLength(beforeRetry);
         expect(await readCache.serve(request)).toBeUndefined();
       } finally {
         if (moved) renameSync(`${harness.root}-saved`, harness.root);
         __setDesktopW5FileStoreForTests(electron);
+      }
+    },
+  );
+
+  test.each(
+    (['root-unavailable', 'root-changed'] as const).flatMap((reason) =>
+      [false, true].flatMap((warmed) =>
+        [false, true].map((pendingBroad) => ({ reason, warmed, pendingBroad })),
+      ),
+    ),
+  )(
+    'foreign commits after terminal $reason (warmed: $warmed, pending broad: $pendingBroad) do no cache work',
+    async ({ reason, warmed, pendingBroad }) => {
+      if (!warmed) failing = (): boolean => true;
+      await compose();
+      if (!warmed) {
+        // A disconnected cold cache can acknowledge its snapshot without warming.
+        usable = false;
+      }
+      await attach();
+      await until(() => applied.some((plan) => plan.broad));
+      usable = true;
+      failing = undefined;
+      expect(ready()).toBe(warmed);
+      let pending: Promise<void> | undefined;
+      if (pendingBroad) {
+        captureGate = deferred();
+        const before = captures.length;
+        pending = readCache.apply(BROAD);
+        await until(() => captures.length > before);
+        expect(readCache.cache.rebuilding()).toBe(true);
+      }
+      if (!electron.capture) throw new Error('Capture required');
+      captureRefusal = reason;
+      await expect(
+        electron.capture({ files: [MANIFEST], discoverWorkspaces: false }),
+      ).rejects.toMatchObject({
+        reason: 'invalid-state',
+        details: { capture: reason },
+      });
+      expect(readCache.cache.terminallyRevoked()).toBe(true);
+      expect(ready()).toBe(false);
+      captureRefusal = undefined;
+      captureGate?.open();
+      await pending;
+      captureGate = undefined;
+      expect(readCache.cache.rebuilding()).toBe(false);
+      expect(readCache.cache.terminallyRevoked()).toBe(true);
+      expect(ready()).toBe(false);
+      const projection = readCache.cache.projection();
+      const image = projection.image(MANIFEST);
+      const broad = discoveries();
+      const before = captures.length;
+      const plans = applied.length;
+      for (const alwaysShow of [true, false, true]) {
+        const acknowledged = acks.length;
+        const commitId = await foreignWrite({ alwaysShow });
+        await until(() => acks.length > acknowledged);
+        expect(applied.at(-1)).toMatchObject({
+          broad: false,
+          manifests: ['a'],
+          commitId,
+        });
+        expect(readCache.cache.projection()).toBe(projection);
+        expect(projection.image(MANIFEST)).toBe(image);
+        expect(ready()).toBe(false);
+      }
+      expect(applied).toHaveLength(plans + 3);
+      expect(discoveries()).toBe(broad);
+      expect(captures).toHaveLength(before);
+      expect(live(retry)).toHaveLength(0);
+      // Retired reconciliation is a no-op; the independent bridge still acknowledges.
+      await readCache.apply(BROAD);
+      expect(discoveries()).toBe(broad);
+      expect(readCache.cache.terminallyRevoked()).toBe(true);
+      expect(ready()).toBe(false);
+    },
+  );
+
+  test.each([
+    ['root-unavailable', false],
+    ['root-changed', false],
+    ['root-unavailable', true],
+    ['root-changed', true],
+  ] as const)(
+    'automatic refills after a terminal %s refusal (warmed: %s) never capture',
+    async (reason, warmed) => {
+      if (!warmed) failing = (): boolean => true;
+      await compose();
+      failing = undefined;
+      expect(readCache.cache.warmed()).toBe(warmed);
+      readCache.markDirty([MANIFEST]);
+      const staleWatch = warmed ? directoryWatch('a') : undefined;
+      const queued = live(() => true);
+      expect(live(own)).toHaveLength(1);
+      expect(live(retry)).toHaveLength(warmed ? 0 : 1);
+
+      if (!electron.capture) throw new Error('Capture required');
+      captureRefusal = reason;
+      await expect(
+        electron.capture({ files: [MANIFEST], discoverWorkspaces: false }),
+      ).rejects.toMatchObject({
+        reason: 'invalid-state',
+        details: { capture: reason },
+      });
+      captureRefusal = undefined;
+      expect(readCache.cache.terminallyRevoked()).toBe(true);
+      const canceled = queued.every((timer) => !timer.live);
+      const before = captures.length;
+      const broad = discoveries();
+      const expectNoAutomaticCapture = async (): Promise<void> => {
+        await settleDetachedWork();
+        expect(discoveries()).toBe(broad);
+        expect(captures).toHaveLength(before);
+        expect(canceled).toBe(true);
+        expect(live(() => true)).toHaveLength(0);
+        expect(readCache.cache.owed()).toBe(false);
+      };
+      // A timer already dispatched before cancellation must also stand aside.
+      for (const timer of queued) {
+        timer.live = false;
+        await timer.run();
+        await expectNoAutomaticCapture();
+      }
+      for (let i = 0; i < 3; i += 1) {
+        readCache.markDirty([MANIFEST]);
+        await expectNoAutomaticCapture();
+        await write({ alwaysShow: i % 2 === 0 });
+        await expectNoAutomaticCapture();
+        healthFailure?.();
+        healthRecovery?.();
+        await expectNoAutomaticCapture();
+        if (warmed) {
+          staleWatch?.emit('change', 'change', 'worktrees.json');
+          await expectNoAutomaticCapture();
+          staleWatch?.emit('error', new Error('Watch lost'));
+          await expectNoAutomaticCapture();
+          // Re-enrollment used to start an immediate coverage broad refill.
+          __setDesktopW5FileStoreForTests(undefined);
+          try {
+            await readCache.serve({
+              files: [MANIFEST],
+              discoverWorkspaces: false,
+            });
+          } finally {
+            __setDesktopW5FileStoreForTests(electron);
+          }
+          expect(staleWatch?.closed).toBe(true);
+          await expectNoAutomaticCapture();
+        }
+      }
+      // W5e cache reconciliation is inert after retirement.
+      await readCache.apply(BROAD);
+      expect(discoveries()).toBe(broad);
+      expect(ready()).toBe(false);
+      expect(readCache.cache.terminallyRevoked()).toBe(true);
+      expect(readCache.cache.owed()).toBe(false);
+      expect(live(() => true)).toHaveLength(0);
+    },
+  );
+
+  test.each(
+    (['root-unavailable', 'root-changed'] as const).flatMap((reason) =>
+      (['dirty', 'own-decision', 'watcher', 'coverage', 'health'] as const).map(
+        (trigger) => ({ reason, trigger }),
+      ),
+    ),
+  )(
+    '$trigger after terminal $reason never starts discovery, even through a stale timer',
+    async ({ reason, trigger }) => {
+      await compose();
+      expect(ready()).toBe(true);
+      expect(live(() => true)).toHaveLength(0);
+      const staleWatch = directoryWatch('a');
+      if (!electron.capture) throw new Error('Capture required');
+      captureRefusal = reason;
+      await expect(
+        electron.capture({ files: [MANIFEST], discoverWorkspaces: false }),
+      ).rejects.toMatchObject({ details: { capture: reason } });
+      captureRefusal = undefined;
+      const before = captures.length;
+      const broad = discoveries();
+      const scheduled = timers.length;
+      for (let i = 0; i < 3; i += 1) {
+        if (trigger === 'dirty') readCache.markDirty([MANIFEST]);
+        else if (trigger === 'own-decision')
+          await write({ alwaysShow: i % 2 === 0 });
+        else if (trigger === 'watcher')
+          staleWatch?.emit('change', 'change', 'worktrees.json');
+        else if (trigger === 'health') {
+          healthFailure?.();
+          healthRecovery?.();
+        } else {
+          staleWatch?.emit('error', new Error('Watch lost'));
+          __setDesktopW5FileStoreForTests(undefined);
+          try {
+            await readCache.serve({
+              files: [MANIFEST],
+              discoverWorkspaces: false,
+            });
+          } finally {
+            __setDesktopW5FileStoreForTests(electron);
+          }
+          expect(staleWatch?.closed).toBe(true);
+        }
+        // Fire even canceled callbacks; cancellation cannot fence one
+        // already dispatched by the event loop.
+        for (const timer of timers.slice(scheduled)) {
+          timer.live = false;
+          await timer.run();
+        }
+        await settleDetachedWork();
+        expect(discoveries()).toBe(broad);
+        expect(captures).toHaveLength(before);
+        expect(live(() => true)).toHaveLength(0);
+        expect(readCache.cache.owed()).toBe(false);
+      }
+    },
+  );
+
+  test.each(['root-unavailable', 'root-changed'] as const)(
+    'terminal %s cancels a queued miss-refresh and fences its stale callback',
+    async (reason) => {
+      writeFileSync(
+        join(dir, 'workspaces', 'index.json'),
+        JSON.stringify({
+          version: 1,
+          workspaces: ['a', 'b'].map((id, order) => ({
+            id,
+            name: id,
+            type: 'multi-repo',
+            color: '#7C3AED',
+            collapsed: false,
+            order,
+          })),
+        }),
+      );
+      await compose();
+      await getWorkspaceIndexRepository().update(({ entries }) => ({
+        entries: entries.map((entry) =>
+          entry.id === 'a' ? { ...entry, name: 'Renamed' } : entry,
+        ),
+        result: undefined,
+      }));
+      await fire(own);
+      const request = {
+        files: [{ kind: 'index' }, { kind: 'manifest', workspaceId: 'b' }],
+        discoverWorkspaces: false,
+      } as const;
+      expect(readCache.cache.projection().serve(request)).toMatchObject({
+        status: 'unserved',
+        reason: 'lagging',
+        refresh: [{ kind: 'manifest', workspaceId: 'b' }],
+      });
+      __setDesktopW5FileStoreForTests(undefined);
+      try {
+        expect(await readCache.serve(request)).toBeUndefined();
+      } finally {
+        __setDesktopW5FileStoreForTests(electron);
+      }
+      const refresh = (timer: Timer): boolean =>
+        timer.ms === W5_READ_CACHE_REFRESH_MS;
+      const queued = live(refresh);
+      expect(queued).toHaveLength(1);
+      if (!electron.capture) throw new Error('Capture required');
+      captureRefusal = reason;
+      await expect(electron.capture(request)).rejects.toMatchObject({
+        details: { capture: reason },
+      });
+      captureRefusal = undefined;
+      const before = captures.length;
+      const broad = discoveries();
+      // Inspect cancellation only after checking the capture symptom.
+      const canceled = queued.every((timer) => !timer.live);
+      for (const timer of queued) {
+        timer.live = false;
+        await timer.run();
+      }
+      await settleDetachedWork();
+      expect(discoveries()).toBe(broad);
+      expect(captures).toHaveLength(before);
+      expect(canceled).toBe(true);
+      expect(live(() => true)).toHaveLength(0);
+      expect(readCache.cache.owed()).toBe(false);
+      await readCache.apply(BROAD);
+      expect(discoveries()).toBe(broad);
+      expect(ready()).toBe(false);
+    },
+  );
+
+  test.each(
+    (['root-unavailable', 'root-changed'] as const).flatMap((reason) =>
+      (['marked', 'broad-trailing', 'broad-new-log'] as const).map((path) => ({
+        reason,
+        path,
+      })),
+    ),
+  )(
+    'terminal $reason racing an automatic $path capture starts no continuation',
+    async ({ reason, path }) => {
+      await compose();
+      if (path === 'broad-new-log') {
+        await write({ alwaysShow: true });
+        abandoned = true;
+        await readCache.apply(BROAD);
+        // The next capture now looks like a replacement log.
+        abandoned = false;
+      }
+      if (path !== 'marked') readCache.revoke();
+      readCache.markDirty([MANIFEST]);
+      captureGate = deferred();
+      const before = captures.length;
+      const pending = fire(own);
+      await until(() => captures.length > before);
+      expect(captures.at(-1)?.discoverWorkspaces).toBe(path !== 'marked');
+      // A broad capture predates this notification and would need another
+      // capture after it completes. Terminal revocation must fence that too.
+      readCache.markDirty([MANIFEST]);
+      if (!electron.capture) throw new Error('Capture required');
+      captureRefusal = reason;
+      await expect(
+        electron.capture({ files: [MANIFEST], discoverWorkspaces: false }),
+      ).rejects.toMatchObject({ details: { capture: reason } });
+      captureRefusal = undefined;
+      const captured = captures.length;
+      const broad = discoveries();
+      captureGate.open();
+      await pending;
+      captureGate = undefined;
+      await settleDetachedWork();
+      expect(discoveries()).toBe(broad);
+      expect(captures).toHaveLength(captured);
+      expect(live(() => true)).toHaveLength(0);
+      expect(readCache.cache.rebuilding()).toBe(false);
+      expect(readCache.cache.terminallyRevoked()).toBe(true);
+      expect(readCache.cache.owed()).toBe(false);
+      expect(ready()).toBe(false);
+      await readCache.apply(BROAD);
+      expect(discoveries()).toBe(broad);
+      expect(ready()).toBe(false);
+    },
+  );
+
+  test.each(
+    (['root-unavailable', 'root-changed'] as const).flatMap((reason) =>
+      [false, true].map((explicit) => ({ reason, explicit })),
+    ),
+  )(
+    'terminal $reason during an automatic root probe (queued W5e: $explicit) retires queued and running cache work',
+    async ({ reason, explicit }) => {
+      await compose();
+      readCache.revoke();
+      readCache.markDirty([MANIFEST]);
+      const entered = deferred();
+      const release = deferred();
+      const fs = jest.requireMock<typeof AsyncFs>('node:fs/promises');
+      const native = jest.requireActual<typeof AsyncFs>('node:fs/promises');
+      const stat = jest.spyOn(fs, 'stat').mockImplementationOnce(async () => {
+        const identity = await native.stat(harness.root, { bigint: true });
+        entered.open();
+        await release.promise;
+        return identity;
+      });
+      const before = captures.length;
+      const broad = discoveries();
+      const pending = fire(own);
+      let reconciliation: Promise<void> | undefined;
+      try {
+        await entered.promise;
+        if (explicit) {
+          let settled = false;
+          reconciliation = readCache.apply(BROAD).then(() => {
+            settled = true;
+          });
+          // A no-op apply must not masquerade as queued work.
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          expect(settled).toBe(false);
+        }
+        if (!electron.capture) throw new Error('Capture required');
+        captureRefusal = reason;
+        await expect(
+          electron.capture({ files: [MANIFEST], discoverWorkspaces: false }),
+        ).rejects.toMatchObject({ details: { capture: reason } });
+        captureRefusal = undefined;
+        // Retirement settles running and queued work while the probe stays blocked.
+        await expect(Promise.all([pending, reconciliation])).resolves.toEqual([
+          undefined,
+          undefined,
+        ]);
+        expect(discoveries()).toBe(broad);
+        expect(captures).toHaveLength(before);
+        release.open();
+        await settleDetachedWork();
+        expect(discoveries()).toBe(broad);
+        expect(captures).toHaveLength(before);
+        expect(live(() => true)).toHaveLength(0);
+        expect(readCache.cache.terminallyRevoked()).toBe(true);
+        expect(readCache.cache.rebuilding()).toBe(false);
+        expect(ready()).toBe(false);
+      } finally {
+        release.open();
+        await pending;
+        await reconciliation;
+        stat.mockRestore();
       }
     },
   );
@@ -1619,10 +2031,11 @@ describe('the read cache over W5e (CAN-7155)', () => {
         ).rejects.toThrow();
         captureRefusal = undefined;
         await electron.capture?.(request);
+        const projection = readCache.cache.projection();
+        const beforeRetry = captures.length;
         await readCache.apply(BROAD);
-        expect(readCache.cache.projection().serve(request).status).toBe(
-          'served',
-        );
+        expect(readCache.cache.projection()).toBe(projection);
+        expect(captures).toHaveLength(beforeRetry);
         expect(await readCache.serve(request)).toBeUndefined();
       } finally {
         registerDesktopW5ReadCacheServer(undefined);
@@ -3192,8 +3605,15 @@ describe('dispatcher reads served from the read cache (CAN-7155 Seam A)', () => 
           } finally {
             unchanged.mockRestore();
           }
-          // Deletion/recreation must not disable content-based self-write
-          // suppression: the app's own commit already updates its cache.
+          // CAN-7156: a live W5e stream stops the watcher, so the app's own
+          // commit reaches its cache only through its own decision.
+          setWorktreesFileWatchersCommitEventsLive(true);
+          const installed = jest
+            .mocked(createWorktreeWatch)
+            .mock.results.at(-1);
+          if (installed?.type !== 'return')
+            throw new Error('The list watcher must be installed');
+          expect(installed.value.close).toHaveBeenCalled();
           const selfRows = oldRows.map((row) => ({
             ...row,
             branchName: 'own',
@@ -3220,6 +3640,7 @@ describe('dispatcher reads served from the read cache (CAN-7155 Seam A)', () => 
         releaseBroad.open();
         await rebuilding;
         stopWorktreesFileWatchers();
+        setWorktreesFileWatchersCommitEventsLive(false);
         jest.mocked(sendToWindow).mockReset();
         __setDesktopW5FileStoreForTests(electron);
         registerDesktopW5ReadCacheServer(undefined);
@@ -3831,4 +4252,218 @@ describe('dispatcher reads served from the read cache (CAN-7155 Seam A)', () => 
       await Promise.all([served.shutdown(), today.shutdown()]);
     }
   });
+});
+
+describe('terminal cache retirement', () => {
+  test.each(['complete', 'reject', 'coverage'] as const)(
+    'retirement preserves a settled targeted projection when broad work %s arrives',
+    async (outcome) => {
+      await compose();
+      const snapshot = await electron.capture?.({
+        files: [MANIFEST],
+        discoverWorkspaces: false,
+      });
+      if (!snapshot) throw new Error('Capture required');
+      const entered = deferred();
+      const release = deferred();
+      let broad = false;
+      let calls = 0;
+      const core = createW5CommittedReadCache({
+        capture: async () => {
+          calls += 1;
+          if (broad && calls === 2 && outcome !== 'coverage') {
+            entered.open();
+            await release.promise;
+            if (outcome === 'reject')
+              throw new Error('Abandoned broad failure');
+          }
+          return snapshot.capture;
+        },
+        servingCoverage: async (projection) => {
+          if (broad && outcome === 'coverage') {
+            entered.open();
+            await release.promise;
+          }
+          return projection.files();
+        },
+      });
+      await core.refillBroad();
+      core.setStreamReady(false);
+      broad = true;
+      const pending = core.refillBroad();
+      await entered.promise;
+      const plan = {
+        ...BROAD,
+        broad: false,
+        manifests: ['a'],
+        commitId: snapshot.capture.log.commitId,
+      };
+      // Stream loss keeps this genuinely targeted, not a promotion to broad.
+      // Coverage certification may already have swapped in a current projection.
+      core.markDirty([MANIFEST]);
+      const beforeTarget = calls;
+      await core.apply(plan);
+      expect(calls).toBe(beforeTarget + 1);
+      const projection = core.projection();
+      expect(projection.holds(MANIFEST, plan.commitId)).toBe(true);
+      const changed = jest.fn();
+      core.onResourcesChanged(changed);
+      const before = calls;
+      core.revoke(true);
+      release.open();
+      await expect(pending).resolves.toBeUndefined();
+      await core.apply(plan);
+      core.markDirty([MANIFEST]);
+      await core.refillMarked();
+      await core.refillBroad();
+      expect(core.projection()).toBe(projection);
+      expect(projection.holds(MANIFEST, plan.commitId)).toBe(true);
+      expect(core.owed()).toBe(false);
+      expect(core.rebuilding()).toBe(false);
+      expect(calls).toBe(before);
+      expect(changed).not.toHaveBeenCalled();
+    },
+  );
+
+  test('retiring an interrupted W5e step preserves store-backed handlers and normal acknowledgement ordering', async () => {
+    await compose();
+    await attach();
+    await until(() => applied.some((plan) => plan.broad));
+    const plans = applied.length;
+    const projection = readCache.cache.projection();
+    const handlerCommits: number[] = [];
+    handlerRead = async (): Promise<void> => {
+      const result = await electron.capture?.({
+        files: [MANIFEST],
+        discoverWorkspaces: false,
+      });
+      if (!result) throw new Error('Capture required');
+      handlerCommits.push(result.capture.log.commitId);
+    };
+    captureGate = deferred();
+    handlerGate = deferred();
+    const before = captures.length;
+    const acked = acks.length;
+    const handled = seen.length;
+    const commitId = await foreignWrite({ alwaysShow: true });
+    await until(() => captures.length > before);
+    readCache.cache.revoke(true);
+    // The abandoned capture remains blocked; retirement alone unblocks W5e.
+    await until(() =>
+      seen
+        .slice(handled)
+        .some((entry) => entry.handler === 'refreshWorkspaceRegistries'),
+    );
+    expect(handlerCommits).toEqual([commitId]);
+    expect(applied.slice(plans)).toHaveLength(1);
+    expect(applied.at(-1)).toMatchObject({ broad: false, commitId });
+    expect(acks).toHaveLength(acked);
+    const retiredImage = projection.image(MANIFEST);
+    handlerGate.open();
+    await until(() => acks.length > acked);
+    captureGate.open();
+    await settleDetachedWork();
+    expect(readCache.cache.projection()).toBe(projection);
+    expect(projection.image(MANIFEST)).toBe(retiredImage);
+    expect(captures).toHaveLength(before + 1);
+    const nextAck = acks.length;
+    const nextCommit = await foreignWrite({ alwaysShow: false });
+    await until(() => acks.length > nextAck);
+    expect(handlerCommits).toEqual([commitId, nextCommit]);
+    expect(applied.slice(plans).every((plan) => !plan.broad)).toBe(true);
+    expect(captures).toHaveLength(before + 1);
+  });
+
+  test.each(['complete', 'limit', 'replacement'] as const)(
+    'retirement discards concurrent already-sent broad/targeted %s results and queued reruns',
+    async (outcome) => {
+      await compose();
+      await foreignWrite({ alwaysShow: true });
+      const snapshot = await electron.capture?.({
+        files: [MANIFEST],
+        discoverWorkspaces: false,
+      });
+      if (!snapshot) throw new Error('Capture required');
+      expect(snapshot.capture.log.commitId).toBeGreaterThan(0);
+      const release = deferred();
+      const entered = deferred();
+      let calls = 0;
+      let pendingCalls = 0;
+      const core = createW5CommittedReadCache({
+        capture: async () => {
+          calls += 1;
+          if (calls > 1) {
+            pendingCalls += 1;
+            if (pendingCalls === 2) entered.open();
+            await release.promise;
+            if (outcome === 'limit')
+              throw new W5CommitRefusedError('invalid-state', 'Too large', {
+                capture: 'limit-exceeded',
+              });
+          }
+          return outcome === 'replacement' && calls > 1
+            ? {
+                ...snapshot.capture,
+                log: {
+                  ...snapshot.capture.log,
+                  commitId: 0,
+                  retainedCommits: 0,
+                },
+              }
+            : snapshot.capture;
+        },
+      });
+      await core.refillBroad();
+      core.setStreamReady(false);
+      const broad = core.refillBroad();
+      core.markDirty([MANIFEST]);
+      const targeted = core.apply({ ...BROAD, broad: false, manifests: ['a'] });
+      const queued = core.refillBroad();
+      await entered.promise;
+      const projection = core.projection();
+      const image = projection.image(MANIFEST);
+      const changed = jest.fn();
+      core.onResourcesChanged(changed);
+      core.revoke(true);
+      // Both jobs settle before their already-sent captures complete.
+      await Promise.all([broad, targeted, queued]);
+      const before = calls;
+      release.open();
+      await settleDetachedWork();
+      expect(calls).toBe(before);
+      expect(core.projection()).toBe(projection);
+      expect(projection.image(MANIFEST)).toBe(image);
+      expect(changed).not.toHaveBeenCalled();
+      expect(core.rebuilding()).toBe(false);
+    },
+  );
+
+  test.each(['terminal', 'dispose'] as const)(
+    '%s closes cache-owned watches and health observation without changing the last projection',
+    async (mode) => {
+      await compose();
+      const watches = Array.from(directoryWatches.values());
+      const staleHealth = healthRecovery;
+      const projection = readCache.cache.projection();
+      const image = projection.image(MANIFEST);
+      readCache.markDirty([{ kind: 'worktrees', workspaceId: 'a' }]);
+      const queued = live(() => true);
+      if (mode === 'dispose') readCache.dispose();
+      else readCache.cache.revoke(true);
+      expect(watches.every((watch) => watch.closed)).toBe(true);
+      expect(healthRecovery).toBeUndefined();
+      const before = captures.length;
+      staleHealth?.();
+      for (const watch of watches)
+        watch.emit('change', 'change', 'workspace.json');
+      for (const timer of queued) await timer.run();
+      await write({ alwaysShow: true });
+      await readCache.apply(BROAD);
+      await readCache.activate(electron);
+      expect(readCache.cache.projection()).toBe(projection);
+      expect(projection.image(MANIFEST)).toBe(image);
+      expect(captures).toHaveLength(before);
+      expect(live(() => true)).toHaveLength(0);
+    },
+  );
 });

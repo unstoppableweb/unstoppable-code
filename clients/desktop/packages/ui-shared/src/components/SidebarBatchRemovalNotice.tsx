@@ -2,8 +2,8 @@
 
 import type { JSX } from 'react';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
-import { LoadingSpinner } from './LoadingSpinner';
-import { Notice, NoticeButton } from './Notice';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
+import { Notice, NoticeButton } from '../primitives/Notice';
 import {
   unitCountLabel,
   type SidebarBatchUnitLabel,
@@ -111,9 +111,12 @@ export function SidebarBatchRemovalNotice({
       }
       onDismiss={onDismiss}
       dismissTestId={`${testId}-dismiss`}
+      {...(cleanupRunning > 0
+        ? { detail: cleanupRunningSentence(unitLabel, cleanupRunning) }
+        : {})}
     >
       {cleanupRunning > 0
-        ? `${outcome} ${cleanupRunningSentence(unitLabel, cleanupRunning)}`
+        ? outcome
         : lateFailed > 0
           ? `Cleanup finished. ${outcome}`
           : outcome}

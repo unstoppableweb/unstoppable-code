@@ -1,5 +1,6 @@
 import { normalize } from 'node:path';
 import type { BrowserWindow, IpcMainInvokeEvent } from 'electron';
+import { CanopyOperationError } from '@canopy/core-runtime';
 import { normalizeFileAnnotationDocument } from '@canopy/core-runtime/node/annotations';
 import {
   IPC_CHANNELS,
@@ -7,8 +8,10 @@ import {
   type FileAnnotationsAppendRequest,
   type FileAnnotationsDismissRequest,
   type FileAnnotationsGetRequest,
+  type FileAnnotationsSaveAnswer,
   type FileAnnotationsSaveRequest,
 } from '@canopy/desktop-shared/types';
+import { ANNOTATION_ERROR_CODES } from '@canopy/protocol/canopy-core';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import {
   annotationCaller,
@@ -54,6 +57,14 @@ function expectedRevision(value: unknown): number | undefined {
   throw new Error('Invalid expectedRevision');
 }
 
+/** A write that was installed but whose folder flush failed after. */
+function isOutcomeUnknown(error: unknown): boolean {
+  return (
+    error instanceof CanopyOperationError &&
+    error.payload.code === ANNOTATION_ERROR_CODES.OUTCOME_UNKNOWN
+  );
+}
+
 function threadIds(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((entry): entry is string => typeof entry === 'string')
@@ -79,7 +90,7 @@ export async function saveFileAnnotationsForIpc(
   dispatcher: AnnotationDispatcher,
   caller: CanopyCaller,
   request: FileAnnotationsSaveRequest,
-): Promise<FileAnnotationDocument> {
+): Promise<FileAnnotationsSaveAnswer> {
   const scope = validateScope(request);
   assertWritableScope(scope.projectId);
   const revision = expectedRevision(request.expectedRevision);
@@ -88,7 +99,7 @@ export async function saveFileAnnotationsForIpc(
     throw new Error('Invalid file annotation document.');
   }
   const projection = await createHostAnnotationProjection(scope);
-  const { document } = await dispatcher.instruction(
+  const saving = dispatcher.instruction(
     'core.annotation.document.save',
     {
       scope,
@@ -105,7 +116,30 @@ export async function saveFileAnnotationsForIpc(
     },
     { caller: annotationCaller(caller, 'write') },
   );
-  return toHostFileAnnotationDocument(document, projection);
+  try {
+    const { document } = await saving;
+    return toHostFileAnnotationDocument(document, projection);
+  } catch (error) {
+    if (!isOutcomeUnknown(error)) throw error;
+    // Answered as data, which neither preload's error cache nor Remote
+    // Control can drop: the save is installed but its flush failed.
+    const stored = await dispatcher
+      .query(
+        'core.annotation.document.get',
+        { scope, file: projection.fileRef(incoming.filePath) },
+        { caller: annotationCaller(caller, 'read') },
+      )
+      .catch(() => undefined);
+    // Unreadable too: answer what was sent at the revision it was based on, so
+    // the hook retires the edit and its next save's revision check is refused
+    // and re-reads, instead of replaying the edit over a newer write.
+    return {
+      ...(stored
+        ? toHostFileAnnotationDocument(stored.document, projection)
+        : { ...request.document, revision: revision ?? 0 }),
+      outcome: 'unknown',
+    };
+  }
 }
 
 export async function appendFileAnnotationsForIpc(
@@ -120,7 +154,7 @@ export async function appendFileAnnotationsForIpc(
     throw new Error('Invalid file annotation append request.');
   }
   const projection = await createHostAnnotationProjection(scope);
-  const { document } = await dispatcher.instruction(
+  const appending = dispatcher.instruction(
     'core.annotation.document.append',
     {
       scope,
@@ -133,7 +167,26 @@ export async function appendFileAnnotationsForIpc(
     },
     { caller: annotationCaller(caller, 'write') },
   );
-  return toHostFileAnnotationDocument(document, projection);
+  try {
+    const { document } = await appending;
+    return toHostFileAnnotationDocument(document, projection);
+  } catch (error) {
+    if (!isOutcomeUnknown(error)) throw error;
+    // Installed but not flushed: answer the stored document, so the caller
+    // reports it applied and has no reason to retry it with fresh ids.
+    // shortcut: if this re-read fails too it rejects as before, and a retry
+    // can duplicate; see CAN-7920.
+    const stored = await dispatcher
+      .query(
+        'core.annotation.document.get',
+        { scope, file: projection.fileRef(normalize(filePath)) },
+        { caller: annotationCaller(caller, 'read') },
+      )
+      .catch(() => {
+        throw error;
+      });
+    return toHostFileAnnotationDocument(stored.document, projection);
+  }
 }
 
 export async function dismissFileAnnotationForIpc(
@@ -168,7 +221,7 @@ export function registerFileAnnotationsHandlers(
       getFileAnnotationsForIpc(dispatcher, resolveCaller(event), request),
   );
 
-  registerIpcHandler<[FileAnnotationsSaveRequest], FileAnnotationDocument>(
+  registerIpcHandler<[FileAnnotationsSaveRequest], FileAnnotationsSaveAnswer>(
     IPC_CHANNELS.fileAnnotationsSave,
     (event: IpcMainInvokeEvent, request) =>
       withFileAnnotationsUpdateWindows(getWindows, () =>

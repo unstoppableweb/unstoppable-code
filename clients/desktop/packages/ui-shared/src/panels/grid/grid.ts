@@ -24,8 +24,8 @@
  *    `size: undefined` through a non-null assertion.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from '../disposable';
-import { type Event } from '../emitter';
+import { Disposable } from '../../lib/disposable';
+import { type Event } from '../../lib/emitter';
 import { type IBoundarySashes, Orientation } from '../sash';
 import type {
   AutoSizing as GridViewAutoSizing,

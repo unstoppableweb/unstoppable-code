@@ -4,6 +4,7 @@ import {
   TRUNCATION_MARKER_BYTES,
   buildRestoreMarker,
   exitEndsNoCommand,
+  isRestorableExitSignal,
 } from '../engine';
 import type {
   TerminalEnvironment,
@@ -17,6 +18,9 @@ import type {
 import type { ResolvedTerminalShell } from '../shells';
 import {
   WORKER_TERMINAL_LOST_SIGNAL,
+  WORKER_TERMINAL_RECORD_SCHEMA_REVISION,
+  type WorkerTerminalRecordAttribution,
+  type WorkerTerminalRecordClient,
   type CanopyWorkspaceScope,
   type WorkerTerminal,
   type WorkerTerminalAttachItem,
@@ -85,6 +89,24 @@ export interface RemoteTerminalsOptions {
   /** Reattach attempts after a stream ended without the terminal's exit. */
   readonly reattachDelaysMs?: readonly number[];
   readonly createIdempotencyKey: () => string;
+  /**
+   * Whether the worker's record authority keeps this worktree's record
+   * (CAN-7051): when it resolves an attribution, the terminal's create or
+   * restore carries it (revision 2), its exit reasons are forwarded, and its
+   * client persistence is the attribution's own port, which writes nothing
+   * to the record. Otherwise, today's persistence port records it.
+   */
+  readonly recordAttribution?: (launch: {
+    readonly projectId: string;
+    readonly worktreeId: string;
+  }) => Promise<RemoteTerminalRecordAttribution | null>;
+}
+
+/** A terminal's record attribution, from a worker that keeps the record (CAN-7051). */
+export interface RemoteTerminalRecordAttribution {
+  readonly client: WorkerTerminalRecordClient;
+  /** Tracks live sessions only; the worker records output and exits itself. */
+  readonly persistence: TerminalPersistencePort;
 }
 
 /** Where a terminal starts on the worker, as its client resolved it. */
@@ -223,6 +245,12 @@ function windowStartEndingScrollback(
   return matched;
 }
 
+interface LostTerminalRelease {
+  readonly scope: CanopyWorkspaceScope;
+  readonly worktree: TerminalWorktreeScope;
+  exit: { revision?: 2; exitSignal?: string };
+}
+
 interface Mirror {
   readonly session: TerminalSession;
   readonly scope: CanopyWorkspaceScope;
@@ -231,7 +259,16 @@ interface Mirror {
   readonly seededOffset: number;
   running: boolean;
   processName: string | null;
+  /** Explicit kill intent or a confirmed cleanup, never a pending release. */
   signalOverride: string | null;
+  cleanupPending: boolean;
+  releaseConfirmed: boolean;
+  releaseDebt?: LostTerminalRelease;
+  releasing?: Promise<void>;
+  /** The worker's record keeps this terminal (CAN-7051). */
+  readonly recorded: boolean;
+  /** Where this terminal's client persistence goes. */
+  readonly persistence: TerminalPersistencePort;
   /** Kills and releases that end no command, not yet known to have failed. */
   noCommandKills: number;
   /** The worker's idle dropped during such a kill; reported if it fails. */
@@ -326,15 +363,11 @@ export class RemoteTerminals {
 
   /**
    * Terminals ended here as lost whose release the worker did not confirm:
-   * worktree release and quit ask again, so none runs on untracked.
+   * worktree release and quit ask again, so none runs on untracked. Each
+   * asks with the exit reason the client recorded, except that a worktree
+   * release or kill replaces a restorable one.
    */
-  private readonly unreleased = new Map<
-    string,
-    {
-      readonly scope: CanopyWorkspaceScope;
-      readonly worktree: TerminalWorktreeScope;
-    }
-  >();
+  private readonly unreleased = new Map<string, LostTerminalRelease>();
 
   /** Creates and restores waiting on the worker. */
   private readonly starts = new Set<Promise<TerminalSession>>();
@@ -403,7 +436,18 @@ export class RemoteTerminals {
       (request.profileId !== undefined || request.initialCommand !== undefined)
     )
       throw new Error('A managed command takes no profile or initial command.');
+    const attribution =
+      (await this.options.recordAttribution?.({
+        projectId: request.projectId,
+        worktreeId: request.worktreeId,
+      })) ?? null;
+    const createdAt = this.now();
     const created = await this.options.transport.create({
+      ...(attribution && {
+        revision: WORKER_TERMINAL_RECORD_SCHEMA_REVISION,
+        client: attribution.client,
+        session: recordAttributionOf(request, createdAt),
+      }),
       scope: request.scope,
       cwdRootId: request.cwdRootId,
       cwdRelativePath: request.cwdRelativePath,
@@ -426,7 +470,7 @@ export class RemoteTerminals {
       shell: request.shell.shell,
       shellBasename: request.shell.shellBasename,
       cwd: request.cwd,
-      createdAt: this.now(),
+      createdAt,
       ...(request.initialCommand !== undefined && {
         initialCommand: request.initialCommand,
       }),
@@ -447,6 +491,7 @@ export class RemoteTerminals {
       capacity: TERMINAL_REPLAY_BUFFER_MAX_BYTES,
       marksTruncation: false,
       seededOffset: 0,
+      attribution,
     });
     return session;
   }
@@ -488,7 +533,19 @@ export class RemoteTerminals {
   private async restoreOnce(
     request: RemoteTerminalRecreate,
   ): Promise<TerminalSession> {
+    const attribution =
+      (await this.options.recordAttribution?.({
+        projectId: request.projectId,
+        worktreeId: request.worktreeId,
+      })) ?? null;
     const restored = await this.options.transport.restore({
+      // The worker replays the record's own history; no output is carried.
+      ...(attribution && {
+        revision: WORKER_TERMINAL_RECORD_SCHEMA_REVISION,
+        client: attribution.client,
+        session: recordAttributionOf(request, request.createdAt),
+        historyFrom: 'record',
+      }),
       scope: request.scope,
       terminalId: request.terminalId,
       restoreMode: 'recreate_if_exited',
@@ -501,7 +558,7 @@ export class RemoteTerminals {
         shell: request.shell.shell,
         args: request.shell.args,
         env: environmentParams(request.environment),
-        scrollback: request.scrollback,
+        scrollback: attribution ? '' : request.scrollback,
         ...(request.initialCommand !== undefined && {
           initialCommand: request.initialCommand,
         }),
@@ -529,7 +586,25 @@ export class RemoteTerminals {
         marksTruncation: true,
         seededOffset: restored.outputOffset,
         replayTo: restored.outputOffset,
-        persisted: Buffer.from(request.scrollback, 'utf8'),
+        ...(!attribution && {
+          persisted: Buffer.from(request.scrollback, 'utf8'),
+        }),
+        attribution,
+      });
+      return session;
+    }
+    if (attribution) {
+      // The worker's replay up to `outputOffset` is the record's history and
+      // the restore marker, read before the session is returned; the worker
+      // recorded the marker itself.
+      await this.adopt(session, request.scope, {
+        pid: restored.pid,
+        capacity:
+          TERMINAL_RESTORED_REPLAY_MAX_BYTES - TRUNCATION_MARKER_BYTES.length,
+        marksTruncation: true,
+        seededOffset: restored.outputOffset,
+        replayTo: restored.outputOffset,
+        attribution,
       });
       return session;
     }
@@ -550,6 +625,7 @@ export class RemoteTerminals {
       // The worker's replay up to `outputOffset` is this same scrollback and
       // marker, so the mirror holds it before the session is returned.
       seed: Buffer.concat([Buffer.from(request.scrollback, 'utf8'), marker]),
+      attribution: null,
     });
     return session;
   }
@@ -584,13 +660,23 @@ export class RemoteTerminals {
   public kill(terminalId: string, signal?: string | null): void {
     const mirror = this.mirrors.get(terminalId);
     if (!mirror) return;
-    if (signal) mirror.signalOverride = signal;
+    if (signal) {
+      mirror.signalOverride = signal;
+      const debt = mirror.releaseDebt;
+      if (debt && this.unreleased.get(terminalId) === debt)
+        debt.exit = exitSignalParams(mirror, signal);
+    }
     const endsNoCommand = exitEndsNoCommand(signal ?? null);
     if (endsNoCommand) mirror.noCommandKills += 1;
     this.enqueue(
       mirror,
       'kill',
-      () => this.options.transport.kill({ scope: mirror.scope, terminalId }),
+      () =>
+        this.options.transport.kill({
+          scope: mirror.scope,
+          terminalId,
+          ...exitSignalParams(mirror, signal ?? undefined),
+        }),
       () => {
         if (endsNoCommand) this.noCommandKillFailed(mirror);
       },
@@ -601,6 +687,14 @@ export class RemoteTerminals {
   public killWorktree(scope: TerminalWorktreeScope): void {
     for (const mirror of this.matching(scope))
       this.kill(mirror.session.id, TERMINAL_WORKTREE_CLEANUP_SIGNAL);
+    // As a kill's reason sticks to a mirror, a lost terminal's next release
+    // asks as this cleanup. In place: a confirmed cleanup discharges its debt.
+    for (const debt of this.unreleased.values())
+      if (
+        debt.worktree.projectId === scope.projectId &&
+        debt.worktree.worktreeId === scope.worktreeId
+      )
+        debt.exit = cleanupExit(debt.exit, TERMINAL_WORKTREE_CLEANUP_SIGNAL);
   }
 
   /** Kills every terminal and waits, bounded, for their exits. */
@@ -608,14 +702,15 @@ export class RemoteTerminals {
     if (options) this.shuttingDown = true;
     if (this.killing) return this.killing;
     const mirrors = Array.from(this.mirrors.values());
-    for (const mirror of mirrors) this.kill(mirror.session.id);
+    for (const mirror of mirrors) this.killFor(mirror, options);
     // A terminal still starting is killed once it exists, even after this
     // bounded wait.
     const started = Array.from(this.starts, (start) =>
       start.then(
         (session) => {
-          this.kill(session.id);
-          return this.mirrors.get(session.id)?.exited;
+          const mirror = this.mirrors.get(session.id);
+          if (mirror) this.killFor(mirror, options);
+          return mirror?.exited;
         },
         () => undefined,
       ),
@@ -635,20 +730,65 @@ export class RemoteTerminals {
     return killing;
   }
 
+  /**
+   * Revision 2 quits use the reason as the exit signal, matching main's
+   * prior record stamp (CAN-7051).
+   */
+  private killFor(mirror: Mirror, options?: TerminalKillAllOptions): void {
+    if (!mirror.recorded || !options) {
+      this.kill(mirror.session.id);
+      return;
+    }
+    const terminalId = mirror.session.id;
+    this.enqueue(mirror, 'kill', () =>
+      this.options.transport.kill({
+        scope: mirror.scope,
+        terminalId,
+        ...exitSignalParams(mirror, options.reason),
+      }),
+    );
+  }
+
   /** Stops the process tree and waits until it is gone. */
   public async release(terminalId: string): Promise<void> {
     const mirror = this.mirrors.get(terminalId);
     if (!mirror) return;
-    mirror.signalOverride ??= TERMINAL_WORKTREE_CLEANUP_SIGNAL;
+    if (!mirror.releasing) {
+      mirror.releasing = this.releaseMirror(mirror).finally(() => {
+        mirror.releasing = undefined;
+      });
+    }
+    await mirror.releasing;
+  }
+
+  private async releaseMirror(mirror: Mirror): Promise<void> {
+    const terminalId = mirror.session.id;
+    mirror.cleanupPending = true;
     mirror.noCommandKills += 1;
     try {
-      await this.options.transport.release({ scope: mirror.scope, terminalId });
+      await this.options.transport.release({
+        scope: mirror.scope,
+        terminalId,
+        ...exitSignalParams(
+          mirror,
+          mirror.signalOverride ?? TERMINAL_WORKTREE_CLEANUP_SIGNAL,
+        ),
+      });
+      mirror.signalOverride ??= TERMINAL_WORKTREE_CLEANUP_SIGNAL;
+      mirror.releaseConfirmed = true;
+      if (
+        mirror.releaseDebt &&
+        this.unreleased.get(terminalId) === mirror.releaseDebt
+      )
+        this.unreleased.delete(terminalId);
     } catch (error) {
       if (!isGone(error)) {
         this.noCommandKillFailed(mirror);
         throw error;
       }
       this.finish(mirror, null, WORKER_TERMINAL_LOST_SIGNAL);
+    } finally {
+      mirror.cleanupPending = false;
     }
     await mirror.exited;
   }
@@ -659,6 +799,7 @@ export class RemoteTerminals {
       this.releaseUnreleased(
         ({ projectId, worktreeId }) =>
           projectId === scope.projectId && worktreeId === scope.worktreeId,
+        TERMINAL_WORKTREE_CLEANUP_SIGNAL,
       ),
     ]);
     const failed = results.find((result) => result.status === 'rejected');
@@ -745,6 +886,7 @@ export class RemoteTerminals {
       /** Waits, bounded, until the mirror holds output up to this offset. */
       replayTo?: number;
       persisted?: Buffer;
+      attribution: RemoteTerminalRecordAttribution | null;
     },
   ): Promise<void> {
     let finish = (): void => undefined;
@@ -759,6 +901,10 @@ export class RemoteTerminals {
       running: false,
       processName: null,
       signalOverride: null,
+      cleanupPending: false,
+      releaseConfirmed: false,
+      recorded: window.attribution !== null,
+      persistence: window.attribution?.persistence ?? this.options.persistence,
       noCommandKills: 0,
       queue: Promise.resolve(),
       exited,
@@ -777,7 +923,7 @@ export class RemoteTerminals {
     const adopting: { exit?: () => void } = {};
     mirror.adopting = adopting;
     this.mirrors.set(session.id, mirror);
-    this.options.persistence.registerLiveSession(session);
+    mirror.persistence.registerLiveSession(session);
     if (typeof window.pid === 'number' && Number.isInteger(window.pid))
       mirror.resource = this.options.resources.register(session, window.pid);
     try {
@@ -879,19 +1025,39 @@ export class RemoteTerminals {
     }
   }
 
+  /**
+   * The worker's record ends it as the client does: lost, unless a kill
+   * already named the reason; else the release would read as a cleanup,
+   * which never restarts.
+   */
   private async releaseLost(mirror: Mirror): Promise<void> {
     const { session, scope } = mirror;
+    const exit = exitSignalParams(
+      mirror,
+      mirror.signalOverride ?? WORKER_TERMINAL_LOST_SIGNAL,
+    );
     try {
-      await this.options.transport.release({ scope, terminalId: session.id });
+      await this.options.transport.release({
+        scope,
+        terminalId: session.id,
+        ...exit,
+      });
     } catch (error) {
-      if (isGone(error)) return;
-      this.unreleased.set(session.id, {
+      if (isGone(error) || mirror.releaseConfirmed) return;
+      // Intent can change while the failed release is in flight.
+      const debt: LostTerminalRelease = {
         scope,
         worktree: {
           projectId: session.projectId,
           worktreeId: session.worktreeId,
         },
-      });
+        exit: exitSignalParams(
+          mirror,
+          mirror.signalOverride ?? WORKER_TERMINAL_LOST_SIGNAL,
+        ),
+      };
+      mirror.releaseDebt = debt;
+      this.unreleased.set(session.id, debt);
       this.options.log('Daemon terminal release failed after a lost stream', {
         terminalId: session.id,
         code: errorCode(error) ?? null,
@@ -901,21 +1067,40 @@ export class RemoteTerminals {
 
   /**
    * Asks again to release lost terminals the worker may still run. One whose
-   * release fails stays tracked, and the call rejects with its failure.
+   * release fails stays tracked with its recorded reason, and the call
+   * rejects with its failure. A `cleanupSignal` replaces a recorded reason
+   * that is restorable, so a cleanup never ends a record restorable.
    */
   private async releaseUnreleased(
     matches: (worktree: TerminalWorktreeScope) => boolean,
+    cleanupSignal?: string,
   ): Promise<void> {
     const results = await Promise.allSettled(
       Array.from(this.unreleased)
         .filter(([, { worktree }]) => matches(worktree))
-        .map(async ([terminalId, { scope }]) => {
+        .map(async ([terminalId, debt]) => {
+          const { scope, exit } = debt;
+          const sent =
+            cleanupSignal === undefined
+              ? exit
+              : cleanupExit(exit, cleanupSignal);
           try {
-            await this.options.transport.release({ scope, terminalId });
+            await this.options.transport.release({
+              scope,
+              terminalId,
+              ...sent,
+            });
           } catch (error) {
             if (!isGone(error)) throw error;
           }
-          this.unreleased.delete(terminalId);
+          // A reason named while this was in flight is still owed.
+          if (
+            this.unreleased.get(terminalId) === debt &&
+            (debt.exit === exit ||
+              (debt.exit.revision === sent.revision &&
+                debt.exit.exitSignal === sent.exitSignal))
+          )
+            this.unreleased.delete(terminalId);
         }),
     );
     const failed = results.find((result) => result.status === 'rejected');
@@ -936,7 +1121,7 @@ export class RemoteTerminals {
         );
         mirror.persisted = undefined;
         if (missing.length > 0)
-          this.options.persistence.appendTerminalOutput(
+          mirror.persistence.appendTerminalOutput(
             session.projectId,
             session.worktreeId,
             session.id,
@@ -948,7 +1133,7 @@ export class RemoteTerminals {
           item.fromOffset >= mirror.seededOffset
             ? data
             : data.subarray(mirror.seededOffset - item.fromOffset);
-        this.options.persistence.appendTerminalOutput(
+        mirror.persistence.appendTerminalOutput(
           session.projectId,
           session.worktreeId,
           session.id,
@@ -1018,7 +1203,10 @@ export class RemoteTerminals {
       this.announceExit(
         mirror,
         exitCode,
-        mirror.signalOverride ?? signal,
+        mirror.signalOverride ??
+          (mirror.cleanupPending && signal !== WORKER_TERMINAL_LOST_SIGNAL
+            ? TERMINAL_WORKTREE_CLEANUP_SIGNAL
+            : signal),
         // `signal`, not the override: an override can outlive a failed kill.
         this.killEndsNoCommand(mirror) || exitEndsNoCommand(signal),
       );
@@ -1072,7 +1260,7 @@ export class RemoteTerminals {
         signal: resolvedSignal,
       },
     });
-    this.options.persistence.markTerminalExited(
+    mirror.persistence.markTerminalExited(
       session.projectId,
       session.worktreeId,
       session.id,
@@ -1081,6 +1269,59 @@ export class RemoteTerminals {
     );
     mirror.finish();
   }
+}
+
+/** A revision 2 exit reason, for a terminal the worker's record keeps. */
+function exitSignalParams(
+  mirror: Mirror,
+  exitSignal: string | undefined,
+): { revision?: 2; exitSignal?: string } {
+  return mirror.recorded && exitSignal !== undefined
+    ? { revision: WORKER_TERMINAL_RECORD_SCHEMA_REVISION, exitSignal }
+    : {};
+}
+
+/** A deliberate close the client recorded, such as user-close, stands. */
+function cleanupExit(
+  exit: { revision?: 2; exitSignal?: string },
+  cleanupSignal: string,
+): { revision?: 2; exitSignal?: string } {
+  return exit.revision !== undefined &&
+    isRestorableExitSignal(exit.exitSignal ?? null)
+    ? { revision: exit.revision, exitSignal: cleanupSignal }
+    : exit;
+}
+
+/** The client session a revision 2 create or restore attributes. */
+function recordAttributionOf(
+  request: RemoteTerminalCreate | RemoteTerminalRecreate,
+  createdAt: number,
+): WorkerTerminalRecordAttribution {
+  const managed = 'managed' in request ? request.managed : undefined;
+  return {
+    // Host paths, as the call's own `shell` and a restore snapshot's launch
+    // inputs are: the exception WorkerTerminalRecordAttributionSchema records.
+    shell: request.shell.shell,
+    shellBasename: request.shell.shellBasename,
+    cwd: request.cwd,
+    createdAt,
+    ...(request.initialCommand !== undefined && {
+      initialCommand: request.initialCommand,
+    }),
+    ...(managed
+      ? {
+          kind: managed.kind,
+          title: managed.title,
+          ...(managed.focusOnSpawn !== undefined && {
+            focusOnSpawn: managed.focusOnSpawn,
+          }),
+          ...(managed.chatId !== undefined && { chatId: managed.chatId }),
+          ...(managed.sessionKey !== undefined && {
+            sessionKey: managed.sessionKey,
+          }),
+        }
+      : { kind: 'shell' }),
+  };
 }
 
 function environmentParams(

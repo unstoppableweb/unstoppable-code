@@ -30,6 +30,8 @@ import { BranchPicker } from './BranchPicker';
 import { LabelField } from './LabelField';
 import { resolveDisplayedBaseBranch } from './branch-options';
 import { refreshWorktreeActivity } from './refresh-worktree-activity';
+import { branchNameProblem } from '@canopy/protocol/worktree-branch-names';
+import { branchRenameRefusalText } from '@/lib/branch-rename-refusal';
 import { CopyButton } from '../shared/CopyButton';
 import { LoadingSpinner } from '../shared/loading/spinners/LoadingSpinner';
 import { CodeGraphSummaryPanel } from './CodeGraphSummaryPanel';
@@ -1160,6 +1162,11 @@ export function WorktreeBranchInfoDialog({
         cancelRename();
         return;
       }
+      const problem = branchNameProblem(trimmed);
+      if (problem) {
+        setRenameError(problem);
+        return;
+      }
       if (isPushedToRemote && !renameConfirmRemote) {
         setRenameConfirmRemote(true);
         return;
@@ -1180,7 +1187,8 @@ export function WorktreeBranchInfoDialog({
         void useProjectsStore.getState().refreshDiffStats();
       } catch (err: unknown) {
         setRenameError(
-          err instanceof Error ? err.message : 'Failed to rename branch',
+          branchRenameRefusalText(err, trimmed) ??
+            (err instanceof Error ? err.message : 'Failed to rename branch'),
         );
       } finally {
         setRenameLoading(false);
@@ -1194,6 +1202,11 @@ export function WorktreeBranchInfoDialog({
       const trimmed = renameValue.trim();
       if (!trimmed || !repoBranches || repoBranches.length === 0) {
         cancelRename();
+        return;
+      }
+      const problem = branchNameProblem(trimmed);
+      if (problem) {
+        setRenameError(problem);
         return;
       }
       if (isPushedToRemote && !renameConfirmRemote) {
@@ -1218,7 +1231,10 @@ export function WorktreeBranchInfoDialog({
               .updateBranchName(projectId, worktree.id, trimmed, rb.repoId);
           } catch (err: unknown) {
             errors.push(
-              `${rb.repoName}: ${err instanceof Error ? err.message : 'Failed'}`,
+              `${rb.repoName}: ${
+                branchRenameRefusalText(err, trimmed) ??
+                (err instanceof Error ? err.message : 'Failed')
+              }`,
             );
           }
         }

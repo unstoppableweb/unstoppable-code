@@ -1,13 +1,13 @@
 'use client';
 
-import { PickListSearch } from './PickList';
+import { PickListSearch } from '../primitives/PickList';
 
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import { useId, useRef, useState, type JSX, type ReactNode } from 'react';
 import { ChevronDownMediumIcon, PlusIcon } from '../icons/AppIcons';
-import { FLOATING_MENU_GAP } from './FloatingMenu';
-import { Inline } from './Stack';
-import { useMediaQuery } from './useMediaQuery';
+import { FLOATING_MENU_GAP } from '../primitives/FloatingMenu';
+import { Inline } from '../primitives/Stack';
+import { useMediaQuery } from '../primitives/useMediaQuery';
 import {
   FloatingPickerMenu,
   PickerMenuList,
@@ -21,7 +21,7 @@ import {
   PickerMenuSearchHeader,
   PickerMenuSection,
   PickerMenuState,
-} from './PickerMenu';
+} from '../primitives/PickerMenu';
 
 export interface CreatablePickerOption {
   /** Stable value reported to onValueChange (for sidebar groups: the group name). */

@@ -1,6 +1,6 @@
 'use client';
 
-import { BusyLabel } from '../BusyLabel';
+import { BusyLabel } from '../../primitives/BusyLabel';
 import { useMemo, type JSX } from 'react';
 import type {
   LedgerActorLabel,
@@ -18,16 +18,16 @@ import {
 } from '../../lib/ledger-display';
 import { HistoryIcon } from '../../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
-import { Button } from '../Button';
-import { Disclosure } from '../Disclosure';
-import { ErrorBanner } from '../StatusBlocks';
+import { Button } from '../../primitives/Button';
+import { Disclosure } from '../../primitives/Disclosure';
+import { ErrorBanner } from '../../primitives/StatusBlocks';
 import {
   ledgerAttributedActorName,
   type LedgerEntryRowAttribution,
 } from './ledger-entry-attribution';
 import type { LedgerOpenEntry } from './ledger-entry-slots';
 import { LedgerActorNameText, LedgerRelativeTime } from './LedgerEntryParts';
-import { Fact, FactList } from '../FactList';
+import { Fact, FactList } from '../../primitives/FactList';
 
 /** One change to an entry, ready to show in its thread. */
 export interface LedgerActivityItem {

@@ -29,7 +29,7 @@ interface AssistantTab {
 /**
  * The assistant's chat tabs in an open workflow's edit view (CAN-4319), drawn
  * as a worktree panel group's title row: the shared `fill` tab strip, each
- * tab numbered (a spinner while it works), with `+` for a new chat. The edit
+ * tab with the chat icon (a spinner while it works), with `+` for a new chat. The edit
  * view's assistant card is laid out like a worktree panel card, so its tabs
  * read the same.
  */

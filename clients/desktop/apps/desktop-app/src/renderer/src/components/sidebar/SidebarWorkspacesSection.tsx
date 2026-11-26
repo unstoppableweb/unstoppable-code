@@ -1,6 +1,6 @@
 import { SidebarDragPreview } from '@canopy/ui-shared/components';
 import { WorkspaceIconSlot } from '@canopy/ui-shared/components';
-import { Dot } from '@canopy/ui-shared/components/Badge';
+import { Dot } from '@canopy/ui-shared/primitives/Badge';
 import {
   OrgProjectPlaceholderRow,
   OrgProjectPlaceholderSection,

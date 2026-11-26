@@ -1,6 +1,6 @@
 'use client';
 
-import { Badge, type BadgeTone } from '@canopy/ui-shared/components/Badge';
+import { Badge, type BadgeTone } from '@canopy/ui-shared/primitives/Badge';
 import { SettingsChartLoading } from '../../pages/loading-skeletons';
 import {
   lazy,

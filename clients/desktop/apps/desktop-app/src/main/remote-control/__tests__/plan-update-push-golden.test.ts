@@ -68,10 +68,17 @@ jest.mock('../../lib/plan-diagram-generator', () => ({
     Promise.resolve({ value: { applicable: false } }),
 }));
 const mockFinishedDiagramTasks: string[] = [];
+let mockDiagramTasksWaiter: { count: number; resolve: () => void } | null =
+  null;
 jest.mock('../../lib/helper-observed-task', () => ({
   startObservedHelperTask: (): void => undefined,
   finalizeObservedHelperTask: (taskKey: string): void => {
     mockFinishedDiagramTasks.push(taskKey);
+    if (
+      mockDiagramTasksWaiter &&
+      mockFinishedDiagramTasks.length >= mockDiagramTasksWaiter.count
+    )
+      mockDiagramTasksWaiter.resolve();
   },
 }));
 jest.mock('../../lib/main-window-focus', () => ({
@@ -331,6 +338,19 @@ afterEach(() => {
 
 async function settle(): Promise<void> {
   for (let index = 0; index < 5; index += 1) await flushRelay();
+}
+
+function diagramTasksFinished(count: number): Promise<void> {
+  if (mockFinishedDiagramTasks.length >= count) return Promise.resolve();
+  return new Promise((resolve) => {
+    mockDiagramTasksWaiter = {
+      count,
+      resolve: (): void => {
+        mockDiagramTasksWaiter = null;
+        resolve();
+      },
+    };
+  });
 }
 
 async function connect(
@@ -856,8 +876,9 @@ describe('agent and pipeline plans reach Remote Control (CAN-7295)', () => {
           metadata: { idempotencyKey: `push-diagram-${String(open)}` },
         },
       );
-      for (let i = 0; i < 500 && mockFinishedDiagramTasks.length < 2; i += 1)
-        await settle();
+      // A diagram's task finishes after its last write reached the main
+      // window, however long the plan file writes take.
+      await diagramTasksFinished(2);
       await settle();
       const sent = appWindow.webContents.sent.filter(
         ({ channel }) => channel === IPC_CHANNELS.trackedPlansUpdated,

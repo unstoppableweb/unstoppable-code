@@ -1,7 +1,4 @@
-import {
-  LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
-  pipelineDeclaresLocalOnlyTrigger,
-} from '@canopy/pipeline-interop/portability';
+import { nativeGrantContentHash } from '../automations/chat-automation-native-grant';
 import {
   authorizeProjectPipelineRequest,
   assertStoredPipelineContext,
@@ -11,6 +8,7 @@ import {
 } from './pipeline-install-context';
 import {
   beginPipelineInstallIntent,
+  PipelineInstallCleanupPendingError,
   isPipelineDefinitionClaimed,
   type PipelineInstallIntent,
 } from './pipeline-install-intents';
@@ -149,7 +147,10 @@ import {
   resolveChildPipelineRef,
   type ChildPipelineRefResolution,
 } from '@canopy/desktop-shared/node/pipelines/child-pipeline-ref';
-import { getStoredPipelinePathWithSource } from '@canopy/execution-engine/pipelines/store';
+import {
+  getStoredPipelinePathWithSource,
+  type StoredPipelineInfo,
+} from '@canopy/execution-engine/pipelines/store';
 import {
   collectPipelineCapabilityRefs,
   getPipelinePluginDefaultRef,
@@ -194,9 +195,11 @@ import {
 } from './automation-pipeline-sources';
 import {
   deleteUserPipelineLocalMetadata,
-  readPipelineLocalMetadata,
   recordUserPipelineOwner,
-  setUserPipelineAgentAuthor,
+  setUserPipelineAgentAuthorIfCurrent,
+  setUserPipelinePersonApproval,
+  readPipelineLocalMetadata,
+  withCurrentUserPipelineRevision,
 } from './pipeline-local-metadata-store';
 import {
   getUserPipelineOwner,
@@ -219,7 +222,6 @@ import {
   getSharedPipeline,
   PACKAGE_REQUEST_TIMEOUT_MS,
   preparePipelinePackageUpload,
-  refuseLocalOnlyTrigger,
   updateSharedPipeline,
   uploadPipelinePackageBlob,
 } from './canopy-server-client';
@@ -231,6 +233,7 @@ import {
 } from '../canopy-cloud/client';
 import {
   PackageAnalysisBlockedError,
+  PackageAnalysisMissingError,
   ShareOperationError,
   SkillSecretDetectedError,
   ShareStageError,
@@ -900,22 +903,6 @@ export interface PortablePipelineDiscovery {
   childrenWithAssets: string[];
 }
 
-/**
- * A shared or packaged pipeline that declares `workflow` can't leave this
- * machine yet (CAN-5782); web never parses packaged pipelines, so the share
- * is blocked here.
- */
-function localOnlyTriggerBlocker(
-  subject: string,
-): PipelinePackageAnalysisBlocker {
-  return {
-    code: 'LOCAL_ONLY_PIPELINE_TRIGGER',
-    subject,
-    message: LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
-    occurrences: [],
-  };
-}
-
 function emptyPortablePipelineDiscovery(): PortablePipelineDiscovery {
   return {
     resources: [],
@@ -1141,20 +1128,6 @@ export async function buildPortablePipelineResources(input: {
         const childPipeline = parsePipelineText(
           await readFile(childPath, 'utf8'),
         );
-        // Web never parses a `child_pipeline` resource, so a child that
-        // declares `workflow` would reach it unchecked (CAN-5782).
-        if (pipelineDeclaresLocalOnlyTrigger(childPipeline)) {
-          discovered.blockers.push({
-            code: 'LOCAL_ONLY_PIPELINE_TRIGGER',
-            subject: displayName,
-            origin: input.bindingKey ? 'transitive' : 'direct',
-            message: LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
-            ...(parentJobId && parentStepId
-              ? { jobId: parentJobId, stepId: parentStepId }
-              : {}),
-            occurrences: [],
-          });
-        }
         if (declaresAssets(childPipeline))
           discovered.childrenWithAssets.push(displayName);
         const providerByStep =
@@ -1303,10 +1276,6 @@ export async function analyzePackageRequest(
       repoPath,
       dismissedReferences: input.dismissedReferences,
     });
-    // The share dialog shows this during review, so nothing is uploaded for
-    // a pipeline that declares `workflow` (CAN-5782).
-    if (pipelineDeclaresLocalOnlyTrigger(pipeline))
-      portable.blockers.push(localOnlyTriggerBlocker(pipeline.name));
     const rootInventoryEntryIds = await capabilityInventoryEntryIdsByKey(
       pipeline,
       inventory,
@@ -1557,8 +1526,6 @@ export async function analyzeAutomationCapabilityPackage(
       if (!resolved.selected) continue;
       try {
         const selected = parsePipelineText(rawPipeline);
-        if (pipelineDeclaresLocalOnlyTrigger(selected))
-          hostBlockers.push(localOnlyTriggerBlocker(resolved.name));
         packagedPipelines.push({
           key: resolved.key,
           name: resolved.name,
@@ -1578,8 +1545,6 @@ export async function analyzeAutomationCapabilityPackage(
     }
     if (input.pipelineContent !== undefined) {
       const pipeline = parsePipelineText(input.pipelineContent);
-      if (pipelineDeclaresLocalOnlyTrigger(pipeline))
-        hostBlockers.push(localOnlyTriggerBlocker(pipeline.name));
       const actionPipeline = packagePipelines
         ? options.actionPipeline
         : undefined;
@@ -2603,13 +2568,8 @@ export async function readAnalyzedCapabilityPackage(request: {
 }> {
   pruneAnalyses();
   const analysis = analyses.get(request.analysisId);
-  if (!analysis || Date.parse(analysis.summary.expiresAt) <= Date.now()) {
-    throw new ShareOperationError(
-      'dependency-review',
-      'Dependency analysis expired. Run the analysis again.',
-      'prepare',
-    );
-  }
+  if (!analysis || Date.parse(analysis.summary.expiresAt) <= Date.now())
+    throw new PackageAnalysisMissingError();
   if (
     request.cloudCopyOf !== undefined &&
     (!cloudCopySubjectMatches(analysis.cloudCopy, request.cloudCopyOf) ||
@@ -3029,8 +2989,6 @@ export async function createPackagedSharedPipeline(
   const rawPipeline = source ? analysis?.shareBytes : request.rawPipeline;
   if (rawPipeline === undefined)
     throw new Error('Workflow unavailable (unknown-provenance)');
-  // Refused before anything is uploaded, not at publication.
-  refuseLocalOnlyTrigger(rawPipeline);
   const authorize = async (): Promise<void> => {
     if (source)
       await authorizeSharedPipelineCreate(
@@ -3132,7 +3090,6 @@ export async function updateSharedPipelinePreservingPackage(
   current?: SharedPipelineDetail,
   options: Parameters<typeof updateSharedPipeline>[2] = {},
 ): Promise<SharedPipelineDetail> {
-  refuseLocalOnlyTrigger(rawPipeline);
   const scoped = pipelineResourceContextEnabled();
   const contextSnapshot = scoped ? await pipelineContextSnapshot() : undefined;
   const currentDetail = current ?? (await getSharedPipeline(remoteId));
@@ -3322,6 +3279,41 @@ export function dropPackageInstallInBackground(localPipelineId: string): void {
  * admitted, the install record must bind exactly that document; without one
  * the stored file is read, as for a run core has no definition for.
  */
+/**
+ * CAN-5782: the digest of the package a start of `localPipelineId` would
+ * resolve, read-only: unlike the start's resolution it never removes an
+ * install record, so a list or an approval can read it while an install
+ * replaces the binding. `undefined` for none (or one the stored YAML no
+ * longer matches, which a start would drop); throws when the cached package
+ * fails verification, as a start would.
+ */
+export async function installedPipelinePackageDigest(
+  localPipelineId: string,
+): Promise<string | undefined> {
+  const install = (await listPackageInstalls()).find(
+    (record) => record.localPipelineId === localPipelineId,
+  );
+  if (!install || install.distributionMode === 'definition_only')
+    return undefined;
+  const pipelinePath = localPipelineService.getPipelinePath(localPipelineId);
+  if (!pipelinePath.success || !pipelinePath.data) return undefined;
+  const rawPipeline = await readFile(pipelinePath.data, 'utf8');
+  if (hashPipelinePackageYaml(rawPipeline) !== install.pipelineContentHash)
+    return undefined;
+  const manifest = await verifyCachedPipelinePackage(
+    packagePathForDigest(install.packageDigest),
+    install.packageDigest,
+  );
+  if (
+    !manifest ||
+    !pipelinePackageCarriesPipeline(manifest, install.pipelineContentHash)
+  )
+    throw new Error(
+      'The installed workflow package is missing or invalid. Reinstall it from the share link.',
+    );
+  return install.packageDigest;
+}
+
 export async function resolveInstalledPipelinePackageForExecution(
   localPipelineId: string,
   admittedDocument?: string,
@@ -3830,7 +3822,6 @@ export async function copyPackageInstall(
   ) {
     throw new Error('Source workflow no longer matches its installed package');
   }
-  await replaceStoredPipelineYaml(targetLocalPipelineId, rawPipeline.data);
   await upsertPipelinePackageInstall(getPipelinePackageInstallStorePath(), {
     ...source,
     localPipelineId: targetLocalPipelineId,
@@ -3881,11 +3872,14 @@ async function findPackageUpdateTarget(originExternalId: string): Promise<
   | undefined
 > {
   for (const record of await listPackageInstalls()) {
-    if (
-      record.originExternalId !== originExternalId ||
-      isPipelineDefinitionClaimed(record.localPipelineId)
-    )
-      continue;
+    if (record.originExternalId !== originExternalId) continue;
+    if (isPipelineDefinitionClaimed(record.localPipelineId)) {
+      await assertStoredPipelineContext(record.localPipelineId);
+      throw new PipelineDefinitionSourceError(
+        'core.pipeline.sourceUnavailable',
+        'An install for this workflow is still pending. Wait for it to finish or restart the app.',
+      );
+    }
     const pipeline = localPipelineService.getPipeline(record.localPipelineId);
     const rawPipeline = localPipelineService.getPipelineText(
       record.localPipelineId,
@@ -3937,15 +3931,18 @@ interface PipelineInstallTransaction {
 async function trackPipelineInstallRollback(
   transaction: PipelineInstallTransaction | undefined,
   localPipelineId: string,
-  created: boolean,
+  change: 'created' | 'replaced' | 'linked',
 ): Promise<void> {
   if (!transaction) return;
-  const previous = created
-    ? undefined
-    : localPipelineService.getPipeline(localPipelineId);
-  const raw = created
-    ? undefined
-    : localPipelineService.getPipelineText(localPipelineId);
+  const previous =
+    change === 'replaced'
+      ? localPipelineService.getPipeline(localPipelineId)
+      : undefined;
+  const raw =
+    change === 'replaced'
+      ? localPipelineService.getPipelineText(localPipelineId)
+      : undefined;
+  const created = change === 'created';
   const record = created
     ? undefined
     : (await listPackageInstalls()).find(
@@ -3995,6 +3992,7 @@ interface PublicShareInstallSession {
   readonly getWindow?: () => BrowserWindow | null;
   subscription?: PublicPackageShareSubscription;
   outcome?: PipelinePackageInstallResult;
+  written?: StoredPipelineInfo;
 }
 
 /** Installs are queued one at a time, so at most one session is running. */
@@ -4282,7 +4280,7 @@ export async function readPublicPipelineShareRemote(
   const installWith = async (
     intent: PipelineInstallIntent,
     write: PipelineDefinitionInstall,
-  ): Promise<PipelineInfo> => {
+  ): Promise<{ info: PipelineInfo; written?: StoredPipelineInfo }> => {
     if (session) session.subscription = subscription;
     const localPipelineId = write.definitionId;
     const outcome = (): PipelinePackageInstallResult =>
@@ -4315,7 +4313,7 @@ export async function readPublicPipelineShareRemote(
           transaction?.onReceiptRollback,
         );
       if (session) session.outcome = outcome();
-      return storedPipelineInfo(localPipelineId);
+      return { info: storedPipelineInfo(localPipelineId) };
     }
     // Core holds the definition's lock from here; an edit saved since the
     // copy was chosen is kept rather than overwritten.
@@ -4332,12 +4330,13 @@ export async function readPublicPipelineShareRemote(
     await transaction?.check();
     // Each write is noted first, so an exit partway is rolled back at the
     // next start instead of leaving a copy a reinstall would duplicate.
+    const change = created ? 'created' : updated ? 'replaced' : 'linked';
     await intent.noteDefinition({
       definitionId: localPipelineId,
-      change: created ? 'created' : updated ? 'replaced' : 'linked',
+      change,
       contentHash: hashPipelinePackageYaml(write.text),
     });
-    let savedInfo: PipelineInfo | undefined;
+    let written: StoredPipelineInfo | undefined;
     if (created) {
       const saved = localPipelineService.savePipeline(
         {
@@ -4354,9 +4353,9 @@ export async function readPublicPipelineShareRemote(
       }
       if (saved.data.id !== localPipelineId)
         throw new Error('Pipeline create identity mismatch');
-      savedInfo = saved.data;
+      written = saved.data;
     }
-    await trackPipelineInstallRollback(transaction, localPipelineId, created);
+    await trackPipelineInstallRollback(transaction, localPipelineId, change);
     if (scopedDetail)
       await recordSharedPipelineInstall(
         scopedDetail,
@@ -4375,15 +4374,10 @@ export async function readPublicPipelineShareRemote(
           content: write.pipeline,
           rawContent: write.text,
         });
-        if (!saved.success) {
+        if (!saved.success || !saved.data) {
           throw new Error(saved.error ?? 'Failed to update the workflow');
         }
-      }
-      // The pin holds the exact shared YAML bytes. The local store serializes
-      // parsed content, so replace that serialization atomically with the
-      // reviewed snapshot before recording the package link.
-      if (created || updated) {
-        await replaceStoredPipelineYaml(localPipelineId, write.text);
+        written = saved.data;
       }
       const installedAt = new Date().toISOString();
       const record: PipelinePackageInstallRecordV1 =
@@ -4443,14 +4437,13 @@ export async function readPublicPipelineShareRemote(
       }
       throw error;
     }
-    await recordInstalledPipelineMetadata(
-      localPipelineId,
-      created,
-      created || Boolean(updated),
-      transaction,
-    );
+    if (!written && change !== 'linked')
+      throw new Error('The workflow write could not be confirmed.');
+    await recordInstalledPipelineOwner(localPipelineId, created, transaction);
     if (session) session.outcome = outcome();
-    return savedInfo ?? storedPipelineInfo(localPipelineId);
+    return written
+      ? { info: written, written }
+      : { info: storedPipelineInfo(localPipelineId) };
   };
 
   // Without a queued session (whose queue settles its intent and leases),
@@ -4459,18 +4452,18 @@ export async function readPublicPipelineShareRemote(
     write: PipelineDefinitionInstall,
   ): Promise<PipelineInfo> => {
     if (session) {
-      // Committed before core records the import's replay receipt, so a
-      // record never outlives an install core reported done.
+      // The queue checks the caller context again before committing its intent.
+      // The internal import's replay key is scoped to this invocation.
       const installed = await installWith(session.intent, write);
       await session.transaction?.check();
-      await session.intent.finish();
-      return installed;
+      session.written = installed.written;
+      return installed.info;
     }
     const intent = await beginPipelineInstallIntent('package_share');
     try {
       const installed = await installWith(intent, write);
-      await intent.finish();
-      return installed;
+      await finishPublicShareIntent(intent, installed.written, subscription);
+      return installed.info;
     } catch (error) {
       await intent.rollBack().catch((rollbackError: unknown) => {
         logMainProcessWarn(
@@ -4522,38 +4515,90 @@ function storedPipelineInfo(localPipelineId: string): PipelineInfo {
   return stored.data.info;
 }
 
-/**
- * An install keeps the owner it was installed in; reinstalling over an
- * existing pipeline keeps that pipeline's owner. Installed content carries no
- * agent marker. A metadata failure is logged rather than failing the install,
- * and a rolled-back install undoes these changes once the pipeline itself was
- * removed or restored.
- */
-export async function recordInstalledPipelineMetadata(
+function finishPublicShareIntent(
+  intent: PipelineInstallIntent,
+  written: StoredPipelineInfo | undefined,
+  subscription?: PublicPackageShareSubscription,
+): Promise<void> {
+  return written
+    ? intent.finish(
+        [{ definitionId: written.id, revision: written.revision }],
+        subscription && { ...subscription, localId: written.id },
+      )
+    : intent.finish();
+}
+
+function clearInstalledPipelineMarker(written: StoredPipelineInfo): void {
+  const result = setUserPipelineAgentAuthorIfCurrent(written.id, null, {
+    revision: written.revision,
+  });
+  if (result !== 'written' && result !== 'unchanged')
+    logMainProcessWarn(
+      'Could not clear the installed workflow’s agent marker',
+      {
+        operation: 'install-marker',
+        pipelineId: written.id,
+        code: result,
+      },
+    );
+}
+
+/** Reinstalling a workflow keeps its previous owner. */
+export async function recordInstalledPipelineOwner(
   localPipelineId: string,
   created: boolean,
-  contentWritten: boolean,
   transaction?: PipelineInstallTransaction,
 ): Promise<void> {
+  const revision = storedPipelineInfo(localPipelineId).revision;
+  const previous = readPipelineLocalMetadata({
+    type: 'stored',
+    source: 'user',
+    value: localPipelineId,
+  });
   try {
-    const previousAuthor = readPipelineLocalMetadata({
-      type: 'stored',
-      source: 'user',
-      value: localPipelineId,
-    }).agentAuthor;
     if (created)
       recordUserPipelineOwner(localPipelineId, await selectedOwnerContext());
     else await getUserPipelineOwner(localPipelineId);
-    if (contentWritten) setUserPipelineAgentAuthor(localPipelineId, null);
+    if (revision !== undefined)
+      withCurrentUserPipelineRevision(localPipelineId, revision, () =>
+        setUserPipelinePersonApproval(localPipelineId, null),
+      );
     transaction?.onReceiptRollback(() => {
-      if (created) deleteUserPipelineLocalMetadata(localPipelineId);
-      else if (contentWritten && previousAuthor)
-        setUserPipelineAgentAuthor(localPipelineId, previousAuthor);
+      const restored = localPipelineService.getPipeline(localPipelineId);
+      if (created) {
+        if (!restored.success) deleteUserPipelineLocalMetadata(localPipelineId);
+      } else if (
+        restored.success &&
+        restored.data &&
+        previous.personApprovedDigest &&
+        nativeGrantContentHash(restored.data.content) ===
+          previous.personApprovedDigest.contentHash &&
+        restored.data.info.revision !== undefined
+      ) {
+        const approval = previous.personApprovedDigest;
+        const restoredRevision = restored.data.info.revision;
+        withCurrentUserPipelineRevision(
+          localPipelineId,
+          restoredRevision,
+          () => {
+            const current = readPipelineLocalMetadata({
+              type: 'stored',
+              source: 'user',
+              value: localPipelineId,
+            });
+            if (current.agentAuthor === undefined)
+              setUserPipelinePersonApproval(localPipelineId, {
+                ...approval,
+                revision: restoredRevision,
+              });
+          },
+        );
+      }
       return Promise.resolve();
     });
   } catch (error) {
     logMainProcessWarn(
-      '[pipeline-packages] could not record installed pipeline metadata',
+      '[pipeline-packages] could not record installed pipeline owner',
       error,
     );
   }
@@ -4601,6 +4646,7 @@ export async function createContainerInstalledPipeline(input: {
   if (!saved.success || !saved.data) {
     throw new Error(saved.error ?? 'Failed to save the pipeline');
   }
+  const written = saved.data;
   try {
     const overlay = input.overlay;
     if (overlay) {
@@ -4645,7 +4691,8 @@ export async function createContainerInstalledPipeline(input: {
     ).catch(() => undefined);
     throw error;
   }
-  await recordInstalledPipelineMetadata(input.localPipelineId, true, true);
+  await recordInstalledPipelineOwner(input.localPipelineId, true);
+  clearInstalledPipelineMarker(written);
   return { localPipelineId: input.localPipelineId, contentHash };
 }
 
@@ -4718,6 +4765,13 @@ export async function installPublicPackageShare(
       try {
         const { importRemotePipeline } =
           await import('../canopy-runtime/pipeline-definition-dispatch');
+        const owner = (): Promise<
+          { owner: string; agentAuthor: null } | undefined
+        > =>
+          selectedOwnerContext().then(
+            (context) => ({ owner: context, agentAuthor: null }),
+            () => undefined,
+          );
         activePublicShareInstall = session;
         let installed: PipelineInfo;
         try {
@@ -4731,6 +4785,7 @@ export async function installPublicPackageShare(
                 : { packageDigest: request.expectedPackageDigest }),
             }),
             nameOverride: null,
+            owner,
           });
         } catch (error) {
           throw publicShareInstallError(error);
@@ -4741,9 +4796,8 @@ export async function installPublicPackageShare(
         if (outcome?.localPipelineId !== installed.id)
           throw new Error('Workflow install failed');
         await transaction?.check();
-        // Already finished by the remote's install; a no-op then.
-        await intent.finish();
-        if (subscription !== undefined)
+        await finishPublicShareIntent(intent, session.written, subscription);
+        if (session.written === undefined && subscription !== undefined)
           recordSharedItemInstall({
             kind: 'pipeline',
             ...subscription,
@@ -4751,6 +4805,7 @@ export async function installPublicPackageShare(
           });
         return outcome;
       } catch (error) {
+        if (error instanceof PipelineInstallCleanupPendingError) throw error;
         const failures: unknown[] = [];
         for (const undo of undos.reverse()) {
           try {

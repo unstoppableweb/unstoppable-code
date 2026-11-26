@@ -35,6 +35,7 @@ export const ORGANIZATION_SETTINGS_SUBTABS = [
   'general',
   'policies',
   'project-defaults',
+  'connectors',
   'integrations',
   'usage',
   'ai-gateway',
@@ -47,6 +48,16 @@ export type OrganizationSettingsSubtab =
 export const ORGANIZATION_MEMORY_VIEWS = ['facts', 'graph', 'ops'] as const;
 
 export type OrganizationMemoryView = (typeof ORGANIZATION_MEMORY_VIEWS)[number];
+
+/** The in-page tabs of the organization Transcripts page. */
+export const ORGANIZATION_TRANSCRIPT_VIEWS = [
+  'sessions',
+  'exports',
+  'access',
+] as const;
+
+export type OrganizationTranscriptView =
+  (typeof ORGANIZATION_TRANSCRIPT_VIEWS)[number];
 
 const SETTINGS_ROUTE_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,191}$/;
 
@@ -98,11 +109,24 @@ const organizationRouteSchema = z
     factId: settingsRouteIdSchema.optional(),
     memoryView: z.enum(ORGANIZATION_MEMORY_VIEWS).optional(),
     invoiceId: settingsRouteIdSchema.optional(),
+    transcriptsView: z.enum(ORGANIZATION_TRANSCRIPT_VIEWS).optional(),
+    sessionId: settingsRouteIdSchema.optional(),
   })
   .superRefine((route, ctx) => {
     const reject = (path: string, message: string): void => {
       ctx.addIssue({ code: 'custom', path: [path], message });
     };
+    if (route.transcriptsView !== undefined && route.page !== 'transcripts')
+      reject('transcriptsView', 'transcriptsView is only valid on Transcripts');
+    if (route.sessionId !== undefined) {
+      if (route.page !== 'transcripts')
+        reject('sessionId', 'sessionId is only valid on Transcripts');
+      else if (
+        route.transcriptsView !== undefined &&
+        route.transcriptsView !== 'sessions'
+      )
+        reject('sessionId', 'sessions belong to the sessions view');
+    }
     if (route.subtab !== undefined && route.page !== 'settings')
       reject('subtab', 'subtab is only valid on Settings');
     if (route.itemId !== undefined && route.page !== 'feed')
@@ -265,6 +289,23 @@ function parseOrganizationSegments(
       if (first !== 'fact' || second === undefined || third !== undefined)
         return null;
       return parseSettingsRoute({ ...base, page: 'memory', factId: second });
+    case 'transcripts':
+      if (noDetail) return parseSettingsRoute({ ...base, page: 'transcripts' });
+      if (first === 'exports' || first === 'access')
+        return second === undefined
+          ? parseSettingsRoute({
+              ...base,
+              page: 'transcripts',
+              transcriptsView: first,
+            })
+          : null;
+      if (first !== 'sessions' || second === undefined || third !== undefined)
+        return null;
+      return parseSettingsRoute({
+        ...base,
+        page: 'transcripts',
+        sessionId: second,
+      });
     case 'settings': {
       if (!noDetail) return null;
       const tab = search.get('tab');

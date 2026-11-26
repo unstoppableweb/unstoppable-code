@@ -193,6 +193,8 @@ export const HOSTED_SETTINGS_PAGE_REPLAY_PRIVACY = Object.freeze({
   'organization/groups': 'reviewed',
   'organization/projects': 'reviewed',
   'organization/memory': 'blocked',
+  // Other members' chat transcripts, exports and the access log.
+  'organization/transcripts': 'blocked',
   'organization/settings': 'reviewed',
 } as const satisfies Record<HostedSettingsPageKey, ReplaySurfacePrivacy>);
 

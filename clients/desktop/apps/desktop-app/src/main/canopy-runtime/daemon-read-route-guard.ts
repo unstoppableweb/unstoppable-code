@@ -62,11 +62,6 @@ const ELIGIBLE_EXCEPT_WINDOWS: Readonly<
   win32: WINDOWS_PENDING,
   linux: ELIGIBLE,
 };
-const PROTOCOL_PENDING: ReadRouteDisposition = {
-  kind: 'blocked',
-  until: 'CAN-4729',
-  reason: 'Stays in-process until CAN-4729 decides its daemon route.',
-};
 /**
  * CAN-4729's decision: Electron main's own Git spawns, Browse and the
  * installer resolve Git from this detection, so a daemon route would add a
@@ -113,7 +108,9 @@ const REMOTE_RETAINED: ReadRouteDisposition = {
  * Platform qualification only, not route selection or proof of serving.
  * Roots and directory keep their shipped reach on all three hosts. File,
  * search, link and branch list qualified on Linux in CAN-5547 after their
- * equivalence suites passed; Linux owns the daemon since CAN-4966.
+ * equivalence suites passed; Linux owns the daemon since CAN-4966. Worktree
+ * health qualified on macOS and Linux in CAN-4729: its checks run no network
+ * Git, and the daemon answers with codes only.
  * Reserved cells stay blocked pending assessment even when prerequisites
  * are met.
  * A missing row or platform fails to compile.
@@ -135,11 +132,7 @@ export const READ_ROUTE_TABLE: Readonly<
     win32: PROTOCOL_QUALIFICATION_PENDING,
     linux: PROTOCOL_QUALIFICATION_PENDING,
   },
-  'git.worktree.health.get': {
-    darwin: PROTOCOL_QUALIFICATION_PENDING,
-    win32: PROTOCOL_QUALIFICATION_PENDING,
-    linux: PROTOCOL_QUALIFICATION_PENDING,
-  },
+  'git.worktree.health.get': ELIGIBLE_EXCEPT_WINDOWS,
   'git.executable.get': {
     darwin: PROTOCOL_QUALIFICATION_PENDING,
     win32: PROTOCOL_QUALIFICATION_PENDING,
@@ -168,7 +161,7 @@ export const READ_ROUTE_PREREQUISITES: Readonly<
   'files.link': ELIGIBLE,
   'git.branch.list': ELIGIBLE,
   'git.remote.get': REMOTE_RETAINED,
-  'git.worktree.health.get': PROTOCOL_PENDING,
+  'git.worktree.health.get': ELIGIBLE,
   'git.executable.get': EXECUTABLE_RETAINED,
   'git.status.get': CHANGED_FILES_PENDING,
   'git.diff.get': CHANGED_FILES_PENDING,
@@ -192,7 +185,7 @@ export const READ_ROUTE_SCOPE_SHAPES: Readonly<
   'files.link': 'worktree',
   'git.branch.list': 'repository',
   'git.remote.get': 'repository',
-  'git.worktree.health.get': 'repository',
+  'git.worktree.health.get': 'worktree',
   'git.executable.get': 'repository',
   'git.status.get': 'repository',
   'git.diff.get': 'repository',

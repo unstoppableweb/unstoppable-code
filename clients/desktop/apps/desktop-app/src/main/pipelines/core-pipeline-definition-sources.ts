@@ -40,15 +40,13 @@ import {
 } from '@canopy/desktop-shared/node/pipelines/definition-sources';
 import { backgroundExecutionDeniedMessage } from '@canopy/execution-engine/lib/automation-context-copy';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
+import { inspectStoredPipelineDocument } from '@canopy/execution-engine/pipelines/store';
 import type { PipelineInfo } from '@canopy/execution-engine/types/pipeline';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { isPathInside } from '../lib/path-safety';
 import { readPreferencesFile } from '../lib/preferences-store';
 import { notifyDesktopInventoryChanged } from '../services/desktop-inventory-sync-signals';
-import {
-  recordSharedItemInstall,
-  recordSharedItemLocalUninstall,
-} from '../canopy-cloud/shared-item-subscriptions';
+import { recordSharedItemLocalUninstall } from '../canopy-cloud/shared-item-subscriptions';
 import {
   assertCanopyCloudCapability,
   CanopyCloudClientError,
@@ -67,11 +65,17 @@ import {
   filterStoredPipelineContexts,
   readProjectPipelineOwner,
 } from './pipeline-install-context';
-import { beginPipelineInstallIntent } from './pipeline-install-intents';
+import {
+  beginPipelineInstallIntent,
+  isPipelineDefinitionClaimed,
+  PipelineInstallCleanupPendingError,
+  whenPipelineDefinitionRecovered,
+} from './pipeline-install-intents';
 import {
   deleteUserPipelineLocalMetadata,
   isPipelineLocalMetadataReadable,
   readPipelineLocalMetadata,
+  takeRequiredUserPipelineMarkerWrite,
 } from './pipeline-local-metadata-store';
 import {
   copyPackageInstall,
@@ -799,18 +803,24 @@ export async function installSharedPipeline(
       await intent.noteInstallRecord(id, null);
       await removePackageInstall(id);
     }
-    // The install is committed; its subscription is best effort.
-    await intent.finish();
-    recordSharedItemInstall({
-      kind: 'pipeline',
-      remoteId: detail.id,
-      sourceKind: 'shared',
-      contentHash: detail.contentHash,
-      localId: id,
-    });
+    await intent.finish(
+      [{ definitionId: result.data.id, revision: result.data.revision }],
+      {
+        remoteId: detail.id,
+        sourceKind: 'shared',
+        contentHash: detail.contentHash,
+        localId: id,
+      },
+    );
     notifyDesktopInventoryChanged(['pipelines']);
     return result.data;
   } catch (error) {
+    if (error instanceof PipelineInstallCleanupPendingError)
+      throw new PipelineDefinitionSourceError(
+        'core.pipeline.sourceUnavailable',
+        error.message,
+        error,
+      );
     const failures = [errorMessage(error)];
     try {
       if (savedDefinition) {
@@ -1193,14 +1203,17 @@ export interface PipelineCopyStore<T> {
   /** The id the store saved the copy under. */
   idOf(created: T): string;
   remove(created: T): Promise<void>;
-  /** The copy as stored after its package install replaced its bytes. */
-  reread(created: T): Promise<T>;
+  /** Refuses a committed copy whose records no longer hold, before it answers. */
+  verify?(created: T): Promise<void>;
 }
 
 /**
  * Creates a copy with what the desktop keeps about its origin, all or
  * nothing: a share or install receipt follows the copy, and a stored
  * source's package install carries over with the package's own bytes.
+ * Everything is recorded before the copy commits, so nothing is written
+ * after it: a crash before the commit leaves only records naming an id no
+ * store holds, which a resend with the same key completes.
  */
 export async function copyPipelineWithProvenance<T>(
   origin: PipelineDefinitionCopy['origin'],
@@ -1212,23 +1225,25 @@ export async function copyPipelineWithProvenance<T>(
     undoOrigin = undo;
   };
   let created: T | undefined;
+  const packaged = origin.source === 'user' || origin.source === 'bundled';
   try {
     await recordPipelineCopyOrigin(origin, definitionId, onRollback);
+    if (packaged) await copyPackageInstall(origin.definitionId, definitionId);
     created = await store.create();
     if (store.idOf(created) !== definitionId)
       throw new Error('Pipeline create identity mismatch');
-    let written = created;
-    if (origin.source === 'user' || origin.source === 'bundled') {
-      await copyPackageInstall(origin.definitionId, definitionId);
-      written = await store.reread(written);
-    }
+    await store.verify?.(created);
     notifyDesktopInventoryChanged(['pipelines']);
-    return written;
+    return created;
   } catch (error) {
     const failures = [errorMessage(error)];
     try {
       if (created !== undefined) await store.remove(created);
-      await undoOrigin?.();
+      // A write with an unknown outcome can have published the copy.
+      if (inspectStoredPipelineDocument(definitionId).kind === 'absent') {
+        if (packaged) await removePackageInstall(definitionId);
+        await undoOrigin?.();
+      }
     } catch (rollbackError) {
       failures.push(errorMessage(rollbackError));
     }
@@ -1239,9 +1254,83 @@ export async function copyPipelineWithProvenance<T>(
           ? error.code
           : 'core.pipeline.sourceUnavailable',
       failures.join('; '),
-      error,
+      error instanceof PipelineDefinitionSourceError
+        ? (error.sourceCause ?? error)
+        : error,
     );
   }
+}
+
+/**
+ * Refuses, for a retry with the same key, a copy of a package-installed
+ * source whose install record doesn't pin the bytes it holds. Execution
+ * removes a record that doesn't match its document, so one written before
+ * the bytes can be gone once they land.
+ */
+async function assertRecordPinsCopy(
+  origin: PipelineDefinitionCopy['origin'],
+  definitionId: string,
+  text: string,
+): Promise<void> {
+  const installs = await listPackageInstalls();
+  if (
+    !installs.some((install) => install.localPipelineId === origin.definitionId)
+  )
+    return;
+  const record = installs.find(
+    (install) => install.localPipelineId === definitionId,
+  );
+  if (record?.pipelineContentHash !== hashPipelinePackageYaml(text))
+    throw new PipelineDefinitionSourceError(
+      'core.pipeline.sourceUnavailable',
+      'The workflow copy lost its package install while it was written.',
+    );
+}
+
+/**
+ * A package-installed source's own bytes, refused once they no longer match
+ * the install record that pins them.
+ */
+function pinnedSourceText(sourceId: string, contentHash: string): string {
+  const source = localPipelines.getPipelineText(sourceId);
+  if (!source.success || source.data === undefined)
+    throw new PipelineDefinitionSourceError(
+      'core.pipeline.sourceUnavailable',
+      source.error ?? 'Failed to read the source workflow',
+    );
+  if (hashPipelinePackageYaml(source.data) !== contentHash)
+    throw new PipelineDefinitionSourceError(
+      'core.pipeline.sourceUnavailable',
+      'Source workflow no longer matches its installed package',
+    );
+  return source.data;
+}
+
+/** The document the store keeps for `text`, without a read-only marker. */
+function storedDocument(text: string): ReturnType<typeof parsePipelineText> {
+  const pipeline = { ...parsePipelineText(text) };
+  delete pipeline.readonly;
+  return pipeline;
+}
+
+/**
+ * A copy as it commits: once its package install is recorded, it holds the
+ * source's own bytes that the record pins, so one store write completes it.
+ */
+async function packagedCopy(
+  copy: PipelineDefinitionCopy,
+): Promise<PipelineDefinitionCopy> {
+  if (copy.origin.source !== 'user' && copy.origin.source !== 'bundled')
+    return copy;
+  const record = (await listPackageInstalls()).find(
+    (install) => install.localPipelineId === copy.definitionId,
+  );
+  if (!record) return copy;
+  const text = pinnedSourceText(
+    copy.origin.definitionId,
+    record.pipelineContentHash,
+  );
+  return { ...copy, text, pipeline: storedDocument(text) };
 }
 
 /**
@@ -1251,22 +1340,42 @@ export async function copyPipelineWithProvenance<T>(
 export function desktopPipelineDefinitionWriter(): PipelineDefinitionWritePort {
   const store = createStoredPipelineDefinitionWriter({ owner: storedOwner });
   const stored = createStoredPipelineDefinitionPort({ owner: storedOwner });
+  const installWriteRefusal =
+    "Couldn't save the workflow while its installation is pending.";
+  const currentWriter = (): PipelineDefinitionWritePort => {
+    const marker = takeRequiredUserPipelineMarkerWrite();
+    return marker
+      ? createStoredPipelineDefinitionWriter({
+          owner: storedOwner,
+          prepare: marker.prepare,
+          finalize: (saved) =>
+            isPipelineDefinitionClaimed(saved.id)
+              ? {
+                  ok: false,
+                  reason: 'finalization_failed',
+                  message: installWriteRefusal,
+                }
+              : marker.finalize(saved),
+        })
+      : store;
+  };
   return {
     copy: async (copy, context): Promise<PipelineDefinitionSourceDocument> => {
       // An organization's project workflow is never copied out as Personal.
       if (copy.origin.source === 'project' && pipelineResourceContextEnabled())
         await assertPersonalProjectCopy(context.scope.workspaceId);
       return copyPipelineWithProvenance(copy.origin, copy.definitionId, {
-        create: () => store.copy(copy, context),
+        create: async () =>
+          currentWriter().copy(await packagedCopy(copy), context),
         idOf: (written) => written.definitionId,
         remove: async (written): Promise<void> => {
-          await store.delete(written.definitionId, null, context);
+          await store.delete(written.definitionId, written.revision, context);
+          deleteUserPipelineLocalMetadata(written.definitionId);
         },
-        reread: async (written) =>
-          (await stored.read('user', copy.definitionId, {
-            ...context,
-            sources: ['user'],
-          })) ?? written,
+        verify: (written) =>
+          copy.origin.source === 'user' || copy.origin.source === 'bundled'
+            ? assertRecordPinsCopy(copy.origin, copy.definitionId, written.text)
+            : Promise.resolve(),
       });
     },
     // As copyPipelineWithProvenance stores it: a stored source with a
@@ -1286,25 +1395,100 @@ export function desktopPipelineDefinitionWriter(): PipelineDefinitionWritePort {
         );
       return source.data;
     },
-    // A crash between the copy's package bytes and its install record leaves
-    // the record unwritten; a copy that has one is left as it is.
-    finishCopy: async (copy): Promise<void> => {
+    // An older build committed a copy before its package bytes and install
+    // record, so a crash could leave it without either. As a copy is made,
+    // the record is written first and the bytes it pins second; the bytes
+    // are rewritten through the store, refused if edited since they were
+    // read. A copy whose record pins the bytes it holds is complete. When
+    // the package moves on after the record is written, the record is taken
+    // back, so the copy is left a plain copy whose record never disagrees
+    // with its bytes.
+    finishCopy: async (copy, context): Promise<void> => {
       if (copy.origin.source !== 'user' && copy.origin.source !== 'bundled')
         return;
-      const installs = await listPackageInstalls();
-      const recorded = (localPipelineId: string): boolean =>
-        installs.some((install) => install.localPipelineId === localPipelineId);
-      if (!recorded(copy.origin.definitionId) || recorded(copy.definitionId))
+      const recordOf = async (
+        localPipelineId: string,
+      ): Promise<
+        Awaited<ReturnType<typeof listPackageInstalls>>[number] | undefined
+      > =>
+        (await listPackageInstalls()).find(
+          (install) => install.localPipelineId === localPipelineId,
+        );
+      if (!(await recordOf(copy.origin.definitionId))) return;
+      const copied = await stored.read('user', copy.definitionId, {
+        ...context,
+        sources: ['user'],
+      });
+      if (!copied)
+        throw new PipelineDefinitionSourceError(
+          'core.pipeline.definitionNotFound',
+          `Workflow not found: ${copy.definitionId}`,
+        );
+      const pinned = await recordOf(copy.definitionId);
+      if (pinned?.pipelineContentHash === hashPipelinePackageYaml(copied.text))
         return;
       await copyPackageInstall(copy.origin.definitionId, copy.definitionId);
+      const record = await recordOf(copy.definitionId);
+      if (!record) {
+        if (!(await recordOf(copy.origin.definitionId))) return;
+        throw new PipelineDefinitionSourceError(
+          'core.pipeline.sourceUnavailable',
+          'The workflow copy lost its package install while it was finished.',
+        );
+      }
+      let text: string;
+      try {
+        text = pinnedSourceText(
+          copy.origin.definitionId,
+          record.pipelineContentHash,
+        );
+      } catch (error) {
+        const failures = [errorMessage(error)];
+        try {
+          await removePackageInstall(copy.definitionId);
+        } catch (undoError) {
+          failures.push(errorMessage(undoError));
+        }
+        throw new PipelineDefinitionSourceError(
+          error instanceof PipelineDefinitionSourceError
+            ? error.code
+            : 'core.pipeline.sourceUnavailable',
+          failures.join('; '),
+          error,
+        );
+      }
+      if (copied.text !== text)
+        await store.upsert(
+          {
+            definitionId: copy.definitionId,
+            expectedRevision: copied.revision,
+            name: copied.name,
+            description: copied.description,
+            icon: copied.icon,
+            text,
+            pipeline: storedDocument(text),
+          },
+          context,
+        );
+      await assertRecordPinsCopy(copy.origin, copy.definitionId, text);
     },
     upsert: async (
       write,
       context,
     ): Promise<PipelineDefinitionSourceDocument> => {
-      if (write.definitionId !== null)
-        await assertWritableContext(write.definitionId);
-      const written = await store.upsert(write, context);
+      const id = write.definitionId;
+      if (id !== null) {
+        await assertWritableContext(id);
+        const recovery = isPipelineDefinitionClaimed(id)
+          ? 'installing'
+          : await whenPipelineDefinitionRecovered(id);
+        if (recovery !== 'ready' && recovery !== 'removed')
+          throw new PipelineDefinitionSourceError(
+            'core.pipeline.sourceUnavailable',
+            installWriteRefusal,
+          );
+      }
+      const written = await currentWriter().upsert(write, context);
       applyUserPipelineSaveEffects(write.definitionId);
       return written;
     },

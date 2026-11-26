@@ -537,7 +537,7 @@ function TestResultPanel({
       role="status"
       data-testid="mcp-health-result"
       data-success={outcome.success ? 'true' : 'false'}
-      title={outcome.success ? 'Connection succeeded' : 'Connection failed'}
+      title={outcome.success ? 'Connection succeeded' : "Couldn't connect"}
       actions={
         outcome.responseTime !== undefined ? (
           <span className="tabular-nums">

@@ -5,8 +5,8 @@ import {
   CuratedPipelineCatalog,
   type CuratedPipelineCatalogProps,
 } from './CuratedPipelineCatalog';
-import { DialogModal } from './DialogModal';
-import { SPACE_ROLE_GAP_CLASS, type SpaceRole } from './Stack';
+import { DialogModal } from '../primitives/DialogModal';
+import { SPACE_ROLE_GAP_CLASS, type SpaceRole } from '../primitives/Stack';
 
 export interface CuratedPipelinePreviewDialogProps {
   catalog: CuratedPipelineCatalogProps;

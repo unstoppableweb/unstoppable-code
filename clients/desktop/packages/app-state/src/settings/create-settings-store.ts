@@ -161,7 +161,8 @@ function seededBootstraps(
 
 /**
  * The organization detail a page carries, for the header cache. Organization
- * tabs carry it directly and memory pages through their optional `team`;
+ * tabs carry it directly, memory pages through their optional `team` and
+ * transcripts pages through their required `team`;
  * drill-downs, the list and account pages carry none. The memory fact
  * page's own `detail` is a fact, not an organization.
  */
@@ -183,6 +184,9 @@ function organizationDetailOf(
     case 'organization.memory.ops':
     case 'organization.memory.fact':
       return page.data.team?.detail ?? null;
+    case 'organization.transcripts':
+    case 'organization.transcripts.session':
+      return page.data.team.detail;
     case 'organization.list':
     case 'organization.digest':
     case 'organization.member':

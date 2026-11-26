@@ -169,6 +169,8 @@ export const WorktreeRecoveryListResultSchema = z.object({
     )
     .optional(),
   check: z.enum(['ok', 'journal-evidence-unreadable']),
+  // Older controllers strip this field; extending the required check enum rejects the entire list.
+  unreadableEvidence: z.literal('receipts').optional(),
 });
 export type WorktreeRecoveryListParams = z.infer<
   typeof WorktreeRecoveryListParamsSchema
@@ -254,6 +256,74 @@ export type WorktreeRecoveryFinishResult = z.infer<
   typeof WorktreeRecoveryFinishResultSchema
 >;
 
+/** CAN-7014: the exact reviewed copy set; no caller-supplied filesystem target. */
+export const WorktreeRecoverySetAsideParamsSchema = z.strictObject({
+  workspaceId: id,
+  operationId: z.string().uuid(),
+  revision: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export const WorktreeRecoverySetAsideResultSchema = z.discriminatedUnion(
+  'status',
+  [
+    z.strictObject({
+      status: z.literal('set-aside'),
+      operationId: z.string().uuid(),
+      /** Journal file names only, as they now appear in the quarantine folder. */
+      quarantinedNames: z.array(z.string().min(1).max(512)).min(1),
+      /** The single copy must be restored to its original name, never the tagged name. */
+      putBackCopies: z
+        .array(
+          z.strictObject({
+            quarantinedName: z.string().min(1).max(512),
+            originalName: z.string().min(1).max(255),
+          }),
+        )
+        .min(1),
+      /** Display-only destination folder for manual put-back. */
+      journalLocationLabel: z.string(),
+      /** Display-only and portable (`<data>/…`); never a host path. */
+      quarantineLocationLabel: z.string(),
+    }),
+    z.strictObject({
+      status: z.literal('refused'),
+      operationId: z.string().uuid(),
+      check: z.enum([
+        'revision-changed',
+        'not-eligible',
+        'resolution-pending',
+        'evidence-unreadable',
+      ]),
+    }),
+    z.strictObject({
+      status: z.literal('interrupted'),
+      operationId: z.string().uuid(),
+      check: z.literal('unconfirmed'),
+      /** Rename happened, but durability or put-back could not be confirmed. */
+      moved: z
+        .strictObject({
+          originalName: z.string().min(1).max(255),
+          quarantinedName: z.string().min(1).max(512),
+          journalLocationLabel: z.string(),
+          quarantineLocationLabel: z.string(),
+        })
+        .optional(),
+      /** An unused destination reservation whose removal could not be confirmed. */
+      reservation: z
+        .strictObject({
+          quarantinedName: z.string().min(1).max(512),
+          quarantineLocationLabel: z.string(),
+        })
+        .optional(),
+    }),
+  ],
+);
+export type WorktreeRecoverySetAsideParams = z.infer<
+  typeof WorktreeRecoverySetAsideParamsSchema
+>;
+export type WorktreeRecoverySetAsideResult = z.infer<
+  typeof WorktreeRecoverySetAsideResultSchema
+>;
+
 export const CORE_WORKTREE_RECOVERY_INSTRUCTIONS = {
   'core.worktree.recovery.resolve': defineCanopyInstruction({
     plane: 'core',
@@ -277,6 +347,19 @@ export const CORE_WORKTREE_RECOVERY_INSTRUCTIONS = {
     requiredGrants: ['core.worktree.write'],
     params: WorktreeRecoveryFinishParamsSchema,
     result: WorktreeRecoveryFinishResultSchema,
+    error: CanopyErrorPayloadSchema.extend({
+      retry: CanopyQueryRetryDirectiveSchema,
+    }),
+  }),
+  'core.worktree.recovery.setAside': defineCanopyInstruction({
+    plane: 'core',
+    domain: 'worktree',
+    version: 1,
+    placement: 'core-only',
+    idempotency: 'inherent',
+    requiredGrants: ['core.worktree.write'],
+    params: WorktreeRecoverySetAsideParamsSchema,
+    result: WorktreeRecoverySetAsideResultSchema,
     error: CanopyErrorPayloadSchema.extend({
       retry: CanopyQueryRetryDirectiveSchema,
     }),

@@ -105,6 +105,23 @@ const FEATURE_LABELS: Record<DataSharingFeatureId, string> = {
   'organization-memory': 'Organization memory',
 };
 
+/** A feature's user-facing pill label. */
+export function dataSharingFeatureLabel(id: DataSharingFeatureId): string {
+  return FEATURE_LABELS[id];
+}
+
+/**
+ * The features the first-run "Sync activity to your account" choice names,
+ * in pill order: what a signed-in member gets by turning sync on.
+ */
+export const ONBOARDING_SYNC_FEATURE_IDS: readonly DataSharingFeatureId[] = [
+  'feed-activity',
+  'statistics',
+  'cost-and-savings',
+  'push-notifications',
+  'organization-memory',
+];
+
 function feature(
   id: DataSharingFeatureId,
   enforcementOnly?: boolean,
@@ -209,6 +226,16 @@ export const DATA_SHARING_SCOPE_DESCRIPTIONS: Record<
 };
 
 /**
+ * A scope's description as a settings row hint. Row hints on the member
+ * surfaces (Settings → Privacy and the first-run data choices card) are
+ * fragments without a closing period, matching the Usage data rows beside
+ * them; the org admin card keeps the full sentences.
+ */
+export function dataSharingScopeRowHint(scope: DataSharingScopeKey): string {
+  return DATA_SHARING_SCOPE_DESCRIPTIONS[scope].replace(/\.$/, '');
+}
+
+/**
  * Features a scope powers, optionally filtered for the member-side surface.
  *
  * Pass `includeEnforcementOnly: false` from the desktop Privacy tab / Cloud sync
@@ -244,6 +271,34 @@ export function dataSharingDependencyNote(scope: DataSharingScopeKey): string {
     return `${FEATURE_LABELS['organization-memory']} also needs ${DATA_SHARING_SCOPE_LABELS.metadata}, which is off.`;
   }
   return `Also needs ${DATA_SHARING_SCOPE_LABELS.metadata}, which is off.`;
+}
+
+/**
+ * The scopes whose content an organization's owners can open: they view and
+ * download transcripts, and export them with plans and session summaries
+ * (docs/organization-transcripts.md). Usage metadata holds no content.
+ */
+export const DATA_SHARING_OWNER_VISIBLE_SCOPES: readonly DataSharingScopeKey[] =
+  ['plans', 'summaries', 'transcripts'];
+
+/**
+ * The note under a scope's Off / Just me / Organization choice saying what
+ * Organization lets owners do, or `null` for a scope without content. One
+ * source for the desktop Privacy rows and the web opt-in.
+ */
+export function dataSharingOrganizationAccessNote(
+  scope: DataSharingScopeKey,
+): string | null {
+  switch (scope) {
+    case 'plans':
+      return "With Organization, your organization's owners can view and download these plans.";
+    case 'summaries':
+      return "With Organization, your organization's owners can view and download these summaries.";
+    case 'transcripts':
+      return "With Organization, your organization's owners can view and download these transcripts.";
+    case 'metadata':
+      return null;
+  }
 }
 
 /** Derived from feature pills, with the metadata delivery prerequisite first. */

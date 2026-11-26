@@ -48,7 +48,7 @@ export function antigravityAppToolServerNames(): { main: string; ui: string } {
   return cursorCanopyMcpServerNames();
 }
 
-/** Native MCP calls skip ACP permissions in 1.5.1. Gate the actual host effect. */
+/** The runtime opener allows routed MCP calls; gate the actual host effect here. */
 export async function openAntigravityAppTools(input: {
   sessionKey: string;
   options: AgentSessionOptions;

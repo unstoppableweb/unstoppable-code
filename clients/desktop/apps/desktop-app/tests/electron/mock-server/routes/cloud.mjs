@@ -3072,6 +3072,12 @@ export async function handleCloudRequest(request, response, url) {
     }
     const scenarioKey = keyFromBearer(request);
     const cloudScenario = getScenario(scenarioKey).cloud;
+    recordScenarioActivity(scenarioKey, 'accountProbe');
+    // CAN-6997: revoke an already provisioned account while Electron is absent.
+    if (cloudScenario?.accountHttpStatus === 401) {
+      jsonResponse(response, 401, { error: 'Credential revoked.' });
+      return true;
+    }
     const accountDelayMs = cloudScenario?.accountDelayMs;
     if (typeof accountDelayMs === 'number' && accountDelayMs > 0) {
       await delay(accountDelayMs);
@@ -3617,6 +3623,7 @@ export async function handleCloudRequest(request, response, url) {
       return true;
     }
     const bearer = keyFromBearer(request);
+    recordScenarioActivity(bearer, 'aiCreditsSubscription');
     jsonResponse(response, 200, {
       email: CLOUD_ACCOUNT.email,
       active: true,
@@ -3634,6 +3641,7 @@ export async function handleCloudRequest(request, response, url) {
       return true;
     }
     const bearer = keyFromBearer(request);
+    recordScenarioActivity(bearer, 'aiCreditsBalance');
     const forcedStatus = getScenario(bearer).cloud?.aiCreditsBalanceHttpStatus;
     if (
       typeof forcedStatus === 'number' &&

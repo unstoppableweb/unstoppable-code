@@ -1,12 +1,12 @@
-import { Badge, Count } from './Badge';
+import { Badge, Count } from '../primitives/Badge';
 import type { JSX, ReactNode } from 'react';
 import type {
   RemoteControlMcpConnectionMetadata,
   RemoteControlPluginCatalogMemberInventory,
 } from '@canopy/protocol/remote-control/shell';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import { Heading } from './Heading';
-import { Surface } from './Surface';
+import { Heading } from '../primitives/Heading';
+import { Surface } from '../primitives/Surface';
 import { PluginModNotice, pluginModRows } from './PluginModMembers';
 
 export interface PluginMemberDetailsProps {

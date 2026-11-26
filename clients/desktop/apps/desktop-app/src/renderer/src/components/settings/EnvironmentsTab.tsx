@@ -27,6 +27,7 @@ import {
   ConfirmDialog,
   EmptyStateRow,
   ErrorState,
+  CopyDetailsButton,
   Notice,
   SearchField,
   SettingsButtonRow,
@@ -134,6 +135,8 @@ export function EnvironmentsTab(): JSX.Element {
     'idle' | 'saving' | 'saved' | 'error'
   >('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
+  // The raw save failure, offered through Copy details and never shown.
+  const [saveErrorDetails, setSaveErrorDetails] = useState<string | null>(null);
   const [editorValidation, setEditorValidation] =
     useState<EditorValidation | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
@@ -178,6 +181,7 @@ export function EnvironmentsTab(): JSX.Element {
       setSaveStatus('idle');
     }
     setSaveError(null);
+    setSaveErrorDetails(null);
   }, [environmentSaveVersion]);
 
   const sortedEnvironments = useMemo(
@@ -405,19 +409,17 @@ export function EnvironmentsTab(): JSX.Element {
     if (!validation.ok) {
       setSaveStatus('error');
       setSaveError(validation.message);
+      setSaveErrorDetails(null);
       return;
     }
     setSaveStatus('saving');
     setSaveError(null);
+    setSaveErrorDetails(null);
     try {
       await save(data);
     } catch (err) {
       setSaveStatus('error');
-      setSaveError(
-        err instanceof Error
-          ? err.message
-          : 'Could not save environment changes.',
-      );
+      setSaveErrorDetails(err instanceof Error ? err.message : null);
     }
   }, [data, save]);
 
@@ -490,13 +492,10 @@ export function EnvironmentsTab(): JSX.Element {
       onRetry={(): void => {
         setSaveStatus('idle');
         setSaveError(null);
+        setSaveErrorDetails(null);
         void retryStorageFailure().catch((err: unknown) => {
           setSaveStatus('error');
-          setSaveError(
-            err instanceof Error
-              ? err.message
-              : 'Could not save environment changes.',
-          );
+          setSaveErrorDetails(err instanceof Error ? err.message : null);
         });
       }}
     />
@@ -553,8 +552,21 @@ export function EnvironmentsTab(): JSX.Element {
             </span>
           )}
           {saveStatus === 'error' && !storageNoticeFailure && (
-            <Notice intent="attention" data-testid="environments-save-error">
-              {saveError ?? 'Could not save environment changes.'}
+            <Notice
+              intent="attention"
+              data-testid="environments-save-error"
+              {...(saveErrorDetails === null
+                ? {}
+                : {
+                    actions: (
+                      <CopyDetailsButton
+                        details={saveErrorDetails}
+                        data-testid="environments-save-error-copy-details"
+                      />
+                    ),
+                  })}
+            >
+              {saveError ?? "Couldn't save environment changes."}
             </Notice>
           )}
           <Button

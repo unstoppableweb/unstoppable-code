@@ -1,19 +1,37 @@
+import { isDeepStrictEqual } from 'node:util';
 import type {
   WorkerAgentSubagentRunResult,
+  WorkerAgentTurnRunParams,
   WorkerAgentTurnRunResult,
 } from '@canopy/protocol/canopy-core';
+import { canonicalizeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
+import { normalizeCodexMaxConcurrentSubagents } from '@canopy/execution-engine/lib/codex-multi-agent';
 import {
   agentRunLaunchUnavailableError,
   type SubagentExecutionWorker,
   type TurnEventSink,
   type TurnExecutionWorker,
 } from '@canopy/core-runtime/node/agent/turns';
+import type { AgentSessionOptions } from '../agents/types';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import {
   stageAgentRun,
   takeStagedAgentRun,
   type StagedAgentRun,
 } from './staged-agent-run';
+import {
+  TURN_LAUNCH_MEMBERS,
+  resolveTurnLaunch,
+  type PortableTurnSessionOptions,
+  type TurnLaunchHostPort,
+} from './turn-launch';
+
+/** What the worker checks a turn's launch against while it serves the staged run (CAN-6995). */
+export interface TurnLaunchShadow {
+  /** The session options the staged run serves. */
+  readonly options: AgentSessionOptions;
+  readonly port: TurnLaunchHostPort;
+}
 
 export interface StagedTurn {
   readonly run: StagedAgentRun;
@@ -23,6 +41,7 @@ export interface StagedTurn {
   readonly settlement: Promise<WorkerAgentTurnRunResult>;
   /** The exact-turn Stop, called once when the worker signal aborts. */
   stop(): Promise<void>;
+  readonly shadow?: TurnLaunchShadow;
 }
 
 export interface StagedSubagent {
@@ -54,6 +73,81 @@ export function stageSubagent(
   stagedSubagents.set(subagent.run, subagent);
 }
 
+const HOST_MEMBERS = new Set(
+  Object.entries(TURN_LAUNCH_MEMBERS)
+    .filter(([, kind]) => kind === 'host')
+    .map(([member]) => member),
+);
+
+/**
+ * The staged options as a session served from the launch reads them: no host
+ * members or unset ones, both thinking fields in one canonical model config,
+ * the subagent limit normalised, and no legacy fast-mode alias.
+ */
+function servedView(options: AgentSessionOptions): Map<string, unknown> {
+  const view = new Map<string, unknown>(
+    Object.entries(options).filter(
+      ([member, value]) =>
+        value !== undefined &&
+        !HOST_MEMBERS.has(member) &&
+        member !== 'codexFastModeEnabled',
+    ),
+  );
+  const modelConfig = {
+    ...options.modelConfig,
+    ...(options.thinkingLevel !== undefined
+      ? { thinkingLevel: options.thinkingLevel }
+      : {}),
+  };
+  if (Object.keys(modelConfig).length > 0)
+    view.set('modelConfig', canonicalizeAgentModelConfig(modelConfig));
+  if (options.codexMaxConcurrentSubagents !== undefined)
+    view.set(
+      'codexMaxConcurrentSubagents',
+      normalizeCodexMaxConcurrentSubagents(options.codexMaxConcurrentSubagents),
+    );
+  return view;
+}
+
+function differingMembers(
+  staged: AgentSessionOptions,
+  served: PortableTurnSessionOptions,
+): string[] {
+  const expected = servedView(staged);
+  const actual = new Map<string, unknown>(Object.entries(served));
+  return Array.from(new Set([...expected.keys(), ...actual.keys()]))
+    .filter(
+      (member) => !isDeepStrictEqual(expected.get(member), actual.get(member)),
+    )
+    .sort();
+}
+
+/**
+ * Resolves the launch as a serving worker would and logs where it differs
+ * from the staged run, by member name only. The staged run is served either
+ * way (CAN-6995 S1b-2a).
+ */
+function checkLaunchShadow(
+  params: WorkerAgentTurnRunParams,
+  shadow: TurnLaunchShadow,
+): void {
+  if (!params.launch) return;
+  const resolved = resolveTurnLaunch(params.launch, params, shadow.port);
+  if (!resolved.ok) {
+    logMainProcessWarn('[turn-worker] launch shadow mismatch', {
+      turnRunId: params.turnRunId,
+      unresolved: resolved.reason,
+    });
+    return;
+  }
+  const members = differingMembers(shadow.options, resolved.options);
+  if (members.length > 0)
+    logMainProcessWarn('[turn-worker] launch shadow mismatch', {
+      turnRunId: params.turnRunId,
+      members,
+    });
+}
+
 function warnStopFailed(error: unknown): void {
   logMainProcessWarn('[turn-worker] The exact-turn Stop failed', error);
 }
@@ -63,6 +157,7 @@ export const desktopTurnWorker: TurnExecutionWorker = {
     const run = takeStagedAgentRun(params.turnRunId);
     const turn = run ? stagedTurns.get(run) : undefined;
     if (!turn) throw agentRunLaunchUnavailableError();
+    if (turn.shadow) checkLaunchShadow(params, turn.shadow);
     turn.attach(sink);
     const onAbort = (): void => {
       void turn.stop().catch(warnStopFailed);

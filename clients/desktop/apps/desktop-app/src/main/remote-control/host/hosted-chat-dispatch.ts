@@ -1,5 +1,9 @@
 import type { HostedFirstPartyClient } from '@canopy/protocol/remote-control';
-import { HOSTED_SLACK_CONVERSATIONS_TARGET } from '@canopy/protocol/remote-control/channels';
+import {
+  HOSTED_SLACK_CONVERSATIONS_TARGET,
+  HOSTED_SLACK_REQUESTS_OFF_REFUSAL,
+  HOSTED_SLACK_REQUESTS_UNAVAILABLE_REFUSAL,
+} from '@canopy/protocol/remote-control/channels';
 import {
   APP_ADVISOR_PROJECT_ID,
   isBotProjectId,
@@ -22,8 +26,8 @@ import type { ChatQuestionRespondOutcome } from '../../chat-questions/respond';
  * rather than replayed through the bridge window (CAN-5985). The session's
  * argument policy (`hostedInvocationAllowed`) has already admitted the call:
  * a new chat, a message, an answer to an ordinary question, a chat's model,
- * the reviewed settings patch keys, or steering a queued message (CAN-7445).
- * Here the host
+ * the reviewed settings patch keys, steering a queued message (CAN-7445), or
+ * archiving one chat (CAN-7446). Here the host
  *
  * - stamps the agent attribution it derived from the authenticated session on
  *   every message and answer, as Portal stamps an external agent's command
@@ -40,7 +44,11 @@ import type { ChatQuestionRespondOutcome } from '../../chat-questions/respond';
  *   while a plan waits for review neither approves nor discards it, as on
  *   Portal; the review only stays hidden until plan mode is back on;
  * - refuses an answer to a secret-input question, which only the person may
- *   give.
+ *   give;
+ * - archives a chat with only its tab ID, so `keepSession` and `unread` never
+ *   reach the chat, and refuses it for any chat in a Work Entry project, whose
+ *   main chat closes only with its task (CAN-7446). A busy chat is refused by
+ *   the archive itself.
  */
 
 type CreateTabCommand = Extract<ChatCommand, { type: 'chat.create_tab' }>;
@@ -62,6 +70,12 @@ export interface HostedChatAttribution {
   readonly sessionDeviceId: string;
   /** The first-party caller the session's verified delegation names. */
   readonly firstPartyClient?: HostedFirstPartyClient;
+  /**
+   * Whether the session still holds its pairing: a send or new chat commits
+   * only while it does, so one in flight when it is removed never goes out
+   * (CAN-7872). Host-only; never serialized.
+   */
+  readonly canCommit?: () => boolean;
 }
 
 export interface HostedQuestionAnswerRequest {
@@ -155,6 +169,11 @@ export interface HostedChatDispatchDeps {
   answerQuestion(
     request: HostedQuestionAnswerRequest,
   ): Promise<ChatQuestionRespondOutcome>;
+  /**
+   * Whether `projectId` is a Work Entry (Cowork) project, whose chats a
+   * hosted archive never closes (CAN-7446).
+   */
+  isWorkEntryScope(projectId: string): boolean;
   /** A Slack session's Orchestrator send; without it every Bot is refused. */
   orchestrator?: HostedOrchestratorDeps;
   /** Whether an accepted send started its turn or waits in the queue. */
@@ -183,12 +202,8 @@ export const HOSTED_MODEL_PROVIDER_REFUSAL =
 export const HOSTED_CHAT_COMMAND_REFUSAL =
   "Agents can't make this chat change.";
 
-export const HOSTED_SLACK_REQUESTS_OFF_REFUSAL =
-  "This computer isn't listening for Slack mentions. Turn it on in Settings → Integrations on this computer.";
-
-// No setting to point at: the flag hides it on this computer.
-export const HOSTED_SLACK_REQUESTS_UNAVAILABLE_REFUSAL =
-  "This computer isn't listening for Slack mentions yet.";
+export const HOSTED_WORK_ENTRY_CHAT_ARCHIVE_REFUSAL =
+  'Archive the task to close its main chat.';
 
 type TabSettingsPatchCommand = Extract<
   ChatCommand,
@@ -428,6 +443,21 @@ export function createHostedChatDispatcher(
                 ? {}
                 : { queuedMessageRevision: command.queuedMessageRevision }),
             },
+          },
+          attribution,
+        );
+      case 'chat.archive_tab':
+        if (deps.isWorkEntryScope(request.projectId))
+          return refused(
+            request,
+            'rejected',
+            HOSTED_WORK_ENTRY_CHAT_ARCHIVE_REFUSAL,
+          );
+        return deps.dispatch(
+          {
+            ...request,
+            origin: 'portal',
+            command: { type: 'chat.archive_tab', tabId: command.tabId },
           },
           attribution,
         );

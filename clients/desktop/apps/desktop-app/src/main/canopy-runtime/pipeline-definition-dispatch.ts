@@ -13,6 +13,7 @@ import {
 import { CanopyOperationError } from '@canopy/core-runtime';
 import {
   pipelineDefinitionError,
+  pipelineDefinitionOwnerKey,
   PipelineDefinitionSourceError,
 } from '@canopy/core-runtime/node/pipeline';
 import {
@@ -40,16 +41,23 @@ import {
 import type {
   IPCResultWithOutcome,
   Pipeline,
+  PipelineAgentAuthor,
   PipelineData,
   PipelineInfo,
 } from '@canopy/execution-engine/types/pipeline';
 import {
   getStoredPipelineIndexEntry,
   listStoredPipelines,
+  type StoredPipelineInfo,
 } from '@canopy/execution-engine/pipelines/store';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import type { PreferencesData } from '@canopy/desktop-shared/types';
 import { getStoredPipelineBySource } from '../pipelines/pipeline-service';
+import {
+  registerPendingDefinitionOwner,
+  type PendingDefinitionOwner,
+} from '../pipelines/daemon-definition-pending-owners';
+import { withRequiredUserPipelineMarker } from '../pipelines/pipeline-local-metadata-store';
 import { withPipelineEnablementCommit } from '../pipelines/pipeline-enablement-commit';
 import {
   withPipelinePresentation,
@@ -100,6 +108,14 @@ export const PIPELINE_DEFINITION_AGENT_CALLER: CanopyCallerDescriptor = {
   grants: [PIPELINE_GRANTS.read, PIPELINE_GRANTS.write],
 };
 
+/**
+ * A routed write's owner (CAN-7507), or how to read it when the write is
+ * routed: an in-process write never reads it.
+ */
+export type PendingDefinitionOwnerSource =
+  | PendingDefinitionOwner
+  | (() => Promise<PendingDefinitionOwner | undefined>);
+
 /** The definition writes main can send to a daemon route (CAN-7507). */
 export type PipelineDefinitionWriteOperation =
   | 'upsert'
@@ -115,6 +131,11 @@ export type PipelineDefinitionWriteOperation =
  */
 export interface PipelineDefinitionWriteRoute {
   serves(operation: PipelineDefinitionWriteOperation): boolean;
+  /**
+   * The client instance the daemon knows this route's connection by, so a
+   * routed write's owner is registered under the key the daemon derives.
+   */
+  readonly clientInstanceId: string;
   upsert(
     params: PipelineDefinitionUpsertParams,
     options?: CanopyClientInstructionOptions,
@@ -173,9 +194,60 @@ async function sendDefinitionWrite<Result>(
     route: PipelineDefinitionWriteRoute,
     options: CanopyClientInstructionOptions,
   ) => Promise<Result>,
+  {
+    marker,
+    owner,
+  }: {
+    marker?: RequiredUserPipelineMarker;
+    owner?: PendingDefinitionOwnerSource;
+  } = {},
 ): Promise<Result> {
   const route = definitionWriteRoute?.() ?? null;
+  if (marker) {
+    if (route?.serves(operation))
+      throw new PipelineDefinitionSourceError(
+        'core.pipeline.sourceUnavailable',
+        'The workflow’s author could not be recorded by its writer.',
+        { reason: 'finalization_failed' },
+      );
+    return withRequiredUserPipelineMarker(
+      marker.author,
+      marker.owner,
+      inProcess,
+      marker.preservePending,
+    );
+  }
   if (!route?.serves(operation)) return inProcess();
+  const pending = typeof owner === 'function' ? await owner() : owner;
+  // A routed create's id is the daemon's, so its owner is recorded before
+  // the commit from what is registered here (CAN-7507). The caller still
+  // records it once the write answers.
+  const release =
+    pending &&
+    registerPendingDefinitionOwner(
+      pipelineDefinitionOwnerKey(route.clientInstanceId, idempotencyKey),
+      pending,
+    );
+  try {
+    const result = await deliverDefinitionWrite(route, idempotencyKey, routed);
+    release?.('settled');
+    return result;
+  } catch (error) {
+    release?.(
+      error instanceof CanopyOutcomeUnknownError ? 'unknown' : 'settled',
+    );
+    throw error;
+  }
+}
+
+async function deliverDefinitionWrite<Result>(
+  route: PipelineDefinitionWriteRoute,
+  idempotencyKey: string,
+  routed: (
+    route: PipelineDefinitionWriteRoute,
+    options: CanopyClientInstructionOptions,
+  ) => Promise<Result>,
+): Promise<Result> {
   let uncertain = false;
   let inFlight = false;
   return deliverCanopy(
@@ -204,8 +276,50 @@ async function sendDefinitionWrite<Result>(
   });
 }
 
+export interface RequiredUserPipelineMarker {
+  author: PipelineAgentAuthor | null;
+  owner?: string;
+  preservePending?: true;
+}
+
+export type UserPipelineWriteResult =
+  IPCResultWithOutcome<StoredPipelineInfo> & {
+    markerRefused?: true;
+    revisionRefused?: true;
+  };
+
 /** A failed write's result; an unknown outcome is reported as unknown. */
-function failedDefinitionWrite(error: unknown): IPCResultWithOutcome<never> {
+function failedDefinitionWrite(
+  error: unknown,
+): Omit<UserPipelineWriteResult, 'data'> {
+  const failure =
+    error instanceof PipelineDefinitionSourceError
+      ? error.sourceCause
+      : pipelineSourceFailure(error);
+  if (typeof failure === 'object' && failure !== null && 'reason' in failure) {
+    if (failure.reason === 'finalization_unconfirmed')
+      return {
+        success: false,
+        outcome: 'unknown',
+        error: CANOPY_OUTCOME_UNKNOWN_MESSAGE,
+      };
+    if (failure.reason === 'finalization_failed')
+      return {
+        success: false,
+        markerRefused: true,
+        error: pipelineWriteErrorMessage(error),
+      };
+  }
+  if (
+    error instanceof CanopyOperationError &&
+    (error.payload.code === 'core.pipeline.revisionConflict' ||
+      error.payload.code === 'core.pipeline.definitionNotFound')
+  )
+    return {
+      success: false,
+      revisionRefused: true,
+      error: pipelineWriteErrorMessage(error),
+    };
   return error instanceof CanopyOutcomeUnknownError
     ? {
         success: false,
@@ -228,6 +342,11 @@ export interface UserPipelineWrite {
   rawContent?: string;
   /** Absent keeps the pipeline's enabled state. */
   enabled?: boolean;
+  /**
+   * Who owns a new pipeline, recorded before a routed create commits
+   * (CAN-7507); the caller still records it after the save.
+   */
+  owner?: PendingDefinitionOwnerSource;
 }
 
 /** The message a legacy caller showed for a failed read or write. */
@@ -284,7 +403,8 @@ async function republishOwnerAutomation(pipelineId: string): Promise<void> {
 export async function saveUserPipeline(
   write: UserPipelineWrite,
   caller: CanopyCallerDescriptor = PIPELINE_DEFINITION_DESKTOP_CALLER,
-): Promise<IPCResultWithOutcome<PipelineInfo>> {
+  marker?: RequiredUserPipelineMarker,
+): Promise<UserPipelineWriteResult> {
   if (
     write.rawContent !== undefined &&
     rawContentMismatch(write.rawContent, write.content)
@@ -318,6 +438,7 @@ export async function saveUserPipeline(
           { caller, metadata: { idempotencyKey } },
         ),
       (route, options) => route.upsert(params, options),
+      { marker, owner: write.id === undefined ? write.owner : undefined },
     );
     void republishOwnerAutomation(definition.definitionId);
     return {
@@ -338,7 +459,7 @@ export async function saveUserPipeline(
 function savedPipelineInfo(
   definition: PipelineDefinition,
   content: Pipeline,
-): PipelineInfo {
+): StoredPipelineInfo {
   const stored = getStoredPipelineBySource('user', definition.definitionId);
   const row = stored.success ? stored.data?.info : undefined;
   return {
@@ -372,6 +493,8 @@ export interface RemotePipelineImport {
   nameOverride: string | null;
   /** A user pipeline the install replaces; absent creates one. */
   definitionId?: string;
+  /** Who owns the installed pipeline, recorded before a routed import commits. */
+  owner?: PendingDefinitionOwnerSource;
 }
 
 /**
@@ -405,6 +528,7 @@ export async function importRemotePipeline(
         { caller, metadata: { idempotencyKey } },
       ),
     (route, options) => route.import(params, options),
+    { owner: input.owner },
   );
   return savedPipelineInfo(definition, parsePipelineText(definition.document));
 }
@@ -414,7 +538,7 @@ export async function deleteUserPipeline(
   id: string,
   expectedRevision: number | null,
   caller: CanopyCallerDescriptor = PIPELINE_DEFINITION_DESKTOP_CALLER,
-): Promise<IPCResultWithOutcome> {
+): Promise<IPCResultWithOutcome & { revisionRefused?: true }> {
   const idempotencyKey = randomUUID();
   const params: PipelineDefinitionDeleteParams = {
     definitionId: id,
@@ -512,9 +636,12 @@ export async function duplicatePipelineDefinition(
     name?: string;
     /** The source checksum the caller checked; a changed source is refused. */
     expectedChecksum?: string;
+    /** Who owns the copy, recorded before a routed copy commits. */
+    owner?: PendingDefinitionOwnerSource;
   },
   caller: CanopyCallerDescriptor = PIPELINE_DEFINITION_DESKTOP_CALLER,
-): Promise<IPCResultWithOutcome<PipelineInfo>> {
+  marker?: RequiredUserPipelineMarker,
+): Promise<UserPipelineWriteResult> {
   const idempotencyKey = randomUUID();
   const params: PipelineDefinitionDuplicateParams = {
     sourceDefinitionId,
@@ -538,15 +665,16 @@ export async function duplicatePipelineDefinition(
             { caller, metadata: { idempotencyKey } },
           ),
         (route, callOptions) => route.duplicate(params, callOptions),
+        { marker, owner: options.owner },
       ),
     );
-    const stored = getStoredPipelineBySource('user', definition.definitionId);
-    if (!stored.success || !stored.data)
-      return {
-        success: false,
-        error: stored.error ?? 'Failed to read the copied workflow',
-      };
-    return { success: true, data: stored.data.info };
+    return {
+      success: true,
+      data: savedPipelineInfo(
+        definition,
+        parsePipelineText(definition.document),
+      ),
+    };
   } catch (error) {
     return failedDefinitionWrite(error);
   }
@@ -662,13 +790,16 @@ export async function readDesktopPipeline(
   ).data;
 }
 
-/** {@link readDesktopPipeline}, with the checksum of the document core read. */
+/**
+ * {@link readDesktopPipeline}, with the document core read and authorized,
+ * and its checksum.
+ */
 export function readDesktopPipelineSnapshot(
   definitionId: string,
   scope: CanopyWorkspaceScope,
   caller: CanopyCallerDescriptor,
   agentPlace?: AgentPlace,
-): Promise<{ data: PipelineData; checksum: string }> {
+): Promise<{ data: PipelineData; checksum: string; document: string }> {
   return withPipelinePresentation(async (presentation) => {
     const definition = await getPipelineDefinition(
       definitionId,
@@ -679,6 +810,7 @@ export function readDesktopPipelineSnapshot(
     return {
       data: desktopPipelineData(definition, presentation),
       checksum: definition.checksum,
+      document: definition.document,
     };
   });
 }

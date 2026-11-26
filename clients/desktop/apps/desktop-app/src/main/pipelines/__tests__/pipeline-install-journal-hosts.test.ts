@@ -63,7 +63,10 @@ import {
   type StorageOwnershipRow,
 } from '@canopy/core-runtime/storage';
 import * as pipelinePaths from '@canopy/execution-engine/pipelines/config-paths';
-import { saveStoredPipeline } from '@canopy/execution-engine/pipelines/store';
+import {
+  getStoredPipeline,
+  saveStoredPipeline,
+} from '@canopy/execution-engine/pipelines/store';
 import { parsePipelineText } from '@canopy/execution-engine/pipelines/parse-pipeline';
 import {
   isInstallReceipt,
@@ -73,6 +76,7 @@ import type {
   CapabilityPackageInstallRecordV1,
   PipelinePackageInstallRecordV1,
 } from '@canopy/execution-engine/types/pipeline';
+import { StorageRowOwnerError } from '@canopy/core-runtime/node/pipeline/store';
 import * as logging from '../../lib/main-process-logging';
 import { pipelineInstallJournalEnvironment } from '../pipeline-install-intents';
 
@@ -511,6 +515,58 @@ describe('pipeline install journal on every host (CAN-7058)', () => {
       expect(electron.intents).toEqual({});
     },
   );
+
+  it('replays a committed marker clear without rolling back the definition', async () => {
+    const id = 'committed-marker';
+    const previous = yaml('Before');
+    const next = yaml('After');
+    seedDefinition(id, previous);
+    const clearMarker = jest.fn().mockImplementationOnce(() => {
+      throw new Error('interrupted before marker cleanup');
+    });
+    const environment = {
+      ...pipelineInstallJournalEnvironment,
+      clearInstalledPipelineMarker: clearMarker,
+    };
+    const installer = createPipelineInstallJournal(environment);
+    const intent = await installer.beginPipelineInstallIntent('automation');
+    await intent.noteDefinition({
+      definitionId: id,
+      change: 'replaced',
+      contentHash: sha(next),
+    });
+    const saved = saveStoredPipeline({
+      id,
+      name: 'Installed',
+      description: '',
+      icon: '',
+      content: parsePipelineText(next),
+      rawContent: next,
+    });
+    if (!saved.success || !saved.data) throw new Error(saved.error);
+    const { revision } = saved.data;
+    const marker = { definitionId: id, revision };
+    await expect(intent.finish([marker])).rejects.toMatchObject({
+      name: 'PipelineInstallCleanupPendingError',
+    });
+    expect(clearMarker).toHaveBeenCalledWith(marker);
+    expect(installer.isPipelineDefinitionClaimed(id)).toBe(true);
+
+    cpSync(electronRoot(), daemonRoot(), { recursive: true });
+    const before = stamps(daemonRoot());
+    const daemon = daemonJournal();
+    await daemon.recoverInterruptedPipelineInstalls();
+    expect(stamps(daemonRoot())).toEqual(before);
+    expect(daemon.isPipelineDefinitionClaimed(id)).toBe(true);
+
+    await createPipelineInstallJournal(
+      environment,
+    ).recoverInterruptedPipelineInstalls();
+    expect(clearMarker.mock.calls).toEqual([[marker], [marker]]);
+    expect(hostState(electronRoot(), id).document).toBe(next);
+    expect(tree(join(electronRoot(), 'pipeline-install-intents'))).toEqual({});
+    expect(getStoredPipeline(id).data?.info.revision).toBe(revision);
+  });
 
   it('sets an unreadable record aside the same way on both hosts', async () => {
     const intentId = randomUUID();
@@ -1102,5 +1158,161 @@ describe('pipeline install journal on every host (CAN-7058)', () => {
       expect(source).not.toContain(
         'createDaemonPipelineInstallJournalEnvironment',
       );
+  });
+
+  it("refuses an install on each host when the intents row is recorded as the other one's (CAN-7690)", async () => {
+    const record = (folder: string, toOwner: 'daemon' | 'legacy'): void => {
+      const path = join(
+        folder,
+        'storage-records',
+        'pipeline_install_intents',
+        'owner-flip.json',
+      );
+      mkdirSync(join(path, '..'), { recursive: true });
+      writeFileSync(
+        path,
+        JSON.stringify({
+          namespaceId: 'pipeline_install_intents',
+          fromOwner: toOwner === 'daemon' ? 'legacy' : 'daemon',
+          toOwner,
+          workPackage: 'W6',
+          backupRecord: `storage-records/pipeline_install_intents/namespace-backup.json#sha256:${'a'.repeat(64)}`,
+          flippedAt: '2026-11-24T10:00:00.000Z',
+        }),
+      );
+    };
+    record(electronRoot(), 'daemon');
+    await expect(
+      refusalOf(() => electronJournal().beginPipelineInstallIntent('shared')),
+    ).resolves.toBeInstanceOf(StorageRowOwnerError);
+    expect(existsSync(join(electronRoot(), 'pipeline-install-intents'))).toBe(
+      false,
+    );
+    record(daemonRoot(), 'legacy');
+    await expect(
+      refusalOf(() => daemonJournal().beginPipelineInstallIntent('shared')),
+    ).resolves.toMatchObject({ owner: 'legacy' });
+    expect(existsSync(join(daemonRoot(), 'pipeline-install-intents'))).toBe(
+      false,
+    );
+    record(daemonRoot(), 'daemon');
+    await expect(
+      daemonJournal().beginPipelineInstallIntent('shared'),
+    ).resolves.toBeDefined();
+  });
+
+  it("refuses snapshots, the finish and a rollback once the intents row is recorded as the other host's, changing no byte (CAN-7690)", async () => {
+    const owned = join(daemonRoot(), 'pipeline-data', 'owned', 'assets');
+    mkdirSync(join(owned, 'tools'), { recursive: true });
+    writeFileSync(join(owned, 'tools', 'run.sh'), 'echo before\n');
+    const journal = daemonJournal();
+    const finishing = await journal.beginPipelineInstallIntent('automation');
+    await finishing.noteDefinition({
+      definitionId: 'owned',
+      change: 'linked',
+      contentHash: sha('owned'),
+    });
+    const rolling = await journal.beginPipelineInstallIntent('automation');
+    await rolling.noteDefinition({
+      definitionId: 'other',
+      change: 'linked',
+      contentHash: sha('other'),
+    });
+    const path = join(
+      daemonRoot(),
+      'storage-records',
+      'pipeline_install_intents',
+      'owner-flip.json',
+    );
+    mkdirSync(join(path, '..'), { recursive: true });
+    writeFileSync(
+      path,
+      JSON.stringify({
+        namespaceId: 'pipeline_install_intents',
+        fromOwner: 'daemon',
+        toOwner: 'legacy',
+        workPackage: 'W6',
+        backupRecord: `storage-records/pipeline_install_intents/namespace-backup.json#sha256:${'a'.repeat(64)}`,
+        flippedAt: '2026-11-24T10:00:00.000Z',
+      }),
+    );
+    const before = tree(daemonRoot());
+    await expect(
+      refusalOf(() =>
+        finishing.noteAssetFiles('owned', {
+          files: [
+            { path: 'tools/run.sh', sha256: sha('next'), executable: false },
+          ],
+          directories: ['.', 'tools'],
+          createdDirectories: [],
+          manifest: { version: 1, assets: {} },
+          manifestText: '{"version":1,"assets":{}}\n',
+          stagingName: `.install-${randomUUID()}`,
+        }),
+      ),
+    ).resolves.toBeInstanceOf(StorageRowOwnerError);
+    await expect(refusalOf(() => finishing.finish())).resolves.toMatchObject({
+      owner: 'legacy',
+    });
+    await expect(refusalOf(() => rolling.rollBack())).resolves.toMatchObject({
+      owner: 'legacy',
+    });
+    expect(tree(daemonRoot())).toEqual(before);
+    // Both intents stay for the owning host's recovery, still claimed.
+    expect(journal.isPipelineDefinitionClaimed('owned')).toBe(true);
+    expect(journal.isPipelineDefinitionClaimed('other')).toBe(true);
+  });
+
+  it('keeps an interrupted install fenced when the next start may not write the intents, writing nothing (CAN-7690)', async () => {
+    const first = daemonJournal();
+    const intent = await first.beginPipelineInstallIntent('automation');
+    await intent.noteDefinition({
+      definitionId: 'half-installed',
+      change: 'linked',
+      contentHash: sha('half'),
+    });
+    // The process exits here, its intent still on disk.
+    const records = join(daemonRoot(), 'pipeline-install-intents');
+    const intents = (): string[] =>
+      readdirSync(records).filter((name) => name.endsWith('.json'));
+    expect(intents()).toHaveLength(1);
+    const path = join(
+      daemonRoot(),
+      'storage-records',
+      'pipeline_install_intents',
+      'owner-flip.json',
+    );
+    const record = (toOwner: 'daemon' | 'legacy'): void => {
+      mkdirSync(join(path, '..'), { recursive: true });
+      writeFileSync(
+        path,
+        JSON.stringify({
+          namespaceId: 'pipeline_install_intents',
+          fromOwner: toOwner === 'daemon' ? 'legacy' : 'daemon',
+          toOwner,
+          workPackage: 'W6',
+          backupRecord: `storage-records/pipeline_install_intents/namespace-backup.json#sha256:${'a'.repeat(64)}`,
+          flippedAt: '2026-11-24T10:00:00.000Z',
+        }),
+      );
+    };
+    record('legacy');
+    const before = tree(daemonRoot());
+    const refused = daemonJournal();
+    await expect(
+      refused.pipelineDefinitionRecoveryRefusal('half-installed'),
+    ).resolves.toMatchObject({ errorCode: 'pipeline_definition_unconfirmed' });
+    await expect(
+      refusalOf(() => refused.recoverInterruptedPipelineInstalls()),
+    ).resolves.toBeInstanceOf(StorageRowOwnerError);
+    expect(tree(daemonRoot())).toEqual(before);
+    record('daemon');
+    const owner = daemonJournal();
+    await owner.recoverInterruptedPipelineInstalls();
+    expect(intents()).toEqual([]);
+    // Its owner rolls it back as before: the link it added is undone.
+    await expect(
+      owner.pipelineDefinitionRecoveryRefusal('half-installed'),
+    ).resolves.toMatchObject({ errorCode: 'pipeline_definition_removed' });
   });
 });

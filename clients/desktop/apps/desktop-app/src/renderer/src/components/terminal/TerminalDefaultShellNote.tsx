@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import { brandText } from '@/lib/brand';
 
 /** Why a shell is marked Default. */

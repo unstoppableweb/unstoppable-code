@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
 import { Button, Tooltip, useAnsiSearch } from '@canopy/ui-shared/components';
-import { SearchBar } from '@canopy/ui-shared/components/SearchBar';
+import { SearchBar } from '@canopy/ui-shared/primitives/SearchBar';
 import { MagnifyingGlassIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { formatShortcut } from '@canopy/ui-shared/lib/shortcuts';
 import {

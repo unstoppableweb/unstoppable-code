@@ -2,7 +2,8 @@ import { useState, type JSX, type ReactNode } from 'react';
 import type { RemoteHostUpdateStatus } from '@canopy/protocol/remote-control';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol/ui-labels';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import { Notice, NoticeButton, type NoticeIntent } from './Notice';
+import { Notice, NoticeButton, type NoticeIntent } from '../primitives/Notice';
+import { CopyDetailsButton } from '../primitives/CopyDetailsButton';
 
 /*
  * The notice a window shows when it can't show another computer because the
@@ -177,14 +178,14 @@ export function describeRemoteHostUpdate(
       };
     case 'failed':
       return {
-        title,
+        title: `Couldn't update ${subject}`,
         body:
           update.reason === 'targeted-update-pending'
             ? `Someone at ${name} picked a specific version to install. Finish or cancel it on ${name}.`
-            : `The update didn't finish on ${subject}.`,
+            : '',
         intent: 'attention',
-        hostText:
-          update.reason === 'targeted-update-pending' ? null : update.detail,
+        // The host's raw reason goes behind Copy details, never in the copy.
+        hostText: null,
       };
     case 'unavailable':
       return {
@@ -274,14 +275,22 @@ export function RemoteHostUpdateNotice({
         break;
       case 'failed':
         actions = (
-          <NoticeButton
-            variant="primary"
-            busy={busy}
-            onClick={onUpdate}
-            data-testid="remote-host-update-retry"
-          >
-            Try again
-          </NoticeButton>
+          <>
+            {update.reason !== 'targeted-update-pending' && update.detail ? (
+              <CopyDetailsButton
+                details={update.detail}
+                data-testid="remote-host-update-copy-details"
+              />
+            ) : null}
+            <NoticeButton
+              variant="primary"
+              busy={busy}
+              onClick={onUpdate}
+              data-testid="remote-host-update-retry"
+            >
+              Try again
+            </NoticeButton>
+          </>
         );
         break;
       case 'up-to-date':

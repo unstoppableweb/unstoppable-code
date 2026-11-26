@@ -146,6 +146,22 @@ function hasValidManifestBase(value: UnknownRecord): boolean {
   );
 }
 
+/**
+ * CAN-6776: 2 when any repository's snapshots ignore in-tree attributes.
+ * Builds before it read only version 1 and would restore those snapshots with
+ * the checkout's attributes, then purge the archive. Readers accept either
+ * version whatever the policy.
+ */
+export function archivedGitStateVersion(
+  repositories: readonly Pick<ArchivedGitRepositoryState, 'attributePolicy'>[],
+): ArchivedGitState['version'] {
+  return repositories.some(
+    (repository) => repository.attributePolicy !== undefined,
+  )
+    ? 2
+    : 1;
+}
+
 function isArchivedGitRepositoryState(
   value: unknown,
 ): value is ArchivedGitRepositoryState {
@@ -169,7 +185,9 @@ function isArchivedGitRepositoryState(
     GIT_OBJECT_ID_RE.test(value.indexSnapshotCommit) &&
     typeof value.worktreeSnapshotCommit === 'string' &&
     GIT_OBJECT_ID_RE.test(value.worktreeSnapshotCommit) &&
-    isNonEmptyString(value.snapshotRef)
+    isNonEmptyString(value.snapshotRef) &&
+    (value.attributePolicy === undefined ||
+      value.attributePolicy === 'ignore-in-tree-attributes')
   );
 }
 
@@ -179,7 +197,7 @@ function isArchivedGitState(
 ): value is ArchivedGitState {
   if (
     isRecord(value) &&
-    value.version === 1 &&
+    (value.version === 1 || value.version === 2) &&
     value.diffFormatVersion === 1 &&
     Array.isArray(value.repositories) &&
     (value.repositories.length > 0 ||

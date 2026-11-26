@@ -169,7 +169,7 @@ export function registerModelRegistryHandlers(
 
   registerIpcHandler(
     IPC_CHANNELS.modelRegistryGet,
-    async (event, request?: { probe?: boolean }) => {
+    async (event, request?: { probe?: boolean; recheck?: boolean }) => {
       if (agentResourceContextEnabled()) await refreshAgentModelsFromStore();
       // worker.agent.provider.list; the synchronous bootstrap listener above
       // keeps the direct snapshot (CAN-4121 D13).
@@ -181,8 +181,27 @@ export function registerModelRegistryHandlers(
       if (request?.probe === true) {
         const { notifyModelCatalogChanged } =
           await import('../remote-projection/agent-catalog-compatibility');
-        broadcastSharedModelRegistryUpdated();
+        const {
+          isProviderSetupWatched,
+          publishProviderSetupProjections,
+          refreshProviderSetupFacts,
+        } = await import('../remote-projection/provider-setup-status');
+        // Only Check again (`recheck`) forces a setup read and a push; other
+        // probes, such as the sign-in dialog's two-second poll, keep the
+        // one-minute refresh. Before a remote session attaches, nobody reads
+        // the setup facts.
+        if (request.recheck !== true || !isProviderSetupWatched()) {
+          broadcastSharedModelRegistryUpdated();
+          await notifyModelCatalogChanged();
+          return snapshot;
+        }
         await notifyModelCatalogChanged();
+        // "Check again" answers with the host as it is now: read the setup
+        // facts again (after any read already running) before controllers
+        // re-project, then push even when no fact changed, since the probe
+        // may have changed a provider's sign-in availability.
+        if (!(await refreshProviderSetupFacts({ fresh: true })))
+          publishProviderSetupProjections();
       }
       return snapshot;
     },

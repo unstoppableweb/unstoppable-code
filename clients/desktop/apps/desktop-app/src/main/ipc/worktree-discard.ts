@@ -4,6 +4,7 @@ import {
   type CanopyCallerDescriptor,
   WorktreeRecoveryListParamsSchema,
   WorktreeRecoveryFinishParamsSchema,
+  WorktreeRecoverySetAsideParamsSchema,
   WorktreeRecoveryResolveParamsSchema,
 } from '@canopy/protocol/canopy-core';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
@@ -66,6 +67,15 @@ export function registerWorktreeDiscardHandlers(runtime: {
       runtime.dispatcher.instruction(
         'core.worktree.recovery.finish',
         WorktreeRecoveryFinishParamsSchema.parse(request),
+        { caller: recoveryWriteCaller(runtime.resolveCaller(event)) },
+      ),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.worktreeRecoverySetAside,
+    async (event, request: unknown) =>
+      runtime.dispatcher.instruction(
+        'core.worktree.recovery.setAside',
+        WorktreeRecoverySetAsideParamsSchema.parse(request),
         { caller: recoveryWriteCaller(runtime.resolveCaller(event)) },
       ),
   );

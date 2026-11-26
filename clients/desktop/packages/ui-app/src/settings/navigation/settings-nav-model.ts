@@ -40,6 +40,8 @@ export interface SettingsNavRow {
   readonly disabled: boolean;
   /** Billing needs the viewer's action. */
   readonly attention: boolean;
+  /** A "New" tag after the label. */
+  readonly tag?: 'new';
 }
 
 export interface SettingsNavGroup<Id extends string = SettingsNavGroupId> {
@@ -70,8 +72,10 @@ const ORGANIZATION_ROW_ORDER: readonly (
   { tab: 'groups' },
   { tab: 'projects' },
   { tab: 'memory' },
+  { tab: 'transcripts' },
   { subtab: 'policies' },
   { subtab: 'project-defaults' },
+  { subtab: 'connectors' },
   { subtab: 'integrations' },
   { subtab: 'usage' },
   { subtab: 'ai-gateway' },
@@ -97,6 +101,7 @@ function organizationTabRow(
     href: item.href(organization.id),
     disabled: organization.disabledTabs.includes(tab),
     attention: false,
+    ...(item.tag === undefined ? {} : { tag: item.tag }),
   };
 }
 

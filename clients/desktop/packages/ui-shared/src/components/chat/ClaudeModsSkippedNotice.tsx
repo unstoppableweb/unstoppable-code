@@ -1,6 +1,6 @@
 import { Fragment, memo, type JSX, type ReactNode } from 'react';
 import { marketplaceTitleCase } from '../../lib/plugin-display-name';
-import { Notice } from '../Notice';
+import { Notice } from '../../primitives/Notice';
 import { NoticeList } from '../NoticeList';
 
 /** One plugin whose Mod a Claude launch skipped, as the transcript stores it. */

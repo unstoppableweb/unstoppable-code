@@ -5,12 +5,16 @@ import {
   matchesRecordedRepositoryIdentity,
 } from '@canopy/core-runtime/node/w5/recorded-directory-identity';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
-import { isArchivedGitSnapshotRef } from '@canopy/desktop-shared/lib/archived-container-contracts';
+import {
+  archivedGitStateVersion,
+  isArchivedGitSnapshotRef,
+} from '@canopy/desktop-shared/lib/archived-container-contracts';
 import {
   archiveRecoveryRepositoryIdentity,
   isArchiveRecoveryRefHeld,
   isArchiveRecoveryRefProtectionActive,
   readArchiveRecoveryHolds,
+  assertNoArchiveResolution,
 } from './archive-recovery-refs';
 import {
   ArchiveRecoveryRefusedError,
@@ -22,7 +26,7 @@ import {
   hasDestructiveLifecycle,
   refuseInterruptedArchiveJournal,
   assertNoLegacyArchiveRecovery,
-  readWorkspaceDestructiveRecoveries,
+  readDestructiveRecoveryProtection,
 } from './w5-destructive-recovery';
 import { execFile } from 'node:child_process';
 import { assertArchiveWorktreeRemoval } from './archive-worktree-postconditions';
@@ -73,6 +77,7 @@ import {
   captureIndexTreeSha,
   captureWorkingTreeSha,
   ARCHIVED_GIT_DIFF_CANCELLED_MESSAGE,
+  resolveRestoreAttributeSource,
   restoreIndexAndWorkingTreeSnapshot,
   streamArchiveTreeDiff,
   setGitTreeSnapshotRuntime,
@@ -188,14 +193,14 @@ export interface ArchivedContainerBranchDeletion {
 }
 
 export interface ArchivedGitCapturingStagedDescriptor {
-  version: 1;
+  version: ArchivedGitState['version'];
   status: 'capturing';
   repositories: ArchivedGitRepositoryState[];
   teardown?: ArchivedGitTeardownJournal;
 }
 
 export interface ArchivedGitReadyStagedDescriptor {
-  version: 1;
+  version: ArchivedGitState['version'];
   status: 'ready';
   repositories: ArchivedGitRepositoryState[];
   gitChanges: ArchivedGitChangesSummary;
@@ -361,7 +366,9 @@ function isGitRepositoryState(
     GIT_OBJECT_ID_RE.test(String(value.indexSnapshotCommit)) &&
     GIT_OBJECT_ID_RE.test(String(value.worktreeSnapshotCommit)) &&
     typeof value.snapshotRef === 'string' &&
-    value.snapshotRef.length > 0
+    value.snapshotRef.length > 0 &&
+    (value.attributePolicy === undefined ||
+      value.attributePolicy === 'ignore-in-tree-attributes')
   );
 }
 
@@ -545,7 +552,7 @@ function isStagedDescriptor(
 ): value is ArchivedGitStagedDescriptor {
   if (
     !isRecord(value) ||
-    value.version !== 1 ||
+    (value.version !== 1 && value.version !== 2) ||
     (value.status !== 'capturing' && value.status !== 'ready') ||
     !Array.isArray(value.repositories) ||
     !value.repositories.every(isGitRepositoryState) ||
@@ -564,7 +571,7 @@ function isStagedDescriptor(
 }
 
 function isPrePullRequestReadyDescriptor(value: unknown): value is {
-  version: 1;
+  version: ArchivedGitState['version'];
   status: 'ready';
   repositories: ArchivedGitRepositoryState[];
   gitChanges: ArchivedGitChangesSummary;
@@ -572,7 +579,7 @@ function isPrePullRequestReadyDescriptor(value: unknown): value is {
 } {
   return (
     isRecord(value) &&
-    value.version === 1 &&
+    (value.version === 1 || value.version === 2) &&
     value.status === 'ready' &&
     Array.isArray(value.repositories) &&
     value.repositories.every(isGitRepositoryState) &&
@@ -660,7 +667,7 @@ export async function readArchivedGitStagedDescriptor(
       return descriptor;
     }
     return {
-      version: 1,
+      version: archivedGitStateVersion(parsed.repositories),
       status: 'capturing',
       repositories: parsed.repositories,
       ...(parsed.teardown ? { teardown: parsed.teardown } : {}),
@@ -679,7 +686,10 @@ async function persistStagedDescriptor(
 ): Promise<void> {
   await writeJsonDurably(
     getArchivedContainerGitStateStagedPath(workspaceId, containerId),
-    descriptor,
+    {
+      ...descriptor,
+      version: archivedGitStateVersion(descriptor.repositories),
+    },
   );
 }
 
@@ -1089,7 +1099,7 @@ export function assertArchivedGitStateManifestIdentity(args: {
   allowEmptyRepositories?: boolean;
 }): void {
   if (
-    args.gitState.version !== 1 ||
+    (args.gitState.version !== 1 && args.gitState.version !== 2) ||
     args.gitState.diffFormatVersion !== 1 ||
     (args.gitState.repositories.length === 0 && !args.allowEmptyRepositories)
   ) {
@@ -1533,7 +1543,7 @@ export async function captureArchivedContainerGitState(args: {
     if (existing) {
       return {
         gitState: {
-          version: 1,
+          version: archivedGitStateVersion(existing.repositories),
           diffFormatVersion: 1,
           repositories: existing.repositories,
         },
@@ -1595,7 +1605,7 @@ export async function captureArchivedContainerGitState(args: {
       },
     });
     descriptor = {
-      version: 1,
+      version: archivedGitStateVersion(captured.repositories),
       status: 'capturing',
       repositories: captured.repositories,
     };
@@ -1624,7 +1634,7 @@ export async function captureArchivedContainerGitState(args: {
     });
     return {
       gitState: {
-        version: 1,
+        version: archivedGitStateVersion(descriptor.repositories),
         diffFormatVersion: 1,
         repositories: descriptor.repositories,
       },
@@ -1900,7 +1910,10 @@ async function snapshotsMatchAtPath(args: {
         ? args.rootPath
         : join(args.rootPath, repository.relativePath);
     try {
-      await assertWorktreeSnapshotSupported(repoPath);
+      const { attributes } = await assertWorktreeSnapshotSupported(
+        repoPath,
+        repository.attributePolicy ?? 'legacy',
+      );
       const [
         head,
         indexTree,
@@ -1909,8 +1922,8 @@ async function snapshotsMatchAtPath(args: {
         expectedWorktreeTree,
       ] = await Promise.all([
         captureHeadCommitSha(repoPath),
-        captureIndexTreeSha(repoPath),
-        captureWorkingTreeSha(repoPath),
+        captureIndexTreeSha(repoPath, attributes),
+        captureWorkingTreeSha(repoPath, attributes),
         runGit(repository.referenceRepoPath, [
           'rev-parse',
           `${repository.indexSnapshotCommit}^{tree}`,
@@ -1980,12 +1993,15 @@ export async function verifyArchivedGitQuarantineSnapshots(
         repository.relativePath === '.'
           ? quarantinePath
           : join(quarantinePath, repository.relativePath);
-      await assertWorktreeSnapshotSupported(repoPath);
+      const { attributes } = await assertWorktreeSnapshotSupported(
+        repoPath,
+        repository.attributePolicy ?? 'legacy',
+      );
       const [head, indexTree, worktreeTree, expectedIndex, expectedWorktree] =
         await Promise.all([
           captureHeadCommitSha(repoPath),
-          captureIndexTreeSha(repoPath),
-          captureWorkingTreeSha(repoPath),
+          captureIndexTreeSha(repoPath, attributes),
+          captureWorkingTreeSha(repoPath, attributes),
           runGit(repository.referenceRepoPath, [
             'rev-parse',
             `${repository.indexSnapshotCommit}^{tree}`,
@@ -2821,40 +2837,59 @@ export async function assertArchivedGitStateRestorable(
   await validatePinnedRepositories(manifest.gitState.repositories);
 }
 
+function attributeSourceOptions(attributeSource: string | undefined): {
+  attributeSource?: string;
+} {
+  return attributeSource === undefined ? {} : { attributeSource };
+}
+
+/**
+ * CAN-6776: each archived repository's attribute source, keyed by its
+ * reference repository path, for every repository captured while ignoring
+ * in-tree attributes. Resolve it before creating the restore destination: it
+ * refuses on a Git or external attribute that cannot reproduce the snapshot.
+ */
+export async function resolveArchivedGitRestoreAttributeSources(
+  manifest: ArchivedContainerManifestV2,
+): Promise<Map<string, string>> {
+  const sources = new Map<string, string>();
+  for (const repository of manifest.gitState.repositories) {
+    if (repository.attributePolicy !== 'ignore-in-tree-attributes') continue;
+    sources.set(
+      resolve(repository.referenceRepoPath),
+      await resolveRestoreAttributeSource(repository.referenceRepoPath, {
+        headCommit: repository.headCommit,
+        indexSnapshotCommit: repository.indexSnapshotCommit,
+        worktreeSnapshotCommit: repository.worktreeSnapshotCommit,
+      }),
+    );
+  }
+  return sources;
+}
+
 export interface ArchivedContainerRestoreBaseBranches {
-  /** Repo-specific base spellings accepted by worktree creation. */
-  baseBranchesByRepo: Record<string, string>;
+  /**
+   * The full `refs/heads/` or `refs/remotes/origin/` ref of each repository's
+   * base, the one checked to contain its captured tip. Restore checks and
+   * creates from this exact ref: a bare name can resolve elsewhere, as a
+   * branch named like a commit id does.
+   */
+  baseRefsByRepo: ReadonlyMap<string, string>;
   /** User-facing warnings returned with an otherwise successful restore. */
   warnings: string[];
 }
 
-function restoreBaseBranchCandidates(
-  branchName: string,
-): Array<{ ref: string; createBranch: string }> {
-  if (branchName.startsWith('refs/heads/')) {
-    const localName = branchName.slice('refs/heads/'.length);
-    return [{ ref: branchName, createBranch: localName }];
-  }
-  if (branchName.startsWith('refs/remotes/origin/')) {
-    const remoteName = branchName.slice('refs/remotes/origin/'.length);
-    return [{ ref: branchName, createBranch: `origin/${remoteName}` }];
+function restoreBaseBranchCandidates(branchName: string): string[] {
+  if (
+    branchName.startsWith('refs/heads/') ||
+    branchName.startsWith('refs/remotes/origin/')
+  ) {
+    return [branchName];
   }
   if (branchName.startsWith('origin/')) {
-    const remoteName = branchName.slice('origin/'.length);
-    return [
-      {
-        ref: `refs/remotes/origin/${remoteName}`,
-        createBranch: branchName,
-      },
-    ];
+    return [`refs/remotes/${branchName}`];
   }
-  return [
-    { ref: `refs/heads/${branchName}`, createBranch: branchName },
-    {
-      ref: `refs/remotes/origin/${branchName}`,
-      createBranch: `origin/${branchName}`,
-    },
-  ];
+  return [`refs/heads/${branchName}`, `refs/remotes/origin/${branchName}`];
 }
 
 /**
@@ -2866,7 +2901,7 @@ function restoreBaseBranchCandidates(
 export async function resolveArchivedContainerRestoreBaseBranches(
   manifest: ArchivedContainerManifestV2,
 ): Promise<ArchivedContainerRestoreBaseBranches> {
-  const baseBranchesByRepo: Record<string, string> = {};
+  const baseRefsByRepo = new Map<string, string>();
   const warnings: string[] = [];
   for (const repository of manifest.gitState.repositories) {
     const branchName = repository.comparisonBaseBranch?.trim();
@@ -2879,10 +2914,7 @@ export async function resolveArchivedContainerRestoreBaseBranches(
     }
     let selected: string | undefined;
     for (const candidate of restoreBaseBranchCandidates(branchName)) {
-      const currentTip = await readRef(
-        repository.referenceRepoPath,
-        candidate.ref,
-      );
+      const currentTip = await readRef(repository.referenceRepoPath, candidate);
       if (!currentTip) continue;
       try {
         await runGit(repository.referenceRepoPath, [
@@ -2891,21 +2923,21 @@ export async function resolveArchivedContainerRestoreBaseBranches(
           commit,
           currentTip,
         ]);
-        selected = candidate.createBranch;
+        selected = candidate;
         break;
       } catch {
         // The ref exists but was rewritten, or the archived tip is unavailable.
       }
     }
     if (selected) {
-      baseBranchesByRepo[repository.repoId] = selected;
+      baseRefsByRepo.set(repository.repoId, selected);
       continue;
     }
     warnings.push(
       `Base branch "${branchName}" for ${repository.repoName} no longer contains archived commit ${commit.slice(0, 8)}. Restored that repository using the current project default; review its base branch.`,
     );
   }
-  return { baseBranchesByRepo, warnings };
+  return { baseRefsByRepo, warnings };
 }
 
 /**
@@ -2957,6 +2989,9 @@ export async function restoreArchivedContainerGitState(args: {
   preserveDescendantHead?: boolean;
 }): Promise<void> {
   await assertArchivedGitStateRestorable(args.manifest);
+  const attributeSources = await resolveArchivedGitRestoreAttributeSources(
+    args.manifest,
+  );
   const expectedDestination = resolve(
     getWorkspaceWorktreeDir(args.manifest.projectId, args.destinationId),
   );
@@ -2974,6 +3009,9 @@ export async function restoreArchivedContainerGitState(args: {
       indexSnapshotCommit: repository.indexSnapshotCommit,
       worktreeSnapshotCommit: repository.worktreeSnapshotCommit,
       preserveDescendantHead: args.preserveDescendantHead,
+      attributes: attributeSourceOptions(
+        attributeSources.get(resolve(repository.referenceRepoPath)),
+      ),
     });
   }
 }
@@ -3734,6 +3772,7 @@ export async function recoverArchivedGitTeardownsForWorkspace(
  * Removes only refs proven orphaned inside this workspace's namespace. A
  * corrupt manifest/descriptor aborts reconciliation conservatively; no GC is
  * run because other archives may share the object database.
+ * Caller holds the workspace archive operation lock throughout the sweep.
  */
 export async function reconcileArchivedGitRefsForWorkspace(
   workspaceId: string,
@@ -3748,26 +3787,14 @@ export async function reconcileArchivedGitRefsForWorkspace(
     workspaceType: config.type,
   });
   // Lifecycle evidence can outlive both the child's row and archive directory.
-  const lifecycleProtectedPrefixes = new Set<string>();
-  for (const record of await readWorkspaceDestructiveRecoveries(workspaceId)) {
-    if (
-      record.worktreeId === undefined ||
-      (record.state === 'completed' && !record.cleanupRequired)
-    )
-      continue;
-    validateId(record.worktreeId, 'containerId');
-    lifecycleProtectedPrefixes.add(
-      `${ARCHIVE_REF_NAMESPACE}/${workspaceId}/${record.worktreeId}/`,
-    );
-  }
+  const recoveryProtection =
+    await readDestructiveRecoveryProtection(workspaceId);
+  const recoveryHolds = await readArchiveRecoveryHolds(workspaceId);
   const keepByRepoPath = new Map<string, Set<string>>();
   const protectedPrefixesByRepoPath = new Map<string, Set<string>>();
   for (const definition of definitions) {
     keepByRepoPath.set(definition.referenceRepoPath, new Set());
-    protectedPrefixesByRepoPath.set(
-      definition.referenceRepoPath,
-      new Set(lifecycleProtectedPrefixes),
-    );
+    protectedPrefixesByRepoPath.set(definition.referenceRepoPath, new Set());
   }
   // Keep this local import to break the archived-containers <-> archived-git
   // module cycle; reconciliation itself runs in packaged Electron builds.
@@ -3792,7 +3819,10 @@ export async function reconcileArchivedGitRefsForWorkspace(
     // namespace. Abort before pruning anything in this workspace.
     validateId(entry.name, 'containerId');
     try {
-      await assertNoDestructiveRecovery(workspaceId, entry.name, true);
+      if (recoveryProtection.protects(entry.name)) continue;
+      await assertNoArchiveResolution(workspaceId, entry.name, undefined, () =>
+        Promise.resolve(recoveryHolds),
+      );
       await assertNoLegacyArchiveRecovery(workspaceId, entry.name);
       if (
         await pathExists(
@@ -3873,7 +3903,7 @@ export async function reconcileArchivedGitRefsForWorkspace(
   }
 
   const heldRefsByCommonDir = new Map<string, Set<string>>();
-  for (const hold of await readArchiveRecoveryHolds(workspaceId)) {
+  for (const hold of recoveryHolds) {
     if (!(await isArchiveRecoveryRefProtectionActive(hold))) continue;
     for (const repository of hold.repositories) {
       if (repository.refs.length === 0) continue;
@@ -3916,7 +3946,9 @@ export async function reconcileArchivedGitRefsForWorkspace(
         !(
           protectedPrefixes !== undefined &&
           Array.from(protectedPrefixes).some((prefix) => ref.startsWith(prefix))
-        )
+        ) &&
+        // Set aside can leave snapshots without either a manifest or a live journal.
+        !recoveryProtection.protects(ref.slice(prefix.length).split('/')[0])
       )
         await runGit(repoPath, ['update-ref', '-d', ref]);
     }

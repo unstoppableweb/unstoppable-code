@@ -1,4 +1,4 @@
-import { Button } from '../Button';
+import { Button } from '../../primitives/Button';
 import { memo, useId, useState, type JSX } from 'react';
 import {
   DELEGATION_CAPABILITY_LIMITS,
@@ -16,7 +16,7 @@ import {
   delegatedAgentCapabilitySourceLabel,
   delegatedAgentOmittedLabel,
 } from './delegated-agent-copy';
-import { Fact } from '../FactList';
+import { Fact } from '../../primitives/FactList';
 
 export interface DelegatedAgentCapabilitiesProps {
   summary: DelegationCapabilitySummary;

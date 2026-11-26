@@ -15,7 +15,7 @@ import {
   PickerMenuOptionLeading,
   PickerTrigger,
   PickerTriggerChevron,
-} from '../PickerMenu';
+} from '../../primitives/PickerMenu';
 import { LedgerEntryTypeIcon } from '../../icons/LedgerEntryTypeIcon';
 
 export interface LedgerEntryTypePickerProps {

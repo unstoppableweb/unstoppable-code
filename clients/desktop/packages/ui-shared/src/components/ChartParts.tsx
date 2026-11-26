@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
-import { richHoverTooltipSurfaceClassName } from './RichHoverTooltip';
-import { Surface } from './Surface';
+import { richHoverTooltipSurfaceClassName } from '../primitives/RichHoverTooltip';
+import { Surface } from '../primitives/Surface';
 
 /** How a tooltip row marks its series: a bar's square, a line's dash, or nothing. */
 export type ChartTooltipMarker = 'swatch' | 'line' | 'none';

@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { RichHoverTooltip } from './RichHoverTooltip';
+import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
 import { ShareIcon } from '../icons/AppIcons';
 
 export const SHARED_WITH_TEAMMATES_LABEL = 'Shared with teammates';

@@ -471,6 +471,8 @@ export function ChatPanel({
     focusMoved: boolean;
   } | null>(null);
   const [queueEditPending, setQueueEditPending] = useState(false);
+  // The held messages the user closed the credits notice for.
+  const [dismissedHeldKey, setDismissedHeldKey] = useState<string | null>(null);
   // The editor closes before the host confirms a save; entry stays hidden
   // until then, since a new edit cannot begin while the save holds the row.
   const [queueEditSaving, setQueueEditSaving] = useState(false);
@@ -981,11 +983,15 @@ export function ChatPanel({
       </div>
     ) : null;
 
+  // The notice comes back when a different set of messages is held.
+  const heldKey = waitingQueuedMessages
+    .filter((message) => message.retryBlockedReason === 'insufficient_credits')
+    .map((message) => message.id)
+    .join('|');
   const creditHeld =
     !queuedCreditNoticeHandled &&
-    waitingQueuedMessages.some(
-      (message) => message.retryBlockedReason === 'insufficient_credits',
-    );
+    heldKey !== '' &&
+    heldKey !== dismissedHeldKey;
   const queuedList =
     creditHeld ||
     (!compactQueue && waitingQueuedMessages.length > 0) ||
@@ -1006,6 +1012,7 @@ export function ChatPanel({
             owner={QUEUED_CREDITS_OWNER}
             placement="composer"
             purchase={QUEUED_CREDITS_PURCHASE}
+            onDismiss={(): void => setDismissedHeldKey(heldKey)}
           />
         )}
         {queueTarget && queueActionsEnabled && (

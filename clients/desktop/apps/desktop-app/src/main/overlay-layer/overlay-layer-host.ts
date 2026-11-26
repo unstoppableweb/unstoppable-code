@@ -14,7 +14,10 @@ import type {
 } from '@canopy/desktop-shared/types';
 import { attachInputGuardsToContents } from '../menu';
 import { cssRectToWindowDips, registerUiZoomContents } from '../lib/ui-zoom';
-import { openExternalGuarded } from '../lib/open-external';
+import {
+  isOpenExternallyClick,
+  openExternalGuarded,
+} from '../lib/open-external';
 import { isElectronWebContents } from '../lib/electron-web-contents';
 import { registerIpcSurface } from '../lib/web-contents-send';
 
@@ -97,10 +100,14 @@ function isAllowedOverlayNavigation(url: string): boolean {
 function routeExternalIfSafe(
   url: string,
   options: OverlayLayerHostOptions,
+  openExternally = false,
 ): void {
   try {
     const parsed = new URL(url);
-    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+    if (
+      !openExternally &&
+      (parsed.protocol === 'http:' || parsed.protocol === 'https:')
+    ) {
       void options.routeAppLink(url).catch(() => undefined);
     } else if (SAFE_EXTERNAL_SCHEMES.has(parsed.protocol)) {
       void openExternalGuarded(url).catch(() => undefined);
@@ -278,7 +285,11 @@ export class OverlayLayerHost {
     view.setVisible(false);
 
     contents.setWindowOpenHandler((details) => {
-      routeExternalIfSafe(details.url, this.options);
+      routeExternalIfSafe(
+        details.url,
+        this.options,
+        isOpenExternallyClick(details),
+      );
       return { action: 'deny' };
     });
     const onWillNavigate = (

@@ -40,22 +40,22 @@ import {
 import {
   analyzeSplitWorktreeItems,
   deleteSplitPipelineExecutions,
-  finalizeSplitChatsAndPlansMigration,
   hasSplitWorktreeStoredItems,
-  migrateSplitChatsAndPlans,
-  migrateSplitPipelineExecutions,
-  restoreSplitExecutionSnapshots,
-  restoreSplitExecutionSnapshotsForTarget,
-  undoSplitChatsAndPlansMigration,
-  undoSplitChatsAndPlansTargetMigration,
   type SplitItemsMigrationTarget,
-  type SplitItemsMigrationUndo,
   type SplitWorktreeRepoItems,
 } from './split-temporary-workspace-items';
-import type {
-  ExecutionState,
-  ExecutionSummary,
-} from '@canopy/execution-engine/node/pipelines/executor/types';
+import {
+  CORE_ITEM_STORE_SOURCE_UNCHANGED,
+  CoreItemStoreRelocationRollbackError,
+  type CoreItemStoreRelocation,
+} from '@canopy/core-runtime/node/worktree/item-store';
+import {
+  getWorktreeItemStore,
+  splitExecutionsRelocation,
+  splitItemsRelocation,
+  splitRelocationDestination,
+} from './worktree-item-store';
+import type { ExecutionSummary } from '@canopy/execution-engine/node/pipelines/executor/types';
 import { stableStringify } from '@canopy/desktop-shared/lib/stable-hash';
 import {
   allocateAdhocDestinationWorktreeId,
@@ -708,6 +708,17 @@ async function markSplitRecoveryReservations(
     }
   }
   return markingErrors;
+}
+
+/** A relocation that could not take itself back, from its host or the port. */
+function relocationRollbackFailed(
+  error: unknown,
+  hostRollbackErrorName: string,
+): error is Error {
+  return (
+    error instanceof CoreItemStoreRelocationRollbackError ||
+    (error instanceof Error && error.name === hostRollbackErrorName)
+  );
 }
 
 function splitFastPhaseRollbackError(
@@ -1377,20 +1388,23 @@ async function splitTemporaryWorkspaceWorktreeAdmitted(
         analysis.perRepo.get(repoId)?.executions ?? [],
       ]),
     );
-    let itemsUndo: SplitItemsMigrationUndo;
+    let itemsRelocation: CoreItemStoreRelocation;
     try {
       attempt?.beforeEffects();
-      itemsUndo = await migrateSplitChatsAndPlans({
-        workspaceId: request.workspaceId,
-        worktreeId: request.worktreeId,
-        analysis,
-        targets,
-        hardDeleteRepoIds,
-      });
+      itemsRelocation = await getWorktreeItemStore().relocate(
+        splitItemsRelocation({
+          workspaceId: request.workspaceId,
+          worktreeId: request.worktreeId,
+          analysis,
+          targets,
+          hardDeleteRepoIds,
+        }),
+      );
     } catch (error) {
-      const rollbackFailed =
-        error instanceof Error &&
-        error.name === 'SplitItemsMigrationRollbackError';
+      const rollbackFailed = relocationRollbackFailed(
+        error,
+        'SplitItemsMigrationRollbackError',
+      );
       if (rollbackFailed) {
         const markingErrors = await markSplitRecoveryReservations(
           recoveryReservations,
@@ -1460,7 +1474,7 @@ async function splitTemporaryWorkspaceWorktreeAdmitted(
       recoveryReservations,
       destinationClaims,
       targets,
-      itemsUndo,
+      itemsRelocation,
       hardDeleteExecutionsByRepo,
       rootAction,
       rootPresent,
@@ -1613,7 +1627,7 @@ async function runSplitBackgroundPhase(args: {
   recoveryReservations: SplitDestinationReservation[];
   destinationClaims: DestinationWorktreeClaim[];
   targets: SplitItemsMigrationTarget[];
-  itemsUndo: SplitItemsMigrationUndo;
+  itemsRelocation: CoreItemStoreRelocation;
   hardDeleteExecutionsByRepo: Map<string, ExecutionSummary[]>;
   rootAction: 'archive' | 'delete';
   rootPresent: boolean;
@@ -1629,7 +1643,7 @@ async function runSplitBackgroundPhase(args: {
     recoveryReservations,
     destinationClaims,
     targets,
-    itemsUndo,
+    itemsRelocation,
     hardDeleteExecutionsByRepo,
     rootAction,
     rootPresent,
@@ -1644,7 +1658,7 @@ async function runSplitBackgroundPhase(args: {
     }
   };
 
-  let executionSnapshots = new Map<string, ExecutionState>();
+  let executionsRelocation = CORE_ITEM_STORE_SOURCE_UNCHANGED;
 
   // Stage 1: reversible checkout moves for kept (split) repos.
   const moved: Array<{ repoPath: string; oldPath: string; newPath: string }> =
@@ -1653,12 +1667,12 @@ async function runSplitBackgroundPhase(args: {
   const rollbackReversibleStage = async (error: unknown): Promise<void> => {
     const rollbackErrors: unknown[] = [];
     await reverseMovedCheckouts(moved, rollbackErrors);
-    await undoSplitChatsAndPlansMigration(itemsUndo).catch((rollbackError) =>
-      rollbackErrors.push(rollbackError),
-    );
-    await restoreSplitExecutionSnapshots(executionSnapshots).catch(
-      (rollbackError) => rollbackErrors.push(rollbackError),
-    );
+    await itemsRelocation
+      .revert()
+      .catch((rollbackError) => rollbackErrors.push(rollbackError));
+    await executionsRelocation
+      .revert()
+      .catch((rollbackError) => rollbackErrors.push(rollbackError));
 
     const preservedReservations: SplitDestinationReservation[] = [];
     if (rollbackErrors.length === 0) {
@@ -1774,15 +1788,16 @@ async function runSplitBackgroundPhase(args: {
   // destination worktrees hydrate with their runs. Ordinary failures restore
   // the executions to the source and roll back the reversible split stage.
   try {
-    executionSnapshots = await migrateSplitPipelineExecutions({
-      workspaceId: request.workspaceId,
-      worktreeId: request.worktreeId,
-      targets,
-    });
+    executionsRelocation = await getWorktreeItemStore().relocate(
+      splitExecutionsRelocation({
+        workspaceId: request.workspaceId,
+        worktreeId: request.worktreeId,
+        targets,
+      }),
+    );
   } catch (error) {
     if (
-      error instanceof Error &&
-      error.name === 'SplitExecutionMigrationRollbackError'
+      relocationRollbackFailed(error, 'SplitExecutionMigrationRollbackError')
     ) {
       const markingErrors = await markSplitRecoveryReservations(
         recoveryReservations,
@@ -1860,7 +1875,7 @@ async function runSplitBackgroundPhase(args: {
   // failure leaves a recoverable duplicate and must not undo promoted
   // destinations or delete their surviving attachment copies.
   try {
-    await finalizeSplitChatsAndPlansMigration(itemsUndo);
+    await itemsRelocation.commit();
   } catch (error) {
     warnings.push(
       `The temporary attachment backup could not be removed and was retained for recovery: ${
@@ -1901,12 +1916,10 @@ async function runSplitBackgroundPhase(args: {
         continue;
       }
       try {
+        const pendingDestination = splitRelocationDestination(pendingTarget);
         await settleAll([
-          undoSplitChatsAndPlansTargetMigration(itemsUndo, pendingTarget),
-          restoreSplitExecutionSnapshotsForTarget(
-            executionSnapshots,
-            pendingTarget,
-          ),
+          itemsRelocation.revertDestination(pendingDestination),
+          executionsRelocation.revertDestination(pendingDestination),
         ]);
         await removeSplitDestinationRecord({
           source: 'temporary_split',
@@ -2011,8 +2024,8 @@ async function runSplitBackgroundPhase(args: {
         worktree,
         plan,
         target,
-        itemsUndo,
-        executionSnapshots,
+        itemsRelocation,
+        executionsRelocation,
       });
       warnings.push(...archived.warnings);
       if (archived.result) {
@@ -2145,8 +2158,8 @@ async function archiveRemovedRepo(params: {
   worktree: WorktreeData;
   plan: PlannedSplitRepo;
   target: SplitItemsMigrationTarget;
-  itemsUndo: SplitItemsMigrationUndo;
-  executionSnapshots: Map<string, ExecutionState>;
+  itemsRelocation: CoreItemStoreRelocation;
+  executionsRelocation: CoreItemStoreRelocation;
 }): Promise<{
   result?: SplitTemporaryWorkspaceResultEntry;
   warnings: string[];
@@ -2155,7 +2168,8 @@ async function archiveRemovedRepo(params: {
   /** Present when destination state survived an incomplete source rollback. */
   recoveryError?: Error;
 }> {
-  const { worktree, plan, target, itemsUndo, executionSnapshots } = params;
+  const { worktree, plan, target, itemsRelocation, executionsRelocation } =
+    params;
   const warnings: string[] = [];
   const destination = plan.destination;
   const destinationWorktreeId = plan.destinationWorktreeId;
@@ -2171,9 +2185,10 @@ async function archiveRemovedRepo(params: {
 
   let movedIn = false;
   const rollbackTargetItems = async (): Promise<void> => {
+    const targetDestination = splitRelocationDestination(target);
     await settleAll([
-      undoSplitChatsAndPlansTargetMigration(itemsUndo, target),
-      restoreSplitExecutionSnapshotsForTarget(executionSnapshots, target),
+      itemsRelocation.revertDestination(targetDestination),
+      executionsRelocation.revertDestination(targetDestination),
     ]);
   };
   try {

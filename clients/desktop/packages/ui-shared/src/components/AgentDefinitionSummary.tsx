@@ -1,12 +1,12 @@
 import { DescriptionMarkdown } from './DescriptionMarkdown';
-import { OverlayScrollArea } from './OverlayScrollArea';
-import { Stack } from './Stack';
+import { OverlayScrollArea } from '../primitives/OverlayScrollArea';
+import { Stack } from '../primitives/Stack';
 import type { JSX } from 'react';
 import { describeAgentBaseModel } from '@canopy/protocol/agents';
-import { Fact, FactList } from './FactList';
-import { Heading } from './Heading';
-import { EmptyStateText } from './StatusBlocks';
-import { Surface } from './Surface';
+import { Fact, FactList } from '../primitives/FactList';
+import { Heading } from '../primitives/Heading';
+import { EmptyStateText } from '../primitives/StatusBlocks';
+import { Surface } from '../primitives/Surface';
 
 export interface AgentDefinitionSummaryPlugin {
   key: string;

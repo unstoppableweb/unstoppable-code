@@ -17,6 +17,7 @@ export * from './ScheduleRunOnField';
 export * from './pipeline-input-form';
 export * from './PipelineInputField';
 export * from './cloud-runs';
+export * from './designer';
 
 export {
   AutomationsPanel,

@@ -19,7 +19,11 @@ import type {
 import type { TerminalOutputEvent } from '@canopy/protocol/terminal';
 import type { WorkspaceContext } from '@canopy/protocol/workspace-context';
 import type { RemoteIpcMalformedReplyError } from './channel-client';
-import type { WireFileTreeRoot } from './wire';
+import type {
+  WireFileTreeRoot,
+  WireTrackedPlan,
+  WireUpdateTrackedPlanRequest,
+} from './wire';
 
 /** The active standalone (cowork) chat work this window shows, if any. */
 export interface StandaloneChatActiveWork {
@@ -161,9 +165,31 @@ export interface IpcCanopyClientPorts {
   readonly appAdvisorTransport?: RemoteIpcTransport;
   /** Sibling slices served by the host. Absent members stay unset. */
   readonly transcripts?: TranscriptReadClient;
+  /**
+   * The host's own plan reads and writes (CAN-4165 PRs 7a and 7b): the desktop
+   * reaches its local core. Absent: `plan.get`, `plan.update`, `plan.delete`
+   * and a plan-exit approval's plan write use the tracked-plans channels.
+   */
+  readonly plans?: PlanClient;
   readonly feedback?: FeedbackReportClient;
   readonly marketplaceSources?: MarketplaceSourcesClient;
   readonly settings?: AccountOrganizationSettingsClient;
+}
+
+interface PlanRef {
+  projectId: string;
+  worktreeId: string;
+  planId: string;
+}
+
+export interface PlanClient {
+  /** A plan by id, or null when the scope has none by that id. */
+  get(request: PlanRef): Promise<WireTrackedPlan | null>;
+  /** The updated plan, or null when the scope has none by that id. */
+  update(
+    request: WireUpdateTrackedPlanRequest,
+  ): Promise<WireTrackedPlan | null>;
+  delete(request: PlanRef): Promise<void>;
 }
 
 /** The client `createIpcCanopyClient` returns. */

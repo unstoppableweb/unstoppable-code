@@ -30,6 +30,8 @@ export function getMcpProxyToggleInactiveTitle(): string {
 
 interface McpServersPanelCardProps {
   servers: DetectedMcpServerInfo[];
+  /** The project's shared connections the chat loads, listed after `servers`. */
+  sharedConnections?: readonly McpServersSectionItem[];
   getRowNavigation?: McpServersSectionBodyProps['getRowNavigation'];
   getRowSettings?: McpServersSectionBodyProps['getRowSettings'];
   renderRowExtra?: McpServersSectionBodyProps['renderRowExtra'];
@@ -51,22 +53,28 @@ interface McpServersPanelCardProps {
 
 export function useMcpServersHeaderChrome({
   servers,
+  sharedConnections = [],
   loading,
-}: Pick<McpServersPanelCardProps, 'servers' | 'loading'>): {
+}: Pick<
+  McpServersPanelCardProps,
+  'servers' | 'sharedConnections' | 'loading'
+>): {
   subtitle: string;
   collapsedIconColor: CollapsedIconColor;
 } {
+  const serverCount = servers.length + sharedConnections.length;
   return {
     subtitle: mcpPanelCardSubtitle({
-      loading: loading && servers.length === 0,
-      serverCount: servers.length,
+      loading: loading && serverCount === 0,
+      serverCount,
     }),
-    collapsedIconColor: servers.length > 0 ? 'blue' : 'muted',
+    collapsedIconColor: serverCount > 0 ? 'blue' : 'muted',
   };
 }
 
 export function McpServersPanelCard({
   servers,
+  sharedConnections = [],
   warnings,
   loading,
   error,
@@ -88,7 +96,15 @@ export function McpServersPanelCard({
   const [editingServerId, setEditingServerId] = useState<string | null>(null);
   const [detailsRefreshKey, setDetailsRefreshKey] = useState(0);
 
-  const headerChrome = useMcpServersHeaderChrome({ servers, loading });
+  const headerChrome = useMcpServersHeaderChrome({
+    servers,
+    sharedConnections,
+    loading,
+  });
+  const rows: readonly McpServersSectionItem[] = [
+    ...servers,
+    ...sharedConnections,
+  ];
 
   const headerAction = (
     <RefreshButton
@@ -113,14 +129,14 @@ export function McpServersPanelCard({
         icon={<McpServerIcon size="sm" />}
         title={sectionTitle}
         hasExpandableContent={
-          servers.length > 0 || error !== null || warnings.length > 0
+          rows.length > 0 || error !== null || warnings.length > 0
         }
         subtitle={headerChrome.subtitle}
         headerAction={chrome === 'body-only' ? undefined : headerAction}
         collapsedIconColor={headerChrome.collapsedIconColor}
       >
         <McpServersSectionBody
-          servers={servers}
+          servers={rows}
           getRowNavigation={getRowNavigation}
           getRowSettings={getRowSettings}
           renderRowExtra={renderRowExtra}

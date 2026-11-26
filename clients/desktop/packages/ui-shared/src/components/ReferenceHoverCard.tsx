@@ -1,6 +1,6 @@
 import type { ComponentType, JSX, ReactNode } from 'react';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import { DisplayAvatar } from './DisplayAvatar';
+import { DisplayAvatar } from '../primitives/DisplayAvatar';
 
 /** A status glyph: an app icon or any glyph that takes a `className`. */
 export type ReferenceHoverCardIcon = ComponentType<{

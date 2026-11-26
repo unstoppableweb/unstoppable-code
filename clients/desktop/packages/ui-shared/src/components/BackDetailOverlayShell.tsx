@@ -1,7 +1,7 @@
 import type { JSX, ReactNode } from 'react';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import { DialogModal } from './DialogModal';
-import { SPACE_ROLE_GAP_CLASS, type SpaceRole } from './Stack';
+import { DialogModal } from '../primitives/DialogModal';
+import { SPACE_ROLE_GAP_CLASS, type SpaceRole } from '../primitives/Stack';
 
 const CONTENT_CLASS = 'px-6 pb-6';
 

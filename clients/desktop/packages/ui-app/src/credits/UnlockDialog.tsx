@@ -12,12 +12,12 @@ import {
   ErrorBanner,
   GuestModelGateContent,
   guestModelGateCopy,
-  LoadingButton,
   LoadingSpinner,
   MODEL_LIBRARY_UNLOCK_COPY,
   modelLibraryUnlockTitle,
   modelLibraryWaitingInBrowserBody,
   type GuestModelGateSubject,
+  Button,
 } from '@canopy/ui-shared/components';
 
 /**
@@ -289,7 +289,7 @@ export function UnlockDialog({
     primary: boolean,
   ): JSX.Element | null =>
     onCheckNow === undefined ? null : (
-      <LoadingButton
+      <Button
         size="compact"
         variant={primary ? 'primary' : 'secondary'}
         className="w-full"
@@ -300,7 +300,7 @@ export function UnlockDialog({
         onClick={onCheckNow}
       >
         {MODEL_LIBRARY_UNLOCK_COPY.checkNowAction}
-      </LoadingButton>
+      </Button>
     );
 
   // A confirmed unlock outranks every purchase step: the purchase landed.
@@ -315,7 +315,7 @@ export function UnlockDialog({
             ? MODEL_LIBRARY_UNLOCK_COPY.selectionFailed
             : `We couldn’t switch to ${modelLabel} just now.`}
         </span>,
-        <LoadingButton
+        <Button
           size="compact"
           variant="primary"
           className="w-full"
@@ -327,7 +327,7 @@ export function UnlockDialog({
           {modelLabel === undefined
             ? MODEL_LIBRARY_UNLOCK_COPY.retrySelection
             : `Use ${modelLabel}`}
-        </LoadingButton>,
+        </Button>,
         MODEL_LIBRARY_UNLOCK_COPY.confirmed,
       );
     case 'confirmed':
@@ -393,7 +393,7 @@ export function UnlockDialog({
         <>
           {checkNowButton(progress.checking, true)}
           {newPurchase ? (
-            <LoadingButton
+            <Button
               size="compact"
               variant="secondary"
               className="w-full"
@@ -403,7 +403,7 @@ export function UnlockDialog({
               onClick={onNewPurchase}
             >
               {MODEL_LIBRARY_UNLOCK_COPY.newPurchaseAction}
-            </LoadingButton>
+            </Button>
           ) : null}
         </>,
       );
@@ -443,7 +443,7 @@ export function UnlockDialog({
       ) : null}
     </span>,
     prompt.primary === 'buy' && onStart !== undefined ? (
-      <LoadingButton
+      <Button
         size="compact"
         variant="primary"
         className="w-full"
@@ -453,7 +453,7 @@ export function UnlockDialog({
         onClick={onStart}
       >
         {copy.action}
-      </LoadingButton>
+      </Button>
     ) : undefined,
   );
 }

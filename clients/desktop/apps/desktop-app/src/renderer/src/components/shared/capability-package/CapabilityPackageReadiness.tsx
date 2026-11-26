@@ -1,4 +1,4 @@
-import { Badge, type BadgeTone } from '@canopy/ui-shared/components/Badge';
+import { Badge, type BadgeTone } from '@canopy/ui-shared/primitives/Badge';
 import { useCallback, useState, type JSX } from 'react';
 import {
   formatPipelinePackageSteps,

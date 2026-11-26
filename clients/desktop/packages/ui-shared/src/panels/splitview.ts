@@ -28,9 +28,9 @@ import {
   dispose,
   type IDisposable,
   toDisposable,
-} from './disposable';
+} from '../lib/disposable';
 import { addDisposableListener } from './dom';
-import { Emitter, Event } from './emitter';
+import { Emitter, Event } from '../lib/emitter';
 import { clamp } from './numbers';
 import { reportPanelError } from './panel-error-sink';
 import {

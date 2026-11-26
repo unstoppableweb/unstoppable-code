@@ -105,6 +105,7 @@ import {
 } from '@canopy/core-transport/node';
 import {
   CANOPY_IN_PROCESS_WORKER_TARGET_ID,
+  CLOUD_ACCOUNT_TRUSTED_CONNECTION_GRANT,
   CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_QUERY_DEFINITIONS,
   CORE_WORKSPACE_METADATA_GRANTS,
@@ -123,7 +124,10 @@ import {
   daemonWorktreeRootLookup,
 } from './mutation-fence';
 import type { DaemonFilesystemWatchOptions } from './filesystem-watch';
-import { flushDirectory } from '@canopy/core-platform/directory-flush';
+import {
+  flushDirectory,
+  flushDirectorySync,
+} from '@canopy/core-platform/directory-flush';
 import type { ExecutionHostShellCommand } from '@canopy/core-platform/execution-host';
 import {
   createCanopyDaemonGraph,
@@ -171,6 +175,12 @@ import {
   type DaemonDirectoryInputs,
   type DaemonDirectoryInputsOptions,
 } from './directory-inputs';
+import {
+  CLOUD_ACCOUNT_AUTHORITY_COMPOSITION_SELECTED,
+  createDaemonCloudAccountServices,
+  type DaemonCloudAccountServices,
+  type DaemonCloudEndpoint,
+} from '@canopy/core-runtime/node/cloud-account/daemon';
 import type { CreateDaemonW5Host, DaemonW5Host } from './w5-host';
 import {
   createDaemonWorkerSupervisor,
@@ -257,6 +267,8 @@ function connectionCaller(
   operationGrants: Readonly<CanopyCallerDescriptor['grants']>,
   /** Where the trusted seam makes this daemon the definitions' writer (CAN-5092). */
   definitionGrants: Readonly<CanopyCallerDescriptor['grants']>,
+  /** Trusted-connection Cloud grants; never inferred from interfaceKind. */
+  cloudAccountGrants: Readonly<CanopyCallerDescriptor['grants']>,
 ): CanopyCallerDescriptor {
   return {
     principalId: 'local-user',
@@ -281,6 +293,7 @@ function connectionCaller(
       ...executionGrants,
       ...operationGrants,
       ...definitionGrants,
+      ...cloudAccountGrants,
       ...w5Grants,
     ],
   };
@@ -512,6 +525,15 @@ export interface StartCanopyDaemonOptions extends CanopyDaemonArguments {
     readonly shell?: ExecutionHostShellCommand;
     /** Test seam for automatic launcher-root propagation without an explicit override. */
     readonly dataDirectoryOverrides?: boolean;
+  };
+  /**
+   * Compose the Cloud account services on the vault's `cloud-account` family
+   * (CAN-6997). Inert unless activation is selected: construction does no I/O.
+   */
+  readonly cloudAccount?: {
+    readonly cloud: DaemonCloudEndpoint | null;
+    /** Trusted test composition only; production uses the code selection. */
+    readonly activationSelected?: boolean;
   };
   /** Split only: how to relaunch this daemon as its worker; defaults to itself. */
   readonly workerCommand?: DaemonWorkerCommand;
@@ -784,6 +806,8 @@ async function startOwnedDaemon(
   )
     throw new Error('Windows launcher claim unsupported.');
   let vault: DaemonVault | undefined;
+  let cloudAccount: DaemonCloudAccountServices | undefined;
+  let cloudAccountModule: RuntimeModule | undefined;
   let native: NativeSecretProtectionOwner | undefined;
   let directory: DaemonDirectoryInputs | undefined;
   let w5: DaemonW5Host | undefined;
@@ -820,8 +844,12 @@ async function startOwnedDaemon(
     })());
   const seal = (): Promise<boolean> => {
     native?.closeAdmission();
+    // Runtime shutdown drains account refresh in phase 4 and releases broker
+    // routes in phase 6; this covers a startup that never reached them.
+    // Disposal is idempotent.
+    const accountDisposal = cloudAccount?.dispose();
     // Abort opening synchronously; disposal keeps submitted initialization alive.
-    void vault?.dispose();
+    if (!cloudAccount) void vault?.dispose();
     return (sealing ??= sealClosure(gate, directory, w5, async (signal) => {
       signal.addEventListener('abort', () => publicationLifetime.abort(), {
         once: true,
@@ -831,6 +859,7 @@ async function startOwnedDaemon(
       if (startupFailed) await rollbackStartup();
       else if (cancellingStartup) await stopAfterStartup?.();
       native?.closeAdmission();
+      await accountDisposal;
       const disposal = vault?.dispose();
       const [, confirmed] = await Promise.all([disposal, drained]);
       return confirmed;
@@ -921,6 +950,10 @@ async function startOwnedDaemon(
     const loadFailure = native ? await native.failure : null;
     checkStartup();
     vault = createDaemonVault({
+      cloudAccountSelected:
+        options.cloudAccount !== undefined &&
+        (options.cloudAccount.activationSelected ??
+          CLOUD_ACCOUNT_AUTHORITY_COMPOSITION_SELECTED),
       secureDataRoot: options.secureDataRoot,
       platform,
       slots,
@@ -954,6 +987,22 @@ async function startOwnedDaemon(
     });
     await options.githubCredentials?.seed?.(githubCredentials, githubLeases);
     checkStartup();
+    if (
+      options.cloudAccount &&
+      (options.cloudAccount.activationSelected ??
+        CLOUD_ACCOUNT_AUTHORITY_COMPOSITION_SELECTED)
+    ) {
+      const composed = createDaemonCloudAccountServices({
+        repository: () => ownedVault.repository(),
+        probeKeyIfDue: () => ownedVault.probeKeyIfDue(),
+        writer: () => ownedVault.writer('cloud-account'),
+        cloud: options.cloudAccount.cloud,
+      });
+      cloudAccount = composed;
+      // Independent client sign-in stays local; only selected composition
+      // constructs daemon custody and serves the account operations.
+      cloudAccountModule = composed.module;
+    }
     const vaultModule = createVaultModule(vault);
     const credentialsModule = createIntegrationCredentialModule({
       authority: githubCredentials,
@@ -1091,6 +1140,7 @@ async function startOwnedDaemon(
         credentials: credentialsModule,
         mutationFence: mutationFenceModule,
         instructionGuard: mutationFenceGuard,
+        ...(cloudAccountModule && { cloudAccount: cloudAccountModule }),
         services: [...services, supervisor.service],
       });
     } else {
@@ -1150,6 +1200,14 @@ async function startOwnedDaemon(
           }),
           shutdown: () => processes.shutdown(),
           resolveScope,
+          dataRoot: canonicalDataRoot,
+          flushDirectorySync: (directory) =>
+            flushDirectorySync(directory, { os }),
+          log: (message, details): void => {
+            process.stderr.write(
+              `${JSON.stringify({ level: 'warn', message, name: details.name })}\n`,
+            );
+          },
         });
       }
       if (options.codeGraph) {
@@ -1247,8 +1305,21 @@ async function startOwnedDaemon(
         });
       if (options.pipelines) {
         const processes = executionServices();
+        const account = cloudAccountModule ? cloudAccount : undefined;
         pipelines = createDaemonPipelineModule({
           accounting,
+          // CAN-6997: governed-native and AI Credits survival, only with
+          // selected account authority. Older launch evidence defaults to
+          // union; current evidence records the desktop's enforcement scope.
+          ...(account && {
+            managed: {
+              authority: account.authority,
+              availability: account.availability,
+              broker: account.broker,
+              brokerReady: (): boolean => true,
+              policyScope: 'union',
+            },
+          }),
           hosts: createDaemonExecutionHostPort({
             services: processes,
             cwd: canonicalDataRoot,
@@ -1285,6 +1356,7 @@ async function startOwnedDaemon(
         credentials: credentialsModule,
         mutationFence: mutationFenceModule,
         instructionGuard: mutationFenceGuard,
+        ...(cloudAccountModule && { cloudAccount: cloudAccountModule }),
         filesystem: {
           os,
           ...(platform.trash && { trash: platform.trash }),
@@ -1381,6 +1453,13 @@ async function startOwnedDaemon(
         })
       : undefined;
     undo.push(() => Promise.resolve(ownerProof?.dispose()));
+    // q-43 B: every authenticated same-user local connection is trusted today.
+    // E1 (CAN-4729) will designate trusted local/remote connections here;
+    // owner proof and a caller-declared interface kind do not define trust.
+    const cloudAccountGrants: CanopyCallerDescriptor['grants'] =
+      cloudAccountModule
+        ? ['core.integration.read', CLOUD_ACCOUNT_TRUSTED_CONNECTION_GRANT]
+        : [];
     const controlPlane = serveCanopyDaemonControlPlane({
       binding: publication,
       dispatcher: runtime.dispatcher,
@@ -1403,6 +1482,7 @@ async function startOwnedDaemon(
               execution ? DAEMON_EXECUTION_CALLER_GRANTS : [],
               operations ? CORE_OPERATION_CALLER_GRANTS : [],
               pipelineDefinitions ? CORE_PIPELINE_DEFINITION_CALLER_GRANTS : [],
+              cloudAccountGrants,
             ),
       ...(ownerProof && { ownerProof }),
       // Generation and read reports reach only clients that decode them
@@ -1492,6 +1572,13 @@ async function startOwnedDaemon(
     checkStartup();
     startupComplete = true;
     startupQuiet();
+    // Custody reads and the first refresh are not readiness dependencies. The
+    // account authority still fences every use; start() checks disposal too.
+    const account = cloudAccountModule ? cloudAccount : undefined;
+    if (account)
+      setImmediate(() => {
+        void account.start().catch(() => false);
+      });
     return running;
   } catch (error) {
     endpoint.withdrawn = true;

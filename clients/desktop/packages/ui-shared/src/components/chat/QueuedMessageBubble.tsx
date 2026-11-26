@@ -1,4 +1,4 @@
-import { Stack } from '../Stack';
+import { Stack } from '../../primitives/Stack';
 import type { AgentSentInfo } from '@canopy/protocol/remote-control/shell/external-agent-sender';
 import {
   AgentSentTitle,

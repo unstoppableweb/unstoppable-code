@@ -2,8 +2,8 @@
 
 import type { JSX } from 'react';
 import type { LedgerViewFileCandidate } from '@canopy/protocol/ledger-view';
-import { ListRow } from '../ListRow';
-import { SearchField } from '../SearchField';
+import { ListRow } from '../../primitives/ListRow';
+import { SearchField } from '../../primitives/SearchField';
 
 export interface LedgerFileSearchProps {
   query: string;

@@ -10,8 +10,8 @@ import {
   PickerMenuOptionTrailing,
   PickerTrigger,
   PickerTriggerChevron,
-} from '../PickerMenu';
-import { Tooltip } from '../Tooltip';
+} from '../../primitives/PickerMenu';
+import { Tooltip } from '../../primitives/Tooltip';
 
 export interface LedgerTargetOption {
   readonly id: string;

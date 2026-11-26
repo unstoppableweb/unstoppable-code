@@ -1,7 +1,7 @@
 import type { JSX, ReactNode } from 'react';
 import { AppAdvisorWatcherIcon } from '../icons/AppIcons';
 import type { ChatWatcherFiredInfo } from '@canopy/protocol/remote-control/shell';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { TranscriptEventRow } from './chat/TranscriptEventRow';
 

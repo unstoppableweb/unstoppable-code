@@ -54,6 +54,8 @@ interface ProfileRunsSectionProps {
    * whole tab is the restricted notice — runs are cost data and stay gated.
    */
   viewerCanViewStats: boolean;
+  /** Owners with the transcript browser on get a transcript link per row. */
+  viewerCanViewTranscripts?: boolean;
   memberName: string;
 }
 
@@ -67,6 +69,7 @@ export function ProfileRunsSection({
   orgId,
   userId,
   viewerCanViewStats,
+  viewerCanViewTranscripts = false,
   memberName,
 }: ProfileRunsSectionProps): JSX.Element {
   const { blockClassName } = useSettingsPrivacy();
@@ -138,7 +141,10 @@ export function ProfileRunsSection({
         </Surface>
       ) : (
         <Surface variant="raised" padding="default">
-          <MostExpensiveRuns runs={usage.mostExpensiveRuns} />
+          <MostExpensiveRuns
+            runs={usage.mostExpensiveRuns}
+            transcriptOrgId={viewerCanViewTranscripts ? orgId : undefined}
+          />
         </Surface>
       )}
     </section>

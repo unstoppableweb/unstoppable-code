@@ -355,7 +355,7 @@ interface CodexTurnState {
   lifecycleStartedTurnIds?: Set<string>;
   lifecycleBindingKeys?: Set<string>;
   unresolvedMergeTurnIds?: Set<string>;
-  mergedResumeAnchor?: string;
+  mergedResumeTurnId?: string;
   fatalRootError?: {
     threadId: string;
     turnId: string;
@@ -3109,7 +3109,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     // The merge is recorded for the shadow binding only. Events keep the
     // dispatched anchor that the host's turn owns; re-anchoring canonical
     // turn membership to the joined turn is the reducer's job (phase 35).
-    turn.mergedResumeAnchor = anchor;
+    turn.mergedResumeTurnId = turnId;
   }
 
   private acceptStartResponse(
@@ -3134,7 +3134,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
     nativeTurn?: Record<string, unknown>,
   ): void {
     const merged =
-      turn.mergedResumeAnchor !== undefined &&
+      turn.mergedResumeTurnId === turnId &&
       turn.allowResumeMerge !== false &&
       turn.lifecycleOrigin !== 'restart' &&
       Boolean(turn.submissionId || turn.clientUserMessageId);
@@ -4309,7 +4309,7 @@ export class CodexAppServerClient implements CodexInteractiveOwner {
       !this.threadReady ||
       active?.executionUserMessageId !== turnId ||
       active.recoveryPromise ||
-      active.mergedResumeAnchor !== undefined ||
+      active.mergedResumeTurnId === active.turnId ||
       active.unresolvedMergeTurnIds?.has(active.turnId) ||
       !this.getSteeringTarget()
     ) {

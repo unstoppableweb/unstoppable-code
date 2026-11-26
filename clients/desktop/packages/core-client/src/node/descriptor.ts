@@ -4,7 +4,7 @@ import type {
   CanopyRuntimeDescriptor,
   CanopyRuntimeDescriptorSource,
 } from './daemon-ports';
-import { canopyLaunchDetails } from './daemon-refusal';
+import { canopyLaunchDetails, canopyLaunchStep } from './daemon-refusal';
 import { canopyConnectError } from './endpoint';
 
 export type CanopyDescriptorState =
@@ -69,7 +69,7 @@ const cancelled = (): CanopyClientError =>
 /**
  * Port failures keep a fixed kind and text: their messages may name paths or
  * tokens. Only the allowlisted launch facts, the step and the port's typed kind
- * cross as details.
+ * cross as details. The step is this port's unless a private-path check refused.
  */
 async function callPort<T>(
   signal: AbortSignal,
@@ -95,9 +95,10 @@ async function callPort<T>(
         'Core process identity cannot be verified on this host.',
       );
     if (signal.aborted) throw cancelled();
+    const inner = canopyLaunchDetails(error);
     throw canopyConnectError('unavailable', 'Core discovery failed.', {
-      ...canopyLaunchDetails(error),
-      operation,
+      ...inner,
+      operation: canopyLaunchStep(inner, operation),
       ...(error instanceof CanopyClientError
         ? { portKind: error.payload.kind }
         : {}),

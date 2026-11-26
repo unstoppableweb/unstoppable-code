@@ -8,8 +8,8 @@ import type {
 } from '@canopy/protocol/remote-control/shell';
 import { useMinuteClock } from '../lib/useMinuteClock';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import { Button } from './Button';
-import { StatusLabel } from './StatusLabel';
+import { Button } from '../primitives/Button';
+import { StatusLabel } from '../primitives/StatusLabel';
 import {
   UsageGroup,
   UsageRow,

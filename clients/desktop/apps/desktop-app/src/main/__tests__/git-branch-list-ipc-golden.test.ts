@@ -8,6 +8,7 @@ import { settleDetachedWork } from '@canopy/desktop-shared/node/lib/detached-wor
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -40,7 +41,12 @@ import {
   type CanopyClientQueryOptions,
 } from '@canopy/core-client';
 import { CanopyOperationError } from '@canopy/core-runtime';
-import { createGitReadHost } from '@canopy/core-platform';
+import {
+  createGitReadHost,
+  deriveLocalAuthorityIdentity,
+  hostLocalAuthorityObservation,
+} from '@canopy/core-platform';
+import { connectCanopyClient } from '@canopy/core-client/node';
 import {
   createGitBranch,
   checkoutGitBranch,
@@ -56,6 +62,7 @@ import {
   IPC_CHANNELS,
   PLAN_EXPLORE_CHAT_PROJECT_ID,
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
+  STANDALONE_CHAT_PROJECT_ID,
   WORKSPACE_ROOT_REPO_ID,
 } from '@canopy/desktop-shared/types';
 
@@ -83,7 +90,15 @@ import { recordGitDefaultBranch } from '../lib/git-default-branch-freshness';
 import { DEFAULT_BRANCH_FRESHNESS_TTL_MS } from '../lib/git-default-branch';
 import { registerCodeReviewTarget } from '../lib/code-review-registry';
 import { registerPlanExploreTarget } from '../lib/plan-explore-registry';
-import { getSharedContainerRunRootDir } from '../lib/paths';
+import {
+  getCoworkWorkspaceRootDir,
+  getSharedContainerRunRootDir,
+} from '../lib/paths';
+import { resolveWorktreeTargetIds } from '../lib/resolve-worktree';
+import {
+  getWorkspaceType,
+  registerWorkspaceTypes,
+} from '../lib/workspace-registry';
 import {
   createDesktopRuntime,
   type DesktopCanopyDispatcher,
@@ -94,6 +109,16 @@ import {
   type DaemonGitRouteOptions,
 } from '../canopy-runtime/daemon-git-route';
 import { createElectronDaemonCallerLifetime } from '../canopy-runtime/electron-daemon-caller-lifetime';
+import {
+  ELECTRON_DAEMON_DEFINITIONS,
+  type ElectronDaemonClient,
+} from '../canopy-runtime/electron-daemon-host';
+import {
+  startCanopyDaemon,
+  type RunningCanopyDaemon,
+} from '../../../../core-daemon/src/daemon';
+import { resolveRepository } from '../canopy-runtime/worker-git-adapter';
+import { workspaceManifestReadable } from '../lib/worktree-health';
 import { FakeSender } from '../canopy-runtime/__tests__/daemon-files-route-harness';
 import * as gitHelpers from '../lib/git';
 import * as processCleanup from '../lib/worktree-process-cleanup';
@@ -1545,15 +1570,60 @@ describe('daemon branch-list route equivalence', () => {
     await list(routeFor({ selectable: undefined, platform: 'darwin' }));
     await list(routeFor({ selectable: undefined, platform: 'linux' }));
     expect(query).toHaveBeenCalledTimes(3);
+    // CAN-4729: worktree health qualifies on macOS and Linux only.
+    expect(READ_ROUTE_TABLE['git.worktree.health.get']).toMatchObject({
+      darwin: { kind: 'eligible' },
+      win32: { kind: 'blocked', until: 'CAN-4732' },
+      linux: { kind: 'eligible' },
+    });
     for (const operation of [
       'git.remote.get',
-      'git.worktree.health.get',
       'git.executable.get',
       'git.status.get',
       'git.diff.get',
     ] as const)
       for (const disposition of Object.values(READ_ROUTE_TABLE[operation]))
         expect(disposition.kind).toBe('blocked');
+  });
+
+  it('keeps a cowork home checkout and its standalone chat in process, as the daemon refuses cowork records', async () => {
+    const home = getCoworkWorkspaceRootDir(COWORK_WS);
+    // The other cowork cases list a home without a checkout.
+    expect(existsSync(home)).toBe(false);
+    initRepo(home);
+    git(home, ['branch', 'cowork-only']);
+    registerWorkspaceTypes(new Map([[COWORK_WS, 'cowork']]));
+    const cases = [
+      { projectId: COWORK_WS, worktreeId: 'home' },
+      { projectId: STANDALONE_CHAT_PROJECT_ID, worktreeId: COWORK_WS },
+    ];
+    try {
+      await runtime?.shutdown();
+      registerHandlers();
+      const direct: string[] = [];
+      for (const request of cases)
+        direct.push(
+          JSON.stringify(await ipc(IPC_CHANNELS.worktreeListBranches, request)),
+        );
+      expect(direct.every((listed) => listed.includes('"cowork-only"'))).toBe(
+        true,
+      );
+      await runtime?.shutdown();
+      // Production's lookups, so the cowork type and the standalone alias resolve.
+      registerHandlers(() =>
+        routeFor({ workspaceType: getWorkspaceType, resolveWorktreeTargetIds }),
+      );
+      for (const [index, request] of cases.entries())
+        expect(
+          JSON.stringify(await ipc(IPC_CHANNELS.worktreeListBranches, request)),
+        ).toBe(direct[index]);
+      expect(query.mock.calls.length).toBe(0);
+    } finally {
+      registerWorkspaceTypes(new Map());
+      rmSync(home, { recursive: true, force: true });
+      await runtime?.shutdown();
+      registerHandlers();
+    }
   });
 
   it('reports connection loss typed, without a direct retry', async () => {
@@ -1670,6 +1740,274 @@ describe('daemon branch-list route equivalence', () => {
     },
   );
 });
+
+// The lean gate (CAN-4729), as worktree-health-ipc-golden has it: Electron's
+// production client definitions and route inputs, served by the bundled
+// daemon's own branch-list host over its data root.
+(process.platform === 'win32' ? describe.skip : describe)(
+  'branch lists over the production connection to the bundled daemon',
+  () => {
+    const lifetime = createElectronDaemonCallerLifetime();
+    const routes: DaemonGitRoute[] = [];
+    let daemon: RunningCanopyDaemon | undefined;
+    let production: ElectronDaemonClient | undefined;
+    let authorityId = '';
+    const connected = (): ElectronDaemonClient => {
+      if (!production) throw new Error('The daemon did not start.');
+      return production;
+    };
+    // Production's inputs (electron-daemon-git-access.ts), without the
+    // reachability wrapper: production selection, execution and repository.
+    const route = (platform: 'darwin' | 'linux' | 'win32'): DaemonGitRoute => {
+      const created = createDaemonGitRoute({
+        lifetime,
+        platform,
+        workspaceType: getWorkspaceType,
+        resolveWorktreeTargetIds,
+        workspaceManifestReadable,
+        repositoryPath: resolveRepository,
+        hostContext: () => Promise.resolve({ authorityId }),
+        connections: () => ({
+          get: (): Promise<{ client: ElectronDaemonClient }> =>
+            Promise.resolve({ client: connected() }),
+        }),
+      });
+      routes.push(created);
+      return created;
+    };
+    const ROUTED = [
+      [
+        IPC_CHANNELS.worktreeListBranches,
+        { projectId: FRESH_WS, worktreeId: WORKTREE },
+      ],
+      [
+        IPC_CHANNELS.worktreeListBranches,
+        { projectId: NO_ORIGIN_WS, worktreeId: WORKTREE },
+      ],
+      [
+        IPC_CHANNELS.worktreeListBranches,
+        { projectId: MULTI_WS, worktreeId: WORKTREE },
+      ],
+      [
+        IPC_CHANNELS.worktreeListBranches,
+        {
+          projectId: MULTI_WS,
+          worktreeId: WORKTREE,
+          repoId: WORKSPACE_ROOT_REPO_ID,
+        },
+      ],
+      [
+        IPC_CHANNELS.worktreeListBranches,
+        { projectId: MULTI_WS, worktreeId: WORKTREE, repoId: 'member' },
+      ],
+      [
+        IPC_CHANNELS.worktreeListBranches,
+        { projectId: REPAIR_WS, worktreeId: WORKTREE },
+      ],
+      [IPC_CHANNELS.homeListBranchTargets, { workspaceId: FRESH_WS }],
+      [IPC_CHANNELS.homeListBranchTargets, { workspaceId: NO_ORIGIN_WS }],
+      [IPC_CHANNELS.homeListBranchTargets, { workspaceId: MULTI_WS }],
+      [IPC_CHANNELS.homeListBranchTargets, { workspaceId: REPAIR_WS }],
+    ] as const;
+    // Every leg starts from the same stored defaults and origin/HEADs, so the
+    // in-process leg's freshness write or origin/HEAD repair never answers
+    // the daemon leg. The store caches in memory, so each value is recorded.
+    const legState = async (): Promise<void> => {
+      const now = Date.now();
+      const stale = now - DEFAULT_BRANCH_FRESHNESS_TTL_MS - 60_000;
+      // Fresh and unlike origin's HEAD: only main's hint names it.
+      await seedFreshness(repos[FRESH_WS], 'develop', now);
+      // Stale: each leg revalidates against the remote itself.
+      for (const repo of [repos[MULTI_WS], repos.member, repos[REPAIR_WS]])
+        await seedFreshness(repo, 'release', stale);
+      for (const repo of [repos[FRESH_WS], repos[MULTI_WS], repos.member])
+        git(repo, ['remote', 'set-head', 'origin', 'main']);
+      // Cold: only a live lookup of the remote's HEAD names main.
+      git(origins[REPAIR_WS], ['symbolic-ref', 'HEAD', 'refs/heads/main']);
+      git(repos[REPAIR_WS], ['remote', 'set-head', 'origin', 'develop']);
+    };
+    // A real checkout the route excludes, so it must list in process.
+    const CODE_REVIEW = [
+      IPC_CHANNELS.worktreeListBranches,
+      {
+        projectId: CODE_REVIEW_CHAT_PROJECT_ID,
+        worktreeId: `${FRESH_WS}--${WORKTREE}`,
+      },
+    ] as const;
+    const UNROUTED = [
+      CODE_REVIEW,
+      [
+        IPC_CHANNELS.worktreeListBranches,
+        { projectId: COWORK_WS, worktreeId: 'home' },
+      ],
+      [IPC_CHANNELS.homeListBranchTargets, { workspaceId: COWORK_WS }],
+      [
+        IPC_CHANNELS.worktreeListBranches,
+        { projectId: STANDALONE_CHAT_PROJECT_ID, worktreeId: 'chat-01' },
+      ],
+    ] as const;
+    /** Each case in process, then through `route`, as identical JSON. */
+    const sameAsInProcess = async (
+      platform: 'darwin' | 'linux' | 'win32',
+      cases: ReadonlyArray<readonly [string, object]>,
+    ): Promise<number> => {
+      const asked = jest.spyOn(connected(), 'query');
+      try {
+        for (const [channel, request] of cases) {
+          await legState();
+          await runtime?.shutdown();
+          registerHandlers();
+          const direct = JSON.stringify(await ipc(channel, request));
+          await legState();
+          await runtime?.shutdown();
+          registerHandlers(() => route(platform));
+          expect(JSON.stringify(await ipc(channel, request))).toBe(direct);
+        }
+        return asked.mock.calls.length;
+      } finally {
+        asked.mockRestore();
+      }
+    };
+
+    beforeAll(async () => {
+      // Only the member checkout has it: a dropped repoId would list the root.
+      git(repos.member, ['branch', 'member-only']);
+      // As the sidebar read registers them; an unregistered type stays direct.
+      registerWorkspaceTypes(
+        new Map([
+          [FRESH_WS, 'single-repo'],
+          [NO_ORIGIN_WS, 'single-repo'],
+          [REPAIR_WS, 'single-repo'],
+          [MULTI_WS, 'multi-repo'],
+          [COWORK_WS, 'cowork'],
+        ]),
+      );
+      // The daemon publishes its runtime files only under a private root.
+      chmodSync(dataDir, 0o700);
+      daemon = await startCanopyDaemon({
+        dataRoot: dataDir,
+        runtimeMode: 'dev',
+        buildVersion: 'test',
+        brandId: 'canopy',
+        secureDataRoot: join(dir, 'secure'),
+        coworkManagedDirName: '.canopy',
+        environment: {
+          HOME: dir,
+          TMPDIR: tmpdir(),
+          PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
+        },
+      });
+      const { descriptor } = daemon;
+      production = await connectCanopyClient({
+        endpoint: {
+          kind: 'socket',
+          path: descriptor.endpoint.path,
+          auth: {
+            secret: readFileSync(descriptor.tokenRef, 'utf8'),
+            dataRootHash: createHash('sha256').update(dataDir).digest('hex'),
+          },
+        },
+        clientName: 'git-branch-list',
+        clientVersion: '0',
+        definitions: ELECTRON_DAEMON_DEFINITIONS,
+      });
+      await production.instruction('core.client.lease.acquire', {
+        clientInstanceId: 'git-branch-list',
+        interfaceKind: 'desktop',
+        label: 'Branch lists',
+        interactive: true,
+        foreground: true,
+        renewalIntervalMs: 15_000,
+        _meta: { idempotencyKey: 'git-branch-list-lease' },
+      });
+      ({ authorityId } = await deriveLocalAuthorityIdentity(
+        { brandId: 'canopy', dataRoot: dataDir },
+        hostLocalAuthorityObservation(),
+      ));
+    });
+    afterAll(async () => {
+      routes.forEach((created) => created.dispose());
+      lifetime.disposeAll();
+      registerWorkspaceTypes(new Map());
+      git(repos.member, ['branch', '-D', 'member-only']);
+      await runtime?.shutdown();
+      registerHandlers();
+      await production?.close();
+      await daemon?.stop('test');
+    });
+
+    it.each(['darwin', 'linux'] as const)(
+      'answers checkout and reference lists as in process on %s, asking the daemon once each',
+      async (platform) => {
+        expect(await sameAsInProcess(platform, ROUTED)).toBe(ROUTED.length);
+        await legState();
+        await runtime?.shutdown();
+        registerHandlers(() => route(platform));
+        // The daemon's own live lookup, not the stale hint or origin/HEAD.
+        expect(
+          JSON.stringify(
+            await ipc(IPC_CHANNELS.homeListBranchTargets, {
+              workspaceId: REPAIR_WS,
+            }),
+          ),
+        ).toContain('"defaultBranch":"main"');
+        const listed = async (repoId: string): Promise<string> =>
+          JSON.stringify(
+            await ipc(IPC_CHANNELS.worktreeListBranches, {
+              projectId: MULTI_WS,
+              worktreeId: WORKTREE,
+              repoId,
+            }),
+          );
+        expect(await listed('member')).toContain('"member-only"');
+        expect(await listed(WORKSPACE_ROOT_REPO_ID)).not.toContain(
+          '"member-only"',
+        );
+      },
+    );
+
+    it('keeps code-review lists and unsupported cowork and standalone lookups in process, with no daemon contact', async () => {
+      for (const platform of ['darwin', 'linux'] as const)
+        expect(await sameAsInProcess(platform, UNROUTED)).toBe(0);
+      // The code-review checkout really lists, so the zero above is a choice.
+      expect(JSON.stringify(await ipc(...CODE_REVIEW))).toMatch(
+        /^\{"result":\{"branches":\[.*"name":"main"/,
+      );
+    });
+
+    it('lists a cowork home checkout and its standalone chat in process, with no daemon contact, as the daemon refuses cowork records', async () => {
+      const home = getCoworkWorkspaceRootDir(COWORK_WS);
+      expect(existsSync(home)).toBe(false);
+      initRepo(home);
+      git(home, ['branch', 'cowork-only']);
+      const COWORK = [
+        [
+          IPC_CHANNELS.worktreeListBranches,
+          { projectId: COWORK_WS, worktreeId: 'home' },
+        ],
+        [
+          IPC_CHANNELS.worktreeListBranches,
+          { projectId: STANDALONE_CHAT_PROJECT_ID, worktreeId: COWORK_WS },
+        ],
+      ] as const;
+      try {
+        for (const platform of ['darwin', 'linux'] as const)
+          expect(await sameAsInProcess(platform, COWORK)).toBe(0);
+        // Each really lists, so the zero above is the route's choice.
+        for (const [channel, request] of COWORK)
+          expect(JSON.stringify(await ipc(channel, request))).toContain(
+            '"cowork-only"',
+          );
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it('keeps Windows in process, with no daemon contact', async () => {
+      expect(await sameAsInProcess('win32', [...ROUTED, ...UNROUTED])).toBe(0);
+    });
+  },
+);
 
 // CAN-7169: one pure validator decides which remote-derived names may reach
 // Git argv. It accepts exactly what `git check-ref-format --branch` accepts

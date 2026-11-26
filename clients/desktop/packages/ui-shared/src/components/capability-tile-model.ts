@@ -7,6 +7,7 @@ import type {
 } from '@canopy/protocol/agent-artifacts';
 import type { StatusGlyphState } from '../lib/status-glyph';
 import { WORKFLOW_ITEM_LABEL } from '../lib/workflow-labels';
+import { MODEL_PRESET_LABEL } from '../lib/model-preset-labels';
 
 /**
  * Receipts that render as a compact capability tile. Pipeline runs and watched
@@ -93,7 +94,7 @@ const ITEM_KIND_LABELS: Record<CapabilityItemKind, string> = {
   skill: 'Skill',
   pipeline: WORKFLOW_ITEM_LABEL,
   automation: 'Automation',
-  agent: 'Agent',
+  agent: MODEL_PRESET_LABEL,
   plugin: 'Plugin',
   'mcp-server': 'MCP server',
   collection: 'Collection',
@@ -306,7 +307,7 @@ function baseModel(
     case 'agent':
       return {
         iconKind: 'agent',
-        kindLabel: 'Agent',
+        kindLabel: MODEL_PRESET_LABEL,
         operationLabel: mutationLabel(receipt.operation),
         name: receipt.name,
         ...(receipt.description || receipt.model

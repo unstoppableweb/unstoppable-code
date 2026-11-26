@@ -1,8 +1,8 @@
-import { TextLink, type WorktreePrLinkTone } from './TextLink';
+import { TextLink, type WorktreePrLinkTone } from '../primitives/TextLink';
 import type { WorkEntryAutoDeleteRowState } from '@canopy/protocol';
 import { SidebarAutoDeleteBadge } from './SidebarAutoDeleteBadge';
-import { Dot, type DotTone } from './Badge';
-import { ChoiceMark } from './Choice';
+import { Dot, type DotTone } from '../primitives/Badge';
+import { ChoiceMark } from '../primitives/Choice';
 import type {
   CSSProperties,
   FocusEvent,
@@ -26,14 +26,14 @@ import {
   useRef,
   useState,
 } from 'react';
-import { LoadingSpinner } from './LoadingSpinner';
-import { ControlButton, Button } from './Button';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
+import { ControlButton, Button } from '../primitives/Button';
 import { GroupedDiffStats } from './GroupedDiffStats';
 import {
   ITEM_PREVIEW_OPEN_DELAY_MS,
   PREVIEW_CARD_SURFACE,
   RichHoverTooltip,
-} from './RichHoverTooltip';
+} from '../primitives/RichHoverTooltip';
 import {
   isPrStatusInMergeQueue,
   PR_STATUS_ICONS,
@@ -50,9 +50,9 @@ import { SidebarRowAge } from './SidebarRowAge';
 import { formatCompactAge } from '../lib/format-relative-time';
 import { useMinuteClock } from '../lib/useMinuteClock';
 import { trackInputModality, wasFocusVisible } from '../lib/input-modality';
-import { CometSpinner } from './CometSpinner';
+import { CometSpinner } from '../primitives/CometSpinner';
 import { RunSpinner } from './RunSpinner';
-import { ThinkingSpinner } from './ThinkingSpinner';
+import { ThinkingSpinner } from '../primitives/ThinkingSpinner';
 import { AgentStateGlyph, backgroundTasksLabel } from './AgentStateGlyph';
 import { AppAdvisorWatcherIcon } from '../icons/AppAdvisorWatcherIcon';
 import { HoverCardIconSlot } from './HoverCardIconSlot';
@@ -88,7 +88,7 @@ import {
   SIDEBAR_INDICATOR_COLORS,
 } from '../lib/operational-status-colors';
 import { STATUS_GLYPHS } from '../lib/status-glyph';
-import { StatusGlyph } from './StatusGlyph';
+import { StatusGlyph } from '../primitives/StatusGlyph';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 
 export type WorktreeRowUiStatus =
@@ -445,6 +445,14 @@ export interface WorktreeRowProps {
    * operational status rail at full opacity.
    */
   isTearingDownVisual?: boolean;
+  /**
+   * The row's work can't be reached right now, such as a task on a paired
+   * computer that is connecting or needs an update (CAN-7766). Its title and
+   * second line fade, as an unavailable picker option does; the row stays
+   * clickable and keeps its place. Say why in text the row already carries,
+   * such as the trailing icon's label. Sidebar rows only.
+   */
+  unavailable?: boolean;
   /** Host-neutral intent to open this row; does not select or move focus. */
   onIntent?: (phase: 'start' | 'end', source: 'pointer' | 'focus') => void;
   /** Click handler for selecting this worktree. */
@@ -497,6 +505,13 @@ export interface WorktreeRowProps {
   runStatusSlot?: ReactNode;
   /** Optional host-owned persistent status shown in the title-line status rail. */
   statusSlot?: ReactNode;
+  /**
+   * One 16px icon at the title line's trailing edge, after the status and in
+   * both status models, that says where the row's work lives, such as the
+   * computer a paired computer's task runs on (CAN-7766). The host's element
+   * carries its own accessible name and tooltip. Sidebar rows only.
+   */
+  trailingIconSlot?: ReactNode;
   /** Click handler on the warning button (e.g. open branch info modal). */
   onWarningClick?: (event: MouseEvent<HTMLButtonElement>) => void;
   /**
@@ -1803,6 +1818,7 @@ function WorktreeRowImpl(
     dragCursor = false,
     nonSortableInteraction = false,
     isTearingDownVisual = false,
+    unavailable = false,
     onClick,
     onIntent,
     onContextMenu,
@@ -1825,6 +1841,7 @@ function WorktreeRowImpl(
     worktreeIdSlot,
     runStatusSlot,
     statusSlot,
+    trailingIconSlot,
     onWarningClick,
     onPipelineIconMouseEnter,
     onPipelineIconMouseLeave,
@@ -3163,6 +3180,7 @@ function WorktreeRowImpl(
         data-display-mode={displayMode}
         data-multiselected={multiSelected || undefined}
         data-worktree-layout="classic"
+        data-unavailable={unavailable || undefined}
         data-worktree-single-line={classicSingleLine || undefined}
         style={style}
         onClick={onClick}
@@ -3405,7 +3423,7 @@ function WorktreeRowImpl(
         </div>
 
         <div
-          className={`min-w-0 flex-1 self-center ${isTearingDownVisual ? 'opacity-50' : ''} ${
+          className={`min-w-0 flex-1 self-center ${isTearingDownVisual || unavailable ? 'opacity-50' : ''} ${
             // Coarse pointers center the always-visible 44px chip hitbox over
             // the whole two-line block, so its reserve stays on the wrapper.
             // The auto-delete badge adds its own 44px.
@@ -3435,7 +3453,7 @@ function WorktreeRowImpl(
             <p
               title={nativeTitles ? branchName || undefined : undefined}
               data-testid="worktree-row-title"
-              className={`${REPLAY_MASK_CLASS} min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-s font-normal leading-snug`}
+              className={`${REPLAY_MASK_CLASS} min-w-0 flex-1 truncate-fade text-s font-normal leading-snug`}
             >
               {branchLabel}
             </p>
@@ -3645,6 +3663,17 @@ function WorktreeRowImpl(
                 {classicTrailingStatus}
               </span>
             )}
+            {trailingIconSlot != null && (
+              <span
+                className="inline-flex h-5 w-5 shrink-0 items-center justify-center group-data-[worktree-single-line=true]:mr-0.5"
+                data-testid={withTestIdSuffix(
+                  'worktree-row-trailing-icon',
+                  testIdSuffix,
+                )}
+              >
+                {trailingIconSlot}
+              </span>
+            )}
             {/* The auto-delete badge sits at the row's end, where the last
                 hover button usually does; last in the line, this shifts all
                 of its content (status included) and its hover reserve one
@@ -3813,12 +3842,12 @@ function WorktreeRowImpl(
                     <LoadingSpinner tone="accent" />
                   </span>,
                 )}
-              <span className="block min-w-0 flex-1 truncate whitespace-nowrap">
+              <span className="block min-w-0 flex-1 truncate-fade">
                 {creationFailure ? (
                   <span className="inline-flex min-w-0 max-w-full items-center gap-2">
                     <span
                       role="status"
-                      className="min-w-0 truncate fg-secondary"
+                      className="min-w-0 truncate-fade fg-secondary"
                       title={creationFailure.reason}
                       data-testid={withTestIdSuffix(
                         'worktree-row-creation-failure',
@@ -4137,7 +4166,7 @@ function WorktreeRowImpl(
             <p
               title={nativeTitles ? branchName || undefined : undefined}
               data-testid="worktree-row-title"
-              className={`${REPLAY_MASK_CLASS} min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-s leading-snug ${
+              className={`${REPLAY_MASK_CLASS} min-w-0 flex-1 truncate-fade text-s leading-snug ${
                 textScale === 'sidebar'
                   ? isDone
                     ? 'font-normal opacity-70'
@@ -4175,7 +4204,7 @@ function WorktreeRowImpl(
           >
             <span className="flex min-w-0 flex-1 items-center gap-1.5">
               <span
-                className="block min-w-0 truncate whitespace-nowrap"
+                className="block min-w-0 truncate-fade"
                 title={
                   nativeTitles ? (specialStatusLabel ?? worktreeId) : undefined
                 }
@@ -4271,7 +4300,7 @@ function WorktreeRowPreviewLine({
       </HoverCardIconSlot>
       <span className="flex min-w-0 flex-col">
         <span
-          className={`${maskLabel ? `${REPLAY_MASK_CLASS} ` : ''}${wrapLabel ? 'break-words' : 'truncate'} fg-secondary`}
+          className={`${maskLabel ? `${REPLAY_MASK_CLASS} ` : ''}${wrapLabel ? 'break-words' : 'truncate-fade'} fg-secondary`}
         >
           {label}
         </span>

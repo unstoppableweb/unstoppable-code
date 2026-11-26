@@ -18,6 +18,7 @@ export interface SelectedMcpSignInStatus {
   readonly authStatusLabel: string;
   readonly canRefresh?: boolean;
   readonly connectActionLabel?: string;
+  readonly source?: string;
 }
 
 /**
@@ -26,6 +27,9 @@ export interface SelectedMcpSignInStatus {
  * vocabulary.
  */
 export function mcpSignInStatusLabel(server: SelectedMcpSignInStatus): string {
+  // A shared connection is signed in by a project admin, not the person, so
+  // its label names the connection's state rather than asking for a sign-in.
+  if (server.source === 'shared') return server.authStatusLabel;
   if (server.connectActionLabel !== undefined) return server.authStatusLabel;
   if (server.authStatus === 'connected') return 'Connected';
   if (server.authStatus === 'not_connected') return 'Sign-in needed';

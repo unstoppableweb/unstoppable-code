@@ -1,6 +1,6 @@
 'use client';
 
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import { useCallback, useId, useState, type JSX } from 'react';
 import { allowsAgentVisualRemoteAssets } from '@canopy/app-core';
 import { useCapabilities } from '@canopy/app-state';

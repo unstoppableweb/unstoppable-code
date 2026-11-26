@@ -1,7 +1,7 @@
 import type { ComponentPropsWithRef, JSX } from 'react';
-import { ListRowFrame } from './ListRow';
+import { ListRowFrame } from '../primitives/ListRow';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import { INLINE_TOKEN_CHIP_CLASS } from './InlineMention';
+import { INLINE_TOKEN_CHIP_CLASS } from '../primitives/InlineMention';
 
 type DiffTone = 'add' | 'del' | 'context';
 const DIFF_FILL: Record<DiffTone, string> = {

@@ -19,6 +19,7 @@ import {
 } from '@/lib/workflows/stored-automation-activity';
 import { useSharedAutomationsWorkflowFormEnabled } from '@/hooks/useSharedAutomationsWorkflowFormEnabled';
 import { unwrapShareOperationResult } from '@/lib/sharing/share-operation-result';
+import { modelPresetErrorMessage } from '@/lib/modelPresetErrors';
 import { Disclosure, Notice } from '@canopy/ui-shared';
 import {
   Stack,
@@ -43,6 +44,7 @@ import {
   AUTOMATION_SHARE_NOTICE_MESSAGES,
   buildSharedAutomationDocument,
   detectRunConditionShareWarnings,
+  type AutomationShareBlockReason,
   type BuildSharedAutomationDocumentOptions,
 } from '@canopy/desktop-shared/lib/automation-sharing';
 import type {
@@ -149,6 +151,15 @@ const TARGET_NARROWING_CHOICES: readonly {
   },
 ];
 /** Block reasons that only mean a target fact is still being resolved. */
+const MODEL_PRESET_SHARE_BLOCK_MESSAGES: Partial<
+  Record<AutomationShareBlockReason, string>
+> = {
+  agent_model_required:
+    'Choose a model for this preset before sharing the automation.',
+  local_agent_unavailable:
+    'This automation uses a local-only or unavailable model preset. Choose a shared or organization model preset and a model before sharing.',
+};
+
 const TARGET_RESOLUTION_REASONS = new Set([
   'session_target_unresolved',
   'pipeline_target_unresolved',
@@ -284,8 +295,8 @@ export function ShareAutomationModal({
         if (failure)
           setAgentError(
             error instanceof Error
-              ? error.message
-              : 'Couldn’t check the shared Agent. Refresh it from Agents before sharing this automation.',
+              ? modelPresetErrorMessage(error.message)
+              : "Couldn't check the shared model preset. Refresh it in Model presets before sharing this automation.",
           );
       })
       .finally(() => {
@@ -1187,7 +1198,8 @@ export function ShareAutomationModal({
               <ul className="list-disc pl-5">
                 {buildResult.reasons.map((reason) => (
                   <li key={reason}>
-                    {AUTOMATION_SHARE_BLOCK_MESSAGES[reason]}
+                    {MODEL_PRESET_SHARE_BLOCK_MESSAGES[reason] ??
+                      AUTOMATION_SHARE_BLOCK_MESSAGES[reason]}
                   </li>
                 ))}
               </ul>
@@ -1290,7 +1302,9 @@ export function ShareAutomationModal({
                       )
                       .map((notice) => (
                         <li key={notice}>
-                          {AUTOMATION_SHARE_NOTICE_MESSAGES[notice]}
+                          {notice === 'local_agent_model_stripped'
+                            ? 'This model preset stays on this computer. Recipients use their default model.'
+                            : AUTOMATION_SHARE_NOTICE_MESSAGES[notice]}
                         </li>
                       ))}
                   </ul>

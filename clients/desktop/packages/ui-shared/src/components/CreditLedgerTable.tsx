@@ -22,7 +22,7 @@
 import type { JSX } from 'react';
 import type { AiCreditsLedgerEntry } from '@canopy/protocol';
 import { formatCredits } from '../lib/billing-format';
-import { DataTable } from './DataTable';
+import { DataTable } from '../primitives/DataTable';
 
 /**
  * Exactly the customer-safe display fields this component reads, picked from

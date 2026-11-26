@@ -78,6 +78,13 @@ export const MAX_SHARED_RUN_COMMENTS_PER_THREAD = 500;
 /** Max length of a single run comment body. */
 export const MAX_SHARED_RUN_COMMENT_BODY_LENGTH = 16_384;
 
+/**
+ * Bound on a comment anchor's `messageId`. The id is opaque and travels on
+ * every detail read, so cap it well above the real
+ * `${turnExternalId}:${parserMessageId}` shape without inspecting it.
+ */
+export const MAX_SHARED_RUN_COMMENT_ANCHOR_MESSAGE_ID_LENGTH = 512;
+
 // ===========================================================================
 // Comments (CAN-397).
 //

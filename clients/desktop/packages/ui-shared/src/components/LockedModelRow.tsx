@@ -1,6 +1,9 @@
 import { forwardRef, type JSX, type MouseEvent, type ReactNode } from 'react';
 import type { ModelLibraryAccess } from '@canopy/protocol/models';
-import { PickerMenuOption, type PickerMenuOptionProps } from './PickerMenu';
+import {
+  PickerMenuOption,
+  type PickerMenuOptionProps,
+} from '../primitives/PickerMenu';
 import {
   MODEL_LIBRARY_UNLOCK_HINTS,
   MODEL_LIBRARY_UNLOCK_LABELS,

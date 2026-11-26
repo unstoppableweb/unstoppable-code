@@ -1,5 +1,5 @@
 import type { ComponentPropsWithoutRef, JSX } from 'react';
-import { Dot } from './Badge';
+import { Dot } from '../primitives/Badge';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 
 export function TerminalTabsBar(

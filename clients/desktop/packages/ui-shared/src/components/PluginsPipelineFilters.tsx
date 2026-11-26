@@ -1,7 +1,7 @@
 import { useRef, useState, type JSX } from 'react';
-import { DropdownMenuItem } from './DropdownMenu';
-import { FloatingMenu } from './FloatingMenu';
-import { PickerTrigger, PickerTriggerChevron } from './PickerMenu';
+import { DropdownMenuItem } from '../primitives/DropdownMenu';
+import { FloatingMenu } from '../primitives/FloatingMenu';
+import { PickerTrigger, PickerTriggerChevron } from '../primitives/PickerMenu';
 import { CheckIcon } from '../icons/AppIcons';
 import {
   PIPELINE_EXECUTION_SCOPE_LABELS,

@@ -19,15 +19,15 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
-import { ActionMenuRowStyle } from '../ActionMenuItems';
+import { ActionMenuRowStyle } from '../../primitives/ActionMenuItems';
 import {
   DropdownMenuDivider,
   DropdownMenuItem,
   DropdownMenuItemIcon,
-} from '../DropdownMenu';
-import { FloatingMenu } from '../FloatingMenu';
-import { NestedMenuFlyout } from '../NestedMenuFlyout';
-import { Tooltip } from '../Tooltip';
+} from '../../primitives/DropdownMenu';
+import { FloatingMenu } from '../../primitives/FloatingMenu';
+import { NestedMenuFlyout } from '../../primitives/NestedMenuFlyout';
+import { Tooltip } from '../../primitives/Tooltip';
 
 export interface PanelAddTabMenuViewEntry {
   /** Optional React key when multiple rows intentionally share one test id. */

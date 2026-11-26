@@ -1,4 +1,4 @@
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import { TranscriptSearchRevealContext } from './transcript-search-reveal';
 import { useContext, memo, useMemo, type JSX, type ReactNode } from 'react';
 import {

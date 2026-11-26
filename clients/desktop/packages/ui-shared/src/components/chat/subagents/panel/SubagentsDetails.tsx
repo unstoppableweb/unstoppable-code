@@ -44,10 +44,10 @@ import {
   StopIcon,
 } from '../../../../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../../../../lib/replay-privacy';
-import { Button } from '../../../Button';
-import { PaneSheet } from '../../../Sheet';
+import { Button } from '../../../../primitives/Button';
+import { PaneSheet } from '../../../../primitives/Sheet';
 import { ExecutionActionButton } from '../../../ExecutionActionButton';
-import { ErrorBanner } from '../../../StatusBlocks';
+import { ErrorBanner } from '../../../../primitives/StatusBlocks';
 import { SubagentChangesLabel } from '../common/SubagentChangesLabel';
 import { SubagentHarnessMark } from '../common/SubagentHarnessMark';
 import {
@@ -64,8 +64,8 @@ import {
   SubagentStatusGlyph,
   subagentStatusInk,
 } from '../common/SubagentStatusGlyph';
-import { Fact, FactList } from '../../../FactList';
-import { Heading } from '../../../Heading';
+import { Fact, FactList } from '../../../../primitives/FactList';
+import { Heading } from '../../../../primitives/Heading';
 
 /** Shared callback and content props for the inspector and bottom drawer. */
 export interface SubagentsDetailsProps {
@@ -200,7 +200,8 @@ function SubagentsTaskDetailsBody({
         <ErrorBanner
           errorSource="subagents-task-details-body"
           className=""
-          error={`${SUBAGENTS_STOP_FAILED_LABEL} ${stopError}`}
+          error={SUBAGENTS_STOP_FAILED_LABEL}
+          details={stopError}
         />
       ) : null}
 
@@ -356,7 +357,8 @@ function SubagentsWorkflowRunDetailsBody({
         <ErrorBanner
           errorSource="subagents-workflow-run-details-body"
           className=""
-          error={`${SUBAGENT_STOP_WORKFLOW_FAILED_LABEL} ${stopWorkflowError}`}
+          error={SUBAGENT_STOP_WORKFLOW_FAILED_LABEL}
+          details={stopWorkflowError}
         />
       ) : null}
 

@@ -43,6 +43,7 @@ import {
 } from '@canopy/desktop-shared/lib/pipeline-editor-tools';
 import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
 import { isClaudeWorkerToolExposed } from '../integration/claude-worker-tool-exposure';
+import { pipelineAgentActionToolDefinitions } from '../canopy-tools/pipeline-agent-actions';
 import { isRecord } from './integration-http';
 import { antigravityAppToolDeclaration } from '../antigravity/app-tool-declarations';
 import { hasInterfaceTool } from '../agents/interface-tool-binding';
@@ -453,6 +454,8 @@ export const CLAUDE_NATIVE_UI_MCP_TOOLS =
   buildClaudeCanopyMcpTools('native-sdk-ui');
 export const CLAUDE_WORKER_MCP_TOOLS =
   buildClaudeCanopyMcpTools('claude-worker');
+const PIPELINE_AGENT_ACTION_CLAUDE_TOOLS =
+  pipelineAgentActionToolDefinitions('claude');
 export const COPILOT_SDK_MCP_TOOLS = buildClaudeCanopyMcpTools('copilot-sdk');
 const ANTIGRAVITY_ACP_MCP_TOOLS = buildClaudeCanopyMcpTools('antigravity-acp');
 const ANTIGRAVITY_ACP_STANDALONE_MCP_TOOLS = buildClaudeCanopyMcpTools(
@@ -1018,12 +1021,25 @@ export function listCanopyRouteTools(
           tool.canonicalKey,
           route.workerMemoryToolExposure ?? 'none',
           route.ledgerTools !== undefined,
+          route.pipelineAgentActions !== undefined,
         ),
-      ).map((tool) => ({
-        name: tool.name,
-        description: tool.description,
-        inputSchema: tool.inputSchema,
-      })),
+      ).map((tool) => {
+        // A pipeline agent's action tools list only the review publish type.
+        const restricted = PIPELINE_AGENT_ACTION_CLAUDE_TOOLS.find(
+          (candidate) => candidate.key === tool.canonicalKey,
+        );
+        return restricted
+          ? {
+              name: restricted.name,
+              description: restricted.description,
+              inputSchema: restricted.inputSchema,
+            }
+          : {
+              name: tool.name,
+              description: tool.description,
+              inputSchema: tool.inputSchema,
+            };
+      }),
     ];
   }
   const tools = getCanopyRouteTools(route, uiServer);

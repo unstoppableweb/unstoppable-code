@@ -21,7 +21,6 @@ import {
   DetailActionBar,
   DetailFact,
   DetailFactError,
-  ExternalTextLink,
   MarketplaceKindLabel,
   ErrorBanner,
   ErrorState,
@@ -454,10 +453,14 @@ function MarketplaceSourceDetailBody({
                 >
                   <span className={REPLAY_MASK_CLASS}>
                     {sourceUrl ? (
-                      <ExternalTextLink
+                      <TextLink
                         href={sourceUrl}
-                        label={source.sourceLabel}
-                      />
+                        size="xs"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {source.sourceLabel}
+                      </TextLink>
                     ) : (
                       source.sourceLabel
                     )}

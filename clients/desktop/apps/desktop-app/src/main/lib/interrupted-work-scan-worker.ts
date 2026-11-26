@@ -228,7 +228,13 @@ export async function scanInterruptedWork(
       }
     }
   }
-  for (const entry of await directories(executionsDir, result.errors)) {
+  const executions = await directories(executionsDir, result.errors);
+  const cancellationIds = new Set(
+    executions
+      .filter((entry) => entry.name.endsWith('.cancel'))
+      .map((entry) => entry.name.slice(0, -7)),
+  );
+  for (const entry of executions) {
     if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
     try {
       const text = await readFile(join(executionsDir, entry.name), 'utf8');
@@ -236,7 +242,8 @@ export async function scanInterruptedWork(
       const executionId = entry.name.slice(0, -5);
       if (
         record(state) &&
-        ['running', 'pending'].includes(String(state.status))
+        (['running', 'pending'].includes(String(state.status)) ||
+          (state.status === 'paused' && cancellationIds.has(executionId)))
       )
         result.pipelineIds.push(executionId);
       if (

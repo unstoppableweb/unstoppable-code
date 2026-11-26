@@ -15,6 +15,7 @@
  * Token signing and verification use each host's own crypto.
  */
 import { z } from 'zod';
+import { DEVICE_ID_PATTERN, isDeviceId } from './device-id';
 
 export const DEVICE_RELAY_PROTOCOL_VERSION = 2;
 
@@ -85,16 +86,7 @@ export const DEVICE_RELAY_DATA_FRAME_OVERHEAD_BYTES = 2 + 22;
  */
 export const DEVICE_RELAY_MIN_DATA_PAYLOAD_BYTES = 16;
 
-/**
- * A device ID is the first 16 bytes of SHA-256 over the device's raw Ed25519
- * public key, base64url-encoded (22 characters). Binding the ID to the key
- * keeps a pairing record self-certifying.
- */
-export const DEVICE_ID_PATTERN = /^[A-Za-z0-9_-]{22}$/;
-
-export function isDeviceId(value: unknown): value is string {
-  return typeof value === 'string' && DEVICE_ID_PATTERN.test(value);
-}
+export { DEVICE_ID_PATTERN, isDeviceId } from './device-id';
 
 /** Raw 32-byte Ed25519 public key, base64url-encoded without padding. */
 const PUBLIC_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;

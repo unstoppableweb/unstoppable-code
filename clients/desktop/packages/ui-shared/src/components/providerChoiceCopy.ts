@@ -102,14 +102,13 @@ export function switchProviderDialogTitle({
 }
 
 /** The carryover promise every recovery subtitle ends on. */
-const CARRIES_OVER =
-  'Pick another provider and your conversation carries over.';
+const CARRIES_OVER = 'Choose another provider and this chat carries over.';
 
 /**
  * The usage-limit subtitle after the limited provider's name, which the
  * dialog renders in front as a node (a gateway's name is user-written and
  * masked, so it is never interpolated here): "reached its usage limit and
- * resets at 3:00 PM. Pick another provider and your conversation carries
+ * resets at 3:00 PM. Choose another provider and this chat carries
  * over." Without a reset time the clause drops.
  */
 export function usageLimitReasonAfterName(resetsLabel?: string): string {
@@ -131,10 +130,10 @@ export function providerChoiceReason(
     case 'quota_limit':
       return `You reached a usage limit. ${CARRIES_OVER}`;
     case 'out_of_credits':
-      return "You're out of credits. Add more or pick another provider, and your conversation carries over.";
+      return "You're out of credits. Buy more or choose another provider. This chat carries over.";
     case 'no_billing_source':
     case 'queued_held':
-      return 'Pick a provider to send your message.';
+      return 'Choose one to send your message.';
     case 'model_locked':
     case 'own_key_limit':
     case null:
@@ -183,7 +182,7 @@ export const PROVIDER_CHOICE_SETUP_SUFFIXES: Readonly<
   // A gateway's setup reads the same as a subscription's connect.
   connect: 'after you connect',
   reconnect: 'after you reconnect',
-  'add-credits': 'after you add credits',
+  'add-credits': 'after you buy credits',
   'credits-arrive': 'once your credits arrive',
 };
 
@@ -211,7 +210,7 @@ export function providerSwitchFailedMessage(
   providerName: string,
 ): string {
   const name = source === 'credits' ? 'credits' : providerName;
-  return `Couldn't switch to ${name}. Try again.`;
+  return `Couldn't switch to ${name}.`;
 }
 
 /** The usage-limit notice's Resume action. */
@@ -247,16 +246,16 @@ export const USAGE_LIMIT_RESUME_COPY = {
     `We'll check again at ${timeLabel} and resume this chat once ${providerName} is back.`,
   cancel: 'Cancel resume',
   canceled: 'Resume canceled.',
-  cancelFailed: "Couldn't cancel the resume. Try again.",
-  noLongerPending: 'The resume is no longer pending.',
-  scheduleFailed: "Couldn't schedule the resume. Try again.",
-  resumeFailed: "Couldn't resume this chat. Try again.",
+  cancelFailed: "Couldn't cancel the resume.",
+  noLongerPending: 'No resume is scheduled now.',
+  scheduleFailed: "Couldn't schedule the resume.",
+  resumeFailed: "Couldn't resume this chat. Switch provider to keep going.",
   /** Usage for the interrupted account can't be read, so nothing waits. */
   unreadable: (providerName: string): string =>
-    `Couldn't check ${providerName} usage for the account this chat used. Sign in to that account again, or continue with another provider.`,
+    `Couldn't check ${providerName}'s usage, so this chat won't resume by itself. Switch provider to keep going.`,
   /** The check stopped after its seven-day limit. */
   expired: (providerName: string): string =>
-    `${providerName} usage didn't clear within 7 days, so this chat wasn't resumed. Resume it again, or continue with another provider.`,
+    `${providerName} was still limited after 7 days, so this chat didn't resume. Resume when ${providerName} is back, or switch provider.`,
 } as const;
 
 /**
@@ -279,7 +278,7 @@ export const PROVIDER_CHOICE_ROW_COPY = {
   policy: 'Turned off by your organization',
   noRunnableModel: 'No model available',
   /** A gateway not set up yet: its models are unknown until it is. */
-  pickModelOnceConnected: "Pick a model once it's connected",
+  pickModelOnceConnected: "Choose a model once it's connected",
   /** A row that offers nothing and has no other reason to give. */
   notAvailableNow: 'Not available right now',
   askAdmin: CONTACT_ORG_ADMIN_COPY,
@@ -306,7 +305,7 @@ export const GATEWAY_ROW_NAME = 'AI gateway';
 
 /** The AI gateway row's description before a gateway is set up. */
 export const GATEWAY_ROW_DESCRIPTION =
-  'Use your own gateway, such as OpenRouter or LiteLLM.';
+  'Use your own AI gateway, such as OpenRouter or LiteLLM.';
 
 /**
  * The current row's Connect or Set up once it is signed out: connecting it
@@ -323,7 +322,7 @@ export const CREDITS_ROW_DESCRIPTION =
   'Pay as you go for top models from many providers.';
 
 /** The credits row's description once its balance is known to be empty. */
-export const CREDITS_ROW_EMPTY_DESCRIPTION = 'No credits left';
+export const CREDITS_ROW_EMPTY_DESCRIPTION = 'No credits';
 
 /** How a locked-model hint names each source that can run the model. */
 const RUNS_ON_NAMES: Readonly<Record<ProviderChoiceSourceKey, string>> = {
@@ -358,9 +357,9 @@ export function runsOnHint(
 export const PROVIDER_ROW_DESCRIPTIONS: Readonly<
   Record<Exclude<ProviderChoiceSourceKey, 'credits'>, string>
 > = {
-  claude: 'Use your existing Claude subscription.',
-  codex: 'Use your existing ChatGPT subscription.',
-  cursor: 'Use your existing Cursor subscription.',
-  copilot: 'Use your existing GitHub Copilot subscription.',
-  gateway: 'Use your own AI gateway and its models.',
+  claude: 'Use your Claude subscription.',
+  codex: 'Use your ChatGPT subscription.',
+  cursor: 'Use your Cursor subscription.',
+  copilot: 'Use your GitHub Copilot subscription.',
+  gateway: GATEWAY_ROW_DESCRIPTION,
 };

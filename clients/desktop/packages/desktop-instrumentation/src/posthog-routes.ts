@@ -203,6 +203,7 @@ export const HOSTED_SETTINGS_PAGE_ROUTES = Object.freeze({
   'organization/groups': 'app://settings/organization/groups',
   'organization/projects': 'app://settings/organization/projects',
   'organization/memory': 'app://settings/organization/memory',
+  'organization/transcripts': 'app://settings/organization/transcripts',
   'organization/settings': 'app://settings/organization/settings',
 } as const satisfies Record<HostedSettingsPageKey, RouteLiteral>);
 

@@ -1,4 +1,6 @@
+import { useEffect } from 'react';
 import type { ComponentPropsWithRef, JSX, ReactNode } from 'react';
+import { retainWindowResizeMarker } from './window-resize-marker';
 
 export function TranscriptViewport(
   props: Omit<ComponentPropsWithRef<'div'>, 'className'>,
@@ -48,6 +50,9 @@ export function AgentActivityPanel({
 export function WorktreeTopBarSurface(
   props: Omit<ComponentPropsWithRef<'div'>, 'className'>,
 ): JSX.Element {
+  // Shed controls and folding labels follow a window drag frame by frame
+  // instead of easing behind it (`window-resize-marker.ts`).
+  useEffect(() => retainWindowResizeMarker(window), []);
   return (
     <div
       {...props}

@@ -27,7 +27,6 @@ import {
   Notice,
   NoticeButton,
   DataTable,
-  IconToggleButton,
   ListRow,
   SearchField,
   SegmentedControl,
@@ -336,7 +335,7 @@ function RunsSection({
           errorSource="automations-panel-runs-error"
           intent="destructive"
           data-testid="automations-panel-runs-error"
-          title="Could not load workflow runs."
+          title="Couldn't load workflow runs."
           actions={
             <NoticeButton
               variant="primary"
@@ -479,14 +478,18 @@ export const AutomationsPanel = memo(function AutomationsPanel({
               </div>
               <div className="flex shrink-0 items-center gap-1">
                 {!isCowork && (
-                  <IconToggleButton
-                    pressed={worktreeOnly}
-                    label={worktreeToggleLabel}
-                    tooltip={worktreeToggleLabel}
-                    icon={<BranchIcon size="sm" aria-hidden="true" />}
-                    onClick={(): void => setWorktreeOnly((prev) => !prev)}
-                    testId="automations-panel-worktree-toggle"
-                  />
+                  <Tooltip label={worktreeToggleLabel} delay="long">
+                    <ControlButton
+                      presentation="icon-toggle"
+                      appearance={{ pressed: worktreeOnly }}
+                      aria-pressed={worktreeOnly}
+                      aria-label={worktreeToggleLabel}
+                      onClick={(): void => setWorktreeOnly((prev) => !prev)}
+                      data-testid="automations-panel-worktree-toggle"
+                    >
+                      {<BranchIcon size="sm" aria-hidden="true" />}
+                    </ControlButton>
+                  </Tooltip>
                 )}
                 {header?.canCreate && (
                   <Tooltip label="New workflow">
@@ -513,7 +516,7 @@ export const AutomationsPanel = memo(function AutomationsPanel({
                   intent="destructive"
                   data-testid="automations-panel-load-error"
                   className=""
-                  title="Could not load workflows."
+                  title="Couldn't load workflows."
                   actions={
                     <NoticeButton
                       variant="primary"

@@ -225,8 +225,8 @@ export const MOBILE_CONTROLLER_CHANNELS = [
  *   `preferences:load-suggestions` (only `enabled`, `dismissed` and
  *   `lastCornerShownAt`), and the two writes the desktop's own tips and
  *   suggestions make. `preferences:update-onboarding-tips` accepts exactly
- *   what `parseOnboardingTipsUpdate` accepts: dismiss one known tip, or reset
- *   every dismissal ("Show tips again"). `preferences:update-suggestions`
+ *   what `parseOnboardingTipsUpdate` accepts: dismiss one known tip or notice,
+ *   or reset only the tips ("Show tips again"). `preferences:update-suggestions`
  *   accepts exactly what `parseSuggestionsUpdate` accepts: turn the master
  *   switch on or off, dismiss one known suggestion, or stamp a corner
  *   suggestion as shown (the host supplies every timestamp). Each write
@@ -371,7 +371,8 @@ export const MOBILE_CONTROLLER_CHANNELS = [
  *   workspace's unfinished archives, as the core `core.worktree.recovery.list`
  *   query answers under the bridge's `core.worktree.read` grant. The revision
  *   and operation tokens it returns are accepted only by
- *   `worktree:recovery-resolve` and `worktree:recovery-finish`.
+ *   `worktree:recovery-resolve`, `worktree:recovery-finish` and
+ *   `worktree:recovery-set-aside`.
  * - Archive recovery actions (CAN-7444), offered whenever the browser is
  *   directly connected to the account's own computer.
  *   - `worktree:recovery-resolve`: keeps a stranded worktree
@@ -381,20 +382,44 @@ export const MOBILE_CONTROLLER_CHANNELS = [
  *   - `worktree:recovery-finish`: finishes an interrupted archive, removing
  *     the worktree's remaining files. A browser receives its `check` only
  *     when it is code-shaped; anything else becomes `finish-refused`.
- *   - Both are bound to the `{ operationId, revision }` the list returned:
+ *   - `worktree:recovery-set-aside` (CAN-7014): after explicit confirmation,
+ *     moves one readable, consistent, ownerless journal to lifecycle quarantine
+ *     only when no other action is offered. It accepts exactly one reviewed
+ *     target, with no filesystem addressing. Results carry fixed codes, file
+ *     names and portable folder labels, never host paths or exception text.
+ *   - All are bound to the `{ operationId, revision }` the list returned:
  *     the computer refuses when the live diagnosis no longer matches, under
  *     a strict params schema and `assertWritableScope`. The computer asks for
  *     no approval of its own; the shared UI asks before deleting recovery
  *     material. The action runs with only `core.worktree.write`, attributed
  *     to the controller's `remote-device:<id>` principal.
  *   - The bridge principal is the same for every controller kind, so adding
- *     either channel to the mobile or hosted list would grant those
+ *     any of these channels to the mobile or hosted list would grant those
  *     controllers the same destructive actions. Desktop controllers reach
- *     both, as every tunnelled channel.
+ *     all three, as every tunnelled channel.
+ * - Agent harness setup (gap 1 of CAN-6718), behind the `harnessSetup`
+ *   capability: each managed runtime's status, connect, cancel, disconnect,
+ *   account and progress (Antigravity, Cursor, Copilot, OpenCode), Claude's
+ *   and Codex's sign-in status, and two sign-ins that hand the browser a
+ *   link or code instead of opening this computer's browser.
+ *   - `codex-login:*` without `open-browser`: a browser starts only the
+ *     device-code method (`browserInvocationAllowed`), and the host lets a
+ *     bridge own only that method. The browser method's PKCE URL never
+ *     leaves the computer.
+ *   - `auth-terminal:*` without `resize`: the fixed sign-in commands only
+ *     (`claude`, `opencode`, `antigravity`; never `github` or a shell), read
+ *     as a text stream with one code line written at a time. The host sends
+ *     a browser the output and exit of only the sign-ins its own bridge
+ *     started, and refuses a write or stop from any other bridge.
+ *   - Disconnect needs no confirmation: each reconnects with Connect.
  * - Terminals: none. Remote Control on the web is terminal-free.
  */
 export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'activity:file-diff',
+  'antigravity-runtime:cancel',
+  'antigravity-runtime:install',
+  'antigravity-runtime:progress',
+  'antigravity-runtime:status',
   'app-advisor:settings-patch',
   'app-advisor:settings-view',
   'app-advisor:tool-request',
@@ -402,6 +427,11 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'app-advisor:tool-response',
   'app-advisor:watcher-delete',
   'app-advisor:window-renderer-ready',
+  'auth-terminal:exit',
+  'auth-terminal:output',
+  'auth-terminal:start',
+  'auth-terminal:stop',
+  'auth-terminal:write',
   'chat:cancel',
   'chat:command',
   'chat:event',
@@ -424,6 +454,24 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'claude-mods:surface-command',
   'claude-mods:surface-push',
   'claude-mods:update',
+  'codex-login:cancel',
+  'codex-login:retry-verification',
+  'codex-login:start',
+  'codex-login:state',
+  'copilot-connection:account',
+  'copilot-connection:cancel',
+  'copilot-connection:change-account',
+  'copilot-connection:connect',
+  'copilot-connection:disconnect',
+  'copilot-connection:progress',
+  'copilot-connection:status',
+  'cursor-connection:account',
+  'cursor-connection:cancel',
+  'cursor-connection:change-account',
+  'cursor-connection:connect',
+  'cursor-connection:disconnect',
+  'cursor-connection:progress',
+  'cursor-connection:status',
   'desktop:session-snapshot',
   'desktop:session-snapshot-invalidate',
   'desktop:session-snapshot-stale',
@@ -452,6 +500,11 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'lifecycle-journal:inspect',
   'lifecycle-journal:quarantine',
   'model-registry:get',
+  'opencode-connection:cancel',
+  'opencode-connection:connect',
+  'opencode-connection:disconnect',
+  'opencode-connection:progress',
+  'opencode-connection:status',
   'org-projects:find-repository-owner',
   'personal-organization-upgrade:convert',
   'personal-organization-upgrade:list',
@@ -472,6 +525,7 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'plugin-catalog:list',
   'plugins:install-built-in-plugin',
   'plugins:install-plugin',
+  'preferences:changed',
   'preferences:load-onboarding-tips',
   'preferences:load-suggestions',
   'preferences:update-onboarding-tips',
@@ -495,6 +549,8 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'script:run',
   'script:started',
   'script:stop',
+  'settings:claude-auth-status',
+  'settings:codex-auth-status',
   'tracked-plans:delete',
   'tracked-plans:get',
   'tracked-plans:update',
@@ -526,6 +582,7 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
   'worktree:get-path',
   'worktree:list-repo-entries',
   'worktree:recovery-finish',
+  'worktree:recovery-set-aside',
   'worktree:recovery-list',
   'worktree:recovery-resolve',
   'worktree:reorder',
@@ -558,8 +615,13 @@ export const BROWSER_CONTROLLER_CHANNELS: readonly string[] = [
  *   creating a named sidebar group or moving a task between groups.
  *   `chat:command` also sets a chat's model, the reviewed settings patch keys
  *   and steers a queued message.
+ * - Archive on a connected computer (CAN-7446), each argument checked on the
+ *   host: `worktree:archive`, `workspace:archive-worktree` and
+ *   `work-entries:delete` only as a locked, restorable archive that keeps the
+ *   branch, and `chat:command`'s `chat.archive_tab` for one chat.
  *
- * No terminals, approval answers or destructive actions.
+ * No terminals, approval answers or other destructive actions: no delete,
+ * discard, branch deletion or unlocked archive.
  */
 export const HOSTED_CONTROLLER_CHANNELS: readonly string[] = [
   'activity:changed-files',
@@ -593,9 +655,12 @@ export const HOSTED_CONTROLLER_CHANNELS: readonly string[] = [
   'tracked-plans:get',
   'tracked-plans:list',
   'work-entries:create',
+  'work-entries:delete',
   'work-entries:update',
+  'workspace:archive-worktree',
   'workspace:create-worktree',
   'worktree:activity-entities',
+  'worktree:archive',
   'worktree:create',
   'worktree:set-hidden',
   'worktree:set-label',
@@ -604,4 +669,5 @@ export const HOSTED_CONTROLLER_CHANNELS: readonly string[] = [
 export * from './browser-arguments';
 export * from './hosted-channels';
 export * from './ipc-channels';
+export * from './one-window-channels';
 export * from './operation-channels';

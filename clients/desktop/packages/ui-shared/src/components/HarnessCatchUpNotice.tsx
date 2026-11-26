@@ -7,7 +7,7 @@ import {
   type HarnessCatchUpOffer,
   type HarnessCatchUpResult,
 } from '../lib/harness-catch-up';
-import { Notice, NoticeButton } from './Notice';
+import { Notice, NoticeButton } from '../primitives/Notice';
 
 /** Where adding existing installs to newly set-up harnesses stands. */
 export type HarnessCatchUpNoticeState =
@@ -90,7 +90,11 @@ export function HarnessCatchUpNotice({
           }
         : { intent: 'neutral' as const })}
       data-testid={testId}
-      title={`Add your installs to ${harnesses}?`}
+      title={
+        state.kind === 'failed'
+          ? `Couldn't add your installs to ${harnesses}`
+          : `Add your installs to ${harnesses}?`
+      }
       detail={state.kind === 'failed' ? state.message : undefined}
       announceDetail={state.kind === 'failed'}
       actions={

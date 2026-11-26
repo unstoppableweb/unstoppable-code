@@ -33,7 +33,7 @@ import type { LocalWorkerTransport } from '../../runtime/local-worker-transport'
 import type { WorkerExecutorReceipt } from '../../runtime/worker-executor-receipts';
 import { OperationLedgerRefusedError } from './ledger/errors';
 import type { OperationAcceptResult } from './ledger/ledger';
-import type { OperationService } from './service';
+import type { OperationServicePort } from './service';
 
 /** Completed worker results that report cancellation settle the child cancelled. */
 const CANCELLED_RESULT_SCHEMAS: Readonly<
@@ -152,7 +152,7 @@ export class LocalWorkerExecution {
 
   constructor(
     private readonly options: {
-      operations: OperationService;
+      operations: OperationServicePort;
       transport: LocalWorkerTransport;
     },
   ) {

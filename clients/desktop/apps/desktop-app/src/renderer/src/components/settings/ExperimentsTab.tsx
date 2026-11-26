@@ -9,6 +9,7 @@ import { isCopilotHarnessReleased } from '@/lib/copilot-settings';
 import { isOpenCodeHarnessReleased } from '@/lib/opencode-settings';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
 import { useFeatureFlagsStore } from '@/stores/featureFlagsStore';
+import { useRemoteControlStore } from '@/stores/remoteControlStore';
 import { type JSX, useEffect, useState } from 'react';
 import type { PreferencesLoadResult } from '@canopy/desktop-shared/types';
 import { ManagedDelegationSettings } from './ManagedDelegationSettings';
@@ -16,13 +17,15 @@ import { CopilotConnection } from './CopilotConnection';
 import { CursorConnection } from './CursorConnection';
 import { CursorApprovalCheck } from './CursorApprovalCheck';
 import { DesktopLabsSettingsSection } from './hosted/DesktopLabsSettingsSection';
+import { OneWindowSection } from './OneWindowSection';
 import { RendererCodeCacheSection } from './RendererCodeCacheSection';
 import { SettingsPage, SettingsLoading } from './SettingsLayout';
 
 /**
  * Settings → Labs tab. Hosts experimental features that are still
  * being evaluated: the early access master switch, managed delegation, the
- * Cursor harness diagnostics and faster window opening. How much of an agent's work chats show is under Display →
+ * Cursor harness diagnostics, one window for all computers and faster
+ * window opening. How much of an agent's work chats show is under Display →
  * Appearance. Code Graph has its own settings page.
  */
 export function ExperimentsTab(): JSX.Element {
@@ -47,6 +50,11 @@ export function ExperimentsTab(): JSX.Element {
   const cursorReleased = useFeatureFlagsStore(isCursorHarnessReleased);
   const copilotReleased = useFeatureFlagsStore(isCopilotHarnessReleased);
   const opencodeReleased = useFeatureFlagsStore(isOpenCodeHarnessReleased);
+  // The one-window switch belongs to the computer in front of the person,
+  // so a window that shows another computer leaves it out.
+  const localWindow = useRemoteControlStore(
+    (store) => store.context.mode === 'local',
+  );
   const [delegationPreferences, setDelegationPreferences] = useState<
     Pick<
       PreferencesLoadResult,
@@ -135,6 +143,7 @@ export function ExperimentsTab(): JSX.Element {
         !antigravityReleased && <GoogleSubscriptionConnection />}
       {copilotHarnessEnabled && !copilotReleased && <CopilotConnection />}
       {opencodeHarnessEnabled && !opencodeReleased && <OpenCodeConnection />}
+      {localWindow && <OneWindowSection />}
       <RendererCodeCacheSection />
     </SettingsPage>
   );

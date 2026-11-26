@@ -1,4 +1,13 @@
-import { type JSX, type ReactNode, useState } from 'react';
+import { type JSX, type ReactNode, useEffect, useMemo, useState } from 'react';
+import type {
+  PreferencesData,
+  PreferencesSavePatch,
+  TelemetrySharingPreferences,
+  UsageDataKey,
+  UsageDataPolicySnapshot,
+  UsageDataPreferences,
+} from '@canopy/desktop-shared/types';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { usesNativeWindowFrame } from '@canopy/desktop-shared/platform-capabilities';
 import { localPlatform } from '@/lib/local-platform';
 import { CONSENT_TOS_VERSION } from '@canopy/desktop-shared/constants/consent';
@@ -8,11 +17,22 @@ import { brand, brandText } from '@/lib/brand';
 import { useCanopyLegalUrls } from '@/hooks/useCanopyLegalUrls';
 import {
   ChoiceField,
+  DataChoicesCard,
   ErrorBanner,
   Heading,
+  SKILL_SAFETY_CHECK_ROW,
   Surface,
+  USAGE_DATA_GROUP_ROWS,
+  type DataChoicesActivityValue,
+  type UsageDataRowLocks,
 } from '@canopy/ui-shared/components';
-import { GitHubIcon, ShieldIcon } from '@canopy/ui-shared/icons/AppIcons';
+import {
+  CircleCheckIcon,
+  GitHubIcon,
+  ShieldIcon,
+} from '@canopy/ui-shared/icons/AppIcons';
+import { useTelemetrySharingAvailable } from '@/lib/cloud-account';
+import { resolveUsageDataLocks } from '@/components/settings/usageDataLocks';
 
 export interface LegalConsentGateProps {
   /**
@@ -20,6 +40,71 @@ export interface LegalConsentGateProps {
    * The host (`App.tsx`) unmounts the gate and lets startup proceed.
    */
   onAccepted: () => void;
+  /**
+   * The preferences `App.tsx` already loaded at startup. Seeds the "What you
+   * share" switches from the stored choices as they are (never from the
+   * policy snapshot, which is all off until consent), so a fresh profile
+   * starts pre-checked and a recovered one keeps its journaled opt-outs.
+   */
+  preferences: Pick<PreferencesData, 'usageData' | 'telemetrySharing'> | null;
+}
+
+const USAGE_DATA_EXTRA_ROWS = [SKILL_SAFETY_CHECK_ROW];
+
+const USAGE_GROUP_DESCRIPTION =
+  'Feature usage, performance, and crash reports. Never your code or chats.';
+
+/** Every Usage data choice, seeded from the stored preferences. */
+function usageChoicesFrom(
+  stored: UsageDataPreferences | undefined,
+): Record<UsageDataKey, boolean> {
+  // A missing value seeds on, like a fresh profile's defaults.
+  return {
+    productAnalytics: stored?.productAnalytics ?? true,
+    sessionReplay: stored?.sessionReplay ?? true,
+    errorReports: stored?.errorReports ?? true,
+    activeUseSignal: stored?.activeUseSignal ?? true,
+    featureFlagIdentity: stored?.featureFlagIdentity ?? true,
+    skillSafetyCheck: stored?.skillSafetyCheck ?? true,
+  };
+}
+
+/** Any stored visibility other than `off` reads as on. */
+function activityChoicesFrom(
+  stored: TelemetrySharingPreferences | undefined,
+): DataChoicesActivityValue {
+  return {
+    metadata: (stored?.metadata ?? 'off') !== 'off',
+    plans: (stored?.plans ?? 'off') !== 'off',
+    summaries: (stored?.summaries ?? 'off') !== 'off',
+    transcripts: (stored?.transcripts ?? 'off') !== 'off',
+  };
+}
+
+/**
+ * The full sharing object to save. A type left on keeps its stored scope; a
+ * type switched on shares with the organization, whose delivery rule keeps
+ * Personal work private and shares only that organization's own work.
+ */
+function telemetrySharingFrom(
+  choices: DataChoicesActivityValue,
+  stored: TelemetrySharingPreferences | undefined,
+): TelemetrySharingPreferences {
+  const scopeFor = (
+    key: keyof DataChoicesActivityValue,
+  ): TelemetrySharingPreferences[keyof DataChoicesActivityValue] => {
+    if (!choices[key]) {
+      return 'off';
+    }
+    const current = stored?.[key] ?? 'off';
+    return current === 'off' ? 'organization' : current;
+  };
+  return {
+    metadata: scopeFor('metadata'),
+    plans: scopeFor('plans'),
+    summaries: scopeFor('summaries'),
+    transcripts: scopeFor('transcripts'),
+  };
 }
 
 function openExternal(url: string): void {
@@ -89,10 +174,54 @@ function ConsentFact({
  */
 export function LegalConsentGate({
   onAccepted,
+  preferences,
 }: LegalConsentGateProps): JSX.Element {
   const [agreed, setAgreed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // False only in a local-only build (a synchronous build-profile fact), where
+  // nothing leaves the computer and Settings → Privacy has no controls.
+  const sharingAvailable = useTelemetrySharingAvailable();
+  const [customizing, setCustomizing] = useState(false);
+  const [usageChoices, setUsageChoices] = useState<
+    Readonly<Record<UsageDataKey, boolean>>
+  >(() => usageChoicesFrom(preferences?.usageData));
+  const [activityChoices, setActivityChoices] =
+    useState<DataChoicesActivityValue>(() =>
+      activityChoicesFrom(preferences?.telemetrySharing),
+    );
+  const [policy, setPolicy] = useState<UsageDataPolicySnapshot | null>(null);
+
+  useEffect(() => {
+    if (!sharingAvailable) {
+      return undefined;
+    }
+    let cancelled = false;
+    // Locks only; the gate stays usable while this loads, and a failed read
+    // means no locks.
+    void window.api.observability
+      .getUsageDataPolicy()
+      .then((next) => {
+        if (!cancelled) {
+          setPolicy(next);
+        }
+      })
+      .catch((readError: unknown) => {
+        reportClientAppError(readError);
+      });
+    return (): void => {
+      cancelled = true;
+    };
+  }, [sharingAvailable]);
+
+  const locks = useMemo(
+    (): UsageDataRowLocks<UsageDataKey> => ({
+      ...resolveUsageDataLocks(policy),
+      // Protective, so no organization lock applies to it.
+      skillSafetyCheck: null,
+    }),
+    [policy],
+  );
   const { termsUrl, privacyUrl } = useCanopyLegalUrls();
   // Brands without a public client repository make no open-source claim.
   const sourceUrl = brand.web.marketing?.sourceRepository?.url ?? null;
@@ -104,10 +233,32 @@ export function LegalConsentGate({
     setSubmitting(true);
     setError(null);
     try {
-      await window.api.savePreferences({
-        legalConsentAcceptedAt: new Date().toISOString(),
-        legalConsentTosVersion: CONSENT_TOS_VERSION,
-      });
+      const now = new Date().toISOString();
+      // One atomic patch: terms and choices commit together, so main never
+      // starts a flow on the pre-checked defaults before the choices land.
+      // Main derives the declined-at-onboarding flag from this commit.
+      const patch: PreferencesSavePatch = sharingAvailable
+        ? {
+            legalConsentAcceptedAt: now,
+            legalConsentTosVersion: CONSENT_TOS_VERSION,
+            dataChoicesConfirmedAt: now,
+            // The full set on purpose: every switch on this screen is an
+            // explicit choice, even one left at its pre-checked value.
+            usageData: { ...usageChoices },
+            telemetrySharing: telemetrySharingFrom(
+              activityChoices,
+              preferences?.telemetrySharing,
+            ),
+          }
+        : // Local-only build: the usage-data flows have nothing to reach
+          // (PostHog, LaunchDarkly, the cloud and update URLs are blanked at
+          // build time; docs/local-only-build.md), so accepting with the
+          // stored defaults sends nothing, as before this gate had choices.
+          {
+            legalConsentAcceptedAt: now,
+            legalConsentTosVersion: CONSENT_TOS_VERSION,
+          };
+      await window.api.savePreferences(patch);
       onAccepted();
     } catch {
       setError('Could not save your acceptance. Please try again.');
@@ -161,7 +312,37 @@ export function LegalConsentGate({
             >
               Your data is yours. We don’t sell it or train AI on it.
             </ConsentFact>
+            {sharingAvailable && (
+              <ConsentFact
+                icon={<CircleCheckIcon size={16} aria-hidden />}
+                testId="legal-consent-opt-in"
+              >
+                You choose what you share.
+              </ConsentFact>
+            )}
           </div>
+
+          {sharingAvailable && (
+            <div className="w-full text-left">
+              <DataChoicesCard
+                rows={USAGE_DATA_GROUP_ROWS}
+                extraRows={USAGE_DATA_EXTRA_ROWS}
+                usageDescription={USAGE_GROUP_DESCRIPTION}
+                value={usageChoices}
+                locks={locks}
+                onChange={setUsageChoices}
+                activity={{
+                  value: activityChoices,
+                  onChange: setActivityChoices,
+                }}
+                expanded={customizing}
+                onExpandedChange={setCustomizing}
+                disabled={submitting}
+                footnote="Change these anytime in Settings → Privacy."
+                idPrefix="legal-consent"
+              />
+            </div>
+          )}
 
           <ErrorBanner
             errorSource="legal-consent-error"

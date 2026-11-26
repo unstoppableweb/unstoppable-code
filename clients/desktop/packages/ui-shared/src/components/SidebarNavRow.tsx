@@ -13,7 +13,7 @@ import {
   SIDEBAR_LIST_ICON_CLASSNAME,
   SIDEBAR_NAV_ITEM_CLASSNAME,
   SIDEBAR_NAV_ROW_TRAILING_INSET_CLASSNAME,
-} from './sidebar-item-classes';
+} from '../primitives/sidebar-item-classes';
 
 /** A run state the row reports on its leading glyph. */
 export type SidebarNavRowStatus = 'active' | 'unread' | 'success' | 'failed';

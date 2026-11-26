@@ -75,7 +75,6 @@ import {
   getWorkspaceChatHistoryRootDir,
   getWorkspaceDir,
   getWorkspaceHomeDir,
-  getWorkspaceWorkEntriesFilePath,
   getCoworkWorkspaceRootDir,
 } from '../lib/paths';
 import {
@@ -84,6 +83,11 @@ import {
   readWorkEntryChatCatalog,
 } from '../lib/cowork-work-entries';
 import { migrateWorkspaceChatsToWorkEntries } from '../lib/cowork-work-entry-migration';
+import {
+  exportWorkEntryRegistry,
+  importWorkEntryRegistry,
+  workEntryRegistryBundleSource,
+} from '../lib/work-entry-repository';
 import {
   getCoworkArtifactsIndexFilePath,
   getCoworkManagedSubdir,
@@ -936,10 +940,7 @@ async function exportProject(
       new ChatStorageV2(targetPath, worktreeId),
     );
   }
-  const workEntriesSource = getWorkspaceWorkEntriesFilePath(workspaceId);
-  if (await pathExists(workEntriesSource)) {
-    await cp(workEntriesSource, join(targetPath, 'work-entries.json'));
-  }
+  await exportWorkEntryRegistry(workspaceId, targetPath);
   for (const chatId of await listHistoryChatIds(req.projectId))
     await getStandaloneHistoryStorage(workspaceId, chatId);
   const chatHistorySource = getWorkspaceChatHistoryRootDir(workspaceId);
@@ -1106,9 +1107,7 @@ async function restoreCoworkWorkspaceContents(
     sources.workEntriesSource &&
     (await pathExists(sources.workEntriesSource))
   ) {
-    const workEntriesDestination = getWorkspaceWorkEntriesFilePath(workspaceId);
-    assertInsideWorkspaceDir(workspaceId, workEntriesDestination);
-    await cp(sources.workEntriesSource, workEntriesDestination);
+    await importWorkEntryRegistry(workspaceId, sources.workEntriesSource);
   }
 
   if (
@@ -1392,7 +1391,7 @@ async function importProject(
       transcriptRoot: manifest.version === 2 ? sourcePath : undefined,
       homeSource: join(sourcePath, 'home'),
       chatTabsDirSource: join(sourcePath, 'chats'),
-      workEntriesSource: join(sourcePath, 'work-entries.json'),
+      workEntriesSource: workEntryRegistryBundleSource(sourcePath),
       chatArchivesDirSource: join(sourcePath, 'chat-archives'),
       chatHistorySource: join(sourcePath, 'chat-history'),
     };

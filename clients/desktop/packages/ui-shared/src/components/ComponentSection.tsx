@@ -1,6 +1,6 @@
 import type { JSX, ReactNode } from 'react';
 import { PluginDetailSectionHeading } from './PluginDetailSectionHeading';
-import { Disclosure } from './Disclosure';
+import { Disclosure } from '../primitives/Disclosure';
 
 /**
  * Titled section wrapping a plugin component list (skills, agents,

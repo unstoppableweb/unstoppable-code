@@ -1,8 +1,10 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import type { AgentProviderAuthStatus } from '@canopy/desktop-shared/types';
 import type { ProviderConnection } from '@canopy/app-state/provider-choice';
-import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
-import { subscriptionLabelForPlanType } from '@canopy/protocol/telemetry';
+import {
+  providerPlanDetail,
+  signedInProviderLine,
+} from '@canopy/ui-app/harness-setup';
 import {
   invalidateClaudeAuthStatusCache,
   useClaudeAuthStatus,
@@ -93,51 +95,5 @@ function providerConnection(
   return status.authenticated ? { kind: 'ready' } : { kind: 'not-connected' };
 }
 
-function providerPlanDetail(
-  provider: DesktopSignInProvider,
-  status: AgentProviderAuthStatus | null,
-): ReactNode {
-  const authenticated = status?.authenticated === true;
-  // Prefer the friendly full subscription label from the shared plan catalog
-  // (e.g. `Claude Max 20x`, `ChatGPT Business`) over the raw provider `detail`
-  // string (`claude.ai (max)`, `team`), matching the provider Usage cards. For
-  // Claude, `status.planType` is already the tier-enriched plan type. Falls
-  // back to `status.detail` for API-key/Bedrock logins with no subscription
-  // plan.
-  const subscriptionLabel =
-    authenticated && status?.planType
-      ? subscriptionLabelForPlanType(provider, status.planType)
-      : null;
-  const planText = subscriptionLabel ?? status?.detail ?? null;
-  // Codex reports which ChatGPT workspace the account uses (Codex 0.165+).
-  const workspaceName = authenticated ? status?.workspaceName : null;
-  // Workspace names can name a person, so replay blocks that part only.
-  return planText && workspaceName ? (
-    <>
-      {planText} ·{' '}
-      <span className={POSTHOG_REPLAY_BLOCK_CLASS}>{workspaceName}</span>
-    </>
-  ) : (
-    planText
-  );
-}
-
-/** A signed-in row's one status line: the account, then the plan. */
-export function signedInProviderLine(
-  status: AgentProviderAuthStatus,
-  detail: ReactNode,
-): ReactNode {
-  // Session replay blocks the account label, not the copy around it.
-  const account: ReactNode = status.accountLabel ? (
-    <span className={POSTHOG_REPLAY_BLOCK_CLASS}>{status.accountLabel}</span>
-  ) : (
-    'Signed in'
-  );
-  return detail ? (
-    <>
-      {account} · {detail}
-    </>
-  ) : (
-    account
-  );
-}
+/** The signed-in line is the shared rows' own (`@canopy/ui-app/harness-setup`). */
+export { signedInProviderLine };

@@ -13,8 +13,8 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react';
-import { SearchBar } from '@canopy/ui-shared/components/SearchBar';
-import { PaneSheet } from '@canopy/ui-shared/components/Sheet';
+import { SearchBar } from '@canopy/ui-shared/primitives/SearchBar';
+import { PaneSheet } from '@canopy/ui-shared/primitives/Sheet';
 import { createDomSearchExecutor } from '@canopy/ui-shared/lib/dom-search-highlight';
 
 interface PreviewSearchContextValue {

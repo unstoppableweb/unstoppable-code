@@ -26,7 +26,7 @@ import type { OperationAcceptRequest } from '../operations/ledger/ledger';
 import type {
   OperationCancelRequest,
   OperationRecovery,
-  OperationService,
+  OperationServicePort,
 } from '../operations/service';
 
 /*
@@ -335,7 +335,7 @@ function errorPayloadFor(
 }
 
 export class InitiatedWorkEngine {
-  private readonly operations: OperationService;
+  private readonly operations: OperationServicePort;
   private readonly clock: () => number;
   private readonly onError: (error: unknown, context: string) => void;
   private readonly recoverable: ReadonlySet<RecoveryKey>;
@@ -355,7 +355,7 @@ export class InitiatedWorkEngine {
   >();
 
   constructor(options: {
-    operations: OperationService;
+    operations: OperationServicePort;
     /**
      * Origin kinds, or single sources of a kind, whose interrupted runs a
      * source resumes after a restart. Their recovery waits until the source

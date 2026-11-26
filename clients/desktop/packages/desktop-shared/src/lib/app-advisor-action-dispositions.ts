@@ -63,6 +63,7 @@ export type AppAdvisorCoreExecutor =
   | 'worktree-actions'
   | 'repository-owner'
   | 'automation'
+  | 'slack-thread'
   | 'resource';
 export type AppAdvisorHostPresentationExecutor =
   | 'shared-engine'
@@ -1827,6 +1828,19 @@ export const APP_ADVISOR_ACTION_DISPOSITIONS: Readonly<
     executor: 'resource',
     grants: Object.freeze(['core.sharing.write'] as const),
     revision: 'none',
+  }),
+  // CAN-7749: hosted reads of the Slack thread behind a Slack tab's request.
+  // A Slack turn runs with no window, so these are core reads: no lease, no
+  // grant and no receipt (a retried turn reads again).
+  'slack_thread.open_file': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'slack-thread',
+  }),
+  'slack_thread.read': Object.freeze({
+    kind: 'core',
+    access: 'read',
+    executor: 'slack-thread',
   }),
   'standalone-chat.create_chat': Object.freeze({
     kind: 'core',

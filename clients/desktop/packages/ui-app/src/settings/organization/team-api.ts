@@ -6,6 +6,7 @@ import type {
   OrgProjectDetail,
   OrgProjectGrant,
   OrgProjectLifecycleRequest,
+  OrgProjectLifecycleResult,
   OrgProjectPage,
   OrgProjectPreference,
   OrgProjectSummary,
@@ -1197,7 +1198,7 @@ export async function applyOrganizationProjectLifecycle(
   orgId: string,
   projectId: string,
   request: OrgProjectLifecycleRequest,
-): Promise<OrgProjectDetail> {
+): Promise<OrgProjectLifecycleResult> {
   return settle(() =>
     client.write('organization.projects.lifecycle', {
       organizationId: orgId,

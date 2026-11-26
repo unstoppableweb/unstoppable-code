@@ -5692,6 +5692,7 @@ async function importTrackedPlanResult(
   result?: AppAdvisorJson;
   error?: AppAdvisorActionError;
 }> {
+  // Stays on the channel: only main can answer trackedPlanFilePath, a host path.
   const response = await window.api.activity.plans.import({
     projectId: action.projectId,
     worktreeId: action.worktreeId,

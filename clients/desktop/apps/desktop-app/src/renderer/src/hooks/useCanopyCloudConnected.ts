@@ -177,3 +177,16 @@ export function useTryItAccount(): TryItAccountState {
     ? { status: 'guest', accountId: 'guest' }
     : { status: 'signed-in', accountId: key };
 }
+
+/**
+ * The signed-in account's id, `''` for a guest or signed-out viewer, and
+ * `null` while the account loads. A Personal project's cloud binding counts
+ * only under this account (CAN-7766 matches projects across computers by it).
+ */
+function cloudAccountId(account: CanopyCloudAccountPublicState): string {
+  return isConnected(account) && account.account ? account.account.id : '';
+}
+
+export function useCanopyCloudAccountId(): string | null {
+  return useCloudAccountPredicate<string>(cloudAccountId, '');
+}

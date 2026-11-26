@@ -33,6 +33,8 @@ export function useLocalBackgroundServiceNotice(
   local: boolean,
 ): Omit<BackgroundServiceNoticeProps, 'recovery'> | undefined {
   const [status, setStatus] = useState<BackgroundServiceStatus | null>(null);
+  const [dataFolder, setDataFolder] = useState<string | undefined>();
+  const dataFolderShared = status?.reason === 'data_folder_shared';
 
   // Pushes, the first read and retry answers can land in any order.
   const accept = useCallback((next: BackgroundServiceStatus): void => {
@@ -50,6 +52,22 @@ export function useLocalBackgroundServiceNotice(
     return unsubscribe;
   }, [local, accept]);
 
+  // The folder stays local: main's status carries codes only (CAN-7917).
+  useEffect(() => {
+    if (!local || !dataFolderShared || dataFolder !== undefined)
+      return undefined;
+    let current = true;
+    window.api.loadPreferences().then(
+      (preferences) => {
+        if (current) setDataFolder(preferences.__dataDir?.path);
+      },
+      () => undefined,
+    );
+    return (): void => {
+      current = false;
+    };
+  }, [local, dataFolderShared, dataFolder]);
+
   return useMemo(
     () =>
       local && status
@@ -58,6 +76,7 @@ export function useLocalBackgroundServiceNotice(
             repairCommand: backgroundServiceRepairCommand(
               formatBrandText('{cli}'),
             ),
+            ...(dataFolder !== undefined && { dataFolder }),
             onRetry: async (): Promise<void> => {
               const next = await getApi()?.retry();
               if (next) accept(next);
@@ -65,6 +84,6 @@ export function useLocalBackgroundServiceNotice(
             onRestart: restartLocalApp,
           }
         : undefined,
-    [local, status, accept],
+    [local, status, dataFolder, accept],
   );
 }

@@ -36,7 +36,6 @@ import {
 import { Tooltip } from '@canopy/ui-shared';
 import {
   Button,
-  LoadingButton,
   Skeleton,
   SlowLoadNote,
   StatusBadge,
@@ -453,7 +452,7 @@ export function McpTab(): JSX.Element {
                       </Button>
                     </Tooltip>
                   )}
-                  <LoadingButton
+                  <Button
                     size="compact"
                     variant="secondary"
                     onClick={(): void => {
@@ -464,7 +463,7 @@ export function McpTab(): JSX.Element {
                     data-testid="settings-mcp-save"
                   >
                     Apply
-                  </LoadingButton>
+                  </Button>
                 </>
               )
             }

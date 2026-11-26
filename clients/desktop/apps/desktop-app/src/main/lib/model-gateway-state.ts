@@ -541,7 +541,8 @@ export async function checkModelGatewayRoute(
   ) {
     return {
       ok: false,
-      message: 'This model belongs to another AI gateway.',
+      message:
+        'This model belongs to another AI gateway. Choose another model.',
     };
   }
   if (requirement.kind === 'blocked') {
@@ -549,12 +550,12 @@ export async function checkModelGatewayRoute(
       ok: false,
       message:
         enforcementOwner?.kind === 'personal'
-          ? 'Your AI gateway settings are unavailable.'
-          : `${organizationName(
+          ? "Couldn't load your AI gateway settings."
+          : `Couldn't load ${organizationName(
               enforcementOwner?.kind === 'organization'
                 ? enforcementOwner.organizationId
                 : undefined,
-            )}'s AI gateway settings are unavailable.`,
+            ).replace(/^Your /, 'your ')}'s AI gateway settings.`,
     };
   }
   if (
@@ -573,7 +574,7 @@ export async function checkModelGatewayRoute(
           ? 'Use a model from your AI gateway to send this.'
           : `${organizationName(
               requiredOrganizationId,
-            )} requires model traffic to use its configured gateway.`,
+            )} allows only models from its AI gateway. Choose one to send this.`,
     };
   }
   return { ok: true, orgRoute: routeOrganizationId !== null };

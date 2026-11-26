@@ -118,7 +118,7 @@ export interface ToastMeta {
   link?: ToastLink;
   /**
    * Display-only bold lead rendered in place of `category` on the toast and in
-   * its detail modal. Lets a toast carry a headline ("Sign in successful")
+   * its detail modal. Lets a toast carry a headline ("Signed in")
    * while `category` stays the routing/preference key.
    */
   title?: string;
@@ -595,6 +595,8 @@ export function addToast(
   const gate = readToastGate(entryMeta);
   const entry = createToastEntry(message, type, onClick, entryMeta, onDismiss);
   if (type === 'error') {
+    // Recording only: a caught value is not what the fixed copy showed, so it
+    // never becomes the error a report attaches.
     recordSurfacedError({
       chokePoint: 'toast',
       // Not the routing default above: a missing category stays visible.

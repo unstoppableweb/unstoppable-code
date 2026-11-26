@@ -6,6 +6,8 @@ export * from './setup-leases';
 export * from './setup-facts';
 export * from './local-agent-setup';
 export * from './survival-assessment';
+export * from './managed-survival';
+export * from './managed-owner';
 export * from './module';
 export * from './relay-leg';
 export * from './relay-session';

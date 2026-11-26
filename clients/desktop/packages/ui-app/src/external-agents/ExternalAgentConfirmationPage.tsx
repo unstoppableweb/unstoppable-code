@@ -1,6 +1,6 @@
 'use client';
 
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import { type JSX, type ReactNode } from 'react';
 import { useStore } from 'zustand';
 import type { ExternalAgentsClient } from '@canopy/app-core';
@@ -23,7 +23,6 @@ import {
   Notice,
   NoticeButton,
   Heading,
-  TextLinkButton,
 } from '@canopy/ui-shared/components';
 import { EXTERNAL_AGENT_SERVER_COPY, relativeTimeLabel } from './display';
 import {
@@ -476,13 +475,15 @@ function PauseOffer({
         data-testid="external-agent-confirmation-paused"
       >
         {`${externalAgentDisplayName(action)} can’t read or change anything until you resume it. `}
-        <TextLinkButton
+        <Button
           onClick={(): void =>
             onOpenPath(externalAgentPath(action.connectionId))
           }
+          variant="link"
+          data-settings-control="link"
         >
           {`Open ${externalAgentDisplayName(action)}`}
-        </TextLinkButton>
+        </Button>
         {' to resume it.'}
       </Notice>
     );

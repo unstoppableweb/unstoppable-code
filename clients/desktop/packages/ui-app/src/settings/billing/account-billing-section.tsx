@@ -57,7 +57,7 @@ import type {
 import type { SettingsFailure } from '../errors';
 import { Divider } from '@canopy/ui-shared/components';
 
-const HISTORY_LOAD_MORE_ERROR = 'Unable to load more history.';
+const HISTORY_LOAD_MORE_ERROR = "Couldn't load more history.";
 
 /** The personal wallet: account billing never pays for an organization. */
 const PERSONAL_OWNER: SettingsPaymentOwner = { kind: 'personal' };

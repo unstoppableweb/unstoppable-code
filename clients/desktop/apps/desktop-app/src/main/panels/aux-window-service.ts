@@ -44,7 +44,10 @@ import { BRAND } from '@canopy/brand/current';
 import { hostPlatformOperatingSystem } from '@canopy/core-platform';
 import { validateWindowBounds } from '../lib/window-state';
 import { getWindowTitleBarOptions } from '../lib/window-title-bar';
-import { openExternalGuarded } from '../lib/open-external';
+import {
+  isOpenExternallyClick,
+  openExternalGuarded,
+} from '../lib/open-external';
 import { shouldShowUiAutomationWindow } from '../lib/ui-automation-window';
 import { registerUiZoomMinimumSize, scaledMinimumSize } from '../lib/ui-zoom';
 
@@ -124,10 +127,14 @@ export interface PanelAuxWindowHardeningOptions {
 function routeExternalIfSafe(
   url: string,
   options: PanelAuxWindowHardeningOptions,
+  openExternally = false,
 ): void {
   try {
     const parsed = new URL(url);
-    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+    if (
+      !openExternally &&
+      (parsed.protocol === 'http:' || parsed.protocol === 'https:')
+    ) {
       void options.routeAppLink(url).catch(() => undefined);
     } else if (SAFE_EXTERNAL_SCHEMES.has(parsed.protocol)) {
       void openExternalGuarded(url);
@@ -250,7 +257,7 @@ export function hardenPanelAuxWindow(
   // Nested window.open from the child: deny-all, with admitted links routed
   // through the same policy as links from the owning main renderer.
   win.webContents.setWindowOpenHandler((details) => {
-    routeExternalIfSafe(details.url, options);
+    routeExternalIfSafe(details.url, options, isOpenExternallyClick(details));
     return { action: 'deny' };
   });
 

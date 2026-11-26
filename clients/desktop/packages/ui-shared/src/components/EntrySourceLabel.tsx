@@ -7,7 +7,7 @@ import {
   sourceLabelProvider,
   type UnifiedPluginEntry,
 } from '../lib/unified-plugin-entry';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 
 function entrySourceProvider(
   entry: UnifiedPluginEntry,

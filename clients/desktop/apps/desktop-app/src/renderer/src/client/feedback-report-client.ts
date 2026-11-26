@@ -15,6 +15,7 @@ import type {
   FeedbackPrepareRequest,
 } from '@canopy/desktop-shared/types';
 import { extractIpcErrorMessage } from '@/lib/errors';
+import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import { useCurrentUiStateStore } from '@/stores/currentUiStateStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 
@@ -201,13 +202,19 @@ export function createDesktopFeedbackReportClient(): FeedbackReportClient {
     async draft() {
       // Read now, not after the awaits: this is where the person was.
       const context = buildFeedbackContext();
-      const [appVersion, { snapshots }] = await Promise.all([
+      const [appVersion, { snapshots }, account] = await Promise.all([
         // App version is best-effort; omit it on failure.
         window.api.update.getAppVersion().catch((error: unknown) => {
           reportClientAppError(error);
           return undefined;
         }),
         probeHostCapabilities(),
+        Promise.resolve()
+          .then(() => window.api.loadCanopyCloudAccount())
+          .catch((error: unknown) => {
+            reportClientAppError(error);
+            return null;
+          }),
       ]);
       return {
         context: {
@@ -217,6 +224,11 @@ export function createDesktopFeedbackReportClient(): FeedbackReportClient {
             : {}),
         },
         diagnostics: snapshots ? 'snapshot' : 'host-collected',
+        errorReports:
+          snapshots &&
+          account?.hasApiKey === true &&
+          (account.read === undefined || account.read === 'ok') &&
+          !isGuestAccount(account),
       };
     },
     submit(request) {

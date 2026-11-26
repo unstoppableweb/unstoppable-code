@@ -2,7 +2,10 @@ import type { JSX } from 'react';
 import type { SubagentStatus } from '@canopy/agent-transcript';
 import { OPERATIONAL_STATUS_COLORS } from '../../../../lib/operational-status-colors';
 import type { StatusGlyphState } from '../../../../lib/status-glyph';
-import { StatusGlyph, type StatusGlyphSize } from '../../../StatusGlyph';
+import {
+  StatusGlyph,
+  type StatusGlyphSize,
+} from '../../../../primitives/StatusGlyph';
 
 const STATUS_INK: Readonly<Record<SubagentStatus, string>> = {
   // Running reads in the neutral ink of its spinner, never the info blue.

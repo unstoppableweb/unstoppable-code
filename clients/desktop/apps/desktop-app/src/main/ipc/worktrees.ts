@@ -379,7 +379,10 @@ export function registerWorktreeHandlers(
       validateId(request.projectId, 'projectId');
       assertWritableScope(request.projectId);
       validateId(request.worktreeId, 'worktreeId');
-      validateAbsolutePath(request.repoPath, 'repoPath');
+      // Optional: hosted controllers send no host path (CAN-7446). A sent
+      // path is still validated, and compared with the worktree's own.
+      if (request.repoPath !== undefined)
+        validateAbsolutePath(request.repoPath, 'repoPath');
       validateWorktreeOrder(
         request.remainingWorktreeOrder,
         'remainingWorktreeOrder',
@@ -612,6 +615,9 @@ export function registerWorktreeHandlers(
         runtime.dispatcher,
         () => runtime.resolveCaller(event),
         request,
+        runtime.daemonGitRoute
+          ? { route: runtime.daemonGitRoute(), sender: event.sender }
+          : undefined,
       ),
   );
 

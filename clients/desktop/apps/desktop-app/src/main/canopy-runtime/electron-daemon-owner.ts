@@ -4,9 +4,13 @@ import { probeCanopyDaemon } from '@canopy/core-client/node';
 import {
   CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
   CORE_MUTATION_FENCE_STREAM_DEFINITIONS,
+  CORE_OPERATION_LEDGER_INSTRUCTION_DEFINITIONS,
+  CORE_OPERATION_LEDGER_QUERY_DEFINITIONS,
+  CORE_OPERATION_LEDGER_STREAM_DEFINITIONS,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_QUERY_DEFINITIONS,
   MUTATION_FENCE_GRANTS,
+  OPERATION_LEDGER_GRANTS,
   PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS,
   WORKER_PIPELINE_GRANTS,
   WORKER_PIPELINE_INSTRUCTION_DEFINITIONS,
@@ -38,10 +42,16 @@ export const DAEMON_PIPELINE_OWNER_CLIENT_INSTANCE_ID =
  * daemon's write activity (CAN-4730 E2 2b).
  */
 export const ELECTRON_DAEMON_OWNER_DEFINITIONS = {
-  queries: { ...CORE_TRANSPORT_QUERY_DEFINITIONS },
+  queries: {
+    ...CORE_TRANSPORT_QUERY_DEFINITIONS,
+    // Only over the owner connection (CAN-6986 L3): the ledger's internal
+    // reads and writes, where the daemon holds it, until E1 (CAN-4729).
+    ...CORE_OPERATION_LEDGER_QUERY_DEFINITIONS,
+  },
   instructions: {
     ...CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
     ...CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
+    ...CORE_OPERATION_LEDGER_INSTRUCTION_DEFINITIONS,
     'worker.pipeline.hostRequest.respond':
       WORKER_PIPELINE_INSTRUCTION_DEFINITIONS[
         'worker.pipeline.hostRequest.respond'
@@ -57,6 +67,7 @@ export const ELECTRON_DAEMON_OWNER_DEFINITIONS = {
     'worker.pipeline.hostRequests':
       WORKER_PIPELINE_STREAM_DEFINITIONS['worker.pipeline.hostRequests'],
     ...CORE_MUTATION_FENCE_STREAM_DEFINITIONS,
+    ...CORE_OPERATION_LEDGER_STREAM_DEFINITIONS,
   },
 };
 type D = typeof ELECTRON_DAEMON_OWNER_DEFINITIONS;
@@ -168,7 +179,11 @@ export async function getDaemonOwnerSession(): Promise<
       clientInstanceId: DAEMON_PIPELINE_OWNER_CLIENT_INSTANCE_ID,
       authorityId,
       interfaceKind: 'desktop',
-      grants: [WORKER_PIPELINE_GRANTS.host, MUTATION_FENCE_GRANTS.publish],
+      grants: [
+        WORKER_PIPELINE_GRANTS.host,
+        MUTATION_FENCE_GRANTS.publish,
+        OPERATION_LEDGER_GRANTS.owner,
+      ],
     },
     owner.signal,
   );

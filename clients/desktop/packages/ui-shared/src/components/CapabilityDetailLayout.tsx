@@ -8,20 +8,20 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 import { DetailFact, DetailFactList } from './DetailFact';
-import { ExternalTextLink } from './ExternalTextLink';
 import { ItemStateMark, useItemStateMarks } from './ItemStateMark';
 import { RefreshSpinner } from './RefreshSpinner';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 import {
   DetailActionBarIntoShell,
   useDetailHeaderActionsClaim,
 } from './DetailActionBar';
-import { Heading } from './Heading';
+import { Heading } from '../primitives/Heading';
 import { DetailEntityType } from './MarketplaceTypeLabel';
-import { Stack } from './Stack';
+import { Stack } from '../primitives/Stack';
 import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
+import { TextLink } from '../primitives/TextLink';
 
 /**
  * A detail page's fact rows, named so every entity lists them in one order
@@ -576,7 +576,9 @@ export function DetailWebsiteFact({
 }): JSX.Element {
   return (
     <DetailFact label="Website" testId={testId}>
-      <ExternalTextLink href={href} label={detailWebsiteHost(href)} />
+      <TextLink href={href} size="xs" target="_blank" rel="noopener noreferrer">
+        {detailWebsiteHost(href)}
+      </TextLink>
     </DetailFact>
   );
 }

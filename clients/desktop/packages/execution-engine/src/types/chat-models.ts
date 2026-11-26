@@ -1,1 +1,1 @@
-export type ChatModel = string;
+export type { ChatModel } from '@canopy/protocol/chat-models';

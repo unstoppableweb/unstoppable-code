@@ -2,6 +2,7 @@ import type { ComponentsLabEntry } from './componentsLabCatalog';
 import {
   MarketplaceLabelsSpecimen,
   McpServerCardRowSpecimen,
+  McpSharedConnectionRowsSpecimen,
   McpStatusSpecimen,
 } from './componentsLabMarketplace';
 import {
@@ -18,6 +19,7 @@ import {
 } from './componentsLabPanels';
 
 const SRC = 'packages/ui-shared/src/components';
+const PRIMITIVES_SRC = 'packages/ui-shared/src/primitives';
 
 /**
  * Specimen sheets that close the component-completeness gap (list root-3):
@@ -53,11 +55,20 @@ export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     View: McpServerCardRowSpecimen,
   },
   {
+    id: 'mcp-shared-connection-rows',
+    name: 'MCP shared connection rows',
+    group: 'Unified',
+    note: "A project's shared connections in the MCP servers card: the connection's own state, who shared it, and no sign-in, details or settings.",
+    source: 'packages/ui-app/src/code/activity/McpServersSectionBody.tsx',
+    prs: [],
+    View: McpSharedConnectionRowsSpecimen,
+  },
+  {
     id: 'code-block',
     name: 'Code block',
     group: 'Unified',
     note: 'The one code block for Markdown, ANSI and plain output. Plain blocks pick a variant by role, ANSI keeps colors and follows the tail, and Markdown adds a copy button that reveals on hover or focus.',
-    source: `${SRC}/CodeBlock.tsx`,
+    source: `${PRIMITIVES_SRC}/CodeBlock.tsx`,
     prs: [],
     View: CodeBlockSpecimen,
   },
@@ -111,7 +122,7 @@ export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     name: 'Pick list with its own input',
     group: 'Unified',
     note: 'The one search-and-pick list: combobox semantics, arrow keys over picker rows, and the empty and loading states.',
-    source: `${SRC}/PickList.tsx`,
+    source: `${PRIMITIVES_SRC}/PickList.tsx`,
     prs: [],
     View: PickListSpecimen,
   },
@@ -120,7 +131,7 @@ export const GAP_ROOT_3A_LAB_ENTRIES: readonly ComponentsLabEntry[] = [
     name: 'Pick list results',
     group: 'Unified',
     note: 'The results of a PickList for a host that owns its input, a palette or a composer: usePickListKeys drives it, and it brings the sections, tabs, disabled rows and row-end controls.',
-    source: `${SRC}/PickList.tsx`,
+    source: `${PRIMITIVES_SRC}/PickList.tsx`,
     prs: [],
     View: PickListResultsSpecimen,
   },

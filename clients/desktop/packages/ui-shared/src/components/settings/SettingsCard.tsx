@@ -1,6 +1,6 @@
 import type { JSX, ReactNode } from 'react';
-import { ToggleSwitch } from '../ToggleSwitch';
-import { Heading } from '../Heading';
+import { ToggleSwitch } from '../../primitives/ToggleSwitch';
+import { Heading } from '../../primitives/Heading';
 
 /**
  * One section of an account or organization settings page, drawn the way

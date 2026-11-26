@@ -1,7 +1,9 @@
 import { createStore, type StoreApi } from 'zustand/vanilla';
 import type {
+  CreateTrackedPlanRequest,
   PlanExitRequestEvent,
   TrackedPlanData,
+  UpdateTrackedPlanRequest,
 } from '@canopy/desktop-shared/types';
 import type { ChatState } from '../state';
 import { createPlanSlice } from '../slices/plan';
@@ -15,6 +17,14 @@ const mockPreparePlanFileSystemInstruction = jest.fn();
 const mockCommand = jest.fn();
 const mockLoadTrackedPlans = jest.fn();
 
+// The plan client's transport has its own golden; here its writes reach the
+// window's tracked-plan stubs below.
+jest.mock('@/client/desktop-plan-client', () => ({
+  createTrackedPlan: (request: CreateTrackedPlanRequest): unknown =>
+    window.api.activity.plans.create(request),
+  updateTrackedPlan: (request: UpdateTrackedPlanRequest): unknown =>
+    window.api.activity.plans.update(request),
+}));
 jest.mock('../backend', () => ({
   chatBackendFor: (): unknown => ({
     chat: {

@@ -20,9 +20,9 @@
  */
 import { useLayoutEffect, useState, type JSX } from 'react';
 import { LOADING_PLACEHOLDER_DELAY_MS } from '../../lib/useDelayedFlag';
-import { CenteredLoadingSpinner } from '../CenteredLoadingSpinner';
+import { CenteredLoadingSpinner } from '../../primitives/CenteredLoadingSpinner';
 import { DelayedLoadingPlaceholder } from '../DelayedLoadingPlaceholder';
-import { LoadingSpinner } from '../LoadingSpinner';
+import { LoadingSpinner } from '../../primitives/LoadingSpinner';
 
 /** A card mounted this soon after another left continues that card's wait. */
 const HANDOFF_WINDOW_MS = 100;

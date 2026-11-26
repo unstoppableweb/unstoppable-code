@@ -422,6 +422,13 @@ test('a fresh local-only profile without Codex imports a Claude project and comp
 
     // 1. Consent, then the first-run import page lists the fixture project.
     const driver = new CanopyAppDriver(window);
+    // Nothing leaves this build, so the gate shows no "What you share" card.
+    await expect(window.getByTestId('legal-consent-gate')).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(window.getByTestId('legal-consent-data-choices')).toHaveCount(
+      0,
+    );
     await driver.acceptLegalConsent();
     await driver.waitForShell({ timeout: 30_000 });
     const row = window.getByTestId(

@@ -8,7 +8,7 @@ import {
   PickerMenuOptionLabel,
   PickerMenuOptionLeading,
   type PickerMenuOptionProps,
-} from './PickerMenu';
+} from '../primitives/PickerMenu';
 import { ProjectAvatarBadge } from './ProjectAvatarBadge';
 
 /** Reserved independently of real workspace ids on every picker host. */

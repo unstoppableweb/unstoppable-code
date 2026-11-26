@@ -1,5 +1,5 @@
 import type { CSSProperties, JSX } from 'react';
-import { ToggleSwitch } from './ToggleSwitch';
+import { ToggleSwitch } from '../primitives/ToggleSwitch';
 import { SettingsRowsRow } from './settings/SettingsRows';
 
 export interface BrowserProfileBadgeProps {

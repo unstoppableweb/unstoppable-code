@@ -12,6 +12,7 @@ import {
   type AppErrorThrownType,
 } from '@canopy/protocol/app-errors';
 import type { FeedbackReportTelemetry } from '@canopy/protocol/feedback-report';
+import { rememberUserVisibleError } from '@canopy/ui-shared/lib';
 import {
   recordBoundaryError,
   recordToastError,
@@ -54,6 +55,7 @@ export function captureRendererAppError(
 ): CapturedRendererAppError {
   const appError = normalize(error, surface, boundary, thrownType);
   if (!appError) return { appError: null, telemetry: null };
+  rememberUserVisibleError(appError);
   try {
     return { appError, telemetry: readClientErrorTelemetry() };
   } catch (failure) {
@@ -86,6 +88,7 @@ export function captureToastFailure(
 ): CapturedToastFailure {
   if (error.kind === 'input') return { error };
   const recorded = recordToastError(identifier, shown, error)?.error ?? error;
+  if (shown) rememberUserVisibleError(recorded);
   if (recorded.kind !== 'defect') return { error: recorded };
   try {
     return { error: recorded, telemetry: readClientErrorTelemetry() };
@@ -102,6 +105,7 @@ export function captureToastFailure(
 export function readRecordedToastFailure(
   error: AppError,
 ): CapturedToastFailure {
+  rememberUserVisibleError(error);
   if (error.kind !== 'defect') return { error };
   try {
     return { error, telemetry: readClientErrorTelemetry() };

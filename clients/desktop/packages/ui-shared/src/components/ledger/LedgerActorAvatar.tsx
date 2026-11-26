@@ -14,7 +14,7 @@ import {
   DISPLAY_AVATAR_GLYPH_SIZE,
   DisplayAvatar,
   type DisplayAvatarSize,
-} from '../DisplayAvatar';
+} from '../../primitives/DisplayAvatar';
 
 /** `large` beside a Feed row (32px); `small` in the panel and on replies. */
 export type LedgerActorAvatarSize = 'large' | 'small';

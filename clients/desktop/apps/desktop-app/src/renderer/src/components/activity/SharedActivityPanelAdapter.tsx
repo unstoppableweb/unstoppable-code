@@ -463,6 +463,7 @@ function SharedActivityPanelAdapterContents({
     detectedMcp.notice !== undefined ||
     detectedMcp.error != null ||
     detectedMcp.servers.length > 0 ||
+    detectedMcp.sharedConnections.length > 0 ||
     (detectedMcp.warnings?.length ?? 0) > 0;
   useEffect(() => {
     if (detectedMcp.initializing) return;
@@ -470,13 +471,15 @@ function SharedActivityPanelAdapterContents({
   }, [detectedMcp.initializing, mcpDetectedContent, worktreeKey]);
   // Detection restarts on every switch. Hold the last known answer until it
   // lands so the section neither flashes in empty nor offers "Add MCP server"
-  // early; with nothing known yet, assume content.
+  // early; with nothing known yet, assume content. A shared connection
+  // already read from the organization layer is content either way.
   // A cloud task's servers come from its web core catalog (CAN-6608).
   const cloudMcp = useCloudMcpServersModel(chromeScope);
   const mcpHasContent = cloudMcp.active
     ? cloudMcp.loading || cloudMcp.servers.length > 0 || cloudMcp.error !== null
     : detectedMcp.initializing
-      ? (recallMcpSectionContent(worktreeKey) ?? true)
+      ? detectedMcp.sharedConnections.length > 0 ||
+        (recallMcpSectionContent(worktreeKey) ?? true)
       : mcpDetectedContent;
   const mcpRefreshAction = (
     <RefreshButton
@@ -784,7 +787,8 @@ function SharedActivityPanelAdapterContents({
           'mcp-servers': String(
             cloudMcp.active
               ? cloudMcp.servers.length
-              : detectedMcp.servers.length,
+              : detectedMcp.servers.length +
+                  detectedMcp.sharedConnections.length,
           ),
           scripts: String(scriptsSection.entries.length),
           hooks: String(hooksSection.entries.length),

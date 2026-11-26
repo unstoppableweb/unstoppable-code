@@ -3,10 +3,10 @@ import {
   ChevronRightMediumIcon,
 } from '../../icons/AppIcons';
 import type { JSX, MouseEventHandler, ReactNode } from 'react';
-import { ControlButton, Button } from '../Button';
+import { ControlButton, Button } from '../../primitives/Button';
 import { DiffLineCounts } from '../DiffLineCounts';
-import { RichHoverTooltip } from '../RichHoverTooltip';
-import { Heading } from '../Heading';
+import { RichHoverTooltip } from '../../primitives/RichHoverTooltip';
+import { Heading } from '../../primitives/Heading';
 
 /**
  * Closed set of changed-file status strings recognized by the shared diff

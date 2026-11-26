@@ -26,6 +26,7 @@ import {
 } from '@canopy/desktop-shared/types';
 import { getDefaultFeatureFlagSnapshot } from '@canopy/protocol/feature-flags';
 import {
+  WORKER_TERMINAL_INSTRUCTION_DEFINITIONS,
   WorkerTerminalCreateParamsSchema,
   WorkerTerminalRestoreParamsSchema,
   type WorkerTerminalCreateResult,
@@ -41,6 +42,17 @@ import { LabsExperimentsService } from '../../services/labs-experiments-service'
 import { registerTerminalHandlers } from '../../ipc/terminal';
 import { registerLabsExperimentsHandlers } from '../../ipc/labs-experiments';
 import { markUnreachable } from '../../canopy-runtime/electron-daemon-connection';
+import {
+  daemonTerminalRecordClient,
+  noteTerminalRecordSession,
+} from '../record-client';
+import { terminalPersistenceStore } from '../persistence';
+import type * as Persistence from '../persistence';
+import { TerminalRecordAdmissionDeferred } from '../record-admission';
+import { workerTerminal } from '../worker-terminal';
+
+let mockRecordCapability = false;
+let mockConnectionLifetime = new AbortController();
 
 interface RouteState {
   root: string;
@@ -48,6 +60,8 @@ interface RouteState {
   labs: LabsExperimentsService | undefined;
   failure: Error | undefined;
   failureAfterCreate: boolean;
+  splitLocked: boolean;
+  daemonHealthy: boolean;
   local: Map<string, TerminalSession>;
   hosted: Map<string, WorkerTerminalCreateResult>;
   restored: Map<string, string>;
@@ -64,6 +78,8 @@ const mockState: RouteState = {
   labs: undefined,
   failure: undefined,
   failureAfterCreate: false,
+  splitLocked: false,
+  daemonHealthy: true,
   local: new Map<string, TerminalSession>(),
   hosted: new Map<string, WorkerTerminalCreateResult>(),
   restored: new Map<string, string>(),
@@ -106,7 +122,9 @@ jest.mock('../../lib/workspace-target-exclusion', () => ({
   ): Promise<unknown> => start(),
 }));
 jest.mock('../../services/split-lock-service', () => ({
-  assertNotSplitLocked: (): void => undefined,
+  assertNotSplitLocked: (): void => {
+    if (mockState.splitLocked) throw new Error('Split PR lock held');
+  },
 }));
 jest.mock('../../services/labs-experiments-runtime', () => ({
   getLabsExperimentsService: (): LabsExperimentsService | undefined =>
@@ -114,6 +132,9 @@ jest.mock('../../services/labs-experiments-runtime', () => ({
 }));
 jest.mock('../../canopy-runtime/electron-daemon-health', () => ({
   getElectronDaemonHealth: jest.fn(() => ({
+    getStatus: (): { state: 'ok' | 'unreachable' } => ({
+      state: mockState.daemonHealthy ? 'ok' : 'unreachable',
+    }),
     isLatched: (): boolean => false,
     noteFallback: (): void => undefined,
     setConsumerEnabled: (): void => undefined,
@@ -133,13 +154,22 @@ jest.mock('../../canopy-runtime/electron-daemon-access', () => ({
           throw mockState.failure;
         return {
           client: {
-            signal: new AbortController().signal,
+            manifest: {
+              has: (): boolean => mockRecordCapability,
+              schemaRevisions: new Map([['worker.terminal.create', 2]]),
+            },
+            signal: mockConnectionLifetime.signal,
             instruction: (operation: string, raw: unknown): Promise<unknown> =>
               Promise.resolve().then(() => {
                 if (mockState.failure && !mockState.failureAfterCreate)
                   throw mockState.failure;
                 if (operation === 'worker.terminal.create') {
-                  const p = WorkerTerminalCreateParamsSchema.parse(raw);
+                  // A legacy peer keeps the strict revision-1 schema.
+                  const p = mockRecordCapability
+                    ? WorkerTerminalCreateParamsSchema.parse(raw)
+                    : WORKER_TERMINAL_INSTRUCTION_DEFINITIONS[
+                        'worker.terminal.create'
+                      ].params.parse(raw);
                   const terminal: WorkerTerminalCreateResult = {
                     terminalId: `daemon-${mockState.hosted.size + 1}`,
                     scope: p.scope,
@@ -263,6 +293,21 @@ jest.mock('../persistence', () => ({
     registerLiveSession: (): void => undefined,
     appendTerminalOutput: (): void => undefined,
     markTerminalExited: (): void => undefined,
+    // CAN-7051: metadata and a history prefetch; this daemon keeps no record.
+    getTerminalMetadata: (
+      id: string,
+    ): ReturnType<TerminalPersistencePort['getPersistedTerminalEntry']> =>
+      mockState.persisted.get(id) ?? null,
+    prefetchPersistedEntry: (): Promise<() => void> =>
+      Promise.resolve(() => undefined),
+    recordClientFor: (): null => null,
+    prepareDaemonRestore: (): Promise<boolean> => Promise.resolve(true),
+    recordedTerminals: {
+      registerLiveSession: (): void => undefined,
+      appendTerminalOutput: (): void => undefined,
+      markTerminalExited: (): void => undefined,
+      getPersistedTerminalEntry: (): null => null,
+    },
   },
 }));
 jest.mock('../../remote-control/host/bridge-window', () => ({
@@ -354,10 +399,14 @@ afterAll(() => {
   rmSync(mockState.root, { recursive: true, force: true });
 });
 beforeEach(() => {
+  mockRecordCapability = false;
+  mockConnectionLifetime = new AbortController();
   mockRouteRecords.length = 0;
   mockState.daemon = undefined;
   mockState.failure = undefined;
   mockState.failureAfterCreate = false;
+  mockState.splitLocked = false;
+  mockState.daemonHealthy = true;
   mockState.local.clear();
   mockState.hosted.clear();
   mockState.restored.clear();
@@ -374,6 +423,270 @@ const REQUEST = {
   cols: 80,
   rows: 24,
 };
+
+it('R3 deferred attribution falls back before ordinary or restore dispatch without changing health', async () => {
+  mockRecordCapability = true;
+  const admission = jest
+    .spyOn(terminalPersistenceStore, 'recordClientFor')
+    .mockImplementation(() => {
+      throw new TerminalRecordAdmissionDeferred();
+    });
+  try {
+    await expect(
+      invoke(IPC_CHANNELS.terminalSpawn, REQUEST),
+    ).resolves.toMatchObject({ id: 'engine-1' });
+    const saved: TerminalSession = {
+      id: 'saved',
+      projectId: 'project',
+      worktreeId: 'task',
+      shell: '/bin/sh',
+      shellBasename: 'sh',
+      cwd: mockState.root,
+      createdAt: 1,
+    };
+    mockState.persisted.set('saved', {
+      session: saved,
+      scrollbackLines: ['history'],
+      exitCode: 0,
+      signal: null,
+    });
+    const restore = jest
+      .spyOn(workerTerminal, 'restore')
+      .mockReturnValue(saved);
+    await expect(
+      invoke(IPC_CHANNELS.terminalRestore, {
+        terminalId: 'saved',
+        cols: 80,
+        rows: 24,
+      }),
+    ).resolves.toMatchObject({ id: 'saved' });
+    expect(restore).toHaveBeenCalledTimes(1);
+    expect(admission).toHaveBeenCalledTimes(2);
+    expect(mockState.hosted.size).toBe(0);
+    expect(mockState.restored.size).toBe(0);
+    expect(mockRouteRecords).not.toContainEqual(['terminals', 'unreachable']);
+    expect(mockRouteRecords).not.toContainEqual(['terminals', 'refused']);
+    restore.mockRestore();
+  } finally {
+    admission.mockRestore();
+  }
+});
+
+it('R1 an idle reconnect renegotiates history capability without terminal activity', async () => {
+  mockRecordCapability = true;
+  mockConnectionLifetime = new AbortController();
+  const { TerminalPersistenceStore } =
+    jest.requireActual<typeof Persistence>('../persistence');
+  const s = new TerminalPersistenceStore({
+    records: daemonTerminalRecordClient,
+  });
+  try {
+    expect(await daemonTerminalRecordClient.available()).toBe(true);
+    mockState.daemonHealthy = false;
+    mockConnectionLifetime.abort();
+    expect(
+      (await s.loadWorktreeState('project', 'task', true)).history?.status,
+    ).toBe('unavailable');
+    mockConnectionLifetime = new AbortController();
+    mockState.daemonHealthy = true;
+    // The health-ok handler calls this, even with no scopes or queued writes.
+    await s.drainAll(true);
+    expect(
+      (await s.loadWorktreeState('project', 'task', true)).history?.status,
+    ).toBe('available');
+    expect(mockState.hosted.size).toBe(0);
+  } finally {
+    mockRecordCapability = false;
+    mockConnectionLifetime.abort();
+  }
+});
+
+it('R11 an output-free recovery probe requires the current session record capability', () => {
+  const connection = new AbortController();
+  const manifest = {
+    operations: new Set<string>(),
+    events: new Set<string>(),
+    streams: new Set<string>(),
+    schemaRevisions: new Map([['worker.terminal.create', 2]]),
+    has: (): boolean => false,
+  };
+  noteTerminalRecordSession({ manifest, signal: connection.signal });
+  expect(daemonTerminalRecordClient.peekAvailable?.()).toBe(false);
+  noteTerminalRecordSession({
+    manifest: { ...manifest, has: (): boolean => true },
+    signal: connection.signal,
+  });
+  expect(daemonTerminalRecordClient.peekAvailable?.()).toBe(true);
+  mockState.daemonHealthy = false;
+  expect(daemonTerminalRecordClient.peekAvailable?.()).toBe(false);
+  mockState.daemonHealthy = true;
+  connection.abort();
+  expect(daemonTerminalRecordClient.peekAvailable?.()).toBe(false);
+});
+
+it('R11 restore rechecks the Split PR lock after its history prefetch', async () => {
+  mockState.persisted.set('saved', {
+    session: {
+      id: 'saved',
+      projectId: 'project',
+      worktreeId: 'task',
+      shell: '/bin/sh',
+      shellBasename: 'sh',
+      cwd: mockState.root,
+      createdAt: 1,
+      initialCommand: 'must-not-run',
+    },
+    scrollbackLines: ['history'],
+    exitCode: null,
+    signal: null,
+  });
+  let reached: () => void = () => undefined;
+  const started = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  let deliver: (release: () => void) => void = () => undefined;
+  const prefetch = new Promise<() => void>((resolve) => {
+    deliver = resolve;
+  });
+  const held = jest
+    .spyOn(terminalPersistenceStore, 'prefetchPersistedEntry')
+    .mockImplementation(() => {
+      reached();
+      return prefetch;
+    });
+  let released = false;
+  try {
+    const restored = invoke(
+      IPC_CHANNELS.terminalRestore,
+      { terminalId: 'saved', cols: 80, rows: 24 },
+      foreign,
+    );
+    await started;
+    mockState.splitLocked = true;
+    deliver((): void => {
+      released = true;
+    });
+    await expect(restored).rejects.toThrow('Split PR lock held');
+    expect(released).toBe(true);
+    expect(mockState.local.size).toBe(0);
+    expect(mockState.restored.size).toBe(0);
+  } finally {
+    held.mockRestore();
+  }
+});
+
+describe('a restore chooses, prepares and dispatches its history on one session', () => {
+  it.each([
+    ['gains', false],
+    ['loses', true],
+  ] as const)(
+    'a session that %s record capability before dispatch never sends the stale restore',
+    async (_label, recordsAtProbe) => {
+      const saved: TerminalSession = {
+        id: 'saved',
+        projectId: 'project',
+        worktreeId: 'task',
+        shell: '/bin/sh',
+        shellBasename: 'sh',
+        cwd: mockState.root,
+        createdAt: 1,
+      };
+      mockState.persisted.set('saved', {
+        session: saved,
+        scrollbackLines: ['queued output'],
+        exitCode: 0,
+        signal: null,
+      });
+      mockRecordCapability = recordsAtProbe;
+      // The session the probe chose drops; its successor serves the other mode.
+      const renegotiate = (): void => {
+        if (mockRecordCapability !== recordsAtProbe) return;
+        mockConnectionLifetime.abort();
+        mockConnectionLifetime = new AbortController();
+        mockRecordCapability = !recordsAtProbe;
+      };
+      const client = jest
+        .spyOn(terminalPersistenceStore, 'recordClientFor')
+        .mockResolvedValue({
+          projectId: 'project',
+          worktreeId: 'task',
+          legacyLayout: 'workspaces',
+          incarnation: null,
+        });
+      const prepare = jest
+        .spyOn(terminalPersistenceStore, 'prepareDaemonRestore')
+        .mockImplementation(() => {
+          renegotiate();
+          return Promise.resolve(true);
+        });
+      const prefetch = jest
+        .spyOn(terminalPersistenceStore, 'prefetchPersistedEntry')
+        .mockImplementation(() => {
+          renegotiate();
+          return Promise.resolve(() => undefined);
+        });
+      const engine = jest
+        .spyOn(workerTerminal, 'restore')
+        .mockReturnValue(saved);
+      let poll: ReturnType<typeof setInterval> | undefined;
+      try {
+        const restoring = invoke(IPC_CHANNELS.terminalRestore, {
+          terminalId: 'saved',
+          cols: 80,
+          rows: 24,
+        });
+        // A record-mode dispatch waits on a replay this mock never streams.
+        await Promise.race([
+          restoring,
+          new Promise<void>((resolve) => {
+            poll = setInterval(() => {
+              if (mockState.restored.has('saved')) resolve();
+            }, 5);
+          }),
+        ]);
+        // Never an empty history: the record mode needs a drain on the session
+        // that serves it, and the snapshot mode needs the snapshot.
+        expect(mockState.restored.has('saved')).toBe(false);
+        await expect(restoring).resolves.toMatchObject({ id: 'saved' });
+        expect(engine).toHaveBeenCalledTimes(1);
+      } finally {
+        clearInterval(poll);
+        client.mockRestore();
+        prepare.mockRestore();
+        prefetch.mockRestore();
+        engine.mockRestore();
+      }
+    },
+  );
+
+  it('a create whose lease turns legacy during attribution opens in process', async () => {
+    mockRecordCapability = true;
+    const client = jest
+      .spyOn(terminalPersistenceStore, 'recordClientFor')
+      .mockImplementation(() => {
+        // The lease the attribution probed drops; a legacy peer replaces it.
+        mockConnectionLifetime.abort();
+        mockConnectionLifetime = new AbortController();
+        mockRecordCapability = false;
+        return Promise.resolve({
+          projectId: 'project',
+          worktreeId: 'task',
+          legacyLayout: 'workspaces',
+          incarnation: null,
+        });
+      });
+    try {
+      await expect(
+        invoke(IPC_CHANNELS.terminalSpawn, REQUEST),
+      ).resolves.toMatchObject({ id: 'engine-1' });
+      expect(client).toHaveBeenCalledTimes(1);
+      expect(mockState.hosted.size).toBe(0);
+      expect(mockRouteRecords).not.toContainEqual(['terminals', 'refused']);
+    } finally {
+      client.mockRestore();
+    }
+  });
+});
 
 describe('terminal:spawn and terminal:restore default daemon placement (CAN-5718)', () => {
   it.each([

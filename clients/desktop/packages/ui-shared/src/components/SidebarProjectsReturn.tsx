@@ -3,7 +3,7 @@
 import type { JSX, Ref } from 'react';
 import { ChevronDownMediumIcon } from '../icons/AppIcons';
 import { prefersReducedMotion } from '../lib/reduced-motion';
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 
 const FOCUSABLE_CONTROL =
   'button:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';

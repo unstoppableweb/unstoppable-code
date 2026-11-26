@@ -14,10 +14,8 @@ import type {
   CoreTerminalPreset,
   CoreTerminalSettings,
 } from '@canopy/protocol/canopy-core';
-import type {
-  PreferencesData,
-  TerminalPreset,
-} from '@canopy/desktop-shared/types';
+import type { TerminalPreset } from '@canopy/desktop-shared/types';
+import type { DomainPreferencesData } from '@canopy/desktop-shared/node/preferences/client-local-preferences';
 
 export const TERMINAL_PRESET_IMAGE_ARTIFACT_PREFIX =
   'terminal-preset-image:sha256:';
@@ -27,15 +25,21 @@ export function terminalPresetImageArtifactId(dataUrl: string): string {
   return `${TERMINAL_PRESET_IMAGE_ARTIFACT_PREFIX}${createHash('sha256').update(dataUrl, 'utf8').digest('hex')}`;
 }
 
-/** The preference reads and writes the store needs; defaults to Electron main's store. */
+/**
+ * The preference reads and writes the store needs; defaults to Electron main's
+ * store. Domain keys only: terminal settings never touch the client-local
+ * document (CAN-4472).
+ */
 export interface DesktopTerminalSettingsPreferences {
   readAuthority(): Promise<{
-    preferences: PreferencesData;
+    preferences: DomainPreferencesData;
     authority: 'ok' | 'absent' | 'unreadable';
   }>;
   update(
-    updater: (latest: PreferencesData) => Partial<PreferencesData> | null,
-  ): Promise<{ previous: PreferencesData; next: PreferencesData }>;
+    updater: (
+      latest: DomainPreferencesData,
+    ) => Partial<DomainPreferencesData> | null,
+  ): Promise<{ previous: DomainPreferencesData; next: DomainPreferencesData }>;
 }
 
 const captures = new AsyncLocalStorage<Map<string, string>>();
@@ -59,7 +63,7 @@ export function withStagedTerminalPresetImages<Result>(
   );
 }
 
-function project(preferences: PreferencesData): CoreTerminalSettings {
+function project(preferences: DomainPreferencesData): CoreTerminalSettings {
   const imageId = (url: string | undefined): string | null => {
     if (!url) return null;
     const id = terminalPresetImageArtifactId(url);

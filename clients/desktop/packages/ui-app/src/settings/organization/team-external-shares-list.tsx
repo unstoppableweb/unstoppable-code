@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import { Trash2 } from '@canopy/ui-shared/icons/AppIcons';
 import {
   Button,
-  LoadingButton,
   ErrorBanner,
   Stack,
   StatusBadge,
@@ -224,14 +223,14 @@ export function TeamExternalSharesList({
       )}
       {nextCursor !== null && (
         <div>
-          <LoadingButton
+          <Button
             size="compact"
             onClick={() => void loadMore()}
             loading={loadingMore}
             data-testid="team-external-shares-more"
           >
             Show more
-          </LoadingButton>
+          </Button>
         </div>
       )}
       {pending && (

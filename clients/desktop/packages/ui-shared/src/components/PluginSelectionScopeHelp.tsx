@@ -2,9 +2,9 @@
 
 import { useRef, useState, type JSX } from 'react';
 import { InfoIcon } from '../icons/InfoIcon';
-import { Button } from './Button';
-import { Popover } from './Popover';
-import { Tooltip } from './Tooltip';
+import { Button } from '../primitives/Button';
+import { Popover } from '../primitives/Popover';
+import { Tooltip } from '../primitives/Tooltip';
 
 const SCOPE_GUIDANCE = [
   'This list comes from your available skills, plugin marketplaces, collections, and configured MCP servers.',

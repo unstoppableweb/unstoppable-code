@@ -2,9 +2,9 @@ import type { JSX, ReactNode } from 'react';
 import { CheckIcon } from '../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { DetailFact, DetailFactList } from './DetailFact';
-import { Disclosure } from './Disclosure';
-import { Notice } from './Notice';
-import { Stack } from './Stack';
+import { Disclosure } from '../primitives/Disclosure';
+import { Notice } from '../primitives/Notice';
+import { Stack } from '../primitives/Stack';
 
 /** Statuses that read as a working connection and carry the check. */
 const SIGNED_IN_STATUSES = new Set(['Connected', 'Signed in']);

@@ -1,4 +1,4 @@
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import { useEffect, useMemo, useState, type JSX } from 'react';
 import type { ReportOutputs } from '@canopy/execution-engine/types/pipeline';
 import { formatPipelineReportContent } from '@/lib/pipelineExecutionDetail';

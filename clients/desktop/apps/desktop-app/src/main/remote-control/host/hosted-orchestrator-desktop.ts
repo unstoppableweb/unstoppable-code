@@ -3,7 +3,12 @@ import { mkdir, readFile, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { APP_ADVISOR_PROJECT_ID } from '@canopy/protocol/chat-targets';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
-import type { HostedSlackTurnStatus } from '@canopy/protocol/remote-control/channels';
+import {
+  SLACK_THREAD_JUST_CLOSED_REFUSAL,
+  SLACK_THREAD_REMOVED_REFUSAL,
+  SLACK_THREAD_TOO_LONG_REFUSAL,
+  type HostedSlackTurnStatus,
+} from '@canopy/protocol/remote-control/channels';
 import type {
   ChatCommand,
   ChatCommandRequest,
@@ -68,15 +73,6 @@ export interface HostedOrchestratorChatReads {
   getState(request: ChatGetStateRequest): Promise<ChatStateSnapshot>;
   transcriptPage(request: ChatTranscriptPageRequest): Promise<TranscriptPage>;
 }
-
-export const SLACK_THREAD_REMOVED_REFUSAL =
-  "This Slack thread's chat was removed from this computer.";
-
-export const SLACK_THREAD_JUST_CLOSED_REFUSAL =
-  "This Slack thread's chat just closed. Send the message again.";
-
-export const SLACK_THREAD_TOO_LONG_REFUSAL =
-  "This Slack thread's chat is too long to check for a repeated message.";
 
 interface SlackConversationsRecord {
   readonly version: 1;

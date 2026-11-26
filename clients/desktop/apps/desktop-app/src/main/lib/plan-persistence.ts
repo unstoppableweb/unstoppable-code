@@ -13,10 +13,7 @@ import type {
   TrackedPlanData,
   TrackedPlanListWithSkippedResult,
   TrackedPlansFile,
-  TrackedPlanReviewStatus,
-  TrackedPlanRevisionData,
   TrackedPlanShareState,
-  TrackedPlanShareSyncStatus,
   TrackedPlanSource,
   UpdateTrackedPlanRequest,
   UsageInitiationSource,
@@ -25,6 +22,7 @@ import type {
 import {
   isPlanDiagramArtifacts,
   isPlanCommentThreadArray,
+  isTrackedPlanData,
 } from '@canopy/desktop-shared/types';
 import {
   createPlanEngine,
@@ -159,27 +157,6 @@ function emitPlanDiagramArtifactChange(plan: TrackedPlanData): void {
   });
 }
 
-function isTrackedPlanReviewStatus(
-  value: unknown,
-): value is TrackedPlanReviewStatus {
-  return value === 'pending' || value === 'approved' || value === 'dismissed';
-}
-
-function isTrackedPlanSource(value: unknown): value is TrackedPlanSource {
-  return (
-    value === 'copilot' ||
-    value === 'claude' ||
-    value === 'codex' ||
-    value === 'opencode' ||
-    value === 'cursor' ||
-    value === 'ollama' ||
-    value === 'antigravity' ||
-    value === 'pipeline' ||
-    value === 'imported' ||
-    value === 'detected'
-  );
-}
-
 function planSourceToUsageMetricProvider(
   source: TrackedPlanSource,
 ): UsageMetricProvider | undefined {
@@ -196,110 +173,6 @@ function planSourceToUsageMetricProvider(
     case 'detected':
       return undefined;
   }
-}
-
-function isTrackedPlanShareSyncStatus(
-  value: unknown,
-): value is TrackedPlanShareSyncStatus {
-  return (
-    value === 'pending' ||
-    value === 'syncing' ||
-    value === 'synced' ||
-    value === 'error'
-  );
-}
-
-function isTrackedPlanShareState(
-  value: unknown,
-): value is TrackedPlanShareState {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  return (
-    typeof value.serverId === 'string' &&
-    typeof value.remoteId === 'string' &&
-    (value.shareScope === 'private' ||
-      value.shareScope === 'team' ||
-      value.shareScope === 'organization') &&
-    (value.teamId === undefined || typeof value.teamId === 'string') &&
-    (value.organizationId === undefined ||
-      typeof value.organizationId === 'string') &&
-    isTrackedPlanShareSyncStatus(value.syncStatus) &&
-    (value.lastSyncedAt === undefined ||
-      typeof value.lastSyncedAt === 'string') &&
-    (value.lastSyncedLocalRevisionNumber === undefined ||
-      typeof value.lastSyncedLocalRevisionNumber === 'number') &&
-    (value.lastSyncedRemoteRevisionNumber === undefined ||
-      typeof value.lastSyncedRemoteRevisionNumber === 'number') &&
-    (value.lastSyncedSnapshotHash === undefined ||
-      typeof value.lastSyncedSnapshotHash === 'string') &&
-    (value.lastSyncError === undefined ||
-      typeof value.lastSyncError === 'string')
-  );
-}
-
-function isTrackedPlanRevisionData(
-  value: unknown,
-): value is TrackedPlanRevisionData {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  return (
-    (value.proposalRequestId === undefined ||
-      (typeof value.proposalRequestId === 'string' &&
-        value.proposalRequestId.length > 0 &&
-        value.proposalRequestId.length <= 256)) &&
-    typeof value.revisionNumber === 'number' &&
-    typeof value.content === 'string' &&
-    isTrackedPlanSource(value.source) &&
-    isTrackedPlanReviewStatus(value.reviewStatus) &&
-    typeof value.createdAt === 'string' &&
-    (value.approvedAt === undefined || typeof value.approvedAt === 'string') &&
-    (value.dismissedAt === undefined || typeof value.dismissedAt === 'string')
-  );
-}
-
-export function isTrackedPlanData(value: unknown): value is TrackedPlanData {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  return (
-    typeof value.id === 'string' &&
-    typeof value.projectId === 'string' &&
-    typeof value.worktreeId === 'string' &&
-    isTrackedPlanSource(value.source) &&
-    (value.proposalChatId === undefined ||
-      (typeof value.proposalChatId === 'string' &&
-        value.proposalChatId.length > 0 &&
-        value.proposalChatId.length <= 256)) &&
-    typeof value.title === 'string' &&
-    typeof value.content === 'string' &&
-    isTrackedPlanReviewStatus(value.reviewStatus) &&
-    typeof value.createdAt === 'string' &&
-    typeof value.updatedAt === 'string' &&
-    typeof value.latestRevisionNumber === 'number' &&
-    (value.approvedAt === undefined || typeof value.approvedAt === 'string') &&
-    (value.dismissedAt === undefined ||
-      typeof value.dismissedAt === 'string') &&
-    Array.isArray(value.revisions) &&
-    value.revisions.every((revision) => isTrackedPlanRevisionData(revision)) &&
-    Array.isArray(value.linkedExecutionIds) &&
-    value.linkedExecutionIds.every((entry) => typeof entry === 'string') &&
-    (value.hidden === undefined || typeof value.hidden === 'boolean') &&
-    (value.diagrams === undefined || isPlanDiagramArtifacts(value.diagrams)) &&
-    (value.commentThreads === undefined ||
-      isPlanCommentThreadArray(value.commentThreads)) &&
-    (value.lastEditSource === undefined ||
-      value.lastEditSource === 'agent' ||
-      value.lastEditSource === 'pipeline') &&
-    (value.share === undefined || isTrackedPlanShareState(value.share)) &&
-    (value.sourceFilePath === undefined ||
-      typeof value.sourceFilePath === 'string') &&
-    (value.sourceRepoId === undefined || typeof value.sourceRepoId === 'string')
-  );
 }
 
 export function isTrackedPlansFile(value: unknown): value is TrackedPlansFile {

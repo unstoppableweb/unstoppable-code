@@ -2,10 +2,10 @@
 
 import { useId, type JSX, type ReactNode } from 'react';
 import { CloseMediumIcon } from '../icons/AppIcons';
-import { BusyLabel } from './BusyLabel';
-import { Button } from './Button';
+import { BusyLabel } from '../primitives/BusyLabel';
+import { Button } from '../primitives/Button';
 import { ComposerDrawerSection } from './ComposerDrawer';
-import { Notice, NoticeButton } from './Notice';
+import { Notice, NoticeButton } from '../primitives/Notice';
 
 /**
  * Where a tip sits. `inline` heads a page or panel body as its own card;

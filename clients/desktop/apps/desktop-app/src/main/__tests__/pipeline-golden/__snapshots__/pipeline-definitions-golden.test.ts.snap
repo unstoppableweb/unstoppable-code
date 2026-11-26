@@ -2047,6 +2047,7 @@ exports[`desktop IPC lists bundled, user and curated definitions and discovers p
             "plan_ready",
           ],
           "updatedAt": "<timestamp>",
+          "workflowPage": {},
         },
         {
           "createdAt": "<timestamp>",
@@ -2235,6 +2236,7 @@ exports[`desktop IPC refuses invalid definitions on save without persisting them
             "plan_ready",
           ],
           "updatedAt": "<timestamp>",
+          "workflowPage": {},
         },
         {
           "createdAt": "<timestamp>",
@@ -2254,6 +2256,7 @@ exports[`desktop IPC refuses invalid definitions on save without persisting them
             "dispatch",
           ],
           "updatedAt": "<timestamp>",
+          "workflowPage": {},
         },
         {
           "createdAt": "<timestamp>",
@@ -4450,22 +4453,8 @@ exports[`workflow trigger (CAN-5782) reads and lists a workflow pipeline 1`] = `
   "packagedShare": {
     "cloudRequests": [],
     "result": {
-      "blockers": [
-        "LOCAL_ONLY_PIPELINE_TRIGGER",
-      ],
-      "create": {
-        "error": "Workflows with a Workflow trigger can't be shared yet.",
-        "failure": {
-          "commitState": "not-committed",
-          "kind": "unavailable",
-          "message": "Workflows with a Workflow trigger can't be shared yet.",
-          "retryable": false,
-          "stage": "access",
-          "version": 1,
-        },
-        "success": false,
-      },
-      "state": "blocked",
+      "blockers": [],
+      "state": "ready",
     },
   },
   "setTriggerTypes": {
@@ -4492,15 +4481,18 @@ exports[`workflow trigger (CAN-5782) reads and lists a workflow pipeline 1`] = `
     },
   },
   "shareCreate": {
-    "cloudRequests": [],
+    "cloudRequests": [
+      "POST /api/v1/desktop-app/pipelines",
+    ],
     "result": {
-      "error": "Workflows with a Workflow trigger can't be shared yet.",
+      "error": "HTTP 404: Not found",
       "failure": {
         "commitState": "not-committed",
+        "httpStatus": 404,
         "kind": "unavailable",
-        "message": "Workflows with a Workflow trigger can't be shared yet.",
+        "message": "Not found",
         "retryable": false,
-        "stage": "access",
+        "stage": "publish",
         "version": 1,
       },
       "success": false,

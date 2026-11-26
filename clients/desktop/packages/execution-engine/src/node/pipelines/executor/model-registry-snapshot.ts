@@ -3,6 +3,7 @@ import {
   CODEX_MODELS,
   OLLAMA_MODELS,
   getConfiguredSupportedThinkingLevelsMap,
+  getConfiguredGatewayId,
   getGatewayModelEntries,
   getModelAliases,
 } from '../../../model-catalog';
@@ -38,6 +39,13 @@ export function buildModelRegistrySnapshot(): ModelRegistrySnapshot & {
       version: 1,
       claudeModels: [...CLAUDE_MODELS],
       codexModels: [...CODEX_MODELS],
+      // Policy identity must not depend on a live inference gateway route.
+      policyModelIds: Object.fromEntries(
+        [...CLAUDE_MODELS, ...CODEX_MODELS].map((model) => [
+          model,
+          getConfiguredGatewayId(model) ?? model,
+        ]),
+      ),
       ollamaModels: [...OLLAMA_MODELS],
       aiGatewayModels: gatewayRoutes
         .filter((route) => route.gatewayOnly)

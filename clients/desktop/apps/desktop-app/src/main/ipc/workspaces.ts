@@ -115,6 +115,7 @@ import {
   updateWorkspaceInstructions,
 } from '../canopy-runtime/workspace-instructions-dispatch';
 import { validateId } from '../lib/validation';
+import { assertWritableScope } from '../lib/read-only-scope';
 import { getCloneJobs } from '../services/clone-jobs-host';
 import {
   classifyGitHubAuthFailure,
@@ -1683,6 +1684,8 @@ export function registerWorkspaceHandlers(
       request: ArchiveWorkspaceWorktreeRequest,
     ): Promise<ArchiveWorktreeResponse> => {
       validateId(request.workspaceId, 'workspaceId');
+      // A read-only scope archives nothing, for every caller (CAN-7446).
+      assertWritableScope(request.workspaceId);
       validateId(request.worktreeId, 'worktreeId');
       if (request.remainingWorktreeOrder) {
         for (

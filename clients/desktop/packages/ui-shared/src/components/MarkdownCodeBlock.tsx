@@ -1,13 +1,13 @@
 'use client';
 
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import {
   type ComponentPropsWithoutRef,
   type JSX,
   type MouseEvent,
 } from 'react';
-import { copyTextToClipboard } from './CopyButton';
-import { Tooltip } from './Tooltip';
+import { copyTextToClipboard } from '../primitives/CopyButton';
+import { Tooltip } from '../primitives/Tooltip';
 import './markdown-overflow.css';
 
 const copiedTimers = new WeakMap<

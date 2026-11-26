@@ -41,7 +41,7 @@ export type PipelineNativeOwnerPreparation =
       }>;
     };
 
-function sameIdentity(
+export function samePipelineOwnerRunIdentity(
   left: PipelineOwnerRunIdentity,
   right: PipelineOwnerRunIdentity,
 ): boolean {
@@ -98,7 +98,8 @@ export function prepareNativePipelineOwnerRun(
   };
   const blockers: PipelineNativeAnswerBlocker[] = [];
   if (!configurationCurrent()) blockers.push('configuration-stale');
-  if (!sameIdentity(identity, proof.identity)) blockers.push('scope-mismatch');
+  if (!samePipelineOwnerRunIdentity(identity, proof.identity))
+    blockers.push('scope-mismatch');
   if (
     identity.owner !== 'personal' ||
     proof.policy !== 'account-independent-personal'

@@ -25,9 +25,14 @@ import {
   dataSharingOptInHeadline,
 } from '@canopy/ui-shared/components/DataSharingOptInCta';
 import {
+  CONTINUE_MENU_LABEL,
+  FAILED_TURN_COPY,
   FIRST_SEND_FAILED_CHOOSE_MODEL_LABEL,
   FIRST_SEND_FAILED_RETRY_LABEL,
+  NO_PROVIDER_COPY,
+  POLICY_ONLY_DEAD_END_COPY,
   continueWithLabel,
+  readyProviderMessage,
   resumeAtLabel,
   SWITCH_PROVIDER_LABEL,
   USAGE_LIMIT_RESUME_COPY,
@@ -316,9 +321,10 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         heading: 'Claude turn limit reached',
         message: 'Resume to continue where Claude left off.',
         actions: [
-          { label: 'Resume', variant: 'primary' },
           { label: 'Claude settings' },
+          { label: 'Resume', variant: 'primary' },
         ],
+        dismissible: true,
       },
       {
         id: 'usage-limit-scheduled',
@@ -340,7 +346,7 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         intent: 'attention',
         heading: 'Codex usage limit reached',
         message: usageLimitMessage('6:00 PM'),
-        detail: "Couldn't schedule the resume. Try again.",
+        detail: "Couldn't schedule the resume.",
         actions: [
           { label: resumeAtLabel('6:00 PM') },
           { label: SWITCH_PROVIDER_LABEL, variant: 'primary' },
@@ -444,21 +450,32 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
       {
         id: 'no-billing-source',
         title: 'No billing source: not connected',
-        note: 'The title names the missing half. Connect is the alternative; the one primary opens the provider list.',
+        note: 'Also a signed-out provider and a dispatch dead end: each says the chat needs a provider. Connect is the alternative; the one primary opens the provider list.',
         intent: 'attention',
-        heading: 'Not connected to Claude',
-        message: 'You have no credits to cover this chat either.',
+        heading: NO_PROVIDER_COPY.title,
+        message: NO_PROVIDER_COPY.message,
         actions: [
           { label: 'Connect Claude' },
           { label: SWITCH_PROVIDER_LABEL, variant: 'primary' },
         ],
       },
       {
+        id: 'no-billing-source-one-ready',
+        title: 'No billing source: one provider ready',
+        note: 'The message names the one ready source, as the Continue menu does.',
+        intent: 'attention',
+        heading: NO_PROVIDER_COPY.title,
+        message: readyProviderMessage(continueWithLabel('codex', 'Codex'), {
+          failedTurn: false,
+        }),
+        actions: [{ label: CONTINUE_MENU_LABEL, variant: 'primary' }],
+      },
+      {
         id: 'no-billing-source-runtime',
         title: 'No billing source: a send already failed',
         intent: 'attention',
-        heading: 'Message not sent',
-        message: "Your credits didn't cover that message.",
+        heading: FAILED_TURN_COPY.title,
+        message: FAILED_TURN_COPY.message,
         actions: [{ label: SWITCH_PROVIDER_LABEL, variant: 'primary' }],
       },
       {
@@ -466,9 +483,8 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         title: 'No billing source: org policy dead end',
         note: 'No button can help, so the message carries the next step.',
         intent: 'attention',
-        heading: 'No model available',
-        message:
-          "Your organization's model policy doesn't allow any model you can run right now, so ask your organization admin to allow a model you can use.",
+        heading: POLICY_ONLY_DEAD_END_COPY.title,
+        message: POLICY_ONLY_DEAD_END_COPY.message,
       },
       {
         id: 'no-billing-source-handoff',
@@ -492,7 +508,7 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         intent: 'neutral',
         icon: <TimeslotIcon size={16} aria-hidden="true" />,
         heading: 'No credits yet',
-        message: "If you've paid, they can take a minute to arrive.",
+        message: "If you've paid, they may still be on the way.",
         actions: [
           { label: 'Connect Claude instead' },
           { label: 'Reopen billing' },
@@ -506,7 +522,7 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         note: 'Says nothing about the balance; Check again is the retry.',
         intent: 'attention',
         heading: "Couldn't check your balance",
-        message: 'Try again in a moment.',
+        message: '',
         actions: [
           { label: 'Connect Claude instead' },
           { label: 'Check again', variant: 'primary' },
@@ -527,7 +543,7 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         note: 'Only for a chat that has no Using AI Credits card, such as a credits-only model without a provider sign-in.',
         intent: 'positive',
         heading: '16 AI Credits added.',
-        message: 'You can send it now.',
+        message: 'Send your message now.',
         dismissible: true,
       },
       {
@@ -558,7 +574,7 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         title: 'Transient provider error: retrying',
         note: 'Live countdown from the shared RetryCountdown.',
         intent: 'attention',
-        heading: 'Temporary provider error',
+        heading: "Claude didn't respond",
         message: (
           <RetryCountdown
             attempt={2}
@@ -573,7 +589,7 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         id: 'transient-retry-exhausted',
         title: 'Transient provider error: gave up',
         intent: 'attention',
-        heading: 'Temporary provider error',
+        heading: "Claude didn't respond",
         message: (
           <RetryCountdown
             attempt={5}
@@ -588,28 +604,28 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         id: 'gateway-key-missing',
         title: 'AI gateway: key missing',
         intent: 'attention',
-        heading: 'Gateway key needed',
+        heading: 'Your AI gateway needs a key',
         message:
           'Acme routes your agents through its own AI gateway, so add your gateway key to send this.',
-        actions: [{ label: 'Add your gateway key', variant: 'primary' }],
+        actions: [{ label: 'Add gateway key', variant: 'primary' }],
       },
       {
         id: 'gateway-key-stale',
         title: 'AI gateway: endpoint moved',
         intent: 'attention',
-        heading: 'Gateway endpoint changed',
+        heading: 'Your AI gateway moved',
         message:
           'Acme moved its AI gateway, so add a key for the new one to send this.',
-        actions: [{ label: 'Add your gateway key', variant: 'primary' }],
+        actions: [{ label: 'Add gateway key', variant: 'primary' }],
       },
       {
         id: 'gateway-key-rejected',
         title: 'AI gateway: key rejected',
         intent: 'attention',
-        heading: 'Gateway key rejected',
+        heading: 'Your AI gateway rejected your key',
         message:
-          "Acme didn't accept your gateway key, so paste a current one or ask your admin for a new key.",
-        actions: [{ label: 'Add your gateway key', variant: 'primary' }],
+          "Acme didn't accept your gateway key, so paste a current one or ask an org admin for a new key.",
+        actions: [{ label: 'Add gateway key', variant: 'primary' }],
       },
       {
         id: 'approvals-upgrade',
@@ -760,6 +776,7 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         heading: 'No response for 6 minutes',
         message: 'The agent might be stuck.',
         actions: [{ label: 'Check status' }],
+        dismissible: true,
       },
       {
         id: 'stuck-agent-checked',
@@ -845,20 +862,11 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         id: 'proxy-error-no-response',
         title: "Proxy error: provider didn't respond",
         intent: 'attention',
-        heading: "The AI provider didn't respond",
-        message: (
-          <>
-            {brand} tried a few times and couldn&apos;t reach the AI provider.
-            This usually clears up quickly, so send your message again in a
-            moment.{' '}
-            <span className="whitespace-nowrap">
-              Error id{' '}
-              <span className="font-mono select-all">req_8f3a2c9e1b</span>
-            </span>
-          </>
-        ),
+        // The shared catalog's words, which the live notice renders.
+        heading: "The service didn't respond",
+        message: 'It may be busy; try again in a moment.',
         actions: [
-          { label: 'Copy id' },
+          { label: 'Copy details' },
           { label: 'Try again', variant: 'primary' },
         ],
       },
@@ -1186,8 +1194,9 @@ export const NOTICE_GALLERY_SECTIONS: readonly NoticeGallerySection[] = [
         title: 'Account: saved sign-in unreadable',
         note: 'The reset is destructive, so it stays secondary; the confirmation dialog carries the weight.',
         intent: 'attention',
-        heading: 'Saved sign-in can’t be read',
-        message: `Another desktop build may have used the same ${brand} Cloud secure storage; reset it to sign in again.`,
+        heading: "Saved sign-in can't be read",
+        message:
+          'Another copy of the app may have changed it. Reset it to sign in again.',
         actions: [{ label: 'Reset saved sign-in' }],
       },
       {

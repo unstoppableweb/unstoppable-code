@@ -1,11 +1,10 @@
 import { z } from 'zod';
 
-import { MAX_SHARED_COLLECTION_BYTES } from '../../../collections';
-import { MAX_SHARED_SKILL_BYTES } from '../../../skills';
 import { CanopyRequestMetadataSchema } from '../../common';
 import {
   CatalogCollectionEntryIdSchema,
   CatalogCollectionPackageRefSchema,
+  CatalogCollectionShareDocumentSchema,
   CatalogSharedCollectionHashSchema,
   CatalogSharedCollectionIdSchema,
 } from './collection-entries';
@@ -24,25 +23,6 @@ const IdSchema = z.string().min(1).max(512);
 const TimestampSchema = z.iso.datetime({ offset: true });
 const KeyedMetaSchema = CanopyRequestMetadataSchema.extend({
   idempotencyKey: IdSchema,
-});
-
-/**
- * The collection document the caller built, as the share channels send it
- * today: the raw document bytes the hosted service hashes, and the inline
- * custom skills its draft items name.
- */
-export const CatalogCollectionShareDocumentSchema = z.strictObject({
-  rawCollection: z.string().min(1).max(MAX_SHARED_COLLECTION_BYTES),
-  customSkills: z
-    .array(
-      z.strictObject({
-        clientKey: IdSchema,
-        name: IdSchema,
-        rawSkill: z.string().min(1).max(MAX_SHARED_SKILL_BYTES),
-      }),
-    )
-    .max(1024)
-    .optional(),
 });
 
 /**

@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 import type { SubagentNode, SubagentTree } from '@canopy/agent-transcript';
-import { Button } from '../../../Button';
+import { Button } from '../../../../primitives/Button';
 import { ArrowUpRightIcon } from '../../../../icons/AppIcons';
 import {
   SubagentWorkflowMark,
@@ -17,7 +17,7 @@ import {
   subagentWorkflowUsageLabel,
 } from '../subagent-copy';
 import { REPLAY_MASK_CLASS } from '../../../../lib/replay-privacy';
-import { Fact, FactList } from '../../../FactList';
+import { Fact, FactList } from '../../../../primitives/FactList';
 
 export interface SubagentWorkflowDetailsProps {
   readonly tree: SubagentTree;

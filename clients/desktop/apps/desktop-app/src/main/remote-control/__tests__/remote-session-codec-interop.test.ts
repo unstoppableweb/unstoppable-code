@@ -21,8 +21,13 @@ import {
   serializeV8,
 } from '@canopy/remote-session';
 import {
+  deflateSmallMessage,
   encodeMessage as desktopEncodeMessage,
+  fragmentPayload,
   MessageAssembler as DesktopMessageAssembler,
+  serializeMessage as desktopSerializeMessage,
+  SYNC_CODEC_BYTES,
+  wantsCompression,
 } from '../transport/message-codec';
 import { SecureChannel as DesktopSecureChannel } from '../crypto/secure-channel';
 import {
@@ -382,7 +387,7 @@ describe('message codec interop with the desktop', () => {
         const expected = plain(deserialize(serialize(envelope)));
         const portableFragments = await encodeMessage(envelope);
         expect(plain(desktopDecode(portableFragments))).toEqual(expected);
-        const desktopFragments = desktopEncodeMessage(envelope);
+        const desktopFragments = await desktopEncodeMessage(envelope);
         expect(plain(await portableDecode(desktopFragments))).toEqual(expected);
         expect(plain(await portableDecode(portableFragments))).toEqual(
           expected,
@@ -403,7 +408,7 @@ describe('message codec interop with the desktop', () => {
     ]) {
       const value = messageOfSerializedSize(size);
       const portable = await encodeMessage(value);
-      const desktop = desktopEncodeMessage(value);
+      const desktop = await desktopEncodeMessage(value);
       expect(portable).toHaveLength(desktop.length);
       portable.forEach((fragment, index) => {
         expectSameBytes(
@@ -449,10 +454,85 @@ describe('message codec interop with the desktop', () => {
       fragments.reduce((sum, fragment) => sum + fragment.byteLength, 0),
     ).toBeLessThan(serializeMessage(large).byteLength);
     expect(desktopDecode(fragments)).toEqual(large);
-    expect(await portableDecode(desktopEncodeMessage(large))).toEqual(large);
+    expect(await portableDecode(await desktopEncodeMessage(large))).toEqual(
+      large,
+    );
     const incompressible = new Uint8Array(randomBytes(20_000));
     const raw = await encodeMessage(incompressible);
     expect((raw[0]?.[0] ?? 0) & FRAGMENT_FLAG_COMPRESSED).toBe(0);
+  });
+
+  it('writes the same bytes as a desktop on the previous release, and reads them', async () => {
+    // The previous release deflated synchronously (level 1) before it split
+    // the message (CAN-7764 moved deflate of messages over 32 KiB to the
+    // thread pool). Both deflate paths must stay byte-compatible with it,
+    // and read what it wrote.
+    const previousRelease = (value: unknown): Buffer[] => {
+      const serialized = serialize(value);
+      const deflated =
+        serialized.byteLength >= 8 * 1024
+          ? deflateRawSync(serialized, { level: 1 })
+          : null;
+      const compressed =
+        deflated !== null && deflated.byteLength < serialized.byteLength;
+      const payload = compressed ? deflated : serialized;
+      const fragments: Buffer[] = [];
+      let offset = 0;
+      do {
+        const end = Math.min(offset + MAX_FRAGMENT_BYTES, payload.byteLength);
+        const flags =
+          (end === payload.byteLength ? FRAGMENT_FLAG_FINAL : 0) |
+          (compressed ? FRAGMENT_FLAG_COMPRESSED : 0);
+        fragments.push(
+          Buffer.concat([Buffer.from([flags]), payload.subarray(offset, end)]),
+        );
+        offset = end;
+      } while (offset < payload.byteLength);
+      return fragments;
+    };
+    // What SecureSession does on main for a message up to SYNC_CODEC_BYTES.
+    const sessionSend = (value: unknown): Buffer[] => {
+      const serialized = desktopSerializeMessage(value);
+      expect(serialized.byteLength).toBeLessThanOrEqual(SYNC_CODEC_BYTES);
+      const deflated = wantsCompression(serialized)
+        ? deflateSmallMessage(serialized)
+        : null;
+      return deflated === null
+        ? fragmentPayload(serialized, false)
+        : fragmentPayload(deflated, true);
+    };
+    const expectSameFragments = (
+      current: Buffer[],
+      previous: Buffer[],
+    ): void => {
+      expect(current).toHaveLength(previous.length);
+      current.forEach((fragment, index) => {
+        expectSameBytes(
+          `fragment ${index}`,
+          fragment,
+          previous[index] ?? new Uint8Array(0),
+        );
+      });
+    };
+    const small = [
+      { small: true },
+      { log: 'line of log output\n'.repeat(500) },
+      { log: 'line of log output\n'.repeat(1_700) },
+      new Uint8Array(randomBytes(30_000)),
+    ];
+    for (const value of small) {
+      const previous = previousRelease(value);
+      expectSameFragments(sessionSend(value), previous);
+    }
+    for (const value of [
+      ...small,
+      { log: 'line of log output\n'.repeat(200_000) },
+      new Uint8Array(randomBytes(3 * MAX_FRAGMENT_BYTES)),
+    ]) {
+      const previous = previousRelease(value);
+      expectSameFragments(await desktopEncodeMessage(value), previous);
+      expect(plain(desktopDecode(previous))).toEqual(plain(value));
+    }
   });
 
   it('enforces the message limit while accumulating and inflating', async () => {
@@ -498,9 +578,9 @@ describe('message codec interop with the desktop', () => {
         serializeMessage('x'.repeat(2_000), { maxMessageBytes: 1_000 }),
       ),
     ).toBe('too_large');
-    expect(() =>
+    await expect(
       desktopEncodeMessage('x'.repeat(2_000), { maxMessageBytes: 1_000 }),
-    ).toThrow('too large');
+    ).rejects.toThrow('too large');
   });
 
   it('rejects malformed fragments and messages with typed errors', async () => {

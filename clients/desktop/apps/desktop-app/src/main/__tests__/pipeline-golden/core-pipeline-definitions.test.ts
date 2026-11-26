@@ -21,6 +21,7 @@ import {
   PIPELINE_GRANTS,
   type CanopyCallerDescriptor,
   type PipelineDefinition,
+  type PipelineDefinitionDuplicateResult,
   type PipelineDefinitionListResult,
   type PipelineDefinitionUpsertParams,
 } from '@canopy/protocol/canopy-core';
@@ -32,7 +33,11 @@ import {
   deleteStoredPipeline,
   getStoredPipelineText,
   listStoredPipelines,
+  pipelineDefinitionStore,
+  updateStoredPipeline,
 } from '@canopy/execution-engine/pipelines/store';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
+import * as atomicFile from '@canopy/execution-engine/node/lib/atomic-file';
 import {
   getUserPipelineIndexPath,
   getUserPipelinesDir,
@@ -920,8 +925,8 @@ describe('a resent create after a lost replay receipt (CAN-7497)', () => {
     }
   });
 
-  // The copy installs the package's bytes, then records the package install:
-  // a crash between the two leaves the copy without its record.
+  // An older build put a copy's package bytes in place, then recorded its
+  // install: a crash between the two left the copy without its record.
   it('finishes a resent copy of a package-installed workflow whose install record was never saved', async () => {
     const sourceId = await world.saveUserPipeline(
       [
@@ -1114,8 +1119,8 @@ describe('a resent create after a lost replay receipt (CAN-7497)', () => {
     }
   });
 
-  // The copy saves core's own document first and puts the package's bytes in
-  // place after it: a crash between the two leaves core's document.
+  // An older build saved core's own document first and put the package's
+  // bytes in place after it: a crash between the two left core's document.
   it('finishes a resent copy of a package-installed workflow whose package bytes were never written', async () => {
     const installs = getPipelinePackageInstallStorePath();
     const sourceId = await world.saveUserPipeline(
@@ -1328,5 +1333,609 @@ describe('a resent create after a lost replay receipt (CAN-7497)', () => {
       for (const id of [sourceId, ...created])
         await removePipelinePackageInstall(installs, id);
     }
+  });
+
+  // CAN-7590: a package-installed copy is recorded before it commits, and
+  // commits the package's own bytes in one durable store write under the
+  // cross-process writer lock, so nothing writes the copy after its commit.
+  describe('a package-installed copy commits in one step (CAN-7590)', () => {
+    const lockPath = (): string =>
+      join(getCanopyDataDir(), 'locks', 'pipeline-definitions', 'writer.lock');
+    const recordsOf = async (
+      id: string,
+    ): ReturnType<typeof listPipelinePackageInstalls> =>
+      (
+        await listPipelinePackageInstalls(getPipelinePackageInstallStorePath())
+      ).filter((install) => install.localPipelineId === id);
+    const copyOf = (
+      sourceId: string,
+      idempotencyKey: string,
+      { loseReceipts = false } = {},
+    ): Promise<PipelineDefinitionDuplicateResult> =>
+      writes({ loseReceipts }).instruction(
+        'core.pipeline.definition.duplicate',
+        { sourceDefinitionId: sourceId, scope: {}, _meta: { idempotencyKey } },
+        { caller: writer, metadata: { idempotencyKey } },
+      );
+    /** Every durable write of a user document, and whether the lock was held. */
+    function documentWrites(): {
+      file: string;
+      data: string;
+      locked: boolean;
+    }[] {
+      const real = atomicFile.writeFileAtomicallySync;
+      const seen: { file: string; data: string; locked: boolean }[] = [];
+      jest
+        .spyOn(atomicFile, 'writeFileAtomicallySync')
+        .mockImplementation((file, data, options) => {
+          seen.push({
+            file: String(file),
+            data: String(data),
+            locked: existsSync(lockPath()),
+          });
+          return real(file, data, options);
+        });
+      return seen;
+    }
+    // A copy an older build left at core's document with no install record.
+    async function oldOrderCopy(
+      name: string,
+      idempotencyKey: string,
+    ): Promise<{
+      sourceId: string;
+      sourceText: string;
+      copyId: string;
+      revision: number;
+    }> {
+      const sourceId = await world.saveUserPipeline(
+        [
+          'pipeline:',
+          `  name: ${name}`,
+          '  on: { dispatch: {} }',
+          '  jobs:',
+          '    run:',
+          '      steps:',
+          '        - run: echo packaged',
+          '',
+        ].join('\n'),
+        `pipeline:${name.toLowerCase().replaceAll(' ', '-')}`,
+      );
+      created.push(sourceId);
+      const first = await copyOf(sourceId, idempotencyKey, {
+        loseReceipts: true,
+      });
+      const copyId = first.definition.definitionId;
+      created.push(copyId);
+      const sourceText = getStoredPipelineText(sourceId).data ?? '';
+      await upsertPipelinePackageInstall(getPipelinePackageInstallStorePath(), {
+        localPipelineId: sourceId,
+        originExternalId: 'golden-packaged-remote',
+        pipelineContentHash: hashPipelinePackageYaml(sourceText),
+        distributionMode: 'package',
+        packageDigest: `pp:v1:${'a'.repeat(43)}`,
+        installedAt: new Date().toISOString(),
+      });
+      expect(getStoredPipelineText(copyId).data).not.toBe(sourceText);
+      return {
+        sourceId,
+        sourceText,
+        copyId,
+        revision: first.definition.revision,
+      };
+    }
+    afterEach(async () => {
+      jest.restoreAllMocks();
+      for (const id of created)
+        await removePipelinePackageInstall(
+          getPipelinePackageInstallStorePath(),
+          id,
+        );
+    });
+
+    it('records the copy before it commits, then commits the package bytes once, durably and under the writer lock', async () => {
+      const { sourceId, sourceText } = await packagedSource(
+        'Golden packaged source single step',
+        'pipeline:packaged-source-single-step',
+      );
+      const before = userIds();
+      const original = packageService.copyPackageInstall;
+      let entered: () => void = () => undefined;
+      const recording = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let release: () => void = () => undefined;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      jest
+        .spyOn(packageService, 'copyPackageInstall')
+        .mockImplementationOnce(async (from, to) => {
+          entered();
+          await released;
+          return original(from, to);
+        });
+      const seen = documentWrites();
+      const pending = copyOf(sourceId, 'single-step-copy');
+      await recording;
+      // Paused while its record is written, there is no copy for a crash to
+      // leave behind, or for another process to edit.
+      expect(userIds()).toEqual(before);
+      release();
+      const copied = await pending;
+      const copyId = copied.definition.definitionId;
+      created.push(copyId);
+      expect(
+        seen
+          .filter((write) => write.file.endsWith(`/${copyId}.yaml`))
+          .map(({ data, locked }) => ({ data, locked })),
+      ).toEqual([{ data: sourceText, locked: true }]);
+      expect(getStoredPipelineText(copyId).data).toBe(sourceText);
+      expect(copied.definition.document).toBe(sourceText);
+      expect(await recordsOf(copyId)).toEqual([
+        expect.objectContaining({
+          pipelineContentHash: hashPipelinePackageYaml(sourceText),
+        }),
+      ]);
+    });
+
+    it('completes a copy abandoned after its install record and before its commit when resent with the same key', async () => {
+      const { sourceId, sourceText } = await packagedSource(
+        'Golden packaged source abandoned',
+        'pipeline:packaged-source-abandoned',
+      );
+      const before = userIds();
+      const installs = getPipelinePackageInstallStorePath();
+      let atCommit: { id: string; installs: string } | undefined;
+      const commit = jest
+        .spyOn(pipelineDefinitionStore, 'writeStoredPipeline')
+        .mockImplementationOnce((_input, options) => {
+          atCommit = {
+            id: options?.createId ?? '',
+            installs: readFileSync(installs, 'utf8'),
+          };
+          throw new Error('the process ended before the commit');
+        });
+      await expect(
+        copyOf(sourceId, 'abandoned-copy', { loseReceipts: true }),
+      ).rejects.toBeDefined();
+      // The crash landed once, on the copy's own commit,
+      expect(commit).toHaveBeenCalledTimes(1);
+      const copyId = atCommit?.id ?? '';
+      expect(copyId).toMatch(/\S/);
+      expect(copyId).not.toBe(sourceId);
+      expect(commit.mock.calls[0]?.[1]?.createId).toBe(copyId);
+      // after its install record,
+      expect(atCommit?.installs).toMatch(
+        new RegExp(`"localPipelineId"\\s*:\\s*"${copyId}"`),
+      );
+      created.push(copyId);
+      // A crash runs no rollback: the install store is left as the commit
+      // found it, holding the copy's record.
+      writeFileSync(installs, atCommit?.installs ?? '');
+      expect(userIds()).toEqual(before);
+      // and before it: the copy has no document yet.
+      expect(getStoredPipelineText(copyId).data).toBeUndefined();
+      expect(await recordsOf(copyId)).toHaveLength(1);
+      const resent = await copyOf(sourceId, 'abandoned-copy');
+      expect(resent.definition.definitionId).toBe(copyId);
+      expect(getStoredPipelineText(copyId).data).toBe(sourceText);
+      expect(await recordsOf(copyId)).toHaveLength(1);
+      expect(userIds()).toHaveLength(before.length + 1);
+    });
+
+    it('finishes a copy an older build left without its package bytes by rewriting it through the store, then recording it', async () => {
+      const { sourceId, sourceText, copyId, revision } = await oldOrderCopy(
+        'Golden packaged source old order',
+        'old-order-copy',
+      );
+      const seen = documentWrites();
+      const resent = await copyOf(sourceId, 'old-order-copy');
+      expect(resent.definition.definitionId).toBe(copyId);
+      expect(
+        seen
+          .filter((write) => write.file.endsWith(`/${copyId}.yaml`))
+          .map(({ data, locked }) => ({ data, locked })),
+      ).toEqual([{ data: sourceText, locked: true }]);
+      expect(resent.definition.revision).toBeGreaterThan(revision);
+      expect(getStoredPipelineText(copyId).data).toBe(sourceText);
+      expect(await recordsOf(copyId)).toHaveLength(1);
+    });
+
+    it('refuses to finish such a copy when another process edits it during the repair, keeping the edit', async () => {
+      const { sourceId, copyId } = await oldOrderCopy(
+        'Golden packaged source edited elsewhere',
+        'old-order-copy-edited',
+      );
+      const real = pipelineDefinitionStore.writeStoredPipeline;
+      let editText: string | undefined;
+      // Another process commits an edit after the repair read the copy and
+      // before its write, as the CLI can under the same lock.
+      const repair = jest
+        .spyOn(pipelineDefinitionStore, 'writeStoredPipeline')
+        .mockImplementationOnce((input, options) => {
+          const edited = updateStoredPipeline(copyId, {
+            name: 'Golden edited elsewhere',
+            description: '',
+            icon: '',
+            content: {
+              name: 'Golden edited elsewhere',
+              on: { dispatch: {} },
+              jobs: { run: { steps: [{ id: 'echo', run: 'echo elsewhere' }] } },
+            },
+          });
+          expect(edited.success).toBe(true);
+          editText = getStoredPipelineText(copyId).data;
+          return real(input, options);
+        });
+      await expect(
+        copyOf(sourceId, 'old-order-copy-edited'),
+      ).rejects.toMatchObject({ payload: { kind: 'conflict' } });
+      // The edit landed once, on the repair's own write of the copy.
+      expect(repair).toHaveBeenCalledTimes(1);
+      expect(repair.mock.calls[0]?.[0]?.id).toBe(copyId);
+      expect(repair.mock.calls[0]?.[1]?.requireExisting).toBe(true);
+      expect(editText).toBeDefined();
+      expect(getStoredPipelineText(copyId).data).toBe(editText);
+      // The record written before the repair doesn't pin the edit, so
+      // execution drops it.
+      expect(await pins(copyId)).not.toBe('pins');
+    });
+
+    /** Whether the copy's record, if any, pins the bytes it holds. */
+    async function pins(
+      copyId: string,
+    ): Promise<'no record' | 'pins' | 'mismatch'> {
+      const [record] = await recordsOf(copyId);
+      if (!record) return 'no record';
+      return record.pipelineContentHash ===
+        hashPipelinePackageYaml(getStoredPipelineText(copyId).data ?? '')
+        ? 'pins'
+        : 'mismatch';
+    }
+    /** The package moves on: new source bytes, and a record pinning them. */
+    async function updateSourcePackage(
+      sourceId: string,
+      run: string,
+    ): Promise<string> {
+      const edited = updateStoredPipeline(sourceId, {
+        name: 'Golden updated source',
+        description: '',
+        icon: '',
+        content: {
+          name: 'Golden updated source',
+          on: { dispatch: {} },
+          jobs: { run: { steps: [{ id: 'echo', run }] } },
+        },
+      });
+      expect(edited.success).toBe(true);
+      const sourceText = getStoredPipelineText(sourceId).data ?? '';
+      await upsertPipelinePackageInstall(getPipelinePackageInstallStorePath(), {
+        localPipelineId: sourceId,
+        originExternalId: 'golden-packaged-remote',
+        pipelineContentHash: hashPipelinePackageYaml(sourceText),
+        distributionMode: 'package',
+        packageDigest: `pp:v1:${'a'.repeat(43)}`,
+        installedAt: new Date().toISOString(),
+      });
+      return sourceText;
+    }
+    const outcomeOf = (request: Promise<unknown>): Promise<unknown> =>
+      request.then(
+        (result) => result,
+        (error: unknown) => error,
+      );
+    const RETRYABLE = {
+      payload: { kind: 'unavailable', retry: { kind: 'same_idempotency_key' } },
+    };
+
+    // The repair records the copy first, then writes the bytes that record
+    // pins, so a package update anywhere in it never leaves a copy whose
+    // record and bytes disagree once it answers.
+    it('finishes consistently when the package updates while the copy is recorded', async () => {
+      const { sourceId, copyId } = await oldOrderCopy(
+        'Golden packaged source updated while recorded',
+        'old-order-copy-updated',
+      );
+      const original = packageService.copyPackageInstall;
+      let updated = '';
+      jest
+        .spyOn(packageService, 'copyPackageInstall')
+        .mockImplementationOnce(async (from, to) => {
+          updated = await updateSourcePackage(sourceId, 'echo updated');
+          return original(from, to);
+        });
+      await expect(
+        copyOf(sourceId, 'old-order-copy-updated'),
+      ).resolves.toMatchObject({ definition: { definitionId: copyId } });
+      expect(getStoredPipelineText(copyId).data).toBe(updated);
+      expect(await pins(copyId)).toBe('pins');
+      await expect(
+        copyOf(sourceId, 'old-order-copy-updated'),
+      ).resolves.toMatchObject({ definition: { definitionId: copyId } });
+      expect(await pins(copyId)).toBe('pins');
+    });
+
+    it('repairs a copy a crash left recorded but holding core’s document', async () => {
+      const { sourceId, copyId } = await oldOrderCopy(
+        'Golden packaged source crashed while repaired',
+        'old-order-copy-crashed',
+      );
+      const sourceText = getStoredPipelineText(sourceId).data ?? '';
+      // The record is written and the process ends before the bytes.
+      await packageService.copyPackageInstall(sourceId, copyId);
+      expect(await pins(copyId)).toBe('mismatch');
+      await expect(
+        copyOf(sourceId, 'old-order-copy-crashed'),
+      ).resolves.toMatchObject({ definition: { definitionId: copyId } });
+      expect(getStoredPipelineText(copyId).data).toBe(sourceText);
+      expect(await pins(copyId)).toBe('pins');
+    });
+
+    it('refuses a repair whose write fails after the record, and the next resend repairs it', async () => {
+      const { sourceId, copyId } = await oldOrderCopy(
+        'Golden packaged source failed while repaired',
+        'old-order-copy-failed',
+      );
+      const sourceText = getStoredPipelineText(sourceId).data ?? '';
+      const repair = jest
+        .spyOn(pipelineDefinitionStore, 'writeStoredPipeline')
+        .mockImplementationOnce(() => {
+          throw new Error('The disk is full.');
+        });
+      await expect(
+        copyOf(sourceId, 'old-order-copy-failed'),
+      ).rejects.toBeDefined();
+      // The failure landed once, on the repair's own write of the copy.
+      expect(repair).toHaveBeenCalledTimes(1);
+      expect(repair.mock.calls[0]?.[0]?.id).toBe(copyId);
+      expect(repair.mock.calls[0]?.[1]?.requireExisting).toBe(true);
+      expect(await pins(copyId)).toBe('mismatch');
+      jest.restoreAllMocks();
+      await expect(
+        copyOf(sourceId, 'old-order-copy-failed'),
+      ).resolves.toMatchObject({ definition: { definitionId: copyId } });
+      expect(getStoredPipelineText(copyId).data).toBe(sourceText);
+      expect(await pins(copyId)).toBe('pins');
+    });
+
+    it('takes back the record when the package moves after the copy is recorded, leaving a plain copy', async () => {
+      const { sourceId, copyId } = await oldOrderCopy(
+        'Golden packaged source moving',
+        'old-order-copy-moving',
+      );
+      const serialized = getStoredPipelineText(copyId).data;
+      const original = packageService.copyPackageInstall;
+      // The package moves after the copy is recorded, before its bytes.
+      jest
+        .spyOn(packageService, 'copyPackageInstall')
+        .mockImplementationOnce(async (from, to) => {
+          await original(from, to);
+          await updateSourcePackage(sourceId, 'echo second');
+        });
+      await expect(
+        outcomeOf(copyOf(sourceId, 'old-order-copy-moving')),
+      ).resolves.toMatchObject(RETRYABLE);
+      expect(getStoredPipelineText(copyId).data).toBe(serialized);
+      expect(await pins(copyId)).toBe('no record');
+      jest.restoreAllMocks();
+      // The source has changed since the copy, so a resend is refused as a
+      // conflict, as before this change; the copy stays a plain copy.
+      await updateSourcePackage(sourceId, 'echo third');
+      await expect(
+        copyOf(sourceId, 'old-order-copy-moving'),
+      ).rejects.toMatchObject({ payload: { kind: 'conflict' } });
+      expect(getStoredPipelineText(copyId).data).toBe(serialized);
+      expect(await pins(copyId)).toBe('no record');
+    });
+
+    it('still refuses when taking back the record fails, leaving a record execution drops', async () => {
+      const { sourceId, copyId } = await oldOrderCopy(
+        'Golden packaged source moving undo fails',
+        'old-order-copy-undo-fails',
+      );
+      const serialized = getStoredPipelineText(copyId).data;
+      const original = packageService.copyPackageInstall;
+      jest
+        .spyOn(packageService, 'copyPackageInstall')
+        .mockImplementationOnce(async (from, to) => {
+          await original(from, to);
+          await updateSourcePackage(sourceId, 'echo moved');
+        });
+      jest
+        .spyOn(packageService, 'removePackageInstall')
+        .mockRejectedValueOnce(new Error('The install store is unavailable.'));
+      await expect(
+        outcomeOf(copyOf(sourceId, 'old-order-copy-undo-fails')),
+      ).resolves.toMatchObject(RETRYABLE);
+      // The record no longer pins the copy, so execution drops it.
+      expect(getStoredPipelineText(copyId).data).toBe(serialized);
+      expect(await pins(copyId)).toBe('mismatch');
+    });
+
+    // Execution removes an install record that doesn't match its document,
+    // and can run while a copy is recorded but its bytes aren't in place: a
+    // copy or repair whose record is gone once its bytes land is refused for
+    // a retry, never answered.
+    const racingRun = async (copyId: string): Promise<void> => {
+      await packageService
+        .resolveInstalledPipelinePackageForExecution(copyId)
+        .catch(() => undefined);
+    };
+    /** Removes the copy's record once its package bytes are in place. */
+    function removeRecordOnceBytesLand(copyId: string, bytes: string): void {
+      const original = packageService.listPackageInstalls;
+      let removed = false;
+      jest
+        .spyOn(packageService, 'listPackageInstalls')
+        .mockImplementation(async () => {
+          if (!removed && getStoredPipelineText(copyId).data === bytes) {
+            removed = true;
+            await packageService.removePackageInstall(copyId);
+          }
+          return original();
+        });
+    }
+
+    it('refuses a repair whose record a run removes before its bytes, and the next resend finishes it', async () => {
+      const { sourceId, sourceText, copyId } = await oldOrderCopy(
+        'Golden packaged source run before bytes',
+        'old-order-copy-run-before-bytes',
+      );
+      const original = packageService.copyPackageInstall;
+      jest
+        .spyOn(packageService, 'copyPackageInstall')
+        .mockImplementationOnce(async (from, to) => {
+          await original(from, to);
+          await racingRun(to);
+        });
+      await expect(
+        outcomeOf(copyOf(sourceId, 'old-order-copy-run-before-bytes')),
+      ).resolves.toMatchObject(RETRYABLE);
+      expect(await pins(copyId)).toBe('no record');
+      jest.restoreAllMocks();
+      await expect(
+        copyOf(sourceId, 'old-order-copy-run-before-bytes'),
+      ).resolves.toMatchObject({ definition: { definitionId: copyId } });
+      expect(getStoredPipelineText(copyId).data).toBe(sourceText);
+      expect(await pins(copyId)).toBe('pins');
+    });
+
+    it('refuses a repair whose record is removed as its bytes land, and the next resend records it without another write', async () => {
+      const { sourceId, sourceText, copyId } = await oldOrderCopy(
+        'Golden packaged source removed as bytes land',
+        'old-order-copy-removed-as-bytes-land',
+      );
+      removeRecordOnceBytesLand(copyId, sourceText);
+      await expect(
+        outcomeOf(copyOf(sourceId, 'old-order-copy-removed-as-bytes-land')),
+      ).resolves.toMatchObject(RETRYABLE);
+      expect(getStoredPipelineText(copyId).data).toBe(sourceText);
+      expect(await pins(copyId)).toBe('no record');
+      jest.restoreAllMocks();
+      const seen = documentWrites();
+      await expect(
+        copyOf(sourceId, 'old-order-copy-removed-as-bytes-land'),
+      ).resolves.toMatchObject({ definition: { definitionId: copyId } });
+      expect(
+        seen.filter((write) => write.file.endsWith(`/${copyId}.yaml`)),
+      ).toEqual([]);
+      expect(await pins(copyId)).toBe('pins');
+    });
+
+    it('ends consistent after runs race two resends, with the last one writing nothing', async () => {
+      const { sourceId, sourceText, copyId } = await oldOrderCopy(
+        'Golden packaged source raced twice',
+        'old-order-copy-raced-twice',
+      );
+      const original = packageService.copyPackageInstall;
+      jest
+        .spyOn(packageService, 'copyPackageInstall')
+        .mockImplementationOnce(async (from, to) => {
+          await original(from, to);
+          await racingRun(to);
+        });
+      await expect(
+        outcomeOf(copyOf(sourceId, 'old-order-copy-raced-twice')),
+      ).resolves.toMatchObject(RETRYABLE);
+      jest.restoreAllMocks();
+      removeRecordOnceBytesLand(copyId, sourceText);
+      await expect(
+        outcomeOf(copyOf(sourceId, 'old-order-copy-raced-twice')),
+      ).resolves.toMatchObject(RETRYABLE);
+      jest.restoreAllMocks();
+      const seen = documentWrites();
+      await expect(
+        copyOf(sourceId, 'old-order-copy-raced-twice'),
+      ).resolves.toMatchObject({ definition: { definitionId: copyId } });
+      expect(
+        seen.filter((write) => write.file.endsWith(`/${copyId}.yaml`)),
+      ).toEqual([]);
+      expect(getStoredPipelineText(copyId).data).toBe(sourceText);
+      expect(await pins(copyId)).toBe('pins');
+    });
+
+    it('rolls a copy back when a run removes its record before the commit, and a run during the rollback undoes none of it', async () => {
+      const { sourceId, sourceText } = await packagedSource(
+        'Golden packaged source run before commit',
+        'pipeline:packaged-source-run-before-commit',
+      );
+      const before = userIds();
+      const copyInstall = packageService.copyPackageInstall;
+      const removeInstall = packageService.removePackageInstall;
+      let copyId = '';
+      jest
+        .spyOn(packageService, 'copyPackageInstall')
+        .mockImplementationOnce(async (from, to) => {
+          copyId = to;
+          await copyInstall(from, to);
+          await racingRun(to);
+        });
+      jest
+        .spyOn(packageService, 'removePackageInstall')
+        .mockImplementationOnce(async (id) => {
+          await Promise.all([racingRun(id), removeInstall(id)]);
+        });
+      await expect(
+        outcomeOf(copyOf(sourceId, 'normal-copy-run-before-commit')),
+      ).resolves.toMatchObject(RETRYABLE);
+      expect(userIds()).toEqual(before);
+      expect(await recordsOf(copyId)).toEqual([]);
+      jest.restoreAllMocks();
+      const copied = await copyOf(sourceId, 'normal-copy-run-before-commit');
+      expect(copied.definition.definitionId).toBe(copyId);
+      created.push(copyId);
+      expect(getStoredPipelineText(copyId).data).toBe(sourceText);
+      expect(await pins(copyId)).toBe('pins');
+    });
+
+    // After a copy completes, a resend is answered from its receipt. Once
+    // that receipt is gone, a copy of a package revision that has since
+    // moved on is refused as a conflict, as a normal copy is in that case.
+    it('answers a resend after a finished repair from its receipt, and refuses one whose receipt is gone, as a normal copy is', async () => {
+      const kept = await oldOrderCopy(
+        'Golden packaged source repaired with receipt',
+        'old-order-copy-receipt',
+      );
+      await copyOf(kept.sourceId, 'old-order-copy-receipt');
+      const keptText = getStoredPipelineText(kept.copyId).data;
+      await updateSourcePackage(kept.sourceId, 'echo moved');
+      await expect(
+        copyOf(kept.sourceId, 'old-order-copy-receipt'),
+      ).resolves.toMatchObject({ definition: { definitionId: kept.copyId } });
+      expect(getStoredPipelineText(kept.copyId).data).toBe(keptText);
+      expect(await pins(kept.copyId)).toBe('pins');
+
+      const lost = await oldOrderCopy(
+        'Golden packaged source repaired without receipt',
+        'old-order-copy-no-receipt',
+      );
+      await copyOf(lost.sourceId, 'old-order-copy-no-receipt', {
+        loseReceipts: true,
+      });
+      const normal = await packagedSource(
+        'Golden packaged source copied normally',
+        'pipeline:packaged-source-copied-normally',
+      );
+      const copied = await copyOf(normal.sourceId, 'normal-copy-no-receipt', {
+        loseReceipts: true,
+      });
+      created.push(copied.definition.definitionId);
+      for (const [sourceId, key, copyId] of [
+        [lost.sourceId, 'old-order-copy-no-receipt', lost.copyId],
+        [
+          normal.sourceId,
+          'normal-copy-no-receipt',
+          copied.definition.definitionId,
+        ],
+      ] as const) {
+        const before = getStoredPipelineText(copyId).data;
+        await updateSourcePackage(sourceId, 'echo moved');
+        await expect(copyOf(sourceId, key)).rejects.toMatchObject({
+          payload: { kind: 'conflict' },
+        });
+        expect(getStoredPipelineText(copyId).data).toBe(before);
+        expect(await pins(copyId)).toBe('pins');
+      }
+    });
   });
 });

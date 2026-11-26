@@ -544,14 +544,19 @@ export function withoutAccountsPickedOver(
 /**
  * Whether `picks` choose another account of `ref`'s connector, so `ref` gives
  * way to it ({@link withoutAccountsPickedOver}): same server, another
- * configuration, and one side an added (`acct-*`) account.
+ * configuration, and one side an added (`acct-*`) account. Only the person's
+ * own accounts give way to each other: an organization's shared connection
+ * (CAN-6246) is another connection, never one of the person's accounts, so
+ * picking a personal account neither drops it nor is dropped by it.
  */
 export function accountPickedOver(
   ref: McpServerRef,
   picks: readonly McpServerRef[],
 ): boolean {
+  if (ref.owner !== undefined) return false;
   return picks.some(
     (choice) =>
+      choice.owner === undefined &&
       choice.serverId === ref.serverId &&
       choice.configId !== ref.configId &&
       (isAccountMcpInstanceConfigId(choice.configId) ||

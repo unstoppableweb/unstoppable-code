@@ -1,5 +1,5 @@
 import { TextLink, DialogActionFooter } from '@canopy/ui-shared/components';
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import { resolveClientAppError } from '@canopy/desktop-instrumentation/client';
 import { toAppError } from '@canopy/protocol/app-errors';
 import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';

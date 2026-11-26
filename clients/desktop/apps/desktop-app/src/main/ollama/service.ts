@@ -17,6 +17,10 @@ import type {
   ShowResponse,
 } from 'ollama';
 import {
+  registerCanopyProcess,
+  reserveLoopbackPort,
+} from '../lib/loopback-listeners';
+import {
   DEFAULT_OLLAMA_SERVER_PORT,
   OLLAMA_SERVER_UNAVAILABLE_ERROR_CODE,
   OLLAMA_SERVER_UNAVAILABLE_ERROR_NAME,
@@ -1613,6 +1617,9 @@ class OllamaServiceImpl implements OllamaService {
     });
 
     this.managedStderr = '';
+    // Remote Control never tunnels to the managed server, from before it
+    // binds the port until it exits (CAN-7679).
+    const releasePort = reserveLoopbackPort(port);
     const child = spawn(executablePath, ['serve'], {
       env: {
         ...getEnhancedEnv({ environment: { runtime: 'canopy' } }),
@@ -1620,6 +1627,17 @@ class OllamaServiceImpl implements OllamaService {
       },
       stdio: ['ignore', 'ignore', 'pipe'],
       windowsHide: process.platform === 'win32',
+    });
+    const forgetProcess =
+      child.pid === undefined ? null : registerCanopyProcess(child.pid);
+    const released = (): void => {
+      releasePort();
+      forgetProcess?.();
+    };
+    child.once('exit', released);
+    // A process that failed to start emits no exit.
+    child.once('error', () => {
+      if (child.pid === undefined) released();
     });
 
     this.childProcess = child;

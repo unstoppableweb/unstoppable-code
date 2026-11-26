@@ -4,16 +4,19 @@ import type {
   TelemetrySharingVisibility,
 } from '@canopy/desktop-shared/types';
 import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
-import { SegmentedControl } from '@canopy/ui-shared/components';
+import {
+  SegmentedControl,
+  SettingsLockedLabel,
+} from '@canopy/ui-shared/components';
 import { DataSharingFeaturePills } from '@canopy/ui-shared/components/DataSharingFeaturePills';
 import { Lock } from '@canopy/ui-shared/icons/AppIcons';
 import {
   DATA_SHARING_PREREQUISITE_SCOPE,
   dataSharingDependencyNote,
+  dataSharingOrganizationAccessNote,
 } from '@canopy/ui-shared/lib/data-sharing-features';
 import type { JSX } from 'react';
 import { SettingsGroup, SettingsRow } from './SettingsLayout';
-import { SettingsLockedLabel } from './SettingsLockedLabel';
 import {
   sharesWithOrganization,
   TELEMETRY_DATA_TYPES,
@@ -179,6 +182,37 @@ function commonScope(
 }
 
 /**
+ * A data type row's description: what it is, the Ledger note for session
+ * summaries, and what Organization lets the organization's owners do.
+ */
+function TelemetryScopeDescription({
+  description,
+  ledgerNote,
+  accessNote,
+  scope,
+}: {
+  readonly description: string;
+  readonly ledgerNote: string | null;
+  readonly accessNote: string | null;
+  readonly scope: string;
+}): JSX.Element | string {
+  if (ledgerNote === null && accessNote === null) return description;
+  return (
+    <>
+      <p>{description}</p>
+      {ledgerNote === null ? null : (
+        <p data-testid="telemetry-sharing-ledger-note">{ledgerNote}</p>
+      )}
+      {accessNote === null ? null : (
+        <p data-testid={`telemetry-sharing-owner-access-note-${scope}`}>
+          {accessNote}
+        </p>
+      )}
+    </>
+  );
+}
+
+/**
  * Presentational telemetry sharing controls: one settings group holding an
  * "All activity" row plus a per-data-type visibility selector, one row
  * per data-sharing scope, each disclosing the product features that row
@@ -330,16 +364,16 @@ export function TelemetrySharingControls({
                 />
               }
               description={
-                ledgerEnabled && dataType.key === 'summaries' ? (
-                  <>
-                    <p>{dataType.description}</p>
-                    <p data-testid="telemetry-sharing-ledger-note">
-                      {LEDGER_SHARING_NOTE}
-                    </p>
-                  </>
-                ) : (
-                  dataType.description
-                )
+                <TelemetryScopeDescription
+                  description={dataType.description}
+                  ledgerNote={
+                    ledgerEnabled && dataType.key === 'summaries'
+                      ? LEDGER_SHARING_NOTE
+                      : null
+                  }
+                  accessNote={dataSharingOrganizationAccessNote(dataType.key)}
+                  scope={dataType.key}
+                />
               }
               control={
                 <ScopeSelector

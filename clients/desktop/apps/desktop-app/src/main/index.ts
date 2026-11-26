@@ -38,8 +38,13 @@ import {
   type WebContents,
 } from 'electron';
 import { existsSync } from 'fs';
+import { stat } from 'node:fs/promises';
+import {
+  COWORK_HOME_WORKTREE_ID,
+  SHARED_CONTAINER_VIEWER_PROJECT_ID,
+} from '@canopy/desktop-shared/types';
 import { randomUUID } from 'node:crypto';
-import { join, resolve } from 'path';
+import { dirname, join, resolve } from 'path';
 import { advertiseWindowsDefaultBrowserCapabilities } from './browser/windows-default-browser-capabilities';
 import { reportShareHandoffEvent } from './canopy-cloud/share-handoff-events';
 import { drainChatStateBeforeRuntimeShutdown } from './canopy-runtime/chat-state-shutdown';
@@ -156,6 +161,7 @@ import { pauseAllActivePipelineExecutions } from './pipelines/pipeline-execution
 import { checkpointPipelinesThroughLocalWorker } from './pipelines/pipeline-worker-dispatch';
 import { startPipelineTransientRetries } from './pipelines/transient-retry-startup';
 import {
+  flushRemoteWebPreviewConsent,
   getRemoteControlRuntime,
   initializeRemoteControl,
   onRemoteControlStateChanged,
@@ -451,6 +457,11 @@ import { migrateStandaloneChatToCowork } from './lib/cowork-migration';
 import { loadCoworkMigrationMapCache } from './lib/cowork-migration-map';
 import { setAppAdvisorProjectAgentAccess } from './lib/app-advisor-project-agent-access';
 import {
+  applyOneWindowChoice,
+  isOneWindowEnabled,
+  onOneWindowEnabledChanged,
+} from './lib/one-window-switch';
+import {
   createWorkEntry,
   listWorkEntries,
   resolveWorkEntryForChat,
@@ -481,6 +492,7 @@ import {
 } from './lib/model-config';
 import {
   consumeExternalOpenLoopGuard,
+  isOpenExternallyClick,
   openExternalGuarded,
 } from './lib/open-external';
 import { installOrgDefaultCoworkProvisioning } from './lib/org-cowork-binding-deps';
@@ -510,6 +522,7 @@ import {
   migrateSidebarRemoteControlVisible,
 } from './lib/preferences-migrations';
 import {
+  arePreferencesUnconfirmed,
   flushPreferencesWrites,
   readPreferencesFile,
   startPreferencesGenerationStamp,
@@ -738,7 +751,11 @@ import {
   scheduleDeferredStartupBackgroundTasks,
   shutdownDeferredStartupStreamRepair,
 } from './startup-background-tasks';
-import { terminalPersistenceStore } from './terminal/persistence';
+import {
+  terminalPersistenceStore,
+  terminalWorktreeExists,
+} from './terminal/persistence';
+import { getElectronDaemonHealth } from './canopy-runtime/electron-daemon-health';
 import { workerTerminal } from './terminal/worker-terminal';
 import { startUpdater, stopUpdater, reportWorkflowDirtyState } from './updater';
 import {
@@ -748,6 +765,10 @@ import {
 import { getVoiceService } from './voice/service';
 import { shutdownW5CommitLogHost } from './w5-commit-log/commit-log-host';
 import { recordDesktopInstanceEvent } from './lifecycle/desktop-instance-diagnostics';
+import {
+  getAgentObservabilityAuditDir,
+  getAgentObservabilitySnapshotPath,
+} from './lib/paths';
 import type { W5StoreArmHandle } from './e2e-fixtures/w5-daemon-record-store-arm';
 import {
   primeLocalOnlyEgressHostCaches,
@@ -1007,6 +1028,16 @@ interface E2eChatEventPayload {
  */
 function installE2eChatEventIngestor(): void {
   if (!__CANOPY_E2E__) return;
+  Object.defineProperty(globalThis, '__CANOPY_E2E_FLUSH_OBSERVABILITY__', {
+    configurable: true,
+    value: async (): Promise<Readonly<Record<string, string>>> => {
+      await getObservabilityService().flush();
+      return {
+        audit: getAgentObservabilityAuditDir(),
+        observability: dirname(getAgentObservabilitySnapshotPath()),
+      };
+    },
+  });
   Object.defineProperty(globalThis, '__CANOPY_E2E_DELIVER_WATCHER_MESSAGE__', {
     configurable: true,
     value: (
@@ -2311,6 +2342,9 @@ async function cleanupRuntimeResources(
     await settleBestEffortCleanup(
       stages.run('local-memory-usage', flushPendingLocalMemoryUsage),
     );
+    await settleBestEffortCleanup(
+      stages.run('remote-web-preview-consent', flushRemoteWebPreviewConsent),
+    );
     await deferPreparationFailure(stages.run('resume-queue', flushResumeQueue));
     setLedgerPendingTitleScheduler(undefined);
     await deferPreparationFailure(
@@ -2552,10 +2586,15 @@ async function cleanupRuntimeResources(
     panelLayoutPersistenceStore.flushAllSync();
     workerTerminal.killAll({ reason });
     // D4: daemon terminals end before this app's daemon session closes.
+    // The daemon's record stamps its live terminals with the quit first
+    // (bounded), so none reads as lost next launch (CAN-7051).
     const daemonTerminalsTeardown = stages
-      .run('daemon-terminals', () =>
-        workerTerminal.daemonTerminals?.killAll({ reason }),
-      )
+      .run('daemon-terminals', async () => {
+        await terminalPersistenceStore.shutdownDaemonTerminals(
+          reason === 'app-quit' ? 'app-quit' : 'fatal-exit',
+        );
+        await workerTerminal.daemonTerminals?.killAll({ reason });
+      })
       .catch(() => undefined);
     getDesktopInventorySyncService().dispose();
     getSharedContainerInboxWatcher().shutdown();
@@ -3546,11 +3585,15 @@ function configureSafeNavigation(
     try {
       const parsed = new URL(details.url);
       if (safeSchemes.has(parsed.protocol)) {
-        void routeSafeNavigation({
-          url: details.url,
-          sender: win.webContents,
-          source: 'app-link',
-        }).catch(() => undefined);
+        void (
+          isOpenExternallyClick(details)
+            ? openExternalGuarded(details.url)
+            : routeSafeNavigation({
+                url: details.url,
+                sender: win.webContents,
+                source: 'app-link',
+              })
+        ).catch(() => undefined);
       }
     } catch {
       // Malformed URL — do not open
@@ -4511,13 +4554,17 @@ function createWindowWithState(preferences: PreferencesData): void {
     try {
       const parsed = new URL(details.url);
       if (safeSchemes.has(parsed.protocol)) {
-        void routeSafeNavigation({
-          url: details.url,
-          sender: mainWindowRendererReady
-            ? (mainWindow?.webContents ?? null)
-            : null,
-          source: 'app-link',
-        }).catch(() => undefined);
+        void (
+          isOpenExternallyClick(details)
+            ? openExternalGuarded(details.url)
+            : routeSafeNavigation({
+                url: details.url,
+                sender: mainWindowRendererReady
+                  ? (mainWindow?.webContents ?? null)
+                  : null,
+                source: 'app-link',
+              })
+        ).catch(() => undefined);
       }
     } catch {
       // Malformed URL — do not open
@@ -5225,6 +5272,35 @@ if (hasSingleInstanceLock) {
   });
 }
 
+async function terminalScopeExists(
+  projectId: string,
+  worktreeId: string,
+): Promise<boolean | null> {
+  const { resolveWorktreeTargetIds, resolveWorktreeCwd } =
+    await import('./lib/resolve-worktree');
+  const target = resolveWorktreeTargetIds(projectId, worktreeId);
+  if (!target) return false;
+  const exists = await terminalWorktreeExists(
+    target.projectId,
+    target.worktreeId,
+  );
+  if (exists !== false) return exists;
+  // These scopes have no canonical worktree row. Their host projection must exist.
+  const { isCoworkWorkspace } = await import('./lib/workspace-registry');
+  if (
+    target.projectId !== SHARED_CONTAINER_VIEWER_PROJECT_ID &&
+    !isBotProjectId(target.projectId) &&
+    !(
+      target.worktreeId === COWORK_HOME_WORKTREE_ID &&
+      isCoworkWorkspace(target.projectId)
+    )
+  )
+    return false;
+  return (
+    await stat(resolveWorktreeCwd(target.projectId, target.worktreeId))
+  ).isDirectory();
+}
+
 void app.whenReady().then(async (): Promise<void> => {
   if (!hasSingleInstanceLock) return;
   try {
@@ -5625,6 +5701,10 @@ void app.whenReady().then(async (): Promise<void> => {
         );
   nativeTheme.themeSource = getNativeThemeSource(preferences.colorMode);
   setAppAdvisorProjectAgentAccess(preferences.appAdvisorProjectAgentAccess);
+  applyOneWindowChoice(
+    preferences.oneWindowEnabled,
+    arePreferencesUnconfirmed(),
+  );
   setCodeGraphPreferences(preferences.codeGraph);
   // Canonical turn state decides the audit entries of turns no dispatcher started.
   installTurnStateAudit(getObservabilityService(), getChatStateService());
@@ -5762,7 +5842,7 @@ void app.whenReady().then(async (): Promise<void> => {
     getChatStatePort: getChatStateService,
     shutdownTimeoutMs: DESKTOP_CANOPY_RUNTIME_SHUTDOWN_TIMEOUT_MS,
     daemonFilesRoute: getDesktopDaemonFilesRoute,
-    // CAN-7155 Seam A stays unselected until the serving-enable follow-up.
+    // CAN-7646 enables CAN-7155 Seam A cached reads on flip builds outside Windows.
     workspaceServices: createDesktopW5CachedWorkspaceServices(),
   });
   setDesktopCanopyRuntime(desktopCanopyRuntime);
@@ -6829,6 +6909,12 @@ void app.whenReady().then(async (): Promise<void> => {
       sendToAllWindows(IPC_CHANNELS.settingsCanopyCloudSessionStatusChanged);
     },
   );
+  // In-process terminal record writes earlier runs left queued drain once the
+  // daemon's record authority is reachable, and on every reconnect (CAN-7051).
+  terminalPersistenceStore.start(terminalScopeExists);
+  getElectronDaemonHealth().onStatusChanged((status) => {
+    if (status.state === 'ok') void terminalPersistenceStore.drainAll(true);
+  });
   closeChatStatePush = registerAllIpcHandlers(
     {
       getMainWindow,
@@ -7246,6 +7332,12 @@ void app.whenReady().then(async (): Promise<void> => {
         // A controller's App Advisor window opens on the same data as this
         // computer's: the commands resolve here and run in its window.
         appAdvisorRequestCommands: sendAppAdvisorWindowRequestCommands,
+        // The main window's API for paired computers (CAN-7761) holds
+        // windowless sessions only while the one-window switch is on.
+        oneWindow: {
+          isEnabled: isOneWindowEnabled,
+          onChange: onOneWindowEnabledChanged,
+        },
       });
     } catch (error) {
       logMainProcessError('Remote control failed to start', error);

@@ -1,6 +1,6 @@
 'use client';
 
-import { Stack, type SpaceRole } from '@canopy/ui-shared/components/Stack';
+import { Stack, type SpaceRole } from '@canopy/ui-shared/primitives/Stack';
 import type { McpServersSectionBodyProps } from '../code/activity/McpServersSectionBody';
 
 import { useId, useState, type JSX, type ReactNode } from 'react';

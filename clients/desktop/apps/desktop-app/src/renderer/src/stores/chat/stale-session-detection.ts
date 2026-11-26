@@ -60,7 +60,7 @@ export function shouldDetectStaleSessionResume(
     signal.lastTurnWasResumeAttempt === true &&
     // Main's canonical empty-completion verdict owns this state. Replacing
     // it with the legacy stale-session transition would make the tab
-    // read-only before its Resume / Try again / Report bug notice can render.
+    // read-only before its Resume / Try again / Report this notice can render.
     !signal.hasEmptyCompletionRecovery &&
     signal.cancelRequestedByUser !== true &&
     !signal.hasAssistantMessageAfterLastUser() &&

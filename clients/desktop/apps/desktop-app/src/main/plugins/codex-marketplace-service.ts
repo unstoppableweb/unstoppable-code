@@ -27,6 +27,13 @@ import type { PluginSource } from '@canopy/execution-engine/node/codex-runtime/g
 import type { PluginSummary } from '@canopy/execution-engine/node/codex-runtime/generated/v2/PluginSummary';
 import { curatedCodexRefreshHash } from './curated-plugin-display';
 import { isCuratedCatalogKey } from '@canopy/protocol/plugin-catalog';
+import {
+  readPluginCopyProviderEvidence,
+  readPluginCopyJson,
+  isPluginCopyInstallMetadata,
+  isPluginCopyEvidenceRecord,
+  taintPluginCopyEvidence,
+} from './plugin-copy-provider-evidence';
 
 export interface CodexMarketplaceOperationResult {
   accepted: boolean;
@@ -134,7 +141,12 @@ function normalizeCodexMarketplaceSource(source: string): string {
 export async function readCodexMarketplaceInstallMetadata(
   marketplaceName: string,
 ): Promise<CodexMarketplaceInstallMetadata | null> {
-  const codexHome = await resolveCodexHomeWithoutSpawn();
+  const codexHome = await resolveCodexHomeWithoutSpawn().catch(
+    (error: unknown) => {
+      taintPluginCopyEvidence();
+      throw error;
+    },
+  );
   const installMetadataPath = path.join(
     codexHome,
     '.tmp',
@@ -142,33 +154,19 @@ export async function readCodexMarketplaceInstallMetadata(
     marketplaceName,
     '.codex-marketplace-install.json',
   );
-  if (!fs.existsSync(installMetadataPath)) {
+  const evidence = await readPluginCopyJson(
+    installMetadataPath,
+    isPluginCopyInstallMetadata,
+  );
+  const parsed = evidence.state === 'present' ? evidence.value : null;
+  if (!isPluginCopyEvidenceRecord(parsed) || typeof parsed.source !== 'string')
     return null;
-  }
-
-  try {
-    const parsed: unknown = JSON.parse(
-      fs.readFileSync(installMetadataPath, 'utf8'),
-    );
-    if (
-      typeof parsed !== 'object' ||
-      parsed === null ||
-      Array.isArray(parsed)
-    ) {
-      return null;
-    }
-    const source: unknown = Reflect.get(parsed, 'source');
-    if (typeof source !== 'string') {
-      return null;
-    }
-    const revision: unknown = Reflect.get(parsed, 'revision');
-    return {
-      source,
-      ...(typeof revision === 'string' ? { revision } : {}),
-    };
-  } catch {
-    return null;
-  }
+  return {
+    source: parsed.source,
+    ...(typeof parsed.revision === 'string'
+      ? { revision: parsed.revision }
+      : {}),
+  };
 }
 
 /**
@@ -349,17 +347,19 @@ export async function removeCodexMarketplace(
 export async function listCodexPlugins(
   cwds?: string[],
 ): Promise<PluginListResponse> {
-  return withConnection((connection) =>
-    connection.request('plugin/list', {
-      cwds: cwds ?? null,
-      // Explicit kinds, never null/omitted: non-explicit kinds add the
-      // signed-in remote global catalog, whose unbounded pagination fetch has
-      // hung plugin/list indefinitely (Codex 0.144.x — see
-      // docs/planning/2026-07-12-codex-app-server-plugin-list-hang/). Canopy
-      // marketplaces are local; the locally cached curated marketplace is
-      // still included when kinds are explicit.
-      marketplaceKinds: ['local'],
-    } satisfies PluginListParams),
+  return readPluginCopyProviderEvidence('plugin/list', () =>
+    withConnection((connection) =>
+      connection.request('plugin/list', {
+        cwds: cwds ?? null,
+        // Explicit kinds, never null/omitted: non-explicit kinds add the
+        // signed-in remote global catalog, whose unbounded pagination fetch has
+        // hung plugin/list indefinitely (Codex 0.144.x — see
+        // docs/planning/2026-07-12-codex-app-server-plugin-list-hang/). Canopy
+        // marketplaces are local; the locally cached curated marketplace is
+        // still included when kinds are explicit.
+        marketplaceKinds: ['local'],
+      } satisfies PluginListParams),
+    ),
   );
 }
 
@@ -597,11 +597,15 @@ export async function resolveCodexPluginInstallRoots(
     reason: string;
   }>;
 }> {
-  const response = await withConnection((connection) =>
-    connection.request('plugin/installed', {
-      cwds: null,
-      installSuggestionPluginNames: null,
-    } satisfies PluginInstalledParams),
+  const response = await readPluginCopyProviderEvidence(
+    'plugin/installed',
+    () =>
+      withConnection((connection) =>
+        connection.request('plugin/installed', {
+          cwds: null,
+          installSuggestionPluginNames: null,
+        } satisfies PluginInstalledParams),
+      ),
   );
   const entry = response.marketplaces.find(
     (marketplace) => marketplace.name === marketplaceName,

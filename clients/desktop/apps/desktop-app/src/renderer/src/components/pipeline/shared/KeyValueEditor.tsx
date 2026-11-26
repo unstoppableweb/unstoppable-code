@@ -126,7 +126,9 @@ export function KeyValueEditor({
 
   return (
     <Stack gap="item">
-      {entries.map(([key, val]) => {
+      {entries.map(([key, val], index) => {
+        // Keys are authored, so labels name the row by number instead.
+        const row = String(index + 1);
         const valType = detectType(val);
         return (
           <Surface variant="group" size="small" padding="tight" key={key}>
@@ -173,7 +175,7 @@ export function KeyValueEditor({
                     size="compact"
                     iconOnly
                     onClick={() => removeEntry(key)}
-                    aria-label={`Remove ${key}`}
+                    aria-label={`Remove entry ${row}`}
                   >
                     <AppCatalogCloseIcon size="sm" />
                   </Button>
@@ -184,7 +186,7 @@ export function KeyValueEditor({
               <div>
                 {!stringOnly && valType === 'boolean' ? (
                   <SegmentedControl
-                    label={`Value for ${key}`}
+                    label={`Value ${row}`}
                     value={val ? 'true' : 'false'}
                     options={BOOLEAN_OPTIONS}
                     onChange={(next): void =>
@@ -204,7 +206,7 @@ export function KeyValueEditor({
                 ) : (
                   <TextArea
                     mono
-                    aria-label={`Value for ${key}`}
+                    aria-label={`Value ${row}`}
                     value={String(val)}
                     onChange={(e) => updateValue(key, e.target.value)}
                     placeholder="Value"

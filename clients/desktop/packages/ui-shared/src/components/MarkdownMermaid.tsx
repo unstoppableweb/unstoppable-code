@@ -1,6 +1,6 @@
 'use client';
 
-import { CodeBlock } from './CodeBlock';
+import { CodeBlock } from '../primitives/CodeBlock';
 import {
   memo,
   useCallback,
@@ -24,10 +24,10 @@ import {
   type AppIcon,
 } from '../icons/AppIcons';
 import { downloadBlob } from '../lib/download-blob';
-import { Button } from './Button';
-import { copyTextToClipboard } from './copy-to-clipboard';
+import { Button } from '../primitives/Button';
+import { copyTextToClipboard } from '../primitives/copy-to-clipboard';
 import { DetailMoreMenuRows, type DetailMoreMenuItem } from './DetailMoreMenu';
-import { FLOATING_MENU_GAP, FloatingMenu } from './FloatingMenu';
+import { FLOATING_MENU_GAP, FloatingMenu } from '../primitives/FloatingMenu';
 import {
   MERMAID_DROPPED_STYLING_NOTE,
   MERMAID_RENDER_FAILURE,
@@ -47,7 +47,7 @@ import {
   mermaidFamilyLabel,
 } from './markdown-mermaid-export-names';
 import { TabContextMenu, type TabContextMenuItem } from './TabContextMenu';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 
 export interface MarkdownMermaidProps extends HTMLAttributes<HTMLElement> {
   readonly source: string;

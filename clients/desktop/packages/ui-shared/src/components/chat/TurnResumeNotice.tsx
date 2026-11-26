@@ -1,7 +1,11 @@
 'use client';
 
 import type { JSX } from 'react';
-import { Notice, NoticeButton, type NoticeIntent } from '../Notice';
+import {
+  Notice,
+  NoticeButton,
+  type NoticeIntent,
+} from '../../primitives/Notice';
 
 export interface TurnResumeNoticeProps {
   /** The state in a few words, for example `Turn stopped`. */
@@ -21,10 +25,10 @@ export interface TurnResumeNoticeProps {
   busyLabel?: string;
   /** Failure text from the last attempt; Resume stays available. */
   error?: string;
-  /** Secondary action that hides the offer. Omit to show Resume alone. */
+  /** Close icon that hides the offer. Omit to show Resume alone. */
   onDismiss?: () => void;
   dismissLabel?: string;
-  /** Root test id; actions use `-button` and `-dismiss` suffixes. */
+  /** Root test id; Resume uses `-button` and the close icon `-dismiss`. */
   'data-testid'?: string;
 }
 
@@ -33,8 +37,7 @@ export interface TurnResumeNoticeProps {
  * stopped, or one cut off when the app closed. Pure display: the host owns
  * the copy, whether the offer applies, and what each action does.
  *
- * Resume is the primary action and sits right-most; Dismiss, when offered,
- * sits before it.
+ * Resume is the only action; the close icon, when offered, hides the offer.
  */
 export function TurnResumeNotice({
   title,
@@ -57,28 +60,25 @@ export function TurnResumeNotice({
       aria-busy={busy || undefined}
       data-testid={testId}
       {...(error ? { detail: error } : {})}
+      {...(onDismiss !== undefined
+        ? {
+            onDismiss,
+            // A resume in flight can't be hidden halfway.
+            dismissDisabled: busy,
+            dismissLabel,
+            dismissTestId: `${testId}-dismiss`,
+          }
+        : {})}
       actions={
-        <>
-          {onDismiss !== undefined && (
-            <NoticeButton
-              variant="secondary"
-              disabled={busy}
-              onClick={onDismiss}
-              data-testid={`${testId}-dismiss`}
-            >
-              {dismissLabel}
-            </NoticeButton>
-          )}
-          <NoticeButton
-            variant="primary"
-            busy={busy}
-            {...(busyLabel !== undefined ? { busyLabel } : {})}
-            onClick={onResume}
-            data-testid={`${testId}-button`}
-          >
-            {resumeLabel}
-          </NoticeButton>
-        </>
+        <NoticeButton
+          variant="primary"
+          busy={busy}
+          {...(busyLabel !== undefined ? { busyLabel } : {})}
+          onClick={onResume}
+          data-testid={`${testId}-button`}
+        >
+          {resumeLabel}
+        </NoticeButton>
       }
     >
       {message}

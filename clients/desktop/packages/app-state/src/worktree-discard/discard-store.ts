@@ -1,6 +1,8 @@
 import type {
   WorktreeRecoveryFinishResult,
   WorktreeRecoveryResolveResult,
+  WorktreeRecoverySetAsideParams,
+  WorktreeRecoverySetAsideResult,
 } from '@canopy/protocol/canopy-core';
 import { create, type StoreApi, type UseBoundStore } from 'zustand';
 import type { CanopyClient } from '@canopy/app-core';
@@ -13,6 +15,7 @@ import type { WorktreeDiscardOffer } from './discard-offer';
 import { WorktreeRecoveryDescriptionSchema } from '@canopy/protocol/remote-control/shell/worktree-discard-schemas';
 import {
   unavailableWorktreeRecovery,
+  worktreeRecoveryOfferedActions,
   worktreeRecoveryResolutionAction,
   type WorktreeRecoveryDescription,
 } from '@canopy/protocol/remote-control/shell/worktree-recovery';
@@ -52,6 +55,8 @@ export type WorktreeDiscardView =
       readonly phase: 'recovery';
       readonly offer: WorktreeDiscardOffer;
       readonly recovery: WorktreeRecoveryDescription;
+      /** Keeps Check again bound after an unconfirmed action withdraws diagnosis. */
+      readonly reviewedOperationId?: string;
       readonly busy:
         | 'refresh'
         | 'retry'
@@ -59,16 +64,19 @@ export type WorktreeDiscardView =
         | 'discard'
         | 'keepWorktree'
         | 'release'
+        | 'setAside'
         | null;
       readonly outcome?:
         | WorktreeRecoveryFinishResult
-        | WorktreeRecoveryResolveResult;
+        | WorktreeRecoveryResolveResult
+        | WorktreeRecoverySetAsideResult;
       readonly error: 'transport-failed' | 'unconfirmed' | null;
-      readonly unconfirmedAction?: 'keep-worktree' | 'release' | 'finish';
-      /**
-       * An older computer refused the last action or check, so nothing ran
-       * (CAN-7444): its update message. The reviewed recovery is kept.
-       */
+      readonly unconfirmedAction?:
+        | 'keep-worktree'
+        | 'release'
+        | 'finish'
+        | 'set-aside';
+      /** An older computer refused the action; the reviewed recovery is kept. */
       readonly hostOutdated?: string;
     }
   | {
@@ -80,7 +88,11 @@ export type WorktreeDiscardView =
     };
 
 export interface WorktreeDiscardState {
+  /** A composite client must never send this computer's work to its next target. */
+  readonly isCurrentComputer: () => boolean;
   readonly view: WorktreeDiscardView;
+  /** Kept for this computer until explicit dismissal, including across detach. */
+  readonly setAsideResult: WorktreeRecoverySetAsideResult | null;
   /**
    * Opens `offer`, describing it first when it came without a description.
    * Resolves `false`, and stays closed, when nothing can be discarded: the
@@ -98,6 +110,8 @@ export interface WorktreeDiscardState {
     action: 'retry' | 'finishArchive' | 'keepWorktree' | 'release',
   ) => Promise<WorktreeDiscardFinished | null>;
   readonly confirmDiscard: () => Promise<void>;
+  /** CAN-7014: runs after the dialog's own confirmation; never a removal. */
+  readonly setAside: (target: WorktreeRecoverySetAsideParams) => Promise<void>;
   readonly refresh: () => Promise<void>;
   readonly deactivate: () => void;
   readonly close: () => void;
@@ -173,6 +187,7 @@ function sameRecoverySubject(
 
 function createWorktreeDiscardStore(
   client: CanopyClient,
+  isCurrentComputer: () => boolean,
 ): WorktreeDiscardStore {
   // Each opening owns its answers; a late answer to an older one is dropped.
   let generation = 0;
@@ -193,17 +208,17 @@ function createWorktreeDiscardStore(
     ): Promise<{
       readonly description?: WorktreeDiscardDescription;
       readonly hostOutdated: string | null;
-    }> =>
-      client
+    }> => {
+      const operationId =
+        view.recovery.diagnosis?.operationId ?? view.reviewedOperationId;
+      return client
         .command('worktree.discard.describe', {
           workspaceId: view.offer.workspaceId,
           worktreeId: view.offer.worktreeId,
           recovery: {
             intent: view.recovery.intent,
             expectedCreatedAt: view.recovery.subject.createdAt,
-            ...(view.recovery.diagnosis
-              ? { operationId: view.recovery.diagnosis.operationId }
-              : {}),
+            ...(operationId ? { operationId } : {}),
           },
         })
         .then(
@@ -212,6 +227,7 @@ function createWorktreeDiscardStore(
             hostOutdated: worktreeRecoveryHostOutdatedMessage(error),
           }),
         );
+    };
     const admitted = (
       view: Extract<WorktreeDiscardView, { phase: 'recovery' }>,
       value: unknown,
@@ -228,19 +244,27 @@ function createWorktreeDiscardStore(
       return parsed.data;
     };
     const routeReview = (recovery: WorktreeRecoveryDescription): boolean => {
-      if (recovery.destination.kind !== 'journal-review') return false;
+      if (
+        get().setAsideResult ||
+        recovery.destination.kind !== 'journal-review'
+      )
+        return false;
       offerLifecycleJournalQuarantine(undefined, recovery.destination.reason);
       set({ view: { phase: 'closed' } });
       return true;
     };
     return {
+      isCurrentComputer,
       view: { phase: 'closed' },
+      setAsideResult: null,
       open: async (offer): Promise<boolean> => {
-        // A running discard keeps its dialog; the later refusal shows its message.
+        if (!isCurrentComputer()) return false;
+        // Running actions and undismissed Set aside results keep their dialog.
         const showing = get().view;
         if (
-          (showing.phase === 'open' || showing.phase === 'recovery') &&
-          showing.busy
+          ((showing.phase === 'open' || showing.phase === 'recovery') &&
+            showing.busy) ||
+          get().setAsideResult
         )
           return false;
         generation += 1;
@@ -283,6 +307,7 @@ function createWorktreeDiscardStore(
         return true;
       },
       discard: async (): Promise<WorktreeDiscardFinished | null> => {
+        if (!isCurrentComputer()) return null;
         const view = get().view;
         if (view.phase !== 'open' || view.busy) return null;
         if (view.description.status !== 'discardable') return null;
@@ -371,6 +396,7 @@ function createWorktreeDiscardStore(
         return null;
       },
       refresh: async (): Promise<void> => {
+        if (!isCurrentComputer()) return;
         const view = get().view;
         if (view.phase !== 'recovery' || view.busy) return;
         const current = generation;
@@ -405,6 +431,9 @@ function createWorktreeDiscardStore(
             view: {
               ...view,
               recovery,
+              reviewedOperationId:
+                view.recovery.diagnosis?.operationId ??
+                view.reviewedOperationId,
               outcome: undefined,
               unconfirmedAction: undefined,
               busy: null,
@@ -414,10 +443,12 @@ function createWorktreeDiscardStore(
           });
       },
       confirmDiscard: async (): Promise<void> => {
+        if (!isCurrentComputer()) return;
         const view = get().view;
         if (
           view.phase !== 'recovery' ||
           view.busy ||
+          get().setAsideResult ||
           !view.recovery.actions.discard.eligible ||
           view.outcome !== undefined
         )
@@ -462,8 +493,14 @@ function createWorktreeDiscardStore(
           });
       },
       recover: async (action): Promise<WorktreeDiscardFinished | null> => {
+        if (!isCurrentComputer()) return null;
         const showing = get().view;
-        if (showing.phase !== 'recovery' || showing.busy || showing.outcome)
+        if (
+          showing.phase !== 'recovery' ||
+          showing.busy ||
+          showing.outcome ||
+          get().setAsideResult
+        )
           return null;
         // A new action replaces the last refusal's update message.
         const view = { ...showing, hostOutdated: undefined };
@@ -594,11 +631,90 @@ function createWorktreeDiscardStore(
         });
         return null;
       },
+      setAside: async (target): Promise<void> => {
+        if (!isCurrentComputer()) return;
+        const showing = get().view;
+        const view =
+          showing.phase === 'recovery'
+            ? { ...showing, hostOutdated: undefined }
+            : showing;
+        const exact =
+          view.phase === 'recovery' ? view.recovery.diagnosis : null;
+        if (
+          view.phase !== 'recovery' ||
+          view.busy ||
+          view.outcome ||
+          get().setAsideResult ||
+          !exact ||
+          target.workspaceId !== view.offer.workspaceId ||
+          target.operationId !== exact.operationId ||
+          target.revision !== exact.revision ||
+          !worktreeRecoveryOfferedActions(view.recovery, {
+            canResolve: client.capabilities.worktreeRecoveryResolution === true,
+            canSetAside: client.capabilities.worktreeRecoverySetAside === true,
+          }).includes('set-aside')
+        )
+          return;
+        const current = generation;
+        set({ view: { ...view, busy: 'setAside', error: null } });
+        try {
+          const outcome = await client.command('worktree.recovery.setAside', {
+            workspaceId: target.workspaceId,
+            operationId: target.operationId,
+            revision: target.revision,
+          });
+          if (current !== generation) return;
+          set({
+            // A live-journal scan cannot recover quarantine locations. Keep
+            // the reply separately from diagnosis until explicit dismissal.
+            ...(outcome.status !== 'refused'
+              ? { setAsideResult: outcome }
+              : {}),
+            view: {
+              ...view,
+              busy: null,
+              outcome: outcome.status === 'refused' ? outcome : undefined,
+              error: null,
+            },
+          });
+        } catch (failure) {
+          const hostOutdated = worktreeRecoveryHostOutdatedMessage(failure);
+          if (current === generation && hostOutdated !== null) {
+            set({ view: { ...view, busy: null, error: null, hostOutdated } });
+            return;
+          }
+          if (current === generation)
+            set({
+              view: {
+                ...view,
+                reviewedOperationId: target.operationId,
+                recovery: {
+                  ...unavailable(view),
+                  evidence: view.recovery.evidence,
+                },
+                busy: null,
+                error: 'unconfirmed',
+                unconfirmedAction: 'set-aside',
+              },
+            });
+        }
+      },
       deactivate: (): void => {
+        const view = get().view;
+        // Detaching is not dismissal. Cancel only the read, so reattachment
+        // can show (and dismiss) the result even if that read never answers.
+        if (view.phase === 'recovery' && get().setAsideResult) {
+          generation += 1;
+          set({ view: { ...view, busy: null } });
+          return;
+        }
+        // The move can still return the only copy of its put-back mapping.
+        if (view.phase === 'recovery' && view.busy === 'setAside') return;
         generation += 1;
         set({ view: { phase: 'closed' } });
       },
       retry: (): void => {
+        if (!isCurrentComputer()) return;
         const view = get().view;
         if (
           view.phase === 'closed' ||
@@ -613,6 +729,11 @@ function createWorktreeDiscardStore(
       },
       close: (): void => {
         const view = get().view;
+        if (get().setAsideResult) {
+          generation += 1;
+          set({ view: { phase: 'closed' }, setAsideResult: null });
+          return;
+        }
         if ((view.phase === 'open' || view.phase === 'recovery') && view.busy)
           return;
         if (view.phase === 'open' && view.offer.recovery) {
@@ -634,15 +755,75 @@ function createWorktreeDiscardStore(
   });
 }
 
-const storesByClient = new WeakMap<CanopyClient, WorktreeDiscardStore>();
+interface ComputerStores {
+  currentComputer: string | null | undefined;
+  readonly activations: Set<object>;
+  readonly computers: Map<string | null, WorktreeDiscardStore>;
+}
 
-/** One discard confirmation per client. */
+const storesByClient = new WeakMap<CanopyClient, ComputerStores>();
+
+function computerStoresFor(client: CanopyClient): ComputerStores {
+  let registry = storesByClient.get(client);
+  if (!registry) {
+    registry = {
+      currentComputer: undefined,
+      activations: new Set(),
+      computers: new Map(),
+    };
+    storesByClient.set(client, registry);
+  }
+  return registry;
+}
+
+/** Pure lookup: speculative renders must not switch the client's computer. */
 export function worktreeDiscardStoreFor(
   client: CanopyClient,
+  computerScopeKey: string | null = null,
 ): WorktreeDiscardStore {
-  const existing = storesByClient.get(client);
+  const registry = computerStoresFor(client);
+  const existing = registry.computers.get(computerScopeKey);
   if (existing) return existing;
-  const store = createWorktreeDiscardStore(client);
-  storesByClient.set(client, store);
+  const store = createWorktreeDiscardStore(
+    client,
+    () =>
+      registry.currentComputer === computerScopeKey &&
+      registry.activations.size > 0,
+  );
+  registry.computers.set(computerScopeKey, store);
   return store;
+}
+
+/** Commit-phase ownership shared by the discard host and recovery notice. */
+export function activateWorktreeDiscardComputer(
+  client: CanopyClient,
+  computerScopeKey: string | null = null,
+): () => void {
+  const store = worktreeDiscardStoreFor(client, computerScopeKey);
+  const registry = computerStoresFor(client);
+  if (registry.currentComputer !== computerScopeKey) {
+    const previous =
+      registry.currentComputer === undefined
+        ? undefined
+        : registry.computers.get(registry.currentComputer);
+    registry.currentComputer = computerScopeKey;
+    registry.activations.clear();
+    previous?.getState().deactivate();
+  }
+  const activation = {};
+  registry.activations.add(activation);
+  return (): void => {
+    if (!registry.activations.delete(activation)) return;
+    // StrictMode reattaches synchronously. An old panel's cleanup must not
+    // cancel a newly mounted A after an A -> B -> A switch.
+    queueMicrotask(() => {
+      if (
+        registry.currentComputer === computerScopeKey &&
+        registry.activations.size === 0
+      ) {
+        registry.currentComputer = undefined;
+        store.getState().deactivate();
+      }
+    });
+  };
 }

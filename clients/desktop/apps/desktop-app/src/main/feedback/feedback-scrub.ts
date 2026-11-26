@@ -41,14 +41,19 @@ const RECORD_WITHHELD = 'looks like it holds a credential';
 const RECORD_TOO_LONG = 'too long to check for credentials';
 const FIELD_WITHHELD = 'Withheld because it looks like it holds a credential';
 const USER_NAME_PLACEHOLDER = '<user>';
+// Local and domain (S-1-5-21) and Microsoft Entra (S-1-12-1) account SIDs:
+// main.log names them in a shared-folder warning (CAN-7915). Well-known SIDs
+// such as S-1-5-11 identify no one and stay.
+const ACCOUNT_SID = /\bS-1-(?:5-21|12-1)(?:-\d+)+/giu;
+const ACCOUNT_SID_PLACEHOLDER = '<account-sid>';
 
 export interface FeedbackScrubOptions {
   /**
    * Account names replaced with `<user>` wherever they appear as a path
    * segment in a `log-entries` copy (CAN-6895). Windows logs carry
    * `C:\Users\<name>`, UNC and escaped forms of the profile path; matching
-   * the segment covers each of them. Without names, every byte that is not
-   * withheld is copied unchanged.
+   * the segment covers each of them. Account SIDs are replaced in every
+   * `log-entries` copy, with or without names.
    */
   readonly redactPathUserNames?: readonly string[];
 }
@@ -80,6 +85,15 @@ function pathUserNameRedactor(
     'giu',
   );
   return (text) => text.replace(pattern, USER_NAME_PLACEHOLDER);
+}
+
+/** Account SIDs, then any account path segments. */
+function logEntryRedactor(names: readonly string[] | undefined): TextRedactor {
+  const paths = pathUserNameRedactor(names);
+  return (text) => {
+    const withoutSids = text.replace(ACCOUNT_SID, ACCOUNT_SID_PLACEHOLDER);
+    return paths ? paths(withoutSids) : withoutSids;
+  };
 }
 
 function escapeRegExp(value: string): string {
@@ -267,7 +281,7 @@ class UnitScrubber {
     this.emit(this.redacted(holds ? this.marker(unit, text) : bytes));
   }
 
-  /** The bytes with account path segments replaced; unchanged when none match. */
+  /** The bytes with account SIDs and path segments replaced; unchanged when none match. */
   private redacted(bytes: Buffer): Buffer {
     if (this.redact === undefined) return bytes;
     const text = bytes.toString('utf8');
@@ -357,7 +371,7 @@ class FeedbackScrubStream extends Transform {
             mode,
             emit,
             mode === 'log-entries'
-              ? pathUserNameRedactor(options.redactPathUserNames)
+              ? logEntryRedactor(options.redactPathUserNames)
               : undefined,
           );
   }
@@ -383,7 +397,8 @@ class FeedbackScrubStream extends Transform {
 
 /**
  * A stream that copies a bundled file with its credential-shaped units
- * withheld and, for `log-entries` given names, account path segments replaced.
+ * withheld and, for `log-entries`, account SIDs and (given names) account
+ * path segments replaced.
  */
 export function createFeedbackScrub(
   mode: FeedbackScrubMode,

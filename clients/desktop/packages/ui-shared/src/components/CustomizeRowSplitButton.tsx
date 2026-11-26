@@ -18,24 +18,24 @@ import {
 } from '../lib/installed-item-status';
 import { menuDismissalSwallowsClick } from '../lib/menu-open-body-flag';
 import { SECONDARY_SURFACE_SHELL_CLASS } from '../lib/row-chips';
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import type { CustomizeRowMenuItem } from './CustomizeRowMenu';
 import {
   DropdownMenuDivider,
   DropdownMenuItem,
   DropdownMenuItemIcon,
   DropdownMenuLabel,
-} from './DropdownMenu';
-import { FloatingMenu } from './FloatingMenu';
+} from '../primitives/DropdownMenu';
+import { FloatingMenu } from '../primitives/FloatingMenu';
 import type { InstalledItemStatusGlyph } from './InstalledItemStatusPicker';
 import {
   ITEM_STATE_LABEL_CLASS,
   ItemStateMark,
   type ItemStateTone,
 } from './ItemStateMark';
-import { LoadingSpinner } from './LoadingSpinner';
-import { Divider } from './Surface';
-import { Tooltip } from './Tooltip';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
+import { Divider } from '../primitives/Surface';
+import { Tooltip } from '../primitives/Tooltip';
 
 /** One status a row's caret menu can switch, as the status picker offers it. */
 export interface CustomizeRowSplitStatus {

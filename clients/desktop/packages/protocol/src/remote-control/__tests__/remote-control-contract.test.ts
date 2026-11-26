@@ -9,6 +9,15 @@ import {
   BROWSER_CONTROLLER_CHANNELS,
   HOSTED_CONTROLLER_CHANNELS,
   MOBILE_CONTROLLER_CHANNELS,
+  ONE_WINDOW_CAPABILITIES,
+  ONE_WINDOW_CAPABILITY_CHANNELS,
+  ONE_WINDOW_CONTROLLER_CHANNELS,
+  oneWindowChannelAllowed,
+  oneWindowChannelsFor,
+  oneWindowInvocationAllowed,
+  oneWindowSendAllowed,
+  ONE_WINDOW_REQUEST_FIELDS,
+  oneWindowControllerProfile,
 } from '../channels';
 import { buildPairingLink, parsePairingFragment } from '../pairing-link';
 import {
@@ -18,6 +27,8 @@ import {
   PAIR_PROOF_LABEL,
 } from '../security';
 import {
+  DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION,
+  DESKTOP_ONE_WINDOW_MODE,
   HelloParamsSchema,
   HelloResultSchema,
   PairRequestParamsSchema,
@@ -97,11 +108,164 @@ it('holds web controllers to their own host floor, not the current protocol', ()
   }
 });
 
+it('holds one-window desktop controllers to their own floor and a reviewed list (CAN-7758)', () => {
+  // 26 is the protocol one-window mode ships on; no host below it has the
+  // profile. The floor never passes this build's protocol.
+  expect(DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION).toBeGreaterThanOrEqual(26);
+  expect(DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION).toBeLessThanOrEqual(
+    REMOTE_PROTOCOL_VERSION,
+  );
+  const controller = oneWindowControllerProfile();
+  expect(HelloParamsSchema.parse({ version, controller }).controller).toEqual({
+    kind: 'desktop',
+    minVersion: DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION,
+    mode: DESKTOP_ONE_WINDOW_MODE,
+  });
+  // The host announces its capabilities; older controllers ignore the key.
+  const hello = { name: 'Host', platform: 'linux', appVersion: '1' };
+  const features = {
+    controllerProfiles: true,
+    pairingProof: true,
+    hostedDelegation: true,
+    oneWindow: { capabilities: [...ONE_WINDOW_CAPABILITIES] },
+  };
+  expect(HelloResultSchema.parse({ ...hello, features }).features).toEqual(
+    features,
+  );
+  // One sorted list without repeats, the union of the capabilities, so it
+  // fingerprints the same however the groups are written.
+  expect(ONE_WINDOW_CONTROLLER_CHANNELS).toEqual(
+    [...new Set(ONE_WINDOW_CONTROLLER_CHANNELS)].sort(),
+  );
+  expect(oneWindowChannelsFor(ONE_WINDOW_CAPABILITIES)).toEqual(
+    new Set(ONE_WINDOW_CONTROLLER_CHANNELS),
+  );
+  // A capability this build does not know grants nothing.
+  expect(oneWindowChannelsFor(['terminals', 'toString'])).toEqual(new Set());
+  expect(oneWindowChannelsFor(['approvals'])).toEqual(
+    new Set(ONE_WINDOW_CAPABILITY_CHANNELS.approvals),
+  );
+  for (const channel of ONE_WINDOW_CONTROLLER_CHANNELS) {
+    expect(oneWindowChannelAllowed(channel)).toBe(true);
+  }
+  expect(oneWindowChannelAllowed('terminal:spawn')).toBe(false);
+  expect(oneWindowChannelAllowed('')).toBe(false);
+});
+
+it('holds every one-window call that changes something to a field allowlist (CAN-7854)', () => {
+  const readOnly = new Set<string>([
+    ...ONE_WINDOW_CAPABILITY_CHANNELS.sidebar,
+    ...ONE_WINDOW_CAPABILITY_CHANNELS.chats,
+    ...ONE_WINDOW_CAPABILITY_CHANNELS.composer,
+    ...ONE_WINDOW_CAPABILITY_CHANNELS.approvals,
+  ]);
+  for (const channel of ONE_WINDOW_CONTROLLER_CHANNELS) {
+    if (readOnly.has(channel)) continue;
+    expect(
+      channel === 'chat:command' || ONE_WINDOW_REQUEST_FIELDS.has(channel),
+    ).toBe(true);
+  }
+  // Every allowlist names a channel on the list, so none is dead.
+  for (const channel of ONE_WINDOW_REQUEST_FIELDS.keys()) {
+    expect(oneWindowChannelAllowed(channel)).toBe(true);
+  }
+  // A call with no allowlist is refused even with no fields at all.
+  expect(oneWindowInvocationAllowed('chat:queue-edit', [{}])).toBe(false);
+  // Sends ride chat:command, which takes the session from the saved chat;
+  // the older send takes it from its caller.
+  expect(oneWindowChannelAllowed('chat:send-message')).toBe(false);
+  // Approval answers wait until the host ties one to a chat's approval.
+  expect(oneWindowChannelAllowed('approval:respond')).toBe(false);
+  expect(oneWindowChannelAllowed('approval:dismiss')).toBe(false);
+  // Values are checked, not only names: plugin selections keep the hosted
+  // shape, so no MCP credential routing, and a send's text is a string.
+  const envelope = (command: Record<string, unknown>): unknown[] => [
+    {
+      schemaVersion: 1,
+      commandId: 'c',
+      projectId: 'p',
+      worktreeId: 'w',
+      command,
+    },
+  ];
+  const selections = { collectionIds: [], skillRefs: [], pluginRefs: [] };
+  // No settings patch: turning on Auto would let a later send move the
+  // chat to another provider, and a patch replaces plugin selections whole.
+  expect(
+    oneWindowInvocationAllowed(
+      'chat:command',
+      envelope({
+        type: 'chat.patch_tab_settings',
+        tabId: 't',
+        patch: { modelSelectionMode: 'auto' },
+      }),
+    ),
+  ).toBe(false);
+  expect(
+    oneWindowInvocationAllowed(
+      'chat:command',
+      envelope({
+        type: 'chat.patch_tab_settings',
+        tabId: 't',
+        patch: { pluginSelections: selections },
+      }),
+    ),
+  ).toBe(false);
+  // Calls that change something are invokes; only reads may be sent.
+  const send = envelope({
+    type: 'chat.send_message',
+    chatId: 'c',
+    userMessageId: 'm',
+    text: 'Hello',
+  });
+  expect(oneWindowInvocationAllowed('chat:command', send)).toBe(true);
+  expect(oneWindowSendAllowed('chat:command', send)).toBe(false);
+  expect(oneWindowSendAllowed('chat:set-interest', [])).toBe(true);
+  expect(oneWindowChannelAllowed('chat:model-change')).toBe(false);
+  // Stop names the exact turn; a plain Stop ends whatever turn runs.
+  const scope = { projectId: 'p', worktreeId: 'w', chatId: 'c' };
+  expect(oneWindowInvocationAllowed('chat:cancel', [scope])).toBe(false);
+  expect(
+    oneWindowInvocationAllowed('chat:cancel', [
+      { ...scope, expectedUserMessageId: 'm' },
+    ]),
+  ).toBe(true);
+  expect(
+    oneWindowInvocationAllowed(
+      'chat:command',
+      envelope({
+        type: 'chat.patch_tab_settings',
+        tabId: 't',
+        patch: {
+          pluginSelections: { ...selections, mcpHttpAuthPreferences: {} },
+        },
+      }),
+    ),
+  ).toBe(false);
+  expect(
+    oneWindowInvocationAllowed(
+      'chat:command',
+      envelope({
+        type: 'chat.send_message',
+        chatId: 'c',
+        userMessageId: 'm',
+        text: { nested: true },
+      }),
+    ),
+  ).toBe(false);
+  expect(
+    oneWindowInvocationAllowed('chat:model-change', [
+      { projectId: 'p', worktreeId: 'w', chatId: 'c', model: 'm', notice: {} },
+    ]),
+  ).toBe(false);
+});
+
 it('allows only channels that the host explicitly tunnels', () => {
   for (const channel of [
     ...MOBILE_CONTROLLER_CHANNELS,
     ...BROWSER_CONTROLLER_CHANNELS,
     ...HOSTED_CONTROLLER_CHANNELS,
+    ...ONE_WINDOW_CONTROLLER_CHANNELS,
   ]) {
     expect(getRemoteChannelDisposition(channel)).toBe('tunnel');
   }

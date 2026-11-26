@@ -1,5 +1,5 @@
 import { CodeBlock } from '@canopy/ui-shared/components';
-import { type BadgeTone } from '@canopy/ui-shared/components/Badge';
+import { type BadgeTone } from '@canopy/ui-shared/primitives/Badge';
 import {
   type JSX,
   useCallback,

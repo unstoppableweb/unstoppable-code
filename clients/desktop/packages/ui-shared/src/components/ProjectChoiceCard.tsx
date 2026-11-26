@@ -1,6 +1,6 @@
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import { HAIRLINE_INSET_RING_CLASS } from '../lib/row-chips';
-import { SURFACE_SELECTED_CLASS } from './Surface';
+import { SURFACE_SELECTED_CLASS } from '../primitives/Surface';
 import type { JSX, ReactNode } from 'react';
 
 export type ProjectChoiceCardProps = {

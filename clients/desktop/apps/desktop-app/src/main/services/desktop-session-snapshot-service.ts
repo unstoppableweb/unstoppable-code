@@ -23,7 +23,10 @@ import { peekDesktopW5RecoveryForRemote } from '../canopy-runtime/desktop-w5-rec
 import { getElectronDaemonHealth } from '../canopy-runtime/electron-daemon-health';
 import { listWorkspaceRemoteControlEntities } from './workspace-remote-control-service';
 import { readAllSidebarItemsSnapshot } from '../lib/sidebar-items';
-import { runW5ReadView } from '../lib/w5-commit-log-file-store';
+import {
+  runDesktopW5CachedReadView,
+  W5_DISCOVER_REQUEST,
+} from '../canopy-runtime/w5-read-cache-server';
 import { workspaceStorageUnavailable } from '../lib/workspace-storage-availability';
 import {
   listStandaloneChats,
@@ -126,8 +129,8 @@ async function composeDesktopSessionSnapshot(
   const worktrees: RemoteControlSessionShellState['worktrees'] = [];
   // Share discovery, not composition: default-project provisioning and runtime
   // decoration must run after the write-refusing view has closed.
-  const sidebarSnapshot = await runW5ReadView(
-    { files: [], discoverWorkspaces: true },
+  const sidebarSnapshot = await runDesktopW5CachedReadView(
+    W5_DISCOVER_REQUEST,
     async (view) => {
       if (view.status === 'uncaptured' && view.error) throw view.error;
       const sidebarSnapshot = await readAllSidebarItemsSnapshot();
@@ -299,8 +302,9 @@ async function composeDesktopSessionSnapshot(
       })),
     );
   }
-  const availableModels = target?.workspaceLocalId
-    ? await destinationCatalog(target.workspaceLocalId, target.worktreeLocalId)
+  const destinationProjectId = target?.workspaceLocalId;
+  const availableModels = destinationProjectId
+    ? await destinationCatalog(destinationProjectId, target?.worktreeLocalId)
     : undefined;
   const appAdvisorItemGroups = await projectSidebarItemGroups({
     appAdvisor: true,
@@ -312,7 +316,10 @@ async function composeDesktopSessionSnapshot(
       ? {}
       : {
           availableModels,
-          providerAvailability: peekRemoteControlProviderAvailability(),
+          // Matches the catalog above: bot projects leave Antigravity out.
+          providerAvailability: peekRemoteControlProviderAvailability({
+            antigravity: !isBotProjectId(destinationProjectId ?? ''),
+          }),
         }),
     workspaces: snapshotWorkspaces,
     worktrees,

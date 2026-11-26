@@ -47,8 +47,9 @@ interface AntigravitySelect {
   values: string[];
 }
 
-// Strict by design for the pinned 1.5.1 shape: flat select options. ACP also
-// allows grouped options; check this parser when the runtime pin changes.
+// Strict by design for the pinned runtime's shape (rechecked on 1.5.14): flat
+// select options. ACP also allows grouped options; check this parser when the
+// runtime pin changes.
 function antigravitySelect(
   value: unknown,
   id: string,

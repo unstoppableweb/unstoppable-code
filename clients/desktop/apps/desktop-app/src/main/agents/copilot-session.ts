@@ -1,5 +1,6 @@
 import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/delegation/watch-delegates-tombstone';
 import { isAgentSecretRequestsEnabled } from '../agent-secrets/feature-gate';
+import { unattendedPluginOptions } from './turn-account-resolution';
 import { TranscriptForkContext } from './transcript-fork-context';
 import { captureHomeCapabilities } from './delegation/capture-home-capabilities';
 import { APP_ADVISOR_TOOL_REGISTRY } from '@canopy/desktop-shared/lib/app-advisor-tools';
@@ -11,6 +12,9 @@ import {
   getRtkManagedEnv,
 } from '@canopy/execution-engine/pipelines/config-paths';
 import { getEnhancedEnv } from '../pipelines/config-paths';
+import { writeFileAtomically } from '../lib/atomic-file';
+import { KeyedAsyncLock } from '../lib/keyed-async-lock';
+import { isErrnoException } from '../lib/type-guards';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
@@ -114,6 +118,61 @@ function hasToolKey<T extends object>(
   key: string,
 ): key is Extract<keyof T, string> {
   return Object.prototype.hasOwnProperty.call(registry, key);
+}
+
+// An SDK setup timeout can leave its readiness callback finishing after the next turn starts.
+const noticeHistoryLock = new KeyedAsyncLock();
+// A previously announced outage ended, but the transcript never confirmed its recovery.
+const unconfirmedRecovery = 'recovery-not-delivered';
+type PendingNoticeHistory = {
+  snapshot: {
+    announcedNotices: string[];
+    unavailableMcp: Record<string, string>;
+    explainedTransition?: string;
+  };
+  historyReadable: boolean;
+  liveMcpStatus: boolean;
+};
+// Keep unsaved receipts across provider replacement during a storage outage.
+const pendingNoticeHistory = new Map<string, PendingNoticeHistory>();
+
+function noticeDigest(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function restoreCopilotNotices(
+  history: unknown,
+  announced: Set<string>,
+  unavailable?: Map<string, string>,
+): string | undefined {
+  if (!history || typeof history !== 'object') return;
+  if (
+    'announcedNotices' in history &&
+    Array.isArray(history.announcedNotices)
+  ) {
+    for (const digest of history.announcedNotices) {
+      if (typeof digest === 'string' && /^[a-f0-9]{64}$/.test(digest))
+        announced.add(digest);
+    }
+  }
+  if (
+    unavailable &&
+    'unavailableMcp' in history &&
+    history.unavailableMcp &&
+    typeof history.unavailableMcp === 'object'
+  ) {
+    for (const [digest, status] of Object.entries(history.unavailableMcp)) {
+      if (/^[a-f0-9]{64}$/.test(digest) && typeof status === 'string')
+        unavailable.set(digest, status);
+    }
+  }
+  if (
+    'explainedTransition' in history &&
+    typeof history.explainedTransition === 'string' &&
+    /^[a-f0-9]{64}$/.test(history.explainedTransition)
+  )
+    return history.explainedTransition;
+  return undefined;
 }
 
 function readCapabilityDigests(
@@ -220,14 +279,13 @@ export class CopilotProvider implements AgentProvider {
     let approval: ApprovalSessionHandle | undefined;
     let awaitingUser = false;
     let lifecycleProducerReleased = false;
-    // Home-folder entries that could not be loaded are reported once per
-    // session, not once per turn.
     const announcedNotices = new Set<string>();
-    // Selected MCP servers that sat out of the previous turn, keyed by name
-    // with their status, so a notice repeats only when that mapping changes
-    // (a server recovered and failed anew, or its status moved), never while
-    // it simply stays down.
     let previousUnavailableMcp = new Map<string, string>();
+    const loggedDelegationNotices = new Set<string>();
+    let activeNoticeFile: string | undefined;
+    let historyReadable = false;
+    let liveMcpStatus = false;
+    let explainedTransition: string | undefined;
     lifetime.signal.addEventListener('abort', () => active?.abort.abort(), {
       once: true,
     });
@@ -352,15 +410,43 @@ export class CopilotProvider implements AgentProvider {
         );
         await mkdir(profile, { recursive: true, mode: 0o700 });
         const bindingFile = join(profile, 'host-session.json');
-        const notice = async (suffix: string, text: string): Promise<void> => {
+        const notice = async (
+          suffix: string,
+          text: string,
+        ): Promise<string> => {
+          const messageId = `${turnId}:${suffix}`;
           await turnEmit({
             type: 'canopy_assistant_patch',
-            messageId: `${turnId}:${suffix}`,
+            messageId,
             timestamp: Date.now(),
             revision: 1,
             role: 'system',
             patches: [{ index: 0, block: { type: 'text', text } }],
           });
+          return messageId;
+        };
+        const commitNotice = async (
+          kind: string,
+          text: string,
+        ): Promise<boolean> => {
+          // A retry can reuse the turn id with different notices.
+          const messageId = await notice(`${kind}:${noticeDigest(text)}`, text);
+          // The event router can log a failed transcript write and still drain.
+          try {
+            const { getChatStateService } =
+              await import('../services/chat-state-service');
+            const committed = await getChatStateService().hasTranscriptMessage(
+              lifecycleScope,
+              opts.chatId,
+              messageId,
+            );
+            return committed && activeNoticeFile === noticeFile;
+          } catch {
+            logMainProcessWarn(
+              '[copilot] Could not confirm the notice in the transcript.',
+            );
+            return false;
+          }
         };
         const recoverSession = async (): Promise<void> => {
           sessionId = undefined;
@@ -369,6 +455,7 @@ export class CopilotProvider implements AgentProvider {
             'Copilot could not restore the previous conversation. Starting a new conversation with your current message; earlier context is unavailable.',
           );
         };
+        let bindingDigest: string | undefined;
         let previousCapabilityDigests: { host?: string; native?: string } = {};
         if (sessionId) {
           let contents: string | undefined;
@@ -385,6 +472,7 @@ export class CopilotProvider implements AgentProvider {
             await recoverSession();
           }
           if (contents !== undefined) {
+            bindingDigest = noticeDigest(contents);
             const binding: unknown = JSON.parse(contents);
             previousCapabilityDigests = readCapabilityDigests(
               binding,
@@ -393,6 +481,119 @@ export class CopilotProvider implements AgentProvider {
             );
           }
         }
+
+        // A chat can deliver notices before the SDK creates or verifies its session.
+        const noticeFile = join(
+          profile,
+          `notices-${noticeDigest(JSON.stringify(runtime.account))}.json`,
+        );
+        if (activeNoticeFile !== noticeFile) {
+          announcedNotices.clear();
+          previousUnavailableMcp.clear();
+          loggedDelegationNotices.clear();
+          explainedTransition = undefined;
+          activeNoticeFile = noticeFile;
+          historyReadable = false;
+          liveMcpStatus = false;
+        }
+        // Earlier saves can fail after their turn ends. Read their result in
+        // queue order before deciding whether this turn needs to retry.
+        const needsRetry = await noticeHistoryLock.run(
+          noticeFile,
+          async () => {
+            const pending = pendingNoticeHistory.get(noticeFile);
+            if (pending && !historyReadable) {
+              explainedTransition = restoreCopilotNotices(
+                pending.snapshot,
+                announcedNotices,
+                previousUnavailableMcp,
+              );
+              liveMcpStatus = pending.liveMcpStatus;
+              historyReadable = pending.historyReadable;
+            }
+            if (!historyReadable) {
+              try {
+                const history: unknown = JSON.parse(
+                  await readFile(noticeFile, {
+                    encoding: 'utf8',
+                    signal: abort.signal,
+                  }),
+                );
+                const savedTransition = restoreCopilotNotices(
+                  history,
+                  announcedNotices,
+                  liveMcpStatus ? undefined : previousUnavailableMcp,
+                );
+                if (!liveMcpStatus) explainedTransition = savedTransition;
+                historyReadable = true;
+              } catch (error) {
+                abort.signal.throwIfAborted();
+                const missing =
+                  isErrnoException(error) && error.code === 'ENOENT';
+                historyReadable = missing || error instanceof SyntaxError;
+                if (!missing)
+                  logMainProcessWarn(
+                    '[copilot] Could not read notice history.',
+                  );
+              }
+            }
+            return historyReadable && pending !== undefined;
+          },
+          abort.signal,
+        );
+        abort.signal.throwIfAborted();
+        // Admit only current turns. Once a notice is delivered, keep its
+        // confirmation and save ahead of the replacement provider's read.
+        const withNoticeHistory = <T>(action: () => Promise<T>): Promise<T> =>
+          noticeHistoryLock.run(
+            noticeFile,
+            async () => {
+              if (
+                activeNoticeFile !== noticeFile ||
+                active?.abort !== abort ||
+                !turnState.ownsKeyResources()
+              )
+                throw new Error('Copilot turn was replaced.');
+              return action();
+            },
+            abort.signal,
+          );
+        const saveNoticeHistory = async (): Promise<void> => {
+          const snapshot = {
+            announcedNotices: [...announcedNotices],
+            unavailableMcp: Object.fromEntries(previousUnavailableMcp),
+            explainedTransition,
+          };
+          const pending = {
+            snapshot,
+            historyReadable,
+            liveMcpStatus,
+          };
+          if (pending.historyReadable) {
+            try {
+              await writeFileAtomically(noticeFile, JSON.stringify(snapshot), {
+                mode: 0o600,
+                durable: true,
+                beforeInstall: () => {
+                  assertCopilotConnectionGeneration(runtime.generation);
+                  return Promise.resolve();
+                },
+              });
+              pendingNoticeHistory.delete(noticeFile);
+              return;
+            } catch {
+              logMainProcessWarn('[copilot] Could not save notice history.');
+            }
+          }
+          pendingNoticeHistory.delete(noticeFile);
+          pendingNoticeHistory.set(noticeFile, pending);
+          // Bound retained chat state during a prolonged filesystem outage.
+          if (pendingNoticeHistory.size > 128) {
+            const oldest = pendingNoticeHistory.keys().next();
+            if (!oldest.done) pendingNoticeHistory.delete(oldest.value);
+          }
+        };
+        if (needsRetry) await withNoticeHistory(saveNoticeHistory);
         const currentApproval = createApprovalSession({
           sessionKey: key,
           getTurnUserMessageId: () => userMessageId,
@@ -439,10 +640,7 @@ export class CopilotProvider implements AgentProvider {
           const text = `Some of your Copilot skills or commands could not be loaded: ${inherited.skipped
             .map((entry) => entry.label)
             .join(', ')}.`;
-          if (!announcedNotices.has(text)) {
-            announcedNotices.add(text);
-            inheritedNotices.push(text);
-          }
+          inheritedNotices.push(text);
         }
         if (inherited.fingerprint !== lastInheritedFingerprint) {
           lastInheritedFingerprint = inherited.fingerprint;
@@ -474,9 +672,7 @@ export class CopilotProvider implements AgentProvider {
                   sessionId: key,
                   packageOverlay: opts.packageOverlay,
                   preferences: context.preferences,
-                  ...(opts.accountResolution
-                    ? { accountResolution: opts.accountResolution }
-                    : {}),
+                  ...unattendedPluginOptions(opts),
                   inheritedCursorCapabilities: inherited,
                   ...(inheritedPluginRefs.length > 0
                     ? { inheritedPluginRefs }
@@ -504,10 +700,11 @@ export class CopilotProvider implements AgentProvider {
           inheritedCapabilityOverlay = captured.overlay;
           if (captured.skipped.length) {
             const text = `Some home capabilities could not be passed to delegates: ${Array.from(new Set(captured.skipped)).join(', ')}.`;
-            if (!announcedNotices.has(text)) {
-              announcedNotices.add(text);
+            const digest = noticeDigest(text);
+            if (!loggedDelegationNotices.has(digest)) {
               // Child inheritance diagnostics do not belong in the parent chat.
               logMainProcessWarn('[copilot-delegation-capabilities]', text);
+              loggedDelegationNotices.add(digest);
             }
           }
         }
@@ -518,27 +715,26 @@ export class CopilotProvider implements AgentProvider {
           // eslint-disable-next-line no-console
           console.warn('[copilot-plugin-resolver]', warning);
         }
-        const warnings = [
+        const pendingNotices = new Map<string, string>();
+        for (const warning of [
           ...inheritedNotices,
-          ...[...(resolved?.cursorNotices ?? []), ...prepared.warnings].filter(
-            (notice) => {
-              if (announcedNotices.has(notice)) return false;
-              announcedNotices.add(notice);
-              return true;
-            },
-          ),
-        ].map((warning) => warning.split('Cursor').join('Copilot'));
-        if (warnings.length)
-          await turnEmit({
-            type: 'canopy_assistant_patch',
-            messageId: `${turnId}:capabilities`,
-            timestamp: Date.now(),
-            revision: 1,
-            role: 'system',
-            patches: [
-              { index: 0, block: { type: 'text', text: warnings.join('\n') } },
-            ],
+          ...(resolved?.cursorNotices ?? []),
+          ...prepared.warnings,
+        ]) {
+          const digest = noticeDigest(warning);
+          if (!announcedNotices.has(digest))
+            pendingNotices.set(digest, warning.split('Cursor').join('Copilot'));
+        }
+        if (pendingNotices.size) {
+          const text = Array.from(pendingNotices.values()).join('\n');
+          await withNoticeHistory(async () => {
+            if (await commitNotice('capabilities', text)) {
+              for (const digest of pendingNotices.keys())
+                announcedNotices.add(digest);
+              await saveNoticeHistory();
+            }
           });
+        }
         const deferredToolsAllowed = opts.deferredToolsAllowed !== false;
         const names = cursorCanopyMcpServerNames(serverMode);
         // The app's own tool servers carry the injected tools the prompt
@@ -547,6 +743,7 @@ export class CopilotProvider implements AgentProvider {
         // Cursor chat, and rejoins on the next turn once it connects.
         const reportMcpReadiness = async (
           readiness: readonly CopilotMcpServerReadiness[],
+          transition: string | undefined,
         ): Promise<boolean> => {
           const unavailable = readiness.filter(
             (server) => server.status !== 'connected',
@@ -563,7 +760,9 @@ export class CopilotProvider implements AgentProvider {
               "Couldn't connect to the app's tools for Copilot. Send again.",
             );
           const current = new Map(
-            unavailable.map((server) => [server.name, server.status] as const),
+            unavailable.map(
+              (server) => [noticeDigest(server.name), server.status] as const,
+            ),
           );
           const previous = previousUnavailableMcp;
           const changed =
@@ -573,7 +772,15 @@ export class CopilotProvider implements AgentProvider {
             );
           // The sat-out set is unchanged, so it explains no digest change and
           // there is nothing new to say.
-          if (!changed) return false;
+          if (!changed) {
+            if (!historyReadable && !liveMcpStatus) {
+              liveMcpStatus = true;
+              await saveNoticeHistory();
+            }
+            return (
+              transition !== undefined && transition === explainedTransition
+            );
+          }
           // A bound connection carries its display name; a managed name from
           // the resolver shows its friendly part, never its prefix or digest.
           const label = (name: string): string => {
@@ -604,12 +811,14 @@ export class CopilotProvider implements AgentProvider {
               `MCP server "${server.name}" is ${server.status}${reason ? `: ${reason}` : ''}.`,
             );
           }
-          const status = new Map(
-            readiness.map((server) => [server.name, server.status] as const),
+          const recoveredServers = readiness.filter(
+            (server) =>
+              server.status === 'connected' &&
+              previous.has(noticeDigest(server.name)),
           );
-          const recovered = Array.from(previous.keys())
-            .filter((name) => status.get(name) === 'connected')
-            .map(label);
+          const recovered = recoveredServers.map((server) =>
+            label(server.name),
+          );
           const needsSignIn = unavailable
             .filter((server) => server.status === 'needs-auth')
             .map((server) => label(server.name));
@@ -663,24 +872,37 @@ export class CopilotProvider implements AgentProvider {
                   ]
                 : []),
           ];
-          if (lines.length) await notice('mcp-unavailable', lines.join('\n'));
+          if (
+            lines.length &&
+            !(await commitNotice('mcp-unavailable', lines.join('\n')))
+          ) {
+            if (recoveredServers.length && activeNoticeFile === noticeFile) {
+              // Keep these entries until delivery so a still-connected server
+              // retries its recovery and a fresh outage gets a fresh reminder.
+              for (const server of recoveredServers)
+                previous.set(noticeDigest(server.name), unconfirmedRecovery);
+              liveMcpStatus = true;
+              explainedTransition = undefined;
+              await saveNoticeHistory();
+            }
+            return false;
+          }
           // Committed only once the notice is out, so an aborted turn
           // announces again on retry.
+          liveMcpStatus = true;
           previousUnavailableMcp = current;
           // Only a server joining or leaving the sat-out set moves the bound
           // tool set; a status change between two sat-out states, or a
-          // deselected server, does not explain a digest change. The set
-          // lives with the session while the digests are persisted, so after
-          // an app restart a server that reconnected gets the generic
-          // capabilities notice instead of "connected again", and a server
-          // joining the set in the same turn as an unrelated tool change
-          // suppresses that notice although it explains only part of the
-          // change. Both cost one notice, never a tool, so the set stays in
-          // memory.
+          // deselected server, does not explain a digest change.
           const joined = Array.from(current.keys()).some(
-            (name) => !previous.has(name),
+            (name) =>
+              !previous.has(name) || previous.get(name) === unconfirmedRecovery,
           );
-          return lines.length > 0 && (joined || recovered.length > 0);
+          const explainsChange =
+            lines.length > 0 && (joined || recovered.length > 0);
+          explainedTransition = explainsChange ? transition : undefined;
+          await saveNoticeHistory();
+          return explainsChange;
         };
         // Reuse the existing full interactive MCP tool allowlist and policy.
         const toolSurface = cowork
@@ -1001,7 +1223,17 @@ export class CopilotProvider implements AgentProvider {
           onToolsReady: async (snapshot, mcpReadiness) => {
             abort.signal.throwIfAborted();
             assertCopilotConnectionGeneration(runtime.generation);
-            const mcpExplainsDigest = await reportMcpReadiness(mcpReadiness);
+            const transition =
+              bindingDigest &&
+              previousCapabilityDigests.native &&
+              previousCapabilityDigests.native !== snapshot.digest
+                ? noticeDigest(JSON.stringify([bindingDigest, snapshot.digest]))
+                : undefined;
+            const mcpExplainsDigest = await withNoticeHistory(() =>
+              reportMcpReadiness(mcpReadiness, transition),
+            );
+            if (active?.abort !== abort || !turnState.ownsKeyResources())
+              return;
             const hostChanged = Boolean(
               previousCapabilityDigests.host &&
               previousCapabilityDigests.host !== capabilitySnapshot.digest,
@@ -1025,12 +1257,14 @@ export class CopilotProvider implements AgentProvider {
               throw new Error(
                 'Copilot could not verify the initialized tool list.',
               );
-            const temporary = `${bindingFile}.${randomUUID()}.tmp`;
+            const bindingVersionId = randomUUID();
+            const temporary = `${bindingFile}.${bindingVersionId}.tmp`;
             try {
               await writeFile(
                 temporary,
                 JSON.stringify({
                   version: 2,
+                  bindingVersionId,
                   runtimeVersion: COPILOT_RUNTIME_VERSION,
                   nativeToolSnapshot,
                   sessionId: id,

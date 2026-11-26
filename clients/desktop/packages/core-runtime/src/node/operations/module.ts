@@ -1,4 +1,7 @@
 import {
+  CORE_OPERATION_LEDGER_INSTRUCTION_DEFINITIONS,
+  CORE_OPERATION_LEDGER_QUERY_DEFINITIONS,
+  CORE_OPERATION_LEDGER_STREAM_DEFINITIONS,
   OPERATION_GRANTS,
   OPERATION_INSTRUCTION_DEFINITIONS,
   OPERATION_QUERY_DEFINITIONS,
@@ -10,6 +13,7 @@ import {
 } from '../../kernel/runtime-profile-graph';
 import type { RuntimeHealthCheck } from '../../kernel/service-container';
 import { createCoreOperationHandlers } from './handlers';
+import { createCoreOperationLedgerHandlers } from './ledger-handlers';
 import type { OperationService } from './service';
 
 /** What a peer needs for `core.operation.*` where a host serves it. */
@@ -22,6 +26,10 @@ export const CORE_OPERATION_OPERATIONS: readonly string[] = [
   ...Object.keys(OPERATION_QUERY_DEFINITIONS),
   ...Object.keys(OPERATION_INSTRUCTION_DEFINITIONS),
   ...Object.keys(OPERATION_STREAM_DEFINITIONS),
+  // The ledger owner's internal operations (CAN-6986 L3), bound to its lease.
+  ...Object.keys(CORE_OPERATION_LEDGER_QUERY_DEFINITIONS),
+  ...Object.keys(CORE_OPERATION_LEDGER_INSTRUCTION_DEFINITIONS),
+  ...Object.keys(CORE_OPERATION_LEDGER_STREAM_DEFINITIONS),
 ];
 
 /**
@@ -35,6 +43,7 @@ export function createCoreOperationModule(
   options: { readonly health?: () => RuntimeHealthCheck } = {},
 ): RuntimeModule {
   const handlers = createCoreOperationHandlers(service);
+  const ledger = createCoreOperationLedgerHandlers(service);
   return defineRuntimeModule({
     name: 'core.operation',
     plane: 'core',
@@ -47,10 +56,23 @@ export function createCoreOperationModule(
       },
     ],
     definitions: {
-      queries: OPERATION_QUERY_DEFINITIONS,
-      instructions: OPERATION_INSTRUCTION_DEFINITIONS,
-      streams: OPERATION_STREAM_DEFINITIONS,
+      queries: {
+        ...OPERATION_QUERY_DEFINITIONS,
+        ...CORE_OPERATION_LEDGER_QUERY_DEFINITIONS,
+      },
+      instructions: {
+        ...OPERATION_INSTRUCTION_DEFINITIONS,
+        ...CORE_OPERATION_LEDGER_INSTRUCTION_DEFINITIONS,
+      },
+      streams: {
+        ...OPERATION_STREAM_DEFINITIONS,
+        ...CORE_OPERATION_LEDGER_STREAM_DEFINITIONS,
+      },
     },
-    handlers,
+    handlers: {
+      queries: { ...handlers.queries, ...ledger.queries },
+      instructions: { ...handlers.instructions, ...ledger.instructions },
+      streams: { ...handlers.streams, ...ledger.streams },
+    },
   });
 }

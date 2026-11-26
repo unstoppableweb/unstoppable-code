@@ -65,8 +65,12 @@ jest.mock('../electron-daemon-connection', () => ({
 }));
 
 import {
+  CORE_OPERATION_LEDGER_INSTRUCTION_DEFINITIONS,
+  CORE_OPERATION_LEDGER_QUERY_DEFINITIONS,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
+  CORE_TRANSPORT_QUERY_DEFINITIONS,
   MUTATION_FENCE_GRANTS,
+  OPERATION_LEDGER_GRANTS,
   WORKER_PIPELINE_GRANTS,
 } from '@canopy/protocol/canopy-core';
 import {
@@ -108,14 +112,18 @@ describe('Electron daemon owner session (CAN-5771)', () => {
       definitions: ELECTRON_DAEMON_OWNER_DEFINITIONS,
     });
     expect(isDaemonPipelineOwnerPossible()).toBe(true);
-    // The owner caller holds the host and fence publish grants only, under
-    // its own lease (D10, CAN-4730 E2-G).
+    // The owner caller holds the host, fence publish and ledger owner grants
+    // only, under its own lease (D10, CAN-4730 E2-G, CAN-6986 L3).
     expect(mockCallers.at(-1)).toEqual({
       principalId: 'electron-main',
       clientInstanceId: DAEMON_PIPELINE_OWNER_CLIENT_INSTANCE_ID,
       authorityId: 'authority-1',
       interfaceKind: 'desktop',
-      grants: [WORKER_PIPELINE_GRANTS.host, MUTATION_FENCE_GRANTS.publish],
+      grants: [
+        WORKER_PIPELINE_GRANTS.host,
+        MUTATION_FENCE_GRANTS.publish,
+        OPERATION_LEDGER_GRANTS.owner,
+      ],
     });
     expect(mockServiceOptions[0]).toMatchObject({
       lease: {
@@ -128,7 +136,15 @@ describe('Electron daemon owner session (CAN-5771)', () => {
     expect(mockServiceOptions[0]).not.toHaveProperty('onReachability');
   });
 
-  it('the owner session declares only the lease, runtime reads, the host request channel, the fence publish, the write activity stream and the definitions import (CAN-7523)', () => {
+  it('the owner session declares only the lease, runtime reads, the host request channel, the fence publish, the write activity stream, the definitions import (CAN-7523) and the operation ledger (CAN-6986 L3)', () => {
+    expect(
+      Object.keys(ELECTRON_DAEMON_OWNER_DEFINITIONS.queries).sort(),
+    ).toEqual(
+      [
+        ...Object.keys(CORE_TRANSPORT_QUERY_DEFINITIONS),
+        ...Object.keys(CORE_OPERATION_LEDGER_QUERY_DEFINITIONS),
+      ].sort(),
+    );
     expect(
       Object.keys(ELECTRON_DAEMON_OWNER_DEFINITIONS.instructions).sort(),
     ).toEqual(
@@ -137,11 +153,13 @@ describe('Electron daemon owner session (CAN-5771)', () => {
         'core.mutationFence.publish',
         'worker.pipeline.hostRequest.respond',
         'core.pipeline.definition.import',
+        ...Object.keys(CORE_OPERATION_LEDGER_INSTRUCTION_DEFINITIONS),
       ].sort(),
     );
     expect(Object.keys(ELECTRON_DAEMON_OWNER_DEFINITIONS.streams)).toEqual([
       'worker.pipeline.hostRequests',
       'core.mutationFence.activity',
+      'core.operationLedger.events',
     ]);
   });
 

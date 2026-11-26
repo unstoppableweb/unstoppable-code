@@ -16,6 +16,8 @@ import type {
 } from '@canopy/protocol/automations';
 import {
   chatAutomationToPipeline,
+  chatAutomationTriggers,
+  type ChatAutomationTrigger,
   convertibleChatAutomation,
   type ChatAutomationAction,
   type ChatAutomationConversionRefusal,
@@ -45,13 +47,19 @@ import { isCoworkWorkspace } from '../lib/workspace-registry';
 import {
   readPipelineLocalMetadata,
   recordUserPipelineOwner,
-  setUserPipelineAgentAuthor,
+  setUserPipelineAgentAuthorIfCurrent,
+  withCurrentUserPipelineRevision,
   setUserPipelineChatPluginDefaults,
   setUserPipelineNativeGrant,
   setUserPipelineOwnerAutomation,
   type PipelineNativeGrant,
 } from '../pipelines/pipeline-local-metadata-store';
 import { getStoredPipelineBySource } from '../pipelines/pipeline-service';
+import {
+  restorePersonApproval,
+  stampPersonApproval,
+} from '../pipelines/pipeline-person-approval';
+import { withPipelineScheduleGuard } from '../pipelines/pipeline-schedule-guard';
 import { automationSendCaller } from './automation-send';
 import { chatPluginPortability } from './chat-plugin-portability';
 import {
@@ -332,13 +340,31 @@ export function regeneratedOwnedChatAction(
   );
 }
 
+/** What an installed copy's new pipeline declares: Manual alone (CAN-5782). */
+const INSTALLED_COPY_TRIGGERS: readonly ChatAutomationTrigger[] = ['dispatch'];
+
 /**
  * Saves the activity's owned pipeline and returns the action that runs it:
  * a new pipeline, or `inPlace` the one it already owns, against the revision
  * that was loaded so a concurrent edit is never overwritten. Throws, changing
  * nothing, for an activity that can't convert.
+ *
+ * CAN-5782: an in-place save holds the pipeline's schedule guard through its
+ * write and its approval stamp; a person's save (an activity with no agent
+ * author) stamps the content it committed.
  */
-export async function saveOwnedChatPipeline(
+export function saveOwnedChatPipeline(
+  stored: ScheduledActivity,
+  inPlace?: OwnedPipelineInPlace,
+): Promise<OwnedPipelineReplacement> {
+  return inPlace
+    ? withPipelineScheduleGuard(inPlace.pipelineId, () =>
+        saveOwnedChatPipelineUnguarded(stored, inPlace),
+      )
+    : saveOwnedChatPipelineUnguarded(stored);
+}
+
+async function saveOwnedChatPipelineUnguarded(
   stored: ScheduledActivity,
   inPlace?: OwnedPipelineInPlace,
 ): Promise<OwnedPipelineReplacement> {
@@ -366,16 +392,26 @@ export async function saveOwnedChatPipeline(
       "This automation can't convert (not_a_chat_action).",
     );
   // CAN-5479: the selections that travel are the pipeline's defaults.
+  // CAN-5782: an in-place save keeps the stored Workflow and Manual
+  // triggers exactly, so a person's choice survives every chat edit. A new
+  // pipeline declares both, except an installed copy, which stays Manual
+  // until a person turns Workflow on.
+  const triggers = inPlace
+    ? chatAutomationTriggers(inPlace.previous.content)
+    : activity.installedFrom !== undefined
+      ? INSTALLED_COPY_TRIGGERS
+      : undefined;
   const converted = chatAutomationToPipeline(activity, {
     portable: await chatPluginPortability(action.pluginSelections),
+    ...(triggers !== undefined ? { triggers } : {}),
   });
   const { pipeline } = converted;
   const owner = await conversionOwner(activity, action);
   // CAN-5479: the settings its runs keep, which D11 would refuse an agent's.
   const authority = nativeGrantAuthority(action);
   // What a rollback of an in-place save puts back besides the content: the
-  // owner, the agent author, whose runs keep their admission (D11), and the
-  // native grant.
+  // owner, the agent author, whose runs keep their admission (D11), the
+  // native grant, and a person's approval (CAN-5782).
   const previousMetadata = inPlace
     ? readPipelineLocalMetadata(userPipelineLocator(inPlace.pipelineId))
     : undefined;
@@ -392,39 +428,46 @@ export async function saveOwnedChatPipeline(
       ...(inPlace
         ? {
             id: inPlace.pipelineId,
-            ...(inPlace.previous.info.revision !== undefined
-              ? { expectedRevision: inPlace.previous.info.revision }
-              : {}),
+            expectedRevision: inPlace.previous.info.revision ?? 0,
           }
         : {}),
       name: pipeline.name,
       description: '',
       icon: '',
       content: pipeline,
+      ...(inPlace
+        ? {}
+        : { owner: { owner, agentAuthor: activity.agentAuthor ?? null } }),
     },
     AUTOMATION_PIPELINE_CALLER,
+    inPlace || activity.agentAuthor
+      ? { author: activity.agentAuthor ?? null, owner }
+      : undefined,
   );
   if (!saved.success || !saved.data)
     throw new OwnedChatConversionError(
-      'pipeline_save',
+      saved.markerRefused ? 'owner_not_recorded' : 'pipeline_save',
       saved.error ?? 'The workflow could not be saved.',
     );
   const pipelineId = saved.data.id;
   const savedRevision = saved.data.revision;
-  const rollback = async (): Promise<void> => {
+  const restoreUnderGuard = async (): Promise<void> => {
     if (!inPlace) {
-      await deleteUserPipeline(pipelineId, null, AUTOMATION_PIPELINE_CALLER);
+      const removed = await deleteUserPipeline(
+        pipelineId,
+        savedRevision,
+        AUTOMATION_PIPELINE_CALLER,
+      );
+      if (!removed.success && !removed.revisionRefused)
+        throw new Error(removed.error ?? 'The workflow could not be removed.');
       return;
     }
-    // Back to what was loaded, unless someone has written it since: then
-    // their content and metadata stay as they wrote them.
     const { info, content, rawContent } = inPlace.previous;
+    const previousAuthor = previousMetadata?.agentAuthor;
     const restored = await saveUserPipeline(
       {
         id: pipelineId,
-        ...(savedRevision !== undefined
-          ? { expectedRevision: savedRevision }
-          : {}),
+        expectedRevision: savedRevision,
         name: info.name,
         description: info.description ?? '',
         icon: info.icon ?? '',
@@ -432,31 +475,66 @@ export async function saveOwnedChatPipeline(
         rawContent,
       },
       AUTOMATION_PIPELINE_CALLER,
+      previousAuthor || previousMetadata?.markerWritePending
+        ? {
+            author: previousAuthor ?? null,
+            owner: previousMetadata?.owner,
+            ...(previousMetadata?.markerWritePending && {
+              preservePending: true,
+            }),
+          }
+        : undefined,
     );
-    if (!restored.success) {
-      logMainProcessWarn('Kept a workflow someone changed meanwhile', {
-        operation: 'restore-owned-pipeline',
-      });
-      return;
-    }
-    if (previousMetadata?.owner !== undefined)
-      recordUserPipelineOwner(pipelineId, previousMetadata.owner);
-    setUserPipelineAgentAuthor(
+    if (restored.revisionRefused) return;
+    if (!restored.success || !restored.data)
+      throw new Error(
+        restored.error ?? 'The previous workflow could not be restored.',
+      );
+    const revision = restored.data.revision;
+    const metadata = withCurrentUserPipelineRevision(
       pipelineId,
-      previousMetadata?.agentAuthor ?? null,
+      revision,
+      () => {
+        if (
+          previousAuthor === undefined &&
+          !previousMetadata?.markerWritePending
+        ) {
+          const cleared = setUserPipelineAgentAuthorIfCurrent(
+            pipelineId,
+            null,
+            { revision },
+          );
+          if (cleared !== 'written' && cleared !== 'unchanged') return false;
+        }
+        if (previousMetadata?.owner !== undefined)
+          recordUserPipelineOwner(pipelineId, previousMetadata.owner);
+        setUserPipelineNativeGrant(
+          pipelineId,
+          restoredGrant(
+            previousMetadata?.nativeGrant,
+            info.revision,
+            revision,
+            pipelineId,
+          ),
+        );
+        setUserPipelineChatPluginDefaults(
+          pipelineId,
+          previousMetadata?.chatPluginDefaults ?? null,
+        );
+        return true;
+      },
     );
-    setUserPipelineNativeGrant(
+    if (metadata === 'newer_revision') return;
+    if (metadata !== true)
+      throw new Error(
+        'The previous workflow’s settings could not be restored.',
+      );
+    // The previous approval, which a failed edit must not stop the schedule
+    // for, on the same compare-and-set as the stamp it replaces.
+    await restorePersonApproval(
       pipelineId,
-      restoredGrant(
-        previousMetadata?.nativeGrant,
-        inPlace.previous.info.revision,
-        restored.data?.revision,
-        pipelineId,
-      ),
-    );
-    setUserPipelineChatPluginDefaults(
-      pipelineId,
-      previousMetadata?.chatPluginDefaults ?? null,
+      previousMetadata?.personApprovedDigest,
+      restored.data?.revision,
     );
     try {
       await writePluginPreferences(pipelineId, previousPreferences);
@@ -467,6 +545,9 @@ export async function saveOwnedChatPipeline(
       });
     }
   };
+  // A rollback the caller runs later holds the guard as the save did.
+  const rollback = (): Promise<void> =>
+    withPipelineScheduleGuard(pipelineId, restoreUnderGuard);
   try {
     // The grant names the revision this save wrote and its content as
     // stored; a write since then is not the automation's. A person's
@@ -488,16 +569,33 @@ export async function saveOwnedChatPipeline(
           ...authority,
         };
     }
-    recordUserPipelineOwner(pipelineId, owner);
-    // An agent's automation keeps its admission (D11); a person's save, whose
-    // activity carries no agent author, clears it.
-    setUserPipelineAgentAuthor(pipelineId, activity.agentAuthor ?? null);
-    setUserPipelineOwnerAutomation(pipelineId, activity.id);
-    setUserPipelineNativeGrant(pipelineId, grant);
-    setUserPipelineChatPluginDefaults(
+    const metadata = withCurrentUserPipelineRevision(
       pipelineId,
-      converted.pluginDefaults ?? null,
+      savedRevision,
+      () => {
+        if (!inPlace && activity.agentAuthor === undefined) {
+          const cleared = setUserPipelineAgentAuthorIfCurrent(
+            pipelineId,
+            null,
+            { revision: savedRevision },
+          );
+          if (cleared !== 'written' && cleared !== 'unchanged') return false;
+        }
+        recordUserPipelineOwner(pipelineId, owner);
+        setUserPipelineOwnerAutomation(pipelineId, activity.id);
+        setUserPipelineNativeGrant(pipelineId, grant);
+        setUserPipelineChatPluginDefaults(
+          pipelineId,
+          converted.pluginDefaults ?? null,
+        );
+        return true;
+      },
     );
+    if (metadata !== true)
+      throw new OwnedChatConversionError(
+        'owner_not_recorded',
+        'The workflow’s owner could not be recorded.',
+      );
     // The selections that don't travel, as the pipeline's own preferences.
     await writePluginPreferences(
       pipelineId,
@@ -533,8 +631,33 @@ export async function saveOwnedChatPipeline(
         'plugins_not_recorded',
         'The workflow’s plugins could not be recorded.',
       );
+    // CAN-5782: a person's save is their approval of the content it
+    // committed. A skipped stamp leaves the previous digest, which doesn't
+    // match this content, so the save itself still stands.
+    if (activity.agentAuthor === undefined && savedRevision !== undefined)
+      await withPipelineScheduleGuard(pipelineId, () =>
+        stampPersonApproval(pipelineId, savedRevision),
+      );
   } catch (error) {
-    await rollback();
+    try {
+      await rollback();
+    } catch (rollbackError) {
+      // The conversion's own error stays first; the caller learns that the
+      // previous workflow did not come back (the cause is only logged).
+      logMainProcessWarn('Could not restore the previous workflow', {
+        operation: 'restore-owned-pipeline',
+        pipelineId,
+        errorType:
+          rollbackError instanceof Error
+            ? rollbackError.name
+            : typeof rollbackError,
+      });
+      const message = error instanceof Error ? error.message : String(error);
+      const reported = `${message} and the previous workflow could not be restored`;
+      throw error instanceof OwnedChatConversionError
+        ? new OwnedChatConversionError(error.reason, reported)
+        : new Error(reported);
+    }
     throw error;
   }
   return {

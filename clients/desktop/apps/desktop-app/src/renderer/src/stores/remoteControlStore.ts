@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
+import { parseAuthorityQualifiedId } from '@canopy/protocol/authority-qualified-id';
 import type {
   CanopyApi,
   RemoteControlApi,
@@ -47,6 +48,28 @@ function requireRemoteControlApi(): RemoteControlApi {
   return api;
 }
 
+/** Where a paired computer's id lives: the computer and its own id there. */
+export interface PairedComputerAddress {
+  /** The computer's relay device id, as `PairedComputersApi` takes it. */
+  deviceId: string;
+  /** The id as that computer knows it; pass this in its calls. */
+  localId: string;
+}
+
+/**
+ * Splits a `computer-<deviceId>:<localId>` id (CAN-7757) into the computer
+ * and the id it knows. Null for this computer's own ids and for cloud ids:
+ * those keep their own paths. Whoever calls the computer strips the
+ * qualifier, since main and the other computer refuse qualified ids.
+ */
+export function pairedComputerAddress(
+  id: string,
+): PairedComputerAddress | null {
+  const parsed = parseAuthorityQualifiedId(id);
+  if (parsed?.authority.kind !== 'paired-computer') return null;
+  return { deviceId: parsed.authority.deviceId, localId: parsed.localId };
+}
+
 export function readRemoteControlContext(): RemoteControlContext {
   const api = getRemoteControlApi();
   if (!api) return { mode: 'local' };
@@ -66,6 +89,7 @@ export function defaultRemoteControlState(): RemoteControlState {
     thisDevice: null,
     allowIncoming: false,
     allowRemoteUpdates: false,
+    allowWebPreview: false,
     hosts: [],
     controllers: [],
     discoverable: [],
@@ -99,6 +123,7 @@ interface RemoteControlStoreState {
   openMachine: (deviceId: string | null) => Promise<void>;
   setAllowIncoming: (allow: boolean) => Promise<void>;
   setAllowRemoteUpdates: (allow: boolean) => Promise<void>;
+  setAllowWebPreview: (allow: boolean) => Promise<void>;
   /**
    * This computer's inventory sync switch (CAN-5986). Turning it off deletes
    * this computer's synced lists from the web; callers confirm first.
@@ -162,6 +187,8 @@ export const useRemoteControlStore = create<RemoteControlStoreState>((set) => {
       apply((api) => api.setAllowIncoming(allow)),
     setAllowRemoteUpdates: (allow): Promise<void> =>
       apply((api) => api.setAllowRemoteUpdates(allow)),
+    setAllowWebPreview: (allow): Promise<void> =>
+      apply((api) => api.setAllowWebPreview(allow)),
     setInventorySyncEnabled: (enabled): Promise<void> =>
       apply((api) => api.setInventorySyncEnabled(enabled)),
     openPairingWindow: (): Promise<RemoteControlOpenPairingWindowResult> =>

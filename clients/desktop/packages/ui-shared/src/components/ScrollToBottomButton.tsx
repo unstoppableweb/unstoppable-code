@@ -1,7 +1,7 @@
 import { memo, type JSX, type MouseEventHandler } from 'react';
 import { ArrowUp } from '../icons/AppIcons';
-import { Button } from './Button';
-import { Tooltip } from './Tooltip';
+import { Button } from '../primitives/Button';
+import { Tooltip } from '../primitives/Tooltip';
 
 export interface ScrollToBottomButtonProps {
   onClick: MouseEventHandler<HTMLButtonElement>;

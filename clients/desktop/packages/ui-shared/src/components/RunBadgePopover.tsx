@@ -1,8 +1,8 @@
 import type { JSX } from 'react';
-import { Dot, type DotTone } from './Badge';
+import { Dot, type DotTone } from '../primitives/Badge';
 import { BADGE_HOVER_CARD_SURFACE } from './ChatPreviewPopover';
-import { RichHoverCard } from './RichHoverTooltip';
-import { Stack } from './Stack';
+import { RichHoverCard } from '../primitives/RichHoverTooltip';
+import { Stack } from '../primitives/Stack';
 
 export interface RunBadgeRow {
   id: string;

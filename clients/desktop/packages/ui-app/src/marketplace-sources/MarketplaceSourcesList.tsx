@@ -1,7 +1,7 @@
 'use client';
 
 import { ControlButton } from '@canopy/ui-shared/components';
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
 import type { MarketplaceSource } from '@canopy/app-core/client';
 import {

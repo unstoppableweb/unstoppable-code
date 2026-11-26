@@ -1,16 +1,16 @@
 'use client';
 
-import { DisclosureToggle } from '../Disclosure';
-import { Stack } from '../Stack';
+import { DisclosureToggle } from '../../primitives/Disclosure';
+import { Stack } from '../../primitives/Stack';
 import { useState, type JSX } from 'react';
-import { Notice } from '../Notice';
+import { Notice } from '../../primitives/Notice';
 import {
   SegmentedControl,
   type SegmentedControlOption,
-} from '../SegmentedControl';
-import { StatusPill } from '../StatusPill';
+} from '../../primitives/SegmentedControl';
+import { StatusPill } from '../../primitives/StatusPill';
 import { SettingsRowsRow } from '../settings/SettingsRows';
-import { ToggleSwitch } from '../ToggleSwitch';
+import { ToggleSwitch } from '../../primitives/ToggleSwitch';
 import type {
   AgentAccessGroupRow,
   AgentAccessLevel,

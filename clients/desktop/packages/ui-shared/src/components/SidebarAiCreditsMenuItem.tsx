@@ -6,7 +6,7 @@ import {
   DropdownMenuItem,
   DropdownMenuItemIcon,
   DropdownMenuItemTrailing,
-} from './DropdownMenu';
+} from '../primitives/DropdownMenu';
 
 export { AI_CREDITS_LABEL } from './aiCreditsLabel';
 

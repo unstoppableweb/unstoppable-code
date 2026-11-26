@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react';
-import { Button } from '@canopy/ui-shared/components/Button';
+import { Button } from '@canopy/ui-shared/primitives/Button';
 import {
   TurnTimer as SharedTurnTimer,
   type TurnCompletionStatus,

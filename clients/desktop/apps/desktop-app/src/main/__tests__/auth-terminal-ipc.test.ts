@@ -1,10 +1,14 @@
+import { EventEmitter } from 'node:events';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { ProviderConnectionEvent } from '../lib/provider-connection-events';
 import type { AuthTerminalEventSender } from '../ipc/auth-terminal-events';
 import type { refreshOpenCodeAccounts } from '../opencode/connection';
+import { isMirrored } from '../remote-control/host/main-window-pushes';
 
 const mockSetEventSender = jest.fn<void, [AuthTerminalEventSender]>();
 const mockStart = jest.fn();
+// Creating the sign-in, after its session is named; throws to fail a start.
+const mockCreate = jest.fn();
 const mockWrite = jest.fn();
 const mockResize = jest.fn();
 const mockStop = jest.fn();
@@ -49,6 +53,8 @@ jest.mock('../sign-in-runs/sign-in-runs', () => ({
     cols: number;
     rows: number;
     verifiedOpenCodeExecutable?: string;
+    remote?: boolean;
+    onSessionId?: (sessionId: string) => void;
   }): Promise<{ sessionId: string }> =>
     Promise.resolve().then(() => {
       const sessionId: unknown = mockStart(
@@ -56,13 +62,44 @@ jest.mock('../sign-in-runs/sign-in-runs', () => ({
         request.cols,
         request.rows,
         request.verifiedOpenCodeExecutable,
+        // Only remote starts carry the flag, so local calls keep their shape.
+        ...(request.remote === undefined ? [] : [request.remote]),
       );
+      // The real start names the session before it creates the sign-in.
+      request.onSessionId?.(String(sessionId));
+      mockCreate(String(sessionId));
       return { sessionId: String(sessionId) };
     }),
   writeSignInTerminal: (...args: unknown[]): unknown => mockWrite(...args),
   resizeSignInTerminal: (...args: unknown[]): unknown => mockResize(...args),
   stopSignInTerminal: (...args: unknown[]): unknown => mockStop(...args),
   getActiveSignInTerminalSessionId: (): unknown => mockGetActiveSessionId(),
+}));
+
+// A window's web contents: destroyed once it emits `destroyed`.
+function fakeSender(id: number): EventEmitter & {
+  id: number;
+  isDestroyed(): boolean;
+  send(): void;
+} {
+  let destroyed = false;
+  const sender = Object.assign(new EventEmitter(), {
+    id,
+    isDestroyed: (): boolean => destroyed,
+    send: (): void => undefined,
+  });
+  sender.once('destroyed', () => {
+    destroyed = true;
+  });
+  return sender;
+}
+
+// The remote bridge window's web contents carry another computer's calls.
+const BRIDGE_SENDER = fakeSender(99);
+const APP_SENDER = fakeSender(1);
+jest.mock('../remote-control/host/bridge-window', () => ({
+  resolveRemoteBridgeSender: (sender: { id: number }): string | null =>
+    sender.id === 99 ? 'controller-device' : null,
 }));
 
 jest.mock('../lib/window-send', () => ({
@@ -86,7 +123,12 @@ jest.mock('../auth/provider-auth-state', () => ({
   },
 }));
 
+jest.mock('../ipc/app-error-policy', () => ({
+  ipcShowsRawErrorDetail: (): boolean => false,
+}));
+
 import { registerAuthTerminalHandlers } from '../ipc/auth-terminal';
+import { toIpcRejection } from '../ipc/app-error-rejection';
 
 function registerAndGetSender(): AuthTerminalEventSender {
   registerAuthTerminalHandlers(() => null);
@@ -163,7 +205,10 @@ async function startOpenCodeLogin(): Promise<void> {
     ([channel]) => channel === IPC_CHANNELS.authTerminalStart,
   )?.[1];
   if (!handler) throw new Error('Missing start handler');
-  await handler({}, { provider: 'opencode', cols: 80, rows: 24 });
+  await handler(
+    { sender: APP_SENDER },
+    { provider: 'opencode', cols: 80, rows: 24 },
+  );
 }
 
 it('keeps the login runtime revocable until the terminal exits', async () => {
@@ -318,7 +363,7 @@ it('an unavailable worker fails start with the existing message shape', async ()
   )?.[1];
   if (!handler) throw new Error('Missing start handler');
   await expect(
-    handler({}, { provider: 'claude', cols: 80, rows: 24 }),
+    handler({ sender: APP_SENDER }, { provider: 'claude', cols: 80, rows: 24 }),
   ).rejects.toThrow('Sign-in could not start on the local worker.');
   const claudeFailure: unknown = expect.objectContaining({
     provider: 'claude',
@@ -515,7 +560,7 @@ it.each(['claude', 'opencode'] as const)(
         ([channel]) => channel === IPC_CHANNELS.authTerminalStop,
       )?.[1];
       if (!stopHandler) throw new Error('Missing stop handler');
-      stopHandler({}, { sessionId: 'opencode-login' });
+      stopHandler({ sender: APP_SENDER }, { sessionId: 'opencode-login' });
       sender(IPC_CHANNELS.authTerminalExit, {
         sessionId: 'opencode-login',
         provider,
@@ -546,3 +591,573 @@ it.each(['claude', 'opencode'] as const)(
     }
   },
 );
+
+describe('sign-in another computer started through Remote Control (CAN-6718)', () => {
+  // No other sign-in is running unless a case says so: a bridge's start
+  // would otherwise meet the shared fixture's live OpenCode session.
+  beforeEach(() => {
+    mockGetActiveSessionId.mockReturnValue(null);
+  });
+
+  function startHandler(): (event: unknown, request: unknown) => unknown {
+    registerAndGetSender();
+    const handler = mockRegisterIpcHandler.mock.calls.find(
+      ([channel]) => channel === IPC_CHANNELS.authTerminalStart,
+    )?.[1];
+    if (!handler) throw new Error('Missing start handler');
+    return handler;
+  }
+
+  it('marks a start from the remote bridge as remote, for Claude and Antigravity', async () => {
+    const handler = startHandler();
+    mockStart.mockReturnValue('remote-login');
+    await handler(
+      { sender: BRIDGE_SENDER },
+      { provider: 'claude', cols: 80, rows: 24 },
+    );
+    await handler(
+      { sender: BRIDGE_SENDER },
+      { provider: 'antigravity', cols: 80, rows: 24 },
+    );
+    expect(mockStart).toHaveBeenNthCalledWith(
+      1,
+      'claude',
+      80,
+      24,
+      undefined,
+      true,
+    );
+    expect(mockStart).toHaveBeenNthCalledWith(
+      2,
+      'antigravity',
+      80,
+      24,
+      undefined,
+      true,
+    );
+  });
+
+  // A remote sign-in waits on a code from another computer; when that
+  // computer's bridge goes away, or the code never comes, it must not keep
+  // the sign-in process running on this one.
+  it('stops a remote sign-in when its bridge goes away, for every provider', async () => {
+    const handler = startHandler();
+    for (const provider of ['claude', 'antigravity'] as const) {
+      const bridge = fakeSender(99);
+      mockStart.mockReturnValueOnce(`${provider}-login`);
+      await handler({ sender: bridge }, { provider, cols: 80, rows: 24 });
+      expect(mockStop).not.toHaveBeenCalled();
+      bridge.emit('destroyed');
+      expect(mockStop).toHaveBeenCalledWith(`${provider}-login`);
+      mockStop.mockClear();
+    }
+    // This computer's own window keeps its sign-in.
+    const app = fakeSender(1);
+    mockStart.mockReturnValueOnce('local-login');
+    await handler({ sender: app }, { provider: 'claude', cols: 80, rows: 24 });
+    app.emit('destroyed');
+    expect(mockStop).not.toHaveBeenCalled();
+  });
+
+  // The deadline is one setTimeout per remote sign-in: 660 s, a backstop
+  // one minute after a sign-in's own 600-second deadline.
+  it('bounds a remote sign-in with a backstop deadline and forgets it once it exits', async () => {
+    jest.useFakeTimers();
+    try {
+      const sender = registerAndGetSender();
+      const handler = mockRegisterIpcHandler.mock.calls.find(
+        ([channel]) => channel === IPC_CHANNELS.authTerminalStart,
+      )?.[1];
+      if (!handler) throw new Error('Missing start handler');
+      const bridge = fakeSender(99);
+      mockStart.mockReturnValueOnce('slow-login');
+      await handler(
+        { sender: bridge },
+        { provider: 'claude', cols: 80, rows: 24 },
+      );
+      jest.advanceTimersByTime(659_999);
+      expect(mockStop).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1);
+      expect(mockStop).toHaveBeenCalledWith('slow-login');
+      mockStop.mockClear();
+      // A sign-in that exits on its own drops its deadline and bridge hook.
+      mockStart.mockReturnValueOnce('quick-login');
+      await handler(
+        { sender: bridge },
+        { provider: 'claude', cols: 80, rows: 24 },
+      );
+      sender(IPC_CHANNELS.authTerminalExit, {
+        sessionId: 'quick-login',
+        provider: 'claude',
+        exitCode: 0,
+        signal: null,
+      });
+      jest.advanceTimersByTime(660_000);
+      bridge.emit('destroyed');
+      expect(mockStop).not.toHaveBeenCalled();
+      expect(bridge.listenerCount('destroyed')).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps a start from this computer’s own window local', async () => {
+    const handler = startHandler();
+    mockStart.mockReturnValue('local-login');
+    await handler(
+      { sender: APP_SENDER },
+      { provider: 'antigravity', cols: 80, rows: 24 },
+    );
+    expect(mockStart).toHaveBeenCalledWith('antigravity', 80, 24, undefined);
+  });
+  function handlerFor(
+    channel: string,
+  ): (event: unknown, request: unknown) => unknown {
+    const handler = mockRegisterIpcHandler.mock.calls.find(
+      ([registered]) => registered === channel,
+    )?.[1];
+    if (!handler) throw new Error(`Missing ${channel} handler`);
+    return handler;
+  }
+
+  // CAN-6718 review: output carries the sign-in link and the session id
+  // input is typed into, so a bridge's sign-in is heard only through that
+  // bridge, and this computer's own copy is never mirrored to controllers.
+  it('sends a bridge’s sign-in output and exit only to that bridge', async () => {
+    const send = registerAndGetSender();
+    const handler = handlerFor(IPC_CHANNELS.authTerminalStart);
+    const bridge = fakeSender(99);
+    mockStart.mockReturnValueOnce('remote-login');
+    await handler(
+      { sender: bridge },
+      { provider: 'claude', cols: 80, rows: 24 },
+    );
+    const output = { sessionId: 'remote-login', data: 'https://claude.ai/x' };
+    send(IPC_CHANNELS.authTerminalOutput, output);
+    expect(mockSendToWindow).toHaveBeenCalledTimes(1);
+    expect(mockSendToWindow).toHaveBeenCalledWith(
+      expect.objectContaining({ webContents: bridge }),
+      IPC_CHANNELS.authTerminalOutput,
+      output,
+    );
+    send(IPC_CHANNELS.authTerminalExit, {
+      sessionId: 'remote-login',
+      provider: 'github',
+      exitCode: 1,
+      signal: null,
+    });
+    expect(mockSendToWindow).toHaveBeenLastCalledWith(
+      expect.objectContaining({ webContents: bridge }),
+      IPC_CHANNELS.authTerminalExit,
+      expect.objectContaining({ sessionId: 'remote-login' }),
+    );
+    mockSendToWindow.mockClear();
+    // A local sign-in's events stay on this computer's window.
+    send(IPC_CHANNELS.authTerminalOutput, { sessionId: 'local', data: 'x' });
+    expect(mockSendToWindow).toHaveBeenCalledWith(
+      null,
+      IPC_CHANNELS.authTerminalOutput,
+      { sessionId: 'local', data: 'x' },
+    );
+    expect(isMirrored(IPC_CHANNELS.authTerminalOutput)).toBe(false);
+    expect(isMirrored(IPC_CHANNELS.authTerminalExit)).toBe(false);
+  });
+
+  // CAN-6718 review: another controller that learns the session id must not
+  // type its own code into a sign-in someone else started.
+  it('takes input, resize and stop only from the window that owns the sign-in', async () => {
+    registerAndGetSender();
+    const start = handlerFor(IPC_CHANNELS.authTerminalStart);
+    const write = handlerFor(IPC_CHANNELS.authTerminalWrite);
+    const resize = handlerFor(IPC_CHANNELS.authTerminalResize);
+    const stop = handlerFor(IPC_CHANNELS.authTerminalStop);
+    const owner = fakeSender(99);
+    const other = fakeSender(99);
+    mockStart.mockReturnValueOnce('owned-login');
+    await start(
+      { sender: owner },
+      { provider: 'antigravity', cols: 80, rows: 24 },
+    );
+    const request = { sessionId: 'owned-login', data: 'code\r' };
+    for (const sender of [other, APP_SENDER]) {
+      expect(() => write({ sender }, request)).toThrow(
+        'This sign-in belongs to another window.',
+      );
+      expect(() =>
+        resize({ sender }, { sessionId: 'owned-login', cols: 1, rows: 1 }),
+      ).toThrow('This sign-in belongs to another window.');
+      expect(() => stop({ sender }, { sessionId: 'owned-login' })).toThrow(
+        'This sign-in belongs to another window.',
+      );
+    }
+    expect(mockWrite).not.toHaveBeenCalled();
+    expect(mockResize).not.toHaveBeenCalled();
+    expect(mockStop).not.toHaveBeenCalled();
+    write({ sender: owner }, request);
+    expect(mockWrite).toHaveBeenCalledWith('owned-login', 'code\r');
+    // A sign-in this computer's window started takes no controller's input.
+    mockStart.mockReturnValueOnce('local-login');
+    await start(
+      { sender: APP_SENDER },
+      { provider: 'claude', cols: 80, rows: 24 },
+    );
+    expect(() =>
+      write({ sender: other }, { sessionId: 'local-login', data: 'x' }),
+    ).toThrow('This sign-in belongs to another window.');
+    write({ sender: APP_SENDER }, { sessionId: 'local-login', data: 'x' });
+    expect(mockWrite).toHaveBeenLastCalledWith('local-login', 'x');
+  });
+
+  it('refuses one oversized write before it reaches the sign-in', async () => {
+    registerAndGetSender();
+    const start = handlerFor(IPC_CHANNELS.authTerminalStart);
+    const write = handlerFor(IPC_CHANNELS.authTerminalWrite);
+    const owner = fakeSender(99);
+    mockStart.mockReturnValueOnce('big-login');
+    await start(
+      { sender: owner },
+      { provider: 'antigravity', cols: 80, rows: 24 },
+    );
+    expect(() =>
+      write(
+        { sender: owner },
+        { sessionId: 'big-login', data: 'x'.repeat(16_385) },
+      ),
+    ).toThrow('Sign-in input is too long.');
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  // CAN-6718 review: a bridge that goes away while the sign-in is still
+  // starting stops it as soon as it has started.
+  it('stops a sign-in whose bridge went away while it was starting', async () => {
+    registerAndGetSender();
+    const start = handlerFor(IPC_CHANNELS.authTerminalStart);
+    const bridge = fakeSender(99);
+    mockStart.mockReturnValueOnce('orphan-login');
+    const started = start(
+      { sender: bridge },
+      { provider: 'antigravity', cols: 80, rows: 24 },
+    );
+    bridge.emit('destroyed');
+    await started;
+    expect(mockStop).toHaveBeenCalledWith('orphan-login');
+  });
+  // CAN-6718 review: a sign-in that fails to start leaves no owner behind.
+  it('forgets a remote sign-in whose start failed', async () => {
+    const send = registerAndGetSender();
+    const start = handlerFor(IPC_CHANNELS.authTerminalStart);
+    const bridge = fakeSender(99);
+    const listeners = bridge.listenerCount('destroyed');
+    mockStart.mockReturnValueOnce('failed-login');
+    mockCreate.mockImplementationOnce(() => {
+      throw new Error('Invalid terminal size.');
+    });
+    await expect(
+      start({ sender: bridge }, { provider: 'claude', cols: -1, rows: 24 }),
+    ).rejects.toThrow('Invalid terminal size.');
+    expect(bridge.listenerCount('destroyed')).toBe(listeners);
+    // A later event for that id would go to this computer's window, not the
+    // bridge: nothing remembers it.
+    send(IPC_CHANNELS.authTerminalOutput, {
+      sessionId: 'failed-login',
+      data: 'x',
+    });
+    expect(mockSendToWindow).toHaveBeenCalledWith(
+      null,
+      IPC_CHANNELS.authTerminalOutput,
+      { sessionId: 'failed-login', data: 'x' },
+    );
+  });
+
+  // CAN-6718 review: the bridge's deadline is a backstop after a sign-in's
+  // own 600-second deadline, so Antigravity reports its own timeout first.
+  it('stops a remote sign-in only after the sign-in’s own deadline', async () => {
+    jest.useFakeTimers();
+    try {
+      registerAndGetSender();
+      const start = handlerFor(IPC_CHANNELS.authTerminalStart);
+      const bridge = fakeSender(99);
+      mockStart.mockReturnValueOnce('slow-login');
+      await start(
+        { sender: bridge },
+        { provider: 'antigravity', cols: 80, rows: 24 },
+      );
+      jest.advanceTimersByTime(600_000);
+      expect(mockStop).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(60_000);
+      expect(mockStop).toHaveBeenCalledWith('slow-login');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  // CAN-6718 review S2: the computer runs one sign-in at a time and a start
+  // replaces the running one, so a bridge may replace only the sign-in it
+  // started. This computer's window may still replace any.
+  it('refuses a bridge’s start while someone else’s sign-in runs', async () => {
+    registerAndGetSender();
+    const start = handlerFor(IPC_CHANNELS.authTerminalStart);
+    const own = fakeSender(99);
+    const other = fakeSender(99);
+    mockStart.mockReturnValueOnce('own-login');
+    await start({ sender: own }, { provider: 'claude', cols: 80, rows: 24 });
+    mockStart.mockReturnValueOnce('local-login');
+    await start(
+      { sender: APP_SENDER },
+      { provider: 'claude', cols: 80, rows: 24 },
+    );
+    mockStart.mockClear();
+    mockOpenManaged.mockClear();
+    const refusals: [string, ReturnType<typeof fakeSender>][] = [
+      ['own-login', other],
+      ['local-login', own],
+      ['unknown-login', own],
+    ];
+    for (const [active, sender] of refusals)
+      for (const provider of ['claude', 'antigravity', 'opencode'] as const) {
+        mockGetActiveSessionId.mockReturnValue(active);
+        await expect(
+          Promise.resolve(start({ sender }, { provider, cols: 80, rows: 24 })),
+        ).rejects.toThrow('A sign-in is already running on the computer.');
+      }
+    expect(mockStart).not.toHaveBeenCalled();
+    expect(mockOpenManaged).not.toHaveBeenCalled();
+    expect(mockStop).not.toHaveBeenCalled();
+    // The bridge replaces its own; this computer's window replaces any.
+    mockGetActiveSessionId.mockReturnValue('own-login');
+    mockStart.mockReturnValueOnce('own-again');
+    await start({ sender: own }, { provider: 'claude', cols: 80, rows: 24 });
+    mockStart.mockReturnValueOnce('local-again');
+    await start(
+      { sender: APP_SENDER },
+      { provider: 'claude', cols: 80, rows: 24 },
+    );
+    expect(
+      mockStart.mock.calls.map((args: unknown[]): unknown => args[0]),
+    ).toEqual(['claude', 'claude']);
+  });
+
+  // CAN-6718 review: the ownership check holds until the sign-in exists, so
+  // neither a second bridge starting at the same moment nor a sign-in that
+  // starts while OpenCode verifies is replaced by a bridge.
+  it('holds a bridge’s start against other owners until its sign-in exists', async () => {
+    registerAndGetSender();
+    const start = handlerFor(IPC_CHANNELS.authTerminalStart);
+    const first = fakeSender(99);
+    const second = fakeSender(99);
+    mockStart.mockReturnValueOnce('first-login');
+    const both = await Promise.allSettled([
+      start({ sender: first }, { provider: 'claude', cols: 80, rows: 24 }),
+      start({ sender: second }, { provider: 'claude', cols: 80, rows: 24 }),
+    ]);
+    expect(both[0]).toMatchObject({
+      status: 'fulfilled',
+      value: { sessionId: 'first-login' },
+    });
+    expect(both[1]).toMatchObject({
+      status: 'rejected',
+      reason: { message: 'A sign-in is already running on the computer.' },
+    });
+    expect(mockStart).toHaveBeenCalledTimes(1);
+
+    // A sign-in this computer starts while a bridge's OpenCode verifies.
+    mockStart.mockClear();
+    let verified: (runtime: unknown) => void = () => undefined;
+    mockOpenManaged.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          verified = resolve;
+        }),
+    );
+    const bridge = fakeSender(99);
+    const pending = start(
+      { sender: bridge },
+      { provider: 'opencode', cols: 80, rows: 24 },
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    // Another bridge waits for it too.
+    await expect(
+      Promise.resolve(
+        start({ sender: second }, { provider: 'claude', cols: 80, rows: 24 }),
+      ),
+    ).rejects.toThrow('A sign-in is already running on the computer.');
+    mockStart.mockReturnValueOnce('local-login');
+    await start(
+      { sender: APP_SENDER },
+      { provider: 'claude', cols: 80, rows: 24 },
+    );
+    mockGetActiveSessionId.mockReturnValue('local-login');
+    verified({
+      executable: '/verified/opencode',
+      signal: mockRuntimeAbort.signal,
+      close: mockRuntimeClose,
+    });
+    await expect(Promise.resolve(pending)).rejects.toThrow(
+      'A sign-in is already running on the computer.',
+    );
+    expect(mockRuntimeClose).toHaveBeenCalled();
+    expect(
+      mockStart.mock.calls.map((args: unknown[]): unknown => args[0]),
+    ).toEqual(['claude']);
+    expect(mockStop).not.toHaveBeenCalled();
+  });
+
+  // CAN-6718 review: the stable IPC error policy keeps the refusal's words,
+  // so a controller says what to wait for instead of generic copy.
+  it('keeps the sign-in refusal through the stable IPC error policy', () => {
+    const rejection = toIpcRejection(
+      IPC_CHANNELS.authTerminalStart,
+      new Error('A sign-in is already running on the computer.'),
+    );
+    const envelope: unknown = JSON.parse(rejection.message);
+    expect(envelope).toMatchObject({
+      legacy: 'Error: A sign-in is already running on the computer.',
+    });
+    const other: unknown = JSON.parse(
+      toIpcRejection(
+        IPC_CHANNELS.authTerminalStart,
+        new Error('/home/someone/private detail'),
+      ).message,
+    );
+    expect(JSON.stringify(other)).not.toContain('private detail');
+  });
+
+  // CAN-6718 review: a bridge has one start on its way at a time, and one
+  // that goes away while OpenCode verifies stops verifying and holds no one.
+  it('gives a bridge one pending start and frees it when the bridge goes away', async () => {
+    registerAndGetSender();
+    const start = handlerFor(IPC_CHANNELS.authTerminalStart);
+    const signals: AbortSignal[] = [];
+    let verified: (runtime: unknown) => void = () => undefined;
+    mockOpenManaged.mockImplementationOnce(
+      (options: { signal: AbortSignal }) => {
+        signals.push(options.signal);
+        return new Promise((resolve) => {
+          verified = resolve;
+        });
+      },
+    );
+    const bridge = fakeSender(99);
+    const other = fakeSender(99);
+    const pending = start(
+      { sender: bridge },
+      { provider: 'opencode', cols: 80, rows: 24 },
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    await expect(
+      Promise.resolve(
+        start({ sender: bridge }, { provider: 'opencode', cols: 80, rows: 24 }),
+      ),
+    ).rejects.toThrow('A sign-in is already running on the computer.');
+    expect(mockOpenManaged).toHaveBeenCalledTimes(1);
+    bridge.emit('destroyed');
+    expect(signals[0]?.aborted).toBe(true);
+    mockStart.mockReturnValueOnce('other-login');
+    await expect(
+      Promise.resolve(
+        start({ sender: other }, { provider: 'claude', cols: 80, rows: 24 }),
+      ),
+    ).resolves.toEqual({ sessionId: 'other-login' });
+    verified({
+      executable: '/verified/opencode',
+      signal: mockRuntimeAbort.signal,
+      close: mockRuntimeClose,
+    });
+    await expect(Promise.resolve(pending)).rejects.toThrow();
+    expect(mockRuntimeClose).toHaveBeenCalled();
+    expect(
+      mockStart.mock.calls.map((args: unknown[]): unknown => args[0]),
+    ).toEqual(['claude']);
+  });
+
+  // CAN-6718 review: OpenCode setup asks whether revoking its runtimes would
+  // end an OpenCode sign-in another window started, or is starting.
+  it('tells OpenCode setup whose OpenCode sign-in its revoke would end', async () => {
+    const { wouldEndAnotherOwnersOpenCodeSignIn } =
+      await import('../ipc/sign-in-owner-guard');
+    registerAndGetSender();
+    const start = handlerFor(IPC_CHANNELS.authTerminalStart);
+    const owner = fakeSender(99);
+    const other = fakeSender(99);
+    // The sign-in is the running one once it has started.
+    mockGetActiveSessionId.mockImplementation((): string | null =>
+      mockStart.mock.calls.length > 0 ? 'bridge-opencode' : null,
+    );
+    mockStart.mockReturnValueOnce('bridge-opencode');
+    await start(
+      { sender: owner },
+      { provider: 'opencode', cols: 80, rows: 24 },
+    );
+    const asked = (sender: unknown): boolean =>
+      wouldEndAnotherOwnersOpenCodeSignIn(
+        sender as Parameters<typeof wouldEndAnotherOwnersOpenCodeSignIn>[0],
+      );
+    expect([asked(owner), asked(other), asked(APP_SENDER)]).toEqual([
+      false,
+      true,
+      true,
+    ]);
+    // A Claude sign-in runs on no OpenCode runtime.
+    mockGetActiveSessionId.mockReset().mockReturnValue('claude-login');
+    mockStart.mockReturnValueOnce('claude-login');
+    await start(
+      { sender: APP_SENDER },
+      { provider: 'claude', cols: 80, rows: 24 },
+    );
+    expect(asked(other)).toBe(false);
+  });
+
+  // CAN-6718 review: while a controller's OpenCode setup, which revokes
+  // every OpenCode runtime, runs, no other window starts an OpenCode
+  // sign-in it would end. Other providers' sign-ins aren't held.
+  it('holds OpenCode sign-in starts while a controller’s OpenCode setup runs', async () => {
+    const { holdOpenCodeSignInStarts } =
+      await import('../ipc/sign-in-owner-guard');
+    registerAndGetSender();
+    const start = handlerFor(IPC_CHANNELS.authTerminalStart);
+    const holder = fakeSender(99);
+    const release = holdOpenCodeSignInStarts(
+      holder as unknown as Parameters<typeof holdOpenCodeSignInStarts>[0],
+    );
+    try {
+      await expect(
+        Promise.resolve(
+          start(
+            { sender: APP_SENDER },
+            { provider: 'opencode', cols: 80, rows: 24 },
+          ),
+        ),
+      ).rejects.toThrow('OpenCode setup is already running.');
+      expect(mockOpenManaged).not.toHaveBeenCalled();
+      mockStart.mockReturnValueOnce('claude-login');
+      await expect(
+        Promise.resolve(
+          start(
+            { sender: APP_SENDER },
+            { provider: 'claude', cols: 80, rows: 24 },
+          ),
+        ),
+      ).resolves.toEqual({ sessionId: 'claude-login' });
+    } finally {
+      release();
+    }
+    mockGetActiveSessionId.mockReturnValue(null);
+    mockStart.mockReturnValueOnce('opencode-after');
+    await expect(
+      Promise.resolve(
+        start(
+          { sender: APP_SENDER },
+          { provider: 'opencode', cols: 80, rows: 24 },
+        ),
+      ),
+    ).resolves.toEqual({ sessionId: 'opencode-after' });
+    expect(
+      JSON.parse(
+        toIpcRejection(
+          IPC_CHANNELS.authTerminalStart,
+          new Error('OpenCode setup is already running.'),
+        ).message,
+      ),
+    ).toMatchObject({ legacy: 'Error: OpenCode setup is already running.' });
+  });
+});

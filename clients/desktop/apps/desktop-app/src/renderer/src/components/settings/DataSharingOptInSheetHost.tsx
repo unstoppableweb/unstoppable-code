@@ -299,11 +299,16 @@ function ReviewContent({
   );
 }
 
-/** Mounted once at the App root; shows the active opt-in request, if any. */
+/**
+ * Mounted once at the App root; shows the active opt-in request, if any. A
+ * request that arrives while the organization requirement notice is open
+ * stays pending and shows once the notice is dismissed.
+ */
 export function DataSharingOptInSheetHost(): JSX.Element | null {
   const request = useNavigationStore((state) => state.pendingPrivacyOptIn);
   const consume = useNavigationStore((state) => state.consumePrivacyOptIn);
-  if (!request) return null;
+  const noticeOpen = useNavigationStore((state) => state.orgSharingNoticeOpen);
+  if (!request || noticeOpen) return null;
   return (
     <DataSharingOptInSheet
       key={request.id}

@@ -1,6 +1,6 @@
 'use client';
 
-import { Stack } from './Stack';
+import { Stack } from '../primitives/Stack';
 import { type JSX, useState } from 'react';
 import {
   StoreBadgeLink,
@@ -8,8 +8,8 @@ import {
   type MobileAppStoreLink,
   type StoreBadgeActivation,
 } from './StoreBadgeLink';
-import { SegmentedControl } from './SegmentedControl';
-import { Surface } from './Surface';
+import { SegmentedControl } from '../primitives/SegmentedControl';
+import { Surface } from '../primitives/Surface';
 import {
   DEFAULT_MOBILE_APP_PROMO_DESCRIPTION,
   defaultMobileAppPromoHeading,

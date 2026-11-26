@@ -40,6 +40,7 @@ import {
 import { type ShareablePluginRef } from '@canopy/execution-engine/plugin-refs';
 import {
   formatCronValidationError,
+  isSharedConnectionWriteList,
   validateAutomationTrigger,
   type AutomationChatRunMode,
 } from '@canopy/desktop-shared/lib/automations';
@@ -127,6 +128,11 @@ export interface FormState {
   fastMode: boolean | undefined;
   plugins: ShareablePluginRef[];
   pluginSelections: ChatTabPluginSelections;
+  /**
+   * The writes a prompt automation's runs may make on its project's shared
+   * connections (CAN-6252): tool names by connection id. Absent allows none.
+   */
+  sharedConnectionWrites?: Record<string, string[]>;
   planMode: boolean | undefined;
   approvalMode?: ApprovalMode;
   promptReferences?: ConfiguredPromptReference[];
@@ -396,6 +402,13 @@ export function activityToFormState(activity: ScheduledActivity): FormState {
       activity.action.type === 'worktree_session_prompt'
         ? (activity.action.pluginSelections ?? emptyPluginSelections())
         : emptyPluginSelections(),
+    ...((activity.action.type === 'app_advisor_prompt' ||
+      activity.action.type === 'standalone_prompt' ||
+      activity.action.type === 'worktree_prompt' ||
+      activity.action.type === 'worktree_session_prompt') &&
+    activity.action.sharedConnectionWrites !== undefined
+      ? { sharedConnectionWrites: activity.action.sharedConnectionWrites }
+      : {}),
     planMode:
       'planMode' in activity.action ? activity.action.planMode : undefined,
     approvalMode:
@@ -1074,6 +1087,29 @@ export function applyChatRunModeSelection(
   return applyWorkspaceActionSelection(state, 'chat', selected, runMode);
 }
 
+/**
+ * A prompt action's allowed writes on its project's shared connections
+ * (CAN-6252), left out when none are allowed. Kept for a chat-authored
+ * payload too, whose other settings stay the chat's.
+ */
+function sharedConnectionWritesPayload(state: FormState): {
+  sharedConnectionWrites?: Record<string, string[]>;
+} {
+  if (
+    state.actionType !== 'app_advisor_prompt' &&
+    state.actionType !== 'standalone_prompt' &&
+    state.actionType !== 'worktree_prompt' &&
+    state.actionType !== 'worktree_session_prompt'
+  )
+    return {};
+  const writes = Object.entries(state.sharedConnectionWrites ?? {}).filter(
+    ([, tools]) => tools.length > 0,
+  );
+  return writes.length > 0
+    ? { sharedConnectionWrites: Object.fromEntries(writes) }
+    : {};
+}
+
 function buildPromptChatSettings(
   state: FormState,
 ): Partial<
@@ -1219,7 +1255,7 @@ export function getPipelineModelAliasBlockingError(
     case 'missing_plugin_collection':
       return `Choose an existing plugin collection for the ${label} model alias.`;
     case 'missing_agent':
-      return `Choose an agent for the ${label} model alias before saving this automation.`;
+      return `Choose a model preset for the ${label} model alias before saving this automation.`;
     case 'agent_model':
       return `Choose a concrete model for the ${label} model alias.`;
   }
@@ -1264,6 +1300,12 @@ export function buildAction(state: FormState): {
       ref.textStart - (state.prompt.length - state.prompt.trimStart().length),
   }));
   const referencePayload = promptReferences?.length ? { promptReferences } : {};
+  const writes = sharedConnectionWritesPayload(state);
+  if (
+    writes.sharedConnectionWrites !== undefined &&
+    !isSharedConnectionWriteList(writes.sharedConnectionWrites)
+  )
+    return { error: AUTOMATION_SHARED_WRITES_TOO_MANY_ERROR };
   switch (state.actionType) {
     case 'app_advisor_prompt':
       if (!prompt)
@@ -1277,6 +1319,7 @@ export function buildAction(state: FormState): {
             : {}),
           prompt,
           ...buildPromptChatSettings(state),
+          ...writes,
           ...referencePayload,
         },
       };
@@ -1294,6 +1337,7 @@ export function buildAction(state: FormState): {
             : {}),
           prompt,
           ...buildPromptChatSettings(state),
+          ...writes,
           ...referencePayload,
         },
       };
@@ -1320,6 +1364,7 @@ export function buildAction(state: FormState): {
             : {}),
           prompt,
           ...buildPromptChatSettings(state),
+          ...writes,
           ...referencePayload,
           ...(state.interfaceMode
             ? { interfaceMode: state.interfaceMode }
@@ -1402,6 +1447,7 @@ export function buildAction(state: FormState): {
         ...(!hasChatAuthoredPayload(state)
           ? buildPromptChatSettings(state)
           : {}),
+        ...writes,
         ...(state.promptReferences?.length
           ? { promptReferences: state.promptReferences }
           : {}),
@@ -1426,6 +1472,19 @@ export function buildAction(state: FormState): {
         error: 'Scheduled workflow resumes cannot be edited.',
       };
   }
+}
+
+/** A write list past what a scheduled claim carries (CAN-6252). */
+export const AUTOMATION_SHARED_WRITES_TOO_MANY_ERROR =
+  "That's more write actions than a scheduled run can carry. Allow fewer.";
+
+/**
+ * Whether the form's allowed writes are past what a scheduled run carries:
+ * at most 64 tools on each of at most 16 connections, in 2 KB.
+ */
+export function automationSharedWritesTooMany(state: FormState): boolean {
+  const writes = state.sharedConnectionWrites;
+  return writes !== undefined && !isSharedConnectionWriteList(writes);
 }
 
 export const AUTOMATION_PIPELINE_TASK_REQUIRED_ERROR =
@@ -1687,6 +1746,8 @@ export function automationFormSnapshot(state: FormState): string {
       pipelineDependencies: state.pipelineDependencies?.length
         ? state.pipelineDependencies
         : undefined,
+      sharedConnectionWrites:
+        sharedConnectionWritesPayload(state).sharedConnectionWrites,
     }),
   );
 }
@@ -1700,6 +1761,12 @@ export function automationFormSnapshot(state: FormState): string {
  */
 export function automationDraftFromSeed(seed?: AutomationDraftSeed): FormState {
   if (!seed) return applyGlobalPipelineSelection(emptyFormState());
+  if ('trigger' in seed)
+    return {
+      ...applyGlobalPipelineSelection(emptyFormState()),
+      name: seed.name,
+      triggerKind: seed.trigger,
+    };
   const selected = applyWorkspaceActionSelection(emptyFormState(), 'chat', {
     id: seed.projectId,
     isCowork: seed.isCowork,

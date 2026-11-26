@@ -1,7 +1,7 @@
 import { useEffect, useRef, type JSX, type ReactNode } from 'react';
-import { Button } from './Button';
-import { Inline } from './Stack';
-import { Surface } from './Surface';
+import { Button } from '../primitives/Button';
+import { Inline } from '../primitives/Stack';
+import { Surface } from '../primitives/Surface';
 
 export interface RunConfirmationCardProps {
   /** Prompt copy — typically "Run <label>?". Caller supplies the sentence so

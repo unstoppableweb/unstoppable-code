@@ -16,13 +16,20 @@ import {
 } from '../auth/provider-auth-state';
 import { settleModelPolicyMarkerWrites } from '../lib/model-policy-state';
 import { settleModelGatewayMarkerWrites } from '../lib/model-gateway-state';
-import { inspectPipelineNativeRouting } from '../agents/ai-credits-routing';
+import {
+  inspectPipelineNativeRouting,
+  resolveRoutingOverrideAttribution,
+  type AiCreditsAttribution,
+} from '../agents/ai-credits-routing';
+import { BRAND } from '@canopy/brand/current';
+import { resolveEnforcementOwner } from '../agents/work-owner';
 
 export type NativePipelineRouteBlocker =
   | 'policy'
   | 'gateway'
   | 'account-proxy'
   | 'ai-credits'
+  | 'ai-credits-on-quota'
   | 'environment-route'
   | 'native-auth-unknown'
   | 'dynamic-selection'
@@ -80,12 +87,24 @@ export async function inspectNativePipelineLaunch(input: {
   readonly selections: readonly DaemonPipelineModelSelection[];
   readonly environment: Readonly<Record<string, string>>;
   readonly modelCatalog?: Readonly<Record<string, string | undefined>>;
+  /**
+   * The daemon holds the Cloud account (CAN-6997): organization policy and
+   * AI Credits chosen for every attempt become evidence the daemon re-checks,
+   * instead of blockers. Off until account authority is active.
+   */
+  readonly managedAccount?: boolean;
+  readonly expectedAccountIdentity?: string;
 }): Promise<NativePipelineRouteInspection> {
   const { params, selections, environment } = input;
+  const managed = input.managedAccount === true;
+  const policyScope = resolveEnforcementOwner({ kind: 'personal' })
+    ? 'owner'
+    : 'union';
   const catalog = input.modelCatalog ?? buildModelRegistrySnapshot();
   const blockers = new Set<NativePipelineRouteBlocker>();
   const routes: WorkerPipelineNativeRouteEvidence['routes'] = [];
-  if (params.owner !== 'personal') blockers.add('policy');
+  let governed = params.owner !== 'personal';
+  if (governed && !managed) blockers.add('policy');
   if (hasEnvironmentRoute(environment)) blockers.add('environment-route');
   if (
     Object.entries(environment).some(
@@ -130,9 +149,27 @@ export async function inspectNativePipelineLaunch(input: {
         ...(params.worktreeId !== null && { worktreeId: params.worktreeId }),
         executionContext: params.owner,
       },
+      managed,
+      true,
     );
-    if (decision.kind !== 'native') {
+    if (decision.kind === 'app-dependent') {
       blockers.add(decision.reason);
+      continue;
+    }
+    if (decision.governed) governed = true;
+    if (decision.kind === 'ai-credits') {
+      if (selection.model === null) {
+        blockers.add('dynamic-selection');
+        continue;
+      }
+      // The account credential is daemon-held; the child gets a broker route.
+      routes.push({
+        ...resolved,
+        runtimeModel: decision.runtimeModel,
+        source: 'ai-gateway',
+        effectiveRoute: 'ai-credits',
+        authentication: 'vendor-profile',
+      });
       continue;
     }
     const credential =
@@ -168,7 +205,26 @@ export async function inspectNativePipelineLaunch(input: {
     settleModelPolicyMarkerWrites(),
     settleModelGatewayMarkerWrites(),
   ]);
+  if (
+    (resolveEnforcementOwner({ kind: 'personal' }) ? 'owner' : 'union') !==
+    policyScope
+  )
+    blockers.add('policy');
   if (blockers.size > 0) return { blockers: [...blockers] };
+  const hasCredits = routes.some(
+    (route) => route.effectiveRoute === 'ai-credits',
+  );
+  const attribution: AiCreditsAttribution | undefined =
+    managed && hasCredits
+      ? await resolveRoutingOverrideAttribution({
+          environmentRuntime: 'pipeline',
+          ...(params.workspaceId !== null && {
+            workspaceId: params.workspaceId,
+          }),
+          ...(params.worktreeId !== null && { worktreeId: params.worktreeId }),
+          executionContext: params.owner,
+        }).catch(() => ({}))
+      : undefined;
   const evidence = WorkerPipelineNativeRouteEvidenceSchema.safeParse({
     version: 1,
     catalogFingerprint: createHash('sha256')
@@ -191,10 +247,32 @@ export async function inspectNativePipelineLaunch(input: {
         }),
       )
       .digest('hex'),
-    policy: 'account-independent-personal',
+    policy: governed ? 'required' : 'account-independent-personal',
+    // Custody provisioning proves the target understands managed evidence.
+    // Keep the original strict v1 shape for native launches on older daemons.
+    ...(managed && {
+      policyScope,
+      expectedAccountIdentity: input.expectedAccountIdentity,
+    }),
+    ...(attribution && {
+      aiCreditsAttribution: {
+        ...(attribution.workspaceName && {
+          workspaceName: attribution.workspaceName,
+        }),
+        ...(attribution.worktreeName && {
+          worktreeName: attribution.worktreeName,
+        }),
+        ...(attribution.organizationProjectId && {
+          organizationProjectId: attribution.organizationProjectId,
+        }),
+        providerName: `${BRAND.displayName} AI Credits`,
+      },
+    }),
     gateway: 'absent',
     accountProxy: 'absent',
-    aiCredits: 'absent',
+    aiCredits: routes.some((route) => route.effectiveRoute === 'ai-credits')
+      ? 'required'
+      : 'absent',
     futureSelections: 'closed',
     routes,
   });

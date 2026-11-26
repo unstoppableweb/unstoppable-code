@@ -30,7 +30,7 @@ export type ExternalAgentsResult<T> =
   | { ok: false; error: ExternalAgentsFailure };
 
 /**
- * Host-bound operations behind the External agents (MCP) pages. Server
+ * Host-bound operations behind the External agents pages. Server
  * authorization remains authoritative: every call is checked against the
  * signed-in owner and the feature flag.
  */

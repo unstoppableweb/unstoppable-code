@@ -1,6 +1,12 @@
 import { assertLegacyWorktreeBaseRequest } from '../worktree-base-capability';
-import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
-import { REMOTE_IPC_CHANNELS } from '@canopy/protocol/remote-control/channels';
+import {
+  IPC_CHANNELS,
+  type ChatInterestDeclaration,
+} from '@canopy/desktop-shared/types';
+import {
+  ONE_WINDOW_CAPABILITIES,
+  REMOTE_IPC_CHANNELS,
+} from '@canopy/protocol/remote-control/channels';
 import { readInstalledItemPushCorrelation } from '../../installed-items/installed-item-push';
 import type { RemoteChannelDisposition } from '@canopy/desktop-shared/remote-control/channel-dispositions';
 import type { BrowserWindow } from 'electron';
@@ -27,8 +33,12 @@ import {
   PairRevokeParamsSchema,
   REMOTE_EVENTS,
   REMOTE_TRANSPORT_RESUME_VERSION,
+  REMOTE_TUNNEL_VERSION,
   REMOTE_METHODS,
+  TUNNEL_INITIAL_WINDOW_BYTES,
+  TUNNEL_MAX_STREAMS,
   RemoteProtocolMismatchError,
+  RemoteArgumentsRefusedError,
   RemoteChannelUnavailableError,
   RemoteControllerRefusedError,
   SecretRequestSettleParamsSchema,
@@ -40,6 +50,7 @@ import {
   type AccountProxySignInOpenParams,
   type DialogOpenParams,
   type DialogOpenResult,
+  type HelloParams,
   type HelloResult,
   type PairRevokeResult,
   type RemoteVersion,
@@ -58,13 +69,22 @@ import {
 } from '../../canopy-runtime/interface-tools/remote-interface-leases';
 import {
   HOST_FEATURES,
+  controllerInvokeDecision,
   controllerMayInvoke,
   controllerMayUseChannel,
   controllerPushWithheld,
   negotiateHello,
+  oneWindowMayInvoke,
+  oneWindowMaySend,
+  oneWindowMayUseChannel,
 } from './controller-profile';
 import type { HostFileReader } from './file-reads';
-import { projectBrowserPush, projectBrowserResult } from './browser-host-paths';
+import {
+  BrowserSignInTextScrubber,
+  browserHarnessErrorMessage,
+  projectBrowserPush,
+  projectBrowserResult,
+} from './browser-host-paths';
 import { controllerInvokeRefusal } from './controller-invoke-refusals';
 import {
   projectControllerPush,
@@ -79,7 +99,12 @@ import { createPushForwarder, type PushForwarder } from './push-forwarder';
 import { RemotePushSummaryAccumulator } from './push-summary';
 import type { RemoteCoreAccess } from './remote-core-access';
 import type { RemoteUploadStore } from './uploads';
-import { TunnelStreamMux, type TunnelOpenHandler } from '../tunnel/stream-mux';
+import {
+  TunnelStreamMux,
+  type TunnelOpenDecision,
+  type TunnelOpenHandler,
+  type TunnelOpenRequest,
+} from '../tunnel/stream-mux';
 
 export interface HostSessionOptions {
   session: SecureSession;
@@ -182,6 +207,16 @@ export interface HostSessionOptions {
    * advertises the same number.
    */
   tunnelMaxStreams?: number;
+  /**
+   * Web preview (CAN-7705). When given, hello advertises
+   * `features.webPreview` only to a desktop controller that asked for it
+   * while it was allowed, and `tunnelOpen` serves only such a session.
+   * Without it `tunnelOpen` alone decides, and nothing is advertised.
+   */
+  webPreview?: {
+    /** Whether preview is allowed now (Allow incoming and the flag), read live. */
+    allowed(): boolean;
+  };
 }
 
 /** The local form's settlement, which this session reaches for a person. */
@@ -250,7 +285,9 @@ function projectControllerAccountProxyStatus(value: unknown): unknown {
  * One controller's live session on this computer: replays each controller
  * window's calls through its own bridge window and forwards this computer's
  * pushes back. Nothing is replayed or forwarded until the controller's hello
- * shows it speaks the same protocol version as this computer.
+ * shows it speaks a compatible protocol: the same version as this computer,
+ * or a version its profile admits from a floor (restricted kinds, and desktop
+ * controllers in one-window mode).
  */
 export class RemoteHostSession {
   readonly rpc: RpcPeer;
@@ -261,6 +298,7 @@ export class RemoteHostSession {
   private forwarder: PushForwarder | null = null;
   private readonly unsubscribers: Array<() => void> = [];
   private readonly chatEventInterestFilter = new ChatEventInterestFilter();
+  private readonly signInText = new BrowserSignInTextScrubber();
   private closed = false;
   private readonly pushSummary = new RemotePushSummaryAccumulator(
     () => this.startedBridges.get('main')?.getChatInterest(),
@@ -278,6 +316,13 @@ export class RemoteHostSession {
     },
   );
   private compatible = false;
+  /**
+   * A desktop controller in one-window mode (CAN-7758): served only the
+   * reviewed one-window channels on its main surface, none of the session
+   * methods that stay with the separate window. Fixed by the session's first
+   * accepted hello; a later hello in the other mode is refused.
+   */
+  private oneWindow = false;
   private exactWorktreeBaseBranch = false;
   /** The controller parses `reason` in a secret-request.settle result. */
   private secretSettleReason = false;
@@ -289,6 +334,10 @@ export class RemoteHostSession {
   private readonly urlWritebacks: ControllerUrlWritebacks;
   /** Made on the first `tunnel.open`; desktop controllers only. */
   private tunnels: TunnelStreamMux | null = null;
+  /** The latest compatible hello advertised web preview to this controller. */
+  private webPreviewNegotiated = false;
+  /** A tunnel stream connected on this session, so it may hold preview bytes. */
+  private carriedPreview = false;
 
   constructor(private readonly options: HostSessionOptions) {
     this.urlWritebacks = new ControllerUrlWritebacks(options.storedStartPages);
@@ -315,18 +364,113 @@ export class RemoteHostSession {
     return this.options.kind;
   }
 
+  /**
+   * A one-window session: it has no App Advisor window, file dialog or
+   * other controller window of its own, so host-initiated requests for
+   * them must go to another session or stay on this computer.
+   */
+  get isOneWindow(): boolean {
+    return this.oneWindow;
+  }
+
+  /**
+   * Whether host-initiated window requests may come here: only once a
+   * compatible hello confirmed the separate window per computer. A session
+   * still waiting for its hello, possibly a reconnecting one-window session,
+   * gets none, so those requests stay on this computer.
+   */
+  get servesControllerWindows(): boolean {
+    return this.compatible && !this.oneWindow;
+  }
+
+  /** Refuses a host-initiated window request on a one-window session. */
+  private assertControllerWindows(): void {
+    if (this.oneWindow) {
+      throw new RemoteControllerRefusedError(
+        'A one-window session has no window for this request.',
+      );
+    }
+  }
+
   /** Whether this controller's profile allows the channel. */
   private allows(channel: string): boolean {
-    return controllerMayUseChannel(
-      this.options.kind,
-      channel,
-      this.options.disposition,
+    return (
+      this.oneWindowAllows(channel) &&
+      controllerMayUseChannel(
+        this.options.kind,
+        channel,
+        this.options.disposition,
+      )
     );
+  }
+
+  /** True unless this is a one-window session and the channel is off its list. */
+  private oneWindowAllows(channel: string): boolean {
+    return (
+      !this.oneWindow ||
+      oneWindowMayUseChannel(channel, this.options.disposition)
+    );
+  }
+
+  /** {@link oneWindowAllows} for a call or send with these arguments. */
+  private oneWindowAllowsInvoke(
+    channel: string,
+    args: readonly unknown[],
+  ): boolean {
+    return (
+      !this.oneWindow ||
+      oneWindowMayInvoke(channel, args, this.options.disposition)
+    );
+  }
+
+  /**
+   * {@link oneWindowAllows} for a send with these arguments: a one-window
+   * session sends only read-only channels, since every call that changes
+   * something is an invoke here and a send of one would get no reply.
+   */
+  private oneWindowAllowsSend(
+    channel: string,
+    args: readonly unknown[],
+  ): boolean {
+    return (
+      !this.oneWindow ||
+      oneWindowMaySend(channel, args, this.options.disposition)
+    );
+  }
+
+  /**
+   * Whether a call or send may name this controller surface. A one-window
+   * session reaches the main surface only: it has no App Advisor window of
+   * its own.
+   */
+  private allowsSurface(surface: RemoteSurface | undefined): boolean {
+    return !this.oneWindow || surface === undefined || surface === 'main';
   }
 
   /** Whether this controller's profile allows the call with these arguments. */
   private allowsInvoke(channel: string, args: readonly unknown[]): boolean {
-    return controllerMayInvoke(
+    return (
+      this.oneWindowAllowsInvoke(channel, args) &&
+      controllerMayInvoke(
+        this.options.kind,
+        channel,
+        args,
+        this.options.disposition,
+        this.options.hostedProfile,
+      )
+    );
+  }
+
+  /**
+   * {@link allowsInvoke} with the reason for a refusal
+   * (`controllerInvokeDecision`).
+   */
+  private invokeDecision(
+    channel: string,
+    args: readonly unknown[],
+  ): 'allow' | 'channel' | 'arguments' {
+    if (!this.oneWindowAllowsInvoke(channel, args)) return 'channel';
+    return controllerInvokeDecision(
       this.options.kind,
       channel,
       args,
@@ -348,6 +492,12 @@ export class RemoteHostSession {
     const existing = this.bridges.get(surface);
     if (existing) return existing;
     if (!this.compatible) return Promise.reject(this.mismatchError());
+    if (!this.allowsSurface(surface))
+      return Promise.reject(
+        new RemoteControllerRefusedError(
+          'A one-window session has no window for this request.',
+        ),
+      );
     const forwarder = this.ensureForwarding();
     const startingBridge = this.options.createBridge(
       surface,
@@ -362,9 +512,11 @@ export class RemoteHostSession {
         this.startedBridges.set(surface, created);
         // CAN-5823: a desktop controller's window behind this bridge serves
         // agent tools through its own lease, which ends with the bridge or
-        // session. Mobile and browser controllers implement none of them.
+        // session. Mobile and browser controllers implement none of them,
+        // and neither does a one-window session, whose list carries none of
+        // the tools' channels.
         const webContentsId =
-          this.options.kind === 'desktop'
+          this.options.kind === 'desktop' && !this.oneWindow
             ? created.window?.webContents.id
             : undefined;
         if (webContentsId !== undefined) {
@@ -386,13 +538,13 @@ export class RemoteHostSession {
               this.leasedWebContents.delete(surface);
               endRemoteInterfaceLease(webContentsId);
             }
-            this.rpc.close('protocol_error');
+            this.close('protocol_error');
           }),
         );
         return created;
       },
       (error: unknown) => {
-        this.rpc.close('protocol_error');
+        this.close('protocol_error');
         throw error;
       },
     );
@@ -410,6 +562,7 @@ export class RemoteHostSession {
   async requestAppAdvisorWindow(
     params: AppAdvisorWindowParams,
   ): Promise<AppAdvisorWindowStateParams> {
+    this.assertControllerWindows();
     return AppAdvisorWindowStateParamsSchema.parse(
       await this.rpc.request(REMOTE_METHODS.appAdvisorWindow, params, {
         timeoutMs: APP_ADVISOR_WINDOW_TIMEOUT_MS,
@@ -472,7 +625,6 @@ export class RemoteHostSession {
       shouldDropObservabilityEvent(interest, args[0])
     )
       return;
-    let bytes = 0;
     // Dedup happens before projection, on the identity shared by the main
     // mirror and the bridge copies. Only the originating browser session
     // gets the token; all other controllers still get the legacy notice.
@@ -494,6 +646,28 @@ export class RemoteHostSession {
       }
     }
     const urlArgs = projectControllerPush(channel, projectedArgs);
+    // A browser's sign-in text may be held back or split (its scrubber).
+    const signInPushes =
+      this.options.kind === 'browser'
+        ? this.signInText.project(channel, urlArgs)
+        : null;
+    if (signInPushes !== null) {
+      for (const [pushChannel, pushArgs] of signInPushes)
+        this.sendPush(pushChannel, pushArgs, args, surface, interest);
+      return;
+    }
+    this.sendPush(channel, urlArgs, args, surface, interest);
+  }
+
+  /** Sends one projected push to the controller and records it. */
+  private sendPush(
+    channel: string,
+    urlArgs: unknown[],
+    args: unknown[],
+    surface: RemoteSurface | undefined,
+    interest: ChatInterestDeclaration | undefined,
+  ): void {
+    let bytes = 0;
     const controllerArgs =
       this.options.kind === 'browser'
         ? projectBrowserPush(channel, urlArgs)
@@ -519,18 +693,68 @@ export class RemoteHostSession {
   }
 
   close(reason: SessionCloseReason): void {
+    this.withoutPreviewResume();
+    // Revoked (a delegation lapsed): what waits to be sealed never leaves.
+    if (reason === 'revoked') this.options.session.discardUnsent();
     this.rpc.close(reason);
   }
 
-  /** Ends the session on purpose and tells the controller not to come back. */
+  /**
+   * Whether a tunnel stream ever connected on this session, through any
+   * dialer it was given, so its re-send buffer may hold preview bytes.
+   */
+  get carriedPreviewData(): boolean {
+    return this.carriedPreview;
+  }
+
+  /**
+   * Ends the session after web preview was revoked while it carried
+   * preview, so it can never resume: the sealed frames it holds for a
+   * resume, which may include preview bytes, are dropped rather than
+   * replayed, and it closes. The controller is not told to stay away, so it
+   * reconnects, and its fresh hello no longer offers preview. If the close
+   * is lost, the controller's resume is refused all the same. Frames already
+   * handed to the relay before the revocation still drain (see the
+   * protocol's "Revoking preview"); events and requests still waiting to be
+   * deflated and sealed are dropped.
+   */
+  endWithoutResume(): void {
+    if (this.closed) return;
+    this.options.session.setResumeNegotiated(false);
+    this.options.session.discardUnsent();
+    this.rpc.close('closed');
+  }
+
+  /**
+   * Ends the session on purpose and tells the controller not to come back.
+   * Events and requests still waiting to be deflated and sealed are dropped
+   * first, so none accepted before the ending leaves after it; replies to
+   * the controller's requests, such as `pair.revoke`'s, still go first.
+   */
   end(reason: RemoteSessionEndReason): void {
     if (this.closed) return;
+    this.withoutPreviewResume();
+    this.options.session.discardUnsent();
     this.rpc.notify(REMOTE_EVENTS.ended, { reason });
     this.rpc.close('revoked');
   }
 
+  /**
+   * A session that carried preview closes without lingering for a resume:
+   * its held frames may include preview bytes, which a resume would replay
+   * after preview is revoked. A connected controller still gets the close
+   * (and any ending); a suspended one is refused its resume and reconnects,
+   * as after any refused resume. Every close this session starts comes
+   * through here first, since only `RpcPeer.close` lingers; the RPC peer's
+   * own closes (a timeout, a malformed message) close outright.
+   */
+  private withoutPreviewResume(): void {
+    if (this.carriedPreview) this.options.session.setResumeNegotiated(false);
+  }
+
   /** Shows a handler's file dialog on the controlling computer. */
   async showOpenDialog(params: DialogOpenParams): Promise<DialogOpenResult> {
+    this.assertControllerWindows();
     const result = DialogOpenResultSchema.parse(
       await this.rpc.request(REMOTE_METHODS.dialogOpen, params, {
         timeoutMs: null,
@@ -598,9 +822,15 @@ export class RemoteHostSession {
         if (!this.compatible) throw this.mismatchError();
         const { channel, args, surface, installRefreshToken } =
           InvokeRequestParamsSchema.parse(params);
-        if (!this.allowsInvoke(channel, args)) {
+        if (!this.allowsSurface(surface))
           throw new RemoteChannelUnavailableError(channel);
-        }
+        const decision = this.invokeDecision(channel, args);
+        // A browser's refused value is not a missing channel: only the
+        // latter reads as an older computer (CAN-6718 review W1).
+        if (decision === 'arguments')
+          throw new RemoteArgumentsRefusedError(channel);
+        if (decision !== 'allow')
+          throw new RemoteChannelUnavailableError(channel);
         const refusal = controllerInvokeRefusal(channel, args);
         if (refusal !== undefined)
           throw new RemoteControllerRefusedError(refusal);
@@ -637,7 +867,11 @@ export class RemoteHostSession {
             surface ?? 'main',
             channel,
             bridgeArgs,
-          ),
+          ).catch((error: unknown) => {
+            throw this.options.kind === 'browser'
+              ? browserInvokeRejection(channel, error)
+              : error;
+          }),
         );
         const result =
           this.options.kind === 'browser'
@@ -769,7 +1003,13 @@ export class RemoteHostSession {
     const core = this.options.core;
     if (!core) throw new UnknownRemoteMethodError(method);
     if (!this.greeted) throw this.mismatchError();
-    this.assertDesktopProfile(method);
+    // Every desktop controller, one-window mode included: below the floor
+    // these are all it is served, so the newer side can update the older.
+    if (this.options.kind !== 'desktop') {
+      throw new RemoteControllerRefusedError(
+        `"${method}" is not available to this controller.`,
+      );
+    }
     return core;
   }
 
@@ -881,7 +1121,8 @@ export class RemoteHostSession {
     const session = this.options.session;
     const parsed = HelloParamsSchema.safeParse(params);
     if (!parsed.success) {
-      session.setResumeNegotiated(false);
+      // A session that already said hello keeps its resume (CAN-7758).
+      if (!this.greeted) session.setResumeNegotiated(false);
       throw this.mismatchError();
     }
     const decision = negotiateHello(
@@ -889,6 +1130,26 @@ export class RemoteHostSession {
       this.options.kind,
       this.options.version,
     );
+    // A session that already said hello refuses any later hello it would
+    // not accept, before resume is touched, so the session that stays keeps
+    // its resume (CAN-7758): a refused profile; a hello in the other mode,
+    // since one without one-window mode would widen the session to the full
+    // tunnel and one that adds it would leave the full session's bridges and
+    // leases in place; and an incompatible hello on an admitted one-window
+    // session, rather than keeping it serving under a negotiation it lost.
+    if (this.greeted) {
+      if (decision.outcome === 'refused')
+        throw new RemoteControllerRefusedError(decision.reason);
+      if (
+        this.oneWindow !== decision.oneWindow ||
+        (this.oneWindow &&
+          this.compatible &&
+          decision.outcome === 'incompatible')
+      )
+        throw new RemoteControllerRefusedError(
+          'The controller profile does not match this session.',
+        );
+    }
     // Resume only a session this computer serves, and only when offered.
     const resume =
       decision.outcome === 'compatible' &&
@@ -899,8 +1160,11 @@ export class RemoteHostSession {
     if (decision.outcome === 'refused') {
       throw new RemoteControllerRefusedError(decision.reason);
     }
+    this.oneWindow = decision.oneWindow;
     this.greeted = true;
     if (decision.outcome === 'incompatible') return hello;
+    if (this.oneWindow && hello.features)
+      hello.features.oneWindow = { capabilities: [...ONE_WINDOW_CAPABILITIES] };
     if (!this.compatible) {
       // Desktop and browser (CAN-7437) controllers may agree the exact
       // catalogue; hosted agents and mobile keep the legacy short names.
@@ -912,6 +1176,16 @@ export class RemoteHostSession {
     this.compatible = true;
     if (this.exactWorktreeBaseBranch && hello.features)
       hello.features.exactWorktreeBaseBranch = true;
+    this.webPreviewNegotiated = this.offersWebPreview(parsed.data);
+    if (this.webPreviewNegotiated && hello.features) {
+      hello.features.webPreview = {
+        version: REMOTE_TUNNEL_VERSION,
+        maxStreams: this.options.tunnelMaxStreams ?? TUNNEL_MAX_STREAMS,
+        initialWindowBytes: TUNNEL_INITIAL_WINDOW_BYTES,
+        // LAN preview is CAN-7686.
+        lan: false,
+      };
+    }
     // Warm the bridge so the controller's first calls do not wait for it.
     this.start().catch((error: unknown) => this.options.onBridgeError?.(error));
     return resume
@@ -999,11 +1273,11 @@ export class RemoteHostSession {
 
   /**
    * Session methods outside the IPC allowlists (host file reads, account
-   * proxy sign-in) stay with full desktop controllers; uploads see
-   * {@link assertUploadProfile}.
+   * proxy sign-in, tunnel streams) stay with full desktop controllers, not
+   * one-window sessions; uploads see {@link assertUploadProfile}.
    */
   private assertDesktopProfile(method: string): void {
-    if (this.options.kind !== 'desktop') {
+    if (this.options.kind !== 'desktop' || this.oneWindow) {
       throw new RemoteControllerRefusedError(
         `"${method}" is not available to this controller.`,
       );
@@ -1015,10 +1289,14 @@ export class RemoteHostSession {
    * person attaches in the browser is stored here before the send that names
    * it, the effect of Portal's attachment upload. The store is per controller
    * device and expires its files; nothing the browser sends selects a path.
-   * Mobile and hosted controllers stay refused.
+   * Mobile and hosted controllers stay refused, and so do one-window
+   * sessions until composer attachments join their list.
    */
   private assertUploadProfile(method: string): void {
-    if (this.options.kind !== 'desktop' && this.options.kind !== 'browser') {
+    if (
+      this.oneWindow ||
+      (this.options.kind !== 'desktop' && this.options.kind !== 'browser')
+    ) {
       throw new RemoteControllerRefusedError(
         `"${method}" is not available to this controller.`,
       );
@@ -1032,6 +1310,43 @@ export class RemoteHostSession {
         this.options.version,
       ),
     );
+  }
+
+  /**
+   * Whether hello advertises web preview: a desktop controller that asked
+   * for it, a dialer to serve it, and preview allowed now.
+   */
+  private offersWebPreview(params: HelloParams): boolean {
+    return (
+      this.options.kind === 'desktop' &&
+      !this.oneWindow &&
+      this.options.tunnelOpen !== undefined &&
+      this.options.webPreview?.allowed() === true &&
+      (params.webPreview?.version ?? 0) >= REMOTE_TUNNEL_VERSION
+    );
+  }
+
+  /**
+   * Serves one `tunnel.open`. Decided per open, not when the stream mux is
+   * made, so an open refused before a hello negotiated preview does not
+   * leave the session refusing every later one. With `webPreview` given, only a
+   * session whose hello negotiated preview is dialed; without it,
+   * `tunnelOpen` alone decides. The dialer still checks authorization and
+   * that preview is allowed on every open.
+   */
+  private async openTunnelStream(
+    request: TunnelOpenRequest,
+    signal: AbortSignal,
+  ): Promise<TunnelOpenDecision> {
+    const open = this.options.tunnelOpen;
+    if (
+      open === undefined ||
+      (this.options.webPreview !== undefined && !this.webPreviewNegotiated)
+    )
+      return { ok: false, code: 'unavailable' };
+    const decision = await open(request, signal);
+    if (decision.ok) this.carriedPreview = true;
+    return decision;
   }
 
   /** The session's tunnel streams, made when the first one opens. */
@@ -1048,7 +1363,8 @@ export class RemoteHostSession {
         onHeldBytesReleased: (listener): (() => void) =>
           session.onHeldBytesReleased(listener),
       },
-      ...(this.options.tunnelOpen ? { open: this.options.tunnelOpen } : {}),
+      open: (request, signal): Promise<TunnelOpenDecision> =>
+        this.openTunnelStream(request, signal),
       ...(this.options.tunnelMaxStreams === undefined
         ? {}
         : { maxStreams: this.options.tunnelMaxStreams }),
@@ -1068,6 +1384,8 @@ export class RemoteHostSession {
       return;
     if (this.tunnels?.handleEvent(name, payload)) return;
     if (name === REMOTE_EVENTS.appAdvisorWindowState) {
+      // A one-window session has no App Advisor window to report.
+      if (this.oneWindow) return;
       const state = AppAdvisorWindowStateParamsSchema.safeParse(payload);
       if (state.success) this.options.onAppAdvisorWindowState?.(state.data);
       return;
@@ -1076,6 +1394,8 @@ export class RemoteHostSession {
     const parsed = InvokeParamsSchema.safeParse(payload);
     if (!parsed.success) return;
     const { channel, args, surface } = parsed.data;
+    if (!this.allowsSurface(surface)) return;
+    if (!this.oneWindowAllowsSend(channel, args)) return;
     if (!this.allowsInvoke(channel, args)) return;
     if (controllerInvokeRefusal(channel, args) !== undefined) return;
     if (this.servesHostedChat(channel)) {
@@ -1117,4 +1437,17 @@ export class RemoteHostSession {
     this.closedListeners.clear();
     this.options.onClose(reason);
   }
+}
+
+/**
+ * A browser's rejected harness setup call, with host paths out of its
+ * message (CAN-6718 review S3). A bridge passes a handler's message as
+ * public text, and a raw error can quote this computer's folders. The error
+ * keeps its class and fields.
+ */
+function browserInvokeRejection(channel: string, error: unknown): unknown {
+  if (!(error instanceof Error)) return error;
+  const message = browserHarnessErrorMessage(channel, error.message);
+  if (message !== error.message) error.message = message;
+  return error;
 }

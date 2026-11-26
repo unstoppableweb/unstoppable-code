@@ -2,6 +2,7 @@ import type { InstalledStatusFilterValue } from './installed-item-status';
 import type { UnifiedEntryKind } from '@canopy/protocol/unified-entry';
 import { WORKSPACE_TEMPLATE_SHARE_LABEL_PLURAL } from '@canopy/protocol/workspace-templates';
 import { WORKFLOW_ITEM_LABEL_PLURAL } from './workflow-labels';
+import { MODEL_PRESET_LABEL_PLURAL } from './model-preset-labels';
 
 /** The kind a non-`all` Marketplace type tab narrows the browse list to. */
 export type MarketplaceKindFilter =
@@ -116,7 +117,7 @@ export const MARKETPLACE_TYPE_TABS: readonly MarketplaceTypeTab[] = [
   { id: 'skill', label: 'Skills' },
   { id: 'workflow', label: WORKFLOW_ITEM_LABEL_PLURAL },
   { id: 'collection', label: 'Collections' },
-  { id: 'agent', label: 'Agents' },
+  { id: 'agent', label: MODEL_PRESET_LABEL_PLURAL },
   { id: 'blueprint', label: WORKSPACE_TEMPLATE_SHARE_LABEL_PLURAL },
   { id: 'sources', label: 'Marketplaces' },
 ];

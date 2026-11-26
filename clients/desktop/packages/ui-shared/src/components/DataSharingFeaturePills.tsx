@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { Badge } from './Badge';
+import { Badge } from '../primitives/Badge';
 import {
   dataSharingFeatureCaption,
   getDataSharingFeatures,

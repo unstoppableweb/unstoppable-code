@@ -8,7 +8,10 @@ import {
   installedItemTargetKey,
   type InstalledEntryStatusState,
 } from '@canopy/ui-shared/lib/installed-item-status';
-import type { InstalledItemStatus } from '@canopy/protocol/installed-items';
+import type {
+  InstalledItemStatus,
+  InstalledItemTarget,
+} from '@canopy/protocol/installed-items';
 import type { UnifiedPluginEntry } from '@canopy/ui-shared/lib';
 import type { CustomizeWorkflowAvailability } from './customizeWorkflowActions';
 
@@ -64,9 +67,12 @@ export interface CustomizeRowActionInput {
       | { readonly ok: true }
       | {
           readonly ok: false;
+          readonly target: InstalledItemTarget;
+          readonly listingId: string;
+          readonly statusEntryId: string;
           readonly next: InstalledItemStatus;
           readonly message: string;
-          readonly retry: () => void;
+          readonly retry: (setStatus?: InstalledItemSetStatus) => void;
         },
   ) => void;
 }
@@ -171,30 +177,39 @@ function statusChoice(
   if (state.kind !== 'ready' || state.item.status === null || !onSetStatus)
     return undefined;
   const target = state.item.target;
+  function change(
+    next: InstalledItemStatus,
+    setStatus: InstalledItemSetStatus,
+  ): void {
+    void setStatus(target, next).then((outcome) => {
+      if (input.onStatusOutcome) {
+        input.onStatusOutcome(
+          outcome.ok
+            ? { ok: true }
+            : {
+                ok: false,
+                target,
+                listingId: status.listing.id,
+                statusEntryId:
+                  status.listing.installedEntryId ?? status.listing.id,
+                next,
+                message: outcome.message ?? 'The status did not change.',
+                retry: (currentSetStatus): void =>
+                  change(next, currentSetStatus ?? setStatus),
+              },
+        );
+        return;
+      }
+      if (!outcome.ok && outcome.message) input.onError?.(outcome.message);
+    });
+  }
   return {
     current: state.item.status,
     ...(heading !== undefined ? { heading } : {}),
     targetKind: target.kind,
     retryCurrent: state.item.notices.some((notice) => notice.retryable),
     busy: input.pendingKeys.has(installedItemTargetKey(target)),
-    onChange: function change(next): void {
-      void onSetStatus(target, next).then((outcome) => {
-        if (input.onStatusOutcome) {
-          input.onStatusOutcome(
-            outcome.ok
-              ? { ok: true }
-              : {
-                  ok: false,
-                  next,
-                  message: outcome.message ?? 'The status did not change.',
-                  retry: (): void => change(next),
-                },
-          );
-          return;
-        }
-        if (!outcome.ok && outcome.message) input.onError?.(outcome.message);
-      });
-    },
+    onChange: (next): void => change(next, onSetStatus),
   };
 }
 

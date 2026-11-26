@@ -21,3 +21,28 @@ export type {
   PreferencesRepository,
 } from './repository';
 export { createPreferencesRepository } from './repository';
+export {
+  CLIENT_LOCAL_PREFERENCE_KEYS,
+  type ClientLocalPreferenceKey,
+} from './client-local-keys';
+export {
+  preserveStoredKeys,
+  type WithStoredKeys,
+} from './preserve-stored-keys';
+export {
+  PREFERENCES_BACKUPS_FOLDER,
+  PREFERENCES_FAMILY_FILES,
+  PREFERENCES_NAMESPACE_ID,
+  PREFERENCES_OWNER_RECORDS_FOLDER,
+} from './family';
+export type {
+  PreferencesBackupOptions,
+  PreferencesNewerLoss,
+  PreferencesRestoreOptions,
+  PreferencesRestoreResult,
+} from './preferences-backup';
+export {
+  PREFERENCES_ROLLBACK_MIGRATION,
+  backupPreferences,
+  restorePreferencesBackup,
+} from './preferences-backup';

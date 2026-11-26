@@ -20,7 +20,15 @@ import type {
   RepoPrTrackingData,
   WorktreePrStatus,
 } from '@canopy/desktop-shared/types/github';
-import type { WorktreeData } from '@canopy/desktop-shared/types';
+import type {
+  WorkspaceConfigFile,
+  WorktreeData,
+} from '@canopy/desktop-shared/types';
+import { runWithW5Caller } from '@canopy/desktop-shared/node/work-counters';
+import {
+  readThroughDesktopW5Cache,
+  w5WorkspaceFileRequest,
+} from '../canopy-runtime/w5-read-cache-server';
 import {
   compareTriggerNames,
   SUPPORTED_PR_HOOK_TRIGGERS,
@@ -429,6 +437,16 @@ function sendToRenderer(channel: string, data: unknown): void {
   sendToWindow(getWindowFn?.() ?? null, channel, data);
 }
 
+/** The manifest from the read cache when it can answer, else as today. */
+function readConfigThroughCache(
+  workspaceId: string,
+): Promise<WorkspaceConfigFile> {
+  return readThroughDesktopW5Cache(
+    w5WorkspaceFileRequest('manifest', workspaceId),
+    () => readWorkspaceConfig(workspaceId),
+  );
+}
+
 async function resolveRefreshTargets(
   projectId: string,
   worktreeId: string,
@@ -451,7 +469,12 @@ async function resolveRefreshTargets(
       ];
     }
 
-    const repoEntries = await listWorkspaceWorktreeRepoEntries(projectId, cwd);
+    const repoEntries = await listWorkspaceWorktreeRepoEntries(
+      projectId,
+      cwd,
+      undefined,
+      readConfigThroughCache,
+    );
     return repoEntries.map((entry) => ({
       target:
         entry.repoId === getWorkspaceRootRepoStorageKey()
@@ -494,7 +517,7 @@ async function resolveEffectiveHookActions(args: {
   };
 
   if (!isMultiRepoWorkspace(args.projectId)) {
-    const config = await readWorkspaceConfig(args.projectId);
+    const config = await readConfigThroughCache(args.projectId);
     const resolvedHooks = await resolveProjectHooks(
       {
         id: args.projectId,
@@ -1681,7 +1704,9 @@ async function refreshSweptWorktree(
 async function sweep(entries: TrackedWorktree[]): Promise<void> {
   const run = beginGitHubSweep(entries.length);
   try {
-    await runSweep(entries, run);
+    await runWithW5Caller('background:github-poller', () =>
+      runSweep(entries, run),
+    );
   } finally {
     const line = finishGitHubSweepLogLine(run);
     if (line !== null) logMainProcessInfo(line);
@@ -2200,7 +2225,12 @@ export function startPolling(getWindow: () => BrowserWindow | null): void {
   gitReadySubscription ??= registerWorktreeGitReadyHook(
     async ({ projectId, worktreeId }) => {
       if (isWorkspaceTargetRemovalPending(projectId, worktreeId)) return;
-      const list = await readWorkspaceWorktreesUnlocked(projectId);
+      const list = await runWithW5Caller('background:github-poller', () =>
+        readThroughDesktopW5Cache(
+          w5WorkspaceFileRequest('worktrees', projectId),
+          () => readWorkspaceWorktreesUnlocked(projectId),
+        ),
+      );
       const row = list.worktrees.find((worktree) => worktree.id === worktreeId);
       if (!row || !ensureTracked(projectId, worktreeId, row.createdAt)) return;
       enqueueFastRefresh(projectId, worktreeId);

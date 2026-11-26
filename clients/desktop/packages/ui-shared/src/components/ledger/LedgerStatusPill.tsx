@@ -9,9 +9,9 @@ import {
   type AppIcon,
 } from '../../icons/AppIcons';
 import { LEDGER_STATUS_LABELS } from '../../lib/ledger-display';
-import { ledgerStatusPillClassName } from '../control-button-shared';
-export { ledgerStatusPillClassName } from '../control-button-shared';
-import { StatusGlyph } from '../StatusGlyph';
+import { ledgerStatusPillClassName } from '../../primitives/control-button-shared';
+export { ledgerStatusPillClassName } from '../../primitives/control-button-shared';
+import { StatusGlyph } from '../../primitives/StatusGlyph';
 
 /**
  * The shared status-badge geometry and the tint a status takes, for the pill

@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { SettingSource } from '@anthropic-ai/claude-agent-sdk';
 import { readPluginCatalog } from '@canopy/execution-engine/node/plugins/catalog-read-health';
+import { isUsablePluginCopy } from './plugin-copy';
 import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
 import { getBundledSkillDir } from '@canopy/execution-engine/pipelines/config-paths';
 import type {
@@ -167,9 +168,17 @@ function recordProjectionFailure(
   });
 }
 
+function readText(filePath: string): string | null {
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
 function readJson<T>(filePath: string): T | null {
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8')) as T;
+    return JSON.parse(readText(filePath) ?? '') as T;
   } catch {
     return null;
   }
@@ -589,11 +598,20 @@ function resolveFacetPath(
   marketplace: MarketplaceInfo,
   warnings: string[],
 ): string | null {
-  if (facet.cachePath && fs.existsSync(facet.cachePath)) {
+  // Resolve only the selected catalog snapshot, never a newer index binding.
+  if (
+    facet.cachePath &&
+    fs.existsSync(facet.cachePath) &&
+    isUsablePluginCopy(facet.cachePath, facet.provenance, readText)
+  ) {
     return facet.cachePath;
   }
 
-  if (facet.installLocation && fs.existsSync(facet.installLocation)) {
+  if (
+    facet.installLocation &&
+    fs.existsSync(facet.installLocation) &&
+    isUsablePluginCopy(facet.installLocation, facet.provenance, readText)
+  ) {
     return facet.installLocation;
   }
 
@@ -610,7 +628,10 @@ function resolveFacetPath(
       );
       return null;
     }
-    if (fs.existsSync(resolved)) {
+    if (
+      fs.existsSync(resolved) &&
+      isUsablePluginCopy(resolved, facet.provenance, readText)
+    ) {
       return resolved;
     }
   }

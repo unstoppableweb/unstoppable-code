@@ -1,4 +1,4 @@
-import type { NoticeIntent } from '../components/Notice';
+import type { NoticeIntent } from '../primitives/Notice';
 
 /** How long a success toast stays up: long enough to read, then it leaves. */
 export const SUCCESS_TOAST_LIFETIME_MS = 6_000;

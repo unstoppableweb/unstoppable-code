@@ -144,5 +144,25 @@ export function canopyRouteFixtures(): CanopyWorktreeSessionRoute[] {
       ledgerTools: ledgerTools(),
       reportStructuredResultSchema: { type: 'object' },
     }),
+    // A `dangerous_all` pipeline agent's worker route, which may post a
+    // review as the GitHub App (CAN-7742).
+    fixture('worker-rw-pipeline-agent', {
+      toolSurface: 'claude-worker',
+      workerMemoryToolExposure: 'read-write',
+      ledgerTools: ledgerTools(),
+      pipelineAgentActions: { executionId: 'e' },
+    }),
+    // A read-only pipeline agent's worker route: its host never sets the field.
+    fixture('worker-ro-pipeline-agent', {
+      toolSurface: 'claude-worker',
+      workerMemoryToolExposure: 'read-only',
+    }),
+    // A `dangerous_all` Claude action subprocess's Ledger route.
+    fixture('ledger-subprocess-pipeline-agent', {
+      toolSurface: 'claude-worker',
+      ledgerTools: ledgerTools(),
+      pipelineAgentActions: { executionId: 'e' },
+      authorizeToolCall: () => Promise.resolve(true),
+    }),
   ];
 }

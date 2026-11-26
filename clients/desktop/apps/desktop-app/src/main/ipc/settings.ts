@@ -17,8 +17,6 @@ import {
 import { BrowserWindow } from 'electron';
 import { loadCloudReleaseNotes } from '../canopy-cloud/release-notes';
 import { OAuthLoginEndedError } from '../canopy-cloud/oauth-login-errors';
-import { normalizePersonalOrganizationId } from '@canopy/protocol/workspace-context';
-import { normalizeMemorySearchOrganizationExternalIds } from '@canopy/desktop-shared/lib/org-memory';
 import { mkdir, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { parseLinearIdentifier } from '@canopy/desktop-shared/lib/create-from-reference';
@@ -74,14 +72,14 @@ import {
   type ProviderCarryoverSummary,
 } from '@canopy/desktop-shared/types/provider-carryover';
 import { validateId } from '../lib/validation';
+import { modelGatewayAccountFields } from '@canopy/desktop-shared/lib/org-enforced-parsing';
 import {
-  normalizeOrgEnforcedSettingsWithStatus,
-  modelGatewayAccountFields,
-} from '@canopy/desktop-shared/lib/org-enforced-parsing';
-import { normalizeOrgBillingStates } from '@canopy/desktop-shared/lib/org-billing-state-parsing';
+  CANOPY_ACCOUNT_REFRESH_REPLACED_FIELDS,
+  canopyAccountRefreshFields,
+  parseCanopyAccountSnapshot,
+} from '@canopy/protocol/canopy-server/account-snapshot';
 import { isGuestAccount } from '@canopy/desktop-shared/lib/guest-account';
 import type { CanopyGuestConsent } from '@canopy/desktop-shared/constants/consent';
-import type { CanopyTeamSummary } from '@canopy/protocol/pipelines';
 import {
   invalidateTokenCache,
   resolveGitHubToken,
@@ -108,8 +106,6 @@ import {
   isCurrentCanopyCloudSessionProbe,
   type CanopyCloudSessionProbe,
 } from '../canopy-cloud/session-status';
-import { parseAuthoritativeOrganizationSnapshot } from '../canopy-cloud/organization-snapshot';
-import { normalizeCanopyOrganizationSummaries } from '../canopy-cloud/organization-summary';
 import { openAuthenticatedCloudPage } from '../canopy-cloud/authenticated-cloud-page';
 import { openAuthenticatedCloudPageRequest } from '../services/authenticated-cloud-page-open';
 import type { AuthenticatedCloudPageResult } from '@canopy/desktop-shared/lib/authenticated-cloud-page-request';
@@ -257,21 +253,6 @@ type DesktopCanopyServerStatus = CanopyServerStatus & {
   organizationModelGatewayConfigs?: CanopyAccountResponse['organizationModelGatewayConfigs'];
 };
 
-function memorySearchOrganizationsField(payload: {
-  memorySearchOrganizationExternalId?: unknown;
-  memorySearchOrganizationExternalIds?: unknown;
-}): {
-  memorySearchOrganizationExternalIds?: string[];
-} {
-  const organizations = normalizeMemorySearchOrganizationExternalIds(
-    payload.memorySearchOrganizationExternalIds,
-    payload.memorySearchOrganizationExternalId,
-  );
-  return organizations.length > 0
-    ? { memorySearchOrganizationExternalIds: organizations }
-    : {};
-}
-
 function refreshFeatureFlagContextAfterSettingsChange(reason: string): void {
   void getFeatureFlagService()
     .refreshContext()
@@ -296,25 +277,6 @@ function resetGitHubCredentialState(): void {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function normalizeCanopyTeams(value: unknown): CanopyTeamSummary[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.filter(
-    (entry): entry is CanopyTeamSummary =>
-      isRecord(entry) &&
-      typeof entry.id === 'string' &&
-      typeof entry.name === 'string' &&
-      isRecord(entry.organization) &&
-      typeof entry.organization.id === 'string' &&
-      typeof entry.organization.name === 'string' &&
-      typeof entry.organization.createdAt === 'string' &&
-      typeof entry.organization.updatedAt === 'string' &&
-      typeof entry.createdAt === 'string' &&
-      typeof entry.updatedAt === 'string',
-  );
 }
 
 function buildWellKnownUrl(baseUrl: string): string {
@@ -527,66 +489,17 @@ async function probeCanopyCloud(
 
     const payload =
       await readJsonResponse<Partial<CanopyAccountResponse>>(accountResponse);
-    const effectiveCapabilities = Array.isArray(payload.capabilities)
-      ? payload.capabilities.filter(
-          (capability): capability is string => typeof capability === 'string',
-        )
-      : capabilities;
+    // Shared protocol normalizer, so other hosts parse the same way (CAN-6997).
+    const snapshot = parseCanopyAccountSnapshot(payload, capabilities);
     const effectiveMissingCapabilities =
       REQUIRED_CANOPY_CLOUD_CAPABILITIES.filter(
-        (capability) => !effectiveCapabilities.includes(capability),
+        (capability) => !snapshot.capabilities.includes(capability),
       );
-    const authoritativeOrganizations = parseAuthoritativeOrganizationSnapshot(
-      payload.organizations,
-    );
-    const organizations =
-      authoritativeOrganizations ??
-      normalizeCanopyOrganizationSummaries(payload.organizations);
-    const normalizedEnforcement = normalizeOrgEnforcedSettingsWithStatus(
-      payload.enforcedSettings,
-    );
     return {
+      ...snapshot,
       authenticated: true,
-      capabilities: effectiveCapabilities,
       missingCapabilities: effectiveMissingCapabilities,
       account: payload.account ?? null,
-      personalOrganizationId: normalizePersonalOrganizationId(
-        payload.personalOrganizationId,
-      ),
-      organizations,
-      organizationsRefreshed: authoritativeOrganizations !== null,
-      ...modelGatewayAccountFields(payload),
-      teams: normalizeCanopyTeams(payload.teams),
-      enforcedSettings: normalizedEnforcement.settings,
-      ...(normalizedEnforcement.telemetryEnforcementUnavailable === true
-        ? { telemetryEnforcementUnavailable: true }
-        : {}),
-      modelGatewayEnforcementUnavailable:
-        normalizedEnforcement.modelGatewayEnforcementUnavailable,
-      // PRESENCE IS THE SIGNAL, so the key is spread rather than always set.
-      // `normalizeOrgBillingStates` maps an absent or malformed field to `[]`,
-      // which is indistinguishable from "the server told us no org is lapsed".
-      // `reprobeAndApplyCanopyCloudEnforcedSettings` reports whether per-org
-      // billing state was genuinely refreshed by testing this key for
-      // `undefined`, and `TelemetrySyncService` treats that report as the
-      // precondition for an irreversible queue delete. Normalizing an omission
-      // to `[]` would make every authenticated probe claim a refresh, including
-      // one against a server that has never sent the field.
-      ...(Array.isArray(payload.orgBillingStates)
-        ? {
-            orgBillingStates: normalizeOrgBillingStates(
-              payload.orgBillingStates,
-            ),
-          }
-        : {}),
-      ...(typeof payload.memorySearchOrganizationExternalId === 'string' &&
-      payload.memorySearchOrganizationExternalId.trim().length > 0
-        ? {
-            memorySearchOrganizationExternalId:
-              payload.memorySearchOrganizationExternalId.trim(),
-          }
-        : {}),
-      ...memorySearchOrganizationsField(payload),
       error:
         effectiveMissingCapabilities.length > 0
           ? `${CLOUD_DISPLAY_NAME} is missing required capabilities: ${effectiveMissingCapabilities.join(', ')}`
@@ -867,60 +780,14 @@ async function reprobeAndApplyAccountSnapshot(
   // Memory-org eligibility is replaced, never merged: `...entry` would
   // otherwise keep a cached org the server stopped advertising (CAN-3457), and
   // org memory would keep searching an org the user may no longer search.
-  const entryWithoutMemoryOrganizations: CanopyCloudAccountEntry = {
-    ...entry,
-  };
-  delete entryWithoutMemoryOrganizations.personalOrganizationId;
-  delete entryWithoutMemoryOrganizations.personalModelGateway;
-  delete entryWithoutMemoryOrganizations.personalModelGatewayEnforcementUnavailable;
-  delete entryWithoutMemoryOrganizations.personalModelGatewayConfig;
-  delete entryWithoutMemoryOrganizations.organizationModelGatewayConfigs;
-  delete entryWithoutMemoryOrganizations.memorySearchOrganizationExternalId;
-  delete entryWithoutMemoryOrganizations.memorySearchOrganizationExternalIds;
+  const entryWithoutReplacedFields: CanopyCloudAccountEntry = { ...entry };
+  for (const field of CANOPY_ACCOUNT_REFRESH_REPLACED_FIELDS)
+    delete entryWithoutReplacedFields[field];
   const nextAccount: CanopyCloudAccountEntry = {
-    ...entryWithoutMemoryOrganizations,
-    capabilities: status.capabilities,
-    ...(status.memorySearchOrganizationExternalId
-      ? {
-          memorySearchOrganizationExternalId:
-            status.memorySearchOrganizationExternalId,
-        }
-      : {}),
-    ...(status.memorySearchOrganizationExternalIds
-      ? {
-          memorySearchOrganizationExternalIds:
-            status.memorySearchOrganizationExternalIds,
-        }
-      : {}),
-    ...(status.personalOrganizationId
-      ? { personalOrganizationId: status.personalOrganizationId }
-      : {}),
-    ...modelGatewayAccountFields(status),
-    ...(status.personalModelGatewayEnforcementUnavailable
-      ? { personalModelGatewayEnforcementUnavailable: true }
-      : {}),
+    ...entryWithoutReplacedFields,
+    // Shared protocol refresh rules (CAN-6997).
+    ...canopyAccountRefreshFields(status),
     account: status.account,
-    organizations: status.organizations,
-    teams: status.teams,
-    ...(status.enforcedSettings
-      ? { enforcedSettings: status.enforcedSettings }
-      : {}),
-    telemetryEnforcementUnavailable:
-      status.telemetryEnforcementUnavailable === true,
-    modelGatewayEnforcementUnavailable:
-      status.modelGatewayEnforcementUnavailable === true,
-    // An AUTHENTICATED response that omits the field clears the cached states
-    // rather than preserving them. Preserving would make a lapse STICKY across
-    // a server rollback: a deployment that predates `orgBillingStates` would
-    // leave every previously-lapsed org gated locally forever — org memory off,
-    // AI credits zeroed, sharing refused — which contradicts the invariant in
-    // `lib/org-billing-state.ts` that an older server means NOT lapsed, and the
-    // PR's claim that either side rolls back independently.
-    //
-    // This is only reached on the authenticated branch. The early returns above
-    // (no key, offline, unauthenticated) still leave the cached value untouched,
-    // because those tell us nothing about the server's support for the field.
-    orgBillingStates: status.orgBillingStates ?? [],
     updatedAt: new Date().toISOString(),
   };
   const organizationIds = status.organizations.map(

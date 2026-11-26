@@ -1,11 +1,12 @@
 // CAN-4175 capture golden: the archived-container retention sweep, pinned on
 // unchanged code before it moves into the core lifecycle. Real archive
-// manifests in a temporary data directory go through the real sweep; only the
-// Ledger journal and the W5 destructive-recovery journal are replaced, so each
-// fence can be set per container. It asserts which archives the sweep removes
+// manifests in a temporary data directory go through the real sweep, and a
+// real W5 archive journal awaiting recovery fences a container; only the
+// Ledger journal is replaced. It asserts which archives the sweep removes
 // and which it keeps: expired ones go, locked ones and ones a fence still
 // holds stay, and a staging directory goes only once it is a day old and holds
 // nothing that may be the last copy of someone's work.
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync, utimesSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -20,22 +21,15 @@ import type * as ArchiveEngine from '../../archive/archive-io-engine';
 import type * as Retention from '../archived-container-retention';
 import type * as Paths from '../paths';
 import type * as Archives from '../archived-containers';
+import type * as Recovery from '../w5-destructive-recovery';
+import type { DestructiveRecoveryRecord } from '../w5-destructive-recovery';
 
-const mockFenced = new Set<string>();
 const mockLedger: {
   intent: 'no_ledger' | 'durable' | 'not_durable';
   purged: string[];
   restored: string[];
 } = { intent: 'no_ledger', purged: [], restored: [] };
 
-jest.mock('../w5-destructive-recovery', () => ({
-  ...jest.requireActual<object>('../w5-destructive-recovery'),
-  hasUnresolvedDestructiveRecovery: (
-    _workspaceId: string,
-    containerId?: string,
-  ): Promise<boolean> =>
-    Promise.resolve(containerId !== undefined && mockFenced.has(containerId)),
-}));
 // The archive I/O utility process runs its engine in this process instead.
 jest.mock('../../archive/archive-io-runner', () => ({
   ...jest.requireActual<object>('../../archive/archive-io-runner'),
@@ -79,6 +73,7 @@ let previousDataDir: string | undefined;
 let retention: typeof Retention;
 let paths: typeof Paths;
 let archives: typeof Archives;
+let recovery: typeof Recovery;
 
 function manifest(
   id: string,
@@ -134,6 +129,30 @@ async function staging(
   utimesSync(directory, touched, touched);
 }
 
+/** Writes `id`'s archive journal, which fences it until its state is completed. */
+async function journal(
+  id: string,
+  state: DestructiveRecoveryRecord['state'],
+): Promise<void> {
+  const directory = paths.getW5DestructiveLifecycleDir();
+  await mkdir(directory, { recursive: true });
+  const record: DestructiveRecoveryRecord = {
+    version: 1,
+    operationId: randomUUID(),
+    operation: 'worktree-archive',
+    workspaceId: PROJECT,
+    worktreeId: id,
+    directoryIdentity: null,
+    state,
+    steps: [],
+    ownedPaths: [],
+  };
+  await writeFile(
+    join(directory, recovery.lifecycleJournalSlotName(PROJECT, id)),
+    JSON.stringify(record),
+  );
+}
+
 function present(id: string): boolean {
   return existsSync(paths.getArchivedContainerDir(PROJECT, id));
 }
@@ -146,7 +165,6 @@ async function listed(): Promise<string[]> {
 
 beforeEach(async () => {
   jest.resetModules();
-  mockFenced.clear();
   mockLedger.intent = 'no_ledger';
   mockLedger.purged = [];
   mockLedger.restored = [];
@@ -156,6 +174,7 @@ beforeEach(async () => {
   paths = await import('../paths');
   archives = await import('../archived-containers');
   retention = await import('../archived-container-retention');
+  recovery = await import('../w5-destructive-recovery');
   await mkdir(join(paths.getWorkspacesRootDir(), PROJECT), { recursive: true });
 });
 
@@ -197,12 +216,12 @@ describe('archived-container retention sweep (CAN-4175 capture)', () => {
   it('keeps an expired archive while a destructive recovery still holds it', async () => {
     await archive('held', expired);
     await archive('free', expired);
-    mockFenced.add('held');
+    await journal('held', 'recovery-required');
 
     await retention.applyArchivedContainerRetention(NOW);
     expect(await listed()).toEqual(['held']);
 
-    mockFenced.clear();
+    await journal('held', 'completed');
     await retention.applyArchivedContainerRetention(NOW);
     expect(await listed()).toEqual([]);
   });
@@ -237,7 +256,7 @@ describe('archived-container retention sweep (CAN-4175 capture)', () => {
     await staging('stale-with-executions', DAY_MS + 60_000, 'executions');
     await staging('stale-with-root-files', DAY_MS + 60_000, 'workspace-root');
     await staging('stale-fenced', DAY_MS + 60_000);
-    mockFenced.add('stale-fenced');
+    await journal('stale-fenced', 'recovery-required');
 
     await retention.applyArchivedContainerRetention(NOW);
 

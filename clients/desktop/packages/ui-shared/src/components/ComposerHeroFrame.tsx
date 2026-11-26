@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from 'react';
 import { HomeSections } from './HomeSection';
-import { Stack } from './Stack';
+import { Stack } from '../primitives/Stack';
 
 export type ComposerHeroFrameRhythm = 'spacious' | 'compact';
 

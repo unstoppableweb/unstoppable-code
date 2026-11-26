@@ -1,7 +1,10 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { WorkerPipelineOwnerLedgerOperation } from '@canopy/protocol/canopy-core';
 import { BRAND } from '@canopy/brand/current';
-import { CANOPY_INJECTED_TOOL_REGISTRY } from '@canopy/execution-engine/lib/canopy-injected-tools';
+import {
+  CANOPY_INJECTED_TOOL_REGISTRY,
+  CANOPY_MCP_TOOL_TIMEOUT_MS,
+} from '@canopy/execution-engine/lib/canopy-injected-tools';
 import type {
   ApprovalRule,
   ApprovalCheck,
@@ -40,6 +43,25 @@ import {
   getMcpHttpProxyService,
   type CanopyWorktreeSessionRoute,
 } from '../mcp/http-proxy-service';
+import {
+  executeCanopyInjectedTool,
+  type CanopyInjectedToolRuntime,
+  type CanopyInjectedToolTextResult,
+} from '../canopy-tools/core';
+import {
+  PIPELINE_AGENT_ACTION_TOOL_KEYS,
+  isPipelineAgentActionToolKey,
+  pipelineAgentActionApprovalRules,
+  pipelineAgentActionApprovalTarget,
+  pipelineAgentActionChatId,
+  pipelineAgentActionClaudeToolNames,
+  pipelineAgentActionRuntime,
+  pipelineAgentActionToolDefinitions,
+  type PipelineAgentActionProvider,
+  type PipelineAgentActionToolDefinition,
+  type PipelineAgentActionToolKey,
+} from '../canopy-tools/pipeline-agent-actions';
+import { pipelineAgentActionCodexPolicy } from './pipeline-agent-action-codex-tools';
 
 /*
  * The desktop host of the Agent Ledger for pipeline agents (phase 08). The
@@ -119,6 +141,145 @@ interface OpenAttempt {
 
 /** The step providers whose Ledger calls the host gates itself. */
 type PipelineLedgerProvider = 'claude' | 'codex' | 'opencode';
+
+/**
+ * Whether an attempt's agent may post a code review as the GitHub App
+ * (CAN-7742): a `dangerous_all` Claude or Codex step in a real project. A
+ * projectless run's synthetic scope would resolve its owner by a flag, so it
+ * never gets the tools; review skills then post another way.
+ */
+export function attemptAllowsAgentActions(
+  request: PipelineLedgerAttemptRequest,
+  provider: PipelineLedgerProvider,
+): provider is PipelineAgentActionProvider {
+  return (
+    request.permissionPreset === 'dangerous_all' &&
+    (provider === 'claude' || provider === 'codex') &&
+    request.projectId !== undefined
+  );
+}
+
+/** An attempt's agent action tools, served by whichever route the step uses. */
+export interface PipelineAgentActionTools {
+  readonly provider: PipelineAgentActionProvider;
+  readonly definitions: readonly PipelineAgentActionToolDefinition[];
+  /** Whether the step's approval session allows this call. Fails closed. */
+  authorize(
+    key: PipelineAgentActionToolKey,
+    toolUseId: string,
+  ): Promise<boolean>;
+  /**
+   * Runs one call with the attempt's own execution, project, worktree and
+   * cwd; any scope in the arguments is ignored. Only the two keys run.
+   */
+  execute(
+    key: string,
+    args: unknown,
+    context: { readonly toolUseId: string; readonly signal?: AbortSignal },
+  ): Promise<CanopyInjectedToolTextResult>;
+}
+
+/** No user attends a workflow step, and its tools read no script output. */
+const unattendedAgentActionHost: Pick<
+  CanopyInjectedToolRuntime,
+  'requestUserAnswers' | 'loadScriptOutput'
+> = {
+  requestUserAnswers: () =>
+    Promise.reject(new Error('No user attends this workflow step.')),
+  loadScriptOutput: () => Promise.resolve({ found: false, lines: [] }),
+};
+
+/**
+ * The one main-side seam of a pipeline agent's action tools: the Claude
+ * subprocess route, a Codex step's tools and the daemon's owner request all
+ * run calls through it. Null unless the attempt passes
+ * `attemptAllowsAgentActions` for this provider.
+ */
+function openPipelineAgentActions(
+  open: OpenAttempt,
+  cwd: string,
+  provider: PipelineLedgerProvider,
+  approval: Pick<ApprovalSessionHandle, 'check'>,
+): PipelineAgentActionTools | null {
+  const { request } = open;
+  if (
+    !attemptAllowsAgentActions(request, provider) ||
+    request.projectId === undefined
+  )
+    return null;
+  const projectId = request.projectId;
+  const { worktreeId } = attemptRouteScope(request);
+  return {
+    provider,
+    definitions: pipelineAgentActionToolDefinitions(provider),
+    authorize: async (key, toolUseId): Promise<boolean> => {
+      const target = pipelineAgentActionApprovalTarget(provider, key);
+      const outcome = await approval.check(target, {
+        title: `Use ${CANOPY_INJECTED_TOOL_REGISTRY[key].displayName}?`,
+        details: target,
+        toolUseId,
+      });
+      return outcome.decision === 'allow';
+    },
+    execute: async (key, args, context) => {
+      if (!isPipelineAgentActionToolKey(key))
+        return {
+          text: 'This workflow step may only post a code review as the GitHub App.',
+          isError: true,
+        };
+      return executeCanopyInjectedTool(
+        key,
+        args,
+        {
+          ...unattendedAgentActionHost,
+          worktreeActionRuntime: pipelineAgentActionRuntime({
+            projectId,
+            worktreeId,
+            chatId: pipelineAgentActionChatId(request.executionId),
+            cwd,
+            executionId: request.executionId,
+            ...(context.signal ? { signal: context.signal } : {}),
+          }),
+        },
+        {
+          toolUseId: context.toolUseId,
+          ...(context.signal ? { signal: context.signal } : {}),
+        },
+      );
+    },
+  };
+}
+
+/**
+ * An open attempt's agent action tools for its own harness, under the
+ * attempt's operation approval session for `cwd`, for the daemon's owner
+ * request. Null when the attempt is not open or does not pass the gate.
+ */
+export function openPipelineAgentActionsForAttempt(
+  attemptKey: string,
+  cwd: string,
+): PipelineAgentActionTools | null {
+  const open = openAttempts.get(attemptKey);
+  if (open === undefined) return null;
+  if (!attemptAllowsAgentActions(open.request, open.request.harness))
+    return null;
+  let approval = open.operationApprovals.get(cwd);
+  if (approval === undefined) {
+    approval = createPipelineLedgerApprovalSession(
+      attemptKey,
+      open.request,
+      cwd,
+      open.request.harness,
+    );
+    open.operationApprovals.set(cwd, approval);
+  }
+  return openPipelineAgentActions(open, cwd, open.request.harness, approval);
+}
+
+/** Whether a Ledger attempt is still open. */
+export function isPipelineLedgerAttemptOpen(attemptKey: string): boolean {
+  return openAttempts.has(attemptKey);
+}
 
 const openAttempts = new Map<string, OpenAttempt>();
 
@@ -238,9 +399,10 @@ function ledgerToolApprovalTarget(
 /**
  * The approval session of a pipeline step's Ledger calls. Like a Claude
  * pipeline worker's, it is unattended, in the mode the step's preset selects,
- * with session rules allowing exactly the three Ledger tools: a project or
- * global deny rule still applies, and a call that would need a prompt fails
- * closed.
+ * with session rules allowing exactly the three Ledger tools, plus
+ * SearchActions and DispatchAction when the step may post a review as the
+ * GitHub App: a project or global deny rule still applies, and a call that
+ * would need a prompt fails closed.
  */
 function createPipelineLedgerApprovalSession(
   attemptKey: string,
@@ -258,32 +420,40 @@ function createPipelineLedgerApprovalSession(
     provider,
     workspaceRoot: cwd,
     mode: request.permissionPreset === 'dangerous_all' ? 'full-access' : 'auto',
-    sessionRules: LEDGER_TOOL_KEYS.map(
-      (key): ApprovalRule => ({
-        id: randomUUID(),
-        behavior: 'allow',
-        target: ledgerToolApprovalTarget(provider, key),
-        createdAt,
-        origin: 'settings',
-      }),
-    ),
+    sessionRules: [
+      ...LEDGER_TOOL_KEYS.map(
+        (key): ApprovalRule => ({
+          id: randomUUID(),
+          behavior: 'allow',
+          target: ledgerToolApprovalTarget(provider, key),
+          createdAt,
+          origin: 'settings',
+        }),
+      ),
+      ...(attemptAllowsAgentActions(request, provider)
+        ? pipelineAgentActionApprovalRules(provider)
+        : []),
+    ],
     getWindow: () => null,
     trackChatTurn: false,
   });
 }
 
 /**
- * The gate of a Claude action subprocess's Ledger route. The subprocess runs
- * outside any chat, so no hook checks its calls: each passes the step's
- * approval session here, and any other tool is refused.
+ * The gate of a Claude action subprocess's or OpenCode step's Ledger route.
+ * The agent runs outside any chat, so no hook checks its calls: each passes
+ * the step's approval session here, and any tool outside `allowedKeys` is
+ * refused. Only a Claude route that passed `attemptAllowsAgentActions`
+ * passes the two agent action keys.
  */
 function pipelineLedgerSubprocessGate(
   approval: Pick<ApprovalSessionHandle, 'check'>,
+  allowedKeys: readonly (LedgerToolKey | PipelineAgentActionToolKey)[],
 ): NonNullable<CanopyWorktreeSessionRoute['authorizeToolCall']> {
   return async (key, _args, context): Promise<boolean> => {
-    const ledgerKey = LEDGER_TOOL_KEYS.find((candidate) => candidate === key);
-    if (ledgerKey === undefined) return false;
-    const tool = CANOPY_INJECTED_TOOL_REGISTRY[ledgerKey].displayName;
+    const allowedKey = allowedKeys.find((candidate) => candidate === key);
+    if (allowedKey === undefined) return false;
+    const tool = CANOPY_INJECTED_TOOL_REGISTRY[allowedKey].displayName;
     const target = {
       kind: 'mcp',
       server: BRAND.tools.namespace,
@@ -315,11 +485,20 @@ export function openPipelineLedgerCodexTools(
     cwd,
     'codex',
   );
-  const { specs, policy } = pipelineLedgerCodexTools(open.tools, approval);
+  const ledger = pipelineLedgerCodexTools(open.tools, approval);
+  // A `dangerous_all` step in a real project may also post a review as the
+  // GitHub App. Codex takes one policy per turn, so the two merge.
+  const actions = openPipelineAgentActions(open, cwd, 'codex', approval);
+  const merged =
+    actions === null
+      ? ledger
+      : pipelineAgentActionCodexPolicy(ledger, actions, () =>
+          openAttempts.has(attemptKey),
+        );
   return {
     instructions: open.tools.systemPrompt(),
-    specs,
-    policy,
+    specs: merged.specs,
+    policy: merged.policy,
     dispose: (): void => approval.dispose(),
   };
 }
@@ -386,7 +565,11 @@ export async function openPipelineLedgerOpenCodeTools(
       createdAt: Date.now(),
       hookHandler: () => undefined,
       ledgerTools: open.tools,
-      authorizeToolCall: pipelineLedgerSubprocessGate(approval),
+      // OpenCode steps never get the agent action tools.
+      authorizeToolCall: pipelineLedgerSubprocessGate(
+        approval,
+        LEDGER_TOOL_KEYS,
+      ),
     });
   } catch (error) {
     approval.dispose();
@@ -490,6 +673,7 @@ async function openAttempt(
       'claude',
     );
     routeApproval = approval;
+    const agentActions = attemptAllowsAgentActions(request, 'claude');
     await proxy.registerCanopyWorktreeSessionRoute({
       sessionKey,
       projectId: route.projectId,
@@ -504,7 +688,18 @@ async function openAttempt(
       createdAt: Date.now(),
       hookHandler: () => undefined,
       ledgerTools: tools,
-      authorizeToolCall: pipelineLedgerSubprocessGate(approval),
+      // A `dangerous_all` step in a real project may also post a review as
+      // the GitHub App, attributed to its execution, in its own folder.
+      ...(agentActions
+        ? {
+            pipelineAgentActions: { executionId: request.executionId },
+            cwd,
+          }
+        : {}),
+      authorizeToolCall: pipelineLedgerSubprocessGate(approval, [
+        ...LEDGER_TOOL_KEYS,
+        ...(agentActions ? PIPELINE_AGENT_ACTION_TOOL_KEYS : []),
+      ]),
     });
     if (!live) {
       proxy.unregisterCanopyWorktreeSessionRoute(sessionKey);
@@ -518,9 +713,14 @@ async function openAttempt(
           url: proxy.getCanopyWorktreeMcpUrl(sessionKey),
           headers: { Authorization: `Bearer ${authToken}` },
           alwaysLoad: true,
+          // A review the GitHub App posts can take its publish deadline.
+          ...(agentActions ? { timeout: CANOPY_MCP_TOOL_TIMEOUT_MS } : {}),
         },
       },
-      allowedTools: pipelineLedgerClaudeToolNames(),
+      allowedTools: [
+        ...pipelineLedgerClaudeToolNames(),
+        ...(agentActions ? pipelineAgentActionClaudeToolNames() : []),
+      ],
       secretValues: [authToken],
     };
   };

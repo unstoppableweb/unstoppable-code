@@ -1,11 +1,25 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { after, test as nodeTest, type TestContext } from 'node:test';
 import type { CursorHookOutcome } from '@canopy/desktop-shared/node/cursor/hook-transport';
+import {
+  getCursorProfileDirectory,
+  prepareCursorProfileDirectory,
+} from '@canopy/desktop-shared/node/cursor/profile-directory';
+import { encodeCursorProjectDir } from '@canopy/desktop-shared/node/cursor/project-dir';
 import { verifyCursorRuntimeVersion } from '@canopy/desktop-shared/node/cursor/runtime-process';
 import {
   runCursorTurn,
@@ -171,7 +185,11 @@ function request(
       spawner: harness.client.spawn,
       owner: { kind: 'turn', id: 'cursor-turn-host' },
     },
-    env: { ...process.env, CURSOR_CONFIG_DIR: directory.profileDir },
+    env: {
+      ...process.env,
+      CURSOR_CONFIG_DIR: directory.profileDir,
+      CANOPY_E2E_CURSOR_ACCOUNT_DIR: directory.profileDir,
+    },
     hookRuntime: process.execPath,
     profileDir: directory.profileDir,
     rawModelId: 'default[]',
@@ -473,14 +491,210 @@ function scenarios(harness: OwnedProviderProcessHost): void {
   });
 }
 
-if (process.platform === 'win32') {
-  // The owned-process port's own suite covers win32, and the fixture's hook
-  // runner uses a POSIX shell.
-  void nodeTest('Cursor turns through the provider process host', {
-    skip: 'POSIX only',
+const harness = startOwnedProviderProcessHost();
+after(() => harness.dispose());
+if (process.platform !== 'win32') scenarios(harness);
+
+test('a saved Cowork session migrates and checks approval after restart', async (t) => {
+  const { cwd, profileDir: root } = await directories(t);
+  const profileId = 'c'.repeat(64);
+  const legacySuffix = path.join(
+    'worktree-data',
+    'b'.repeat(36),
+    'cursor-sessions',
+    profileId,
+  );
+  const hookSuffix = path.join('projects', encodeCursorProjectDir(cwd));
+  // Reproduce the reported 259-unit hook cwd independently of the runner's temp root.
+  const padding = Math.max(
+    0,
+    258 - path.join(root, legacySuffix, hookSuffix).length,
+  );
+  const legacy = path.join(root, 'u'.repeat(padding), legacySuffix);
+  const owner = path.dirname(path.dirname(legacy));
+  assert.ok(path.join(legacy, hookSuffix).length >= 248);
+
+  // A previous build could save history before any tool needed PowerShell.
+  // Seed it in a launchable directory, then place that profile in the old layout.
+  const seed = path.join(root, 'seed');
+  const first = await runCursorTurn(
+    request(harness, { cwd, profileDir: seed }, 'CURSOR_CHAT_E2E_TEXT'),
+    host(() => ({ decision: 'deny' }), []),
+  );
+  assert.equal(first.isError, false, first.message);
+  assert.ok(first.sessionId);
+  await mkdir(path.dirname(legacy), { recursive: true });
+  await rename(seed, legacy);
+
+  const calls: string[] = [];
+  const observed = (decision: 'allow' | 'deny'): CursorTurnHost =>
+    host((payload) => {
+      assert.ok(
+        payload && typeof payload === 'object' && 'tool_name' in payload,
+      );
+      calls.push(String(payload.tool_name));
+      return { decision };
+    }, []);
+  const { directory: profileDir, confirmResume } =
+    await prepareCursorProfileDirectory(owner, profileId, cwd, {
+      platform: 'win32',
+      sessionId: first.sessionId,
+    });
+  assert.equal(
+    profileDir,
+    getCursorProfileDirectory(owner, profileId, 'win32'),
+  );
+  assert.ok(path.join(profileDir, hookSuffix).length < 248);
+  assert.ok((await lstat(path.join(legacy, 'home'))).isFile());
+  assert.ok(confirmResume);
+
+  const resume = (profile: string): CursorTurnRequest => ({
+    ...request(harness, { cwd, profileDir: profile }, 'create the result file'),
+    sessionId: first.sessionId,
+    requireExistingSession: true,
   });
-} else {
-  const harness = startOwnedProviderProcessHost();
-  after(() => harness.dispose());
-  scenarios(harness);
-}
+  const unavailable = path.join(profileDir, 'fixture-forget-sessions');
+  await writeFile(unavailable, '');
+  const refused = await runCursorTurn(resume(profileDir), observed('deny'));
+  assert.equal(refused.isError, true);
+  assert.equal(refused.sessionId, first.sessionId);
+  assert.deepEqual(calls, []);
+  for (const sessionId of [undefined, 'another-session']) {
+    const fresh = await prepareCursorProfileDirectory(owner, profileId, cwd, {
+      platform: 'win32',
+      sessionId,
+    });
+    assert.equal(fresh.confirmResume, undefined);
+  }
+  const retry = await prepareCursorProfileDirectory(owner, profileId, cwd, {
+    platform: 'win32',
+    sessionId: first.sessionId,
+  });
+  assert.ok(retry.confirmResume);
+  await rm(unavailable);
+  const denied = await runCursorTurn(resume(profileDir), observed('deny'));
+  assert.equal(denied.isError, false, denied.message);
+  assert.equal(denied.sessionId, first.sessionId);
+  assert.equal(denied.contextLost, false);
+  assert.deepEqual(calls, ['Read', 'Write']);
+  await assert.rejects(readFile(path.join(cwd, 'result.txt')), {
+    code: 'ENOENT',
+  });
+
+  calls.length = 0;
+  await confirmResume();
+  const { directory: reopened, confirmResume: pending } =
+    await prepareCursorProfileDirectory(owner, profileId, cwd, {
+      platform: 'win32',
+      sessionId: first.sessionId,
+    });
+  assert.equal(pending, undefined);
+  const allowed = await runCursorTurn(resume(reopened), observed('allow'));
+  assert.equal(allowed.isError, false, allowed.message);
+  assert.equal(allowed.contextLost, false);
+  assert.equal(allowed.sessionId, first.sessionId);
+  assert.deepEqual(calls, ['Read', 'Write']);
+  assert.equal(
+    await readFile(path.join(reopened, 'fixture-loaded.txt'), 'utf8'),
+    first.sessionId,
+  );
+  assert.equal(
+    await readFile(path.join(cwd, 'result.txt'), 'utf8'),
+    'CURSOR_APPROVAL_OK\n',
+  );
+  const restored = await prepareCursorProfileDirectory(
+    root,
+    'restored-chat',
+    cwd,
+    {
+      platform: 'win32',
+      sessionId: first.sessionId,
+    },
+  );
+  assert.equal(restored.confirmResume, undefined);
+  const fresh = await runCursorTurn(
+    {
+      ...request(
+        harness,
+        { cwd, profileDir: restored.directory },
+        'CURSOR_CHAT_E2E_TEXT',
+      ),
+      sessionId: 'missing-fixture-session',
+      requireExistingSession: Boolean(restored.confirmResume),
+    },
+    host(() => ({ decision: 'deny' }), []),
+  );
+  assert.equal(fresh.isError, false, fresh.message);
+  assert.equal(fresh.contextLost, true);
+  assert.notEqual(fresh.sessionId, 'missing-fixture-session');
+  await rm(owner, { recursive: true });
+  await assert.rejects(lstat(profileDir), { code: 'ENOENT' });
+});
+
+test('an interrupted profile move blocks the old Windows launch before publishing native history', async (t) => {
+  const { cwd, profileDir: owner } = await directories(t);
+  const id = 'saved';
+  const legacy = getCursorProfileDirectory(owner, id, 'darwin');
+  const profile = getCursorProfileDirectory(owner, id, 'win32');
+  const stage = profile + '.moving';
+  // A staged HOME and a source HOME conflict. Preparation must freeze the
+  // old launch and preserve both copies until the conflict has been resolved.
+  await mkdir(path.join(legacy, 'home'), { recursive: true });
+  await mkdir(path.join(stage, 'home'), { recursive: true });
+  await writeFile(
+    profile + '.json',
+    JSON.stringify({ version: 1, profileId: id }) + '\n',
+  );
+  await writeFile(path.join(legacy, 'store.db'), 'existing history');
+  await assert.rejects(
+    prepareCursorProfileDirectory(owner, id, cwd, { platform: 'win32' }),
+    /conflict/,
+  );
+  const config = path.join(
+    legacy,
+    'projects',
+    encodeCursorProjectDir(cwd),
+    '.cursor',
+    'hooks.json',
+  );
+  if (process.platform === 'win32') {
+    await assert.rejects(writeFile(config, '{}'), /EPERM|EACCES/);
+  }
+  assert.equal(
+    await readFile(path.join(legacy, 'store.db'), 'utf8'),
+    'existing history',
+  );
+  await assert.rejects(lstat(profile), { code: 'ENOENT' });
+  // Replay a journaled rename followed by an older build recreating its HOME.
+  const sourceHome = path.join(legacy, 'home');
+  const stagedHome = path.join(stage, 'home');
+  await rm(stagedHome, { recursive: true });
+  await writeFile(path.join(sourceHome, 'original.txt'), 'original HOME');
+  const stat = await lstat(sourceHome, { bigint: true });
+  await writeFile(stage + '.home-id', `${stat.dev}:${stat.ino}`);
+  await rename(sourceHome, stagedHome);
+  await mkdir(sourceHome);
+  await writeFile(path.join(sourceHome, 'later.txt'), 'recreated HOME');
+  await prepareCursorProfileDirectory(owner, id, cwd, { platform: 'win32' });
+  await assert.rejects(mkdir(sourceHome, { recursive: true }));
+  assert.equal(
+    await readFile(path.join(profile, 'home', 'original.txt'), 'utf8'),
+    'original HOME',
+  );
+  const recovered = (await readdir(path.dirname(profile))).filter((name) =>
+    name.startsWith(path.basename(stage) + '.recreated-home-'),
+  );
+  assert.equal(recovered.length, 1);
+  assert.equal(
+    await readFile(
+      path.join(path.dirname(profile), recovered[0], 'later.txt'),
+      'utf8',
+    ),
+    'recreated HOME',
+  );
+  await assert.rejects(lstat(stage + '.home-id'), { code: 'ENOENT' });
+  assert.equal(
+    await readFile(path.join(profile, 'store.db'), 'utf8'),
+    'existing history',
+  );
+});

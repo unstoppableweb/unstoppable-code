@@ -1,4 +1,4 @@
-import { useCallback, type JSX } from 'react';
+import { useCallback, useState, type JSX } from 'react';
 import { FirstSendFailedNotice } from '@canopy/ui-shared/components';
 import { retryFailedFirstSend } from '@/components/home/homeSend';
 import { FIRST_SEND_FAILED_TITLE } from '@/components/home/homeModelFailureCopy';
@@ -22,7 +22,7 @@ export function FirstSendFailedSlot({
   target,
   failure,
   active,
-}: FirstSendFailedSlotProps): JSX.Element {
+}: FirstSendFailedSlotProps): JSX.Element | null {
   const { projectId, worktreeId, chatId } = target;
   const chooseModel = useCallback((): void => {
     requestModelPickerOpen({ scope: 'chat', projectId, worktreeId, chatId });
@@ -32,6 +32,9 @@ export function FirstSendFailedSlot({
   const retry = useCallback((): void => {
     void retryFailedFirstSend({ projectId, worktreeId, chatId });
   }, [projectId, worktreeId, chatId]);
+  // Closed per failure: a new failure has a new id, so it shows again.
+  const [dismissedId, setDismissedId] = useState<string | null>(null);
+  if (dismissedId === failure.failureId) return null;
   return (
     <FirstSendFailedNotice
       title={FIRST_SEND_FAILED_TITLE}
@@ -39,6 +42,7 @@ export function FirstSendFailedSlot({
       onChooseModel={chooseModel}
       onRetry={retry}
       focusKey={active ? failure.failureId : null}
+      onDismiss={(): void => setDismissedId(failure.failureId)}
     />
   );
 }

@@ -10875,9 +10875,11 @@ describe('a cloud task in the cowork page (CAN-6175 R2)', () => {
         failure: true,
         composer: false,
       });
-      expect(container.textContent).toContain(
+      // The web core's reason rides behind Copy details, never in the copy.
+      expect(container.textContent).not.toContain(
         'The web core could not read this task.',
       );
+      expect(shown('standalone-chat-load-copy-details')).toBe(true);
       expect(sentTo('wt-6754-a3')).toEqual([]);
     });
 

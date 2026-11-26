@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react';
-import { ListRowFrame } from './ListRow';
+import { ListRowFrame } from '../primitives/ListRow';
 import { SECONDARY_SURFACE_SHELL_CLASS } from '../lib/row-chips';
 
 export function OpenAppSplitSurface({

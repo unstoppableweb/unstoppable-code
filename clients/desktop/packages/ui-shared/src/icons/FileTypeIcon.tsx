@@ -79,6 +79,12 @@ export interface FileTypeIconProps {
   readonly language?: string;
   /** A step of the icon scale. Defaults to `sm` (14px). */
   readonly size?: IconSize;
+  /**
+   * Fill the box `className` gives instead of a step of the scale, as a
+   * catalog icon does with the same flag: an inline chip sizes its glyph to
+   * the surrounding text.
+   */
+  readonly exactSize?: boolean;
   readonly className?: string;
   /** Names the icon for assistive tech; without it the icon is decorative. */
   readonly title?: string;
@@ -94,6 +100,7 @@ export const FileTypeIcon = memo(function FileTypeIcon({
   filename,
   language,
   size = DEFAULT_ICON_SIZE,
+  exactSize = false,
   className,
   title,
 }: FileTypeIconProps): JSX.Element | null {
@@ -104,7 +111,7 @@ export const FileTypeIcon = memo(function FileTypeIcon({
   const defId = iconDefId(id);
   const lightId = FILE_TYPE_LIGHT_ICONS[id];
   const light = lightId ? FILE_TYPE_ICONS[lightId] : undefined;
-  const px = ICON_SIZE_PX[size];
+  const px = exactSize ? '100%' : ICON_SIZE_PX[size];
   const svg = (
     icon: FileTypeIconDef,
     iconId: string,
@@ -133,7 +140,7 @@ export const FileTypeIcon = memo(function FileTypeIcon({
       role={title === undefined ? undefined : 'img'}
       aria-label={title}
       aria-hidden={title === undefined ? true : undefined}
-      className={`inline-flex shrink-0 ${className ?? ''}`}
+      className={`${exactSize ? '' : 'inline-flex '}shrink-0 ${className ?? ''}`}
       data-file-type-icon={id}
     >
       {light ? (

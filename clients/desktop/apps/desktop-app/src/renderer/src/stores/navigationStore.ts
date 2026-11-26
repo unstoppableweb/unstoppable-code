@@ -670,6 +670,12 @@ interface NavigationState {
   pendingPrivacyOptIn?: PendingPrivacyOptIn;
   queuedPrivacyOptIns: PendingPrivacyOptIn[];
   /**
+   * True while the one-time organization data-sharing requirement notice is
+   * open. A privacy opt-in request that arrives meanwhile stays pending and
+   * its sheet waits until the notice closes, so the two never show together.
+   */
+  orgSharingNoticeOpen: boolean;
+  /**
    * Transient text seed for the Home composer (CAN-2361 v2 "Try now"): the
    * deep-link landing stages a starter prompt here when no worktree is
    * selected, and `HomeSurface` consumes it into the Slate editor via its
@@ -824,7 +830,11 @@ interface NavigationState {
   /** {@link NavigationState.openWorkflowEdit} for a saved automation. */
   openAutomationEdit: (link: AutomationEditDeepLink) => void;
   /** Opens the shell on a new automation draft with a fresh draft key. */
-  openAutomationDraft: (seed?: AutomationDraftSeed) => void;
+  /** `returnTo` is the item Back reopens, such as the workflow it came from. */
+  openAutomationDraft: (
+    seed?: AutomationDraftSeed,
+    returnTo?: WorkflowEditTarget,
+  ) => void;
   openAutomationReveal: (link: AutomationRevealDeepLink) => void;
   consumeAutomationReveal: () => void;
   consumeAutomationRunFocus: () => void;
@@ -869,6 +879,7 @@ interface NavigationState {
    * newer pending link.
    */
   consumePrivacyOptIn: (id: number) => void;
+  setOrgSharingNoticeOpen: (open: boolean) => void;
   consumeShareInstall: () => void;
   requestHomeComposerText: (text: string) => void;
   consumeHomeComposerTextRequest: () => void;
@@ -1698,11 +1709,12 @@ export const useNavigationStore = create<NavigationState>(
         ...(link.returnTo !== undefined ? { returnTo: link.returnTo } : {}),
       });
     },
-    openAutomationDraft: (seed): void => {
+    openAutomationDraft: (seed, returnTo): void => {
       get().openWorkflowEdit({
         kind: 'automation-draft',
         draftKey: newWorkflowDraftKey(),
         ...(seed !== undefined ? { seed } : {}),
+        ...(returnTo !== undefined ? { returnTo } : {}),
       });
     },
     // A reveal and a review both act on the Library list, so they close the
@@ -1907,6 +1919,10 @@ export const useNavigationStore = create<NavigationState>(
         const [next, ...rest] = state.queuedPrivacyOptIns;
         return { pendingPrivacyOptIn: next, queuedPrivacyOptIns: rest };
       });
+    },
+    orgSharingNoticeOpen: false,
+    setOrgSharingNoticeOpen: (open): void => {
+      set({ orgSharingNoticeOpen: open });
     },
     consumeShareInstall: (): void => {
       // A review that is writing cannot be closed; its close affordances are

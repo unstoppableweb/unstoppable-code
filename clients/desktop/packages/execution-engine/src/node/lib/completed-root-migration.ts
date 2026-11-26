@@ -1,4 +1,5 @@
 import { homedir } from 'node:os';
+import type { PlatformPermissionCause } from '@canopy/core-runtime';
 import { hasDataDirectoryOverride } from '@canopy/core-runtime/node/build-identity';
 import { getCanopyBuildIdentity, getCanopyDataDir } from '../../canopy-paths';
 
@@ -7,6 +8,16 @@ export interface CompletedRootMigration {
   destination: string;
   transactionId: string;
   completedAtMs: number;
+}
+
+/** `privacy`: the closed cause of the first private-path check that refused. */
+export class CompletedRootMigrationUnverifiedError extends Error {
+  override readonly name = 'CompletedRootMigrationUnverifiedError';
+  constructor(readonly privacy: PlatformPermissionCause | undefined) {
+    super(
+      'The completed migration location could not be verified. Preserve both roots and the migration journal before continuing work.',
+    );
+  }
 }
 
 // Migration is cold-only: evidence cannot change while an admitted host runs.
@@ -44,19 +55,20 @@ async function readCompletedRootMigration(
   const { canonicalStoragePath, readInternalRootStartup } =
     await import('@canopy/core-platform/build-storage-startup');
   let completed: CompletedRootMigration | undefined;
+  let privacy: PlatformPermissionCause | undefined;
   const status = readInternalRootStartup({
     home: canonicalStoragePath(homedir()),
     identity,
     onCompletedMigration: (migration) => {
       completed = migration;
     },
+    onPrivacyRefused: (cause) => {
+      privacy ??= cause;
+    },
   });
   if (status === 'fresh' || status === 'required' || status === 'stable-owned')
     return undefined;
-  if (status !== 'complete' || completed?.destination !== destination) {
-    throw new Error(
-      'The completed migration location could not be verified. Preserve both roots and the migration journal before continuing work.',
-    );
-  }
+  if (status !== 'complete' || completed?.destination !== destination)
+    throw new CompletedRootMigrationUnverifiedError(privacy);
   return completed;
 }

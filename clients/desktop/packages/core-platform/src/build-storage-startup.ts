@@ -12,7 +12,11 @@ import {
   evaluateWindowsAcl,
   readWindowsAclSync,
 } from './secure-files/windows-acl';
-import type { PlatformOperatingSystem } from '@canopy/core-runtime';
+import type {
+  PlatformOperatingSystem,
+  PlatformPermissionAcceptance,
+  PlatformPermissionCause,
+} from '@canopy/core-runtime';
 import { isDevelopmentOrTestBuild } from '@canopy/core-runtime/node/build-identity';
 import { matchesInternalRootNodeIdentity } from '@canopy/core-runtime/node/internal-root-migration';
 import {
@@ -63,37 +67,109 @@ export interface InternalRootStartupObservation {
   readonly readWindowsAcl: (path: string) => string;
 }
 
+/** A node admitted with other accounts' allow entries (CAN-7915). */
+export interface InternalRootAcceptedTrustees {
+  /** Local log only, like the SIDs. */
+  readonly path: string;
+  /** The migration folder or one of its files, or the published data root. */
+  readonly role: 'internal_migration' | 'data_root';
+  readonly acceptance: PlatformPermissionAcceptance;
+}
+
+type AcceptedTrusteesSink = (accepted: InternalRootAcceptedTrustees) => void;
+
+// The check runs at import time, before a host can log: hold a few until then.
+const PENDING_ACCEPTED_LIMIT = 16;
+const pendingAccepted: InternalRootAcceptedTrustees[] = [];
+let acceptedSink: AcceptedTrusteesSink | undefined;
+
+function reportAcceptedTrustees(accepted: InternalRootAcceptedTrustees): void {
+  if (acceptedSink) acceptedSink(accepted);
+  else if (pendingAccepted.length < PENDING_ACCEPTED_LIMIT)
+    pendingAccepted.push(accepted);
+}
+
+/**
+ * Receives every accepted node, starting with those checked before it was
+ * installed. Returns a remover; nodes checked without a sink are held again.
+ */
+export function onInternalRootTrusteesAccepted(
+  sink: AcceptedTrusteesSink,
+): () => void {
+  acceptedSink = sink;
+  for (const accepted of pendingAccepted.splice(0)) sink(accepted);
+  return () => {
+    if (acceptedSink === sink) acceptedSink = undefined;
+  };
+}
+
+interface StartupNodeCheck {
+  readonly observation: InternalRootStartupObservation;
+  readonly onRefused?: (cause: PlatformPermissionCause) => void;
+  /** Set only for the migration folder, its files and the data root. */
+  readonly accept?: {
+    readonly role: InternalRootAcceptedTrustees['role'];
+    readonly report: AcceptedTrusteesSink;
+  };
+}
+
+/** Why a node is not private to this user, or `null` when it is. */
+function startupNodeRefusal(
+  path: string,
+  stat: BigIntStats,
+  kind: 'directory' | 'file',
+  check: StartupNodeCheck,
+): PlatformPermissionCause | null {
+  const { observation } = check;
+  if (observation.os === 'win32') {
+    const acl = evaluateWindowsAcl(
+      observation.readWindowsAcl(path),
+      kind,
+      check.accept ? 'accept' : 'refuse',
+    );
+    if (acl.state !== 'private') return acl.cause ?? 'unverifiable';
+    const after = lstatSync(path, { bigint: true });
+    if (stat.dev !== after.dev || stat.ino !== after.ino) return 'path_changed';
+    if (after.isSymbolicLink()) return 'symlink';
+    if (kind === 'directory' ? !after.isDirectory() : !after.isFile())
+      return 'wrong_kind';
+    if (kind === 'file' && after.nlink !== 1n) return 'hard_link';
+    if (acl.accepted && check.accept)
+      check.accept.report({
+        path,
+        role: check.accept.role,
+        acceptance: acl.accepted,
+      });
+    return null;
+  }
+  const uid = observation.getuid();
+  if (
+    (observation.os !== 'darwin' && observation.os !== 'linux') ||
+    uid === undefined ||
+    !Number.isSafeInteger(uid) ||
+    uid < 0
+  )
+    return 'unverifiable';
+  if (stat.uid !== BigInt(uid)) return 'foreign_owner';
+  return (stat.mode & 0o077n) === 0n ? null : 'broad_mode';
+}
+
 function privateStartupNode(
   path: string,
   stat: BigIntStats,
   kind: 'directory' | 'file',
-  observation: InternalRootStartupObservation,
+  check: StartupNodeCheck,
 ): boolean {
-  if (observation.os === 'win32') {
-    if (
-      evaluateWindowsAcl(observation.readWindowsAcl(path), kind).state !==
-      'private'
-    )
-      return false;
-    const after = lstatSync(path, { bigint: true });
-    return (
-      stat.dev === after.dev &&
-      stat.ino === after.ino &&
-      !after.isSymbolicLink() &&
-      (kind === 'directory'
-        ? after.isDirectory()
-        : after.isFile() && after.nlink === 1n)
-    );
+  let refusal: PlatformPermissionCause | null;
+  try {
+    refusal = startupNodeRefusal(path, stat, kind, check);
+  } catch (error) {
+    // The caller still refuses on the throw; only the cause is added.
+    check.onRefused?.('unverifiable');
+    throw error;
   }
-  const uid = observation.getuid();
-  return (
-    (observation.os === 'darwin' || observation.os === 'linux') &&
-    uid !== undefined &&
-    Number.isSafeInteger(uid) &&
-    uid >= 0 &&
-    stat.uid === BigInt(uid) &&
-    (stat.mode & 0o077n) === 0n
-  );
+  if (refusal !== null) check.onRefused?.(refusal);
+  return refusal === null;
 }
 
 /** B supplies this only after strict journal and secure-completion validation. */
@@ -108,20 +184,63 @@ export type InternalRootStartupReader = (options: {
     transactionId: string;
     completedAtMs: number;
   }) => void;
+  /** Closed cause only, for diagnostics; the state alone decides admission. */
+  readonly onPrivacyRefused?: (cause: PlatformPermissionCause) => void;
+  /** Defaults to the process-wide sink `onInternalRootTrusteesAccepted` installs. */
+  readonly onTrusteesAccepted?: (
+    accepted: InternalRootAcceptedTrustees,
+  ) => void;
 }) => InternalRootStartupState;
 
 /** The validator belongs to B; this adapter supplies only synchronous filesystem facts. */
-export const readInternalRootStartup: InternalRootStartupReader = ({
+export const readInternalRootStartup: InternalRootStartupReader = (options) => {
+  const accepted: InternalRootAcceptedTrustees[] = [];
+  const state = readInternalRootStartupState({
+    ...options,
+    onTrusteesAccepted: (node) => accepted.push(node),
+  });
+  // Only an admitted startup reports: a later refusal is the outcome to log.
+  if (state !== 'unsupported') {
+    const report = options.onTrusteesAccepted ?? reportAcceptedTrustees;
+    for (const node of accepted) {
+      try {
+        report(node);
+      } catch {
+        // A warning never decides admission.
+      }
+    }
+  }
+  return state;
+};
+
+function readInternalRootStartupState({
   home: suppliedHome,
   identity,
   onValidatedSource,
   onCompletedMigration,
+  onPrivacyRefused,
+  onTrusteesAccepted,
   observation = {
     os: hostOperatingSystem(),
     getuid: () => process.getuid?.(),
     readWindowsAcl: readWindowsAclSync,
   },
-}) => {
+}: Parameters<InternalRootStartupReader>[0] & {
+  readonly onTrusteesAccepted: AcceptedTrusteesSink;
+}): InternalRootStartupState {
+  // The startup disposition record beside these stays strict.
+  const strict: StartupNodeCheck = {
+    observation,
+    ...(onPrivacyRefused && { onRefused: onPrivacyRefused }),
+  };
+  const migrationFolder: StartupNodeCheck = {
+    ...strict,
+    accept: { role: 'internal_migration', report: onTrusteesAccepted },
+  };
+  const publishedRoot: StartupNodeCheck = {
+    ...strict,
+    accept: { role: 'data_root', report: onTrusteesAccepted },
+  };
   if (identity.brandId !== 'canopy' && identity.brandId !== 'unstoppable-code')
     return 'unsupported';
   const home = canonicalStoragePath(suppliedHome);
@@ -136,7 +255,12 @@ export const readInternalRootStartup: InternalRootStartupReader = ({
         !directory.isDirectory() ||
         directory.isSymbolicLink() ||
         realpathSync.native(coordination) !== coordination ||
-        !privateStartupNode(coordination, directory, 'directory', observation)
+        !privateStartupNode(
+          coordination,
+          directory,
+          'directory',
+          migrationFolder,
+        )
       )
         return 'unsupported';
       const path = join(coordination, 'journal.json');
@@ -147,7 +271,7 @@ export const readInternalRootStartup: InternalRootStartupReader = ({
           stat.isSymbolicLink() ||
           stat.nlink !== 1n ||
           stat.size > 16n * 1024n * 1024n ||
-          !privateStartupNode(path, stat, 'file', observation)
+          !privateStartupNode(path, stat, 'file', migrationFolder)
         )
           return 'unsupported';
         const journal = validateInternalRootJournal(
@@ -187,7 +311,7 @@ export const readInternalRootStartup: InternalRootStartupReader = ({
           !root.isSymbolicLink() &&
           realpathSync.native(destination) === destination &&
           (observation.os === 'win32'
-            ? privateStartupNode(destination, root, 'directory', observation)
+            ? privateStartupNode(destination, root, 'directory', publishedRoot)
             : published.uid === observation.getuid()) &&
           matchesInternalRootNodeIdentity(
             publicationIdentity,
@@ -228,7 +352,7 @@ export const readInternalRootStartup: InternalRootStartupReader = ({
           stat.isSymbolicLink() ||
           stat.nlink !== 1n ||
           stat.size > 16n * 1024n * 1024n ||
-          !privateStartupNode(staging, stat, 'file', observation)
+          !privateStartupNode(staging, stat, 'file', migrationFolder)
         )
           return 'unsupported';
       }
@@ -240,7 +364,7 @@ export const readInternalRootStartup: InternalRootStartupReader = ({
           stat.isSymbolicLink() ||
           stat.nlink !== 1n ||
           stat.size > 16n * 1024n * 1024n ||
-          !privateStartupNode(report, stat, 'file', observation) ||
+          !privateStartupNode(report, stat, 'file', migrationFolder) ||
           !isInternalRootCleanupReport(
             JSON.parse(readFileSync(report, 'utf8')),
             report,
@@ -268,7 +392,7 @@ export const readInternalRootStartup: InternalRootStartupReader = ({
         stat.isSymbolicLink() ||
         stat.nlink !== 1n ||
         stat.size > 4096n ||
-        !privateStartupNode(disposition, stat, 'file', observation)
+        !privateStartupNode(disposition, stat, 'file', strict)
       )
         return 'unsupported';
       const record: unknown = JSON.parse(readFileSync(disposition, 'utf8'));
@@ -303,7 +427,7 @@ export const readInternalRootStartup: InternalRootStartupReader = ({
           observation.os,
         ) ||
         assertOwnedStorageDirectory(destination).kind !== 'directory' ||
-        !privateStartupNode(destination, root, 'directory', observation)
+        !privateStartupNode(destination, root, 'directory', publishedRoot)
       )
         return 'unsupported';
       return 'fresh';
@@ -327,7 +451,7 @@ export const readInternalRootStartup: InternalRootStartupReader = ({
   )
     return 'stable-owned';
   return 'required';
-};
+}
 
 let readInternalRoot: InternalRootStartupReader = readInternalRootStartup;
 
@@ -355,11 +479,15 @@ export function assertHostBuildStorageStartup(options: {
   )
     return;
   let customSource = false;
+  let privacy: PlatformPermissionCause | undefined;
   const internalState = readInternalRoot({
     ...options,
     onValidatedSource: (source) => {
       customSource =
         source !== join(canonicalStoragePath(home), `.${identity.brandId}`);
+    },
+    onPrivacyRefused: (cause) => {
+      privacy ??= cause;
     },
   });
   if (
@@ -379,16 +507,21 @@ export function assertHostBuildStorageStartup(options: {
         : {}),
     });
   } catch (error) {
-    if (
-      customSource &&
-      error instanceof BuildStorageStartupRefused &&
-      isDevelopmentOrTestBuild()
-    )
+    if (!(error instanceof BuildStorageStartupRefused)) throw error;
+    // Every refused node ends the read, so a recorded cause decided the state.
+    const cause =
+      internalState === 'unsupported' || internalState === 'incomplete'
+        ? privacy
+        : undefined;
+    if (customSource && isDevelopmentOrTestBuild())
       throw new BuildStorageStartupRefused(
         error.reason,
         `${error.message} This transaction used an explicit source; append the original --source-dir option when resuming.`,
+        cause,
       );
-    throw error;
+    throw cause === undefined
+      ? error
+      : new BuildStorageStartupRefused(error.reason, error.message, cause);
   }
 }
 

@@ -44,6 +44,7 @@ import {
   type PreferencesData,
 } from '@canopy/desktop-shared/types';
 import type { DesktopDomainAdapter } from './desktop-runtime';
+import type { DomainPreferencesData } from '@canopy/desktop-shared/node/preferences/client-local-preferences';
 
 /** The stores behind `core.config.*`, one per served namespace; tests inject them. */
 export interface CoreConfigHost {
@@ -224,7 +225,8 @@ type ConfigValue = ConfigGetResult['value'];
 /** A namespace's value as `core.config.get` returns it, from preferences. */
 function preferenceValue(
   namespace: PreferenceNamespace,
-  preferences: PreferencesData,
+  // Domain keys only: no namespace may serve a client-local one (CAN-4472).
+  preferences: DomainPreferencesData,
 ): ConfigValue {
   switch (namespace) {
     case 'agent':

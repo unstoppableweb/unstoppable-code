@@ -89,6 +89,13 @@ const mockPort: ChatStateCommandPort = {
   },
 };
 
+// #7337 (CAN-5479 deferred item 2) refuses the native chat dispatch to a chat
+// automation that converts to a workflow. These fixtures convert, but the
+// native path they pin still serves the automations that stay native (D4
+// sends, D11 agent settings, an Agent-route pin), so the gate is opened here.
+jest.mock('../../automations/native-chat-dispatch', () => ({
+  refusesNativeChatDispatch: (): boolean => false,
+}));
 jest.mock('../../ipc/chat-state', () => ({
   getChatStateCommandPort: (): ChatStateCommandPort => mockPort,
 }));

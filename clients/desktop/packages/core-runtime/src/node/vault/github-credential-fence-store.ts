@@ -75,8 +75,16 @@ export function createGitHubCredentialFenceStore(options: {
       throw new GitHubCredentialFenceReadError('privacy_check_failed');
     try {
       if (
-        (await files.permissions({ path, kind, mode: 'owner-only', action }))
-          .state !== 'private'
+        (
+          await files.permissions({
+            path,
+            kind,
+            mode: 'owner-only',
+            action,
+            // `secure-storage/` admits other accounts; its files stay strict (CAN-7915).
+            foreignTrustees: path === folder ? 'accept' : 'refuse',
+          })
+        ).state !== 'private'
       )
         throw new GitHubCredentialFenceReadError('privacy_check_failed');
     } catch {

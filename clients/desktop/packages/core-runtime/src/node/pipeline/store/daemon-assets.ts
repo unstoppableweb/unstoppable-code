@@ -10,6 +10,7 @@ import {
   type StorageOwnershipRow,
 } from '../../../storage';
 import { pruneDamagedCopies } from '../../damaged-copies';
+import { assertRowWritable } from '../../storage-records';
 import { validateId } from '../../identifiers';
 import {
   createDurableAtomicInstall,
@@ -315,6 +316,7 @@ export function createDaemonPipelineInstallJournalEnvironment<TReceipt>(
         'daemon',
         ownership,
       );
+      return assertRowWritable(dataRoot, 'pipeline_install_intents', 'daemon');
     },
     createDirectoryDurably: async (directoryPath) => {
       const root = rootOf(directoryPath);

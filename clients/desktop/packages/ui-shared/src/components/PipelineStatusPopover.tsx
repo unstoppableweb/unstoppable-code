@@ -1,9 +1,9 @@
 import { type StatusGlyphState } from '../lib/status-glyph';
-import { StatusGlyph } from './StatusGlyph';
+import { StatusGlyph } from '../primitives/StatusGlyph';
 import { useEffect, useLayoutEffect, useRef, useState, type JSX } from 'react';
 import { BADGE_HOVER_CARD_SURFACE } from './ChatPreviewPopover';
-import { RichHoverCard } from './RichHoverTooltip';
-import { Stack } from './Stack';
+import { RichHoverCard } from '../primitives/RichHoverTooltip';
+import { Stack } from '../primitives/Stack';
 import type { WorktreePipelineStatus } from './WorktreeRow';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 import { formatElapsed, getElapsedMs } from '../lib/pipeline-timing-display';

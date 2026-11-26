@@ -1,7 +1,10 @@
 import { z } from 'zod';
+import { join } from 'node:path';
+import { app, BrowserWindow, dialog } from 'electron';
 import {
   IPC_CHANNELS,
   type AccountOrganizationSettingsResponse,
+  type SettingsTranscriptDownloadResult,
 } from '@canopy/desktop-shared/types';
 import {
   settingsPaymentHandoffRequestSchema,
@@ -126,6 +129,42 @@ export function registerAccountOrganizationSettingsHandlers(): () => void {
       return (await getService()).paymentHandoffAvailability(
         request.data.accountId,
       );
+    },
+  );
+  // Organization transcript downloads (owners only): main asks where to save,
+  // then fetches with the signed-in account's own credential and origin.
+  registerIpcHandler(
+    IPC_CHANNELS.accountOrganizationSettingsDownloadTranscript,
+    async (
+      event,
+      value: unknown,
+    ): Promise<SettingsTranscriptDownloadResult> => {
+      const [{ downloadOrganizationTranscript }, client, cloudChats] =
+        await Promise.all([
+          import('../services/organization-transcript-download'),
+          import('../canopy-cloud/client'),
+          import('./cloud-chats'),
+        ]);
+      return downloadOrganizationTranscript(value, {
+        signedInAccountId: cloudChats.signedInAccountId,
+        readCredentials: async () => {
+          const context = await client.resolveCanopyCloudCredentialContext();
+          return { baseUrl: context.baseUrl, apiKey: context.apiKey };
+        },
+        choosePath: async (suggestedName) => {
+          const options = {
+            defaultPath: join(app.getPath('downloads'), suggestedName),
+          };
+          const window = BrowserWindow.fromWebContents(event.sender);
+          const result = window
+            ? await dialog.showSaveDialog(window, options)
+            : await dialog.showSaveDialog(options);
+          return result.canceled || result.filePath === undefined
+            ? null
+            : result.filePath;
+        },
+        fetch: (input, init) => fetch(input, init),
+      });
     },
   );
 

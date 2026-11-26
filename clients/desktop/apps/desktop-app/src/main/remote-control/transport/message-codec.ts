@@ -1,5 +1,5 @@
 import { deserialize, serialize } from 'node:v8';
-import { deflateRawSync, inflateRawSync } from 'node:zlib';
+import { deflateRaw, deflateRawSync, inflateRawSync } from 'node:zlib';
 import {
   MAX_FRAGMENT_BYTES,
   MAX_MESSAGE_BYTES,
@@ -22,6 +22,16 @@ export {
  * a deflated message (set on every fragment of that message). Bit 2 marks a
  * transport-control fragment, which belongs to no message: it is sent only
  * once both sides negotiated session resume, and read before the assembler.
+ *
+ * Serializing, fragmenting, inflating and decoding are synchronous. Deflate
+ * of messages over {@link SYNC_CODEC_BYTES} is not: it runs on libuv's thread
+ * pool through {@link MessageCompressor}, so a large message never blocks
+ * main while it is compressed (CAN-7764). Smaller ones stay on main, where
+ * they cost well under a millisecond, because waiting for main to pick up a
+ * thread-pool result costs more than that when main is busy. The session
+ * keeps sent messages in order around both. Deflate is level 1, as it always
+ * was, so the bytes on the wire are the same as before. Inflating off main
+ * is a separate change.
  */
 const FLAG_FINAL = 0x01;
 const FLAG_COMPRESSED = 0x02;
@@ -29,6 +39,23 @@ const FLAG_TRANSPORT_CONTROL = 0x04;
 /** Transport-control kind: `[kind u8][nextExpected u64 BE]`. */
 const CONTROL_ACK = 0x01;
 const ACK_FRAGMENT_BYTES = 1 + 1 + 8;
+/**
+ * Output chunk for one thread-pool step. Node's default (16 KiB) would take
+ * hundreds of round trips through main for a multi-megabyte message.
+ */
+const MAX_ZLIB_CHUNK_BYTES = 1024 * 1024;
+/**
+ * Messages up to this many serialized bytes are deflated on main; larger
+ * ones go to the thread pool. Measured under Electron 45's Node on a Ryzen 7
+ * 9800X3D at load 6, p99: level-1 deflate of 32 KiB costs 0.02 to 0.07 ms
+ * for terminal output and chat rows and 0.61 ms at worst, for incompressible
+ * bytes. At 64 KiB the worst case was 1.0 ms, past the workload's 1 ms delay
+ * floor, so the bound stops at 32 KiB. A thread-pool round trip on a busy
+ * Electron main took 0.8 ms p50 and 9 ms p95, and every message behind it
+ * waits for it.
+ */
+export const SYNC_CODEC_BYTES = 32 * 1024;
+const MIN_ZLIB_CHUNK_BYTES = 64 * 1024;
 
 export class MessageCodecError extends Error {
   constructor(message: string) {
@@ -49,30 +76,82 @@ export interface MessageCodecOptions {
   compress?: boolean;
 }
 
-export function encodeMessage(
+/**
+ * The asynchronous half of the codec. The default runs Node's zlib on the
+ * thread pool; CAN-7768 can swap in one that also runs off main, and tests
+ * use it to slow or fail a step.
+ */
+export interface MessageCompressor {
+  /** Raw deflate, or null when it would not be smaller than the input. */
+  readonly deflate: (serialized: Buffer) => Promise<Buffer | null>;
+}
+
+function chunkSize(expectedBytes: number): number {
+  return Math.min(
+    MAX_ZLIB_CHUNK_BYTES,
+    Math.max(MIN_ZLIB_CHUNK_BYTES, expectedBytes),
+  );
+}
+
+export const zlibMessageCompressor: MessageCompressor = {
+  deflate: (serialized) =>
+    new Promise((resolve, reject) => {
+      deflateRaw(
+        serialized,
+        { level: 1, chunkSize: chunkSize(serialized.byteLength) },
+        (error, deflated) => {
+          if (error) reject(error);
+          else
+            resolve(
+              deflated.byteLength < serialized.byteLength ? deflated : null,
+            );
+        },
+      );
+    }),
+};
+
+/**
+ * Level-1 deflate on main, for messages up to {@link SYNC_CODEC_BYTES}; null
+ * when it would not be smaller.
+ */
+export function deflateSmallMessage(serialized: Buffer): Buffer | null {
+  const deflated = deflateRawSync(serialized, { level: 1 });
+  return deflated.byteLength < serialized.byteLength ? deflated : null;
+}
+
+/**
+ * Serializes now, so the value is captured when the caller sends it, and
+ * checks the size the receiver will check after inflating.
+ */
+export function serializeMessage(
   value: unknown,
   options: MessageCodecOptions = {},
-): Buffer[] {
+): Buffer {
   const maxMessageBytes = options.maxMessageBytes ?? MAX_MESSAGE_BYTES;
   const serialized = serialize(value);
   options.onSerialized?.(serialized.byteLength);
-  // The receiver checks the inflated size, so check the same size here,
-  // before compression can hide it.
   if (serialized.byteLength > maxMessageBytes) {
     throw new MessageCodecError('Message is too large to send.');
   }
-  let payload = serialized;
-  let compressed = false;
-  if (
+  return serialized;
+}
+
+/** Whether the codec tries to deflate this serialized message. */
+export function wantsCompression(
+  serialized: Buffer,
+  options: Pick<MessageCodecOptions, 'compress'> = {},
+): boolean {
+  return (
     options.compress !== false &&
     serialized.byteLength >= COMPRESSION_THRESHOLD_BYTES
-  ) {
-    const deflated = deflateRawSync(serialized, { level: 1 });
-    if (deflated.byteLength < serialized.byteLength) {
-      payload = deflated;
-      compressed = true;
-    }
-  }
+  );
+}
+
+/** Splits one serialized or deflated message into fragments. */
+export function fragmentPayload(
+  payload: Buffer,
+  compressed: boolean,
+): Buffer[] {
   const fragments: Buffer[] = [];
   let offset = 0;
   do {
@@ -86,6 +165,21 @@ export function encodeMessage(
     offset = end;
   } while (offset < payload.byteLength);
   return fragments;
+}
+
+/** Serializes, deflates when worthwhile, and splits one message. */
+export async function encodeMessage(
+  value: unknown,
+  options: MessageCodecOptions = {},
+  compressor: MessageCompressor = zlibMessageCompressor,
+): Promise<Buffer[]> {
+  const serialized = serializeMessage(value, options);
+  const deflated = wantsCompression(serialized, options)
+    ? await compressor.deflate(serialized)
+    : null;
+  return deflated === null
+    ? fragmentPayload(serialized, false)
+    : fragmentPayload(deflated, true);
 }
 
 /**

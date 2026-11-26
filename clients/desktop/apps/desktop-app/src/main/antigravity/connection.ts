@@ -14,6 +14,7 @@ import {
 } from './feature-flag';
 import { getAntigravityRuntimeInstaller } from './runtime-installer';
 import { readPreferencesFileDetailed } from '../lib/preferences-store';
+import { logMainProcessWarn } from '../lib/main-process-logging';
 
 /** App-local consent only. Google's credential store is never changed here. */
 export async function isAntigravityConnectionEnabled(): Promise<boolean> {
@@ -31,11 +32,21 @@ const VERIFY_TIMEOUT_MS = 60_000;
 
 type Progress = (status: AntigravityRuntimeStatus) => void;
 
+/** The window that registered an operation: its WebContents, under IPC. */
+type OperationOwner = object;
+
 interface RunningInstall {
   controller: AbortController;
   /** The operation that started this install; its window owns it. */
   origin: string;
-  operationIds: Set<string>;
+  /**
+   * Each operation waiting on this install, with the window that registered
+   * it. Only that window may cancel or release its operation, so another
+   * window that learns an ID can't stop the download with it.
+   */
+  operations: Map<string, OperationOwner>;
+  /** Ends a joined operation's wait without stopping the install. */
+  detachers: Map<string, (status: AntigravityRuntimeStatus) => void>;
   listeners: Set<Progress>;
   phase: AntigravityRuntimeStatus['phase'];
   done: Promise<AntigravityRuntimeStatus>;
@@ -161,15 +172,47 @@ function emit(install: RunningInstall, status: AntigravityRuntimeStatus): void {
 async function join(
   install: RunningInstall,
   operationId: string,
+  owner: OperationOwner,
   progress: Progress,
 ): Promise<AntigravityRuntimeStatus> {
-  install.operationIds.add(operationId);
+  // One waiting call per operation ID: a repeat, even from the same window,
+  // would replace the first call's detach and leave it waiting after Cancel.
+  if (install.operations.has(operationId))
+    throw new Error('Antigravity operation id is already in use.');
+  install.operations.set(operationId, owner);
   install.listeners.add(progress);
+  const detached = new Promise<AntigravityRuntimeStatus>((resolve) => {
+    install.detachers.set(operationId, resolve);
+  });
   try {
-    return await install.done;
+    return await Promise.race([install.done, detached]);
   } finally {
     install.listeners.delete(progress);
+    install.detachers.delete(operationId);
   }
+}
+
+/**
+ * A window that joined another window's install stops waiting on it: its
+ * own call answers at once, marked `detached`, with the install's current
+ * phase, and the download goes on for the window that started it.
+ */
+async function detach(
+  install: RunningInstall,
+  operationId: string,
+): Promise<void> {
+  install.operations.delete(operationId);
+  const resolve = install.detachers.get(operationId);
+  if (!resolve) return;
+  resolve({
+    supported: true,
+    installed: false,
+    managed: false,
+    version: ANTIGRAVITY_RUNTIME_VERSION,
+    phase: install.phase,
+    detached: true,
+  });
+  await Promise.resolve();
 }
 
 /**
@@ -180,9 +223,10 @@ async function join(
  */
 export async function installAntigravityRuntime(
   operationId: string,
+  owner: OperationOwner,
   progress: Progress,
 ): Promise<AntigravityRuntimeStatus> {
-  if (running) return join(running, operationId, progress);
+  if (running) return join(running, operationId, owner, progress);
   assertAntigravityHarnessEnabled();
   const installer = getAntigravityRuntimeInstaller();
   if (!installer) {
@@ -194,18 +238,19 @@ export async function installAntigravityRuntime(
         'The managed Antigravity CLI is available on macOS and Linux (x64 and arm64).',
     };
   }
-  if (running) return join(running, operationId, progress);
+  if (running) return join(running, operationId, owner, progress);
   const controller = new AbortController();
   const install: RunningInstall = {
     controller,
     origin: operationId,
-    operationIds: new Set(),
+    operations: new Map(),
+    detachers: new Map(),
     listeners: new Set(),
     phase: 'downloading',
     done: runInstall(installer, controller, () => install),
   };
   running = install;
-  return join(install, operationId, progress);
+  return join(install, operationId, owner, progress);
 }
 
 async function runInstall(
@@ -241,6 +286,13 @@ async function runInstall(
     );
     final = await readStatus();
   } catch (error) {
+    // A browser gets a fixed sentence for a raw install error (CAN-6718
+    // review S3); the raw text stays in this computer's log.
+    if (!controller.signal.aborted) {
+      logMainProcessWarn('[Antigravity] CLI install failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     const status = await readStatus();
     final = controller.signal.aborted
       ? status
@@ -259,12 +311,22 @@ async function runInstall(
   return final;
 }
 
-/** Stops the install the given operation started or joined. */
+/**
+ * Stops the install the given operation started, or detaches one it joined.
+ * Only the window that registered the operation may.
+ */
 export async function cancelAntigravityRuntimeInstall(
   operationId: string,
+  owner: OperationOwner,
 ): Promise<void> {
   const install = running;
-  if (!install?.operationIds.has(operationId)) return;
+  if (!install || install.operations.get(operationId) !== owner) return;
+  // Only the window that started the install stops the download; a window
+  // that joined it (a controller, under Remote Control) only detaches.
+  if (install.origin !== operationId) {
+    await detach(install, operationId);
+    return;
+  }
   install.controller.abort();
   await install.done.catch(() => undefined);
 }
@@ -275,11 +337,14 @@ export async function cancelAntigravityRuntimeInstall(
  */
 export async function releaseAntigravityRuntimeInstall(
   operationId: string,
+  owner: OperationOwner,
 ): Promise<void> {
   const install = running;
-  if (!install?.operationIds.has(operationId)) return;
+  if (!install || install.operations.get(operationId) !== owner) return;
+  // A joined window's call and progress end now, as its Cancel ends them;
+  // the download goes on for the window that started it.
   if (install.origin !== operationId) {
-    install.operationIds.delete(operationId);
+    await detach(install, operationId);
     return;
   }
   install.controller.abort();

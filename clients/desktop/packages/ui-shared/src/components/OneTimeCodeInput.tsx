@@ -8,7 +8,7 @@ import {
   type ClipboardEvent,
   type JSX,
 } from 'react';
-import { TextInput, type TextInputProps } from './Field';
+import { TextInput, type TextInputProps } from '../primitives/Field';
 
 /**
  * `numeric` keeps only ASCII digits, up to `length`, preserving leading
@@ -97,6 +97,9 @@ export const OneTimeCodeInput = forwardRef<
       type="text"
       inputMode={format === 'numeric' ? 'numeric' : 'text'}
       autoComplete="one-time-code"
+      autoCapitalize="none"
+      autoCorrect="off"
+      spellCheck={false}
       mono
       align="center"
       value={value}

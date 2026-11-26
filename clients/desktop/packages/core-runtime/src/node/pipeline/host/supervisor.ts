@@ -4,6 +4,7 @@ import {
   isWorkerPipelineOwnerAction,
   pipelineModelCatalogIdentity,
   WORKER_PIPELINE_LIST_LIMIT_MAX,
+  WORKER_PIPELINE_OWNER_AGENT_ACTION_NOT_SENT_TEXT,
   WorkerPipelineControlResultSchema,
   WorkerPipelineExecutionSchema,
   WorkerPipelineExecutionViewSchema,
@@ -152,6 +153,16 @@ function localRefusal(
     // rather than run without its plugins.
     case 'owner.codex.pluginRefs':
       return { kind: 'codex.pluginRefs', selections: null, warnings: [] };
+    // A remote owner never posts as this host's app (CAN-7742): no tools,
+    // and a call that never reached an owner posted nothing.
+    case 'owner.agentActions.open':
+      return { kind: 'agentActions.open', tools: null };
+    case 'owner.agentActions.call':
+      return {
+        kind: 'agentActions.call',
+        text: WORKER_PIPELINE_OWNER_AGENT_ACTION_NOT_SENT_TEXT,
+        isError: true,
+      };
     default:
       return MOD_ADMISSION_OFF;
   }
@@ -199,6 +210,21 @@ export interface PipelineOwnerRunAuthority {
     request: WorkerPipelineHostRequest,
     signal: AbortSignal,
   ) => Promise<PipelineOwnerSettlement | undefined>;
+  /**
+   * Requests this authority answers while the app is still connected, such as
+   * an AI Credits invocation whose route must live in the daemon from launch
+   * (CAN-6997). When it does not answer one, the app does and the run no
+   * longer survives owner loss.
+   */
+  readonly answersFirst?: (request: WorkerPipelineHostRequest) => boolean;
+  /** Stop new routes without releasing routes already handed to running steps. */
+  readonly retire?: () => void;
+  /** Release a route whose in-flight settlement lost authority before delivery. */
+  readonly discardAnswer?: (request: WorkerPipelineHostRequest) => void;
+  /** Bind execution-owned checkpointing before a model route can be revoked. */
+  readonly bindCheckpoint?: (
+    checkpoint: (blocker: SurvivalBlocker) => Promise<void>,
+  ) => void;
   dispose(): void;
 }
 
@@ -314,6 +340,16 @@ const DEPENDENCY_UNVERIFIED: SurvivalBlocker = {
   explanation:
     'A workflow dependency changed or could not be verified while the app was closed.',
 };
+const BACKGROUND_ROUTE_DECLINED: SurvivalBlocker = {
+  code: 'ai-credits',
+  explanation:
+    'The background service could not route this model step, so the app routed it.',
+};
+const AI_CREDITS_UNCONSENTED: SurvivalBlocker = {
+  code: 'ai-credits',
+  explanation:
+    'AI Credits are off, or could not be confirmed, for this workflow.',
+};
 const APP_CLOSED_UNCONFIRMED: SurvivalBlocker = {
   code: 'unknown',
   explanation:
@@ -324,6 +360,46 @@ const CATALOG_CHANGED: SurvivalBlocker = {
   // The cause only: the run surface already says the run pauses.
   explanation: 'Model settings changed after this workflow started.',
 };
+
+/**
+ * The blocker for an app answer whose model route runs through the app (AI
+ * Credits, a gateway or an account proxy) and so ends when the app closes.
+ */
+function appHostedRouteBlocker(
+  settlement: PipelineOwnerSettlement,
+): SurvivalBlocker | undefined {
+  if (settlement.result.status !== 'owner') return undefined;
+  const value = settlement.result.value;
+  let route:
+    | {
+        readonly aiCreditsRouted: boolean;
+        readonly modelGatewayRouted: boolean;
+        readonly accountProxyRouted: boolean;
+      }
+    | undefined;
+  if (value.kind === 'model.invocation') route = value;
+  else if (value.kind === 'model.routing' && value.override !== null)
+    // A routing override is never the native route.
+    route = { ...value.override, aiCreditsRouted: true };
+  if (
+    !route ||
+    !(
+      route.aiCreditsRouted ||
+      route.modelGatewayRouted ||
+      route.accountProxyRouted
+    )
+  )
+    return undefined;
+  return {
+    code: route.accountProxyRouted
+      ? 'account-proxy'
+      : route.modelGatewayRouted
+        ? 'gateway'
+        : 'ai-credits',
+    explanation:
+      'The app routed a model step through a route that ends when it closes.',
+  };
+}
 
 /** The model registry an owner-bound launch makes its host apply, if any. */
 function appliedCatalogOf(
@@ -361,12 +437,27 @@ function factsOf(error: unknown): PipelineHostErrorFacts | undefined {
 
 /**
  * Ledger calls the host binds to the app's Ledger epoch and withdraws when it
- * ends; a later app must never receive one (CAN-6996).
+ * ends; a later app must never receive one (CAN-6996). An agent action call
+ * is bound too (CAN-7742): the app that left may have posted the review, and
+ * a later app, which never issued its tools, would answer "nothing posted".
  */
 const LEDGER_EPOCH_ACTIONS: ReadonlySet<string> = new Set([
   'owner.ledger.open',
   'owner.ledger.operation',
+  'owner.agentActions.call',
 ]);
+
+/**
+ * Owner requests for a step's optional tools: its Feed tools and its agent
+ * action tools (CAN-7742). Losing the app during one never pauses a run that
+ * survives owner loss; the tool answers unavailable instead.
+ */
+function isOptionalToolOwnerAction(action: string): boolean {
+  return (
+    action.startsWith('owner.ledger.') ||
+    action.startsWith('owner.agentActions.')
+  );
+}
 
 /** An owner request the current app subscription holds (CAN-6996). */
 interface AppOwnerCall {
@@ -562,6 +653,11 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
 
   private readonly starts = new Map<string, Promise<WorkerPipelineExecution>>();
   private readonly ownerRuns = new Map<string, PipelineOwnerRunAuthority>();
+  /** Revoking future answers must not tear down an already-running model route. */
+  private readonly retiredOwnerRuns = new Map<
+    string,
+    PipelineOwnerRunAuthority
+  >();
 
   /** Each portable start, by execution id, for recovery controls (CAN-6103). */
   private readonly recoverable = new Map<string, RecoverableStart>();
@@ -997,6 +1093,17 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
       this.survivalCandidates.add(executionId);
       this.survivalCatalogs.set(executionId, appliedCatalogOf(start.launch));
     }
+    authority?.bindCheckpoint?.(async (blocker): Promise<void> => {
+      if (
+        this.ownerRuns.get(executionId) !== authority &&
+        this.retiredOwnerRuns.get(executionId) !== authority
+      )
+        return;
+      // Retirement retains live routes; it does not imply the run has paused.
+      if (!this.revokingRuns.has(executionId))
+        void this.revokeAndPause(executionId, blocker);
+      await this.answerPaused(executionId, new AbortController().signal);
+    });
     let projection: WorkerPipelineExecution;
     let settledEarly: boolean;
     let revoked: SurvivalBlocker | undefined;
@@ -1534,6 +1641,11 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
       if (!host.exited) host.process.kill();
     }
     this.host = null;
+    for (const executionId of new Set([
+      ...this.ownerRuns.keys(),
+      ...this.retiredOwnerRuns.keys(),
+    ]))
+      this.releaseOwnerAuthority(executionId);
     this.recoverable.clear();
     for (const release of this.releases.values()) release();
     this.releases.clear();
@@ -1889,6 +2001,27 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
         signal,
         DEPENDENCY_UNVERIFIED,
       );
+    // Taken while the run may still survive: its survival can end, and its
+    // app leave, before the request reaches that app.
+    const appLeft =
+      this.survivesOrMay(runId) &&
+      isWorkerPipelineOwnerAction(request.request.action)
+        ? this.appLeavesFrom(runId)
+        : undefined;
+    const first = await this.answerFirst(request, runId, signal);
+    if (first !== undefined) return first;
+    // An app that left meanwhile leaves a survivor to its daemon authority.
+    const answerer = this.daemonAuthorityFor(request, runId);
+    if (answerer !== undefined)
+      return this.answerAsDaemon(
+        request,
+        runId,
+        answerer,
+        signal,
+        DEPENDENCY_UNVERIFIED,
+      );
+    const departed = this.pauseIfAppLeft(request, runId, appLeft, signal);
+    if (departed) return departed;
     // A remote owner never receives a request only this host can answer.
     if (remote && isWorkerPipelineLocalOwnerAction(request.request.action))
       return {
@@ -1915,24 +2048,26 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
       // A model step's owner request (CAN-5095) takes the owner's answer and values as they are.
       if (isWorkerPipelineOwnerAction(request.request.action)) {
         if (!remote) {
+          const replaced = this.pauseIfAppLeft(request, runId, appLeft, signal);
+          if (replaced) return await replaced;
           const epoch = new AbortController();
           this.appOwnerCalls.set(epoch, {
             runId,
             ledgerEpoch: LEDGER_EPOCH_ACTIONS.has(request.request.action),
           });
+          let answered: PipelineOwnerSettlement | undefined;
           try {
-            return {
-              kind: 'owner',
-              settlement: await owner.broker.raiseOwner(
-                request,
-                AbortSignal.any([signal, epoch.signal]),
-              ),
-            };
+            answered = await owner.broker.raiseOwner(
+              request,
+              AbortSignal.any([signal, epoch.signal]),
+            );
           } catch (error) {
             if (signal.aborted || !epoch.signal.aborted) throw error;
           } finally {
             this.appOwnerCalls.delete(epoch);
           }
+          if (answered !== undefined)
+            return this.forwardAppOwnerAnswer(runId, answered, signal);
           // The app left without answering: it may have acted on the request,
           // so no later app receives it again (withdrawAppOwnerCalls).
           // Only a survivor's request or an epoch-bound Ledger call is
@@ -1982,7 +2117,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
         if (
           !remote &&
           owner.ownerSubscribed() !== true &&
-          !request.request.action.startsWith('owner.ledger.') &&
+          !isOptionalToolOwnerAction(request.request.action) &&
           this.survivesOwnerLoss.has(runId)
         )
           void this.revokeAndPause(runId, APP_CLOSED_UNCONFIRMED);
@@ -2015,6 +2150,144 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     return this.ownerRuns.get(runId);
   }
 
+  /**
+   * The run's daemon authority answering a request it owns from launch while
+   * the app is connected (CAN-6997). Undefined hands the request to the app:
+   * nothing is refused that the app answered before, and survival ends first,
+   * since an app-hosted route does not outlive the app.
+   */
+  private async answerFirst(
+    request: WorkerPipelineHostRequest,
+    runId: string,
+    signal: AbortSignal,
+  ): Promise<PipelineHostSettlement | null | undefined> {
+    if (this.options.remoteOwner) return undefined;
+    const authority =
+      this.ownerRuns.get(runId) ??
+      (request.request.action === 'owner.model.release'
+        ? this.retiredOwnerRuns.get(runId)
+        : undefined);
+    let claims = false;
+    try {
+      claims = authority?.answersFirst?.(request) === true;
+    } catch {
+      claims = false;
+    }
+    if (!authority || !claims) return undefined;
+    let declined = BACKGROUND_ROUTE_DECLINED;
+    try {
+      const answer = await authority.answer(request, signal);
+      if (answer?.checkpoint === 'ai-credits')
+        declined = AI_CREDITS_UNCONSENTED;
+      if (signal.aborted) {
+        if (answer?.values) authority.discardAnswer?.(request);
+        return null;
+      }
+      const stillOwns =
+        this.ownerRuns.get(runId) === authority ||
+        (request.request.action === 'owner.model.release' &&
+          this.retiredOwnerRuns.get(runId) === authority);
+      if (!stillOwns) {
+        if (answer?.values) authority.discardAnswer?.(request);
+        return undefined;
+      }
+      if (
+        answer?.checkpoint === 'policy' &&
+        this.survivesOrMay(runId) &&
+        (this.options.owner?.ownerSubscribed() !== true ||
+          this.detachedOwnerRuns.has(runId))
+      ) {
+        void this.revokeAndPause(runId, {
+          code: 'policy',
+          explanation: 'The refreshed account policy blocks this model.',
+        });
+        return this.answerPaused(runId, signal);
+      }
+      if (answer !== undefined && answer.result.status !== 'failure')
+        return {
+          kind: 'owner',
+          settlement: ownerSettlement(request, answer.result, answer.values),
+        };
+    } catch {
+      // The app answers instead; no retry against this authority.
+    }
+    if (signal.aborted) return null;
+    if (
+      this.survivesOrMay(runId) &&
+      (this.options.owner?.ownerSubscribed() !== true ||
+        this.detachedOwnerRuns.has(runId))
+    )
+      return this.answerAsDaemon(
+        request,
+        runId,
+        undefined,
+        signal,
+        declined,
+        true,
+      );
+    // A connected app routes the declined step, as without the daemon.
+    if (this.survivesOrMay(runId))
+      await this.invalidateSurvival(runId, BACKGROUND_ROUTE_DECLINED);
+    return undefined;
+  }
+
+  /**
+   * The app's answer to a survivor's request. A route through the app ends
+   * the run's survival before the step can use it, so the owner-loss pause
+   * covers the run; once the app has left, the run checkpoints instead.
+   */
+  private async forwardAppOwnerAnswer(
+    runId: string,
+    settlement: PipelineOwnerSettlement,
+    signal: AbortSignal,
+  ): Promise<PipelineHostSettlement | null> {
+    const blocker = this.survivesOrMay(runId)
+      ? appHostedRouteBlocker(settlement)
+      : undefined;
+    if (blocker === undefined) return { kind: 'owner', settlement };
+    // The answering app's route ended with its own subscription.
+    const appGone = this.appLeavesFrom(runId);
+    if (!appGone()) await this.invalidateSurvival(runId, blocker);
+    // The app may have left meanwhile: its route is gone with it.
+    if (appGone()) {
+      void this.revokeAndPause(runId, blocker);
+      return this.answerPaused(runId, signal);
+    }
+    return { kind: 'owner', settlement };
+  }
+
+  /**
+   * Whether the app subscribed now has left since: its subscription ended or
+   * was replaced, or the run detached. A replacing subscription is another
+   * app, with no context for the run's earlier requests (CAN-6997).
+   */
+  private appLeavesFrom(runId: string): () => boolean {
+    const ownerLosses = this.ownerLosses;
+    return () =>
+      this.options.owner?.ownerSubscribed() !== true ||
+      this.ownerLosses !== ownerLosses ||
+      this.detachedOwnerRuns.has(runId);
+  }
+
+  /**
+   * A survivor's request on its way to the app whose app left meanwhile:
+   * no later app receives the request, and the run checkpoints unless the
+   * request is for an optional tool, which answers unavailable (CAN-7742).
+   * Undefined hands it to the app.
+   */
+  private pauseIfAppLeft(
+    request: WorkerPipelineHostRequest,
+    runId: string,
+    appLeft: (() => boolean) | undefined,
+    signal: AbortSignal,
+  ): Promise<PipelineHostSettlement | null> | undefined {
+    if (appLeft?.() !== true) return undefined;
+    if (isOptionalToolOwnerAction(request.request.action))
+      return Promise.resolve({ kind: 'unavailable' });
+    void this.revokeAndPause(runId, APP_CLOSED_UNCONFIRMED);
+    return this.answerPaused(runId, signal);
+  }
+
   /** A survivor, or a start whose assessment continues and has not answered. */
   private survivesOrMay(runId: string): boolean {
     return (
@@ -2035,10 +2308,26 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     blocker: WorkerPipelineSurvivalAssessment['blockers'][number],
     survivor = this.survivesOrMay(runId),
   ): Promise<PipelineHostSettlement | null> {
+    let checkpointFor = blocker;
     try {
       const answer = await authority?.answer(request, signal);
-      if (signal.aborted) return null;
-      if (answer !== undefined && answer.result.status !== 'failure')
+      if (answer?.checkpoint === 'ai-credits')
+        checkpointFor = AI_CREDITS_UNCONSENTED;
+      if (signal.aborted) {
+        if (answer?.values) authority?.discardAnswer?.(request);
+        return null;
+      }
+      if (authority && this.ownerRuns.get(runId) !== authority) {
+        if (answer?.values) authority.discardAnswer?.(request);
+        // Fall through to checkpointing: another withdrawn request may have
+        // released the authority while its invalidation is still in flight.
+      } else if (answer?.checkpoint === 'policy' && survivor) {
+        void this.revokeAndPause(runId, {
+          code: 'policy',
+          explanation: 'The refreshed account policy blocks this model.',
+        });
+        return this.answerPaused(runId, signal);
+      } else if (answer !== undefined && answer.result.status !== 'failure')
         return {
           kind: 'owner',
           settlement: ownerSettlement(request, answer.result, answer.values),
@@ -2048,8 +2337,8 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     }
     // Another request may have revoked survival meanwhile; its pause may
     // still be on its way, and this step must not fail first.
-    if (!request.request.action.startsWith('owner.ledger.') && survivor) {
-      void this.revokeAndPause(runId, blocker);
+    if (!isOptionalToolOwnerAction(request.request.action) && survivor) {
+      void this.revokeAndPause(runId, checkpointFor);
       return this.answerPaused(runId, signal);
     }
     return { kind: 'unavailable' };
@@ -2271,7 +2560,7 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
   ): Promise<void> {
     if (this.survivalCandidates.has(executionId))
       this.revokedCandidates.set(executionId, blocker);
-    this.releaseOwnerAuthority(executionId);
+    this.releaseOwnerAuthority(executionId, true);
     const host = this.host;
     if (!host || host.exited) return;
     await this.send(
@@ -2412,7 +2701,10 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     host.process.kill();
   }
 
-  private releaseOwnerAuthority(executionId: string): void {
+  private releaseOwnerAuthority(
+    executionId: string,
+    retainRoutes = false,
+  ): void {
     const authority = this.ownerRuns.get(executionId);
     this.ownerRuns.delete(executionId);
     this.survivesOwnerLoss.delete(executionId);
@@ -2420,7 +2712,16 @@ export class PipelineHostSupervisor implements PipelineExecutionWorker {
     this.survivalCatalogs.delete(executionId);
     this.detachedOwnerRuns.delete(executionId);
     this.revokingRuns.delete(executionId);
-    this.disposeOwnerAuthority(authority);
+    if (retainRoutes) {
+      if (authority) {
+        authority.retire?.();
+        this.retiredOwnerRuns.set(executionId, authority);
+      }
+    } else {
+      this.disposeOwnerAuthority(authority);
+      this.disposeOwnerAuthority(this.retiredOwnerRuns.get(executionId));
+      this.retiredOwnerRuns.delete(executionId);
+    }
   }
 
   /**

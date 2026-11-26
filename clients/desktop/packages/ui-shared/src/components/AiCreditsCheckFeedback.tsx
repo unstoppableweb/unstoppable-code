@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
-import { Button } from './Button';
-import { LoadingSpinner } from './LoadingSpinner';
+import { Button } from '../primitives/Button';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
 import {
   AI_CREDITS_HANDOFF_COPY,
   AI_CREDITS_REOPEN_BILLING_LABEL,

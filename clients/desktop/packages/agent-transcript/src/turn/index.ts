@@ -597,6 +597,16 @@ export function settleChatTurnForRestart(
   return finalizeCurrentTurn(state, endedAtMs, outcome, undefined, 'restart');
 }
 
+export function settleChatTurnForStop(
+  state: ChatTurnState,
+  turnId: string,
+  endedAtMs: number,
+): { state: ChatTurnState; effects: ChatTurnEffect[] } {
+  return state.current?.id === turnId
+    ? finalizeCurrentTurn(state, endedAtMs, 'cancelled')
+    : { state, effects: [] };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

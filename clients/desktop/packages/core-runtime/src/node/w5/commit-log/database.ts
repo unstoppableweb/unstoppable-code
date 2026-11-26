@@ -249,7 +249,8 @@ function pragmaText(db: DatabaseSync, pragma: string, column: string): string {
   return typeof value === 'string' ? value.toLowerCase() : '';
 }
 
-function readSchemaVersion(db: DatabaseSync): number | null {
+/** `null` is the state in which opening the log creates a fresh schema. */
+export function readSchemaVersion(db: DatabaseSync): number | null {
   const table = db
     .prepare(
       `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'w5_meta'`,

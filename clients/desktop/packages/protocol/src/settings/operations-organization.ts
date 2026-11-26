@@ -35,6 +35,7 @@ import {
   ORG_PROJECT_PREFERENCES,
   type CreateOrgProjectsResponse,
   type OrgProjectDetail,
+  type OrgProjectLifecycleResult,
   type OrgProjectPage,
   type OrgProjectSummary,
 } from '../org-projects';
@@ -132,12 +133,33 @@ import { settingsRouteIdSchema } from './routes';
 import {
   CAPABILITY_SETUP_DISMISSED_RECOMMENDATION_LIMIT,
   CAPABILITY_SETUP_ITEM_LIMIT,
+  CapabilitySetupConnectorRefSchema,
   CapabilitySetupItemRefSchema,
   CatalogOrganizationDefaultsGetResultSchema,
   CatalogOrganizationDefaultsUpdateResultSchema,
   CatalogProjectSetupGetResultSchema,
   CatalogProjectSetupUpdateResultSchema,
+  StoredProjectConnectorSetupSchema,
 } from '../canopy-core/core/catalog/capability-setup';
+import {
+  OrgTranscriptAccessEventsListResultSchema,
+  OrgTranscriptExportEstimateResultSchema,
+  OrgTranscriptExportRequestParamsSchema,
+  OrgTranscriptExportSchema,
+  OrgTranscriptExportsListResultSchema,
+  OrgTranscriptSessionGetResultSchema,
+  OrgTranscriptSessionsListParamsSchema,
+  OrgTranscriptSessionsListResultSchema,
+} from '../canopy-core/core/organizationTranscripts/operations';
+import {
+  SharedConnectionDisconnectResultSchema,
+  SharedConnectionListResultSchema,
+  SharedConnectionRemoveResultSchema,
+  SharedConnectionStartResultSchema,
+  SharedConnectionToolsResultSchema,
+  SharedConnectionUsageListParamsSchema,
+  SharedConnectionUsageListResultSchema,
+} from '../canopy-core/core/integration/shared-connections';
 
 /**
  * The organization half of the hosted settings operation table: one entry per
@@ -233,8 +255,39 @@ function projectSetupPath(projectId: string): string {
   return `/api/v1/settings/projects/${settingsPathSegment(projectId)}/setup`;
 }
 
+/**
+ * The organization's connections (CAN-6245): a compatibility route over the
+ * service behind `core.integration.sharedConnection.*`. Desktop main answers
+ * these entries through those web core operations instead.
+ */
+function organizationConnectionsPath(
+  organizationId: string,
+  suffix = '',
+): string {
+  return `/api/v1/settings/organization/${settingsPathSegment(organizationId)}/connections${suffix}`;
+}
+
+const connectionIdField = {
+  connectionId: z.string().uuid(),
+};
+const idempotencyKeyField = {
+  idempotencyKey: z.string().min(1).max(512),
+};
+
 function cloudGatewayKeyPath(organizationId: string): string {
   return `/api/v1/settings/ai-gateway/organization/${settingsPathSegment(organizationId)}/cloud-key`;
+}
+
+/**
+ * Organization transcripts (docs/organization-transcripts.md): compatibility
+ * routes over the service behind `core.organizationTranscripts.*`. Desktop
+ * main resolves these through the web core as the signed-in account.
+ */
+function organizationTranscriptsPath(
+  organizationId: string,
+  suffix: string,
+): string {
+  return `/api/v1/settings/organization/${settingsPathSegment(organizationId)}/transcripts${suffix}`;
 }
 
 function get(path: string): SettingsOperationRequest {
@@ -263,6 +316,24 @@ const cloudGatewayKeyStatusSchema = z.looseObject({
   status: z.enum(['none', 'saved', 'rejected', 'stale_url']),
 });
 const cursorSchema = z.string().min(1).max(2048);
+const transcriptSessionFilterInput = OrgTranscriptSessionsListParamsSchema.omit(
+  {
+    organizationId: true,
+    cursor: true,
+    limit: true,
+    includeFilterOptions: true,
+  },
+).extend(organizationIdField);
+const transcriptExportRequestInput =
+  OrgTranscriptExportRequestParamsSchema.omit({ organizationId: true }).extend(
+    organizationIdField,
+  );
+const transcriptListInput = z.strictObject({
+  ...organizationIdField,
+  cursor: z.string().min(1).max(512).optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+});
+
 const pageLimitSchema = z.number().int().positive().max(500);
 const organizationNameSchema = z.string().trim().min(1).max(256);
 const isoInstantSchema = z.string().min(1).max(64);
@@ -593,6 +664,15 @@ const orgProjectSummarySchema = settingsDtoSchema<OrgProjectSummary>(
 const orgProjectDetailSchema = settingsDtoSchema<OrgProjectDetail>(
   orgProjectDetailShape,
 );
+
+const orgProjectLifecycleResultSchema =
+  settingsDtoSchema<OrgProjectLifecycleResult>(
+    orgProjectDetailShape.extend({
+      sharedConnectionsToDisconnect: z
+        .array(z.looseObject({ id: z.string(), name: z.string() }))
+        .optional(),
+    }),
+  );
 
 const createOrgProjectsSchema = settingsDtoSchema<CreateOrgProjectsResponse>(
   z.looseObject({
@@ -1433,6 +1513,11 @@ export const ORGANIZATION_SETTINGS_OPERATIONS = {
       items: z
         .array(CapabilitySetupItemRefSchema)
         .max(CAPABILITY_SETUP_ITEM_LIMIT),
+      /** The default connections (CAN-6246); absent leaves them unchanged. */
+      connectors: z
+        .array(CapabilitySetupConnectorRefSchema)
+        .max(CAPABILITY_SETUP_ITEM_LIMIT)
+        .optional(),
       idempotencyKey: z.string().min(1).max(512),
     }),
     result: CatalogOrganizationDefaultsUpdateResultSchema,
@@ -1440,6 +1525,114 @@ export const ORGANIZATION_SETTINGS_OPERATIONS = {
       method: 'PUT',
       path: organizationProjectDefaultsPath(organizationId),
       body,
+    }),
+  }),
+  /* Organization transcripts (owners only) ------------------------------ */
+  'organization.transcripts.sessions': defineSettingsRead({
+    transport: 'backend',
+    input: transcriptSessionFilterInput.extend({
+      cursor: z.string().min(1).max(512).optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+      includeFilterOptions: z.boolean().optional(),
+    }),
+    result: OrgTranscriptSessionsListResultSchema,
+    request: ({ organizationId, ...query }) =>
+      get(
+        settingsPathWithQuery(
+          organizationTranscriptsPath(organizationId, '/sessions'),
+          query,
+        ),
+      ),
+  }),
+  /** One page of a session's transcript; the first page records a view. */
+  'organization.transcripts.session': defineSettingsRead({
+    transport: 'backend',
+    input: z.strictObject({
+      ...organizationIdField,
+      sessionId: settingsRouteIdSchema,
+      turnsCursor: z.string().min(1).max(512).optional(),
+    }),
+    result: OrgTranscriptSessionGetResultSchema,
+    request: ({ organizationId, sessionId, turnsCursor }) =>
+      get(
+        settingsPathWithQuery(
+          organizationTranscriptsPath(
+            organizationId,
+            `/sessions/${settingsPathSegment(sessionId)}`,
+          ),
+          { turnsCursor },
+        ),
+      ),
+  }),
+  'organization.transcripts.exports': defineSettingsRead({
+    transport: 'backend',
+    input: transcriptListInput,
+    result: OrgTranscriptExportsListResultSchema,
+    request: ({ organizationId, ...query }) =>
+      get(
+        settingsPathWithQuery(
+          organizationTranscriptsPath(organizationId, '/exports'),
+          query,
+        ),
+      ),
+  }),
+  'organization.transcripts.exports.estimate': defineSettingsRead({
+    transport: 'backend',
+    input: transcriptExportRequestInput,
+    result: OrgTranscriptExportEstimateResultSchema,
+    request: ({ organizationId, ...query }) =>
+      get(
+        settingsPathWithQuery(
+          organizationTranscriptsPath(organizationId, '/exports/estimate'),
+          query,
+        ),
+      ),
+  }),
+  'organization.transcripts.accessEvents': defineSettingsRead({
+    transport: 'backend',
+    input: transcriptListInput,
+    result: OrgTranscriptAccessEventsListResultSchema,
+    request: ({ organizationId, ...query }) =>
+      get(
+        settingsPathWithQuery(
+          organizationTranscriptsPath(organizationId, '/access-events'),
+          query,
+        ),
+      ),
+  }),
+  /**
+   * Queues an export. Refusals carry `core.organizationTranscripts.exports.*`
+   * codes: `tooLarge` (422, with `details.sessionCount`), `activeExportExists`
+   * (409), `rateLimited` (429). The key replays a committed request.
+   */
+  'organization.transcripts.exports.create': defineSettingsWrite({
+    transport: 'backend',
+    input: transcriptExportRequestInput.extend({
+      idempotencyKey: z.string().min(1).max(512),
+    }),
+    result: OrgTranscriptExportSchema,
+    request: ({ organizationId, ...body }) => ({
+      method: 'POST',
+      path: organizationTranscriptsPath(organizationId, '/exports'),
+      body,
+    }),
+  }),
+  /** Deletes a Ready, Failed or Expired export; a preparing one refuses with 409. */
+  'organization.transcripts.exports.delete': defineSettingsWrite({
+    transport: 'backend',
+    input: z.strictObject({
+      ...organizationIdField,
+      exportId: settingsRouteIdSchema,
+      idempotencyKey: z.string().min(1).max(512),
+    }),
+    result: OrgTranscriptExportSchema,
+    request: ({ organizationId, exportId, idempotencyKey }) => ({
+      method: 'DELETE',
+      path: organizationTranscriptsPath(
+        organizationId,
+        `/exports/${settingsPathSegment(exportId)}`,
+      ),
+      body: { idempotencyKey },
     }),
   }),
   /**
@@ -1474,12 +1667,144 @@ export const ORGANIZATION_SETTINGS_OPERATIONS = {
       dismissedRecommendations: z
         .array(z.string().min(1).max(1024))
         .max(CAPABILITY_SETUP_DISMISSED_RECOMMENDATION_LIMIT),
+      /**
+       * The project's connections and their tool limits (CAN-6246,
+       * CAN-6248); absent leaves them unchanged.
+       */
+      connectors: StoredProjectConnectorSetupSchema.optional(),
       idempotencyKey: z.string().min(1).max(512),
     }),
     result: CatalogProjectSetupUpdateResultSchema,
     request: ({ projectId, ...body }) => ({
       method: 'PUT',
       path: projectSetupPath(projectId),
+      body,
+    }),
+  }),
+  /**
+   * Connectors subtab (CAN-6245): the connections the organization holds and
+   * the catalog servers an owner or admin can connect. The results are
+   * `core.integration.sharedConnection.*`'s.
+   */
+  'organization.settings.connections': defineSettingsRead({
+    transport: 'backend',
+    input: organizationInputSchema,
+    result: SharedConnectionListResultSchema,
+    request: (input) => get(organizationConnectionsPath(input.organizationId)),
+  }),
+  /**
+   * Every tool an organization connection's server offers, for a project's
+   * tool limit (CAN-6248). The result is
+   * `core.integration.sharedConnection.tools`'s.
+   */
+  'organization.settings.connections.tools': defineSettingsRead({
+    transport: 'backend',
+    input: z.strictObject({
+      ...organizationIdField,
+      ...connectionIdField,
+      /** A project the caller is on, for an automation's writes (CAN-6252). */
+      projectId: z.string().min(1).max(128).optional(),
+    }),
+    result: SharedConnectionToolsResultSchema,
+    request: ({ organizationId, connectionId, projectId }) =>
+      get(
+        settingsPathWithQuery(
+          organizationConnectionsPath(
+            organizationId,
+            `/${settingsPathSegment(connectionId)}/tools`,
+          ),
+          { projectId },
+        ),
+      ),
+  }),
+  /**
+   * The uses of the organization's connections (CAN-6249), newest first,
+   * filtered and a page at a time. The result is
+   * `core.integration.sharedConnection.usage.list`'s.
+   */
+  'organization.settings.connectionUsage': defineSettingsRead({
+    transport: 'backend',
+    input: SharedConnectionUsageListParamsSchema,
+    result: SharedConnectionUsageListResultSchema,
+    request: ({ organizationId, ...filters }) =>
+      get(
+        settingsPathWithQuery(
+          organizationConnectionsPath(organizationId, '/usage'),
+          filters,
+        ),
+      ),
+  }),
+  /** Starts a fresh sign-in as the organization for a catalog server. */
+  'organization.settings.connections.connect': defineSettingsWrite({
+    transport: 'backend',
+    input: z.strictObject({
+      ...organizationIdField,
+      serverKey: z.string().min(1).max(512),
+      label: z.string().min(1).max(80).optional(),
+      returnTo: z.string().min(1).max(2048).optional(),
+      /** Adds the new connection to this project (CAN-6251). */
+      projectId: z.string().min(1).max(128).optional(),
+      ...idempotencyKeyField,
+    }),
+    result: SharedConnectionStartResultSchema,
+    request: ({ organizationId, ...body }) => ({
+      method: 'POST',
+      path: organizationConnectionsPath(organizationId),
+      body,
+    }),
+  }),
+  /** Signs an organization connection in again. */
+  'organization.settings.connections.reconnect': defineSettingsWrite({
+    transport: 'backend',
+    input: z.strictObject({
+      ...organizationIdField,
+      ...connectionIdField,
+      returnTo: z.string().min(1).max(2048).optional(),
+      ...idempotencyKeyField,
+    }),
+    result: SharedConnectionStartResultSchema,
+    request: ({ organizationId, connectionId, ...body }) => ({
+      method: 'POST',
+      path: organizationConnectionsPath(
+        organizationId,
+        `/${settingsPathSegment(connectionId)}/reconnect`,
+      ),
+      body,
+    }),
+  }),
+  /** Drops an organization connection's sign-in; it stays listed. */
+  'organization.settings.connections.disconnect': defineSettingsWrite({
+    transport: 'backend',
+    input: z.strictObject({
+      ...organizationIdField,
+      ...connectionIdField,
+      ...idempotencyKeyField,
+    }),
+    result: SharedConnectionDisconnectResultSchema,
+    request: ({ organizationId, connectionId, ...body }) => ({
+      method: 'POST',
+      path: organizationConnectionsPath(
+        organizationId,
+        `/${settingsPathSegment(connectionId)}/disconnect`,
+      ),
+      body,
+    }),
+  }),
+  /** Deletes an organization connection and its bindings everywhere. */
+  'organization.settings.connections.remove': defineSettingsWrite({
+    transport: 'backend',
+    input: z.strictObject({
+      ...organizationIdField,
+      ...connectionIdField,
+      ...idempotencyKeyField,
+    }),
+    result: SharedConnectionRemoveResultSchema,
+    request: ({ organizationId, connectionId, ...body }) => ({
+      method: 'DELETE',
+      path: organizationConnectionsPath(
+        organizationId,
+        `/${settingsPathSegment(connectionId)}`,
+      ),
       body,
     }),
   }),
@@ -1760,7 +2085,7 @@ export const ORGANIZATION_SETTINGS_OPERATIONS = {
       revision: z.number().int().nonnegative(),
       action: z.enum(['archive', 'restore', 'delete']),
     }),
-    result: orgProjectDetailSchema,
+    result: orgProjectLifecycleResultSchema,
     request: (input) => ({
       method: 'POST',
       path: projectPath(input.organizationId, input.projectId, '/lifecycle'),

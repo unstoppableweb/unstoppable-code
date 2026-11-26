@@ -2,12 +2,17 @@ import {
   CanopyOperationError,
   type CanopyHandlerContext,
 } from '@canopy/core-runtime';
+import { flushDirectory } from '@canopy/core-platform/directory-flush';
 import {
   createAnnotationOperations,
   createFileAnnotationEngine,
   type AnnotationFileRoot,
   type AnnotationOperations,
 } from '@canopy/core-runtime/node/annotations';
+import {
+  assertStorageWriteAllowed,
+  STORAGE_OWNERSHIP,
+} from '@canopy/core-runtime/storage';
 import type {
   AnnotationScope,
   CanonicalFileAnnotationDocument,
@@ -15,7 +20,7 @@ import type {
   CanopyQueryHandler,
 } from '@canopy/protocol/canopy-core';
 import { getFileBrowserRoots } from '../lib/file-browser-roots';
-import { getFileAnnotationsStateFilePath } from '../lib/paths';
+import { getDataDir, getFileAnnotationsStateFilePath } from '../lib/paths';
 import { isWritableScope } from '../lib/read-only-scope';
 import { validateId } from '../lib/validation';
 
@@ -132,6 +137,15 @@ export function getDesktopAnnotationOperations(): AnnotationOperations {
           scope.worktreeId,
         );
       },
+      dataRoot: getDataDir,
+      flushDirectory,
+      // Refused once the daemon owns the store; reads stay open (CAN-4735).
+      admitWrite: () =>
+        assertStorageWriteAllowed(
+          'file_annotations',
+          'electron_main',
+          STORAGE_OWNERSHIP,
+        ),
     }),
     roots: readAnnotationFileRoots,
     // Shared-container recipient scopes stay read-only for every binding,

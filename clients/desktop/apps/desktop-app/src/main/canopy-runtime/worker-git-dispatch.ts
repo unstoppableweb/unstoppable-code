@@ -33,6 +33,7 @@ import {
   type WorkerGitBranchListResult,
   type WorkerGitCheckoutScope,
   type WorkerGitRemoteGetResult,
+  type WorkerGitWorktreeHealthGetResult,
 } from '@canopy/protocol/canopy-core';
 import { CanopyOperationError } from '@canopy/core-runtime';
 import {
@@ -88,7 +89,7 @@ import {
 } from './worker-git-adapter';
 import type { DaemonGitRoute, DaemonGitRouteRequest } from './daemon-git-route';
 
-interface GitBranchListRouteRequest extends DaemonGitRouteRequest {
+interface GitReadRouteRequest extends DaemonGitRouteRequest {
   readonly route: DaemonGitRoute;
 }
 
@@ -96,7 +97,7 @@ function queryBranchList(
   dispatcher: WorkerGitDispatcher,
   caller: CanopyCallerDescriptor,
   params: WorkerGitBranchListParams,
-  routing: GitBranchListRouteRequest | undefined,
+  routing: GitReadRouteRequest | undefined,
   requestedParams: WorkerGitBranchListParams = params,
 ): Promise<WorkerGitBranchListResult> {
   const options = { caller: gitReadCaller(caller) };
@@ -140,7 +141,7 @@ export async function listWorktreeBranches(
   dispatcher: WorkerGitDispatcher,
   caller: CanopyCallerDescriptor,
   request: ListBranchesRequest,
-  routing?: GitBranchListRouteRequest,
+  routing?: GitReadRouteRequest,
   exactWorktreeBaseBranch = true,
 ): Promise<ListBranchesResponse> {
   validateId(request.projectId, 'projectId');
@@ -212,7 +213,7 @@ export async function listHomeBranchTargets(
   dispatcher: WorkerGitDispatcher,
   caller: CanopyCallerDescriptor,
   request: HomeBranchTargetsRequest,
-  routing?: GitBranchListRouteRequest,
+  routing?: GitReadRouteRequest,
   exactWorktreeBaseBranch = true,
 ): Promise<HomeBranchTargetsResponse> {
   validateId(request.workspaceId, 'workspaceId');
@@ -345,6 +346,7 @@ export async function checkWorktreeHealth(
   dispatcher: WorkerGitDispatcher,
   resolveCaller: () => CanopyCallerDescriptor,
   request: WorktreeHealthCheckRequest,
+  routing?: GitReadRouteRequest,
 ): Promise<WorktreeHealthCheckResponse> {
   validateId(request.projectId, 'projectId');
   assertWritableScope(request.projectId);
@@ -358,11 +360,22 @@ export async function checkWorktreeHealth(
       route.target.worktreeId,
     );
   let issue: WorktreeHealthIssue | null;
+  const params = { scope: route.scope };
+  const options = { caller: gitReadCaller(resolveCaller()) };
   try {
     ({ legacyResult: issue } = await queryWorktreeHealthForLegacyIpc(
       dispatcher,
-      { scope: route.scope },
-      { caller: gitReadCaller(resolveCaller()) },
+      params,
+      options,
+      routing &&
+        ((direct, settle): Promise<WorkerGitWorktreeHealthGetResult> =>
+          routing.route.worktreeHealth(
+            params,
+            options,
+            routing,
+            direct,
+            settle,
+          )),
     ));
   } catch (error) {
     throw hostError(error);

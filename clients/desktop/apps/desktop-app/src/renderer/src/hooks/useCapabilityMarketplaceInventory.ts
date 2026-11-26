@@ -823,8 +823,8 @@ export function useCapabilityMarketplaceInventory(
       ['Shared collections', sharedCollectionsError],
       ['Automations', automationsError],
       ['Shared automations', sharedAutomationsError],
-      ['Shared agents', sharedMarketplaceShares.agentsError],
-      ['Your shared agents', ownedAgentShares.agentsError],
+      ['Shared model presets', sharedMarketplaceShares.agentsError],
+      ['Your shared model presets', ownedAgentShares.agentsError],
       ['Shared plugins', sharedMarketplaceShares.pluginsError],
       ['Shared project templates', sharedMarketplaceShares.templatesError],
     ] as const

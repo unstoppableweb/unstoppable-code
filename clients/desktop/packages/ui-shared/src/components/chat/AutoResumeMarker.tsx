@@ -5,7 +5,7 @@ import {
 } from '@canopy/protocol/remote-control/shell';
 import { useChatAppName } from '../chat-look';
 import { ChatCopyAction } from './ChatCopyAction';
-import { getWindow } from '../../panels/window-registry';
+import { getWindow } from '../../lib/window-registry';
 
 // Cached at module load: transcript rows render often. The marker always
 // shows its date so the label never depends on when it is rendered.

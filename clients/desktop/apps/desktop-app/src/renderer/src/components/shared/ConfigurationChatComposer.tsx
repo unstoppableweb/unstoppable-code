@@ -100,6 +100,8 @@ import type {
   ConfigurationChatComposerValue,
 } from './ConfigurationChatComposer.types';
 
+const REFERENCE_SAVE_FAILED = "Couldn't save this reference.";
+
 /**
  * Apply a configuration speed choice: an explicit speed is written with its
  * derived boolean; Use default removes both so the action inherits.
@@ -497,10 +499,9 @@ function ComposerInstance({
       setError(null);
       setSerializationError(null);
     } catch (cause) {
+      // The resolver throws our own sentences that name the reference to fix.
       const message =
-        cause instanceof Error
-          ? cause.message
-          : 'Could not save this reference.';
+        cause instanceof Error ? cause.message : REFERENCE_SAVE_FAILED;
       setError(message);
       setSerializationError(message);
     }

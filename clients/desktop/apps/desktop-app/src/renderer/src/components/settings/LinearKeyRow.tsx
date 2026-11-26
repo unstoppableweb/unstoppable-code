@@ -5,8 +5,8 @@ import {
   Button,
   Notice,
   ProviderStatusDot,
-  ExternalTextLink,
   StatusLabel,
+  TextLink,
 } from '@canopy/ui-shared/components';
 import {
   type JSX,
@@ -223,10 +223,14 @@ export function LinearKeyRow(): JSX.Element {
           'Optional.'
         )}{' '}
         Create a personal API key in{' '}
-        <ExternalTextLink
+        <TextLink
           href="https://linear.app/settings/account/security/api-keys"
-          label="Linear API settings"
-        />
+          size="xs"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Linear API settings
+        </TextLink>
         .
       </>
     );

@@ -35,13 +35,13 @@ import {
   DetailEntityType,
   DetailFact,
   DetailFactList,
-  ExternalTextLink,
   DataTableBody,
   DataTableCell,
   DataTableFrame,
   DataTableHead,
   DataTableHeaderCell,
   DataTableRow,
+  TextLink,
 } from '@canopy/ui-shared/components';
 
 const PROVIDER_LABEL: Record<ProviderConnectorProvider, string> =
@@ -270,20 +270,28 @@ export function ProviderConnectorDetail({
             <DetailFactList>
               {catalogEntry.authorUrl && (
                 <DetailFact label="Website">
-                  <ExternalTextLink
+                  <TextLink
                     href={catalogEntry.authorUrl}
-                    label={catalogEntry.authorUrl
+                    size="xs"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {catalogEntry.authorUrl
                       .replace(/^https?:\/\/(www\.)?/, '')
                       .replace(/\/$/, '')}
-                  />
+                  </TextLink>
                 </DetailFact>
               )}
               {catalogEntry.docsUrl && (
                 <DetailFact label="Docs">
-                  <ExternalTextLink
+                  <TextLink
                     href={catalogEntry.docsUrl}
-                    label="Open docs"
-                  />
+                    size="xs"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Open docs
+                  </TextLink>
                 </DetailFact>
               )}
             </DetailFactList>

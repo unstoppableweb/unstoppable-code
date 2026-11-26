@@ -1,8 +1,14 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   OperationService,
+  RemoteOperationService,
   createCoreOperationHandlers,
+  createRemoteCoreOperationHandlers,
   type CoreOperationHandlers,
   type OperationLedger,
+  type OperationLedgerTransport,
+  type OperationServicePort,
 } from '@canopy/core-runtime/node/operations';
 import {
   logMainProcessInfo,
@@ -21,13 +27,15 @@ import { getOperationLedgerPath } from '../lib/paths';
  */
 
 export interface CoreOperationAdapter extends CoreOperationHandlers {
-  readonly service: OperationService;
+  readonly service: OperationServicePort;
   close(): void;
 }
 
 export function createCoreOperationAdapter(
   options: { ledgerPath?: () => string } = {},
-): CoreOperationAdapter {
+): Omit<CoreOperationAdapter, 'service'> & {
+  readonly service: OperationService;
+} {
   const ledgerPath = options.ledgerPath ?? getOperationLedgerPath;
   const service = new OperationService({
     openLedger: async (): Promise<OperationLedger> => {
@@ -67,6 +75,42 @@ export function createCoreOperationAdapter(
     streams: {
       'core.operation.events': handlers.streams['core.operation.events'],
     },
+    service,
+    close: (): void => {
+      service.close();
+    },
+  };
+}
+
+/**
+ * This process's run as the ledger owner, minted by its first adapter rather
+ * than at module load: its owner sessions resume it, so a reconnect or a
+ * daemon restart leaves the work running here as it is.
+ */
+let processOwnerRun: string | undefined;
+
+/**
+ * The adapter over a ledger the daemon holds (CAN-6986 L3): the service
+ * makes each call over Electron main's daemon owner connection, never a
+ * leased peer connection, and the domains' cancellation and recovery stay in
+ * this process. Unselected: only a test seam builds it until the
+ * `operation_ledger` ownership row names the daemon (CAN-6986 L5).
+ */
+export function createDaemonCoreOperationAdapter(options: {
+  /** The owner connection's client; read at each call. */
+  readonly ownerClient: () => Promise<OperationLedgerTransport>;
+}): CoreOperationAdapter & { readonly service: RemoteOperationService } {
+  processOwnerRun ??= randomUUID();
+  const service = new RemoteOperationService({
+    transport: options.ownerClient,
+    ownerRun: processOwnerRun,
+    onError: (error, context): void => {
+      logMainProcessWarn(`[operations] ${context} failed`, error);
+    },
+  });
+  const handlers = createRemoteCoreOperationHandlers(service);
+  return {
+    ...handlers,
     service,
     close: (): void => {
       service.close();

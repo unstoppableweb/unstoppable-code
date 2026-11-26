@@ -410,8 +410,9 @@ async function executeScriptRoute(
         logMainProcessWarn(
           'Daemon scripts are unavailable; running the script in the app.',
         );
-      // A stop or drain that came first ends the run here: nothing runs.
-      if (entry.signal.aborted) {
+      // A stop, or a drain that came first or is still under way, ends the
+      // run here: nothing runs.
+      if (entry.fenced()) {
         const cancelled: WorkerScriptExecuteResult = {
           executionId: params.executionId,
           status: 'cancelled',

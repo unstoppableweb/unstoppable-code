@@ -187,6 +187,12 @@ export interface AgentSessionFeedItem extends FeedItemBase {
   totalCostUsd: number | null;
   /** Number of tool invocations across the session's turns. */
   toolUseCount: number | null;
+  /**
+   * The canonical organization transcript session ID, set only for an
+   * organization owner with the transcript browser on when the session has a
+   * shared transcript. Absent otherwise; older clients ignore it.
+   */
+  transcriptSessionId?: string;
 }
 
 export interface PipelineRunFeedItem extends FeedItemBase {

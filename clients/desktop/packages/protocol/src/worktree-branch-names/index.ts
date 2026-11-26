@@ -94,6 +94,55 @@ export function sanitizeBranchName(raw: string): string | null {
   return sanitized.length > 0 ? sanitized : null;
 }
 
+/** The characters `git check-ref-format` refuses anywhere in a name. */
+const REFUSED_BRANCH_CHARACTERS = ['~', '^', ':', '?', '*', '[', '\\'];
+
+function listAlternatives(items: readonly string[]): string {
+  if (items.length <= 1) return items.join('');
+  return `${items.slice(0, -1).join(', ')} or ${items[items.length - 1]}`;
+}
+
+/**
+ * Why Git won't accept `name` as a branch, as a sentence for the person who
+ * typed it, or null when `git check-ref-format --branch` accepts it. Mirrors
+ * Git's rules so a rename field can say what to change before it asks Git;
+ * the Git check in main stays the authority.
+ */
+export function branchNameProblem(name: string): string | null {
+  if (name === '') return 'Enter a branch name.';
+  const refused: string[] = [];
+  if (/[ \t]/.test(name)) refused.push('spaces');
+  if (
+    [...name].some((character): boolean => {
+      const code = character.charCodeAt(0);
+      return (code < 0x20 && character !== '\t') || code === 0x7f;
+    })
+  )
+    refused.push('control characters');
+  for (const character of REFUSED_BRANCH_CHARACTERS)
+    if (name.includes(character)) refused.push(`"${character}"`);
+  if (refused.length === 1 && refused[0] === 'spaces')
+    return "Branch names can't contain spaces. Use hyphens instead.";
+  if (refused.length > 0)
+    return `Branch names can't contain ${listAlternatives(refused)}.`;
+  if (name.startsWith('-')) return 'Branch names can\'t start with "-".';
+  if (name === 'HEAD') return '"HEAD" is reserved by Git. Choose another name.';
+  for (const sequence of ['..', '@{', '//'])
+    if (name.includes(sequence))
+      return `Branch names can't contain "${sequence}".`;
+  if (name.startsWith('/') || name.endsWith('/'))
+    return 'Branch names can\'t start or end with "/".';
+  if (name.startsWith('.')) return 'Branch names can\'t start with ".".';
+  if (name.endsWith('.lock')) return 'Branch names can\'t end with ".lock".';
+  if (name.endsWith('.')) return 'Branch names can\'t end with ".".';
+  const parts = name.split('/');
+  if (parts.some((part) => part.startsWith('.')))
+    return 'A part of a branch name after "/" can\'t start with ".".';
+  if (parts.some((part) => part.endsWith('.lock')))
+    return 'A part of a branch name before "/" can\'t end with ".lock".';
+  return null;
+}
+
 export interface PickUniqueAnimalNameOptions {
   /** Prepended to every candidate before it is checked against `existing`. */
   readonly prefix?: string;

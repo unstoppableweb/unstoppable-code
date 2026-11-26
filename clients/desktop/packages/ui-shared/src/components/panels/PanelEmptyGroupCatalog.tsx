@@ -1,8 +1,8 @@
 import type { JSX, ReactNode } from 'react';
 import { MoreHorizontalIcon } from '../../icons/AppIcons';
-import { ListRow } from '../ListRow';
-import { LoadingSpinner } from '../LoadingSpinner';
-import { Heading } from '../Heading';
+import { ListRow } from '../../primitives/ListRow';
+import { LoadingSpinner } from '../../primitives/LoadingSpinner';
+import { Heading } from '../../primitives/Heading';
 
 export interface PanelEmptyGroupCatalogEntry {
   readonly key: string;

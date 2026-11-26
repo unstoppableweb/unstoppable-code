@@ -20,10 +20,10 @@ import { withPrivacyClass } from './privacy-class';
 import { Surface } from '@canopy/ui-shared/components';
 
 const INVALID_CODE_ERROR = 'Invalid verification code.';
-const ENABLE_FAILED_ERROR = 'Unable to enable two-factor authentication.';
-const DISABLE_FAILED_ERROR = 'Unable to disable two-factor authentication.';
-const REGENERATE_FAILED_ERROR = 'Unable to regenerate backup codes.';
-const COPY_FAILED_ERROR = 'Unable to copy backup codes.';
+const ENABLE_FAILED_ERROR = "Couldn't enable two-factor authentication.";
+const DISABLE_FAILED_ERROR = "Couldn't disable two-factor authentication.";
+const REGENERATE_FAILED_ERROR = "Couldn't regenerate backup codes.";
+const COPY_FAILED_ERROR = "Couldn't copy backup codes.";
 
 /** A step of the flow: a full-width row under the status row that starts it. */
 const STEP_ROW_CLASS = `${SETTINGS_CARD_ROW_CLASS} flex-col items-stretch gap-3`;

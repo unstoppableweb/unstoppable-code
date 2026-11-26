@@ -14,16 +14,16 @@ import {
   type ReactNode,
 } from 'react';
 import { MoreHorizontalIcon } from '../icons/AppIcons';
-import { Button } from './Button';
-import { ActionMenuRowStyle } from './ActionMenuItems';
+import { Button } from '../primitives/Button';
+import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
 import {
   DropdownMenuDivider,
   DropdownMenuItem,
   DropdownMenuItemIcon,
   DropdownMenuLabel,
-} from './DropdownMenu';
-import { FLOATING_MENU_GAP, FloatingMenu } from './FloatingMenu';
-import { Tooltip } from './Tooltip';
+} from '../primitives/DropdownMenu';
+import { FLOATING_MENU_GAP, FloatingMenu } from '../primitives/FloatingMenu';
+import { Tooltip } from '../primitives/Tooltip';
 
 export interface DetailMoreMenuItem {
   readonly id: string;

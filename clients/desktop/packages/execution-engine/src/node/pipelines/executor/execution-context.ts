@@ -8,6 +8,8 @@ import type {
   PipelineTriggerType,
 } from '@canopy/execution-engine/types/pipeline';
 import { BRAND } from '@canopy/brand/current';
+// One copy of the rule the workflow designer reads entries by (CAN-4224).
+import { toExpressionRoot } from '@canopy/pipeline-interop/workflow-designer-trigger';
 import type { NormalizedPipeline } from '@canopy/execution-engine/pipelines/types';
 import type { CanopyEventData, NormalizedJob, JobResult } from './types';
 import { isPipelineInputValue } from '@canopy/execution-engine/pipelines/json-values';
@@ -157,16 +159,6 @@ export interface ExpressionContext {
 export interface RehydratedJobContext {
   steps: Record<string, ExpressionStepState>;
   dynamicEnv: Record<string, string>;
-}
-
-function toExpressionRoot(value: string): string {
-  return value
-    .split(/[-_]+/)
-    .filter(Boolean)
-    .map((part, index) =>
-      index === 0 ? part : `${part.charAt(0).toUpperCase()}${part.slice(1)}`,
-    )
-    .join('');
 }
 
 function scalarToString(value: PipelineScalar | undefined): string | undefined {

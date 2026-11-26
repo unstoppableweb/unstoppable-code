@@ -38,10 +38,7 @@ import {
   provisionCoworkWorkspaceRecord,
 } from './cowork-workspace-records';
 import { writeFile } from 'node:fs/promises';
-import {
-  removeWorkspaceNonW5Children,
-  removeWorkspaceDirectoryAfterRecordRemoval,
-} from './w5-workspace-directory-removal';
+import { getWorktreeItemStore } from './worktree-item-store';
 import {
   recordSharedItemInstall,
   recordSharedItemUninstall,
@@ -939,13 +936,18 @@ export async function deleteCoworkWorkspace(
     for (const worktreeId of [...entryIds, COWORK_HOME_WORKTREE_ID]) {
       await cleanupPersistedWorktreeData(workspaceId, worktreeId, {
         deferLocalWatcherCancellationCommit: true,
+        deferTerminalRecordRetirement: true,
       });
     }
     await destructiveStep('cowork-summaries-removal', () =>
       clearWorkEntrySummariesForWorkspace(workspaceId),
     );
     await destructiveStep('workspace-non-w5-children-removal', () =>
-      removeWorkspaceNonW5Children(workspaceId),
+      getWorktreeItemStore().purge({
+        scope: 'workspace',
+        workspaceId,
+        stage: 'items',
+      }),
     );
     await options.commitIndexRemoval();
     ownerCommitted = true;
@@ -961,7 +963,12 @@ export async function deleteCoworkWorkspace(
         commitTaskBrowserRetirement(workspaceId, entry.worktreeId),
       );
     await destructiveStep('workspace-directory-removal', () =>
-      removeWorkspaceDirectoryAfterRecordRemoval(workspaceId),
+      getWorktreeItemStore().purge({
+        scope: 'workspace',
+        workspaceId,
+        stage: 'folder',
+        worktreeIds: [],
+      }),
     );
   } catch (error) {
     if (!ownerCommitted) {

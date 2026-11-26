@@ -4,6 +4,7 @@ import {
   PIPELINE_DEFINITION_INSTRUCTION_DEFINITIONS,
   PIPELINE_DEFINITION_QUERY_DEFINITIONS,
   PIPELINE_GRANTS,
+  WORKER_PIPELINE_OWNER_SERVED_REVISIONS,
   type CanopyWorkspaceScope,
   type WorkerPipelineHostRequest,
   type WorkerPipelineOwnerResult,
@@ -27,12 +28,14 @@ import {
 import {
   createPipelineDefinitionService,
   PipelineDefinitionSourceError,
+  type PipelineDefinitionOwnerCheck,
   type PipelineDefinitionOwnerEffectsPort,
   type PipelineDefinitionOwnerWrite,
   type PipelineDefinitionService,
   type PipelineDefinitionServiceOptions,
   type PipelineDefinitionWritePort,
 } from './definitions';
+import { assertRowWritable } from '../storage-records';
 import { PipelineHostUnavailableError } from './execution/host-requests';
 import type { PipelineOwnerChannel } from './execution/owner-channel';
 import type { PipelineLocalMetadataStore } from './store/local-metadata';
@@ -99,12 +102,39 @@ export interface DaemonPipelineDefinitionHostOptions {
   readonly owner?: PipelineOwnerChannel;
 }
 
+/**
+ * The daemon's definition write receipts under its data root. Each write
+ * first checks the receipts row's owner record as the daemon (CAN-7690).
+ */
+export function createDaemonDefinitionReceipts(
+  options: Pick<
+    DaemonPipelineDefinitionHostOptions,
+    'dataRoot' | 'flushDirectory' | 'writeReplays'
+  >,
+): PipelineDefinitionReplayStore {
+  return createPipelineDefinitionReplayStore({
+    filePath: () => pipelineDefinitionReplaysPath(options.dataRoot),
+    write:
+      options.writeReplays ??
+      createDurableReplayFileWriter(options.flushDirectory),
+    assertWritable: () =>
+      assertRowWritable(
+        options.dataRoot,
+        'pipeline_definition_replays',
+        'daemon',
+      ),
+  });
+}
+
 /** The reserved scope the definitions' owner requests ride (CAN-7522). */
 export const PIPELINE_DEFINITIONS_OWNER_SCOPE = 'core:pipeline-definitions';
 /** How long the owner has to check a write before it is refused. */
 export const PIPELINE_DEFINITION_PRECHECK_DEADLINE_MS = 10_000;
 /** How long the owner has to apply a write's effects. */
 export const PIPELINE_DEFINITION_EFFECTS_DEADLINE_MS = 30_000;
+/** The effects revision whose owner records a routed write's owner (CAN-7507). */
+const PIPELINE_DEFINITION_OWNER_KEY_REVISION =
+  WORKER_PIPELINE_OWNER_SERVED_REVISIONS['owner.definition.effects'];
 
 /**
  * No request was raised: no owner is subscribed, none serves the request, or
@@ -206,7 +236,7 @@ export function createDaemonDefinitionOwnerEffects(
       .digest('hex');
   return {
     async precheck(
-      write: PipelineDefinitionOwnerWrite,
+      write: PipelineDefinitionOwnerCheck,
       scope: CanopyWorkspaceScope,
       signal: AbortSignal,
     ): Promise<void> {
@@ -248,12 +278,18 @@ export function createDaemonDefinitionOwnerEffects(
           ...(write.op === 'duplicate' && write.origin
             ? { origin: write.origin }
             : {}),
+          ...(write.ownerKey !== undefined && { ownerKey: write.ownerKey }),
         },
         idOf(write, phase),
         effectsMs,
         signal,
       );
     },
+    servesOwnerKeys: (): boolean =>
+      channel.broker.servesOwner(
+        'owner.definition.effects',
+        PIPELINE_DEFINITION_OWNER_KEY_REVISION,
+      ),
     async reconcile(signal): Promise<void> {
       await raise(
         {
@@ -377,12 +413,7 @@ export function createDaemonPipelineDefinitionHost(
   let service: Promise<PipelineDefinitionService> | undefined;
   const ownerEffects =
     options.owner && createDaemonDefinitionOwnerEffects(options.owner);
-  const receipts = createPipelineDefinitionReplayStore({
-    filePath: () => pipelineDefinitionReplaysPath(options.dataRoot),
-    write:
-      options.writeReplays ??
-      createDurableReplayFileWriter(options.flushDirectory),
-  });
+  const receipts = createDaemonDefinitionReceipts(options);
   const replays: PipelineDefinitionReplayStore = {
     load: () =>
       Promise.resolve()

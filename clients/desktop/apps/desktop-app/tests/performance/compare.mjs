@@ -197,6 +197,23 @@ export function buildRegressionDiagnosticInvocation(
       npmArgs.push(option, String(value));
     }
   }
+  // A connected run's replay keeps its Remote Control workload.
+  const remoteControl = current.config?.remoteControl;
+  if (remoteControl?.role) {
+    npmArgs.push(
+      '--remote-control',
+      remoteControl.role,
+      '--remote-control-peers',
+      String(remoteControl.peers),
+    );
+    if (remoteControl.role === 'controller')
+      npmArgs.push(
+        '--remote-control-tasks',
+        String(remoteControl.tasks),
+        '--remote-control-status-interval-ms',
+        String(remoteControl.statusIntervalMs),
+      );
+  }
   if (
     current.environment?.studyWindowMode !== undefined ||
     (current.environment?.studyViewportPreset !== undefined &&

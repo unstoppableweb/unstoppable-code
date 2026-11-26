@@ -1621,7 +1621,11 @@ export async function readDisplayRefreshRate(electronApp, timeoutMs = 5_000) {
   const result = await raceWithTimeout(
     Promise.resolve().then(() =>
       electronApp.evaluate(({ BrowserWindow, screen }) => {
-        const [window] = BrowserWindow.getAllWindows();
+        // Not a hidden Remote Control bridge window (a `data:` page that
+        // `--remote-control host` opens and getAllWindows may list first).
+        const window = BrowserWindow.getAllWindows().find(
+          (candidate) => !candidate.webContents.getURL().startsWith('data:'),
+        );
         const display = window
           ? screen.getDisplayMatching(window.getBounds())
           : screen.getPrimaryDisplay();
@@ -1662,7 +1666,11 @@ export async function placeWindowOnFastestDisplay(
   const result = await raceWithTimeout(
     Promise.resolve().then(() =>
       electronApp.evaluate(({ BrowserWindow, screen }) => {
-        const [window] = BrowserWindow.getAllWindows();
+        // Not a hidden Remote Control bridge window (a `data:` page that
+        // `--remote-control host` opens and getAllWindows may list first).
+        const window = BrowserWindow.getAllWindows().find(
+          (candidate) => !candidate.webContents.getURL().startsWith('data:'),
+        );
         if (!window) return { moved: false, reason: 'no window' };
         const displays = screen.getAllDisplays();
         const fastest = displays.reduce((best, candidate) =>

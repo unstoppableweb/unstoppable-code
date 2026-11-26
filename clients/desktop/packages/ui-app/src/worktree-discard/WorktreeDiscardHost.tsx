@@ -1,18 +1,25 @@
-import { useEffect, useRef, useSyncExternalStore, type JSX } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useSyncExternalStore,
+  type JSX,
+} from 'react';
 import type { CanopyClient } from '@canopy/app-core';
 import {
   useWorktreeDiscardOffer,
   type WorktreeDiscardOffer,
 } from '@canopy/app-state';
 import type * as PanelModule from './WorktreeDiscardPanel';
+import { activateWorktreeDiscardComputer } from '@canopy/app-state/worktree-discard';
 import type { WorktreeDiscarded } from './types';
 
 export type { WorktreeDiscarded } from './types';
 
 type LoadedPanel = typeof PanelModule;
 
-// The confirmation and its store load with the first refused removal, not
-// with every route. A manual `import()`, as for the journal review.
+// The confirmation UI loads with the first refused removal, not with every
+// route. A manual `import()`, as for the journal review.
 let loadedPanel: LoadedPanel | null = null;
 let pendingLoad: Promise<LoadedPanel> | null = null;
 const listeners = new Set<() => void>();
@@ -56,10 +63,12 @@ function loadPanel(): Promise<LoadedPanel> {
  */
 export function WorktreeDiscardHost({
   client,
+  computerScopeKey = null,
   notify,
   onDiscarded,
 }: {
   client: CanopyClient;
+  computerScopeKey?: string | null;
   notify: (offer: WorktreeDiscardOffer) => void;
   onDiscarded: (discarded: WorktreeDiscarded) => void;
 }): JSX.Element | null {
@@ -69,6 +78,7 @@ export function WorktreeDiscardHost({
   const pendingOffer = useRef<{
     token: number;
     client: CanopyClient;
+    computerScopeKey: string | null;
     active: boolean;
   } | null>(null);
   const notifyRef = useRef(notify);
@@ -78,11 +88,24 @@ export function WorktreeDiscardHost({
     onDiscardedRef.current = onDiscarded;
   });
   const loaded = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-  useEffect(() => {
+  useLayoutEffect(
+    () => activateWorktreeDiscardComputer(client, computerScopeKey),
+    [client, computerScopeKey],
+  );
+  // Cancel a lazy opening during the switch's commit, before its promise can
+  // select the old computer again through the still-reused client.
+  useLayoutEffect(() => {
     if (token === answered.current) {
       const pending = pendingOffer.current;
-      if (!pending || pending.token !== token || pending.client !== client)
+      if (
+        !pending ||
+        pending.token !== token ||
+        pending.client !== client ||
+        pending.computerScopeKey !== computerScopeKey
+      ) {
+        pendingOffer.current = null;
         return;
+      }
       pending.active = true;
       return (): void => {
         pending.active = false;
@@ -97,11 +120,13 @@ export function WorktreeDiscardHost({
       notifyRef.current(offer);
       return;
     }
-    const pending = { token, client, active: true };
+    const pending = { token, client, computerScopeKey, active: true };
     pendingOffer.current = pending;
     loadPanel()
       .then((panel) =>
-        pending.active ? panel.openWorktreeDiscard(client, offer) : true,
+        pending.active
+          ? panel.openWorktreeDiscard(client, offer, computerScopeKey)
+          : true,
       )
       .then(
         (opened) => {
@@ -114,12 +139,14 @@ export function WorktreeDiscardHost({
     return (): void => {
       pending.active = false;
     };
-  }, [client, offer, supported, token]);
+  }, [client, computerScopeKey, offer, supported, token]);
   if (!loaded || !supported) return null;
   const { WorktreeDiscardPanel } = loaded;
   return (
     <WorktreeDiscardPanel
+      key={computerScopeKey ?? undefined}
       client={client}
+      computerScopeKey={computerScopeKey}
       onDiscarded={(discarded) => onDiscardedRef.current(discarded)}
     />
   );

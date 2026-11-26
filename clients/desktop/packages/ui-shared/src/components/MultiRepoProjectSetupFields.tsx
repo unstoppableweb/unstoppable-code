@@ -1,14 +1,14 @@
 'use client';
 
 import { useId, useMemo, useState, type JSX } from 'react';
-import { Fieldset } from './Fieldset';
-import { ChoiceField } from './Choice';
-import { TextInput, FieldError } from './Field';
-import { FormField } from './FormField';
-import { Button } from './Button';
-import { SearchEmptyState, SearchField } from './SearchField';
-import { Skeleton } from './Skeleton';
-import { Tooltip } from './Tooltip';
+import { Fieldset } from '../primitives/Fieldset';
+import { ChoiceField } from '../primitives/Choice';
+import { TextInput, FieldError } from '../primitives/Field';
+import { FormField } from '../primitives/FormField';
+import { Button } from '../primitives/Button';
+import { SearchEmptyState, SearchField } from '../primitives/SearchField';
+import { Skeleton } from '../primitives/Skeleton';
+import { Tooltip } from '../primitives/Tooltip';
 import { GitHubIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 

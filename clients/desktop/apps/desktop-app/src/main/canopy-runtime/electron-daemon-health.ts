@@ -1,6 +1,7 @@
 import {
   INITIAL_BACKGROUND_SERVICE_STATUS,
   type BackgroundServiceConsumer,
+  type BackgroundServiceBackupWarning,
   type BackgroundServiceHandoffFailure,
   type BackgroundServiceStatus,
   type BackgroundServiceUnreachableReason,
@@ -9,7 +10,10 @@ import {
   logMainProcessInfo,
   logMainProcessWarn,
 } from '../lib/main-process-logging';
-import type { ElectronDaemonReachability } from './electron-daemon-connection';
+import {
+  DIAGNOSED_UNREACHABLE_REASONS,
+  type ElectronDaemonReachability,
+} from './electron-daemon-connection';
 
 /**
  * Main's one record of whether the local background service can be reached
@@ -67,6 +71,8 @@ export interface ElectronDaemonHealth {
    * handoff's failure code for diagnostics.
    */
   requireRestart(handoff: BackgroundServiceHandoffFailure): void;
+  /** Startup backup failed safely; no reachability latch or save restriction. */
+  noteBackupWarning(reason: BackgroundServiceBackupWarning): void;
   /** Recovery handoff: one-way latch; no Try again or late reach can lift it. */
   beginRecovery(): void;
   /** Quit: ignores every later event and retry. */
@@ -78,6 +84,7 @@ const LATCHING_REASONS: ReadonlySet<BackgroundServiceUnreachableReason> =
   new Set<BackgroundServiceUnreachableReason>([
     'start_failed',
     'endpoint_repair_required',
+    'data_folder_shared',
     'connect_timeout',
     'host_unavailable',
     'reconnect_failed',
@@ -105,6 +112,7 @@ export function createElectronDaemonHealth(
   let recoveries = 0;
   let restartRequired = false;
   let handoffFailure: BackgroundServiceHandoffFailure | undefined;
+  let backupWarning: BackgroundServiceBackupWarning | undefined;
   /** The first latched failure kept hidden by the current `reconnecting`. */
   let hiddenReason: BackgroundServiceUnreachableReason | undefined;
 
@@ -122,7 +130,8 @@ export function createElectronDaemonHealth(
       reason === status.reason &&
       retry === status.retry &&
       recovery === status.recovery &&
-      handoff === status.handoff
+      handoff === status.handoff &&
+      backupWarning === status.backupWarning
     )
       return;
     const previous = status;
@@ -132,6 +141,7 @@ export function createElectronDaemonHealth(
       retry,
       ...(recovery && { recovery }),
       ...(handoff && { handoff }),
+      ...(backupWarning && { backupWarning }),
       sequence: previous.sequence + 1,
     };
     if (status.reason && status.reason !== previous.reason)
@@ -151,9 +161,11 @@ export function createElectronDaemonHealth(
     update(
       'unavailable',
       'idle',
-      status.reason === 'endpoint_repair_required'
+      status.reason && DIAGNOSED_UNREACHABLE_REASONS.has(status.reason)
         ? status.reason
-        : 'start_failed',
+        : handoffFailure === 'data_folder_shared'
+          ? handoffFailure
+          : 'start_failed',
     );
   };
   // Connection events count while a consumer depends on them or Try again runs.
@@ -168,8 +180,9 @@ export function createElectronDaemonHealth(
   };
   /**
    * Whether `reason` replaces the shown status. Later attach failures don't
-   * prove the blocking files were repaired, so the repair command stays
-   * until reached() clears it. Outside Try again, which reports its own
+   * prove the blocking files were repaired or the data folder's access
+   * removed, so a diagnosis stays until reached() clears it; a newer one
+   * replaces it. Outside Try again, which reports its own
    * attempt, a lost daemon is the lease's to diagnose: another session's
    * attach failing during the restart, or after the lease gave up, only
    * latches. Its first latched diagnosis otherwise stays.
@@ -177,13 +190,10 @@ export function createElectronDaemonHealth(
   const replacesShown = (
     reason: BackgroundServiceUnreachableReason,
   ): boolean => {
-    if (status.reason === 'endpoint_repair_required') return false;
-    if (
-      reason === 'endpoint_repair_required' ||
-      reason === 'reconnect_failed' ||
-      retrying !== undefined
-    )
-      return true;
+    if (DIAGNOSED_UNREACHABLE_REASONS.has(reason)) return true;
+    if (status.reason && DIAGNOSED_UNREACHABLE_REASONS.has(status.reason))
+      return false;
+    if (reason === 'reconnect_failed' || retrying !== undefined) return true;
     if (status.state === 'reconnecting') return false;
     return status.reason === undefined || !LATCHING_REASONS.has(status.reason);
   };
@@ -243,6 +253,15 @@ export function createElectronDaemonHealth(
         update('unavailable', status.retry, reason);
     },
     isLatched: () => latched,
+    noteBackupWarning(reason): void {
+      if (stopped || backupWarning !== undefined) return;
+      backupWarning = reason;
+      // One bounded classification per launch, not one event per durability retry.
+      log.info(
+        `Startup backup incomplete (${reason}); continuing with daemon authority`,
+      );
+      update(status.state, status.retry, status.reason);
+    },
     requireRestart(handoff): void {
       if (stopped) return;
       restartRequired = true;

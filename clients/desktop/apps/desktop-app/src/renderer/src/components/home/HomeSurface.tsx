@@ -9,7 +9,7 @@ import {
   reportClientAppError,
   resolveClientAppError,
 } from '@canopy/desktop-instrumentation/client';
-import { Button } from '@canopy/ui-shared/components/Button';
+import { Button } from '@canopy/ui-shared/primitives/Button';
 import {
   ChatComposerShell,
   Heading,
@@ -92,7 +92,6 @@ import { DEFAULT_COWORK_WORKSPACE_ID } from '@canopy/protocol/ui-labels';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
-import { isRegisteredCoworkWorkspaceId } from '@/lib/cowork-registry';
 import { useCanopyOrgProjectsEnabled } from '@/hooks/useCanopyOrgProjectsEnabled';
 import {
   getHomeScope,
@@ -105,9 +104,16 @@ import {
   type HomeContextRebind,
 } from './homeScope';
 import { HomeRestoreNotices } from './HomeRestoreNotices';
+import { HomeUnavailableProjectNotice } from './HomeUnavailableProjectNotice';
+import {
+  isHomeSeedFallbackDismissed,
+  useHomeSeedFallback,
+  useHomeSeedFallbackRecovery,
+} from './homeSeedFallback';
 import {
   homeSeedKey,
   homeSendTargetSessionKey,
+  isHomeSendTargetUsable,
   isPersonalDefaultChatsRegistered,
   resolveHomeTargetReadiness,
   useHomeDefaultChatsTarget,
@@ -128,6 +134,7 @@ import {
   isHomeAttachmentImportCurrent,
   isHomeSendEnabled,
   resolveHomeAttachmentWorktreeId,
+  homeLaunchTargetKey,
   useHomeComposerStore,
   resolveHomeEffectiveProviderType,
   defaultNewWorktreeBaseTarget,
@@ -144,6 +151,7 @@ import {
   markSuggestedPromptInserted,
 } from '@/lib/chatMessageSendTelemetry';
 import { trackHomeChatSend } from './homeSendTelemetry';
+import { FIRST_SEND_FAILED_TITLE } from './homeModelFailureCopy';
 import { snapshotHomeTask } from '@/lib/repeat-task-automation/draft';
 import { maybeOfferRepeatTaskAutomation } from '@/lib/repeat-task-automation/offer';
 import {
@@ -167,6 +175,9 @@ import {
 } from '@/lib/slashInvocableInventory';
 import { useTaskReadyPipelineLauncher } from '@/components/worktree/useTaskReadyPipelineLauncher';
 import { TaskReadyPipelineModal } from '@/components/worktree/TaskReadyPipelineModal';
+import type { TaskReadyPipelineInsertion } from '@/components/worktree/useTaskReadyPipelineLauncher';
+import type { PipelineTriggerModalProps } from '@/components/activity/PipelineTriggerModal';
+import { requestPipelineAssistantNewChat } from '@/lib/pipelineAssistantEvents';
 import { useWatcherRecipientGroups } from '@/components/watchers/useWatcherRecipientGroups';
 import { useCanopyDesktopSuggestedPromptsEnabled } from '@/hooks/useCanopyDesktopSuggestedPromptsEnabled';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
@@ -267,6 +278,31 @@ function readHomeComposerWorkspaceId(): string | null {
 }
 
 /**
+ * Opens a new workflow in the Workflows editor with a new assistant chat for
+ * it, as Workflows' own New workflow does (CAN-4319).
+ */
+/** The settings an attached workflow was inserted with, for its review. */
+function reviewRunSettings(
+  attached: TaskReadyPipelineInsertion,
+): NonNullable<PipelineTriggerModalProps['initialRunSettings']> {
+  const { modelAliasPreferences, preferences, modelConfig } =
+    attached.pluginCollectionContext;
+  return {
+    ...(modelAliasPreferences ? { modelAliasPreferences } : {}),
+    pluginCollectionPreferences: preferences,
+    ...(modelConfig ? { modelConfig } : {}),
+    watcher: attached.watcherSelection,
+  };
+}
+
+function openNewWorkflowDraft(): void {
+  requestPipelineAssistantNewChat();
+  useNavigationStore
+    .getState()
+    .openWorkflowEdit({ kind: 'pipeline', pipelineId: null });
+}
+
+/**
  * Chat-centric Home surface: a draft composer backed entirely by
  * `homeComposerStore` (workspace picker, branch picker, mode pill, editor,
  * chat controls). This is the single component behind the standalone Home
@@ -282,31 +318,6 @@ export function HomeSurface(props: HomeSurfaceProps): JSX.Element {
     <ComposerTipArbiterProvider>
       <HomeSurfaceContent {...props} />
     </ComposerTipArbiterProvider>
-  );
-}
-
-/** Validate actual membership and cowork dispatch, including scoped windows. */
-function isHomeSendTargetUsable(
-  workspaceId: string | null,
-  failedWorkspaceIds = useProjectsStore.getState().failedWorkspaceIds,
-): boolean {
-  if (workspaceId === null) return false;
-  const scoped = useStandaloneChatStore.getState().scopedWorkspaceId;
-  if (scoped !== null && scoped !== workspaceId) return false;
-  const scope = getHomeScope();
-  if (!scope.isInScope(workspaceId)) return false;
-  if (isHomeCloudTarget(workspaceId)) {
-    // Keep a selected offline or removed cloud project with its draft. The
-    // cloud send path reports why it cannot send; local target provisioning
-    // must not hide that refusal or redirect the draft to another project.
-    return true;
-  }
-  const state = useProjectsStore.getState();
-  const project = state.projects.find((item) => item.id === workspaceId);
-  return (
-    project !== undefined &&
-    !failedWorkspaceIds.has(workspaceId) &&
-    (project.type !== 'cowork' || isRegisteredCoworkWorkspaceId(workspaceId))
   );
 }
 
@@ -611,6 +622,22 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
         isHomeSendTargetUsable(seededWorkspaceId)
       ) {
         selectWorkspace(seededWorkspaceId, { preserveDraft: true });
+        // CAN-7326: the last project failed to load (it is missing, not
+        // deleted), so say where new tasks go instead. `selectWorkspace`
+        // clears the record, so this must follow it.
+        if (
+          mruWorkspaceId !== null &&
+          !mruStillExists &&
+          seededWorkspaceId !== mruWorkspaceId &&
+          useProjectsStore.getState().failedWorkspaceIds.has(mruWorkspaceId) &&
+          useStandaloneChatStore.getState().scopedWorkspaceId === null &&
+          !isHomeSeedFallbackDismissed(mruWorkspaceId)
+        ) {
+          useHomeComposerStore.getState().setSeedFallback({
+            unavailableWorkspaceId: mruWorkspaceId,
+            seededWorkspaceId,
+          });
+        }
       }
     })();
     return (): void => {
@@ -889,6 +916,22 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
     (s) => s.syncWorkspaceDefaultPluginSelections,
   );
   const taskPlanPreset = useHomeComposerStore((s) => s.pendingTaskPlanPreset);
+  // The dialog opened from + › Workflow attaches instead of running, and
+  // never takes the onboarding preset.
+  const attachingWorkflow = pipelineLauncher.ctx?.purpose === 'attach';
+  const modalPreset = attachingWorkflow ? null : taskPlanPreset;
+  // The target and account an Attach a workflow dialog was opened for. Its
+  // list and settings belong to them, so it closes if either changes, and
+  // Insert never files them under another target.
+  const attachOpenedForRef = useRef<string | null>(null);
+  const liveAttachScope = useHomeComposerStore(
+    (state) => `${homeLaunchTargetKey(state)}#${accountEpoch}`,
+  );
+  const closeWorkflowDialog = pipelineLauncher.close;
+  useEffect(() => {
+    if (attachingWorkflow && attachOpenedForRef.current !== liveAttachScope)
+      closeWorkflowDialog();
+  }, [attachingWorkflow, liveAttachScope, closeWorkflowDialog]);
   const workspaceDefaultsKey = useProjectsStore((s): string | null => {
     if (!workspaceId) return null;
     const project = s.projects.find((p) => p.id === workspaceId);
@@ -1456,6 +1499,50 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
     selectWorkspace(prevWorkspaceId);
   }
 
+  /** Detaches `attached` once it has run, unless it was replaced meanwhile. */
+  function detachIfStillAttached(attached: TaskReadyPipelineInsertion): void {
+    if (useHomeComposerStore.getState().selectedWorkflow === attached)
+      useHomeComposerStore.getState().detachWorkflow();
+  }
+
+  /**
+   * Opens the Attach a workflow dialog for the draft's project and branch
+   * (CAN-7513), on the attached workflow when there is one.
+   */
+  function openAttachWorkflow(): void {
+    const {
+      workspaceId: draftWorkspaceId,
+      branchTarget,
+      branchTargets,
+      newWorktreeBaseTarget: base,
+      selectedWorkflow,
+    } = useHomeComposerStore.getState();
+    if (!draftWorkspaceId || isHomeCloudTarget(draftWorkspaceId)) return;
+    const target = resolveTaskReadyLaunchTarget(
+      projects.find((p) => p.id === draftWorkspaceId),
+      branchTarget,
+      branchTargets?.branches ?? [],
+      base,
+    );
+    attachOpenedForRef.current = `${homeLaunchTargetKey(
+      useHomeComposerStore.getState(),
+    )}#${useWorkspaceContextStore.getState().accountEpoch}`;
+    void pipelineLauncher.open(draftWorkspaceId, '', target, {
+      purpose: 'attach',
+      ...(selectedWorkflow === null
+        ? {}
+        : {
+            initialPipeline: {
+              id: selectedWorkflow.id,
+              source: selectedWorkflow.source,
+            },
+            // Opened again on the attachment, the dialog starts from what was
+            // inserted, so Insert without edits keeps it as it was.
+            review: selectedWorkflow,
+          }),
+    });
+  }
+
   function handleSend(origin: 'user' | 'github-connect-resume' = 'user'): void {
     const sendAccountEpoch = useWorkspaceContextStore.getState().accountEpoch;
     const {
@@ -1512,7 +1599,29 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
         branchTargets?.branches ?? [],
         base,
       );
-      void pipelineLauncher.open(draftWorkspaceId, taskText, target);
+      // A workflow attached from + runs as inserted, with no dialog
+      // (CAN-7513); a run that fails opens the dialog on it. Otherwise (the
+      // onboarding Task Plan preset, a restored workflow-mode draft) Send
+      // opens the dialog to choose.
+      const attached = useHomeComposerStore.getState().selectedWorkflow;
+      if (attached === null) {
+        void pipelineLauncher.open(draftWorkspaceId, taskText, target);
+        return;
+      }
+      if (pipelineLauncher.running) return;
+      void pipelineLauncher
+        .launch(
+          draftWorkspaceId,
+          taskText,
+          target,
+          attached,
+          attached.targetKey !==
+            homeLaunchTargetKey(useHomeComposerStore.getState()),
+        )
+        .then((outcome) => {
+          // The workflow was inserted into this send.
+          if (outcome === 'dispatched') detachIfStillAttached(attached);
+        });
       return;
     }
 
@@ -1589,9 +1698,14 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
     return project.repos.map((repo) => ({ id: repo.id, name: repo.name }));
   }, [projects, workspaceId]);
   const linkProjectPreview = useHomeLinkProjectPreview();
+  const seedFallbackNotice = useHomeSeedFallback();
+  useHomeSeedFallbackRecovery();
   const showWorkspacePicker =
-    shouldShowHomeWorkspacePicker(homeScope, workspaceId) ||
-    linkProjectPreview !== null;
+    shouldShowHomeWorkspacePicker(
+      homeScope,
+      workspaceId,
+      seedFallbackNotice !== null,
+    ) || linkProjectPreview !== null;
   // While the project picker previews a pasted link's destination, the
   // branch and directory pickers would describe the other, still-selected
   // project; the link panel under the composer names the branch instead.
@@ -1663,8 +1777,21 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                 </NoticeButton>
               }
             >
-              Your draft is kept. Try again or choose a project.
+              Your draft is kept.
             </Notice>
+          ) : null,
+          // CAN-7326: the frame counts every entry as a showing notice, so a
+          // hidden notice must be null rather than render nothing. Change
+          // project opens this surface's own picker, which works in every
+          // Home variant and mode.
+          seedFallbackNotice ? (
+            <HomeUnavailableProjectNotice
+              key="home-project-unavailable"
+              notice={seedFallbackNotice}
+              onChangeProject={() =>
+                setWorkspaceCommandOpenSignal((signal) => signal + 1)
+              }
+            />
           ) : null,
           showsRestoreNotices ? (
             <HomeRestoreNotices key="home-restore" />
@@ -1684,12 +1811,7 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
               testId="home-composer-model-unavailable"
               modelLabel={unbillableModelSwitch.modelLabel}
               reason={unbillableModelSwitch.reason}
-              switchModelLabel={unbillableModelSwitch.switchModelLabel}
-              onSwitch={(): void =>
-                useHomeComposerStore
-                  .getState()
-                  .setModel(unbillableModelSwitch.switchModel)
-              }
+              onChooseModel={() => requestModelPickerOpen({ scope: 'home' })}
             />
           ) : null,
           missingFolderRecovery ? (
@@ -1704,12 +1826,24 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
               intent="destructive"
               title="Couldn’t send"
               className="pointer-events-auto"
+              // Closing clears the failure; the next failed send shows again.
+              onDismiss={(): void => setSendError(null)}
+              dismissLabel="Dismiss"
               announceDetail
               {...(locateFolderStatus === 'failed'
                 ? { detail: 'Couldn’t open the folder location.' }
                 : {})}
               actions={
                 <>
+                  <NoticeButton
+                    variant="secondary"
+                    data-testid="home-composer-error-choose-project"
+                    onClick={(): void => {
+                      requestWorkspacePickerOpen();
+                    }}
+                  >
+                    Choose another project
+                  </NoticeButton>
                   {canLocateFolder && (
                     <NoticeButton
                       variant="primary"
@@ -1721,15 +1855,6 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                       Locate folder
                     </NoticeButton>
                   )}
-                  <NoticeButton
-                    variant="secondary"
-                    data-testid="home-composer-error-choose-project"
-                    onClick={(): void => {
-                      requestWorkspacePickerOpen();
-                    }}
-                  >
-                    Choose another project
-                  </NoticeButton>
                 </>
               }
             >
@@ -1742,7 +1867,7 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
             <FirstSendFailedNotice
               key="send-error"
               data-testid="home-composer-error"
-              title="Couldn’t send"
+              title={FIRST_SEND_FAILED_TITLE}
               message={inlineFailureText(sendError) ?? ''}
               onChooseModel={() => requestModelPickerOpen({ scope: 'home' })}
               focusKey={
@@ -1750,6 +1875,7 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                   ? sendErrorChooseModel.failureId
                   : null
               }
+              onDismiss={(): void => setSendError(null)}
               className="pointer-events-auto"
             />
           ) : sendError ? (
@@ -1758,6 +1884,8 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
               key="send-error"
               testId="home-composer-error"
               className="pointer-events-auto"
+              onDismiss={(): void => setSendError(null)}
+              dismissLabel="Dismiss"
               error={sendError.error}
               {...(sendError.details === undefined
                 ? {}
@@ -1791,6 +1919,7 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
                     commandOpenSignal={workspaceCommandOpenSignal}
                     shortcutEnabled={variant === 'page'}
                     onRestoreFocus={(): void => focusEditor(editor)}
+                    seedFallbackActive={seedFallbackNotice !== null}
                   />
                 )}
                 {selectionPickersVisible && showBranchPicker && (
@@ -1890,6 +2019,7 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
               )}
 
               <HomeComposerControls
+                onAttachWorkflow={openAttachWorkflow}
                 key={`${accountEpoch}:${homeComposerContextKey(scopingContext)}`}
                 composerActionScope={composerActionScope}
                 composerMenu={composerMenu}
@@ -2045,20 +2175,84 @@ function HomeSurfaceContent({ variant }: HomeSurfaceProps): JSX.Element {
       />
       {pipelineLauncher.ctx && (
         <TaskReadyPipelineModal
+          {...(attachingWorkflow
+            ? {
+                attach: {
+                  onCreateWorkflow: (): void => {
+                    pipelineLauncher.close();
+                    openNewWorkflowDraft();
+                  },
+                },
+              }
+            : {})}
           cwd={pipelineLauncher.ctx.cwd}
           repoChoices={pipelineLauncher.ctx.repoChoices}
           executionScope={pipelineLauncher.ctx.executionScope}
           // One-shot preselection staged by the onboarding "Create a
           // Task Plan" CTA (bundled implementation-plan pipeline + the
           // lane-matched model input); cleared when the modal closes.
-          initialPipelineId={taskPlanPreset?.pipelineId}
-          initialInputs={taskPlanPreset?.inputs}
+          // Otherwise the workflow picked from the + menu (CAN-7261),
+          // which stays picked for the next send.
+          initialPipelineId={
+            modalPreset?.pipelineId ?? pipelineLauncher.ctx.initialPipeline?.id
+          }
+          // Only the attached workflow is checked against the list, by id and
+          // source; the onboarding preset is an explicit request.
+          {...(modalPreset === null &&
+          pipelineLauncher.ctx.initialPipeline !== undefined
+            ? {
+                initialPipelineSource:
+                  pipelineLauncher.ctx.initialPipeline.source,
+              }
+            : {})}
+          initialInputs={
+            modalPreset?.inputs ?? pipelineLauncher.ctx.review?.inputs
+          }
+          {...(pipelineLauncher.ctx.review
+            ? {
+                review: {
+                  selectedRepoId: pipelineLauncher.ctx.review.selectedRepoId,
+                  settings: reviewRunSettings(pipelineLauncher.ctx.review),
+                },
+              }
+            : {})}
           onClose={(): void => {
             useHomeComposerStore.getState().stageTaskPlanPreset(null);
             pipelineLauncher.close();
           }}
           onRun={async (...args): Promise<void> => {
+            if (attachingWorkflow) {
+              if (attachOpenedForRef.current !== liveAttachScope) {
+                pipelineLauncher.close();
+                return;
+              }
+              // Insert: the workflow and its settings ride the next Send.
+              const [
+                pipelineId,
+                pipeline,
+                inputs,
+                selectedRepoId,
+                pluginCollectionContext,
+              ] = args;
+              useHomeComposerStore.getState().attachWorkflow({
+                targetKey: homeLaunchTargetKey(useHomeComposerStore.getState()),
+                id: pipelineId,
+                source: pipeline.info.source,
+                name: pipeline.info.name,
+                pipeline,
+                inputs,
+                selectedRepoId,
+                pluginCollectionContext,
+                watcherSelection: pipelineLauncher.watcherSelection,
+              });
+              pipelineLauncher.close();
+              return;
+            }
+            const reviewed = pipelineLauncher.ctx?.review;
             const dispatched = await pipelineLauncher.run(...args);
+            // An attached workflow reviewed and run is done, as from Send.
+            if (dispatched && reviewed !== undefined)
+              detachIfStillAttached(reviewed);
             // A failed run keeps the modal open on `runError`; the
             // staged preset must survive so a retry does not reload
             // the pipeline list from scratch.

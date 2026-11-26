@@ -149,6 +149,25 @@ export const waitForCanopyFileLockRetry = (
   signal?: AbortSignal,
 ): Promise<void> => timerDelay(LOCK_DELAY_MS * attempt, signal);
 
+/**
+ * A host's private-path refusal names this step, which every port read then
+ * keeps; any other typed host error crosses unchanged.
+ */
+function withPrepareStep(error: CanopyClientError): CanopyClientError {
+  const { details } = error.payload;
+  if (
+    canopyLaunchDetails(error).privacy === undefined ||
+    typeof details !== 'object' ||
+    details === null ||
+    Array.isArray(details)
+  )
+    return error;
+  return new CanopyClientError({
+    ...error.payload,
+    details: { ...details, operation: 'prepare_runtime' },
+  });
+}
+
 type PrivateObservation =
   | { readonly kind: 'read'; readonly text: string | null }
   | { readonly kind: 'changed' };
@@ -191,7 +210,7 @@ export function createCanopyDaemonHostLaunch(
       await verifyRuntime(signal);
     } catch (error) {
       signal.throwIfAborted();
-      if (error instanceof CanopyClientError) throw error;
+      if (error instanceof CanopyClientError) throw withPrepareStep(error);
       throw canopyConnectError(
         'failed_precondition',
         'Core runtime directory validation failed.',

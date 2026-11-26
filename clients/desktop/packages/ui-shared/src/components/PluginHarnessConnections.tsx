@@ -1,6 +1,6 @@
 import type { ComponentType, JSX, ReactNode, SVGProps } from 'react';
 import type { AgentExecutionHarness } from '@canopy/protocol/models';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 import { ComponentSection } from './ComponentSection';
 import { CheckIcon, GitHubIcon, RefreshIcon } from '../icons/AppIcons';
 import { ClaudeLogo } from '../icons/ClaudeLogo';
@@ -8,8 +8,8 @@ import { CodexLogo } from '../icons/CodexLogo';
 import { CursorLogo } from '../icons/CursorLogo';
 import { OpenCodeLogo } from '../icons/OpenCodeLogo';
 import { AntigravityLogo } from '../icons/AntigravityLogo';
-import { DataTable } from './DataTable';
-import { Tooltip } from './Tooltip';
+import { DataTable } from '../primitives/DataTable';
+import { Tooltip } from '../primitives/Tooltip';
 import { useItemStateMarks } from './ItemStateMark';
 import { DetailFactError } from './CapabilityDetailLayout';
 

@@ -232,7 +232,9 @@ function validArchivedGitRepository(value: unknown): boolean {
     nonEmpty(value.headCommit) &&
     nonEmpty(value.indexSnapshotCommit) &&
     nonEmpty(value.worktreeSnapshotCommit) &&
-    nonEmpty(value.snapshotRef)
+    nonEmpty(value.snapshotRef) &&
+    (value.attributePolicy === undefined ||
+      value.attributePolicy === 'ignore-in-tree-attributes')
   );
 }
 

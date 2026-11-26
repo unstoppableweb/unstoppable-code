@@ -6,13 +6,19 @@
 // and `check:public-export` requires every import to stay inside
 // apps/desktop-app/tests/electron or node_modules.
 //
-// The app directory is `CANOPY_E2E_OUT_DIR` (relative to the repository
-// root) when set, otherwise `out-e2e/`, the same default as launchCanopy.mjs.
+// The app directory is `CANOPY_E2E_OUT_DIR` (relative to the runtime root)
+// when set, otherwise `out-e2e/`, the same default as launchCanopy.mjs.
 // In this repository that is an E2E build (`pnpm run build:e2e`), where
 // `CANOPY_E2E_LOCAL_ONLY=1` turns the local-only profile on, so the golden
 // runs without extra configuration. The export's `smoke:local` sets
 // `CANOPY_E2E_OUT_DIR=out`, a production `CANOPY_LOCAL_ONLY=true` build,
 // which ignores that variable.
+//
+// The runtime root is also the app's working directory, where an unpackaged
+// build looks for its daemon (`dist/core-daemon/`). Under the Electron
+// global setup it is the lane directory holding this head's verified E2E
+// daemon (`CANOPY_E2E_LANE_RUNTIME_ROOT`), as for launchCanopy.mjs; otherwise,
+// as under `smoke:local`, it is the repository root.
 import {
   existsSync,
   mkdirSync,
@@ -31,13 +37,23 @@ export const REPO_ROOT = path.resolve(import.meta.dirname, '../../../../..');
 
 const CLOSE_TIMEOUT_MS = 20_000;
 
+/** The lane directory the Electron global setup staged, else the repository. */
+export function resolveRuntimeRoot(env = process.env) {
+  return path.resolve(env.CANOPY_E2E_LANE_RUNTIME_ROOT?.trim() || REPO_ROOT);
+}
+
 /** `<app dir>/main/index.js`, failing with the build command when missing. */
 export function resolveMainEntry(env = process.env) {
+  const runtimeRoot = resolveRuntimeRoot(env);
   const outDir = env.CANOPY_E2E_OUT_DIR?.trim() || 'out-e2e';
-  const mainEntry = path.resolve(REPO_ROOT, outDir, 'main', 'index.js');
+  const mainEntry = path.resolve(runtimeRoot, outDir, 'main', 'index.js');
   if (!existsSync(mainEntry)) {
+    const shown =
+      runtimeRoot === REPO_ROOT
+        ? path.relative(REPO_ROOT, mainEntry)
+        : mainEntry;
     throw new Error(
-      `No desktop build at ${path.relative(REPO_ROOT, mainEntry)}. Build a local-only app first (in this repository: pnpm run build:e2e; in the public export: pnpm run build:local, then pnpm run smoke:local).`,
+      `No desktop build at ${shown}. Build a local-only app first (in this repository: pnpm run build:e2e; in the public export: pnpm run build:local, then pnpm run smoke:local).`,
     );
   }
   return mainEntry;
@@ -269,7 +285,9 @@ export async function launchLocalOnlyApp({
   const extra = extraElectronArgs();
   const electronApp = await electron.launch({
     executablePath: electronPath,
-    cwd: REPO_ROOT,
+    // Only the working directory: buildLocalOnlyEnv drops every CANOPY_*
+    // variable, the lane root included, from the app's environment.
+    cwd: resolveRuntimeRoot(),
     args: [...platformElectronArgs(roots.data), mainEntry],
     env: buildLocalOnlyEnv({ roots, proxyUrl, noProxy, extraEnv }),
     // Playwright adds --no-sandbox to Linux launches unless told otherwise;

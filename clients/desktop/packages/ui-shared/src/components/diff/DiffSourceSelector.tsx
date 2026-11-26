@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { SegmentedControl } from '../SegmentedControl';
+import { SegmentedControl } from '../../primitives/SegmentedControl';
 
 /**
  * Diff source selection — which set of changes the diff viewer is currently

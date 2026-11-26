@@ -1314,7 +1314,9 @@ test.describe('Home chat send', () => {
         timeout: 30_000,
       });
       // Its own gateway key pays, so the composer reports no billing dead end.
-      await expect(window.getByText('Not connected to Claude')).toHaveCount(0);
+      await expect(window.getByText('This chat needs a provider')).toHaveCount(
+        0,
+      );
     } finally {
       await closeCanopy(electronApp, userDataDir);
     }

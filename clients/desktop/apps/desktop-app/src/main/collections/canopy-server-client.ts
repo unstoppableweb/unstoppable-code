@@ -100,6 +100,7 @@ export async function listSharedCollections(
 
 export async function getSharedCollection(
   collectionId: string,
+  signal?: AbortSignal,
 ): Promise<SharedCollectionDetail> {
   const snapshot = resourceContextEnabled()
     ? await resourceContextSnapshot()
@@ -107,7 +108,7 @@ export async function getSharedCollection(
   const detail = await withPackageVersionNegotiation((headers) =>
     requestCanopyCloudJson<SharedCollectionDetail>(
       `${API_PREFIX}/collections/${encodeURIComponent(collectionId)}`,
-      { headers },
+      { headers, ...(signal ? { signal } : {}) },
     ),
   );
   await assertResourceContext({ owner: detail.owner });

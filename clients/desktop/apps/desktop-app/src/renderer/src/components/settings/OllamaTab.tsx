@@ -1,4 +1,4 @@
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import {
   type JSX,
   type ReactNode,
@@ -36,7 +36,6 @@ import {
   type StatusBadgeVariant,
   FieldError,
   Surface,
-  TextLinkButton,
 } from '@canopy/ui-shared/components';
 import { formatByteSize, formatDateTime } from '@canopy/ui-shared/lib';
 import { brandText } from '@/lib/brand';
@@ -951,16 +950,18 @@ export function OllamaTab(): JSX.Element {
                 >
                   Detect again
                 </NoticeButton>
-                {isLinux ? (
-                  <NoticeButton
-                    variant="primary"
-                    onClick={handleDownload}
-                    data-testid="ollama-linux-instructions"
-                  >
-                    Linux installation instructions
-                  </NoticeButton>
-                ) : null}
               </>
+            }
+            primaryAction={
+              isLinux ? (
+                <NoticeButton
+                  variant="primary"
+                  onClick={handleDownload}
+                  data-testid="ollama-linux-instructions"
+                >
+                  Linux installation instructions
+                </NoticeButton>
+              ) : undefined
             }
           />
         )}
@@ -1315,16 +1316,18 @@ export function OllamaTab(): JSX.Element {
             description={
               <>
                 Find a model in the{' '}
-                <TextLinkButton
+                <Button
                   data-testid="ollama-model-list-link"
                   onClick={(): void => {
                     void window.api.browser.openExternal({
                       url: OLLAMA_MODEL_LIST_URL,
                     });
                   }}
+                  variant="link"
+                  data-settings-control="link"
                 >
                   Ollama model list
-                </TextLinkButton>
+                </Button>
                 , then enter its exact name.
               </>
             }

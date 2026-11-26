@@ -19,7 +19,7 @@ import {
   type SegmentedControlProps,
   type SettingsRowsGroupProps,
 } from '@canopy/ui-shared/components';
-import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
+import { PageHeader } from '@canopy/ui-shared/primitives/PageHeader';
 import { SettingsPageColumn } from '@canopy/ui-shared/components/settings/SettingsPageColumn';
 import {
   forwardRef,

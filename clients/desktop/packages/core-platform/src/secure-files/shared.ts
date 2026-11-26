@@ -1,10 +1,11 @@
 import type { BigIntStats } from 'node:fs';
 import type {
+  PlatformPermissionCause as PermissionCause,
   PlatformPermissionRequest as PermissionRequest,
   PlatformPermissionResult as PermissionResult,
 } from '@canopy/core-runtime';
 
-export type { PermissionRequest, PermissionResult };
+export type { PermissionCause, PermissionRequest, PermissionResult };
 
 export type SecureFileErrorCode =
   | 'not_regular_file'
@@ -25,7 +26,8 @@ export const PATH_CHANGED_DURING_CHECK = 'path changed during permission check';
 export const fail = (
   state: 'insecure' | 'unverifiable',
   reason: string,
-): PermissionResult => ({ state, reason });
+  cause: PermissionCause,
+): PermissionResult => ({ state, reason, cause });
 
 // Structural, not instanceof: fs errors may come from another realm.
 export const errorCode = (error: unknown): string | undefined =>
@@ -44,11 +46,12 @@ export function checkShape(
   stats: BigIntStats,
   kind: PermissionRequest['kind'],
 ): PermissionResult | null {
-  if (stats.isSymbolicLink()) return fail('insecure', 'path is a symlink');
+  if (stats.isSymbolicLink())
+    return fail('insecure', 'path is a symlink', 'symlink');
   if (kind === 'directory' ? !stats.isDirectory() : !stats.isFile()) {
-    return fail('insecure', `path is not a ${kind}`);
+    return fail('insecure', `path is not a ${kind}`, 'wrong_kind');
   }
   return kind === 'file' && stats.nlink !== BigInt(1)
-    ? fail('insecure', 'file has multiple hard links')
+    ? fail('insecure', 'file has multiple hard links', 'hard_link')
     : null;
 }

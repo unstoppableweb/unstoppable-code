@@ -13,6 +13,7 @@ import {
   managedAntigravityExecutable,
 } from './runtime-artifacts';
 import { verifyAntigravityExecutable } from './runtime-integrity';
+import { ANTIGRAVITY_RUNTIME_VERSION } from './runtime-metadata';
 
 // Kept apart from runtime.ts so status readers can resolve the executable
 // without loading the ESM-only ACP client that runtime.ts imports.
@@ -149,6 +150,6 @@ export async function resolveAntigravityExecutable(
       'The selected Antigravity executable is unavailable. Choose an installed Antigravity CLI.',
     );
   throw new Error(
-    'Install Antigravity CLI 1.5.1 from Settings, then refresh Google models.',
+    `Install Antigravity CLI ${ANTIGRAVITY_RUNTIME_VERSION} from Settings, then refresh Google models.`,
   );
 }

@@ -104,7 +104,10 @@ export interface W5CommitLogHostPort {
   ): Promise<void>;
   /** forCommit bypasses host-side ordinary read batching, when present. */
   revision(resource: W5Resource, forCommit?: boolean): Promise<number>;
-  capture(request: W5CaptureRequest): Promise<W5CaptureResult>;
+  capture(
+    request: W5CaptureRequest,
+    signal?: AbortSignal,
+  ): Promise<W5CaptureResult>;
   captureForPreparation?(request: W5CaptureRequest): Promise<W5CaptureResult>;
 }
 
@@ -190,6 +193,7 @@ export interface W5CommitLogFileStore extends W5FileStore {
   /** One serialized capture after launch recovery, with the root it is under. */
   capture?(
     request: W5CaptureRequest,
+    signal?: AbortSignal,
   ): Promise<{ capture: W5CaptureResult; root: string }>;
 }
 
@@ -606,11 +610,17 @@ export function createW5CommitLogFileStore(
             }
           : { status: 'unsupported' },
       ),
-    capture: (request) =>
-      onHost(async (host) => ({
-        capture: await host.capture(request),
-        root: host.root,
-      })),
+    capture: async (request, signal) => {
+      signal?.throwIfAborted();
+      return onHost(async (host) => {
+        // Recovery is shared with ordinary reads/writes; only this capture stops.
+        signal?.throwIfAborted();
+        return {
+          capture: await host.capture(request, signal),
+          root: host.root,
+        };
+      });
+    },
     async read(filePath): Promise<W5FileRead> {
       const scope = currentW5CommitScope();
       if (scope && scope.store !== store)

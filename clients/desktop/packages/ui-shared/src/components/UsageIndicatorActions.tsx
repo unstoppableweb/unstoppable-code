@@ -1,7 +1,7 @@
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import type { JSX, ReactNode } from 'react';
 import { ChevronRightMediumIcon } from '../icons/AppIcons';
-import { DisclosureChevron, DisclosureToggle } from './Disclosure';
+import { DisclosureChevron, DisclosureToggle } from '../primitives/Disclosure';
 import { USAGE_TOUCH_FLOOR_CLASS } from './usage-indicator-meter';
 
 /**

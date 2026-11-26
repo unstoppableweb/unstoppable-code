@@ -7,8 +7,8 @@ import {
   WORKFLOW_NOT_RUN_YET,
   type WorkflowLastRun,
 } from '../lib/workflow-last-run';
-import { StatusGlyph } from './StatusGlyph';
-import { Tooltip } from './Tooltip';
+import { StatusGlyph } from '../primitives/StatusGlyph';
+import { Tooltip } from '../primitives/Tooltip';
 
 export interface WorkflowLastRunTextProps {
   /** `null` and `undefined` both read `Not run yet`. */

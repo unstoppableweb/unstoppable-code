@@ -55,6 +55,17 @@ const stepAttempts = new Map();
 /** @type {Map<string, object[]>} */
 const requestObservations = new Map();
 
+/** @type {Map<string, object[]>} */
+const inferenceJournals = new Map();
+
+const INFERENCE_JOURNAL_STRING_FIELDS = [
+  'transport',
+  'route',
+  'model',
+  'tag',
+  'helper',
+];
+
 const OBSERVATION_STRING_FIELDS = [
   'model',
   'transport',
@@ -140,8 +151,23 @@ function getBarrierSnapshots(key) {
   }));
 }
 
+function fixtureAuthenticationFields(input) {
+  if (!Object.hasOwn(input, 'fixtureCredentialLabel')) return {};
+  return {
+    fixtureCredentialLabel:
+      input.fixtureCredentialLabel === 'initial' ||
+      input.fixtureCredentialLabel === 'replacement'
+        ? input.fixtureCredentialLabel
+        : null,
+    brokerAuthenticated: input.brokerAuthenticated === true,
+  };
+}
+
 function snapshotObservation(observation) {
-  const snapshot = { index: observation.index };
+  const snapshot = {
+    index: observation.index,
+    ...fixtureAuthenticationFields(observation),
+  };
   for (const field of OBSERVATION_STRING_FIELDS) {
     if (typeof observation[field] === 'string') {
       snapshot[field] = observation[field];
@@ -247,6 +273,76 @@ export function resetAll() {
   scenarioBarriers.clear();
   stepAttempts.clear();
   requestObservations.clear();
+  inferenceJournals.clear();
+}
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+/**
+ * Open, or empty, a named inference journal. Until it is closed, every
+ * inference request the mock serves is appended to it, whatever its prompt,
+ * marker or credential, so a fixture can audit requests no scenario claims.
+ * One journal at a time: no request says which fixture caused it, so a
+ * second open journal with a live owner is refused. A dead owner's journal
+ * (a killed test worker) is dropped.
+ *
+ * @param {string} name
+ * @param {number} ownerPid the opening process, on this host
+ * @returns {string | undefined} the open journal that refused this one
+ */
+export function openInferenceJournal(name, ownerPid) {
+  for (const [other, journal] of inferenceJournals) {
+    if (other === name) continue;
+    if (processAlive(journal.ownerPid)) return other;
+    inferenceJournals.delete(other);
+  }
+  inferenceJournals.set(name, { ownerPid, entries: [] });
+  return undefined;
+}
+
+/**
+ * @param {string} name
+ * @returns {boolean} whether the journal was open
+ */
+export function closeInferenceJournal(name) {
+  return inferenceJournals.delete(name);
+}
+
+/**
+ * @param {string} name
+ * @returns {object[] | undefined} the entries, or undefined when not open
+ */
+export function getInferenceJournal(name) {
+  return inferenceJournals.get(name)?.entries.map((entry) => ({ ...entry }));
+}
+
+/**
+ * Append one content-free entry to every open journal. Credentials appear only
+ * as the synthetic fixture label of the scenario they are registered under.
+ *
+ * @param {object} fields
+ */
+export function recordInferenceJournalEntry(fields) {
+  if (inferenceJournals.size === 0) return;
+  const input = fields && typeof fields === 'object' ? fields : {};
+  const entry = {
+    ...fixtureAuthenticationFields({
+      fixtureCredentialLabel: input.fixtureCredentialLabel,
+      brokerAuthenticated: input.brokerAuthenticated,
+    }),
+  };
+  for (const field of INFERENCE_JOURNAL_STRING_FIELDS) {
+    entry[field] = typeof input[field] === 'string' ? input[field] : null;
+  }
+  for (const { entries } of inferenceJournals.values())
+    entries.push({ index: entries.length, ...entry });
 }
 
 /**
@@ -363,7 +459,10 @@ export function recordRequest(key, fields = {}) {
   const keyForRequest = scenarioKey(key);
   const observations = requestObservations.get(keyForRequest) ?? [];
   const input = fields && typeof fields === 'object' ? fields : {};
-  const observation = { index: observations.length };
+  const observation = {
+    index: observations.length,
+    ...fixtureAuthenticationFields(input),
+  };
 
   for (const field of OBSERVATION_STRING_FIELDS) {
     if (typeof input[field] === 'string') {
@@ -500,6 +599,9 @@ function jsonResponse(response, status, body) {
  *   POST   /__mock/barrier       body `{ key, name }`     → persist a release
  *   GET    /__mock/barrier?key=…                         → barrier status
  *   GET    /__mock/requests?key=…                        → content-free request observations
+ *   POST   /__mock/inference-journal  body `{ name, ownerPid }` → open or empty a journal (409 while another is open)
+ *   GET    /__mock/inference-journal?name=…              → its entries (404 when not open)
+ *   DELETE /__mock/inference-journal?name=…              → close it
  *
  * @param {import('node:http').IncomingMessage} request
  * @param {import('node:http').ServerResponse} response
@@ -575,6 +677,50 @@ export async function handleControlPlaneRequest(request, response, url) {
     }
     jsonResponse(response, 200, { requests: getRequestSnapshots(key) });
     return true;
+  }
+
+  if (pathname === '/__mock/inference-journal') {
+    const body = method === 'POST' ? await readJsonBody(request) : undefined;
+    const name = method === 'POST' ? body?.name : url.searchParams.get('name');
+    if (typeof name !== 'string' || !name.trim()) {
+      jsonResponse(response, 400, {
+        error: 'Expected a nonempty journal name.',
+      });
+      return true;
+    }
+    if (method === 'POST') {
+      const ownerPid = body?.ownerPid;
+      if (!Number.isSafeInteger(ownerPid) || ownerPid <= 0) {
+        jsonResponse(response, 400, {
+          error: 'Expected a positive integer ownerPid.',
+        });
+        return true;
+      }
+      const refusedBy = openInferenceJournal(name, ownerPid);
+      if (refusedBy !== undefined)
+        jsonResponse(response, 409, {
+          error: `Inference journal ${JSON.stringify(refusedBy)} is open: journal specs must run alone against this mock server.`,
+        });
+      else jsonResponse(response, 200, { ok: true, name });
+      return true;
+    }
+    if (method === 'DELETE') {
+      jsonResponse(response, 200, {
+        ok: true,
+        closed: closeInferenceJournal(name),
+      });
+      return true;
+    }
+    if (method === 'GET') {
+      const requests = getInferenceJournal(name);
+      // An unopened journal fails loudly rather than reading as no requests.
+      if (!requests)
+        jsonResponse(response, 404, {
+          error: `Inference journal ${JSON.stringify(name)} is not open.`,
+        });
+      else jsonResponse(response, 200, { requests });
+      return true;
+    }
   }
 
   const stateMatch = /^\/__mock\/state\/(.+)$/.exec(pathname);

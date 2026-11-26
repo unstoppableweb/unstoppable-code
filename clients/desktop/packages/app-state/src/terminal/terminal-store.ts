@@ -59,6 +59,16 @@ export interface WorktreeTerminalBucket {
   sessions: Record<string, KnownTerminalSession>;
   /** Renderer has been rehydrated from persisted worktree state. */
   hydrated: boolean;
+  /** The last hydration could not read the terminals' history (CAN-7051). */
+  historyUnavailable?: boolean;
+  /** New terminal history is held in memory, not saved yet (CAN-7051). */
+  historyHeld?: boolean;
+  /** False when a status probe found an older peer without status-only support. */
+  historyRefreshSupported?: boolean;
+  /** Changes only when an unavailable history load recovers. */
+  historyRevision?: number;
+  /** The last hydration's view, echoed by saves (CAN-7051). */
+  viewToken?: string;
 }
 
 interface TerminalState {
@@ -272,6 +282,7 @@ function buildSaveRequest(
     groupOrdinals: { ...bucket.groupOrdinals },
     terminalCustomNames,
     groupCustomNames,
+    ...(bucket.viewToken !== undefined && { viewToken: bucket.viewToken }),
     ...(forgetTerminalIds && { forgetTerminalIds }),
   };
 }
@@ -292,8 +303,11 @@ function mergeHydratedWorktree(
     });
   }
 
+  // A load that could not read history (CAN-7051) omits exited terminals it
+  // could not see; the drawer keeps what it already showed.
+  const partial = response.history?.status === 'unavailable';
   for (const session of Object.values(bucket.sessions)) {
-    if (session.live && sessions[session.id] === undefined) {
+    if ((session.live || partial) && sessions[session.id] === undefined) {
       sessions[session.id] = session;
     }
   }
@@ -363,7 +377,7 @@ function mergeHydratedWorktree(
     }
   }
 
-  return {
+  const merged: WorktreeTerminalBucket = {
     ...bucket,
     drawerCollapsed:
       previousBucket === undefined
@@ -381,7 +395,18 @@ function mergeHydratedWorktree(
     groupOrdinals,
     sessions,
     hydrated: true,
+    historyUnavailable: response.history?.status === 'unavailable',
+    historyHeld: response.historyHeld === true,
+    historyRevision:
+      (bucket.historyRevision ?? 0) +
+      (bucket.historyUnavailable && response.history?.status === 'available'
+        ? 1
+        : 0),
   };
+  // A load's token names only its own view; one without a token clears it.
+  if (response.viewToken === undefined) delete merged.viewToken;
+  else merged.viewToken = response.viewToken;
+  return merged;
 }
 
 // ---------------------------------------------------------------------------
@@ -393,6 +418,7 @@ export interface TerminalStoreController {
   ensureHydrated: (projectId: string, worktreeId: string) => Promise<void>;
   reset: () => void;
   purgeWorktrees: (worktreeIds: readonly string[]) => void;
+  observeHistory: (projectId: string, worktreeId: string) => () => void;
 }
 
 export interface TerminalRemovedEvent {
@@ -418,6 +444,9 @@ function notifyTerminalRemoved(
     listener({ projectId, worktreeId, terminalId });
 }
 
+// 30 probes at 2 s: a minute between full loads that keep failing.
+const HISTORY_RECOVERY_MAX_BACKOFF_PROBES = 30;
+
 export interface TerminalStoreOptions {
   /**
    * Records one failed save. Defaults to the host recorder installed with
@@ -438,6 +467,116 @@ export function createTerminalStore(
   const hydrationPromises = new Map<string, Promise<void>>();
   let generation = 0;
   const worktreeGenerations = new Map<string, number>();
+  const hydrationSequences = new Map<string, number>();
+  const historyObservers = new Map<
+    string,
+    { users: number; stop: () => void }
+  >();
+
+  // One output-free probe per visible worktree, not per split pane. Failed
+  // history loads retry only after reachability returns; normal output is untouched.
+  function observeHistory(projectId: string, worktreeId: string): () => void {
+    const key = worktreeKey(projectId, worktreeId);
+    const bucket = store.getState().worktrees[key];
+    if (!bucket?.hydrated || bucket.historyRefreshSupported === false)
+      return (): void => undefined;
+    const existing = historyObservers.get(key);
+    if (existing) {
+      existing.users += 1;
+      return historyObserverRelease(key, existing);
+    }
+    const client = getClient();
+    const currentGeneration = generation;
+    const worktreeGeneration = worktreeGenerations.get(key);
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const current = (): boolean =>
+      active &&
+      generation === currentGeneration &&
+      worktreeGenerations.get(key) === worktreeGeneration;
+    const observer = {
+      users: 1,
+      stop: (): void => {
+        active = false;
+        if (timer !== undefined) clearTimeout(timer);
+      },
+    };
+    historyObservers.set(key, observer);
+    // An available probe reflects only daemon health, so a full load can still
+    // fail or come back unavailable: each retry doubles the probes the next
+    // waits, until history loads or a probe reports unavailable again.
+    let recoveryBackoff = 0;
+    let probesUntilRecovery = 0;
+    const refresh = async (): Promise<void> => {
+      try {
+        if (!current()) return;
+        const response = await client.query('terminal.worktreeState.get', {
+          projectId,
+          worktreeId,
+          historyStatusOnly: true,
+        });
+        if (!current()) return;
+        const bucket = store.getState().worktrees[key];
+        if (!bucket) return;
+        // An older peer ignores the optional field and returns a full load.
+        // Never merge it as status or repeatedly poll its history.
+        if (response.historyRefreshSupported !== true) {
+          store.setState((state) => ({
+            worktrees: {
+              ...state.worktrees,
+              [key]: { ...bucket, historyRefreshSupported: false },
+            },
+          }));
+          observer.stop();
+          return;
+        }
+        const historyHeld = response.historyHeld === true;
+        if (bucket.historyHeld !== historyHeld)
+          store.setState((state) => ({
+            worktrees: {
+              ...state.worktrees,
+              [key]: { ...bucket, historyHeld },
+            },
+          }));
+        if (
+          response.history?.status !== 'available' ||
+          bucket.historyUnavailable !== true
+        ) {
+          recoveryBackoff = 0;
+          probesUntilRecovery = 0;
+        } else if (probesUntilRecovery-- <= 0) {
+          // Set first, so a load that fails outright backs off as well.
+          recoveryBackoff = Math.min(
+            Math.max(recoveryBackoff * 2, 1),
+            HISTORY_RECOVERY_MAX_BACKOFF_PROBES,
+          );
+          probesUntilRecovery = recoveryBackoff;
+          await hydrateWorktree(projectId, worktreeId, current);
+        }
+      } catch {
+        // Keep the notice and the current terminal; nothing blocks user work.
+      } finally {
+        if (current()) timer = setTimeout((): void => void refresh(), 2_000);
+      }
+    };
+    void refresh();
+    return historyObserverRelease(key, observer);
+  }
+
+  function historyObserverRelease(
+    key: string,
+    observer: { users: number; stop: () => void },
+  ): () => void {
+    let released = false;
+    return (): void => {
+      if (released || historyObservers.get(key) !== observer) return;
+      released = true;
+      observer.users -= 1;
+      if (observer.users > 0) return;
+      observer.stop();
+      historyObservers.delete(key);
+    };
+  }
   function persistWorktreeState(
     projectId: string,
     worktreeId: string,
@@ -489,61 +628,77 @@ export function createTerminalStore(
     );
   }
 
+  async function hydrateWorktree(
+    projectId: string,
+    worktreeId: string,
+    isCurrent: () => boolean = () => true,
+  ): Promise<void> {
+    const currentGeneration = generation;
+    const key = worktreeKey(projectId, worktreeId);
+    const worktreeGeneration = worktreeGenerations.get(key) ?? 0;
+    worktreeGenerations.set(key, worktreeGeneration);
+    const sequence = (hydrationSequences.get(key) ?? 0) + 1;
+    hydrationSequences.set(key, sequence);
+    const response = await getClient().query('terminal.worktreeState.get', {
+      projectId,
+      worktreeId,
+    });
+    if (
+      !isCurrent() ||
+      hydrationSequences.get(key) !== sequence ||
+      generation !== currentGeneration ||
+      worktreeGenerations.get(key) !== worktreeGeneration
+    )
+      return;
+    store.setState((state) => {
+      const key = worktreeKey(projectId, worktreeId);
+      const previousBucket = state.worktrees[key];
+      const nextBucket = mergeHydratedWorktree(previousBucket, response);
+
+      const nextTerminalCustomNames = { ...state.terminalCustomNames };
+      const nextGroupCustomNames = { ...state.groupCustomNames };
+
+      // Partial loads can include live sessions without their record names.
+      // Missing names are authoritative only on a full load (R6-F2).
+      if (previousBucket) {
+        const partial = response.history?.status === 'unavailable';
+        for (const terminalId of Object.keys(previousBucket.sessions)) {
+          if (!partial || nextBucket.sessions[terminalId] === undefined)
+            delete nextTerminalCustomNames[terminalId];
+        }
+        const keptGroups = new Set(nextBucket.groups.map((group) => group.id));
+        for (const group of previousBucket.groups) {
+          if (!partial || !keptGroups.has(group.id))
+            delete nextGroupCustomNames[group.id];
+        }
+      }
+
+      for (const [terminalId, customName] of Object.entries(
+        response.terminalCustomNames,
+      )) {
+        nextTerminalCustomNames[terminalId] = customName;
+      }
+
+      for (const [groupId, customName] of Object.entries(
+        response.groupCustomNames,
+      )) {
+        nextGroupCustomNames[groupId] = customName;
+      }
+
+      return {
+        worktrees: { ...state.worktrees, [key]: nextBucket },
+        terminalCustomNames: nextTerminalCustomNames,
+        groupCustomNames: nextGroupCustomNames,
+      };
+    });
+  }
+
   const store = create<TerminalState>((set, get) => ({
     worktrees: {},
     terminalCustomNames: {},
     groupCustomNames: {},
 
-    hydrateWorktree: async (projectId, worktreeId): Promise<void> => {
-      const currentGeneration = generation;
-      const key = worktreeKey(projectId, worktreeId);
-      const worktreeGeneration = worktreeGenerations.get(key) ?? 0;
-      worktreeGenerations.set(key, worktreeGeneration);
-      const response = await getClient().query('terminal.worktreeState.get', {
-        projectId,
-        worktreeId,
-      });
-      if (
-        generation !== currentGeneration ||
-        worktreeGenerations.get(key) !== worktreeGeneration
-      )
-        return;
-      set((state) => {
-        const key = worktreeKey(projectId, worktreeId);
-        const previousBucket = state.worktrees[key];
-        const nextBucket = mergeHydratedWorktree(previousBucket, response);
-
-        const nextTerminalCustomNames = { ...state.terminalCustomNames };
-        const nextGroupCustomNames = { ...state.groupCustomNames };
-
-        if (previousBucket) {
-          for (const terminalId of Object.keys(previousBucket.sessions)) {
-            delete nextTerminalCustomNames[terminalId];
-          }
-          for (const group of previousBucket.groups) {
-            delete nextGroupCustomNames[group.id];
-          }
-        }
-
-        for (const [terminalId, customName] of Object.entries(
-          response.terminalCustomNames,
-        )) {
-          nextTerminalCustomNames[terminalId] = customName;
-        }
-
-        for (const [groupId, customName] of Object.entries(
-          response.groupCustomNames,
-        )) {
-          nextGroupCustomNames[groupId] = customName;
-        }
-
-        return {
-          worktrees: { ...state.worktrees, [key]: nextBucket },
-          terminalCustomNames: nextTerminalCustomNames,
-          groupCustomNames: nextGroupCustomNames,
-        };
-      });
-    },
+    hydrateWorktree,
 
     setDrawerCollapsed: (projectId, worktreeId, collapsed): void => {
       let shouldPersist = false;
@@ -1010,6 +1165,8 @@ export function createTerminalStore(
     for (const key of Array.from(keys)) {
       if (!worktreeIds.some((id) => key.endsWith(`/${id}`))) continue;
       worktreeGenerations.set(key, (worktreeGenerations.get(key) ?? 0) + 1);
+      historyObservers.get(key)?.stop();
+      historyObservers.delete(key);
       clearPersistTimer(key);
       hydrationPromises.delete(key);
       const bucket = worktrees[key];
@@ -1035,20 +1192,24 @@ export function createTerminalStore(
     generation += 1;
     for (const key of Array.from(persistTimers.keys())) clearPersistTimer(key);
     hydrationPromises.clear();
+    hydrationSequences.clear();
     worktreeGenerations.clear();
+    for (const observer of historyObservers.values()) observer.stop();
+    historyObservers.clear();
     store.setState({
       worktrees: {},
       terminalCustomNames: {},
       groupCustomNames: {},
     });
   }
-  return { store, ensureHydrated, reset, purgeWorktrees };
+  return { store, ensureHydrated, reset, purgeWorktrees, observeHistory };
 }
 
 const terminalStore = createTerminalStore(requireTerminalClient);
 export const useTerminalStore = terminalStore.store;
 export const ensureTerminalWorktreeHydrated = terminalStore.ensureHydrated;
 export const purgeTerminalWorktrees = terminalStore.purgeWorktrees;
+export const observeTerminalHistory = terminalStore.observeHistory;
 registerTerminalClientReset(terminalStore.reset);
 export {
   ensureTerminalExitSubscription,

@@ -149,6 +149,7 @@ type CuratedMcpConnectionDetailProps = McpConnectionSource & {
   providerConnections?: ReactNode;
   /** The installed item's Status, under the server's name. */
   statusContent?: ReactNode;
+  otherVersions?: ReactNode;
   /**
    * The person's accounts of this connector (CAN-6226), under its header,
    * given the facts about the account the card shows to draw inside its row.
@@ -417,6 +418,7 @@ function AppMcpConnectionDetail({
   onDeleted,
   onSignInBrowserChange,
   statusContent,
+  otherVersions,
   identity,
   renderAccounts,
 }: CuratedMcpConnectionDetailProps): JSX.Element {
@@ -1376,6 +1378,7 @@ function AppMcpConnectionDetail({
               : undefined
           }
           statusContent={statusContent}
+          otherVersions={otherVersions}
           renderAccounts={renderAccounts}
           // Where the server is installed describes the server, not the
           // account, so it stays on the page under an accounts list.

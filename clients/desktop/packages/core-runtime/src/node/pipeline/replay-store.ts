@@ -207,6 +207,11 @@ export interface PipelineDefinitionReplayStoreOptions {
   readonly filePath: () => string;
   /** The host's atomic durable write. */
   readonly write: PipelineDefinitionReplayFileWriter;
+  /**
+   * Rejects before any byte is written when this host may not write the
+   * receipts (CAN-7690): their row's owner record names another owner.
+   */
+  readonly assertWritable?: () => Promise<void>;
 }
 
 /**
@@ -222,25 +227,25 @@ export function createPipelineDefinitionReplayStore(
   options: PipelineDefinitionReplayStoreOptions,
 ): PipelineDefinitionReplayStore {
   return {
-    load: (): Promise<PipelineDefinitionReplayLedger> => {
+    load: async (): Promise<PipelineDefinitionReplayLedger> => {
       try {
         const file = options.filePath();
-        if (!existsSync(file))
-          return Promise.resolve({ entries: [], expired: [] });
+        if (!existsSync(file)) return { entries: [], expired: [] };
         try {
-          return Promise.resolve(parseLedger(readFileSync(file, 'utf8')));
+          return parseLedger(readFileSync(file, 'utf8'));
         } catch (error) {
           if (!(error instanceof UnreadableLedger)) throw error;
+          // Setting the file aside writes the row, so it is checked too.
+          await options.assertWritable?.();
           renameSync(file, `${file}.unreadable`);
-          return Promise.resolve({ entries: [], expired: [] });
+          return { entries: [], expired: [] };
         }
       } catch (error) {
-        return Promise.reject(
-          error instanceof Error ? error : new Error(String(error)),
-        );
+        throw error instanceof Error ? error : new Error(String(error));
       }
     },
     save: async (ledger): Promise<void> => {
+      await options.assertWritable?.();
       const file = options.filePath();
       const directory = dirname(file);
       try {

@@ -151,6 +151,7 @@ function pluginSelectionsSignature(
     | 'projectId'
     | 'worktreeId'
     | 'accountResolution'
+    | 'sharedConnectionWrites'
   >,
 ): string {
   // An automation's turn resolves accounts unattended (CAN-6232); a session

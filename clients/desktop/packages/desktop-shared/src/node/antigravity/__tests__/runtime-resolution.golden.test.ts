@@ -98,8 +98,8 @@ function executable(file: string, contents: string): string {
 }
 
 function managedCopy(contents = MANAGED_BYTES): string {
-  mkdirSync(join(managedRoot, '1.5.1'), { recursive: true });
-  return executable(join(managedRoot, '1.5.1', 'antigravity'), contents);
+  mkdirSync(join(managedRoot, '1.5.14'), { recursive: true });
+  return executable(join(managedRoot, '1.5.14', 'antigravity'), contents);
 }
 
 beforeEach(() => {
@@ -112,7 +112,7 @@ beforeEach(() => {
   mockOperatingSystem = 'darwin';
   digestChecks = [];
   mockArtifact = {
-    version: '1.5.1',
+    version: '1.5.14',
     url: 'https://example.invalid/agy_cli_mac_arm64.tar.gz',
     integrity: 'sha512-unused',
     archiveBytes: 1,
@@ -253,7 +253,7 @@ describe('Antigravity executable resolution', () => {
     await expect(
       resolveAntigravityExecutable({ managedRootDir: managedRoot }),
     ).rejects.toThrow(
-      'Install Antigravity CLI 1.5.1 from Settings, then refresh Google models.',
+      'Install Antigravity CLI 1.5.14 from Settings, then refresh Google models.',
     );
   });
 

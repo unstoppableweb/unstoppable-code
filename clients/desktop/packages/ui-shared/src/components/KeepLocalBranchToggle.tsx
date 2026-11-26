@@ -1,6 +1,6 @@
 import { useId, type JSX, type ReactNode } from 'react';
-import { Surface } from './Surface';
-import { ToggleSwitch } from './ToggleSwitch';
+import { Surface } from '../primitives/Surface';
+import { ToggleSwitch } from '../primitives/ToggleSwitch';
 import { useRowToggleClick } from './settings/SettingsRows';
 
 export const DEFAULT_KEEP_LOCAL_BRANCH = true;

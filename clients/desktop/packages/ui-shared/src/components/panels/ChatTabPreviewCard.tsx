@@ -1,5 +1,5 @@
 import { useEffect, useState, type JSX, type ReactNode } from 'react';
-import { CometSpinner } from '../CometSpinner';
+import { CometSpinner } from '../../primitives/CometSpinner';
 import { HoverCardIconSlot } from '../HoverCardIconSlot';
 import { CircleXIcon, QuestionMarkIcon } from '../../icons/AppIcons';
 import { formatRelativeTime } from '../../lib/format-relative-time';
@@ -159,10 +159,12 @@ export function ChatTabPreviewCard({
     >
       {hasPrompt ? (
         <div
-          className={`truncate rounded-md bg-muted px-2 py-1 fg-primary ${REPLAY_BLOCK_CLASS}`}
+          className={`rounded-md bg-muted px-2 py-1 fg-primary ${REPLAY_BLOCK_CLASS}`}
           data-testid="chat-tab-preview-prompt"
         >
-          {prompt}
+          {/* The fade masks its own box, so it sits inside the bubble rather
+              than on it, which would fade the bubble's fill too. */}
+          <span className="block truncate-fade">{prompt}</span>
         </div>
       ) : null}
       <div className="flex flex-col gap-2.5 px-2">

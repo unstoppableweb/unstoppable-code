@@ -1,8 +1,8 @@
 'use client';
 
-import { TextLink } from './TextLink';
-import { CodeBlock } from './CodeBlock';
-import { Stack } from './Stack';
+import { TextLink } from '../primitives/TextLink';
+import { CodeBlock } from '../primitives/CodeBlock';
+import { Stack } from '../primitives/Stack';
 import { useId, type JSX } from 'react';
 import type {
   CuratedPipelineDetail,
@@ -14,18 +14,20 @@ import {
   pipelinePackageKindLabel,
   pipelinePackageRequirementKindLabel,
 } from '../lib/pipeline-package-display';
-import { Disclosure } from './Disclosure';
-import { EmptyStateText, ErrorBanner } from './StatusBlocks';
-import { Button } from './Button';
-import { LoadingButton } from './LoadingButton';
-import { BusyLabel } from './BusyLabel';
+import { Disclosure } from '../primitives/Disclosure';
+import { EmptyStateText, ErrorBanner } from '../primitives/StatusBlocks';
+import { Button } from '../primitives/Button';
+import { BusyLabel } from '../primitives/BusyLabel';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
-import { Skeleton } from './Skeleton';
-import { Surface } from './Surface';
-import { SearchEmptyState, SearchField } from './SearchField';
+import { Skeleton } from '../primitives/Skeleton';
+import { Surface } from '../primitives/Surface';
+import { SearchEmptyState, SearchField } from '../primitives/SearchField';
 import { curatedPipelineFiltersActive } from '../lib/curated-pipeline-search';
-import { SettingsSelect, type SettingsSelectOption } from './SettingsSelect';
-import { Heading } from './Heading';
+import {
+  SettingsSelect,
+  type SettingsSelectOption,
+} from '../primitives/SettingsSelect';
+import { Heading } from '../primitives/Heading';
 
 export interface CuratedPipelineCatalogProps {
   cloudDisplayName: string;
@@ -279,10 +281,10 @@ export function CuratedPipelineCatalog(
                   )}
                 </div>
               ) : (
-                <LoadingButton
+                <Button
                   className="self-start"
                   variant="primary"
-                  loading={props.importing}
+                  loading={props.importing ?? false}
                   loadingLabel="Adding workflow…"
                   aria-disabled={props.importDisabledReason ? true : undefined}
                   aria-describedby={
@@ -292,7 +294,7 @@ export function CuratedPipelineCatalog(
                   data-testid="curated-pipeline-add"
                 >
                   Add to my workflows
-                </LoadingButton>
+                </Button>
               )}
             </>
           )}
@@ -404,14 +406,14 @@ function LaunchAvailabilityControl({
           ? 'Enabled. It appears when you run a workflow.'
           : 'Disabled. It is hidden when you run a workflow.'}
       </p>
-      <LoadingButton
+      <Button
         loading={pending}
         loadingLabel={enabled ? 'Disabling…' : 'Enabling…'}
         onClick={() => onChange(!enabled)}
         data-testid="curated-pipeline-toggle-enabled"
       >
         {enabled ? 'Disable workflow' : 'Enable workflow'}
-      </LoadingButton>
+      </Button>
     </div>
   );
 }

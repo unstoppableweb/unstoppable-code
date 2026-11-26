@@ -24,10 +24,53 @@ import { copyTextToClipboard } from '@/lib/clipboard';
 import { invalidateCodexAuthStatusCache } from '@/hooks/useCodexAuthStatus';
 import { useUsageLimitResumePromptStore } from '@/stores/usageLimitResumePromptStore';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
+import {
+  isRemoteSignIn,
+  openSignInLink,
+} from '@/lib/remote-control/open-sign-in-link';
+import { isProviderSignInLink } from '@canopy/desktop-shared/lib/provider-sign-in-links';
+
+/** Answer to a start while another window's Codex sign-in runs (CAN-6718). */
+const ALREADY_RUNNING_COPY =
+  'A Codex sign-in is already running on the computer. Try again when it finishes.';
 
 interface CodexLoginModalProps {
   onClose: () => void;
   ownerDocument?: Document;
+}
+
+/**
+ * Opens the waiting attempt's sign-in page. This computer's own window asks
+ * main to open the browser (it holds the browser method's URL); a window that
+ * shows another computer opens the device-code page that computer published,
+ * in this computer's browser.
+ */
+function openSignInPage(
+  state: CodexLoginState,
+  remote: boolean,
+  fail: (appError: AppError | undefined, copy: string) => void,
+  refuse: (copy: string) => void,
+): void {
+  if (remote) {
+    if (!state.verificationUrl) return;
+    // The other computer checked the page before publishing it; this one
+    // checks again, so that computer can't send its browser elsewhere.
+    if (isProviderSignInLink('codex', state.verificationUrl))
+      openSignInLink(state.verificationUrl);
+    else
+      refuse(
+        "The other computer sent a sign-in page that isn't OpenAI's, so it wasn't opened.",
+      );
+    return;
+  }
+  void window.api.codexLogin
+    .openBrowser()
+    .catch((caught: unknown) =>
+      fail(
+        toAppError(resolveClientAppError(caught)),
+        "Couldn't open your browser. Use Open browser to try again.",
+      ),
+    );
 }
 
 export function CodexLoginModal({
@@ -47,8 +90,12 @@ export function CodexLoginModal({
     },
     [],
   );
+  // Started from another computer, sign-in uses a device code: the browser
+  // method's callback runs on the controlled computer, where nobody is.
+  const remote = isRemoteSignIn();
+  const initialMethod = remote ? 'chatgptDeviceCode' : 'chatgpt';
   const [method, setMethod] = useState<'chatgpt' | 'chatgptDeviceCode'>(
-    'chatgpt',
+    initialMethod,
   );
   const [copied, setCopied] = useState(false);
   const [snapshotsOpen, setSnapshotsOpen] = useState(false);
@@ -79,28 +126,65 @@ export function CodexLoginModal({
   const cancellationScheduled = useRef(false);
   const startPromise = useRef<Promise<CodexLoginState> | null>(null);
   const openedAttempt = useRef<string | null>(null);
+  /**
+   * The attempt this dialog's own start or cancel answered with. State is
+   * pushed to every window, controllers' included, so a pushed state for any
+   * other attempt is someone else's sign-in and is ignored.
+   */
+  const ownAttempt = useRef<string | null>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
-  const receive = useCallback((next: CodexLoginState): void => {
-    setState(next);
-    if (
-      next.phase === 'complete' ||
-      (next.phase === 'verification-failed' && next.activeWorkCount > 0)
-    ) {
-      if (
-        next.phase === 'complete' &&
-        next.outcome === 'failed' &&
-        next.activeWorkCount === 0
-      )
-        return;
-      if (completed.current) return;
-      completed.current = true;
-      invalidateCodexAuthStatusCache();
-      if (next.activeWorkCount > 0)
-        useUsageLimitResumePromptStore.getState().openAuthentication(next);
-      closeRef.current();
-    }
+  const refuse = useCallback((copy: string): void => {
+    setError({ error: copy });
   }, []);
+  const receive = useCallback(
+    (next: CodexLoginState): void => {
+      if (next.refusal === 'already-running') {
+        refuse(ALREADY_RUNNING_COPY);
+        return;
+      }
+      if (next.attemptId !== null) ownAttempt.current = next.attemptId;
+      setState(next);
+      if (
+        next.phase === 'complete' ||
+        (next.phase === 'verification-failed' && next.activeWorkCount > 0)
+      ) {
+        if (
+          next.phase === 'complete' &&
+          next.outcome === 'failed' &&
+          next.activeWorkCount === 0
+        )
+          return;
+        if (completed.current) return;
+        completed.current = true;
+        invalidateCodexAuthStatusCache();
+        if (next.activeWorkCount > 0)
+          useUsageLimitResumePromptStore.getState().openAuthentication(next);
+        closeRef.current();
+      }
+    },
+    [refuse],
+  );
+
+  /**
+   * Pushes that arrive while a start is pending, the latest one per attempt,
+   * applied once the start's answer names its attempt. The waiting state with the
+   * device code can arrive before the start's answer, which carries only the
+   * state when the start returned.
+   */
+  const earlyStates = useRef<Map<string, CodexLoginState> | null>(null);
+  const receiveStartAnswer = useCallback(
+    (next: CodexLoginState): void => {
+      const early = earlyStates.current;
+      earlyStates.current = null;
+      receive(next);
+      // A kept push for this attempt is no older than the answer.
+      const kept =
+        next.attemptId === null ? undefined : early?.get(next.attemptId);
+      if (kept) receive(kept);
+    },
+    [receive],
+  );
 
   const cancelAfterStart = useCallback(
     (reportError: boolean): void => {
@@ -115,7 +199,7 @@ export function CodexLoginModal({
           if (reportError)
             fail(
               toAppError(resolveClientAppError(caught)),
-              "Couldn't finish cancelling sign-in. Try again.",
+              "Couldn't cancel. Try again.",
             );
           // Closing the dialog cancels in the background, with nowhere to show
           // a failure.
@@ -128,22 +212,32 @@ export function CodexLoginModal({
   useEffect(() => {
     let disposed = false;
     const unsubscribe = window.api.codexLogin.onState((next) => {
-      if (!disposed) receive(next);
+      if (disposed || next.attemptId === null) return;
+      // While a start is pending, its attempt is unknown: a retry starts a
+      // new attempt while this dialog still knows the old one.
+      const early = earlyStates.current;
+      if (early) {
+        early.set(next.attemptId, next);
+        return;
+      }
+      if (next.attemptId === ownAttempt.current) receive(next);
     });
+    earlyStates.current = new Map();
     const pending = window.api.codexLogin.start({
       confirmPause: false,
-      method: 'chatgpt',
+      method: initialMethod,
     });
     startPromise.current = pending;
     void pending
       .then((next) => {
-        if (!disposed) receive(next);
+        if (!disposed) receiveStartAnswer(next);
       })
       .catch((caught: unknown) => {
+        earlyStates.current = null;
         if (!disposed)
           fail(
             toAppError(resolveClientAppError(caught)),
-            "Couldn't start Codex sign-in. Try again.",
+            "Couldn't connect Codex.",
           );
       });
     return (): void => {
@@ -151,7 +245,7 @@ export function CodexLoginModal({
       unsubscribe();
       if (!completed.current) cancelAfterStart(false);
     };
-  }, [cancelAfterStart, fail, receive]);
+  }, [cancelAfterStart, fail, initialMethod, receive, receiveStartAnswer]);
 
   useEffect(() => {
     if (
@@ -161,15 +255,8 @@ export function CodexLoginModal({
     )
       return;
     openedAttempt.current = `${state.attemptId}:${state.method}`;
-    void window.api.codexLogin
-      .openBrowser()
-      .catch((caught: unknown) =>
-        fail(
-          toAppError(resolveClientAppError(caught)),
-          "Couldn't open your browser. Use Open browser to try again.",
-        ),
-      );
-  }, [fail, state.attemptId, state.method, state.phase]);
+    openSignInPage(state, remote, fail, refuse);
+  }, [fail, refuse, remote, state]);
 
   const cancel = (): void => {
     if (!state.attemptId) {
@@ -189,26 +276,26 @@ export function CodexLoginModal({
       .catch((caught: unknown) =>
         fail(
           toAppError(resolveClientAppError(caught)),
-          "Couldn't finish cancelling sign-in. Try again.",
+          "Couldn't cancel. Try again.",
         ),
       );
   };
   const start = (nextMethod = method): void => {
     setError(null);
     setMethod(nextMethod);
+    earlyStates.current = new Map();
     const pending = window.api.codexLogin.start({
       confirmPause: true,
       method: nextMethod,
     });
     startPromise.current = pending;
-    void pending
-      .then(receive)
-      .catch((caught: unknown) =>
-        fail(
-          toAppError(resolveClientAppError(caught)),
-          "Couldn't start Codex sign-in. Try again.",
-        ),
+    void pending.then(receiveStartAnswer).catch((caught: unknown) => {
+      earlyStates.current = null;
+      fail(
+        toAppError(resolveClientAppError(caught)),
+        "Couldn't connect Codex.",
       );
+    });
   };
   useCurrentUiStateReporter('auth.loginModal', {
     open: true,
@@ -220,7 +307,7 @@ export function CodexLoginModal({
   return (
     <DialogModal
       inset="flush"
-      title="Sign in to Codex"
+      title="Connect Codex"
       maxWidth="md"
       onClose={cancel}
       ownerDocument={ownerDocument}
@@ -249,7 +336,7 @@ export function CodexLoginModal({
           )}
           {state.phase === 'waiting' && (
             <>
-              {state.method !== 'chatgptDeviceCode' && (
+              {state.method !== 'chatgptDeviceCode' && !remote && (
                 <Button
                   size="compact"
                   variant="secondary"
@@ -261,16 +348,9 @@ export function CodexLoginModal({
               <Button
                 size="compact"
                 variant="primary"
-                onClick={(): void => {
-                  void window.api.codexLogin
-                    .openBrowser()
-                    .catch((caught: unknown) =>
-                      fail(
-                        toAppError(resolveClientAppError(caught)),
-                        "Couldn't open your browser. Try again.",
-                      ),
-                    );
-                }}
+                onClick={(): void =>
+                  openSignInPage(state, remote, fail, refuse)
+                }
               >
                 Open browser
               </Button>
@@ -278,7 +358,7 @@ export function CodexLoginModal({
           )}
           {state.phase === 'complete' && state.outcome === 'failed' && (
             <Button size="compact" variant="primary" onClick={() => start()}>
-              Sign in
+              Try again
             </Button>
           )}
           {state.phase === 'verification-failed' && (
@@ -293,7 +373,7 @@ export function CodexLoginModal({
                   .catch((caught: unknown) =>
                     fail(
                       toAppError(resolveClientAppError(caught)),
-                      "Couldn't verify your Codex account.",
+                      "Couldn't connect Codex.",
                     ),
                   );
               }}
@@ -316,27 +396,31 @@ export function CodexLoginModal({
                 After signing in or cancelling, you can choose which chats and
                 workflows to resume.
               </p>
-              <ChoiceList aria-label="Sign-in method">
-                <ChoiceListRow
-                  selected={method === 'chatgptDeviceCode'}
-                  onClick={() =>
-                    setMethod(
-                      method === 'chatgptDeviceCode'
-                        ? 'chatgpt'
-                        : 'chatgptDeviceCode',
-                    )
-                  }
-                >
-                  Use a device code
-                </ChoiceListRow>
-              </ChoiceList>
+              {!remote && (
+                <ChoiceList aria-label="Sign-in method">
+                  <ChoiceListRow
+                    selected={method === 'chatgptDeviceCode'}
+                    onClick={() =>
+                      setMethod(
+                        method === 'chatgptDeviceCode'
+                          ? 'chatgpt'
+                          : 'chatgptDeviceCode',
+                      )
+                    }
+                  >
+                    Use a device code
+                  </ChoiceListRow>
+                </ChoiceList>
+              )}
             </>
           ) : state.phase === 'waiting' ? (
             <>
               <p>Finish signing in in your browser.</p>
               {state.userCode ? (
                 <Stack gap="inline">
-                  <p className="fg-secondary">Enter this code when asked:</p>
+                  <p className="fg-secondary">
+                    Enter this code on the page that opened:
+                  </p>
                   <div className="flex items-center gap-3">
                     <code
                       data-testid="codex-login-device-code"
@@ -365,16 +449,16 @@ export function CodexLoginModal({
               )}
             </>
           ) : state.phase === 'complete' && state.outcome === 'failed' ? (
-            <p>Sign-in did not complete. Try again.</p>
+            <p>Couldn't connect Codex.</p>
           ) : state.phase === 'verification-failed' ? (
             <p>{state.error}</p>
           ) : (
             <p>
               {state.phase === 'verifying'
-                ? 'Verifying your current Codex account…'
+                ? 'Checking your Codex account…'
                 : state.phase === 'pausing'
                   ? 'Pausing Codex work…'
-                  : 'Preparing sign-in…'}
+                  : 'Starting…'}
             </p>
           )}
           {snapshots.length > 0 && (

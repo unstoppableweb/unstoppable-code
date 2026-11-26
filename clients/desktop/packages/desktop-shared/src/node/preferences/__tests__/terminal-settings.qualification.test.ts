@@ -76,7 +76,7 @@ describe('terminal settings revision and the preferences:save rule (CAN-4148)', 
       ).terminalSettingsRevision,
     ).toBe(4);
     expect(
-      mergePreferenceUpdate(current, { terminalDrawerHeight: 400 }, context)
+      mergePreferenceUpdate(current, { fileAutoSave: true }, context)
         .terminalSettingsRevision,
     ).toBe(3);
     expect(
@@ -90,7 +90,7 @@ describe('terminal settings revision and the preferences:save rule (CAN-4148)', 
     expect(
       mergePreferenceUpdate(
         current,
-        { terminalSettingsRevision: 99, terminalDrawerHeight: 400 },
+        { terminalSettingsRevision: 99, fileAutoSave: true },
         context,
       ).terminalSettingsRevision,
     ).toBe(3);

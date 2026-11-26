@@ -8,6 +8,7 @@ import {
   Notice,
 } from '@canopy/ui-shared/components';
 import { FeedbackDialogShell } from './FeedbackDialogShell';
+import { readRecentUserVisibleError } from '@canopy/ui-shared/lib';
 import type {
   DraftState,
   FeedbackReportDialogComponent,
@@ -49,6 +50,7 @@ export function FeedbackReportDialog(
   const opening = useRef<{
     readonly client: Client;
     readonly draft: Promise<DraftState>;
+    readonly recentError: ReturnType<typeof readRecentUserVisibleError>;
   } | null>(null);
 
   useEffect(() => {
@@ -58,6 +60,7 @@ export function FeedbackReportDialog(
     if (opening.current?.client !== client) {
       opening.current = {
         client,
+        recentError: readRecentUserVisibleError(),
         draft: Promise.resolve()
           .then(() => client.draft())
           .then(
@@ -83,7 +86,13 @@ export function FeedbackReportDialog(
 
   if (state.status === 'ready' && state.client === client) {
     const { Content, openingDraft } = state;
-    return <Content {...props} openingDraft={openingDraft} />;
+    return (
+      <Content
+        {...props}
+        openingDraft={openingDraft}
+        recentError={opening.current?.recentError}
+      />
+    );
   }
 
   const failed = state.status === 'failed' && state.client === client;

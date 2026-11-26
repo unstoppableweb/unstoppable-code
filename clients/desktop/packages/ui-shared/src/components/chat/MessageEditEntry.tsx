@@ -15,10 +15,10 @@ import {
   BUBBLE_SURFACE_CLASS,
   BUBBLE_INFO_SURFACE_CLASS,
 } from '../bubble-badge';
-import { Button } from '../Button';
-import { CopyButton } from '../CopyButton';
-import { Notice } from '../Notice';
-import { Surface } from '../Surface';
+import { Button } from '../../primitives/Button';
+import { CopyButton } from '../../primitives/CopyButton';
+import { Notice } from '../../primitives/Notice';
+import { Surface } from '../../primitives/Surface';
 import { MessageEditCard } from './MessageEditCard';
 
 /**

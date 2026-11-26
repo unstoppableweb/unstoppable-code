@@ -48,11 +48,33 @@ interface PipelineInstallOwner {
   readonly localPipelineId: string;
 }
 
-/** A host store the journal undoes through, which a host may not have. */
+/** The install committed and still needs recovery before it can run. */
+export class PipelineInstallCleanupPendingError extends Error {
+  constructor() {
+    super('The workflow was installed. Restart the app to finish the install.');
+    this.name = 'PipelineInstallCleanupPendingError';
+  }
+}
+
+/** A host store the journal needs to settle an install. */
 export type PipelineInstallJournalHostPort =
   | 'install_records'
   | 'install_receipts'
-  | 'shared_item_ledger';
+  | 'shared_item_ledger'
+  | 'agent_markers';
+
+interface CommittedPipelineSubscription {
+  readonly localId: string;
+  readonly remoteId: string;
+  readonly sourceKind: 'shared' | 'public';
+  readonly contentHash: string | null;
+  readonly observedLedgerVersion?: string | null;
+}
+
+interface CommittedMarkerClear {
+  readonly definitionId: string;
+  readonly revision: number;
+}
 
 /**
  * A record needs a store this host doesn't have, so it is left as it is for
@@ -90,7 +112,7 @@ export interface PipelineInstallJournalEnvironment<
    * journal's stores: before an install's first write, at the start of
    * recovery and before each rollback.
    */
-  readonly assertWritable: () => void;
+  readonly assertWritable: () => void | Promise<void>;
   readonly createDirectoryDurably: (
     directoryPath: string,
     options: { readonly dataRoot: string },
@@ -119,6 +141,14 @@ export interface PipelineInstallJournalEnvironment<
     readonly getPipelineText: PipelineDefinitionStore['getStoredPipelineText'];
   };
   readonly deleteUserPipelineLocalMetadata: (definitionId: string) => void;
+  /** Clears only the saved revision's marker. Throws if the check or clear fails. */
+  readonly clearInstalledPipelineMarker?: (
+    marker: CommittedMarkerClear,
+  ) => void;
+  readonly recordCommittedSubscription?: (
+    subscription: CommittedPipelineSubscription,
+    recovery: 'live' | 'replay',
+  ) => Promise<void>;
   /**
    * The host's package install records. A host without them leaves every
    * record that notes one, or creates a definition, as it is.
@@ -184,9 +214,8 @@ function hashPipelinePackageYaml(rawPipeline: string): string {
   return createHash('sha256').update(rawPipeline).digest('hex');
 }
 
-/** Version 2 records also note supporting files (CAN-5677). */
-const INTENT_VERSION = 2;
-const INTENT_FILE = /^[0-9a-f-]{36}\.json$/;
+const INTENT_VERSION = 4;
+export const INTENT_FILE = /^[0-9a-f-]{36}\.json$/;
 const INTENT_ID = /^[0-9a-f-]{36}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const UNREADABLE_INTENT_PREFIX = /[0-9a-f-]{36}\.json\.unreadable-/;
@@ -485,8 +514,11 @@ export interface PipelineInstallJournalIntent<
       previous: TReceipt | undefined;
     },
   ): Promise<void>;
-  /** The install committed: its record goes. */
-  finish(): Promise<void>;
+  /** Commit the install and retain any pending marker clears for recovery. */
+  finish(
+    markerClears?: readonly CommittedMarkerClear[],
+    subscription?: CommittedPipelineSubscription,
+  ): Promise<void>;
   /**
    * The install failed: undo what is left of it after the caller's own
    * rollback, then drop the record. When an undo fails the record stays for
@@ -615,9 +647,9 @@ export function createPipelineInstallJournal<
     };
   }
 
-  interface IntentFileV1 {
-    /** 2 once any definition notes `assetFiles`; 1 otherwise. */
-    version: 1 | 2;
+  interface IntentFile {
+    markerClears?: readonly CommittedMarkerClear[];
+    subscription?: CommittedPipelineSubscription;
     id: string;
     source: PipelineInstallIntentSource;
     startedAt: string;
@@ -709,7 +741,7 @@ export function createPipelineInstallJournal<
   }
 
   type ParsedIntent =
-    | { kind: 'intent'; intent: IntentFileV1 }
+    | { kind: 'intent'; intent: IntentFile }
     | { kind: 'newer' }
     | { kind: 'unreadable' };
 
@@ -724,7 +756,7 @@ export function createPipelineInstallJournal<
       return { kind: 'unreadable' };
     if (value.version > INTENT_VERSION) return { kind: 'newer' };
     if (
-      (value.version !== 1 && value.version !== 2) ||
+      ![1, 2, 3, 4].includes(value.version) ||
       typeof value.id !== 'string' ||
       typeof value.startedAt !== 'string' ||
       (value.source !== 'shared' &&
@@ -740,14 +772,75 @@ export function createPipelineInstallJournal<
       if (!definition) return { kind: 'unreadable' };
       definitions.push(definition);
     }
+    const markerClears: CommittedMarkerClear[] = [];
+    if (value.version >= 3) {
+      if (
+        value.source === 'curated' ||
+        !Array.isArray(value.markerClears) ||
+        value.markerClears.length === 0
+      )
+        return { kind: 'unreadable' };
+      const writtenIds = new Set(
+        definitions
+          .filter(({ change }) => change !== 'linked')
+          .map(({ definitionId }) => definitionId),
+      );
+      for (const marker of value.markerClears) {
+        if (
+          !isRecord(marker) ||
+          typeof marker.definitionId !== 'string' ||
+          !writtenIds.delete(marker.definitionId) ||
+          typeof marker.revision !== 'number' ||
+          !Number.isSafeInteger(marker.revision) ||
+          marker.revision <= 0
+        )
+          return { kind: 'unreadable' };
+        markerClears.push({
+          definitionId: marker.definitionId,
+          revision: marker.revision,
+        });
+      }
+      if (writtenIds.size > 0) return { kind: 'unreadable' };
+    }
+    let subscription: CommittedPipelineSubscription | undefined;
+    if (value.version === 4) {
+      const record = value.subscription;
+      if (
+        (value.source !== 'shared' && value.source !== 'package_share') ||
+        !isRecord(record) ||
+        typeof record.remoteId !== 'string' ||
+        record.remoteId.trim() === '' ||
+        typeof record.localId !== 'string' ||
+        !markerClears.some(
+          ({ definitionId }) => definitionId === record.localId,
+        ) ||
+        (record.sourceKind !== 'shared' && record.sourceKind !== 'public') ||
+        (record.contentHash !== null &&
+          typeof record.contentHash !== 'string') ||
+        (record.observedLedgerVersion !== undefined &&
+          record.observedLedgerVersion !== null &&
+          typeof record.observedLedgerVersion !== 'string')
+      )
+        return { kind: 'unreadable' };
+      subscription = {
+        remoteId: record.remoteId,
+        localId: record.localId,
+        sourceKind: record.sourceKind,
+        contentHash: record.contentHash,
+        ...(record.observedLedgerVersion !== undefined && {
+          observedLedgerVersion: record.observedLedgerVersion,
+        }),
+      };
+    }
     return {
       kind: 'intent',
       intent: {
-        version: value.version,
         id: value.id,
         source: value.source,
         startedAt: value.startedAt,
         definitions,
+        ...(value.version >= 3 && { markerClears }),
+        ...(subscription && { subscription }),
       },
     };
   }
@@ -761,17 +854,21 @@ export function createPipelineInstallJournal<
     return path.join(getPipelineInstallIntentsDir(), id);
   }
 
-  async function writeIntent(intent: IntentFileV1): Promise<void> {
+  async function writeIntent(intent: IntentFile): Promise<void> {
     // The folder's own entry must survive power loss with the record, before
     // any write the record covers (CAN-5678).
     await createDirectoryDurably(getPipelineInstallIntentsDir(), {
       dataRoot: getDataDir(),
     });
-    // A build that knows only version 1 leaves a record noting files alone
-    // instead of rolling it back without them.
-    const version = intent.definitions.some((entry) => entry.assetFiles)
-      ? 2
-      : 1;
+    // Older hosts leave records with supporting files or committed clears
+    // alone when they cannot settle them.
+    const version = intent.subscription
+      ? 4
+      : intent.markerClears
+        ? 3
+        : intent.definitions.some((entry) => entry.assetFiles)
+          ? 2
+          : 1;
     await writeStoreFileDurably(
       intentPath(intent.id),
       `${JSON.stringify({ ...intent, version }, null, 2)}\n`,
@@ -1247,7 +1344,7 @@ export function createPipelineInstallJournal<
    * reaches.
    */
   function lackingPortFor(
-    intent: IntentFileV1,
+    intent: IntentFile,
   ): PipelineInstallJournalHostPort | null {
     for (const definition of intent.definitions) {
       if (definition.receipt && !environment.installReceipts)
@@ -1262,8 +1359,33 @@ export function createPipelineInstallJournal<
     return null;
   }
 
-  async function rollBackIntent(intent: IntentFileV1): Promise<void> {
-    assertWritable();
+  async function finalizeCommittedIntent(
+    id: string,
+    markerClears: readonly CommittedMarkerClear[],
+    subscription: CommittedPipelineSubscription | undefined,
+    recovery: 'live' | 'replay',
+  ): Promise<void> {
+    await assertWritable();
+    const clearMarker = environment.clearInstalledPipelineMarker;
+    if (!clearMarker)
+      throw new PipelineInstallJournalLeftForHostError('agent_markers');
+    // The journal writer can return after a rename with an unconfirmed flush.
+    await syncDirectory(getPipelineInstallIntentsDir());
+    for (const marker of markerClears) clearMarker(marker);
+    if (subscription) {
+      const record = environment.recordCommittedSubscription;
+      if (!record)
+        throw new PipelineInstallJournalLeftForHostError('shared_item_ledger');
+      const stored = inspectStoredPipelineDocument(subscription.localId);
+      if (stored.kind === 'unreadable')
+        throw new Error('The installed workflow could not be confirmed.');
+      if (stored.kind === 'stored') await record(subscription, recovery);
+    }
+    await removeIntent(id);
+  }
+
+  async function rollBackIntent(intent: IntentFile): Promise<void> {
+    await assertWritable();
     const lackingPort = lackingPortFor(intent);
     if (lackingPort) {
       logMainProcessWarn(
@@ -1355,15 +1477,27 @@ export function createPipelineInstallJournal<
   async function recoverInterruptedPipelineInstalls(
     options: { onListed?: () => void } = {},
   ): Promise<void> {
-    assertWritable();
+    // A host the intents' owner record refuses still reads them, writing
+    // nothing: what they cover stays claimed and unconfirmed, so no run starts
+    // against it, and the refusal is thrown once they are read.
+    const refusal = await Promise.resolve()
+      .then(assertWritable)
+      .then(
+        () => undefined,
+        (error: unknown) =>
+          error instanceof Error ? error : new Error(String(error)),
+      );
     let names: string[];
     try {
       names = await readdir(getPipelineInstallIntentsDir());
     } catch (error) {
-      if (isRecord(error) && error.code === 'ENOENT') return;
+      if (isRecord(error) && error.code === 'ENOENT') {
+        if (refusal) throw refusal;
+        return;
+      }
       throw error;
     }
-    const pending: Array<{ intent: IntentFileV1; settle: SettleRecovery }> = [];
+    const pending: Array<{ intent: IntentFile; settle: SettleRecovery }> = [];
     for (const name of names.sort()) {
       if (!INTENT_FILE.test(name)) continue;
       const id = name.slice(0, -'.json'.length);
@@ -1378,6 +1512,7 @@ export function createPipelineInstallJournal<
           continue;
         }
         if (parsed.kind === 'unreadable' || parsed.intent.id !== id) {
+          if (refusal) continue;
           const setAside = `.unreadable-${Date.now()}`;
           await rename(file, `${file}${setAside}`);
           await rename(
@@ -1393,6 +1528,11 @@ export function createPipelineInstallJournal<
           );
           continue;
         }
+        if (refusal) {
+          claimDefinitions(parsed.intent);
+          unconfirmedIntents.add(parsed.intent.id);
+          continue;
+        }
         pending.push({
           intent: parsed.intent,
           settle: noteDefinitionsRecovering(parsed.intent),
@@ -1405,16 +1545,30 @@ export function createPipelineInstallJournal<
       }
     }
     options.onListed?.();
+    if (refusal) throw refusal;
     for (const { intent, settle } of pending) {
       try {
-        await rollBackIntent(intent);
+        if (intent.markerClears) {
+          await finalizeCommittedIntent(
+            intent.id,
+            intent.markerClears,
+            intent.subscription,
+            'replay',
+          );
+        } else {
+          await rollBackIntent(intent);
+        }
         releaseClaims(intent.id);
-        settle('ready', noteUndoneDefinitions(intent));
+        unconfirmedIntents.delete(intent.id);
+        settle(
+          'ready',
+          intent.markerClears ? new Set() : noteUndoneDefinitions(intent),
+        );
       } catch (error) {
         // Its record stays for the next start; until then no install of this
         // process may take over what it covers, and no run starts against it.
         claimDefinitions(intent);
-        failedRollbacks.add(intent.id);
+        unconfirmedIntents.add(intent.id);
         settle('unconfirmed', new Set());
         logMainProcessWarn(
           '[pipeline-install] Could not recover an interrupted install',
@@ -1445,7 +1599,7 @@ export function createPipelineInstallJournal<
    */
   const claimedDefinitions = new Map<string, string>();
 
-  function claimDefinitions(intent: IntentFileV1): void {
+  function claimDefinitions(intent: IntentFile): void {
     for (const definition of intent.definitions)
       claimedDefinitions.set(definition.definitionId, intent.id);
   }
@@ -1471,7 +1625,7 @@ export function createPipelineInstallJournal<
    * longer has: one the install had created. A run must not fall back to a
    * caller's copy of it.
    */
-  function noteUndoneDefinitions(intent: IntentFileV1): Set<string> {
+  function noteUndoneDefinitions(intent: IntentFile): Set<string> {
     const removed = new Set<string>();
     for (const { definitionId } of intent.definitions)
       if (inspectStoredPipelineDocument(definitionId).kind === 'absent') {
@@ -1490,15 +1644,15 @@ export function createPipelineInstallJournal<
   }
 
   /**
-   * Intents whose rollback failed in this process. Their record stays for the
-   * next start, so what they cover is only partly restored until then.
+   * Intents that could not finish recovery in this process. They stay for
+   * the next start, and runs against the definitions they cover stay fenced.
    */
-  const failedRollbacks = new Set<string>();
+  const unconfirmedIntents = new Set<string>();
 
-  /** Each definition a record being rolled back covers, until it settles. */
+  /** Each definition startup recovery covers until its record settles. */
   const recoveringDefinitions = new Map<string, Promise<SettledRecovery>>();
 
-  function noteDefinitionsRecovering(intent: IntentFileV1): SettleRecovery {
+  function noteDefinitionsRecovering(intent: IntentFile): SettleRecovery {
     let settle: SettleRecovery = () => undefined;
     const settled = new Promise<{
       outcome: 'ready' | 'unconfirmed';
@@ -1582,7 +1736,7 @@ export function createPipelineInstallJournal<
       if (definitionRemoval(definitionId) === 'undone') return 'removed';
     }
     const owner = claimedDefinitions.get(definitionId);
-    return owner !== undefined && failedRollbacks.has(owner)
+    return owner !== undefined && unconfirmedIntents.has(owner)
       ? 'unconfirmed'
       : 'ready';
   }
@@ -1662,9 +1816,8 @@ export function createPipelineInstallJournal<
     source: PipelineInstallIntentSource,
   ): Promise<PipelineInstallIntent> {
     await whenPipelineInstallsRecovered();
-    assertWritable();
-    const intent: IntentFileV1 = {
-      version: INTENT_VERSION,
+    await assertWritable();
+    const intent: IntentFile = {
       id: randomUUID(),
       source,
       startedAt: new Date().toISOString(),
@@ -1684,7 +1837,7 @@ export function createPipelineInstallJournal<
       end(how);
     };
     const save = async (): Promise<void> => {
-      assertWritable();
+      await assertWritable();
       await writeIntent(intent);
       written = true;
     };
@@ -1699,7 +1852,17 @@ export function createPipelineInstallJournal<
     const release = (): void => {
       releaseClaims(intent.id);
     };
+    // A finish or rollback the store's owner record refuses leaves the
+    // intent for the owning host's recovery, so what it covers stays claimed
+    // and no run starts against it.
+    const leftForOwner = (error: unknown): never => {
+      unconfirmedIntents.add(intent.id);
+      ended('unconfirmed');
+      throw error;
+    };
     const settle = async (): Promise<void> => {
+      if (written)
+        await Promise.resolve().then(assertWritable).catch(leftForOwner);
       try {
         if (written) await removeIntent(intent.id);
         written = false;
@@ -1754,6 +1917,8 @@ export function createPipelineInstallJournal<
           throw new Error(
             `Install intent got a staging folder name that is not an install's: ${plan.stagingName}`,
           );
+        // Before the first snapshot byte, not only at the save.
+        await assertWritable();
         const kept = snapshotsDir(intent.id);
         let keptDirReady = false;
         const files: IntentAssetFile[] = [];
@@ -1839,14 +2004,45 @@ export function createPipelineInstallJournal<
         };
         await save();
       },
-      finish: settle,
+      async finish(markerClears = [], subscription): Promise<void> {
+        if (markerClears.length === 0) return settle();
+        await assertWritable();
+        // Recovery switches from rollback to cleanup at this durable write.
+        await writeIntent({
+          ...intent,
+          markerClears,
+          ...(subscription && { subscription }),
+        });
+        intent.markerClears = markerClears;
+        try {
+          await finalizeCommittedIntent(
+            intent.id,
+            markerClears,
+            subscription,
+            'live',
+          );
+          written = false;
+          release();
+          ended('finished');
+        } catch (error) {
+          unconfirmedIntents.add(intent.id);
+          ended('unconfirmed');
+          logMainProcessWarn(
+            '[pipeline-install] Committed install needs marker cleanup',
+            error,
+          );
+          throw new PipelineInstallCleanupPendingError();
+        }
+      },
       async rollBack(): Promise<void> {
+        if (intent.markerClears) return;
         // A rollback that fails leaves the record for startup recovery, so what
         // it covers stays claimed for the rest of this process, and no run
         // starts against it.
         if (written) {
+          await Promise.resolve().then(assertWritable).catch(leftForOwner);
           await rollBackIntent(intent).catch((error: unknown) => {
-            failedRollbacks.add(intent.id);
+            unconfirmedIntents.add(intent.id);
             ended('unconfirmed');
             throw error;
           });

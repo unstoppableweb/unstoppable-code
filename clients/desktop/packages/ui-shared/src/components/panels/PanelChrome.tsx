@@ -10,8 +10,8 @@ import {
   ActionMenuItems,
   ActionMenuRowStyle,
   type ActionMenuItem,
-} from '../ActionMenuItems';
-import { FloatingMenu } from '../FloatingMenu';
+} from '../../primitives/ActionMenuItems';
+import { FloatingMenu } from '../../primitives/FloatingMenu';
 import {
   ChevronDownMediumIcon,
   ChevronLeftMediumIcon,

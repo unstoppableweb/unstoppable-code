@@ -83,6 +83,9 @@ async function tryLoadFromCandidates(
   rootDir: string,
   ref: string,
   escapeMessage: string,
+  resolveFile?: (
+    filePath: string,
+  ) => Promise<ResolvedChildPipeline | undefined> | undefined,
 ): Promise<ResolvedChildPipeline | null> {
   const hasExtension = path.extname(ref).length > 0;
   const candidateRefs = hasExtension
@@ -117,6 +120,8 @@ async function tryLoadFromCandidates(
         continue;
       }
 
+      const checked = await resolveFile?.(candidatePath);
+      if (checked) return checked;
       return {
         pipeline: await loadPipelineFromPath(candidatePath),
         pipelineId: path.basename(candidatePath),
@@ -143,22 +148,15 @@ async function tryLoadFromCandidates(
 async function resolveUncheckedChildPipeline(
   args: ResolveChildPipelineArgs,
 ): Promise<ResolvedChildPipeline> {
-  const authorizeFile = async (
-    resolved: ResolvedChildPipeline,
-  ): Promise<ResolvedChildPipeline> => {
-    if (resolved.preferenceLocator?.type === 'file')
-      await args.resolvePipelineResource?.(
-        args.pipelineRef?.trim() ?? '',
-        args.parent,
-        {
-          cwd: args.repoPath ?? args.cwd,
-          filePath: resolved.preferenceLocator.value,
-        },
-      );
-    return resolved;
-  };
   const trimmedRef = args.pipelineRef?.trim();
   if (trimmedRef) {
+    const resolveFile = (
+      filePath: string,
+    ): Promise<ResolvedChildPipeline | undefined> | undefined =>
+      args.resolvePipelineResource?.(trimmedRef, args.parent, {
+        cwd: args.repoPath ?? args.cwd,
+        filePath,
+      });
     const packaged = args.packageOverlay?.resources.find(
       (resource) =>
         resource.kind === 'child_pipeline' &&
@@ -205,10 +203,9 @@ async function resolveUncheckedChildPipeline(
         args.pipelineFileDir,
         trimmedRef,
         `Child workflow ref "${trimmedRef}" escapes parent workflow directory`,
+        resolveFile,
       );
-      if (relativeToFile) {
-        return authorizeFile(relativeToFile);
-      }
+      if (relativeToFile) return relativeToFile;
     }
 
     if (args.repoPath && args.getProjectPipelinesDirCandidates) {
@@ -219,10 +216,9 @@ async function resolveUncheckedChildPipeline(
           projectPipelinesDir,
           trimmedRef,
           `Child workflow ref "${trimmedRef}" escapes project pipelines directory`,
+          resolveFile,
         );
-        if (relativeToProject) {
-          return authorizeFile(relativeToProject);
-        }
+        if (relativeToProject) return relativeToProject;
       }
     }
 
@@ -230,20 +226,18 @@ async function resolveUncheckedChildPipeline(
       args.cwd,
       trimmedRef,
       `Child workflow ref "${trimmedRef}" escapes execution cwd`,
+      resolveFile,
     );
-    if (relativeToCwd) {
-      return authorizeFile(relativeToCwd);
-    }
+    if (relativeToCwd) return relativeToCwd;
 
     const bundledPipelinesDir = getBundledPipelinesDir();
     const relativeToBundled = await tryLoadFromCandidates(
       bundledPipelinesDir,
       trimmedRef,
       `Child workflow ref "${trimmedRef}" escapes bundled pipelines directory`,
+      resolveFile,
     );
-    if (relativeToBundled) {
-      return authorizeFile({ ...relativeToBundled, bundled: true });
-    }
+    if (relativeToBundled) return { ...relativeToBundled, bundled: true };
 
     throw new Error(`Unable to resolve child workflow "${trimmedRef}"`);
   }

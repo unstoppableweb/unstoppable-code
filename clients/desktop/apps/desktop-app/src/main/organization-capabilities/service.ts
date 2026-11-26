@@ -17,6 +17,7 @@ import {
   type InstalledOrganizationItem,
   type OrganizationCapabilityScope,
   type OrganizationCapabilitySnapshot,
+  type OrganizationSharedConnection,
 } from '@canopy/desktop-shared/lib/organization-capabilities';
 import { importSharedMarketplacePlugin } from '@canopy/desktop-shared/lib/shared-import/shared-plugin-marketplace-import';
 import { writeFileAtomically } from '../lib/atomic-file';
@@ -103,6 +104,47 @@ const InstalledItemSchema = z.union([
   }),
 ]);
 
+const SharedConnectionSchema = z.strictObject({
+  key: z.string().min(1),
+  connectionId: z.string().min(1),
+  name: z.string(),
+  source: z.enum(['organization', 'project']),
+  serverKey: z.string().min(1),
+  configId: z.string().min(1),
+  identityKind: z.enum(['user', 'bot']),
+  status: z.enum(['pending', 'connected', 'needsSignIn', 'disconnected']),
+});
+
+/**
+ * A project's shared connections as the desktop shows and selects them
+ * (CAN-6246): only available ones a ref can name. The hosted proxy decides
+ * every call, so this copy never widens access.
+ */
+function sharedConnectionsOf(
+  setup: Pick<CatalogProjectSetupGetResult, 'connectors'>,
+): OrganizationSharedConnection[] {
+  // A member not added to the project, directly or through a team, may not
+  // use its connections (CAN-6247), so their chats carry none. A server from
+  // before `canUse` sends none, and the proxy still decides every call.
+  if (setup.connectors?.canUse === false) return [];
+  return (setup.connectors?.effective ?? []).flatMap(({ item, source }) =>
+    item.available && item.configId !== undefined && item.serverKey !== ''
+      ? [
+          {
+            key: `connector:${item.ref.id}`,
+            connectionId: item.ref.id,
+            name: item.name,
+            source,
+            serverKey: item.serverKey,
+            configId: item.configId,
+            identityKind: item.identityKind,
+            status: item.status,
+          },
+        ]
+      : [],
+  );
+}
+
 const CacheFileSchema = z.strictObject({
   version: z.literal(1),
   snapshots: z.array(
@@ -118,6 +160,9 @@ const CacheFileSchema = z.strictObject({
       items: z.array(InstalledItemSchema),
       // Added in phase 10b; written only when the project switched one off.
       switchedOffPipelines: z.array(z.string().min(1)).optional(),
+      // Added with shared connections (CAN-6246); written only when the
+      // project has some, so a file without them still reads in an older app.
+      connections: z.array(SharedConnectionSchema).optional(),
     }),
   ),
   // Added in phase 10a; written only while a removal is due, so a file
@@ -220,7 +265,10 @@ function sameItems(
   a: OrganizationCapabilitySnapshot | undefined,
   b: OrganizationCapabilitySnapshot,
 ): boolean {
-  return JSON.stringify(a?.items ?? null) === JSON.stringify(b.items);
+  return (
+    JSON.stringify(a?.items ?? null) === JSON.stringify(b.items) &&
+    JSON.stringify(a?.connections ?? []) === JSON.stringify(b.connections ?? [])
+  );
 }
 
 /** A workspace's organization pipelines, by hosted id (phase 10b). */
@@ -350,6 +398,8 @@ export function createOrganizationCapabilityService(deps: {
         readonly defaultsRevision: number;
         /** The organization's default pipelines the project switched off. */
         readonly switchedOffPipelines: readonly string[];
+        /** The project's shared connections (CAN-6246). */
+        readonly connections: readonly OrganizationSharedConnection[];
       }
     | { readonly kind: 'unavailable' | 'refused' };
 
@@ -365,6 +415,7 @@ export function createOrganizationCapabilityService(deps: {
             setupRevision: setup.value.revision,
             defaultsRevision: setup.value.organizationDefaultsRevision,
             switchedOffPipelines: switchedOffPipelines(setup.value),
+            connections: sharedConnectionsOf(setup.value),
           }
         : { kind: setup.kind };
     }
@@ -381,6 +432,8 @@ export function createOrganizationCapabilityService(deps: {
           setupRevision: null,
           defaultsRevision: defaults.value.revision,
           switchedOffPipelines: [],
+          // No project, so no project grant: shared connections never apply.
+          connections: [],
         }
       : { kind: defaults.kind };
   }
@@ -605,6 +658,9 @@ export function createOrganizationCapabilityService(deps: {
             items,
             ...(result.switchedOffPipelines.length > 0
               ? { switchedOffPipelines: [...result.switchedOffPipelines] }
+              : {}),
+            ...(result.connections.length > 0
+              ? { connections: [...result.connections] }
               : {}),
           };
           if ((await deps.accountId()) !== accountId) return null;

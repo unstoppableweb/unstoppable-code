@@ -16,6 +16,7 @@ import {
 import type { DynamicToolCallParams } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolCallParams';
 import type { DynamicToolCallResponse } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolCallResponse';
 import type { DynamicToolSpec } from '@canopy/execution-engine/node/codex-runtime/generated/v2/DynamicToolSpec';
+import { VISUAL_PREVIEW_BUDGETS } from '../browser/visual-preview-types';
 import { defineCodexFunctionToolSpec } from '../codex/dynamic-tool-spec';
 import {
   APP_ADVISOR_ADD_LEDGER_ENTRY_DESCRIPTION,
@@ -173,6 +174,15 @@ export function buildAppAdvisorDynamicToolSpecs(
   );
 }
 
+/** The raw image bytes left once a dispatch result's text has its share. */
+const CODEX_DISPATCH_IMAGE_BUDGET_BYTES = Math.floor(
+  ((VISUAL_PREVIEW_BUDGETS.codexResponseBytes -
+    VISUAL_PREVIEW_BUDGETS.codexTextBytes -
+    2048) *
+    3) /
+    4,
+);
+
 export async function handleAppAdvisorDynamicToolCall(
   params: DynamicToolCallParams,
   runtime: AppAdvisorToolRuntime,
@@ -200,6 +210,12 @@ export async function handleAppAdvisorDynamicToolCall(
     runtime,
     {
       toolUseId: `codex-${params.callId}`,
+      // CAN-7749: an image a DispatchAction returns (only slack_thread.open_file
+      // does) is fitted to its share of Codex's response limit, as
+      // preview_visual's screenshot is.
+      ...(canonicalKey === 'dispatch_action'
+        ? { imageBudgetBytes: CODEX_DISPATCH_IMAGE_BUDGET_BYTES }
+        : {}),
       ...(context?.signal ? { signal: context.signal } : {}),
       ...(context?.interfaceTools
         ? { interfaceTools: context.interfaceTools }
@@ -221,8 +237,30 @@ export async function handleAppAdvisorDynamicToolCall(
     },
   );
 
-  return {
-    contentItems: [{ type: 'inputText', text: result.text }],
-    success: result.isError !== true,
-  };
+  const success = result.isError !== true;
+  if (!result.imageDataUrl)
+    return {
+      contentItems: [{ type: 'inputText', text: result.text }],
+      success,
+    };
+  const contentItems = [
+    { type: 'inputText' as const, text: result.text },
+    { type: 'inputImage' as const, imageUrl: result.imageDataUrl },
+  ];
+  // Codex rejects a response over its limit, so swap the image for a note
+  // rather than lose the whole result.
+  if (
+    Buffer.byteLength(JSON.stringify({ success, contentItems }), 'utf8') >
+    VISUAL_PREVIEW_BUDGETS.codexResponseBytes
+  )
+    return {
+      contentItems: [
+        {
+          type: 'inputText',
+          text: `${result.text}\nImage omitted to fit the response limit: the delivered image described above was not sent.`,
+        },
+      ],
+      success,
+    };
+  return { contentItems, success };
 }

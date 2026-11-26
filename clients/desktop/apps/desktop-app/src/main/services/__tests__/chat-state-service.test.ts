@@ -2885,6 +2885,102 @@ describe('chat state service', () => {
     await expect(target.turnOutcome(first)).resolves.toBe('completed');
   });
 
+  it("does not save a paired controller's answer whose pairing is removed while it is in flight (CAN-7872)", async () => {
+    const { target } = serviceWithRepository();
+    await createChat(target);
+    await target.upsertPendingQuestion(SCOPE, {
+      requestId: 'remote-question',
+      chatId: 'chat-1',
+      delivery: 'async',
+      questions: [{ id: 'scope', question: 'Which scope?', options: ['Full'] }],
+    });
+    // The pairing holds when the answer is admitted and is gone by the time
+    // it would commit.
+    let checks = 0;
+    const canCommitSend = (): boolean => (checks += 1) === 1;
+
+    await expect(
+      target.command(
+        envelope('remote-answer', {
+          type: 'chat.answer_question',
+          chatId: 'chat-1',
+          questionId: 'remote-question',
+          answers: [
+            {
+              questionId: 'scope',
+              question: 'Which scope?',
+              selectedOptions: ['Full'],
+            },
+          ],
+        }),
+        { canCommitSend },
+      ),
+    ).resolves.toMatchObject({ outcome: 'rejected' });
+
+    expect(checks).toBeGreaterThan(1);
+    expect(dispatched).toEqual([]);
+    const state = await target.getState(SCOPE);
+    expect(
+      state.tabsFile.pendingQuestions?.find(
+        (question) => question.requestId === 'remote-question',
+      )?.answeredAt,
+    ).toBeUndefined();
+    expect(state.tabsFile.tabs[0]?.messages.map(({ id }) => id)).toEqual([]);
+    expect(state.runtimeByChatId['chat-1']?.queuedMessages ?? []).toEqual([]);
+    await expect(target.hasMutation(SCOPE, 'remote-answer')).resolves.toBe(
+      false,
+    );
+  });
+
+  it('leaves a queued message as it is when a paired controller sends again with its id (CAN-7872)', async () => {
+    const { target } = serviceWithRepository();
+    await createChat(target);
+    const queued = {
+      id: 'row-kept',
+      request: {
+        ...SCOPE,
+        chatId: 'chat-1',
+        userMessageId: 'user-kept',
+        text: 'Queued text',
+      },
+      origin: 'desktop' as const,
+      enqueuedAtMs: 1,
+    };
+    await target.reconcileHostQueue(
+      { ...SCOPE, chatId: 'chat-1' },
+      ['row-kept'],
+      true,
+      undefined,
+      [queued],
+      'user-running',
+    );
+    const before = await target.getState(SCOPE);
+
+    await expect(
+      target.command(
+        envelope('remote-resend', {
+          type: 'chat.send_message',
+          chatId: 'chat-1',
+          userMessageId: 'user-kept',
+          text: 'Replaced text',
+        }),
+        { canCommitSend: () => true },
+      ),
+    ).resolves.toMatchObject({
+      outcome: 'already_applied',
+      messageId: 'user-kept',
+    });
+
+    const after = await target.getState(SCOPE);
+    expect(after.runtimeByChatId['chat-1']?.queuedMessages).toEqual(
+      before.runtimeByChatId['chat-1']?.queuedMessages,
+    );
+    expect(after.tabsFile.tabs[0]?.messages).toEqual(
+      before.tabsFile.tabs[0]?.messages,
+    );
+    expect(dispatched).toEqual([]);
+  });
+
   it('names the user messages whose transcript position does not start a turn yet', async () => {
     const { target } = serviceWithRepository();
     await createChat(target);
@@ -3789,6 +3885,122 @@ describe('chat state service', () => {
       target.turnOutcome(turn('user-failed', 'chat-2')),
     ).resolves.toBe('failed');
   }, 120_000);
+
+  it.each([
+    { provider: 'claude', tagged: true },
+    { provider: 'codex', tagged: false },
+  ] as const)(
+    'settles a terminal-less $provider Stop durably',
+    async ({ provider, tagged }) => {
+      const fixture = await deliveryFixture();
+      const { target, repository } = fixture;
+      const turn = {
+        ...fixture.scope,
+        userMessageId: 'root-1',
+      };
+      await target.command(
+        envelope('send-stop', {
+          type: 'chat.send_message',
+          chatId: turn.chatId,
+          userMessageId: turn.userMessageId,
+          text: 'Run',
+        }),
+      );
+      await reportTurn(target, 'start', turn.userMessageId, { provider });
+      await target.ingestProviderEvent({
+        ...turn,
+        turnUserMessageId: turn.userMessageId,
+        data: {
+          type: CANOPY_USER_PROMPT_ACCEPTED_EVENT_TYPE,
+          canopy_turn_user_message_id: turn.userMessageId,
+        },
+      });
+      await expect(fixture.steer()).resolves.toBe(true);
+      await fixture.updateLedger((ledger) => ({
+        ...ledger,
+        rows: ledger.rows.map((row) => ({
+          ...row,
+          state: 'picked-up',
+          attempts: row.attempts.map((attempt) => ({
+            ...attempt,
+            pickedUpAt: 1,
+            rootUserMessageId: turn.userMessageId,
+          })),
+        })),
+      }));
+      const stop = {
+        ...SCOPE,
+        chatId: turn.chatId,
+        mutationId: `stop-${provider}`,
+        explicitStop: {
+          userMessageId: turn.userMessageId,
+          executionTurnId: `turn-${turn.userMessageId}`,
+        },
+        ...(tagged ? { turnUserMessageId: turn.userMessageId } : {}),
+        data: {
+          type: 'result',
+          is_error: false,
+          result: 'Cancelled',
+        },
+      };
+      const stopResult = await target.ingestProviderEventWithResult(stop);
+      const cancelled = await target.settledTurn(turn);
+      expect(cancelled).toMatchObject({
+        outcome: 'cancelled',
+        endedAt: expect.any(Number),
+      });
+      expect((await fixture.getRow()).attempts[0]).toMatchObject({
+        turnOutcome: 'cancelled',
+        turnSettledAt: cancelled.endedAt,
+      });
+      expect(
+        (await repository.getState(SCOPE)).runtimeByChatId[turn.chatId]?.status,
+      ).toBe('cancelled');
+      await target.ingestProviderEvent(stop);
+      await expect(target.settledTurn(turn)).resolves.toEqual(cancelled);
+
+      const nextInput = 'user-next';
+      await target.command(
+        envelope('send-next', {
+          type: 'chat.send_message',
+          chatId: turn.chatId,
+          userMessageId: nextInput,
+          text: 'Continue',
+        }),
+      );
+      await reportTurn(target, 'start', nextInput, { provider });
+      await target.ingestProviderEvent({
+        ...stop,
+        mutationId: `stale-stop-${provider}`,
+      });
+      expect(
+        (await repository.getState(SCOPE)).runtimeByChatId[turn.chatId]?.turn
+          ?.current?.userMessageId,
+      ).toBe(nextInput);
+      await reportTurn(target, 'end', nextInput, { provider });
+      await target.ingestProviderEvent({
+        ...stop,
+        mutationId: `completed-stop-${provider}`,
+        turnUserMessageId: nextInput,
+        data: {
+          ...stop.data,
+          canopy_turn_user_message_id: nextInput,
+        },
+        explicitStop: {
+          userMessageId: nextInput,
+          executionTurnId: `turn-${nextInput}`,
+        },
+      });
+      await expect(
+        target.settledTurn({ ...turn, userMessageId: nextInput }),
+      ).resolves.toMatchObject({ outcome: 'completed' });
+      await expect(target.settledTurn(turn)).resolves.toEqual(cancelled);
+      expect(stopResult.cancellation).toEqual({
+        ...stop.explicitStop,
+        endedAt: cancelled.endedAt,
+      });
+    },
+  );
 
   it('reports a provider event’s place in commit order at once, so events submitted without waiting commit in provider order', async () => {
     // Group commit: the turn pipeline submits
@@ -17222,6 +17434,302 @@ describe('chat state service', () => {
       await expect(target.turnOutcome(turn('user-held'))).resolves.toBe(
         'cancelled',
       );
+    });
+
+    it('stops the held turn by its id, as from another device, and runs the sends queued behind it after setup (CAN-7873)', async () => {
+      const { target, queue, notices, settle } = heldService();
+      await createChat(target);
+      await send(target, 'user-held');
+      await queueBehind(target, queue, 'user-next');
+      mockedGetChatQueueService.mockReturnValue(queue);
+      const service = jest
+        .spyOn(chatStateServiceModule, 'getChatStateService')
+        .mockReturnValue(target);
+      const sessions = await import('../../agents/session-manager');
+      const providerCancel = jest.spyOn(sessions, 'requestChatTurnCancel');
+      try {
+        const { cancelWorktreeChatTurn } = await import('../chat-service');
+        await expect(
+          cancelWorktreeChatTurn({ ...CHAT, turnId: 'user-held' }),
+        ).resolves.toEqual({ ok: true, outcome: 'stop_requested' });
+        await settled();
+
+        // It never reaches a provider, so no provider stop is left pending.
+        expect(providerCancel).not.toHaveBeenCalled();
+        expect(notices).toEqual([endNotice('user-held', 'cancelled')]);
+        await expect(target.turnOutcome(turn('user-held'))).resolves.toBe(
+          'cancelled',
+        );
+        expect(dispatched).toEqual([]);
+        // The queue no longer reports the stopped turn as running.
+        expect(queue.runningTurnUserMessageId(CHAT)).toBeUndefined();
+        await expect(
+          cancelWorktreeChatTurn({ ...CHAT, turnId: 'user-held' }),
+        ).resolves.toEqual({ ok: true, outcome: 'turn_not_active' });
+        expect(queue.holdsUserMessage(CHAT, 'user-next')).toBe(true);
+
+        settle('ready');
+        await until(() => dispatched.length === 1);
+        await settled();
+
+        expect(dispatchedIds()).toEqual(['user-next']);
+        expect(notices).toHaveLength(1);
+      } finally {
+        providerCancel.mockRestore();
+        service.mockRestore();
+      }
+    });
+
+    it("ends only the running turn for a one-window session's exact Stop, leaving a queued message and the queue unchanged (CAN-7854)", async () => {
+      const { target, queue, notices, settle } = heldService();
+      await createChat(target);
+      await send(target, 'user-held');
+      await queueBehind(target, queue, 'user-next');
+      mockedGetChatQueueService.mockReturnValue(queue);
+      const service = jest
+        .spyOn(chatStateServiceModule, 'getChatStateService')
+        .mockReturnValue(target);
+      try {
+        const { cancelWorktreeChatTurn } = await import('../chat-service');
+        const liveQueue = (): unknown =>
+          queue.getWorktreeSnapshots(SCOPE.projectId, SCOPE.worktreeId);
+        const queueBefore = JSON.stringify(liveQueue());
+        const runtimeBefore = await runtimeOf(target);
+
+        // A message still waiting in the queue is not the running turn.
+        await expect(
+          cancelWorktreeChatTurn(
+            { ...CHAT, turnId: 'user-next' },
+            { runningTurnOnly: true },
+          ),
+        ).resolves.toEqual({ ok: true, outcome: 'turn_not_active' });
+        await settled();
+        expect(JSON.stringify(liveQueue())).toBe(queueBefore);
+        await expect(runtimeOf(target)).resolves.toEqual(runtimeBefore);
+        expect(queue.holdsUserMessage(CHAT, 'user-next')).toBe(true);
+        expect(notices).toEqual([]);
+
+        // The first message waiting for Git setup is the running turn.
+        await expect(
+          cancelWorktreeChatTurn(
+            { ...CHAT, turnId: 'user-held' },
+            { runningTurnOnly: true },
+          ),
+        ).resolves.toEqual({ ok: true, outcome: 'stop_requested' });
+        await settled();
+        expect(notices).toEqual([endNotice('user-held', 'cancelled')]);
+
+        settle('ready');
+        await until(() => dispatched.length === 1);
+        expect(dispatchedIds()).toEqual(['user-next']);
+      } finally {
+        service.mockRestore();
+      }
+    });
+
+    it('still withdraws a queued message for any other exact Stop (CAN-7854)', async () => {
+      const { target, queue, settle } = heldService();
+      await createChat(target);
+      await send(target, 'user-held');
+      await queueBehind(target, queue, 'user-next');
+      await queueBehind(target, queue, 'user-last');
+      mockedGetChatQueueService.mockReturnValue(queue);
+      const service = jest
+        .spyOn(chatStateServiceModule, 'getChatStateService')
+        .mockReturnValue(target);
+      try {
+        const { cancelWorktreeChatTurn } = await import('../chat-service');
+        await expect(
+          cancelWorktreeChatTurn({ ...CHAT, turnId: 'user-next' }),
+        ).resolves.toEqual({ ok: true, outcome: 'stop_requested' });
+        expect(queue.holdsUserMessage(CHAT, 'user-next')).toBe(false);
+        await expect(queuedUserMessageIds(target)).resolves.toEqual([
+          'user-last',
+        ]);
+
+        settle('ready');
+        await until(() => dispatched.length === 1);
+        expect(dispatchedIds()).toEqual(['user-held']);
+      } finally {
+        service.mockRestore();
+      }
+    });
+
+    it('leaves a send already being handed to its agent to its own end when stopped by its id (CAN-7873)', async () => {
+      let handOff = (): void => undefined;
+      const { target, queue, notices, settle } = heldService({
+        provider: (request) =>
+          request.userMessageId === 'user-held'
+            ? new Promise<void>((resolve) => {
+                handOff = resolve;
+              })
+            : Promise.resolve(),
+      });
+      await createChat(target);
+      await send(target, 'user-held');
+      await queueBehind(target, queue, 'user-next');
+      mockedGetChatQueueService.mockReturnValue(queue);
+      const service = jest
+        .spyOn(chatStateServiceModule, 'getChatStateService')
+        .mockReturnValue(target);
+      const sessions = await import('../../agents/session-manager');
+      const providerCancel = jest.spyOn(sessions, 'requestChatTurnCancel');
+      try {
+        const { cancelWorktreeChatTurn } = await import('../chat-service');
+        settle('ready');
+        await until(() => dispatched.length === 1);
+
+        await expect(
+          cancelWorktreeChatTurn({ ...CHAT, turnId: 'user-held' }),
+        ).resolves.toEqual({ ok: true, outcome: 'stop_requested' });
+        expect(notices).toEqual([]);
+        expect(queue.runningTurnUserMessageId(CHAT)).toBe('user-held');
+        expect(providerCancel).toHaveBeenCalledWith(
+          expect.any(String),
+          'user-held',
+        );
+
+        handOff();
+        queue.onTurnTerminal(CHAT, 'complete', 'user-held');
+        await until(() => dispatched.length === 2);
+
+        expect(dispatchedIds()).toEqual(['user-held', 'user-next']);
+        expect(notices).toEqual([]);
+      } finally {
+        providerCancel.mockRestore();
+        service.mockRestore();
+      }
+    });
+
+    it("never sends a pipeline send stopped by its id while setup's model write is saved (CAN-7873)", async () => {
+      const validation = jest
+        .spyOn(senderContext, 'revalidateAgentSenderRequest')
+        .mockResolvedValue(undefined);
+      const { target, repository, queue, notices, settle } = heldService();
+      mockedGetChatQueueService.mockReturnValue(queue);
+      const service = jest
+        .spyOn(chatStateServiceModule, 'getChatStateService')
+        .mockReturnValue(target);
+      try {
+        await createChat(target);
+        const sender = {
+          kind: 'pipeline' as const,
+          executionId: 'exec-1',
+          pipelineId: 'nightly',
+          stepId: 'notify',
+        };
+        await expect(
+          target.command(
+            envelope('send-pipeline-stopped', {
+              type: 'chat.send_message',
+              chatId: 'chat-1',
+              userMessageId: 'pipeline-held',
+              text: 'Nightly report',
+              agentSent: { sender, chatTitle: 'Nightly', projectLabel: '' },
+              agentSenderProvenance: {
+                version: 1,
+                sender,
+                owner: { kind: 'personal' },
+                capturedAt: '2026-10-26T00:00:00.000Z',
+                acceptedInputId: 'pipeline-held',
+              },
+              hiddenContext: {
+                kind: 'agent-sender-context',
+                text: '<system_instruction>Pipeline</system_instruction>',
+              },
+              turnOverride: {
+                version: 1,
+                model: 'claude-sonnet-4-6',
+                providerType: 'claude',
+              },
+            }),
+          ),
+        ).resolves.toMatchObject({ outcome: 'applied' });
+        expect(target.isAwaitingWorktreeSetup(turn('pipeline-held'))).toBe(
+          true,
+        );
+        await queueBehind(target, queue, 'user-next');
+        await expect(
+          target.command(
+            envelope('set-model-during-setup', {
+              type: 'chat.set_model',
+              tabId: 'chat-1',
+              model: 'gpt-6-sol',
+              providerType: 'codex',
+            }),
+          ),
+        ).resolves.toMatchObject({ outcome: 'applied' });
+        // Hold setup's write of the override's model open.
+        let saveModel = (): void => undefined;
+        const modelSaved = new Promise<void>((resolve) => {
+          saveModel = resolve;
+        });
+        const transactWith = repository.transactWith.bind(repository);
+        let modelWrite = false;
+        const write = jest
+          .spyOn(repository, 'transactWith')
+          .mockImplementationOnce(async (...args) => {
+            modelWrite = true;
+            await modelSaved;
+            return transactWith(...args);
+          });
+        const { cancelWorktreeChatTurn } = await import('../chat-service');
+
+        settle('ready');
+        await until(() => modelWrite);
+        const stopping = cancelWorktreeChatTurn({
+          ...CHAT,
+          turnId: 'pipeline-held',
+        });
+        saveModel();
+        await expect(stopping).resolves.toEqual({
+          ok: true,
+          outcome: 'stop_requested',
+        });
+        await until(() => dispatched.length === 1);
+        await settled();
+        write.mockRestore();
+
+        expect(dispatchedIds()).toEqual(['user-next']);
+        expect(notices).toEqual([endNotice('pipeline-held', 'cancelled')]);
+      } finally {
+        service.mockRestore();
+        validation.mockRestore();
+      }
+    });
+
+    it('keeps the queue held until a stopped send waiting for setup has its end saved (CAN-7873)', async () => {
+      const { target, repository, queue, notices, settle } = heldService();
+      await createChat(target);
+      await send(target, 'user-held');
+      await queueBehind(target, queue, 'user-next');
+      mockedGetChatQueueService.mockReturnValue(queue);
+      const service = jest
+        .spyOn(chatStateServiceModule, 'getChatStateService')
+        .mockReturnValue(target);
+      const write = jest
+        .spyOn(repository, 'transactWith')
+        .mockRejectedValueOnce(new Error('disk full'));
+      try {
+        const { cancelWorktreeChatTurn } = await import('../chat-service');
+        await expect(
+          cancelWorktreeChatTurn({ ...CHAT, turnId: 'user-held' }),
+        ).resolves.toEqual({ ok: true, outcome: 'stop_requested' });
+
+        expect(write).toHaveBeenCalled();
+        expect(notices).toEqual([]);
+        expect(queue.runningTurnUserMessageId(CHAT)).toBe('user-held');
+        expect(dispatched).toEqual([]);
+
+        settle('ready');
+        await until(() => dispatched.length === 1);
+        await settled();
+
+        expect(dispatchedIds()).toEqual(['user-next']);
+      } finally {
+        write.mockRestore();
+        service.mockRestore();
+      }
     });
 
     it('never runs a queued send cancelled from the queue during the hold', async () => {

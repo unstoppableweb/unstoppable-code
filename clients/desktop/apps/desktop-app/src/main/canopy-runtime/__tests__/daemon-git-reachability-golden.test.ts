@@ -12,6 +12,7 @@ import type {
   CanopyHostExecution,
   WorkerGitBranchListParams,
   WorkerGitBranchListResult,
+  WorkerGitWorktreeHealthGetResult,
 } from '@canopy/protocol/canopy-core';
 import {
   createDaemonGitRoute,
@@ -60,6 +61,25 @@ const inProcess: WorkerGitBranchListResult = {
   defaultBranch: null,
   defaultBranchSource: null,
 };
+const healthy: WorkerGitWorktreeHealthGetResult = { healthy: true };
+const healthInProcess: WorkerGitWorktreeHealthGetResult = {
+  healthy: false,
+  issue: {
+    code: 'missing-worktree-path',
+    checkedAt: '2026-01-01T00:00:00.000Z',
+    repoIssues: null,
+  },
+};
+// Connection setup's own timeout, tagged as it is in electron-daemon-connection.
+const setupTimedOut = (): unknown =>
+  markUnreachable(
+    new CanopyOperationError({
+      kind: 'deadline_exceeded',
+      message: 'Desktop connection setup timed out.',
+      retry: { kind: 'never' },
+    }),
+    'connect_timeout',
+  );
 const refusal = (): CanopyOperationError =>
   new CanopyOperationError({
     kind: 'failed_precondition',
@@ -87,6 +107,11 @@ interface Harness {
   readonly record: jest.Mock;
   readonly connection: AbortController;
   readonly list: () => Promise<WorkerGitBranchListResult>;
+  readonly healthDirect: jest.Mock<
+    Promise<WorkerGitWorktreeHealthGetResult>,
+    []
+  >;
+  readonly health: () => Promise<WorkerGitWorktreeHealthGetResult>;
 }
 
 function harness(
@@ -137,6 +162,7 @@ function harness(
             projectId,
             worktreeId,
           }),
+          workspaceManifestReadable: () => Promise.resolve(true),
           execution: (): CanopyHostExecution => ({
             childEnvironment: { GIT_TERMINAL_PROMPT: '0' },
           }),
@@ -148,7 +174,19 @@ function harness(
     record,
   });
   routes.push(route);
+  const healthDirect = jest.fn(
+    (): Promise<WorkerGitWorktreeHealthGetResult> =>
+      Promise.resolve(healthInProcess),
+  );
   return {
+    healthDirect,
+    health: () =>
+      route.worktreeHealth(
+        { scope: { workspaceId: 'ws', worktreeId: 'wt' } },
+        { caller },
+        { sender: new FakeSender(1) },
+        healthDirect,
+      ),
     route,
     direct,
     query,
@@ -271,6 +309,16 @@ describe('daemon branch lists under the background-service rule (CAN-4729)', () 
     expect(h.record.mock.calls).toEqual([['latched']]);
   });
 
+  it('falls back once when connection setup times out before the request deadline', async () => {
+    const h = harness();
+    h.get.mockRejectedValueOnce(setupTimedOut());
+    await expect(h.list()).resolves.toEqual(inProcess);
+    expect(h.direct).toHaveBeenCalledTimes(1);
+    expect(h.query).not.toHaveBeenCalled();
+    expect(h.noteFallback.mock.calls).toEqual([['connect_timeout']]);
+    expect(h.record.mock.calls).toEqual([['unreachable']]);
+  });
+
   it('keeps a deadline typed while the connection is still being set up', async () => {
     const h = harness({ queryDeadlineMs: 20 });
     h.get.mockImplementationOnce(() => new Promise<never>(() => undefined));
@@ -318,6 +366,7 @@ describe('daemon branch lists under the background-service rule (CAN-4729)', () 
             await watched.hostContext();
             return direct();
           },
+          worktreeHealth: (_requested, _context, _request, direct) => direct(),
           dispose: (): void => undefined,
         };
       },
@@ -414,5 +463,89 @@ describe('daemon branch lists under the background-service rule (CAN-4729)', () 
       'host_unavailable',
       'latched',
     ]);
+  });
+});
+
+describe('daemon worktree health under the background-service rule (CAN-4729)', () => {
+  it('serves a reached daemon and never checks in process', async () => {
+    const h = harness();
+    h.query.mockResolvedValueOnce(healthy);
+    await expect(h.health()).resolves.toEqual(healthy);
+    expect((h.query.mock.calls[0] as unknown[]).slice(0, 2)).toEqual([
+      'worker.git.worktree.health.get',
+      {
+        scope: {
+          workspaceId: 'ws',
+          worktreeId: 'wt',
+          authorityId: 'authority',
+        },
+      },
+    ]);
+    expect(h.healthDirect).not.toHaveBeenCalled();
+    expect(h.record.mock.calls).toEqual([['served']]);
+  });
+
+  it('falls back once when the host cannot be prepared', async () => {
+    const h = harness();
+    h.hostContext.mockRejectedValueOnce(new Error('no data root'));
+    await expect(h.health()).resolves.toEqual(healthInProcess);
+    expect(h.healthDirect).toHaveBeenCalledTimes(1);
+    expect(h.get).not.toHaveBeenCalled();
+    expect(h.noteFallback.mock.calls).toEqual([['host_unavailable']]);
+  });
+
+  it('keeps a reached daemon refusal typed, with no in-process check', async () => {
+    const h = harness();
+    h.query.mockRejectedValueOnce(
+      new CanopyOperationError({
+        kind: 'failed_precondition',
+        code: 'worker.git.worktree.scopeUnsupported',
+        message: 'Unsupported.',
+        retry: { kind: 'never' },
+      }),
+    );
+    await expect(h.health()).rejects.toMatchObject({
+      payload: { code: 'worker.git.worktree.scopeUnsupported' },
+    });
+    expect(h.healthDirect).not.toHaveBeenCalled();
+    expect(h.record.mock.calls).toEqual([['refused']]);
+  });
+
+  it('falls back once when connection setup times out before the request deadline', async () => {
+    const h = harness();
+    h.get.mockRejectedValueOnce(setupTimedOut());
+    await expect(h.health()).resolves.toEqual(healthInProcess);
+    expect(h.healthDirect).toHaveBeenCalledTimes(1);
+    expect(h.query).not.toHaveBeenCalled();
+    expect(h.noteFallback.mock.calls).toEqual([['connect_timeout']]);
+    expect(h.record.mock.calls).toEqual([['unreachable']]);
+  });
+
+  it('keeps a deadline typed while the connection is still being set up', async () => {
+    const h = harness({ queryDeadlineMs: 20 });
+    h.get.mockImplementationOnce(() => new Promise<never>(() => undefined));
+    await expect(h.health()).rejects.toMatchObject({
+      payload: { kind: 'deadline_exceeded' },
+    });
+    expect(h.healthDirect).not.toHaveBeenCalled();
+    expect(h.noteFallback).not.toHaveBeenCalled();
+    expect(h.record.mock.calls).toEqual([['refused']]);
+  });
+
+  it('checks in process from the start while latched, with no contact', async () => {
+    const h = harness({ latched: true });
+    await expect(h.health()).resolves.toEqual(healthInProcess);
+    expect(h.hostContext).not.toHaveBeenCalled();
+    expect(h.healthDirect).toHaveBeenCalledTimes(1);
+    expect(h.record.mock.calls).toEqual([['latched']]);
+  });
+
+  it('leaves Windows on the in-process check, never refused', async () => {
+    const h = harness({ platform: 'win32' });
+    await expect(h.health()).resolves.toEqual(healthInProcess);
+    expect(h.hostContext).not.toHaveBeenCalled();
+    expect(h.healthDirect).toHaveBeenCalledTimes(1);
+    await settle();
+    expect(h.record).not.toHaveBeenCalled();
   });
 });

@@ -22,14 +22,14 @@
     "model-registry:updated": ["baseUrl"],
     "plugin-catalog:list": ["sourceUrl", "url"],
     "plugins:addMarketplace": ["sourceUrl", "url"],
-    "plugins:install-built-in-plugin": ["url"],
-    "plugins:install-plugin": ["url"],
+    "plugins:install-built-in-plugin": ["sourceUrl", "url"],
+    "plugins:install-plugin": ["sourceUrl", "url"],
     "plugins:load": ["sourceUrl", "url"],
     "plugins:loadCacheOnly": ["sourceUrl", "url"],
-    "plugins:prepare-codex-compatibility": ["url"],
+    "plugins:prepare-codex-compatibility": ["sourceUrl", "url"],
     "plugins:refreshMarketplaces": ["sourceUrl", "url"],
     "plugins:removeMarketplace": ["sourceUrl", "url"],
-    "plugins:set-codex-compat-disabled": ["url"],
+    "plugins:set-codex-compat-disabled": ["sourceUrl", "url"],
     "plugins:updateMarketplace": ["sourceUrl", "url"],
     "projects:load": ["manifestUrl", "url"],
     "projects:save": ["manifestUrl", "url"],
@@ -497,6 +497,26 @@
       "field": "remoteUrl",
       "reason": "Sanitized at the source: share-preview.ts passes each repository remote through sanitizeRemoteUrl (plan-share-repos.ts), which clears userinfo, query and fragment and drops file: URLs and absolute paths. controller-remote-urls-golden pins the userinfo and token-query cases (CAN-7082).",
       "channels": ["shared-containers:preview"]
+    },
+    {
+      "field": "verificationUrl",
+      "reason": "The Codex device-code page, published only while a chatgptDeviceCode attempt waits (assertCodexLoginUrl checks it). It is the same page for everyone and carries no credential; the controller that started the attempt opens it in its own browser. The browser method's URL, which carries the attempt's PKCE state and a callback on this computer, is never published.",
+      "channels": [
+        "codex-login:cancel",
+        "codex-login:retry-verification",
+        "codex-login:start",
+        "codex-login:state"
+      ]
+    },
+    {
+      "field": "signInUrl",
+      "reason": "The Cursor CLI's sign-in link, set only on signing-in progress of a sign-in a remote controller started, which that controller opens in its own browser. signInWithBrowser accepts only https://cursor.com links without userinfo; the sign-in completes on cursor.com, which the CLI polls.",
+      "channels": [
+        "cursor-connection:change-account",
+        "cursor-connection:connect",
+        "cursor-connection:progress",
+        "cursor-connection:status"
+      ]
     }
   ],
   "ticketed": [

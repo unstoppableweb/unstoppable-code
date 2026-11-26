@@ -1,8 +1,8 @@
 import type { JSX } from 'react';
 import { DownloadIcon } from '../icons/AppIcons';
-import { CompositeListRow } from './ListRow';
-import { Stack } from './Stack';
-import { Surface } from './Surface';
+import { CompositeListRow } from '../primitives/ListRow';
+import { Stack } from '../primitives/Stack';
+import { Surface } from '../primitives/Surface';
 
 export interface AttachmentDropZoneProps {
   readonly active?: boolean;

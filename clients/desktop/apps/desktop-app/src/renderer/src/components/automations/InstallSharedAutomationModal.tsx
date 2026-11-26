@@ -1,4 +1,5 @@
 import { automationAgentPluginsMatch } from '@/lib/agentSharing';
+import { modelPresetErrorMessage } from '@/lib/modelPresetErrors';
 import { Fieldset } from '@canopy/ui-shared/components';
 import { findInstalledAutomationAgent } from '@canopy/desktop-shared/lib/automation-agent';
 import {
@@ -1913,7 +1914,9 @@ function InstallSharedAutomationForm({
       onClose();
     } catch (err: unknown) {
       let errorMessage =
-        err instanceof Error ? err.message : 'Installation failed.';
+        err instanceof Error
+          ? modelPresetErrorMessage(err.message)
+          : 'Installation failed.';
       if (createdPipelineId) {
         await window.pipelines.delete(createdPipelineId).catch(() => undefined);
       } else if (overwrittenPipeline) {

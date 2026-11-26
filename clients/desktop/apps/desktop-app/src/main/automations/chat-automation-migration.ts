@@ -132,6 +132,10 @@ function failureReason(
     case 'activity_running':
     case 'automations_write':
       return failure.stage;
+    // Only a save converts a given revision; the migration converts whatever
+    // is stored, so it never stops here.
+    case 'changed':
+      return 'skipped';
     case 'save':
       if (failure.cause instanceof ChatAutomationNotMigratedError)
         return 'skipped';

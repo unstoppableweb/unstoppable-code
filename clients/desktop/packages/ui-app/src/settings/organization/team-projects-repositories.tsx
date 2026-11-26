@@ -5,7 +5,6 @@ import {
   Button,
   DelayedLoadingPlaceholder,
   DialogModal,
-  LoadingButton,
   Notice,
   SearchField,
   Skeleton,
@@ -315,7 +314,7 @@ export function TeamProjectsRepositories({
           </ul>
         )}
         {nextCursor && (
-          <LoadingButton
+          <Button
             variant="secondary"
             size="compact"
             className="self-start"
@@ -327,7 +326,7 @@ export function TeamProjectsRepositories({
             }}
           >
             Load more
-          </LoadingButton>
+          </Button>
         )}
       </div>
     </DialogModal>

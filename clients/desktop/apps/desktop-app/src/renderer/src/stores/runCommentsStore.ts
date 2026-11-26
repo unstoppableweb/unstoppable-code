@@ -5,7 +5,7 @@ import { create } from 'zustand';
 //
 // Deliberately holds ONLY the routing target, never comment data. Comments are
 // server-authoritative: the panel fetches through `runs:comments:*` IPC and
-// keeps the server's `SharedRunDetail` in local component state. There is no
+// keeps the server's comment state in local component state. There is no
 // desktop-local comment store and no merge algorithm — mirroring the same rule
 // the main process and the web viewer follow.
 // ---------------------------------------------------------------------------

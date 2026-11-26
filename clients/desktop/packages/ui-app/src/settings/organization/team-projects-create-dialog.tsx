@@ -4,7 +4,6 @@ import { useEffect, useRef, useState, type JSX } from 'react';
 import {
   Button,
   DialogModal,
-  LoadingButton,
   Notice,
   PrivateMemoryAdvancedOption,
   buttonClassName,
@@ -307,7 +306,7 @@ export function TeamProjectsCreateDialog({
               >
                 Back
               </Button>
-              <LoadingButton
+              <Button
                 variant="primary"
                 size="compact"
                 data-testid="team-projects-create-submit"
@@ -318,7 +317,7 @@ export function TeamProjectsCreateDialog({
                 }}
               >
                 Create {selected.length} projects
-              </LoadingButton>
+              </Button>
             </div>
           </>
         )}

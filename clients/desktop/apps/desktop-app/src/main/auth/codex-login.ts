@@ -9,6 +9,7 @@ import type {
   CodexLoginState,
   CodexLoginStartRequest,
 } from '@canopy/desktop-shared/types';
+import { isProviderSignInLink } from '@canopy/desktop-shared/lib/provider-sign-in-links';
 import type { CodexAuthenticationSession } from '@canopy/execution-engine/node/codex-runtime';
 import { getCodexRuntimeService } from '../codex/runtime-service';
 import {
@@ -170,6 +171,7 @@ export class CodexLoginManager {
           phase: 'pausing',
           method: request.method,
           userCode: undefined,
+          verificationUrl: undefined,
         });
         this.launch = this.inRun(async (): Promise<void> => {
           await session.resetLogin();
@@ -329,6 +331,12 @@ export class CodexLoginManager {
     this.publish({
       phase: 'waiting',
       userCode: login.type === 'chatgptDeviceCode' ? login.userCode : undefined,
+      // The device-code page is the same for everyone and carries no secret,
+      // so a computer controlling this one can open it itself. The browser
+      // method's URL carries this attempt's PKCE state and a callback on this
+      // computer, so it is never published.
+      verificationUrl:
+        login.type === 'chatgptDeviceCode' ? login.verificationUrl : undefined,
     });
   }
 
@@ -341,19 +349,7 @@ export class CodexLoginManager {
       (this.state.phase === 'verifying' ||
         this.state.phase === 'verification-failed')
     ) {
-      // Cancel the in-flight probe, rather than joining the promise it is
-      // trying to cancel. A late probe must not publish an account or grant.
-      if (!this.abandoning) {
-        this.verificationEpoch += 1;
-        this.abandoning = this.inRun(() => this.abandonVerification()).finally(
-          () => {
-            this.abandoning = null;
-          },
-        );
-      }
-      this.settling = this.abandoning;
-      await this.settling;
-      return this.state;
+      return this.closeWithoutVerifying('cancelled');
     }
     this.cancelled = true;
     this.browserLoginUrl = null;
@@ -362,6 +358,7 @@ export class CodexLoginManager {
         phase: 'verifying',
         outcome,
         userCode: undefined,
+        verificationUrl: undefined,
       });
       if (this.timeout) clearTimeout(this.timeout);
       this.timeout = null;
@@ -369,6 +366,48 @@ export class CodexLoginManager {
     }
     await this.settling;
     return this.state;
+  }
+
+  /**
+   * Cancels the in-flight probe, rather than joining the promise it is
+   * trying to cancel, and closes the attempt. A late probe must not publish
+   * an account or grant.
+   */
+  private async closeWithoutVerifying(
+    outcome: 'cancelled' | 'failed',
+  ): Promise<CodexLoginState> {
+    if (!this.abandoning) {
+      this.verificationEpoch += 1;
+      this.abandoning = this.inRun(() =>
+        this.abandonVerification(outcome),
+      ).finally(() => {
+        this.abandoning = null;
+      });
+    }
+    this.settling = this.abandoning;
+    await this.settling;
+    return this.state;
+  }
+
+  /**
+   * Ends an attempt nobody is left to finish: the window that owns it went
+   * away, or a remote attempt ended. It is checked like a cancel first, so a
+   * signed-in account still grants the work the attempt paused. When that
+   * check fails, as on a signed-out host, the attempt is closed without a
+   * verified account instead of staying open, keeping a `failed` outcome
+   * (its code expired or it timed out). Settles `verification-failed` only
+   * if closing fails.
+   */
+  async abandon(): Promise<CodexLoginState> {
+    if (!this.session) return this.state;
+    if (this.state.phase === 'verifying') await this.settling;
+    else if (this.state.phase !== 'verification-failed')
+      await this.finish('cancelled');
+    if (!this.session || this.state.phase !== 'verification-failed')
+      return this.state;
+    return this.closeWithoutVerifying(
+      this.state.outcome === 'failed' ? 'failed' : 'cancelled',
+    );
   }
 
   /** No sign-in run admitted the attempt, so no login started; nothing to verify. */
@@ -382,10 +421,17 @@ export class CodexLoginManager {
     if (this.session === session) this.session = null;
     this.releaseSessions?.();
     this.releaseSessions = null;
-    this.publish({ phase: 'complete', outcome: 'failed', userCode: undefined });
+    this.publish({
+      phase: 'complete',
+      outcome: 'failed',
+      userCode: undefined,
+      verificationUrl: undefined,
+    });
   }
 
-  private async abandonVerification(): Promise<void> {
+  private async abandonVerification(
+    outcome: 'cancelled' | 'failed',
+  ): Promise<void> {
     const session = this.session;
     this.cancelled = true;
     if (this.timeout) clearTimeout(this.timeout);
@@ -407,10 +453,11 @@ export class CodexLoginManager {
     this.releaseSessions = null;
     this.publish({
       phase: 'complete',
-      outcome: 'cancelled',
+      outcome,
       account: undefined,
       error: undefined,
       userCode: undefined,
+      verificationUrl: undefined,
     });
   }
 
@@ -491,14 +538,7 @@ export class CodexLoginManager {
 }
 
 export function assertCodexLoginUrl(value: string): void {
-  const url = new URL(value);
-  if (
-    url.protocol !== 'https:' ||
-    url.hostname !== 'auth.openai.com' ||
-    url.username ||
-    url.password ||
-    url.port
-  )
+  if (!isProviderSignInLink('codex', value))
     throw new Error('Codex returned an unsupported sign-in address.');
 }
 

@@ -7,7 +7,7 @@
  * overlay slot. Wiring only: the list is the shared display component, and
  * every row action runs through the same store paths as the sidebar.
  */
-import { Count } from '@canopy/ui-shared/components/Badge';
+import { Count } from '@canopy/ui-shared/primitives/Badge';
 import { useEffect, type JSX } from 'react';
 import {
   Surface,

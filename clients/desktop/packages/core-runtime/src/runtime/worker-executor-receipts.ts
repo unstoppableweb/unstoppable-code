@@ -12,6 +12,7 @@ import {
   CanopyOperationError,
   canopyInvalidHandlerResultError,
 } from './errors';
+import { dispatchTagScope, type DispatchTagScope } from './dispatch-tag-scope';
 import type { CanopyHandlerContext } from './types';
 
 /**
@@ -88,6 +89,14 @@ export const WORKER_EXECUTOR_RECEIPTS_MAX = 4_096;
 export const WORKER_EXECUTOR_REPLAYED_KEYS_MAX = 1_048_576;
 
 /**
+ * Dispatch tags one peer (an interface caller's principal and client
+ * instance, as the core scopes them) may record or seal in one worker run,
+ * so one peer exhausting its share leaves every other peer's tags working.
+ * The run-wide bound above still caps all peers together.
+ */
+export const WORKER_EXECUTOR_DISPATCH_TAGS_PER_PEER_MAX = 65_536;
+
+/**
  * Serialized size, in UTF-16 code units, of the full results replayed
  * operations keep for replay, whatever the receipt's bounded copy holds.
  * Past it the oldest settled receipts are forgotten, and their keys refused.
@@ -112,7 +121,8 @@ export type WorkerExecutorReplayRefusal =
   | 'not-retained'
   | 'keys-exhausted'
   | 'tag-reused'
-  | 'not-started';
+  | 'not-started'
+  | 'tag-unscoped';
 
 const REFUSALS: Record<
   WorkerExecutorReplayRefusal,
@@ -141,14 +151,35 @@ const REFUSALS: Record<
     message:
       'This dispatch tag was sealed before the dispatch arrived, so it was refused before it ran. Send it again with a new tag.',
   },
+  'tag-unscoped': {
+    kind: 'invalid_argument',
+    message: 'This dispatch tag was not scoped to a caller by the core.',
+  },
+};
+
+/** Which dispatch tag bound refused a tag. */
+export type WorkerExecutorTagBound = 'peer' | 'principal' | 'worker';
+
+/**
+ * A dispatch tag bound's message names its scope, because a worker binding
+ * carries the message across but not the details.
+ */
+const TAG_BOUND_MESSAGES: Record<WorkerExecutorTagBound, string> = {
+  peer: 'This caller may record no more dispatch tags on this worker until it restarts.',
+  principal:
+    "This caller's principal may record no more dispatch tags on this worker, from any of its sessions, until it restarts.",
+  worker:
+    'This worker accepts no more dispatch tags from any caller until it restarts.',
 };
 
 function replayRefusal(
   reason: WorkerExecutorReplayRefusal,
+  scope?: WorkerExecutorTagBound,
 ): CanopyOperationError {
   return new CanopyOperationError({
     ...REFUSALS[reason],
-    details: { receipt: reason },
+    ...(scope && { message: TAG_BOUND_MESSAGES[scope] }),
+    details: { receipt: reason, ...(scope && { scope }) },
     retry: { kind: 'never' },
   });
 }
@@ -233,6 +264,15 @@ export function createWorkerExecutorReceipts(
     max?: number;
     replay?: WorkerExecutorReplay;
     maxReplayedKeys?: number;
+    maxDispatchTagsPerPeer?: number;
+    /**
+     * Dispatch tags a caller principal may record or seal in one run,
+     * across all its peers, or undefined for a principal bounded only by
+     * the run-wide bound. It is given the principal as the tag carries it
+     * (`dispatchTagPrincipal`). A host whose callers can open new peers at
+     * will bounds them, so one principal rotating peers can't take the run.
+     */
+    maxDispatchTagsForPrincipal?: (principal: string) => number | undefined;
     maxReplayResults?: number;
     /** Flat digests of forgotten keys and tags; without it they are kept verbatim. */
     digest?: (text: string) => string;
@@ -241,6 +281,9 @@ export function createWorkerExecutorReceipts(
   const max = options.max ?? WORKER_EXECUTOR_RECEIPTS_MAX;
   const maxReplayedKeys =
     options.maxReplayedKeys ?? WORKER_EXECUTOR_REPLAYED_KEYS_MAX;
+  const maxDispatchTagsPerPeer =
+    options.maxDispatchTagsPerPeer ??
+    WORKER_EXECUTOR_DISPATCH_TAGS_PER_PEER_MAX;
   const maxReplayResults =
     options.maxReplayResults ?? WORKER_EXECUTOR_REPLAY_RESULTS_MAX;
   // Kept replay results' total size, against `maxReplayResults`.
@@ -287,6 +330,37 @@ export function createWorkerExecutorReceipts(
   const sealedDispatches = new Set<string>();
   // Tags dispatched or sealed this run; bounds both sets.
   let dispatchTags = 0;
+  const peerDispatchTags = new Map<string, number>();
+  const principalDispatchTags = new Map<string, number>();
+  const { maxDispatchTagsForPrincipal } = options;
+  const principalBound = (principal: string): number =>
+    maxDispatchTagsForPrincipal?.(principal) ?? Number.POSITIVE_INFINITY;
+  /** Why a peer may record no more tags, or undefined when it may. */
+  const tagBound = ({
+    principal,
+    peer,
+  }: DispatchTagScope): WorkerExecutorTagBound | undefined =>
+    dispatchTags >= maxReplayedKeys
+      ? 'worker'
+      : (principalDispatchTags.get(principal) ?? 0) >= principalBound(principal)
+        ? 'principal'
+        : (peerDispatchTags.get(peer) ?? 0) >= maxDispatchTagsPerPeer
+          ? 'peer'
+          : undefined;
+  const countTag = ({ principal, peer }: DispatchTagScope): void => {
+    dispatchTags += 1;
+    peerDispatchTags.set(peer, (peerDispatchTags.get(peer) ?? 0) + 1);
+    principalDispatchTags.set(
+      principal,
+      (principalDispatchTags.get(principal) ?? 0) + 1,
+    );
+  };
+  /** The core-issued scope of a tag; a tag the core did not scope is refused. */
+  const scopeOf = (tag: string): DispatchTagScope => {
+    const scope = dispatchTagScope(tag);
+    if (scope === undefined) throw replayRefusal('tag-unscoped');
+    return scope;
+  };
   const forgetDispatch = (id: string): void => {
     dispatches.delete(id);
     dispatchOrder.delete(id);
@@ -337,14 +411,17 @@ export function createWorkerExecutorReceipts(
     const definition = definitions[name];
     if (tag === undefined || definition === undefined)
       return runKeyed(name, handler, params, context);
+    const scope = dispatchTagScope(tag);
+    if (scope === undefined)
+      return Promise.reject(replayRefusal('tag-unscoped'));
     const id = dispatchKeyOf(context.caller.principalId, name, tag);
     if (dispatches.has(id) || forgottenDispatches.has(digestOf(id)))
       return Promise.reject(replayRefusal('tag-reused'));
     if (sealedDispatches.has(digestOf(id)))
       return Promise.reject(replayRefusal('not-started'));
-    if (dispatchTags >= maxReplayedKeys)
-      return Promise.reject(replayRefusal('keys-exhausted'));
-    dispatchTags += 1;
+    const bound = tagBound(scope);
+    if (bound) return Promise.reject(replayRefusal('keys-exhausted', bound));
+    countTag(scope);
     let markSettled: () => void = () => undefined;
     const entry: Entry = {
       settled: new Promise<void>((resolve) => {
@@ -524,6 +601,7 @@ export function createWorkerExecutorReceipts(
     },
     lookup: (principalId, operation, lookup): WorkerExecutorReceiptView => {
       if ('dispatchId' in lookup) {
+        scopeOf(lookup.dispatchId);
         const id = dispatchKeyOf(principalId, operation, lookup.dispatchId);
         const entry = dispatches.get(id);
         if (entry) return viewOf(entry.receipt);
@@ -542,15 +620,16 @@ export function createWorkerExecutorReceipts(
         : { state: 'absent' };
     },
     seal: (principalId, operation, dispatchId): WorkerExecutorReceiptView => {
+      const scope = scopeOf(dispatchId);
       const id = dispatchKeyOf(principalId, operation, dispatchId);
       const entry = dispatches.get(id);
       if (entry) return viewOf(entry.receipt);
       const gone = digestOf(id);
       if (forgottenDispatches.has(gone)) return { state: 'forgotten' };
       if (sealedDispatches.has(gone)) return { state: 'absent' };
-      if (dispatchTags >= maxReplayedKeys) return { state: 'forgotten' };
+      if (tagBound(scope)) return { state: 'forgotten' };
       sealedDispatches.add(gone);
-      dispatchTags += 1;
+      countTag(scope);
       return { state: 'absent' };
     },
   };

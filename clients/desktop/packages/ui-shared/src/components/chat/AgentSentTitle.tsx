@@ -3,8 +3,8 @@
 import {
   AGENT_SENT_INLINE_TITLE_CLASS,
   AGENT_SENT_TITLE_CLASS,
-} from '../control-button-shared';
-import { ControlButton } from '../Button';
+} from '../../primitives/control-button-shared';
+import { ControlButton } from '../../primitives/Button';
 import { memo, type JSX } from 'react';
 import type { ChatAgentSentInfo } from '@canopy/protocol/remote-control/shell';
 import type { AgentSentInfo } from '@canopy/protocol/remote-control/shell/external-agent-sender';

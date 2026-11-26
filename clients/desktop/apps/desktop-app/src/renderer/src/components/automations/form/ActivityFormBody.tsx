@@ -6,9 +6,12 @@
 
 import {
   AutomationSendAs,
+  AutomationSharedWrites,
   withAutomationSendAs,
+  withAutomationSharedWrites,
 } from '@canopy/ui-app/capability';
 import { useAutomationSendAs } from './useAutomationSendAs';
+import { useAutomationSharedWrites } from './useAutomationSharedWrites';
 import {
   useCallback,
   useEffect,
@@ -60,6 +63,7 @@ import {
 import type { PipelineData } from '@canopy/execution-engine/types/pipeline';
 import type { useProjectsStore } from '@/stores/projectsStore';
 import { getWorkspaceDisplayName } from '@/lib/workspaceDisplayName';
+import { projectPickerOption } from './projectPickerOption';
 import { automationContextNoteMessage } from '@canopy/execution-engine/lib/automation-context-copy';
 import type { WorktreeSessionTarget } from '@/components/automations/worktreeSessionPrompt';
 import { AutomationSidebarGroupPicker } from '@/components/automations/AutomationSidebarGroupPicker';
@@ -79,7 +83,6 @@ import {
   TerminalBorderedIcon,
 } from '@canopy/ui-shared/icons';
 import type { AutomationScope } from '@/hooks/useAutomationScope';
-import { ProjectIcon } from '@/components/shared/ProjectIcon';
 import { Tooltip } from '@canopy/ui-shared';
 import {
   Badge,
@@ -109,10 +112,7 @@ import { buildTimeSlotOptions, passedTimeOn } from '@/lib/timeSlotOptions';
 import { WORKFLOW_ITEM_LABEL } from '@canopy/ui-shared/lib/workflow-labels';
 import { automationDestinationExecutionScope } from '@canopy/pipeline-interop/automation-target';
 import type { AutomationTargetResolution } from '@canopy/pipeline-interop/automation-target';
-import {
-  SearchableSelect,
-  type SearchableSelectOption,
-} from '@/components/shared/SearchableSelect';
+import { SearchableSelect } from '@/components/shared/SearchableSelect';
 import {
   AutomationChatTargetPicker,
   AUTOMATION_CHAT_TARGET_INCOMPLETE_ERROR,
@@ -132,6 +132,7 @@ import {
   automationFormChatTarget,
   actionTypeTakesPipelineDependencies,
   automationFormSidebarGroupScope,
+  automationSharedWritesTooMany,
   buildAction,
   clearedPipelineSelection,
   displayedPipelineRunIn,
@@ -653,6 +654,18 @@ export function ActivityFormBody({
   const sendAsBlocked =
     !formReadOnly &&
     sendAsConnectors.some((connector) => connector.value === null);
+  // "Allowed write actions" on an organization project's shared connections
+  // (CAN-6252): a scheduled run reads from them and writes only through the
+  // tools allowed here. It never holds up Save; a list that can't load just
+  // offers nothing to allow, so the run writes nothing.
+  const sharedWrites = useAutomationSharedWrites(
+    selectedProject?.owner,
+    showDefinition &&
+      (state.actionType === 'standalone_prompt' ||
+        state.actionType === 'worktree_prompt' ||
+        state.actionType === 'worktree_session_prompt') &&
+      selectedProject?.owner?.type === 'organization',
+  );
   const isAppAdvisorTarget = actionCategory === 'app_advisor';
   // The picker's scope: App Advisor Work Entries, or the selected project.
   const chatTargetWorkspaceId = isAppAdvisorTarget
@@ -1422,7 +1435,9 @@ export function ActivityFormBody({
             )}
           </>
         )}
-        {showDefinition && (
+        {/* A usage-limit resume runs one paused run where it is: only its
+            name changes (CAN-4224). Choosing a target would replace it. */}
+        {showDefinition && state.actionType !== 'pipeline_execution_resume' && (
           <>
             <SegmentedControl
               label="Target"
@@ -1710,6 +1725,24 @@ export function ActivityFormBody({
                         />
                       </div>
                     )}
+                  <AutomationSharedWrites
+                    connections={sharedWrites.connections}
+                    value={state.sharedConnectionWrites}
+                    tooMany={automationSharedWritesTooMany(state)}
+                    disabled={saving || formReadOnly}
+                    onRetry={sharedWrites.retry}
+                    onChange={(connectionId, tools) => {
+                      const sharedConnectionWrites = withAutomationSharedWrites(
+                        state.sharedConnectionWrites,
+                        connectionId,
+                        tools,
+                      );
+                      onFieldChange({
+                        ...state,
+                        sharedConnectionWrites,
+                      });
+                    }}
+                  />
                 </div>
               </Field>
             )}
@@ -1970,31 +2003,4 @@ function SegmentedControl<T extends string>({
       />
     </div>
   );
-}
-
-/** Project picker row for the automation form. */
-function projectPickerOption(
-  project: ReturnType<typeof useProjectsStore.getState>['projects'][number],
-): SearchableSelectOption {
-  const displayName = getWorkspaceDisplayName(project);
-  const isMultiRepo = project.type === 'multi-repo';
-  const isCowork = project.type === 'cowork';
-  const subtitle = isMultiRepo
-    ? `${project.repos.length} ${
-        project.repos.length === 1 ? 'repo' : 'repos'
-      }${project.temporary === true ? ' • Temporary' : ''}`
-    : undefined;
-  return {
-    id: project.id,
-    label: displayName,
-    subtitle,
-    badge: (
-      <ProjectIcon
-        color={project.color}
-        repoPath={project.type === 'single-repo' ? project.repoPath : undefined}
-        kind={isCowork ? 'cowork' : isMultiRepo ? 'multi-repo' : 'single-repo'}
-        temporary={isMultiRepo && project.temporary === true}
-      />
-    ),
-  };
 }

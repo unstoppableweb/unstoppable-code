@@ -1,8 +1,8 @@
 'use client';
 
-import { CodeBlock } from '../CodeBlock';
-import { Badge } from '../Badge';
-import { surfaceClassName } from '../Surface';
+import { CodeBlock } from '../../primitives/CodeBlock';
+import { Badge } from '../../primitives/Badge';
+import { surfaceClassName } from '../../primitives/Surface';
 import {
   memo,
   useCallback,
@@ -27,7 +27,7 @@ import {
   EyeIcon,
   ShieldIcon,
 } from '../../icons/AppIcons';
-import { Stack } from '../Stack';
+import { Stack } from '../../primitives/Stack';
 import { formatTransferBytes } from '../../lib/format-transfer-bytes';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { isMacPlatform } from '../../lib/shortcut-platform';
@@ -35,18 +35,18 @@ import {
   type ActionMenuItem,
   ActionMenuItems,
   ActionMenuRowStyle,
-} from '../ActionMenuItems';
-import { ControlButton, Button } from '../Button';
+} from '../../primitives/ActionMenuItems';
+import { ControlButton, Button } from '../../primitives/Button';
 import {
   DropdownMenuDivider,
   DropdownMenuItem,
   DropdownMenuItemIcon,
   DropdownMenuLabel,
-} from '../DropdownMenu';
-import { TextArea } from '../Field';
-import { FloatingMenu } from '../FloatingMenu';
-import { FormField } from '../FormField';
-import { Tooltip } from '../Tooltip';
+} from '../../primitives/DropdownMenu';
+import { TextArea } from '../../primitives/Field';
+import { FloatingMenu } from '../../primitives/FloatingMenu';
+import { FormField } from '../../primitives/FormField';
+import { Tooltip } from '../../primitives/Tooltip';
 import {
   ApprovalContentModal,
   type ApprovalContentModalContent,

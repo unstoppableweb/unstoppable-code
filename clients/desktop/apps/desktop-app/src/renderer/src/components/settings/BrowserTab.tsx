@@ -168,7 +168,7 @@ export function BrowserTab(): JSX.Element {
         <SettingsGroup>
           <SettingsRow
             label="Open links in the built-in browser"
-            description={`Links you click in ${brandText.appName} open here instead of in another browser.`}
+            description={`Links you click in ${brandText.appName} open here instead of in another browser. Pull requests always open in another browser.`}
             htmlFor="settings-browser-open-app-links"
             control={
               <ToggleSwitch

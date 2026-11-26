@@ -47,6 +47,7 @@ import {
   pluginNotAddedYet,
   pluginOpensCatalogSummary,
   CustomizeRelatedSection,
+  CustomizeMcpVersions,
   CustomizeManifestPreview,
   customizeCatalogContents,
   customizeWorkflowAvailability,
@@ -788,12 +789,14 @@ export function PluginEntryDetail(props: PluginEntryDetailProps): JSX.Element {
   return (
     <DetailRelatedProvider
       related={
-        <CustomizeRelatedSection
-          subject={props.entry}
-          entries={relatedEntries}
-          McpServerLogoComponent={McpServerLogo}
-          onOpenEntry={(entry) => onOpenEntry?.(entry.id)}
-        />
+        <>
+          <CustomizeRelatedSection
+            subject={props.entry}
+            entries={relatedEntries}
+            McpServerLogoComponent={McpServerLogo}
+            onOpenEntry={(entry) => onOpenEntry?.(entry.id)}
+          />
+        </>
       }
     >
       {content}
@@ -861,6 +864,8 @@ function PluginEntryDetailContent({
   const shownLogo = useCustomizeEntryIdentity(entry);
   // Customize's light logo plate, only while New Customize is on.
   const customizeLogoPlate = useCustomizeDiscoveryEnabled();
+  const useCuratedInstallEvidence =
+    customizeLogoPlate && entry.ref.type === 'curated-plugin';
   // New Customize's automation and agent pages wear the tile's identity.
   const layoutIdentity: AutomationDetailIdentity | undefined =
     customizeLogoPlate
@@ -1052,11 +1057,24 @@ function PluginEntryDetailContent({
     | undefined => {
     if (!customizeLogoPlate || !resolved) return undefined;
     const plugin = pluginOverride ?? resolved.plugin;
-    if (!pluginNotAddedYet({ state: entry.state, plugin })) return undefined;
+    if (
+      !pluginNotAddedYet({
+        state: entry.state,
+        plugin,
+        useCuratedInstallEvidence,
+      })
+    )
+      return undefined;
     return plugin.externalSource
       ? undefined
       : readCheckoutComponent(plugin, resolved.marketplace);
-  }, [customizeLogoPlate, entry.state, pluginOverride, resolved]);
+  }, [
+    customizeLogoPlate,
+    entry.state,
+    pluginOverride,
+    resolved,
+    useCuratedInstallEvidence,
+  ]);
   // The source list is these same rows, so a marketplace outside them has no
   // page to open and its name stays plain text.
   const openSource = (sourceId: string): (() => void) | undefined =>
@@ -1436,7 +1454,7 @@ function PluginEntryDetailContent({
               loadFailed ? (
                 <span className="inline-flex flex-wrap items-center gap-1.5 text-s">
                   <DetailFactError
-                    error="Couldn't load your agents"
+                    error="Couldn't load your model presets"
                     testId="local-agent-detail-error"
                   />
                   {onRetryLocalAgents && (
@@ -1450,7 +1468,7 @@ function PluginEntryDetailContent({
                 </span>
               ) : (
                 <div data-testid="local-agent-detail-loading">
-                  <DelayedLoadingPlaceholder slowNote="Still loading agent…">
+                  <DelayedLoadingPlaceholder slowNote="Still loading model preset…">
                     <CenteredLoadingSpinner spacing="section" />
                   </DelayedLoadingPlaceholder>
                 </div>
@@ -1474,7 +1492,7 @@ function PluginEntryDetailContent({
             <NoticeButton onClick={onRetryLocalAgents}>Try again</NoticeButton>
           }
         >
-          Couldn't load your agents.
+          Couldn't load your model presets.
         </Notice>
       ) : null;
     if (!agent) {
@@ -1504,7 +1522,7 @@ function PluginEntryDetailContent({
               className="text-s fg-secondary"
               data-testid="local-agent-detail-loading"
             >
-              Loading agent…
+              Loading model preset…
             </p>
           </DetailShell>
         );
@@ -1832,6 +1850,7 @@ function PluginEntryDetailContent({
     const notAddedYet = pluginNotAddedYet({
       state: entry.state,
       plugin: currentPlugin,
+      useCuratedInstallEvidence,
     });
     const catalogFirst = pluginOpensCatalogSummary({
       preferCatalogDetail,
@@ -2558,6 +2577,15 @@ function PluginEntryDetailContent({
       <>
         {accountControls.signIn.dialogs}
         <CuratedMcpConnectionDetail
+          otherVersions={
+            customizeLogoPlate && relatedEntries && onOpenEntry ? (
+              <CustomizeMcpVersions
+                entry={entry}
+                entries={relatedEntries}
+                onOpenEntryId={onOpenEntry}
+              />
+            ) : undefined
+          }
           // A desktop-only server's accounts bind nothing (REG-3035): the card
           // stays on its device server and offers only the leftover cloud
           // connection's Disconnect, so it lists no accounts. A device copy

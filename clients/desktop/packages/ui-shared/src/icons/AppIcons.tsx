@@ -12,6 +12,7 @@ import {
   IconSearchX,
   IconFileDown,
   IconMonitorDown,
+  IconMonitor,
   IconCircleStop,
   IconCircleDashed,
   IconCirclePause,
@@ -194,6 +195,7 @@ import {
   IconPlanning,
   IconPlay,
   IconPlayCircle,
+  IconPlug,
   IconPlusLarge,
   IconPlusMedium,
   IconPlusSmall,
@@ -631,6 +633,8 @@ export const PlanModeIcon = MapIcon;
 export const PlansIcon = MapIcon;
 export const PlayIcon = /* @__PURE__ */ createAppIcon(IconPlay);
 export const PlayCircleIcon = /* @__PURE__ */ createAppIcon(IconPlayCircle);
+/** Organization Connectors (shared connections); Integrations keep `PluginsIcon`. */
+export const ConnectorsIcon = /* @__PURE__ */ createAppIcon(IconPlug);
 export const PluginsIcon = /* @__PURE__ */ createAppIcon(IconPuzzle);
 export const PlusIcon = /* @__PURE__ */ createAppIcon(IconPlusSmall);
 export const PlusLargeIcon = /* @__PURE__ */ createAppIcon(IconPlusLarge);
@@ -915,6 +919,12 @@ export const ArrowUpDownIcon = /* @__PURE__ */ createAppIcon(IconArrowUpDown);
 export const SearchXIcon = /* @__PURE__ */ createAppIcon(IconSearchX);
 export const FileDownIcon = /* @__PURE__ */ createAppIcon(IconFileDown);
 export const MonitorDownIcon = /* @__PURE__ */ createAppIcon(IconMonitorDown);
+/**
+ * A plain monitor: work on another computer, such as a paired computer's
+ * task in the sidebar (CAN-7766). `MonitorIcon` draws monitor-smartphone,
+ * for devices in general.
+ */
+export const ComputerIcon = /* @__PURE__ */ createAppIcon(IconMonitor);
 export const CircleStopIcon = /* @__PURE__ */ createAppIcon(IconCircleStop);
 export const CircleDashedIcon = /* @__PURE__ */ createAppIcon(IconCircleDashed);
 /** The Paused status glyph: two bars in a circle. */

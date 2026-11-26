@@ -361,12 +361,14 @@ export function createW5RecordHostPort(
 
   async function capture(
     request: Parameters<W5CommitLogHostPort['capture']>[0],
+    signal?: AbortSignal,
   ): Promise<W5CaptureResult> {
+    signal?.throwIfAborted();
     if (!isW5CaptureRequest(request))
       throw canopyInvalidArgumentError('This capture is not a W5 record read.');
     let result: unknown;
     try {
-      result = await transport.capture(request);
+      result = await transport.capture(request, signal);
     } catch (error) {
       const refused = fromWire(error);
       if (

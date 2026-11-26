@@ -59,6 +59,20 @@ import {
   type AccountDelegationSettings,
 } from './account-delegation';
 import {
+  ACCOUNT_SLACK_LINK_INTENTS_PATH,
+  ACCOUNT_SLACK_LINKS_PATH,
+  accountSlackLinkInputSchema,
+  accountSlackLinkIntentInputSchema,
+  accountSlackLinkIntentResultSchema,
+  accountSlackLinkMoveInputSchema,
+  accountSlackLinkMoveResultSchema,
+  accountSlackLinkPath,
+  accountSlackLinksSchema,
+  type AccountSlackLinkIntentResult,
+  type AccountSlackLinkMoveResult,
+  type AccountSlackLinks,
+} from './account-slack-link';
+import {
   isGitHubCloudConnectionDto,
   isGitHubCloudConnectResponse,
   GITHUB_CLOUD_CONNECT_INTENTS,
@@ -909,6 +923,60 @@ export const ACCOUNT_SETTINGS_OPERATIONS = {
     request: () => ({
       method: 'DELETE',
       path: `${API}/cloud/github/connection`,
+    }),
+  }),
+
+  /* ------------------------------------------------------------------------ */
+  /* Integrations tab: Slack account links (CAN-7606)                         */
+  /* ------------------------------------------------------------------------ */
+
+  'account.slack.link.read': defineSettingsRead({
+    transport: 'backend',
+    input: settingsEmptyInputSchema,
+    result: settingsDtoSchema<AccountSlackLinks>(accountSlackLinksSchema),
+    request: () => ({ method: 'GET', path: ACCOUNT_SLACK_LINKS_PATH }),
+  }),
+  /** Disconnect: unlinks and revokes the Slack connection together. */
+  'account.slack.link.remove': defineSettingsWrite({
+    transport: 'backend',
+    input: accountSlackLinkInputSchema,
+    result: settingsAcknowledgementSchema,
+    request: (input) => ({
+      method: 'DELETE',
+      path: accountSlackLinkPath(input.linkId),
+    }),
+  }),
+  /**
+   * Change computer: the link's mentions run on another of the person's
+   * computers paired for agents. No new Slack sign-in.
+   */
+  'account.slack.link.move': defineSettingsWrite({
+    transport: 'backend',
+    input: accountSlackLinkMoveInputSchema,
+    result: settingsDtoSchema<AccountSlackLinkMoveResult>(
+      accountSlackLinkMoveResultSchema,
+    ),
+    request: (input) => ({
+      method: 'PATCH',
+      path: accountSlackLinkPath(input.linkId),
+      body: { remoteId: input.remoteId },
+    }),
+  }),
+  /**
+   * Connect Slack to another of the person's computers from a desktop: a
+   * single-use connect intent for that computer, which the desktop opens the
+   * signed-in hand-off page with.
+   */
+  'account.slack.link.intent': defineSettingsWrite({
+    transport: 'backend',
+    input: accountSlackLinkIntentInputSchema,
+    result: settingsDtoSchema<AccountSlackLinkIntentResult>(
+      accountSlackLinkIntentResultSchema,
+    ),
+    request: (input) => ({
+      method: 'POST',
+      path: ACCOUNT_SLACK_LINK_INTENTS_PATH,
+      body: { remoteId: input.remoteId },
     }),
   }),
 

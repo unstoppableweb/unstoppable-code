@@ -962,7 +962,7 @@ class AcpClientConnection implements AcpClient {
                       'provider',
                       // The reason is agent-authored, so only Copy details
                       // may expose it. Keep the headline in our own copy.
-                      "Couldn't complete the agent request.",
+                      "Couldn't finish this reply.",
                       {
                         method,
                         rpcCode: rpcCodeOf(error),

@@ -1,7 +1,7 @@
 'use client';
 
 import type { JSX, ReactNode } from 'react';
-import { Notice } from './Notice';
+import { Notice } from '../primitives/Notice';
 
 /**
  * Bounded diff states, defined once so every diff surface (the shared

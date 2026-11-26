@@ -7,7 +7,7 @@ import {
 } from '@/lib/modelRecoveryLease';
 import {
   isAntigravityHarnessReleased,
-  useAntigravityHostSupported,
+  useAntigravityHostSupport,
   getAntigravitySettingsSection,
 } from '@/lib/antigravity-settings';
 import { useOpenCodeChatAvailable } from '@/hooks/useOpenCodeChatAvailable';
@@ -29,6 +29,10 @@ import { registerChatHarnessAction } from '@/lib/chat-harness-actions';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
 import { useCursorModels } from '@/hooks/useCursorModels';
 import { useCursorChatAvailable } from '@/hooks/useCursorChatAvailable';
+import {
+  antigravityPickerEntry,
+  useUnsupportedManagedHarnesses,
+} from '@/hooks/useUnsupportedManagedHarnesses';
 import {
   useCallback,
   useId,
@@ -106,6 +110,9 @@ import {
   type ModelRowLock,
   CompactToggleIndicator,
   preferredGatewayTabId,
+  modelPickerHarnessSetupReason,
+  modelPickerPlatformName,
+  type ModelPickerManagedHarness,
 } from '@canopy/ui-shared';
 import { matchAiGatewayPreset } from '@canopy/protocol/model-gateway/presets';
 import {
@@ -849,9 +856,53 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
     !modelGatewayEnforced;
   // Main pins a CLI for this host (macOS or Linux, arm64 or x64); asked only
   // once Google chats are on here.
-  const antigravityEnabled = useAntigravityHostSupported(antigravityWanted);
+  const antigravityHostSupport = useAntigravityHostSupport(antigravityWanted);
+  const antigravityEnabled = antigravityHostSupport === true;
   const antigravityAvailable =
     antigravityEnabled && Boolean(antigravityModels?.length);
+  // Disconnected managed harnesses this computer may not support at all; the
+  // rail then says so instead of offering a connect that can't succeed.
+  const disconnectedManagedHarnesses: ModelPickerManagedHarness[] = [];
+  if (props.allowOpenCode === true && opencodeEnabled && !opencodeAvailable)
+    disconnectedManagedHarnesses.push('opencode');
+  if (
+    props.allowCopilot === true &&
+    copilotEnabled &&
+    !copilotAvailable &&
+    !modelGatewayEnforced
+  )
+    disconnectedManagedHarnesses.push('copilot');
+  if (props.allowCursor === true && !cursorAvailable && !modelGatewayEnforced)
+    disconnectedManagedHarnesses.push('cursor');
+  const unsupportedHarnesses = useUnsupportedManagedHarnesses(
+    disconnectedManagedHarnesses,
+  );
+  // Antigravity's answer is the host-support read above, so a picker mount
+  // reads it once.
+  const antigravityEntry = antigravityPickerEntry({
+    hostSupport: antigravityHostSupport,
+    released: antigravityReleased,
+    available: antigravityAvailable,
+  });
+  const unsupportedHarnessReason = (
+    harness: ModelPickerManagedHarness,
+  ): { unavailableReason?: string } =>
+    (
+      harness === 'antigravity'
+        ? antigravityEntry.unsupported
+        : unsupportedHarnesses.has(harness)
+    )
+      ? {
+          unavailableReason: modelPickerHarnessSetupReason(
+            harness,
+            'unsupported_host',
+            {
+              kind: 'local',
+              platformName: modelPickerPlatformName(window.platform),
+            },
+          ),
+        }
+      : {};
   const opencodeModels = opencodeCatalog.models;
   const copilotModels = copilotCatalog.models;
   const cursorModels = cursorCatalog.models;
@@ -2376,11 +2427,23 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
         : {}),
     },
     runnableHarnesses: [
-      ...(antigravityEnabled && (antigravityReleased || antigravityAvailable)
-        ? [{ id: 'antigravity' as const, connected: antigravityAvailable }]
+      ...(antigravityEntry.listed
+        ? [
+            {
+              id: 'antigravity' as const,
+              connected: antigravityAvailable,
+              ...unsupportedHarnessReason('antigravity'),
+            },
+          ]
         : []),
       ...(props.allowOpenCode === true && opencodeEnabled
-        ? [{ id: 'opencode' as const, connected: opencodeAvailable }]
+        ? [
+            {
+              id: 'opencode' as const,
+              connected: opencodeAvailable,
+              ...unsupportedHarnessReason('opencode'),
+            },
+          ]
         : []),
       {
         id: 'claude',
@@ -2393,14 +2456,26 @@ function ConcreteModelPicker(props: ModelPickerProps): JSX.Element {
         connectVia: 'sign-in',
       },
       ...(props.allowCopilot === true && copilotEnabled && !modelGatewayEnforced
-        ? [{ id: 'copilot' as const, connected: copilotAvailable }]
+        ? [
+            {
+              id: 'copilot' as const,
+              connected: copilotAvailable,
+              ...unsupportedHarnessReason('copilot'),
+            },
+          ]
         : []),
       // Released Cursor is discoverable before setup. Experimental Cursor
       // appears here only after connecting it in Labs.
       ...(props.allowCursor === true &&
       !modelGatewayEnforced &&
       (cursorReleased || cursorAvailable)
-        ? [{ id: 'cursor' as const, connected: cursorAvailable }]
+        ? [
+            {
+              id: 'cursor' as const,
+              connected: cursorAvailable,
+              ...unsupportedHarnessReason('cursor'),
+            },
+          ]
         : []),
     ],
     onConnectHarness: (harness): void => {

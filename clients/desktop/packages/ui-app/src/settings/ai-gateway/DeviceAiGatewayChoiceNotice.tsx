@@ -104,16 +104,6 @@ export function DeviceAiGatewayChoiceNotice({
       actions={
         <>
           <NoticeButton
-            variant="primary"
-            data-testid="device-ai-gateway-choice-use-device"
-            aria-disabled={busy ? true : undefined}
-            busy={busy === 'device'}
-            busyLabel="Switching…"
-            onClick={() => void decide('device')}
-          >
-            {"Use this computer's gateway"}
-          </NoticeButton>
-          <NoticeButton
             variant="secondary"
             data-testid="device-ai-gateway-choice-keep-account"
             aria-disabled={busy ? true : undefined}
@@ -122,6 +112,16 @@ export function DeviceAiGatewayChoiceNotice({
             onClick={() => void decide('account')}
           >
             {"Keep my account's"}
+          </NoticeButton>
+          <NoticeButton
+            variant="primary"
+            data-testid="device-ai-gateway-choice-use-device"
+            aria-disabled={busy ? true : undefined}
+            busy={busy === 'device'}
+            busyLabel="Switching…"
+            onClick={() => void decide('device')}
+          >
+            {"Use this computer's gateway"}
           </NoticeButton>
         </>
       }

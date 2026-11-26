@@ -2,6 +2,7 @@ import { turnAccountResolution } from '../agents/turn-account-resolution';
 import { assertAntigravityHarnessEnabled } from '../antigravity/feature-flag';
 import { assertAgentModelAdmission } from '../agents/agent-default-model';
 import { readCoworkFolderMissing } from '@canopy/protocol/canopy-core';
+import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import { removeUnstartedWorkEntry } from '../lib/cowork-work-entries';
 import { assertCoworkWorkspaceRootPresent } from '../lib/cowork-folder-guard';
 import {
@@ -119,6 +120,10 @@ import {
   isChatTurnStopCurrent,
   type ChatTurnStopContext,
 } from '../lib/chat-turn-cancel';
+import {
+  settleStoppedChatTurn,
+  withChatTurnStopOwner,
+} from '../lib/chat-turn-stop';
 import { resolveAiCreditsScopeOwner } from '../agents/work-owner';
 import {
   pinInheritingAgentToDestination,
@@ -1157,7 +1162,11 @@ function buildStandaloneChatSummary(
     // Projected composer state (CAN-1219) so the portal's standalone model
     // picker seeds from and reconciles against the desktop.
     model: tab.model,
-    providerAvailability: peekRemoteControlProviderAvailability(),
+    // Bot projects' catalogs leave Antigravity out, so their pickers get no
+    // Antigravity setup reason either.
+    providerAvailability: peekRemoteControlProviderAvailability({
+      antigravity: !isBotProjectId(projectId),
+    }),
     pluginSelectionsDetail: normalizePluginSelections(tab.pluginSelections),
     deferredToolsAllowed:
       options?.deferredToolsAllowed ?? tab.deferredToolsAllowed,
@@ -2823,29 +2832,10 @@ export async function cancelStandaloneChat(
       'stop',
     );
   }
-  await cancelChatTurn(target, 'stop', stopContext);
-  const userMessageId = stopContext.fence?.userMessageId;
-  // A native idle session has no captured turn to release or persist. Do not
-  // manufacture an untagged terminal that could be applied to a newer send
-  // which replaced this fence during Stop.
-  if (stopContext.fence !== undefined && userMessageId === undefined) {
-    return { ok: true };
-  }
-  getChatQueueService().onTurnTerminal(target, 'cancelled', userMessageId);
-  const cancelledData = {
-    type: 'result',
-    is_error: false,
-    result: 'Cancelled',
-    ...(userMessageId ? { canopy_turn_user_message_id: userMessageId } : {}),
-  };
-  await getChatStateService().ingestProviderEvent({
-    ...target,
-    data: cancelledData,
-    ...(userMessageId ? { turnUserMessageId: userMessageId } : {}),
-    mutationId: `manual-cancellation:${request.chatId}:${randomUUID()}`,
+  await withChatTurnStopOwner(stopContext, async () => {
+    const cancellation = await cancelChatTurn(target, 'stop', stopContext);
+    await settleStoppedChatTurn(stopContext, cancellation);
   });
-  const { settleStoppedChatTurnRuns } = await import('../agent-runs/turn-runs');
-  settleStoppedChatTurnRuns(target, userMessageId);
   return { ok: true };
 }
 

@@ -9,11 +9,11 @@ import {
 import {
   RailSectionHeaderFrame,
   type RailSectionHeaderFrameProps,
-} from './Disclosure';
+} from '../primitives/Disclosure';
 import { RailIconButton } from './RailIconButton';
-import { Dot } from './Badge';
-import { FloatingMenu } from './FloatingMenu';
-import { ActionMenuRowStyle } from './ActionMenuItems';
+import { Dot } from '../primitives/Badge';
+import { FloatingMenu } from '../primitives/FloatingMenu';
+import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
 
 export interface RailSectionHeaderProps extends RailSectionHeaderFrameProps {
   readonly renderMenuItems?: (close: () => void) => ReactNode;

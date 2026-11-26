@@ -20,6 +20,7 @@ import {
 import { getActiveDesktopRuntime } from '../../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../../canopy-runtime/desktop-runtime-identity';
 import { respondToChatQuestion } from '../../chat-questions/respond';
+import { isCoworkWorkspace } from '../../lib/workspace-registry';
 import {
   getChatStateCommandPort,
   validateChatCommandRequest,
@@ -103,13 +104,18 @@ function dispatch(
   attribution: HostedChatAttribution,
   options?: ChatCommandExecutionOptions,
 ): Promise<ChatCommandResult> {
+  const canCommit = attribution.canCommit;
+  const executionOptions =
+    canCommit === undefined
+      ? options
+      : { ...options, canCommitSend: canCommit, canCommitCreate: canCommit };
   return dispatchTrustedChatCommand(request, {
     ...createChatCommandDispatchOptions(
       chatPort(),
       getActiveDesktopRuntime(),
       hostedCaller(attribution),
     ),
-    ...(options === undefined ? {} : { executionOptions: options }),
+    ...(executionOptions === undefined ? {} : { executionOptions }),
   });
 }
 
@@ -157,6 +163,7 @@ function knownModel(model: string): string {
 export const dispatchHostedChatCommandOnDesktop = createHostedChatDispatcher({
   validate: (request) => validateChatCommandRequest(request),
   dispatch,
+  isWorkEntryScope: (projectId) => isCoworkWorkspace(projectId),
   createSeed: async (projectId, model) => {
     const seed = await resolveRemoteCreateTabSeed(
       projectId,

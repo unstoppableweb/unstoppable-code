@@ -1,8 +1,8 @@
-import { Stack } from './Stack';
+import { Stack } from '../primitives/Stack';
 import { useRef, useState, type JSX } from 'react';
-import { DialogModal } from './DialogModal';
-import { Button } from './Button';
-import { ListRow } from './ListRow';
+import { DialogModal } from '../primitives/DialogModal';
+import { Button } from '../primitives/Button';
+import { ListRow } from '../primitives/ListRow';
 import { UsageRow } from './UsageGroup';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 

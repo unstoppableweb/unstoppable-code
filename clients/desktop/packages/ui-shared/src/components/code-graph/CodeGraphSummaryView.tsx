@@ -1,16 +1,16 @@
-import { Stack } from '../Stack';
+import { Stack } from '../../primitives/Stack';
 import type { JSX, ReactNode } from 'react';
-import { LoadingButton } from '../LoadingButton';
-import { LoadingSpinner } from '../LoadingSpinner';
+import { LoadingSpinner } from '../../primitives/LoadingSpinner';
 import {
   SettingsRowsGroup,
   SettingsRowsRow,
   SettingsRowsSection,
 } from '../settings/SettingsRows';
-import { Notice, NoticeButton } from '../Notice';
-import { StatusLabel } from '../StatusLabel';
-import { Surface } from '../Surface';
-import { EmptyStateRow } from '../StatusBlocks';
+import { Notice, NoticeButton } from '../../primitives/Notice';
+import { StatusLabel } from '../../primitives/StatusLabel';
+import { Surface } from '../../primitives/Surface';
+import { EmptyStateRow } from '../../primitives/StatusBlocks';
+import { Button } from '../../primitives/Button';
 
 /**
  * Graph state shown by the summary. `'partial'` applies only to the aggregate
@@ -369,14 +369,14 @@ function BuildButton({
   testId: string;
 }): JSX.Element {
   return (
-    <LoadingButton
+    <Button
       size="compact"
       onClick={onBuild}
       loading={building}
       data-testid={testId}
     >
       {label}
-    </LoadingButton>
+    </Button>
   );
 }
 
@@ -648,7 +648,7 @@ export function CodeGraphSummaryView({
           </Notice>
         )}
         {unreadable && (
-          <LoadingButton
+          <Button
             className="self-start"
             variant="primary"
             size="compact"
@@ -658,7 +658,7 @@ export function CodeGraphSummaryView({
             data-testid={`${testId}-build`}
           >
             Update Code Graph
-          </LoadingButton>
+          </Button>
         )}
       </div>
     );
@@ -794,7 +794,7 @@ export function CodeGraphSummaryView({
               {buildErrorMessage}
             </Notice>
           )}
-          <LoadingButton
+          <Button
             className="self-start"
             variant="primary"
             size="compact"
@@ -804,7 +804,7 @@ export function CodeGraphSummaryView({
             data-testid={`${testId}-build`}
           >
             {buildActionLabel}
-          </LoadingButton>
+          </Button>
         </div>
       ) : (
         <div className="flex flex-col gap-4">
@@ -844,7 +844,7 @@ export function CodeGraphSummaryView({
               {buildErrorMessage}
             </Notice>
           )}
-          <LoadingButton
+          <Button
             className="self-start"
             variant="primary"
             size="compact"
@@ -854,7 +854,7 @@ export function CodeGraphSummaryView({
             data-testid={`${testId}-build`}
           >
             {buildActionLabel}
-          </LoadingButton>
+          </Button>
         </div>
       )}
     </Stack>

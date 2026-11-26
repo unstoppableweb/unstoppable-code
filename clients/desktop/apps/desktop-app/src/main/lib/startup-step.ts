@@ -40,6 +40,7 @@ export type StartupMigrationStepName =
  */
 export type StartupStepName =
   | StartupMigrationStepName
+  | 'migration.cowork_map_recovery'
   | 'migration.ledger_last_good'
   | 'migration.ledger_unavailable.damaged'
   | 'migration.ledger_unavailable.newer_version'

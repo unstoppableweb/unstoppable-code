@@ -8,8 +8,8 @@ import {
 } from 'react';
 import type { FileLinkLineLocation } from '@canopy/ui-shared/lib/file-link-line-suffix';
 import { useAgentFilePresentationStore } from '@/stores/agentFilePresentationStore';
-import { InlineMention } from '@canopy/ui-shared';
-import { FileIcon } from '@canopy/ui-shared/icons';
+import { INLINE_CHIP_ICON_CLASS, InlineMention } from '@canopy/ui-shared';
+import { FileTypeIcon } from '@canopy/ui-shared/icons';
 import { useChatStore } from '@/stores/chatStore';
 import { requestFilePanelPlacementBesideChat } from '@/lib/panels/chat-panel-sync';
 import type { FilePathMentionTarget } from '@/lib/filePathMentionIndex';
@@ -80,7 +80,13 @@ export const FilePathMention = memo(function FilePathMention({
 
   return (
     <InlineMention
-      icon={FileIcon}
+      icon={
+        <FileTypeIcon
+          filename={target.filename}
+          className={INLINE_CHIP_ICON_CLASS}
+          exactSize
+        />
+      }
       title={`Open ${displayText ?? target.displayPath}`}
       aria-label={`Open ${displayText ?? target.displayPath}`}
       onClick={handleClick}

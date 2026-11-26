@@ -360,7 +360,7 @@ export function ShareAgentModal({
   return (
     <DesktopShareResourceDialog
       marketplace={{ kind: 'agent', resourceKey: agent.id }}
-      resourceNoun="agent"
+      resourceNoun="model preset"
       testIdPrefix="share-agent"
       requiredCapability={AGENTS_CRUD_CAPABILITY}
       scopes={SHARE_SCOPES}

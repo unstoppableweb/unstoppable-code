@@ -150,6 +150,8 @@ export function createCommitEventHandlersMock(): object {
       },
       publishWorktreeListWrite: (): void => undefined,
       publishWorktreeMembershipChange: (): void => undefined,
+      handleExternalWorktreeList: (): void => undefined,
+      readWorktreeListContent: (): Promise<null> => Promise.resolve(null),
     }),
   };
 }

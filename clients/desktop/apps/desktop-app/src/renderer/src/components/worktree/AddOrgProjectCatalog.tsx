@@ -231,7 +231,8 @@ export function AddOrgProjectCatalog({
       offerGitHubConnect: true,
     }).finally((): void => onAddActivityChange(-1));
     if (!mounted.current) return;
-    if (outcome.kind === 'listing-failed') setError('Failed to add project');
+    if (outcome.kind === 'listing-failed')
+      setError("Couldn't add the project.");
     // Found linked by the fresh check: its row re-renders without Add.
     else if (outcome.kind === 'linked')
       setLinkedAfterListing((previous): readonly string[] => [

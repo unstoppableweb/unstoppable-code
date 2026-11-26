@@ -4,7 +4,7 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 
 export interface MobileTopBarButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   /**

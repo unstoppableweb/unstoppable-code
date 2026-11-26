@@ -1,5 +1,6 @@
 export type { BrandBuildIdentity } from '@canopy/protocol/brand';
 import type { ProductBuild } from '@canopy/protocol/brand';
+import type { PlatformPermissionCause } from '../platform/platform-services';
 
 /** Facts supplied by B's validated journal reader, never inferred from a folder name. */
 export type InternalRootStartupState =
@@ -24,10 +25,23 @@ export class BuildStorageStartupRefused extends Error {
   constructor(
     readonly reason: BuildStorageRefusalReason,
     recovery: string,
+    /** The closed cause when a private-path check decided the refusal (CAN-7917). */
+    readonly privacy?: PlatformPermissionCause,
   ) {
     super(recovery);
   }
 }
+
+/**
+ * The local stderr line after a refusal's message: the reason code and any
+ * closed private-path cause, never a path or SID. Empty without a cause.
+ */
+export const buildStorageRefusalDiagnostic = (
+  error: BuildStorageStartupRefused,
+): string =>
+  error.privacy === undefined
+    ? ''
+    : `Diagnostic: ${error.reason}, a folder or file is not private (${error.privacy}).\n`;
 
 /** Must run before creation, recovery, cohort registration or writer admission. */
 export function assertBuildStorageStartup(options: {

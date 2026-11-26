@@ -31,10 +31,19 @@ import {
   type KnownSettingsError,
   type SettingsFailure,
 } from '../../errors';
+import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
+import type {
+  CapabilitySetupConnectorRef,
+  CapabilitySetupItemRef,
+} from '@canopy/protocol/canopy-core';
 import {
+  availableDefaultRefs,
+  defaultConnectorsWith,
   matchesProjectDefaultSearch,
+  projectDefaultConnectorRows,
   projectDefaultRows,
   projectDefaultsWith,
+  type ProjectDefaultConnectorRow,
   type ProjectDefaultKind,
   type ProjectDefaultRow,
   type ProjectDefaultsState,
@@ -144,6 +153,7 @@ export function ProjectDefaultsSection({
           items: result.items,
           candidates: result.candidates,
           canEdit: result.canEdit,
+          connectors: result.connectors ?? null,
         });
         setLoadError(null);
         setStale(false);
@@ -157,9 +167,20 @@ export function ProjectDefaultsSection({
     };
   }, [client, orgId, loadFailure, loadAttempt]);
 
-  const toggle = async (row: ProjectDefaultRow, on: boolean): Promise<void> => {
+  /**
+   * Saves one switch: the items to store, and the default connections when
+   * a connection's switch changed (left out otherwise, which keeps them).
+   */
+  const save = async (
+    key: string,
+    on: boolean,
+    write: {
+      readonly items: CapabilitySetupItemRef[];
+      readonly connectors?: CapabilitySetupConnectorRef[];
+    },
+  ): Promise<void> => {
     if (state === null || pending !== null) return;
-    setPending({ key: row.key, on });
+    setPending({ key, on });
     setSaveError(null);
     const readAt = generation.current;
     try {
@@ -168,7 +189,7 @@ export function ProjectDefaultsSection({
         {
           organizationId: orgId,
           expectedRevision: state.revision,
-          items: projectDefaultsWith(state.items, row.ref, on),
+          ...write,
           idempotencyKey: crypto.randomUUID(),
         },
       );
@@ -176,7 +197,15 @@ export function ProjectDefaultsSection({
         setState((previous) =>
           previous === null
             ? previous
-            : { ...previous, revision: saved.revision, items: saved.items },
+            : {
+                ...previous,
+                revision: saved.revision,
+                items: saved.items,
+                connectors:
+                  previous.connectors === null || !saved.connectors
+                    ? previous.connectors
+                    : { ...previous.connectors, items: saved.connectors.items },
+              },
         );
     } catch (error) {
       setSaveError(
@@ -193,6 +222,28 @@ export function ProjectDefaultsSection({
       setPending(null);
     }
   };
+
+  const toggle = (row: ProjectDefaultRow, on: boolean): Promise<void> =>
+    state === null
+      ? Promise.resolve()
+      : save(row.key, on, {
+          items: projectDefaultsWith(state.items, row.ref, on),
+        });
+
+  const toggleConnector = (
+    row: ProjectDefaultConnectorRow,
+    on: boolean,
+  ): Promise<void> =>
+    state === null || state.connectors === null
+      ? Promise.resolve()
+      : save(row.key, on, {
+          items: availableDefaultRefs(state.items),
+          connectors: defaultConnectorsWith(
+            state.connectors.items,
+            row.ref,
+            on,
+          ),
+        });
 
   if (state === null) {
     if (loadError !== null)
@@ -222,8 +273,10 @@ export function ProjectDefaultsSection({
   );
   const total = rowsByKind.reduce((sum, [, rows]) => sum + rows.length, 0);
   // While searching, a card keeps only its matching rows, and a card with
-  // none is left out rather than saying it has nothing shared.
-  const searching = query.trim() !== '';
+  // none is left out rather than saying it has nothing shared. With nothing
+  // shared the search row is gone, so a query kept from before a reload
+  // applies to nothing and every empty card stays.
+  const searching = total > 0 && query.trim() !== '';
   const matchedByKind = rowsByKind
     .map(
       ([kind, rows]) =>
@@ -240,6 +293,20 @@ export function ProjectDefaultsSection({
   const busy = pending !== null || !state.canEdit || stale;
   const shown = (row: ProjectDefaultRow): ProjectDefaultRow =>
     pending?.key === row.key ? { ...row, isDefault: pending.on } : row;
+  const cards = (
+    <div className="flex flex-col gap-10">
+      {matchedByKind.map(([kind, rows]) => (
+        <ProjectDefaultsCard
+          key={kind}
+          kind={kind}
+          rows={rows.map(shown)}
+          disabled={busy}
+          pendingKey={pending?.key ?? null}
+          onToggle={(row, on) => void toggle(row, on)}
+        />
+      ))}
+    </div>
+  );
 
   return (
     <div
@@ -273,11 +340,16 @@ export function ProjectDefaultsSection({
         error={saveError?.copy}
         details={saveError?.details}
       />
-      {total === 0 ? (
+      {/* With nothing shared, the page is only empty when it has no
+          connectors either. Beside the Connectors card, each card keeps its
+          place with an empty row, as it looks once something is shared. */}
+      {total === 0 && state.connectors !== null ? (
+        cards
+      ) : total === 0 ? (
         agentsAndPipelinesEnabled ? (
           <EmptyState
             testId="organization-project-defaults-empty"
-            title="No skills, plugins, agents or workflows are shared with this organization yet"
+            title="No skills, plugins, model presets or workflows are shared with this organization yet"
             subtitle="Share one with this organization to make it a default for every project."
           />
         ) : (
@@ -309,22 +381,85 @@ export function ProjectDefaultsSection({
               actionTestId="organization-project-defaults-clear-search"
             />
           ) : (
-            <div className="flex flex-col gap-10">
-              {matchedByKind.map(([kind, rows]) => (
-                <ProjectDefaultsCard
-                  key={kind}
-                  kind={kind}
-                  rows={rows.map(shown)}
-                  disabled={busy}
-                  pendingKey={pending?.key ?? null}
-                  onToggle={(row, on) => void toggle(row, on)}
-                />
-              ))}
-            </div>
+            cards
           )}
         </div>
       )}
+      {state.connectors !== null && (
+        <ProjectDefaultConnectorsCard
+          rows={projectDefaultConnectorRows(state.connectors).map((row) =>
+            pending?.key === row.key ? { ...row, isDefault: pending.on } : row,
+          )}
+          disabled={busy}
+          pendingKey={pending?.key ?? null}
+          onToggle={(row, on) => void toggleConnector(row, on)}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * The organization's connections (CAN-6246): a connection that is on is
+ * a default for every project, so people on each project can use it.
+ */
+function ProjectDefaultConnectorsCard({
+  rows,
+  disabled,
+  pendingKey,
+  onToggle,
+}: {
+  rows: readonly ProjectDefaultConnectorRow[];
+  disabled: boolean;
+  pendingKey: string | null;
+  onToggle: (row: ProjectDefaultConnectorRow, on: boolean) => void;
+}): JSX.Element {
+  return (
+    <SettingsCard
+      title="Connectors"
+      subtitle="A connector that is on is in every project, including new ones. People on a project can use it."
+      testId="organization-project-defaults-connectors"
+    >
+      {rows.length === 0 ? (
+        <EmptyStateRow
+          title="The organization doesn't hold any connections yet"
+          testId="organization-project-defaults-connectors-empty"
+        />
+      ) : (
+        rows.map((row) => (
+          <div
+            key={row.key}
+            className={SETTINGS_CARD_ROW_CLASS}
+            data-testid={`organization-project-default-row-${row.key}`}
+          >
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <div className="flex min-w-0 items-center gap-2">
+                <p
+                  className={`truncate text-s font-medium fg-primary ${REPLAY_MASK_CLASS}`}
+                >
+                  {row.name}
+                </p>
+                {!row.available && <Badge>Unavailable</Badge>}
+                {row.needsSignIn && <Badge tone="warning">Needs sign-in</Badge>}
+              </div>
+              {!row.available && (
+                <p className="text-xs text-pretty fg-secondary">
+                  It was deleted from the organization.
+                </p>
+              )}
+            </div>
+            <SettingsCardSwitch
+              checked={row.isDefault}
+              disabled={disabled || (!row.available && !row.isDefault)}
+              busy={pendingKey === row.key}
+              label={`Default for every project: ${row.name}`}
+              onChange={(on) => onToggle(row, on)}
+              dataTestId={`organization-project-default-toggle-${row.key}`}
+            />
+          </div>
+        ))
+      )}
+    </SettingsCard>
   );
 }
 
@@ -345,10 +480,10 @@ const CARD_COPY: Record<
     empty: 'No plugins are shared with this organization yet',
   },
   agent: {
-    title: 'Agents',
+    title: 'Model presets',
     subtitle:
-      'An agent that is on is available in every project, including new ones.',
-    empty: 'No agents are shared with this organization yet',
+      'A model preset that is on is available in every project, including new ones.',
+    empty: 'No model presets are shared with this organization yet',
   },
   // The `pipeline` kind is shown as a workflow, as the Workflows library
   // and Customize name it.
@@ -456,6 +591,7 @@ const noop = (): void => undefined;
 const SAMPLE_STATE: ProjectDefaultsState = {
   revision: 0,
   canEdit: false,
+  connectors: null,
   items: [],
   candidates: [
     {

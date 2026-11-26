@@ -1,5 +1,8 @@
 import type { JSX } from 'react';
-import { DropdownMenuItem, DropdownMenuItemIcon } from './DropdownMenu';
+import {
+  DropdownMenuItem,
+  DropdownMenuItemIcon,
+} from '../primitives/DropdownMenu';
 import { PinIcon } from '../icons/AppIcons';
 
 export interface SidebarPinMenuItemProps {

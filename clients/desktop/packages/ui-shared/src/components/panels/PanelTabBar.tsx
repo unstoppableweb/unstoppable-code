@@ -1,4 +1,4 @@
-import { ControlButton } from '../Button';
+import { ControlButton } from '../../primitives/Button';
 import {
   createContext,
   memo,
@@ -17,6 +17,7 @@ import {
   type ReactNode,
 } from 'react';
 import {
+  ChatIcon,
   CloseMediumIcon,
   PinIcon,
   QuestionMarkIcon,
@@ -26,9 +27,9 @@ import { SIDEBAR_INDICATOR_COLORS } from '../../lib/operational-status-colors';
 import { useHorizontalOverflowScroll } from '../../lib/useHorizontalOverflowScroll';
 import type { PanelDropEdge, PanelTabModel } from '../../panels/registry-types';
 import { AgentStateGlyph } from '../AgentStateGlyph';
-import { RichHoverTooltip } from '../RichHoverTooltip';
-import { ThinkingSpinner } from '../ThinkingSpinner';
-import { Tooltip } from '../Tooltip';
+import { RichHoverTooltip } from '../../primitives/RichHoverTooltip';
+import { ThinkingSpinner } from '../../primitives/ThinkingSpinner';
+import { Tooltip } from '../../primitives/Tooltip';
 import { PanelAddTabButton } from './PanelAddTabButton';
 import {
   edgeHintClearance,
@@ -253,58 +254,27 @@ export function usePanelTabStyle(): PanelTabStyle {
   return useContext(PanelTabStyleContext);
 }
 
-const PanelTabPositionContext = createContext<number | null>(null);
-
-/**
- * The 1-based place of the tab whose icon is rendering, counted across its
- * strip (fill tabs, and their rows in the ⌄ list). `null` outside a fill
- * tab's icon slot.
- */
-export function usePanelTabPosition(): number | null {
-  return useContext(PanelTabPositionContext);
-}
-
-/**
- * A tab's place in its strip, drawn in the icon slot in the title's own font
- * and size, a step quieter (tertiary ink). Centered in a fixed 16px square
- * that fits two digits at 13px, so the label never moves; the digits keep the
- * font's own proportional widths.
- */
-export function PanelTabNumber({
-  position,
-}: {
-  readonly position: number;
-}): JSX.Element {
-  return (
-    <span
-      className="inline-flex size-4 shrink-0 items-center justify-center leading-none fg-tertiary"
-      data-testid="panel-tab-number"
-    >
-      {position}
-    </span>
-  );
-}
-
 /**
  * A chat tab's glyph in a fill tab bar: while the chat works, the accent
  * spinner, marked busy so the bar withholds its close button; otherwise the
- * tab's number. Desktop and web chat tabs both draw it, so a crowded row reads
- * the same on each. Extra props (unread hooks, test ids) land on the wrapper.
+ * chat icon. The icon carries no state: fill tabs show unread, plan review and
+ * approval on their right. Desktop and web chat tabs both draw it, so a
+ * crowded row reads the same on each. Extra props (unread hooks, test ids)
+ * land on the wrapper.
  */
 export function PanelFillChatTabGlyph({
   busy,
   ...props
 }: {
   readonly busy: boolean;
-} & HTMLAttributes<HTMLSpanElement>): JSX.Element | null {
-  const position = usePanelTabPosition();
+} & HTMLAttributes<HTMLSpanElement>): JSX.Element {
   const inList = useInPanelTabList();
-  if (busy && inList && position !== null) {
-    // In the ⌄ list the row keeps its number; the spinner goes to the row's
-    // right-hand status slot (panels.css places it), still marked busy.
+  if (busy && inList) {
+    // In the ⌄ list the row keeps its chat icon; the spinner goes to the
+    // row's right-hand status slot (panels.css places it), still marked busy.
     return (
       <span className="inline-flex shrink-0 items-center" {...props}>
-        <PanelTabNumber position={position} />
+        <ChatIcon size="sm" className="shrink-0" />
         <span
           className="canopy-panel-tab-list-busy"
           {...{ [PANEL_TAB_BUSY_ATTRIBUTE]: 'true' }}
@@ -329,16 +299,14 @@ export function PanelFillChatTabGlyph({
           // The accent, as the sidebar's running worktree spinner uses: the
           // same "agent working here" signal in the theme's own colour.
           tone="accent"
-          // Lifted onto the tab number's center in panels.css.
           className="shrink-0"
         />
       </span>
     );
   }
-  if (position === null) return null;
   return (
     <span className="inline-flex shrink-0 items-center" {...props}>
-      <PanelTabNumber position={position} />
+      <ChatIcon size="sm" className="shrink-0" />
     </span>
   );
 }
@@ -1089,14 +1057,12 @@ function PanelTabBarComponent({
       customTooltip,
       hoverCard,
       tabIsPinned,
-      position,
     }: {
       icon: ReactNode;
       title: string;
       customTooltip: ReactNode;
       hoverCard: ReactNode;
       tabIsPinned: boolean;
-      position: number;
     },
   ): JSX.Element => {
     const trailing = renderTabTrailing ? (
@@ -1112,9 +1078,7 @@ function PanelTabBarComponent({
         <>
           <span className="canopy-panel-tab-main">
             <span className="canopy-panel-tab-icon" aria-hidden="true">
-              <PanelTabPositionContext.Provider value={position}>
-                {icon ?? <PinGlyph />}
-              </PanelTabPositionContext.Provider>
+              {icon ?? <PinGlyph />}
             </span>
           </span>
           {trailing}
@@ -1158,9 +1122,7 @@ function PanelTabBarComponent({
       <span className="canopy-panel-tab-main">
         {icon ? (
           <span className="canopy-panel-tab-icon" aria-hidden="true">
-            <PanelTabPositionContext.Provider value={position}>
-              {icon}
-            </PanelTabPositionContext.Provider>
+            {icon}
           </span>
         ) : null}
         {/* Label, trailing content, and close button share one wrapper: it
@@ -1373,7 +1335,6 @@ function PanelTabBarComponent({
             customTooltip,
             hoverCard,
             tabIsPinned,
-            position: fullIndex + 1,
           })
         ) : tabIsPinned ? (
           // Compact icon-only pinned tab; falls back to the pin glyph when the
@@ -1654,12 +1615,10 @@ function PanelTabBarComponent({
             }}
             onCloseTab={onCloseTab}
             {...(canCloseTab ? { canCloseTab } : {})}
-            renderIcon={(tab, position): ReactNode => (
-              // Drawn as the strip draws it: the same style and number.
+            renderIcon={(tab): ReactNode => (
+              // Drawn as the strip draws it, in the same style.
               <PanelTabStyleProvider value={tabStyle}>
-                <PanelTabPositionContext.Provider value={position}>
-                  {renderTabIcon?.(tab) ?? null}
-                </PanelTabPositionContext.Provider>
+                {renderTabIcon?.(tab) ?? null}
               </PanelTabStyleProvider>
             )}
             renderLabel={(tab): ReactNode =>

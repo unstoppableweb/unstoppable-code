@@ -15,14 +15,17 @@ import {
   ActionMenuItems,
   ActionMenuRowStyle,
   type ActionMenuItem,
-} from './ActionMenuItems';
+} from '../primitives/ActionMenuItems';
 import type { SpaceNotificationMenuChoiceKey } from './SpaceNotificationMenu';
 import { RailIconButton } from './RailIconButton';
 import {
   CONTEXT_MENU_POINTER_OFFSET,
   useContextMenuPlacement,
-} from './context-menu-placement';
-import { FloatingMenu, FloatingMenuPointAnchor } from './FloatingMenu';
+} from '../primitives/context-menu-placement';
+import {
+  FloatingMenu,
+  FloatingMenuPointAnchor,
+} from '../primitives/FloatingMenu';
 import { WorktreeRowActionChip } from './WorktreeRow';
 
 export type WorktreeMenuItemKey =

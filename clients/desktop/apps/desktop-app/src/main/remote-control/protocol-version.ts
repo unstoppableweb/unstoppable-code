@@ -1,4 +1,10 @@
-import { REMOTE_PROTOCOL_VERSION, type RemoteVersion } from './remote-protocol';
+import { oneWindowHostChannels } from '@canopy/protocol/remote-control/channels';
+import {
+  DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION,
+  REMOTE_PROTOCOL_VERSION,
+  type HelloResult,
+  type RemoteVersion,
+} from './remote-protocol';
 
 /** Whether two computers speak the same remote-control protocol. */
 export function compatibleRemoteVersions(
@@ -6,6 +12,24 @@ export function compatibleRemoteVersions(
   right: RemoteVersion,
 ): boolean {
   return left.protocolVersion === right.protocolVersion;
+}
+
+/**
+ * Whether this computer may use a host that answered a one-window hello
+ * (CAN-7761). Both computers must be at or above the one-window floor, and
+ * the host must serve the mode: it announced `features.oneWindow`, or it
+ * runs this computer's exact protocol (a host released before the mode
+ * serves the full tunnel there). Every other session, the separate window
+ * included, keeps the exact match of `compatibleRemoteVersions`.
+ */
+export function oneWindowHostCompatible(
+  hello: HelloResult,
+  local: RemoteVersion,
+): boolean {
+  return (
+    local.protocolVersion >= DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION &&
+    oneWindowHostChannels(hello, local) !== null
+  );
 }
 
 /**

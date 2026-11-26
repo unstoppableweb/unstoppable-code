@@ -1,3 +1,4 @@
+import { CLOUD_ACCOUNT_TRUSTED_CONNECTION_GRANT } from './cloud-account-custody';
 import { z } from 'zod';
 import {
   defineCanopyInstruction,
@@ -71,7 +72,10 @@ export const CoreCloudAccountConnectWithKeyResultSchema = z.strictObject({
   account: CloudAccountSummarySchema,
 });
 
-export const CoreCloudAccountDisconnectParamsSchema = z.strictObject({});
+export const CoreCloudAccountDisconnectParamsSchema = z.strictObject({
+  /** From custody.get; omitted by older clients. */
+  expectedCredentialGeneration: z.number().int().nonnegative().optional(),
+});
 export const CoreCloudAccountDisconnectResultSchema = z.strictObject({
   account: CloudAccountSummarySchema,
 });
@@ -136,10 +140,12 @@ export type CoreCloudAccountResetUnreadableResult = z.output<
 >;
 
 /**
- * The desktop cloud account (CAN-4168). Spec-first: no registry composes
- * these until the desktop core adapter lands, so every core answers
- * `capability_unavailable`. On the web the account is the hosted session,
- * so the web core does not serve them.
+ * The desktop cloud account (CAN-4168). The daemon serves `connectWithKey`,
+ * `disconnect` and `resetUnreadable` over its own account record where
+ * account authority is selected (CAN-6997); browser sign-in stays with the
+ * client, which provisions the daemon from it. The desktop's own sign-in
+ * keeps its Electron path. On the web the account is the hosted session, so
+ * the web core does not serve them.
  */
 export const CORE_CLOUD_ACCOUNT_INSTRUCTION_DEFINITIONS =
   defineCanopyInstructionRegistry('core', {
@@ -180,7 +186,10 @@ export const CORE_CLOUD_ACCOUNT_INSTRUCTION_DEFINITIONS =
         CORE_CLOUD_ACCOUNT_CONNECT_WITH_KEY_ERROR_CODES,
       ),
       idempotency: 'keyed',
-      requiredGrants: ['core.integration.write'],
+      requiredGrants: [
+        'core.integration.write',
+        CLOUD_ACCOUNT_TRUSTED_CONNECTION_GRANT,
+      ],
     }),
     'core.integration.cloudAccount.disconnect': defineCanopyInstruction({
       plane: 'core',
@@ -192,8 +201,13 @@ export const CORE_CLOUD_ACCOUNT_INSTRUCTION_DEFINITIONS =
       error: inherentOperationErrorSchema(
         CORE_CLOUD_ACCOUNT_DISCONNECT_ERROR_CODES,
       ),
-      idempotency: 'inherent',
-      requiredGrants: ['core.integration.write'],
+      // A clear that may have committed is never replayed: without its
+      // generation fence, a replay would clear a later replacement (CAN-6997).
+      idempotency: 'none',
+      requiredGrants: [
+        'core.integration.write',
+        CLOUD_ACCOUNT_TRUSTED_CONNECTION_GRANT,
+      ],
     }),
     'core.integration.cloudAccount.resetUnreadable': defineCanopyInstruction({
       plane: 'core',
@@ -206,6 +220,9 @@ export const CORE_CLOUD_ACCOUNT_INSTRUCTION_DEFINITIONS =
         CORE_CLOUD_ACCOUNT_RESET_UNREADABLE_ERROR_CODES,
       ),
       idempotency: 'inherent',
-      requiredGrants: ['core.integration.write'],
+      requiredGrants: [
+        'core.integration.write',
+        CLOUD_ACCOUNT_TRUSTED_CONNECTION_GRANT,
+      ],
     }),
   });

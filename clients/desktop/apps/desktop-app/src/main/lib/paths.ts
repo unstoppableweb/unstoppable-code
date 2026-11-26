@@ -10,6 +10,10 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { join } from 'path';
 import { scriptRunFileStem } from '@canopy/core-runtime/node/script/run-log-stem';
 import {
+  PREFERENCES_BACKUPS_FOLDER,
+  PREFERENCES_OWNER_RECORDS_FOLDER,
+} from '@canopy/core-runtime/node/preferences/family';
+import {
   getCanopyDataDir,
   getCanopySecureDataDir,
   getInternalLegacySharedSecureDataDir,
@@ -237,6 +241,25 @@ export function getRepoShadowsRootDir(): string {
 export function getPreferencesFilePath(): string {
   return join(getDataDir(), 'preferences.json');
 }
+
+/** Client-local preferences (CAN-4472), beside preferences.json in the same root. */
+export function getClientPreferencesFilePath(): string {
+  return join(getDataDir(), 'client-preferences.json');
+}
+
+/**
+ * Read and protection paths of the preferences family, for code other than
+ * its writer; they confer no write admission (CAN-7924).
+ */
+export const preferencesReadPaths = {
+  document: (): string => join(getDataDir(), 'preferences.json'),
+  /** The row's owner records folder (`storage-records/preferences`). */
+  ownerRecords: (): string =>
+    join(getDataDir(), ...PREFERENCES_OWNER_RECORDS_FOLDER.split('/')),
+  /** The folder holding every preferences backup. */
+  backups: (): string =>
+    join(getDataDir(), ...PREFERENCES_BACKUPS_FOLDER.split('/')),
+};
 
 /**
  * Optional settings of the local-only build profile
@@ -880,6 +903,27 @@ export function getHookInvocationsDir(
   worktreeId: string,
 ): string {
   return join(getWorktreeDataDir(workspaceId, worktreeId), 'hook-invocations');
+}
+
+/**
+ * Which data-root layout holds a worktree's legacy terminal state; the
+ * daemon's record authority reads it there once, at import (CAN-7051).
+ */
+export function getWorktreeTerminalLegacyLayout(
+  workspaceId: string,
+): 'workspaces' | 'app-workspaces' {
+  return isAppManagedChatWorkspace(workspaceId)
+    ? 'app-workspaces'
+    : 'workspaces';
+}
+
+/**
+ * The root of main's terminal record outbox (CAN-7051): main's own data
+ * root, never an identity-pinned one, so every queued write drains to the
+ * same daemon.
+ */
+export function getTerminalOutboxDataRoot(): string {
+  return getCanopyDataDir();
 }
 
 export function getWorktreeTerminalStateFilePath(

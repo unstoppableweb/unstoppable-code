@@ -71,6 +71,13 @@ export const WorkerGitStatusGetErrorSchema = CanopyErrorPayloadSchema.extend({
  */
 export const WORKER_GIT_DIFF_SCHEMA_REVISION = 2;
 
+/**
+ * Revision 3, served by the desktop's in-process worker and the daemon, never
+ * the web core (CAN-4729): the comparison's settled Git reads in `reads`, so
+ * the desktop can rebuild its legacy changed-files lists from a daemon answer.
+ */
+export const WORKER_GIT_DIFF_READS_REVISION = 3;
+
 export const WorkerGitDiffGetParamsSchema = z.strictObject({
   scope: CanopyWorkspaceScopeSchema,
   repoId: id,
@@ -79,8 +86,16 @@ export const WorkerGitDiffGetParamsSchema = z.strictObject({
   head: z.string(),
   paths: z.array(z.string()).optional(),
   contextLines: z.number().int().min(0).max(100).optional(),
-  /** Revision 2 output, sent only when the runtime advertises it. */
-  revision: z.literal(WORKER_GIT_DIFF_SCHEMA_REVISION).optional(),
+  /**
+   * Revision 2 output, sent only when the runtime advertises it; revision 3
+   * only to a desktop or daemon worker.
+   */
+  revision: z
+    .union([
+      z.literal(WORKER_GIT_DIFF_SCHEMA_REVISION),
+      z.literal(WORKER_GIT_DIFF_READS_REVISION),
+    ])
+    .optional(),
 });
 
 export type WorkerGitDiffGetParams = z.output<
@@ -137,6 +152,53 @@ export type WorkerGitDiffFile = z.output<typeof WorkerGitDiffFileSchema>;
 
 const objectId = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
 
+/** At most this many untracked files are estimated, in Git's listing order. */
+export const WORKER_GIT_DIFF_MAX_UNTRACKED_ESTIMATES = 200;
+
+/** Revision 3: one Git read of the comparison, settled. */
+export const WorkerGitDiffReadSchema = z.discriminatedUnion('ok', [
+  z.strictObject({
+    ok: z.literal(true),
+    /** Its `-z` output split on NUL, without the trailing terminator's empty field. */
+    fields: z.array(z.string()),
+    /**
+     * The output was longer than any list the legacy listing still shows, so
+     * `fields` is empty, as that listing shows it.
+     */
+    overCap: z.literal(true).optional(),
+  }),
+  z.strictObject({
+    ok: z.literal(false),
+    /** Git's exit code; null when it did not exit with one. */
+    exitCode: z.number().int().nullable(),
+  }),
+]);
+
+export type WorkerGitDiffRead = z.output<typeof WorkerGitDiffReadSchema>;
+
+/** Revision 3: every read of the comparison, failures included. */
+export const WorkerGitDiffReadsSchema = z.strictObject({
+  nameStatus: WorkerGitDiffReadSchema,
+  numstat: WorkerGitDiffReadSchema,
+  /** Null for a comparison of two objects. */
+  untracked: WorkerGitDiffReadSchema.nullable(),
+  /** Null for a comparison of two objects. */
+  unmerged: WorkerGitDiffReadSchema.nullable(),
+  /** For the first untracked files, in order. */
+  untrackedEstimates: z
+    .array(
+      z.strictObject({
+        insertions: z.number().int().nonnegative(),
+        binary: z.boolean(),
+        /** The confined read skipped this file: its parent resolves outside the checkout. */
+        confined: z.literal(true).optional(),
+      }),
+    )
+    .max(WORKER_GIT_DIFF_MAX_UNTRACKED_ESTIMATES),
+});
+
+export type WorkerGitDiffReads = z.output<typeof WorkerGitDiffReadsSchema>;
+
 export const WorkerGitDiffGetResultSchema = z
   .object({
     files: z.array(WorkerGitDiffFileSchema),
@@ -152,6 +214,11 @@ export const WorkerGitDiffGetResultSchema = z
     mergeBaseSha: objectId.nullable().optional(),
     /** Revision 2: the listing hit the server's bound, so files are missing. */
     filesTruncated: z.boolean().optional(),
+    /**
+     * Revision 3: the reads themselves, failed ones included. `files` is then
+     * empty and `truncated` false: the caller builds its lists from these.
+     */
+    reads: WorkerGitDiffReadsSchema.optional(),
   })
   .catchall(CanopyJsonValueSchema);
 
@@ -166,6 +233,11 @@ export const WORKER_GIT_DIFF_ERROR_CODES = [
   'worker.git.diff.invalidScope',
   'worker.git.diff.scopeUnsupported',
   'worker.git.diff.invalidRange',
+  /**
+   * Revision 3: a read needed an object a partial clone lacks, and this worker
+   * does not fetch it.
+   */
+  'worker.git.diff.objectMissing',
 ] as const;
 
 export const WorkerGitDiffGetErrorSchema = CanopyErrorPayloadSchema.extend({

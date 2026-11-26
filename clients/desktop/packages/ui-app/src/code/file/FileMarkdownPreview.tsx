@@ -10,7 +10,7 @@ import {
   type ReactNode,
   type UIEventHandler,
 } from 'react';
-import { Button } from '@canopy/ui-shared/components/Button';
+import { Button } from '@canopy/ui-shared/primitives/Button';
 import {
   TextLink,
   MARKDOWN_ROOT_PROPS,

@@ -1129,6 +1129,12 @@ export function classifyPipelineType(id: string): PipelineUsageType {
 export interface TelemetryExpensiveRun {
   /** Stable per-session id: `${worktreeExternalId}:${sessionKey}`. */
   sessionId: string;
+  /**
+   * The canonical organization transcript session ID (or null when the session
+   * has no shared transcript), set only for an organization owner with the
+   * transcript browser on. Absent for every other viewer.
+   */
+  transcriptSessionId?: string | null;
   /** Number of turns summed into this session. */
   turnCount: number;
   /** From the session's latest turn. */

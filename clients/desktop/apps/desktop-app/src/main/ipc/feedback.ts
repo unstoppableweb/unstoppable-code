@@ -17,8 +17,9 @@ import { prepareFeedbackBundle } from '../feedback/feedback-bundle';
 import { submitFeedback } from '../feedback/feedback-submit';
 import { registerIpcHandler } from './register';
 import {
-  loadCanopyCloudAccount,
+  readCanopyCloudAccountWithStatus,
   subscribeCanopyCloudAccountChanges,
+  type CanopyCloudAccountEntry,
 } from '../lib/canopy-cloud-account-store';
 import {
   prepareFeedbackDiagnostics,
@@ -27,15 +28,48 @@ import {
   releaseFeedbackDiagnostics,
   revokeFeedbackDiagnostics,
 } from '../feedback/feedback-snapshots';
+import { createFeedbackErrorAccountFence } from '../feedback/feedback-error-account-fence';
 
 let accountGeneration = 0;
 let subscribed = false;
-async function ownerFor(
+const errorAccounts = createFeedbackErrorAccountFence();
+// A guest can't file error reports: like a signed-out viewer, it is asked to
+// sign in, and that account may then report what the guest saw.
+function reportingCredential(
+  entry: CanopyCloudAccountEntry | null,
+): string | null {
+  return entry && !isGuestAccount(entry) ? entry.apiKey : null;
+}
+
+interface AccountRead {
+  readonly entry: CanopyCloudAccountEntry | null;
+  /** `undefined` when the read failed: no account can vouch for an error. */
+  readonly reporting: string | null | undefined;
+}
+
+// An unreadable account owns snapshots as a signed-out viewer, as before.
+async function readAccount(): Promise<AccountRead> {
+  const result = await readCanopyCloudAccountWithStatus().catch(
+    (error: unknown) => {
+      errorAccounts.observeUnreadable();
+      throw error;
+    },
+  );
+  if (result.status !== 'ok') {
+    errorAccounts.observeUnreadable();
+    return { entry: null, reporting: undefined };
+  }
+  const reporting = reportingCredential(result.entry);
+  errorAccounts.observeRead(reporting);
+  return { entry: result.entry, reporting };
+}
+
+function ownerOf(
   event: IpcMainInvokeEvent,
-  errorReport = false,
-): Promise<string> {
-  const account = await loadCanopyCloudAccount();
-  if (errorReport && (!account || isGuestAccount(account))) {
+  account: AccountRead,
+  errorReport: boolean,
+): string {
+  if (errorReport && !account.reporting) {
     throw new Error('Sign in to report this error.');
   }
   return createHash('sha256')
@@ -43,19 +77,37 @@ async function ownerFor(
       JSON.stringify([
         event.sender.id,
         accountGeneration,
-        account?.apiKey ?? null,
+        account.entry?.apiKey ?? null,
       ]),
     )
     .digest('hex');
 }
 
+async function ownerFor(event: IpcMainInvokeEvent): Promise<string> {
+  return ownerOf(event, await readAccount(), false);
+}
+
+/**
+ * Admission and the owner come from one read, so an account change while it
+ * is pending cannot attach the earlier account's error. A later change moves
+ * the owner, which each handler re-checks before acting on it.
+ */
+async function admit<T extends { error?: unknown; telemetry?: unknown }>(
+  received: T,
+): Promise<{ request: T; account: AccountRead }> {
+  const account = await readAccount();
+  return { request: errorAccounts.admit(received, account.reporting), account };
+}
+
 export function registerFeedbackHandlers(): void {
   if (!subscribed) {
     subscribed = true;
-    subscribeCanopyCloudAccountChanges(() => {
+    subscribeCanopyCloudAccountChanges((entry) => {
+      errorAccounts.observe(reportingCredential(entry));
       accountGeneration += 1;
       void revokeFeedbackDiagnostics();
     });
+    void readAccount().catch(() => undefined);
   }
   // `errorSource` is additive: this host accepts `source` on report errors.
   // The protocol version stays 1 because older clients ignore the flag.
@@ -70,8 +122,10 @@ export function registerFeedbackHandlers(): void {
   registerIpcHandler<
     [FeedbackDiagnosticsPrepareRequest],
     FeedbackDiagnosticsSnapshot
-  >(IPC_CHANNELS.feedbackDiagnosticsPrepare, async (event, request) => {
-    const owner = await ownerFor(event);
+  >(IPC_CHANNELS.feedbackDiagnosticsPrepare, async (event, received) => {
+    // The archive scope must match the submit, which drops the same error.
+    const { request, account } = await admit(received);
+    const owner = ownerOf(event, account, false);
     const snapshot = await prepareFeedbackDiagnostics(owner, request);
     if (owner !== (await ownerFor(event))) {
       await releaseFeedbackDiagnostics(owner, snapshot.id);
@@ -99,13 +153,16 @@ export function registerFeedbackHandlers(): void {
   );
   registerIpcHandler<[FeedbackSubmitRequest], FeedbackSubmitResponse>(
     IPC_CHANNELS.feedbackReportSubmit,
-    async (event, request) => {
-      const owner = await ownerFor(event, request.error !== undefined);
+    async (event, received) => {
+      const { request, account } = await admit(received);
+      const owner = ownerOf(event, account, request.error !== undefined);
       return submitFeedback(request, {
         owner,
         exact: true,
+        // No sign-in gate here: a switch, even to a guest, reaches the client
+        // as an account change, which holds the send.
         validateOwner: async () => {
-          if (owner !== (await ownerFor(event, request.error !== undefined)))
+          if (owner !== (await ownerFor(event)))
             throw new Error('Account changed. Reopen the report.');
         },
       });
@@ -117,13 +174,15 @@ export function registerFeedbackHandlers(): void {
   );
   registerIpcHandler<[FeedbackSubmitRequest], FeedbackSubmitResponse>(
     IPC_CHANNELS.feedbackSubmit,
-    async (event, request) => {
+    async (event, received) => {
+      if (received.error === undefined) return submitFeedback(received);
+      const { request, account } = await admit(received);
       if (!request.error) return submitFeedback(request);
-      const owner = await ownerFor(event, true);
+      const owner = ownerOf(event, account, true);
       return submitFeedback(request, {
         owner,
         validateOwner: async () => {
-          if (owner !== (await ownerFor(event, true)))
+          if (owner !== (await ownerFor(event)))
             throw new Error('Account changed. Reopen the report.');
         },
       });

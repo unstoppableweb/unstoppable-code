@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { ThinkingSpinner } from '../ThinkingSpinner';
+import { ThinkingSpinner } from '../../primitives/ThinkingSpinner';
 
 /**
  * The agent's question is on its way: an answer was given or the question

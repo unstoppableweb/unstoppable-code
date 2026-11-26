@@ -1,10 +1,12 @@
 import { getAttentionTracker } from '../services/attention-tracker';
 import { isAgentSecretRequestsEnabled } from '../agent-secrets/feature-gate';
+import { unattendedPluginOptions } from './turn-account-resolution';
 import {
   PIPELINE_EDITOR_TOOL_REGISTRY,
   type PipelineEditorToolKey,
 } from '@canopy/desktop-shared/lib/pipeline-editor-tools';
 import { CURSOR_PLAN_MODE_STEERING } from '@canopy/desktop-shared/node/cursor/headless-policy';
+import { prepareCursorProfileDirectory } from '@canopy/desktop-shared/node/cursor/profile-directory';
 import { extractProposedPlan } from '@canopy/execution-engine/codex-plan-mode';
 import {
   CODE_REVIEW_CHAT_PROJECT_ID,
@@ -523,11 +525,16 @@ export class CursorProvider implements AgentProvider {
         const profileTarget = (opts.projectId === STANDALONE_CHAT_PROJECT_ID
           ? resolveWorktreeTargetIds(opts.projectId, opts.worktreeId)
           : null) ?? { projectId: opts.projectId, worktreeId: opts.worktreeId };
-        const profile = join(
-          getWorktreeDataDir(profileTarget.projectId, profileTarget.worktreeId),
-          'cursor-sessions',
-          profileId,
-        );
+        const { directory: profile, confirmResume } =
+          await prepareCursorProfileDirectory(
+            getWorktreeDataDir(
+              profileTarget.projectId,
+              profileTarget.worktreeId,
+            ),
+            profileId,
+            opts.cwd,
+            { sessionId },
+          );
         // The chat's own home directory. The CLI discovers skills and
         // commands under `~/.cursor`, and this is what keeps one chat's
         // selection out of another's session. Sign-in and caches stay shared
@@ -683,9 +690,7 @@ export class CursorProvider implements AgentProvider {
                 ...(opts.packageOverlay
                   ? { packageOverlay: opts.packageOverlay }
                   : {}),
-                ...(opts.accountResolution
-                  ? { accountResolution: opts.accountResolution }
-                  : {}),
+                ...unattendedPluginOptions(opts),
                 ...(pluginContext.preferences
                   ? { preferences: pluginContext.preferences }
                   : {}),
@@ -776,6 +781,9 @@ export class CursorProvider implements AgentProvider {
               ? { thinkingLevel: turnThinkingLevel }
               : {}),
             ...(sessionId ? { sessionId } : {}),
+            // A relocated Windows profile must resume its saved native state;
+            // a load failure must not silently replace it with an empty chat.
+            requireExistingSession: Boolean(confirmResume),
             signal: abort.signal,
           },
           {
@@ -1171,6 +1179,7 @@ export class CursorProvider implements AgentProvider {
               // timing (see call sites in ipc/chat.ts and
               // lib/worktree-chat-turn.ts); leaving it stale/undefined for the
               // full turn duration silently breaks that fallback.
+              await confirmResume?.();
               sessionId = activeSessionId;
               if (contextLost) {
                 announce(
@@ -1382,7 +1391,10 @@ export class CursorProvider implements AgentProvider {
         return {
           type: 'result',
           is_error: outcome.isError,
-          result: message,
+          result:
+            confirmResume && outcome.isError && outcome.contextLost
+              ? "Cursor couldn't load the saved conversation after moving its profile. Restore the saved files and retry here, or start a new chat. This chat keeps its transcript."
+              : message,
           ...(outcome.providerErrorDetails
             ? { canopy_provider_error_details: outcome.providerErrorDetails }
             : {}),

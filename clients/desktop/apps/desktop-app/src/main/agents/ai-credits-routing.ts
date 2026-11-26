@@ -98,7 +98,7 @@ import {
 import { readModelGatewayDeviceOptOuts } from '../lib/model-gateway-device-use';
 import {
   readModelPolicyDecision,
-  isOrgModelPolicyActiveForStoredAccount,
+  readOrgModelPolicyActivityForStoredAccount,
   isStoredModelPolicyReadDegraded,
 } from '../lib/model-policy-state';
 import { effectivePersonalModelGateway } from '@canopy/desktop-shared/lib/org-model-gateway';
@@ -119,13 +119,21 @@ import {
   CODEX_BROKER_ALLOWED_PATHS,
   LOOPBACK_BROKER_AUTH_TOKEN,
 } from './gateway-broker-routes';
+import { buildAiCreditsProxyBaseUrl } from '@canopy/core-runtime/node/model-broker/broker-routes';
 import {
   resolveAccountProxySessionRoute,
   previewAccountProxySessionRoute,
 } from '../account-proxy/routing';
 
 export type PipelineNativeRoutingInspection =
-  | { readonly kind: 'native' }
+  /** `governed`: organization policy applies; only a managed inspection says so. */
+  | { readonly kind: 'native'; readonly governed?: true }
+  /** Managed inspection only: every attempt of this selection uses AI Credits. */
+  | {
+      readonly kind: 'ai-credits';
+      readonly runtimeModel: string;
+      readonly governed?: true;
+    }
   | {
       readonly kind: 'app-dependent';
       readonly reason:
@@ -133,8 +141,19 @@ export type PipelineNativeRoutingInspection =
         | 'gateway'
         | 'account-proxy'
         | 'ai-credits'
+        | 'ai-credits-on-quota'
         | 'unknown';
     };
+
+interface RoutingInspector {
+  readonly report: (decision: PipelineNativeRoutingInspection) => void;
+  /**
+   * The daemon holds the account (CAN-6997): an organization policy the
+   * daemon re-checks, and AI Credits the user chose for every attempt, are
+   * route facts rather than app dependencies.
+   */
+  readonly managed: boolean;
+}
 
 /**
  * Uses the effective resolver's decision path without registering a broker or
@@ -145,6 +164,9 @@ export async function inspectPipelineNativeRouting(
   model: string | undefined,
   provider: 'claude' | 'codex',
   options: ResolveAiCreditsRoutingOverrideOptions,
+  managed = false,
+  // Admission alone needs this local distinction to skip custody waits.
+  distinguishQuotaDependency = false,
 ): Promise<PipelineNativeRoutingInspection> {
   let decision: PipelineNativeRoutingInspection = {
     kind: 'app-dependent',
@@ -157,8 +179,16 @@ export async function inspectPipelineNativeRouting(
       undefined,
       undefined,
       options,
-      (value): void => {
-        decision = value;
+      {
+        managed,
+        report: (value): void => {
+          decision =
+            !distinguishQuotaDependency &&
+            value.kind === 'app-dependent' &&
+            value.reason === 'ai-credits-on-quota'
+              ? { kind: 'app-dependent', reason: 'ai-credits' }
+              : value;
+        },
       },
     );
   } catch {
@@ -313,15 +343,7 @@ export function buildProxyBaseUrl(
   cloudBaseUrl: string,
   harness: AiGatewayHarness,
 ): string {
-  const base = cloudBaseUrl.replace(/\/+$/, '');
-  // The Codex trailing `/responses` is NOT redundant. The app-server appends
-  // its own `/responses` to whatever base URL it is given, so the wire path is
-  // `.../llm-proxy/openai/responses/responses` — which is exactly what the
-  // `openai/responses/[...path]` route allowlists. Dropping the segment here
-  // 404s every credits-routed Codex turn.
-  return harness === 'claude'
-    ? `${base}/api/v1/llm-proxy/anthropic`
-    : `${base}/api/v1/llm-proxy/openai/responses`;
+  return buildAiCreditsProxyBaseUrl(cloudBaseUrl, harness);
 }
 
 /** Codex appends `/responses`, while an organization configures its gateway root. */
@@ -937,12 +959,13 @@ export function emitAiCreditsNoBillingSource(
 export function isAiCreditsChosenOverAccountProxy(
   aiCreditsRouting: AiCreditsRoutingState | undefined,
   subscriptionBillingOverride?: boolean,
+  routingMode = getAiCreditsRoutingMode(),
 ): boolean {
   // The renderer's AI Credits alerts read the same rule, so they show what
   // this decides.
   return aiCreditsOutrankAccountProxy({
     chatChoseAiCredits: aiCreditsRouting?.active === true,
-    routingMode: getAiCreditsRoutingMode(),
+    routingMode,
     subscriptionBillingOverride,
   });
 }
@@ -972,6 +995,7 @@ export function isAiCreditsChosenOverAccountProxy(
 export function resolveAiCreditsRoutingActivation(
   storedAiCreditsRouting: AiCreditsRoutingState | undefined,
   provider: AgentProviderType,
+  mode = getAiCreditsRoutingMode(),
 ): { modelId?: string } | null {
   const aiCreditsRouting = effectiveTabAiCreditsRouting(
     storedAiCreditsRouting,
@@ -980,7 +1004,6 @@ export function resolveAiCreditsRoutingActivation(
   if (aiCreditsRouting?.active) {
     return { modelId: aiCreditsRouting.modelId };
   }
-  const mode = getAiCreditsRoutingMode();
   if (mode === 'on') {
     return {};
   }
@@ -1076,6 +1099,7 @@ export async function resolveAiCreditsRoutingDecision(
   provider: AgentProviderType,
   isNativelyAuthenticated: () => Promise<boolean>,
   subscriptionBillingOverride?: boolean,
+  routingMode?: AiCreditsRoutingMode,
 ): Promise<AiCreditsRoutingDecision> {
   const isGatewayProvider = provider === 'claude' || provider === 'codex';
   // The actual model and organization gateway requirements are checked by the
@@ -1108,6 +1132,7 @@ export async function resolveAiCreditsRoutingDecision(
   const activation = resolveAiCreditsRoutingActivation(
     aiCreditsRouting,
     provider,
+    routingMode,
   );
   if (activation) {
     return {
@@ -1142,7 +1167,7 @@ export async function resolveAiCreditsRoutingDecision(
   // routes a confirmed sign-out. The cold-cache read goes to the preferences
   // file so an `on-quota` or `on` user is never refused on a cold start, and an
   // unreadable mode is inconclusive: go native rather than refuse or spend.
-  const mode = await readAiCreditsRoutingModeForDecision();
+  const mode = routingMode ?? (await readAiCreditsRoutingModeForDecision());
   if (mode === null) {
     return { kind: 'native' };
   }
@@ -1402,11 +1427,13 @@ async function resolveRoutingOverride(
   routingState: AiCreditsRoutingState | undefined,
   routeSessionId: string | undefined,
   options: ResolveAiCreditsRoutingOverrideOptions,
-  inspect?: (decision: PipelineNativeRoutingInspection) => void,
+  inspector?: RoutingInspector,
 ): Promise<AiCreditsRoutingOverride | null> {
   if (provider !== 'claude' && provider !== 'codex') {
     return null;
   }
+  const inspect = inspector?.report;
+  const managed = inspector?.managed === true;
   const attributionPromise = resolveRoutingOverrideAttribution(options);
   const attribution = await attributionPromise;
   const model =
@@ -1418,15 +1445,39 @@ async function resolveRoutingOverride(
     'resolveAiCreditsRoutingOverride',
   );
   const gatewayEnforced = gatewayRequirement.kind !== 'unrestricted';
+  if (inspect && gatewayEnforced) {
+    inspect({ kind: 'app-dependent', reason: 'gateway' });
+    return null;
+  }
+  let governed = false;
+  let inspectedRoutingMode: AiCreditsRoutingMode | undefined;
+  if (inspect || options.environmentRuntime === 'pipeline') {
+    const preferences = await readPreferencesFileDetailed();
+    if (preferences.authority === 'unreadable') {
+      if (inspect) {
+        inspect({ kind: 'app-dependent', reason: 'unknown' });
+        return null;
+      }
+      // Unread consent is mode `off`, not the stale spawn-path cache: attached
+      // runs keep native and mode-independent routes and never spend on it.
+      inspectedRoutingMode = 'off';
+    } else {
+      inspectedRoutingMode =
+        preferences.preferences.aiCreditsRoutingMode ?? 'off';
+    }
+  }
   if (inspect) {
     // A cold mode cache defaults to off, and on-quota may be inactive now.
     // Neither proves that future attempts are independent of AI Credits.
-    const preferences = await readPreferencesFileDetailed();
-    if (preferences.authority === 'unreadable') {
-      inspect({ kind: 'app-dependent', reason: 'unknown' });
+    const mode = inspectedRoutingMode ?? 'off';
+    // Admission and route selection must use the same authoritative consent,
+    // not a stale spawn-path cache that may still say `on` after opt-out.
+    // Only `on` decides every attempt now; `on-quota` depends on later quota.
+    if (mode === 'on-quota') {
+      inspect({ kind: 'app-dependent', reason: 'ai-credits-on-quota' });
       return null;
     }
-    if ((preferences.preferences.aiCreditsRoutingMode ?? 'off') !== 'off') {
+    if (mode === 'on' && !managed) {
       inspect({ kind: 'app-dependent', reason: 'ai-credits' });
       return null;
     }
@@ -1435,15 +1486,32 @@ async function resolveRoutingOverride(
       attribution.workOwner,
       'pipeline-native-admission',
     );
+    // A degraded or blocking answer is never managed: it pauses as before.
     if (
-      attribution.workOwner?.kind !== 'personal' ||
       policy.degraded ||
       policy.blocked ||
-      (await isOrgModelPolicyActiveForStoredAccount(attribution.workOwner)) ||
       isStoredModelPolicyReadDegraded()
     ) {
       inspect({ kind: 'app-dependent', reason: 'policy' });
       return null;
+    }
+    const orgPolicy =
+      attribution.workOwner?.kind === 'personal'
+        ? await readOrgModelPolicyActivityForStoredAccount(
+            attribution.workOwner,
+          )
+        : { active: true, degraded: false };
+    // The activity probe re-reads storage; a failed re-read is unknown policy.
+    if (orgPolicy.degraded) {
+      inspect({ kind: 'app-dependent', reason: 'policy' });
+      return null;
+    }
+    if (orgPolicy.active) {
+      if (!managed || !attribution.workOwner) {
+        inspect({ kind: 'app-dependent', reason: 'policy' });
+        return null;
+      }
+      governed = true;
     }
     if (
       gatewayEnforced ||
@@ -1465,6 +1533,7 @@ async function resolveRoutingOverride(
   const aiCreditsChosen = isAiCreditsChosenOverAccountProxy(
     effectiveTabAiCreditsRouting(routingState, provider),
     options.subscriptionBillingOverride,
+    inspectedRoutingMode,
   );
   if (options.requiredAccountProxyConnectionId && aiCreditsChosen) {
     throw new Error(
@@ -1528,6 +1597,7 @@ async function resolveRoutingOverride(
     provider,
     checkNativeAuth,
     options.subscriptionBillingOverride,
+    inspectedRoutingMode,
   );
   const resolvedAttempt = routingAttemptOf(decision);
   // Two independent reasons to drop a `no-native-auth` attempt here. Only that
@@ -1582,6 +1652,33 @@ async function resolveRoutingOverride(
   const gatewayOnly = entry?.gatewayOnly === true;
   const enforcedOrgRoute = gatewayEnforced && entry?.origin === 'org-gateway';
   if (inspect) {
+    // Managed: AI Credits the user turned on for every attempt is a route the
+    // daemon broker serves. A gateway, a gateway-only model or a fallback for
+    // missing native sign-in (which a later sign-in changes) stays with the app.
+    if (
+      managed &&
+      attempt?.reason === 'mode' &&
+      entry &&
+      !gatewayOnly &&
+      !gatewayEnforced &&
+      entry.origin !== 'org-gateway'
+    ) {
+      inspect(
+        governed
+          ? { kind: 'ai-credits', runtimeModel: entry.gatewayId, governed }
+          : { kind: 'ai-credits', runtimeModel: entry.gatewayId },
+      );
+      return null;
+    }
+    if (
+      governed &&
+      !attempt &&
+      !gatewayOnly &&
+      entry?.origin !== 'org-gateway'
+    ) {
+      inspect({ kind: 'native', governed });
+      return null;
+    }
     inspect(
       attempt ||
         gatewayOnly ||

@@ -18,12 +18,17 @@ import {
   IPC_CHANNELS,
   WORKSPACE_ROOT_REPO_ID,
   type SidebarItemsFile,
+  type WorkspaceConfigFile,
   type WorktreeBranchChangedEvent,
   type WorktreeData,
 } from '@canopy/desktop-shared/types';
 import type { CoreWorkspaceReadDetail } from '../canopy-runtime/core-workspace-adapter';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+import {
+  readThroughDesktopW5Cache,
+  w5WorkspaceFileRequest,
+} from '../canopy-runtime/w5-read-cache-server';
 import { getCurrentBranchDisplayName, getGitHeadWatchState } from './git';
 import {
   logMainProcessDebug,
@@ -42,6 +47,7 @@ import {
 import { WorktreeRecordRefusedError } from './worktree-repair';
 import { listWorkspaceWorktreeRepoEntries } from './worktree-repo-entries';
 import { sendToWindow } from './window-send';
+import { readWorkspaceConfig } from './workspace-persistence';
 import { workspaceStorageUnavailable } from './workspace-storage-availability';
 
 // Main's composition of the core-runtime branch observer (CAN-4899): the
@@ -91,6 +97,16 @@ function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** The manifest from the read cache when it can answer, else as today. */
+function readObserverConfig(workspaceId: string): Promise<WorkspaceConfigFile> {
+  return runWithW5Caller('background:branch-observer-config', () =>
+    readThroughDesktopW5Cache(
+      w5WorkspaceFileRequest('manifest', workspaceId),
+      () => readWorkspaceConfig(workspaceId),
+    ),
+  );
+}
+
 async function collectWorktreeCheckouts(
   workspaceId: string,
   workspaceKind: 'single-repo' | 'multi-repo',
@@ -111,6 +127,8 @@ async function collectWorktreeCheckouts(
   const repoEntries = await listWorkspaceWorktreeRepoEntries(
     workspaceId,
     worktreePath,
+    undefined,
+    readObserverConfig,
   ).catch((error: unknown) => {
     logMainProcessWarn('Worktree branch watcher repos unavailable', {
       key: `${workspaceId}/${worktree.id}`,

@@ -22,6 +22,7 @@ const ORGANIZATION_PAGE_SEGMENTS: Readonly<
   groups: 'teams',
   projects: 'projects',
   memory: 'memory',
+  transcripts: 'transcripts',
   settings: 'settings',
 };
 
@@ -76,6 +77,15 @@ function organizationRoutePath(route: OrganizationSettingsRoute): string {
       if (route.memoryView === 'graph' || route.memoryView === 'ops')
         return `${base}/memory/${route.memoryView}`;
       return `${base}/memory`;
+    case 'transcripts':
+      if (route.sessionId !== undefined)
+        return `${base}/transcripts/sessions/${segment(route.sessionId)}`;
+      if (
+        route.transcriptsView === 'exports' ||
+        route.transcriptsView === 'access'
+      )
+        return `${base}/transcripts/${route.transcriptsView}`;
+      return `${base}/transcripts`;
     case 'settings':
       if (route.invoiceId !== undefined)
         return `${base}/billing/invoices/${segment(route.invoiceId)}`;

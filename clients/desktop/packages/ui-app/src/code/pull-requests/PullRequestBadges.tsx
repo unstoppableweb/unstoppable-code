@@ -6,7 +6,7 @@ import {
   PullRequestHeaderLink,
   PullRequestHeaderStatus,
 } from '@canopy/ui-shared/components';
-import { Dot, type DotTone } from '@canopy/ui-shared/components/Badge';
+import { Dot, type DotTone } from '@canopy/ui-shared/primitives/Badge';
 import type { JSX } from 'react';
 import {
   PrBadgeTooltipContent,

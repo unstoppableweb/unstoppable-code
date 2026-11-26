@@ -8,10 +8,10 @@ import {
   type ReactNode,
 } from 'react';
 import { RuleType, type MarkdownToJSX } from 'markdown-to-jsx';
-import { Checkbox } from './Choice';
+import { Checkbox } from '../primitives/Choice';
 import { DeferredMarkdownMath } from './DeferredMarkdownMath';
 import { MarkdownCodeBlock } from './MarkdownCodeBlock';
-import { TextLink, TEXT_LINK_INLINE_CLASS } from './TextLink';
+import { TextLink, TEXT_LINK_INLINE_CLASS } from '../primitives/TextLink';
 import { MarkdownImage } from './MarkdownImage';
 import { MarkdownMermaid } from './MarkdownMermaid';
 import { MAX_MERMAID_BLOCKS } from './markdown-mermaid-policy';

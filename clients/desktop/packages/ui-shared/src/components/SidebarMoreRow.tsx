@@ -1,4 +1,4 @@
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import type { JSX } from 'react';
 
 export interface SidebarMoreRowProps {

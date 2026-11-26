@@ -22,7 +22,11 @@ import type {
   Pipeline,
   PipelineInfo,
 } from '@canopy/execution-engine/types/pipeline';
-import { getTriggerInputDefs } from '@canopy/execution-engine/types/pipeline';
+import {
+  getTriggerInputDefs,
+  getTriggerTypes,
+} from '@canopy/execution-engine/types/pipeline';
+import { scheduleRunEvent } from '@canopy/desktop-shared/lib/schedule-run-event';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import type {
   AutomationCloudDestinationCandidate,
@@ -31,7 +35,10 @@ import type {
 } from '@canopy/desktop-shared/types';
 import type { CloudModelPreflightResult } from '@canopy/protocol/canopy-core';
 import { CloudModelReplacementDialog } from '@canopy/ui-app';
-import type { PipelineWorkflowPageInfo } from '@canopy/protocol/pipelines';
+import type {
+  PipelineExecutionScope,
+  PipelineWorkflowPageInfo,
+} from '@canopy/protocol/pipelines';
 import {
   ScheduleRunOnField,
   type PipelineTriggerScheduleRow,
@@ -50,9 +57,11 @@ import { storedAutomationActivity } from '@/lib/workflows/stored-automation-acti
 import { useAutomationsStore } from '@/stores/automationsStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { ActivityFormBody } from '../../automations/form/ActivityFormBody';
+import { ScheduleDestinationFields } from './ScheduleDestinationFields';
 import { usePipelineCloudRuns } from '../../activity/pipelineRunOn';
 import {
   activityToFormState,
+  buildAutomationMutationRequest,
   findModelAliasBlock,
   type FormState,
   type ModelAliasBlock,
@@ -69,6 +78,23 @@ import {
 // A schedule's model alias that can't run (CAN-5782 follow-up). The row has
 // no model picker, so the fix is the workflow's default, or setting one in
 // its settings when it has none.
+
+/**
+ * The trigger whose inputs a schedule's runs resolve (CAN-5782): `workflow`
+ * for a definition that declares `workflow` without `dispatch`, else
+ * `dispatch`, as the scheduler chooses the run's event.
+ */
+function scheduleInputTrigger(
+  pipeline:
+    | { readonly on?: Parameters<typeof getTriggerTypes>[0] }
+    | null
+    | undefined,
+): 'dispatch' | 'workflow' {
+  return scheduleRunEvent(getTriggerTypes(pipeline?.on)) === 'workflow'
+    ? 'workflow'
+    : 'dispatch';
+}
+
 const USE_WORKFLOW_DEFAULT = "Use the workflow's default";
 
 /**
@@ -102,6 +128,23 @@ function scheduleModelAliasError(block: ModelAliasBlock): {
   return block.alias.defaults
     ? { message: unusable, resetAliasId: block.alias.id }
     : { message: `${unusable} ${setDefault}` };
+}
+
+/** The model aliases a schedule of `ran` resolves, by trimmed ID. */
+function runAliases(
+  ran: Pipeline | null | undefined,
+): NonNullable<Pipeline['model_aliases']> {
+  return (ran?.model_aliases ?? []).flatMap((alias) => {
+    const id = alias.id.trim();
+    return id === '' ? [] : [{ ...alias, id }];
+  });
+}
+
+/** The plugin collections `ran` declares, by trimmed ID. */
+function runCollectionIds(ran: Pipeline | null | undefined): Set<string> {
+  return new Set(
+    (ran?.plugin_collections ?? []).map((collection) => collection.id.trim()),
+  );
 }
 
 const AGENT_ORIGIN_NOTICE =
@@ -195,11 +238,12 @@ function newScheduleState(
   const inputs =
     values?.inputs ??
     (Object.keys(defaults).length > 0 ? { ...defaults } : undefined);
-  // A project-bound schedule keeps its project; only a converted one, which
-  // stores no project, runs with no project.
+  // A project-bound schedule keeps its project. Otherwise it runs with no
+  // project when the workflow can; one that can't waits for its project.
+  const runsWithoutProject = (info.scopes ?? ['global']).includes('global');
   const target =
     values?.target ??
-    (values?.workspaceId !== undefined
+    (values?.workspaceId !== undefined || !runsWithoutProject
       ? undefined
       : { kind: 'global' as const });
   const activity: ScheduledActivity = {
@@ -252,21 +296,39 @@ export interface WorkflowSchedulesSaveOptions {
 }
 
 export interface WorkflowSchedulesApi {
-  /** The pipeline is a workflow page: its schedules replace Automations. */
-  readonly isWorkflowPage: boolean;
+  /**
+   * The pipeline is a user workflow, so it takes schedules: they replace the
+   * Automations section. Read-only workflows keep that list.
+   */
+  readonly schedulable: boolean;
   readonly records: readonly ScheduledActivity[];
   readonly dirty: boolean;
   readonly saving: boolean;
   /** An agent wrote the pipeline and main granted its runs (phase 04). */
   readonly agentGranted: boolean;
   /**
-   * Saves each changed schedule; the first failure stops and says why.
+   * Saves each changed schedule; one that fails doesn't stop the others,
+   * and the first failure says why.
    */
   readonly saveAll: (
     options?: WorkflowSchedulesSaveOptions,
   ) => Promise<UnsavedChangesSaveResult>;
+  /**
+   * CAN-5782: the inputs, by schedule ID, of each saved schedule Save would
+   * write right after the pipeline, which the pipeline save's schedule check
+   * reads in place of the stored ones.
+   */
+  readonly pendingScheduleInputs: (
+    /** The definition the save sends, such as a Raw YAML candidate. */
+    candidate?: Pipeline | null,
+  ) => Promise<Record<string, Record<string, string>>>;
   readonly discard: () => void;
   readonly triggers: PipelineTriggerSchedules | undefined;
+  /**
+   * Adds a new schedule row on a workflow page, recurring or once (the
+   * Designer's trigger card, CAN-4224); the Trigger tab adds recurring ones.
+   */
+  readonly addSchedule: (kind: 'schedule' | 'once') => void;
   /**
    * The run values of the first schedule, else the ones the workflow kept
    * from its last (phase 08): what the steps' `inputs.*` stand for.
@@ -335,9 +397,8 @@ export function useWorkflowSchedules({
           ),
     [automations.activities, pipelineId],
   );
-  const isWorkflowPage =
-    pipelineId !== undefined &&
-    (workflowPage !== undefined || records.length > 0);
+  // CAN-5782: every user workflow takes schedules, however it was made.
+  const schedulable = pipelineId !== undefined;
   // The grant is the pipeline's (CAN-6065), so it holds after its first
   // schedule is removed.
   const agentGranted =
@@ -428,7 +489,8 @@ export function useWorkflowSchedules({
 
   const required = useMemo(() => inputsTheStepsRead(pipeline), [pipeline]);
   const definitions = useMemo(
-    () => getTriggerInputDefs(pipeline?.on, 'dispatch') ?? {},
+    () =>
+      getTriggerInputDefs(pipeline?.on, scheduleInputTrigger(pipeline)) ?? {},
     [pipeline],
   );
   const declared = useMemo(() => Object.keys(definitions), [definitions]);
@@ -462,6 +524,111 @@ export function useWorkflowSchedules({
   // Bumped by Discard, so a save waiting on preferences writes nothing the
   // person discarded.
   const saveGenerationRef = useRef(0);
+  // A required input left empty under `candidate`, the definition the save
+  // sends, which differs from the loaded one after a Raw YAML edit.
+  const missingInputUnder = useCallback(
+    (state: FormState, candidate: Pipeline | null | undefined) => {
+      if (candidate === undefined || candidate === null)
+        return missingInput(state);
+      const reads = inputsTheStepsRead(candidate);
+      const defs =
+        getTriggerInputDefs(candidate.on, scheduleInputTrigger(candidate)) ??
+        {};
+      const values = new Map(
+        state.pipelineInputs.map((entry) => [entry.key, entry.value]),
+      );
+      return Object.entries(defs).find(
+        ([key, definition]) =>
+          reads.has(key) &&
+          inputDefaultText(definition.default) === undefined &&
+          !values.get(key)?.trim(),
+      )?.[0];
+    },
+    [missingInput],
+  );
+  // The model preferences this computer stores for the pipeline, which a
+  // run layers under a schedule's own. A failed read checks the schedule's
+  // own choices alone.
+  const loadMachinePreferences = useCallback(async (): Promise<
+    Readonly<Record<string, unknown>>
+  > => {
+    if (!info) return {};
+    try {
+      const result = await window.pipelines.loadModelAliasPreferences({
+        pipelinePreferenceLocator: derivePipelinePreferenceLocator(info),
+      });
+      if (result.success && result.data) return result.data.preferences;
+      reportClientAppError(
+        new Error(result.error ?? 'Model preferences failed to load'),
+      );
+    } catch (error: unknown) {
+      reportClientAppError(error);
+    }
+    return {};
+  }, [info]);
+  // Why Save refuses to write this draft for `ran` before it reaches the
+  // form's own checks: a required input left empty, or a model alias it
+  // can't resolve. The pending inputs and the write loop both ask it, so the
+  // check never reads inputs Save won't write (CAN-5782).
+  const draftRefusal = useCallback(
+    (
+      state: FormState,
+      ran: Pipeline | null | undefined,
+      machine: Readonly<Record<string, unknown>>,
+      runsInCloud: boolean,
+    ): { message: string; resetAliasId?: string } | undefined => {
+      const missing = missingInputUnder(state, ran);
+      if (missing !== undefined)
+        return { message: `Fill in ${missing} for this schedule.` };
+      // A cloud run takes only the workflow's defaults, never these
+      // preferences (CAN-6917): its models are checked when it moves.
+      const aliases = runAliases(ran);
+      if (aliases.length === 0 || runsInCloud) return undefined;
+      const block = findModelAliasBlock(
+        aliases,
+        runPreferences(machine, state.modelAliasPreferences),
+        runCollectionIds(ran),
+      );
+      return block === undefined ? undefined : scheduleModelAliasError(block);
+    },
+    [missingInputUnder],
+  );
+  const pendingScheduleInputs = useCallback(
+    async (
+      candidate?: Pipeline | null,
+    ): Promise<Record<string, Record<string, string>>> => {
+      const ran = candidate ?? pipeline;
+      const machine =
+        runAliases(ran).length > 0 ? await loadMachinePreferences() : {};
+      const pending: Record<string, Record<string, string>> = {};
+      for (const draft of drafts.current()) {
+        if (!draft.dirty || draft.activity === null) continue;
+        const state = drafts.latest(draft.key);
+        // A draft Save won't write (refused above, or a form its write
+        // rejects, such as an invalid cron) keeps its stored inputs for the
+        // check: they stay what the schedule runs with.
+        if (
+          state === undefined ||
+          draftRefusal(
+            state,
+            ran,
+            machine,
+            draft.activity.executionLocation === 'cloud',
+          ) !== undefined ||
+          !buildAutomationMutationRequest(state).ok
+        )
+          continue;
+        pending[draft.activity.id] = Object.fromEntries(
+          state.pipelineInputs
+            .filter((entry) => entry.key.trim() !== '')
+            .map((entry) => [entry.key.trim(), entry.value]),
+        );
+      }
+      return pending;
+    },
+    [draftRefusal, drafts, loadMachinePreferences, pipeline],
+  );
+
   const saveAll = useCallback(
     async ({
       savedName,
@@ -471,46 +638,41 @@ export function useWorkflowSchedules({
       const scheduleName = savedName ?? name;
       const generation = saveGenerationRef.current;
       setRowError(null);
-      // The pipeline the schedules run, and the model preferences this
-      // computer stores for it, which a run layers under a schedule's own.
+      // The pipeline the schedules run.
       const ran = savedPipeline ?? pipeline;
-      const aliases = (ran?.model_aliases ?? []).flatMap((alias) => {
-        const id = alias.id.trim();
-        return id === '' ? [] : [{ ...alias, id }];
-      });
-      const collectionIds = new Set(
-        (ran?.plugin_collections ?? []).map((collection) =>
-          collection.id.trim(),
-        ),
-      );
       let stored: Readonly<Record<string, unknown>> | undefined;
       const storedPreferences = async (): Promise<
         Readonly<Record<string, unknown>>
       > => {
-        if (stored !== undefined) return stored;
-        stored = {};
-        if (!info) return stored;
-        try {
-          const result = await window.pipelines.loadModelAliasPreferences({
-            pipelinePreferenceLocator: derivePipelinePreferenceLocator(info),
-          });
-          // A failed read checks the schedule's own choices alone.
-          if (result.success && result.data) stored = result.data.preferences;
-          else
-            reportClientAppError(
-              new Error(result.error ?? 'Model preferences failed to load'),
-            );
-        } catch (error: unknown) {
-          reportClientAppError(error);
-        }
+        stored ??= await loadMachinePreferences();
         return stored;
+      };
+      // A draft that fails doesn't stop the others: each one the pipeline
+      // save's schedule check read is still written (CAN-5782). The first
+      // failure is shown and returned once the rest are written.
+      let firstFailure: UnsavedChangesSaveResult | undefined;
+      const failed = new Set<string>();
+      const fail = (
+        key: string,
+        result: UnsavedChangesSaveResult,
+        rowError?: { message: string; resetAliasId?: string },
+      ): void => {
+        failed.add(key);
+        if (firstFailure !== undefined) return;
+        firstFailure = result;
+        if (rowError) setRowError({ key, ...rowError });
+        setExpandedKey(key);
       };
       // Read the drafts as they are now, again after each pass: a schedule
       // edited while the pipeline saved is saved too, never skipped.
       for (let pass = 0; pass < 3; pass += 1) {
         const pending = drafts
           .current()
-          .filter((draft) => draft.dirty || draft.activity === null);
+          .filter(
+            (draft) =>
+              (draft.dirty || draft.activity === null) &&
+              !failed.has(draft.key),
+          );
         if (pending.length === 0) break;
         for (const draft of pending) {
           // A schedule takes the workflow's name; the Trigger tab never edits
@@ -519,48 +681,34 @@ export function useWorkflowSchedules({
           if (scheduleName.trim() !== '')
             drafts.setName(draft.key, scheduleName);
           // Loaded first, so the checks below see the draft that is saved.
-          const machine = aliases.length > 0 ? await storedPreferences() : {};
+          const machine =
+            runAliases(ran).length > 0 ? await storedPreferences() : {};
           const state = drafts.latest(draft.key);
           if (state === undefined) continue;
-          // A cloud run takes only the workflow's defaults, never these
-          // preferences (CAN-6917): its models are checked when it moves.
           // Where it runs is read now, since another window may have moved it.
           const now = drafts.current().find((entry) => entry.key === draft.key);
           // A saved schedule put back as it was meanwhile has nothing to save.
           if (now?.activity && !now.dirty) continue;
-          const runsIn = now?.activity;
-          const checkAliases =
-            aliases.length > 0 && runsIn?.executionLocation !== 'cloud';
-          const missing = missingInput(state);
-          if (missing !== undefined) {
-            const message = `Fill in ${missing} for this schedule.`;
-            setRowError({ key: draft.key, message });
-            setExpandedKey(draft.key);
-            return { ok: false, message };
-          }
-          if (checkAliases) {
-            const block = findModelAliasBlock(
-              aliases,
-              runPreferences(machine, state.modelAliasPreferences),
-              collectionIds,
-            );
-            if (block !== undefined) {
-              const error = scheduleModelAliasError(block);
-              setRowError({ key: draft.key, ...error });
-              setExpandedKey(draft.key);
-              return { ok: false, message: error.message };
-            }
+          // Against the definition just saved, as the pipeline save's
+          // schedule check judged this draft (CAN-5782).
+          const refusal = draftRefusal(
+            state,
+            ran,
+            machine,
+            now?.activity?.executionLocation === 'cloud',
+          );
+          if (refusal !== undefined) {
+            fail(draft.key, { ok: false, message: refusal.message }, refusal);
+            continue;
           }
           if (saveGenerationRef.current !== generation) return { ok: false };
           const refused = check?.();
           if (refused) return refused;
           const saved = await drafts.save(draft.key);
-          if (!saved.ok) {
-            setExpandedKey(draft.key);
-            return saved;
-          }
+          if (!saved.ok) fail(draft.key, saved);
         }
       }
+      if (firstFailure !== undefined) return firstFailure;
       // Edits made during a create live on as its record, which isn't
       // listed yet: they aren't written.
       const carriedUnlisted = [...awaitingRef.current.values()].some(
@@ -574,7 +722,7 @@ export function useWorkflowSchedules({
           }
         : { ok: true };
     },
-    [drafts, info, missingInput, name, pipeline],
+    [draftRefusal, drafts, loadMachinePreferences, name, pipeline],
   );
 
   const { discard: discardDrafts } = drafts;
@@ -585,25 +733,51 @@ export function useWorkflowSchedules({
     setRowError(null);
   }, [discardDrafts]);
 
-  const addSchedule = useCallback((): void => {
-    if (!info) return;
-    nextKey.current += 1;
-    const key = `new-schedule-${String(nextKey.current)}`;
-    setNewRows((rows) => [
-      ...rows,
-      {
-        key,
-        initial: newScheduleState(
-          info,
-          records[0],
-          workflowPage,
-          name,
-          defaults,
-        ),
-      },
-    ]);
-    setExpandedKey(key);
-  }, [defaults, info, name, records, workflowPage]);
+  /**
+   * Adds a schedule row. `copy` is the Trigger tab's Add: the first
+   * schedule's values as they are. The Designer asks for a kind: a
+   * recurring row always repeats, and a one-time row asks for its own date
+   * and time; neither copies the other kind's timing.
+   */
+  const addRow = useCallback(
+    (kind: 'copy' | 'schedule' | 'once'): void => {
+      if (!info) return;
+      nextKey.current += 1;
+      const key = `new-schedule-${String(nextKey.current)}`;
+      const copied = newScheduleState(
+        info,
+        records[0],
+        workflowPage,
+        name,
+        defaults,
+      );
+      const initial: FormState =
+        kind === 'once'
+          ? {
+              ...copied,
+              triggerKind: 'one_time',
+              oneTimeDate: '',
+              oneTimeTime: '',
+            }
+          : kind === 'schedule' && copied.triggerKind !== 'cron'
+            ? {
+                ...copied,
+                triggerKind: 'cron',
+                cronExpression: NEW_SCHEDULE_CRON,
+                oneTimeDate: '',
+                oneTimeTime: '',
+              }
+            : copied;
+      setNewRows((rows) => [...rows, { key, initial }]);
+      setExpandedKey(key);
+    },
+    [defaults, info, name, records, workflowPage],
+  );
+  const addSchedule = useCallback(
+    (kind: 'schedule' | 'once'): void => addRow(kind),
+    [addRow],
+  );
+  const addRecurring = useCallback((): void => addRow('copy'), [addRow]);
 
   // Another schedule of this workflow, from a row's stored action: never
   // the chat action it shows as, which would make a workflow of its own.
@@ -838,6 +1012,7 @@ export function useWorkflowSchedules({
           inCloud={runOnValue === 'cloud'}
           moving={moving?.busy === true}
           projects={projects}
+          scopes={info?.scopes ?? []}
           scope={automations.scope}
           declaredInputs={declared}
           requiredInputs={required}
@@ -916,6 +1091,7 @@ export function useWorkflowSchedules({
       declared,
       drafts,
       duplicateSchedule,
+      info?.scopes,
       move,
       moves,
       onDeleteWorkflow,
@@ -996,14 +1172,14 @@ export function useWorkflowSchedules({
   );
 
   const { toggle } = drafts;
-  const triggers: PipelineTriggerSchedules | undefined = isWorkflowPage
+  const triggers: PipelineTriggerSchedules | undefined = schedulable
     ? {
         rows,
         expandedKey,
         onExpand: setExpandedKey,
         onToggle: (row, next): void => toggle(row.key, next),
         renderBody,
-        onAdd: addSchedule,
+        onAdd: addRecurring,
       }
     : undefined;
 
@@ -1032,7 +1208,8 @@ export function useWorkflowSchedules({
   const declaredDefaults = useMemo(
     () =>
       initializeInputValues(
-        resolvePipelineTriggerInputs(pipeline, 'dispatch').inputDefs,
+        resolvePipelineTriggerInputs(pipeline, scheduleInputTrigger(pipeline))
+          .inputDefs,
       ),
     [pipeline],
   );
@@ -1058,14 +1235,16 @@ export function useWorkflowSchedules({
   }, [edited]);
 
   return {
-    isWorkflowPage,
+    schedulable,
     records,
     dirty: drafts.dirty || newRows.length > 0,
     saving: drafts.saving,
     agentGranted,
     saveAll,
+    pendingScheduleInputs,
     discard,
     triggers,
+    addSchedule,
     firstScheduleInputs,
     editedFirstScheduleInputs,
     editedCollectionOverrides,
@@ -1084,6 +1263,8 @@ interface ScheduleBodyProps {
   /** It runs in the cloud: Run now starts it here, so it isn't offered. */
   readonly inCloud: boolean;
   readonly projects: ReturnType<typeof useProjectsStore.getState>['projects'];
+  /** Where the workflow declares it can run. */
+  readonly scopes: readonly PipelineExecutionScope[];
   readonly scope: AutomationsPageBodyApi['scope'];
   readonly declaredInputs: readonly string[];
   readonly requiredInputs: ReadonlySet<string>;
@@ -1106,6 +1287,7 @@ function ScheduleBody({
   inCloud,
   moving,
   projects,
+  scopes,
   scope,
   declaredInputs,
   requiredInputs,
@@ -1164,6 +1346,15 @@ function ScheduleBody({
         >
           {error}
         </Notice>
+      ) : null}
+      {!inCloud && state.actionType === 'worktree_pipeline' ? (
+        <ScheduleDestinationFields
+          state={state}
+          projects={projects}
+          scopes={scopes}
+          disabled={draft.saving || moving}
+          onChange={onChange}
+        />
       ) : null}
       {runOn}
       {keys.length > 0 ? (

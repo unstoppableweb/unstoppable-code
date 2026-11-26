@@ -1281,6 +1281,13 @@
       "class": "direct",
       "note": "Lucide minus, 2px stroke. Replaces remove; regular 20px, compact 14px."
     },
+    "monitor": {
+      "source": "lucide",
+      "name": "monitor",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide monitor, 2px stroke. Another computer's task in the sidebar (CAN-7766); monitor-smartphone means devices in general. Regular 20px, compact 14px."
+    },
     "monitorDown": {
       "source": "lucide",
       "name": "monitor-down",
@@ -1442,6 +1449,13 @@
       "fill": 0,
       "class": "direct",
       "note": "Lucide circle-play, 2px stroke. Replaces play_circle; regular 20px, compact 14px."
+    },
+    "plug": {
+      "source": "lucide",
+      "name": "plug",
+      "fill": 0,
+      "class": "direct",
+      "note": "Lucide plug, 2px stroke; regular 20px, compact 14px. Organization Connectors (shared connections), distinct from the Integrations puzzle (2026-11-25)."
     },
     "plusLarge": {
       "source": "lucide",

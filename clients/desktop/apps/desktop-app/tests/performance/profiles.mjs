@@ -2,6 +2,12 @@ import {
   HEADLESS_STUDY_MODE,
   HEADLESS_STUDY_VIEWPORT,
 } from './browser-profiles-evidence.mjs';
+import {
+  REMOTE_CONTROL_USAGE,
+  isRemoteControlOption,
+  recordRemoteControlOption,
+  remoteControlConfig,
+} from './remote-control-connected/options.mjs';
 export const RESPONSIVENESS_THRESHOLDS = Object.freeze({
   rendererFrameDelayMaxMs: 100,
   rendererKeyToPaintConfirmationP95Ms: 100,
@@ -960,6 +966,8 @@ export function parsePerformanceArgs(argv) {
   let explicitHeadless = false;
   let explicitHeaded = false;
   let explicitScenarios = false;
+  // `--remote-control*`; validated once every option is read.
+  const remoteControlOptions = {};
   for (let index = 0; index < argv.length; index += 1) {
     const raw = argv[index];
     const option = raw.split('=')[0];
@@ -999,6 +1007,10 @@ export function parsePerformanceArgs(argv) {
       options.warmLaunches = value;
     } else if (option === '--release-like') {
       options.releaseLike = true;
+    } else if (isRemoteControlOption(option)) {
+      const result = readOptionValue(argv, index, option);
+      index = result.nextIndex;
+      recordRemoteControlOption(remoteControlOptions, option, result.value);
     } else if (
       option === '--profile' ||
       option === '--scenarios' ||
@@ -1250,6 +1262,10 @@ export function parsePerformanceArgs(argv) {
       );
     }
   }
+  const remoteControl = remoteControlConfig(remoteControlOptions, {
+    scenarios: options.scenarios,
+    releaseLike: options.releaseLike,
+  });
   const config = {
     ...scopedScenarioConfig(
       PERFORMANCE_PROFILES[options.profile],
@@ -1266,6 +1282,9 @@ export function parsePerformanceArgs(argv) {
     ...(options.warmLaunches > 0
       ? { startupWarmLaunches: options.warmLaunches }
       : {}),
+    // Remote Control connected is a different workload; present only when
+    // requested, so unconnected runs keep their fingerprint.
+    ...(remoteControl ? { remoteControl } : {}),
   };
   if (
     options.scenarios.includes('startup-realistic') &&
@@ -1442,6 +1461,7 @@ Options:
   --w5-store <${W5_STORE_ARMS.join('|')}> Launch every scenario with this W5 store arm (E2E builds only; recorded as the result's treatment)
   --w5-store-workspaces <n>          w5-store-* scenarios: seeded workspaces (at least 2; above 127 passes the capture limit)
   --retained-active-watchers <n>     retained-worktrees-idle: seed n active chat-completion watchers on retained worktree chats (default none)
+${REMOTE_CONTROL_USAGE}
   --release-like                     Launch the existing production bundle under the deterministic scenario driver
   --release-like-root <path>         Checkout containing the production out/ bundle (default current checkout)
   --e2e-root <path>                  Checkout containing the E2E out-e2e/ bundle (default current checkout)

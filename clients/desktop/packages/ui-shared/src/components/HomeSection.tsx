@@ -11,10 +11,10 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 import { DetailMoreMenu } from './DetailMoreMenu';
 import { EyeOffIcon } from '../icons/AppIcons';
-import { Heading } from './Heading';
+import { Heading } from '../primitives/Heading';
 
 interface HomeSectionsContextValue {
   hidden: ReadonlySet<string>;

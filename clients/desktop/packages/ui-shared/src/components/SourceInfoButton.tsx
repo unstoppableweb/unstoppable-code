@@ -1,7 +1,7 @@
 import type { JSX, MouseEvent } from 'react';
 import { InfoIcon } from '../icons/InfoIcon';
-import { Button } from './Button';
-import { Tooltip } from './Tooltip';
+import { Button } from '../primitives/Button';
+import { Tooltip } from '../primitives/Tooltip';
 
 export interface SourceInfoButtonProps {
   onClick: () => void;

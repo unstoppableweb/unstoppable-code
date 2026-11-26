@@ -14,6 +14,7 @@ import {
 } from '@canopy/execution-engine/lib/resource-context-policy';
 import { pruneDamagedCopies } from '@canopy/execution-engine/node/lib/damaged-copies';
 import {
+  confirmStoredPipelineDirectoryDurability,
   inspectStoredPipelineDocument,
   removeUnlistedStoredPipelineDocument,
   removeStoredPipeline,
@@ -24,11 +25,17 @@ import type {
   PipelinePackageInstallRecordV1,
 } from '@canopy/execution-engine/types/pipeline';
 import {
+  assertRowWritable,
   createPipelineInstallJournal,
+  type PipelineInstallIntentSource,
   type PipelineInstallJournalEnvironment,
   type PipelineInstallJournalIntent,
 } from '@canopy/core-runtime/node/pipeline/store';
-import { recordSharedItemLocalUninstall } from '../canopy-cloud/shared-item-subscriptions';
+import {
+  readCommittedInstallSubscriptionVersion,
+  recordCommittedSharedItemInstall,
+  recordSharedItemLocalUninstall,
+} from '../canopy-cloud/shared-item-subscriptions';
 import {
   createDirectoryDurably,
   syncDirectory,
@@ -44,7 +51,10 @@ import {
   getPipelinePackageInstallStorePath,
 } from '../lib/paths';
 import { createResourceInstallReceiptsStore } from '../lib/resource-install-receipts';
-import { deleteUserPipelineLocalMetadata } from './pipeline-local-metadata-store';
+import {
+  deleteUserPipelineLocalMetadata,
+  setUserPipelineAgentAuthorIfCurrent,
+} from './pipeline-local-metadata-store';
 import {
   definitionRemoval,
   noteDefinitionRemoved,
@@ -61,6 +71,7 @@ export {
   PIPELINE_DEFINITION_RESTORING_MESSAGE,
   PIPELINE_DEFINITION_UNCONFIRMED_MESSAGE,
   RUN_START_RECOVERY_WAIT_MS,
+  PipelineInstallCleanupPendingError,
   type PipelineDefinitionRecovery,
   type PipelineDefinitionRecoveryRefusal,
   type PipelineInstallIntentSource,
@@ -87,8 +98,14 @@ export const pipelineInstallJournalEnvironment: PipelineInstallJournalEnvironmen
   getPipelineAssetsDir: (definitionId) => getPipelineAssetsDir(definitionId),
   getPipelineAssetsManifestPath: (definitionId) =>
     getPipelineAssetsManifestPath(definitionId),
-  // Electron main is the single writer under its single-instance lock.
-  assertWritable: () => undefined,
+  // Electron main is the single writer under its single-instance lock,
+  // until the intents row's owner record names another owner (CAN-7690).
+  assertWritable: () =>
+    assertRowWritable(
+      getDataDir(),
+      'pipeline_install_intents',
+      'electron_main',
+    ),
   createDirectoryDurably: (directoryPath, options) =>
     createDirectoryDurably(directoryPath, options),
   syncDirectory: (directoryPath) => syncDirectory(directoryPath),
@@ -111,6 +128,26 @@ export const pipelineInstallJournalEnvironment: PipelineInstallJournalEnvironmen
   deleteUserPipelineLocalMetadata: (definitionId) => {
     deleteUserPipelineLocalMetadata(definitionId);
   },
+  clearInstalledPipelineMarker: ({ definitionId, revision }) => {
+    const result = setUserPipelineAgentAuthorIfCurrent(definitionId, null, {
+      revision,
+      requireDurable: true,
+    });
+    if (result === 'newer_revision') return;
+    if (result !== 'written' && result !== 'unchanged')
+      throw new Error(
+        `Could not clear the installed workflow’s agent marker: ${result}`,
+      );
+  },
+  recordCommittedSubscription: (
+    { observedLedgerVersion, ...subscription },
+    recovery,
+  ) =>
+    recordCommittedSharedItemInstall(
+      { kind: 'pipeline', ...subscription },
+      recovery,
+      observedLedgerVersion,
+    ),
   installRecords: {
     storePath: () => getPipelinePackageInstallStorePath(),
     find: (storePath, owner) =>
@@ -158,4 +195,27 @@ export const whenPipelineDefinitionRecovered =
   journal.whenPipelineDefinitionRecovered;
 export const pipelineDefinitionRecoveryRefusal =
   journal.pipelineDefinitionRecoveryRefusal;
-export const beginPipelineInstallIntent = journal.beginPipelineInstallIntent;
+export async function beginPipelineInstallIntent(
+  source: PipelineInstallIntentSource,
+): Promise<PipelineInstallIntent> {
+  const intent = await journal.beginPipelineInstallIntent(source);
+  return {
+    ...intent,
+    async finish(markerClears, subscription): Promise<void> {
+      // The definition and index can both be visible after an unconfirmed
+      // directory flush. Keep the install reversible until they are confirmed.
+      if (markerClears?.length)
+        await confirmStoredPipelineDirectoryDurability();
+      await intent.finish(
+        markerClears,
+        subscription && {
+          ...subscription,
+          observedLedgerVersion: await readCommittedInstallSubscriptionVersion({
+            kind: 'pipeline',
+            ...subscription,
+          }),
+        },
+      );
+    },
+  };
+}

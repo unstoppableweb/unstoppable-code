@@ -3,6 +3,7 @@ import { isSidebarItemGroupId } from '@canopy/protocol/sidebar';
 import {
   APP_ADVISOR_REPO_RULES_MODAL_SOURCES,
   PLUGINS_MANAGEMENT_SECTIONS,
+  TELEMETRY_SHARING_SCOPES,
   WORKSPACE_ROOT_REPO_ID,
   type AgentProviderType,
   type AppAdvisorJson,
@@ -15,6 +16,7 @@ import {
   type PluginsManagementSectionId,
   type ProjectOwnerContext,
   type SidebarItem,
+  type TelemetryScopeKey,
   type WorkspaceSettingsTab,
   type WorkspaceType,
 } from '@canopy/desktop-shared/types';
@@ -237,6 +239,10 @@ function readStringList(
     (candidate): candidate is string => typeof candidate === 'string',
   );
   return strings.slice(0, limit);
+}
+
+function isTelemetryScopeKey(value: string): value is TelemetryScopeKey {
+  return TELEMETRY_SHARING_SCOPES.some((scope) => scope === value);
 }
 
 function isAgentProviderType(
@@ -1315,6 +1321,25 @@ export function buildCurrentUiStateSnapshot(
     };
   }
 
+  // Organization data-sharing requirement notice: organization and scopes.
+  const orgSharingNoticeSlice = readObject(slices.orgSharingNotice);
+  const orgSharingNoticeOrganizationId = readString(
+    orgSharingNoticeSlice?.organizationId,
+  );
+  if (orgSharingNoticeSlice && orgSharingNoticeOrganizationId) {
+    snapshot.orgSharingNotice = {
+      open: true,
+      organizationId: orgSharingNoticeOrganizationId,
+      requiredScopes: (
+        readStringList(
+          orgSharingNoticeSlice.requiredScopes,
+          TELEMETRY_SHARING_SCOPES.length,
+        ) ?? []
+      ).filter(isTelemetryScopeKey),
+      queued: readNumber(orgSharingNoticeSlice.queued) ?? 0,
+    };
+  }
+
   // Shared containers "Share" modal (CAN-2546). Identifiers,
   // counts, and the container display name only — member search text and the
   // approved file scope stay out of the provider boundary.
@@ -2155,7 +2180,8 @@ export function buildCurrentUiStateSnapshot(
       ...(typeof pipelineSlice.readonly === 'boolean'
         ? { readonly: pipelineSlice.readonly }
         : {}),
-      ...(pipelineSlice.activeView === 'flow' ||
+      ...(pipelineSlice.activeView === 'designer' ||
+      pipelineSlice.activeView === 'flow' ||
       pipelineSlice.activeView === 'details'
         ? { activeView: pipelineSlice.activeView }
         : {}),

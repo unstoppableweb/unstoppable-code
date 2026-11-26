@@ -25,9 +25,11 @@ import type {
  * The host-neutral projection behind `core.workspace.*` and `core.worktree.*`
  * list/get (CAN-7239): scope checks, typed fields, repository sources, the
  * worktree row, provenance filters and paging, over the read port below.
- * Electron main's adapter (`core-workspace-adapter.ts`) still serves these
- * queries; its equivalence golden pins this module to it. Revisions come from
- * the caller's capture, keyed by `coreWorkspaceResourceKey`.
+ * Electron main's adapter (`core-workspace-adapter.ts`) composes the `select*`
+ * stages over its own reads (CAN-7732), so its legacy capture lands before
+ * any row projects; the equivalence golden pins the W5 read port to it.
+ * Revisions come from the caller's capture, keyed by
+ * `coreWorkspaceResourceKey`.
  */
 
 /** Only `ok` and `absent` prove content complete. */
@@ -203,6 +205,11 @@ export function checkCoreWorkspaceGetParams(
   checkCoreWorkspaceScope(params.scope);
   checkCoreWorkspaceIdSpelling(params.workspaceId);
   checkCoreWorkspaceIdSpelling(params.scope?.workspaceId);
+  if (
+    params.scope?.workspaceId !== undefined &&
+    params.scope.workspaceId !== params.workspaceId
+  )
+    throw workspaceNotFound();
 }
 
 export function checkCoreWorktreeListParams(
@@ -215,13 +222,19 @@ export function checkCoreWorktreeListParams(
     checkCoreWorktreeWorkspaceIdSpelling(params.scope.workspaceId);
 }
 
-/** The scoped id checks follow in {@link projectCoreWorktreeGet}. */
 export function checkCoreWorktreeGetParams(
-  params: { scope?: CanopyWorkspaceScope },
+  params: { worktreeId: string; scope?: CanopyWorkspaceScope },
   authorityId: string,
 ): void {
   checkCoreWorkspaceAuthority(params.scope, authorityId);
   checkCoreWorktreeScope(params.scope);
+  if (
+    params.scope?.worktreeId !== undefined &&
+    params.scope.worktreeId !== params.worktreeId
+  )
+    throw worktreeNotFound();
+  if (params.scope?.workspaceId)
+    checkCoreWorktreeWorkspaceIdSpelling(params.scope.workspaceId);
 }
 
 // --- Index and manifest typed fields -----------------------------------------
@@ -634,7 +647,9 @@ export function listBinding(
 // --- The read port ------------------------------------------------------------
 
 /** One workspace as the discovery read projected it. */
-export interface CoreWorkspaceSidebarWorkspace {
+export interface CoreWorkspaceSidebarWorkspace<
+  Row extends CoreWorktreeRow = CoreWorktreeRow,
+> {
   readonly index: CoreWorkspaceIndexEntry;
   readonly indexStored?: StoredWorkspaceIndexFields;
   /** Absent when the read reports no manifest authority. */
@@ -646,11 +661,13 @@ export interface CoreWorkspaceSidebarWorkspace {
   /** The source the read's repositories were overlaid from, when any. */
   readonly sourceRepoPath?: string;
   /** Code workspaces only. */
-  readonly worktrees?: CoreWorktreeListRead;
+  readonly worktrees?: CoreWorktreeListRead<Row>;
 }
 
 /** The index and every workspace it names, from one read. */
-export interface CoreWorkspaceSidebarRead {
+export interface CoreWorkspaceSidebarRead<
+  Row extends CoreWorktreeRow = CoreWorktreeRow,
+> {
   /** The index read's own authority; absent when the read reports none. */
   readonly indexAuthority?: CoreWorkspaceReadAuthority;
   /** Every indexed id, including unprojected ones; absent when unreported. */
@@ -658,7 +675,7 @@ export interface CoreWorkspaceSidebarRead {
   /** Set when the host left out workspaces for reasons only it decides. */
   readonly unprojected?: boolean;
   /** In display order. */
-  readonly workspaces: readonly CoreWorkspaceSidebarWorkspace[];
+  readonly workspaces: readonly CoreWorkspaceSidebarWorkspace<Row>[];
 }
 
 export interface CoreWorkspaceIndexRead {
@@ -680,8 +697,10 @@ export interface CoreWorkspaceManifestRead {
   readonly stored?: StoredWorkspaceManifestFields;
 }
 
-export interface CoreWorktreeListRead {
-  readonly rows: readonly CoreWorktreeRow[];
+export interface CoreWorktreeListRead<
+  Row extends CoreWorktreeRow = CoreWorktreeRow,
+> {
+  readonly rows: readonly Row[];
   /** Absent when the read reports none. */
   readonly authority?: CoreWorkspaceReadAuthority;
   /** RR1: the read left out rows this process removed. */
@@ -715,6 +734,33 @@ export interface CoreWorkspaceProjectedList<Item> {
   readonly rows: readonly CoreWorkspaceProjectedRow<Item>[];
   /** Absent for a listing no single collection spans. */
   readonly collection?: W5Resource;
+}
+
+/**
+ * A query's selection over reads already made: what its provenance needs,
+ * and its result only on demand, so a host can publish what it read first.
+ */
+export interface CoreWorkspaceSelection<Result> {
+  readonly filters: CoreWorkspaceFilters;
+  readonly resources: readonly CoreWorkspaceResourceProjection[];
+  project(): Result;
+}
+
+export interface CoreWorkspaceListSelection<
+  Item,
+> extends CoreWorkspaceSelection<CoreWorkspaceProjectedList<Item>> {
+  /** The rows the listing holds, counted before any projects. */
+  readonly total: number;
+}
+
+function projectSelection<Result>(
+  selection: CoreWorkspaceSelection<Result>,
+): CoreWorkspaceProjected<Result> {
+  return {
+    filters: selection.filters,
+    resources: selection.resources,
+    result: selection.project(),
+  };
 }
 
 /** Publishable revisions by `coreWorkspaceResourceKey`. */
@@ -764,13 +810,12 @@ function listedWorkspace(
   });
 }
 
-/** `core.workspace.list`'s first page projection, after its scope checks. */
-export async function projectCoreWorkspaceList(
-  reads: Pick<CoreWorkspaceProjectionReads, 'readSidebar'>,
+/** `core.workspace.list`'s first page selection, after its scope checks. */
+export function selectCoreWorkspaceList(
+  sidebar: CoreWorkspaceSidebarRead,
   scope: CanopyWorkspaceScope | undefined,
   pageSize: number,
-): Promise<CoreWorkspaceProjected<CoreWorkspaceProjectedList<CoreWorkspace>>> {
-  const sidebar = await reads.readSidebar();
+): CoreWorkspaceListSelection<CoreWorkspace> {
   // Kept in order, not by id: duplicate-id rows keep their own fields.
   const workspaces = sidebar.workspaces.filter(
     ({ index, organizationId }) =>
@@ -785,6 +830,7 @@ export async function projectCoreWorkspaceList(
   ];
   const collection: W5Resource = { kind: 'workspaces' };
   return {
+    total: workspaces.length,
     filters: [...filters, isPartialPage(workspaces.length, pageSize) && 'page'],
     resources: [
       { resource: collection, filters },
@@ -802,13 +848,80 @@ export async function projectCoreWorkspaceList(
         }),
       ),
     ],
-    result: {
+    project: () => ({
       collection,
       rows: workspaces.map((workspace) => ({
         item: listedWorkspace(workspace),
         resource: { kind: 'workspace', workspaceId: workspace.index.id },
       })),
+    }),
+  };
+}
+
+/** `core.workspace.list`'s first page projection, after its scope checks. */
+export async function projectCoreWorkspaceList(
+  reads: Pick<CoreWorkspaceProjectionReads, 'readSidebar'>,
+  scope: CanopyWorkspaceScope | undefined,
+  pageSize: number,
+): Promise<CoreWorkspaceProjected<CoreWorkspaceProjectedList<CoreWorkspace>>> {
+  return projectSelection(
+    selectCoreWorkspaceList(await reads.readSidebar(), scope, pageSize),
+  );
+}
+
+/** `core.workspace.get`'s resources, from its manifest read alone. */
+export function coreWorkspaceGetResources(
+  workspaceId: string,
+  manifest: {
+    readonly authority?: CoreWorkspaceReadAuthority;
+    readonly type?: string;
+    readonly sourceRepoPath?: string;
+  },
+): CoreWorkspaceResourceProjection[] {
+  return [
+    {
+      resource: { kind: 'workspace', workspaceId },
+      filters: manifestFilters(manifest.authority),
+      external: sourceOverlayFields(manifest),
     },
+  ];
+}
+
+/** An organization scope sees only its own workspaces; others are not found. */
+export function checkCoreWorkspaceOrganization(
+  scope: CanopyWorkspaceScope | undefined,
+  organizationId: string | undefined,
+): void {
+  if (
+    scope?.organizationId !== undefined &&
+    organizationId !== scope.organizationId
+  )
+    throw workspaceNotFound();
+}
+
+/**
+ * `core.workspace.get`'s row from its index and manifest reads. A read that
+ * reports no authority projects its manifest as read.
+ */
+export function projectCoreWorkspaceGetRow(
+  indexRead: CoreWorkspaceIndexRead,
+  manifest: Pick<
+    CoreWorkspaceManifestRead,
+    'authority' | 'repositories' | 'fields' | 'stored'
+  >,
+): CoreWorkspaceProjectedRow<CoreWorkspace> {
+  const proven =
+    manifest.authority === undefined || manifest.authority === 'ok';
+  return {
+    resource: { kind: 'workspace', workspaceId: indexRead.entry.id },
+    item: projectCoreWorkspace({
+      index: indexRead.entry,
+      indexStored: indexRead.stored,
+      repositories: manifest.repositories,
+      ...(proven
+        ? { manifest: { fields: manifest.fields, stored: manifest.stored } }
+        : {}),
+    }),
   };
 }
 
@@ -818,41 +931,15 @@ export async function projectCoreWorkspaceGet(
   workspaceId: string,
   scope: CanopyWorkspaceScope | undefined,
 ): Promise<CoreWorkspaceProjected<CoreWorkspaceProjectedRow<CoreWorkspace>>> {
-  if (scope?.workspaceId !== undefined && scope.workspaceId !== workspaceId)
-    throw workspaceNotFound();
   // The index lookup stays first: it keeps unknown ids off the manifest path.
   const indexRead = await reads.readIndexEntry(workspaceId);
   if (!indexRead) throw workspaceNotFound();
   const manifest = await reads.readManifest(workspaceId);
-  if (
-    scope?.organizationId !== undefined &&
-    manifest.organizationId !== scope.organizationId
-  )
-    throw workspaceNotFound();
-  const resource: W5Resource = { kind: 'workspace', workspaceId };
-  // A read that reports no authority projects its manifest as read.
-  const proven =
-    manifest.authority === undefined || manifest.authority === 'ok';
+  checkCoreWorkspaceOrganization(scope, manifest.organizationId);
   return {
     filters: [],
-    resources: [
-      {
-        resource,
-        filters: manifestFilters(manifest.authority),
-        external: sourceOverlayFields(manifest),
-      },
-    ],
-    result: {
-      resource,
-      item: projectCoreWorkspace({
-        index: indexRead.entry,
-        indexStored: indexRead.stored,
-        repositories: manifest.repositories,
-        ...(proven
-          ? { manifest: { fields: manifest.fields, stored: manifest.stored } }
-          : {}),
-      }),
-    },
+    resources: coreWorkspaceGetResources(workspaceId, manifest),
+    result: projectCoreWorkspaceGetRow(indexRead, manifest),
   };
 }
 
@@ -864,7 +951,7 @@ async function checkWorktreeWorkspace(
 }
 
 function isListedForWorktrees(
-  workspace: CoreWorkspaceSidebarWorkspace,
+  workspace: CoreWorkspaceSidebarWorkspace<CoreWorktreeRow>,
   organizationId: string | undefined,
 ): boolean {
   return (
@@ -874,48 +961,56 @@ function isListedForWorktrees(
   );
 }
 
-/** `core.worktree.list`'s first page projection, after its scope checks. */
-export async function projectCoreWorktreeList(
-  reads: CoreWorkspaceProjectionReads,
+/**
+ * `core.worktree.list`'s first page selection over one workspace's list,
+ * after its scope checks and index lookup. `ownerOrganizationId` is the
+ * manifest's, read only for an organization scope.
+ */
+export function selectCoreWorkspaceWorktreeList(
+  workspaceId: string,
+  list: CoreWorktreeListRead,
+  ownerOrganizationId: string | undefined,
   scope: CanopyWorkspaceScope | undefined,
   pageSize: number,
-): Promise<CoreWorkspaceProjected<CoreWorkspaceProjectedList<CoreWorktree>>> {
-  const workspaceId = scope?.workspaceId;
+): CoreWorkspaceListSelection<CoreWorktree> {
   const organizationId = scope?.organizationId;
   const worktreeId = scope?.worktreeId;
-  if (workspaceId) {
-    await checkWorktreeWorkspace(reads, workspaceId);
-    const list = await reads.readWorktrees(workspaceId);
-    const owner = organizationId
-      ? (await reads.readManifest(workspaceId)).organizationId
-      : undefined;
-    const rows = list.rows.filter(
-      (row) =>
-        (worktreeId === undefined || row.id === worktreeId) &&
-        (organizationId === undefined || owner === organizationId),
-    );
-    const filters: CoreWorkspaceFilters = [
-      worktreeId !== undefined && 'worktree-scope',
-      organizationId !== undefined && 'organization',
-      ...listFilters(list.authority, list.recentlyRemoved),
-    ];
-    const collection: W5Resource = { kind: 'worktrees', workspaceId };
-    return {
-      filters: [...filters, isPartialPage(rows.length, pageSize) && 'page'],
-      resources: [
-        { resource: collection, filters },
-        ...rows.map((row) => worktreeResource(workspaceId, row.id)),
-      ],
-      result: {
-        collection,
-        rows: rows.map((row) => ({
-          item: projectCoreWorktree(workspaceId, row),
-          resource: worktreeResource(workspaceId, row.id).resource,
-        })),
-      },
-    };
-  }
-  const sidebar = await reads.readSidebar();
+  const rows = list.rows.filter(
+    (row) =>
+      (worktreeId === undefined || row.id === worktreeId) &&
+      (organizationId === undefined || ownerOrganizationId === organizationId),
+  );
+  const filters: CoreWorkspaceFilters = [
+    worktreeId !== undefined && 'worktree-scope',
+    organizationId !== undefined && 'organization',
+    ...listFilters(list.authority, list.recentlyRemoved),
+  ];
+  const collection: W5Resource = { kind: 'worktrees', workspaceId };
+  return {
+    total: rows.length,
+    filters: [...filters, isPartialPage(rows.length, pageSize) && 'page'],
+    resources: [
+      { resource: collection, filters },
+      ...rows.map((row) => worktreeResource(workspaceId, row.id)),
+    ],
+    project: () => ({
+      collection,
+      rows: rows.map((row) => ({
+        item: projectCoreWorktree(workspaceId, row),
+        resource: worktreeResource(workspaceId, row.id).resource,
+      })),
+    }),
+  };
+}
+
+/** `core.worktree.list`'s unscoped first page selection over one discovery read. */
+export function selectCoreWorktreeListAcrossWorkspaces(
+  sidebar: CoreWorkspaceSidebarRead,
+  scope: CanopyWorkspaceScope | undefined,
+  pageSize: number,
+): CoreWorkspaceListSelection<CoreWorktree> {
+  const organizationId = scope?.organizationId;
+  const worktreeId = scope?.worktreeId;
   const included = sidebar.workspaces.filter((workspace) =>
     isListedForWorktrees(workspace, organizationId),
   );
@@ -939,6 +1034,7 @@ export async function projectCoreWorktreeList(
     }),
   );
   return {
+    total: rows.length,
     filters: [
       organizationId !== undefined && 'organization',
       ...sidebarFilters(sidebar),
@@ -949,12 +1045,75 @@ export async function projectCoreWorktreeList(
       ...collections,
       ...rows.map((entry) => worktreeResource(entry.workspaceId, entry.row.id)),
     ],
-    result: {
+    project: () => ({
       rows: rows.map((entry) => ({
         item: projectCoreWorktree(entry.workspaceId, entry.row),
         resource: worktreeResource(entry.workspaceId, entry.row.id).resource,
       })),
-    },
+    }),
+  };
+}
+
+/** `core.worktree.list`'s first page projection, after its scope checks. */
+export async function projectCoreWorktreeList(
+  reads: CoreWorkspaceProjectionReads,
+  scope: CanopyWorkspaceScope | undefined,
+  pageSize: number,
+): Promise<CoreWorkspaceProjected<CoreWorkspaceProjectedList<CoreWorktree>>> {
+  const workspaceId = scope?.workspaceId;
+  if (!workspaceId)
+    return projectSelection(
+      selectCoreWorktreeListAcrossWorkspaces(
+        await reads.readSidebar(),
+        scope,
+        pageSize,
+      ),
+    );
+  await checkWorktreeWorkspace(reads, workspaceId);
+  const list = await reads.readWorktrees(workspaceId);
+  const owner = scope.organizationId
+    ? (await reads.readManifest(workspaceId)).organizationId
+    : undefined;
+  return projectSelection(
+    selectCoreWorkspaceWorktreeList(workspaceId, list, owner, scope, pageSize),
+  );
+}
+
+/**
+ * The one row with `worktreeId` across a discovery read's code workspaces in
+ * the organization scope, if any; refuses an id two of them hold.
+ */
+export function findCoreWorktreeAcrossWorkspaces<Row extends CoreWorktreeRow>(
+  sidebar: CoreWorkspaceSidebarRead<Row>,
+  worktreeId: string,
+  organizationId: string | undefined,
+): { workspaceId: string; row: Row } | undefined {
+  let match: { workspaceId: string; row: Row } | undefined;
+  for (const workspace of sidebar.workspaces) {
+    if (!isListedForWorktrees(workspace, organizationId)) continue;
+    const row = workspace.worktrees?.rows.find(
+      (entry) => entry.id === worktreeId,
+    );
+    if (!row) continue;
+    if (match) throw ambiguousWorktree();
+    match = { workspaceId: workspace.index.id, row };
+  }
+  return match;
+}
+
+/** `core.worktree.get`'s selection of the row it found. */
+export function selectCoreWorktreeGet(
+  workspaceId: string,
+  row: CoreWorktreeRow,
+): CoreWorkspaceSelection<CoreWorkspaceProjectedRow<CoreWorktree>> {
+  const projection = worktreeResource(workspaceId, row.id);
+  return {
+    filters: [],
+    resources: [projection],
+    project: () => ({
+      resource: projection.resource,
+      item: projectCoreWorktree(workspaceId, row),
+    }),
   };
 }
 
@@ -964,13 +1123,10 @@ export async function projectCoreWorktreeGet(
   worktreeId: string,
   scope: CanopyWorkspaceScope | undefined,
 ): Promise<CoreWorkspaceProjected<CoreWorkspaceProjectedRow<CoreWorktree>>> {
-  if (scope?.worktreeId !== undefined && scope.worktreeId !== worktreeId)
-    throw worktreeNotFound();
   const workspaceId = scope?.workspaceId;
   const organizationId = scope?.organizationId;
   let match: { workspaceId: string; row: CoreWorktreeRow } | undefined;
   if (workspaceId) {
-    checkCoreWorktreeWorkspaceIdSpelling(workspaceId);
     await checkWorktreeWorkspace(reads, workspaceId);
     if (
       organizationId !== undefined &&
@@ -982,24 +1138,12 @@ export async function projectCoreWorktreeGet(
     );
     if (row) match = { workspaceId, row };
   } else {
-    for (const workspace of (await reads.readSidebar()).workspaces) {
-      if (!isListedForWorktrees(workspace, organizationId)) continue;
-      const row = workspace.worktrees?.rows.find(
-        (entry) => entry.id === worktreeId,
-      );
-      if (!row) continue;
-      if (match) throw ambiguousWorktree();
-      match = { workspaceId: workspace.index.id, row };
-    }
+    match = findCoreWorktreeAcrossWorkspaces(
+      await reads.readSidebar(),
+      worktreeId,
+      organizationId,
+    );
   }
   if (!match) throw worktreeNotFound();
-  const projection = worktreeResource(match.workspaceId, match.row.id);
-  return {
-    filters: [],
-    resources: [projection],
-    result: {
-      resource: projection.resource,
-      item: projectCoreWorktree(match.workspaceId, match.row),
-    },
-  };
+  return projectSelection(selectCoreWorktreeGet(match.workspaceId, match.row));
 }

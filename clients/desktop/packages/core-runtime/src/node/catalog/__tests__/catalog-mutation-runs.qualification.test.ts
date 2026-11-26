@@ -196,6 +196,11 @@ describe('catalog mutation receipts (CAN-4123)', () => {
       delete: unexpected,
       readManagement: unexpected,
       deleteCorrupt: unexpected,
+      analyze: unexpected,
+      dropAnalysis: unexpected,
+      commit: unexpected,
+      signedInAccountId: unexpected,
+      readImportReadiness: unexpected,
     };
     const { instructions } = createCoreCollectionEntryHandlers({
       host,
@@ -455,6 +460,10 @@ describe('catalog mutation receipts (CAN-4123)', () => {
           entryId: `collection:${'f'.repeat(128)}`,
           deleted: true,
         },
+      },
+      'core.catalog.entry.import': {
+        boundedBy:
+          'collection-entry-handlers: refuses an analysis too large to record, and drops it',
       },
       'core.catalog.skill.updates.check': {
         boundedBy:

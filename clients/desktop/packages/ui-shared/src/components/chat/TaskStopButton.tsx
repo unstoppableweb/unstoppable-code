@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
-import { Button } from '../Button';
+import { Button } from '../../primitives/Button';
 import { ExecutionActionButton } from '../ExecutionActionButton';
-import { Tooltip } from '../Tooltip';
+import { Tooltip } from '../../primitives/Tooltip';
 import { StopFilledIcon } from '../../icons/AppIcons';
 
 /** Visible label of a running task's Stop control. */

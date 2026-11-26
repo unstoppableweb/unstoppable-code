@@ -123,16 +123,25 @@ export interface ProviderEventAdmission {
   readonly tools: readonly ToolOccurrenceAdmission[];
 }
 
+/** Immutable Stop evidence returned only after the canonical write succeeds. */
+export interface CommittedChatTurnCancellation {
+  readonly userMessageId: string;
+  readonly executionTurnId?: string;
+  readonly endedAt: number;
+}
+
 /** `pickup` answers a starting input pickup; `admission` an applied event. */
 export type ProviderEventIngestResult =
   | {
       readonly outcome: 'applied';
       readonly admission?: ProviderEventAdmission;
       readonly pickup?: ChatPickupVerdict;
+      readonly cancellation?: CommittedChatTurnCancellation;
     }
   | {
       readonly outcome: Exclude<ProviderEventIngestOutcome, 'applied'>;
       readonly pickup?: ChatPickupVerdict;
+      readonly cancellation?: CommittedChatTurnCancellation;
     };
 
 /**

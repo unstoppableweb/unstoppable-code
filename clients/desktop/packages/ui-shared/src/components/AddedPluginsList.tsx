@@ -1,9 +1,9 @@
-import { Stack } from './Stack';
+import { Stack } from '../primitives/Stack';
 import { useEffect, useRef, type JSX, type ReactNode } from 'react';
 import { McpServerLogo } from './McpServerLogo';
 import { ActivityItemRow } from './ActivityItemRow';
 import { ExecutionActionButton } from './ExecutionActionButton';
-import { ErrorBanner } from './StatusBlocks';
+import { ErrorBanner } from '../primitives/StatusBlocks';
 export interface AddedPluginItem {
   id: string;
   name: string;

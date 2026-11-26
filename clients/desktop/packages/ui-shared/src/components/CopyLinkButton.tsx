@@ -1,10 +1,10 @@
 import { useCallback, useId, type JSX, type MouseEvent } from 'react';
 import { CheckIcon, CopyIcon } from '../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import type { ButtonSize } from './Button';
-import { CopyButton } from './CopyButton';
-import { NoticeButton } from './Notice';
-import { useCopyToClipboard } from './copy-to-clipboard';
+import type { ButtonSize } from '../primitives/Button';
+import { CopyButton } from '../primitives/CopyButton';
+import { NoticeButton } from '../primitives/Notice';
+import { useCopyToClipboard } from '../primitives/copy-to-clipboard';
 
 /** How long the `Copied` confirmation stays before the label returns. */
 export const COPY_LINK_CONFIRMATION_MS = 2000;

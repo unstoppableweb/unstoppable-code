@@ -835,7 +835,15 @@ function carriedNativeSurvival(
   admission: NativeStartAdmission,
 ): NativeSurvivalLaunchMembers {
   const blockers = (...extra: NativeRouteBlocker[]): NativeRouteBlocker[] => [
-    ...new Set([...admission.routes.blockers, ...admission.blockers, ...extra]),
+    ...new Set([
+      // On-quota is a local distinction, not a new wire blocker.
+      ...admission.routes.blockers.map(
+        (blocker): NativeRouteBlocker =>
+          blocker === 'ai-credits-on-quota' ? 'ai-credits' : blocker,
+      ),
+      ...admission.blockers,
+      ...extra,
+    ]),
   ];
   const setup = admission.setup && jsonCopy(admission.setup);
   const attempts: unknown[] = [
@@ -975,15 +983,37 @@ async function startPipelineRoute(
                     executionContext: options.executionContext,
                   }),
                 }) ?? Promise.resolve(null),
-              inspectRoutes: async () =>
-                (
-                  await import('./daemon-pipeline-native-admission')
-                ).inspectNativePipelineLaunch({
+              inspectRoutes: async () => {
+                const { inspectNativePipelineLaunch } =
+                  await import('./daemon-pipeline-native-admission');
+                const input = {
                   params,
                   selections,
                   environment: nativeEnvironment,
                   modelCatalog: launch.pipelineLaunch.modelCatalog,
-                }),
+                };
+                const independent = await inspectNativePipelineLaunch(input);
+                // Wait only when custody could remove every blocker.
+                const accountResolvable = new Set(['policy', 'ai-credits']);
+                if (
+                  independent.blockers.length === 0 ||
+                  independent.blockers.some(
+                    (blocker) => !accountResolvable.has(blocker),
+                  )
+                )
+                  return independent;
+                const { daemonCloudAccountAdmissionIdentity } =
+                  await import('../canopy-cloud/daemon-account-provisioning');
+                const accountIdentity =
+                  await daemonCloudAccountAdmissionIdentity(session);
+                if (accountIdentity === undefined) return independent;
+                return inspectNativePipelineLaunch({
+                  ...input,
+                  // CAN-6997: false until the daemon holds the account.
+                  managedAccount: accountIdentity !== undefined,
+                  expectedAccountIdentity: accountIdentity,
+                });
+              },
             }),
           )
           .catch(
@@ -995,10 +1025,23 @@ async function startPipelineRoute(
           )
       : undefined;
     const nativeSurvival = admission && carriedNativeSurvival(admission);
-    const send = (
+    const send = async (
       target: ElectronDaemonClient,
-    ): Promise<WorkerPipelineExecutionResult> =>
-      target.instruction(
+    ): Promise<WorkerPipelineExecutionResult> => {
+      const targetSurvival = { ...nativeSurvival };
+      if (
+        targetSurvival.nativeRouteEvidence &&
+        !(
+          await import('../canopy-cloud/daemon-account-provisioning')
+        ).isDaemonCloudAccountAuthorityActive(target)
+      ) {
+        const legacy = { ...targetSurvival.nativeRouteEvidence };
+        delete legacy.policyScope;
+        delete legacy.expectedAccountIdentity;
+        delete legacy.aiCreditsAttribution;
+        targetSurvival.nativeRouteEvidence = legacy;
+      }
+      return target.instruction(
         'worker.pipeline.execution.start',
         paramsWithoutSecrets,
         {
@@ -1015,11 +1058,12 @@ async function startPipelineRoute(
                   resolvePipelineMockEnvOverride()),
               },
               secretEnv: { ...secrets.env },
-              ...nativeSurvival,
+              ...targetSurvival,
             },
           },
         },
       );
+    };
     // Startup catches up on a commit step that settles while nothing
     // follows the run (CAN-6012 D3); a run that falls back is the app's.
     const commitHooksPending =

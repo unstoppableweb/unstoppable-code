@@ -186,6 +186,8 @@ export class GitReadError extends Error {
   readonly signal: string | null | undefined;
   /** Behind `cleanup_unconfirmed`: the kill failure, else the first failure or abort reason. */
   readonly failure: unknown;
+  /** `exit_status`: Git's stderr carried {@link GIT_LAZY_FETCH_DISABLED_WARNING}. */
+  readonly lazyFetchBlocked: boolean;
 
   constructor(
     code: GitReadErrorCode,
@@ -194,6 +196,7 @@ export class GitReadError extends Error {
       readonly exitCode?: number | null;
       readonly signal?: string | null;
       readonly failure?: unknown;
+      readonly lazyFetchBlocked?: boolean;
     } = {},
   ) {
     super(MESSAGES[code]);
@@ -202,6 +205,7 @@ export class GitReadError extends Error {
     this.stream = detail.stream;
     this.exitCode = detail.exitCode;
     this.signal = detail.signal;
+    this.lazyFetchBlocked = detail.lazyFetchBlocked === true;
   }
 }
 
@@ -380,9 +384,17 @@ export const GIT_CHANGE_SET_COMMAND_PREFIX: readonly string[] = Object.freeze([
 ]);
 
 /**
+ * Git's own warning when `GIT_NO_LAZY_FETCH` stops a fetch
+ * (promisor-remote.c). Localized Git builds print a translation, which reads
+ * as an ordinary failure.
+ */
+export const GIT_LAZY_FETCH_DISABLED_WARNING =
+  'lazy fetching disabled; some objects may not be available';
+
+/**
  * A change-set read's environment: a partial clone's missing objects fail the
- * read instead of being fetched from its promisor remote (Git 2.44 and later;
- * earlier Git ignores the variable and fetches, as in process).
+ * read instead of being fetched from its promisor remote, where the host's Git
+ * honors `GIT_NO_LAZY_FETCH`; a Git that ignores it fetches, as in process.
  */
 function changeSetEnvironment(
   environment: GitReadEnvironment,

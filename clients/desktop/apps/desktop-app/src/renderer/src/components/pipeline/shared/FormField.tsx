@@ -5,7 +5,7 @@ interface FormFieldProps {
   label: string;
   htmlFor?: string;
   hint?: string;
-  error?: string;
+  error?: ReactNode;
   trailingAction?: ReactNode;
   children: ReactNode;
 }

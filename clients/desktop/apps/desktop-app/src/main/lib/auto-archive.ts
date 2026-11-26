@@ -7,6 +7,8 @@ import { getWorkspaceWorktreeDir } from './paths';
 import { isErrnoException } from './type-guards';
 import type { AutoDeleteAttention } from '@canopy/protocol/remote-control/shell/auto-delete-attention';
 import { AutoDeleteInspectionError } from './auto-delete-inspection-error';
+import { autoArchiveAppError } from './auto-archive-error';
+import type { AppError } from '@canopy/protocol/app-errors';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import { logMainProcessWarn } from './main-process-logging';
 import type { WorktreeRecoveryDescription } from '@canopy/protocol/remote-control/shell/worktree-recovery';
@@ -148,6 +150,7 @@ export interface AutoArchiveResult {
   status: 'success' | 'failure' | 'attention';
   recovery?: WorktreeRecoveryDescription;
   error?: string;
+  appError?: AppError;
   warnings?: string[];
 }
 
@@ -1135,6 +1138,7 @@ const defaultDependencies: AutoArchiveDependencies = {
       inactivityDays: result.candidate.inactivityDays,
       status: result.status,
       ...(result.error ? { error: result.error } : {}),
+      ...(result.appError ? { appError: result.appError } : {}),
       ...(result.warnings?.length ? { warnings: result.warnings } : {}),
     });
     if (result.status === 'failure') {
@@ -1238,7 +1242,11 @@ export async function applyAutoArchive(
   // Work Entry summaries map chat ids to their owning entry. Candidate
   // collection intentionally stays small; hydrate this map from registry rows.
   const chatOwners = new Map<string, string>();
-  const ownerErrors = new Map<string, unknown>();
+  // Captured at the failure: later candidates' awaits must not restamp it.
+  const ownerErrors = new Map<
+    string,
+    { error: unknown; appError: AppError | undefined }
+  >();
   for (const workspaceId of Array.from(
     new Set(
       due
@@ -1258,7 +1266,10 @@ export async function applyAutoArchive(
         }
       }
     } catch (error) {
-      ownerErrors.set(workspaceId, error);
+      ownerErrors.set(workspaceId, {
+        error,
+        appError: autoArchiveAppError(error),
+      });
     }
   }
   const results: AutoArchiveResult[] = [];
@@ -1275,14 +1286,12 @@ export async function applyAutoArchive(
         });
       }
     };
+    const ownerFailure =
+      candidate.surface === 'cowork' || candidate.surface === 'app-advisor'
+        ? ownerErrors.get(candidate.workspaceId)
+        : undefined;
     try {
-      if (
-        (candidate.surface === 'cowork' ||
-          candidate.surface === 'app-advisor') &&
-        ownerErrors.has(candidate.workspaceId)
-      ) {
-        throw ownerErrors.get(candidate.workspaceId);
-      }
+      if (ownerFailure) throw ownerFailure.error;
       let busy = false;
       const outcome = await withWorkspaceTargetAutoArchiveLease(
         candidate.workspaceId,
@@ -1323,6 +1332,7 @@ export async function applyAutoArchive(
         candidate,
         status: 'failure',
         error: error instanceof Error ? error.message : String(error),
+        appError: ownerFailure?.appError ?? autoArchiveAppError(error),
       };
       results.push(result);
       deps.onResult(result);

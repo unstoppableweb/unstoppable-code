@@ -1,4 +1,4 @@
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import {
   createContext,
   useCallback,
@@ -25,14 +25,19 @@ import {
   thinkingControlLevels,
   advanceThinkingControlLevel,
 } from '../lib/chat-thinking';
-import { DropdownMenuItem } from './DropdownMenu';
-import { COMPOSER_ROW_MENU_GAP, FloatingMenu } from './FloatingMenu';
+import { DropdownMenuItem } from '../primitives/DropdownMenu';
+import {
+  COMPOSER_ROW_MENU_GAP,
+  FloatingMenu,
+} from '../primitives/FloatingMenu';
 import { FoldReveal } from './FoldReveal';
-import { PickerTrigger, PickerTriggerChevron } from './PickerMenu';
-import { IconToggleButton } from './IconToggleButton';
-import { Slider } from './Slider';
-import { Tooltip } from './Tooltip';
-import { SettingsSelect, type SettingsSelectOption } from './SettingsSelect';
+import { PickerTrigger, PickerTriggerChevron } from '../primitives/PickerMenu';
+import { Slider } from '../primitives/Slider';
+import { Tooltip } from '../primitives/Tooltip';
+import {
+  SettingsSelect,
+  type SettingsSelectOption,
+} from '../primitives/SettingsSelect';
 
 export interface ThinkingLevelControlProps {
   value: ThinkingLevel | undefined;
@@ -621,29 +626,36 @@ export function ThinkingLevelPanelPicker({
             </div>
             {fastMode ? (
               // The corner toggle follows the selected speed tier.
-              <IconToggleButton
-                pressed={fastMode.on}
-                label={fastModeName}
-                tooltip={`${fastModeName}: ${(ultraFast
+              <Tooltip
+                label={`${fastModeName}: ${(ultraFast
                   ? ULTRA_FAST_DESCRIPTION
                   : FAST_MODE_DESCRIPTION
                 ).toLowerCase()}`}
-                disabled={fastMode.disabled === true}
-                onClick={(): void => fastMode.onToggle()}
-                placement="panel-corner"
-                activeTone={ultraFast ? 'special' : 'accent'}
-                dataSpeed={
-                  ultraFast ? 'ultrafast' : fastMode.on ? 'fast' : 'standard'
-                }
-                icon={
-                  fastMode.on ? (
+                delay="long"
+              >
+                <ControlButton
+                  presentation="icon-toggle"
+                  appearance={{
+                    pressed: fastMode.on,
+                    activeTone: ultraFast ? 'special' : 'accent',
+                    placement: 'panel-corner',
+                  }}
+                  aria-pressed={fastMode.on}
+                  aria-label={fastModeName}
+                  disabled={fastMode.disabled === true}
+                  onClick={(): void => fastMode.onToggle()}
+                  data-testid={testId ? `${testId}-fast-mode` : undefined}
+                  data-speed={
+                    ultraFast ? 'ultrafast' : fastMode.on ? 'fast' : 'standard'
+                  }
+                >
+                  {fastMode.on ? (
                     <FastModeOnIcon size={16} />
                   ) : (
                     <FastModeIcon size={16} />
-                  )
-                }
-                {...(testId ? { testId: `${testId}-fast-mode` } : {})}
-              />
+                  )}
+                </ControlButton>
+              </Tooltip>
             ) : null}
           </div>
           {/* The heading names the level; the slider needs no scale. It

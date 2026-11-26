@@ -24,10 +24,6 @@ import {
   automationAgentPackageMatches,
   getSharedAgent,
 } from '../../agents/canopy-server-client';
-import {
-  LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
-  pipelineDeclaresLocalOnlyTrigger,
-} from '@canopy/pipeline-interop/portability';
 import { readFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import {
@@ -114,11 +110,6 @@ export type SharedContainerDefinitionOmissionReason =
   | 'unsupported_source'
   /** The local definition does not parse. */
   | 'invalid_definition'
-  /**
-   * The pipeline declares `workflow`, which can't leave this machine yet
-   * (CAN-5782).
-   */
-  | 'local_only_trigger'
   /** The portable document failed the existing sanitizer or validator. */
   | 'not_portable'
   /** The automation is bound to one execution on this machine. */
@@ -524,13 +515,6 @@ export async function buildPipelineDefinitionResource(
       detail: error instanceof Error ? error.message : undefined,
     };
   }
-  if (pipelineDeclaresLocalOnlyTrigger(pipeline)) {
-    return {
-      resource: undefined,
-      reason: 'local_only_trigger',
-      detail: LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
-    };
-  }
   const agentIds = pipelineAgentIds(pipeline);
   const provenance = provenanceFor(source.origin);
   const description = source.pipeline.description?.trim();
@@ -561,19 +545,6 @@ export async function buildPipelineDefinitionResource(
     pipelineFileDir: source.pipelineFileDir,
     repoPath: source.repoPath,
   });
-  // A child pipeline that declares `workflow` would travel as a
-  // `child_pipeline` resource, which web never parses.
-  if (
-    portable.blockers.some(
-      (blocker) => blocker.code === 'LOCAL_ONLY_PIPELINE_TRIGGER',
-    )
-  ) {
-    return {
-      resource: undefined,
-      reason: 'local_only_trigger',
-      detail: LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
-    };
-  }
   const rootInventoryIds = await deps.capabilityInventoryEntryIdsByKey(
     pipeline,
     inventory,

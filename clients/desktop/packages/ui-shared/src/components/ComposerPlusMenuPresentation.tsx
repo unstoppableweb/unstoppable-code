@@ -1,6 +1,6 @@
 'use client';
 
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import {
   useEffect,
   useRef,
@@ -16,8 +16,8 @@ import {
   type ComposerShowAllControl,
   type ComposerActionRow,
 } from './ComposerActionList';
-import { FloatingMenu } from './FloatingMenu';
-import { Tooltip } from './Tooltip';
+import { FloatingMenu } from '../primitives/FloatingMenu';
+import { Tooltip } from '../primitives/Tooltip';
 import { ComposerIconButton } from './ComposerIconButton';
 import { PlusLargeIcon } from '../icons/AppIcons';
 

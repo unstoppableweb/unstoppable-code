@@ -1,6 +1,6 @@
 'use client';
 
-import { ControlButton } from '../Button';
+import { ControlButton } from '../../primitives/Button';
 import { forwardRef, type ButtonHTMLAttributes, type JSX } from 'react';
 import { ChevronDownIcon } from '../../icons/AppIcons';
 

@@ -5,10 +5,10 @@ import {
   AutoArchiveSettingsControl,
   DaysInput,
 } from './AutoArchiveSettingsControl';
-import { Heading } from './Heading';
+import { Heading } from '../primitives/Heading';
 import { SettingsRowsSubRow } from './settings/SettingsRows';
-import { Stack } from './Stack';
-import { Surface } from './Surface';
+import { Stack } from '../primitives/Stack';
+import { Surface } from '../primitives/Surface';
 
 export interface OrchestratorRetentionCardProps {
   readonly retentionDays: number;

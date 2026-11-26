@@ -1,5 +1,9 @@
 import type { JSX } from 'react';
-import { Surface, type SurfacePadding, type SurfaceProps } from './Surface';
+import {
+  Surface,
+  type SurfacePadding,
+  type SurfaceProps,
+} from '../primitives/Surface';
 
 const PADDING = {
   none: 'none',

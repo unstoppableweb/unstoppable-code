@@ -3,11 +3,18 @@
 // ---------------------------------------------------------------------------
 //
 // The target, input, and command shapes that `@canopy/agent-actions`
-// validates and the desktop host executes. The rest of the in-app browser
-// contract (the preload API, IPC payloads, and host-local fields) stays in
+// validates and the desktop host executes, plus the drawer tab discriminator
+// that preferences persist. The rest of the in-app browser contract (the
+// preload API, IPC payloads, and host-local fields) stays in
 // `@canopy/execution-engine/types/browser`, which re-exports this module.
 
 import type { BrowserProfileSelection } from '../browser-profiles';
+
+/**
+ * Compatibility discriminator retained by the current-UI-state wire shape.
+ * `'browser'` identifies a relevant visible Browser panel.
+ */
+export type BrowserDrawerTabId = 'terminal' | 'browser';
 
 // ---------------------------------------------------------------------------
 // Console / network types

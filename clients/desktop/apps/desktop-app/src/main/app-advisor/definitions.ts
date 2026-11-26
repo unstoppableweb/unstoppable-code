@@ -44,6 +44,11 @@ import {
 import { editorSetupActionSchema } from '@canopy/agent-actions/families/editor-setup/actions';
 import { cloudChatActionSchema } from '@canopy/agent-actions/families/cloud-chats/actions';
 import {
+  SLACK_THREAD_ACTION_TYPES,
+  slackThreadActionSchema,
+  type SlackThreadAction,
+} from '@canopy/agent-actions/families/slack-thread/actions';
+import {
   appAdvisorPipelineRunActionSchema,
   type AppAdvisorPipelineRunAction,
   installedItemActionSchema,
@@ -373,6 +378,8 @@ export const searchActionsSchema = z.object({
       z.enum(REMOTE_CONTROL_ACTION_TYPES),
       z.enum(SETTINGS_ACTION_TYPES),
       z.enum(PIPELINES_ACTION_TYPES),
+      // CAN-7749: listed only in a Slack tab; the executor drops them elsewhere.
+      z.enum(SLACK_THREAD_ACTION_TYPES),
     ])
     .optional(),
   limit: z.number().int().min(1).max(50).optional(),
@@ -391,6 +398,7 @@ export const searchActionsToolShape = {
       z.enum(INVENTORY_SYNC_ACTION_TYPES),
       z.enum(REMOTE_CONTROL_ACTION_TYPES),
       z.enum(SETTINGS_ACTION_TYPES),
+      z.enum(SLACK_THREAD_ACTION_TYPES),
     ])
     .optional(),
 };
@@ -2871,6 +2879,9 @@ const appAdvisorDispatchPayloadSchema: z.ZodType<
   | SettingsAction
   | AiGatewayAction
   | AppAdvisorPipelineRunAction
+  // CAN-7749: main-only Orchestrator reads; never part of the renderer's
+  // AppAdvisorAction, so they can't reach a window.
+  | SlackThreadAction
 > = z.union([
   appAdvisorActionSchema,
   transcriptReadActionSchema,
@@ -2882,6 +2893,7 @@ const appAdvisorDispatchPayloadSchema: z.ZodType<
   settingsActionSchema,
   aiGatewayActionSchema,
   appAdvisorPipelineRunActionSchema,
+  slackThreadActionSchema,
 ]);
 
 export const dispatchActionSchema = z.object({
@@ -2995,6 +3007,7 @@ export const searchActionsJsonSchema: JsonValue = {
         ...REMOTE_CONTROL_ACTION_TYPES,
         ...SETTINGS_ACTION_TYPES,
         ...PIPELINES_ACTION_TYPES,
+        ...SLACK_THREAD_ACTION_TYPES,
       ],
       description:
         'Optional exact action type to inspect, such as pipeline.debug_run.',

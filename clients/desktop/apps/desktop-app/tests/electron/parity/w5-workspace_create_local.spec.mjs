@@ -26,6 +26,7 @@ import { closeCanopy } from '../launchCanopy.mjs';
 import {
   DEFAULT_COWORK_WORKSPACE_ID,
   crashKeepingData,
+  createW5Teardown,
   git,
   GATE_CLONE,
   gitHooksPathEnv,
@@ -50,14 +51,20 @@ import {
 } from './w5-fixtures.mjs';
 
 let fixtures;
+let w5Teardown;
 test.beforeEach(() => {
+  w5Teardown = createW5Teardown();
   fixtures = realpathSync(
     mkdtempSync(path.join(os.tmpdir(), 'canopy-w5-create-')),
   );
 });
-test.afterEach(() => {
-  reapCliChildren();
-  rmSync(fixtures, { recursive: true, force: true });
+test.afterEach(async ({}, testInfo) => {
+  try {
+    await w5Teardown.end(testInfo.status !== testInfo.expectedStatus);
+  } finally {
+    reapCliChildren();
+    rmSync(fixtures, { recursive: true, force: true });
+  }
 });
 
 async function openCreateProjectForm(window) {
@@ -557,41 +564,40 @@ test('workspace_create_local/graceful_shutdown: an acknowledged create survives 
 
 test('workspace_create_local/crash_restart: SIGKILL after an acknowledged create keeps the entry, including a multi-repo workspace:create, which leaves no unindexed manifest (CAN-3806)', async () => {
   test.setTimeout(150_000);
-  let launched = await launchW5App();
-  const { userDataDir } = launched;
-  try {
-    const repoPath = initRepo(path.join(fixtures, 'alpha'));
-    await launched.window.evaluate(
-      (request) => window.api.addWorkspaceFromFolder(request),
-      { repoPath },
-    );
-    // The Multi-Repo dialog's create, which indexes in the same commit.
-    await launched.window.evaluate(
-      (request) => window.api.createWorkspace(request),
-      { name: 'Delta Multi' },
-    );
-    await crashKeepingData(launched);
+  // Outside `fixtures`, which afterEach removes: a failed test keeps its root.
+  const userDataDir = realpathSync(
+    mkdtempSync(path.join(os.tmpdir(), 'canopy-w5-create-data-')),
+  );
+  let launched = await launchW5App({ userDataDir }, w5Teardown);
+  const repoPath = initRepo(path.join(fixtures, 'alpha'));
+  await launched.window.evaluate(
+    (request) => window.api.addWorkspaceFromFolder(request),
+    { repoPath },
+  );
+  // The Multi-Repo dialog's create, which indexes in the same commit.
+  await launched.window.evaluate(
+    (request) => window.api.createWorkspace(request),
+    { name: 'Delta Multi' },
+  );
+  await crashKeepingData(launched, w5Teardown);
 
-    launched = await launchW5App({ userDataDir });
+  launched = await launchW5App({ userDataDir }, w5Teardown);
 
-    expect(await loadProjectIds(launched.window)).toEqual([
-      DEFAULT_COWORK_WORKSPACE_ID,
-      'alpha',
-      'delta-multi',
-    ]);
-    expect(readManifest(userDataDir, 'alpha')).toMatchObject({ repoPath });
-    expect(orphanManifestIds(userDataDir)).toEqual([]);
-    expect(
-      existsSync(path.join(userDataDir, 'repos', 'delta-multi', '.git')),
-    ).toBe(true);
-    const retried = await launched.window.evaluate(
-      (request) => window.api.createWorkspace(request),
-      { name: 'Delta Multi' },
-    );
-    expect(retried.id).toBe('delta-multi-2');
-  } finally {
-    await closeCanopy(launched.electronApp, userDataDir);
-  }
+  expect(await loadProjectIds(launched.window)).toEqual([
+    DEFAULT_COWORK_WORKSPACE_ID,
+    'alpha',
+    'delta-multi',
+  ]);
+  expect(readManifest(userDataDir, 'alpha')).toMatchObject({ repoPath });
+  expect(orphanManifestIds(userDataDir)).toEqual([]);
+  expect(
+    existsSync(path.join(userDataDir, 'repos', 'delta-multi', '.git')),
+  ).toBe(true);
+  const retried = await launched.window.evaluate(
+    (request) => window.api.createWorkspace(request),
+    { name: 'Delta Multi' },
+  );
+  expect(retried.id).toBe('delta-multi-2');
 });
 
 test('workspace_create_local/client_disconnect: a renderer reload while add-from-remote is inside git clone does not stop the main-process write', async () => {

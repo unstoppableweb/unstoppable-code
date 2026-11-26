@@ -12,62 +12,28 @@ import type {
   UsageDataPreferences,
 } from '@canopy/desktop-shared/types';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
-import { TextLinkButton, ToggleSwitch } from '@canopy/ui-shared/components';
-import { brandText, getBrandHostedServicesUrl } from '@/lib/brand';
 import {
-  SettingsGroup,
-  SettingsRow,
-  SettingsSection,
-  SettingsSubRow,
-} from './SettingsLayout';
-import { SettingsLockedLabel } from './SettingsLockedLabel';
+  USAGE_DATA_ROWS,
+  UsageDataRows,
+  type UsageDataRowKey,
+  type UsageDataRowLocks,
+  Button,
+} from '@canopy/ui-shared/components';
+import { brandText, getBrandHostedServicesUrl } from '@/lib/brand';
+import { SettingsGroup, SettingsSection } from './SettingsLayout';
 import { resolveUsageDataLocks } from './usageDataLocks';
 
-interface UsageDataRowCopy {
-  readonly label: string;
-  readonly description: string;
-}
-
-// Row hints are fragments without a closing period, like the Activity
-// sharing rows below them.
-const USAGE_DATA_COPY: Record<UsageDataKey, UsageDataRowCopy> = {
-  productAnalytics: {
-    label: 'Usage analytics',
-    description: 'Which features you use and how the app performs',
-  },
-  sessionReplay: {
-    label: 'Session recordings',
-    description:
-      'Replays of how you move through the app, with your content hidden',
-  },
-  errorReports: {
-    label: 'Error reports',
-    description: 'Details of crashes and errors so they can be fixed',
-  },
-  activeUseSignal: {
-    label: 'Active use count',
-    description: 'A count of the messages you send, never their content',
-  },
-  featureFlagIdentity: {
-    label: 'Personalized feature rollouts',
-    description:
-      'Use your account to decide which new features you get. When off, only your app version and organizations are used',
-  },
-  skillSafetyCheck: {
-    label: 'Skill safety check',
-    description:
-      'Look up installed skills with a safety service to show their risk',
-  },
-};
-
-/** The rows under Usage analytics' own row, in display order. */
-const TOP_LEVEL_KEYS = [
-  'productAnalytics',
-  'errorReports',
-  'activeUseSignal',
-  'featureFlagIdentity',
-  'skillSafetyCheck',
-] as const satisfies readonly UsageDataKey[];
+/**
+ * Compile-time guard that the shared row list covers exactly the stored
+ * Usage data keys, so a new flow can't ship without a Settings switch.
+ */
+type AssertUsageDataRowParity = UsageDataKey extends UsageDataRowKey
+  ? UsageDataRowKey extends UsageDataKey
+    ? true
+    : never
+  : never;
+const _usageDataRowParity: AssertUsageDataRowParity = true;
+void _usageDataRowParity;
 
 /**
  * Settings → Privacy → Usage data: one switch per outbound flow the product
@@ -145,7 +111,14 @@ export function UsageDataSection(): JSX.Element {
     };
   }, [load]);
 
-  const locks = useMemo(() => resolveUsageDataLocks(snapshot), [snapshot]);
+  // Skill safety check is protective, so no organization lock applies to it.
+  const locks = useMemo(
+    (): UsageDataRowLocks<UsageDataKey> => ({
+      ...resolveUsageDataLocks(snapshot),
+      skillSafetyCheck: null,
+    }),
+    [snapshot],
+  );
   const ready = preferences !== null && snapshot !== null;
 
   const handleToggle = useCallback(
@@ -175,32 +148,6 @@ export function UsageDataSection(): JSX.Element {
     [],
   );
 
-  function lockFor(key: UsageDataKey): string | null {
-    return key === 'skillSafetyCheck' ? null : locks[key];
-  }
-
-  function renderToggle(key: UsageDataKey, dependsOnOff = false): JSX.Element {
-    const lock = lockFor(key);
-    const copy = USAGE_DATA_COPY[key];
-    return (
-      <ToggleSwitch
-        id={`settings-usage-data-${key}`}
-        // A locked row shows the flow as off; a row under a parent that is
-        // off keeps its stored value, dimmed, so turning the parent back on
-        // restores it.
-        checked={lock ? false : (preferences?.[key] ?? true)}
-        label={copy.label}
-        disabled={!ready || lock !== null || dependsOnOff}
-        dataTestId={`usage-data-toggle-${key}`}
-        onChange={(checked): void => handleToggle(key, checked)}
-      />
-    );
-  }
-
-  const analyticsOff =
-    lockFor('productAnalytics') !== null ||
-    preferences?.productAnalytics === false;
-
   return (
     <SettingsSection
       title="Usage data"
@@ -208,65 +155,29 @@ export function UsageDataSection(): JSX.Element {
       dataTestId="usage-data-section"
       footer={
         hostedServicesUrl ? (
-          <TextLinkButton
+          <Button
             data-testid="usage-data-hosted-services-link"
             onClick={(): void => {
               void window.api.browser.openExternal({ url: hostedServicesUrl });
             }}
+            variant="link"
+            data-settings-control="link"
           >
             See everything that leaves your device
-          </TextLinkButton>
+          </Button>
         ) : undefined
       }
     >
       <SettingsGroup dataTestId="usage-data-controls">
-        {TOP_LEVEL_KEYS.map((key) => {
-          const copy = USAGE_DATA_COPY[key];
-          const lock = lockFor(key);
-          const sessionReplayLock = lockFor('sessionReplay');
-          return (
-            // The wrapper is the group's row: it carries the lock state the
-            // row itself has no attribute for.
-            <div
-              key={key}
-              data-testid={`usage-data-row-${key}`}
-              data-locked={lock ? 'true' : undefined}
-            >
-              <SettingsRow
-                label={
-                  <SettingsLockedLabel
-                    label={copy.label}
-                    reason={lock}
-                    dataTestId={`usage-data-lock-badge-${key}`}
-                  />
-                }
-                description={copy.description}
-                htmlFor={`settings-usage-data-${key}`}
-                control={renderToggle(key)}
-              >
-                {key === 'productAnalytics' ? (
-                  <div
-                    data-testid="usage-data-row-sessionReplay"
-                    data-locked={sessionReplayLock ? 'true' : undefined}
-                  >
-                    <SettingsSubRow
-                      label={
-                        <SettingsLockedLabel
-                          label={USAGE_DATA_COPY.sessionReplay.label}
-                          reason={sessionReplayLock}
-                          dataTestId="usage-data-lock-badge-sessionReplay"
-                        />
-                      }
-                      description={USAGE_DATA_COPY.sessionReplay.description}
-                      htmlFor="settings-usage-data-sessionReplay"
-                      control={renderToggle('sessionReplay', analyticsOff)}
-                    />
-                  </div>
-                ) : null}
-              </SettingsRow>
-            </div>
-          );
-        })}
+        <UsageDataRows
+          rows={USAGE_DATA_ROWS}
+          value={preferences}
+          locks={locks}
+          ready={ready}
+          onToggle={handleToggle}
+          idPrefix="settings-usage-data"
+          testIdPrefix="usage-data"
+        />
       </SettingsGroup>
     </SettingsSection>
   );

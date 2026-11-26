@@ -1,6 +1,6 @@
 import type { JSX, ReactNode } from 'react';
 import { ModelProviderIcon } from '../../icons/ModelProviderIcon';
-import { Button } from '../Button';
+import { Button } from '../../primitives/Button';
 import { ProviderRowLabel, ProviderStatusDot } from '../ProviderRowLabel';
 import { SettingsRowsRow } from './SettingsRows';
 
@@ -29,8 +29,13 @@ export function GoogleSubscriptionRow({
   readonly busy: boolean;
   readonly onSignIn: () => void;
   readonly onRefresh: () => void;
-  readonly onDisconnect: () => void;
-  readonly onReconnect: () => void;
+  /**
+   * Withdraws this app's access. Absent where the host can't change the
+   * setting (a browser controlling the computer): no Disconnect button.
+   */
+  readonly onDisconnect?: () => void;
+  /** Absent where the host can't change the setting: Reconnect is disabled. */
+  readonly onReconnect?: () => void;
   /** The host's Antigravity CLI status and install controls, if any. */
   readonly runtime?: ReactNode;
   readonly error?: ReactNode;
@@ -52,7 +57,8 @@ export function GoogleSubscriptionRow({
           : connected
             ? // Discovery confirms account access, not a paid subscription tier.
               'Antigravity connected'
-            : `Install Antigravity CLI 1.5.1 from this card if it is not installed, then sign in with your personal Google account. ${SHARED_SIGN_IN}`
+            : // Version-neutral: the host's install control names the version it installs.
+              `Install Antigravity CLI from this card if it is not installed, then sign in with your personal Google account. ${SHARED_SIGN_IN}`
       }
       dataTestId="google-subscription-connection"
       control={
@@ -60,7 +66,7 @@ export function GoogleSubscriptionRow({
           <Button
             variant="secondary"
             size="sm"
-            disabled={busy}
+            disabled={busy || (disconnected && !onReconnect)}
             onClick={
               disconnected ? onReconnect : connected ? onRefresh : onSignIn
             }
@@ -73,7 +79,7 @@ export function GoogleSubscriptionRow({
                   ? 'Refresh models'
                   : 'Connect account'}
           </Button>
-          {connected && !disconnected ? (
+          {connected && !disconnected && onDisconnect ? (
             // This withdraws app access only, never the shared native login.
             <Button
               variant="secondary"

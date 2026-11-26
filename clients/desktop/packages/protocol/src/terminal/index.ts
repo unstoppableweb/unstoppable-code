@@ -322,17 +322,44 @@ export interface TerminalRestoreRequest {
 export interface LoadWorktreeTerminalStateRequest {
   projectId: string;
   worktreeId: string;
+  /** Status probe only: no terminal output, layout load or view token. */
+  historyStatusOnly?: boolean;
 }
+
+/**
+ * Whether a load could read the terminals' history (CAN-7051). While the
+ * background service that keeps it cannot be reached, a load serves only
+ * what main holds, and says so; a later load reads it again.
+ */
+export type TerminalRecordHistoryStatus =
+  | { status: 'available' }
+  | { status: 'unavailable'; reason: 'background_service' };
 
 export interface LoadWorktreeTerminalStateResponse extends WorktreeTerminalLayoutState {
   terminals: PersistedTerminalEntry[];
   /** Terminal ids backed by a currently-live PTY in the main process. */
   liveTerminalIds: string[];
+  /** Absent from older hosts: history is available. */
+  history?: TerminalRecordHistoryStatus;
+  /**
+   * New terminal history could not be saved durably and is held in memory
+   * until it can be (CAN-7051, q-28 (1)); terminals keep running.
+   */
+  historyHeld?: boolean;
+  /** Status-only reply acknowledgement; omitted from ordinary loads. */
+  historyRefreshSupported?: boolean;
+  /**
+   * Names what this load served (CAN-7051); a save made from it echoes it,
+   * so it forgets only terminals this view was shown. Absent from older hosts.
+   */
+  viewToken?: string;
 }
 
 export interface SaveWorktreeTerminalStateRequest extends WorktreeTerminalLayoutState {
   projectId: string;
   worktreeId: string;
+  /** The `viewToken` of the load this layout came from, when it had one. */
+  viewToken?: string;
   /** Closed terminals whose history to delete; omission from `groups` keeps it. */
   forgetTerminalIds?: string[];
 }

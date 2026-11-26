@@ -6,7 +6,7 @@ import type {
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { COST_NOT_PRICED_LABEL, formatCostAmount } from './cost-format';
 import { ValueRow, ValueRows } from '../settings/ValueRows';
-import { Tooltip } from '../Tooltip';
+import { Tooltip } from '../../primitives/Tooltip';
 
 // Account-proxy accounts on cost surfaces (CAN-4021). Labels are often
 // emails, so session replay blocks them.

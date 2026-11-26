@@ -11,6 +11,13 @@ import { sendToWebContents } from '../lib/web-contents-send';
 import { peekOpenCodeRuntimeAvailability } from '../opencode/runtime-availability';
 import { broadcastModelRegistryUpdated } from '../models/model-registry';
 import { notifyModelCatalogChanged } from '../remote-projection/agent-catalog-compatibility';
+import type { OpenCodeRevokeOptions } from '../opencode/connection';
+import { resolveRemoteBridgeSender } from '../remote-control/host/bridge-window';
+import {
+  SIGN_IN_ALREADY_RUNNING_MESSAGE,
+  holdOpenCodeSignInStarts,
+  wouldEndAnotherOwnersOpenCodeSignIn,
+} from './sign-in-owner-guard';
 
 const operations = new Set<{
   owner: number;
@@ -36,6 +43,20 @@ function assertOwner(event: IpcMainInvokeEvent): void {
   if (event.senderFrame !== event.sender.mainFrame)
     throw new Error('OpenCode setup window is unavailable.');
   assertOwnerContents(event.sender);
+}
+
+/**
+ * Connect and disconnect revoke every live OpenCode runtime, which ends an
+ * OpenCode sign-in running on one. A remote bridge may not do that to a
+ * sign-in another window started or is starting (CAN-6718); this
+ * computer's own window still may, as it may replace any sign-in.
+ */
+function assertSignInsUntouched(event: IpcMainInvokeEvent): void {
+  if (
+    resolveRemoteBridgeSender(event.sender) !== null &&
+    wouldEndAnotherOwnersOpenCodeSignIn(event.sender)
+  )
+    throw new Error(SIGN_IN_ALREADY_RUNNING_MESSAGE);
 }
 
 async function owned<T>(
@@ -154,20 +175,50 @@ async function listModels(signal: AbortSignal): Promise<OpenCodeModelEntry[]> {
 async function connect(
   signal: AbortSignal,
   progress: (status: OpenCodeConnectionStatus) => void,
+  options: OpenCodeRevokeOptions = {},
 ): Promise<OpenCodeConnectionStatus> {
   const { connectOpenCode } = await import('../opencode/connection');
   try {
     // Connect discovers the catalog and publishes it after durable enablement.
-    return await connectOpenCode(signal, progress);
+    return await connectOpenCode(signal, progress, options);
   } finally {
     publish();
   }
 }
 
-async function disconnect(): Promise<void> {
+async function disconnect(options: OpenCodeRevokeOptions = {}): Promise<void> {
   const { disconnectOpenCode } = await import('../opencode/connection');
-  await disconnectOpenCode();
+  await disconnectOpenCode(options);
   publish();
+}
+
+/**
+ * Runs a bridge's OpenCode setup with other windows' OpenCode sign-in starts
+ * held until it settles, so none starts between its checks and its revoke
+ * (CAN-6718). This computer's own window holds nothing.
+ */
+async function heldForBridge<T>(
+  event: IpcMainInvokeEvent,
+  run: () => Promise<T>,
+): Promise<T> {
+  if (resolveRemoteBridgeSender(event.sender) === null) return run();
+  const release = holdOpenCodeSignInStarts(event.sender);
+  try {
+    return await run();
+  } finally {
+    release();
+  }
+}
+
+/**
+ * The revoke check for a call: a remote bridge's setup checks again right
+ * before it revokes, since a sign-in can start while it waits. This
+ * computer's own window keeps none.
+ */
+function revokeOptionsFor(event: IpcMainInvokeEvent): OpenCodeRevokeOptions {
+  return resolveRemoteBridgeSender(event.sender) === null
+    ? {}
+    : { beforeRevoke: () => assertSignInsUntouched(event) };
 }
 
 async function cancelOwned(
@@ -200,11 +251,17 @@ export async function runOpenCodeConnectionForWindow(
     case 'models':
       return ownedBy(owner, false, listModels, undefined, signal);
     case 'connect':
-      return ownedBy(owner, true, connect, undefined, signal);
+      return ownedBy(
+        owner,
+        true,
+        (setupSignal, progress) => connect(setupSignal, progress),
+        undefined,
+        signal,
+      );
     case 'cancel':
       return cancelOwned(owner, undefined);
     case 'disconnect':
-      return ownedBy(owner, true, disconnect, undefined, signal);
+      return ownedBy(owner, true, () => disconnect(), undefined, signal);
   }
 }
 
@@ -220,7 +277,16 @@ export function registerOpenCodeConnectionHandlers(): void {
     IPC_CHANNELS.opencodeConnectionConnect,
     (event, operationId?: unknown) => {
       const id = parseOperationId(operationId);
-      return owned(event, true, connect, id);
+      assertSignInsUntouched(event);
+      const options = revokeOptionsFor(event);
+      return heldForBridge(event, () =>
+        owned(
+          event,
+          true,
+          (signal, progress) => connect(signal, progress, options),
+          id,
+        ),
+      );
     },
   );
   registerIpcHandler(
@@ -230,7 +296,11 @@ export function registerOpenCodeConnectionHandlers(): void {
       await cancelOwned(event.sender, parseOperationId(operationId));
     },
   );
-  registerIpcHandler(IPC_CHANNELS.opencodeConnectionDisconnect, (event) =>
-    owned(event, true, disconnect),
-  );
+  registerIpcHandler(IPC_CHANNELS.opencodeConnectionDisconnect, (event) => {
+    assertSignInsUntouched(event);
+    const options = revokeOptionsFor(event);
+    return heldForBridge(event, () =>
+      owned(event, true, () => disconnect(options)),
+    );
+  });
 }

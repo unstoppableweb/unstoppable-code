@@ -1,12 +1,11 @@
-import { ButtonLink } from './ButtonLink';
-import { TextLink } from './TextLink';
+import { TextLink } from '../primitives/TextLink';
 import type { JSX } from 'react';
 import { CloseIcon } from '../icons/AppIcons';
 import { badgeClassName } from '../lib/badge';
-import { Dot } from './Badge';
-import { Button } from './Button';
-import { LoadingSpinner } from './LoadingSpinner';
-import { Tooltip } from './Tooltip';
+import { Dot } from '../primitives/Badge';
+import { Button } from '../primitives/Button';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
+import { Tooltip } from '../primitives/Tooltip';
 
 /** The status of an MCP sign-in that waits in another tab. */
 export const MCP_SIGN_IN_WAITING_LABEL = 'Waiting for sign-in';
@@ -141,7 +140,7 @@ export function McpSignInPendingActions({
           {cancelLabel}
         </Button>
       )}
-      <ButtonLink
+      <Button
         variant={reopenVariant}
         size="md"
         href={authorizationUrl}
@@ -150,7 +149,7 @@ export function McpSignInPendingActions({
         data-testid={`${dataTestId}-reopen`}
       >
         {MCP_SIGN_IN_REOPEN_LABEL}
-      </ButtonLink>
+      </Button>
     </>
   );
 }

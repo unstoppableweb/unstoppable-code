@@ -656,7 +656,7 @@ describe('daemon pipeline owner settlement (CAN-5771)', () => {
       expect(owner.streams[0]).toEqual({
         serves: [
           { kind: 'owner.definition.precheck', revision: 1 },
-          { kind: 'owner.definition.effects', revision: 1 },
+          { kind: 'owner.definition.effects', revision: 2 },
         ],
       });
     });
@@ -727,7 +727,7 @@ describe('daemon pipeline owner settlement (CAN-5771)', () => {
         {
           serves: [
             { kind: 'owner.definition.precheck', revision: 1 },
-            { kind: 'owner.definition.effects', revision: 1 },
+            { kind: 'owner.definition.effects', revision: 2 },
           ],
         },
         {},

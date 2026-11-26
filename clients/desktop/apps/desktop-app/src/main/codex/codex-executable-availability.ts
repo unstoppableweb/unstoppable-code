@@ -120,6 +120,11 @@ async function requireExecutable(lookup = executableLookup()): Promise<Probe> {
   return result;
 }
 
+/** Bypasses the cached absence and any in-flight probe, never spawns, and leaves the cache as is. */
+export async function probeCodexExecutableInstalled(): Promise<boolean> {
+  return (await probeExecutable(executableLookup().searchPath)).installed;
+}
+
 export async function assertCodexExecutableInstalled(): Promise<void> {
   await requireExecutable();
 }

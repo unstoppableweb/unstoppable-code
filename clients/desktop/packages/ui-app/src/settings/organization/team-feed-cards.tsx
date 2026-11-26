@@ -6,7 +6,7 @@ import {
   OrganizationFeedCard,
   Surface,
 } from '@canopy/ui-shared/components';
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import {
   createContext,
   memo,
@@ -28,7 +28,6 @@ import {
   Markdown,
   DocumentProse,
   Skeleton,
-  TextLinkButton,
   Tooltip,
   useCopyToClipboard,
 } from '@canopy/ui-shared/components';
@@ -815,9 +814,13 @@ function WorktreeUpdatedCard({
               </DocumentProse>
               {(overflows || expanded) && (
                 <div className="text-xs">
-                  <TextLinkButton onClick={() => setExpanded((prev) => !prev)}>
+                  <Button
+                    onClick={() => setExpanded((prev) => !prev)}
+                    variant="link"
+                    data-settings-control="link"
+                  >
                     {expanded ? 'Show less' : 'Show more'}
-                  </TextLinkButton>
+                  </Button>
                 </div>
               )}
             </div>
@@ -1057,6 +1060,16 @@ function AgentSessionCard({
       member={member}
       icon={<Bot size={16} />}
       title="ran an agent session"
+      // Set by the server only for an owner when the session has a shared
+      // transcript (docs/organization-transcripts.md).
+      internalLink={
+        item.transcriptSessionId === undefined
+          ? undefined
+          : {
+              href: `/organization/${orgId}/transcripts/sessions/${item.transcriptSessionId}`,
+              label: 'View transcript',
+            }
+      }
     >
       <MetaRow>
         <span>

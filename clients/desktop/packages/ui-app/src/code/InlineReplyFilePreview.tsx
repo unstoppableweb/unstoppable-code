@@ -2,49 +2,34 @@
 
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { useOptionalCanopyClient } from '@canopy/app-state';
-import type {
-  RemoteControlFilePreview,
-  RemoteControlFileReadPayload,
-} from '@canopy/protocol/remote-control/shell';
+import type { RemoteControlFilePreview } from '@canopy/protocol/remote-control/shell';
 import { turnFileHref } from '@canopy/protocol/turn-files';
 import type { TurnFileRecord } from '@canopy/protocol/turn-files';
 import {
   Button,
-  Markdown,
-  MarkdownCodeBlock,
   MarkdownTableBlock,
-  Surface,
   markdownTableCellProps,
-  TRANSCRIPT_MARKDOWN_OPTIONS,
   TRANSCRIPT_PROSE_CLASS,
 } from '@canopy/ui-shared/components';
 import { recordSurfacedError } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { parseCsvTableContent } from './file/FileCsvPreview';
-import { fileExtension, resolveFileRenderKind } from './file/file-kind';
+import { fileExtension } from './file/file-kind';
 
 export interface InlineReplyPreviewContent extends Pick<
   RemoteControlFilePreview,
-  'content' | 'language'
+  'content'
 > {
   readonly truncated?: boolean;
-  readonly rows?: readonly (readonly string[])[];
-  readonly imageSource?: {
-    readonly src: string;
-    readonly dispose?: () => void;
-  };
 }
 
-export type InlineReplyDocumentReader = (
-  request: RemoteControlFileReadPayload,
-  kind: 'pdf' | 'xlsx' | 'image',
-  signal: AbortSignal,
-) => Promise<InlineReplyPreviewContent | null>;
-
 /** Saved paths are literal: URL syntax in the basename must not hide its extension. */
-function literalExtension(path: string): string {
+function tableDelimiter(path: string): ',' | '\t' | undefined {
   const fileName = path.split(/[\\/]/).pop() ?? path;
-  return fileExtension(fileName.replace(/[?#]/g, '_'));
+  const extension = fileExtension(fileName.replace(/[?#]/g, '_'));
+  if (extension === 'csv') return ',';
+  if (extension === 'tsv') return '\t';
+  return undefined;
 }
 
 /**
@@ -55,44 +40,15 @@ function literalExtension(path: string): string {
 export function isInlineReplyOutput(
   file: Pick<TurnFileRecord, 'path' | 'change' | 'saved'>,
 ): boolean {
-  const extension = literalExtension(file.path);
   return (
-    (extension === 'csv' || extension === 'tsv') &&
+    tableDelimiter(file.path) !== undefined &&
     (file.change !== 'updated' || file.saved === true)
   );
 }
 
-const CODE_EXTENSIONS = new Set([
-  'txt',
-  'js',
-  'jsx',
-  'mjs',
-  'ts',
-  'tsx',
-  'py',
-  'rb',
-  'rs',
-  'go',
-  'java',
-  'swift',
-  'sh',
-  'sql',
-  'json',
-  'jsonl',
-  'xml',
-  'yaml',
-  'yml',
-  'toml',
-  'css',
-  'scss',
-  'html',
-  'htm',
-  'c',
-  'h',
-  'cpp',
-]);
 const MAX_INLINE_TEXT_LENGTH = 100_000;
 const MAX_INLINE_TABLE_CELLS = 2_000;
+const COLLAPSED_TABLE_ROWS = 20;
 
 // TODO(CAN-759): replace with a typed error code on the file read. A file
 // deleted after lookup, one that cannot be read as text, or a cloud saved copy
@@ -112,7 +68,6 @@ export function InlineReplyFilePreview({
   worktreeId,
   chatId,
   readPreview,
-  readDocument,
 }: {
   readonly path: string;
   readonly projectId: string;
@@ -121,7 +76,6 @@ export function InlineReplyFilePreview({
   readonly readPreview?: (
     signal: AbortSignal,
   ) => Promise<InlineReplyPreviewContent | null>;
-  readonly readDocument?: InlineReplyDocumentReader;
 }): JSX.Element | null {
   const client = useOptionalCanopyClient();
   const marker = useRef<HTMLDivElement>(null);
@@ -132,25 +86,11 @@ export function InlineReplyFilePreview({
   }>();
   const scopeKey = useMemo(
     () => Symbol(),
-    [projectId, worktreeId, chatId, path, client, readPreview, readDocument],
+    [projectId, worktreeId, chatId, path, client, readPreview],
   );
-  const fileName = path.split(/[\\/]/).pop() ?? path;
-  // Saved paths are literal. URL syntax in the basename must not hide its extension.
-  const literalPath = fileName.replace(/[?#]/g, '_');
-  const extension = fileExtension(literalPath);
-  const kind = resolveFileRenderKind({ path: literalPath });
-  const markdown = kind === 'markdown';
-  const image = kind === 'image' || kind === 'pdf';
-  const documentKind =
-    kind === 'xlsx' || kind === 'pdf' || (kind === 'image' && readDocument)
-      ? kind
-      : undefined;
-  const table = extension === 'csv' || extension === 'tsv';
-  const supported = documentKind
-    ? !!(readPreview ?? readDocument)
-    : image || markdown || table || CODE_EXTENSIONS.has(extension);
+  const delimiter = tableDelimiter(path);
   const enabled =
-    supported &&
+    delimiter !== undefined &&
     (readPreview !== undefined ||
       (client !== null && client.capabilities.fileSystemAccess !== 'none'));
 
@@ -172,21 +112,13 @@ export function InlineReplyFilePreview({
     if (!enabled || !intersected) return;
     const controller = new AbortController();
     const { signal } = controller;
-    let disposeImage: (() => void) | undefined;
     const show = (preview: InlineReplyPreviewContent | null): void => {
-      if (signal.aborted) {
-        preview?.imageSource?.dispose?.();
-        return;
-      }
-      disposeImage = preview?.imageSource?.dispose;
-      const oversizedText =
-        !image &&
+      if (signal.aborted) return;
+      const complete =
         preview !== null &&
-        preview.content.length > MAX_INLINE_TEXT_LENGTH;
-      setResult({
-        scopeKey,
-        preview: preview?.truncated || oversizedText ? null : preview,
-      });
+        !preview.truncated &&
+        preview.content.length <= MAX_INLINE_TEXT_LENGTH;
+      setResult({ scopeKey, preview: complete ? preview : null });
     };
     void (async (): Promise<void> => {
       if (readPreview) {
@@ -205,17 +137,14 @@ export function InlineReplyFilePreview({
         setResult({ scopeKey, preview: null });
         return;
       }
-      const request = {
-        projectId,
-        worktreeId,
-        fileRootLocalId: target.fileRootLocalId,
-        relativePath: target.relativePath,
-      };
-      const preview =
-        documentKind && readDocument
-          ? await readDocument(request, documentKind, signal)
-          : await client.query('file.read', request);
-      show(preview);
+      show(
+        await client.query('file.read', {
+          projectId,
+          worktreeId,
+          fileRootLocalId: target.fileRootLocalId,
+          relativePath: target.relativePath,
+        }),
+      );
     })().catch((error: unknown) => {
       if (signal.aborted) return;
       setResult({ scopeKey, preview: null });
@@ -227,181 +156,108 @@ export function InlineReplyFilePreview({
         error,
       });
     });
-    return (): void => {
-      controller.abort();
-      disposeImage?.();
-    };
+    return (): void => controller.abort();
   }, [
     client,
     enabled,
     intersected,
-    image,
     path,
     projectId,
     worktreeId,
     chatId,
     readPreview,
-    readDocument,
-    documentKind,
     scopeKey,
   ]);
 
-  if (!enabled || (result?.scopeKey === scopeKey && result.preview === null))
+  if (
+    delimiter === undefined ||
+    !enabled ||
+    (result?.scopeKey === scopeKey && result.preview === null)
+  )
     return null;
   const preview = result?.scopeKey === scopeKey ? result.preview : undefined;
-  if (image && preview) {
-    if (
-      !preview.imageSource &&
-      !/^data:image\/(?:png|jpeg|gif|webp|bmp|svg\+xml);base64,/i.test(
-        preview.content,
-      )
-    )
-      return null;
-    return (
-      <Surface
-        variant="transcript-well"
-        replay="block"
-        data-testid="inline-reply-file-preview"
-        className="overflow-hidden"
-      >
-        <img
-          className="block max-h-100 max-w-full object-contain"
-          src={preview.imageSource?.src ?? preview.content}
-          alt={fileName}
-        />
-      </Surface>
-    );
-  }
   return (
     <div ref={marker}>
       {preview ? (
-        <PreviewBody
+        <PreviewTable
           key={path}
-          preview={preview}
-          markdown={markdown}
-          language={preview.language ?? extension}
-          delimiter={table ? (extension === 'tsv' ? '\t' : ',') : undefined}
+          content={preview.content}
+          delimiter={delimiter}
         />
       ) : null}
     </div>
   );
 }
 
-function PreviewBody({
-  preview,
-  markdown,
-  language,
+function PreviewTable({
+  content,
   delimiter,
 }: {
-  readonly preview: InlineReplyPreviewContent;
-  readonly markdown: boolean;
-  readonly language: string;
-  readonly delimiter?: string;
+  readonly content: string;
+  readonly delimiter: string;
 }): JSX.Element | null {
   const [expanded, setExpanded] = useState(false);
-  const tabular = delimiter !== undefined || preview.rows !== undefined;
-  const rows =
-    preview.rows ??
-    (delimiter ? parseCsvTableContent(preview.content, delimiter).rows : null);
-  const [head, ...body] = rows ?? [];
-  const longText =
-    !tabular &&
-    (preview.content.length > 1800 || preview.content.split('\n').length > 24);
-  const expandable = tabular ? body.length > 20 : longText;
+  const rows = parseCsvTableContent(content, delimiter).rows ?? [];
+  const [head, ...body] = rows;
   if (
-    tabular &&
-    (!head ||
-      (rows?.reduce((total, row) => total + row.length, 0) ?? 0) >
-        MAX_INLINE_TABLE_CELLS ||
-      (rows?.reduce(
-        (total, row) =>
-          total + row.reduce((length, cell) => length + cell.length, 0),
-        0,
-      ) ?? 0) > MAX_INLINE_TEXT_LENGTH)
+    !head ||
+    rows.reduce((total, row) => total + row.length, 0) >
+      MAX_INLINE_TABLE_CELLS ||
+    rows.reduce(
+      (total, row) =>
+        total + row.reduce((length, cell) => length + cell.length, 0),
+      0,
+    ) > MAX_INLINE_TEXT_LENGTH
   )
     return null;
 
-  const content = (
-    <>
-      <div
-        className={`${TRANSCRIPT_PROSE_CLASS}${!expanded && longText ? ' max-h-150 overflow-hidden' : ''}`}
-      >
-        {head ? (
-          <MarkdownTableBlock>
-            <thead>
-              <tr>
-                {head.map((cell, index) => (
-                  <th key={index} {...markdownTableCellProps(cell, true)}>
-                    {cell}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {(expanded ? body : body.slice(0, 20)).map((row, index) => (
-                <tr key={index}>
-                  {row.map((cell, column) => (
-                    <td key={column} {...markdownTableCellProps(cell)}>
+  return (
+    <div
+      data-testid="inline-reply-file-preview"
+      className={`min-w-0 ${REPLAY_BLOCK_CLASS}`}
+    >
+      <div className="flex min-w-0 max-w-full justify-start px-3">
+        <div className="min-w-0 max-w-full">
+          <div className={TRANSCRIPT_PROSE_CLASS}>
+            <MarkdownTableBlock>
+              <thead>
+                <tr>
+                  {head.map((cell, index) => (
+                    <th key={index} {...markdownTableCellProps(cell, true)}>
                       {cell}
-                    </td>
+                    </th>
                   ))}
                 </tr>
-              ))}
-            </tbody>
-          </MarkdownTableBlock>
-        ) : markdown ? (
-          <Markdown options={TRANSCRIPT_MARKDOWN_OPTIONS}>
-            {preview.content}
-          </Markdown>
-        ) : (
-          <MarkdownCodeBlock>
-            <code className={language ? `language-${language}` : undefined}>
-              {preview.content}
-            </code>
-          </MarkdownCodeBlock>
-        )}
-      </div>
-      {expandable ? (
-        <div className="flex justify-center pt-2">
-          <Button
-            variant="secondary"
-            size="compact"
-            aria-expanded={expanded}
-            onClick={(): void => setExpanded(!expanded)}
-          >
-            {expanded
-              ? 'Show less'
-              : tabular
-                ? `Show all ${body.length} rows`
-                : 'Show more'}
-          </Button>
-        </div>
-      ) : null}
-    </>
-  );
-
-  if (tabular) {
-    return (
-      <div
-        data-testid="inline-reply-file-preview"
-        className={`min-w-0 ${REPLAY_BLOCK_CLASS}`}
-      >
-        <div className="flex min-w-0 max-w-full justify-start px-3">
-          <div className="min-w-0 max-w-full">{content}</div>
+              </thead>
+              <tbody>
+                {(expanded ? body : body.slice(0, COLLAPSED_TABLE_ROWS)).map(
+                  (row, index) => (
+                    <tr key={index}>
+                      {row.map((cell, column) => (
+                        <td key={column} {...markdownTableCellProps(cell)}>
+                          {cell}
+                        </td>
+                      ))}
+                    </tr>
+                  ),
+                )}
+              </tbody>
+            </MarkdownTableBlock>
+          </div>
+          {body.length > COLLAPSED_TABLE_ROWS ? (
+            <div className="flex justify-center pt-2">
+              <Button
+                variant="secondary"
+                size="compact"
+                aria-expanded={expanded}
+                onClick={(): void => setExpanded(!expanded)}
+              >
+                {expanded ? 'Show less' : `Show all ${body.length} rows`}
+              </Button>
+            </div>
+          ) : null}
         </div>
       </div>
-    );
-  }
-
-  return (
-    <Surface
-      variant="transcript-well"
-      replay="block"
-      padding="compact"
-      data-testid="inline-reply-file-preview"
-      className="min-w-0"
-    >
-      {content}
-    </Surface>
+    </div>
   );
 }

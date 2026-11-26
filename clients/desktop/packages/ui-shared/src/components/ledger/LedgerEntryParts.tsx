@@ -30,9 +30,9 @@ import {
   REPLAY_BLOCK_CLASS,
   REPLAY_MASK_CLASS,
 } from '../../lib/replay-privacy';
-import { ControlButton, Button } from '../Button';
-import { Heading } from '../Heading';
-import { Tooltip } from '../Tooltip';
+import { ControlButton, Button } from '../../primitives/Button';
+import { Heading } from '../../primitives/Heading';
+import { Tooltip } from '../../primitives/Tooltip';
 import { WorkPath } from '../WorkPath';
 import { LedgerActorGlyph } from './LedgerActorAvatar';
 import { LedgerStatusPill } from './LedgerStatusPill';

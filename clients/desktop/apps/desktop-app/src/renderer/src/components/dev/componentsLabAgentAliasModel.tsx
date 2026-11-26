@@ -38,12 +38,12 @@ function LiveAgentAliasFields({
         disabled={disabled}
         agentError={
           value.agent_id === 'agent_model_missing'
-            ? "Saved agent can't be used. Select an agent."
+            ? "Saved model preset can't be used. Select a model preset."
             : undefined
         }
         modelError={
           value.base === 'missing-model'
-            ? "Saved model can't be used. Choose a model or use the agent's model."
+            ? "Saved model can't be used. Choose a model or use the preset's model."
             : undefined
         }
         renderModelPicker={({ onChange, placeholderLabel, ...control }) => (
@@ -63,15 +63,15 @@ export function AgentAliasModelSpecimen(): JSX.Element {
   return (
     <SpecimenPanel title="AgentAliasModelFields">
       <SpecimenGrid min={400}>
-        <SpecimenCell label="No agent selected">
+        <SpecimenCell label="No model preset selected">
           <LiveAgentAliasFields initialValue={{ agent_id: '' }} />
         </SpecimenCell>
-        <SpecimenCell label="Agent selected: inherits the agent's model">
+        <SpecimenCell label="Model preset selected: inherits the preset's model">
           <LiveAgentAliasFields
             initialValue={{ agent_id: 'agent_model_reviewer' }}
           />
         </SpecimenCell>
-        <SpecimenCell label="Chosen model: clear with Use agent's model">
+        <SpecimenCell label="Chosen model: clear with Use preset's model">
           <LiveAgentAliasFields
             initialValue={{
               agent_id: 'agent_model_reviewer',
@@ -92,12 +92,12 @@ export function AgentAliasModelSpecimen(): JSX.Element {
             }}
           />
         </SpecimenCell>
-        <SpecimenCell label="Agent error">
+        <SpecimenCell label="Model preset error">
           <LiveAgentAliasFields
             initialValue={{ agent_id: 'agent_model_missing' }}
           />
         </SpecimenCell>
-        <SpecimenCell label="No local agents: Agent selection disabled">
+        <SpecimenCell label="No local model presets: model preset selection disabled">
           <LiveAgentAliasFields initialValue={{ agent_id: '' }} noAgents />
         </SpecimenCell>
         <SpecimenCell label="Read-only: inherited model">

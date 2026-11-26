@@ -1,6 +1,6 @@
 import { type JSX } from 'react';
-import { Fact, FactList } from './FactList';
-import { Surface } from './Surface';
+import { Fact, FactList } from '../primitives/FactList';
+import { Surface } from '../primitives/Surface';
 
 function formatFrontmatterValue(value: unknown): string {
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';

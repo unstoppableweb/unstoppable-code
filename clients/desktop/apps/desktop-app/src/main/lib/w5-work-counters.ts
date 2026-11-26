@@ -140,9 +140,11 @@ export function countingW5HostPort(
               : Promise.reject(new Error('Preparation capability was removed')),
         }
       : {}),
-    async capture(request) {
+    async capture(request, signal) {
       recordW5Work('host.capture');
-      const result = await timed('host.capture', () => host.capture(request));
+      const result = await timed('host.capture', () =>
+        host.capture(request, signal),
+      );
       recordW5Work('host.capture.files', result.files.length);
       recordW5Work(
         W5_AGGREGATE_KEYS.hostCapturedBytes,
@@ -207,9 +209,9 @@ export function countingW5RecordPortTransport(
     }
   };
   return {
-    capture: (request) =>
+    capture: (request, signal) =>
       call('capture', async () => {
-        const result = await transport.capture(request);
+        const result = await transport.capture(request, signal);
         recordW5Work(
           W5_AGGREGATE_KEYS.portCapturedBytes,
           w5PresentImageBytes(result),

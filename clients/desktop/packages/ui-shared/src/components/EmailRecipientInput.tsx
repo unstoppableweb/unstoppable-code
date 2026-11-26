@@ -1,6 +1,6 @@
 import { type JSX, useId, useState } from 'react';
-import { TextInput } from './Field';
-import { FormField } from './FormField';
+import { TextInput } from '../primitives/Field';
+import { FormField } from '../primitives/FormField';
 
 /**
  * Upper bound accepted by the account identity and invite APIs. Longer input

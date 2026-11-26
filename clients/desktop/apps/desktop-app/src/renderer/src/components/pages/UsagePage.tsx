@@ -6,7 +6,7 @@ import {
 } from '@canopy/ui-shared';
 import { PageTitlebar } from '../shared/PageTitlebar';
 import { PageContent } from '../shared/PageContent';
-import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
+import { PageHeader } from '@canopy/ui-shared/primitives/PageHeader';
 import { useObservabilityStore } from '@/stores/observabilityStore';
 import { ProviderUsageCards } from './usage/ProviderUsageCards';
 import { AiCreditsUsageCard } from './usage/AiCreditsUsageCard';

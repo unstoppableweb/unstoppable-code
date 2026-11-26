@@ -2,7 +2,7 @@ import { memo, type JSX } from 'react';
 import type { SafetyDenyReason } from '@canopy/protocol/approvals';
 import { ShieldIcon } from '../../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
-import { Notice } from '../Notice';
+import { Notice } from '../../primitives/Notice';
 
 const PROMPT_LIMIT = 'This call cannot be approved from a prompt.';
 

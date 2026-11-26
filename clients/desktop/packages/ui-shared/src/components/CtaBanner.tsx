@@ -2,8 +2,11 @@
 
 import { type JSX, type ReactNode, useCallback, useRef, useState } from 'react';
 import { CloseMediumIcon } from '../icons/AppIcons';
-import { Button } from './Button';
-import { FloatingMenu, type FloatingMenuPlacement } from './FloatingMenu';
+import { Button } from '../primitives/Button';
+import {
+  FloatingMenu,
+  type FloatingMenuPlacement,
+} from '../primitives/FloatingMenu';
 
 /** Which edge of the surrounding stack the hugged pill sits against. */
 export type CtaBannerAlign = 'start' | 'end';

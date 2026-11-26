@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 import { CloseIcon, ForwardIcon, RetryIcon } from '../icons/AppIcons';
-import { Button } from './Button';
-import { Tooltip } from './Tooltip';
+import { Button } from '../primitives/Button';
+import { Tooltip } from '../primitives/Tooltip';
 
 interface ChecklistDismissProps {
   label: string;

@@ -7,7 +7,7 @@ exports[`shared runs (CAN-4169 golden) degrades comments to none on a server wit
   },
   "listed": {
     "resolved": {
-      "detail": null,
+      "comments": null,
       "lastSeenCommentRevision": 0,
     },
   },
@@ -129,37 +129,9 @@ exports[`shared runs (CAN-4169 golden) lists, creates, replies to and resolves r
 {
   "backfill": {
     "resolved": {
-      "detail": {
-        "author": {
-          "image": null,
-          "name": "Owner",
-          "userId": "user-owner",
-        },
-        "clientChatId": "chat-legacy",
+      "comments": {
         "commentRevision": 0,
         "commentThreads": [],
-        "createdAt": "2026-11-01T12:00:00.000Z",
-        "diff": "",
-        "externalId": "00000000-0000-4000-8000-000000000010",
-        "messages": [],
-        "organizationId": null,
-        "plans": [],
-        "rollup": {
-          "cacheCreationInputTokens": 0,
-          "cacheReadInputTokens": 0,
-          "inputTokens": 0,
-          "outputTokens": 0,
-          "provider": "claude",
-          "status": "success",
-          "toolUseCount": 0,
-          "totalCostUsd": 0,
-          "turnCount": 1,
-        },
-        "shareScope": "team",
-        "summary": "",
-        "title": "Legacy run",
-        "transcript": [],
-        "updatedAt": "2026-11-01T12:00:00.000Z",
         "viewerUserId": "user-owner",
       },
       "lastSeenCommentRevision": 0,
@@ -174,13 +146,7 @@ exports[`shared runs (CAN-4169 golden) lists, creates, replies to and resolves r
   ],
   "created": {
     "resolved": {
-      "detail": {
-        "author": {
-          "image": null,
-          "name": "Owner",
-          "userId": "user-owner",
-        },
-        "clientChatId": "chat-shared",
+      "comments": {
         "commentRevision": 1,
         "commentThreads": [
           {
@@ -189,6 +155,7 @@ exports[`shared runs (CAN-4169 golden) lists, creates, replies to and resolves r
               "messageId": "turn-1:msg-1",
             },
             "anchorState": "matched",
+            "anchorText": "I changed the retry loop.",
             "comments": [
               {
                 "author": {
@@ -206,37 +173,6 @@ exports[`shared runs (CAN-4169 golden) lists, creates, replies to and resolves r
             "status": "open",
           },
         ],
-        "createdAt": "2026-11-01T12:00:00.000Z",
-        "diff": "",
-        "externalId": "00000000-0000-4000-8000-000000000001",
-        "messages": [
-          {
-            "chatId": "chat-shared",
-            "createdAtMs": 1793534400000,
-            "messageId": "turn-1:msg-1",
-            "role": "assistant",
-            "status": "complete",
-            "text": "I changed the retry loop.",
-          },
-        ],
-        "organizationId": "00000000-0000-4000-8000-00000000b001",
-        "plans": [],
-        "rollup": {
-          "cacheCreationInputTokens": 0,
-          "cacheReadInputTokens": 0,
-          "inputTokens": 0,
-          "outputTokens": 0,
-          "provider": "claude",
-          "status": "success",
-          "toolUseCount": 0,
-          "totalCostUsd": 0,
-          "turnCount": 1,
-        },
-        "shareScope": "organization",
-        "summary": "",
-        "title": "Fix the flaky upload test",
-        "transcript": [],
-        "updatedAt": "2026-11-01T12:00:00.000Z",
         "viewerUserId": "user-owner",
       },
     },
@@ -249,13 +185,7 @@ exports[`shared runs (CAN-4169 golden) lists, creates, replies to and resolves r
   },
   "listed": {
     "resolved": {
-      "detail": {
-        "author": {
-          "image": null,
-          "name": "Owner",
-          "userId": "user-owner",
-        },
-        "clientChatId": "chat-shared",
+      "comments": {
         "commentRevision": 3,
         "commentThreads": [
           {
@@ -264,6 +194,7 @@ exports[`shared runs (CAN-4169 golden) lists, creates, replies to and resolves r
               "messageId": "turn-1:msg-1",
             },
             "anchorState": "matched",
+            "anchorText": "I changed the retry loop.",
             "comments": [
               {
                 "author": {
@@ -291,37 +222,6 @@ exports[`shared runs (CAN-4169 golden) lists, creates, replies to and resolves r
             "status": "resolved",
           },
         ],
-        "createdAt": "2026-11-01T12:00:00.000Z",
-        "diff": "",
-        "externalId": "00000000-0000-4000-8000-000000000001",
-        "messages": [
-          {
-            "chatId": "chat-shared",
-            "createdAtMs": 1793534400000,
-            "messageId": "turn-1:msg-1",
-            "role": "assistant",
-            "status": "complete",
-            "text": "I changed the retry loop.",
-          },
-        ],
-        "organizationId": "00000000-0000-4000-8000-00000000b001",
-        "plans": [],
-        "rollup": {
-          "cacheCreationInputTokens": 0,
-          "cacheReadInputTokens": 0,
-          "inputTokens": 0,
-          "outputTokens": 0,
-          "provider": "claude",
-          "status": "success",
-          "toolUseCount": 0,
-          "totalCostUsd": 0,
-          "turnCount": 1,
-        },
-        "shareScope": "organization",
-        "summary": "",
-        "title": "Fix the flaky upload test",
-        "transcript": [],
-        "updatedAt": "2026-11-01T12:00:00.000Z",
         "viewerUserId": "user-owner",
       },
       "lastSeenCommentRevision": 0,
@@ -404,13 +304,7 @@ exports[`shared runs (CAN-4169 golden) lists, creates, replies to and resolves r
   },
   "replied": {
     "resolved": {
-      "detail": {
-        "author": {
-          "image": null,
-          "name": "Owner",
-          "userId": "user-owner",
-        },
-        "clientChatId": "chat-shared",
+      "comments": {
         "commentRevision": 2,
         "commentThreads": [
           {
@@ -419,6 +313,7 @@ exports[`shared runs (CAN-4169 golden) lists, creates, replies to and resolves r
               "messageId": "turn-1:msg-1",
             },
             "anchorState": "matched",
+            "anchorText": "I changed the retry loop.",
             "comments": [
               {
                 "author": {
@@ -446,37 +341,6 @@ exports[`shared runs (CAN-4169 golden) lists, creates, replies to and resolves r
             "status": "open",
           },
         ],
-        "createdAt": "2026-11-01T12:00:00.000Z",
-        "diff": "",
-        "externalId": "00000000-0000-4000-8000-000000000001",
-        "messages": [
-          {
-            "chatId": "chat-shared",
-            "createdAtMs": 1793534400000,
-            "messageId": "turn-1:msg-1",
-            "role": "assistant",
-            "status": "complete",
-            "text": "I changed the retry loop.",
-          },
-        ],
-        "organizationId": "00000000-0000-4000-8000-00000000b001",
-        "plans": [],
-        "rollup": {
-          "cacheCreationInputTokens": 0,
-          "cacheReadInputTokens": 0,
-          "inputTokens": 0,
-          "outputTokens": 0,
-          "provider": "claude",
-          "status": "success",
-          "toolUseCount": 0,
-          "totalCostUsd": 0,
-          "turnCount": 1,
-        },
-        "shareScope": "organization",
-        "summary": "",
-        "title": "Fix the flaky upload test",
-        "transcript": [],
-        "updatedAt": "2026-11-01T12:00:00.000Z",
         "viewerUserId": "user-owner",
       },
     },
@@ -531,13 +395,7 @@ exports[`shared runs (CAN-4169 golden) lists, creates, replies to and resolves r
   ],
   "resolved": {
     "resolved": {
-      "detail": {
-        "author": {
-          "image": null,
-          "name": "Owner",
-          "userId": "user-owner",
-        },
-        "clientChatId": "chat-shared",
+      "comments": {
         "commentRevision": 3,
         "commentThreads": [
           {
@@ -546,6 +404,7 @@ exports[`shared runs (CAN-4169 golden) lists, creates, replies to and resolves r
               "messageId": "turn-1:msg-1",
             },
             "anchorState": "matched",
+            "anchorText": "I changed the retry loop.",
             "comments": [
               {
                 "author": {
@@ -573,37 +432,6 @@ exports[`shared runs (CAN-4169 golden) lists, creates, replies to and resolves r
             "status": "resolved",
           },
         ],
-        "createdAt": "2026-11-01T12:00:00.000Z",
-        "diff": "",
-        "externalId": "00000000-0000-4000-8000-000000000001",
-        "messages": [
-          {
-            "chatId": "chat-shared",
-            "createdAtMs": 1793534400000,
-            "messageId": "turn-1:msg-1",
-            "role": "assistant",
-            "status": "complete",
-            "text": "I changed the retry loop.",
-          },
-        ],
-        "organizationId": "00000000-0000-4000-8000-00000000b001",
-        "plans": [],
-        "rollup": {
-          "cacheCreationInputTokens": 0,
-          "cacheReadInputTokens": 0,
-          "inputTokens": 0,
-          "outputTokens": 0,
-          "provider": "claude",
-          "status": "success",
-          "toolUseCount": 0,
-          "totalCostUsd": 0,
-          "turnCount": 1,
-        },
-        "shareScope": "organization",
-        "summary": "",
-        "title": "Fix the flaky upload test",
-        "transcript": [],
-        "updatedAt": "2026-11-01T12:00:00.000Z",
         "viewerUserId": "user-owner",
       },
     },
@@ -613,7 +441,7 @@ exports[`shared runs (CAN-4169 golden) lists, creates, replies to and resolves r
   },
   "unshared": {
     "resolved": {
-      "detail": null,
+      "comments": null,
       "lastSeenCommentRevision": 0,
     },
   },
@@ -737,13 +565,7 @@ exports[`shared runs (CAN-4169 golden) polls comments on the interval and on foc
   },
   "listedAfterSeen": {
     "resolved": {
-      "detail": {
-        "author": {
-          "image": null,
-          "name": "Owner",
-          "userId": "user-owner",
-        },
-        "clientChatId": "chat-shared",
+      "comments": {
         "commentRevision": 4,
         "commentThreads": [
           {
@@ -752,6 +574,7 @@ exports[`shared runs (CAN-4169 golden) polls comments on the interval and on foc
               "messageId": "turn-1:msg-1",
             },
             "anchorState": "matched",
+            "anchorText": "I changed the retry loop.",
             "comments": [
               {
                 "author": {
@@ -783,6 +606,7 @@ exports[`shared runs (CAN-4169 golden) polls comments on the interval and on foc
               "kind": "run",
             },
             "anchorState": "matched",
+            "anchorText": null,
             "comments": [
               {
                 "author": {
@@ -800,37 +624,6 @@ exports[`shared runs (CAN-4169 golden) polls comments on the interval and on foc
             "status": "open",
           },
         ],
-        "createdAt": "2026-11-01T12:00:00.000Z",
-        "diff": "",
-        "externalId": "00000000-0000-4000-8000-000000000001",
-        "messages": [
-          {
-            "chatId": "chat-shared",
-            "createdAtMs": 1793534400000,
-            "messageId": "turn-1:msg-1",
-            "role": "assistant",
-            "status": "complete",
-            "text": "I changed the retry loop.",
-          },
-        ],
-        "organizationId": "00000000-0000-4000-8000-00000000b001",
-        "plans": [],
-        "rollup": {
-          "cacheCreationInputTokens": 0,
-          "cacheReadInputTokens": 0,
-          "inputTokens": 0,
-          "outputTokens": 0,
-          "provider": "claude",
-          "status": "success",
-          "toolUseCount": 0,
-          "totalCostUsd": 0,
-          "turnCount": 1,
-        },
-        "shareScope": "organization",
-        "summary": "",
-        "title": "Fix the flaky upload test",
-        "transcript": [],
-        "updatedAt": "2026-11-01T12:00:00.000Z",
         "viewerUserId": "user-owner",
       },
       "lastSeenCommentRevision": 4,

@@ -1,6 +1,6 @@
 'use client';
 
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import type { JSX } from 'react';
 import type { RemoteControlPlan } from '@canopy/protocol/remote-control/shell';
 import { isCursorPlanExecutionUnavailable } from '@canopy/app-core/client';

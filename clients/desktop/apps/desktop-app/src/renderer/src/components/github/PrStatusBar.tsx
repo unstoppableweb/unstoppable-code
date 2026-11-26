@@ -6,7 +6,13 @@ import {
   reportClientAppError,
   resolveClientAppError,
 } from '@canopy/desktop-instrumentation/client';
-import { inlineFailure } from '@/lib/inline-app-error';
+import {
+  inlineFailure,
+  inputFailure,
+  type InlineFailure,
+} from '@/lib/inline-app-error';
+import { branchRenameRefusalText } from '@/lib/branch-rename-refusal';
+import { branchNameProblem } from '@canopy/protocol/worktree-branch-names';
 import {
   memo,
   useCallback,
@@ -20,7 +26,11 @@ import {
   type RefObject,
 } from 'react';
 import { useShallow } from 'zustand/shallow';
-import { gitActionFailureRaiser, useGitHubStore } from '@/stores/githubStore';
+import {
+  gitActionFailureRaiser,
+  useGitHubStore,
+  worktreeKey,
+} from '@/stores/githubStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useActivityStore } from '@/stores/activityStore';
 import { useChatStore } from '@/stores/chatStore';
@@ -1100,21 +1110,34 @@ export const PrStatusBar = memo(function PrStatusBar({
     string | null
   >(null);
 
-  // The bar stays mounted across worktree selection, so a pending inline
-  // rename (and its remote confirmation) would otherwise survive navigation
-  // and commit against the NEWLY selected worktree with the previous
-  // worktree's branch name. Navigation cancels the edit outright.
-  useEffect(() => {
-    setBranchEditValue(null);
-    setBranchRenameRemoteConfirm(null);
-  }, [projectId, worktreeId]);
   // Pill width captured when the edit begins — the input's FLOOR, so
   // flipping into rename causes no jump; from there the input grows with the
   // typed name up to the 40cqw cap.
   const [branchEditWidth, setBranchEditWidth] = useState<number | null>(null);
-  const [branchRenamePending, setBranchRenamePending] = useState(false);
+  // Navigation resets the editor, but Git keeps running for its worktree.
+  // The ref guards submissions synchronously; state publishes its snapshot.
+  const pendingBranchRenamesRef = useRef(new Set<string>());
+  const [pendingBranchRenames, setPendingBranchRenames] = useState<
+    ReadonlySet<string>
+  >(new Set());
+  const branchRenameKey = worktreeKey(projectId, worktreeId);
+  const branchRenamePending = pendingBranchRenames.has(branchRenameKey);
   // Set by the input's commit so the blur that follows keeps the edit open.
   const branchEditCommittedRef = useRef(false);
+  const branchEditInputRef = useRef<HTMLInputElement | null>(null);
+  // A refused name (CAN-7293) keeps the edit open with the typed text, marks
+  // the field, and says why in the git action banner under the top bar. The
+  // banner's `seq` lets the next attempt, or Escape, take that reason down.
+  // The bar has no room for a field error, so the field's description repeats
+  // the banner's sentence for screen readers that read the focused field.
+  const [branchRenameRefusal, setBranchRenameRefusal] = useState<string | null>(
+    null,
+  );
+  const branchRenameRefusalId = useId();
+  const branchRenameRefusalSeqRef = useRef<number | null>(null);
+  // Navigation invalidates pending replies, even if the person returns to
+  // the same worktree before Git settles.
+  const branchRenameScopeRef = useRef({});
 
   // PR base branch update confirmation
   const [pendingBaseChange, setPendingBaseChange] = useState<{
@@ -1415,19 +1438,60 @@ export const PrStatusBar = memo(function PrStatusBar({
   // to open this was cut on review: renaming a git branch is consequential
   // enough that the entry must be deliberate and labelled, not a gesture you
   // can hit while aiming for the menu.
+  const dismissBranchRenameRefusal = useCallback((): void => {
+    setBranchRenameRefusal(null);
+    const seq = branchRenameRefusalSeqRef.current;
+    branchRenameRefusalSeqRef.current = null;
+    if (seq !== null)
+      useGitHubStore
+        .getState()
+        .dismissGitActionFailure(projectId, worktreeId, seq);
+  }, [projectId, worktreeId]);
+
+  // The bar stays mounted across worktree selection. Cleanup owns the old
+  // scope's ids, so it dismisses only that rename's banner before resetting
+  // the editor. A newer Git failure is protected by its distinct sequence.
+  useEffect(() => {
+    setBranchEditValue(null);
+    setBranchRenameRemoteConfirm(null);
+    setBranchRenameRefusal(null);
+    return (): void => {
+      branchRenameScopeRef.current = {};
+      dismissBranchRenameRefusal();
+    };
+  }, [dismissBranchRenameRefusal]);
+
+  const showBranchRenameRefusal = useCallback(
+    (
+      reason: string,
+      raiseFailure: (failure: InlineFailure) => number | null,
+    ): void => {
+      branchRenameRefusalSeqRef.current = raiseFailure(inputFailure(reason));
+      setBranchRenameRefusal(reason);
+      // Enter left the field; put the person back in it to fix the name.
+      requestAnimationFrame(() => branchEditInputRef.current?.focus());
+    },
+    [],
+  );
+
   const beginInlineBranchRename = useCallback((): void => {
     setBranchMenuOpen(false);
     branchEditCommittedRef.current = false;
     setBranchRenameRemoteConfirm(null);
+    setBranchRenameRefusal(null);
     setBranchEditWidth(branchMenuTriggerRef.current?.offsetWidth ?? null);
     setBranchEditValue(currentBranchRawLabel);
   }, [currentBranchRawLabel]);
 
   const performBranchRename = useCallback(
     async (trimmed: string): Promise<void> => {
+      if (pendingBranchRenamesRef.current.has(branchRenameKey)) return;
+      pendingBranchRenamesRef.current.add(branchRenameKey);
+      setPendingBranchRenames(new Set(pendingBranchRenamesRef.current));
       setBranchRenameRemoteConfirm(null);
-      setBranchRenamePending(true);
+      const scope = branchRenameScopeRef.current;
       const raiseFailure = gitActionFailureRaiser(projectId, worktreeId);
+      let keepEditing = false;
       try {
         await window.api.renameBranch({
           projectId,
@@ -1439,28 +1503,53 @@ export const PrStatusBar = memo(function PrStatusBar({
           .updateBranchName(projectId, worktreeId, trimmed);
         void useProjectsStore.getState().refreshDiffStats();
       } catch (err: unknown) {
-        const appError = toAppError(resolveClientAppError(err));
-        if (appError) {
-          raiseFailure(inlineFailure(appError, "Couldn't rename the branch."));
+        if (branchRenameScopeRef.current !== scope) return;
+        const refusal = branchRenameRefusalText(err, trimmed);
+        if (refusal !== null) {
+          keepEditing = true;
+          showBranchRenameRefusal(refusal, raiseFailure);
+        } else {
+          const appError = toAppError(resolveClientAppError(err));
+          if (appError) {
+            raiseFailure(
+              inlineFailure(appError, "Couldn't rename the branch."),
+            );
+          }
         }
       } finally {
-        setBranchRenamePending(false);
-        setBranchEditValue(null);
+        pendingBranchRenamesRef.current.delete(branchRenameKey);
+        setPendingBranchRenames(new Set(pendingBranchRenamesRef.current));
+        if (branchRenameScopeRef.current === scope) {
+          if (!keepEditing) setBranchEditValue(null);
+        }
       }
     },
-    [projectId, worktreeId],
+    [branchRenameKey, projectId, worktreeId, showBranchRenameRefusal],
   );
 
   const commitBranchRename = useCallback(
     async (value: string): Promise<void> => {
-      if (branchRenamePending || branchRenameRemoteConfirm !== null) return;
+      if (
+        pendingBranchRenamesRef.current.has(branchRenameKey) ||
+        branchRenameRemoteConfirm !== null
+      )
+        return;
       const trimmed = value.trim();
+      dismissBranchRenameRefusal();
       if (trimmed === '' || trimmed === currentBranchRawLabel) {
         setBranchEditValue(null);
         return;
       }
       // The input shows the committed name while it renames or asks.
       setBranchEditValue(value);
+      const problem = branchNameProblem(trimmed);
+      if (problem !== null) {
+        showBranchRenameRefusal(
+          problem,
+          gitActionFailureRaiser(projectId, worktreeId),
+        );
+        return;
+      }
       // Same gate as the branch dialog's rename: a pushed branch only renames
       // after an explicit confirmation, since the old remote branch and any
       // associated PRs survive a local rename.
@@ -1471,11 +1560,15 @@ export const PrStatusBar = memo(function PrStatusBar({
       await performBranchRename(trimmed);
     },
     [
-      branchRenamePending,
+      branchRenameKey,
       branchRenameRemoteConfirm,
       currentBranchRawLabel,
+      dismissBranchRenameRefusal,
       hasBranchBeenPushed,
       performBranchRename,
+      projectId,
+      showBranchRenameRefusal,
+      worktreeId,
     ],
   );
 
@@ -2283,7 +2376,15 @@ export const PrStatusBar = memo(function PrStatusBar({
               // starving its neighbours.
               <span className="electron-no-drag relative inline-flex max-w-[40cqw]">
                 <InlineTextInput
+                  ref={branchEditInputRef}
                   data-testid="pr-status-bar-branch-rename-input"
+                  aria-invalid={branchRenameRefusal !== null ? true : undefined}
+                  aria-describedby={
+                    branchRenameRefusal !== null
+                      ? branchRenameRefusalId
+                      : undefined
+                  }
+                  onDraftChange={(): void => setBranchRenameRefusal(null)}
                   // Grows with what is typed. The pill's width is the floor, so
                   // entering edit mode causes no jump, and its 8px inset keeps
                   // the text where the read-only label had it.
@@ -2318,6 +2419,7 @@ export const PrStatusBar = memo(function PrStatusBar({
                     // with this abandoned name.
                     setBranchRenameRemoteConfirm(null);
                     setBranchEditValue(null);
+                    dismissBranchRenameRefusal();
                   }}
                   onBlur={(): void => {
                     // Leaving with the name unchanged ends the edit; a changed
@@ -2329,9 +2431,15 @@ export const PrStatusBar = memo(function PrStatusBar({
                     }
                     if (branchRenameRemoteConfirm === null) {
                       setBranchEditValue(null);
+                      dismissBranchRenameRefusal();
                     }
                   }}
                 />
+                {branchRenameRefusal !== null && (
+                  <span id={branchRenameRefusalId} className="sr-only">
+                    {branchRenameRefusal}
+                  </span>
+                )}
                 {branchRenameRemoteConfirm !== null && (
                   <ConfirmDialog
                     title="Rename pushed branch?"

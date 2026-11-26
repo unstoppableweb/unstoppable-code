@@ -1,11 +1,11 @@
-import { TextLink } from './TextLink';
+import { TextLink } from '../primitives/TextLink';
 import {
   CAPABILITY_TILE_CELL_CLASS,
   ROW_TRIGGER_CLASS,
   TRIGGER_CLASS,
-} from './control-button-shared';
-export { CAPABILITY_TILE_CELL_CLASS } from './control-button-shared';
-import { ControlButton } from './Button';
+} from '../primitives/control-button-shared';
+export { CAPABILITY_TILE_CELL_CLASS } from '../primitives/control-button-shared';
+import { ControlButton } from '../primitives/Button';
 import {
   createContext,
   memo,
@@ -23,8 +23,11 @@ import { McpServerIcon } from '../icons/McpServerIcon';
 import { PipelineIcon } from '../icons/PipelineIcon';
 import { PluginsIcon } from '../icons/PluginsIcon';
 import { SkillIcon } from '../icons/SkillIcon';
-import { RichHoverTooltip, type TooltipTriggerProps } from './RichHoverTooltip';
-import { StatusGlyph } from './StatusGlyph';
+import {
+  RichHoverTooltip,
+  type TooltipTriggerProps,
+} from '../primitives/RichHoverTooltip';
+import { StatusGlyph } from '../primitives/StatusGlyph';
 import { StepRow } from './chat/StepRow';
 import {
   capabilityTileStatusText,

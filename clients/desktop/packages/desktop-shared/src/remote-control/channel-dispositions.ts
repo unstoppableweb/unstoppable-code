@@ -44,8 +44,9 @@ type RemoteDispositions<Catalog extends Record<string, string>> = {
 
 export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
   {
-    // The generic relay admits only tracked local renderer surfaces; no
-    // domain caller has moved to it yet. Remote calls use compatibility IPC.
+    // The generic relay admits only tracked local renderer surfaces. Remote
+    // calls use compatibility IPC, so a controlling window reads its feature
+    // flags over the tunneled feature-flags:* channels (CAN-4181 F5).
     canopyCoreRelay: 'blocked',
     // A controlling desktop gets each worktree's scripts and hooks in the
     // tunneled projects:load (CAN-6933); this on-demand read stays local.
@@ -83,16 +84,16 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     opencodeConnectionCancel: 'tunnel',
     opencodeConnectionDisconnect: 'tunnel',
     opencodeConnectionProgress: 'tunnel',
-    // Whether the controlled computer can launch Antigravity is readable, but
-    // installing a CLI is this computer's own download: install, cancel and
-    // their progress stay local.
+    // The managed Antigravity CLI runs on the controlled computer, so its
+    // install, cancel and progress go there too, like the Cursor, Copilot and
+    // OpenCode connects that download their runtimes.
     antigravityRuntimeStatus: 'tunnel',
     // Whether the controlled computer pins a CLI, so the controller's picker
     // and Settings rows follow that computer.
     antigravityRuntimeHostSupport: 'tunnel',
-    antigravityRuntimeInstall: 'local',
-    antigravityRuntimeCancel: 'local',
-    antigravityRuntimeProgress: 'local',
+    antigravityRuntimeInstall: 'tunnel',
+    antigravityRuntimeCancel: 'tunnel',
+    antigravityRuntimeProgress: 'tunnel',
     managedDelegationMessage: 'tunnel',
     managedDelegationTree: 'tunnel',
     managedDelegationTranscriptPage: 'tunnel',
@@ -120,6 +121,9 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     accountOrganizationSettingsPaymentHandoff: 'blocked',
     accountOrganizationSettingsPaymentHandoffAvailability: 'blocked',
     accountOrganizationSettingsOpen: 'blocked',
+    // A save dialog and a write on the local person's computer, with the
+    // local account's credential; other people's transcripts never tunnel.
+    accountOrganizationSettingsDownloadTranscript: 'blocked',
     referencePreviewGitHubScope: 'tunnel',
     referencePreviewGitHubOrigin: 'tunnel',
     referencePreviewGitHub: 'tunnel',
@@ -341,12 +345,13 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     worktreeActivityEntities: 'tunnel',
     worktreeCheckRemovalAdmission: 'tunnel',
     // CAN-7439: the list is a read under the bridge's `core.worktree.read`.
-    // CAN-7444: Resolve and Finish admit the local user and a bridge caller
+    // CAN-7444, CAN-7014: Resolve, Finish and Set aside admit the local user and a bridge caller
     // as archive recovery reviewers; the controller profile lists keep them
     // to browser and desktop controllers.
     worktreeRecoveryList: 'tunnel',
     worktreeRecoveryResolve: 'tunnel',
     worktreeRecoveryFinish: 'tunnel',
+    worktreeRecoverySetAside: 'tunnel',
     worktreeDiscardDescribe: 'tunnel',
     worktreeDiscard: 'tunnel',
     workspaceDeleteDiscardDescribe: 'tunnel',
@@ -1058,14 +1063,15 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     claudeTerminalScheduledPrompt: 'tunnel',
     claudeTerminalSyncCompleted: 'tunnel',
     claudeTerminalError: 'tunnel',
-    // Each sign-in attempt belongs to the app window that started it
-    // (ipc/codex-login.ts), so a remote window cannot drive one; sign in on
-    // that computer.
-    codexLoginStart: 'blocked',
-    codexLoginCancel: 'blocked',
-    codexLoginRetryVerification: 'blocked',
+    // Each sign-in attempt belongs to the window that started it
+    // (ipc/codex-login.ts). A remote window may start only the device-code
+    // method, then show the code and open the page on its own computer.
+    // Opening the controlled computer's browser stays blocked.
+    codexLoginStart: 'tunnel',
+    codexLoginCancel: 'tunnel',
+    codexLoginRetryVerification: 'tunnel',
     codexLoginOpenBrowser: 'blocked',
-    codexLoginState: 'blocked',
+    codexLoginState: 'tunnel',
     authTerminalStart: 'tunnel',
     authTerminalWrite: 'tunnel',
     authTerminalResize: 'tunnel',
@@ -1395,6 +1401,8 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     remoteControlOpenMachine: 'local',
     remoteControlSetAllowIncoming: 'local',
     remoteControlSetAllowRemoteUpdates: 'local',
+    // Consent to web preview is the host user's choice, like updates.
+    remoteControlSetAllowWebPreview: 'local',
     // Data sharing is the host user's choice: a controller never changes it.
     remoteControlSetInventorySyncEnabled: 'local',
     remoteControlStartPairing: 'local',
@@ -1410,6 +1418,17 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     remoteControlPathPickerRequest: 'local',
     remoteControlPathPickerResolve: 'local',
     remoteControlListDirectory: 'tunnel',
+    // The main window's per-computer API (CAN-7761) reaches paired computers
+    // from this computer only. Never tunnelled, so a paired computer acting
+    // here can't use this computer to reach a third one; main also refuses
+    // bridge senders and windows showing another computer.
+    remoteControlComputerHold: 'local',
+    remoteControlComputerRelease: 'local',
+    remoteControlComputerInvoke: 'local',
+    remoteControlComputerSend: 'local',
+    remoteControlComputerState: 'local',
+    remoteControlComputerProjectFacts: 'local',
+    remoteControlComputerEvent: 'local',
     // The pairing window is this computer's own opt-in surface.
     remoteControlOpenPairingWindow: 'local',
     remoteControlClosePairingWindow: 'local',
@@ -1419,6 +1438,9 @@ export const IPC_REMOTE_DISPOSITIONS: RemoteDispositions<typeof IPC_CHANNELS> =
     // The controlled computer's stable install identifier; controllers
     // (hosted MCP pairing) read it after authorization.
     remoteControlInstallId: 'tunnel',
+    // Connect Slack pairs and links this computer as the person sitting at
+    // it (CAN-7606); never reachable from a controller or hosted session.
+    slackConnectThisComputer: 'local',
     // Served by the host session itself to a Slack session (CAN-7604), never
     // through the bridge window; every other controller is refused it.
     appAdvisorSlackTurnStatus: 'tunnel',
@@ -1434,6 +1456,9 @@ export const PIPELINE_REMOTE_DISPOSITIONS: RemoteDispositions<
   DISCOVER_PROJECT: 'tunnel',
   GET: 'tunnel',
   SAVE: 'tunnel',
+  // CAN-5782: no controller shows the Approve for schedules button yet, so
+  // the approval stays off the remote-control contract until one does.
+  APPROVE_FOR_SCHEDULES: 'blocked',
   DELETE: 'tunnel',
   DUPLICATE: 'tunnel',
   RESOLVE_ACTION: 'tunnel',

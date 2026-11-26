@@ -1,20 +1,20 @@
-import { ListRowFrame } from './ListRow';
+import { ListRowFrame } from '../primitives/ListRow';
 import type { CSSProperties, JSX, ReactNode } from 'react';
 import { CHAT_UNIT_LABEL } from '@canopy/protocol';
 import { SummaryIcon, UnarchiveIcon } from '../icons/AppIcons';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
-import { Dot } from './Badge';
-import { ControlButton, Button } from './Button';
+import { Dot } from '../primitives/Badge';
+import { ControlButton, Button } from '../primitives/Button';
 import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRowStyleProvider,
   DropdownMenuSurface,
   QUIET_MENU_ROW_STYLE,
-} from './DropdownMenu';
-import { LoadingSpinner } from './LoadingSpinner';
-import { Tooltip } from './Tooltip';
+} from '../primitives/DropdownMenu';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
+import { Tooltip } from '../primitives/Tooltip';
 
 /** The drawn line width of the card's 14px Lucide glyphs, in CSS px. */
 const CARD_ICON_STROKE_PX = 1.5;

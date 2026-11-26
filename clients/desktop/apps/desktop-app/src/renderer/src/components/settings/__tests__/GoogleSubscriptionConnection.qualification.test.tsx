@@ -7,6 +7,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { AntigravityRuntimeStatus } from '@canopy/desktop-shared/types/antigravity-runtime';
+import type { RemoteIpcTransport } from '@canopy/protocol/remote-control';
 
 declare global {
   var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
@@ -42,6 +43,7 @@ let container: HTMLDivElement;
 let progress: (status: AntigravityRuntimeStatus) => void = () => undefined;
 let pending: Deferred | undefined;
 let install: jest.Mock<Promise<AntigravityRuntimeStatus>, [string]>;
+let readStatus: jest.Mock<Promise<AntigravityRuntimeStatus>, []>;
 let cancel: jest.Mock<Promise<void>, [string]>;
 let getModelRegistry: jest.Mock<Promise<unknown>, [unknown]>;
 let savePreferences: jest.Mock<Promise<unknown>, [unknown]>;
@@ -75,6 +77,9 @@ async function renderCard(status: AntigravityRuntimeStatus): Promise<void> {
     pending?.resolve(NOT_INSTALLED);
     return Promise.resolve();
   });
+  readStatus = jest.fn<Promise<AntigravityRuntimeStatus>, []>(() =>
+    Promise.resolve(status),
+  );
   getModelRegistry = jest.fn<Promise<unknown>, [unknown]>(() =>
     Promise.resolve(snapshot([])),
   );
@@ -88,27 +93,66 @@ async function renderCard(status: AntigravityRuntimeStatus): Promise<void> {
       onPreferencesSynced: (): (() => void) => () => undefined,
       getModelRegistry,
       savePreferences,
-      antigravityRuntime: {
-        status: (): Promise<AntigravityRuntimeStatus> =>
-          Promise.resolve(status),
-        install,
-        cancel,
-        onProgress: (callback: (value: AntigravityRuntimeStatus) => void) => {
-          progress = callback;
-          return (): void => undefined;
-        },
-      },
     },
   });
   const { GoogleSubscriptionConnection } =
     await import('../GoogleSubscriptionConnection');
+  // The card reads the runtime through the desktop's CanopyClient
+  // (`harnessSetup`), whose preload transport reaches the same handlers.
+  const card = await withDesktopClient(<GoogleSubscriptionConnection />, {
+    invoke: (channel, ...args) => {
+      const [operationId] = args;
+      if (channel === 'antigravity-runtime:status') return readStatus();
+      if (channel === 'antigravity-runtime:install')
+        return install(String(operationId));
+      if (channel === 'antigravity-runtime:cancel')
+        return cancel(String(operationId));
+      return Promise.reject(new Error(`unexpected ${channel}`));
+    },
+    send: () => undefined,
+    on: (channel, listener) => {
+      if (channel === 'antigravity-runtime:progress')
+        progress = (value): void => listener(value);
+      return (): void => undefined;
+    },
+  });
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   act(() => {
-    root.render(<GoogleSubscriptionConnection />);
+    root.render(card);
   });
   await flush();
+}
+
+type CanopyClientTransport = RemoteIpcTransport;
+
+/**
+ * `element` under a CanopyClientProvider, as the app root mounts Settings,
+ * with the desktop adapter over `transport`.
+ */
+async function withDesktopClient(
+  element: React.JSX.Element,
+  transport: CanopyClientTransport,
+): Promise<React.JSX.Element> {
+  const { CanopyClientProvider } =
+    await import('@canopy/app-state/CanopyClientProvider');
+  const { createIpcCanopyClient } = await import('@canopy/ipc-canopy-client');
+  const client = createIpcCanopyClient(transport, {
+    capabilities: {
+      localExecution: true,
+      terminalPty: false,
+      fileSystemAccess: 'read-write',
+      voice: false,
+      settingsScope: 'full',
+      pipelines: 'execute',
+      routing: 'in-memory',
+      overviewNotifications: false,
+      harnessSetup: true,
+    },
+    openExternalUrl: () => undefined,
+  });
+  return <CanopyClientProvider client={client}>{element}</CanopyClientProvider>;
 }
 
 afterEach(() => {
@@ -183,6 +227,57 @@ it('cancel returns the card to not installed', async () => {
   expect(install.mock.calls[1]?.[0]).not.toBe(operationId);
 });
 
+// CAN-6718 review: a window that joined another window's install only
+// detaches on Cancel. The install goes on there, so this card says so instead
+// of staying on Downloading… with no controls, and can check it again.
+it('a joined card that cancels says another window is installing and checks again', async () => {
+  await renderCard(NOT_INSTALLED);
+  cancel.mockImplementation(() => {
+    pending?.resolve({
+      ...NOT_INSTALLED,
+      phase: 'downloading',
+      detached: true,
+    });
+    return Promise.resolve();
+  });
+  act(() => button('Install managed 1.5.1').click());
+  await flush();
+  act(() => button('Cancel').click());
+  await flush();
+  expect(container.textContent).toContain(
+    'Another window is installing the Antigravity CLI.',
+  );
+  expect(container.textContent).not.toContain('Downloading…');
+  expect(buttonWithText('Cancel')).toBeUndefined();
+  expect(buttonWithText('Install managed 1.5.1')).toBeUndefined();
+
+  // Still installing there: the card keeps saying so.
+  readStatus.mockResolvedValueOnce({ ...NOT_INSTALLED, phase: 'verifying' });
+  act(() => button('Check again').click());
+  await flush();
+  expect(container.textContent).toContain(
+    'Another window is installing the Antigravity CLI.',
+  );
+  // Finished there: the card shows the result and refreshes models.
+  readStatus.mockResolvedValueOnce(MANAGED);
+  act(() => button('Check again').click());
+  await flush();
+  expect(container.textContent).toContain(
+    'Antigravity CLI 1.5.1: installed (managed)',
+  );
+  expect(buttonWithText('Check again')).toBeUndefined();
+  expect(getModelRegistry).toHaveBeenCalledWith({ probe: true });
+});
+
+it('an install another window is running shows as such, with Check again', async () => {
+  await renderCard({ ...NOT_INSTALLED, phase: 'downloading' });
+  expect(container.textContent).toContain(
+    'Another window is installing the Antigravity CLI.',
+  );
+  expect(buttonWithText('Check again')).toBeDefined();
+  expect(buttonWithText('Install managed 1.5.1')).toBeUndefined();
+});
+
 it('shows the error and the Install button after a failed install', async () => {
   await renderCard(NOT_INSTALLED);
   act(() => button('Install managed 1.5.1').click());
@@ -202,7 +297,7 @@ it('shows the error and the Install button after a failed install', async () => 
   expect(getModelRegistry).not.toHaveBeenCalled();
 });
 
-it('a window showing another computer never installs on this one', async () => {
+it('a window showing another computer installs there through the tunnel', async () => {
   const { useRemoteControlStore } = await import('@/stores/remoteControlStore');
   useRemoteControlStore.setState({
     context: {
@@ -213,14 +308,18 @@ it('a window showing another computer never installs on this one', async () => {
     },
   });
   try {
+    // The status shown is the controlled computer's, and install, cancel and
+    // progress tunnel there too, so the card offers the same install.
     await renderCard(NOT_INSTALLED);
-    expect(buttonWithText('Install managed 1.5.1')).toBeUndefined();
     expect(
       container.querySelector(
         '[data-testid="antigravity-runtime-remote-install"]',
-      )?.textContent,
-    ).toMatch(/Install it from Settings on the computer you.re controlling/);
-    expect(install).not.toHaveBeenCalled();
+      ),
+    ).toBeNull();
+    act(() => button('Install managed 1.5.1').click());
+    await flush();
+    expect(install).toHaveBeenCalledTimes(1);
+    expect(buttonWithText('Cancel')).toBeDefined();
   } finally {
     useRemoteControlStore.setState({ context: { mode: 'local' } });
   }
@@ -287,6 +386,42 @@ function recordingApi(
   });
 }
 
+/** The window.api path each CanopyClient channel the card uses stands for. */
+const CHANNEL_API_PATHS: Readonly<Record<string, string>> = {
+  'antigravity-runtime:status': 'api.antigravityRuntime.status',
+  'antigravity-runtime:install': 'api.antigravityRuntime.install',
+  'antigravity-runtime:cancel': 'api.antigravityRuntime.cancel',
+  'antigravity-runtime:progress': 'api.antigravityRuntime.onProgress',
+};
+
+/**
+ * The CanopyClient transport beside recordingApi: a channel is recorded as
+ * the window.api path it stands for and answered from `answers` the same
+ * way; any other channel never settles.
+ */
+function recordingTransport(
+  answers: Record<string, (...args: unknown[]) => unknown>,
+): CanopyClientTransport {
+  const record = (channel: string): string => {
+    const path = CHANNEL_API_PATHS[channel] ?? `channel.${channel}`;
+    apiCalls.push(path);
+    return path;
+  };
+  return {
+    invoke: (channel, ...args) => {
+      const answer = answers[record(channel)];
+      return answer
+        ? Promise.resolve(answer(...args))
+        : new Promise<never>(() => undefined);
+    },
+    send: () => undefined,
+    on: (channel) => {
+      record(channel);
+      return (): void => undefined;
+    },
+  };
+}
+
 async function mountWithApi(
   platform: NodeJS.Platform,
   flags: { harness: boolean; released: boolean },
@@ -308,7 +443,10 @@ async function mountWithApi(
       (key === ANTIGRAVITY_FLAGS.harness && flags.harness) ||
       (key === ANTIGRAVITY_FLAGS.released && flags.released),
   });
-  const element = await render();
+  const element = await withDesktopClient(
+    await render(),
+    recordingTransport(answers),
+  );
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);

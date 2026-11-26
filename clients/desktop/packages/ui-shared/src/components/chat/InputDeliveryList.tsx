@@ -1,6 +1,6 @@
 'use client';
 
-import { Stack } from '../Stack';
+import { Stack } from '../../primitives/Stack';
 import {
   memo,
   useCallback,
@@ -15,8 +15,8 @@ import type {
   ChatInputDeliveryView,
 } from '@canopy/protocol/remote-control/shell';
 import { TrashIcon } from '../../icons';
-import { Button } from '../Button';
-import { Tooltip } from '../Tooltip';
+import { Button } from '../../primitives/Button';
+import { Tooltip } from '../../primitives/Tooltip';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import {
   AgentSentTitle,

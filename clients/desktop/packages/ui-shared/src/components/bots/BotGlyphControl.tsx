@@ -2,9 +2,9 @@
 import { useId, useRef, useState, type JSX } from 'react';
 import type { BotGlyph as BotGlyphValue } from '@canopy/protocol/bot-glyph';
 import { PencilIcon } from '../../icons/AppIcons';
-import { Button } from '../Button';
-import { Popover } from '../Popover';
-import { Tooltip } from '../Tooltip';
+import { Button } from '../../primitives/Button';
+import { Popover } from '../../primitives/Popover';
+import { Tooltip } from '../../primitives/Tooltip';
 import { BotGlyph } from './BotGlyph';
 import { BotGlyphPicker } from './BotGlyphPicker';
 

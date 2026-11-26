@@ -35,7 +35,10 @@ import {
   type CursorHookOutcome,
   type CursorHookTransport,
 } from './hook-transport';
-import { encodeCursorProjectDir } from './project-dir';
+import {
+  assertCursorHookPathBudget,
+  encodeCursorProjectDir,
+} from './project-dir';
 import { rewriteCursorShellInput } from './rtk-rewrite';
 import type { ProviderProcess } from '../provider-process/spawn';
 import type { CursorLaunch } from './runtime-launch';
@@ -48,6 +51,46 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isEmptyRecord(value: unknown): boolean {
   return isRecord(value) && Object.keys(value).length === 0;
+}
+
+const CURSOR_HOOK_SPAWN_CODES = new Set([
+  'ENOENT',
+  'EACCES',
+  'EPERM',
+  'ENAMETOOLONG',
+]);
+
+function hookSpawnFailureMessage(output: unknown): string | undefined {
+  if (
+    !isRecord(output) ||
+    typeof output.error !== 'string' ||
+    output.error.length > 16_384
+  )
+    return undefined;
+  // This is diagnostic evidence only, never approval evidence. Keep the
+  // provider's paths, command arguments and possible callback secrets out of
+  // the message; only a bounded, known OS code reaches the user.
+  const error = output.error;
+  const spawn = ' execution failed: spawn ';
+  for (const line of error.split(/[\r\n]/)) {
+    const hook = /\bHook /.exec(line);
+    if (!hook) continue;
+    const script = line.indexOf(
+      'approval-hook.cjs',
+      hook.index + hook[0].length,
+    );
+    if (script < 0) continue;
+    const failure = line.indexOf(spawn, script + 'approval-hook.cjs'.length);
+    if (failure < 0) continue;
+    const detail = line.slice(failure + spawn.length).trimEnd();
+    const separator = detail.lastIndexOf(' ');
+    if (separator <= 0) continue;
+    const code = detail.slice(separator + 1);
+    if (CURSOR_HOOK_SPAWN_CODES.has(code)) {
+      return `Couldn't start Cursor's approval check (${code}), so the session was stopped. Report this error or choose another model.`;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -284,9 +327,10 @@ export interface CursorTurnRequest {
    * Refuse the turn outright when `sessionId` cannot be loaded, instead of
    * silently starting a fresh conversation in its place.
    *
-   * Interactive chat wants the fallback: a repo or data-dir change orphans
+   * Interactive chat normally uses the fallback: a repo or data-dir change orphans
    * the saved session, and failing every later turn of that chat would be
-   * worse than continuing without the old context. A pipeline
+   * worse than continuing without the old context. A Windows chat requires its
+   * saved session for the first load after profile relocation. A pipeline
    * `builtin/agent-resume` step wants the opposite — its prompt is written
    * assuming the prior context exists, so running it against an empty
    * session does real work (with whatever permissions the step declared)
@@ -489,6 +533,7 @@ export async function runCursorTurn(
     return ended;
   };
   try {
+    assertCursorHookPathBudget(request.profileDir, request.cwd);
     await mkdir(request.profileDir, { recursive: true, mode: 0o700 });
     hookDir = await mkdtemp(join(tmpdir(), 'cursor-chat-hook-'));
     if (host.onUsage) {
@@ -857,6 +902,9 @@ export async function runCursorTurn(
               !alreadySettled
             ) {
               integrity.failure =
+                (change.status === 'failed'
+                  ? hookSpawnFailureMessage(change.rawOutput)
+                  : undefined) ??
                 'Cursor ran a tool without reaching the approval hook, so the session was stopped. Reconnect Cursor before trying again.';
               integrity.kind = 'unapproved_tool';
               integrity.cause = undefined;
@@ -979,8 +1027,8 @@ export async function runCursorTurn(
           // cause was replaced by a misdiagnosis. A transport-level fault is
           // now surfaced truthfully and stays an ordinary retryable step
           // failure; an agent-side rejection still means the context is gone.
-          // The interactive path keeps its documented fallback-to-fresh
-          // behaviour for every failure kind.
+          // Interactive callers that allow a fresh session retain their
+          // documented fallback for every failure kind.
           throw error;
         }
         contextLost = true;

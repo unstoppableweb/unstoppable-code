@@ -17,7 +17,7 @@ import type {
   OrgProjectRepositoryVisibility,
   OrgProjectSummary,
 } from '@canopy/protocol/org-projects';
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 
 const VISIBILITY_LABEL: Record<OrgProjectRepositoryVisibility, string> = {
   PUBLIC: 'Public',

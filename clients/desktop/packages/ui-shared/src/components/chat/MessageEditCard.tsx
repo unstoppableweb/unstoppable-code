@@ -8,9 +8,9 @@ import {
   type ReactNode,
   type Ref,
 } from 'react';
-import { Button } from '../Button';
+import { Button } from '../../primitives/Button';
 import { ChatComposerShell } from '../ChatComposerShell';
-import { Stack } from '../Stack';
+import { Stack } from '../../primitives/Stack';
 
 // The desktop composer's editable text (ui-rich composer density), on a
 // plain textarea: no native ring or resize grip, growing with its content.

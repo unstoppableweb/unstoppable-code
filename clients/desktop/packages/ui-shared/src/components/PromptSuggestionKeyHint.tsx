@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { Kbd } from './Kbd';
+import { Kbd } from '../primitives/Kbd';
 
 /**
  * The key hint after an offered prompt suggestion in the composer's

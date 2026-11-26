@@ -196,13 +196,22 @@ async function submitPreparedFeedback(
         destination: 'temp',
       });
       if (bundle.sizeBytes > FEEDBACK_UPLOAD_MAX_BYTES) {
-        // Crash dumps are the bulk that can cross the server limit; without an
-        // upload URL the report would lose its logs too, so rebuild without them.
+        // Preserve the legacy dump-only retry, including compressible contents
+        // above preview limits that have always attached successfully.
         await discardTemporaryBundle(bundle.absolutePath);
         bundle = await prepareFeedbackBundle(prepareRequest, {
           destination: 'temp',
           includeCrashDumps: false,
         });
+        if (bundle.sizeBytes > FEEDBACK_UPLOAD_MAX_BYTES) {
+          await discardTemporaryBundle(bundle.absolutePath);
+          bundle = await prepareFeedbackBundle(prepareRequest, {
+            destination: 'temp',
+            includeCrashDumps: false,
+            bounded: true,
+            oversizedRetryContext: request.context,
+          });
+        }
       }
       bundlePath = bundle.absolutePath;
       bundleSizeBytes = bundle.sizeBytes;

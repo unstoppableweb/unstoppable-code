@@ -1,10 +1,10 @@
 'use client';
 
-import { CompositeListRow } from './ListRow';
+import { CompositeListRow } from '../primitives/ListRow';
 import type { WorkEntryAutoDeleteRowState } from '@canopy/protocol';
 import { SidebarAutoDeleteBadge } from './SidebarAutoDeleteBadge';
 
-import { Dot } from './Badge';
+import { Dot } from '../primitives/Badge';
 import {
   memo,
   useCallback,
@@ -28,28 +28,31 @@ import {
   DropdownMenuItemIcon,
   DropdownMenuRowStyleProvider,
   QUIET_MENU_ROW_STYLE,
-} from './DropdownMenu';
+} from '../primitives/DropdownMenu';
 import {
   SpaceNotificationMenuItems,
   spaceNotificationMenuUnavailable,
   type SpaceNotificationMenuChoice,
   type SpaceNotificationMenuState,
 } from './SpaceNotificationMenu';
-import { ActionMenuRowStyle } from './ActionMenuItems';
-import { FloatingMenu, FloatingMenuPointAnchor } from './FloatingMenu';
+import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
+import {
+  FloatingMenu,
+  FloatingMenuPointAnchor,
+} from '../primitives/FloatingMenu';
 import { RailIconButton } from './RailIconButton';
 import { SharedWithTeammatesBadge } from './SharedWithTeammatesBadge';
 import {
   CONTEXT_MENU_POINTER_OFFSET,
   useContextMenuPlacement,
-} from './context-menu-placement';
+} from '../primitives/context-menu-placement';
 import { SidebarRowAge } from './SidebarRowAge';
 import { AgentStateGlyph, backgroundTasksLabel } from './AgentStateGlyph';
-import { ChoiceMark } from './Choice';
+import { ChoiceMark } from '../primitives/Choice';
 import { SidebarPinMenuItem } from './SidebarPinMenuItem';
 import { SidebarPinnedBadge } from './SidebarPinnedBadge';
-import { Tooltip } from './Tooltip';
-import { StatusGlyph } from './StatusGlyph';
+import { Tooltip } from '../primitives/Tooltip';
+import { StatusGlyph } from '../primitives/StatusGlyph';
 import {
   ArchiveBoxIcon,
   ArchiveIcon,
@@ -715,7 +718,7 @@ function WorkEntryRowImpl({
       {/* Done titles keep full text color: the state lives in the leading
           checkmark, matching code-worktree rows. */}
       <p
-        className={`${REPLAY_MASK_CLASS} min-w-0 flex-1 truncate text-s font-normal leading-snug ${
+        className={`${REPLAY_MASK_CLASS} min-w-0 flex-1 truncate-fade text-s font-normal leading-snug ${
           compactActions
             ? compactTitleReserveClassName(coarseActionCount, hasMetadataBadge)
             : titleReserveClassName(

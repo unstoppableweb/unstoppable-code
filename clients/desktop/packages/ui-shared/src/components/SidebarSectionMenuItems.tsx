@@ -6,7 +6,7 @@ import {
   DropdownMenuItemIcon,
   DropdownMenuLabel,
   DropdownMenuItemTrailing,
-} from './DropdownMenu';
+} from '../primitives/DropdownMenu';
 import { CheckIcon, ShareIcon, DownloadIcon } from '../icons/AppIcons';
 
 /** Labels for the two ordering modes a sidebar section can be in. */

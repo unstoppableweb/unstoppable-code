@@ -53,6 +53,10 @@ import {
   createDefaultModelDefaultsByProvider,
   createEmptyPluginSelections,
 } from './field-normalizers';
+import type {
+  ClientLocalPreferences,
+  DomainPreferencesData,
+} from './client-local-preferences';
 
 /**
  * Windows close-to-tray defaults ON, matching Slack/Discord/Teams. Defaulting
@@ -63,26 +67,12 @@ import {
  */
 export const DEFAULT_CLOSE_TO_TRAY = true;
 
-export const DEFAULT_PREFERENCES: PreferencesData = {
+export const DEFAULT_DOMAIN_PREFERENCES: DomainPreferencesData = {
   orgProjectDefaultDestinationRoot: undefined,
   orgProjectCloneProtocol: 'https',
   workspaceDefaultLayoutMode: 'advanced',
   navigationMode: 'code',
-  worktreePanelPercent: 32,
-  activityPanelExpanded: false,
-  activityPanelWidthPercent: 25,
-  kanbanWorktreePanelPercent: 32,
-  kanbanActivityPanelExpanded: false,
-  kanbanActivityPanelWidthPercent: 25,
-  kanbanChatPanelVisible: false,
-  pipelineChatPanelVisible: true,
-  pipelineChatPanelWidthPercent: 30,
-  sidebarCollapsed: false,
   sidebarProjectSortMode: 'manual',
-  sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
-  sidebarCodeSectionCollapsed: false,
-  sidebarCoworkSectionCollapsed: false,
-  sidebarOrchestratorCollapsed: false,
   sidebarNavLayout: createDefaultSidebarNavLayout(),
   branchNamePrefixMode: 'github',
   branchNameCustomPrefix: '',
@@ -161,7 +151,6 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   initializedCuratedPluginDefaults: [],
   appAdvisorPluginSelections: createEmptyPluginSelections(),
   pipelineEditorPluginSelections: createEmptyPluginSelections(),
-  appAdvisorDialogBounds: null,
   codexMultiAgentAppAdvisorEnabled: true,
   providerModelConfigDefaults: {
     codex: { fastMode: false },
@@ -226,16 +215,10 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   auditRetentionDays: 7,
   automationRunRetentionDays: 90,
   aiCreditsRoutingMode: 'off',
-  theme: 'default',
-  colorMode: 'system',
-  sidebarAppearance: 'translucent',
-  worktreeDiffStatsStyle: 'short',
-  scrollbarBehavior: 'system',
   singleDollarMath: true,
   promptSuggestionsEnabled: true,
   linearChatEnrichmentMode: DEFAULT_LINEAR_CHAT_ENRICHMENT_MODE,
   githubChatEnrichmentMode: DEFAULT_GITHUB_CHAT_ENRICHMENT_MODE,
-  uiScale: UI_SCALE_DEFAULT,
   // "Agents add to the Feed" (LD09) is on by default.
   ledgerAgentRecordingEnabled: true,
   // The master suggestion switch (CAN-4343) is on for fresh profiles.
@@ -244,9 +227,6 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   skillSuggestionsEnabled: true,
   rendererCodeCacheSchemeEnabled: false,
   chatDetail: DEFAULT_CHAT_DETAIL,
-  windowBounds: null,
-  windowMaximized: false,
-  windowFullScreen: false,
   ollamaServerPort: DEFAULT_OLLAMA_SERVER_PORT,
   googleSubscriptionDisconnected: false,
   // Transport contract: the shared `PreferencesData.ollamaConnectionMode` /
@@ -278,8 +258,6 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
       activation: true,
     },
   },
-  terminalDrawerCollapsed: DEFAULT_TERMINAL_DRAWER_COLLAPSED,
-  terminalDrawerHeight: DEFAULT_TERMINAL_DRAWER_HEIGHT,
   terminalDrawerActiveTabId: DEFAULT_TERMINAL_DRAWER_ACTIVE_TAB_ID,
   disabledTerminalShellProfileIds: [],
   terminalPresets: [],
@@ -335,6 +313,8 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
   // A default on every brand, not a count: it is written with any
   // preference save, but brands without a source repository never count.
   githubStarPrompt: { version: 1, promptsSent: 0 },
+  // Main sets this only in the commit that first records legal consent.
+  usageAnalyticsDeclinedAtOnboarding: false,
   usageData: {
     productAnalytics: true,
     sessionReplay: true,
@@ -364,4 +344,39 @@ export const DEFAULT_PREFERENCES: PreferencesData = {
     selectedWorkspaceIds: [],
     generationTimeoutMinutes: 30,
   },
+};
+
+/** Defaults of the client-local document (CAN-4472). */
+export const DEFAULT_CLIENT_LOCAL_PREFERENCES: ClientLocalPreferences = {
+  windowBounds: null,
+  windowMaximized: false,
+  windowFullScreen: false,
+  appAdvisorDialogBounds: null,
+  theme: 'default',
+  colorMode: 'system',
+  sidebarAppearance: 'translucent',
+  scrollbarBehavior: 'system',
+  worktreeDiffStatsStyle: 'short',
+  uiScale: UI_SCALE_DEFAULT,
+  sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
+  sidebarCollapsed: false,
+  sidebarCodeSectionCollapsed: false,
+  sidebarCoworkSectionCollapsed: false,
+  sidebarOrchestratorCollapsed: false,
+  worktreePanelPercent: 32,
+  kanbanWorktreePanelPercent: 32,
+  activityPanelExpanded: false,
+  kanbanActivityPanelExpanded: false,
+  activityPanelWidthPercent: 25,
+  kanbanActivityPanelWidthPercent: 25,
+  kanbanChatPanelVisible: false,
+  pipelineChatPanelVisible: true,
+  pipelineChatPanelWidthPercent: 30,
+  terminalDrawerCollapsed: DEFAULT_TERMINAL_DRAWER_COLLAPSED,
+  terminalDrawerHeight: DEFAULT_TERMINAL_DRAWER_HEIGHT,
+};
+
+export const DEFAULT_PREFERENCES: PreferencesData = {
+  ...DEFAULT_DOMAIN_PREFERENCES,
+  ...DEFAULT_CLIENT_LOCAL_PREFERENCES,
 };

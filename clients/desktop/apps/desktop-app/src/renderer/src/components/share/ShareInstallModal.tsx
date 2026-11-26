@@ -33,7 +33,7 @@ import {
   type ShareInstallEntity,
 } from '@canopy/ui-app/sharing/share-install-copy';
 import { useResourceContext } from '@canopy/ui-app/capability';
-import { ConfirmDialog } from '@canopy/ui-shared/components/ConfirmDialog';
+import { ConfirmDialog } from '@canopy/ui-shared/primitives/ConfirmDialog';
 import { InstalledShareMenu } from '@canopy/ui-shared/components/InstalledShareMenu';
 import {
   ShareInstallDialog,

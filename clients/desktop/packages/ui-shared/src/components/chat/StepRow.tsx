@@ -1,6 +1,6 @@
-import { STEP_ROW_TEXT_CLASS } from '../control-button-shared';
-export { STEP_ROW_TEXT_CLASS } from '../control-button-shared';
-import { ControlButton } from '../Button';
+import { STEP_ROW_TEXT_CLASS } from '../../primitives/control-button-shared';
+export { STEP_ROW_TEXT_CLASS } from '../../primitives/control-button-shared';
+import { ControlButton } from '../../primitives/Button';
 import { useContinuousMotion } from '../../lib/continuous-motion';
 import {
   Children,

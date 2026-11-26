@@ -451,7 +451,7 @@ interface GitHubState {
     worktreeId: string,
     failure: RaisedGitActionFailure,
     attemptId?: string,
-  ) => void;
+  ) => number | null;
   /** Dismisses one failure; a newer failure (another `seq`) stays. */
   dismissGitActionFailure: (
     projectId: string,
@@ -568,17 +568,18 @@ export function currentGitActionAttempt(
  * For a failure raised outside a git action attempt (opening a link, loading
  * branches, starting a fix chat): call it when the work starts. The returned
  * raise drops the failure when a newer attempt began in between, so a late
- * rejection never replaces that attempt's failure or its Try again.
+ * rejection never replaces that attempt's failure or its Try again. Returns
+ * the published sequence, or null if the failure was stale.
  */
 export function gitActionFailureRaiser(
   projectId: string,
   worktreeId: string,
-): (failure: InlineFailure) => void {
+): (failure: InlineFailure) => number | null {
   const attemptAtStart = currentGitActionAttempt(projectId, worktreeId);
-  return (failure): void => {
+  return (failure): number | null => {
     if (currentGitActionAttempt(projectId, worktreeId) !== attemptAtStart)
-      return;
-    useGitHubStore
+      return null;
+    return useGitHubStore
       .getState()
       .raiseGitActionFailure(projectId, worktreeId, failure);
   };
@@ -4048,10 +4049,15 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
     });
   },
 
-  raiseGitActionFailure: (projectId, worktreeId, failure, attemptId): void => {
+  raiseGitActionFailure: (
+    projectId,
+    worktreeId,
+    failure,
+    attemptId,
+  ): number | null => {
     const key = worktreeKey(projectId, worktreeId);
     if (attemptId !== undefined && gitFailureAttempts.get(key) !== attemptId)
-      return;
+      return null;
     gitActionFailureSeq += 1;
     const seq = gitActionFailureSeq;
     // Only the attempt that registered the retry may offer it, and it never
@@ -4071,6 +4077,7 @@ export const useGitHubStore = create<GitHubState>((set, get) => ({
         [key]: { ...failure, seq, ...(retry ? { retry } : {}) },
       },
     }));
+    return seq;
   },
 
   dismissGitActionFailure: (projectId, worktreeId, seq): void => {

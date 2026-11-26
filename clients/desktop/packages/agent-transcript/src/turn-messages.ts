@@ -43,6 +43,12 @@ export type TurnBlock =
     }
   | {
       type: 'turn_timer';
+      /** Canonical execution identity; absent on legacy timers. */
+      turnId?: string;
+      /** The canonical execution's prompt; absent when it has no prompt. */
+      userMessageId?: string;
+      /** The canonical execution's recorded end; absent when unknown. */
+      outcome?: 'completed' | 'cancelled' | 'failed';
       startedAt?: number;
       pausedAt?: number | null;
       resumedAt?: number | null;
@@ -178,6 +184,12 @@ export interface TurnGroup {
   assistantMessages: TurnMessage[];
   timerMessage: TurnMessage;
   isComplete: boolean;
+  /**
+   * Earlier executions' finished timer rows folded into this turn instead of
+   * shown as their own rows. Lookups by message id (a fork point, a jump
+   * target) still find the turn through them.
+   */
+  foldedTimerIds?: readonly string[];
 }
 
 export interface StandaloneTurnMessage {

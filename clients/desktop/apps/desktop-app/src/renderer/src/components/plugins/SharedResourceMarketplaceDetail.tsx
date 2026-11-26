@@ -41,6 +41,7 @@ import {
   sharedBlueprintInstallLink,
   sharedResourceInstallLink,
 } from '@/lib/sharedResourceInstallLink';
+import { modelPresetErrorMessage } from '@/lib/modelPresetErrors';
 import { useNavigationStore } from '@/stores/navigationStore';
 import {
   openInAppAgentInstall,
@@ -138,8 +139,9 @@ function useSharedAgentRead(agentId: string): {
           id: agentId,
           detail: null,
           error:
-            toAppError(failure)?.detail.message.trim() ||
-            'Couldn’t load this agent',
+            modelPresetErrorMessage(
+              toAppError(failure)?.detail.message.trim() ?? '',
+            ) || "Couldn't load this model preset",
         });
       });
     return (): void => {
@@ -177,7 +179,7 @@ function SharedAgentReadNotice({
     );
   }
   return (
-    <DelayedLoadingPlaceholder slowNote="Still loading agent…">
+    <DelayedLoadingPlaceholder slowNote="Still loading model preset…">
       <CenteredLoadingSpinner spacing="section" />
     </DelayedLoadingPlaceholder>
   );
@@ -287,13 +289,13 @@ export function SharedAgentLayoutDetail({
           primary={
             <CustomizeRowSplitButton
               // The title names it; labels keep its name out of replay.
-              entryName="this agent"
+              entryName="this model preset"
               idPrefix={`shared-agent-detail-${agent.id}`}
               action={{
                 ...primary,
                 accessibleName: installed
-                  ? 'This agent is installed'
-                  : 'Add this agent',
+                  ? 'This model preset is installed'
+                  : 'Add this model preset',
               }}
               items={[]}
             />

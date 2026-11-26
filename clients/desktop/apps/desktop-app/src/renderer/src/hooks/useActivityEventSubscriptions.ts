@@ -2,7 +2,6 @@ import { useEffect } from 'react';
 import { useActivityStore } from '@/stores/activityStore';
 import type {
   ActivityBgProcessOutputEvent,
-  DetectedPlansUpdatedEvent,
   TrackedPlansUpdatedEvent,
   WorktreeSummaryGeneratingEvent,
   WorktreeSummaryUpdatedEvent,
@@ -24,7 +23,6 @@ export function useActivityEventSubscriptions(): void {
   const removeTrackedPlan = useActivityStore(
     (state) => state.removeTrackedPlan,
   );
-  const setDetectedPlans = useActivityStore((state) => state.setDetectedPlans);
 
   useEffect(() => {
     const unsubscribeBgOutput = window.api.activity.onBgProcessOutput(
@@ -63,19 +61,12 @@ export function useActivityEventSubscriptions(): void {
           upsertTrackedPlan(event.plan);
         },
       );
-    const unsubscribeDetectedPlansUpdated =
-      window.api.activity.onDetectedPlansUpdated(
-        (event: DetectedPlansUpdatedEvent) => {
-          setDetectedPlans(event.projectId, event.worktreeId, event.entries);
-        },
-      );
 
     return (): void => {
       unsubscribeBgOutput();
       unsubscribeSummaryUpdated();
       unsubscribeSummaryGenerating();
       unsubscribeTrackedPlansUpdated();
-      unsubscribeDetectedPlansUpdated();
     };
   }, [
     appendBgProcessOutput,
@@ -83,6 +74,5 @@ export function useActivityEventSubscriptions(): void {
     setWorktreeSummary,
     upsertTrackedPlan,
     removeTrackedPlan,
-    setDetectedPlans,
   ]);
 }

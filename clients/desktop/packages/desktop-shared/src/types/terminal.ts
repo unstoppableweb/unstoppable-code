@@ -24,6 +24,7 @@ import type { BrowserDrawerTabId } from '@canopy/execution-engine/types/browser'
 export type {
   LoadWorktreeTerminalStateRequest,
   LoadWorktreeTerminalStateResponse,
+  TerminalRecordHistoryStatus,
   ManagedTerminalCommand,
   PersistedTerminalEntry,
   PersistedWorktreeTerminalStateFile,

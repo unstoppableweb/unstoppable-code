@@ -1,6 +1,6 @@
 'use client';
 
-import { Dot } from '../Badge';
+import { Dot } from '../../primitives/Badge';
 import { useRef, useState, type JSX, type ReactNode } from 'react';
 import type {
   LedgerEntryType,
@@ -34,7 +34,7 @@ import {
   PickerMenuOptionLeading,
   PickerMenuSection,
   PickerMenuSectionLabel,
-} from '../PickerMenu';
+} from '../../primitives/PickerMenu';
 import { FilterMenuButton, pageFilter } from '../PageSearchRow';
 import { RailIconButton } from '../RailIconButton';
 import { LedgerEntryTypeIcon } from '../../icons/LedgerEntryTypeIcon';

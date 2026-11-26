@@ -17,7 +17,7 @@ import {
   type ExecutionSecretStager,
 } from '../execution-secrets';
 import type { LocalWorkerExecution } from '../operations/local-worker';
-import type { OperationService } from '../operations/service';
+import type { OperationServicePort } from '../operations/service';
 import { catalogMaterializationIdentity } from './revision';
 
 /*
@@ -146,7 +146,7 @@ export class CoreCatalogMaterializations {
 
   constructor(
     private readonly options: {
-      operations: OperationService;
+      operations: OperationServicePort;
       localWorker: LocalWorkerExecution;
       resolver: CatalogMaterializationResolver;
       /** Stages the MCP secret grant each dispatched attempt redeems (CAN-4125). */

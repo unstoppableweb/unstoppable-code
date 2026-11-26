@@ -1,4 +1,5 @@
 /** CAN-4733: a replayed key never reaches its handler twice, however its receipt ends. */
+import { peerScopedDispatchTag } from '../dispatch-tag-scope';
 import {
   WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS,
   WORKER_FILESYSTEM_WRITE_INSTRUCTION_DEFINITIONS,
@@ -277,14 +278,19 @@ describe('worker executor receipt replay (CAN-4733)', () => {
     if (!run) throw new Error('Missing wrapped handler');
     const tagged = (dispatchId: string): CanopyHandlerContext => ({
       ...context('k'),
-      metadata: { idempotencyKey: 'k', dispatchId },
+      metadata: {
+        idempotencyKey: 'k',
+        dispatchId: peerScopedDispatchTag(CALLER, dispatchId),
+      },
     });
     await expect(run(params('a'), tagged('t1'))).resolves.toEqual(RESULT);
     await expect(run(params('a'), tagged('t2'))).resolves.toEqual(RESULT);
     expect(handler).toHaveBeenCalledTimes(1);
     for (const dispatchId of ['t1', 't2'])
       expect(
-        receipts.lookup(CALLER.principalId, OPERATION, { dispatchId }),
+        receipts.lookup(CALLER.principalId, OPERATION, {
+          dispatchId: peerScopedDispatchTag(CALLER, dispatchId),
+        }),
       ).toEqual({
         state: 'settled',
         outcome: { status: 'completed', result: RESULT },

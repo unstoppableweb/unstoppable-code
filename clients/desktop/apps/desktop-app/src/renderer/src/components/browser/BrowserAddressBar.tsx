@@ -1,4 +1,4 @@
-import { Dot } from '@canopy/ui-shared/components/Badge';
+import { Dot } from '@canopy/ui-shared/primitives/Badge';
 import { useCallback, useId, useRef, useState, type JSX } from 'react';
 import { isMcpOAuthBrowserScope } from '@canopy/execution-engine/types/browser';
 import type { BrowserSessionSnapshot } from '@canopy/desktop-shared/types';

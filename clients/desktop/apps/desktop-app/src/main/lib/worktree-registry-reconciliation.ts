@@ -8,7 +8,6 @@ import { cleanupPersistedWorktreeData } from './worktree-data-cleanup';
 import { withLinuxWorktreeWriterTracking } from './worktree-process-cleanup';
 import { notifyDesktopInventoryChanged } from '../services/desktop-inventory-sync-signals';
 import { notifyLedgerContainerRemovedExternally } from '../ledger/lifecycle';
-import { publishWorktreeLifecycleChange } from './worktree-lifecycle-signals';
 
 const inFlightCleanup = new Map<string, Promise<void>>();
 
@@ -86,9 +85,8 @@ export async function reconcileExternalWorktreeSnapshot(
   // An external writer (the CLI) changed which worktrees exist, and with
   // them which per-worktree pipeline documents the cloud inventory should
   // hold (CAN-2830); the in-app write paths notify through
-  // scheduleDesktopStructureChanged, this is the watcher's counterpart.
+  // scheduleDesktopStructureChanged. Callers publish the membership change.
   notifyDesktopInventoryChanged(['pipelines']);
-  publishWorktreeLifecycleChange('external-snapshot');
   const cleanups: Promise<void>[] = [];
   for (const worktreeId of removedWorktreeIds) {
     const key = `${workspaceId}/${worktreeId}`;

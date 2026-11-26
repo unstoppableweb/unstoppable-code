@@ -4,10 +4,10 @@ import {
   TURN_FEEDBACK_REASONS,
   type TurnFeedbackReason,
 } from '@canopy/protocol/turn-feedback';
-import { Button } from './Button';
-import { Chip } from './Chip';
-import { DialogModal } from './DialogModal';
-import { TextArea } from './Field';
+import { Button } from '../primitives/Button';
+import { Chip } from '../primitives/Chip';
+import { DialogModal } from '../primitives/DialogModal';
+import { TextArea } from '../primitives/Field';
 
 const REASON_LABELS: Record<TurnFeedbackReason, string> = {
   'incorrect-or-didnt-work': "Incorrect or didn't work",

@@ -34,6 +34,7 @@ import {
   CHAT_FORMAT4_TRIGGERS,
   chatFormat4Labels,
   recordChatFormat4Outcome,
+  withChatFormat4PreHandoffTrigger,
   type ChatFormat4Outcome,
 } from '../chat-format4-telemetry';
 import {
@@ -136,6 +137,18 @@ describe('format 4 telemetry payloads', () => {
       { event: 'sweep_pass_completed', remaining: 12 },
       { event: 'sweep_paused', reason: 'battery' },
       { event: 'sweep_scope_backed_off', reason: 'integrity' },
+      { event: 'prehandoff_completed', durationMs: 2_500, remaining: 0 },
+      {
+        event: 'prehandoff_bound_exceeded',
+        durationMs: 21_000,
+        remaining: 40,
+      },
+      // An abandoned scan's count is unknown.
+      {
+        event: 'prehandoff_bound_exceeded',
+        durationMs: 22_000,
+        remaining: undefined,
+      },
     ];
     for (const outcome of outcomes) recordChatFormat4Outcome(outcome);
     expect(succeedDesktopOperation).not.toHaveBeenCalled();
@@ -213,6 +226,33 @@ describe('format 4 telemetry payloads', () => {
         format4_pause_reason: 'none',
         format4_trigger: 'sweep',
       },
+      {
+        format4_event: 'prehandoff_completed',
+        format4_reason: 'none',
+        format4_attempt: 0,
+        format4_duration_bucket: '1s_5s',
+        format4_remaining_bucket: '0',
+        format4_pause_reason: 'none',
+        format4_trigger: 'pre-handoff',
+      },
+      {
+        format4_event: 'prehandoff_bound_exceeded',
+        format4_reason: 'none',
+        format4_attempt: 0,
+        format4_duration_bucket: '5s_30s',
+        format4_remaining_bucket: '21_100',
+        format4_pause_reason: 'none',
+        format4_trigger: 'pre-handoff',
+      },
+      {
+        format4_event: 'prehandoff_bound_exceeded',
+        format4_reason: 'none',
+        format4_attempt: 0,
+        format4_duration_bucket: '5s_30s',
+        format4_remaining_bucket: 'none',
+        format4_pause_reason: 'none',
+        format4_trigger: 'pre-handoff',
+      },
     ]);
     for (const context of sentContexts()) expectOnlyDeclaredFields(context);
     // Neither the path nor the message reaches any call.
@@ -247,6 +287,35 @@ describe('format 4 telemetry payloads', () => {
       chatFormat4Labels({ event: 'sweep_paused', reason: 'disk' })
         .format4_trigger,
     ).toBe('sweep');
+  });
+
+  it('labels every outcome recorded while a pre-handoff pass runs pre-handoff, the repository’s own included, and none outside it (CAN-7178 PR 3)', async () => {
+    await withChatFormat4PreHandoffTrigger(async () => {
+      recordChatFormat4Outcome({
+        event: 'promoted',
+        attempt: 1,
+        trigger: 'sweep',
+      });
+      await settle();
+      recordChatFormat4Outcome({
+        event: 'newer_format_refused',
+        trigger: 'sweep',
+      });
+    });
+    recordChatFormat4Outcome({
+      event: 'promoted',
+      attempt: 1,
+      trigger: 'sweep',
+    });
+    recordChatFormat4Outcome({ event: 'promoted', attempt: 1 });
+    await settle();
+    expect(
+      sentContexts().map((context): unknown =>
+        typeof context === 'object' && context !== null
+          ? Reflect.get(context, 'format4_trigger')
+          : undefined,
+      ),
+    ).toEqual(['pre-handoff', 'pre-handoff', 'sweep', 'load']);
   });
 
   it('classifies a failure by its type and code alone', () => {

@@ -13,6 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  WORKER_PIPELINE_OWNER_AGENT_ACTION_NOT_SENT_TEXT,
   WorkerPipelineHostRequestSchema,
   type WorkerPipelineHostRequest,
   type WorkerPipelineOwnerResult,
@@ -95,6 +96,14 @@ jest.mock('../../lib/model-policy-state', () => ({
   isModelBlockedByStoredPolicy: (): boolean => false,
   isOrgModelPolicyActiveForStoredAccount: (...args: unknown[]): unknown =>
     Reflect.apply(mockPolicyActive, undefined, args),
+}));
+const mockExecuteTool = jest.fn<Promise<unknown>, unknown[]>(() =>
+  Promise.resolve({ text: 'posted' }),
+);
+jest.mock('../../canopy-tools/core', () => ({
+  ...jest.requireActual<object>('../../canopy-tools/core'),
+  executeCanopyInjectedTool: (...args: unknown[]): unknown =>
+    Reflect.apply(mockExecuteTool, undefined, args),
 }));
 jest.mock('../../approvals/approval-service', () => ({
   createApprovalSession: (...args: unknown[]): unknown =>
@@ -498,6 +507,137 @@ describe('PipelineOwnerRunContext', () => {
         .result.status,
     ).toBe('failure');
     expect(mockLedgerOperate).not.toHaveBeenCalled();
+    await context.close(state());
+  });
+
+  it("serves a dangerous_all attempt's agent action tools with the attempt's own scope, until it closes (CAN-7742)", async () => {
+    const context = new PipelineOwnerRunContext(run());
+    const openAttempt = async (permissionPreset: string): Promise<string> => {
+      const opened = ownerValue(
+        await context.apply(
+          ownerRequest({
+            action: 'owner.ledger.open',
+            physicalJobId: 'job',
+            logicalJobId: 'job',
+            jobName: 'Job',
+            stepId: 'step',
+            stepName: 'Step',
+            attempt: 1,
+            iteration: 0,
+            harness: 'claude',
+            permissionPreset,
+          }),
+          signal,
+        ),
+      );
+      if (opened?.kind !== 'ledger.open' || !opened.attempt)
+        throw new Error('No attempt.');
+      return opened.attempt.attemptKey;
+    };
+    const check = jest.fn().mockResolvedValue({ decision: 'allow' });
+    mockCreateApprovalSession.mockImplementation(() => ({
+      check,
+      dispose: jest.fn(),
+    }));
+    const readOnly = await openAttempt('read_only');
+    expect(
+      ownerValue(
+        await context.apply(
+          ownerRequest({
+            action: 'owner.agentActions.open',
+            attemptKey: readOnly,
+          }),
+          signal,
+        ),
+      ),
+    ).toEqual({ kind: 'agentActions.open', tools: null });
+
+    const attemptKey = await openAttempt('dangerous_all');
+    const open = async (): Promise<string> => {
+      const value = ownerValue(
+        await context.apply(
+          ownerRequest({
+            action: 'owner.agentActions.open',
+            attemptKey,
+            cwd: worktree,
+          }),
+          signal,
+        ),
+      );
+      if (value?.kind !== 'agentActions.open' || value.tools === null)
+        throw new Error('No tools.');
+      expect(value.tools.definitions.map(({ key }) => key)).toEqual([
+        'search_actions',
+        'dispatch_action',
+      ]);
+      return value.tools.toolsKey;
+    };
+    const toolsKey = await open();
+    // A second open for the attempt answers the same tools.
+    expect(await open()).toBe(toolsKey);
+
+    const call = (
+      overrides: Partial<{ toolsKey: string; invocationId: string }> = {},
+    ): Promise<PipelineOwnerSettlement> =>
+      context.apply(
+        ownerRequest({
+          action: 'owner.agentActions.call',
+          toolsKey,
+          key: 'dispatch_action',
+          arguments: {
+            action: { type: 'pull_request.review.publish' },
+            executionId: 'forged',
+            projectId: 'forged',
+          },
+          invocationId: 'claude:toolu_1',
+          ...overrides,
+        }),
+        signal,
+      );
+    expect(ownerValue(await call())).toEqual({
+      kind: 'agentActions.call',
+      text: 'posted',
+      isError: false,
+    });
+    expect(check).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'mcp', tool: 'DispatchAction' }),
+      expect.objectContaining({ toolUseId: 'claude:toolu_1' }),
+    );
+    expect(mockExecuteTool).toHaveBeenCalledTimes(1);
+    const [key, , runtime, context1] = mockExecuteTool.mock.calls[0] ?? [];
+    expect(key).toBe('dispatch_action');
+    expect(runtime).toMatchObject({
+      worktreeActionRuntime: {
+        projectId: 'workspace-1',
+        worktreeId: 'worktree-1',
+        chatId: 'pipeline:execution-1',
+        cwd: worktree,
+        allowedActionTypes: ['pull_request.review.publish'],
+        pipelineExecutionId: 'execution-1',
+      },
+    });
+    expect(context1).toMatchObject({ toolUseId: 'claude:toolu_1' });
+
+    const notSent = {
+      kind: 'agentActions.call',
+      text: WORKER_PIPELINE_OWNER_AGENT_ACTION_NOT_SENT_TEXT,
+      isError: true,
+    };
+    // An unknown key, or a call the step's approval refuses, runs nothing.
+    expect(ownerValue(await call({ toolsKey: 'foreign' }))).toEqual(notSent);
+    check.mockResolvedValueOnce({ decision: 'deny' });
+    expect(ownerValue(await call())).toEqual(notSent);
+    // The tools end with the attempt.
+    await context.apply(
+      ownerRequest({
+        action: 'owner.ledger.close',
+        attemptKey,
+        outcome: { kind: 'settled' },
+      }),
+      signal,
+    );
+    expect(ownerValue(await call())).toEqual(notSent);
+    expect(mockExecuteTool).toHaveBeenCalledTimes(1);
     await context.close(state());
   });
 

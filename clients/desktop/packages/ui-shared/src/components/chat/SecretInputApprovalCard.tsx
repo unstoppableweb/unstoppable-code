@@ -15,10 +15,10 @@ import type {
   SecretInputApprovalPrompt,
 } from '@canopy/protocol/approvals';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
-import { surfaceClassName } from '../Surface';
-import { Button } from '../Button';
-import { FormField } from '../FormField';
-import { TextInput } from '../Field';
+import { surfaceClassName } from '../../primitives/Surface';
+import { Button } from '../../primitives/Button';
+import { FormField } from '../../primitives/FormField';
+import { TextInput } from '../../primitives/Field';
 import type { ToolApprovalCardHandle } from './ToolApprovalCard';
 
 export interface SecretInputApprovalCardProps {

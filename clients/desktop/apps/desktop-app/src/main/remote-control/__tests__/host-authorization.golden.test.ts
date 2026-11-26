@@ -5,20 +5,36 @@
  * relay does. A break here lets a controller act beyond its profile, pair
  * without consent, or outlive a revocation.
  */
+import { isMirrored } from '../host/main-window-pushes';
+import { scrubHostPaths } from '../host/browser-host-paths';
+import type { RemoteControlTelemetryEvent } from '@canopy/desktop-instrumentation/pairing';
 import { sign } from 'node:crypto';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
+import os, { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type {
   DeviceKind,
   DeviceRelayDeviceInfo,
 } from '@canopy/protocol/device-relay';
 import {
+  ARGUMENTS_REFUSED_CODE,
+  CHANNEL_UNAVAILABLE_CODE,
+  DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION,
+  DESKTOP_ONE_WINDOW_MODE,
   HOSTED_DELEGATION_MAX_MS,
   HelloResultSchema,
   REMOTE_EVENTS,
   REMOTE_METHODS,
   REMOTE_PROTOCOL_VERSION,
+  REMOTE_TRANSPORT_RESUME_VERSION,
+  RemoteChannelUnavailableError,
   WEB_CONTROLLER_MIN_PROTOCOL_VERSION,
   hostedDelegationSigningBytes,
   parsePairingFragment,
@@ -35,13 +51,23 @@ import {
   BROWSER_CONTROLLER_CHANNELS,
   BROWSER_PENDING_RECOVERY_FIELD_MAX_LENGTH,
   BROWSER_PENDING_RECOVERY_MAX_ENTRIES,
+  HOSTED_ARCHIVE_CHANNELS,
   HOSTED_CHAT_COMMAND_FIELDS,
   HOSTED_CONTROLLER_CHANNELS,
   HOSTED_IPC_CHANNELS,
+  HOSTED_SLACK_REQUESTS_OFF_REFUSAL,
+  HOSTED_SLACK_REQUESTS_UNAVAILABLE_REFUSAL,
   HOSTED_TASK_CHANNELS,
   MOBILE_CONTROLLER_CHANNELS,
+  ONE_WINDOW_CAPABILITIES,
+  ONE_WINDOW_CAPABILITY_CHANNELS,
+  ONE_WINDOW_CHAT_COMMANDS,
+  ONE_WINDOW_CONTROLLER_CHANNELS,
   hostedInvocationAllowed,
   browserInvocationAllowed,
+  oneWindowChannelAllowed,
+  oneWindowControllerProfile,
+  oneWindowHostChannels,
   browserWorkspaceDeleteAllowed,
   browserWorktreeDiscardDescribeAllowed,
 } from '@canopy/protocol/remote-control/channels';
@@ -69,6 +95,8 @@ import type {
   ChatCommandExecutionOptions,
   ChatCommandRequest,
   ChatCommandResult,
+  PairedComputerUpdate,
+  PairedComputerWindowEvent,
   PersistedPendingQuestion,
   RemoteControlPairingEvent,
   RemoteControlState,
@@ -91,15 +119,30 @@ import {
   type DeviceKeyPair,
 } from '../crypto/device-key';
 import { decodeEnvelope } from '../transport/envelope';
+import {
+  createOneWindowSessionPolicy,
+  followOneWindowSwitch,
+} from '../client/one-window-session-policy';
+import {
+  applyOneWindowChoice,
+  isOneWindowEnabled,
+  onOneWindowEnabledChanged,
+} from '../../lib/one-window-switch';
+import {
+  PairedComputerWindowApi,
+  ownWindowCheck,
+} from '../client/paired-computer-window-api';
+import { createPairedComputersApi } from '../../../preload/api/paired-computers-api';
+import type { PreloadIpcRenderer } from '../../../preload/ipc-router';
 import type { HostBridge } from '../host/bridge-window';
 import { pairingProofFor } from '../host/controller-profile';
+import { APP_ADVISOR_PROJECT_ID } from '@canopy/protocol/chat-targets';
 import { mergeAgentModelConfig } from '@canopy/execution-engine/lib/codex-speed';
 import {
   HOSTED_CHAT_COMMAND_REFUSAL,
   HOSTED_MODEL_PROVIDER_REFUSAL,
   HOSTED_SECRET_ANSWER_REFUSAL,
-  HOSTED_SLACK_REQUESTS_OFF_REFUSAL,
-  HOSTED_SLACK_REQUESTS_UNAVAILABLE_REFUSAL,
+  HOSTED_WORK_ENTRY_CHAT_ARCHIVE_REFUSAL,
   createHostedChatDispatcher,
   type HostedChatAttribution,
   type HostedQuestionAnswerRequest,
@@ -116,7 +159,18 @@ import {
   type RemoteRelayFactoryOptions,
 } from '../remote-control-service';
 import type { RemoteRelay } from '../transport/relay-client';
-import { RpcPeer, RpcRemoteError } from '../transport/rpc-peer';
+import { RpcPeer, RpcPublicError, RpcRemoteError } from '../transport/rpc-peer';
+import { getCanopyDataDir } from '@canopy/execution-engine/canopy-paths';
+import { TunnelStreamMux } from '../tunnel/stream-mux';
+import { webPreviewFlagOn } from '../host/web-preview-flag';
+import { RemoteWebPreviewStore } from '../remote-web-preview-store';
+import {
+  CLIENT_FEATURE_FLAGS,
+  getDefaultFeatureFlagSnapshot,
+  type FeatureFlagSnapshot,
+} from '@canopy/protocol/feature-flags';
+import { TunnelOpenError } from '../tunnel/tunnel-socket';
+import { NEXT_PAGE, startDevServers } from './helpers/dev-servers';
 import {
   RemoteSessionManager,
   type RelayTransport,
@@ -139,6 +193,8 @@ const ACCOUNT_USER_ID = '00000000-0000-4000-8000-0000000000ab';
 const DEFAULT_MODEL = 'default-model';
 /** The Orchestrator's own model, which a Slack thread's tab starts on. */
 const ORCHESTRATOR_MODEL = 'orchestrator-model';
+/** A Work Entry (Cowork) project in the hosted chat fixture. */
+const WORK_ENTRY_PROJECT_ID = 'cowork-project-1';
 /** A model whose create seed carries plugin selections (CAN-7445). */
 const SEEDED_MODEL = 'seeded-model';
 const SEED_PLUGIN_SELECTIONS = {
@@ -165,11 +221,14 @@ class Hub {
   /** Whether the relay authenticates kinds (`device-kind`). */
   authenticatesKind = true;
   hold: Hold | null = null;
+  /** Links the relay can't carry right now, both ways (`a>b` and `b>a`). */
+  readonly cut = new Set<string>();
   private readonly links = new Map<string, Promise<void>>();
 
   deliver(from: string, to: string, payload: Buffer): boolean {
     const target = this.endpoints.get(to);
     if (!target?.online) return false;
+    if (this.cut.has(`${from}>${to}`)) return false;
     const key = `${from}>${to}`;
     const run = async (): Promise<void> => {
       if (this.hold) await this.hold(from, to, payload);
@@ -196,6 +255,7 @@ class Endpoint implements RemoteRelay {
   online = false;
   private readonly frames = new Set<FrameListener>();
   private readonly offline = new Set<(peer: string) => void>();
+  private readonly cameOnline = new Set<(peer: string) => void>();
   private readonly undeliverable = new Set<(peer: string) => void>();
 
   constructor(
@@ -248,9 +308,16 @@ class Endpoint implements RemoteRelay {
     return () => this.offline.delete(listener);
   }
 
-  // Presence never changes here, so nothing announces a peer online.
-  onPeerOnline(): () => void {
-    return () => undefined;
+  /** Presence changes only when a test says so (`peerWent`). */
+  onPeerOnline(listener: (peer: string) => void): () => void {
+    this.cameOnline.add(listener);
+    return () => this.cameOnline.delete(listener);
+  }
+
+  /** Tells this endpoint's listeners a peer went offline or came back. */
+  peerWent(peer: string, presence: 'offline' | 'online'): void {
+    const listeners = presence === 'offline' ? this.offline : this.cameOnline;
+    for (const listener of Array.from(listeners)) listener(peer);
   }
 
   onUndeliverable(listener: (peer: string) => void): () => void {
@@ -270,6 +337,13 @@ interface FakeBridgeLog {
   posts: string[];
   /** Each bridge created, with its controller and exact base-branch mode. */
   created: Array<{ controllerDeviceId: string; exact: boolean }>;
+  /**
+   * The session check each bridge was given, which a send or new chat it
+   * replays must pass before it commits (CAN-7872), in creation order.
+   */
+  commitGuards: Array<() => boolean>;
+  /** Whether each bridge serves a one-window session (CAN-7854). */
+  oneWindowFlags: boolean[];
   emitPush: (channel: string, args: unknown[]) => void;
 }
 
@@ -316,6 +390,10 @@ interface HostOptions {
   invokeResult?: unknown;
   /** A reply per channel; takes precedence over `invokeResult`. */
   invokeResultFor?: (channel: string) => unknown;
+  /** A rejection per channel, as a bridge passes a handler's error. */
+  invokeRejectFor?: (channel: string) => Error | undefined;
+  /** Holds each hosted `chat:command` dispatch until it settles. */
+  hostedDispatchGate?: Promise<void>;
   settings?: Partial<RemoteControlFile>;
   portalReads?: LegacyPortalOptInRead[];
   pairingWindowMs?: number;
@@ -326,6 +404,26 @@ interface HostOptions {
   slackGate?: boolean;
   /** The Slack requests feature flag (CAN-7604); on by default. */
   slackFlag?: boolean;
+  /** A signed-in account a test can change; overrides `signedInAccount`. */
+  account?: { current: string | null };
+  /** How long a Connect Slack expectation stays armed (CAN-7606). */
+  expectedPairingMs?: number;
+  /** The web preview flag (CAN-7705); off by default. */
+  webPreviewFlag?: boolean;
+  /**
+   * This computer's saved web preview consent (CAN-7712) when no file is
+   * there yet: on by default, so the flag's goldens see preview served;
+   * 'missing' leaves the file absent.
+   */
+  webPreviewConsent?: boolean | 'missing';
+  /** First retry of a failed web preview off (CAN-7712). */
+  webPreviewRetryMs?: number;
+  /** Replaces the web preview consent file's write (CAN-7712). */
+  webPreviewWrite?: (path: string, contents: string) => Promise<void>;
+  /** Replaces the web preview consent file's read (CAN-7712). */
+  webPreviewRead?: (path: string) => Promise<string>;
+  /** Runs before the service first reads its settings. */
+  beforeInitialize?: (service: RemoteControlService) => void;
 }
 
 interface Host {
@@ -341,9 +439,20 @@ interface Host {
   secretAnswers: Array<{ answer: unknown; from: string }>;
   /** Everything the service logged. */
   logs: string[];
+  /** The Remote Control telemetry events the service recorded. */
+  telemetry: RemoteControlTelemetryEvent[];
   mainPush: (channel: string, args: unknown[]) => void;
   portal: { reads: number };
   readSettings: () => Promise<RemoteControlFile>;
+  /** Turns the web preview flag on or off and tells the service. */
+  /** Where web preview consent is saved (CAN-7712). */
+  webPreviewPath: string;
+  webPreviewStore: RemoteWebPreviewStore;
+  setWebPreviewFlag: (value: boolean) => void;
+  /** The flag service's snapshot status changes, keeping its values. */
+  setWebPreviewFlagStatus: (status: FeatureFlagSnapshot['status']) => void;
+  /** Every state the service broadcast to this computer's windows. */
+  broadcasts: RemoteControlState[];
 }
 
 const cleanups: Array<() => Promise<void> | void> = [];
@@ -407,6 +516,8 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
     invokeArgs: [],
     posts: [],
     created: [],
+    commitGuards: [],
+    oneWindowFlags: [],
     emitPush: (channel, args): void => {
       for (const listener of Array.from(pushListeners)) listener(channel, args);
     },
@@ -417,6 +528,45 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
     ...(options.portalReads ?? [{ reliable: true, active: false }]),
   ];
   const uploads = new RemoteUploadStore(join(dir, 'uploads'));
+  const webPreviewPath = join(dir, 'remote-web-preview.json');
+  // A restarted host (a reused `dir`) keeps exactly what it saved: nothing is
+  // seeded unless the test asks, so a lost file can't be recreated.
+  const seed =
+    options.webPreviewConsent !== 'missing' &&
+    (options.dir === undefined || options.webPreviewConsent !== undefined);
+  if (seed) {
+    // Only when nothing is there.
+    await writeFile(
+      webPreviewPath,
+      JSON.stringify({
+        version: 1,
+        allowWebPreview: options.webPreviewConsent ?? true,
+      }),
+      { flag: 'wx' },
+    ).catch(() => undefined);
+  }
+  const webPreviewStore = new RemoteWebPreviewStore(webPreviewPath, {
+    ...(options.webPreviewRetryMs === undefined
+      ? {}
+      : { retryMs: options.webPreviewRetryMs }),
+    ...(options.webPreviewWrite === undefined
+      ? {}
+      : { writeFile: options.webPreviewWrite }),
+    ...(options.webPreviewRead === undefined
+      ? {}
+      : { readFile: options.webPreviewRead }),
+  });
+  // The flag service's snapshot, read the way main reads it.
+  const webPreviewFlag: Pick<FeatureFlagSnapshot, 'status' | 'values'> = {
+    status: 'ready',
+    values: {
+      ...getDefaultFeatureFlagSnapshot('ready').values,
+      [CLIENT_FEATURE_FLAGS.canopyRemoteWebPreview.key]:
+        options.webPreviewFlag ?? false,
+    },
+  };
+  const webPreviewFlagListeners = new Set<() => void>();
+  const broadcasts: RemoteControlState[] = [];
   // The secret form's settlement, first answer wins as in the real store.
   const secretAnswers: Host['secretAnswers'] = [];
   const settledSecretRequests = new Set<string>();
@@ -440,6 +590,7 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
     return Promise.resolve({ accepted: true });
   };
   const logs: string[] = [];
+  const telemetry: RemoteControlTelemetryEvent[] = [];
   const hostedChat: HostedChatLog = {
     dispatched: [],
     answers: [],
@@ -457,14 +608,22 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
   // The real dispatcher and validation over a recorded chat state: a send to
   // a chat that started without a model is refused, as its first turn could
   // not run.
+  const hostedDispatchGate = options.hostedDispatchGate;
   const dispatchHostedChatCommand = createHostedChatDispatcher({
     validate: (request) => validateChatCommandRequest(request),
-    dispatch: (request, attribution, options): Promise<ChatCommandResult> => {
+    // A Work Entry project's chats close only with their task (CAN-7446).
+    isWorkEntryScope: (projectId) => projectId === WORK_ENTRY_PROJECT_ID,
+    dispatch: async (
+      request,
+      attribution,
+      options,
+    ): Promise<ChatCommandResult> => {
       hostedChat.dispatched.push({
         request,
         attribution,
         ...(options === undefined ? {} : { options }),
       });
+      if (hostedDispatchGate) await hostedDispatchGate;
       const command = request.command;
       if (command.type === 'chat.create_tab') {
         hostedChat.tabs.set(command.tabId, command.model);
@@ -472,14 +631,14 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
       const runnable =
         command.type !== 'chat.send_message' ||
         hostedChat.tabs.get(command.chatId) !== undefined;
-      return Promise.resolve({
+      return {
         commandId: request.commandId,
         revision: 1,
         outcome: runnable ? 'applied' : 'rejected',
         ...(command.type === 'chat.send_message'
           ? { entityId: command.chatId, messageId: command.userMessageId }
           : {}),
-      });
+      };
     },
     createSeed: (_projectId, model) =>
       Promise.resolve(
@@ -543,8 +702,16 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
         relayUrl: 'wss://relay.test',
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
       }),
-    signedInAccount: (): string =>
-      options.signedInAccount ?? `account:${ACCOUNT_USER_ID}`,
+    signedInAccount: (): string | null =>
+      options.account
+        ? options.account.current
+        : (options.signedInAccount ?? `account:${ACCOUNT_USER_ID}`),
+    recordTelemetry: (event: RemoteControlTelemetryEvent): void => {
+      telemetry.push(event);
+    },
+    ...(options.expectedPairingMs === undefined
+      ? {}
+      : { expectedPairingMs: options.expectedPairingMs }),
     ...(options.hostedChat === false ? {} : { dispatchHostedChatCommand }),
     hostedOrchestratorReads: {
       readsChat: (entryId, chatId): Promise<boolean> =>
@@ -573,14 +740,20 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
       controllerDeviceId: string,
       _surface: unknown,
       exact: boolean,
+      isAuthorized: () => boolean,
+      oneWindow: boolean,
     ): Promise<HostBridge> => {
       bridge.created.push({ controllerDeviceId, exact });
+      bridge.commitGuards.push(isAuthorized);
+      bridge.oneWindowFlags.push(oneWindow);
       return Promise.resolve({
         getChatInterest: (): undefined => undefined,
         window: null,
         invoke: (channel: string, args: unknown[]): Promise<unknown> => {
           bridge.invokes.push(channel);
           bridge.invokeArgs.push(args);
+          const rejection = options.invokeRejectFor?.(channel);
+          if (rejection) return Promise.reject(rejection);
           return Promise.resolve(
             options.invokeResultFor
               ? options.invokeResultFor(channel)
@@ -624,9 +797,23 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
       showDialog: (): Promise<{ canceled: boolean; filePaths: string[] }> =>
         Promise.resolve({ canceled: true, filePaths: [] }),
     },
-    broadcastState: (): void => undefined,
+    broadcastState: (broadcast): void => {
+      broadcasts.push(broadcast);
+    },
     broadcastPairingEvent: (event): void => {
       events.push(event);
+    },
+    webPreview: {
+      store: webPreviewStore,
+      flag: {
+        isEnabled: (): boolean => webPreviewFlagOn(webPreviewFlag),
+        onChange: (listener): (() => void) => {
+          webPreviewFlagListeners.add(listener);
+          return (): void => {
+            webPreviewFlagListeners.delete(listener);
+          };
+        },
+      },
     },
     readLegacyPortalOptIn: (): Promise<LegacyPortalOptInRead> => {
       portal.reads += 1;
@@ -643,6 +830,7 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
       : { pairingWindowMs: options.pairingWindowMs }),
   });
   cleanups.push((): void => service.dispose());
+  options.beforeInitialize?.(service);
   await service.initialize();
   return {
     service,
@@ -655,12 +843,29 @@ async function createHost(hub: Hub, options: HostOptions = {}): Promise<Host> {
     hostedChat,
     secretAnswers,
     logs,
+    telemetry,
     mainPush: (channel, args): void => {
       for (const listener of Array.from(mainListeners)) listener(channel, args);
     },
     portal,
+    webPreviewPath,
+    webPreviewStore,
     readSettings: async (): Promise<RemoteControlFile> =>
       JSON.parse(await readFile(settingsPath, 'utf8')) as RemoteControlFile,
+    setWebPreviewFlag: (value): void => {
+      webPreviewFlag.values = {
+        ...webPreviewFlag.values,
+        [CLIENT_FEATURE_FLAGS.canopyRemoteWebPreview.key]: value,
+      };
+      for (const listener of Array.from(webPreviewFlagListeners)) listener();
+    },
+    setWebPreviewFlagStatus: (status): void => {
+      // A published initializing or error snapshot keeps the earlier
+      // values, as the service does.
+      webPreviewFlag.status = status;
+      for (const listener of Array.from(webPreviewFlagListeners)) listener();
+    },
+    broadcasts,
   };
 }
 
@@ -875,6 +1080,29 @@ function delegate(
 // ---------------------------------------------------------------------------
 // Controller profiles
 // ---------------------------------------------------------------------------
+
+/** A sign-in push as the controller received it: its channel and text. */
+function signInPushOf(value: unknown): { channel: string; data?: string } {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('channel' in value) ||
+    typeof value.channel !== 'string'
+  )
+    throw new Error('Not a push.');
+  const args: unknown = 'args' in value ? value.args : undefined;
+  const first: unknown = Array.isArray(args) ? args[0] : undefined;
+  const data =
+    typeof first === 'object' &&
+    first !== null &&
+    'data' in first &&
+    typeof first.data === 'string'
+      ? first.data
+      : undefined;
+  return data === undefined
+    ? { channel: value.channel }
+    : { channel: value.channel, data };
+}
 
 describe('controller profiles', () => {
   it.each(['mobile', 'desktop'] as const)(
@@ -1186,6 +1414,1561 @@ describe('controller profiles', () => {
       'remote_protocol_mismatch',
     );
     expect(below.host.bridge.invokes).toEqual([]);
+  });
+});
+
+describe('one-window desktop controllers (CAN-7758)', () => {
+  /** What a host released before one-window mode advertises. */
+  const HOST_FEATURES_BEFORE_ONE_WINDOW = {
+    controllerProfiles: true,
+    pairingProof: true,
+    hostedDelegation: true,
+    pairRevoke: true,
+  };
+  /** On the one-window list: the chat state the main window reads. */
+  const LIST_CHANNEL = IPC_CHANNELS.chatGetState;
+  const oneWindow = oneWindowControllerProfile();
+
+  async function oneWindowSession(options: {
+    host?: { protocolVersion: number; appVersion: string };
+    controller?: { protocolVersion: number; appVersion: string };
+    profile?: NonNullable<HelloParams['controller']>;
+  }): Promise<{
+    host: Host;
+    desktop: Controller;
+    rpc: RpcPeer;
+    answer: HelloResult;
+  }> {
+    const hub = new Hub();
+    const desktop = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(desktop)] },
+      ...(options.host ? { version: options.host } : {}),
+    });
+    const { rpc } = await control(host, desktop);
+    const answer = HelloResultSchema.parse(
+      await hello(rpc, {
+        version: options.controller ?? VERSION,
+        controller: options.profile ?? oneWindow,
+      }),
+    );
+    return { host, desktop, rpc, answer };
+  }
+
+  it('keeps the reviewed list within tunneled channels, with the calls the desktop chat backend needs', () => {
+    expect(oneWindow).toEqual({
+      kind: 'desktop',
+      minVersion: DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION,
+      mode: DESKTOP_ONE_WINDOW_MODE,
+    });
+    for (const channel of ONE_WINDOW_CONTROLLER_CHANNELS) {
+      expect(getRemoteChannelDisposition(channel)).toBe('tunnel');
+    }
+    // The browser list lacks these; the desktop chat store's native API
+    // shows approvals and declares chat scopes and interest with them.
+    for (const channel of [
+      IPC_CHANNELS.approvalRequest,
+      IPC_CHANNELS.chatSetStateScopes,
+      IPC_CHANNELS.chatSetInterest,
+    ]) {
+      expect(BROWSER_CONTROLLER_CHANNELS).not.toContain(channel);
+      expect(oneWindowChannelAllowed(channel)).toBe(true);
+    }
+    // The queue's actions wait for CAN-7877, and answering an approval until
+    // the host ties the answer to a chat's approval; secret
+    // input, a terminal and the approval mode setter, which writes this
+    // computer's default for every chat, never reach a one-window session.
+    for (const channel of [
+      IPC_CHANNELS.chatQueueEdit,
+      IPC_CHANNELS.chatQueueSetEditLock,
+      IPC_CHANNELS.chatQueueCancel,
+      IPC_CHANNELS.chatQueueForce,
+      // A chat's settings stay off: the setters save without checking the
+      // pairing again, and plan mode restarts a terminal-backed chat's
+      // terminal, ending its running turn.
+      IPC_CHANNELS.planModeToggle,
+      IPC_CHANNELS.thinkingLevelToggle,
+      IPC_CHANNELS.chatCodexFastModeToggle,
+      IPC_CHANNELS.approvalRespond,
+      IPC_CHANNELS.approvalDismiss,
+      IPC_CHANNELS.chatModelChange,
+      IPC_CHANNELS.approvalSecretInput,
+      IPC_CHANNELS.approvalModeSet,
+      NOT_A_MOBILE_CHANNEL,
+      'no-such:channel',
+    ]) {
+      expect(oneWindowChannelAllowed(channel)).toBe(false);
+    }
+  });
+
+  it.each([
+    [
+      'a newer controller',
+      VERSION,
+      { protocolVersion: REMOTE_PROTOCOL_VERSION + 3, appVersion: '9' },
+    ],
+    [
+      'an older controller at the floor',
+      { protocolVersion: REMOTE_PROTOCOL_VERSION + 2, appVersion: '9' },
+      {
+        protocolVersion: DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION,
+        appVersion: '1',
+      },
+    ],
+  ])(
+    'serves %s at or above the floor the reviewed list and nothing else',
+    async (_label, hostVersion, controllerVersion) => {
+      const { host, desktop, rpc, answer } = await oneWindowSession({
+        host: hostVersion,
+        controller: controllerVersion,
+      });
+      expect(answer.version).toEqual(hostVersion);
+      expect(answer.features).toEqual({
+        controllerProfiles: true,
+        pairingProof: true,
+        hostedDelegation: true,
+        pairRevoke: true,
+        oneWindow: { capabilities: [...ONE_WINDOW_CAPABILITIES] },
+      });
+      expect(oneWindowHostChannels(answer, controllerVersion)).toEqual(
+        new Set(ONE_WINDOW_CONTROLLER_CHANNELS),
+      );
+      expect(await invokeCode(rpc, LIST_CHANNEL)).toBe('ok');
+      const approval = {
+        requestId: 'request-1',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        chatId: 'chat-1',
+      };
+      // Approval requests are shown, not answered: the host settles a
+      // response by its request ID alone, which also names prompts that
+      // belong to no chat, and saves the rule target the caller sends.
+      for (const [channel, request] of [
+        [
+          IPC_CHANNELS.approvalRespond,
+          { ...approval, decision: { behavior: 'allow', scope: 'once' } },
+        ],
+        [IPC_CHANNELS.approvalDismiss, approval],
+      ] as const) {
+        expect(await invokeCodeWith(rpc, channel, [request])).toBe(
+          'remote_channel_unavailable',
+        );
+      }
+      // Outside the list: refused before the bridge, as an older host refuses
+      // a channel it does not tunnel, so the feature reports itself unavailable.
+      for (const channel of [
+        NOT_A_MOBILE_CHANNEL,
+        MOBILE_CHANNEL,
+        IPC_CHANNELS.approvalSecretInput,
+        IPC_CHANNELS.approvalModeSet,
+        'no-such:channel',
+      ]) {
+        expect(await invokeCode(rpc, channel)).toBe(
+          'remote_channel_unavailable',
+        );
+      }
+      // The main surface only: a one-window session has no App Advisor window.
+      await expect(
+        rpc.request(REMOTE_METHODS.invoke, {
+          channel: LIST_CHANNEL,
+          args: [],
+          surface: 'app-advisor',
+        }),
+      ).rejects.toMatchObject({ code: 'remote_channel_unavailable' });
+      // The model catalog is read without options: probe and recheck start
+      // provider discovery on this computer.
+      for (const request of [{ probe: true }, { probe: true, recheck: true }]) {
+        expect(
+          await invokeCodeWith(rpc, IPC_CHANNELS.modelRegistryGet, [request]),
+        ).toBe('remote_channel_unavailable');
+      }
+      expect(
+        await invokeCodeWith(rpc, IPC_CHANNELS.modelRegistryGet, [{}]),
+      ).toBe('ok');
+      expect(host.bridge.invokes).toEqual([
+        LIST_CHANNEL,
+        IPC_CHANNELS.modelRegistryGet,
+      ]);
+      expect(
+        host.bridge.created.map((bridge) => bridge.controllerDeviceId),
+      ).toEqual([desktop.deviceId]);
+      // Its bridge is marked one-window, so its exact Stop ends only the
+      // running turn on this computer (CAN-7854).
+      expect(host.bridge.oneWindowFlags).toEqual([true]);
+      // Sends and pushes follow the same list.
+      rpc.notify(REMOTE_EVENTS.ipcSend, {
+        channel: 'terminal:write',
+        args: [],
+      });
+      rpc.notify(REMOTE_EVENTS.ipcSend, {
+        channel: IPC_CHANNELS.chatCancel,
+        args: [],
+      });
+      rpc.notify(REMOTE_EVENTS.ipcSend, {
+        channel: IPC_CHANNELS.chatSetInterest,
+        args: [],
+        surface: 'app-advisor',
+      });
+      rpc.notify(REMOTE_EVENTS.ipcSend, {
+        channel: IPC_CHANNELS.chatSetInterest,
+        args: [],
+      });
+      host.mainPush('terminal:output', [{}]);
+      host.mainPush(IPC_CHANNELS.chatStateChanged, [{}]);
+      host.bridge.emitPush('activity:bg-process-output', [{}]);
+      host.bridge.emitPush(IPC_CHANNELS.approvalRequest, [{}]);
+      await until(
+        () => host.bridge.posts.length > 0 && desktop.pushes.length > 1,
+      );
+      await settle(20);
+      expect(host.bridge.posts).toEqual([IPC_CHANNELS.chatSetInterest]);
+      expect(desktop.pushes).toEqual([
+        IPC_CHANNELS.chatStateChanged,
+        IPC_CHANNELS.approvalRequest,
+      ]);
+      // The session methods that stay with the separate window are refused.
+      await expect(
+        rpc.request(REMOTE_METHODS.uploadPut, {
+          fileName: 'a.txt',
+          bytes: new Uint8Array([1]),
+        }),
+      ).rejects.toMatchObject({ code: 'remote_controller_refused' });
+      await expect(
+        rpc.request(REMOTE_METHODS.fileRead, {
+          absolutePath: '/workspace/a.txt',
+          offset: 0,
+          length: 1,
+        }),
+      ).rejects.toMatchObject({ code: 'remote_controller_refused' });
+      await expect(
+        rpc.request(REMOTE_METHODS.tunnelOpen, {
+          streamId: 1,
+          host: 'localhost',
+          port: 3000,
+          class: 'loopback',
+        }),
+      ).rejects.toMatchObject({ code: 'remote_controller_refused' });
+    },
+  );
+
+  it('never offers web preview to a one-window session', async () => {
+    const hub = new Hub();
+    const desktop = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(desktop)] },
+      webPreviewFlag: true,
+    });
+    const { rpc } = await control(host, desktop);
+    const answer = HelloResultSchema.parse(
+      await hello(rpc, {
+        version: VERSION,
+        controller: oneWindow,
+        webPreview: { version: 1 },
+      }),
+    );
+    expect(answer.features?.webPreview).toBeUndefined();
+    expect(answer.features?.oneWindow).toBeDefined();
+  });
+
+  it('serves nothing below either floor, refuses unknown and misplaced modes, and keeps a session in its first mode', async () => {
+    const belowFloor = {
+      protocolVersion: DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION - 1,
+      appVersion: '0.9',
+    };
+    const newer = {
+      protocolVersion: REMOTE_PROTOCOL_VERSION + 3,
+      appVersion: '9',
+    };
+    // A controller below this host's floor, a host below the controller's
+    // floor, a host below its own floor, and a mode this host does not know:
+    // each answers with the host's version and serves no channel.
+    for (const refused of [
+      { controller: belowFloor },
+      {
+        controller: newer,
+        profile: { ...oneWindow, minVersion: REMOTE_PROTOCOL_VERSION + 1 },
+      },
+      { host: belowFloor },
+      { profile: { ...oneWindow, mode: 'every-window' } },
+    ]) {
+      const { host, rpc, answer } = await oneWindowSession(refused);
+      expect(answer.version).toEqual(refused.host ?? VERSION);
+      expect(answer.features?.oneWindow).toBeUndefined();
+      // This build's controller sends only the mode it knows.
+      if (refused.profile?.mode !== 'every-window')
+        expect(
+          oneWindowHostChannels(answer, refused.controller ?? VERSION),
+        ).toBeNull();
+      expect(await invokeCode(rpc, LIST_CHANNEL)).toBe(
+        'remote_protocol_mismatch',
+      );
+      await expect(
+        rpc.request(REMOTE_METHODS.uploadPut, {
+          fileName: 'a.txt',
+          bytes: new Uint8Array([1]),
+        }),
+      ).rejects.toMatchObject({ code: 'remote_protocol_mismatch' });
+      expect(host.bridge.invokes).toEqual([]);
+      expect(host.bridge.created).toEqual([]);
+    }
+    // Only desktop controllers have modes.
+    const hub = new Hub();
+    const browser = addController(hub, 'browser');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(browser, 'browser')] },
+    });
+    const { rpc: browserRpc } = await control(host, browser);
+    await expect(
+      hello(browserRpc, {
+        version: VERSION,
+        controller: {
+          kind: 'browser',
+          minVersion: WEB_CONTROLLER_MIN_PROTOCOL_VERSION,
+          mode: DESKTOP_ONE_WINDOW_MODE,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'remote_controller_refused' });
+    // A later hello in the full-tunnel mode cannot widen a one-window
+    // session, even on this host's exact protocol.
+    const session = await oneWindowSession({});
+    await expect(
+      hello(session.rpc, { version: VERSION }),
+    ).rejects.toMatchObject({ code: 'remote_controller_refused' });
+    expect(await invokeCode(session.rpc, NOT_A_MOBILE_CHANNEL)).toBe(
+      'remote_channel_unavailable',
+    );
+  });
+
+  it('holds chat:command to the reviewed command types, so a one-window session cannot archive, fork or reset chats', async () => {
+    const { host, rpc } = await oneWindowSession({
+      controller: {
+        protocolVersion: REMOTE_PROTOCOL_VERSION + 1,
+        appVersion: '9',
+      },
+    });
+    const commandRequest = (command: Record<string, unknown>): unknown[] => [
+      {
+        schemaVersion: 1,
+        commandId: 'command-1',
+        projectId: 'project',
+        worktreeId: 'worktree',
+        command,
+      },
+    ];
+    for (const command of [
+      { type: 'chat.archive_tab', chatId: 'chat-1' },
+      { type: 'chat.reset_to_point', chatId: 'chat-1', messageId: 'm-1' },
+      { type: 'chat.fork_tab', chatId: 'chat-1' },
+      { type: 'chat.close_tab', chatId: 'chat-1' },
+      { type: 'chat.not_a_command' },
+      { chatId: 'chat-1' },
+    ]) {
+      expect(
+        await invokeCodeWith(
+          rpc,
+          IPC_CHANNELS.chatCommand,
+          commandRequest(command),
+        ),
+      ).toBe('remote_channel_unavailable');
+    }
+    expect(await invokeCodeWith(rpc, IPC_CHANNELS.chatCommand, [])).toBe(
+      'remote_channel_unavailable',
+    );
+    const send = commandRequest({
+      type: 'chat.send_message',
+      chatId: 'chat-1',
+      userMessageId: 'message-1',
+      text: 'Hello',
+    });
+    expect(await invokeCodeWith(rpc, IPC_CHANNELS.chatCommand, send)).toBe(
+      'ok',
+    );
+    // A command is an invoke on this computer, so a send of one, which
+    // would get no reply, is refused even when the invoke is served; only
+    // the read-only channels may be sent.
+    rpc.notify(REMOTE_EVENTS.ipcSend, {
+      channel: IPC_CHANNELS.chatCommand,
+      args: commandRequest({ type: 'chat.archive_tab', chatId: 'chat-1' }),
+    });
+    rpc.notify(REMOTE_EVENTS.ipcSend, {
+      channel: IPC_CHANNELS.chatCommand,
+      args: send,
+    });
+    rpc.notify(REMOTE_EVENTS.ipcSend, {
+      channel: IPC_CHANNELS.chatSetInterest,
+      args: [],
+    });
+    await until(() => host.bridge.posts.length > 0);
+    await settle(20);
+    expect(host.bridge.posts).toEqual([IPC_CHANNELS.chatSetInterest]);
+    expect(host.bridge.invokes).toEqual([IPC_CHANNELS.chatCommand]);
+    expect(host.bridge.invokeArgs).toEqual([send]);
+    for (const type of ONE_WINDOW_CHAT_COMMANDS) {
+      expect(type).not.toMatch(/archive|fork|reset|close|restore/);
+    }
+    // A send, held to the pairing at commit (CAN-7872); a new chat waits
+    // until the host gives it this computer's defaults (CAN-7907), and the
+    // queue's commands wait for CAN-7877.
+    expect(ONE_WINDOW_CHAT_COMMANDS).toEqual(['chat.send_message']);
+    // Allowed commands carry only their reviewed fields: no auto-archive,
+    // session, pin or approval keys in a settings patch, no seeded or
+    // session-carrying new chat, no approval mode, and no host-set origin.
+    for (const command of [
+      {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { autoArchive: true },
+      },
+      {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { autoArchive: null },
+      },
+      {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { sdkSessionId: 's-1' },
+      },
+      {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { pinned: true },
+      },
+      {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: {
+          modelConfig: { thinkingLevel: 'high', approvalMode: 'full-access' },
+        },
+      },
+      {
+        type: 'chat.create_tab',
+        tabId: 'chat-2',
+        seedTab: { sdkSessionId: 's-1' },
+      },
+      { type: 'chat.create_tab', tabId: 'chat-2', sdkSessionId: 's-1' },
+      {
+        type: 'chat.create_tab',
+        tabId: 'chat-2',
+        claudeForkSessionOnNextSend: true,
+      },
+      { type: 'chat.create_tab', tabId: 'chat-2', approvalMode: 'full-access' },
+      {
+        type: 'chat.set_approval_mode',
+        tabId: 'chat-1',
+        approvalMode: 'full-access',
+      },
+      { type: 'chat.dismiss_question', chatId: 'chat-1', questionId: 'q-1' },
+      // Question answers wait until the host refuses a remote answer to a
+      // secret or person-only question; chat.set_model takes the provider
+      // from its caller (a model change is chat:model-change); read and
+      // attention state waits until the host checks the version named.
+      {
+        type: 'chat.answer_question',
+        chatId: 'chat-1',
+        questionId: 'q-1',
+        answers: {},
+      },
+      {
+        type: 'chat.set_model',
+        tabId: 'chat-1',
+        model: 'model-1',
+        providerType: 'codex',
+      },
+      { type: 'chat.set_model', tabId: 'chat-1', model: 'model-1' },
+      { type: 'chat.mark_read', chatId: 'chat-1' },
+      { type: 'chat.mark_unread', chatId: 'chat-1' },
+      { type: 'chat.dismiss_attention', chatId: 'chat-1', attentionVersion: 1 },
+    ]) {
+      expect(
+        await invokeCodeWith(
+          rpc,
+          IPC_CHANNELS.chatCommand,
+          commandRequest(command),
+        ),
+      ).toBe('remote_channel_unavailable');
+    }
+    const [envelope] = send;
+    expect(
+      await invokeCodeWith(rpc, IPC_CHANNELS.chatCommand, [
+        { ...Object(envelope), origin: { kind: 'automation' } },
+      ]),
+    ).toBe('remote_channel_unavailable');
+    // Values are checked too: plugin selections carry only the reviewed
+    // keys, so a controller cannot route MCP credentials, and a field holds
+    // only its type.
+    const selections = { collectionIds: [], skillRefs: [], pluginRefs: [] };
+    const credentialRouting = {
+      ...selections,
+      mcpHttpAuthPreferences: { 'server-1': 'oauth' },
+    };
+    for (const command of [
+      // No settings patch: turning on Auto would let a later send route the
+      // chat to another provider with its transcript, unasked; plan mode
+      // and model settings skip the live-session update their dedicated
+      // setters make; and a patch replaces plugin selections whole,
+      // dropping this computer's MCP auth preferences.
+      {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { modelSelectionMode: 'auto' },
+      },
+      {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { planMode: true },
+      },
+      {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { modelConfig: { thinkingLevel: 'high' } },
+      },
+      {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { modelConfig: { speed: 'ultrafast' } },
+      },
+      {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { pluginSelections: selections },
+      },
+      {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { modelSelectionMode: 'auto', planMode: true },
+      },
+      {
+        type: 'chat.create_tab',
+        tabId: 'chat-2',
+        pluginSelections: selections,
+      },
+      {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { pluginSelections: credentialRouting },
+      },
+      {
+        type: 'chat.create_tab',
+        tabId: 'chat-2',
+        pluginSelections: credentialRouting,
+      },
+      { type: 'chat.patch_tab_settings', tabId: 'chat-1', patch: {} },
+      {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { modelSelectionMode: 'manual' },
+      },
+      {
+        type: 'chat.patch_tab_settings',
+        tabId: 'chat-1',
+        patch: { planMode: 'yes' },
+      },
+      {
+        type: 'chat.send_message',
+        chatId: 'chat-1',
+        userMessageId: 'message-2',
+        text: { nested: ['Hello'] },
+      },
+      {
+        type: 'chat.send_message',
+        chatId: 'chat-1',
+        userMessageId: 'message-2',
+        text: '',
+      },
+      { type: 'chat.create_tab', tabId: { id: 'chat-2' } },
+    ]) {
+      expect(
+        await invokeCodeWith(
+          rpc,
+          IPC_CHANNELS.chatCommand,
+          commandRequest(command),
+        ),
+      ).toBe('remote_channel_unavailable');
+    }
+    // The host checks no revision guard on these commands from this caller,
+    // so a request naming one is refused rather than looking guarded.
+    for (const extra of [
+      { schemaVersion: 2 },
+      { expectedRevision: 3 },
+      { expectedTabRevision: 3 },
+    ]) {
+      expect(
+        await invokeCodeWith(rpc, IPC_CHANNELS.chatCommand, [
+          { ...Object(envelope), ...extra },
+        ]),
+      ).toBe('remote_channel_unavailable');
+    }
+    // A new chat waits for CAN-7907: the controller sends no defaults.
+    expect(
+      await invokeCodeWith(
+        rpc,
+        IPC_CHANNELS.chatCommand,
+        commandRequest({
+          type: 'chat.create_tab',
+          tabId: 'chat-2',
+          model: 'model-1',
+          planMode: true,
+        }),
+      ),
+    ).toBe('remote_channel_unavailable');
+    expect(host.bridge.invokeArgs).toEqual([send]);
+  });
+
+  it('holds every call that changes something to its reviewed fields, one case per call', async () => {
+    const { host, rpc } = await oneWindowSession({});
+    const scope = {
+      projectId: 'project',
+      worktreeId: 'worktree',
+      chatId: 'chat-1',
+    };
+    const sendCommand = {
+      type: 'chat.send_message',
+      chatId: 'chat-1',
+      userMessageId: 'message-1',
+      text: 'Hello',
+    };
+    const send = {
+      schemaVersion: 1,
+      commandId: 'command-1',
+      projectId: 'project',
+      worktreeId: 'worktree',
+      command: sendCommand,
+    };
+    const entry = { ...scope, entryId: 'entry-1' };
+    const stop = { ...scope, expectedUserMessageId: 'message-1' };
+    // Each call with the fields it may carry, and with one it may not.
+    const cases: Array<
+      [string, Record<string, unknown>, Record<string, unknown>[]]
+    > = [
+      [
+        // A send takes the session and settings from the saved chat, so it
+        // may not change the model or plan mode, name a session, steer a
+        // turn the host does not check, or carry attachments, overlays,
+        // approval state or provenance.
+        IPC_CHANNELS.chatCommand,
+        send,
+        [
+          { model: 'model-2' },
+          { planMode: true },
+          { sendWhileRunning: true },
+          { steerTurnId: 'turn-1' },
+          { attachmentPaths: ['/tmp/a.png'] },
+          { attachmentPromptContexts: [] },
+          { fileReferences: [] },
+          { packageOverlay: { plugins: [] } },
+          { approvalMode: 'full-access' },
+          { sessionApprovalRules: [] },
+          { sdkSessionId: 's-1' },
+          { claudeForkSession: true },
+          { agentSent: {} },
+          { internalRow: {} },
+        ].map((extra) => ({ ...send, command: { ...sendCommand, ...extra } })),
+      ],
+      // Each value is an ID-sized string and every field is required. Stop
+      // names the exact turn: a plain Stop would end whatever turn runs when
+      // it lands.
+      [
+        IPC_CHANNELS.chatCancel,
+        stop,
+        [
+          scope,
+          { ...stop, force: true },
+          { ...stop, chatId: { id: 'chat-1' } },
+          { ...stop, expectedUserMessageId: true },
+        ],
+      ],
+    ];
+    for (const [channel, allowed, refused] of cases) {
+      for (const request of refused) {
+        expect(await invokeCodeWith(rpc, channel, [request])).toBe(
+          'remote_channel_unavailable',
+        );
+      }
+      // One request object, nothing more.
+      expect(await invokeCodeWith(rpc, channel, [allowed, {}])).toBe(
+        'remote_channel_unavailable',
+      );
+      expect(await invokeCodeWith(rpc, channel, [allowed])).toBe('ok');
+    }
+    // The older send takes the session and settings from its caller; a
+    // model change waits until the host derives the chat's harness lock for
+    // a remote caller instead of taking it from the request; and editing a
+    // queued message waits until attachments join: an edit that omits them
+    // clears the entry's.
+    expect(
+      await invokeCodeWith(rpc, IPC_CHANNELS.chatSendMessage, [
+        { ...scope, userMessageId: 'message-1', text: 'Hello' },
+      ]),
+    ).toBe('remote_channel_unavailable');
+    for (const request of [
+      { ...scope, model: 'model-1' },
+      { ...scope, model: 'model-1', lockedHarness: 'claude' },
+    ]) {
+      expect(
+        await invokeCodeWith(rpc, IPC_CHANNELS.chatModelChange, [request]),
+      ).toBe('remote_channel_unavailable');
+    }
+    for (const channel of [
+      IPC_CHANNELS.chatQueueEdit,
+      IPC_CHANNELS.chatQueueSetEditLock,
+    ]) {
+      expect(
+        await invokeCodeWith(rpc, channel, [{ ...entry, text: 'Edited' }]),
+      ).toBe('remote_channel_unavailable');
+    }
+    // The queue's actions stay off until CAN-7877 holds them to the pairing:
+    // cancelling drains the queue, which can dispatch the next message, and
+    // Run now and steer deliver a queued one.
+    for (const channel of [
+      IPC_CHANNELS.chatQueueCancel,
+      IPC_CHANNELS.chatQueueForce,
+    ]) {
+      expect(await invokeCodeWith(rpc, channel, [entry])).toBe(
+        'remote_channel_unavailable',
+      );
+    }
+    for (const command of [
+      {
+        type: 'chat.steer_queued_message',
+        chatId: 'chat-1',
+        queuedMessageId: 'entry-1',
+      },
+      {
+        type: 'chat.force_queued_message',
+        chatId: 'chat-1',
+        queuedMessageId: 'entry-1',
+      },
+      {
+        type: 'chat.cancel_queued_message',
+        chatId: 'chat-1',
+        queuedMessageId: 'entry-1',
+      },
+    ]) {
+      expect(
+        await invokeCodeWith(rpc, IPC_CHANNELS.chatCommand, [
+          { ...send, command },
+        ]),
+      ).toBe('remote_channel_unavailable');
+    }
+    // Every call that changes something is an invoke here: a send of one,
+    // which would get no reply, is refused even with allowed fields.
+    rpc.notify(REMOTE_EVENTS.ipcSend, {
+      channel: IPC_CHANNELS.chatSendMessage,
+      args: [{ ...scope, userMessageId: 'message-1', text: 'Hello' }],
+    });
+    rpc.notify(REMOTE_EVENTS.ipcSend, {
+      channel: IPC_CHANNELS.chatQueueEdit,
+      args: [{ ...entry, text: 'Edited' }],
+    });
+    for (const [channel, allowed] of cases) {
+      rpc.notify(REMOTE_EVENTS.ipcSend, { channel, args: [allowed] });
+    }
+    rpc.notify(REMOTE_EVENTS.ipcSend, {
+      channel: IPC_CHANNELS.chatSetInterest,
+      args: [],
+    });
+    await until(() => host.bridge.posts.length > 0);
+    await settle(20);
+    expect(host.bridge.posts).toEqual([IPC_CHANNELS.chatSetInterest]);
+    expect(host.bridge.invokeArgs).toEqual(
+      cases.map(([, allowed]) => [allowed]),
+    );
+  });
+
+  it('refuses an incompatible second hello on an admitted session, which keeps serving its list', async () => {
+    const { host, rpc } = await oneWindowSession({});
+    for (const params of [
+      {
+        version: VERSION,
+        controller: { ...oneWindow, mode: 'every-window' },
+      },
+      {
+        version: {
+          protocolVersion: DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION - 1,
+          appVersion: '0.9',
+        },
+        controller: oneWindow,
+      },
+    ]) {
+      await expect(hello(rpc, params)).rejects.toMatchObject({
+        code: 'remote_controller_refused',
+      });
+    }
+    expect(await invokeCode(rpc, LIST_CHANNEL)).toBe('ok');
+    expect(await invokeCode(rpc, NOT_A_MOBILE_CHANNEL)).toBe(
+      'remote_channel_unavailable',
+    );
+    expect(host.bridge.invokes).toEqual([LIST_CHANNEL]);
+  });
+
+  it('never routes App Advisor windows, file dialogs or interface tools to a one-window session', async () => {
+    const { host, desktop } = await oneWindowSession({});
+    // Host-initiated window requests find no session for this controller,
+    // so they stay on this computer instead of waiting on a window the
+    // controlling computer does not have.
+    expect(host.service.hostSessionForController(desktop.deviceId)).toBeNull();
+    expect(
+      host.service.appAdvisorSurfaceForController(desktop.deviceId),
+    ).toBeNull();
+    // A session still waiting for its hello, as a reconnecting one-window
+    // session is, gets none either; the same device's separate window gets
+    // them once its hello confirms the mode.
+    const full = await control(host, desktop);
+    expect(host.service.hostSessionForController(desktop.deviceId)).toBeNull();
+    await hello(full.rpc);
+    expect(
+      host.service.hostSessionForController(desktop.deviceId)?.isOneWindow,
+    ).toBe(false);
+  });
+
+  it('keeps a session resumable when it refuses a later hello it would not accept', async () => {
+    const hub = new Hub();
+    const desktop = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(desktop)] },
+    });
+    const { session, rpc } = await control(host, desktop);
+    const answer = HelloResultSchema.parse(
+      await hello(rpc, {
+        version: VERSION,
+        controller: oneWindow,
+        transport: { resume: REMOTE_TRANSPORT_RESUME_VERSION },
+      }),
+    );
+    expect(answer.transport?.resume).toBe(REMOTE_TRANSPORT_RESUME_VERSION);
+    session.setResumeNegotiated(true);
+    // A hello in the other mode, a profile naming another kind, and a hello
+    // the host cannot parse are all refused without touching resume.
+    for (const params of [
+      {
+        version: VERSION,
+        transport: { resume: REMOTE_TRANSPORT_RESUME_VERSION },
+      },
+      {
+        version: VERSION,
+        controller: { kind: 'browser' as const, minVersion: 1 },
+        transport: { resume: REMOTE_TRANSPORT_RESUME_VERSION },
+      },
+    ]) {
+      await expect(hello(rpc, params)).rejects.toMatchObject({
+        code: 'remote_controller_refused',
+      });
+    }
+    await expect(
+      rpc.request(REMOTE_METHODS.hello, { version: 'not a version' }),
+    ).rejects.toMatchObject({ code: 'remote_protocol_mismatch' });
+    // The relay drops the link, then brings it back: the session resumes.
+    const hostId = host.identity.deviceId;
+    host.hub.cut.add(`${hostId}>${desktop.deviceId}`);
+    host.hub.cut.add(`${desktop.deviceId}>${hostId}`);
+    host.hub.endpoints.get(hostId)?.peerWent(desktop.deviceId, 'offline');
+    desktop.endpoint.peerWent(hostId, 'offline');
+    expect(session.state).toBe('suspended');
+    host.hub.cut.delete(`${hostId}>${desktop.deviceId}`);
+    host.hub.cut.delete(`${desktop.deviceId}>${hostId}`);
+    desktop.endpoint.peerWent(hostId, 'online');
+    await until(() => session.state === 'active' || session.isClosed);
+    expect(session.state).toBe('active');
+    expect(await invokeCode(rpc, LIST_CHANNEL)).toBe('ok');
+    expect(await invokeCode(rpc, NOT_A_MOBILE_CHANNEL)).toBe(
+      'remote_channel_unavailable',
+    );
+  });
+
+  it('keeps the separate window per computer on the exact match and the full tunnel', async () => {
+    const hub = new Hub();
+    const desktop = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(desktop)] },
+    });
+    // On another protocol, with or without a minimum, nothing is served.
+    for (const params of [
+      {
+        version: {
+          protocolVersion: REMOTE_PROTOCOL_VERSION + 1,
+          appVersion: '9',
+        },
+      },
+      {
+        version: {
+          protocolVersion: REMOTE_PROTOCOL_VERSION + 1,
+          appVersion: '9',
+        },
+        controller: { kind: 'desktop' as const, minVersion: 1 },
+      },
+    ]) {
+      const { rpc } = await control(host, desktop);
+      const answer = HelloResultSchema.parse(await hello(rpc, params));
+      expect(answer.features?.oneWindow).toBeUndefined();
+      expect(await invokeCode(rpc, NOT_A_MOBILE_CHANNEL)).toBe(
+        'remote_protocol_mismatch',
+      );
+    }
+    // On the same protocol, every tunneled channel, and a full session
+    // cannot narrow itself into one-window mode afterwards.
+    const { rpc } = await control(host, desktop);
+    const answer = HelloResultSchema.parse(await hello(rpc));
+    expect(answer.features?.oneWindow).toBeUndefined();
+    expect(await invokeCode(rpc, NOT_A_MOBILE_CHANNEL)).toBe('ok');
+    await expect(
+      hello(rpc, { version: VERSION, controller: oneWindow }),
+    ).rejects.toMatchObject({ code: 'remote_controller_refused' });
+    expect(await invokeCode(rpc, NOT_A_MOBILE_CHANNEL)).toBe('ok');
+    // A host released before one-window mode strips it and answers like
+    // this full session: on the exact protocol the controller may use only
+    // the read-only capabilities, since that host has no field allowlists
+    // or one-window checks for a call that changes something (CAN-7854);
+    // and nothing on another protocol.
+    const olderHost: HelloResult = {
+      ...answer,
+      features: HOST_FEATURES_BEFORE_ONE_WINDOW,
+    };
+    const readOnly = oneWindowHostChannels(olderHost, VERSION);
+    expect(readOnly).toEqual(
+      new Set(
+        ONE_WINDOW_CONTROLLER_CHANNELS.filter(
+          (channel) =>
+            !(
+              ONE_WINDOW_CAPABILITY_CHANNELS.send as readonly string[]
+            ).includes(channel),
+        ),
+      ),
+    );
+    for (const channel of [
+      IPC_CHANNELS.chatCommand,
+      IPC_CHANNELS.chatCancel,
+      IPC_CHANNELS.planModeToggle,
+      IPC_CHANNELS.thinkingLevelToggle,
+      IPC_CHANNELS.chatCodexFastModeToggle,
+    ])
+      expect(readOnly?.has(channel)).toBe(false);
+    expect(readOnly?.has(IPC_CHANNELS.chatGetState)).toBe(true);
+    expect(
+      oneWindowHostChannels(
+        {
+          ...olderHost,
+          version: {
+            protocolVersion: REMOTE_PROTOCOL_VERSION + 1,
+            appVersion: '9',
+          },
+        },
+        VERSION,
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("the main window's per-computer API (CAN-7761)", () => {
+  /** On the one-window list: the chat state the main window reads. */
+  const LIST_CHANNEL = IPC_CHANNELS.chatGetState;
+  /** A valid chat state read, in the paired computer's own ids. */
+  const READ = { projectId: 'project-1', worktreeId: 'worktree-1' };
+  /** A push on the one-window list. */
+  const LIST_PUSH = IPC_CHANNELS.desktopSessionSnapshotStale;
+  const WINDOW_CHANNELS = [
+    IPC_CHANNELS.remoteControlComputerHold,
+    IPC_CHANNELS.remoteControlComputerRelease,
+    IPC_CHANNELS.remoteControlComputerInvoke,
+    IPC_CHANNELS.remoteControlComputerSend,
+    IPC_CHANNELS.remoteControlComputerState,
+    IPC_CHANNELS.remoteControlComputerEvent,
+  ];
+  type Version = { protocolVersion: number; appVersion: string };
+
+  /** A window's renderer, as main sees its sender. */
+  class Window {
+    destroyed = false;
+    readonly events: PairedComputerWindowEvent[] = [];
+    private readonly resets = new Set<() => void>();
+    constructor(
+      readonly id: number,
+      readonly role: 'own' | 'bridge' | 'shows-another' = 'own',
+    ) {}
+    isDestroyed(): boolean {
+      return this.destroyed;
+    }
+    onReset(listener: () => void): void {
+      this.resets.add(listener);
+    }
+    /** The renderer reloads: same window, a new document. */
+    reload(): void {
+      for (const listener of Array.from(this.resets)) listener();
+    }
+    close(): void {
+      this.destroyed = true;
+      for (const listener of Array.from(this.resets)) listener();
+    }
+  }
+
+  async function identityDir(identity: DeviceKeyPair): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), 'rc-paired-'));
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    await writeFile(
+      join(dir, 'remote-control-identity.key'),
+      `pkcs8:${exportDeviceKeyPair(identity).toString('base64')}\n`,
+    );
+    return dir;
+  }
+
+  /** A computer that this desktop has paired with and that pins it back. */
+  async function addPairedHost(
+    hub: Hub,
+    desktop: DeviceKeyPair,
+    version: Version = VERSION,
+  ): Promise<{ host: Host; identity: DeviceKeyPair }> {
+    const identity = generateDeviceKeyPair();
+    const host = await createHost(hub, {
+      dir: await identityDir(identity),
+      version,
+      settings: {
+        pairedControllers: [
+          {
+            deviceId: desktop.deviceId,
+            name: 'Desktop',
+            platform: 'darwin',
+            kind: 'desktop',
+            publicKey: desktop.publicKey,
+            pairedAt: new Date(0).toISOString(),
+          },
+        ],
+      },
+    });
+    return { host, identity };
+  }
+
+  /**
+   * This desktop's own RemoteControlService, paired with each host, its
+   * window API with the real own-window check, and the switch.
+   */
+  async function pairedDesktop(
+    options: {
+      hosts?: Version[];
+      desktop?: Version;
+      oneWindow?: boolean;
+      /** This desktop's signed-in account; null signs it out. */
+      account?: { current: string | null };
+    } = {},
+  ): Promise<{
+    desktop: Host;
+    hosts: Array<{ host: Host; deviceId: string }>;
+    api: PairedComputerWindowApi<Window>;
+    setOneWindow: (on: boolean, unconfirmed?: boolean) => void;
+    local: Version;
+  }> {
+    const hub = new Hub();
+    const identity = generateDeviceKeyPair();
+    const paired = [];
+    for (const version of options.hosts ?? [VERSION])
+      paired.push(await addPairedHost(hub, identity, version));
+    const hosts = paired.map(({ host, identity: hostIdentity }) => ({
+      host,
+      deviceId: hostIdentity.deviceId,
+    }));
+    const local = options.desktop ?? VERSION;
+    const desktop = await createHost(hub, {
+      dir: await identityDir(identity),
+      version: local,
+      ...(options.account ? { account: options.account } : {}),
+      settings: {
+        allowIncoming: false,
+        pairedHosts: paired.map(({ identity: hostIdentity }, index) => ({
+          deviceId: hostIdentity.deviceId,
+          name: `Computer ${index + 1}`,
+          platform: 'darwin' as const,
+          publicKey: hostIdentity.publicKey,
+          pairedAt: new Date(0).toISOString(),
+        })),
+      },
+    });
+    await until(() => desktop.hub.endpoints.has(identity.deviceId));
+    // Main's real switch, followed as main follows it; a saved choice turns
+    // it on or off, and unconfirmed preferences read off.
+    const setOneWindow = (on: boolean, unconfirmed = false): void =>
+      applyOneWindowChoice(on, unconfirmed);
+    setOneWindow(options.oneWindow !== false);
+    const stopFollowing = followOneWindowSwitch(
+      desktop.service,
+      { isEnabled: isOneWindowEnabled, onChange: onOneWindowEnabledChanged },
+      createOneWindowSessionPolicy(local),
+    );
+    cleanups.push(() => {
+      stopFollowing();
+      applyOneWindowChoice(false, false);
+    });
+    const api = new PairedComputerWindowApi<Window>({
+      service: desktop.service,
+      // The check main uses, over this test's window roles.
+      isOwnWindow: ownWindowCheck<Window>({
+        bridgeController: (sender) =>
+          sender.role === 'bridge' ? (hosts[0]?.deviceId ?? 'paired') : null,
+        showsAnotherComputer: (sender) => sender.role === 'shows-another',
+        isAppWindow: () => true,
+      }),
+      deliver: (sender, event): void => {
+        sender.events.push(event);
+      },
+      onRendererReset: (sender, listener): void => sender.onReset(listener),
+    });
+    cleanups.push(() => api.dispose());
+    return { desktop, hosts, api, setOneWindow, local };
+  }
+
+  function fail(message: string): never {
+    throw new Error(message);
+  }
+
+  function connectedControllers(host: Host): Promise<number> {
+    return state(host).then(
+      (snapshot) =>
+        snapshot.controllers.filter((controller) => controller.connected)
+          .length,
+    );
+  }
+
+  it('keeps every window channel local, so no controller reaches a third computer through this one', async () => {
+    for (const channel of WINDOW_CHANNELS) {
+      expect(getRemoteChannelDisposition(channel)).toBe('local');
+      expect(oneWindowChannelAllowed(channel)).toBe(false);
+    }
+    // A paired desktop on the full tunnel, and one in one-window mode, are
+    // refused every window channel before the host's bridge sees it.
+    const hub = new Hub();
+    const controller = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(controller)] },
+    });
+    for (const params of [
+      { version: VERSION },
+      { version: VERSION, controller: oneWindowControllerProfile() },
+    ]) {
+      const { rpc } = await control(host, controller);
+      await hello(rpc, params);
+      for (const channel of WINDOW_CHANNELS) {
+        expect(await invokeCode(rpc, channel)).toBe(
+          'remote_channel_unavailable',
+        );
+      }
+    }
+    expect(host.bridge.invokes).toEqual([]);
+    // In main, a bridge window and a window showing another computer are
+    // refused every call; neither opens a session.
+    const { api, hosts } = await pairedDesktop();
+    const deviceId = hosts[0]?.deviceId ?? fail('no host');
+    for (const sender of [
+      new Window(1, 'bridge'),
+      new Window(2, 'shows-another'),
+    ]) {
+      await expect(api.hold(sender, deviceId)).rejects.toThrow(
+        "Only this computer's own windows can reach a paired computer.",
+      );
+      expect(() => api.state(sender, deviceId)).toThrow(
+        "Only this computer's own windows",
+      );
+      await expect(
+        Promise.resolve().then(() =>
+          api.invoke(sender, deviceId, LIST_CHANNEL, [READ]),
+        ),
+      ).rejects.toThrow("Only this computer's own windows");
+      api.send(sender, deviceId, LIST_CHANNEL, [READ]);
+    }
+    await settle(20);
+    expect(await connectedControllers(hosts[0]?.host ?? fail('no host'))).toBe(
+      0,
+    );
+  });
+
+  it('is inert while the one-window switch is off, and closes everything when it turns off', async () => {
+    const { api, hosts, setOneWindow, desktop } = await pairedDesktop({
+      oneWindow: false,
+    });
+    const { host, deviceId } = hosts[0] ?? fail('no host');
+    const window = new Window(1);
+    await expect(api.hold(window, deviceId)).rejects.toThrow(
+      'Connecting to another computer without its window is off.',
+    );
+    expect(api.state(window, deviceId)).toEqual({
+      status: 'unavailable',
+      reason: 'one-window-off',
+      message: null,
+    });
+    await settle(20);
+    expect(await connectedControllers(host)).toBe(0);
+    expect(host.bridge.created).toEqual([]);
+
+    setOneWindow(true);
+    const { holdId } = await api.hold(window, deviceId);
+    await until(() => api.state(window, deviceId).status === 'connected');
+    expect(await api.invoke(window, deviceId, LIST_CHANNEL, [READ])).toBe('ok');
+
+    setOneWindow(false);
+    expect(window.events.at(-1)).toEqual({
+      deviceId,
+      type: 'state',
+      state: { status: 'unavailable', reason: 'one-window-off', message: null },
+    });
+    await until(async () => (await connectedControllers(host)) === 0);
+    // The window's hold went with the switch: it holds nothing to call.
+    await expect(
+      Promise.resolve().then(() =>
+        api.invoke(window, deviceId, LIST_CHANNEL, [READ]),
+      ),
+    ).rejects.toThrow('This window is not connected to that computer.');
+    api.release(window, holdId);
+    // Turning it back on reconnects nothing until a window holds it again.
+    setOneWindow(true);
+    await settle(20);
+    expect(await connectedControllers(host)).toBe(0);
+    expect(desktop.service.computerState(deviceId)).toEqual({ status: 'idle' });
+
+    // A failed preferences recovery latches the switch off: the same close.
+    await api.hold(window, deviceId);
+    await until(() => api.state(window, deviceId).status === 'connected');
+    setOneWindow(true, true);
+    expect(isOneWindowEnabled()).toBe(false);
+    expect(window.events.at(-1)).toEqual({
+      deviceId,
+      type: 'state',
+      state: { status: 'unavailable', reason: 'one-window-off', message: null },
+    });
+    await until(async () => (await connectedControllers(host)) === 0);
+  });
+
+  it('serves only the announced list, refusing anything else in main, and only to a window holding a paired computer', async () => {
+    const { api, hosts } = await pairedDesktop();
+    const { host, deviceId } = hosts[0] ?? fail('no host');
+    const window = new Window(1);
+    const other = new Window(2);
+    // Not paired: refused, and nothing connects.
+    const stranger = generateDeviceKeyPair().deviceId;
+    await expect(api.hold(window, stranger)).rejects.toThrow(
+      'That computer is not paired.',
+    );
+    expect(api.state(window, stranger)).toEqual({
+      status: 'unavailable',
+      reason: 'not-paired',
+      message: null,
+    });
+    await expect(api.hold(window, 'not a device')).rejects.toThrow(
+      'Invalid device ID.',
+    );
+
+    const held = await api.hold(window, deviceId);
+    expect(typeof held.holdId).toBe('string');
+    await until(() => api.state(window, deviceId).status === 'connected');
+    expect(api.state(window, deviceId)).toEqual({
+      status: 'connected',
+      version: VERSION,
+      capabilities: [...ONE_WINDOW_CAPABILITIES],
+    });
+    expect(await api.invoke(window, deviceId, LIST_CHANNEL, [READ])).toBe('ok');
+    // The other computer receives exactly the call the window made.
+    expect(host.bridge.invokes.at(-1)).toBe(LIST_CHANNEL);
+    expect(host.bridge.invokeArgs.at(-1)).toEqual([READ]);
+    // Off the list, or on it with arguments it may not carry: refused here,
+    // before anything reaches the other computer.
+    const before = host.bridge.invokes.length;
+    for (const [channel, args] of [
+      [NOT_A_MOBILE_CHANNEL, []],
+      [IPC_CHANNELS.approvalModeSet, [{ mode: 'full' }]],
+      [IPC_CHANNELS.modelRegistryGet, [{ probe: true }]],
+      ['no-such-channel', []],
+    ] as const) {
+      const refusal = await api
+        .invoke(window, deviceId, channel, [...args])
+        .then(
+          () => null,
+          (error: unknown) => error,
+        );
+      expect(refusal).toBeInstanceOf(RemoteChannelUnavailableError);
+      expect(refusal).not.toBeInstanceOf(RpcRemoteError);
+      api.send(window, deviceId, channel, [...args]);
+    }
+    // A qualified id is the window's mistake: the computer gets its own ids.
+    await expect(
+      Promise.resolve().then(() =>
+        api.invoke(window, deviceId, LIST_CHANNEL, [
+          { chatId: `computer-${deviceId}:chat-1` },
+        ]),
+      ),
+    ).rejects.toThrow('Invalid id: pass the computer its own id.');
+    // In the session snapshot's selectors too.
+    for (const selector of [
+      'workspaceLocalId',
+      'worktreeLocalId',
+      'standaloneChatLocalId',
+    ]) {
+      await expect(
+        Promise.resolve().then(() =>
+          api.invoke(window, deviceId, IPC_CHANNELS.desktopSessionSnapshot, [
+            { [selector]: `computer-${deviceId}:local-1` },
+          ]),
+        ),
+      ).rejects.toThrow('Invalid id: pass the computer its own id.');
+    }
+    // Nested in a declaration's lists too, such as the scopes it covers.
+    await expect(
+      Promise.resolve().then(() =>
+        api.invoke(window, deviceId, IPC_CHANNELS.chatSetStateScopes, [
+          {
+            kind: 'scopes',
+            scopes: [
+              { projectId: `computer-${deviceId}:project-1`, worktreeId: 'w' },
+            ],
+          },
+        ]),
+      ),
+    ).rejects.toThrow('Invalid id: pass the computer its own id.');
+    await settle(20);
+    expect(host.bridge.invokes.slice(before)).toEqual([]);
+    expect(host.bridge.posts).toEqual([]);
+    // Another window that holds nothing can't use this one's hold.
+    await expect(
+      Promise.resolve().then(() =>
+        api.invoke(other, deviceId, LIST_CHANNEL, [READ]),
+      ),
+    ).rejects.toThrow('This window is not connected to that computer.');
+    api.release(other, held.holdId);
+    expect(await api.invoke(window, deviceId, LIST_CHANNEL, [READ])).toBe('ok');
+    // Closing the window lets the session go.
+    window.close();
+    await until(async () => (await connectedControllers(host)) === 0);
+  });
+
+  it('lets go of a window that reloads, a call its window let go of, and every hold at sign-out', async () => {
+    const account: { current: string | null } = {
+      current: `account:${ACCOUNT_USER_ID}`,
+    };
+    const { api, hosts, desktop } = await pairedDesktop({ account });
+    const { host, deviceId } = hosts[0] ?? fail('no host');
+    // A reloaded renderer never saw its old hold ids: they go with it.
+    const reloading = new Window(1);
+    await api.hold(reloading, deviceId);
+    await until(() => api.state(reloading, deviceId).status === 'connected');
+    reloading.reload();
+    await expect(
+      Promise.resolve().then(() =>
+        api.invoke(reloading, deviceId, LIST_CHANNEL, [READ]),
+      ),
+    ).rejects.toThrow('This window is not connected to that computer.');
+    await until(async () => (await connectedControllers(host)) === 0);
+
+    // A call the old page made is dropped even when the reloaded page holds
+    // the computer again before the connection opens, and another window
+    // keeps that connection.
+    const keeper = new Window(9);
+    const { holdId: keeperHold } = await api.hold(keeper, deviceId);
+    const { holdId: oldHold } = await api.hold(reloading, deviceId);
+    const oldCall = api.invoke(reloading, deviceId, LIST_CHANNEL, [READ]);
+    reloading.reload();
+    const { holdId: newHold } = await api.hold(reloading, deviceId);
+    await expect(oldCall).rejects.toThrow(
+      'The connection to that computer was closed.',
+    );
+    await until(() => api.state(reloading, deviceId).status === 'connected');
+    await settle(20);
+    expect(host.bridge.invokes).toEqual([]);
+    expect(oldHold).not.toBe(newHold);
+    expect(await api.invoke(reloading, deviceId, LIST_CHANNEL, [READ])).toBe(
+      'ok',
+    );
+    api.release(reloading, newHold);
+    api.release(keeper, keeperHold);
+    await until(async () => (await connectedControllers(host)) === 0);
+
+    // A call made while the connection opens is dropped once its window
+    // lets go, even though another window keeps the connection.
+    const leaving = new Window(2);
+    const staying = new Window(3);
+    const { holdId } = await api.hold(leaving, deviceId);
+    await api.hold(staying, deviceId);
+    const before = host.bridge.invokes.length;
+    const call = api.invoke(leaving, deviceId, LIST_CHANNEL, [READ]);
+    api.send(leaving, deviceId, LIST_CHANNEL, [READ]);
+    api.release(leaving, holdId);
+    await expect(call).rejects.toThrow(
+      'The connection to that computer was closed.',
+    );
+    await until(() => api.state(staying, deviceId).status === 'connected');
+    await settle(20);
+    expect(host.bridge.invokes.slice(before)).toEqual([]);
+    expect(host.bridge.posts).toEqual([]);
+    expect(await api.invoke(staying, deviceId, LIST_CHANNEL, [READ])).toBe(
+      'ok',
+    );
+
+    // Signing out stops Remote Control: the window hears why, not idle.
+    account.current = null;
+    await desktop.service.reconcile();
+    expect(staying.events.at(-1)).toEqual({
+      deviceId,
+      type: 'state',
+      state: {
+        status: 'unavailable',
+        reason: 'remote-control-off',
+        message: null,
+      },
+    });
+    await until(async () => (await connectedControllers(host)) === 0);
+  });
+
+  it("delivers each computer's updates only to windows holding it, split per computer in the preload", async () => {
+    const { api, hosts } = await pairedDesktop({ hosts: [VERSION, VERSION] });
+    const [studio, laptop] = hosts;
+    if (!studio || !laptop) fail('two hosts');
+    const window = new Window(1);
+    const bystander = new Window(2);
+    // The preload's transport over this window's events.
+    const listeners = new Set<Parameters<PreloadIpcRenderer['on']>[1]>();
+    const preload = createPairedComputersApi({
+      invoke: (): Promise<never> => Promise.reject(new Error('unused')),
+      send: (): void => undefined,
+      sendSync: (): undefined => undefined,
+      on: (_channel, listener): void => {
+        listeners.add(listener);
+      },
+      once: (): void => undefined,
+      removeListener: (_channel, listener): void => {
+        listeners.delete(listener);
+      },
+      removeAllListeners: (): void => undefined,
+    });
+    const studioUpdates: PairedComputerUpdate[] = [];
+    const laptopUpdates: PairedComputerUpdate[] = [];
+    const stopStudio = preload.onUpdate(studio.deviceId, (update) =>
+      studioUpdates.push(update),
+    );
+    preload.onUpdate(laptop.deviceId, (update) => laptopUpdates.push(update));
+    const forward = (): void => {
+      for (const event of window.events.splice(0))
+        for (const listener of Array.from(listeners))
+          Reflect.apply(listener, undefined, [{}, event]);
+    };
+
+    await api.hold(window, studio.deviceId);
+    await api.hold(window, laptop.deviceId);
+    await until(
+      () =>
+        api.state(window, studio.deviceId).status === 'connected' &&
+        api.state(window, laptop.deviceId).status === 'connected',
+    );
+    studio.host.bridge.emitPush(LIST_PUSH, ['studio']);
+    laptop.host.bridge.emitPush(LIST_PUSH, ['laptop']);
+    // Off the list: the host does not forward it, nor would main.
+    studio.host.bridge.emitPush(NOT_A_MOBILE_CHANNEL, ['never']);
+    await until(
+      () => window.events.filter((event) => event.type === 'push').length === 2,
+    );
+    forward();
+    expect(studioUpdates).toEqual([
+      { type: 'push', channel: LIST_PUSH, args: ['studio'] },
+    ]);
+    expect(laptopUpdates).toEqual([
+      { type: 'push', channel: LIST_PUSH, args: ['laptop'] },
+    ]);
+    expect(bystander.events).toEqual([]);
+    // Unsubscribed from one computer, the other's updates still arrive.
+    stopStudio();
+    studio.host.bridge.emitPush(LIST_PUSH, ['studio again']);
+    laptop.host.bridge.emitPush(LIST_PUSH, ['laptop again']);
+    await until(
+      () => window.events.filter((event) => event.type === 'push').length === 2,
+    );
+    forward();
+    expect(studioUpdates).toHaveLength(1);
+    expect(laptopUpdates.at(-1)).toEqual({
+      type: 'push',
+      channel: LIST_PUSH,
+      args: ['laptop again'],
+    });
+  });
+
+  it('connects to a paired computer on another version at or above the floor; the separate window keeps the exact match', async () => {
+    const newer = {
+      protocolVersion: REMOTE_PROTOCOL_VERSION + 1,
+      appVersion: '2.0.0',
+    };
+    const { api, hosts, desktop } = await pairedDesktop({ desktop: newer });
+    const { deviceId } = hosts[0] ?? fail('no host');
+    const window = new Window(1);
+    await api.hold(window, deviceId);
+    await until(() => api.state(window, deviceId).status === 'connected');
+    expect(api.state(window, deviceId)).toMatchObject({
+      status: 'connected',
+      version: VERSION,
+    });
+    expect(await api.invoke(window, deviceId, LIST_CHANNEL, [READ])).toBe('ok');
+    // The separate window to the same computer is still refused.
+    await desktop.service.openMachine(deviceId);
+    await until(async () =>
+      (await state(desktop)).hosts.some(
+        (entry) => entry.deviceId === deviceId && entry.connection === 'error',
+      ),
+    );
+    const entry = (await state(desktop)).hosts.find(
+      (candidate) => candidate.deviceId === deviceId,
+    );
+    expect(entry?.error).toContain('Update Host to connect.');
+    // The windowless session is unaffected.
+    expect(await api.invoke(window, deviceId, LIST_CHANNEL, [READ])).toBe('ok');
+  });
+
+  it('reports a paired computer below the floor as needing an update, with both versions', async () => {
+    const belowFloor = {
+      protocolVersion: DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION - 1,
+      appVersion: '0.9.0',
+    };
+    const { api, hosts, local } = await pairedDesktop({ hosts: [belowFloor] });
+    const { host, deviceId } = hosts[0] ?? fail('no host');
+    const window = new Window(1);
+    await api.hold(window, deviceId);
+    await until(() => api.state(window, deviceId).status === 'needs-update');
+    expect(api.state(window, deviceId)).toEqual({
+      status: 'needs-update',
+      reason: 'computer-too-old',
+      computerVersion: belowFloor,
+      computerAppVersion: belowFloor.appVersion,
+      thisComputerVersion: local,
+      update: null,
+    });
+    expect(
+      window.events.some(
+        (event) =>
+          event.type === 'state' && event.state.status === 'needs-update',
+      ),
+    ).toBe(true);
+    // Nothing reaches it: no bridge, no calls.
+    await expect(
+      api.invoke(window, deviceId, LIST_CHANNEL, [READ]),
+    ).rejects.toThrow('Update Host to connect.');
+    expect(host.bridge.created).toEqual([]);
+    expect(host.bridge.invokes).toEqual([]);
+  });
+
+  it('names this computer as the one to update when the paired computer is newer and refuses it', async () => {
+    const newer = {
+      protocolVersion: REMOTE_PROTOCOL_VERSION + 1,
+      appVersion: '2.0.0',
+    };
+    // This computer's own build is below the floor (an E2E override).
+    const belowFloor = {
+      protocolVersion: DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION - 1,
+      appVersion: '0.9.0',
+    };
+    const { api, hosts } = await pairedDesktop({
+      hosts: [newer],
+      desktop: belowFloor,
+    });
+    const { deviceId } = hosts[0] ?? fail('no host');
+    const window = new Window(1);
+    await api.hold(window, deviceId);
+    await until(() => api.state(window, deviceId).status === 'needs-update');
+    expect(api.state(window, deviceId)).toMatchObject({
+      status: 'needs-update',
+      reason: 'this-computer-older',
+      computerVersion: newer,
+      thisComputerVersion: belowFloor,
+    });
   });
 });
 
@@ -1566,16 +3349,28 @@ describe('browser controller channels', () => {
     expect(host.bridge.invokes).toEqual([channel]);
   });
 
-  it('serves the archive recovery list, Resolve and Finish to browsers and desktops only (CAN-7439, CAN-7444)', async () => {
+  it('serves the archive recovery list, Resolve, Finish and Set aside to browsers and desktops only (CAN-7439, CAN-7444)', async () => {
     // The list is a read under the bridge's `core.worktree.read`; the
-    // revision tokens it returns are accepted only by Resolve and Finish.
+    // revision tokens it returns are accepted by Resolve, Finish and Set aside.
     // The bridge principal is the same for every controller kind, so the
     // profile lists alone keep mobile and hosted controllers out.
     const list = IPC_CHANNELS.worktreeRecoveryList;
     const actions = [
       IPC_CHANNELS.worktreeRecoveryResolve,
       IPC_CHANNELS.worktreeRecoveryFinish,
+      IPC_CHANNELS.worktreeRecoverySetAside,
     ];
+    const reviewed = {
+      workspaceId: 'ws',
+      operationId: '00000000-0000-4000-8000-000000007014',
+      revision: 'a'.repeat(64),
+    };
+    const argsFor = (channel: string): unknown[] =>
+      channel === IPC_CHANNELS.worktreeRecoveryResolve
+        ? [{ ...reviewed, action: 'release' }]
+        : channel === list
+          ? []
+          : [reviewed];
     expect(list).toBe('worktree:recovery-list');
     expect(getRemoteChannelDisposition(list)).toBe('tunnel');
     expect(BROWSER_CONTROLLER_CHANNELS).toContain(list);
@@ -1617,33 +3412,72 @@ describe('browser controller channels', () => {
     );
     await hello(fromHosted.rpc);
     for (const channel of [list, ...actions])
-      expect(await invokeCode(fromHosted.rpc, channel)).toBe(
-        'remote_channel_unavailable',
-      );
+      expect(
+        await invokeCodeWith(fromHosted.rpc, channel, argsFor(channel)),
+      ).toBe('remote_channel_unavailable');
     const fromPhone = await control(host, phone);
     await hello(fromPhone.rpc, {
       version: VERSION,
       controller: { kind: 'mobile', minVersion: REMOTE_PROTOCOL_VERSION },
     });
     for (const channel of [list, ...actions])
-      expect(await invokeCode(fromPhone.rpc, channel)).toBe(
-        'remote_channel_unavailable',
-      );
+      expect(
+        await invokeCodeWith(fromPhone.rpc, channel, argsFor(channel)),
+      ).toBe('remote_channel_unavailable');
     expect(host.bridge.invokes).toEqual([]);
     const fromDesktop = await control(host, desktop);
     await hello(fromDesktop.rpc, { version: VERSION });
     for (const action of actions)
-      expect(await invokeCode(fromDesktop.rpc, action)).toBe('ok');
+      expect(
+        await invokeCodeWith(fromDesktop.rpc, action, argsFor(action)),
+      ).toBe('ok');
     expect(host.bridge.invokes).toEqual(actions);
     const fromBrowser = await control(host, browser);
     await hello(fromBrowser.rpc, {
       version: VERSION,
       controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
     });
+    // Browser callers reach only the adapter's exact reviewed-target shape.
+    for (const args of [
+      [],
+      [null],
+      [reviewed, reviewed],
+      [{ ...reviewed, path: '/tmp/record' }],
+      [{ ...reviewed, workspaceId: '' }],
+      [{ ...reviewed, workspaceId: 'w'.repeat(513) }],
+      [{ ...reviewed, operationId: 'not-a-uuid' }],
+      [{ ...reviewed, revision: 'a'.repeat(63) }],
+      [{ ...reviewed, revision: 'G'.repeat(64) }],
+      [{ operationId: reviewed.operationId, revision: reviewed.revision }],
+    ]) {
+      expect(
+        await invokeCodeWith(
+          fromBrowser.rpc,
+          IPC_CHANNELS.worktreeRecoverySetAside,
+          args,
+        ),
+      ).toBe('remote_channel_unavailable');
+    }
+    expect(host.bridge.invokes).toEqual(actions);
     for (const action of actions)
-      expect(await invokeCode(fromBrowser.rpc, action)).toBe('ok');
+      expect(
+        await invokeCodeWith(fromBrowser.rpc, action, argsFor(action)),
+      ).toBe('ok');
     expect(await invokeCode(fromBrowser.rpc, list)).toBe('ok');
     expect(host.bridge.invokes).toEqual([...actions, ...actions, list]);
+    expect(
+      await invokeCodeWith(
+        fromBrowser.rpc,
+        IPC_CHANNELS.worktreeRecoverySetAside,
+        [{ ...reviewed, workspaceId: 'w'.repeat(512) }],
+      ),
+    ).toBe('ok');
+    expect(host.bridge.invokes).toEqual([
+      ...actions,
+      ...actions,
+      list,
+      IPC_CHANNELS.worktreeRecoverySetAside,
+    ]);
   });
 
   it('passes only code-shaped archive Finish checks to browsers (CAN-7444)', async () => {
@@ -1788,7 +3622,6 @@ describe('browser controller channels', () => {
   });
 
   it.each([
-    ['work-entries:delete', IPC_CHANNELS.workEntriesDelete],
     [
       'workspace:set-archive-retention',
       IPC_CHANNELS.workspaceSetArchiveRetention,
@@ -2540,6 +4373,449 @@ describe('browser controller channels', () => {
         { channel: IPC_CHANNELS.cloneJobsChanged, args: [expected] },
       ]);
       expect(job.destinationPath).toBe('/Users/someone/code/app');
+    }
+  });
+
+  // Gap 1 of CAN-6718: a sign-in's text, exit and Codex code reach a
+  // controller only through its own bridge (`ipc/auth-terminal.ts`,
+  // `ipc/codex-login.ts`); main's copies for this computer's window are never
+  // mirrored (`main-window-pushes.ts`). What a bridge forwards reaches its
+  // controller whole, the device code included. A browser never receives the
+  // Antigravity executable path, in a result or a progress push.
+  it('forwards a bridge’s own sign-ins whole and keeps the Antigravity path from a browser (gap 1 of CAN-6718)', async () => {
+    const runtimeWithoutPath = {
+      supported: true,
+      installed: true,
+      managed: false,
+      version: '1.5.1',
+      phase: 'installed',
+    };
+    const runtime = {
+      ...runtimeWithoutPath,
+      executable: '/home/someone/.local/bin/agy',
+    };
+    const codex = {
+      attemptId: 'attempt-own',
+      phase: 'waiting',
+      activeWorkCount: 0,
+      method: 'chatgptDeviceCode',
+      userCode: 'ABCD-1234',
+      verificationUrl: 'https://auth.openai.com/codex/device',
+    };
+    for (const kind of ['browser', 'desktop'] as const) {
+      const hub = new Hub();
+      const controller = addController(hub, kind);
+      const host = await createHost(hub, {
+        settings: { pairedControllers: [pinned(controller, kind)] },
+        invokeResult: runtime,
+      });
+      const { rpc } = await control(host, controller);
+      await hello(rpc, {
+        version: VERSION,
+        controller: { kind, minVersion: REMOTE_PROTOCOL_VERSION },
+      });
+      const status = await rpc.request(REMOTE_METHODS.invoke, {
+        channel: IPC_CHANNELS.antigravityRuntimeStatus,
+        args: [],
+      });
+      expect(status).toEqual(kind === 'browser' ? runtimeWithoutPath : runtime);
+      const pushes: readonly (readonly [string, unknown])[] = [
+        [IPC_CHANNELS.authTerminalOutput, { sessionId: 'own', data: 'b' }],
+        [
+          IPC_CHANNELS.authTerminalExit,
+          { sessionId: 'own', exitCode: 0, signal: null },
+        ],
+        [IPC_CHANNELS.codexLoginState, codex],
+        [IPC_CHANNELS.antigravityRuntimeProgress, runtime],
+      ];
+      for (const [channel, payload] of pushes)
+        host.bridge.emitPush(channel, [payload]);
+      const expected = pushes.map(([channel, payload]) => ({
+        channel,
+        args: [
+          kind === 'browser' && payload === runtime
+            ? runtimeWithoutPath
+            : payload,
+        ],
+        surface: 'main',
+      }));
+      await until(() => controller.pushPayloads.length >= expected.length);
+      expect(controller.pushPayloads).toEqual(expected);
+    }
+    // Main's copies of setup progress for this computer's window stay off
+    // the mirror too: Copilot's carries its device code.
+    for (const channel of [
+      IPC_CHANNELS.authTerminalOutput,
+      IPC_CHANNELS.authTerminalExit,
+      IPC_CHANNELS.codexLoginState,
+      IPC_CHANNELS.antigravityRuntimeProgress,
+      IPC_CHANNELS.copilotConnectionProgress,
+    ])
+      expect([channel, isMirrored(channel)]).toEqual([channel, false]);
+  });
+
+  // CAN-6718 review: sign-in text a browser receives names no host folder.
+  // A raw error a sign-in prints (Antigravity's, creating its folder) can
+  // quote the app's data folder; a desktop controller gets the text as is.
+  it('keeps host folders out of the sign-in text a browser receives', async () => {
+    const dataDir = getCanopyDataDir();
+    const raw = `EACCES: permission denied, mkdir '${dataDir}/antigravity/login'\r\n`;
+    for (const kind of ['browser', 'desktop'] as const) {
+      const hub = new Hub();
+      const controller = addController(hub, kind);
+      const host = await createHost(hub, {
+        settings: { pairedControllers: [pinned(controller, kind)] },
+      });
+      const { rpc } = await control(host, controller);
+      await hello(rpc, {
+        version: VERSION,
+        controller: { kind, minVersion: REMOTE_PROTOCOL_VERSION },
+      });
+      host.bridge.emitPush(IPC_CHANNELS.authTerminalOutput, [
+        { sessionId: 'own', data: raw },
+      ]);
+      await until(() => controller.pushPayloads.length >= 1);
+      expect(controller.pushPayloads).toEqual([
+        {
+          channel: IPC_CHANNELS.authTerminalOutput,
+          args: [
+            {
+              sessionId: 'own',
+              data:
+                kind === 'browser'
+                  ? "EACCES: permission denied, mkdir 'the app's data folder/antigravity/login'\r\n"
+                  : raw,
+            },
+          ],
+          surface: 'main',
+        },
+      ]);
+    }
+  });
+
+  // CAN-6718 review: a host folder split across two output events is still
+  // named generically, and text held back at the end of one event reaches
+  // the browser with the next one or before the exit.
+  it('scrubs a host folder split across sign-in output events', async () => {
+    const dataDir = getCanopyDataDir();
+    const cut = Math.floor(dataDir.length / 2);
+    const hub = new Hub();
+    const controller = addController(hub, 'browser');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(controller, 'browser')] },
+    });
+    const { rpc } = await control(host, controller);
+    await hello(rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    const chunks = [
+      `failed: '${dataDir.slice(0, cut)}`,
+      `${dataDir.slice(cut)}/login'\r\nnext `,
+      `${dataDir.slice(0, cut)}`,
+    ];
+    for (const data of chunks)
+      host.bridge.emitPush(IPC_CHANNELS.authTerminalOutput, [
+        { sessionId: 'own', data },
+      ]);
+    host.bridge.emitPush(IPC_CHANNELS.authTerminalExit, [
+      { sessionId: 'own', exitCode: 1, signal: null },
+    ]);
+    await until(() =>
+      controller.pushPayloads
+        .map(signInPushOf)
+        .some((push) => push.channel === IPC_CHANNELS.authTerminalExit),
+    );
+    const pushes = controller.pushPayloads.map(signInPushOf);
+    const outputs = pushes.filter(
+      (push) => push.channel === IPC_CHANNELS.authTerminalOutput,
+    );
+    const text = outputs.map((push) => push.data ?? '').join('');
+    expect(text).toBe(
+      `failed: 'the app's data folder/login'\r\nnext ${scrubHostPaths(dataDir.slice(0, cut))}`,
+    );
+    for (const push of outputs)
+      expect(push.data ?? '').not.toContain(dataDir.slice(0, cut + 1));
+    expect(pushes.at(-1)?.channel).toBe(IPC_CHANNELS.authTerminalExit);
+  });
+
+  // CAN-6718 review: a host folder whose own tail begins a folder prefix
+  // (a home folder at /home/home) is never cut in two by the held tail.
+  it('never cuts a host folder in two when holding sign-in text back', async () => {
+    const home = jest.spyOn(os, 'homedir').mockReturnValue('/home/home');
+    try {
+      const hub = new Hub();
+      const controller = addController(hub, 'browser');
+      const host = await createHost(hub, {
+        settings: { pairedControllers: [pinned(controller, 'browser')] },
+      });
+      const { rpc } = await control(host, controller);
+      await hello(rpc, {
+        version: VERSION,
+        controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+      });
+      for (const data of ['open /home/home/h', 'istory\r\n'])
+        host.bridge.emitPush(IPC_CHANNELS.authTerminalOutput, [
+          { sessionId: 'own', data },
+        ]);
+      host.bridge.emitPush(IPC_CHANNELS.authTerminalExit, [
+        { sessionId: 'own', exitCode: 0, signal: null },
+      ]);
+      await until(() =>
+        controller.pushPayloads
+          .map(signInPushOf)
+          .some((push) => push.channel === IPC_CHANNELS.authTerminalExit),
+      );
+      const text = controller.pushPayloads
+        .map(signInPushOf)
+        .filter((push) => push.channel === IPC_CHANNELS.authTerminalOutput)
+        .map((push) => push.data ?? '')
+        .join('');
+      expect(text).toBe('open ~/history\r\n');
+    } finally {
+      home.mockRestore();
+    }
+  });
+
+  // CAN-6718 review W1: only harness setup's argument refusals carry their
+  // own code; another browser policy keeps its documented refusal.
+  it('refuses a browser harness setup value with its own code, other channels as before', async () => {
+    const hub = new Hub();
+    const controller = addController(hub, 'browser');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(controller, 'browser')] },
+    });
+    const { rpc } = await control(host, controller);
+    await hello(rpc, {
+      version: VERSION,
+      controller: { kind: 'browser', minVersion: REMOTE_PROTOCOL_VERSION },
+    });
+    const codeOf = async (
+      channel: string,
+      args: readonly unknown[],
+    ): Promise<unknown> =>
+      rpc.request(REMOTE_METHODS.invoke, { channel, args }).then(
+        () => 'served',
+        (error: unknown) =>
+          error instanceof RpcRemoteError ? error.code : 'failed',
+      );
+    expect(
+      await codeOf(IPC_CHANNELS.authTerminalStart, [
+        { provider: 'github', cols: 100, rows: 30 },
+      ]),
+    ).toBe(ARGUMENTS_REFUSED_CODE);
+    expect(
+      await codeOf(IPC_CHANNELS.codexLoginStart, [
+        { confirmPause: false, method: 'chatgpt' },
+      ]),
+    ).toBe(ARGUMENTS_REFUSED_CODE);
+    expect(await codeOf(IPC_CHANNELS.authTerminalResize, [{}])).toBe(
+      CHANNEL_UNAVAILABLE_CODE,
+    );
+    expect(
+      await codeOf(INSTALLED_ITEM_CHANNELS.LIST_STATUS, [{ unexpected: true }]),
+    ).toBe(CHANNEL_UNAVAILABLE_CODE);
+    expect(host.bridge.invokes).toEqual([]);
+  });
+
+  // CAN-6718 review S1: a finished Codex sign-in's account reaches a
+  // browser without its opaque fingerprint or account kind, in pushes and in
+  // the start, cancel and retry results; a desktop controller keeps them.
+  it('sends a browser no Codex account fingerprint or kind', async () => {
+    const account = {
+      authenticated: true,
+      accountLabel: 'person@example.com',
+      accountEmail: 'person@example.com',
+      detail: null,
+      error: null,
+      planType: 'plus',
+      accountKind: 'subscription',
+      authFingerprint: 'fp-0123456789',
+    };
+    const browserAccount = {
+      authenticated: true,
+      accountLabel: 'person@example.com',
+      accountEmail: 'person@example.com',
+      detail: null,
+      error: null,
+      planType: 'plus',
+    };
+    const complete = {
+      attemptId: null,
+      phase: 'complete',
+      activeWorkCount: 0,
+      outcome: 'success',
+      account,
+    };
+    const browserComplete = { ...complete, account: browserAccount };
+    for (const kind of ['browser', 'desktop'] as const) {
+      const hub = new Hub();
+      const controller = addController(hub, kind);
+      const host = await createHost(hub, {
+        settings: { pairedControllers: [pinned(controller, kind)] },
+        invokeResult: complete,
+      });
+      const { rpc } = await control(host, controller);
+      await hello(rpc, {
+        version: VERSION,
+        controller: { kind, minVersion: REMOTE_PROTOCOL_VERSION },
+      });
+      const shown = kind === 'browser' ? browserComplete : complete;
+      for (const [channel, args] of [
+        [
+          IPC_CHANNELS.codexLoginStart,
+          [{ confirmPause: false, method: 'chatgptDeviceCode' }],
+        ],
+        [IPC_CHANNELS.codexLoginCancel, []],
+        [IPC_CHANNELS.codexLoginRetryVerification, []],
+      ] as const)
+        expect([
+          channel,
+          await rpc.request(REMOTE_METHODS.invoke, { channel, args }),
+        ]).toEqual([channel, shown]);
+      host.mainPush(IPC_CHANNELS.codexLoginState, [complete]);
+      await until(() => controller.pushPayloads.length >= 1);
+      expect(controller.pushPayloads).toEqual([
+        { channel: IPC_CHANNELS.codexLoginState, args: [shown] },
+      ]);
+    }
+  });
+
+  // Gap 1 of CAN-6718: Claude's and Codex's sign-in status reach a browser
+  // without the opaque account-change fingerprint or the account kind, as
+  // Codex login states do; a desktop controller keeps both.
+  it('sends a browser no auth status fingerprint or account kind', async () => {
+    const status = {
+      authenticated: true,
+      accountLabel: 'person@example.com',
+      accountEmail: 'person@example.com',
+      detail: 'plus',
+      error: null,
+      planType: 'plus',
+      workspaceName: null,
+      accountKind: 'subscription',
+      authFingerprint: 'auth:subscription:person@example.com',
+    };
+    const browserStatus = {
+      authenticated: true,
+      accountLabel: 'person@example.com',
+      accountEmail: 'person@example.com',
+      detail: 'plus',
+      error: null,
+      planType: 'plus',
+      workspaceName: null,
+    };
+    for (const kind of ['browser', 'desktop'] as const) {
+      const hub = new Hub();
+      const controller = addController(hub, kind);
+      const host = await createHost(hub, {
+        settings: { pairedControllers: [pinned(controller, kind)] },
+        invokeResult: status,
+      });
+      const { rpc } = await control(host, controller);
+      await hello(rpc, {
+        version: VERSION,
+        controller: { kind, minVersion: REMOTE_PROTOCOL_VERSION },
+      });
+      for (const channel of [
+        IPC_CHANNELS.settingsClaudeAuthStatus,
+        IPC_CHANNELS.settingsCodexAuthStatus,
+      ])
+        expect([
+          channel,
+          await rpc.request(REMOTE_METHODS.invoke, { channel, args: [] }),
+        ]).toEqual([channel, kind === 'browser' ? browserStatus : status]);
+    }
+  });
+
+  // CAN-6718 review S3: errors a browser receives from harness setup never
+  // quote this computer's folders. An install failure becomes a fixed
+  // sentence, and every other error has the home folder and the app's data
+  // folders named generically. A desktop controller still gets the raw text.
+  it('keeps host paths out of the harness setup errors a browser receives', async () => {
+    const home = homedir();
+    const dataDir = getCanopyDataDir();
+    const rawInstall = `ENOSPC: no space left on device, open '${dataDir}/runtimes/antigravity/.install-AbC123/runtime.tgz'`;
+    const runtime = (error: string): unknown => ({
+      supported: true,
+      installed: false,
+      managed: false,
+      version: '1.5.1',
+      phase: 'failed',
+      error,
+    });
+    const invokeResultFor = (channel: string): unknown => {
+      if (channel === IPC_CHANNELS.antigravityRuntimeInstall)
+        return runtime(rawInstall);
+      return runtime('Antigravity CLI download failed. Try connecting again.');
+    };
+    const invokeRejectFor = (channel: string): Error | undefined => {
+      if (channel === IPC_CHANNELS.cursorConnectionConnect)
+        return new RpcPublicError(
+          `EACCES: permission denied, open '${dataDir}/cursor/x'`,
+        );
+      if (channel === IPC_CHANNELS.opencodeConnectionConnect)
+        return new RpcPublicError(
+          `EACCES: permission denied, open '${home}/x'`,
+        );
+      return undefined;
+    };
+    for (const kind of ['browser', 'desktop'] as const) {
+      const browser = kind === 'browser';
+      const hub = new Hub();
+      const controller = addController(hub, kind);
+      const host = await createHost(hub, {
+        settings: { pairedControllers: [pinned(controller, kind)] },
+        invokeResultFor,
+        invokeRejectFor,
+      });
+      const { rpc } = await control(host, controller);
+      await hello(rpc, {
+        version: VERSION,
+        controller: { kind, minVersion: REMOTE_PROTOCOL_VERSION },
+      });
+      const invoke = (channel: string, args: unknown[]): Promise<unknown> =>
+        rpc.request(REMOTE_METHODS.invoke, { channel, args });
+      expect(
+        await invoke(IPC_CHANNELS.antigravityRuntimeInstall, [
+          '6f9619ff-8b86-4d01-b42d-00cf4fc964ff',
+        ]),
+      ).toEqual(
+        runtime(
+          browser ? 'Antigravity CLI install failed. Try again.' : rawInstall,
+        ),
+      );
+      expect(await invoke(IPC_CHANNELS.antigravityRuntimeStatus, [])).toEqual(
+        runtime('Antigravity CLI download failed. Try connecting again.'),
+      );
+      await expect(
+        invoke(IPC_CHANNELS.cursorConnectionConnect, [{ signInLink: true }]),
+      ).rejects.toMatchObject({
+        message: browser
+          ? "EACCES: permission denied, open 'the app's data folder/cursor/x'"
+          : `EACCES: permission denied, open '${dataDir}/cursor/x'`,
+      });
+      await expect(
+        invoke(IPC_CHANNELS.opencodeConnectionConnect, []),
+      ).rejects.toMatchObject({
+        message: browser
+          ? "EACCES: permission denied, open '~/x'"
+          : `EACCES: permission denied, open '${home}/x'`,
+      });
+      host.mainPush(IPC_CHANNELS.antigravityRuntimeProgress, [
+        runtime(rawInstall),
+      ]);
+      await until(() => controller.pushPayloads.length >= 1);
+      expect(controller.pushPayloads).toEqual([
+        {
+          channel: IPC_CHANNELS.antigravityRuntimeProgress,
+          args: [
+            browser
+              ? runtime('Antigravity CLI install failed. Try again.')
+              : runtime(rawInstall),
+          ],
+        },
+      ]);
     }
   });
 
@@ -3701,6 +5977,151 @@ describe('pairing', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Connect Slack: the one expected hosted pairing (CAN-7606)
+// ---------------------------------------------------------------------------
+
+describe('expected hosted pairing (Connect Slack, CAN-7606)', () => {
+  /** Answers the prompt a request raised, or fails when none came. */
+  async function declinePrompt(host: Host): Promise<void> {
+    await until(() => host.events.some((event) => event.type === 'request'));
+    const request = host.events.find((event) => event.type === 'request');
+    if (request?.type !== 'request') throw new Error('No request.');
+    await host.service.respondToPairing({
+      pairingId: request.pairing.pairingId,
+      approve: false,
+    });
+  }
+
+  it('pairs the armed hosted root once with no prompt, recorded as expected', async () => {
+    const hub = new Hub();
+    const host = await createHost(hub, { settings: {} });
+    const root = addController(hub, 'hosted');
+    expect(host.service.hasHostedController()).toBe(false);
+    expect(host.service.armExpectedPairing(root.deviceId)).not.toBeNull();
+    expect((await pairRequest(host, root)).approved).toBe(true);
+    expect((await host.readSettings()).pairedControllers).toEqual([
+      expect.objectContaining({ deviceId: root.deviceId, kind: 'hosted' }),
+    ]);
+    expect(host.service.hasHostedController()).toBe(true);
+    // No prompt, no code: the request never reached `incoming`.
+    expect(host.events.map((event) => event.type)).toEqual(['paired']);
+    expect(host.events[0]).toEqual(
+      expect.objectContaining({ method: 'expected', kind: 'hosted' }),
+    );
+    expect((await state(host)).incomingPairings).toEqual([]);
+    expect(host.telemetry).toContainEqual({
+      event: 'device_add',
+      device_kind: 'hosted',
+      pair_method: 'expected',
+    });
+
+    // Single use: the next request from the same root asks on this computer.
+    const again = pairRequest(host, root);
+    await declinePrompt(host);
+    expect((await again).approved).toBe(false);
+  });
+
+  it('prompts as usual when nothing is armed, or the expectation expired or was cleared', async () => {
+    const hub = new Hub();
+    const host = await createHost(hub, {
+      settings: {},
+      expectedPairingMs: 100,
+    });
+    const root = addController(hub, 'hosted');
+
+    const unarmed = pairRequest(host, root);
+    await declinePrompt(host);
+    expect((await unarmed).approved).toBe(false);
+
+    host.service.armExpectedPairing(root.deviceId);
+    await settle(150);
+    host.events.length = 0;
+    const expired = pairRequest(host, root);
+    await declinePrompt(host);
+    expect((await expired).approved).toBe(false);
+
+    host.service.armExpectedPairing(root.deviceId)?.clear();
+    host.events.length = 0;
+    const cleared = pairRequest(host, root);
+    await declinePrompt(host);
+    expect((await cleared).approved).toBe(false);
+    expect((await host.readSettings()).pairedControllers).toEqual([]);
+  });
+
+  it('prompts for another device or a kind other than hosted, and keeps the expectation for its own root', async () => {
+    const hub = new Hub();
+    const host = await createHost(hub, { settings: {} });
+    const root = addController(hub, 'hosted');
+    const otherRoot = addController(hub, 'hosted');
+    host.service.armExpectedPairing(root.deviceId);
+
+    // A different root device: prompted, and the expectation stays armed.
+    const other = pairRequest(host, otherRoot);
+    await declinePrompt(host);
+    expect((await other).approved).toBe(false);
+    expect((await pairRequest(host, root)).approved).toBe(true);
+
+    // The bound device under any kind but authenticated hosted is prompted.
+    for (const kind of ['browser', 'desktop', undefined] as const) {
+      const sibling = new Hub();
+      const local = await createHost(sibling, { settings: {} });
+      const device = addController(sibling, kind);
+      local.service.armExpectedPairing(device.deviceId);
+      const pending = pairRequest(local, device);
+      await declinePrompt(local);
+      expect((await pending).approved).toBe(false);
+      expect((await local.readSettings()).pairedControllers).toEqual([]);
+    }
+  });
+
+  it('prompts when Allow incoming was turned off, and turning it off disarms', async () => {
+    const hub = new Hub();
+    const host = await createHost(hub, { settings: {} });
+    const root = addController(hub, 'hosted');
+    host.service.armExpectedPairing(root.deviceId);
+    await host.service.setAllowIncoming(false);
+    await host.service.setAllowIncoming(true);
+    const pending = pairRequest(host, root);
+    await declinePrompt(host);
+    expect((await pending).approved).toBe(false);
+    expect((await host.readSettings()).pairedControllers).toEqual([]);
+  });
+
+  it('never approves for an account other than the one it was armed under', async () => {
+    const hub = new Hub();
+    const account = { current: `account:${ACCOUNT_USER_ID}` as string | null };
+    const host = await createHost(hub, { settings: {}, account });
+    const root = addController(hub, 'hosted');
+    host.service.armExpectedPairing(root.deviceId);
+    // Another account, same relay connection still up for this request.
+    account.current = 'account:other-user';
+    const pending = pairRequest(host, root);
+    await declinePrompt(host);
+    expect((await pending).approved).toBe(false);
+
+    // Signed out: nothing to arm under.
+    account.current = null;
+    expect(host.service.armExpectedPairing(root.deviceId)).toBeNull();
+    expect((await host.readSettings()).pairedControllers).toEqual([]);
+  });
+
+  it('replaces an earlier expectation when armed again', async () => {
+    const hub = new Hub();
+    const host = await createHost(hub, { settings: {} });
+    const first = addController(hub, 'hosted');
+    const second = addController(hub, 'hosted');
+    const stale = host.service.armExpectedPairing(first.deviceId);
+    host.service.armExpectedPairing(second.deviceId);
+    // Clearing the replaced handle leaves the newer expectation armed.
+    stale?.clear();
+    const firstTry = pairRequest(host, first);
+    await declinePrompt(host);
+    expect((await firstTry).approved).toBe(false);
+    expect((await pairRequest(host, second)).approved).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Hosted delegation
 // ---------------------------------------------------------------------------
 
@@ -3782,6 +6203,7 @@ describe('hosted delegation', () => {
     request: (channel: string, args: unknown[]) => Promise<unknown>;
     rpc: RpcPeer;
     child: Controller;
+    session: SecureSession;
   }> {
     const hub = new Hub();
     const root = generateDeviceKeyPair();
@@ -3801,7 +6223,7 @@ describe('hosted delegation', () => {
       },
     });
     const child = addController(hub, 'hosted');
-    const { rpc } = await control(
+    const { rpc, session } = await control(
       host,
       child,
       delegate(
@@ -3827,7 +6249,7 @@ describe('hosted delegation', () => {
           : 'failed';
       }
     };
-    return { host, root, invoke, request, rpc, child };
+    return { host, root, invoke, request, rpc, child, session };
   }
 
   const envelope = (
@@ -3851,6 +6273,129 @@ describe('hosted delegation', () => {
     questionId: 'question-1',
     answers: [{ question: 'Which branch?', selectedOptions: ['main'] }],
   };
+
+  it("refuses to commit a desktop controller's send that is in flight when its pairing is removed (CAN-7872)", async () => {
+    const hub = new Hub();
+    const desktop = addController(hub, 'desktop');
+    const other = addController(hub, 'desktop');
+    let release = (): void => undefined;
+    const inFlight = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // What the replayed send's commit check says when it would commit.
+    const atCommit: boolean[] = [];
+    const host: Host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(desktop), pinned(other)] },
+      invokeResultFor: (channel) =>
+        channel === IPC_CHANNELS.chatCommand
+          ? inFlight.then(() => {
+              atCommit.push(host.bridge.commitGuards[0]?.() === true);
+              return 'ok';
+            })
+          : 'ok',
+    });
+    const sender = await control(host, desktop);
+    await hello(sender.rpc);
+    const bystander = await control(host, other);
+    await hello(bystander.rpc);
+    const sending = sender.rpc
+      .request(REMOTE_METHODS.invoke, {
+        channel: IPC_CHANNELS.chatCommand,
+        args: [envelope(send)],
+      })
+      .catch(() => 'ended');
+    await until(() => host.bridge.invokes.includes(IPC_CHANNELS.chatCommand));
+    expect(await invokeCode(bystander.rpc, IPC_CHANNELS.chatGetState)).toBe(
+      'ok',
+    );
+    const [guard, bystanderGuard] = host.bridge.commitGuards;
+    // Separate-window desktop sessions keep the full Stop (CAN-7854).
+    expect(host.bridge.oneWindowFlags).toEqual([false, false]);
+    expect(guard?.()).toBe(true);
+    // The pairing goes while the send is still being prepared.
+    await host.service.forgetDevice({
+      deviceId: desktop.deviceId,
+      role: 'controller',
+    });
+    release();
+    await until(() => atCommit.length > 0);
+    expect(atCommit).toEqual([false]);
+    expect(guard?.()).toBe(false);
+    // Another computer's pairing is untouched.
+    expect(bystanderGuard?.()).toBe(true);
+    await sending;
+  });
+
+  it("refuses to commit a hosted controller's send that is in flight when its pairing is removed (CAN-7872)", async () => {
+    let release = (): void => undefined;
+    const inFlight = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { host, root, request } = await delegatedSession({
+      hostedDispatchGate: inFlight,
+    });
+    host.hostedChat.tabs.set('chat-1', DEFAULT_MODEL);
+    const sending = request('chat:command', [envelope(send)]).catch(
+      () => 'ended',
+    );
+    await until(() => host.hostedChat.dispatched.length > 0);
+    const canCommit = host.hostedChat.dispatched[0]?.attribution.canCommit;
+    expect(canCommit?.()).toBe(true);
+    await host.service.forgetDevice({
+      deviceId: root.deviceId,
+      role: 'controller',
+    });
+    // The dispatch still running is told its session lost its pairing, so
+    // the send and any new chat it makes are refused before they commit.
+    expect(canCommit?.()).toBe(false);
+    release();
+    await sending;
+  });
+
+  it("gives a hosted controller's question answer its pairing check (CAN-7872)", async () => {
+    const { host, root, request } = await delegatedSession();
+    host.hostedChat.tabs.set('chat-1', DEFAULT_MODEL);
+    host.hostedChat.questions.set('question-1', {
+      requestId: 'question-1',
+      chatId: 'chat-1',
+      questions: [{ question: 'Which branch?', options: ['main', 'develop'] }],
+    });
+    await request('chat:command', [envelope(answer)]);
+    // The answer carries the same check as a send. An answer to an async
+    // question is accepted as a send, which the chat-state service checks
+    // before it commits; one the agent is waiting on is CAN-7877's.
+    const canCommit = host.hostedChat.answers[0]?.attribution.canCommit;
+    expect(canCommit?.()).toBe(true);
+    await host.service.forgetDevice({
+      deviceId: root.deviceId,
+      role: 'controller',
+    });
+    expect(canCommit?.()).toBe(false);
+  });
+
+  it("refuses to commit a hosted controller's send that is in flight when its session ends, pairing kept (CAN-7872)", async () => {
+    let release = (): void => undefined;
+    const inFlight = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { host, request, session } = await delegatedSession({
+      hostedDispatchGate: inFlight,
+    });
+    host.hostedChat.tabs.set('chat-1', DEFAULT_MODEL);
+    const sending = request('chat:command', [envelope(send)]).catch(
+      () => 'ended',
+    );
+    await until(() => host.hostedChat.dispatched.length > 0);
+    const canCommit = host.hostedChat.dispatched[0]?.attribution.canCommit;
+    expect(canCommit?.()).toBe(true);
+    // The session ends but the pairing stays: the dispatch still running is
+    // refused all the same.
+    session.close('closed');
+    await until(() => canCommit?.() === false);
+    expect((await host.readSettings()).pairedControllers).toHaveLength(1);
+    release();
+    await sending;
+  });
 
   it('stores uploads for desktop and browser controllers only; host file reads stay with desktops', async () => {
     const methodCode = async (
@@ -3972,7 +6517,15 @@ describe('hosted delegation', () => {
         questionId: 'question-1',
       }),
       envelope({ type: 'chat.archive_tab', chatId: 'chat-1' }),
+      envelope({
+        type: 'chat.archive_tab',
+        tabId: 'chat-1',
+        keepSession: true,
+      }),
+      envelope({ type: 'chat.archive_tab', tabId: 'chat-1', unread: true }),
+      envelope({ type: 'chat.archive_tab', tabId: 'chat-1', extra: 1 }),
       envelope({ type: 'chat.close_tab', chatId: 'chat-1' }),
+      envelope({ type: 'chat.close_tab', tabId: 'chat-1' }),
       envelope({
         type: 'chat.reset_to_point',
         chatId: 'chat-1',
@@ -4478,6 +7031,22 @@ describe('hosted delegation', () => {
     });
     for (const channel of Object.values(HOSTED_TASK_CHANNELS))
       expect(HOSTED_CONTROLLER_CHANNELS).toContain(channel);
+    // The archive channels (CAN-7446) are the desktop's own channels too.
+    expect(HOSTED_ARCHIVE_CHANNELS).toEqual({
+      worktreeArchive: IPC_CHANNELS.worktreeArchive,
+      workspaceArchiveWorktree: IPC_CHANNELS.workspaceArchiveWorktree,
+      workEntriesDelete: IPC_CHANNELS.workEntriesDelete,
+    });
+    for (const channel of Object.values(HOSTED_ARCHIVE_CHANNELS))
+      expect(HOSTED_CONTROLLER_CHANNELS).toContain(channel);
+    // Hosted admission leaves the other profiles alone: browsers keep
+    // `work-entries:delete` and mobile controllers stay refused it.
+    expect(BROWSER_CONTROLLER_CHANNELS).toContain(
+      IPC_CHANNELS.workEntriesDelete,
+    );
+    expect(MOBILE_CONTROLLER_CHANNELS).not.toContain(
+      IPC_CHANNELS.workEntriesDelete,
+    );
     // Four of them are on no other controller list: they stay hosted-only.
     for (const channel of [
       HOSTED_TASK_CHANNELS.sidebarItemGroupsCreate,
@@ -4620,6 +7189,159 @@ describe('hosted delegation', () => {
         'remote_channel_unavailable',
       ]);
     expect(host.bridge.invokes).toHaveLength(accepted.length);
+  });
+
+  it('admits the hosted archive channels only as a locked archive that keeps the branch (CAN-7446)', async () => {
+    const { host, invoke } = await delegatedSession();
+    const channels = HOSTED_ARCHIVE_CHANNELS;
+    // A real ISO timestamp, as the computer reports a worktree's createdAt.
+    const createdAt = '2026-11-21T09:30:15.123Z';
+    const flags = { lockAfterArchive: true, deleteBranch: false };
+    const single = {
+      projectId: 'project-1',
+      worktreeId: 'worktree-1',
+      ...flags,
+    };
+    const multi = {
+      workspaceId: 'project-2',
+      worktreeId: 'worktree-2',
+      ...flags,
+    };
+    const entry = {
+      projectId: 'project-3',
+      entryId: 'entry-1',
+      lockAfterArchive: true,
+    };
+    const accepted: Array<[string, Record<string, unknown>]> = [
+      [channels.worktreeArchive, single],
+      [channels.worktreeArchive, { ...single, expectedCreatedAt: createdAt }],
+      [channels.workspaceArchiveWorktree, multi],
+      [
+        channels.workspaceArchiveWorktree,
+        { ...multi, expectedCreatedAt: createdAt },
+      ],
+      [channels.workEntriesDelete, entry],
+    ];
+    for (const [channel, arg] of accepted)
+      expect([channel, await invoke(channel, [arg])]).toEqual([channel, 'ok']);
+    expect(host.bridge.invokes).toEqual(accepted.map(([channel]) => channel));
+    expect(host.bridge.invokeArgs).toEqual(accepted.map(([, arg]) => [arg]));
+
+    const without = (
+      value: Record<string, unknown>,
+      key: string,
+    ): Record<string, unknown> =>
+      Object.fromEntries(
+        Object.entries(value).filter(([name]) => name !== key),
+      );
+    const worktreeRefusals = (
+      channel: string,
+      base: Record<string, unknown>,
+    ): Array<[string, unknown[]]> => [
+      ...Object.keys(base).map((key): [string, unknown[]] => [
+        channel,
+        [without(base, key)],
+      ]),
+      [channel, [{ ...base, lockAfterArchive: false }]],
+      [channel, [{ ...base, lockAfterArchive: 'true' }]],
+      [channel, [{ ...base, lockAfterArchive: 1 }]],
+      [channel, [{ ...base, lockAfterArchive: null }]],
+      [channel, [{ ...base, deleteBranch: true }]],
+      [channel, [{ ...base, deleteBranch: null }]],
+      [channel, [{ ...base, repoPath: '/Users/me/repo' }]],
+      [channel, [{ ...base, typedRefusal: true }]],
+      [channel, [{ ...base, deleteWithoutRetentionIfMissing: true }]],
+      [channel, [{ ...base, expectedBranchName: 'main' }]],
+      [channel, [{ ...base, remainingWorktreeOrder: [] }]],
+      [channel, [{ ...base, expectedRemainingWorktreeOrder: [] }]],
+      [channel, [{ ...base, extra: 1 }]],
+      [channel, [{ ...base, expectedCreatedAt: 1 }]],
+      [channel, [{ ...base, expectedCreatedAt: 'x'.repeat(65) }]],
+      [channel, []],
+      [channel, [base, {}]],
+    ];
+    const refused: Array<[string, unknown[]]> = [
+      ...worktreeRefusals(channels.worktreeArchive, single),
+      ...worktreeRefusals(channels.workspaceArchiveWorktree, multi),
+      // Each shape names its project under its own key.
+      [channels.worktreeArchive, [{ ...multi }]],
+      [channels.workspaceArchiveWorktree, [{ ...single }]],
+      ...Object.keys(entry).map((key): [string, unknown[]] => [
+        channels.workEntriesDelete,
+        [without(entry, key)],
+      ]),
+      [channels.workEntriesDelete, [{ ...entry, lockAfterArchive: false }]],
+      [channels.workEntriesDelete, [{ ...entry, lockAfterArchive: 'true' }]],
+      [
+        channels.workEntriesDelete,
+        [{ ...entry, expectedCreatedAt: createdAt }],
+      ],
+      [channels.workEntriesDelete, [{ ...entry, extra: 1 }]],
+      [channels.workEntriesDelete, []],
+      [channels.workEntriesDelete, [entry, {}]],
+      // No Bot project, under either key.
+      [
+        channels.worktreeArchive,
+        [{ ...single, projectId: APP_ADVISOR_PROJECT_ID }],
+      ],
+      [
+        channels.workspaceArchiveWorktree,
+        [{ ...multi, workspaceId: APP_ADVISOR_PROJECT_ID }],
+      ],
+      [
+        channels.workEntriesDelete,
+        [{ ...entry, projectId: APP_ADVISOR_PROJECT_ID }],
+      ],
+      // The archived-items list and discard stay off.
+      ['work-entries:list-archived', [{ projectId: 'project-3' }]],
+      [
+        'worktree:discard',
+        [{ projectId: 'project-1', worktreeId: 'worktree-1' }],
+      ],
+    ];
+    for (const [channel, args] of refused)
+      expect([channel, await invoke(channel, args)]).toEqual([
+        channel,
+        'remote_channel_unavailable',
+      ]);
+    expect(host.bridge.invokes).toHaveLength(accepted.length);
+  });
+
+  it('serves a hosted chat archive itself with only the tab, never in a Work Entry project (CAN-7446)', async () => {
+    const { host, request, invoke } = await delegatedSession();
+    const archive = { type: 'chat.archive_tab', tabId: 'chat-1' };
+    expect(await request('chat:command', [envelope(archive)])).toMatchObject({
+      outcome: 'applied',
+    });
+    expect(host.hostedChat.dispatched.at(-1)?.request).toMatchObject({
+      origin: 'portal',
+      command: archive,
+    });
+    expect(
+      Object.keys(host.hostedChat.dispatched.at(-1)?.request.command ?? {}),
+    ).toEqual(['type', 'tabId']);
+    // A Work Entry's chats close only with their task.
+    expect(
+      await request('chat:command', [
+        { ...envelope(archive), projectId: WORK_ENTRY_PROJECT_ID },
+      ]),
+    ).toMatchObject({
+      outcome: 'rejected',
+      reason: HOSTED_WORK_ENTRY_CHAT_ARCHIVE_REFUSAL,
+    });
+    for (const command of [
+      { ...archive, keepSession: true },
+      { ...archive, unread: true },
+      { type: 'chat.archive_tab', chatId: 'chat-1' },
+      { type: 'chat.close_tab', tabId: 'chat-1' },
+      { type: 'chat.discard_tab', tabId: 'chat-1' },
+    ]) {
+      expect(await invoke('chat:command', [envelope(command)])).toBe(
+        'remote_channel_unavailable',
+      );
+    }
+    expect(host.hostedChat.dispatched).toHaveLength(1);
+    expect(host.bridge.posts).toEqual([]);
   });
 
   it('serves the hosted chat settings commands itself, rebuilt from the reviewed fields (CAN-7445)', async () => {
@@ -4903,6 +7625,7 @@ describe('hosted delegation', () => {
     const dispatched: ChatCommandRequest[] = [];
     const dispatcher = createHostedChatDispatcher({
       validate: (value) => validateChatCommandRequest(value),
+      isWorkEntryScope: () => false,
       dispatch: (value) => {
         dispatched.push(value);
         return Promise.resolve({
@@ -5411,5 +8134,1092 @@ describe('a closed controller session', () => {
     await hello(fromLaptop.rpc);
     expect(await invokeCode(fromLaptop.rpc, MOBILE_CHANNEL)).toBe('ok');
     expect(host.bridge.invokes).toEqual(['chat:command', MOBILE_CHANNEL]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Web preview (CAN-7705)
+// ---------------------------------------------------------------------------
+
+describe('web preview', () => {
+  interface PreviewSession {
+    session: SecureSession;
+    rpc: RpcPeer;
+    tunnels: TunnelStreamMux;
+    /** What the first hello advertised, if anything. */
+    features: unknown;
+    /** `session.ended` notices the controller received. */
+    ended: unknown[];
+  }
+
+  const ASKS: Partial<HelloParams> = { webPreview: { version: 1 } };
+
+  /** Every hello also offers resume, so "without resume" means something. */
+  function helloParams(params: Partial<HelloParams>): HelloParams {
+    return {
+      version: VERSION,
+      transport: { resume: REMOTE_TRANSPORT_RESUME_VERSION },
+      ...params,
+    };
+  }
+
+  /** Says hello and keeps the resume the host agreed, as controllers do. */
+  async function sayHello(
+    control: { session: SecureSession; rpc: RpcPeer },
+    params: Partial<HelloParams>,
+  ): Promise<unknown> {
+    const answer = HelloResultSchema.parse(
+      await control.rpc.request(REMOTE_METHODS.hello, helloParams(params)),
+    );
+    control.session.setResumeNegotiated(
+      (answer.transport?.resume ?? 0) >= REMOTE_TRANSPORT_RESUME_VERSION,
+    );
+    return answer.features?.webPreview;
+  }
+
+  /** A desktop controller's session, its events routed to its stream mux. */
+  async function previewSession(
+    host: Host,
+    controller: Controller,
+    params: Partial<HelloParams> = ASKS,
+  ): Promise<PreviewSession> {
+    const session = await controller.sessions.connect({
+      peerDeviceId: host.identity.deviceId,
+      purpose: 'control',
+      pinnedPeerPublicKey: host.identity.publicKey,
+    });
+    let tunnels: TunnelStreamMux | null = null;
+    const ended: unknown[] = [];
+    const rpc = new RpcPeer(session, {
+      onRequest: (): Promise<never> => Promise.reject(new Error('Not served.')),
+      onEvent: (name, payload): void => {
+        if (name === REMOTE_EVENTS.ended) ended.push(payload);
+        tunnels?.handleEvent(name, payload);
+      },
+    });
+    tunnels = new TunnelStreamMux({
+      role: 'controller',
+      transport: {
+        notify: (name, payload, notifyOptions): boolean =>
+          rpc.notify(name, payload, notifyOptions),
+        request: (method, params, requestOptions): Promise<unknown> =>
+          rpc.request(method, params, requestOptions),
+      },
+    });
+    const mux = tunnels;
+    rpc.onClose(() => mux.close());
+    return {
+      session,
+      rpc,
+      tunnels,
+      features: await sayHello({ session, rpc }, params),
+      ended,
+    };
+  }
+
+  /** Fetches a page through one stream: the answer, or the open's code. */
+  function fetchPage(tunnels: TunnelStreamMux, port: number): Promise<string> {
+    const socket = tunnels.openStream('localhost', port, {
+      class: 'loopback',
+    });
+    return new Promise((resolve) => {
+      const parts: Buffer[] = [];
+      socket.on('data', (part: Buffer) => parts.push(part));
+      socket.once('end', () => resolve(Buffer.concat(parts).toString()));
+      socket.once('error', (error: Error) =>
+        resolve(error instanceof TunnelOpenError ? error.code : error.message),
+      );
+      socket.write(
+        'GET /next HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n',
+      );
+    });
+  }
+
+  /**
+   * Opens a keep-alive stream and waits for its first answer; resolves
+   * `closed` once the stream goes away.
+   */
+  async function heldStream(
+    tunnels: TunnelStreamMux,
+    port: number,
+  ): Promise<{ closed: Promise<string> }> {
+    const socket = tunnels.openStream('localhost', port, {
+      class: 'loopback',
+    });
+    // A reset reaches the socket as an error before it closes.
+    socket.on('error', () => undefined);
+    const closed = new Promise<string>((resolve) => {
+      socket.once('close', () => resolve('closed'));
+    });
+    await new Promise<void>((resolve) => {
+      socket.once('data', () => resolve());
+      socket.write('GET /next HTTP/1.1\r\nHost: localhost\r\n\r\n');
+    });
+    return { closed };
+  }
+
+  /**
+   * The relay drops the link between the two, as when a laptop sleeps:
+   * nothing crosses it, so neither side hears what the other sends.
+   */
+  function dropLink(host: Host, controller: Controller): void {
+    host.hub.cut.add(`${host.identity.deviceId}>${controller.deviceId}`);
+    host.hub.cut.add(`${controller.deviceId}>${host.identity.deviceId}`);
+    host.hub.endpoints
+      .get(host.identity.deviceId)
+      ?.peerWent(controller.deviceId, 'offline');
+    controller.endpoint.peerWent(host.identity.deviceId, 'offline');
+  }
+
+  /** The link is back: the controller asks to resume its sessions. */
+  function restoreLink(host: Host, controller: Controller): void {
+    host.hub.cut.delete(`${host.identity.deviceId}>${controller.deviceId}`);
+    host.hub.cut.delete(`${controller.deviceId}>${host.identity.deviceId}`);
+    controller.endpoint.peerWent(host.identity.deviceId, 'online');
+  }
+
+  const ADVERTISED = {
+    version: 1,
+    maxStreams: 256,
+    initialWindowBytes: 256 * 1024,
+    lan: false,
+  };
+
+  it('is advertised and served only with the flag on, to desktop controllers that ask', async () => {
+    const servers = await startDevServers();
+    cleanups.push(() => servers.stop());
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const off = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+    });
+    // The flag is off: nothing is advertised or dialed.
+    const unflagged = await previewSession(off, laptop);
+    expect(unflagged.features).toBeUndefined();
+    expect(await fetchPage(unflagged.tunnels, servers.port)).toBe(
+      'unavailable',
+    );
+
+    const studio = addController(hub, 'desktop');
+    const browser = addController(hub, 'browser');
+    const host = await createHost(hub, {
+      settings: {
+        pairedControllers: [pinned(studio), pinned(browser, 'browser')],
+      },
+      webPreviewFlag: true,
+    });
+    const asking = await previewSession(host, studio);
+    expect(asking.features).toEqual(ADVERTISED);
+    expect(await fetchPage(asking.tunnels, servers.port)).toContain(NEXT_PAGE);
+    // A desktop controller that didn't ask is neither told nor served.
+    const silent = await previewSession(host, studio, {});
+    expect(silent.features).toBeUndefined();
+    expect(await fetchPage(silent.tunnels, servers.port)).toBe('unavailable');
+    // Other controllers never are.
+    const fromBrowser = await previewSession(host, browser);
+    expect(fromBrowser.features).toBeUndefined();
+    expect(host.service.webPreviewAllowed()).toBe(true);
+  });
+
+  it('serves opens once a hello negotiates preview, even after an earlier open was refused', async () => {
+    const servers = await startDevServers();
+    cleanups.push(() => servers.stop());
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+    });
+    // The first hello did not ask, so the first open is refused...
+    const early = await previewSession(host, laptop, {});
+    expect(early.features).toBeUndefined();
+    expect(await fetchPage(early.tunnels, servers.port)).toBe('unavailable');
+    // ...and once a hello on the same session negotiates it, opens are served.
+    expect(await sayHello(early, ASKS)).toEqual(ADVERTISED);
+    expect(await fetchPage(early.tunnels, servers.port)).toContain(NEXT_PAGE);
+  });
+
+  it('turning the flag off resets streams and aborts a session that carried preview without resume; its reconnect gets no preview', async () => {
+    const servers = await startDevServers();
+    cleanups.push(() => servers.stop());
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const studio = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop), pinned(studio)] },
+      webPreviewFlag: true,
+    });
+    const carrying = await previewSession(host, laptop);
+    const quiet = await previewSession(host, studio);
+    expect(carrying.session.resumeNegotiated).toBe(true);
+    const held = await heldStream(carrying.tunnels, servers.port);
+
+    host.setWebPreviewFlag(false);
+    expect(await held.closed).toBe('closed');
+    await until(() => carrying.session.isClosed);
+    // Closed, not suspended: nothing is left to resume.
+    expect(laptop.sessions.suspendedSessions(host.identity.deviceId)).toEqual(
+      [],
+    );
+    // Not told to stay away, so it reconnects, and is not offered preview.
+    expect(carrying.ended).toEqual([]);
+    const again = await previewSession(host, laptop);
+    expect(again.features).toBeUndefined();
+    expect(await fetchPage(again.tunnels, servers.port)).toBe('unavailable');
+    // A session that never carried preview stays, and opens nothing.
+    expect(quiet.rpc.isClosed).toBe(false);
+    expect(await fetchPage(quiet.tunnels, servers.port)).toBe('unavailable');
+
+    // On again: the session that stayed, and negotiated it, serves again.
+    host.setWebPreviewFlag(true);
+    expect(await fetchPage(quiet.tunnels, servers.port)).toContain(NEXT_PAGE);
+
+    // Off again: now it carried preview, it is aborted the same way.
+    host.setWebPreviewFlag(false);
+    await until(() => quiet.session.isClosed);
+    expect(quiet.ended).toEqual([]);
+    expect((await previewSession(host, studio)).features).toBeUndefined();
+  });
+
+  it('revokes preview while the flag service publishes initializing or error, though the snapshot keeps the earlier value', async () => {
+    const servers = await startDevServers();
+    cleanups.push(() => servers.stop());
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+    });
+    const carrying = await previewSession(host, laptop);
+    expect(await fetchPage(carrying.tunnels, servers.port)).toContain(
+      NEXT_PAGE,
+    );
+    // Published initializing: the earlier true doesn't count.
+    host.setWebPreviewFlagStatus('initializing');
+    await until(() => carrying.session.isClosed);
+    expect(host.service.webPreviewAllowed()).toBe(false);
+    expect((await previewSession(host, laptop)).features).toBeUndefined();
+    // Evaluated again: on.
+    host.setWebPreviewFlagStatus('ready');
+    const again = await previewSession(host, laptop);
+    expect(again.features).toEqual(ADVERTISED);
+    expect(await fetchPage(again.tunnels, servers.port)).toContain(NEXT_PAGE);
+    // Published error: off again.
+    host.setWebPreviewFlagStatus('error');
+    await until(() => again.session.isClosed);
+    expect((await previewSession(host, laptop)).features).toBeUndefined();
+  });
+
+  it('refuses the resume of a suspended session that carried preview once preview is revoked, while one that never carried resumes', async () => {
+    const servers = await startDevServers();
+    cleanups.push(() => servers.stop());
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const studio = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop), pinned(studio)] },
+      webPreviewFlag: true,
+    });
+    const carrying = await previewSession(host, laptop);
+    const quiet = await previewSession(host, studio);
+    expect(await fetchPage(carrying.tunnels, servers.port)).toContain(
+      NEXT_PAGE,
+    );
+    dropLink(host, laptop);
+    dropLink(host, studio);
+    expect(carrying.session.state).toBe('suspended');
+    expect(quiet.session.state).toBe('suspended');
+
+    host.setWebPreviewFlag(false);
+    // Nothing crossed the cut link: both controllers still wait to resume.
+    await settle(50);
+    expect(carrying.session.state).toBe('suspended');
+    expect(quiet.session.state).toBe('suspended');
+    const carryingStates: string[] = [];
+    carrying.session.onStateChange((next) => carryingStates.push(next));
+    restoreLink(host, laptop);
+    restoreLink(host, studio);
+    // The quiet session picks up where it was...
+    await until(() => quiet.session.state === 'active');
+    expect(await sayHello(quiet, ASKS)).toBeUndefined();
+    // ...the one that carried preview has nothing to resume, so it closes
+    // without ever being active again, so nothing it held is replayed,
+    await until(() => carrying.session.isClosed);
+    expect(carryingStates).not.toContain('active');
+    expect(carrying.ended).toEqual([]);
+    // and its controller's fresh hello is not offered preview.
+    expect((await previewSession(host, laptop)).features).toBeUndefined();
+  });
+
+  it('when Allow incoming turns off, tells a connected controller it was revoked, and a suspended one is refused its resume and its reconnect', async () => {
+    const servers = await startDevServers();
+    cleanups.push(() => servers.stop());
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const studio = addController(hub, 'desktop');
+    // This computer also controls one, so its relay stays up with Allow
+    // incoming off and the suspended controller's resume reaches it.
+    const office = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: {
+        pairedControllers: [pinned(laptop), pinned(studio)],
+        pairedHosts: [pinned(office)],
+      },
+      webPreviewFlag: true,
+    });
+    const connected = await previewSession(host, laptop);
+    const asleep = await previewSession(host, studio);
+    const held = await heldStream(connected.tunnels, servers.port);
+    expect(await fetchPage(asleep.tunnels, servers.port)).toContain(NEXT_PAGE);
+    dropLink(host, studio);
+
+    await host.service.setAllowIncoming(false);
+    expect(await held.closed).toBe('closed');
+    await until(() => connected.session.isClosed);
+    expect(connected.ended).toEqual([{ reason: 'revoked' }]);
+    expect(host.service.webPreviewAllowed()).toBe(false);
+    expect(asleep.session.state).toBe('suspended');
+    // The suspended controller never heard; its resume is refused...
+    restoreLink(host, studio);
+    await until(() => asleep.session.isClosed);
+    expect(asleep.ended).toEqual([]);
+    // ...and so is its reconnect, and the other's.
+    await expect(previewSession(host, studio)).rejects.toThrow();
+    await expect(previewSession(host, laptop)).rejects.toThrow();
+  });
+
+  it('ends a carrying session without resume and refuses other opens as soon as a narrowing starts, whether or not it saves', async () => {
+    const servers = await startDevServers();
+    cleanups.push(() => servers.stop());
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+    });
+    const quiet = await previewSession(host, laptop);
+    const carrying = await previewSession(host, laptop);
+    const held = await heldStream(carrying.tunnels, servers.port);
+    // The relay now says the device is a phone, so its pairing narrows. The
+    // update is held, so the cached pairing still says desktop meanwhile.
+    let releaseSave: () => void = () => undefined;
+    host.store.gate = new Promise((resolve) => {
+      releaseSave = resolve;
+    });
+    laptop.endpoint.info.kind = 'mobile';
+    const narrowing = laptop.sessions
+      .connect({
+        peerDeviceId: host.identity.deviceId,
+        purpose: 'control',
+        pinnedPeerPublicKey: host.identity.publicKey,
+      })
+      .then(
+        () => 'connected',
+        () => 'refused',
+      );
+    // The carrying session's streams reset and it ends at once, before the
+    // save settles, without resume.
+    expect(await held.closed).toBe('closed');
+    await until(() => carrying.session.isClosed);
+    expect(laptop.sessions.suspendedSessions(host.identity.deviceId)).toEqual(
+      [],
+    );
+    expect(carrying.ended).toEqual([]);
+    // The other session opens nothing while the narrowing waits.
+    expect(await fetchPage(quiet.tunnels, servers.port)).toBe('unavailable');
+    // The real store caches the narrowed pairing, then its write fails: a
+    // directory where the file goes fails the rename whatever the
+    // permissions.
+    const settingsPath = join(host.dir, 'remote-control.json');
+    await rm(settingsPath, { force: true });
+    await mkdir(join(settingsPath, 'blocked'), { recursive: true });
+    try {
+      releaseSave();
+      expect(await narrowing).toBe('refused');
+    } finally {
+      await rm(settingsPath, { recursive: true, force: true });
+      host.store.gate = null;
+    }
+  });
+  // Consent (CAN-7712): the host's own switch, saved in remote-web-preview.json.
+
+  it('turning consent off resets streams and ends a session that carried preview without resume, admits none while it saves, and its reconnect gets no preview', async () => {
+    const servers = await startDevServers();
+    cleanups.push(() => servers.stop());
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const studio = addController(hub, 'desktop');
+    const save: { release: (() => void) | null } = { release: null };
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop), pinned(studio)] },
+      webPreviewFlag: true,
+      webPreviewWrite: async (path, contents): Promise<void> => {
+        if (contents.includes('"allowWebPreview": false'))
+          await new Promise<void>((resolve) => {
+            save.release = resolve;
+          });
+        await writeFile(path, contents);
+      },
+    });
+    expect((await state(host)).allowWebPreview).toBe(true);
+    const carrying = await previewSession(host, laptop);
+    const quiet = await previewSession(host, studio);
+    const held = await heldStream(carrying.tunnels, servers.port);
+    // The switch is this computer's own: a paired computer can't turn it.
+    expect(
+      await invokeCodeWith(
+        carrying.rpc,
+        IPC_CHANNELS.remoteControlSetAllowWebPreview,
+        [false],
+      ),
+    ).toBe('remote_channel_unavailable');
+    expect(host.service.webPreviewAllowed()).toBe(true);
+
+    const optingOut = host.service.setAllowWebPreview(false);
+    // Revoked while the save is still held.
+    expect(host.service.webPreviewAllowed()).toBe(false);
+    expect(await held.closed).toBe('closed');
+    await until(() => carrying.session.isClosed);
+    expect(laptop.sessions.suspendedSessions(host.identity.deviceId)).toEqual(
+      [],
+    );
+    expect(carrying.ended).toEqual([]);
+    // Nothing is admitted while the opt-out saves.
+    await until(() => save.release !== null);
+    const meanwhile = await previewSession(host, laptop);
+    expect(meanwhile.features).toBeUndefined();
+    expect(await fetchPage(meanwhile.tunnels, servers.port)).toBe(
+      'unavailable',
+    );
+    save.release?.();
+    expect((await optingOut).allowWebPreview).toBe(false);
+
+    const again = await previewSession(host, laptop);
+    expect(again.features).toBeUndefined();
+    // A session that never carried preview stays, and opens nothing.
+    expect(quiet.rpc.isClosed).toBe(false);
+    expect(await fetchPage(quiet.tunnels, servers.port)).toBe('unavailable');
+
+    // An opt-in counts once saved; the session that stayed serves again.
+    expect((await host.service.setAllowWebPreview(true)).allowWebPreview).toBe(
+      true,
+    );
+    expect(await fetchPage(quiet.tunnels, servers.port)).toContain(NEXT_PAGE);
+  });
+
+  it('writes an off chosen during a slow on after it, so the off always wins, and counts the on only once saved', async () => {
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const written: boolean[] = [];
+    const onSave: { release: (() => void) | null } = { release: null };
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+      webPreviewConsent: false,
+      webPreviewWrite: async (path, contents): Promise<void> => {
+        const on = contents.includes('"allowWebPreview": true');
+        if (on)
+          await new Promise<void>((resolve) => {
+            onSave.release = resolve;
+          });
+        written.push(on);
+        await writeFile(path, contents);
+      },
+    });
+    const optingIn = host.service.setAllowWebPreview(true);
+    await until(() => onSave.release !== null);
+    // The on is still saving: not counted yet.
+    expect(host.service.webPreviewAllowed()).toBe(false);
+    expect((await previewSession(host, laptop)).features).toBeUndefined();
+    const optingOut = host.service.setAllowWebPreview(false);
+    onSave.release?.();
+    await optingIn;
+    expect((await optingOut).allowWebPreview).toBe(false);
+    expect(written).toEqual([true, false]);
+    expect(host.service.webPreviewAllowed()).toBe(false);
+    expect(await readFile(host.webPreviewPath, 'utf8')).toContain(
+      '"allowWebPreview": false',
+    );
+    host.service.dispose();
+    const restarted = await createHost(hub, {
+      dir: host.dir,
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+    });
+    expect((await state(restarted)).allowWebPreview).toBe(false);
+  });
+
+  it('folds quick toggles into the next write, never writing on behind an off', async () => {
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const written: boolean[] = [];
+    const firstSave: { release: (() => void) | null } = { release: null };
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+      webPreviewWrite: async (path, contents): Promise<void> => {
+        if (written.length === 0 && firstSave.release === null)
+          await new Promise<void>((resolve) => {
+            firstSave.release = resolve;
+          });
+        written.push(contents.includes('"allowWebPreview": true'));
+        await writeFile(path, contents);
+      },
+    });
+    // Off, on, off in quick succession, the first save still under way.
+    const toggles = Promise.allSettled([
+      host.service.setAllowWebPreview(false),
+      host.service.setAllowWebPreview(true),
+      host.service.setAllowWebPreview(false),
+    ]);
+    expect(host.service.webPreviewAllowed()).toBe(false);
+    await until(() => firstSave.release !== null);
+    firstSave.release?.();
+    await toggles;
+    expect(written).toEqual([false]);
+    expect(host.service.webPreviewAllowed()).toBe(false);
+  });
+
+  it('keeps preview off when an opt-out fails to save, and saves it once the disk recovers so a restart keeps it off', async () => {
+    const servers = await startDevServers();
+    cleanups.push(() => servers.stop());
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    let failing = false;
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+      webPreviewRetryMs: 20,
+      webPreviewWrite: async (path, contents): Promise<void> => {
+        if (failing) throw new Error('Disk is full.');
+        await writeFile(path, contents);
+      },
+    });
+    const carrying = await previewSession(host, laptop);
+    expect(await fetchPage(carrying.tunnels, servers.port)).toContain(
+      NEXT_PAGE,
+    );
+    failing = true;
+    const broadcastsBefore = host.broadcasts.length;
+    await expect(host.service.setAllowWebPreview(false)).rejects.toThrow();
+    // Revoked all the same.
+    await until(() => carrying.session.isClosed);
+    expect(host.service.webPreviewAllowed()).toBe(false);
+    // The Settings switch hears it is off, though the call failed.
+    await until(() => host.broadcasts.length > broadcastsBefore);
+    expect(host.broadcasts.at(-1)?.allowWebPreview).toBe(false);
+    expect((await previewSession(host, laptop)).features).toBeUndefined();
+    // Once the disk takes writes again, the retry saves the off...
+    failing = false;
+    await until(async () =>
+      (await readFile(host.webPreviewPath, 'utf8')).includes(
+        '"allowWebPreview": false',
+      ),
+    );
+    host.service.dispose();
+    // ...so a restart keeps preview off.
+    const restarted = await createHost(hub, {
+      dir: host.dir,
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+    });
+    expect((await state(restarted)).allowWebPreview).toBe(false);
+    expect((await previewSession(restarted, laptop)).features).toBeUndefined();
+  });
+
+  it('does not take an opt-in whose save failed, so neither a retry nor the quit saves it', async () => {
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    let failing = true;
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+      webPreviewConsent: 'missing',
+      webPreviewRetryMs: 20,
+      webPreviewWrite: async (path, contents): Promise<void> => {
+        if (failing) throw new Error('Disk is full.');
+        await writeFile(path, contents);
+      },
+    });
+    expect((await state(host)).allowWebPreview).toBe(false);
+    await expect(host.service.setAllowWebPreview(true)).rejects.toThrow();
+    expect(host.service.webPreviewAllowed()).toBe(false);
+    expect((await state(host)).allowWebPreview).toBe(false);
+    // The disk recovers: nothing saves the opt-in that failed.
+    failing = false;
+    await settle(80);
+    await host.webPreviewStore.flush();
+    host.service.dispose();
+    const saved = await readFile(host.webPreviewPath, 'utf8').catch(() => '');
+    expect(saved).not.toContain('"allowWebPreview": true');
+  });
+
+  it('falls back to off when an opt-in fails after a failed opt-out, so the retry and the quit write off, never the old on', async () => {
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    let failing = false;
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+      webPreviewRetryMs: 20,
+      webPreviewWrite: async (path, contents): Promise<void> => {
+        if (failing) throw new Error('Disk is full.');
+        await writeFile(path, contents);
+      },
+    });
+    expect((await state(host)).allowWebPreview).toBe(true);
+    failing = true;
+    await expect(host.service.setAllowWebPreview(false)).rejects.toThrow();
+    await expect(host.service.setAllowWebPreview(true)).rejects.toThrow();
+    // The file may hold either value; the failed opt-in is not taken.
+    expect(host.service.webPreviewAllowed()).toBe(false);
+    expect((await state(host)).allowWebPreview).toBe(false);
+    // The disk recovers: the retry writes off, never the on it held before.
+    failing = false;
+    await until(async () =>
+      (await readFile(host.webPreviewPath, 'utf8')).includes(
+        '"allowWebPreview": false',
+      ),
+    );
+    await settle(80);
+    await host.webPreviewStore.flush();
+    host.service.dispose();
+    expect(await readFile(host.webPreviewPath, 'utf8')).toContain(
+      '"allowWebPreview": false',
+    );
+    expect(host.service.webPreviewAllowed()).toBe(false);
+    const restarted = await createHost(hub, {
+      dir: host.dir,
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+    });
+    expect((await state(restarted)).allowWebPreview).toBe(false);
+  });
+
+  it('keeps preview off after an opt-out until a later opt-in is saved, though the earlier on is still in the file', async () => {
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const written: boolean[] = [];
+    const held: Array<() => void> = [];
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+      webPreviewWrite: async (path, contents): Promise<void> => {
+        await new Promise<void>((resolve) => {
+          held.push(resolve);
+        });
+        written.push(contents.includes('"allowWebPreview": true'));
+        await writeFile(path, contents);
+      },
+    });
+    expect((await state(host)).allowWebPreview).toBe(true);
+    const optingOut = host.service.setAllowWebPreview(false);
+    await until(() => held.length === 1);
+    // On again while the off is still saving: the file still holds the
+    // earlier on, but that on came before the opt-out and doesn't count.
+    const optingIn = host.service.setAllowWebPreview(true);
+    expect(host.service.webPreviewAllowed()).toBe(false);
+    expect((await previewSession(host, laptop)).features).toBeUndefined();
+    held[0]?.();
+    expect((await optingOut).allowWebPreview).toBe(false);
+    await until(() => held.length === 2);
+    // The opt-in's own write is under way: still off.
+    expect(host.service.webPreviewAllowed()).toBe(false);
+    expect((await previewSession(host, laptop)).features).toBeUndefined();
+    held[1]?.();
+    expect((await optingIn).allowWebPreview).toBe(true);
+    expect(written).toEqual([false, true]);
+    expect(host.service.webPreviewAllowed()).toBe(true);
+  });
+
+  it('holds an opt-out made before the consent file was first read, though the file held on', async () => {
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    let optingOut: Promise<unknown> = Promise.resolve();
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+      beforeInitialize: (service): void => {
+        optingOut = service.setAllowWebPreview(false);
+      },
+    });
+    await optingOut;
+    expect(host.service.webPreviewAllowed()).toBe(false);
+    expect((await state(host)).allowWebPreview).toBe(false);
+    expect((await previewSession(host, laptop)).features).toBeUndefined();
+    expect(await readFile(host.webPreviewPath, 'utf8')).toContain(
+      '"allowWebPreview": false',
+    );
+  });
+
+  it('reports a failed save to the choice it carried: an opt-in folded over an opt-out fails, the overtaken opt-out does not', async () => {
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const written: boolean[] = [];
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+      webPreviewConsent: false,
+      webPreviewRetryMs: 60_000,
+      webPreviewWrite: async (path, contents): Promise<void> => {
+        await writeFile(path, contents);
+        // The on reaches the file, then its directory's fsync fails.
+        if (contents.includes('"allowWebPreview": true'))
+          throw new Error('fsync failed.');
+        written.push(false);
+      },
+    });
+    const outcome = (saving: Promise<unknown>): Promise<string> =>
+      saving.then(
+        () => 'done',
+        () => 'failed',
+      );
+    // Off then on before either is written: one write carries the on.
+    const optingOut = outcome(host.service.setAllowWebPreview(false));
+    const optingIn = outcome(host.service.setAllowWebPreview(true));
+    expect(await optingIn).toBe('failed');
+    expect(await optingOut).toBe('done');
+    // The failed opt-in falls back to off, which is written over the on.
+    await until(() => written.length > 0);
+    expect(host.service.webPreviewAllowed()).toBe(false);
+    expect((await state(host)).allowWebPreview).toBe(false);
+    expect(await readFile(host.webPreviewPath, 'utf8')).toContain(
+      '"allowWebPreview": false',
+    );
+  });
+
+  it('counts an opt-in at once when its write finds on already saved, after an earlier write of on lands', async () => {
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const written: boolean[] = [];
+    const firstSave: { release: (() => void) | null } = { release: null };
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+      webPreviewConsent: false,
+      webPreviewWrite: async (path, contents): Promise<void> => {
+        if (written.length === 0 && firstSave.release === null)
+          await new Promise<void>((resolve) => {
+            firstSave.release = resolve;
+          });
+        written.push(contents.includes('"allowWebPreview": true'));
+        await writeFile(path, contents);
+      },
+    });
+    const first = host.service.setAllowWebPreview(true);
+    await until(() => firstSave.release !== null);
+    const optingOut = host.service.setAllowWebPreview(false);
+    const optingIn = host.service.setAllowWebPreview(true);
+    // The first on is still saving and an opt-out followed it: off.
+    expect(host.service.webPreviewAllowed()).toBe(false);
+    firstSave.release?.();
+    await Promise.all([first, optingOut]);
+    expect((await optingIn).allowWebPreview).toBe(true);
+    // On was durably in the file when the later opt-in's write came to run,
+    // so nothing more was written.
+    expect(written).toEqual([true]);
+    expect(host.service.webPreviewAllowed()).toBe(true);
+  });
+
+  it('writes an off chosen during an opt-in whose write landed and then failed, never trusting the old saved value', async () => {
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const onSave: { release: (() => void) | null } = { release: null };
+    let failOn = true;
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+      webPreviewConsent: false,
+      webPreviewRetryMs: 60_000,
+      webPreviewWrite: async (path, contents): Promise<void> => {
+        const on = contents.includes('"allowWebPreview": true');
+        if (on)
+          await new Promise<void>((resolve) => {
+            onSave.release = resolve;
+          });
+        await writeFile(path, contents);
+        // The rename landed; the directory's fsync fails.
+        if (on && failOn) {
+          failOn = false;
+          throw new Error('fsync failed.');
+        }
+      },
+    });
+    const optingIn = host.service.setAllowWebPreview(true).then(
+      () => 'saved',
+      () => 'failed',
+    );
+    await until(() => onSave.release !== null);
+    const optingOut = host.service.setAllowWebPreview(false);
+    onSave.release?.();
+    expect(await optingIn).toBe('failed');
+    expect((await optingOut).allowWebPreview).toBe(false);
+    expect(await readFile(host.webPreviewPath, 'utf8')).toContain(
+      '"allowWebPreview": false',
+    );
+    host.service.dispose();
+    const restarted = await createHost(hub, {
+      dir: host.dir,
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+    });
+    expect((await state(restarted)).allowWebPreview).toBe(false);
+  });
+
+  it('saves an opt-out whose save was still in flight when the app quit, and then failed', async () => {
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    let failFirst: (error: Error) => void = () => undefined;
+    let writes = 0;
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+      webPreviewRetryMs: 60_000,
+      webPreviewWrite: (path, contents): Promise<void> => {
+        writes += 1;
+        if (writes > 1) return writeFile(path, contents);
+        return new Promise((_resolve, reject) => {
+          failFirst = reject;
+        });
+      },
+    });
+    const optingOut = host.service.setAllowWebPreview(false).then(
+      () => 'saved',
+      () => 'failed',
+    );
+    await until(() => writes === 1);
+    // The app quits while that save is still in flight; then it fails.
+    const quitting = host.webPreviewStore.flush();
+    failFirst(new Error('Disk is full.'));
+    expect(await optingOut).toBe('failed');
+    await quitting;
+    host.service.dispose();
+    expect(await readFile(host.webPreviewPath, 'utf8')).toContain(
+      '"allowWebPreview": false',
+    );
+  });
+
+  it('saves an unsaved opt-out when the app quits, before its retry is due, and takes no change after that', async () => {
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    let failing = true;
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+      webPreviewRetryMs: 60_000,
+      webPreviewWrite: async (path, contents): Promise<void> => {
+        if (failing) throw new Error('Disk is full.');
+        await writeFile(path, contents);
+      },
+    });
+    await expect(host.service.setAllowWebPreview(false)).rejects.toThrow();
+    // The disk recovers, and the app quits long before the retry is due.
+    failing = false;
+    await host.webPreviewStore.flush();
+    // Nothing would save a change made after the flush, so none is taken.
+    await expect(host.service.setAllowWebPreview(true)).rejects.toThrow();
+    host.service.dispose();
+    expect(await readFile(host.webPreviewPath, 'utf8')).toContain(
+      '"allowWebPreview": false',
+    );
+    const restarted = await createHost(hub, {
+      dir: host.dir,
+      webPreviewFlag: true,
+    });
+    expect((await state(restarted)).allowWebPreview).toBe(false);
+  });
+
+  it('reads off when the first read fails with EIO or EACCES, and writes an opt-out over the on still in the file', async () => {
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    for (const code of ['EIO', 'EACCES']) {
+      const written: string[] = [];
+      const host = await createHost(hub, {
+        settings: { pairedControllers: [pinned(laptop)] },
+        webPreviewFlag: true,
+        webPreviewRead: (): Promise<string> =>
+          Promise.reject(
+            Object.assign(new Error(`${code}: consent file`), { code }),
+          ),
+        webPreviewWrite: async (path, contents): Promise<void> => {
+          written.push(contents);
+          await writeFile(path, contents);
+        },
+      });
+      // The file holds on, but the read failed: off, and its value unknown.
+      expect(
+        JSON.parse(await readFile(host.webPreviewPath, 'utf8')),
+      ).toMatchObject({ allowWebPreview: true });
+      expect((await state(host)).allowWebPreview).toBe(false);
+      expect((await previewSession(host, laptop)).features).toBeUndefined();
+      // Settings is told, so the person can save off (the switch alone
+      // could only turn preview on).
+      expect((await state(host)).webPreviewChoiceUnread).toBe(true);
+      // So the opt-out is written, not skipped as already saved.
+      const saved = await host.service.setAllowWebPreview(false);
+      expect(written).toHaveLength(1);
+      expect(saved.allowWebPreview).toBe(false);
+      expect(saved.webPreviewChoiceUnread).toBe(false);
+      await host.webPreviewStore.flush();
+      host.service.dispose();
+      // Once reads work again, a restart keeps preview off.
+      const restarted = await createHost(hub, {
+        dir: host.dir,
+        settings: { pairedControllers: [pinned(laptop)] },
+        webPreviewFlag: true,
+      });
+      expect((await state(restarted)).allowWebPreview).toBe(false);
+      restarted.service.dispose();
+    }
+  });
+
+  it('offers to save off after a failed first read while the flag is off, and saves it', async () => {
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: false,
+      webPreviewRead: (): Promise<string> =>
+        Promise.reject(
+          Object.assign(new Error('EIO: consent file'), { code: 'EIO' }),
+        ),
+    });
+    // The flag hides the switch, not the state Settings needs to offer off.
+    expect((await state(host)).webPreviewChoiceUnread).toBe(true);
+    const saved = await host.service.setAllowWebPreview(false);
+    expect(saved.webPreviewChoiceUnread).toBe(false);
+    expect(JSON.parse(await readFile(host.webPreviewPath, 'utf8'))).toEqual({
+      version: 1,
+      allowWebPreview: false,
+    });
+  });
+
+  it('stops offering to save off once the person has chosen, even when that save failed after a failed first read', async () => {
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+      webPreviewRetryMs: 60_000,
+      webPreviewRead: (): Promise<string> =>
+        Promise.reject(
+          Object.assign(new Error('EIO: consent file'), { code: 'EIO' }),
+        ),
+      webPreviewWrite: (): Promise<void> =>
+        Promise.reject(new Error('Disk is full.')),
+    });
+    expect((await state(host)).webPreviewChoiceUnread).toBe(true);
+    // The person turns it off; the save fails and is reported, and off is
+    // retried in the background, so the notice has done its job.
+    await expect(host.service.setAllowWebPreview(false)).rejects.toThrow();
+    const after = await state(host);
+    expect(after.allowWebPreview).toBe(false);
+    expect(after.webPreviewChoiceUnread).toBe(false);
+  });
+
+  it('writes nothing at quit after a failed first read when no choice was made, so a saved opt-in survives', async () => {
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const written: string[] = [];
+    const host = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+      webPreviewRead: (): Promise<string> =>
+        Promise.reject(
+          Object.assign(new Error('EIO: consent file'), { code: 'EIO' }),
+        ),
+      webPreviewWrite: async (path, contents): Promise<void> => {
+        written.push(contents);
+        await writeFile(path, contents);
+      },
+    });
+    expect((await state(host)).allowWebPreview).toBe(false);
+    // Settings is told the saved choice couldn't be read.
+    expect((await state(host)).webPreviewChoiceUnread).toBe(true);
+    // The app quits without the person touching the switch.
+    await host.webPreviewStore.flush();
+    host.service.dispose();
+    expect(written).toEqual([]);
+    // The opt-in is still the file the restart reads (nothing re-seeds it).
+    expect(
+      JSON.parse(await readFile(host.webPreviewPath, 'utf8')),
+    ).toMatchObject({ allowWebPreview: true });
+    const restarted = await createHost(hub, {
+      dir: host.dir,
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+    });
+    expect((await state(restarted)).allowWebPreview).toBe(true);
+  });
+
+  it('saves consent in its own file, which a remote-control.json write never drops, and reads a missing, damaged or blocked file as off, never skipping the next save after a damaged or blocked one', async () => {
+    const hub = new Hub();
+    const laptop = addController(hub, 'desktop');
+    const first = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+    });
+    await first.service.setAllowWebPreview(false);
+    expect(JSON.parse(await readFile(first.webPreviewPath, 'utf8'))).toEqual({
+      version: 1,
+      allowWebPreview: false,
+    });
+    // This build's own remote-control.json writes never carry it.
+    await first.service.setAllowRemoteUpdates(true);
+    expect(await first.readSettings()).not.toHaveProperty('allowWebPreview');
+    first.service.dispose();
+
+    // An older build rewrites remote-control.json in its own format.
+    const restarted = await createHost(hub, {
+      dir: first.dir,
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+    });
+    expect((await state(restarted)).allowWebPreview).toBe(false);
+    expect((await previewSession(restarted, laptop)).features).toBeUndefined();
+    restarted.service.dispose();
+
+    // A file that can't be parsed reads as off.
+    await writeFile(first.webPreviewPath, '{"allowWebPreview": tru');
+    const damaged = await createHost(hub, {
+      dir: first.dir,
+      webPreviewFlag: true,
+    });
+    expect((await state(damaged)).allowWebPreview).toBe(false);
+    expect(damaged.service.webPreviewAllowed()).toBe(false);
+    // Its value is unknown, so an opt-out is written, never skipped as saved.
+    await damaged.service.setAllowWebPreview(false);
+    expect(JSON.parse(await readFile(first.webPreviewPath, 'utf8'))).toEqual({
+      version: 1,
+      allowWebPreview: false,
+    });
+    damaged.service.dispose();
+
+    // So does a directory where the file goes.
+    await rm(first.webPreviewPath, { force: true });
+    await mkdir(join(first.webPreviewPath, 'blocked'), { recursive: true });
+    const blocked = await createHost(hub, {
+      dir: first.dir,
+      webPreviewFlag: true,
+    });
+    expect((await state(blocked)).allowWebPreview).toBe(false);
+    expect(blocked.service.webPreviewAllowed()).toBe(false);
+    // An opt-out is tried, and its failure reported, never taken as saved.
+    await expect(blocked.service.setAllowWebPreview(false)).rejects.toThrow();
+    expect(blocked.service.webPreviewAllowed()).toBe(false);
+    blocked.service.dispose();
+
+    // And no file at all: preview is off until the person turns it on.
+    const fresh = await createHost(hub, {
+      settings: { pairedControllers: [pinned(laptop)] },
+      webPreviewFlag: true,
+      webPreviewConsent: 'missing',
+    });
+    expect((await state(fresh)).allowWebPreview).toBe(false);
+    expect((await previewSession(fresh, laptop)).features).toBeUndefined();
+    expect((await fresh.service.setAllowWebPreview(true)).allowWebPreview).toBe(
+      true,
+    );
+    expect((await previewSession(fresh, laptop)).features).toEqual(ADVERTISED);
   });
 });

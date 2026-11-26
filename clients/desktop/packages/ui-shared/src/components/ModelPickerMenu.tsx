@@ -33,6 +33,8 @@ import {
 } from '@canopy/protocol/models';
 import { getWindow } from '../panels';
 import { measureTextWidth } from '../lib/measure-text-width';
+import { UNAVAILABLE_MODEL_PRESET_REASON } from '../lib/agent-model-selection';
+import { MODEL_PRESET_LABEL_PLURAL } from '../lib/model-preset-labels';
 import {
   AllModelsIcon,
   AllModelsFilledIcon,
@@ -53,15 +55,15 @@ import {
   DropdownMenuControl,
   DropdownMenuItem,
   type DropdownMenuSurfaceShell,
-} from './DropdownMenu';
+} from '../primitives/DropdownMenu';
 import {
   COMPOSER_ROW_MENU_GAP,
   FLOATING_PICKER_GAP,
   FloatingMenu,
-} from './FloatingMenu';
+} from '../primitives/FloatingMenu';
 import { ModelGroupHeader } from './ModelGroupHeader';
-import { NestedMenuFlyout } from './NestedMenuFlyout';
-import { OverlayScrollArea } from './OverlayScrollArea';
+import { NestedMenuFlyout } from '../primitives/NestedMenuFlyout';
+import { OverlayScrollArea } from '../primitives/OverlayScrollArea';
 import {
   PickerMenuList,
   PickerMenuOption,
@@ -75,19 +77,22 @@ import {
   PickerMenuSampleOption,
   type PickerMenuOptionTrailingSlots,
   type PickerMenuSampleLabelWidth,
-} from './PickerMenu';
-import { Button } from './Button';
-import { Fact, FactList } from './FactList';
-import { RichHoverCard, RichHoverTooltip } from './RichHoverTooltip';
-import { SearchField } from './SearchField';
-import { Skeleton } from './Skeleton';
-import { Stack } from './Stack';
+} from '../primitives/PickerMenu';
+import { Button } from '../primitives/Button';
+import { Fact, FactList } from '../primitives/FactList';
+import {
+  RichHoverCard,
+  RichHoverTooltip,
+} from '../primitives/RichHoverTooltip';
+import { SearchField } from '../primitives/SearchField';
+import { Skeleton } from '../primitives/Skeleton';
+import { Stack } from '../primitives/Stack';
 import { AI_CREDITS_LABEL } from './aiCreditsLabel';
-import { EmptyState } from './StatusBlocks';
+import { EmptyState } from '../primitives/StatusBlocks';
 import { LockedModelRow, type LockedModelRowLock } from './LockedModelRow';
-import { IconToggleButton } from './IconToggleButton';
-import { Tooltip } from './Tooltip';
-import { CompactToggleIndicator } from './ToggleSwitch';
+import { ControlButton } from '../primitives/Button';
+import { Tooltip } from '../primitives/Tooltip';
+import { CompactToggleIndicator } from '../primitives/ToggleSwitch';
 
 import { ModelProviderIcon } from '../icons/ModelProviderIcon';
 
@@ -544,7 +549,21 @@ export interface ModelPickerMenuProps {
        * flow, `settings` (the default) sends the user to Settings.
        */
       readonly connectVia?: 'sign-in' | 'settings';
+      /**
+       * Why a disconnected harness can't be connected from here, such as a
+       * computer whose operating system it doesn't support, or a remote
+       * picker that can only point at the other computer's Settings. Shown
+       * in place of the connect prompt, with no connect button, and the
+       * harness is left out of the connect suggestions.
+       */
+      readonly unavailableReason?: string;
     }[];
+    /**
+     * Re-checks the host's harnesses. Offered as Check again beside a
+     * harness's `unavailableReason`, for a fix made elsewhere (for example in
+     * the other computer's Settings).
+     */
+    readonly onRecheckHarnesses?: () => void;
     /**
      * Host action for the connect empty-state CTA (Settings, managed
      * Cursor setup, Ollama install, and so on).
@@ -1399,7 +1418,7 @@ export function ModelPickerMenu({
       );
     const agents: CatalogSection = {
       key: 'agents',
-      label: 'Agents',
+      label: MODEL_PRESET_LABEL_PLURAL,
       icon: <PeopleIdCardIcon size="sm" />,
       options: catalog.filter((option) => option.kind === 'agent'),
       sortOrder: -1,
@@ -1486,7 +1505,7 @@ export function ModelPickerMenu({
   // of All and from search when the host can connect them.
   const connectableHarnesses = harnessTabs?.onConnectHarness
     ? (harnessTabs.runnableHarnesses ?? []).filter(
-        (harness) => !harness.connected,
+        (harness) => !harness.connected && !harness.unavailableReason,
       )
     : [];
   const connectQuery = modelSearch.trim().toLowerCase();
@@ -1811,8 +1830,7 @@ export function ModelPickerMenu({
       if (agentDisabled) {
         return {
           disabled: true,
-          unavailableReason:
-            'This agent is unavailable — its base model is not registered on the desktop app.',
+          unavailableReason: UNAVAILABLE_MODEL_PRESET_REASON,
         };
       }
       if (providerDisabled) {
@@ -2809,31 +2827,41 @@ export function ModelPickerMenu({
   // A typed search is about models, so Auto steps aside until it clears.
   const autoToggle =
     pickerChrome && autoModeOption && !modelSearch ? (
-      <IconToggleButton
-        pressed={autoPressed}
-        label={MODEL_PICKER_AUTO_LABEL}
-        showLabel
-        offTone="accent"
-        tooltip={`${MODEL_PICKER_AUTO_LABEL}: ${
+      <Tooltip
+        label={`${MODEL_PICKER_AUTO_LABEL}: ${
           autoUnavailable && autoOption?.unavailableReason
             ? autoOption.unavailableReason
             : MODEL_PICKER_AUTO_DESCRIPTION.toLowerCase()
         }`}
-        disabled={autoUnavailable && !autoActionable}
-        onClick={(): void => {
-          // Already on: nothing changes, so the picker stays open.
-          if (autoPressed) return;
-          selectOption(autoModeOption);
-        }}
-        icon={
-          <AutoModelIcon
-            size={PICKER_ROW_GLYPH_SIZE}
-            exactSize
-            data-testid={`${testIdPrefix}-option-auto-icon`}
-          />
-        }
-        testId={`${testIdPrefix}-option-${autoModeOption.id}`}
-      />
+        delay="long"
+      >
+        <ControlButton
+          presentation="icon-toggle"
+          appearance={{
+            pressed: autoPressed,
+            labelled: true,
+            offTone: 'accent',
+          }}
+          aria-pressed={autoPressed}
+          aria-label={MODEL_PICKER_AUTO_LABEL}
+          disabled={autoUnavailable && !autoActionable}
+          onClick={(): void => {
+            // Already on: nothing changes, so the picker stays open.
+            if (autoPressed) return;
+            selectOption(autoModeOption);
+          }}
+          data-testid={`${testIdPrefix}-option-${autoModeOption.id}`}
+        >
+          {
+            <AutoModelIcon
+              size={PICKER_ROW_GLYPH_SIZE}
+              exactSize
+              data-testid={`${testIdPrefix}-option-auto-icon`}
+            />
+          }
+          <span aria-hidden="true">{MODEL_PICKER_AUTO_LABEL}</span>
+        </ControlButton>
+      </Tooltip>
     ) : null;
   const railIconSize = PICKER_RAIL_GLYPH_SIZE;
   const railTabsInOrder: {
@@ -3299,12 +3327,31 @@ export function ModelPickerMenu({
                       />
                     }
                     title={
-                      activeRunnableHarness.connectVia === 'sign-in'
+                      activeRunnableHarness.unavailableReason ??
+                      (activeRunnableHarness.connectVia === 'sign-in'
                         ? `Sign in to ${connectHarnessLabel}`
-                        : `Connect ${connectHarnessLabel} in Settings`
+                        : `Connect ${connectHarnessLabel} in Settings`)
                     }
                     action={
-                      harnessTabs?.onConnectHarness ? (
+                      activeRunnableHarness.unavailableReason ? (
+                        harnessTabs?.onRecheckHarnesses ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            data-testid={`${testIdPrefix}-recheck-harnesses`}
+                            onMouseDown={(event): void =>
+                              event.preventDefault()
+                            }
+                            onClick={(event): void => {
+                              event.preventDefault();
+                              harnessTabs.onRecheckHarnesses?.();
+                            }}
+                          >
+                            Check again
+                          </Button>
+                        ) : undefined
+                      ) : harnessTabs?.onConnectHarness ? (
                         <Button
                           type="button"
                           size="sm"

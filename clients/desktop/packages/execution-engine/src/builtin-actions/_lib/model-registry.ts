@@ -220,6 +220,8 @@ function parseBuiltinModelCatalog(
       value.version !== 1 ||
       !isStringArray(value.claudeModels) ||
       !isStringArray(value.codexModels) ||
+      (value.policyModelIds !== undefined &&
+        !isStringRecord(value.policyModelIds)) ||
       !isStringArray(value.ollamaModels) ||
       !isStringArray(value.aiGatewayModels) ||
       !Array.isArray(value.gatewayRoutes) ||
@@ -232,6 +234,9 @@ function parseBuiltinModelCatalog(
       version: value.version,
       claudeModels: value.claudeModels,
       codexModels: value.codexModels,
+      ...(value.policyModelIds !== undefined && {
+        policyModelIds: value.policyModelIds,
+      }),
       ollamaModels: value.ollamaModels,
       aiGatewayModels: value.aiGatewayModels,
       gatewayRoutes: value.gatewayRoutes,
@@ -302,6 +307,9 @@ function applyModelRegistry(
     read('MODEL_HARNESS_ASSIGNMENTS'),
   );
   const thinkingLevelsByModel = parseThinkingLevelsRecord(rawThinkingLevels);
+  const policyModelIds = new Map(
+    Object.entries(modelCatalog?.policyModelIds ?? {}),
+  );
   const withThinkingLevels = (
     id: string,
   ): { supportedThinkingLevels?: ThinkingLevel[] } => {
@@ -312,13 +320,23 @@ function applyModelRegistry(
   if (rawClaudeModels !== undefined || absentClears) {
     const claudeEntries: ClaudeModelEntry[] = parseStringArray(
       rawClaudeModels,
-    ).map((id) => ({ id, label: id, ...withThinkingLevels(id) }));
+    ).map((id) => ({
+      id,
+      label: id,
+      gatewayId: policyModelIds.get(id),
+      ...withThinkingLevels(id),
+    }));
     initClaudeModels(claudeEntries);
   }
   if (rawCodexModels !== undefined || absentClears) {
     const codexEntries: CodexModelEntry[] = parseStringArray(
       rawCodexModels,
-    ).map((id) => ({ id, label: id, ...withThinkingLevels(id) }));
+    ).map((id) => ({
+      id,
+      label: id,
+      gatewayId: policyModelIds.get(id),
+      ...withThinkingLevels(id),
+    }));
     initCodexModels(codexEntries);
   }
   if (rawOllamaModels !== undefined || absentClears) {

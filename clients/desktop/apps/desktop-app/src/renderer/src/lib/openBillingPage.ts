@@ -29,7 +29,7 @@ import {
   type ModelLibraryUnlockSource,
 } from '@canopy/protocol/billing';
 import {
-  AI_CREDITS_PURCHASE_LABEL,
+  AI_CREDITS_GUEST_PURCHASE_LABEL,
   CONTACT_ORG_ADMIN_COPY,
   MODEL_LIBRARY_UNLOCK_COPY,
 } from '@canopy/ui-shared/components';
@@ -452,11 +452,11 @@ export function getAiCreditsConnectContext(
   const opensSettings =
     options.destination !== 'browser' && hostedSettingsOpenable();
   return {
-    title: AI_CREDITS_PURCHASE_LABEL,
-    subtitle: `Connect your ${brandText.appName} account to buy credits.`,
+    title: AI_CREDITS_GUEST_PURCHASE_LABEL,
+    subtitle: `Credits are kept on your ${brandText.appName} account.`,
     toastMessage: opensSettings
-      ? "You're connected. Opening Billing in Settings so you can buy credits."
-      : "You're connected. Opening your billing page so you can buy credits.",
+      ? "You're signed in. Opening Billing in Settings."
+      : "You're signed in. Opening your billing page.",
   };
 }
 

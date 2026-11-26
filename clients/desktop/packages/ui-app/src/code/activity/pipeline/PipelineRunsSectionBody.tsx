@@ -49,6 +49,7 @@ export interface PipelineRunsSectionBodyProps {
   readonly onDismissFailedQueuedExecution?: (queueId: string) => void;
   readonly onCancelPendingExecution?: (localId: string) => void;
   readonly onDismissFailedPendingExecution?: (localId: string) => void;
+  readonly onRetryFailedPendingExecution?: (localId: string) => void;
   readonly runRowProps: Omit<PipelineRunTreeRowProps, 'node'>;
 }
 
@@ -67,6 +68,7 @@ export function PipelineRunsSectionBody({
   onDismissFailedQueuedExecution,
   onCancelPendingExecution,
   onDismissFailedPendingExecution,
+  onRetryFailedPendingExecution,
   runRowProps,
 }: PipelineRunsSectionBodyProps): JSX.Element | null {
   const frameless = layout === 'frameless';
@@ -137,6 +139,7 @@ export function PipelineRunsSectionBody({
                   key={entry.localId}
                   entry={entry}
                   onDismiss={onDismissFailedPendingExecution ?? noop}
+                  onRetry={onRetryFailedPendingExecution}
                 />
               ))}
             </div>

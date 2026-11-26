@@ -1,5 +1,5 @@
-import { Badge } from './Badge';
-import { Stack } from './Stack';
+import { Badge } from '../primitives/Badge';
+import { Stack } from '../primitives/Stack';
 import { pluginDisplayName } from '../lib/plugin-display-name';
 import { pluginDisplayAuthor } from '../lib/official-marketplace-products';
 import {
@@ -14,7 +14,7 @@ import {
   useState,
 } from 'react';
 
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 import { ClickableName } from './ClickableName';
 import { ComponentSection } from './ComponentSection';
 import {
@@ -26,8 +26,8 @@ import {
   DataTableHeaderCell,
   DataTableRow,
   type DataTableColumn,
-} from './DataTable';
-import { Disclosure } from './Disclosure';
+} from '../primitives/DataTable';
+import { Disclosure } from '../primitives/Disclosure';
 import { DetailFact, DetailFactList } from './DetailFact';
 import {
   CapabilityDetailLayout,
@@ -37,16 +37,15 @@ import {
   type CapabilityDetailFacts,
 } from './CapabilityDetailLayout';
 import { DetailEntityType, MarketplaceTypeLabel } from './MarketplaceTypeLabel';
-import { ExternalTextLink } from './ExternalTextLink';
 import { Markdown, type MarkdownProps } from './Markdown';
 import { MarkdownFrontmatterContent } from './MarkdownFrontmatterContent';
 import { PluginDetailSectionHeading } from './PluginDetailSectionHeading';
 import { PluginModNotice, pluginModRows } from './PluginModMembers';
-import { EmptyStateText, ErrorBanner } from './StatusBlocks';
-import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
+import { EmptyStateText, ErrorBanner } from '../primitives/StatusBlocks';
+import { CenteredLoadingSpinner } from '../primitives/CenteredLoadingSpinner';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
-import { TabBar } from './TabBar';
-import { Tooltip } from './Tooltip';
+import { TabBar } from '../primitives/TabBar';
+import { Tooltip } from '../primitives/Tooltip';
 import { McpServerLogo } from './McpServerLogo';
 import { StatusToneText, useItemStateMarks } from './ItemStateMark';
 import {
@@ -74,6 +73,7 @@ import type {
   PluginProviderFacet,
   PluginProviderSupport,
 } from '@canopy/protocol/plugins';
+import { TextLink } from '../primitives/TextLink';
 
 // ---------------------------------------------------------------------------
 // Shared presentational core of the plugin detail surface (PR 5 of
@@ -1541,10 +1541,14 @@ export function PluginDetailContent({
                           label="Website"
                           testId="plugin-detail-links"
                         >
-                          <ExternalTextLink
+                          <TextLink
                             href={displayHomepage}
-                            label={detailWebsiteHost(displayHomepage)}
-                          />
+                            size="xs"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {detailWebsiteHost(displayHomepage)}
+                          </TextLink>
                         </DetailFact>
                       )}
                       {metadataFacts}

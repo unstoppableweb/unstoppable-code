@@ -3,6 +3,7 @@ import {
   type AccountOrganizationSettingsApi,
   type AccountOrganizationSettingsEventMessage,
   type AccountOrganizationSettingsResponse,
+  type SettingsTranscriptDownloadResult,
 } from '@canopy/desktop-shared/types';
 import {
   isSettingsErrorCode,
@@ -24,7 +25,8 @@ type SettingsInvokeChannel =
   | typeof IPC_CHANNELS.accountOrganizationSettingsSubscribe
   | typeof IPC_CHANNELS.accountOrganizationSettingsUnsubscribe
   | typeof IPC_CHANNELS.accountOrganizationSettingsPaymentHandoff
-  | typeof IPC_CHANNELS.accountOrganizationSettingsPaymentHandoffAvailability;
+  | typeof IPC_CHANNELS.accountOrganizationSettingsPaymentHandoffAvailability
+  | typeof IPC_CHANNELS.accountOrganizationSettingsDownloadTranscript;
 
 type SettingsPushChannel =
   | typeof IPC_CHANNELS.accountOrganizationSettingsEvent
@@ -66,6 +68,33 @@ function parseResponse(value: unknown): AccountOrganizationSettingsResponse {
   if (typeof error.serverCode === 'string')
     payload.serverCode = error.serverCode;
   return { ok: false, error: payload };
+}
+
+const DOWNLOAD_FAILURE_REASONS: ReadonlySet<unknown> = new Set([
+  'invalid',
+  'unauthenticated',
+  'forbidden',
+  'not_found',
+  'gone',
+  'too_large',
+  'busy',
+  'failed',
+]);
+
+function isDownloadFailureReason(
+  value: unknown,
+): value is Extract<SettingsTranscriptDownloadResult, { ok: false }>['reason'] {
+  return DOWNLOAD_FAILURE_REASONS.has(value);
+}
+
+function parseDownloadResult(value: unknown): SettingsTranscriptDownloadResult {
+  if (isRecord(value)) {
+    if (value.ok === true && typeof value.saved === 'boolean')
+      return { ok: true, saved: value.saved };
+    if (value.ok === false && isDownloadFailureReason(value.reason))
+      return { ok: false, reason: value.reason };
+  }
+  return { ok: false, reason: 'failed' };
 }
 
 const SETTINGS_EVENT_TYPES: ReadonlySet<unknown> = new Set([
@@ -186,6 +215,19 @@ export function createAccountOrganizationSettingsApi(
       );
       return parsed.success ? parsed.data : { available: false };
     },
+    downloadTranscriptFile: async (
+      request,
+    ): Promise<SettingsTranscriptDownloadResult> =>
+      parseDownloadResult(
+        await ipc.invoke(
+          IPC_CHANNELS.accountOrganizationSettingsDownloadTranscript,
+          {
+            accountId: request.accountId,
+            path: request.path,
+            suggestedName: request.suggestedName,
+          },
+        ),
+      ),
     onOpenRequest: (listener): (() => void) =>
       subscribePush(
         ipc,

@@ -1,27 +1,43 @@
 import { isCodexContextWindowSetting } from './lib/codex-context-window';
-import type { CodexContextWindowSetting } from './lib/codex-context-window';
 import { codexSpeedFastMode, isCodexSpeed } from './lib/codex-speed';
-import type { CodexSpeed } from './lib/codex-speed';
 import type { ConfiguredModelBillingMetadata } from './model-catalog';
 import { isThinkingLevel } from './thinking';
 import type { BrowserLoadStatus } from './types/browser';
-import type { McpHttpAuthPreference } from './types/mcp-servers';
 import type { UsageInitiationSource } from './types/observability';
 import type { ThinkingLevel } from './types/thinking';
 import type { AgentProviderType } from '@canopy/agent-transcript';
+import type { AgentModelConfig } from '@canopy/protocol/agent-model-config';
 import type { AiGatewayHarness } from '@canopy/protocol/ai-gateway-models';
 import type {
   GatewayModelConfig,
   GatewayModelEntry,
 } from '@canopy/protocol/llm-gateway';
 import type { AutoResumeReason } from '@canopy/protocol/remote-control/shell';
-import type { SelectionRefOwner } from '@canopy/protocol/plugins';
 import type {
   CommandShellDefinition,
   ScriptDevServerPattern,
   ScriptLifecyclePhase,
 } from '@canopy/protocol/scripts';
-import type { TryItCapability } from '@canopy/protocol/try-it';
+
+export type { AgentModelConfig } from '@canopy/protocol/agent-model-config';
+export type {
+  ChatTabPluginSelections,
+  PluginSelectionTombstones,
+  SelectionMcpServerRef,
+  SelectionPluginRef,
+  SelectionSkillRef,
+} from '@canopy/protocol/plugins/selections';
+export {
+  ORG_PROHIBITABLE_USAGE_DATA_KEYS,
+  USAGE_DATA_KEYS,
+} from '@canopy/protocol/usage-data';
+export type {
+  OrgProhibitableUsageDataKey,
+  UsageDataKey,
+  UsageDataPolicySnapshot,
+  UsageDataPreferences,
+  UsageDataProhibitionSource,
+} from '@canopy/protocol/usage-data';
 
 /**
  * Local ownership binding of a workspace to an organization project
@@ -61,96 +77,6 @@ export interface WorkspaceOwnershipTransfer {
 }
 
 export const DEFAULT_CODEX_APP_SERVER_IDLE_TIMEOUT_MINUTES = 10;
-
-export interface AgentModelConfig {
-  thinkingLevel?: ThinkingLevel;
-  /**
-   * Requested Codex speed; the source of truth when present. Canonical writes
-   * pair it with the derived `fastMode` (see `lib/codex-speed.ts`).
-   */
-  speed?: CodexSpeed;
-  /**
-   * Legacy compatibility projection, always `speed === 'fast'` on canonical
-   * writes and never `true` for `ultrafast`. Read only as a fallback when
-   * `speed` is absent. An explicit boolean command without `speed` replaces
-   * the speed (true → Fast, false → Regular).
-   */
-  fastMode?: boolean;
-  /**
-   * Requested Codex context window. Absent uses the provider default, then
-   * the model's own window (`lib/codex-context-window.ts`).
-   */
-  contextWindow?: CodexContextWindowSetting;
-}
-
-/**
- * The usage-data switches under Settings → Privacy → Usage data. Every flow
- * defaults on; turning one off stops that flow. The main-process usage-data
- * policy combines these with the selected organization's prohibitions.
- */
-export const USAGE_DATA_KEYS = [
-  'productAnalytics',
-  'sessionReplay',
-  'errorReports',
-  'activeUseSignal',
-  'featureFlagIdentity',
-  'skillSafetyCheck',
-] as const;
-
-/** One usage-data switch. */
-export type UsageDataKey = (typeof USAGE_DATA_KEYS)[number];
-
-/**
- * The usage-data switches an organization admin can turn off for members.
- * Prohibitions only narrow; they never turn a flow on. The skill safety check
- * is the member's choice alone.
- */
-export const ORG_PROHIBITABLE_USAGE_DATA_KEYS = [
-  'productAnalytics',
-  'sessionReplay',
-  'errorReports',
-  'activeUseSignal',
-  'featureFlagIdentity',
-] as const satisfies readonly UsageDataKey[];
-
-/** One usage-data switch an organization can prohibit. */
-export type OrgProhibitableUsageDataKey =
-  (typeof ORG_PROHIBITABLE_USAGE_DATA_KEYS)[number];
-
-/** The member's stored usage-data choices. `true` means the flow may send. */
-export type UsageDataPreferences = Record<UsageDataKey, boolean>;
-
-/** Why a usage-data flow is turned off by policy rather than by the member. */
-export interface UsageDataProhibitionSource {
-  /**
-   * The organization that turned it off, or `null` while main fails closed:
-   * the stored account can't be read (until the next successful policy
-   * check), or, with `preferencesUnreadable`, the stored preferences can't.
-   */
-  organizationName: string | null;
-  /**
-   * Set while the member's stored preferences can't be read, so their own
-   * opt-out is unknown. Lasts until a preferences save or restart.
-   */
-  preferencesUnreadable?: true;
-}
-
-/**
- * Main's effective usage-data policy, as delivered to renderers. `effective`
- * is `preferences` narrowed by `prohibitedBy`, resolved for the selected
- * workspace context.
- */
-export interface UsageDataPolicySnapshot {
-  /**
-   * The stored choices. While they can't be read this holds the defaults;
-   * `prohibitedBy` (with `preferencesUnreadable`) and `effective` say so.
-   */
-  preferences: UsageDataPreferences;
-  effective: UsageDataPreferences;
-  prohibitedBy: Partial<
-    Record<OrgProhibitableUsageDataKey, UsageDataProhibitionSource>
-  >;
-}
 
 export interface UsageLimitedChatTarget {
   projectId: string;
@@ -289,84 +215,6 @@ export interface CodexSelectedCapabilityRoot {
     environmentId: string;
     path: string;
   };
-}
-
-/**
- * Selection refs name their item by two fields and, for an organization's
- * item, its owner (CAN-6235). No owner means the person's own item, which is
- * what every ref saved before the field existed means. The owner is part of a
- * ref's identity: see `@canopy/protocol/plugins` `selectionRefOwnerKey`.
- */
-export interface SelectionSkillRef {
-  sourceId: string;
-  skillName: string;
-  owner?: SelectionRefOwner;
-}
-
-export interface SelectionPluginRef {
-  marketplaceId: string;
-  pluginName: string;
-  owner?: SelectionRefOwner;
-}
-
-export interface SelectionMcpServerRef {
-  serverId: string;
-  configId: string;
-  owner?: SelectionRefOwner;
-}
-
-export interface ChatTabPluginSelections {
-  /** Catalog selections awaiting installation/auth; never runtime filesystem refs. */
-  unresolvedCapabilities?: TryItCapability[];
-  /**
-   * IDs of locally-saved Collections (formerly "Bundles") attached to this
-   * chat. Persisted writes emit only `collectionIds`; the legacy
-   * {@link ChatTabPluginSelections.bundleIds} alias is preserved for read-side
-   * migration from older persisted state and must not be written by new
-   * code.
-   */
-  collectionIds: string[];
-  /**
-   * @deprecated Read only for migration from older persisted state. The
-   * normalization helper merges any legacy `bundleIds` into `collectionIds`
-   * and drops this field on output.
-   */
-  bundleIds?: string[];
-  skillRefs: SelectionSkillRef[];
-  pluginRefs: SelectionPluginRef[];
-  mcpServerRefs?: SelectionMcpServerRef[];
-  /**
-   * Per-server overrides for the HTTP MCP auth handler scoped to this
-   * chat/worktree's plugin selections. Each entry pairs an
-   * {@link McpHttpAuthTarget} with the {@link McpHttpAuthHandler} that should
-   * be used in place of the global default.
-   *
-   * Intentionally NOT counted in {@link hasAnySelections} — overrides alone
-   * should not flip an empty selection set into an active one, because that
-   * would cause plugin discovery and resolution to run for chats that have
-   * no actual plugin/MCP refs.
-   */
-  mcpHttpAuthPreferences?: McpHttpAuthPreference[];
-}
-
-/**
- * Explicit local rejections of inherited plugin defaults, persisted per scope.
- * A workspace config's tombstones suppress
- * {@link PreferencesData.globalPluginSelections} entries for the workspace; a
- * chat tab's tombstones suppress everything the chat inherits (its
- * workspace's `defaultPluginSelections` and the surviving global defaults). A
- * tombstoned entry stays excluded even when the same resource is later
- * re-added as a default, which is what makes a local "turn this default off"
- * durable. Tombstones only suppress inherited layers; they never remove a
- * scope's own local selections. Entries use the same identity granularity as
- * {@link ChatTabPluginSelections}; `mcpHttpAuthPreferences` are not
- * selections and cannot be tombstoned.
- */
-export interface PluginSelectionTombstones {
-  collectionIds?: string[];
-  skillRefs?: SelectionSkillRef[];
-  pluginRefs?: SelectionPluginRef[];
-  mcpServerRefs?: SelectionMcpServerRef[];
 }
 
 export type TrackedPlanSource =

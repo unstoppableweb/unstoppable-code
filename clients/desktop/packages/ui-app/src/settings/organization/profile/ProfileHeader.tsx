@@ -1,6 +1,6 @@
 'use client';
 
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import type { JSX, ReactNode } from 'react';
 import type { MemberProfileHeader } from '@canopy/protocol/team';
 import type { OrganizationRole } from '@canopy/protocol/settings';

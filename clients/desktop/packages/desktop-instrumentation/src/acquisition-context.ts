@@ -35,7 +35,7 @@ const ENUMS: Readonly<Record<string, readonly string[]>> = {
   pairing_entry: ['portal_modal', 'pair_computer_dialog', 'incoming_prompt'],
   peer_platform: ['darwin', 'win32', 'linux', 'unknown'],
   device_kind: ['desktop', 'mobile', 'browser', 'hosted'],
-  pair_method: ['link', 'code'],
+  pair_method: ['link', 'code', 'expected'],
   failure_reason: [
     'denied',
     'expired',

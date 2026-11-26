@@ -67,12 +67,6 @@ export function CloudSignInGate({
           <Surface variant="sign-in-card" className="w-full">
             <CloudAuthPanel
               layout="splash"
-              // The panel's default lead is written for a guest upgrading in
-              // place ("nothing you've built gets left behind"). This gate
-              // blocks a FRESH install, where the user has built nothing and
-              // that reassurance lands directly under "start building" as a
-              // contradiction. Keep only the half that is true here.
-              lead="Free account, no card required."
               onConnectSuccess={handleConnectSuccess}
               onReadyToContinue={onConnected}
             />

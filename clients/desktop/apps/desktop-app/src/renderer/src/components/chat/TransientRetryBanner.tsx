@@ -1,6 +1,10 @@
 import type { JSX } from 'react';
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
-import { Notice, RetryCountdown } from '@canopy/ui-shared';
+import {
+  Notice,
+  RetryCountdown,
+  getModelCatalogProviderLabel,
+} from '@canopy/ui-shared';
 import type { ChatBannerTarget } from '@/stores/aiCreditsBannerStore';
 import { useTransientRetryState } from '@/stores/transientRetryBannerStore';
 
@@ -44,10 +48,10 @@ export function TransientRetryBanner({
   return (
     <Notice
       intent="attention"
-      title="Temporary provider error"
+      title={`${getModelCatalogProviderLabel(state.provider)} didn't respond`}
       data-testid="chat-input-transient-retry-banner"
       onDismiss={dismiss}
-      dismissLabel="Dismiss transient retry notice"
+      dismissLabel="Dismiss retry notice"
       dismissTestId="chat-input-transient-retry-dismiss"
     >
       <RetryCountdown {...state} />

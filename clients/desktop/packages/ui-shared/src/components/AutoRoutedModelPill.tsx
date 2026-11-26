@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 
 export interface AutoRoutedModelPillProps {
   /** Display name of the model routing picked for the turn. */

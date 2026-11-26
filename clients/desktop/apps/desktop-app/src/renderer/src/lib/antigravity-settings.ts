@@ -72,10 +72,12 @@ export function readAntigravityHostSupport(
 /**
  * readAntigravityHostSupport for a component, asked only once `enabled` (the
  * caller's rollout and feature checks) is true, so a window with Google chats
- * off never asks main. False until main answers.
+ * off never asks main. Undefined until main answers, and while not enabled.
  */
-export function useAntigravityHostSupported(enabled: boolean): boolean {
-  const [supported, setSupported] = useState(false);
+export function useAntigravityHostSupport(
+  enabled: boolean,
+): boolean | undefined {
+  const [supported, setSupported] = useState<boolean | undefined>(undefined);
   useEffect(() => {
     if (!enabled) return undefined;
     let current = true;
@@ -86,7 +88,12 @@ export function useAntigravityHostSupported(enabled: boolean): boolean {
       current = false;
     };
   }, [enabled]);
-  return enabled && supported;
+  return enabled ? supported : undefined;
+}
+
+/** useAntigravityHostSupport, false until main answers. */
+export function useAntigravityHostSupported(enabled: boolean): boolean {
+  return useAntigravityHostSupport(enabled) === true;
 }
 
 export function getAntigravitySettingsSection(): 'account' | 'experiments' {

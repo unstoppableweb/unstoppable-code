@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
-import { StatusLabel } from './StatusLabel';
+import { StatusLabel } from '../primitives/StatusLabel';
 import { CheckIcon } from '../icons/AppIcons';
-import { LoadingSpinner } from './LoadingSpinner';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
 
 export type SettingsSaveState = 'idle' | 'saving' | 'saved' | 'error';
 

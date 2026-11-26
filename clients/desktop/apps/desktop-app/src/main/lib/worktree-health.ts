@@ -5,6 +5,7 @@ import {
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { lstat, readFile, stat } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
 import type {
   WorktreeData,
   WorkspaceConfigFile,
@@ -22,12 +23,16 @@ import {
   withGitRequestContextEnv,
 } from '@canopy/desktop-shared/node/git-request-context';
 import { getEnhancedEnv } from '@canopy/execution-engine/pipelines/config-paths';
+import { CANOPY_IN_PROCESS_WORKER_TARGET_ID } from '@canopy/protocol/canopy-core';
+import { classifyPersistedWorkspaceOwner } from '@canopy/protocol/workspace-owner';
 import { getResolvedGitExecutableForSpawn } from './git-executable';
 import { resolveWorktreeCwd } from './resolve-worktree';
 import {
+  getWorkspaceManifestRepository,
   readWorkspaceWorktrees,
   readWorkspaceConfig,
 } from './workspace-persistence';
+import { getWorkspaceType } from './workspace-registry';
 import { recordWorktreeHealth } from './worktree-repair';
 import {
   listWorkspaceWorktreeRepoEntries,
@@ -36,8 +41,14 @@ import {
 
 const GIT_HEALTH_TIMEOUT_MS = 5000;
 
-async function runGitBounded(args: string[], cwd: string): Promise<string> {
+async function runGitBounded(
+  args: string[],
+  cwd: string,
+  beforeLaunch?: AbortSignal,
+): Promise<string> {
+  beforeLaunch?.throwIfAborted();
   const executable = await getResolvedGitExecutableForSpawn();
+  beforeLaunch?.throwIfAborted();
   return await new Promise<string>((resolvePromise, reject) => {
     const child = execFile(
       executable,
@@ -101,12 +112,15 @@ async function createBestEffortWorktree(
  * The desktop sources for one worktree's health check (`inspectWorktreeHealth`
  * in core-runtime): today's workspace records, repository listing,
  * filesystem and bounded Git confirmation. Reads only; the worktree list is
- * read without persisting its removal cleanup.
+ * read without persisting its removal cleanup. A `signal` stops the
+ * repository listing and the Git confirmation before any later read or Git
+ * launch.
  */
 export function desktopWorktreeHealthSources(
   projectId: string,
   worktreeId: string,
   worktreePath: string,
+  signal?: AbortSignal,
 ): WorktreeHealthSources {
   return {
     worktreePath,
@@ -119,7 +133,7 @@ export function desktopWorktreeHealthSources(
       };
     },
     listRepositoryEntries: () =>
-      listWorkspaceWorktreeRepoEntries(projectId, worktreePath),
+      listWorkspaceWorktreeRepoEntries(projectId, worktreePath, signal),
     readIncludedRepoIds: async () =>
       (
         await readWorkspaceWorktrees(projectId, {
@@ -130,9 +144,75 @@ export function desktopWorktreeHealthSources(
     lstat: (path) => lstat(path),
     readText: (path) => readFile(path, 'utf8'),
     confirmWorkTree: (path) =>
-      runGitBounded(['rev-parse', '--is-inside-work-tree'], path),
+      runGitBounded(['rev-parse', '--is-inside-work-tree'], path, signal),
     now: () => new Date(),
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A recorded path both readers agree on. The daemon reader drops a string
+ * path that is empty, relative or contains NUL (its `usablePath`) where main
+ * keeps it, so the two would judge the worktree differently.
+ */
+function recordedPath(value: unknown): boolean {
+  return (
+    typeof value !== 'string' ||
+    (value !== '' && isAbsolute(value) && !value.includes('\0'))
+  );
+}
+
+/** A repository the daemon's recorded reader accepts (its `safeId` rule). */
+function recordedRepo(repo: unknown): boolean {
+  return (
+    isRecord(repo) &&
+    typeof repo.id === 'string' &&
+    repo.id.length <= 512 &&
+    /^[a-z0-9][a-z0-9-]*$/.test(repo.id) &&
+    typeof repo.name === 'string' &&
+    typeof repo.repoPath === 'string' &&
+    recordedPath(repo.repoPath)
+  );
+}
+
+/**
+ * Whether the daemon's recorded reader accepts this workspace's manifest as
+ * it stands on disk. Main normalizes values that reader refuses, and a
+ * refusal from a daemon that answered is final, so every manifest it would
+ * refuse keeps its health check in process. Each check mirrors one refusal in
+ * `readWorkspace` (core-runtime `recorded-worker-git-hosts.ts`), over the same
+ * raw read (`readWorkspaceManifest`).
+ */
+// shortcut: these guards mirror the daemon reader's checks in core-runtime recorded-worker-git-hosts.ts (usablePath :210-217, readWorkspace :310-378), so a new daemon refusal or dropped value must be mirrored here; export a shared predicate the next time that reader is touched.
+export async function workspaceManifestReadable(
+  workspaceId: string,
+): Promise<boolean> {
+  const read = await getWorkspaceManifestRepository().read(workspaceId);
+  if (read.authority !== 'ok') return false;
+  const manifest = read.document;
+  const declared =
+    manifest.type === undefined
+      ? typeof manifest.repoPath === 'string'
+        ? 'single-repo'
+        : 'multi-repo'
+      : manifest.type;
+  return (
+    declared === getWorkspaceType(workspaceId) &&
+    (manifest.workspaceId === undefined ||
+      manifest.workspaceId === workspaceId) &&
+    (manifest.targetId === undefined ||
+      manifest.targetId === CANOPY_IN_PROCESS_WORKER_TARGET_ID) &&
+    // shortcut: main can't see the daemon's authority id before the host lookup, so any recorded one stays in process; compare it if desktop starts writing one.
+    manifest.authorityId === undefined &&
+    classifyPersistedWorkspaceOwner(manifest.owner).kind !== 'malformed' &&
+    recordedPath(manifest.repoPath) &&
+    recordedPath(manifest.sourceRepoPath) &&
+    (manifest.repos === undefined ||
+      (Array.isArray(manifest.repos) && manifest.repos.every(recordedRepo)))
+  );
 }
 
 /** One implementation: the core-runtime check over the desktop sources. */

@@ -5,6 +5,7 @@ import {
 import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import { AgentAliasModelFields } from '@canopy/ui-shared/components';
 import { resolvePipelineModelAliasLenient } from '@canopy/pipeline-interop';
+import { MODEL_PRESET_LABEL } from '@canopy/ui-shared/lib/model-preset-labels';
 // ---------------------------------------------------------------------------
 // Per-alias editor used by `PipelineModelAliasesSection`.
 //
@@ -122,7 +123,7 @@ export function PipelineModelAliasEditor({
     if (effective.preference.mode === 'agent') {
       const embedded = parseAgentRouteModelId(effective.preference.agent_id);
       const base = effective.preference.base ?? embedded?.baseModel;
-      return `${alias.id} · ${embedded?.agentId ?? (effective.preference.agent_id || 'Agent')}${base ? ` · ${getModelDisplayName(resolvePipelineModelAliasLenient(base))}` : ''}`;
+      return `${alias.id} · ${embedded?.agentId ?? (effective.preference.agent_id || MODEL_PRESET_LABEL)}${base ? ` · ${getModelDisplayName(resolvePipelineModelAliasLenient(base))}` : ''}`;
     }
     const base = effective.preference.base;
     return `${alias.id} · ${base ? getModelDisplayName(base) : 'No base model'}`;
@@ -250,7 +251,7 @@ export function PipelineModelAliasEditor({
           onChange={selectMode}
           options={(['inline', 'agent'] as const).map((mode) => ({
             value: mode,
-            label: mode === 'inline' ? 'Inline model' : 'Agent',
+            label: mode === 'inline' ? 'Inline model' : 'Model preset',
             dataTestId: `pipeline-model-alias-${alias.id}-mode-${mode}`,
           }))}
         />
@@ -351,7 +352,7 @@ export function PipelineModelAliasEditor({
                 allowCopilot
                 allowOpenCode
                 placeholderLabel={placeholderLabel}
-                triggerTooltip="Model for this agent alias"
+                triggerTooltip="Model for this preset"
                 disabled={disabled}
               />
             )}
@@ -360,7 +361,7 @@ export function PipelineModelAliasEditor({
 
         {currentMode === null && (
           <p className="text-xs fg-secondary">
-            Choose an inline model or an agent for this alias.
+            Choose an inline model or a model preset for this alias.
           </p>
         )}
 

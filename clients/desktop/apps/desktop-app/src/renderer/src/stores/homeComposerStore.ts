@@ -57,6 +57,7 @@ import {
   splitChosenChatPluginSelections,
 } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import { useProjectsStore } from './projectsStore';
+import type { TaskReadyPipelineInsertion } from '@/components/worktree/useTaskReadyPipelineLauncher';
 import { useWorkspaceContextStore } from './workspaceContextStore';
 import {
   resolveFallbackDefaultModel,
@@ -170,6 +171,39 @@ export const MISSING_HOME_WORKTREE_BASE_MESSAGE =
 
 export type HomeComposerMode = 'chat' | 'pipeline';
 
+/** Whether two branch targets name the same destination. */
+function isSameBranchTarget(a: HomeBranchTarget, b: HomeBranchTarget): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * A task workflow attached to the next send from the Attach a workflow
+ * dialog (CAN-7513), with the settings its run needs. Send runs it as is.
+ */
+export interface HomeSelectedWorkflow extends TaskReadyPipelineInsertion {
+  readonly name: string;
+  /** The launch target it was inserted for; see {@link homeLaunchTargetKey}. */
+  readonly targetKey: string;
+}
+
+/**
+ * The draft's launch target as one comparable value: its project, branch
+ * target and new-worktree base. An attached workflow inserted for another
+ * target is reviewed before it runs.
+ */
+export function homeLaunchTargetKey(
+  state: Pick<
+    HomeComposerData,
+    'workspaceId' | 'branchTarget' | 'newWorktreeBaseTarget'
+  >,
+): string {
+  return JSON.stringify([
+    state.workspaceId,
+    state.branchTarget,
+    state.newWorktreeBaseTarget,
+  ]);
+}
+
 /**
  * The provider a Home draft's capabilities are keyed on. `cursor` has no
  * provider-side slash discovery (its skills and commands come from the
@@ -196,7 +230,8 @@ export type HomeDiscoveryProviderType =
  */
 export const HOME_DRAFT_WORKTREE_ID = 'home-draft';
 
-const NEW_WORKTREE_TARGET: HomeBranchTarget = { kind: 'new-worktree' };
+/** The branch target `selectWorkspace` assigns; CAN-7326 recovery compares against it. */
+export const NEW_WORKTREE_TARGET: HomeBranchTarget = { kind: 'new-worktree' };
 
 /**
  * Fallback branch-targets result used when the `homeListBranchTargets` IPC
@@ -1064,6 +1099,13 @@ interface HomeComposerData {
     inputs: Record<string, string>;
   } | null;
   /**
+   * The task workflow attached from the + menu's Workflow row (CAN-7513):
+   * in workflow mode, Send runs it with its inserted settings. It belongs to
+   * the target it was inserted for, so changing the project or branch
+   * target detaches it, as leaving workflow mode does. Not persisted.
+   */
+  selectedWorkflow: HomeSelectedWorkflow | null;
+  /**
    * Whether the user chose `workspaceId` (CAN-3606). MRU, fallback, and
    * context rebinds are inherited choices: a pasted link may propose another
    * destination for them, but never silently overrides an explicit project.
@@ -1076,6 +1118,13 @@ interface HomeComposerData {
    * returned to the same workspace.
    */
   workspaceSelectionGeneration: number;
+  /**
+   * Set when the launch seed fell back from the last project because that
+   * project failed to load (CAN-7326). Home shows a notice naming both while
+   * `workspaceId` still equals `seededWorkspaceId`. Every `selectWorkspace`
+   * and `reset()` clears it. Not persisted.
+   */
+  seedFallback: HomeSeedFallbackRecord | null;
   /**
    * Preview of the worktree destination a link in the draft proposes. Preview
    * only: it never changes `workspaceId`, `branchTarget`, or context. The
@@ -1141,6 +1190,14 @@ export function currentMissingFolderRecovery(state: {
   return recovery && recovery.failure === state.sendError ? recovery : null;
 }
 
+/** The launch seed's fallback from a project that failed to load. */
+export interface HomeSeedFallbackRecord {
+  /** The last active project, which failed to load. */
+  readonly unavailableWorkspaceId: string;
+  /** The project the seed selected instead. */
+  readonly seededWorkspaceId: string;
+}
+
 function createInitialData(): HomeComposerData {
   return {
     workspaceId: null,
@@ -1187,8 +1244,10 @@ function createInitialData(): HomeComposerData {
     pendingGitHubConnectResume: null,
     branchPickerRevealed: false,
     pendingTaskPlanPreset: null,
+    selectedWorkflow: null,
     workspaceSelectionExplicit: false,
     workspaceSelectionGeneration: 0,
+    seedFallback: null,
     linkTarget: IDLE_HOME_LINK_TARGET,
     dismissedLinkKeys: [],
     chosenLinkKey: null,
@@ -1305,6 +1364,12 @@ export interface HomeComposerState extends HomeComposerData {
   ) => void;
   /** Treat the current project as inherited so a link may propose another. */
   markWorkspaceSelectionInherited: () => void;
+  /**
+   * Records or clears the launch seed's fallback from a project that failed
+   * to load. Does nothing when the value is unchanged, so every mounted Home
+   * surface may call it.
+   */
+  setSeedFallback: (record: HomeSeedFallbackRecord | null) => void;
   /**
    * Advances selection identity without reselecting, so the draft, branch
    * target, and attachments stay as they are and a successful same-project
@@ -1437,6 +1502,13 @@ export interface HomeComposerState extends HomeComposerData {
     preset: { pipelineId: string; inputs: Record<string, string> } | null,
   ) => void;
   /**
+   * Attaches `workflow` and turns workflow mode on. See
+   * {@link HomeComposerData.selectedWorkflow}.
+   */
+  attachWorkflow: (workflow: HomeSelectedWorkflow) => void;
+  /** Detaches the attached workflow and returns to chat mode. */
+  detachWorkflow: () => void;
+  /**
    * Sets/clears the composer-level error banner. Used for attachment-import
    * failures today and available to B5's send orchestrator for send
    * failures — `selectWorkspace` and `reset` both clear it.
@@ -1506,6 +1578,9 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
   ...createInitialData(),
 
   selectWorkspace: (workspaceId, options): void => {
+    // An attached workflow was inserted for its project's target.
+    if (get().selectedWorkflow !== null && workspaceId !== get().workspaceId)
+      get().detachWorkflow();
     const workspacePluginSelections = workspaceId
       ? unionPluginSelections(
           currentWorkspaceDefaultPluginSelections(workspaceId),
@@ -1517,6 +1592,7 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
       workspaceId,
       workspaceSelectionExplicit: options?.explicit === true,
       workspaceSelectionGeneration: get().workspaceSelectionGeneration + 1,
+      seedFallback: null,
       executionHarness: undefined,
       branchTarget: NEW_WORKTREE_TARGET,
       newWorktreeBaseTarget: null,
@@ -1568,6 +1644,19 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
     set({ workspaceSelectionExplicit: false });
   },
 
+  setSeedFallback: (record): void => {
+    const current = get().seedFallback;
+    if (
+      current === record ||
+      (current !== null &&
+        record !== null &&
+        current.unavailableWorkspaceId === record.unavailableWorkspaceId &&
+        current.seededWorkspaceId === record.seededWorkspaceId)
+    )
+      return;
+    set({ seedFallback: record });
+  },
+
   advanceWorkspaceSelectionGeneration: (): void => {
     set((state) => ({
       workspaceSelectionGeneration: state.workspaceSelectionGeneration + 1,
@@ -1614,6 +1703,12 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
   },
 
   setBranchTarget: (target): void => {
+    // An attached workflow was inserted for the earlier target.
+    if (
+      get().selectedWorkflow !== null &&
+      !isSameBranchTarget(get().branchTarget, target)
+    )
+      get().detachWorkflow();
     set((state) => ({
       branchTarget: target,
       pendingAttachmentImportIds: [],
@@ -1668,7 +1763,7 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
             executionHarness: undefined,
             linkTarget: IDLE_HOME_LINK_TARGET,
           }
-        : { mode, pendingTaskPlanPreset: null },
+        : { mode, pendingTaskPlanPreset: null, selectedWorkflow: null },
     );
   },
 
@@ -1910,6 +2005,9 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
       })),
       attachments: [...restored.attachments],
       restoreNotice: restored.notice,
+      // A restored draft carries no workflow pick, so an earlier composer's
+      // must not ride along with it.
+      selectedWorkflow: null,
       // A mounted editor takes the restored draft as an owner's reset.
       draftGeneration: state.draftGeneration + 1,
       linkDraftRevision: state.linkDraftRevision + 1,
@@ -2022,6 +2120,15 @@ export const useHomeComposerStore = create<HomeComposerState>((set, get) => ({
 
   stageTaskPlanPreset: (preset): void => {
     set({ pendingTaskPlanPreset: preset });
+  },
+
+  attachWorkflow: (workflow): void => {
+    get().setMode('pipeline');
+    set({ selectedWorkflow: workflow });
+  },
+
+  detachWorkflow: (): void => {
+    get().setMode('chat');
   },
 
   setSendError: (error): void => {

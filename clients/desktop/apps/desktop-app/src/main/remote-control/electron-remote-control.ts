@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   app,
+  BrowserWindow as ElectronBrowserWindow,
   ipcMain,
   type BrowserWindow,
   type BrowserWindowConstructorOptions,
@@ -47,16 +48,36 @@ import {
   type RemoteControlRespondToPairingRequest,
   type RemoteControlState,
   type RemotePathPickerResponse,
+  type SlackConnectThisComputerResult,
 } from '@canopy/desktop-shared/types';
 import { setAccountProxyRemoteSignInProvider } from '../account-proxy/remote-sign-in';
 import { getDesktopCanopyRuntime } from '../canopy-runtime/desktop-runtime-access';
 import { createRemoteCoreAccess } from './host/remote-core-access';
 import {
+  registerCanopyPorts,
+  registerCanopyProcesses,
+} from '../lib/loopback-listeners';
+import {
+  recordedLocalAccountProxyPids,
+  recordedLocalAccountProxyPorts,
+} from '../account-proxy/local-runtime';
+import { publishedCoreDaemonPid } from '../canopy-runtime/electron-daemon-access';
+import { getFeatureFlagService } from '../feature-flags';
+import { webPreviewFlagOn } from './host/web-preview-flag';
+import { RemoteWebPreviewStore } from './remote-web-preview-store';
+import {
   notifyRemoteUpdatePolicyChanged,
   setRemoteUpdatePolicy,
 } from './remote-update-policy';
 import { setInterfaceToolAudienceResolver } from '../agents/interface-tool-binding';
-import { requestCanopyCloudJson } from '../canopy-cloud/client';
+import {
+  requestCanopyCloudJson,
+  type CanopyCloudCredentialContext,
+} from '../canopy-cloud/client';
+import { openStrictAuthenticatedCloudPage } from '../canopy-cloud/authenticated-cloud-page';
+import { CLIENT_FEATURE_FLAGS } from '@canopy/protocol/feature-flags';
+import { broadcastPreferencesChanged } from '../lib/preferences-broadcast';
+import type { SlackConnectDeps } from './slack-connect';
 import { getCanopyCloudBaseUrl } from '../canopy-cloud/config';
 import { getInstallId, readDurableInstallId } from '../lib/install-identity';
 import { readLegacyPortalOptIn } from './legacy-portal-opt-in';
@@ -68,6 +89,8 @@ import {
 } from '../ipc/app-advisor';
 import { registerIpcHandler } from '../ipc/register';
 import {
+  getCanopyCloudCredentials,
+  loadCanopyCloudAccount,
   peekCanopyCloudAccount,
   subscribeCanopyCloudAccountChanges,
 } from '../lib/canopy-cloud-account-store';
@@ -87,7 +110,10 @@ import {
   MAIN_WINDOW_RENDERER_PAGE,
 } from '../lib/renderer-pages';
 import { shouldShowUiAutomationWindow } from '../lib/ui-automation-window';
-import { readPreferencesFile } from '../lib/preferences-store';
+import {
+  readPreferencesFile,
+  updatePreferencesFile,
+} from '../lib/preferences-store';
 import { getSecretStoragePolicy } from '../lib/secure-storage-policy';
 import {
   applySavedUiZoom,
@@ -101,6 +127,7 @@ import {
   trackAppWindowBackground,
 } from '../lib/window-material';
 import { sendToAllWindows, sendToWindowDetailed } from '../lib/window-send';
+import { sendToWebContents } from '../lib/web-contents-send';
 import { getObservabilityService } from '../observability';
 import type { RemoteControlDiagnostic } from './diagnostics';
 import {
@@ -109,6 +136,19 @@ import {
 } from './client/account-proxy-sign-in';
 import { markAsDownloaded } from './client/downloaded-files';
 import { linkUrlForLocalOpen } from './client/local-links';
+import {
+  createOneWindowSessionPolicy,
+  followOneWindowSwitch,
+  type OneWindowSwitch,
+} from './client/one-window-session-policy';
+import {
+  PairedComputerWindowApi,
+  ownWindowCheck,
+} from './client/paired-computer-window-api';
+import {
+  createLocalProjectFactsReader,
+  localProjectFactsHandler,
+} from './client/local-project-facts';
 import {
   RemoteMachineWindows,
   type RemoteWindowHost,
@@ -256,6 +296,17 @@ export interface RemoteControlRuntime {
 }
 
 let runtime: RemoteControlRuntime | null = null;
+/** This computer's web preview consent (CAN-7712), once initialized. */
+let webPreviewConsent: RemoteWebPreviewStore | null = null;
+
+/**
+ * On quit: saves a web preview opt-out whose save hasn't landed, so the
+ * next launch doesn't read a more permissive value. Bounded; a no-op
+ * otherwise.
+ */
+export function flushRemoteWebPreviewConsent(): Promise<void> {
+  return webPreviewConsent?.flush() ?? Promise.resolve();
+}
 
 const stateListeners = new Set<(state: RemoteControlState) => void>();
 const inventorySyncListeners = new Set<
@@ -342,6 +393,12 @@ export function initializeRemoteControl(options: {
     request: AppAdvisorWindowOpenRequest | undefined,
     send: (command: AppAdvisorWindowCommand) => void,
   ) => Promise<unknown>;
+  /**
+   * The one-window switch (CAN-7755). While it is on, the main process
+   * holds windowless sessions with paired computers for the main window
+   * (CAN-7761); off, or absent, that path stays inert.
+   */
+  oneWindow?: OneWindowSwitch;
 }): RemoteControlRuntime {
   if (runtime) return runtime;
   const dataDir = getDataDir();
@@ -350,6 +407,11 @@ export function initializeRemoteControl(options: {
     identityPath: join(dataDir, 'remote-control-identity.key'),
     secretStorage: getSecretStoragePolicy(),
   });
+  // Its own file, which builds before CAN-7712 never read or rewrite.
+  const webPreviewStore = new RemoteWebPreviewStore(
+    join(dataDir, 'remote-web-preview.json'),
+  );
+  webPreviewConsent = webPreviewStore;
   const uploads = new RemoteUploadStore(
     join(dataDir, 'remote-control-uploads'),
   );
@@ -407,6 +469,29 @@ export function initializeRemoteControl(options: {
       trackAppWindowBackground(window),
   });
 
+  // Canopy's own processes, which web preview never tunnels to (CAN-7679).
+  registerCanopyProcesses(() =>
+    app.getAppMetrics().map((metric) => metric.pid),
+  );
+  registerCanopyProcesses(async (signal) => {
+    const timeout = AbortSignal.timeout(2_000);
+    const pid = await publishedCoreDaemonPid(
+      signal ? AbortSignal.any([signal, timeout]) : timeout,
+    );
+    return pid === null ? [] : [pid];
+  });
+  // The account proxy, including one an earlier run left running.
+  registerCanopyProcesses(recordedLocalAccountProxyPids);
+  registerCanopyPorts(recordedLocalAccountProxyPorts);
+
+  const version = currentRemoteVersion(
+    app.getVersion(),
+    process.env,
+    __CANOPY_E2E__,
+  );
+  // One policy for the app's life: turning the switch on again reuses it.
+  const oneWindowPolicy = createOneWindowSessionPolicy(version);
+
   service = new RemoteControlService({
     recordPairing: startRemotePairingTelemetry,
     recordTelemetry: recordRemoteControlTelemetry,
@@ -427,22 +512,38 @@ export function initializeRemoteControl(options: {
     deviceName,
     platform: devicePlatform(),
     onRemoteUpdatesAllowedChange: notifyRemoteUpdatePolicyChanged,
-    version: currentRemoteVersion(
-      app.getVersion(),
-      process.env,
-      __CANOPY_E2E__,
-    ),
+    webPreview: {
+      store: webPreviewStore,
+      flag: {
+        isEnabled: (): boolean =>
+          webPreviewFlagOn(getFeatureFlagService().getSnapshot()),
+        onChange: (listener): (() => void) =>
+          getFeatureFlagService().onSnapshotChanged(() => listener()),
+      },
+    },
+    version,
     release: localRelease(app.getVersion()),
-    createBridge: (
+    createBridge: async (
       controllerDeviceId,
       _surface,
       exactWorktreeBaseBranch,
-    ): Promise<HostBridge> =>
-      createBridgeWindow({
+      isAuthorized,
+      oneWindow,
+    ): Promise<HostBridge> => {
+      // The first session's projections already know which providers this
+      // computer can't run (CAN-6718). Waits only for the pinned-runtime
+      // manifests; the rest of the setup facts are read in the background.
+      await import('../remote-projection/provider-setup-status')
+        .then(({ primeProviderSetupFacts }) => primeProviderSetupFacts())
+        .catch(() => undefined);
+      return createBridgeWindow({
         controllerDeviceId,
         exactWorktreeBaseBranch,
         preloadPath: join(__dirname, '../preload/remote-bridge.js'),
-      }),
+        isAuthorized,
+        oneWindow,
+      });
+    },
     createAppAdvisorSurface: (session): RemoteAppAdvisorSurface =>
       new RemoteAppAdvisorSurface({
         controllerDeviceId: session.controllerDeviceId,
@@ -546,6 +647,8 @@ export function initializeRemoteControl(options: {
       logMainProcessInfo(message, context),
   });
   const activeService = service;
+  if (options.oneWindow)
+    followOneWindowSwitch(activeService, options.oneWindow, oneWindowPolicy);
 
   const logReconcileError = (error: unknown): void => {
     logMainProcessError('Remote control could not update', error);
@@ -553,14 +656,19 @@ export function initializeRemoteControl(options: {
   powerMonitor.on('resume', () => {
     activeService.handleSystemResume();
   });
+  // Windows close as the app quits, which closes their sessions; the ones
+  // the main process holds without a window close here.
+  app.once('will-quit', () => {
+    activeService.closeWindowlessConnections();
+  });
   subscribeCanopyCloudAccountChanges(() => {
     void activeService.reconcile().catch(logReconcileError);
   });
 
   setRemoteOpenDialogProvider((sender: WebContents, dialogOptions) => {
-    const controllerDeviceId = resolveRemoteBridgeSender(sender);
-    if (!controllerDeviceId) return null;
-    const session = activeService.hostSessionForController(controllerDeviceId);
+    if (!resolveRemoteBridgeSender(sender)) return null;
+    // The session that owns this bridge, not just one of its controller's.
+    const session = activeService.hostSessionForBridge(sender);
     if (!session) return Promise.resolve({ canceled: true, filePaths: [] });
     return session
       .showOpenDialog({
@@ -572,12 +680,11 @@ export function initializeRemoteControl(options: {
 
   // A controller's App Advisor window answers its own window calls, and a
   // chat driven from a controller runs its renderer tools there.
-  setRemoteAppAdvisorWindowHostResolver((sender: WebContents) => {
-    const controllerDeviceId = resolveRemoteBridgeSender(sender);
-    return controllerDeviceId
-      ? activeService.appAdvisorSurfaceForController(controllerDeviceId)
-      : null;
-  });
+  setRemoteAppAdvisorWindowHostResolver((sender: WebContents) =>
+    resolveRemoteBridgeSender(sender)
+      ? activeService.appAdvisorSurfaceForBridge(sender)
+      : null,
+  );
   setRendererToolSurfaceRouter((request) => {
     const chatId = getAppAdvisorRendererToolRequestOriginChatId(request);
     const controllerDeviceId = chatId ? chatDriver(chatId) : null;
@@ -608,12 +715,13 @@ export function initializeRemoteControl(options: {
     if (!controllerDeviceId) return null;
     return accountProxyRemoteSignInTarget({
       controllerDeviceId,
-      session: activeService.hostSessionForController(controllerDeviceId),
+      session: activeService.hostSessionForBridge(sender),
       outdatedControllerMessage: `Update ${BRAND.displayName} on this computer to add accounts from here, or add the account on ${deviceName()}.`,
     });
   });
 
   registerRemoteControlIpc(activeService, windows);
+  registerPairedComputerIpc(activeService, windows, options.oneWindow);
 
   void activeService.initialize().catch((error: unknown) => {
     logMainProcessError('Remote control failed to start', error);
@@ -625,6 +733,72 @@ export function initializeRemoteControl(options: {
     liveMachineWindows: (): BrowserWindow[] => windows.liveWindows(),
   };
   return runtime;
+}
+
+/**
+ * The main window's per-computer API (CAN-7761). Only this computer's own
+ * windows may use it: a bridge window (a paired computer acting here) and a
+ * window showing another computer are refused, so no paired computer reaches
+ * a third one through this one.
+ */
+function registerPairedComputerIpc(
+  service: RemoteControlService,
+  windows: RemoteMachineWindows,
+  oneWindow: OneWindowSwitch | undefined,
+): void {
+  const isOwnWindow = ownWindowCheck<WebContents>({
+    bridgeController: resolveRemoteBridgeSender,
+    showsAnotherComputer: (sender): boolean =>
+      windows.surfaceForSender(sender) !== null,
+    isAppWindow: (sender): boolean =>
+      ElectronBrowserWindow.fromWebContents(sender) !== null,
+  });
+  const api = new PairedComputerWindowApi<WebContents>({
+    service,
+    isOwnWindow,
+    deliver: (sender, event): void =>
+      sendToWebContents(sender, IPC_CHANNELS.remoteControlComputerEvent, event),
+    onRendererReset: (sender, listener): void => {
+      sender.once('destroyed', listener);
+      sender.on('render-process-gone', listener);
+      // A reload or new page in the window's top frame.
+      sender.on('did-navigate', listener);
+    },
+  });
+  registerIpcHandler(
+    IPC_CHANNELS.remoteControlComputerHold,
+    (event, deviceId: unknown) => api.hold(event.sender, deviceId),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.remoteControlComputerRelease,
+    (event, holdId: unknown) => api.release(event.sender, holdId),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.remoteControlComputerInvoke,
+    (event, deviceId: unknown, channel: unknown, args: unknown) =>
+      api.invoke(event.sender, deviceId, channel, args),
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.remoteControlComputerState,
+    (event, deviceId: unknown) => api.state(event.sender, deviceId),
+  );
+  // This computer's own project facts (CAN-7766), for the same windows and
+  // only while the switch is on: nothing reads them for anyone else.
+  const projectFacts = localProjectFactsHandler<WebContents>({
+    isOwnWindow,
+    isOneWindowEnabled: (): boolean => oneWindow?.isEnabled() === true,
+    reader: createLocalProjectFactsReader(),
+  });
+  registerIpcHandler(
+    IPC_CHANNELS.remoteControlComputerProjectFacts,
+    (event, projectIds: unknown) => projectFacts(event.sender, projectIds),
+  );
+  ipcMain.removeAllListeners(IPC_CHANNELS.remoteControlComputerSend);
+  ipcMain.on(
+    IPC_CHANNELS.remoteControlComputerSend,
+    (event: IpcMainEvent, deviceId: unknown, channel: unknown, args: unknown) =>
+      api.send(event.sender, deviceId, channel, args),
+  );
 }
 
 function remoteDeviceForSender(
@@ -707,6 +881,57 @@ function localRelease(version: string): LocalRelease {
   };
 }
 
+/** Connect Slack's main-process wiring over this computer's service. */
+function slackConnectDeps(service: RemoteControlService): SlackConnectDeps {
+  return {
+    slackMentionsEnabled: (): boolean =>
+      getFeatureFlagService().isEnabled(
+        CLIENT_FEATURE_FLAGS.canopyDesktopSlackOrchestratorRequests.key,
+      ),
+    signedInCredentials:
+      async (): Promise<CanopyCloudCredentialContext | null> => {
+        const snapshot = await loadCanopyCloudAccount();
+        if (
+          !snapshot?.account?.id ||
+          isGuestAccount(snapshot) ||
+          snapshot.apiKey.trim().length === 0
+        ) {
+          return null;
+        }
+        const credentials = await getCanopyCloudCredentials().catch(() => null);
+        return credentials?.account?.id === snapshot.account.id &&
+          credentials.apiKey === snapshot.apiKey
+          ? credentials
+          : null;
+      },
+    relayDeviceId: (): Promise<string> => service.thisRelayDeviceId(),
+    installId: getInstallId,
+    rememberRelayInstall: async (deviceId: string): Promise<void> => {
+      await fetchRelayToken(deviceId);
+    },
+    postJson: async (path, body, options): Promise<unknown> => {
+      const { postCanopyCloudJson } = await import('./slack-connect');
+      return postCanopyCloudJson(path, body, options);
+    },
+    armExpectedPairing: (controllerDeviceId: string) =>
+      service.armExpectedPairing(controllerDeviceId),
+    hasHostedController: (): boolean => service.hasHostedController(),
+    enableSlackMentions: async (): Promise<void> => {
+      await updatePreferencesFile(() => ({
+        slackOrchestratorRequestsEnabled: true,
+      }));
+      broadcastPreferencesChanged();
+    },
+    setAllowIncoming: (allow: true): Promise<RemoteControlState> =>
+      service.setAllowIncoming(allow),
+    waitUntilAcceptingRemoteControl: (timeoutMs, signal): Promise<boolean> =>
+      service.waitUntilAcceptingRemoteControl(timeoutMs, signal),
+    openStrictCloudPage: openStrictAuthenticatedCloudPage,
+    log: (message: string, context?: unknown): void =>
+      logMainProcessInfo(message, context),
+  };
+}
+
 function registerRemoteControlIpc(
   service: RemoteControlService,
   windows: RemoteMachineWindows,
@@ -766,6 +991,13 @@ function registerRemoteControlIpc(
     (_event, allow: unknown) => {
       if (typeof allow !== 'boolean') throw new Error('Expected a boolean.');
       return service.setAllowRemoteUpdates(allow);
+    },
+  );
+  registerIpcHandler(
+    IPC_CHANNELS.remoteControlSetAllowWebPreview,
+    (_event, allow: unknown) => {
+      if (typeof allow !== 'boolean') throw new Error('Expected a boolean.');
+      return service.setAllowWebPreview(allow);
     },
   );
   registerIpcHandler(
@@ -869,6 +1101,14 @@ function registerRemoteControlIpc(
       }
       validateId(response.requestId, 'requestId');
       windows.resolvePicker(event.sender, response);
+    },
+  );
+  // Connect Slack on this computer (CAN-7606). Loaded on first use.
+  registerIpcHandler(
+    IPC_CHANNELS.slackConnectThisComputer,
+    async (): Promise<SlackConnectThisComputerResult> => {
+      const { connectSlackThisComputer } = await import('./slack-connect');
+      return connectSlackThisComputer(slackConnectDeps(service));
     },
   );
   registerIpcHandler(

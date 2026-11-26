@@ -1,6 +1,7 @@
 import type {
   WorktreeRecoveryFinishResult,
   WorktreeRecoveryResolveResult,
+  WorktreeRecoverySetAsideResult,
 } from '@canopy/protocol/canopy-core';
 import {
   formatWorktreeRecoveryReason,
@@ -242,13 +243,17 @@ export function worktreeRecoveryRetainedFact(
 
 /** Preservation and withdrawal never promise to undo earlier scripts or stopped sessions. */
 export function worktreeRecoveryResultCopy(
-  result: WorktreeRecoveryFinishResult | WorktreeRecoveryResolveResult,
+  result:
+    | WorktreeRecoveryFinishResult
+    | WorktreeRecoveryResolveResult
+    | WorktreeRecoverySetAsideResult,
   action?:
     | 'keep-worktree'
     | 'release'
     | 'finish'
     | 'finish-cleanup'
-    | 'delete-hold',
+    | 'delete-hold'
+    | 'set-aside',
 ): string {
   const verb = action
     ? RECOVERY_ACTION_VERBS[action]
@@ -266,6 +271,8 @@ export function worktreeRecoveryResultCopy(
       );
     case 'hold-deleted':
       return 'Retained recovery material deleted.';
+    case 'set-aside':
+      return WORKTREE_RECOVERY_SET_ASIDE_DONE;
     case 'finished':
     case 'cleanup-pending':
       if (
@@ -288,6 +295,10 @@ export function worktreeRecoveryResultCopy(
     case 'refused':
       return `Couldn't ${verb}. Check again to review the current options. No completion has been confirmed.`;
     case 'interrupted':
+      if ('moved' in result && result.moved)
+        return 'The record was moved, but the move could not be confirmed as saved. Check Details for both file names and folders. Quit the app and ask support before putting it back.';
+      if ('reservation' in result && result.reservation)
+        return 'The move could not be confirmed. A quarantine reservation may remain and keep saved recovery material protected. Check Details and ask support before changing it.';
       return `The attempt to ${verb} was interrupted. Check again before continuing; some changes may already have been applied.`;
   }
 }
@@ -298,7 +309,19 @@ const RECOVERY_ACTION_VERBS = {
   finish: 'finish the archive',
   'finish-cleanup': 'finish cleanup',
   'delete-hold': 'delete recovery material',
+  'set-aside': 'set the record aside',
 };
+
+/**
+ * CAN-7014: the undo is a manual move while the app is quit (decision q-26
+ * 3a), so the result says how. "The app" keeps the copy brand-neutral.
+ * Other recovery evidence stays in place and may still block removal.
+ */
+export const WORKTREE_RECOVERY_SET_ASIDE_DONE =
+  "Record set aside. Other recovery records may still block archiving or deleting this worktree. Nothing else was moved or deleted. To undo, quit the app. Details lists both folders and the file's original and quarantined names. Move the file back to the journal folder using its original filename, not its quarantined filename. If the original name is occupied, leave the file in place and ask support. Never replace an existing journal.";
+
+export const WORKTREE_RECOVERY_SET_ASIDE_CONFIRM =
+  "This record stops blocking archiving and deleting this worktree. Its working files, saved copies and Git snapshots stay where they are and aren't cleaned up. You can move the record back later, while the app is quit.";
 
 function retainedRecoveryCopy(result: {
   retainedSnapshots: number;
@@ -316,7 +339,8 @@ export function worktreeRecoveryUnconfirmedCopy(
     | 'release'
     | 'finish'
     | 'finish-cleanup'
-    | 'delete-hold',
+    | 'delete-hold'
+    | 'set-aside',
 ): string {
   const subject = {
     'keep-worktree': 'Keeping the worktree',
@@ -324,6 +348,7 @@ export function worktreeRecoveryUnconfirmedCopy(
     finish: 'Finishing the archive',
     'finish-cleanup': 'Finishing cleanup',
     'delete-hold': 'Deleting recovery material',
+    'set-aside': 'Setting the record aside',
   }[action];
   return `${subject} hasn't been confirmed. Check again before continuing.`;
 }

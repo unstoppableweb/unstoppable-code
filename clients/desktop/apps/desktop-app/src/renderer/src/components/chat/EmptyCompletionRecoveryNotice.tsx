@@ -13,6 +13,8 @@ export interface EmptyCompletionRecoveryNoticeProps {
   busy?: boolean;
   /** Post-action failure text. */
   error?: string | null;
+  /** Closes the notice. The host shows it again for the next empty turn. */
+  onDismiss?: () => void;
 }
 
 /**
@@ -38,20 +40,22 @@ export function EmptyCompletionRecoveryNotice({
   onRetry,
   busy = false,
   error = null,
+  onDismiss,
 }: EmptyCompletionRecoveryNoticeProps): JSX.Element {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
 
   const message = recovery.repeatsToolActivity
-    ? 'The agent started working but the turn ended with nothing to show. Resume picks up where it stopped; trying again may repeat what it already did, so it is unavailable for this turn.'
-    : 'The turn finished without a response. Resume picks up where it stopped, or try the same request again.';
+    ? 'Resume picks up where it stopped. Try again is off because it could repeat work already done.'
+    : 'Resume picks up where it stopped. Try again sends your message again.';
 
   return (
     <>
       <Notice
         intent="attention"
-        title="No response for this turn"
+        title="The reply came back empty."
         data-testid="empty-completion-recovery"
         actionsPlacement="below"
+        onDismiss={onDismiss}
         {...(error ? { detail: error } : {})}
         actions={
           <>
@@ -60,7 +64,7 @@ export function EmptyCompletionRecoveryNotice({
               onClick={(): void => setFeedbackOpen(true)}
               data-testid="empty-completion-recovery-report"
             >
-              Report bug
+              Report this
             </NoticeButton>
             {recovery.canRetryPrompt && (
               <NoticeButton

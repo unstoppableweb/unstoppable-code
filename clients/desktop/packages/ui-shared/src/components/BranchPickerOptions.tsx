@@ -11,8 +11,8 @@ import {
   PickerMenuOptionLabel,
   PickerMenuOptionLeading,
   PickerMenuOptionTrailing,
-} from './PickerMenu';
-import { Tooltip } from './Tooltip';
+} from '../primitives/PickerMenu';
+import { Tooltip } from '../primitives/Tooltip';
 
 /** Local-only branch provenance tooltip. */
 const LOCAL_BRANCH_TOOLTIP = 'Local branch';

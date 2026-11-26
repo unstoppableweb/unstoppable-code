@@ -1,9 +1,9 @@
-import { Button } from '../../../Button';
+import { Button } from '../../../../primitives/Button';
 import { useId, useState, type JSX } from 'react';
 import type { SubagentNode } from '@canopy/agent-transcript';
 import { REPLAY_BLOCK_CLASS } from '../../../../lib/replay-privacy';
 import { DelegatedAgentCapabilities } from '../../DelegatedAgentCapabilities';
-import { StatusLabel } from '../../../StatusLabel';
+import { StatusLabel } from '../../../../primitives/StatusLabel';
 import {
   delegatedAgentCapabilityCountsLabel,
   hasDelegatedAgentCapabilityEntries,
@@ -36,7 +36,7 @@ import {
   subagentStartedCountLabel,
   subagentWorkspaceLabel,
 } from '../subagent-copy';
-import { Fact, FactList } from '../../../FactList';
+import { Fact, FactList } from '../../../../primitives/FactList';
 
 export interface SubagentSetupDetailsProps {
   readonly node: SubagentNode;

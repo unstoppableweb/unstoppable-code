@@ -1,5 +1,5 @@
 import { DialogActionFooter } from '@canopy/ui-shared/components';
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import {
   memo,
   useCallback,
@@ -12,7 +12,12 @@ import type { MergePrVerifiedRepo } from '@canopy/desktop-shared/types/github';
 import { Button } from '@canopy/ui-shared';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { ThinkingSpinner } from '@/components/shared/loading/spinners/ThinkingSpinner';
-import { Stack, Checkbox, Surface } from '@canopy/ui-shared/components';
+import {
+  Stack,
+  Checkbox,
+  Surface,
+  TextLink,
+} from '@canopy/ui-shared/components';
 
 interface PrMergeMultiRepoModalProps {
   /** Freshly verified per-repo PR state for every repo with an open PR. */
@@ -99,10 +104,6 @@ export const PrMergeMultiRepoModal = memo(function PrMergeMultiRepoModal({
     return 'Pull requests on a merge queue are added to the queue. Those with no merge queue hook open a chat that oversees the merge.';
   }, [repos]);
 
-  const handleOpenPr = useCallback((prUrl: string): void => {
-    void window.api.browser.openLink({ url: prUrl });
-  }, []);
-
   const handleConfirm = useCallback((): void => {
     if (isSubmitting || selected.size === 0) return;
     onConfirm(Array.from(selected));
@@ -187,13 +188,13 @@ export const PrMergeMultiRepoModal = memo(function PrMergeMultiRepoModal({
                         <span className="truncate font-semibold">
                           {repo.repoName}
                         </span>
-                        <span className="self-start text-xs">
-                          <Button
-                            variant="link"
-                            onClick={(): void => handleOpenPr(repo.prUrl)}
-                          >
-                            #{repo.prNumber}
-                          </Button>
+                        <span className="self-start">
+                          <TextLink
+                            href={repo.prUrl}
+                            size="xs"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >{`#${repo.prNumber}`}</TextLink>
                         </span>
                       </div>
                       <div className="flex shrink-0 items-center gap-2">

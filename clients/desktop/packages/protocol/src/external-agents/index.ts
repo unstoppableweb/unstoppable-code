@@ -1,7 +1,8 @@
 import { z } from 'zod';
+import type { HostedFirstPartyClient } from '../remote-control/security';
 
 /**
- * Wire shapes for the External agents (MCP) pages: the agents a person
+ * Wire shapes for the External agents pages: the agents a person
  * connected to the hosted MCP servers through OAuth, and what each may do.
  * Normative sources: docs/planning/2026-10-12-web-mcp-server/
  * 04-oauth-and-access-control.md ("External agents dashboard") and
@@ -396,6 +397,13 @@ export type ExternalAgentConnectionSummary = {
   lastUsedAt: string | null;
   expiresAt: string | null;
   access: ExternalAgentAccessSummary;
+  /**
+   * Set only for a connection the product itself owns (CAN-7606: `slack`,
+   * the token-less connection behind Connect Slack). Its access can't be
+   * edited here; Pause and Remove still work, and Remove also disconnects
+   * Slack. Absent on every OAuth-authorized agent.
+   */
+  firstPartyClient?: HostedFirstPartyClient;
 };
 
 /** The canonical address an agent adds for one server. */
@@ -567,5 +575,7 @@ export const EXTERNAL_AGENT_ERRORS = [
   'expired',
   'invalid_policy',
   'invalid_request',
+  /** The connection's access is fixed (a first-party connection, CAN-7606). */
+  'failed_precondition',
 ] as const;
 export type ExternalAgentError = (typeof EXTERNAL_AGENT_ERRORS)[number];

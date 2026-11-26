@@ -1,8 +1,8 @@
 import type { ComponentType, JSX, ReactNode } from 'react';
 import { EARLY_ACCESS_EXPERIMENT_ID } from '@canopy/protocol/experiments';
 
-import { ErrorBanner } from './StatusBlocks';
-import { ToggleSwitch } from './ToggleSwitch';
+import { ErrorBanner } from '../primitives/StatusBlocks';
+import { ToggleSwitch } from '../primitives/ToggleSwitch';
 
 /** One listed experiment, as its host resolved it for display. */
 export interface LabsExperimentRowView {

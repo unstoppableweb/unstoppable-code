@@ -141,14 +141,26 @@ function urlHostname(value: string): string | undefined {
     : /^[a-z0-9.-]+\.[a-z]{2,}(?:[/:?#]|$)/i.test(trimmed)
       ? `https://${trimmed}`
       : undefined;
-  if (withScheme === undefined) return undefined;
+  return withScheme === undefined
+    ? undefined
+    : parseCatalogWebUrl(withScheme)?.hostname.toLowerCase();
+}
+
+function parseCatalogWebUrl(value: string): URL | undefined {
   try {
-    const { protocol, hostname } = new URL(withScheme);
-    if (protocol !== 'http:' && protocol !== 'https:') return undefined;
-    return hostname === '' ? undefined : hostname.toLowerCase();
+    const url = new URL(value);
+    return url.hostname &&
+      (url.protocol === 'http:' || url.protocol === 'https:')
+      ? url
+      : undefined;
   } catch {
     return undefined;
   }
+}
+
+/** Canonical identity for a catalog URL, including its full path and query. */
+export function canonicalCatalogEndpoint(value: string): string | undefined {
+  return parseCatalogWebUrl(value)?.href;
 }
 
 /** `mcp.eu.vanta.com` → `vanta.com`; `bbc.co.uk` stays `bbc.co.uk`. */

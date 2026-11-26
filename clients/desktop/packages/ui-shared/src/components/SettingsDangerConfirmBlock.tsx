@@ -1,7 +1,8 @@
-import { Heading } from './Heading';
-import { Children, type JSX, type ReactNode } from 'react';
-import { Button } from './Button';
-import { Stack } from './Stack';
+import { Heading } from '../primitives/Heading';
+import { Children, useRef, type JSX, type ReactNode } from 'react';
+import { Button } from '../primitives/Button';
+import { ConfirmDialog } from '../primitives/ConfirmDialog';
+import { Stack } from '../primitives/Stack';
 
 export interface SettingsDangerConfirmBlockProps {
   /** Section heading rendered inside the bordered card. */
@@ -17,13 +18,13 @@ export interface SettingsDangerConfirmBlockProps {
    * (e.g. active sessions, missing source repo path). */
   triggerDisabled?: boolean;
   triggerLabel: string;
-  /** Confirm phase: action is in flight (`isWorking` true) or awaiting a
-   * second click. */
+  /** The confirm dialog is open: the action is in flight (`isWorking` true)
+   * or awaiting the answer. */
   confirming: boolean;
   onConfirmStart: () => void;
   onConfirmCancel: () => void;
-  /** Click handler for the confirm button. The button shows
-   * `confirmInProgressLabel` while `isWorking` is true. */
+  /** The dialog's action. It shows `confirmInProgressLabel` and the dialog
+   * stays open while `isWorking` is true. */
   onConfirm: () => void;
   isWorking: boolean;
   confirmLabel: string;
@@ -34,15 +35,15 @@ export interface SettingsDangerConfirmBlockProps {
   /**
    * `card` frames the action on its own. `row` is one settings row: the
    * label and explanation leading, a quiet text action trailing (danger ink
-   * for `destructive`), and the confirm step in place of the action.
+   * for `destructive`).
    */
   surface?: 'card' | 'row';
 }
 
 /**
- * Single confirm/cancel pattern used for "Delete project/workspace" and
- * "Convert to single/multi-repo" sections in both modals. Renders the trigger
- * button until clicked, then swaps to a "Confirm / Cancel" pair.
+ * Single confirm pattern used for "Delete project/workspace" and
+ * "Convert to single/multi-repo" sections in both modals. The trigger opens a
+ * `ConfirmDialog`; focus returns to the trigger when it closes.
  */
 export function SettingsDangerConfirmBlock({
   title,
@@ -62,9 +63,27 @@ export function SettingsDangerConfirmBlock({
   surface = 'card',
 }: SettingsDangerConfirmBlockProps): JSX.Element {
   const warningItems = Children.toArray(warnings);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const dialog = confirming ? (
+    <ConfirmDialog
+      title={`${title}?`}
+      message={description}
+      confirmLabel={confirmLabel}
+      busyLabel={confirmInProgressLabel}
+      busy={isWorking}
+      destructive={variant === 'destructive'}
+      onConfirm={onConfirm}
+      onCancel={onConfirmCancel}
+      restoreFocusRef={triggerRef}
+    >
+      {warningItems.length > 0 ? (
+        <Stack gap="tight">{warningItems}</Stack>
+      ) : null}
+    </ConfirmDialog>
+  ) : null;
   if (surface === 'row') {
     return (
-      <div className="flex min-h-10 items-center justify-between gap-6">
+      <div className="flex min-h-10 items-center justify-between gap-x-6 gap-y-2 max-sm:flex-wrap">
         <Stack gap="tight" className="min-w-0 flex-1">
           <div className="flex flex-col gap-0.5">
             <div className="text-s font-medium fg-primary">{title}</div>
@@ -78,38 +97,17 @@ export function SettingsDangerConfirmBlock({
           {warningItems.length > 0 && <Stack gap="tight">{warningItems}</Stack>}
         </Stack>
         <div className="flex shrink-0 items-center gap-2">
-          {!confirming ? (
-            <Button
-              onClick={onConfirmStart}
-              disabled={triggerDisabled || isWorking}
-              variant={
-                variant === 'destructive' ? 'ghost-destructive' : 'ghost'
-              }
-              size="compact"
-            >
-              {triggerLabel}
-            </Button>
-          ) : (
-            <>
-              <Button
-                onClick={onConfirmCancel}
-                disabled={isWorking}
-                variant="ghost"
-                size="compact"
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={onConfirm}
-                disabled={isWorking}
-                variant={variant === 'destructive' ? 'destructive' : 'primary'}
-                size="compact"
-              >
-                {isWorking ? confirmInProgressLabel : confirmLabel}
-              </Button>
-            </>
-          )}
+          <Button
+            ref={triggerRef}
+            onClick={onConfirmStart}
+            disabled={triggerDisabled || isWorking}
+            variant={variant === 'destructive' ? 'ghost-destructive' : 'ghost'}
+            size="compact"
+          >
+            {triggerLabel}
+          </Button>
         </div>
+        {dialog}
       </div>
     );
   }
@@ -136,36 +134,17 @@ export function SettingsDangerConfirmBlock({
         </Stack>
         {warning}
       </div>
-      {!confirming ? (
-        <Button
-          onClick={onConfirmStart}
-          disabled={triggerDisabled || isWorking}
-          variant={variant === 'destructive' ? 'destructive' : 'secondary'}
-          size="sm"
-          className="self-start"
-        >
-          {triggerLabel}
-        </Button>
-      ) : (
-        <div className="flex items-center gap-2">
-          <Button
-            onClick={onConfirm}
-            disabled={isWorking}
-            variant={variant === 'destructive' ? 'destructive' : 'primary'}
-            size="sm"
-          >
-            {isWorking ? confirmInProgressLabel : confirmLabel}
-          </Button>
-          <Button
-            onClick={onConfirmCancel}
-            disabled={isWorking}
-            variant="ghost"
-            size="sm"
-          >
-            Cancel
-          </Button>
-        </div>
-      )}
+      <Button
+        ref={triggerRef}
+        onClick={onConfirmStart}
+        disabled={triggerDisabled || isWorking}
+        variant={variant === 'destructive' ? 'destructive' : 'secondary'}
+        size="sm"
+        className="self-start"
+      >
+        {triggerLabel}
+      </Button>
+      {dialog}
     </div>
   );
 }

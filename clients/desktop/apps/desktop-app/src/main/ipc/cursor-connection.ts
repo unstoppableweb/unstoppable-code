@@ -9,6 +9,7 @@ import {
   type CursorAccountIntent,
   type CursorConnectionStatus,
   type CursorModelEntry,
+  type CursorSignInClient,
 } from '@canopy/desktop-shared/types';
 import { registerIpcHandler } from './register';
 import { broadcastModelRegistryUpdated } from '../models/model-registry';
@@ -23,6 +24,12 @@ import {
   refreshCursorRuntimeAvailability,
 } from '../cursor/runtime-availability';
 import { sendToWebContents } from '../lib/web-contents-send';
+import { resolveRemoteBridgeSender } from '../remote-control/host/bridge-window';
+import {
+  assertCursorSignInReachable,
+  readCursorSignInOptions,
+  type CursorSignInOptions,
+} from '../cursor/sign-in-link';
 let shuttingDown = false;
 async function stopModelDiscovery(): Promise<void> {
   getObservabilityService().invalidateCursorUsage();
@@ -42,6 +49,89 @@ const probes = new Set<{
   controller: AbortController;
   done: Promise<unknown>;
 }>();
+// The account read running now, which overlapping probes share, and how
+// many windows wait on it.
+interface SharedAccountRead {
+  controller: AbortController;
+  done: Promise<CursorAccount | null>;
+  waiters: number;
+}
+let accountRead: SharedAccountRead | undefined;
+
+/**
+ * Starts the account read overlapping probes share. It follows no single
+ * window: setup stands it down and quitting drains it (`probes`), it times
+ * out after 60 seconds, and it is cancelled once every window waiting on it
+ * has gone.
+ */
+function startAccountRead(
+  read: (signal: AbortSignal) => Promise<CursorAccount | null>,
+): SharedAccountRead {
+  const controller = new AbortController();
+  const shared: SharedAccountRead = {
+    controller,
+    done: read(
+      AbortSignal.any([controller.signal, AbortSignal.timeout(60_000)]),
+    ),
+    waiters: 0,
+  };
+  probes.add(shared);
+  accountRead = shared;
+  void shared.done
+    .finally(() => {
+      probes.delete(shared);
+      if (accountRead === shared) accountRead = undefined;
+    })
+    .catch(() => undefined);
+  return shared;
+}
+
+/**
+ * `owner`'s wait on a shared read. A window that goes away stops only its
+ * own wait; the read is cancelled when the last waiting window has gone.
+ */
+function waitForAccountRead(
+  shared: SharedAccountRead,
+  owner: WebContents,
+): Promise<CursorAccount | null> {
+  shared.waiters += 1;
+  return new Promise((resolve, reject) => {
+    let waiting = true;
+    const leave = (): void => {
+      if (!waiting) return;
+      waiting = false;
+      shared.waiters -= 1;
+      owner.off('destroyed', gone);
+      owner.off('render-process-gone', gone);
+      owner.off('did-start-navigation', gone);
+    };
+    const gone = (): void => {
+      if (!waiting) return;
+      leave();
+      if (shared.waiters === 0) shared.controller.abort();
+      reject(new Error('Cursor setup window unavailable.'));
+    };
+    owner.once('destroyed', gone);
+    owner.once('render-process-gone', gone);
+    owner.once('did-start-navigation', gone);
+    shared.done.then(
+      (account) => {
+        if (!waiting) return;
+        leave();
+        resolve(account);
+      },
+      (error: unknown) => {
+        if (!waiting) return;
+        leave();
+        reject(
+          error instanceof Error
+            ? error
+            : new Error('Could not check the Cursor sign-in.'),
+        );
+      },
+    );
+  });
+}
 function assertOwner(
   sender: WebContents,
   frame: Electron.WebFrameMain | null,
@@ -120,6 +210,17 @@ export function registerCursorConnectionHandlers(): void {
     // into a stale cached answer.
     () => probeCursorRuntimeStatus(),
   );
+  // A remote bridge window carries another computer's calls: its sign-in
+  // link goes to that computer with the progress status, when that
+  // computer's app says it shows it (`client`).
+  const remoteSignInOptions = (
+    event: Electron.IpcMainInvokeEvent,
+    client: unknown,
+  ): CursorSignInOptions =>
+    readCursorSignInOptions(
+      resolveRemoteBridgeSender(event.sender) !== null,
+      client,
+    );
   // Connect and Change account share one owned, cancellable operation per
   // window: the same abort wiring, progress channel, and lifetime guards.
   const runOwned = async (
@@ -217,12 +318,16 @@ export function registerCursorConnectionHandlers(): void {
     await refreshCursorRuntimeAvailability();
     broadcastModelRegistryUpdated();
   };
-  registerIpcHandler<[], CursorConnectionStatus>(
+  registerIpcHandler<[CursorSignInClient?], CursorConnectionStatus>(
     IPC_CHANNELS.cursorConnectionConnect,
     // Async so the disabled-harness guard rejects the invoke rather than
     // throwing synchronously at the caller.
-    async (event) => {
+    async (event, client) => {
       assertCursorHarnessEnabled();
+      // Refused before it claims setup, clears the catalog or installs: a
+      // controller that can't show the link could never finish the sign-in.
+      const signInOptions = remoteSignInOptions(event, client);
+      assertCursorSignInReachable(signInOptions);
       return runOwned(event, async (signal, progress) => {
         // Model discovery runs the CLI too; setup and sign-in own it exclusively.
         await stopModelDiscovery();
@@ -232,23 +337,28 @@ export function registerCursorConnectionHandlers(): void {
         // Re-check after the awaits: the flag can flip while the runtime graph
         // loads, and this is the last point before a download or a sign-in.
         assertCursorHarnessEnabled();
-        const status = await connectCursor(signal, progress);
+        const status = await connectCursor(signal, progress, signInOptions);
         await republishCursorModels(signal, status);
         return status;
       });
     },
   );
-  registerIpcHandler<[CursorAccountIntent], CursorConnectionStatus>(
+  registerIpcHandler<
+    [CursorAccountIntent, CursorSignInClient?],
+    CursorConnectionStatus
+  >(
     IPC_CHANNELS.cursorConnectionChangeAccount,
     // Async so the disabled-harness guard rejects the invoke rather than
     // throwing synchronously at the caller.
-    async (event, intent) => {
+    async (event, intent, client) => {
       assertCursorHarnessEnabled();
       // The intent decides whether a sign-out runs, so it is validated here
       // rather than defaulted: an unrecognized value must not fall through to
       // the destructive branch.
       if (intent !== 'change' && intent !== 'sign-in')
         throw new Error('Unknown Cursor account operation.');
+      const signInOptions = remoteSignInOptions(event, client);
+      assertCursorSignInReachable(signInOptions);
       return runOwned(event, async (signal, progress) => {
         const { changeCursorAccount } = await import('../cursor/connection');
         assertCursorHarnessEnabled();
@@ -265,6 +375,7 @@ export function registerCursorConnectionHandlers(): void {
             initCursorModels([]);
             broadcastModelRegistryUpdated();
           },
+          signInOptions,
         );
         await republishCursorModels(signal, status);
         return status;
@@ -292,26 +403,15 @@ export function registerCursorConnectionHandlers(): void {
       // is drained on quit rather than outliving either as a detached child.
       // Attached only once the guards have passed: a throw above would
       // otherwise leave three listeners on a long-lived WebContents.
-      const controller = new AbortController();
-      const stop = (): void => controller.abort();
-      owner.once('destroyed', stop);
-      owner.once('render-process-gone', stop);
-      owner.once('did-start-navigation', stop);
-      const probe = {
-        controller,
-        done: readCursorAccount(
-          AbortSignal.any([controller.signal, AbortSignal.timeout(60_000)]),
-        ),
-      };
-      probes.add(probe);
-      try {
-        return await probe.done;
-      } finally {
-        probes.delete(probe);
-        owner.off('destroyed', stop);
-        owner.off('render-process-gone', stop);
-        owner.off('did-start-navigation', stop);
-      }
+      // A read already running answers this probe too: a cache miss
+      // verifies the whole runtime on the queue local launches use, so
+      // overlapping probes (a paired browser can send many) share one
+      // (CAN-6718 review). The read runs the CLI, so it is tracked in
+      // `probes` and cancelled once no window waits on it.
+      return await waitForAccountRead(
+        accountRead ?? startAccountRead(readCursorAccount),
+        owner,
+      );
     },
   );
   registerIpcHandler<[], void>(IPC_CHANNELS.cursorConnectionCancel, (event) => {

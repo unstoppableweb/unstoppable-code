@@ -22,6 +22,7 @@ import { isCopilotHarnessEnabled } from '../../copilot/feature-flag';
 import type { CopilotDelegationPreparation } from './copilot-runner';
 import { getRawCursorModelId } from '@canopy/execution-engine/lib/cursor-models';
 import { CURSOR_RUNTIME_VERSION } from '@canopy/desktop-shared/node/cursor/runtime-metadata';
+import { prepareCursorProfileDirectory } from '@canopy/desktop-shared/node/cursor/profile-directory';
 import type { CursorTurnGates } from '@canopy/desktop-shared/node/cursor/turn-driver';
 import { readCursorAccount } from '../../cursor/connection';
 import { readPreferencesFile } from '../../lib/preferences-store';
@@ -1377,10 +1378,10 @@ export class DelegationRouteRuntime {
       session,
       session.captured.capabilities,
     );
-    const profileDir = path.join(
+    const { directory: profileDir } = await prepareCursorProfileDirectory(
       this.options.directory,
-      'cursor-sessions',
       context.request.delegationId,
+      session.tools.cwd,
     );
     session.readRoots.push(
       path.join(profileDir, 'home', '.cursor', 'skills'),

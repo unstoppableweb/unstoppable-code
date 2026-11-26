@@ -1,64 +1,35 @@
 import {
-  matchesRecordedDirectoryIdentity,
-  matchesRecordedRepositoryIdentity,
-} from '@canopy/core-runtime/node/w5/recorded-directory-identity';
-import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
+  admitResolution,
+  readArchiveResolutionPreparation,
+} from './worktree-archive-resolution-admission';
 import {
   settleArchiveRecovery,
   type ArchiveRecoverySettlementPorts,
 } from './archive-recovery-settlement';
-import { lstat } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
 import {
   ArchiveRecoveryRefusedError,
-  classifyArchiveRecovery,
   type ArchiveRecoveryReceipt,
-  type ArchiveRecoveryPreparation,
 } from '@canopy/desktop-shared/node/archive-recovery-store';
-import { journalSchema } from '@canopy/desktop-shared/node/w5-destructive-journal';
 import type {
   WorktreeRecoveryResolveParams,
   WorktreeRecoveryResolveResult,
 } from '@canopy/protocol/canopy-core';
-import { assertWorktreeCanBeRemoved } from '../agents/background-work';
-import {
-  assertNotSplitDestinationWorktreeClaimed,
-  assertNotSplitLocked,
-  hasWorkspaceDeletionLease,
-} from '../services/split-lock-service';
+import { hasWorkspaceDeletionLease } from '../services/split-lock-service';
 import { readArchiveJournalOperations } from './stranded-archive-journals';
 import { describeWorktreeRecovery } from './worktree-recovery-description';
 import { archiveRecoveryStore } from './archive-recovery-refs';
 import {
-  inspectArchiveRecoveryRepositories,
   deleteArchiveRecoveryRefs,
   qualifyArchiveRecoveryRefDeletion,
-  readArchivedGitStagedDescriptor,
 } from './archived-container-git';
-import {
-  readArchivedContainerManifestIncludingExpired,
-  withArchivedContainerOperationLock,
-} from './archived-containers';
+import { withArchivedContainerOperationLock } from './archived-containers';
 import { serializeWorkspaceMutation } from './chat-project-operation-queue';
-import {
-  readWorkspaceConfigDetailed,
-  readWorkspaceWorktreesDetailed,
-} from './workspace-persistence';
 import { assertWritableScope } from './read-only-scope';
 import { validateId } from './validation';
 import {
-  areOwnedPathsUnreplaced,
-  hasUnverifiableProjectIdentity,
-  isDestructiveRecoveryOwnerless,
-  isRecoveryProjectUnreplaced,
-  isUnverifiableReleaseCandidate,
   readBlockingDestructiveRecoveries,
-  isVerifiedProtectedPathIdentity,
-  readDirectoryStatIdentity,
   withExclusiveLifecycleJournalAccess,
 } from './w5-destructive-recovery';
-import { getWorkspaceWorktreeDir, getWorktreeDataDir } from './paths';
 import { withW5Commit } from './w5-commit-log-file-store';
 
 async function requireResolutionAdmission<T>(
@@ -90,161 +61,6 @@ function resultOf(
     ),
     retainedPayload: receipt.staging !== null,
   };
-}
-
-/** Qualifies original resource admission only while its effects remain unperformed. */
-async function admitResolution(receipt: ArchiveRecoveryReceipt): Promise<void> {
-  const record = journalSchema.parse(receipt.sourceRecord);
-  const { workspaceId, worktreeId } = receipt;
-  if (
-    record.operationId !== receipt.operationId ||
-    record.workspaceId !== workspaceId ||
-    record.worktreeId !== worktreeId ||
-    record.createdAt !== receipt.createdAt ||
-    record.operation !== 'worktree-archive' ||
-    record.state !== 'recovery-required' ||
-    !isDestructiveRecoveryOwnerless(record)
-  )
-    throw new Error('Source archive is not ownerless stranded evidence.');
-  assertWritableScope(workspaceId);
-  assertNotSplitLocked(workspaceId, worktreeId, 'resolving the archive');
-  assertNotSplitDestinationWorktreeClaimed(
-    workspaceId,
-    worktreeId,
-    'resolving the archive',
-  );
-  assertWorktreeCanBeRemoved(workspaceId, worktreeId);
-  const scan = await readArchiveJournalOperations(workspaceId);
-  if (!scan.readable || hasWorkspaceDeletionLease(workspaceId))
-    throw new Error('Project deletion or unreadable journal evidence.');
-  if (
-    (await readBlockingDestructiveRecoveries(workspaceId, worktreeId)).some(
-      (other) => other.operationId !== receipt.operationId,
-    )
-  )
-    throw new Error('Another destructive operation is pending.');
-  const source = scan.operations.find(
-    (operation) => operation.record.operationId === receipt.operationId,
-  );
-  if (!source && !['withdrawal-intent', 'withdrawn'].includes(receipt.stage))
-    throw new Error('Source journal disappeared before withdrawal intent.');
-  if (
-    source &&
-    !['withdrawal-intent', 'withdrawn'].includes(receipt.stage) &&
-    source.copies !== receipt.copies.length
-  )
-    throw new Error('Source journal copy set changed before withdrawal.');
-  if (
-    source &&
-    (!source.consistent ||
-      source.sources.some(
-        (copy) =>
-          !receipt.copies.some((expected) => isDeepStrictEqual(copy, expected)),
-      ))
-  )
-    throw new Error('Source archive changed.');
-  const unverifiable = hasUnverifiableProjectIdentity(record);
-  if (
-    (unverifiable
-      ? receipt.action !== 'release' || !isUnverifiableReleaseCandidate(record)
-      : !(await isRecoveryProjectUnreplaced(record))) ||
-    !(await areOwnedPathsUnreplaced(
-      record,
-      unverifiable ? getWorktreeDataDir(workspaceId, worktreeId) : undefined,
-    ))
-  )
-    throw new Error('Archive identity changed.');
-  const list = await readWorkspaceWorktreesDetailed(workspaceId, {
-    persistRemovalCleanup: false,
-  });
-  if (list.authority !== 'ok')
-    throw new Error('Canonical worktree inventory is unreadable.');
-  const row = list.worktrees.find((entry) => entry.id === worktreeId);
-  const checkout = getWorkspaceWorktreeDir(workspaceId, worktreeId);
-  const quarantine = join(
-    dirname(checkout),
-    `.${basename(checkout)}.archive-quarantine`,
-  );
-  const quarantinePresent = await lstat(quarantine).then(
-    () => true,
-    (error: unknown) => {
-      if (
-        typeof error === 'object' &&
-        error !== null &&
-        'code' in error &&
-        error.code === 'ENOENT'
-      )
-        return false;
-      throw error;
-    },
-  );
-  if (quarantinePresent)
-    throw new Error('Archive quarantine occupancy changed.');
-  const identity = await readDirectoryStatIdentity(checkout);
-  const expected = record.ownedPaths.find(
-    (owned) => owned.path === checkout,
-  )?.identity;
-  if (receipt.action === 'keep-worktree') {
-    if (
-      !row ||
-      row.createdAt !== receipt.createdAt ||
-      identity === null ||
-      !expected ||
-      !isVerifiedProtectedPathIdentity(expected) ||
-      !matchesRecordedDirectoryIdentity(
-        expected,
-        identity,
-        hostOperatingSystem(),
-      )
-    )
-      throw new Error('Keep requires the original listed live checkout.');
-  } else if (row || identity !== null)
-    throw new Error('Release requires authoritative row and checkout absence.');
-  if (
-    unverifiable &&
-    ((await readArchivedContainerManifestIncludingExpired(
-      workspaceId,
-      worktreeId,
-    ).catch((error: unknown) => {
-      if (
-        typeof error === 'object' &&
-        error !== null &&
-        'code' in error &&
-        error.code === 'ENOENT'
-      )
-        return null;
-      throw error;
-    })) !== null ||
-      (await readArchivedGitStagedDescriptor(workspaceId, worktreeId, {
-        readOnly: true,
-        recoveryOnly: true,
-      })) !== null)
-  )
-    throw new Error('Unverifiable archive release requires no capture.');
-  const config = await readWorkspaceConfigDetailed(workspaceId);
-  if (config.authority !== 'ok' || config.config.type === 'cowork')
-    throw new Error('Project repositories are unavailable.');
-  const repositories = await inspectArchiveRecoveryRepositories({
-    workspaceId,
-    containerId: worktreeId,
-    workspaceType: config.config.type,
-  });
-  if (
-    repositories.length !== receipt.repositories.length ||
-    !receipt.repositories.every((saved, index) => {
-      const live = repositories[index];
-      return (
-        live !== undefined &&
-        matchesRecordedRepositoryIdentity(
-          saved.identity,
-          live.identity,
-          hostOperatingSystem(),
-        ) &&
-        isDeepStrictEqual({ ...saved, identity: live.identity }, live)
-      );
-    })
-  )
-    throw new Error('Retained Git evidence changed or became unavailable.');
 }
 
 /** Core policy; worker primitives keep evidence, vacate staging and retire exact journal copies. */
@@ -367,6 +183,8 @@ export async function resolveWorktreeArchive(
                     operationId: request.operationId,
                   },
                   undefined,
+                  undefined,
+                  'metadata',
                 );
                 if (
                   diagnosis.diagnosis?.verdict !== request.action ||
@@ -375,72 +193,12 @@ export async function resolveWorktreeArchive(
                   throw new ArchiveRecoveryRefusedError(
                     'Archive resolution is not admitted.',
                   );
-                if (
-                  (await store.list(request.workspaceId)).some(
-                    (entry) =>
-                      entry.worktreeId === worktreeId &&
-                      classifyArchiveRecovery(entry).worktreeFence,
-                  )
-                )
-                  throw new ArchiveRecoveryRefusedError(
-                    'Another archive resolution is pending.',
-                  );
-                const config = await readWorkspaceConfigDetailed(
-                  request.workspaceId,
-                );
-                if (
-                  config.authority !== 'ok' ||
-                  config.config.type === 'cowork'
-                )
-                  throw new ArchiveRecoveryRefusedError(
-                    'Project repositories are unavailable.',
-                  );
-                const repositories = await inspectArchiveRecoveryRepositories({
-                  workspaceId: request.workspaceId,
-                  containerId: worktreeId,
-                  workspaceType: config.config.type,
-                });
-                const descriptor = await readArchivedGitStagedDescriptor(
-                  request.workspaceId,
-                  worktreeId,
-                  { readOnly: true, recoveryOnly: true },
-                );
-                for (const captured of descriptor?.repositories ?? []) {
-                  if (
-                    !repositories.some(
-                      (repository) =>
-                        repository.referenceRepoPath ===
-                          captured.referenceRepoPath &&
-                        repository.refs.some(
-                          (ref) =>
-                            ref.name === captured.snapshotRef &&
-                            ref.objectId === captured.worktreeSnapshotCommit,
-                        ),
-                    )
-                  )
-                    throw new ArchiveRecoveryRefusedError(
-                      'Staged snapshots cannot be verified.',
-                    );
-                }
-                const preparation: ArchiveRecoveryPreparation = {
-                  ...request,
+                const preparation = await readArchiveResolutionPreparation(
+                  operation,
                   action,
-                  worktreeId,
-                  createdAt: operation.record.createdAt,
-                  copies: operation.sources,
-                  sourceRecord: operation.record,
-                  repositories,
-                  capture:
-                    descriptor?.status === 'ready'
-                      ? 'complete'
-                      : descriptor
-                        ? 'partial'
-                        : repositories.some(
-                              (repository) => repository.refs.length > 0,
-                            )
-                          ? 'unpublished'
-                          : 'none',
-                };
+                  undefined,
+                  'metadata',
+                );
                 if (cancelled) {
                   await settlementPorts.admitResolution({
                     ...preparation,
@@ -450,6 +208,7 @@ export async function resolveWorktreeArchive(
                   });
                   await settlementPorts.qualifyRefs(cancelled);
                 }
+                // Read-only preflights above; prepare is the single exact-content gate before effects.
                 receipt = await store.prepare(preparation);
               }
               receipt = await settleArchiveRecovery(

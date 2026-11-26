@@ -7,7 +7,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react';
-import { ConfirmDialog } from './ConfirmDialog';
+import { ConfirmDialog } from '../primitives/ConfirmDialog';
 
 /**
  * Confirmation for removing an installed item (CAN-4255), shared by the
@@ -29,6 +29,7 @@ interface UninstallConfirmDialogBaseProps {
    * keep the dialog open. A rejection shows `fallbackErrorMessage`.
    */
   readonly onConfirm: () => Promise<string | null>;
+  readonly confirmDisabled?: boolean;
   readonly onCancel: () => void;
   /** Called after a confirmed removal; the host closes the dialog here. */
   readonly onUninstalled: () => void;
@@ -64,6 +65,7 @@ export function UninstallConfirmDialog({
   title,
   message,
   onConfirm,
+  confirmDisabled = false,
   onCancel,
   onUninstalled,
   fallbackErrorMessage = 'Could not uninstall. Try again.',
@@ -80,7 +82,7 @@ export function UninstallConfirmDialog({
   const inFlightRef = useRef(false);
 
   const confirm = async (): Promise<void> => {
-    if (inFlightRef.current) return;
+    if (confirmDisabled || inFlightRef.current) return;
     inFlightRef.current = true;
     setBusy(true);
     setError(null);
@@ -104,6 +106,7 @@ export function UninstallConfirmDialog({
       title={title}
       message={message}
       confirmLabel={confirmLabel}
+      confirmDisabled={confirmDisabled}
       busyLabel={busyLabel}
       busy={busy}
       destructive

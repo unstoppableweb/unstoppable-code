@@ -1,9 +1,9 @@
 'use client';
 
-import { ButtonLink } from './ButtonLink';
 import type { JSX, MouseEvent, ReactNode } from 'react';
 import type { TryItSignInGateState } from '@canopy/protocol/try-it/continuation';
-import { Notice, NoticeButton } from './Notice';
+import { Notice, NoticeButton } from '../primitives/Notice';
+import { Button } from '../primitives/Button';
 
 /**
  * An authentication control. `href` renders a link that runs `onActivate`
@@ -95,9 +95,9 @@ function AuthControl({
     );
   }
   if (disabled) {
-    // ButtonLink drops the href when disabled, so nothing can navigate.
+    // A `Button` with an `href` drops it when disabled, so nothing can navigate.
     return (
-      <ButtonLink
+      <Button
         href=""
         disabled
         variant={variant}
@@ -107,7 +107,7 @@ function AuthControl({
         data-testid={testId}
       >
         {children}
-      </ButtonLink>
+      </Button>
     );
   }
   // Enter and every left click (modified or not) dispatch `click`; a middle
@@ -124,7 +124,7 @@ function AuthControl({
       });
   };
   return (
-    <ButtonLink
+    <Button
       href={action.href}
       rel="noopener"
       variant={variant}
@@ -136,7 +136,7 @@ function AuthControl({
       data-testid={testId}
     >
       {children}
-    </ButtonLink>
+    </Button>
   );
 }
 
@@ -333,6 +333,11 @@ export function TryItSignInNotice({
         {...common}
         data-retry="setup"
         intent="attention"
+        title={
+          setup?.requiresSignIn === false
+            ? "Connection didn't finish"
+            : "Authorization didn't finish"
+        }
         actions={
           setup ? (
             <SetupActions
@@ -345,8 +350,7 @@ export function TryItSignInNotice({
           ) : undefined
         }
       >
-        {errorMessage ??
-          `${setup?.requiresSignIn === false ? "Connection didn't finish" : "Authorization didn't finish"}. ${capabilityName} still needs setup.`}
+        {errorMessage ?? `${capabilityName} still needs setup.`}
       </Notice>
     );
   }
@@ -357,6 +361,11 @@ export function TryItSignInNotice({
         {...common}
         data-retry="continuation"
         intent="attention"
+        title={
+          selectOnly
+            ? `Couldn't set up ${capabilityName}`
+            : "Your prompt couldn't continue"
+        }
         actions={
           onRetryContinuation ? (
             <NoticeButton
@@ -371,9 +380,7 @@ export function TryItSignInNotice({
         }
       >
         {errorMessage ??
-          (selectOnly
-            ? `Couldn't set up ${capabilityName}. Your prompt is still in the composer.`
-            : "Your prompt couldn't continue.")}
+          (selectOnly ? 'Your prompt is still in the composer.' : null)}
       </Notice>
     );
   }

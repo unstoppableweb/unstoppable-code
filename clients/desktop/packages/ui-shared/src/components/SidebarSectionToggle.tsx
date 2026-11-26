@@ -1,5 +1,5 @@
 import type { JSX, MouseEvent, ReactNode } from 'react';
-import { DisclosureChevron, DisclosureToggle } from './Disclosure';
+import { DisclosureChevron, DisclosureToggle } from '../primitives/Disclosure';
 
 export type SidebarSectionToggleSection = 'chats' | 'workspaces';
 

@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 import type { LedgerStatus } from '@canopy/protocol/canopy-core';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 
 export const PROGRESS_DOTS_MAX = 24;
 

@@ -6,6 +6,7 @@ import {
   sidebarNavItemClassName,
 } from '@canopy/ui-shared/components';
 import { AttentionDot } from '@canopy/ui-shared/components/settings/AttentionDot';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import { SidebarPageNavGroup } from '../../sidebar';
 import type { SettingsLinkComponent } from '../host';
 import type { SettingsNavGroup, SettingsNavRow } from './settings-nav-model';
@@ -37,6 +38,11 @@ function RowContent({
       ) : (
         <span className="min-w-0 truncate">{row.label}</span>
       )}
+      {row.tag === 'new' ? (
+        <Badge tone="info" data-testid={`${testIdPrefix}${row.key}-new`}>
+          New
+        </Badge>
+      ) : null}
     </>
   );
 }

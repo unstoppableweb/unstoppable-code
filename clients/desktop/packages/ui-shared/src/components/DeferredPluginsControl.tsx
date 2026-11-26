@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
-import { ActionTooltip } from './ActionTooltip';
-import { ToggleSwitch } from './ToggleSwitch';
+import { ActionTooltip } from '../primitives/ActionTooltip';
+import { ToggleSwitch } from '../primitives/ToggleSwitch';
 
 export interface DeferredPluginsControlProps {
   allowed: boolean;

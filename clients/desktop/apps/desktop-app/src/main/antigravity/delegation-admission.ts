@@ -29,7 +29,7 @@ export type AntigravityNativeDiscoveryIsolation =
  * Every Antigravity session launches as a Canopy-defined custom agent that
  * inherits nothing from the repository and exposes only host-gated tools. The
  * qualification evidence is
- * docs/planning/2026-11-12-antigravity-parity/evidence/isolation-1.5.1.json
+ * docs/planning/2026-11-12-antigravity-parity/evidence/isolation-1.5.14.json
  * (written by scripts/antigravity/qualify-isolation.mjs): a child launched as
  * the delegate runner launches it sees no repository markers and reports the
  * bounded tool surface. Change this only with new qualification evidence.

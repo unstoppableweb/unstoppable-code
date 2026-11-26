@@ -1,5 +1,5 @@
-import { DisclosureToggle } from '../Disclosure';
-import { Stack } from '../Stack';
+import { DisclosureToggle } from '../../primitives/Disclosure';
+import { Stack } from '../../primitives/Stack';
 import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import { ChevronDownIcon, ChevronRightIcon } from '../../icons';
 import type {

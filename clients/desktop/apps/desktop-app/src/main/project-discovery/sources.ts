@@ -9,8 +9,13 @@ import {
   type WorkspaceConfigFile,
 } from '@canopy/desktop-shared/types';
 import type { CanopyQueryOptions } from '@canopy/core-runtime';
+import { runWithW5Caller } from '@canopy/desktop-shared/node/work-counters';
 import { getActiveDesktopRuntime } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
+import {
+  readThroughDesktopW5Cache,
+  W5_INDEX_REQUEST,
+} from '../canopy-runtime/w5-read-cache-server';
 import { readWorkEntriesFileStrict } from '../lib/cowork-work-entries';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import { getWorkspaceIndexRepository } from '../lib/sidebar-items';
@@ -98,7 +103,11 @@ function sourceReadFailed(message: string): DiscoveryError {
 export async function readProjectIndexSnapshot(
   projectId: string,
 ): Promise<ProjectIndexSnapshot> {
-  const index = await getWorkspaceIndexRepository().read();
+  const index = await runWithW5Caller('background:project-discovery', () =>
+    readThroughDesktopW5Cache(W5_INDEX_REQUEST, () =>
+      getWorkspaceIndexRepository().read(),
+    ),
+  );
   if (index.authority === 'unreadable')
     throw workspaceStorageUnavailable(index.unserved);
   if (index.authority === 'partial') {

@@ -1,7 +1,11 @@
 import { z } from 'zod';
 
-import { COLLECTION_SHARE_SCOPES } from '../../../collections';
+import {
+  COLLECTION_SHARE_SCOPES,
+  MAX_SHARED_COLLECTION_BYTES,
+} from '../../../collections';
 import { isSafePortableRelativePath } from '../../../safe-relative-path';
+import { MAX_SHARED_SKILL_BYTES } from '../../../skills';
 import {
   CanopyQueryRequestMetadataSchema,
   CanopyRequestMetadataSchema,
@@ -238,13 +242,17 @@ export const CatalogCollectionImportReadinessSchema = z.strictObject({
   contentHash: CatalogSharedCollectionHashSchema,
   /** Null when the shared collection has no package. */
   package: CatalogCollectionPackageRefSchema.nullable(),
-  requirements: z
-    .array(
-      CatalogCollectionRequirementSchema.extend({
-        status: z.enum(['available', 'missing', 'unknown']),
-      }),
-    )
-    .max(1024),
+  /**
+   * As published, which caps neither a name nor a setup hint nor their count
+   * (PR 4b-1b); the desktop host refuses an answer past the relay reply cap.
+   */
+  requirements: z.array(
+    CatalogCollectionRequirementSchema.extend({
+      displayName: z.string().min(1),
+      setupHint: z.string(),
+      status: z.enum(['available', 'missing', 'unknown']),
+    }),
+  ),
 });
 
 export const CatalogCollectionGetParamsSchema = z.discriminatedUnion('read', [
@@ -312,6 +320,31 @@ export const CatalogCollectionInvocationDismissalSchema = z.strictObject({
   provider: z.enum(['claude', 'codex']),
   token: z.string().min(1).max(512),
 });
+export type CatalogCollectionInvocationDismissal = z.output<
+  typeof CatalogCollectionInvocationDismissalSchema
+>;
+
+/**
+ * The collection document the caller built, as the share channels send it
+ * today: the raw document bytes the hosted service hashes, and the inline
+ * custom skills its draft items name.
+ */
+export const CatalogCollectionShareDocumentSchema = z.strictObject({
+  rawCollection: z.string().min(1).max(MAX_SHARED_COLLECTION_BYTES),
+  customSkills: z
+    .array(
+      z.strictObject({
+        clientKey: IdSchema,
+        name: IdSchema,
+        rawSkill: z.string().min(1).max(MAX_SHARED_SKILL_BYTES),
+      }),
+    )
+    .max(1024)
+    .optional(),
+});
+export type CatalogCollectionShareDocument = z.output<
+  typeof CatalogCollectionShareDocumentSchema
+>;
 
 const importFields = {
   kind: z.literal('collection'),
@@ -327,9 +360,20 @@ export const CatalogCollectionImportParamsSchema = z.discriminatedUnion(
       mode: z.literal('analyze'),
       entryId: CatalogCollectionEntryIdSchema,
       expectedRevision: CatalogCollectionRevisionSchema,
+      /**
+       * The document a share of this analysis will publish, byte for byte:
+       * the hosted service binds the package to these bytes. Its items must
+       * name the collection's stored members.
+       */
+      document: CatalogCollectionShareDocumentSchema,
+      /**
+       * Left out, the analysis applies the collection's saved dismissals; a
+       * list, an empty one included, replaces them.
+       */
       dismissedInvocations: z
         .array(CatalogCollectionInvocationDismissalSchema)
-        .max(256),
+        .max(256)
+        .optional(),
     }),
     /** Upload a ready analysis's package, with the optional resources chosen. */
     z.strictObject({
@@ -397,8 +441,15 @@ export const CatalogCollectionAnalysisSchema = z.strictObject({
   requirements: z.array(CatalogCollectionRequirementSchema).max(1024),
   /** Members the package cannot carry; they stay in the collection. */
   unpackageableMemberLabels: z.array(z.string().max(512)).max(1024),
+  /** The dismissals this analysis applied, from those the request sent. */
+  dismissedInvocations: z
+    .array(CatalogCollectionInvocationDismissalSchema)
+    .max(256),
   expiresAt: TimestampSchema,
 });
+export type CatalogCollectionAnalysis = z.output<
+  typeof CatalogCollectionAnalysisSchema
+>;
 
 export const CatalogCollectionImportResultSchema = z.discriminatedUnion(
   'mode',

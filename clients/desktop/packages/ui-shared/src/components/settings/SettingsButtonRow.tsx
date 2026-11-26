@@ -1,7 +1,7 @@
-import { ControlButton } from '../Button';
+import { ControlButton } from '../../primitives/Button';
 import type { ButtonHTMLAttributes, JSX, ReactNode } from 'react';
 import { CheckIcon, ChevronRightIcon } from '../../icons/AppIcons';
-import { Tooltip } from '../Tooltip';
+import { Tooltip } from '../../primitives/Tooltip';
 
 /**
  * A Settings row that is itself the target: it opens the item it names (an

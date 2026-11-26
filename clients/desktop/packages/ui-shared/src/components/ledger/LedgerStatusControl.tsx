@@ -1,6 +1,6 @@
 'use client';
 
-import { ControlButton } from '../Button';
+import { ControlButton } from '../../primitives/Button';
 import { useId, useRef, useState, type JSX, type MouseEvent } from 'react';
 import type { LedgerStatus } from '@canopy/protocol/canopy-core';
 import {
@@ -19,7 +19,7 @@ import {
   PickerTrigger,
   PickerTriggerChevron,
   type PickerTriggerVariant,
-} from '../PickerMenu';
+} from '../../primitives/PickerMenu';
 import { ChevronDownIcon } from '../../icons/AppIcons';
 import { LedgerStatusLabel } from './LedgerStatusLabel';
 import { LedgerStatusGlyph } from './LedgerStatusPill';

@@ -335,7 +335,8 @@ function describeSkip(run: ScheduledActivityRun): string {
     case 'already_running':
       return 'The previous run was still going, so this one was skipped';
     case undefined:
-      return 'Skipped, so nothing ran';
+      // CAN-5782: a schedule the workflow refused records why as its error.
+      return run.error ?? 'Skipped, so nothing ran';
   }
 }
 

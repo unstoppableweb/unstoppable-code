@@ -1,4 +1,5 @@
 import { WORKFLOW_ITEM_LABEL } from '@canopy/ui-shared/lib/workflow-labels';
+import { MODEL_PRESET_LABEL } from '@canopy/ui-shared/lib/model-preset-labels';
 import type { PublicShareInstalledTarget } from './usePublicShareLanding';
 
 /**
@@ -15,7 +16,7 @@ const ENTITY_TITLE: Readonly<
   skill: 'Skill',
   plugin: 'Plugin',
   pipeline: WORKFLOW_ITEM_LABEL,
-  agent: 'Agent',
+  agent: MODEL_PRESET_LABEL,
   collection: 'Collection',
   workspace: 'Project',
 };

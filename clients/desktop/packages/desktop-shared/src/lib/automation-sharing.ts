@@ -40,13 +40,10 @@ import type {
   PipelinePackageRef,
   PipelineShareInstallPin,
 } from '@canopy/protocol/pipelines';
-import {
-  LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
-  rawPipelineDeclaresLocalOnlyTrigger,
-} from '@canopy/pipeline-interop/portability';
 import type { AutomationAction, ScheduledActivity } from '../types';
 import { hasAnySelections } from '../types';
 import { AUTOMATION_IF_CMD_OUTPUT_VAR_NAMES } from './automations';
+import { SHARED_CONNECTION_WRITES_INPUT } from './chat-automation-conversion';
 import {
   sessionSharedActionType,
   type AutomationSessionTargetKind,
@@ -88,7 +85,6 @@ export const AUTOMATION_SHARE_BLOCK_REASONS = [
   'pipeline_target_unresolved',
   'pipeline_dependencies_stale',
   'installed_pipeline_dependencies',
-  'pipeline_local_only_trigger',
   'local_agent_unavailable',
   'agent_model_required',
 ] as const;
@@ -113,6 +109,7 @@ export const AUTOMATION_SHARE_NOTICES = [
   'cowork_project_binding_stripped',
   'approval_mode_stripped',
   'plan_mode_stripped',
+  'shared_connection_writes_stripped',
 ] as const;
 
 export type AutomationShareNotice = (typeof AUTOMATION_SHARE_NOTICES)[number];
@@ -247,7 +244,6 @@ export const AUTOMATION_SHARE_BLOCK_MESSAGES: Record<
     'This automation changed after its workflows were checked. Check them again before sharing.',
   installed_pipeline_dependencies:
     'This automation was installed from a share with its workflows, so it cannot be shared again. Share the original instead.',
-  pipeline_local_only_trigger: LOCAL_ONLY_PIPELINE_TRIGGER_MESSAGE,
   agent_model_required:
     'Choose an explicit model for this Agent before sharing the automation (agent@model).',
   local_agent_unavailable:
@@ -287,6 +283,8 @@ export const AUTOMATION_SHARE_NOTICE_MESSAGES: Record<
     'The approval mode stays on this machine. Recipients get their own default.',
   plan_mode_stripped:
     'Plan mode stays on this machine. Recipients get a copy that runs without planning first.',
+  shared_connection_writes_stripped:
+    'The write actions this automation may take on shared connections stay on this machine. Recipients choose their own, and until they do, scheduled runs can only read.',
 };
 
 export interface ResolvedAutomationPlugins {
@@ -642,15 +640,6 @@ export function buildSharedAutomationDocument(
   if ((activity.installedFrom?.pipelineDependencies?.length ?? 0) > 0) {
     return { ok: false, reasons: ['installed_pipeline_dependencies'] };
   }
-  // The targeted pipeline's YAML travels inline; one that declares
-  // `workflow` can't leave this machine yet (CAN-5782).
-  if (
-    options.pipelineRawContent !== undefined &&
-    rawPipelineDeclaresLocalOnlyTrigger(options.pipelineRawContent)
-  ) {
-    return { ok: false, reasons: ['pipeline_local_only_trigger'] };
-  }
-
   const reasons: AutomationShareBlockReason[] = [];
   const notices: AutomationShareNotice[] = [];
   let sharedAction: SharedAutomationAction | null = null;
@@ -721,6 +710,11 @@ export function buildSharedAutomationDocument(
     // copy follows their own default instead of a mode someone else picked.
     if (action.approvalMode !== undefined) {
       notices.push('approval_mode_stripped');
+    }
+    // The writes a scheduled run may take never travel (CAN-6252): each
+    // person chooses what their own runs may change.
+    if (action.sharedConnectionWrites !== undefined) {
+      notices.push('shared_connection_writes_stripped');
     }
     // Only the worktree_prompt wire shape has a planMode field, so a
     // plan-only App Advisor or Cowork prompt reaches recipients as one that
@@ -874,7 +868,15 @@ export function buildSharedAutomationDocument(
     if (isNonEmptyRecord(action.pluginCollectionPreferences)) {
       notices.push('plugin_collection_preferences_stripped');
     }
-    const inputKeys = Object.keys(action.inputs ?? {}).sort();
+    // A converted chat automation's allowed writes (CAN-6252) aren't an
+    // input a recipient supplies: they choose their own.
+    const allInputKeys = Object.keys(action.inputs ?? {});
+    const inputKeys = allInputKeys
+      .filter((key) => key !== SHARED_CONNECTION_WRITES_INPUT)
+      .sort();
+    if (inputKeys.length < allInputKeys.length) {
+      notices.push('shared_connection_writes_stripped');
+    }
     if (inputKeys.length > 0) {
       notices.push('input_values_stripped');
     }

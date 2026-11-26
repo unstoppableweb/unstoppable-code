@@ -10,7 +10,6 @@ import {
   Button,
   DialogFormField,
   DialogModal,
-  LoadingButton,
   Notice,
   SettingsSelect,
 } from '@canopy/ui-shared/components';
@@ -125,7 +124,7 @@ export function CloudModelReplacementDialog({
           >
             Cancel
           </Button>
-          <LoadingButton
+          <Button
             size="compact"
             variant="primary"
             loading={busy}
@@ -136,7 +135,7 @@ export function CloudModelReplacementDialog({
             data-testid={CLOUD_MODEL_DIALOG_TEST_IDS.confirm}
           >
             Use these models
-          </LoadingButton>
+          </Button>
         </>
       }
     >

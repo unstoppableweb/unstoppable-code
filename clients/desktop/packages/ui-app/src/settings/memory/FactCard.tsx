@@ -8,7 +8,7 @@ import type {
 import { withPrivacyClass } from '../account/privacy-class';
 import { useSettingsPrivacy } from '../host';
 import { Stack, Surface } from '@canopy/ui-shared/components';
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 
 interface FactCardProps {
   fact: ExplorerFact | ExplorerRankedFact;

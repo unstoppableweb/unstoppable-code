@@ -1,6 +1,6 @@
 import type { AppError } from '@canopy/protocol/app-errors';
 import type { FeedbackReportTelemetry } from '@canopy/protocol/feedback-report';
-import type { NoticeIntent } from '../components/Notice';
+import type { NoticeIntent } from '../primitives/Notice';
 import { toastStackLifetimeMs } from './toast-lifetime';
 
 export type ToastType = 'error' | 'info' | 'success' | 'warning';

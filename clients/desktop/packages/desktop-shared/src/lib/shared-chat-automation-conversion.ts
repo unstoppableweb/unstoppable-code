@@ -308,8 +308,12 @@ export async function convertSharedChatAutomation(
       : refuse(convertible.reason);
 
   // 2. Its workflow, as the chat automation converter writes it.
+  // CAN-5782: Manual alone, which curated records still require
+  // (curated publication of Workflow is deferred). An installed copy stays
+  // Manual-only until a person turns Workflow on.
   const converted = chatAutomationToPipeline(chat, {
     portable: plugins.portable,
+    triggers: ['dispatch'],
   });
   const rawPipeline = serializePipelineDocument(converted.pipeline);
   const pipelineContentHash = await hashPipelineDocumentYaml(rawPipeline);

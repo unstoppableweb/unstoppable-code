@@ -1,6 +1,6 @@
 'use client';
 
-import { Stack } from '@canopy/ui-shared/components/Stack';
+import { Stack } from '@canopy/ui-shared/primitives/Stack';
 import {
   useCallback,
   useEffect,

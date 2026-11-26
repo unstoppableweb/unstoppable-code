@@ -1,4 +1,4 @@
-import { Count } from '@canopy/ui-shared/components/Badge';
+import { Count } from '@canopy/ui-shared/primitives/Badge';
 import { useCallback, useEffect, useState, type JSX } from 'react';
 import { WORKTREE_UNIT_LABEL_PLURAL } from '@canopy/protocol';
 import type { SidebarItem, WorktreeData } from '@canopy/desktop-shared/types';

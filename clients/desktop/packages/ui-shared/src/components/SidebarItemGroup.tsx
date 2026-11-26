@@ -1,6 +1,6 @@
 'use client';
 
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import {
   useId,
   useEffect,
@@ -36,23 +36,23 @@ import {
   ActionMenuItems,
   ActionMenuRowStyle,
   type ActionMenuItem,
-} from './ActionMenuItems';
+} from '../primitives/ActionMenuItems';
 import { ColorSwatchPicker, type ColorSwatchOption } from './ColorSwatchPicker';
-import { DisclosureChevron, DisclosureToggle } from './Disclosure';
+import { DisclosureChevron, DisclosureToggle } from '../primitives/Disclosure';
 import {
   DropdownMenuDivider,
   DropdownMenuItem,
   DropdownMenuLabel,
-} from './DropdownMenu';
-import { FloatingMenu } from './FloatingMenu';
-import { TextInput } from './Field';
+} from '../primitives/DropdownMenu';
+import { FloatingMenu } from '../primitives/FloatingMenu';
+import { TextInput } from '../primitives/Field';
 import { RailIconButton } from './RailIconButton';
 import {
   SIDEBAR_ROW_TRAILING_CELL_CLASSNAME,
   SIDEBAR_ROW_LEADING_SLOT_CLASSNAME,
-} from './sidebar-item-classes';
-import { Tooltip } from './Tooltip';
-import { ToggleSwitch } from './ToggleSwitch';
+} from '../primitives/sidebar-item-classes';
+import { Tooltip } from '../primitives/Tooltip';
+import { ToggleSwitch } from '../primitives/ToggleSwitch';
 import { useRowToggleClick } from './settings/SettingsRows';
 import { useSidebarHeaderRest } from '../lib/useSidebarHeaderRest';
 

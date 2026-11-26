@@ -20,9 +20,9 @@ import {
   groupLedgerThreads,
   type LedgerThread,
 } from '../../lib/ledger-threads';
-import { Button } from '../Button';
-import { BusyLabel } from '../BusyLabel';
-import { ErrorBanner } from '../StatusBlocks';
+import { Button } from '../../primitives/Button';
+import { BusyLabel } from '../../primitives/BusyLabel';
+import { ErrorBanner } from '../../primitives/StatusBlocks';
 import { LedgerEntryThread } from './LedgerEntryThread';
 import type { LedgerEntryPostContext } from './LedgerEntryPost';
 import type { LedgerEntryRowDetails } from './ledger-entry-attribution';

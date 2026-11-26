@@ -1,9 +1,9 @@
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 import type { JSX } from 'react';
 
 import { BranchIcon, CloseMediumIcon, WarningIcon } from '../icons/AppIcons';
-import { LoadingSpinner } from './LoadingSpinner';
-import { Tooltip } from './Tooltip';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
+import { Tooltip } from '../primitives/Tooltip';
 
 /**
  * Where a pasted link would send the draft. Hosts decide the state; this
@@ -55,7 +55,7 @@ export function LinkTargetChip({
       data-status={status}
       role="group"
       aria-label="Link destination"
-      className={`flex min-w-0 max-w-full flex-wrap items-center gap-1.5 rounded-2xl px-2.5 py-1 text-xs ring-1 ring-inset pointer-coarse:gap-y-4 ${
+      className={`flex min-w-0 max-w-full flex-wrap items-center gap-1.5 rounded-2xl px-2.5 py-1 text-xs ring-1 ring-inset pointer-coarse:gap-x-4 pointer-coarse:gap-y-4 ${
         status === 'blocked'
           ? 'fg-primary ring-line-base bg-subtle'
           : 'fg-secondary ring-line-base'
@@ -105,7 +105,6 @@ export function LinkTargetChip({
             variant="ghost"
             size="sm"
             iconOnly
-            touchArea="contained"
             data-testid={`${testId}-dismiss`}
             aria-label={dismissLabel}
             onClick={onDismiss}

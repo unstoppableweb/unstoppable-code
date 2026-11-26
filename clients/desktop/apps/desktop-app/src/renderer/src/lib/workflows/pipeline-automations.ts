@@ -385,3 +385,27 @@ export function pipelineUserCount(
     (pipeline.workflowCallers ?? 0)
   );
 }
+
+/**
+ * Whether the shared-pipeline notice offers Duplicate (CAN-4224 phase 07):
+ * only where main would accept the copy. Main refuses a workflow page that
+ * an install with a capability package owns, and that owner is among the
+ * page's schedules, so the offer waits until the automations have loaded.
+ */
+export function sharedPipelineDuplicateOffered(
+  pipeline: PipelineInfo,
+  {
+    activities,
+    activitiesLoaded,
+  }: {
+    readonly activities: readonly ScheduledActivity[];
+    readonly activitiesLoaded: boolean;
+  },
+): boolean {
+  if (pipeline.source !== 'user' || !activitiesLoaded) return false;
+  return !activities.some(
+    (activity) =>
+      activity.workflowSchedule?.pipelineId === pipeline.id &&
+      activity.installedFrom?.capabilityPackage !== undefined,
+  );
+}

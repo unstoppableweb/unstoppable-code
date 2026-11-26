@@ -78,7 +78,9 @@ export function useAutoArchiveNotifications(): void {
       if (notification.status === 'failure') {
         addFailureToast({
           message: text,
-          error: unclassifiedToastError(),
+          error: unclassifiedToastError(
+            notification.appError ?? notification.error,
+          ),
           origin: worktreeToastOrigin(
             notification.workspaceId,
             notification.targetId,

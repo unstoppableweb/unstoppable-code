@@ -52,6 +52,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { isNativeError } from 'node:util/types';
 import type * as ClientModule from '@canopy/desktop-instrumentation/client';
+import type { UsageDataPolicy } from '../../lib/usage-data-policy';
 import type { PostHogRuntimeFlags } from '@canopy/desktop-instrumentation/types';
 import type * as ElectronMainModule from '@canopy/desktop-instrumentation/electron/main';
 
@@ -313,7 +314,11 @@ describe('PostHog main gating by usage-data policy', () => {
   }
 
   it.each([
-    ['no_billing_source', 'external.ai_credits_required', 'Out of AI Credits'],
+    [
+      'no_billing_source',
+      'external.ai_credits_required',
+      "You're out of credits",
+    ],
     [
       'credentials_unavailable',
       'external.sign_in_required',
@@ -322,7 +327,7 @@ describe('PostHog main gating by usage-data policy', () => {
     [
       'session_budget_exhausted',
       'external.ai_credits_budget_exhausted',
-      'session has used',
+      'reached its credits limit',
     ],
     [
       'future_private_code',
@@ -1821,6 +1826,108 @@ describe('PostHog main gating by usage-data policy', () => {
         app_brand: 'canopy',
         release_channel: 'rc',
       },
+    });
+  });
+
+  describe('before the first-run legal consent', () => {
+    async function installGateOnPendingPolicy(): Promise<{
+      policy: UsageDataPolicy;
+      uninstall: () => void;
+    }> {
+      const policyModule = await import('../../lib/usage-data-policy');
+      const gate = await import('../../lib/posthog-operation-capture-gate');
+      // A fresh profile: readable default preferences, consent not recorded.
+      policyModule.__resetUsageDataPolicyForTests({
+        prohibitions: new Map(),
+      });
+      const policy = policyModule.getUsageDataPolicy();
+      policy.setWorkspaceContext({ kind: 'personal' });
+      const flags = getDefaultFeatureFlagSnapshot('ready');
+      flags.values[CLIENT_FEATURE_FLAGS.canopyPostHogCaptureEnabled.key] = true;
+      const uninstall = gate.installPostHogOperationCaptureGate({
+        getSnapshot: () => flags,
+        onSnapshotChanged: (): (() => void) => (): void => undefined,
+      });
+      await main.initializePostHogMain(
+        () => Promise.resolve(ANONYMOUS_ID),
+        undefined,
+        getInstallLaunch,
+      );
+      return { policy, uninstall };
+    }
+
+    const ACCEPTED = { accepted: true, analyticsDeclinedAtOnboarding: false };
+
+    it('sends nothing while consent is pending, and nothing captured then after accept', async () => {
+      const { policy, uninstall } = await installGateOnPendingPolicy();
+      try {
+        expect(policy.isConsentPending()).toBe(true);
+        main.succeedDesktopOperation('canopy.chat_turn');
+        main.captureDesktopInstrumentationError(new Error('before consent'));
+        const pending = captured();
+        expect(
+          pending.filter(({ event }) => event === 'desktop:app_start'),
+        ).toHaveLength(0);
+        await expect(deliver(pending)).resolves.toEqual([]);
+
+        policy.setStored(policy.getUsageDataPolicySnapshot().preferences, {
+          ...ACCEPTED,
+        });
+
+        // Whatever was held while pending never goes out after accept.
+        await expect(deliver(pending)).resolves.toEqual([]);
+        const launches = captured()
+          .slice(pending.length)
+          .filter(({ event }) => event === 'desktop:app_start');
+        expect(launches).toHaveLength(1);
+        await expect(deliver(launches)).resolves.toEqual(['desktop:app_start']);
+      } finally {
+        uninstall();
+      }
+    });
+
+    it('never sends desktop:app_start when the accepting commit turns Usage analytics off', async () => {
+      const { policy, uninstall } = await installGateOnPendingPolicy();
+      try {
+        const before = captured().length;
+        // One atomic commit: consent and the declined choice together.
+        policy.setStored(
+          {
+            ...policy.getUsageDataPolicySnapshot().preferences,
+            productAnalytics: false,
+            sessionReplay: false,
+          },
+          { accepted: true, analyticsDeclinedAtOnboarding: true },
+        );
+        main.succeedDesktopOperation('canopy.chat_turn');
+        const after = captured().slice(before);
+        expect(
+          after.filter(({ event }) => event === 'desktop:app_start'),
+        ).toHaveLength(0);
+        await expect(deliver(after)).resolves.toEqual([]);
+        expect(policy.wasAnalyticsDeclinedAtOnboarding()).toBe(true);
+      } finally {
+        uninstall();
+      }
+    });
+
+    it('stops sending when consent is lost mid-session', async () => {
+      const { policy, uninstall } = await installGateOnPendingPolicy();
+      try {
+        const preferences = policy.getUsageDataPolicySnapshot().preferences;
+        policy.setStored(preferences, { ...ACCEPTED });
+        policy.setStored(preferences, {
+          accepted: false,
+          analyticsDeclinedAtOnboarding: false,
+        });
+        expect(policy.isConsentPending()).toBe(true);
+        const before = captured().length;
+        main.succeedDesktopOperation('canopy.chat_turn');
+        main.captureDesktopInstrumentationError(new Error('after reset'));
+        await expect(deliver(captured().slice(before))).resolves.toEqual([]);
+      } finally {
+        uninstall();
+      }
     });
   });
 

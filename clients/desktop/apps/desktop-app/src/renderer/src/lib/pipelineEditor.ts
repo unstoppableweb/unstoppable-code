@@ -1,4 +1,5 @@
 import { parsePipelineAgentAliasRoute } from '@canopy/pipeline-interop/agent-alias-model';
+import { modelPresetErrorMessage } from './modelPresetErrors';
 import type { Pipeline } from '@canopy/execution-engine/types/pipeline';
 import {
   getJobOrder,
@@ -131,7 +132,8 @@ export function renameJobId(
       if (job.needs === oldJobId) {
         newJobs[key] = { ...job, needs: newJobId };
       }
-    } else {
+    } else if (Array.isArray(job.needs)) {
+      // Anything else is left for draft validation to report.
       const updated: string[] = job.needs.map((dep: string): string =>
         dep === oldJobId ? newJobId : dep,
       );
@@ -269,14 +271,14 @@ export function getDraftValidation(pipeline: Pipeline): ValidationIssue[] {
           issues.push({
             type: 'error',
             path: aliasPath,
-            message: parsed.error,
+            message: modelPresetErrorMessage(parsed.error),
           });
         }
         if (!defaults.agent_id || defaults.agent_id.trim() === '') {
           issues.push({
             type: 'error',
             path: aliasPath,
-            message: `Model alias "${id || `#${i + 1}`}" agent default must reference an agent`,
+            message: `Choose a default model preset for alias "${id || `#${i + 1}`}".`,
           });
         }
       } else if (!defaults.base || defaults.base.trim() === '') {

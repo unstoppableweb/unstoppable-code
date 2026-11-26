@@ -10,6 +10,7 @@ import { worktreeRecoveryResultCopy } from '@canopy/ui-shared/lib/worktree-disca
 import type {
   WorktreeRecoveryFinishResult,
   WorktreeRecoveryResolveResult,
+  WorktreeRecoverySetAsideResult,
 } from '@canopy/protocol/canopy-core';
 import { SpecimenCell, SpecimenPanel } from './componentsLabParts';
 import {
@@ -20,16 +21,20 @@ import {
   recoveryHold,
   recoveryProjectName,
   recoveryProjects,
+  setAsideRecovery,
   type ArchiveListCase,
   type RecoveryAction,
 } from './componentsLabArchiveRecoveryFixtures';
 
 const noop = (): void => undefined;
 type RecoveryDialogProps = ComponentProps<typeof WorktreeRecoveryDialog>;
-type Result = WorktreeRecoveryFinishResult | WorktreeRecoveryResolveResult;
+type Result =
+  | WorktreeRecoveryFinishResult
+  | WorktreeRecoveryResolveResult
+  | WorktreeRecoverySetAsideResult;
 type DialogCase = {
   readonly label: string;
-  readonly action: RecoveryAction;
+  readonly action: RecoveryAction | 'set-aside';
   readonly busy?: RecoveryDialogProps['busy'];
   readonly error?: RecoveryDialogProps['error'];
   readonly outcome?: Result;
@@ -38,9 +43,23 @@ type DialogCase = {
 };
 
 function result(
-  action: RecoveryAction,
+  action: RecoveryAction | 'set-aside',
   operationId = archiveOperationId,
 ): Result {
+  if (action === 'set-aside')
+    return {
+      status: 'set-aside',
+      operationId,
+      quarantinedNames: [`20261118T120000000Z-1a2b3c4d-${operationId}.json`],
+      putBackCopies: [
+        {
+          quarantinedName: `20261118T120000000Z-1a2b3c4d-${operationId}.json`,
+          originalName: `${operationId}.json`,
+        },
+      ],
+      journalLocationLabel: '<data>/w5/destructive-lifecycles',
+      quarantineLocationLabel: '<data>/w5/quarantined-lifecycles',
+    };
   return action === 'finish'
     ? {
         status: 'finished',
@@ -177,6 +196,44 @@ const dialogCases: readonly DialogCase[] = [
     action: 'keep-worktree',
     canResolve: false,
   },
+  { label: 'set-aside: offer', action: 'set-aside' },
+  {
+    label: 'set-aside: busy and disabled',
+    action: 'set-aside',
+    busy: 'setAside',
+  },
+  {
+    label: 'set-aside: result',
+    action: 'set-aside',
+    outcome: result('set-aside'),
+  },
+  {
+    label: 'set-aside: refused',
+    action: 'set-aside',
+    outcome: {
+      status: 'refused',
+      operationId: archiveOperationId,
+      check: 'revision-changed',
+    },
+  },
+  {
+    label: 'set-aside: reservation cleanup unconfirmed',
+    action: 'set-aside',
+    outcome: {
+      status: 'interrupted',
+      operationId: archiveOperationId,
+      check: 'unconfirmed',
+      reservation: {
+        quarantinedName: `set-aside-${'a'.repeat(64)}-${'b'.repeat(64)}-20261118T120000000Z-1a2b3c4d-${archiveOperationId}.json`,
+        quarantineLocationLabel: '<data>/w5/quarantined-lifecycles',
+      },
+    },
+  },
+  {
+    label: 'set-aside: unconfirmed',
+    action: 'set-aside',
+    error: 'unconfirmed',
+  },
 ];
 
 /** Real dialogs, fixture-only callbacks; opening a case focuses its dialog. */
@@ -201,8 +258,20 @@ export function WorktreeRecoverySpecimen(): JSX.Element {
       {selected ? (
         <WorktreeRecoveryDialog
           name={selected.name ?? 'Worktree'}
-          recovery={archiveRecovery(selected.action)}
+          recovery={
+            selected.action === 'set-aside'
+              ? setAsideRecovery()
+              : archiveRecovery(selected.action)
+          }
           canResolve={selected.canResolve ?? true}
+          canSetAside
+          onSetAside={() =>
+            setSelected({
+              ...selected,
+              outcome: result('set-aside'),
+              error: null,
+            })
+          }
           busy={selected.busy ?? null}
           error={selected.error ?? null}
           unconfirmedAction={
@@ -317,6 +386,10 @@ export function ArchiveRecoveryListSpecimen(): JSX.Element {
           name="Unlisted worktree"
           recovery={review}
           canResolve
+          canSetAside
+          onSetAside={() =>
+            setReviewOutcome(result('set-aside', review.diagnosis?.operationId))
+          }
           busy={null}
           error={null}
           outcome={reviewOutcome}

@@ -1,4 +1,4 @@
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 /**
  * Left-nav entry point for an overview page: a workspace's "Archived and
  * deleted" overview, and the recipient's "Past shares". Pure and
@@ -10,7 +10,7 @@ import { ArrowUpRight } from '../icons/AppIcons';
 import {
   SIDEBAR_ROW_LEADING_SLOT_CLASSNAME,
   SIDEBAR_ROW_TRAILING_CELL_CLASSNAME,
-} from './sidebar-item-classes';
+} from '../primitives/sidebar-item-classes';
 
 export interface SidebarOverviewNavLinkProps {
   /** The page the link opens, as it reads in the sidebar. */

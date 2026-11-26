@@ -1,8 +1,9 @@
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type { JSX } from 'react';
-import { ChoiceList, ChoiceListRow } from './ChoiceList';
+import { ChoiceList, ChoiceListRow } from '../primitives/ChoiceList';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
-import { SegmentedControl } from './SegmentedControl';
+import { SegmentedControl } from '../primitives/SegmentedControl';
+import { SettingsRowsRow } from './settings/SettingsRows';
 
 const ACCESS_LABEL = `Allow project agents to use ${ORCHESTRATOR_LABEL} chats and create automations`;
 
@@ -153,20 +154,16 @@ export function AppAdvisorProjectAgentAccessControl({
       data-testid={testIdPrefix}
       aria-busy={saving || undefined}
     >
-      <div className="flex min-h-7 items-center justify-between gap-6">
-        <div className="min-w-0 flex-1 flex flex-col gap-0.5">
-          <div
-            id={`${testIdPrefix}-label`}
-            className="block text-s font-medium fg-primary"
-          >
-            {ACCESS_LABEL}
-          </div>
-          <div className="text-xs text-pretty fg-secondary">
+      <SettingsRowsRow
+        label={ACCESS_LABEL}
+        labelId={`${testIdPrefix}-label`}
+        description={
+          <>
             Controls whether code and cowork agents can use {ORCHESTRATOR_LABEL}{' '}
             tools and create automations that prompt {ORCHESTRATOR_LABEL}.
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
+          </>
+        }
+        control={
           <SegmentedControl<AppAdvisorProjectAgentAccessControlMode>
             value={value.mode}
             options={[
@@ -192,10 +189,11 @@ export function AppAdvisorProjectAgentAccessControl({
             disabled={disabled || saving}
             dataTestId={`${testIdPrefix}-mode`}
           />
-        </div>
-      </div>
+        }
+      />
       <div
         className="text-xs fg-secondary"
+        aria-live="polite"
         data-testid={`${testIdPrefix}-mode-description`}
       >
         {MODE_DESCRIPTIONS[value.mode]}

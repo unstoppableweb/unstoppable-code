@@ -2,7 +2,7 @@ import type { useActivityStore as ActivityStoreHook } from '../../renderer/src/s
 import type { useProjectsStore as ProjectsStoreHook } from '../../renderer/src/stores/projectsStore';
 // Real Git and registered activity IPC, through the production renderer refresh
 // entry points and store. Only IPC registration and unrelated host APIs are fake.
-jest.mock('@canopy/ui-shared/components/Skeleton', () => ({
+jest.mock('@canopy/ui-shared/primitives/Skeleton', () => ({
   Skeleton: (): null => null,
 }));
 import { writeFileSync } from 'node:fs';

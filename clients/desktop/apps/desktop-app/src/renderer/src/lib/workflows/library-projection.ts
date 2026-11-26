@@ -770,22 +770,32 @@ export function workflowDeleteMessage({
   scheduleCount,
   running,
   callers,
+  deletesWorkflow = false,
 }: {
   readonly scheduleCount: number;
   readonly running: boolean;
   readonly callers: number;
+  /**
+   * The row is a workflow's (`workflowSchedule`), so Delete removes the
+   * workflow with its schedules, even its only one (CAN-5782).
+   */
+  readonly deletesWorkflow?: boolean;
 }): string {
   const removes =
     scheduleCount > 1
       ? `Deletes the workflow and its ${String(scheduleCount)} schedules.`
-      : running
-        ? 'A run is in progress and will be stopped.'
+      : deletesWorkflow
+        ? 'Deletes the workflow and its schedule.'
         : null;
+  const stops =
+    scheduleCount <= 1 && running
+      ? 'A run is in progress and will be stopped.'
+      : null;
   const breaks =
     callers > 0
       ? `${String(callers)} ${callers === 1 ? 'workflow that calls' : 'workflows that call'} it will fail.`
       : null;
-  return [removes, breaks, 'This cannot be undone.']
+  return [removes, stops, breaks, 'This cannot be undone.']
     .filter((sentence) => sentence !== null)
     .join(' ');
 }

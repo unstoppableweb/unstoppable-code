@@ -2,7 +2,6 @@ import { isAbsolute, normalize, sep } from 'node:path';
 import { types } from 'node:util';
 import type { z } from 'zod';
 import { CanopyOperationError } from '@canopy/core-runtime';
-import { isSafePortableRelativePath } from '@canopy/protocol/safe-relative-path';
 import {
   PLAN_ERROR_CODES,
   PLAN_SOURCES,
@@ -13,13 +12,18 @@ import {
   type PlanSource,
   type PlanUpdateParamsSchema,
 } from '@canopy/protocol/canopy-core';
-import type {
-  CreateTrackedPlanRequest,
-  ImportTrackedPlanRequest,
-  TrackedPlanData,
-  UpdateTrackedPlanRequest,
+import {
+  isTrackedPlanData,
+  type CreateTrackedPlanRequest,
+  type ImportTrackedPlanRequest,
+  type TrackedPlanData,
+  type UpdateTrackedPlanRequest,
 } from '@canopy/desktop-shared/types';
-import { isTrackedPlanData } from '../lib/plan-persistence';
+import {
+  trackedPlanImportParams,
+  trackedPlanCreateParams,
+  trackedPlanUpdateParams,
+} from '@canopy/desktop-shared/lib/tracked-plan-params';
 
 const PLAN_SOURCE_NAMES: ReadonlySet<string> = new Set(PLAN_SOURCES);
 
@@ -66,23 +70,14 @@ export function writtenTrackedPlan(record: PlanRecord | null): TrackedPlanData {
   return plan;
 }
 
+/** A create the engine refuses for its source is refused before dispatch. */
 export function planCreateParams(
   scope: PlanScope,
   request: CreateTrackedPlanRequest,
 ): z.input<typeof PlanCreateParamsSchema> {
   return {
-    scope,
+    ...trackedPlanCreateParams(scope, request),
     source: knownSource(request.source),
-    content: request.content,
-    title: request.title,
-    planId: request.id,
-    proposalRequestId: request.proposalRequestId,
-    reviewStatus: request.reviewStatus,
-    linkedExecutionId: request.linkedExecutionId,
-    chatId: request.chatId,
-    sourceFilePath: request.sourceFilePath,
-    sourceRepoId: request.sourceRepoId,
-    initiationSource: request.initiationSource,
   };
 }
 
@@ -91,21 +86,10 @@ export function planUpdateParams(
   request: UpdateTrackedPlanRequest,
 ): z.input<typeof PlanUpdateParamsSchema> {
   return {
-    scope,
-    planId: request.planId,
-    proposalRequestId: request.proposalRequestId,
-    content: request.content,
-    title: request.title,
-    source:
-      request.source === undefined ? undefined : knownSource(request.source),
-    reviewStatus: request.reviewStatus,
-    linkedExecutionId: request.linkedExecutionId,
-    approvedAt: request.approvedAt,
-    dismissedAt: request.dismissedAt,
-    hidden: request.hidden,
-    chatId: request.chatId,
-    lastEditSource: request.lastEditSource,
-    initiationSource: request.initiationSource,
+    ...trackedPlanUpdateParams(scope, request),
+    ...(request.source === undefined
+      ? {}
+      : { source: knownSource(request.source) }),
   };
 }
 
@@ -117,29 +101,8 @@ export function planImportParams(
   scope: PlanScope,
   request: ImportTrackedPlanRequest & { filePath: string },
 ): z.input<typeof PlanImportParamsSchema> {
-  if (!request.repoId)
-    throw new Error(
-      'Plan import requires repoId; use WORKSPACE_ROOT_REPO_ID for the worktree root.',
-    );
-  if (isAbsolute(request.filePath))
-    throw new Error('Plan import paths must be relative to the worktree.');
-  // A portable path can't carry one, so a macOS name with a literal backslash
-  // is refused here with its own message rather than as invalid parameters.
-  if (request.filePath.includes('\\'))
-    throw new Error("Plan import paths can't contain a backslash.");
-  const path = normalize(request.filePath).split(sep).join('/');
-  if (path === '..' || path.startsWith('../'))
-    throw new Error('Plan import path must stay inside the worktree.');
-  // Any other shape core's portable path refuses (a drive-like prefix such as
-  // 'A: Plan.md', a trailing slash) gets a clear message, not invalid params.
-  if (!isSafePortableRelativePath(path))
-    throw new Error(
-      'Plan import paths must be plain relative paths inside the worktree.',
-    );
-  return {
-    scope,
-    repoId: request.repoId,
-    path,
-    initiationSource: request.initiationSource,
-  };
+  return trackedPlanImportParams(scope, request, {
+    isAbsolute,
+    normalize: (path) => normalize(path).split(sep).join('/'),
+  });
 }

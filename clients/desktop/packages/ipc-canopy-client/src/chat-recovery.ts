@@ -35,7 +35,11 @@ import { REMOTE_IPC_CHANNELS as C } from '@canopy/protocol/remote-control/channe
 import { isRemoteControlPlanReviewSource } from '@canopy/protocol/remote-control/shell';
 import type { ChannelClient } from './channel-client';
 import { anyReply, isRecord, reply } from './decoders';
-import type { WireChatCommandResult } from './wire';
+import type { PlanClient } from './ports';
+import type {
+  WireChatCommandResult,
+  WireUpdateTrackedPlanRequest,
+} from './wire';
 
 /** The worktree a chat command addresses. */
 interface CommandScope {
@@ -51,6 +55,8 @@ export interface ChatRecoveryDeps {
     target: CommandScope,
     command: Record<string, unknown>,
   ) => Promise<{ commandId: string; reply: WireChatCommandResult }>;
+  /** The host's own plan writes; absent, the tracked-plans channel. */
+  readonly plans?: PlanClient;
 }
 
 /**
@@ -292,20 +298,23 @@ export function createChatRecoveryHandlers(
     try {
       // 3. The tracked plan's review. Main links an implementation only to an
       // approved revision, so nothing is sent unless this applied.
-      const plan = await channels.invoke(
-        C.trackedPlansUpdate,
-        anyReply<unknown>(),
-        {
-          projectId: args.projectId,
-          worktreeId: args.worktreeId,
-          planId: approval.planId,
-          chatId: args.chatId,
-          initiationSource: 'user',
-          reviewStatus: 'approved',
-          approvedAt: deps.now(),
-          dismissedAt: null,
-        },
-      );
+      const review: WireUpdateTrackedPlanRequest = {
+        projectId: args.projectId,
+        worktreeId: args.worktreeId,
+        planId: approval.planId,
+        chatId: args.chatId,
+        initiationSource: 'user',
+        reviewStatus: 'approved',
+        approvedAt: deps.now(),
+        dismissedAt: null,
+      };
+      const plan: unknown = deps.plans
+        ? await deps.plans.update(review)
+        : await channels.invoke(
+            C.trackedPlansUpdate,
+            anyReply<unknown>(),
+            review,
+          );
       if (
         !isRecord(plan) ||
         plan.id !== approval.planId ||

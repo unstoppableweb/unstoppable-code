@@ -38,11 +38,7 @@ import type {
   CheckWorktreeRemovalAdmissionRequest,
   CheckWorktreeRemovalAdmissionResponse,
 } from '@canopy/desktop-shared/types';
-import { assertWorktreeCanBeRemoved } from '../agents/background-work';
-import {
-  assertNotSplitDestinationWorktreeClaimed,
-  assertNotSplitLocked,
-} from '../services/split-lock-service';
+import { assertWorktreeRemovalAdmitted } from './worktree-discard-admission';
 import { listArchivedContainerManifests } from './archived-containers';
 import { isWorktreeArchiveSourceUnavailable } from './archived-container-recovery';
 import { recordWorktreeCrudTelemetry } from './desktop-telemetry';
@@ -528,14 +524,11 @@ async function archiveWorktreeTransition(
   const admit = (check: () => void): void =>
     attempt ? attempt.validate(check) : check();
   admit(() => {
-    assertNotSplitLocked(workspaceId, worktreeId, 'archiving the worktree');
-    assertNotSplitDestinationWorktreeClaimed(
+    assertWorktreeRemovalAdmitted(
       workspaceId,
       worktreeId,
       'archiving the worktree',
     );
-    // Live delegates or close-blocking background work keep the worktree.
-    assertWorktreeCanBeRemoved(workspaceId, worktreeId);
   });
 
   // Archive journals may advance the row during teardown. The caller revision

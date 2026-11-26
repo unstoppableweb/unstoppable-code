@@ -1,5 +1,6 @@
 import type { WorkspaceKind } from '@canopy/ui-shared/components';
 import { WORKFLOW_TYPE_TAB_LABELS } from '@canopy/ui-shared/lib/workflow-labels';
+import { MODEL_PRESET_LABEL_PLURAL } from '@canopy/ui-shared/lib/model-preset-labels';
 
 /**
  * Every kind of result the search palette lists. A host lists the kinds it
@@ -110,7 +111,7 @@ export const SEARCH_PALETTE_SECTION_BY_KIND: Readonly<
     label: WORKFLOW_TYPE_TAB_LABELS.automation,
   },
   watcher: { id: 'watchers', label: 'Watchers' },
-  agent: { id: 'agents', label: 'Agents' },
+  agent: { id: 'agents', label: MODEL_PRESET_LABEL_PLURAL },
   plugin: { id: 'plugins', label: 'Plugins' },
   skill: { id: 'skills', label: 'Skills' },
   setting: { id: 'settings', label: 'Settings' },

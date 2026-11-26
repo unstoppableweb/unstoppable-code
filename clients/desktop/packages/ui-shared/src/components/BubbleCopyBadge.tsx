@@ -1,9 +1,12 @@
 import { useCallback, type JSX, type MouseEvent } from 'react';
 import { CheckIcon } from '../icons/CheckIcon';
 import { CopyIcon } from '../icons/CopyIcon';
-import { Button } from './Button';
-import { CopyStatusRegion, useAnnouncedCopy } from './copy-feedback';
-import { Tooltip } from './Tooltip';
+import { Button } from '../primitives/Button';
+import {
+  CopyStatusRegion,
+  useAnnouncedCopy,
+} from '../primitives/copy-feedback';
+import { Tooltip } from '../primitives/Tooltip';
 
 /**
  * The user bubble's copy badge name (CAN-5354). One word, like every copy

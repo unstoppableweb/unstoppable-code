@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 import { ExperimentIcon, WrenchIcon } from '../icons/AppIcons';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 
 /**
  * `dev` marks a development reference page that only dev and E2E builds show;

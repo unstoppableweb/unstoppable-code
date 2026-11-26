@@ -20,11 +20,11 @@ export const API_PIPELINE_TRIGGER_TYPES = [
 ] as const;
 
 /**
- * Trigger types a pipeline may declare to leave this machine: shares, curated
- * publication, capability packages and the Portal. `workflow` is readable and
- * runnable locally, but released desktops and web can't store it yet
- * (CAN-5782), so anything that carries a definition off this machine refuses
- * it.
+ * The triggers agents, the CLI, the Portal and the Run button start a
+ * pipeline from, and the ones a curated publication may declare. Shares,
+ * automation shares and capability packages carry `workflow` too (CAN-5782);
+ * a `workflow`-only pipeline is started only from its Workflow page or its
+ * schedules, and curated publication of it stays deferred.
  */
 export const PORTABLE_PIPELINE_TRIGGER_TYPES = [
   'dispatch',
@@ -203,6 +203,26 @@ export interface PipelineWorkflowPageInfo {
   agentGranted?: true;
   /** Present when the page has no schedules and kept the last one's values. */
   lastScheduleValues?: WorkflowScheduleValues;
+  /**
+   * CAN-5782: for a user pipeline whose only trigger is Workflow, whether a
+   * person approved its saved content for timed runs, and what an
+   * **Approve for schedules** request names: the stored revision, the
+   * digest of its content and the package it runs with (`null` for none).
+   */
+  scheduleApproval?: PipelineScheduleApprovalFacts;
+}
+
+/** What a workflow page's **Approve for schedules** sees (CAN-5782). */
+export interface PipelineScheduleApprovalFacts {
+  approved: boolean;
+  revision: number;
+  contentDigest: string;
+  packageDigest: string | null;
+  /**
+   * Its schedules run it with a package an automation install brought,
+   * which an approval can't cover yet: they need a Manual trigger.
+   */
+  automationPackage?: true;
 }
 
 /**
@@ -253,16 +273,22 @@ export interface PipelineInfo extends PipelineIndexEntry {
   /** Package mode returned with an authenticated shared-pipeline snapshot. */
   distributionMode?: PipelineDistributionMode;
   /**
-   * CAN-5782: set on a user pipeline that is a workflow page (a live
-   * automation owns it, or it was kept as one). Desktop-local projection.
+   * CAN-5782: set on every user pipeline's list row (every user workflow has
+   * the same page): the facts its page and schedules read. Desktop-local
+   * projection.
    */
   workflowPage?: PipelineWorkflowPageInfo;
   /**
-   * CAN-5782 phase 09: how many other workflow pages call this user pipeline
-   * through a `builtin/run-pipeline` step whose child is fixed before a run.
-   * Absent when none does. Desktop-local projection.
+   * CAN-5782 phase 09: how many other user workflows call this one through a
+   * `builtin/run-pipeline` step whose child is fixed before a run. Absent
+   * when none does. Desktop-local projection.
    */
   workflowCallers?: number;
+  /**
+   * CAN-5782: how many of those callers declare the Workflow trigger: a run
+   * of theirs as Workflow passes the event on. Desktop-local.
+   */
+  workflowTriggerCallers?: number;
 }
 
 /** Mirrors the web `OrganizationRole` enum: the caller's role in an org. */

@@ -1,5 +1,5 @@
 import type { CSSProperties, JSX } from 'react';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 
 export interface PrLabelBadgeProps {
   /** Label text. */

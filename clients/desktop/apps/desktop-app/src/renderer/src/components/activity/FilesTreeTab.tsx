@@ -122,7 +122,7 @@ import {
 import { saveStartPageFromAction } from '@/lib/start-page/save-start-page';
 import { workspaceFileSourceFor } from '@/lib/files/workspace-file-source';
 import { useScopeCapabilities } from '@/hooks/useScopeCapabilities';
-import { Button, LoadingButton } from '@canopy/ui-shared/components';
+import { Button } from '@canopy/ui-shared/components';
 import { sandboxStatusOf } from '@canopy/protocol/cloud-session';
 import { CloudSandboxStatusLine } from '@canopy/ui-app/cloud-sandbox-status';
 import { useCloudWorktreeSandboxState } from '@/stores/chat/web-core/sandbox-states';
@@ -846,7 +846,7 @@ function DirectoryChildren({
         data-testid="files-tree-folder-error"
       >
         <StatusLabel>{"Couldn't load this folder."}</StatusLabel>
-        <LoadingButton
+        <Button
           size="compact"
           loading={retrying}
           loadingLabel="Trying again…"
@@ -863,7 +863,7 @@ function DirectoryChildren({
           }}
         >
           Try again
-        </LoadingButton>
+        </Button>
       </div>
     );
   }

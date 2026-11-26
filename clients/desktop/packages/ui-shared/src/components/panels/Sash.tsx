@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, type JSX } from 'react';
-import { DisposableStore, toDisposable } from '../../panels/disposable';
-import { getWindow } from '../../panels/window-registry';
+import { DisposableStore, toDisposable } from '../../lib/disposable';
+import { getWindow } from '../../lib/window-registry';
 import {
   type IHorizontalSashOptions,
   type ISashEvent,

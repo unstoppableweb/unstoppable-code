@@ -545,9 +545,20 @@ function observeOpenCodeConnection(
   });
 }
 
+/**
+ * Options for the OpenCode setups that revoke every live OpenCode runtime.
+ * `beforeRevoke` runs right before that revoke, with nothing awaited in
+ * between, and may throw to stop the setup there (CAN-6718: a remote
+ * controller's setup may not end another window's OpenCode sign-in).
+ */
+export interface OpenCodeRevokeOptions {
+  beforeRevoke?: () => void;
+}
+
 export async function connectOpenCode(
   signal: AbortSignal,
   progress: (status: OpenCodeConnectionStatus) => void,
+  options: OpenCodeRevokeOptions = {},
 ): Promise<OpenCodeConnectionStatus> {
   return withProviderConnectionAttempt(
     'opencode',
@@ -556,7 +567,7 @@ export async function connectOpenCode(
     async () => {
       const previous = await opencodeConnectionStatus();
       const newRuntimeConnection = !previous.installed || !previous.enabled;
-      const connected = await connectOpenCodeImpl(signal, progress);
+      const connected = await connectOpenCodeImpl(signal, progress, options);
       if (connected.phase === 'connected') {
         observeOpenCodeRuntime(true, 'in_app');
         // A new runtime event already carries the discovered account method.
@@ -570,6 +581,7 @@ export async function connectOpenCode(
 async function connectOpenCodeImpl(
   signal: AbortSignal,
   progress: (status: OpenCodeConnectionStatus) => void,
+  options: OpenCodeRevokeOptions,
 ): Promise<OpenCodeConnectionStatus> {
   assertOpenCodeHarnessEnabled();
   observeRollout();
@@ -581,6 +593,7 @@ async function connectOpenCodeImpl(
   let epoch = generation;
   let enabledRevision: number | undefined;
   try {
+    options.beforeRevoke?.();
     await revokeOpenCodeRuntimes();
     epoch = generation;
     await updatePreferencesFile((preferences) => ({
@@ -644,11 +657,28 @@ async function connectOpenCodeImpl(
   }
 }
 
-export async function disconnectOpenCode(): Promise<void> {
-  await updatePreferencesFile((preferences) => ({
-    ...preferences,
-    opencodeEnabled: false,
-  }));
+export async function disconnectOpenCode(
+  options: OpenCodeRevokeOptions = {},
+): Promise<void> {
+  // Checked before the preference changes too; the check right before the
+  // revoke is the one that holds, and a refusal there puts the preference
+  // back, so a refused disconnect changes nothing.
+  options.beforeRevoke?.();
+  let wasEnabled: unknown;
+  await updatePreferencesFile((preferences) => {
+    wasEnabled = preferences.opencodeEnabled;
+    return { ...preferences, opencodeEnabled: false };
+  });
+  try {
+    options.beforeRevoke?.();
+  } catch (error) {
+    await updatePreferencesFile((preferences) => ({
+      ...preferences,
+      opencodeEnabled: wasEnabled === true,
+    }));
+    broadcastPreferencesChanged();
+    throw error;
+  }
   observeOpenCodeRuntime(false, 'in_app');
   resetOpenCodeAccountConnection();
   try {

@@ -1,4 +1,4 @@
-import type { JSX } from 'react';
+import { useState, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { Notice, NoticeButton } from '@canopy/ui-shared/components';
 import { useCurrentUiStateReporter } from '@/hooks/useCurrentUiStateReporter';
@@ -46,7 +46,14 @@ export function ChatStateRecoveryBanner({
   const dismissChatStateNotice = useChatStore((s) => s.dismissChatStateNotice);
 
   const showRefreshing = phase === 'refreshing';
-  const showRefreshError = phase === 'refresh_error';
+  // The close icon hides this failure; the next failed refresh shows it again.
+  const [refreshErrorDismissedFor, setRefreshErrorDismissedFor] = useState<
+    string | null
+  >(null);
+  if (phase !== 'refresh_error' && refreshErrorDismissedFor !== null)
+    setRefreshErrorDismissedFor(null);
+  const showRefreshError =
+    phase === 'refresh_error' && refreshErrorDismissedFor !== key;
   useCurrentUiStateReporter(
     'chat.stateRecovery',
     showRefreshing || showRefreshError || notice
@@ -87,6 +94,8 @@ export function ChatStateRecoveryBanner({
           intent="destructive"
           data-testid="chat-state-refresh-error"
           title={CHAT_STATE_REFRESH_ERROR_HEADING}
+          onDismiss={(): void => setRefreshErrorDismissedFor(key)}
+          dismissTestId="chat-state-refresh-error-dismiss"
           actions={
             <NoticeButton
               variant="primary"

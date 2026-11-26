@@ -3,10 +3,7 @@ import { REMOTE_CONTROL_LABEL } from '@canopy/protocol';
 import { brandText } from '@/lib/brand';
 import { BrandLogo } from '@/components/BrandLogo';
 import { DialogModal } from '@/components/shared/DialogModal';
-import {
-  CloudAuthPanel,
-  GUEST_CLOUD_AUTH_BENEFITS,
-} from '@/components/auth/CloudAuthPanel';
+import { CloudAuthPanel } from '@/components/auth/CloudAuthPanel';
 import type { CanopyCloudConnectSuccess } from '@/components/auth/useCanopyCloudAuth';
 import {
   didGuestMergeFail,
@@ -38,14 +35,17 @@ interface CloudSyncModalProps {
    * still-live "Disconnect" button contradicted itself, so success closes.
    */
   toastMessage?: string;
-  /** Use guest-specific reassurance only for a confirmed guest entry point. */
+  /**
+   * A confirmed guest entry point: report a failed guest merge, and hide the
+   * API key path, which can't keep guest work.
+   */
   guestBenefits?: boolean;
 }
 
 const DEFAULT_TITLE = `${brandText.appName} Cloud`;
 const DEFAULT_SUBTITLE = `Connect your account to access team features, ${REMOTE_CONTROL_LABEL}, and sync across devices.`;
-const DEFAULT_TOAST_MESSAGE = "You're connected.";
-const SUCCESS_TOAST_TITLE = 'Sign in successful';
+const DEFAULT_TOAST_MESSAGE = "You're signed in.";
+const SUCCESS_TOAST_TITLE = 'Signed in';
 
 /**
  * The single sign-in gate behind every contextual connect prompt (guest pill,
@@ -81,7 +81,7 @@ export function CloudSyncModal({
       const message = mergeFailed
         ? GUEST_MERGE_FAILURE_MESSAGE
         : result.replacedManualKey
-          ? `${baseMessage} Stored API key was replaced by OAuth sign-in.`
+          ? `${baseMessage} Your saved API key was replaced by this sign-in.`
           : baseMessage;
       useGitHubStore
         .getState()
@@ -140,7 +140,6 @@ export function CloudSyncModal({
         // a doubled paragraph now that the lead sits tight under the title. A
         // per-surface `description` always wins.
         lead={description ?? (subtitle === null ? undefined : null)}
-        benefits={guestBenefits ? GUEST_CLOUD_AUTH_BENEFITS : undefined}
         allowApiKeyFallback={!guestBenefits}
         oauthCtaRef={oauthCtaRef}
         onAuthPendingChange={setAuthPending}

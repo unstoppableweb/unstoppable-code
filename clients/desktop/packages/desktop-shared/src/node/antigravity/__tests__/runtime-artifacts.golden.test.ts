@@ -14,7 +14,7 @@ import {
 import { ANTIGRAVITY_RUNTIME_VERSION } from '../runtime-metadata';
 
 const BASE =
-  'https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.1';
+  'https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.14';
 
 describe('Antigravity runtime artifacts', () => {
   it('manifest version equals ANTIGRAVITY_RUNTIME_VERSION', () => {
@@ -34,52 +34,52 @@ describe('Antigravity runtime artifacts', () => {
 
   it('returns the darwin-arm64 artifact with the pinned url, integrity, archiveBytes and executableSha256', () => {
     expect(getAntigravityRuntimeArtifact('darwin', 'arm64')).toEqual({
-      version: '1.5.1',
+      version: '1.5.14',
       url: `${BASE}/agy_cli_mac_arm64.tar.gz`,
       integrity:
-        'sha512-B4OZs5LDv85wvF2fsaRHpLCiomvUDDYUj0lEAouPIeNYiQ1bm+3N5pKWZ3sdosAmtOKDrpGII0KcE7kd3LkTzg==',
-      archiveBytes: 63804999,
+        'sha512-JoMP1Gv7kgDQc88+cb+UtwdVJVe0OA7AGv1umfOisDDmVCLasYZ/dzGAeGkt78hZp1R9F+xLCx6TafE8nDyupg==',
+      archiveBytes: 85943943,
       executableSha256:
-        '5ce7fbe126eb9abdc78634332a0a1bdd428327fba37ef7d1aeba7553eec55f3f',
+        'e8c2959bf4744580d0e5b8f938ec2dc3918a942b620a6262e53856400f14e5fb',
     });
   });
 
   it('returns the darwin-x64 artifact', () => {
     expect(getAntigravityRuntimeArtifact('darwin', 'x64')).toEqual({
-      version: '1.5.1',
+      version: '1.5.14',
       url: `${BASE}/agy_cli_mac_x64.tar.gz`,
       integrity:
-        'sha512-c2oPEhC0LtxuwpLh+EOGlvYWv2kGrV6HjUFbGKpTrMxZpnggXDMuWvVk+rjTLKWsW0HJuq2M7Qp7wiSgzPzDtQ==',
-      archiveBytes: 69355865,
+        'sha512-G2ofxtvka6bZ0EBdG2CVGJ816/xMPDPOsf0bbQyf1wK1KsELZLi1Ku0NjXGuAsXfPP/V4+PTdUnC2v/M4qhTxw==',
+      archiveBytes: 91613810,
       executableSha256:
-        '1f72c9a1c29b768fedd6d33150ebe5baa0f0692242c6286bd1669a1d183ec2d9',
+        '5f3832bb8e391820bb895a08d1f837bb9e1714d48cd5ba31edf9286af6e9ea21',
     });
   });
 
   // CAN-6718: Linux has no OS signature to check, so its launch check
   // compares the executable with these digests. They are Google's glibc
-  // builds from the same 1.5.1 GitHub release.
+  // builds from the same 1.5.14 GitHub release.
   it('returns the linux-x64 artifact', () => {
     expect(getAntigravityRuntimeArtifact('linux', 'x64')).toEqual({
-      version: '1.5.1',
+      version: '1.5.14',
       url: `${BASE}/agy_cli_linux_x64.tar.gz`,
       integrity:
-        'sha512-9wQGZU69lm8hFCQzglni040JnEhzTpAdwGl1Bj5aATfVW265Nmt1mDxpCLvCCukqJhdla7GR2O1v5CnWVLyk9Q==',
-      archiveBytes: 72209583,
+        'sha512-gzEdPzVFZ2EtwWwa4uqbUD1vaDOqThONOaoinaPzu5mw5NfMoLzkeWsAYNalHYET63RJ7V3A55AL8hcQfqW/+Q==',
+      archiveBytes: 101195950,
       executableSha256:
-        '72738cf0445918483956a5f0da33abdfcfb21a12dd9a421fd57d063782826669',
+        '37873b8062391b6202a3d3199ec012abc9e53aab720d26cd65699441497d8c94',
     });
   });
 
   it('returns the linux-arm64 artifact', () => {
     expect(getAntigravityRuntimeArtifact('linux', 'arm64')).toEqual({
-      version: '1.5.1',
+      version: '1.5.14',
       url: `${BASE}/agy_cli_linux_arm64.tar.gz`,
       integrity:
-        'sha512-/fikY+W/Ts2KAbaKU+AG564CVueuNRo545xm4E4nXG0ItLk/QjzFctI0hx97+FLEUj4BcVak756n3qGq/7Cixg==',
-      archiveBytes: 68424392,
+        'sha512-ybKbukdfY6GoAWGuk7pysiHHpYbZhR5NAGFUZwS6tm1rJ2CyXXFtGRck/HVk8yRkVu4VHiiqN69I281yvcbEYw==',
+      archiveBytes: 92116379,
       executableSha256:
-        'd2b02615f4d0f8619966653a74b8f89160d12996ce763752ccc5e27a58029565',
+        '702b888abddc7d482ee30592fa153cda5785afae3188179d38b511b6ec360286',
     });
   });
 
@@ -105,11 +105,11 @@ describe('Antigravity runtime artifacts', () => {
     const root = mkdtempSync(join(tmpdir(), 'agy-root-'));
     const artifact = getAntigravityRuntimeArtifact('darwin', 'arm64');
     if (!artifact) throw new Error('missing artifact');
-    mkdirSync(join(root, '1.5.1'), { recursive: true });
-    writeFileSync(join(root, '1.5.1', 'antigravity'), '');
+    mkdirSync(join(root, '1.5.14'), { recursive: true });
+    writeFileSync(join(root, '1.5.14', 'antigravity'), '');
     expect(ANTIGRAVITY_MANAGED_EXECUTABLE_NAME).toBe('antigravity');
     expect(managedAntigravityExecutable(root, artifact)).toBe(
-      join(root, '1.5.1', 'antigravity'),
+      join(root, '1.5.14', 'antigravity'),
     );
   });
 

@@ -43,10 +43,12 @@ import {
   type ExplorerSearchLogEntry,
   type ExplorerSourceTranscript,
 } from './organization-memory';
-import type {
-  OrganizationSettingsRoute,
-  OrganizationsSettingsRoute,
-  SettingsRoute,
+import {
+  ORGANIZATION_TRANSCRIPT_VIEWS,
+  type OrganizationSettingsRoute,
+  type OrganizationsSettingsRoute,
+  type OrganizationTranscriptView,
+  type SettingsRoute,
 } from './routes';
 
 /**
@@ -76,6 +78,8 @@ export const ORGANIZATION_PAGE_DATA_KINDS = [
   'organization.memory.graph',
   'organization.memory.ops',
   'organization.memory.fact',
+  'organization.transcripts',
+  'organization.transcripts.session',
   'organization.settings',
   'organization.invoice',
 ] as const;
@@ -183,6 +187,8 @@ export interface OrganizationMemberPageData {
   org: { id: string; name: string };
   member: MemberProfileHeader;
   viewerCanViewStats: boolean;
+  /** The viewer may open this member's shared transcripts (owner, flag on). Absent from older servers. */
+  viewerCanViewTranscripts?: boolean;
   editContext: OrganizationMemberProfileEditTarget | null;
   orgLapsed: boolean;
   orgTrialEndedAt: string | null;
@@ -238,6 +244,29 @@ export type OrganizationMemoryFactPageData = OrganizationMemoryPageData<{
   detail: ExplorerFactDetail;
   transcript: ExplorerSourceTranscript | null;
 }>;
+
+/**
+ * `/organization/[orgId]/transcripts[/exports|/access]`: owners only. The
+ * Sessions, Exports and Access history contents load through the
+ * `organization.transcripts.*` settings operations; page data carries only
+ * the header, the active view and whether exports can be stored here.
+ */
+export interface OrganizationTranscriptsPageData {
+  team: OrganizationTeamPageData;
+  view: OrganizationTranscriptView;
+  /** False when the deployment has no export storage: Export stays off, browsing works. */
+  storageAvailable: boolean;
+}
+
+/**
+ * `/organization/[orgId]/transcripts/sessions/[sessionId]`: the gate and
+ * header only. The transcript loads through `organization.transcripts.session`
+ * on mount, so a page-data prefetch never records a view.
+ */
+export interface OrganizationTranscriptSessionPageData {
+  team: OrganizationTeamPageData;
+  sessionId: string;
+}
 
 /** `/organization/[orgId]/billing/invoices/[invoiceId]`. No API route exists. */
 export interface OrganizationInvoicePageData {
@@ -364,6 +393,7 @@ const pageDataShapes = {
         memberSinceIso: z.string(),
       }),
       viewerCanViewStats: z.boolean(),
+      viewerCanViewTranscripts: z.boolean().optional(),
       editContext: z
         .union([
           z.looseObject({ mode: z.literal('self') }),
@@ -418,6 +448,18 @@ const pageDataShapes = {
       transcript: explorerSourceTranscriptShape.nullable(),
     }),
   ),
+  'organization.transcripts':
+    settingsDtoSchema<OrganizationTranscriptsPageData>(
+      z.looseObject({
+        team: teamPageDataShape,
+        view: z.enum(ORGANIZATION_TRANSCRIPT_VIEWS),
+        storageAvailable: z.boolean(),
+      }),
+    ),
+  'organization.transcripts.session':
+    settingsDtoSchema<OrganizationTranscriptSessionPageData>(
+      z.looseObject({ team: teamPageDataShape, sessionId: z.string() }),
+    ),
   'organization.settings': organizationTeamPageDataSchema,
   'organization.invoice': settingsDtoSchema<OrganizationInvoicePageData>(
     z.looseObject({
@@ -510,6 +552,14 @@ export const organizationMemoryFactPageDataSchema = pageDataMember(
   'organization.memory.fact',
   pageDataShapes['organization.memory.fact'],
 );
+export const organizationTranscriptsPageDataSchema = pageDataMember(
+  'organization.transcripts',
+  pageDataShapes['organization.transcripts'],
+);
+export const organizationTranscriptSessionPageDataSchema = pageDataMember(
+  'organization.transcripts.session',
+  pageDataShapes['organization.transcripts.session'],
+);
 export const organizationSettingsPageDataSchema = pageDataMember(
   'organization.settings',
   pageDataShapes['organization.settings'],
@@ -536,6 +586,8 @@ export const organizationPageDataSchema = z.discriminatedUnion('kind', [
   organizationMemoryGraphPageDataSchema,
   organizationMemoryOpsPageDataSchema,
   organizationMemoryFactPageDataSchema,
+  organizationTranscriptsPageDataSchema,
+  organizationTranscriptSessionPageDataSchema,
   organizationSettingsPageDataSchema,
   organizationInvoicePageDataSchema,
 ]);
@@ -574,6 +626,10 @@ function organizationRouteKind(
       if (route.memoryView === 'graph') return 'organization.memory.graph';
       if (route.memoryView === 'ops') return 'organization.memory.ops';
       return 'organization.memory.facts';
+    case 'transcripts':
+      return route.sessionId === undefined
+        ? 'organization.transcripts'
+        : 'organization.transcripts.session';
     case 'settings':
       return route.invoiceId === undefined
         ? 'organization.settings'

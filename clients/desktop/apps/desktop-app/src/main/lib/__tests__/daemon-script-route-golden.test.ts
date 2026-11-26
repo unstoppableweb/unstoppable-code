@@ -992,31 +992,73 @@ describePosix('daemon script route (CAN-5087)', () => {
     expect(mockGet).not.toHaveBeenCalled();
   });
 
-  it('a drain while the daemon refuses the run leaves nothing running in process', async () => {
-    let refuse = (): void => undefined;
-    double.openGate = (): Promise<void> =>
-      new Promise((_resolve, reject) => {
-        refuse = (): void => reject(new Error('refused'));
-      });
-    const local = jest.spyOn(desktopScriptWorker, 'execute');
-    const response = invoke(IPC_CHANNELS.scriptRun, runRequest('echo'));
-    for (
-      let attempt = 0;
-      attempt < 100 &&
-      !double.calls.some(
-        ({ name }) => name === 'worker.script.execution.output',
+  it.each([
+    ['while the drain reads the run logs', 'sweeping'],
+    ['once the drain has stopped the run', 'stopped'],
+  ] as const)(
+    'a drain while the daemon refuses the run leaves nothing running in process (%s)',
+    async (_when, phase) => {
+      const until = async (check: () => boolean): Promise<void> => {
+        for (let attempt = 0; attempt < 500 && !check(); attempt += 1)
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(check()).toBe(true);
+      };
+      let refuse = (): void => undefined;
+      double.openGate = (): Promise<void> =>
+        new Promise((_resolve, reject) => {
+          refuse = (): void => reject(new Error('refused'));
+        });
+      const local = jest.spyOn(desktopScriptWorker, 'execute');
+      const response = invoke(IPC_CHANNELS.scriptRun, runRequest('echo'));
+      await until(() =>
+        double.calls.some(
+          ({ name }) => name === 'worker.script.execution.output',
+        ),
       );
-      attempt += 1
-    )
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    const drained = drainWorktreeShellScripts('project', 'task');
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    refuse();
-    await drained;
-    await response.catch(() => undefined);
-    expect(local).not.toHaveBeenCalled();
-    local.mockRestore();
-  });
+      // The drain's run-log read is held so the refusal lands at a known point.
+      const listOf = desktopScriptWorker.list.bind(desktopScriptWorker);
+      let release = (): void => undefined;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let reading = false;
+      let read = false;
+      const list = jest
+        .spyOn(desktopScriptWorker, 'list')
+        .mockImplementation(async (params) => {
+          reading = true;
+          await held;
+          const runs = await listOf(params);
+          read = true;
+          return runs;
+        });
+      let drainSettled = false;
+      const drained = drainWorktreeShellScripts('project', 'task').finally(
+        () => {
+          drainSettled = true;
+        },
+      );
+      if (phase === 'sweeping') {
+        await until(() => reading);
+        refuse();
+        await response.catch(() => undefined);
+        release();
+      } else {
+        release();
+        await until(() => read);
+        // The drain waits for the run it stopped to end.
+        expect(drainSettled).toBe(false);
+        refuse();
+      }
+      await drained;
+      await response.catch(() => undefined);
+      list.mockRestore();
+      const inProcess = local.mock.calls.length;
+      local.mockRestore();
+      expect(inProcess).toBe(0);
+      expect(double.spawns).toBe(0);
+    },
+  );
 
   it('worktree removal drains a daemon run it did not route', async () => {
     const { supervision } = hostPlatformServices(

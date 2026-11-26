@@ -191,6 +191,41 @@ export interface AiGatewayDeviceUse {
   setUsed(used: boolean): Promise<void>;
 }
 
+/**
+ * A file to save from an authenticated settings download route, as a
+ * same-origin path (`/api/v1/settings/organization/<id>/transcripts/...`).
+ * Never an absolute URL: the host supplies the origin and the credential.
+ */
+export interface SettingsFileDownloadRequest {
+  readonly path: string;
+  /** The file name to offer; hosts sanitize it again. */
+  readonly suggestedName: string;
+}
+
+/**
+ * What a download did. `saved: false` is a save dialog the person cancelled.
+ * A host that hands the request to the browser reports `saved: true` once it
+ * started; the browser reports its own failures.
+ */
+export type SettingsFileDownloadResult =
+  | { readonly ok: true; readonly saved: boolean }
+  | {
+      readonly ok: false;
+      readonly reason:
+        | 'invalid'
+        | 'unauthenticated'
+        | 'forbidden'
+        | 'not_found'
+        | 'gone'
+        | 'too_large'
+        | 'busy'
+        | 'failed';
+    };
+
+export type SettingsFileDownload = (
+  request: SettingsFileDownloadRequest,
+) => Promise<SettingsFileDownloadResult>;
+
 export interface SettingsUiHost {
   /** Fixed-table hosted settings data access. */
   readonly client: AccountOrganizationSettingsClient;
@@ -247,6 +282,13 @@ export interface SettingsUiHost {
   readonly useAiGatewayDeviceUse?: (
     organizationId: string,
   ) => AiGatewayDeviceUse | null;
+  /**
+   * Saves a file from an authenticated settings download route (organization
+   * transcripts). Web follows a same-origin link; desktop asks main, which
+   * shows a save dialog and fetches with the account's own credential.
+   * `null` while the host can't download (desktop signed out).
+   */
+  readonly useDownloadFile?: () => SettingsFileDownload | null;
 }
 
 const SettingsHostContext = createContext<SettingsUiHost | null>(null);
@@ -316,6 +358,13 @@ export function useSettingsTopUpFeePercent(): number {
 
 export function useSettingsWorkspaceContext(): SettingsWorkspaceContext {
   return useSettingsHost().useWorkspaceContext();
+}
+
+const NO_DOWNLOAD = (): null => null;
+
+/** The host's file download, or `null` when it has none right now. */
+export function useSettingsDownloadFile(): SettingsFileDownload | null {
+  return (useSettingsHost().useDownloadFile ?? NO_DOWNLOAD)();
 }
 
 /** The host's stored-key row for AI gateways, when it keeps keys. */

@@ -1,6 +1,12 @@
 import type { MemorySearchFact } from '@canopy/protocol/memory';
 import type { AppliedOrgMemoryTurn } from '../types';
-import { normalizeUuid } from '@canopy/execution-engine/lib/workspace-owner';
+import { normalizeOrganizationExternalId } from '@canopy/protocol/canopy-server/account-snapshot';
+
+// Moved to protocol so other hosts parse the same way (CAN-6997).
+export {
+  normalizeMemorySearchOrganizationExternalIds,
+  normalizeOrganizationExternalId,
+} from '@canopy/protocol/canopy-server/account-snapshot';
 
 const MAX_FACTS_PER_TURN = 8;
 const MAX_FACT_TEXT_LENGTH = 500;
@@ -10,46 +16,8 @@ const MAX_SOURCE_TURN_ID_LENGTH = 256;
 const MAX_FACT_ID_LENGTH = 64;
 const MAX_SEARCH_ID_LENGTH = 64;
 
-const MAX_MEMORY_SEARCH_ORGANIZATIONS = 256;
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * Normalizes an organization external id (a UUID) to its lowercase form, or
- * returns `null` when the value is not a UUID. Organization memory keys every
- * search, delivery ack, and feedback call by this id (CAN-3457), so a malformed
- * value must never reach a request.
- */
-export function normalizeOrganizationExternalId(value: unknown): string | null {
-  return normalizeUuid(value);
-}
-
-/**
- * Normalizes the account response's organization-memory eligibility into the
- * list of organizations the user may search (CAN-3457).
- *
- * - The list drops malformed values and duplicates and lowercases the UUIDs.
- * - A response without the list but with the deprecated single-org field (an
- *   older server) is read as `[legacyId]`. This is not a fallback to another
- *   org: the owning org is still searched only when it appears in the list.
- */
-export function normalizeMemorySearchOrganizationExternalIds(
-  list: unknown,
-  legacyId: unknown,
-): string[] {
-  const source: unknown[] = Array.isArray(list)
-    ? list
-    : legacyId === undefined
-      ? []
-      : [legacyId];
-  const normalized: string[] = [];
-  for (const raw of source.slice(0, MAX_MEMORY_SEARCH_ORGANIZATIONS)) {
-    const id = normalizeOrganizationExternalId(raw);
-    if (id !== null && !normalized.includes(id)) normalized.push(id);
-  }
-  return normalized;
 }
 
 export function normalizeOrgMemoryFacts(value: unknown): MemorySearchFact[] {

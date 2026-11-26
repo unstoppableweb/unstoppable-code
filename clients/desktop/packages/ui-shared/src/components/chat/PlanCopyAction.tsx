@@ -10,10 +10,13 @@ import {
 } from 'react';
 import { CheckIcon } from '../../icons/CheckIcon';
 import { CopyIcon } from '../../icons/CopyIcon';
-import { Button } from '../Button';
+import { Button } from '../../primitives/Button';
 import { CLEAN_ICON_BUTTON_VARIANT } from '../chat-look';
-import { CopyStatusRegion, useAnnouncedCopy } from '../copy-feedback';
-import { Tooltip } from '../Tooltip';
+import {
+  CopyStatusRegion,
+  useAnnouncedCopy,
+} from '../../primitives/copy-feedback';
+import { Tooltip } from '../../primitives/Tooltip';
 import type { PlanTurnResolution } from './exit-plan-mode-plan';
 
 /** The action's name on every surface (CAN-5354). */

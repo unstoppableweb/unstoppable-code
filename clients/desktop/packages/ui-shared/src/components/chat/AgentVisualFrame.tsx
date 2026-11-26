@@ -31,8 +31,8 @@ import {
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 import { DownloadIcon, ExternalIcon } from '../../icons/AppIcons';
 import { BUBBLE_ACTION_GLYPH_PX } from '../bubble-badge';
-import { ControlButton, Button } from '../Button';
-import { Tooltip } from '../Tooltip';
+import { ControlButton, Button } from '../../primitives/Button';
+import { Tooltip } from '../../primitives/Tooltip';
 import {
   AGENT_VISUAL_MODIFIER_KEYS,
   agentVisualNeedsClick,

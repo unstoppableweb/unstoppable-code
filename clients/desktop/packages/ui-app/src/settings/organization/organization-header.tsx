@@ -1,7 +1,7 @@
 'use client';
 
 import { useMemo, type JSX, type ReactNode } from 'react';
-import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
+import { PageHeader } from '@canopy/ui-shared/primitives/PageHeader';
 import {
   selectSettingsBootstrap,
   useOptionalSettingsStore,
@@ -92,6 +92,9 @@ export function organizationTabForRoute(route: SettingsRoute): TeamTab | null {
       return route.digestId === undefined ? 'digests' : null;
     case 'settings':
       return route.invoiceId === undefined ? 'settings' : null;
+    case 'transcripts':
+      // A session has its own breadcrumb header.
+      return route.sessionId === undefined ? 'transcripts' : null;
     case 'feed':
     case 'statistics':
     case 'groups':
@@ -102,12 +105,15 @@ export function organizationTabForRoute(route: SettingsRoute): TeamTab | null {
 }
 
 /**
- * Timeline, Statistics and Memory hold feeds, charts, a graph and wide
- * tables, so they keep the wide column; every other organization page is a
- * settings page in the shared 640px column.
+ * Timeline, Statistics, Memory and Transcripts hold feeds, charts, a graph
+ * and wide tables, so they keep the wide column; every other organization
+ * page is a settings page in the shared 640px column.
  */
 export function organizationTabColumnWidth(tab: TeamTab): 'settings' | 'wide' {
-  return tab === 'feed' || tab === 'statistics' || tab === 'memory'
+  return tab === 'feed' ||
+    tab === 'statistics' ||
+    tab === 'memory' ||
+    tab === 'transcripts'
     ? 'wide'
     : 'settings';
 }

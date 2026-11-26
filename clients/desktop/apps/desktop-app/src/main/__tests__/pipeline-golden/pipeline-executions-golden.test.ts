@@ -16,6 +16,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -65,6 +66,8 @@ import {
   createPipelineGoldenWorld,
   GOLDEN_CURATED_KEY,
   GOLDEN_CURATED_YAML,
+  GOLDEN_PROJECT_PIPELINE_FILE,
+  GOLDEN_PROJECT_PIPELINE_ID,
   GOLDEN_SHARED_DISPATCH_REMOTE_ID,
   GOLDEN_WORKSPACE_ID,
   GOLDEN_WORKTREE_ID,
@@ -1050,6 +1053,132 @@ describe('run admission', () => {
     );
     const state = await waitForExecution(executionsDir, run.executionId ?? '');
     expect(state.pipeline_snapshot.name).toBe(sent.name);
+  });
+
+  // CAN-7513: a run chosen at a revision of its document runs only that
+  // revision, and a caller that checked the definition it sends gets only
+  // that definition.
+  it('runs a stored run at its revision and refuses another', async () => {
+    const stored = readFileSync(
+      getStoredPipelinePath(pipelineIds.success).data ?? '',
+    );
+    const revision = createHash('sha256')
+      .update(stored)
+      .digest('hex')
+      .slice(0, 16);
+    const run = await start('revision-match', () =>
+      invokeIpc(PIPELINE_CHANNELS.EXECUTE, parsePipelineText(SUCCESS_YAML), {
+        pipelineId: pipelineIds.success,
+        expectedRevision: revision,
+        ...worktreeTarget(),
+      }),
+    );
+    expect(run.executionId).toBeTruthy();
+    expect(
+      await invokeIpc(
+        PIPELINE_CHANNELS.EXECUTE,
+        parsePipelineText(SUCCESS_YAML),
+        {
+          pipelineId: pipelineIds.success,
+          expectedRevision: '0123456789abcdef',
+          ...worktreeTarget(),
+        },
+      ),
+    ).toEqual({
+      success: false,
+      error:
+        'This workflow changed after you attached it. Send again to review it.',
+    });
+  });
+
+  it("runs a worktree's checked copy of a project workflow and refuses another revision", async () => {
+    const file = join(
+      world.worktreePath,
+      '.canopy',
+      'pipelines',
+      GOLDEN_PROJECT_PIPELINE_FILE,
+    );
+    const revision = createHash('sha256')
+      .update(readFileSync(file))
+      .digest('hex')
+      .slice(0, 16);
+    const fromWorktree = (
+      expectedRevision: string,
+    ): Record<string, unknown> => ({
+      pipelineId: GOLDEN_PROJECT_PIPELINE_ID,
+      pipelineFilePath: file,
+      definitionWorktreeId: GOLDEN_WORKTREE_ID,
+      expectedRevision,
+      ...worktreeTarget(),
+    });
+    const run = await start('definition-worktree', () =>
+      invokeIpc(
+        PIPELINE_CHANNELS.EXECUTE,
+        parsePipelineText(SUCCESS_YAML),
+        fromWorktree(revision),
+      ),
+    );
+    expect(run.result).toMatchObject({ success: true });
+    const state = await waitForExecution(executionsDir, run.executionId ?? '');
+    expect(state.pipeline_snapshot.name).toBe(
+      parsePipelineText(readFileSync(file, 'utf8')).name,
+    );
+    // The source checkout is kept with the run, so a rerun resolves child
+    // workflows from it as the original run did.
+    expect(state.pipeline_source?.filePath).toBe(file);
+    const rerun = await start('definition-worktree-rerun', () =>
+      invokeIpc(PIPELINE_CHANNELS.RERUN_EXECUTION, run.executionId),
+    );
+    const rerunState = await waitForExecution(
+      executionsDir,
+      rerun.executionId ?? '',
+    );
+    expect(rerunState.pipeline_source).toEqual(state.pipeline_source);
+    expect(
+      await invokeIpc(
+        PIPELINE_CHANNELS.EXECUTE,
+        parsePipelineText(SUCCESS_YAML),
+        fromWorktree('0123456789abcdef'),
+      ),
+    ).toEqual({
+      success: false,
+      error:
+        'This workflow changed after you attached it. Send again to review it.',
+    });
+  });
+
+  it('refuses a checked stored workflow deleted before it starts', async () => {
+    const id = await world.saveUserPipeline(SUCCESS_YAML, 'pipeline:deleted');
+    rmSync(getStoredPipelinePath(id).data ?? '', { force: true });
+    const result = await invokeIpc(
+      PIPELINE_CHANNELS.EXECUTE,
+      parsePipelineText(SUCCESS_YAML),
+      { pipelineId: id, requireSentDefinition: true, ...worktreeTarget() },
+    );
+    expect(result).toEqual({
+      success: false,
+      error:
+        'This workflow changed after you attached it. Send again to review it.',
+    });
+  });
+
+  it('refuses a checked definition main would replace', async () => {
+    const sent = parsePipelineText(SUCCESS_YAML);
+    expect(
+      await invokeIpc(
+        PIPELINE_CHANNELS.EXECUTE,
+        { ...sent, name: 'Caller copy' },
+        {
+          pipelineId: pipelineIds.success,
+          requireSentDefinition: true,
+          ...worktreeTarget(),
+        },
+      ),
+    ).toEqual({
+      success: false,
+      error:
+        'This workflow changed after you attached it. Send again to review it.',
+    });
   });
 
   it('refuses a stored definition that no longer validates', async () => {

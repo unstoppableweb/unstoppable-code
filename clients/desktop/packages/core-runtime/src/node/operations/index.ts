@@ -3,17 +3,30 @@
 export {
   OperationCancelRefusedError,
   OperationService,
+  type OperationServicePort,
   type OperationCancelOutcome,
   type OperationCancelRequest,
   type OperationDomain,
   type OperationEventListener,
+  type OperationOwnerDomain,
   type OperationRecovery,
   type OperationServiceOptions,
 } from './service';
 export {
   createCoreOperationHandlers,
+  createRemoteCoreOperationHandlers,
   type CoreOperationHandlers,
 } from './handlers';
+export {
+  createCoreOperationLedgerHandlers,
+  type CoreOperationLedgerHandlers,
+} from './ledger-handlers';
+export {
+  RemoteOperationService,
+  type OperationLedgerEventFrame,
+  type OperationLedgerTransport,
+  type RemoteOperationServiceOptions,
+} from './remote';
 export {
   OperationLedgerError,
   OperationLedgerRefusedError,

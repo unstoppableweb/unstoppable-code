@@ -1,6 +1,6 @@
 import type { JSX, ReactNode } from 'react';
-import { Button } from './Button';
-import { surfaceClassName } from './Surface';
+import { Button } from '../primitives/Button';
+import { surfaceClassName } from '../primitives/Surface';
 
 export interface RunningProcessCardProps {
   dataTestId?: string;

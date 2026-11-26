@@ -19,6 +19,7 @@ export function OrganizationMemberPage({
       org={data.org}
       member={data.member}
       viewerCanViewStats={data.viewerCanViewStats}
+      viewerCanViewTranscripts={data.viewerCanViewTranscripts === true}
       editContext={data.editContext}
       showDigestsTab={data.showDigestsTab}
       isOwnProfile={data.isOwnProfile}

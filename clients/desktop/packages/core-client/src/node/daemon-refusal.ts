@@ -86,6 +86,32 @@ const LAUNCH_OPERATIONS = [
   'verify_private_file',
 ] as const;
 export type CanopyLaunchOperation = (typeof LAUNCH_OPERATIONS)[number];
+/**
+ * Why a path the host needs is not private: core-runtime's closed
+ * `PlatformPermissionCause`, never the check's reason text, which can name a
+ * path or SID. Additive.
+ */
+const PRIVACY_CAUSES = [
+  'foreign_trustee',
+  'foreign_owner',
+  'null_dacl',
+  'broad_mode',
+  'extended_acl',
+  'reparse_point',
+  'symlink',
+  'wrong_kind',
+  'hard_link',
+  'path_changed',
+  'unverifiable',
+] as const;
+export type CanopyPrivacyCause = (typeof PRIVACY_CAUSES)[number];
+/** The causes that mean another account can reach the path. */
+const SHARED_PRIVACY_CAUSES: ReadonlySet<CanopyPrivacyCause> = new Set([
+  'foreign_trustee',
+  'foreign_owner',
+  'null_dacl',
+  'broad_mode',
+]);
 
 export type CanopyLaunchDetails = {
   readonly errno?: (typeof LAUNCH_ERRNOS)[number];
@@ -94,6 +120,8 @@ export type CanopyLaunchDetails = {
   readonly nativeStage?: (typeof LAUNCH_NATIVE_STAGES)[number];
   readonly cause?: CanopyClaimCause;
   readonly operation?: CanopyLaunchOperation;
+  /** Set only by a private-path check; its own step then wins over a wrapper's. */
+  readonly privacy?: CanopyPrivacyCause;
   /** The typed kind a port failure carried before discovery replaced it. */
   readonly portKind?: CanopyErrorKind;
 };
@@ -123,6 +151,7 @@ export function canopyLaunchDetails(value: unknown): CanopyLaunchDetails {
   const nativeStage = allowed(LAUNCH_NATIVE_STAGES, own(source, 'nativeStage'));
   const cause = allowed(CLAIM_CAUSES, own(source, 'cause'));
   const operation = allowed(LAUNCH_OPERATIONS, own(source, 'operation'));
+  const privacy = allowed(PRIVACY_CAUSES, own(source, 'privacy'));
   const portKind = allowed(CANOPY_ERROR_KINDS, own(source, 'portKind'));
   return {
     ...(errno ? { errno } : {}),
@@ -136,20 +165,41 @@ export function canopyLaunchDetails(value: unknown): CanopyLaunchDetails {
     ...(nativeStage ? { nativeStage } : {}),
     ...(cause ? { cause } : {}),
     ...(operation ? { operation } : {}),
+    ...(privacy ? { privacy } : {}),
     ...(portKind ? { portKind } : {}),
   };
 }
 
 /**
+ * The step a wrapper reports: its own, except that a private-path refusal
+ * keeps the check that refused. Every port read prepares the runtime first,
+ * so the wrapper's step would hide which folder or file is not private.
+ */
+export const canopyLaunchStep = (
+  inner: CanopyLaunchDetails,
+  operation: CanopyLaunchOperation,
+): CanopyLaunchOperation =>
+  inner.privacy !== undefined && inner.operation !== undefined
+    ? inner.operation
+    : operation;
+
+/** Whether a failure says another account can reach a path the host needs. */
+export function canopyPathSharedWithAnotherAccount(error: unknown): boolean {
+  const { privacy } = canopyLaunchDetails(error);
+  return privacy !== undefined && SHARED_PRIVACY_CAUSES.has(privacy);
+}
+
+/**
  * Details for a wrapper that names its own step: the inner launch facts first,
- * then the wrapper's operation, so the outer step wins over an inner one.
+ * then the wrapper's operation, so the outer step wins over an inner one
+ * (except a private-path refusal's; see `canopyLaunchStep`).
  */
 export const canopyLaunchStepDetails =
   (operation: CanopyLaunchOperation) =>
-  (error: unknown): CanopyLaunchDetails => ({
-    ...canopyLaunchDetails(error),
-    operation,
-  });
+  (error: unknown): CanopyLaunchDetails => {
+    const inner = canopyLaunchDetails(error);
+    return { ...inner, operation: canopyLaunchStep(inner, operation) };
+  };
 
 export function canopyDaemonRefusalError(
   refusal: CanopyDaemonRefusal,

@@ -1,10 +1,13 @@
 import {
   AppErrorCopySchema,
+  AppErrorDetailSchema,
   createAppError,
+  toAppError,
   type AppError,
 } from '@canopy/protocol/app-errors';
 
 const MAX_TITLE_LENGTH = AppErrorCopySchema.shape.title.maxLength ?? 256;
+const MAX_MESSAGE_LENGTH = AppErrorDetailSchema.shape.message.maxLength ?? 4096;
 
 /**
  * A failure of the person's own work: a script, hook or terminal command that
@@ -23,9 +26,25 @@ export function ownWorkToastError(title: string): AppError {
 
 /**
  * A failure the app cannot yet classify, which may offer Report this until
- * CAN-5118 tells external failures apart. Catalog detail only: command output
- * and failure strings never enter a report.
+ * CAN-5118 tells external failures apart. Keep the failure when supplied;
+ * feedback redacts it before export. Missing or blank text keeps catalog detail.
  */
-export function unclassifiedToastError(): AppError {
-  return createAppError('app.unexpected');
+export function unclassifiedToastError(failure?: unknown): AppError {
+  if (typeof failure === 'string')
+    return createAppError(
+      'app.unexpected',
+      failure.trim().length === 0
+        ? {}
+        : {
+            // A returned string has no caught stack; never invent one here.
+            detail: {
+              name: 'Error',
+              message: failure.slice(0, MAX_MESSAGE_LENGTH),
+            },
+          },
+    );
+  return (
+    (failure === undefined ? undefined : toAppError(failure)) ??
+    createAppError('app.unexpected')
+  );
 }

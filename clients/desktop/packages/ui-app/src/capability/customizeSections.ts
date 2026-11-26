@@ -16,6 +16,7 @@ import {
   type CustomizeDiscoveryFilters,
   type CustomizeSkillMatch,
   DEFAULT_CUSTOMIZE_HARNESS,
+  DEFAULT_CUSTOMIZE_DISCOVERY_FILTERS,
   DEFAULT_PIPELINE_FILTERS,
   entryHasInstalledStatus,
   isBundledSkill,
@@ -24,6 +25,7 @@ import {
   pipelineFiltersActive,
   rankCustomizeByRelevance,
   rankCustomizeSearch,
+  customizeMatchTier,
   type MarketplaceCatalogTabId,
   type MarketplaceTypeTabId,
   type PipelineFilterValues,
@@ -32,6 +34,7 @@ import {
   type InstalledEntryStatusStates,
   type InstalledStatusFilterValue,
 } from '@canopy/ui-shared/lib';
+import { MODEL_PRESET_LABEL_PLURAL } from '@canopy/ui-shared/lib/model-preset-labels';
 import {
   buildMarketplaceBrowseGroups,
   groupMarketplaceListings,
@@ -57,7 +60,8 @@ export type CustomizeSectionId =
   | 'updates'
   | 'installed'
   | 'shared-by-me'
-  | 'browse';
+  | 'browse'
+  | 'results';
 
 export interface CustomizeBrowseGroup {
   readonly id: string;
@@ -76,6 +80,8 @@ export interface CustomizeSectionModel {
   readonly showEntryTypes: boolean;
   readonly previewLimit?: number;
   readonly groups?: readonly CustomizeBrowseGroup[];
+  /** All search keeps each ranked row's Installed or Browse actions. */
+  readonly installedResultIds?: ReadonlySet<string>;
   readonly inventoryState?: CustomizeInventoryState;
   readonly emptyReason?: 'search' | 'pipeline-filters';
   /** Installed only: set while a listed row is a plugin-bundled skill. */
@@ -552,7 +558,7 @@ function allBrowseGroups(
     },
     {
       id: 'agents',
-      title: 'Agents',
+      title: MODEL_PRESET_LABEL_PLURAL,
       entries: entries.filter((entry) => entry.kind === 'agent'),
     },
     {
@@ -599,26 +605,113 @@ export function buildCustomizeTabModel(
   // New Customize's filter menu (CAN-6809); every entry passes while it is off.
   const discoveryFilters = input.discoveryFilters;
   const discovery = discoveryFilters !== undefined;
+  const splitSearchResults = discovery && searchActive && input.tab === 'all';
+  const hasUpdate = (entry: UnifiedPluginEntry): boolean =>
+    entryHasUpdate(entry, input.supportedUpdateKinds);
+  const statusFilter = effectiveInstalledStatusFilter(
+    input.tab,
+    input.installedStatusFilter,
+    input.supportedUpdateKinds,
+  );
+  const matchesStatus = (entry: UnifiedPluginEntry): boolean =>
+    statusFilter === undefined ||
+    installedStatusMember(
+      entry,
+      statusFilter,
+      input.installedStatusStates,
+      input.installedStatusSnapshot,
+      input.supportedUpdateKinds,
+    );
+  const discoveryStatusOnly =
+    splitSearchResults && discoveryFilters.status !== 'any'
+      ? {
+          ...DEFAULT_CUSTOMIZE_DISCOVERY_FILTERS,
+          status: discoveryFilters.status,
+        }
+      : undefined;
   // New Customize's publisher and logo rule (Sergii's QA); off, every entry
   // keeps the projection's own.
   const candidates = unique(
-    discovery ? input.entries.map(customizeDiscoveryIdentity) : input.entries,
+    discovery
+      ? input.entries.map((entry) =>
+          customizeDiscoveryIdentity(
+            // A plugin can supply the same curated MCP, which remains
+            // available as a standalone install in All search.
+            splitSearchResults &&
+              entry.ref.type === 'curated-mcp' &&
+              entry.installedVia !== undefined
+              ? { ...entry, installedVia: undefined }
+              : entry,
+          ),
+        )
+      : input.entries,
   );
-  // New Customize lists each integration once (CAN-6811): the copies that
-  // share an integration key collapse into one row on every tab and in
-  // search. Tabs, filters and search read every copy the row stands for.
+  // Choose a representative from the copies eligible for standalone results.
+  const matchingCopies = splitSearchResults
+    ? candidates.filter((entry) => {
+        if (entry.kind !== 'app') return true;
+        if (listedAsItsPlugin(entry)) return false;
+        if (!statusFilter && !discoveryStatusOnly) return true;
+        const installed = marketplaceEntryIsInstalled(
+          entry,
+          input.installedStatusStates,
+        );
+        return (
+          (!statusFilter || (installed && matchesStatus(entry))) &&
+          (!discoveryStatusOnly ||
+            customizeDiscoveryEntryMatches(
+              entry,
+              discoveryStatusOnly,
+              installed,
+              hasUpdate(entry),
+            ))
+        );
+      })
+    : candidates;
   const integrationRows = discovery
     ? mergeCustomizeIntegrations(
-        candidates,
+        matchingCopies,
         input.defaultHarness ?? DEFAULT_CUSTOMIZE_HARNESS,
         input.installedStatusStates,
+        splitSearchResults,
       )
     : undefined;
-  const rowCandidates = integrationRows?.rows ?? candidates;
+  const skillAliases = new Map<string, UnifiedPluginEntry[]>();
+  if (splitSearchResults) {
+    const standaloneSkillIds = new Set(
+      candidates
+        .filter((entry) => entry.ref.type === 'skill')
+        .map(({ id }) => id),
+    );
+    for (const entry of candidates) {
+      const installId = entry.installedEntryId;
+      if (
+        entry.ref.type !== 'shared-skill' ||
+        !installId ||
+        !standaloneSkillIds.has(installId)
+      )
+        continue;
+      const aliases = skillAliases.get(installId);
+      if (aliases) aliases.push(entry);
+      else skillAliases.set(installId, [entry]);
+    }
+  }
+  const foldedSkillIds = new Set(
+    [...skillAliases.values()].flatMap((aliases) =>
+      aliases.map(({ id }) => id),
+    ),
+  );
+  const rowCandidates = (integrationRows?.rows ?? candidates).filter(
+    (entry) => !foldedSkillIds.has(entry.id),
+  );
   const membersOf = (
     entry: UnifiedPluginEntry,
-  ): readonly UnifiedPluginEntry[] =>
-    integrationRows?.membersOf.get(entry.id) ?? [entry];
+  ): readonly UnifiedPluginEntry[] => {
+    const aliases = skillAliases.get(entry.id);
+    return aliases
+      ? [entry, ...aliases]
+      : (integrationRows?.membersOf.get(entry.id) ?? [entry]);
+  };
   // A plugin's skills, for the skill tier of New Customize's search order.
   const bundledSkillNames = new Map<string, string[]>();
   for (const entry of candidates) {
@@ -642,6 +735,18 @@ export function buildCustomizeTabModel(
   const skillNamesOf = (entry: UnifiedPluginEntry): readonly string[] => [
     ...new Set(membersOf(entry).flatMap(copySkillNames)),
   ];
+  const typedMatchTier = (entry: UnifiedPluginEntry): number => {
+    const suffix =
+      entry.kind === 'plugin'
+        ? 'plugin'
+        : entry.kind === 'app'
+          ? 'mcp'
+          : undefined;
+    if (!suffix || !query.toLowerCase().endsWith(` ${suffix}`)) return 7;
+    const name = query.slice(0, -(suffix.length + 1));
+    const tier = customizeMatchTier(entry, name);
+    return tier <= 2 ? tier : 7;
+  };
   // New Customize keeps a plugin's skills inside the plugin (CAN-6812): no
   // bundled skill gets its own row, the plugin row stands for them and a
   // search reaches the plugin through them.
@@ -691,8 +796,6 @@ export function buildCustomizeTabModel(
       standsForPlugin(entry) &&
       (membersOf(entry).some((copy) => bundledSkillNames.has(copy.id)) ||
         skillMatchOf(entry) !== undefined));
-  const hasUpdate = (entry: UnifiedPluginEntry): boolean =>
-    entryHasUpdate(entry, input.supportedUpdateKinds);
   const sharedWithMeOnly = discovery && input.sharedWithMeOnly === true;
   // Shared includes uninstalled agents, but still intersects the explicit
   // Only collections filter, just like Status, Marketplace and Works with.
@@ -788,7 +891,11 @@ export function buildCustomizeTabModel(
     return new Set(
       rows.flatMap((row) =>
         matched.has(row.id) ||
-        membersOf(row).some((copy) => matched.has(copy.id)) ||
+        membersOf(row).some(
+          (copy) =>
+            matched.has(copy.id) ||
+            (splitSearchResults && typedMatchTier(copy) < 7),
+        ) ||
         skillMatchOf(row) !== undefined ||
         serverMatchOf(row)
           ? [row.id]
@@ -861,20 +968,6 @@ export function buildCustomizeTabModel(
   const canonicalInstalls = canonicalInstallsOf(entries);
   // Missing desktop inventory does not erase known cloud/project installs.
   const allInstalled = [...canonicalInstalls.values()];
-  const statusFilter = effectiveInstalledStatusFilter(
-    input.tab,
-    input.installedStatusFilter,
-    input.supportedUpdateKinds,
-  );
-  const matchesStatus = (entry: UnifiedPluginEntry): boolean =>
-    statusFilter === undefined ||
-    installedStatusMember(
-      entry,
-      statusFilter,
-      input.installedStatusStates,
-      input.installedStatusSnapshot,
-      input.supportedUpdateKinds,
-    );
   // New Customize keeps the Workflows tab's Source, Scope and Trigger in
   // the page's one filter menu, so they narrow installed workflows too.
   const installedWorkflowFilters =
@@ -899,16 +992,17 @@ export function buildCustomizeTabModel(
     hasUpdate(entry) || customizeDiscoveryNeedsAttention(entry);
   // With a query, relevance beats needs-attention-first (Sergii's QA); the
   // attention order applies only with no query.
-  const installed = !discovery
-    ? groupedInstalled
-    : searchActive
-      ? rankCustomizeSearch(groupedInstalled, query, skillNamesOf, {
-          keepOrder: true,
-        })
-      : [
-          ...groupedInstalled.filter(needsAttention),
-          ...groupedInstalled.filter((entry) => !needsAttention(entry)),
-        ];
+  const installed =
+    !discovery || splitSearchResults
+      ? groupedInstalled
+      : searchActive
+        ? rankCustomizeSearch(groupedInstalled, query, skillNamesOf, {
+            keepOrder: true,
+          })
+        : [
+            ...groupedInstalled.filter(needsAttention),
+            ...groupedInstalled.filter((entry) => !needsAttention(entry)),
+          ];
   const updates = installed.filter((entry) =>
     surfacedUpdate(entry, input.supportedUpdateKinds),
   );
@@ -941,7 +1035,7 @@ export function buildCustomizeTabModel(
       input.tab === 'collection' && !discovery
         ? 'Added'
         : input.tab === 'agent' && !discovery
-          ? 'Your agents'
+          ? 'Your model presets'
           : 'Installed',
       installed,
       {
@@ -1047,7 +1141,7 @@ export function buildCustomizeTabModel(
                 )))),
       );
     const allGroups =
-      input.tab === 'all'
+      input.tab === 'all' && !splitSearchResults
         ? allBrowseGroups(browse, searchActive, input.suggestedNames)
         : undefined;
     // New Customize's Browse is one list (CAN-6810): today's group order,
@@ -1057,7 +1151,7 @@ export function buildCustomizeTabModel(
       ? unique(allGroups.flatMap((group) => group.entries))
       : groupMarketplaceListings(browse);
     const browseEntries =
-      discovery && searchActive
+      discovery && searchActive && !splitSearchResults
         ? rankCustomizeByRelevance(browseOrder, query, skillNamesOf)
         : browseOrder;
     if (
@@ -1079,6 +1173,40 @@ export function buildCustomizeTabModel(
     }
   }
   const batchableUpdates = updates.filter((entry) => entry.kind === 'skill');
+  if (splitSearchResults) {
+    const browse = sections.find((item) => item.id === 'browse');
+    const installedSection = sections.find((item) => item.id === 'installed');
+    const results = (installedSection?.entries ?? [])
+      .concat(browse?.entries ?? [])
+      .map((entry) => ({
+        entry,
+        tier: Math.min(
+          ...membersOf(entry).map((copy) =>
+            Math.min(
+              customizeMatchTier(copy, query, copySkillNames(copy)),
+              typedMatchTier(copy),
+            ),
+          ),
+        ),
+      }))
+      .sort(
+        (a, b) =>
+          a.tier - b.tier ||
+          Number(b.entry.accountProxyMcp === true) -
+            Number(a.entry.accountProxyMcp === true) ||
+          Number(b.entry.recommended) - Number(a.entry.recommended),
+      )
+      .map(({ entry }) => entry);
+    sections.length = 0;
+    if (results.length > 0)
+      section('results', 'Search results', results, {
+        installedResultIds: new Set(
+          installedSection?.entries.map(({ id }) => id),
+        ),
+      });
+    if (installedSection && installedSection.inventoryState !== 'ready')
+      sections.push({ ...installedSection, entries: [], count: 0 });
+  }
   const skillMatches = new Map<string, CustomizeSkillMatch>();
   for (const row of sections.flatMap((section) => section.entries)) {
     const match = skillMatchOf(row);

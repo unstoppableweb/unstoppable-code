@@ -124,7 +124,7 @@ export const REMOTE_EVENTS = {
  * Version 1 is every release before this check. After a bump, run
  * `pnpm run remote-control:contract:write`; see docs/remote-control-protocol.md.
  */
-export const REMOTE_PROTOCOL_VERSION = 26;
+export const REMOTE_PROTOCOL_VERSION = 27;
 
 /**
  * The oldest host protocol the web's browser and hosted controllers accept,
@@ -147,6 +147,36 @@ export const REMOTE_PROTOCOL_VERSION = 26;
  * controller floor").
  */
 export const WEB_CONTROLLER_MIN_PROTOCOL_VERSION = 19;
+
+/**
+ * The `session.hello.controller.mode` of a desktop controller in one-window
+ * mode (CAN-7758): the main window following several paired computers. Such a
+ * controller is admitted from a version floor and served only
+ * `ONE_WINDOW_CONTROLLER_CHANNELS`. A desktop controller without a mode is the
+ * separate window per computer: exact protocol match and the full tunnel.
+ */
+export const DESKTOP_ONE_WINDOW_MODE = 'one-window';
+
+/**
+ * The oldest protocol a one-window desktop controller and host work with,
+ * checked both ways: the controller sends it as
+ * `session.hello.controller.minVersion` and accepts no host below it, and a
+ * host serves no one-window controller below it. Below the floor the host
+ * serves only `REMOTE_CORE_OPERATIONS`, so the newer side can update the older
+ * one.
+ *
+ * What pins it, so a bump's author can tell whether the floor must move:
+ * - 26 (CAN-7758): one-window mode itself. A host on 25 or below has no
+ *   one-window profile and refuses a desktop controller on another protocol.
+ *
+ * Raise it only when a host or controller below the new floor would misread
+ * or mishandle a channel on the one-window list, and no capability or channel
+ * refusal already covers it; add the reason above. Never raise it just
+ * because `REMOTE_PROTOCOL_VERSION` went up. It never exceeds
+ * `REMOTE_PROTOCOL_VERSION` (docs/remote-control-protocol.md, "One-window
+ * desktop controllers").
+ */
+export const DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION = 26;
 
 /** What a computer runs, as the other computer of a session sees it. */
 export const RemoteVersionSchema = z.object({
@@ -177,6 +207,14 @@ export const HelloParamsSchema = z.object({
     .object({
       kind: z.enum(DEVICE_KINDS),
       minVersion: z.number().int().min(1),
+      /**
+       * How a desktop controller uses the session: `DESKTOP_ONE_WINDOW_MODE`,
+       * or absent for the separate window per computer. Hosts answer a mode
+       * they do not know as incompatible and refuse any mode on another kind.
+       * Hosts released before it strip the field, so they hold the controller
+       * to the exact match.
+       */
+      mode: z.string().min(1).max(64).optional(),
     })
     .optional(),
   transport: RemoteTransportFeaturesSchema.optional(),
@@ -458,6 +496,17 @@ export const HelloResultSchema = z.object({
        * Absent means unsupported.
        */
       webPreview: WebPreviewHostFeatureSchema.optional(),
+      /**
+       * The host admitted this desktop controller in one-window mode and
+       * serves it the channels of these capabilities only
+       * (`ONE_WINDOW_CAPABILITY_CHANNELS`). Absent means the host does not
+       * know the mode: at the same protocol it serves the full tunnel.
+       */
+      oneWindow: z
+        .object({
+          capabilities: z.array(z.string().min(1).max(64)).max(256),
+        })
+        .optional(),
     })
     .optional(),
   /** The transport features the host accepted from the hello's offer. */
@@ -692,6 +741,33 @@ export class RemoteChannelUnavailableError extends Error {
   constructor(channel: string) {
     super(channelUnavailableMessage(channel));
     this.name = 'RemoteChannelUnavailableError';
+  }
+}
+
+export const ARGUMENTS_REFUSED_CODE = 'remote_arguments_refused';
+
+/**
+ * Keep this text unchanged: controllers may match it when a transport drops
+ * the code. It never matches {@link isChannelUnavailableRejection}.
+ */
+export function argumentsRefusedMessage(channel: string): string {
+  return `The computer refused the values sent on "${channel}".`;
+}
+
+/**
+ * A host refusing a browser's harness setup call (gap 1 of CAN-6718) on a
+ * channel it does serve, because the arguments fail the channel's browser
+ * policy (`browserInvocationAllowed`). A missing channel stays
+ * {@link RemoteChannelUnavailableError}, so only that one reads as an older
+ * computer. Other channels' argument policies still answer
+ * `remote_channel_unavailable`, as their contracts say, and so do hosts from
+ * before this code.
+ */
+export class RemoteArgumentsRefusedError extends Error {
+  readonly code = ARGUMENTS_REFUSED_CODE;
+  constructor(channel: string) {
+    super(argumentsRefusedMessage(channel));
+    this.name = 'RemoteArgumentsRefusedError';
   }
 }
 

@@ -431,6 +431,16 @@ export const CLIENT_FEATURE_FLAGS = {
     description:
       "Controls whether desktop shares chat automations that it would otherwise share in chat form (packaged installs, native chat automations, container automations) as workflows (CAN-6455). Off until recipients run a desktop that binds a workflow's project input.",
   },
+  canopyRemoteWebPreview: {
+    key: 'canopy-remote-web-preview',
+    launchDarklyDisabledDefaultValue: false,
+    launchDarklyEnabledUnavailableValue: false,
+    // Remote Control needs the relay, so a local-only build never offers it.
+    localOnlyDefaultValue: false,
+    ownership: 'both',
+    description:
+      "Lets paired desktop computers open this computer's local web servers over Remote Control (CAN-7705): this computer advertises web preview and dials loopback streams, and Settings → Remote access shows its switch (CAN-7712). Off by default until the controller's preview browser ships.",
+  },
   canopyDesktopChatFormat4Promotion: {
     key: 'canopy-desktop-chat-format4-promotion',
     launchDarklyDisabledDefaultValue: false,
@@ -855,7 +865,7 @@ export const CLIENT_FEATURE_FLAGS = {
     localOnlyDefaultValue: false,
     ownership: 'interface',
     description:
-      'Shows the External agents (MCP) row in the desktop account menu, which opens the hosted page through the authenticated Portal.',
+      'Shows the External agents row in the desktop account menu, which opens the hosted page through the authenticated Portal.',
   },
   canopyDesktopSlackOrchestratorRequests: {
     key: 'canopy-desktop-slack-orchestrator-requests',
@@ -868,7 +878,7 @@ export const CLIENT_FEATURE_FLAGS = {
     localOnlyDefaultValue: false,
     ownership: 'both',
     description:
-      "Offers Slack requests to the Orchestrator: shows the Slack section in Settings → Remote Control, desktop main serves a Slack session's send only while it is on, and the web Slack events endpoint records and announces mentions for a Slack workspace only while it is on for that workspace.",
+      "Offers Slack requests to the Orchestrator: shows Listen for Slack mentions on desktop, lets a person link Slack under Account → Integrations on web and desktop, resolves their Slack mentions to the linked computer, desktop main serves a Slack session's send only while it is on, and the web Slack events endpoint records and announces mentions only while it is on for their workspace.",
   },
   canopySharedAgentSecretRequests: {
     key: 'canopy-shared-agent-secret-requests',
@@ -992,6 +1002,7 @@ export type ClientFeatureFlagValues = {
   [CLIENT_FEATURE_FLAGS.canopyDesktopPrSplit.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm
     .key]: boolean;
+  [CLIENT_FEATURE_FLAGS.canopyRemoteWebPreview.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Sweep.key]: boolean;
   [CLIENT_FEATURE_FLAGS.canopyDesktopCursorHarness.key]: boolean;
@@ -1176,6 +1187,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_DISABLED_DEFAULTS: ClientFeatureFl
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm
+        .launchDarklyDisabledDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyRemoteWebPreview.key]:
+      CLIENT_FEATURE_FLAGS.canopyRemoteWebPreview
         .launchDarklyDisabledDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion
@@ -1423,6 +1437,9 @@ export const CLIENT_FEATURE_FLAG_LAUNCHDARKLY_ENABLED_UNAVAILABLE_DEFAULTS: Clie
     [CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm
         .launchDarklyEnabledUnavailableValue,
+    [CLIENT_FEATURE_FLAGS.canopyRemoteWebPreview.key]:
+      CLIENT_FEATURE_FLAGS.canopyRemoteWebPreview
+        .launchDarklyEnabledUnavailableValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion
         .launchDarklyEnabledUnavailableValue,
@@ -1649,6 +1666,8 @@ export const CLIENT_FEATURE_FLAG_LOCAL_ONLY_DEFAULTS: ClientFeatureFlagValues =
     [CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopSharedAutomationsWorkflowForm
         .localOnlyDefaultValue,
+    [CLIENT_FEATURE_FLAGS.canopyRemoteWebPreview.key]:
+      CLIENT_FEATURE_FLAGS.canopyRemoteWebPreview.localOnlyDefaultValue,
     [CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion.key]:
       CLIENT_FEATURE_FLAGS.canopyDesktopChatFormat4Promotion
         .localOnlyDefaultValue,

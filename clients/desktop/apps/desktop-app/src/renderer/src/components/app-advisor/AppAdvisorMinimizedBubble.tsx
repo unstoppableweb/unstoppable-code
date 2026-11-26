@@ -1,6 +1,6 @@
 import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import type { JSX } from 'react';
-import { Button } from '@canopy/ui-shared/components/Button';
+import { Button } from '@canopy/ui-shared/primitives/Button';
 import { RunningGlyph, Tooltip } from '@canopy/ui-shared/components';
 import { OPERATIONAL_STATUS_COLORS } from '@canopy/ui-shared/lib/operational-status-colors';
 import { AppAdvisorIcon } from '@canopy/ui-shared/icons/AppIcons';

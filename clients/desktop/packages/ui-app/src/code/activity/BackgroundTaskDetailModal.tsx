@@ -1,6 +1,6 @@
 'use client';
 
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import { useEffect, useRef, useState, type JSX } from 'react';
 import type { BackgroundTask } from '@canopy/protocol/background-tasks';
 import {
@@ -11,7 +11,7 @@ import {
   Notice,
   LoadingSpinner,
 } from '@canopy/ui-shared/components';
-import { SearchBar } from '@canopy/ui-shared/components/SearchBar';
+import { SearchBar } from '@canopy/ui-shared/primitives/SearchBar';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   backgroundProcessStatusBadgeTone,

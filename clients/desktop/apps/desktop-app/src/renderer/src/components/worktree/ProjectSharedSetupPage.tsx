@@ -16,6 +16,7 @@ import {
   projectLocalSetupKey,
 } from '@/lib/projectLocalSetup';
 import { ProjectSetupPanel } from '@canopy/ui-app/capability/project-setup/ProjectSetupPanel';
+import { openAuthenticatedCloudPage } from '@/lib/openAuthenticatedCloudPage';
 
 /** Commands in script and hook rows are blocked from session replay. */
 const REPLAY_PRIVACY = {
@@ -86,6 +87,9 @@ export function ProjectSharedSetupPage({
       localSetup={localSetup}
       privacy={REPLAY_PRIVACY}
       agentsAndPipelinesEnabled={agentsAndPipelinesEnabled}
+      // The sign-in page only sends its flow's owner on, so it opens in the
+      // browser signed in as this account.
+      openSignIn={openAuthenticatedCloudPage}
     />
   );
 }

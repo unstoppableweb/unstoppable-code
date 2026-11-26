@@ -21,11 +21,16 @@ export function StickyPromptSurface(
   );
 }
 
+/**
+ * Fades the transcript in below the pinned head, so content scrolls out under
+ * a soft edge rather than a hard line. Shows only while the head is stuck
+ * (`data-stuck`): at rest nothing passes under it.
+ */
 export function StickyPromptFade(): JSX.Element {
   return (
     <div
       aria-hidden
-      className="pointer-events-none absolute inset-x-0 top-full hidden h-2.5 bg-gradient-to-b from-base/80 via-base/30 to-transparent group-data-[underlap]/sticky:block"
+      className="pointer-events-none absolute inset-x-0 top-full hidden h-3 bg-gradient-to-b from-base to-transparent group-data-[stuck]/sticky:block"
     />
   );
 }

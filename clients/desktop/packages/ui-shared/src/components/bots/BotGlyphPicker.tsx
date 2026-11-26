@@ -7,11 +7,11 @@ import type {
 import { SIDEBAR_ITEM_GROUP_COLORS } from '@canopy/protocol/sidebar';
 import { PencilIcon } from '../../icons/AppIcons';
 import { deriveBotColors } from '../../lib/bot-colors';
-import { Button } from '../Button';
+import { Button } from '../../primitives/Button';
 import { ColorSwatchPicker } from '../ColorSwatchPicker';
-import { SearchEmptyState, SearchField } from '../SearchField';
-import { TabBar } from '../TabBar';
-import { Tooltip } from '../Tooltip';
+import { SearchEmptyState, SearchField } from '../../primitives/SearchField';
+import { TabBar } from '../../primitives/TabBar';
+import { Tooltip } from '../../primitives/Tooltip';
 import { BotCustomColor } from './BotCustomColor';
 import { BOT_ICON_OPTIONS } from './bot-icons';
 import emojiData from './emoji-data.json';

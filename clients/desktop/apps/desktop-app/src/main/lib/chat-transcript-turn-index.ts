@@ -92,7 +92,11 @@ function projectTurn(
       : undefined;
   const rendered = groupIntoTurns(
     mergeToolResults(
-      reorderMessagesForDisplay(frameTimer ? [...rows, frameTimer] : rows),
+      // Display folds some runs into the turn they follow; the index keeps
+      // the placement it has always used (see `indexOrder`).
+      reorderMessagesForDisplay(frameTimer ? [...rows, frameTimer] : rows, {
+        indexOrder: true,
+      }),
     ),
   );
   const group = rendered.find((item) => item.kind === 'turn-group');

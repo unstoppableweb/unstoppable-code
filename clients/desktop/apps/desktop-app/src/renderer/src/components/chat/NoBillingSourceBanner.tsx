@@ -18,16 +18,16 @@ import {
   AI_CREDITS_GUEST_PURCHASE_LABEL,
   AI_CREDITS_PURCHASE_LABEL,
   AI_CREDITS_REOPEN_BILLING_LABEL,
-  DISPATCH_DEAD_END_COPY,
   MESSAGE_QUEUED_TITLE,
+  NO_PROVIDER_COPY,
   NoticeButton,
   POLICY_BILLING_DEAD_END_COPY,
   POLICY_ONLY_DEAD_END_COPY,
   connectProviderLabel,
   CREDITS_ONLY_DEAD_END_COPY,
   FAILED_TURN_COPY,
-  notSignedInCopy,
-  signedOutCopy,
+  continueWithLabel,
+  readyProviderMessage,
   type CreditsRecoveryCopy,
 } from '@canopy/ui-shared/components';
 import {
@@ -968,20 +968,15 @@ export function NoBillingSourceBanner({
   }
 
   // Copy branches on WHICH trigger fired. The runtime signal means a turn
-  // already failed, so the past tense is the accurate account; reusing the
-  // pre-flight "not connected" line would also be plainly wrong for the case
-  // this exists to fix, where the user IS signed in natively. The derived copy
-  // is untouched — keep it in step with the main-process backstop in
-  // `claude-session.ts` / `codex-session.ts`, which describes the same dead
-  // end.
+  // already failed, so it says the message wasn't sent. The pre-send copy
+  // matches the main-process backstop in `claude-session.ts` /
+  // `codex-session.ts` (`buildNoBillingSourceError`), which describes the
+  // same dead end; keep the two in step.
   //
-  // "didn't cover" rather than "ran out" (CAN-2413 review): the hosted
+  // Neither says credits "ran out" (CAN-2413 review): the hosted
   // `billed === null` that produces this 402 means "no positive personal
   // balance AND no funded eligible org pool", which includes a user who never
-  // had credits at all. The case this banner exists to fix — a working native
-  // login on a gateway-only model — makes a brand-new user one of the
-  // likeliest people to see it, and "ran out" tells them they spent something
-  // they never had.
+  // had credits at all.
   //
   // CAN-1929: name the half that is actually missing. Telling a Claude
   // subscriber they have "no billing source" because their org only allows
@@ -1010,18 +1005,28 @@ export function NoBillingSourceBanner({
           noDispatchableModel?.missing === 'both' &&
           noDispatchableModel.hasPolicyAllowedLane !== false
         ? POLICY_BILLING_DEAD_END_COPY
-        : // Every remaining dispatch dead end keeps the copy ECW-9091
-          // shipped: without a policy the resolver's verdict is about
-          // payment, and the CTAs below name the remedy.
-          dispatchDeadEnd
-          ? DISPATCH_DEAD_END_COPY
-          : // Signed out with credits nobody chose (CAN-7062). Not
-            // `notSignedInCopy`: its "no credits either" may be false here.
-            signedOutNoSource
-            ? signedOutCopy({ providerLabel })
-            : runtimeSignalActive
-              ? FAILED_TURN_COPY
-              : notSignedInCopy({ providerLabel });
+        : // A dispatch dead end and a sign-out with credits nobody chose
+          // (CAN-7062) say the same as before sending: the chat needs a
+          // provider. Only a failed turn with neither says it wasn't sent.
+          runtimeSignalActive && !dispatchDeadEnd && !signedOutNoSource
+          ? FAILED_TURN_COPY
+          : NO_PROVIDER_COPY;
+  const providerChoiceNotice =
+    providerChoice?.notice('chat-input-no-billing-source-provider-choice') ??
+    null;
+  // Exactly one source is ready: name it, as the notice's Continue does.
+  const choicePrimary = providerChoiceNotice?.primary;
+  const message =
+    choicePrimary?.kind === 'continue-with' &&
+    (copy === NO_PROVIDER_COPY || copy === FAILED_TURN_COPY)
+      ? readyProviderMessage(
+          continueWithLabel(
+            choicePrimary.source,
+            providerChoiceNotice?.providerName ?? '',
+          ),
+          { failedTurn: copy === FAILED_TURN_COPY },
+        )
+      : copy.message;
 
   const approvedRefusal =
     providerChoice === null &&
@@ -1074,7 +1079,7 @@ export function NoBillingSourceBanner({
           }}
           dismissTestId="chat-input-no-billing-source-arrival-dismiss"
         >
-          You can send it now.
+          Send your message now.
         </CreditsNotice>
       ) : visible && !standDown && !awaitingCard ? (
         <CreditsNotice
@@ -1123,13 +1128,15 @@ export function NoBillingSourceBanner({
           // With provider choice the list's rows connect each provider, so
           // the notice keeps one button instead of a second Connect.
           {...(providerChoice === null
-            ? { secondaryAction: connectAction }
-            : {})}
-          {...(providerChoice !== null
             ? {
-                providerChoice: providerChoice.notice(
-                  'chat-input-no-billing-source-provider-choice',
-                ),
+                secondaryAction: connectAction,
+                // Connect is the primary until a purchase is pending.
+                secondaryActionLeads: visibleHandoff === null,
+              }
+            : {})}
+          {...(providerChoiceNotice !== null
+            ? {
+                providerChoice: providerChoiceNotice,
                 completion: creditsControl,
               }
             : {})}
@@ -1144,7 +1151,7 @@ export function NoBillingSourceBanner({
           data-testid="chat-input-no-billing-source-banner"
           contactAdminTestId="chat-input-no-billing-source-contact-admin"
         >
-          {queuedHeld || visibleHandoff !== null ? undefined : copy.message}
+          {queuedHeld || visibleHandoff !== null ? undefined : message}
         </CreditsNotice>
       ) : null}
       {/* Rendered as a SIBLING of the `role="status"` element, not inside it.

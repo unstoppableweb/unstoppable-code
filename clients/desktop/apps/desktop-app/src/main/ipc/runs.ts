@@ -30,42 +30,14 @@ import {
   unshareRun,
 } from '../lib/shared-run-sync';
 import { getSharedRunAutoUpdater } from '../services/shared-run-auto-updater';
-import { readSharedRunMetadata } from '../lib/chat-tabs-reader';
 import {
   normalizeCount,
-  readSharedRunCommentEntry,
-  registerSharedRunForComments,
   sharedRunIdempotencyKey,
 } from '../lib/shared-run-comments-registry';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
 import type { DesktopIpcCallerResolver } from './file-tree';
-import {
-  createRunCommentThread,
-  getSharedRun,
-  replyToRunCommentThread,
-  setRunCommentThreadStatus,
-  supportsRunComments,
-} from '../runs/canopy-server-client';
 import { validateId } from '../lib/validation';
 import { registerIpcHandler } from './register';
-
-/**
- * Resolve the shared run backing a chat. Comments are server-authoritative, so
- * the `externalId` always comes from the freshly-read persisted metadata rather
- * than a cached value.
- */
-async function resolveSharedRunExternalId(request: {
-  projectId: string;
-  worktreeId: string;
-  chatId: string;
-}): Promise<string | null> {
-  const meta = await readSharedRunMetadata(
-    request.projectId,
-    request.worktreeId,
-    request.chatId,
-  );
-  return meta?.externalId ?? null;
-}
 
 function validateSessionRef(request: {
   projectId: string;
@@ -96,22 +68,6 @@ function validateCommentThreadId(threadId: string): void {
   ) {
     throw new Error('Invalid threadId');
   }
-}
-
-/**
- * Resolve the run a comment mutation targets, or throw an actionable error.
- * Mutations (unlike the read) surface a failure so the composer can report it.
- */
-async function requireSharedRunExternalId(request: {
-  projectId: string;
-  worktreeId: string;
-  chatId: string;
-}): Promise<string> {
-  const externalId = await resolveSharedRunExternalId(request);
-  if (!externalId) {
-    throw new Error('This chat is not currently shared as a run.');
-  }
-  return externalId;
 }
 
 /** The window's run share, which App Advisor's runs.share shares (CAN-6003). */
@@ -190,10 +146,28 @@ async function markRunCommentsSeenForIpc(
   }
 }
 
+// The runs:comments channels project core.publication.comment.* with only
+// the grants each operation needs.
+const READ_GRANTS = [PUBLICATION_GRANTS.read, 'core.workspace.read'] as const;
+const WRITE_GRANTS = [
+  PUBLICATION_GRANTS.write,
+  'core.workspace.write',
+] as const;
+
 export function registerRunsHandlers(
-  dispatcher: Pick<DesktopCanopyDispatcher, 'instruction'>,
+  dispatcher: Pick<DesktopCanopyDispatcher, 'query' | 'instruction'>,
   resolveCaller: DesktopIpcCallerResolver,
 ): void {
+  const writeAs = (
+    event: Parameters<DesktopIpcCallerResolver>[0],
+  ): {
+    caller: CanopyCallerDescriptor;
+    metadata: { idempotencyKey: string };
+  } => ({
+    caller: { ...resolveCaller(event), grants: [...WRITE_GRANTS] },
+    metadata: { idempotencyKey: randomUUID() },
+  });
+
   registerIpcHandler<[ShareRunRequest], ShareOperationResult<ShareRunResponse>>(
     IPC_CHANNELS.runsShare,
     (_event, request) => shareRunForWindow(request),
@@ -214,84 +188,50 @@ export function registerRunsHandlers(
 
   registerIpcHandler<[ListRunCommentsRequest], ListRunCommentsResponse>(
     IPC_CHANNELS.runsCommentsList,
-    async (_event, request) => {
+    (event, request) => {
       validateSessionRef(request);
-      const entry = await readSharedRunCommentEntry(request);
-      const lastSeenCommentRevision = entry?.lastSeenCommentRevision ?? 0;
-      const externalId = await resolveSharedRunExternalId(request);
-      // Not shared, or the connected Cloud has no comment routes: degrade to
-      // "no comments" rather than erroring, so an older server never breaks
-      // the chat UI.
-      if (!externalId || !(await supportsRunComments())) {
-        return { detail: null, lastSeenCommentRevision };
-      }
-      // Backfill: runs shared BEFORE this feature shipped were never registered
-      // (registration only happens in `shareRun`), so they would never be
-      // polled — no unread badge, no notification — and `markSeen` would no-op
-      // against a missing entry. A finished session never re-shares itself, so
-      // without this it would stay dead forever. Registering opportunistically
-      // on first read makes the run a poll candidate from here on.
-      //
-      // Best-effort: this is a WRITE on a read path, so a failure (disk full,
-      // EACCES, a Windows EPERM on rename) must never turn "show me the
-      // comments" into "Unable to load comments." The next open retries it.
-      if (!entry) {
-        await registerSharedRunForComments({ ...request, externalId }).catch(
-          () => undefined,
-        );
-      }
-      return {
-        detail: await getSharedRun(externalId),
-        lastSeenCommentRevision,
-      };
+      return dispatcher.query('core.publication.comment.list', request, {
+        caller: { ...resolveCaller(event), grants: [...READ_GRANTS] },
+      });
     },
   );
 
   registerIpcHandler<
     [CreateRunCommentThreadRequest],
     RunCommentMutationResponse
-  >(IPC_CHANNELS.runsCommentsCreate, async (_event, request) => {
+  >(IPC_CHANNELS.runsCommentsCreate, (event, request) => {
     validateSessionRef(request);
-    const externalId = await requireSharedRunExternalId(request);
-    return {
-      detail: await createRunCommentThread(
-        externalId,
-        request.body,
-        request.anchor,
-      ),
-    };
+    return dispatcher.instruction(
+      'core.publication.comment.create',
+      request,
+      writeAs(event),
+    );
   });
 
   registerIpcHandler<
     [ReplyRunCommentThreadRequest],
     RunCommentMutationResponse
-  >(IPC_CHANNELS.runsCommentsReply, async (_event, request) => {
+  >(IPC_CHANNELS.runsCommentsReply, (event, request) => {
     validateSessionRef(request);
     validateCommentThreadId(request.threadId);
-    const externalId = await requireSharedRunExternalId(request);
-    return {
-      detail: await replyToRunCommentThread(
-        externalId,
-        request.threadId,
-        request.body,
-      ),
-    };
+    return dispatcher.instruction(
+      'core.publication.comment.reply',
+      request,
+      writeAs(event),
+    );
   });
 
   registerIpcHandler<
     [SetRunCommentThreadStatusRequest],
     RunCommentMutationResponse
-  >(IPC_CHANNELS.runsCommentsSetStatus, async (_event, request) => {
+  >(IPC_CHANNELS.runsCommentsSetStatus, (event, request) => {
     validateSessionRef(request);
     validateCommentThreadId(request.threadId);
-    const externalId = await requireSharedRunExternalId(request);
-    return {
-      detail: await setRunCommentThreadStatus(
-        externalId,
-        request.threadId,
-        request.status,
-      ),
-    };
+    return dispatcher.instruction(
+      'core.publication.comment.update',
+      request,
+      writeAs(event),
+    );
   });
 
   registerIpcHandler<[MarkRunCommentsSeenRequest], MarkRunCommentsSeenResponse>(

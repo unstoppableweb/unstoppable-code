@@ -1,11 +1,13 @@
 import {
   BarChart3,
   Boxes,
+  ConnectorsIcon,
   CreditCard,
   Database,
   FeedIcon,
   FileText,
   FolderGit2,
+  MessagesSquare,
   Network,
   PluginsIcon,
   Settings,
@@ -33,6 +35,8 @@ export interface TeamNavItem {
   readonly description: string;
   readonly icon: typeof FeedIcon;
   readonly href: (orgId: string) => string;
+  /** A "New" tag both rails draw after the label, for a recently added page. */
+  readonly tag?: 'new';
 }
 
 /**
@@ -89,6 +93,16 @@ export const TEAM_NAV_ITEMS: readonly TeamNavItem[] = [
     description: "Facts agents have learned from this organization's work.",
     icon: Database,
     href: (id) => `/organization/${id}/memory`,
+  },
+  {
+    // Owners only; the server decides who gets it (`transcriptsEnabled`).
+    key: 'transcripts',
+    label: 'Transcripts',
+    description:
+      'Chat transcripts members share with this organization. Only owners can see this page.',
+    icon: MessagesSquare,
+    href: (id) => `/organization/${id}/transcripts`,
+    tag: 'new',
   },
   {
     key: 'settings',
@@ -158,6 +172,12 @@ export const ORGANIZATION_SETTINGS_SUBTAB_ITEMS: readonly OrganizationSettingsSu
       label: 'Project defaults',
       description: 'What every project in this organization gets by default.',
       icon: SkillIcon,
+    },
+    {
+      key: 'connectors',
+      label: 'Connectors',
+      description: 'Tools the organization holds and shares with its projects.',
+      icon: ConnectorsIcon,
     },
     {
       key: 'integrations',

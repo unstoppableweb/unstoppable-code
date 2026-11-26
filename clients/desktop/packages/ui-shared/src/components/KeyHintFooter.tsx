@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { Kbd } from './Kbd';
+import { Kbd } from '../primitives/Kbd';
 
 export interface KeyHint {
   /** The keys, as for `Kbd`. */

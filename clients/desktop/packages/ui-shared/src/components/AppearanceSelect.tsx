@@ -1,7 +1,7 @@
 'use client';
 
 import type { JSX, ReactNode } from 'react';
-import { SettingsSelect } from './SettingsSelect';
+import { SettingsSelect } from '../primitives/SettingsSelect';
 
 export interface AppearanceOption<Value extends string> {
   readonly value: Value;

@@ -1,5 +1,14 @@
 import { normalizeWorkspaceOwner } from '@canopy/desktop-shared/lib/workspace-owner';
 import type { WorkspaceOwnerBinding } from '@canopy/desktop-shared/types';
+import {
+  prepareOrganizationLossState,
+  type OrganizationMembershipSnapshot,
+} from '@canopy/core-runtime/node/cloud-account';
+
+export {
+  selectLostOrganizationIds,
+  type OrganizationMembershipSnapshot,
+} from '@canopy/core-runtime/node/cloud-account';
 
 export interface OrganizationAccessLossWorkspace {
   workspaceId: string;
@@ -17,44 +26,8 @@ export interface OrganizationAccessLossRecord {
   workspaces?: OrganizationAccessLossWorkspace[];
 }
 
-export interface OrganizationMembershipSnapshot {
-  account?: { id: string };
-  organizations?: readonly { id: string }[];
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function membershipIds(value: unknown): string[] | null {
-  if (!Array.isArray(value)) return null;
-  const ids = new Set<string>();
-  const members: unknown[] = value;
-  for (const member of members) {
-    if (!isRecord(member) || typeof member.id !== 'string' || !member.id.trim())
-      return null;
-    ids.add(member.id.trim().toLowerCase());
-  }
-  return [...ids];
-}
-
-export function selectLostOrganizationIds(input: {
-  previous: OrganizationMembershipSnapshot;
-  saved: OrganizationMembershipSnapshot;
-  organizationsRefreshed: boolean;
-}): string[] {
-  const accountId = input.previous.account?.id.trim();
-  if (
-    !input.organizationsRefreshed ||
-    !accountId ||
-    input.saved.account?.id.trim() !== accountId
-  )
-    return [];
-  const previous = membershipIds(input.previous.organizations);
-  const saved = membershipIds(input.saved.organizations);
-  if (!previous || !saved) return [];
-  const retained = new Set(saved);
-  return previous.filter((id) => !retained.has(id));
 }
 
 export interface OrganizationAccessLossState {
@@ -100,65 +73,14 @@ export function prepareOrganizationAccessLossState(
   },
   next: OrganizationMembershipSnapshot & { updatedAt: string },
   organizationsRefreshed: boolean,
-  { recordLosses = true }: { recordLosses?: boolean } = {},
+  options: { recordLosses?: boolean } = {},
 ): OrganizationAccessLossState | undefined {
-  const accountId = next.account?.id.trim();
-  if (!accountId || accountId !== previous.account?.id.trim()) return undefined;
-  const held = previous.organizationAccessLossState;
-  const organizationIds = membershipIds(next.organizations);
-  if (!organizationsRefreshed || !organizationIds) {
-    const previousIds = membershipIds(previous.organizations);
-    return (
-      held ??
-      (previousIds
-        ? { version: 1, accountId, organizationIds: previousIds, pending: [] }
-        : undefined)
-    );
-  }
-  const pending = [...(held?.pending ?? [])];
-  for (const organizationId of selectLostOrganizationIds({
-    previous: held
-      ? {
-          account: previous.account,
-          organizations: held.organizationIds.map((id) => ({ id })),
-        }
-      : previous,
-    saved: next,
-    organizationsRefreshed: organizationsRefreshed && recordLosses,
-  })) {
-    let detachedAt = next.updatedAt;
-    while (
-      pending.some(
-        (record) =>
-          record.organizationId === organizationId &&
-          record.detachedAt === detachedAt,
-      )
-    )
-      detachedAt = new Date(Date.parse(detachedAt) + 1).toISOString();
-    pending.push({
-      version: 1,
-      accountId,
-      organizationId,
-      detachedAt,
-    });
-  }
-  return {
-    version: 1,
-    accountId,
-    // A same-account login can confirm restoration but cannot consume a loss
-    // diff: only the refresh hook creates the corresponding durable handoff.
-    organizationIds: recordLosses
-      ? organizationIds
-      : [
-          ...new Set([
-            ...(held?.organizationIds ??
-              membershipIds(previous.organizations) ??
-              []),
-            ...organizationIds,
-          ]),
-        ],
-    pending,
-  };
+  return prepareOrganizationLossState(
+    previous,
+    next,
+    organizationsRefreshed,
+    options,
+  );
 }
 
 export function normalizeOrganizationAccessLossRecords(

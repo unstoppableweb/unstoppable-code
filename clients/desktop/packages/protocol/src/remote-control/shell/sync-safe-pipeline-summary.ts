@@ -148,7 +148,16 @@ function sanitizeInput(
 export function sanitizePipelineSummaryForSync(
   summary: RemoteControlPipelineSummary,
 ): RemoteControlPipelineSummary {
-  const { description, taskReadyInputs, planReadyInputs, ...rest } = summary;
+  // `revision` digests the whole file, redacted values included, so it never
+  // leaves the machine; a synced row is reviewed before it runs (CAN-7513).
+  const {
+    description,
+    taskReadyInputs,
+    planReadyInputs,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- stripped on purpose
+    revision: _revision,
+    ...rest
+  } = summary;
   const sanitizeInputs = (
     inputs: Record<string, RemoteControlPipelineInputDefinition> | undefined,
   ): Record<string, RemoteControlPipelineInputDefinition> | undefined =>

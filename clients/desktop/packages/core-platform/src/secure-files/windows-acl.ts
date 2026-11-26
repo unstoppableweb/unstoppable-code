@@ -155,10 +155,15 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isSid = (value: unknown): value is string =>
   typeof value === 'string' && /^S-1(-\d+)+$/.test(value);
 
-/** Anything not provably private fails closed. */
+/**
+ * Anything not provably private fails closed. `accept` admits other accounts'
+ * allow entries only; every other refusal stands, including a later malformed
+ * entry.
+ */
 export function evaluateWindowsAcl(
   text: string,
   kind: PermissionRequest['kind'],
+  foreignTrustees: NonNullable<PermissionRequest['foreignTrustees']> = 'refuse',
 ): PermissionResult {
   let receipt: unknown;
   try {
@@ -167,31 +172,65 @@ export function evaluateWindowsAcl(
     receipt = undefined;
   }
   if (!isRecord(receipt) || !Array.isArray(receipt.aces)) {
-    return fail('unverifiable', 'Windows ACL receipt is malformed');
+    return fail(
+      'unverifiable',
+      'Windows ACL receipt is malformed',
+      'unverifiable',
+    );
   }
   const { user, owner, reparse, directory, dacl } = receipt;
   if (!isSid(user) || !isSid(owner)) {
-    return fail('unverifiable', 'Windows owner or user identity is missing');
+    return fail(
+      'unverifiable',
+      'Windows owner or user identity is missing',
+      'unverifiable',
+    );
   }
-  if (reparse !== false) return fail('insecure', 'path may be a reparse point');
+  if (reparse !== false)
+    return fail('insecure', 'path may be a reparse point', 'reparse_point');
   if (directory !== (kind === 'directory')) {
-    return fail('insecure', `path is not a ${kind}`);
+    return fail('insecure', `path is not a ${kind}`, 'wrong_kind');
   }
-  if (owner !== user) return fail('insecure', 'owned by another account');
-  if (dacl !== true) return fail('insecure', 'null DACL grants everyone');
+  if (owner !== user)
+    return fail('insecure', 'owned by another account', 'foreign_owner');
+  if (dacl !== true)
+    return fail('insecure', 'null DACL grants everyone', 'null_dacl');
+  const accepted = new Set<string>();
   for (const ace of receipt.aces) {
     if (!isRecord(ace) || !isSid(ace.sid)) {
-      return fail('unverifiable', 'Windows ACL entry is malformed');
+      return fail(
+        'unverifiable',
+        'Windows ACL entry is malformed',
+        'unverifiable',
+      );
     }
     if (ace.type === ACCESS_DENIED) continue;
     if (ace.type !== ACCESS_ALLOWED) {
-      return fail('unverifiable', `unsupported ACE type ${String(ace.type)}`);
+      return fail(
+        'unverifiable',
+        `unsupported ACE type ${String(ace.type)}`,
+        'unverifiable',
+      );
     }
-    if (ace.sid !== user && !PRIVILEGED_SIDS.has(ace.sid)) {
-      return fail('insecure', `ACL grants access to ${ace.sid}`);
+    if (ace.sid === user || PRIVILEGED_SIDS.has(ace.sid)) continue;
+    if (foreignTrustees !== 'accept') {
+      return fail(
+        'insecure',
+        `ACL grants access to ${ace.sid}`,
+        'foreign_trustee',
+      );
     }
+    accepted.add(ace.sid);
   }
-  return PRIVATE;
+  return accepted.size === 0
+    ? PRIVATE
+    : {
+        state: 'private',
+        accepted: {
+          cause: 'accepted_foreign_trustee',
+          trustees: [...accepted],
+        },
+      };
 }
 
 /** Read-only: mode bits prove nothing here and insecure ACLs are never repaired. */
@@ -202,11 +241,15 @@ export async function windowsPermissions(
   const stats = await lstat(request.path, { bigint: true });
   let result =
     checkShape(stats, request.kind) ??
-    evaluateWindowsAcl(await read(request.path), request.kind);
+    evaluateWindowsAcl(
+      await read(request.path),
+      request.kind,
+      request.foreignTrustees,
+    );
   if (result.state === 'private') {
     const after = await lstat(request.path, { bigint: true });
     result = !sameNode(stats, after)
-      ? fail('unverifiable', PATH_CHANGED_DURING_CHECK)
+      ? fail('unverifiable', PATH_CHANGED_DURING_CHECK, 'path_changed')
       : (checkShape(after, request.kind) ?? result);
   }
   return result.state === 'private' || request.action === 'verify'

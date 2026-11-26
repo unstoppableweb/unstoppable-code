@@ -6,7 +6,6 @@ import {
   DiffSourceSelector,
   ErrorBanner,
   GoogleSubscriptionRow,
-  LoadingButton,
   SettingsBackButton,
   SettingsButtonRow,
   SettingsRowsGroup,
@@ -158,7 +157,7 @@ export function SettingsSaveBarSpecimen(): JSX.Element {
               <SettingsSaveBar
                 status={saving ? 'Saving…' : 'Unsaved changes'}
                 actions={
-                  <LoadingButton
+                  <Button
                     size="compact"
                     variant="primary"
                     loading={saving}
@@ -166,7 +165,7 @@ export function SettingsSaveBarSpecimen(): JSX.Element {
                     onClick={() => setSaving((current) => !current)}
                   >
                     Save
-                  </LoadingButton>
+                  </Button>
                 }
               />
             </div>

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { unattendedPluginOptions } from '../agents/turn-account-resolution';
 import { join } from 'node:path';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -300,9 +301,7 @@ export async function openAntigravityExtensions(input: {
               sessionId: ownerId,
               preferences: context.preferences,
               packageOverlay: options.packageOverlay,
-              ...(options.accountResolution
-                ? { accountResolution: options.accountResolution }
-                : {}),
+              ...unattendedPluginOptions(options),
               mcpHttpProxyService: {
                 ensureStarted: (port) => proxy.ensureStarted(port),
                 registerRoute: async (route) => {

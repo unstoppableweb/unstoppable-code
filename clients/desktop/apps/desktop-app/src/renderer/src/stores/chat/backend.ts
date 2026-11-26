@@ -6,6 +6,7 @@ import type {
   SecretRequestSettleResponse,
 } from '@canopy/desktop-shared/types';
 import { CoreCoworkRequestError } from '@canopy/app-state/core-cowork';
+import { isPairedComputerId } from '@canopy/protocol/authority-qualified-id';
 import { isWebCoreScope } from '@/lib/chat-authority';
 import { reportUnhandledRendererRejection } from '@/lib/renderer-error-logging';
 import { webCoreChatBackend } from './web-core';
@@ -193,11 +194,15 @@ export function reportUnlessUnavailable(error: unknown): void {
 
 /**
  * The backend that serves this scope's chats: the web core's for a web core
- * scope, the local core's otherwise. A scope is never served by another
- * authority's backend.
+ * scope, the local core's for a local one. A scope is never served by another
+ * authority's backend: a paired computer's scope has no backend yet, so it is
+ * refused rather than sent to the local core (CAN-7757).
  */
 export function chatBackendFor(scope: ChatBackendScope): ChatBackend {
-  return isWebCoreScope(scope.projectId) ? webCoreChatBackend() : localBackend;
+  if (isWebCoreScope(scope.projectId)) return webCoreChatBackend();
+  if (isPairedComputerId(scope.projectId))
+    throw new Error('No chat backend serves another computer yet.');
+  return localBackend;
 }
 
 /**

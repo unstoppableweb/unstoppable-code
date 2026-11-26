@@ -1,4 +1,4 @@
-import { SPACE_ROLE_GAP_CLASS, type SpaceRole } from './Stack';
+import { SPACE_ROLE_GAP_CLASS, type SpaceRole } from '../primitives/Stack';
 import {
   type JSX,
   type KeyboardEvent,
@@ -13,10 +13,10 @@ import {
 } from './bubble-badge';
 import type { ChatMessageContextMenuTargetProps } from './ChatMessageContextMenu';
 import { BubbleCopyBadge } from './BubbleCopyBadge';
-import { Button } from './Button';
-import { getWindow } from '../panels/window-registry';
-import { Tooltip } from './Tooltip';
-import { useIsPhone } from './useMediaQuery';
+import { Button } from '../primitives/Button';
+import { getWindow } from '../lib/window-registry';
+import { Tooltip } from '../primitives/Tooltip';
+import { useIsPhone } from '../primitives/useMediaQuery';
 import { RevertIcon as AppCatalogRevertIcon } from '../icons/AppIcons';
 
 /**
@@ -63,8 +63,9 @@ export interface UserBubbleProps {
    * Bubble tint. `default` keeps the primary/accent pill; `info` renders the
    * info-tinted variant used for Canopy-generated (watcher-fired) messages;
    * `muted` is a flat muted fill with no shadow, for a chat on its own
-   * raised surface. `transcript-row` keeps the message actions around a
-   * full-width transcript event.
+   * raised surface. `transcript-row` wraps a full-width transcript event,
+   * such as a watcher wake, and keeps Revert but not Copy: the row shows a
+   * summary, not the message text Copy would take.
    */
   variant?: 'default' | 'info' | 'muted' | 'transcript-row';
   /** Optional media rendered inside the bubble, between the header and
@@ -207,13 +208,14 @@ export function UserBubble({
   // PULL-OUT PANEL WINDOWS are the one realm this does NOT follow into, and it
   // is worth recording why rather than leaving it to be rediscovered.
   // `useLayoutTier` reads the GLOBAL `window.matchMedia`, while this package's
-  // `panels/window-registry` rule is that DOM-touching code must use the owning
+  // `lib/window-registry` rule is that DOM-touching code must use the owning
   // window of the element it works with. A narrow aux window would therefore
   // read the MAIN window's tier, not its own. That is inert today only because
   // the main window's `minWidth: 800` keeps `useIsPhone()` permanently false in
   // that realm — so if the main window's minimum ever drops below 640, or an
   // aux window ever needs its own tier, `useMediaQuery` needs a window-scoped
   // `matchMedia` before this gate can be trusted there.
+  const showCopy = variant !== 'transcript-row';
   const phoneSurfaceClass =
     isPhone && variant !== 'transcript-row' ? ' ml-auto w-fit max-w-17/20' : '';
 
@@ -260,8 +262,8 @@ export function UserBubble({
   // `h-7 w-7` (28px) with a `gap-1` (4px) between them, and the cluster is
   // inset `right-1` (4px). One badge therefore needs 4 + 28 = 32px of clearance
   // and two need 4 + 28 + 4 + 28 = 64px; the values below add the surface's own
-  // 4px breathing room on top. Copy is always rendered, so the one-badge case is
-  // the floor rather than zero.
+  // 4px breathing room on top. A transcript row has no Copy, so it can have
+  // no badges at all.
   //
   // On a coarse pointer the gap widens to `gap-4` (16px): each Button's touch
   // hit area reaches 8px past its 28px disc, so 16px lets the two 44px targets
@@ -275,10 +277,11 @@ export function UserBubble({
   // which is exactly what the `w-fit` geometry above is sensitive to.
   //
   // Both candidates are spelled out literally so Tailwind's scanner emits them.
+  const badgeCount = (onRevert ? 1 : 0) + (showCopy ? 1 : 0);
   const phoneBadgeClearanceClass =
-    !isPhone || actionsOnCorner
+    !isPhone || actionsOnCorner || badgeCount === 0
       ? ''
-      : onRevert
+      : badgeCount === 2
         ? ' pr-17 pointer-coarse:pr-20'
         : ' pr-9';
 
@@ -316,7 +319,9 @@ export function UserBubble({
             </Button>
           </Tooltip>
         )}
-        <BubbleCopyBadge copyText={copyText} dataTestId="user-bubble-copy" />
+        {showCopy && (
+          <BubbleCopyBadge copyText={copyText} dataTestId="user-bubble-copy" />
+        )}
       </div>
       <div
         className={

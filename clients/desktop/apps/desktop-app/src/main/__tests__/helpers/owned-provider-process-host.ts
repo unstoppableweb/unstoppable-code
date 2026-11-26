@@ -66,6 +66,9 @@ export function startOwnedProviderProcessHost(): OwnedProviderProcessHost {
   });
   const services = createExecutionProcessServices({
     os: testOperatingSystem(),
+    nativePath: process.env.CANOPY_OWNED_CHILD_ADDON
+      ? path.resolve(ROOT, process.env.CANOPY_OWNED_CHILD_ADDON)
+      : undefined,
   });
   const owned = createOwnedProcessHostPort({
     services,

@@ -8,12 +8,16 @@ import {
 } from '@canopy/core-runtime';
 import {
   WORKER_GIT_BRANCH_LIST_ERROR_CODES,
+  WORKER_GIT_WORKTREE_HEALTH_ERROR_CODES,
   WorkerGitBranchListResultSchema,
+  WorkerGitWorktreeHealthGetResultSchema,
   type CanopyCallerDescriptor,
   type CanopyErrorKind,
   type CanopyHostExecution,
   type WorkerGitBranchListParams,
   type WorkerGitBranchListResult,
+  type WorkerGitWorktreeHealthGetParams,
+  type WorkerGitWorktreeHealthGetResult,
 } from '@canopy/protocol/canopy-core';
 import {
   CODE_REVIEW_CHAT_PROJECT_ID,
@@ -41,12 +45,18 @@ import type {
 
 export interface DaemonGitQueryClient {
   readonly signal: AbortSignal;
+  /** Each route validates the answer against its operation's result schema. */
   query(
-    name: 'worker.git.branch.list',
-    params: WorkerGitBranchListParams,
+    name: 'worker.git.branch.list' | 'worker.git.worktree.health.get',
+    params: WorkerGitBranchListParams | WorkerGitWorktreeHealthGetParams,
     options?: CanopyClientQueryOptions,
-  ): Promise<WorkerGitBranchListResult>;
+  ): Promise<unknown>;
 }
+
+/** The reads this route may send to the daemon. */
+export type DaemonGitRouteOperation =
+  | 'git.branch.list'
+  | 'git.worktree.health.get';
 
 export interface DaemonGitRouteRequest {
   readonly sender: CallerLifetimeSender & { readonly id: number };
@@ -65,12 +75,21 @@ export interface DaemonGitRouteOptions {
   readonly resolveWorktreeTargetIds: ReadRouteLookups['resolveWorktreeTargetIds'];
   readonly platform?: ReadRoutePlatform | null;
   /** Test-only selection; production uses {@link DAEMON_GIT_PRODUCTION_SELECTION}. */
-  readonly selectable?: ReadonlySet<'git.branch.list'>;
+  readonly selectable?: ReadonlySet<DaemonGitRouteOperation>;
   readonly queryDeadlineMs?: number;
   readonly execution?: () => CanopyHostExecution;
   readonly repositoryPath?: (
     params: WorkerGitBranchListParams,
   ) => Promise<string | null>;
+  /**
+   * Whether main reads the workspace manifest the way the daemon will. The
+   * daemon refuses a workspace whose manifest it cannot read, while main still
+   * records an issue, so health stays in process then; without this input
+   * health is never routed.
+   */
+  readonly workspaceManifestReadable?: (
+    workspaceId: string,
+  ) => Promise<boolean>;
 }
 
 export interface DaemonGitRoute {
@@ -80,6 +99,19 @@ export interface DaemonGitRoute {
     request: DaemonGitRouteRequest,
     direct: () => Promise<WorkerGitBranchListResult>,
   ): Promise<WorkerGitBranchListResult>;
+  /**
+   * Codes only (q-49): the private issue detail stays in main (CAN-7188).
+   * `settle` runs main's follow-up on a daemon answer within the request's
+   * lifetime; a retired document or the deadline ends it, and the route
+   * checks the request again before handing the answer back to be recorded.
+   */
+  worktreeHealth(
+    params: WorkerGitWorktreeHealthGetParams,
+    options: CanopyQueryOptions,
+    request: DaemonGitRouteRequest,
+    direct: () => Promise<WorkerGitWorktreeHealthGetResult>,
+    settle?: (result: WorkerGitWorktreeHealthGetResult) => Promise<void>,
+  ): Promise<WorkerGitWorktreeHealthGetResult>;
   dispose(): void;
 }
 
@@ -88,10 +120,13 @@ const EXCLUDED_WORKSPACES = new Set([
   PLAN_EXPLORE_CHAT_PROJECT_ID,
   SHARED_CONTAINER_VIEWER_PROJECT_ID,
 ]);
-const WORKSPACE_TYPES: ReadonlySet<WorkspaceType> = new Set([
+// The daemon's recorded Git reader refuses cowork records, so cowork branch
+// lists and health checks (and the standalone-chat sentinel resolving to one)
+// stay in process.
+// shortcut: the daemon's reader refuses every scope while one index row is unreadable, with no fallback; CAN-7675 fixes the reader for branch lists and health.
+const ROUTED_WORKSPACE_TYPES: ReadonlySet<WorkspaceType> = new Set([
   'single-repo',
   'multi-repo',
-  'cowork',
 ]);
 
 /**
@@ -100,33 +135,37 @@ const WORKSPACE_TYPES: ReadonlySet<WorkspaceType> = new Set([
  * so a new read never becomes selectable by accident.
  */
 export const DAEMON_GIT_PRODUCTION_SELECTION: Readonly<
-  Record<ReadRoutePlatform, ReadonlySet<'git.branch.list'>>
+  Record<ReadRoutePlatform, ReadonlySet<DaemonGitRouteOperation>>
 > = {
-  darwin: new Set(['git.branch.list']),
+  darwin: new Set(['git.branch.list', 'git.worktree.health.get']),
   win32: new Set(),
-  linux: new Set(['git.branch.list']),
+  linux: new Set(['git.branch.list', 'git.worktree.health.get']),
 };
-const NO_SELECTION: ReadonlySet<'git.branch.list'> = new Set();
+const NO_SELECTION: ReadonlySet<DaemonGitRouteOperation> = new Set();
+const BRANCH_LIST = "Couldn't list branches.";
+const WORKTREE_HEALTH = "Couldn't check the worktree.";
 
 function failure(kind: CanopyErrorKind, message: string): CanopyOperationError {
   return new CanopyOperationError({ kind, message, retry: { kind: 'never' } });
 }
 
 /** Wire errors have no host cause. Keep only this operation's declared codes. */
-function typedFailure(error: unknown): CanopyOperationError {
+function typedFailure(
+  error: unknown,
+  codes: readonly string[],
+  action: string,
+): CanopyOperationError {
   if (
     !(
       error instanceof CanopyClientError ||
       error instanceof CanopyOperationError
     )
   )
-    return failure('internal', "Couldn't list branches.");
+    return failure('internal', action);
   const { code, ...payload } = error.payload;
   return new CanopyOperationError({
     ...payload,
-    ...(WORKER_GIT_BRANCH_LIST_ERROR_CODES.some(
-      (declared) => declared === code,
-    ) && { code }),
+    ...(codes.some((declared) => declared === code) && { code }),
     retry:
       payload.retry.kind === 'after_refresh'
         ? payload.retry
@@ -134,25 +173,21 @@ function typedFailure(error: unknown): CanopyOperationError {
   });
 }
 
-function untilAborted<T>(read: Promise<T>, signal: AbortSignal): Promise<T> {
+function untilAborted<T>(
+  read: Promise<T>,
+  signal: AbortSignal,
+  action: string,
+): Promise<T> {
   if (signal.aborted) {
     void read.catch(() => undefined);
     return Promise.reject(
-      failure(
-        'cancelled',
-        "Couldn't list branches. The request was cancelled.",
-      ),
+      failure('cancelled', `${action} The request was cancelled.`),
     );
   }
   return new Promise((resolve, reject) => {
     const abort = (): void => {
       signal.removeEventListener('abort', abort);
-      reject(
-        failure(
-          'cancelled',
-          "Couldn't list branches. The request was cancelled.",
-        ),
-      );
+      reject(failure('cancelled', `${action} The request was cancelled.`));
     };
     signal.addEventListener('abort', abort, { once: true });
     void read
@@ -194,7 +229,7 @@ export function createDaemonGitRoute(
                 workspaceType: options.workspaceType,
                 resolveWorktreeTargetIds: options.resolveWorktreeTargetIds,
                 excludedWorkspaceIds: EXCLUDED_WORKSPACES,
-                routedWorkspaceTypes: WORKSPACE_TYPES,
+                routedWorkspaceTypes: ROUTED_WORKSPACE_TYPES,
               },
             })
           : null;
@@ -259,7 +294,7 @@ export function createDaemonGitRoute(
             );
         };
         assertActive();
-        let result: WorkerGitBranchListResult;
+        let result: unknown;
         try {
           result = await untilAborted(
             client.query(
@@ -288,6 +323,7 @@ export function createDaemonGitRoute(
               },
             ),
             querySignal,
+            BRANCH_LIST,
           );
         } catch (error) {
           if (client.signal.aborted && !signal.aborted)
@@ -307,7 +343,11 @@ export function createDaemonGitRoute(
         return { repoPath, result: parsed.data };
       };
       try {
-        const { repoPath, result } = await untilAborted(read(), signal);
+        const { repoPath, result } = await untilAborted(
+          read(),
+          signal,
+          BRANCH_LIST,
+        );
         signal.throwIfAborted();
         // Effects cannot be rolled back; once they begin, drain them before success.
         await applyDefaultBranchEffects(
@@ -331,7 +371,139 @@ export function createDaemonGitRoute(
             'cancelled',
             "Couldn't list branches. The request was cancelled.",
           );
-        throw typedFailure(error);
+        throw typedFailure(
+          error,
+          WORKER_GIT_BRANCH_LIST_ERROR_CODES,
+          BRANCH_LIST,
+        );
+      }
+    },
+    async worktreeHealth(
+      params,
+      context,
+      request,
+      direct,
+      settle,
+    ): Promise<WorkerGitWorktreeHealthGetResult> {
+      const target =
+        !lifetime.signal.aborted && selectable.has('git.worktree.health.get')
+          ? evaluateReadRoute({
+              operation: 'git.worktree.health.get',
+              platform,
+              caller: context.caller,
+              senderId: request.sender.id,
+              scope: params.scope,
+              lookups: {
+                workspaceType: options.workspaceType,
+                resolveWorktreeTargetIds: options.resolveWorktreeTargetIds,
+                excludedWorkspaceIds: EXCLUDED_WORKSPACES,
+                routedWorkspaceTypes: ROUTED_WORKSPACE_TYPES,
+              },
+            })
+          : null;
+      if (target?.shape !== 'worktree') return direct();
+      const scope = {
+        workspaceId: target.workspaceId,
+        worktreeId: target.worktreeId,
+      };
+      const deadlineMs = options.queryDeadlineMs ?? 60_000;
+      const deadlineAt = new Date(Date.now() + deadlineMs).toISOString();
+      // Held before the manifest read, so a document retired during it cancels the check.
+      const owner = options.lifetime.ownerFor(request.sender);
+      const deadline = AbortSignal.timeout(deadlineMs);
+      const signal = AbortSignal.any([
+        owner,
+        lifetime.signal,
+        deadline,
+        ...(context.signal ? [context.signal] : []),
+      ]);
+      const aborted = (): CanopyOperationError | null => {
+        if (deadline.aborted)
+          return failure(
+            'deadline_exceeded',
+            `${WORKTREE_HEALTH} The background service took too long to respond.`,
+          );
+        return signal.aborted
+          ? failure(
+              'cancelled',
+              `${WORKTREE_HEALTH} The request was cancelled.`,
+            )
+          : null;
+      };
+      let readable: boolean;
+      try {
+        readable = await untilAborted(
+          options.workspaceManifestReadable?.(target.workspaceId) ??
+            Promise.resolve(false),
+          signal,
+          WORKTREE_HEALTH,
+        );
+      } catch (error) {
+        throw aborted() ?? error;
+      }
+      if (!readable) return direct();
+      const disconnected = (): CanopyOperationError =>
+        failure(
+          'unavailable',
+          `${WORKTREE_HEALTH} The background service disconnected.`,
+        );
+      const read = async (): Promise<WorkerGitWorktreeHealthGetResult> => {
+        signal.throwIfAborted();
+        const host = await options.hostContext();
+        signal.throwIfAborted();
+        const { client } = await options
+          .connections()
+          .get({ ...context.caller, authorityId: host.authorityId }, owner);
+        signal.throwIfAborted();
+        if (client.signal.aborted) throw disconnected();
+        const querySignal = AbortSignal.any([signal, client.signal]);
+        let result: unknown;
+        try {
+          result = await untilAborted(
+            client.query(
+              'worker.git.worktree.health.get',
+              { scope: { ...scope, authorityId: host.authorityId } },
+              {
+                signal: querySignal,
+                metadata: { deadlineAt },
+                execution:
+                  options.execution?.() ??
+                  daemonGitRequestExecution('repository-read'),
+              },
+            ),
+            querySignal,
+            WORKTREE_HEALTH,
+          );
+        } catch (error) {
+          if (client.signal.aborted && !signal.aborted) throw disconnected();
+          throw error;
+        }
+        signal.throwIfAborted();
+        if (client.signal.aborted) throw disconnected();
+        const parsed = WorkerGitWorktreeHealthGetResultSchema.safeParse(result);
+        if (!parsed.success)
+          throw failure(
+            'internal',
+            `${WORKTREE_HEALTH} The background service returned an unreadable response.`,
+          );
+        // Git it has started may finish after an abort; its answer is dropped.
+        await settle?.(parsed.data);
+        return parsed.data;
+      };
+      try {
+        const result = await untilAborted(read(), signal, WORKTREE_HEALTH);
+        // No event turn lies between this check and the caller's record.
+        signal.throwIfAborted();
+        return result;
+      } catch (error) {
+        throw (
+          aborted() ??
+          typedFailure(
+            error,
+            WORKER_GIT_WORKTREE_HEALTH_ERROR_CODES,
+            WORKTREE_HEALTH,
+          )
+        );
       }
     },
     dispose: (): void => lifetime.abort(),

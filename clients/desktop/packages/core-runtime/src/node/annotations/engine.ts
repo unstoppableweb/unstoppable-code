@@ -7,6 +7,7 @@ import {
   type StoredAnnotationCommentThread,
 } from '@canopy/protocol/canopy-core';
 import { CanopyOperationError } from '../../runtime/errors';
+import { isStorageOutcomeUnknownError } from '../../storage/outcome-unknown';
 import {
   emptyFileAnnotationDocument,
   normalizeFileAnnotationDocument,
@@ -20,6 +21,7 @@ import {
 } from './document';
 import {
   keepDamagedAnnotationStateCopy,
+  type AnnotationFolderFlush,
   readAnnotationStateBytes,
   readAnnotationStateText,
   withAnnotationStateLock,
@@ -36,6 +38,18 @@ import {
 export interface FileAnnotationEngineOptions {
   /** The scope's state file, resolved by the host's canonical path helper. */
   statePath(this: void, scope: AnnotationScope): string;
+  /** The data root holding that file; a write makes its folders durable up to it. */
+  dataRoot(this: void): string;
+  /**
+   * The host's folder flush (default: POSIX `fsync`). A Windows host must pass
+   * one; the desktop passes core-platform's `flushDirectory`.
+   */
+  flushDirectory?: AnnotationFolderFlush;
+  /**
+   * Admits a write before the state file is read for it, copied or replaced;
+   * throws to refuse. The desktop host checks storage ownership here (CAN-4735).
+   */
+  admitWrite?(this: void, scope: AnnotationScope): void;
   now?(this: void): Date;
   randomId?(this: void): string;
 }
@@ -134,6 +148,21 @@ function damagedStateError(cause: unknown): CanopyOperationError {
       message:
         "This worktree's file comments could not be read, so they were left unchanged.",
       details: { reason: 'DAMAGED_STATE' },
+      retry: { kind: 'never' },
+    },
+    cause,
+  );
+}
+
+/** The write was installed but not made durable: not acknowledged (CAN-4735). */
+function outcomeUnknownError(cause: unknown): CanopyOperationError {
+  return new CanopyOperationError(
+    {
+      kind: 'internal',
+      code: ANNOTATION_ERROR_CODES.OUTCOME_UNKNOWN,
+      message:
+        "This worktree's file comments may not have been saved. Reload them before trying again.",
+      details: { reason: 'OUTCOME_UNKNOWN', effects: 'unknown' },
       retry: { kind: 'never' },
     },
     cause,
@@ -253,7 +282,15 @@ export function createFileAnnotationEngine(
   ): Promise<boolean> => {
     const digest = createHash('sha256').update(bytes).digest('hex');
     if (copiedBytes.get(statePath) === digest) return true;
-    if (!(await keepDamagedAnnotationStateCopy(statePath, bytes))) return false;
+    if (
+      !(await keepDamagedAnnotationStateCopy(
+        statePath,
+        bytes,
+        options.dataRoot(),
+        options.flushDirectory,
+      ))
+    )
+      return false;
     copiedBytes.set(statePath, digest);
     return true;
   };
@@ -296,21 +333,30 @@ export function createFileAnnotationEngine(
   };
 
   /** Runs one read-modify-write under the state file's lock. */
-  const mutate = <Result>(
+  const mutate = async <Result>(
     scope: AnnotationScope,
     change: (state: FileAnnotationsStateV1) => {
       document: StoredFileAnnotationDocument;
       result: Result;
     },
   ): Promise<Result> => {
+    options.admitWrite?.(scope);
     const statePath = options.statePath(scope);
     return withAnnotationStateLock(statePath, async () => {
       const state = await readForWrite(statePath);
       const { document, result } = change(state);
-      await writeAnnotationStateText(
-        statePath,
-        serializeFileAnnotationsState(replaceDocument(state, document)),
-      );
+      try {
+        await writeAnnotationStateText(
+          statePath,
+          serializeFileAnnotationsState(replaceDocument(state, document)),
+          options.dataRoot(),
+          options.flushDirectory,
+        );
+      } catch (error) {
+        throw isStorageOutcomeUnknownError(error)
+          ? outcomeUnknownError(error)
+          : error;
+      }
       return result;
     });
   };

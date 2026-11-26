@@ -27,7 +27,13 @@ import {
   CloudWorkspaceFilesSection,
   useCloudWorkspaceFilesHeaderChrome,
 } from './CloudWorkspaceFilesSection';
-import { lazy, Suspense, type JSX, useCallback } from 'react';
+import { lazy, Suspense, type JSX, useCallback, useMemo } from 'react';
+import type { McpServersSectionItem } from '@canopy/ui-app';
+import {
+  useOrganizationLayer,
+  useOrganizationLayerStore,
+} from '@/stores/organizationLayerStore';
+import { sharedConnectionRows } from '@/components/mcp/sharedConnectionRows';
 import {
   AttachmentIcon,
   CognitionIcon,
@@ -239,7 +245,10 @@ const EMPTY_MCP_SELECTIONS = {
 export function useMcpServersActivityModel({
   projectId,
   worktreeId,
-}: ActivitySectionRenderProps): SelectedMcpSignInResult {
+}: ActivitySectionRenderProps): SelectedMcpSignInResult & {
+  /** The project's shared connections the chat loads (CAN-6246). */
+  readonly sharedConnections: readonly McpServersSectionItem[];
+} {
   const chatId =
     useWorktreeChatRenderState(
       `${projectId}/${worktreeId}`,
@@ -265,7 +274,12 @@ export function useMcpServersActivityModel({
     },
     [projectId, worktreeId, chatId],
   );
-  return useSelectedMcpSignIn({
+  const organizationLayer = useOrganizationLayer(projectId, worktreeId);
+  const sharedConnections = useMemo(
+    () => sharedConnectionRows(mcpSelections, organizationLayer),
+    [mcpSelections, organizationLayer],
+  );
+  const signIn = useSelectedMcpSignIn({
     selections:
       mcpSelections ??
       (projectId && worktreeId && chatId ? EMPTY_MCP_SELECTIONS : null),
@@ -302,6 +316,17 @@ export function useMcpServersActivityModel({
     },
     onSelectionsChange,
   });
+  const refreshInventory = signIn.refresh;
+  // Refresh also reads the organization layer again: main answers with its
+  // set and reads the web core behind it once that set is a minute old, and
+  // a changed set comes back as a layer change.
+  const refresh = useCallback(async (): Promise<void> => {
+    await Promise.all([
+      refreshInventory(),
+      useOrganizationLayerStore.getState().reload(projectId, worktreeId),
+    ]);
+  }, [refreshInventory, projectId, worktreeId]);
+  return { ...signIn, refresh, sharedConnections };
 }
 
 export type McpServersActivityModel = ReturnType<
@@ -320,6 +345,7 @@ export function McpServersActivitySectionBody({
       {model.notice}
       <McpServersPanelCard
         servers={model.servers}
+        sharedConnections={model.sharedConnections}
         warnings={model.warnings}
         loading={model.loading}
         error={model.notice === undefined ? model.error : null}

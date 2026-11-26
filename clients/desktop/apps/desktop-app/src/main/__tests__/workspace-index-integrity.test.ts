@@ -130,6 +130,14 @@ import {
 } from '../lib/w5-storage';
 import { discardCoworkWorkspaceRecord } from '../lib/cowork-workspace-records';
 import { removeSplitCreatedWorkspace } from '../lib/split-temporary-workspace-records';
+import {
+  captureDirectoryEffects,
+  directoryEffectsAdmitted,
+} from '../lib/directory-effect-admission';
+import {
+  W5CommitRefusedError,
+  W5ProcessFileLockTimeoutError,
+} from '@canopy/core-runtime/node/w5/commit-log/errors';
 import { cleanupCompositionDestination } from '../lib/workspace-composition-records';
 import { scheduleDesktopStructureChanged } from '../services/desktop-structure-signal';
 import * as worktreeDataCleanup from '@canopy/desktop-shared/node/lib/worktree-data-cleanup';
@@ -1035,6 +1043,38 @@ describe('workspace cleanup persistence integrity', () => {
         expect(scheduleDesktopStructureChanged).toHaveBeenCalled();
       }
       expect((await host.recoveryReport()).recoveryRequired).toEqual([]);
+    },
+  );
+
+  it.each([
+    new W5CommitRefusedError(
+      'unapplied-change',
+      'A file this change writes has a committed change not yet applied.',
+    ),
+    new W5ProcessFileLockTimeoutError('worktrees.json'),
+  ])(
+    'split cleanup refused by W5 after staging releases its directory fence (%s)',
+    async (refusal) => {
+      prepare('split');
+      jest.spyOn(host, 'commit').mockRejectedValueOnce(refusal);
+      await expect(
+        removeSplitCreatedWorkspace({
+          source: 'temporary_split',
+          workspaceId: 'a',
+          worktreeIds: ['entry'],
+          containsRollbackData: () => Promise.resolve(false),
+        }),
+      ).rejects.toBe(refusal);
+      expectRecordsPresent();
+      expect(await readIndexIds()).toEqual(['a', 'other']);
+      // A definite refusal is abandonment: surviving metadata saves are admitted.
+      expect(
+        directoryEffectsAdmitted(
+          captureDirectoryEffects(
+            path.join(root, 'a', 'worktree-data', 'entry'),
+          ),
+        ),
+      ).toBe(true);
     },
   );
 

@@ -13,12 +13,18 @@ import {
   BROWSER_CONTROLLER_CHANNELS,
   HOSTED_CONTROLLER_CHANNELS,
   MOBILE_CONTROLLER_CHANNELS,
+  REMOTE_MEMBER_CHANNELS,
   browserInvocationAllowed,
   hostedInvocationAllowed,
+  oneWindowChannelAllowed,
+  oneWindowInvocationAllowed,
+  oneWindowSendAllowed,
   scopedFileReadAllowed,
   type HostedInvocationProfile,
 } from '@canopy/protocol/remote-control/channels';
 import {
+  DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION,
+  DESKTOP_ONE_WINDOW_MODE,
   HOSTED_DELEGATION_MAX_MS,
   PAIR_PROOF_LABEL,
   decodeCanonicalBase64url,
@@ -80,7 +86,8 @@ export function controllerMayUseChannel(
  * Whether a controller of `kind` may invoke or send on `channel` with these
  * arguments. The channel must be allowed; hosted controllers also pass the
  * argument policy of generic dispatch channels, so `chat:command` can start
- * chats and send messages but never answer approvals, archive or reset work.
+ * chats, send messages and archive one chat (CAN-7446), but never answer
+ * approvals, close, discard or reset work.
  * Browser and mobile file reads use the same scoped-read policy as hosted controllers.
  * Browsers also pass their own argument policies (`browserInvocationAllowed`):
  * the repository owner lookup takes exactly `{ remoteUrl }` (CAN-7433);
@@ -97,23 +104,64 @@ export function controllerMayInvoke(
   disposition: (channel: string) => RemoteChannelDisposition,
   hostedProfile: HostedInvocationProfile = {},
 ): boolean {
-  if (!controllerMayUseChannel(kind, channel, disposition)) return false;
+  return (
+    controllerInvokeDecision(
+      kind,
+      channel,
+      args,
+      disposition,
+      hostedProfile,
+    ) === 'allow'
+  );
+}
+
+/**
+ * The harness setup invokes (gap 1 of CAN-6718), whose browser argument
+ * refusals answer `remote_arguments_refused`.
+ */
+const HARNESS_SETUP_INVOKES: ReadonlySet<string> = new Set(
+  REMOTE_MEMBER_CHANNELS.harnessSetup.invoke,
+);
+
+/**
+ * {@link controllerMayInvoke} with the reason for a refusal: `channel` when
+ * the profile has no such channel (or one of the cross-profile policies
+ * above refuses it), `arguments` when a browser's arguments fail a harness
+ * setup channel's browser policy (`browserInvocationAllowed`). The host
+ * answers `arguments` with `remote_arguments_refused`, so a browser tells a
+ * value it should not have sent from an older computer (CAN-6718 review W1).
+ * Every other refusal, including a browser policy on any other channel and
+ * every hosted and mobile refusal, stays `channel`, as those channels'
+ * clients and contracts expect.
+ */
+export function controllerInvokeDecision(
+  kind: DeviceKind,
+  channel: string,
+  args: readonly unknown[],
+  disposition: (channel: string) => RemoteChannelDisposition,
+  hostedProfile: HostedInvocationProfile = {},
+): 'allow' | 'channel' | 'arguments' {
+  if (!controllerMayUseChannel(kind, channel, disposition)) return 'channel';
   // Require a workspace scope and refuse allowedRoot overrides into the
   // desktop's generated-image reader, using the existing hosted policy.
   if (
     (kind === 'browser' || kind === 'mobile') &&
     channel === 'file:read-content'
   )
-    return scopedFileReadAllowed(args);
+    return scopedFileReadAllowed(args) ? 'allow' : 'channel';
   if (
     channel === CLAUDE_MOD_SURFACE_COMMAND_CHANNEL &&
     !controllerMaySendSurfaceCommand(nestedKind(args, 'command'))
   )
-    return false;
-  if (kind === 'browser') return browserInvocationAllowed(channel, args);
-  return (
-    kind !== 'hosted' || hostedInvocationAllowed(channel, args, hostedProfile)
-  );
+    return 'channel';
+  if (kind === 'browser') {
+    if (browserInvocationAllowed(channel, args)) return 'allow';
+    return HARNESS_SETUP_INVOKES.has(channel) ? 'arguments' : 'channel';
+  }
+  return kind !== 'hosted' ||
+    hostedInvocationAllowed(channel, args, hostedProfile)
+    ? 'allow'
+    : 'channel';
 }
 
 const CLAUDE_MOD_SURFACE_COMMAND_CHANNEL = 'claude-mods:surface-command';
@@ -435,18 +483,27 @@ function requiredFeatures(
 }
 
 export type HelloDecision =
-  | { outcome: 'compatible' }
-  /** Answer with this host's version so the controller can explain. */
-  | { outcome: 'incompatible' }
+  /**
+   * `oneWindow`: a desktop controller in one-window mode, served only
+   * `ONE_WINDOW_CONTROLLER_CHANNELS`.
+   */
+  | { outcome: 'compatible'; oneWindow: boolean }
+  /**
+   * Answer with this host's version so the controller can explain, and serve
+   * it only the core operations. `oneWindow` as above.
+   */
+  | { outcome: 'incompatible'; oneWindow: boolean }
   | { outcome: 'refused'; reason: string };
 
 /**
  * Version negotiation for one hello. Without a `controller` profile, or for
- * a desktop controller, versions must match exactly, as before. A restricted
- * controller whose profile matches its authenticated kind may name a
- * minimum version instead, honored only when this host enforces every
- * feature that kind needs. A profile naming another kind is refused: a
- * self-asserted kind never relaxes compatibility.
+ * a desktop controller that names no mode, versions must match exactly, as
+ * before. A desktop controller in one-window mode is admitted from the floor
+ * instead (`negotiateOneWindow`). A restricted controller whose profile
+ * matches its authenticated kind may name a minimum version instead, honored
+ * only when this host enforces every feature that kind needs. A profile
+ * naming another kind is refused: a self-asserted kind never relaxes
+ * compatibility.
  */
 export function negotiateHello(
   params: HelloParams,
@@ -461,11 +518,20 @@ export function negotiateHello(
       reason: 'The controller profile does not match this device.',
     };
   }
+  if (controller?.mode !== undefined) {
+    return negotiateOneWindow(
+      controller.mode,
+      controller.minVersion,
+      kind,
+      params.version,
+      host,
+    );
+  }
   if (params.version.protocolVersion === host.protocolVersion) {
-    return { outcome: 'compatible' };
+    return { outcome: 'compatible', oneWindow: false };
   }
   if (controller === undefined || kind === 'desktop') {
-    return { outcome: 'incompatible' };
+    return { outcome: 'incompatible', oneWindow: false };
   }
   const supported = requiredFeatures(kind).every(
     (feature) => features[feature] === true,
@@ -473,6 +539,86 @@ export function negotiateHello(
   return supported &&
     controller.minVersion <= host.protocolVersion &&
     controller.minVersion <= params.version.protocolVersion
-    ? { outcome: 'compatible' }
-    : { outcome: 'incompatible' };
+    ? { outcome: 'compatible', oneWindow: false }
+    : { outcome: 'incompatible', oneWindow: false };
+}
+
+/**
+ * A desktop controller that names a mode (CAN-7758). Only desktop
+ * controllers have modes; another kind naming one is refused. A mode this
+ * host does not know is answered as incompatible, held as tightly as
+ * one-window, so the controller sees this host's version and can say which
+ * computer to update. One-window mode is admitted when both computers are at
+ * or above both floors: the controller's `minVersion`, which this host must
+ * meet, and `DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION`, which the controller
+ * (and this host) must meet. The versions need not match: the reviewed list
+ * is what both sides agree on. Below a floor only the core operations are
+ * served.
+ */
+function negotiateOneWindow(
+  mode: string,
+  minVersion: number,
+  kind: DeviceKind,
+  controller: RemoteVersion,
+  host: RemoteVersion,
+): HelloDecision {
+  if (kind !== 'desktop') {
+    return {
+      outcome: 'refused',
+      reason: 'Only a desktop controller may name a mode.',
+    };
+  }
+  const admitted =
+    mode === DESKTOP_ONE_WINDOW_MODE &&
+    minVersion <= host.protocolVersion &&
+    minVersion <= controller.protocolVersion &&
+    controller.protocolVersion >= DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION &&
+    host.protocolVersion >= DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION;
+  return { outcome: admitted ? 'compatible' : 'incompatible', oneWindow: true };
+}
+
+/**
+ * Whether a desktop controller in one-window mode may use `channel`: invoke
+ * it, send on it or receive its pushes. Only the reviewed list, and only
+ * channels this host tunnels; anything else, unknown channels included, is
+ * refused. Argument policies still apply on top (`controllerInvokeDecision`).
+ */
+export function oneWindowMayUseChannel(
+  channel: string,
+  disposition: (channel: string) => RemoteChannelDisposition,
+): boolean {
+  return disposition(channel) === 'tunnel' && oneWindowChannelAllowed(channel);
+}
+
+/**
+ * {@link oneWindowMayUseChannel} for an invoke or send with these arguments
+ * (`oneWindowInvocationAllowed`): the model catalog is read without the
+ * options that start provider discovery, and every call that changes
+ * something carries only the fields of its allowlist.
+ */
+export function oneWindowMayInvoke(
+  channel: string,
+  args: readonly unknown[],
+  disposition: (channel: string) => RemoteChannelDisposition,
+): boolean {
+  return (
+    oneWindowMayUseChannel(channel, disposition) &&
+    oneWindowInvocationAllowed(channel, args)
+  );
+}
+
+/**
+ * {@link oneWindowMayUseChannel} for a send (`ipc.send`) with these
+ * arguments (`oneWindowSendAllowed`): only the read-only channels, since
+ * every call that changes something is an invoke on this computer.
+ */
+export function oneWindowMaySend(
+  channel: string,
+  args: readonly unknown[],
+  disposition: (channel: string) => RemoteChannelDisposition,
+): boolean {
+  return (
+    oneWindowMayUseChannel(channel, disposition) &&
+    oneWindowSendAllowed(channel, args)
+  );
 }

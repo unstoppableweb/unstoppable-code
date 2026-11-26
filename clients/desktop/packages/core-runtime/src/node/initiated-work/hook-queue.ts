@@ -17,7 +17,7 @@ import {
 import {
   OperationCancelRefusedError,
   type OperationRecovery,
-  type OperationService,
+  type OperationServicePort,
 } from '../operations/service';
 import {
   type HookQueuePayloadStore,
@@ -142,12 +142,12 @@ export class HookQueue {
   private readonly enqueuing = new Set<string>();
   private readonly enqueueChains = new Map<string, Promise<unknown>>();
   private readonly recoveryCleanup = new Map<string, string>();
-  private readonly operations: OperationService;
+  private readonly operations: OperationServicePort;
   private readonly payloads: HookQueuePayloadStore;
   private readonly onError: (error: unknown, context: string) => void;
 
   constructor(options: {
-    operations: OperationService;
+    operations: OperationServicePort;
     payloads: HookQueuePayloadStore;
     onError?: (error: unknown, context: string) => void;
   }) {

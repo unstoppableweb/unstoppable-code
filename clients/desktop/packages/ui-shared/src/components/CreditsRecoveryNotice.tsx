@@ -7,15 +7,14 @@ import {
   MESSAGE_QUEUED_TITLE,
   CREDIT_HELD_MESSAGE_WARNING_COPY,
 } from './creditsPromptCopy';
-import { Notice, NoticeButton, type NoticeProps } from './Notice';
+import { Notice, NoticeButton, type NoticeProps } from '../primitives/Notice';
 import { outOfAiCreditsCopy } from './creditsPromptCopy';
 
 type RecoveryNoticeProps<Props> = Props extends unknown
-  ? Omit<Props, 'detail' | 'children'>
+  ? Omit<Props, 'children'>
   : never;
 
 export type CreditsRecoveryNoticeProps = RecoveryNoticeProps<NoticeProps> & {
-  readonly detail?: never;
   readonly children?: ReactNode;
   /** Omitted when the host cannot connect the provider. */
   readonly connectAction?: {
@@ -60,7 +59,7 @@ function rendersContent(node: ReactNode): boolean {
  *
  * Everything after the title reads as one paragraph: the message, the
  * contact-admin sentence, then the detail sentences, wrapping together with
- * no line of their own.
+ * no line of their own. A changing status goes in `detail`, on its own line.
  */
 export function CreditsRecoveryNotice({
   queued = false,

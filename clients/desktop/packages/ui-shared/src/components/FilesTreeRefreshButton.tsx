@@ -1,9 +1,9 @@
 import type { JSX } from 'react';
 import { RefreshIcon as CentralRefreshIcon } from '../icons/AppIcons';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 import { useIconStyle } from './icon-style';
 import { RefreshSpinner } from './RefreshSpinner';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 
 /**
  * Glyph density the Files tab draws the control at. `compact` matches the

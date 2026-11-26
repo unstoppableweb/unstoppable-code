@@ -25,8 +25,8 @@ export interface FeedbackDiagnostics {
   }) => Promise<FeedbackDiagnosticsSnapshot>;
   /** Unchecking diagnostics: forgets and releases the snapshot. */
   readonly discard: () => void;
-  /** A host call said the snapshot is gone. */
-  readonly markExpired: () => void;
+  /** A host call said this snapshot is gone. A replacement is never expired. */
+  readonly markExpired: (snapshotId: string) => void;
 }
 
 /** setTimeout overflows past this; a snapshot lives far less. */
@@ -61,13 +61,17 @@ export function useFeedbackDiagnostics(
     [client],
   );
 
-  const markExpired = useCallback((): void => {
-    const expired = current.current;
-    current.current = null;
-    clearExpiryTimer();
-    if (expired) release(expired);
-    setState({ status: 'expired' });
-  }, [clearExpiryTimer, release]);
+  const markExpired = useCallback(
+    (snapshotId: string): void => {
+      const expired = current.current;
+      if (expired?.id !== snapshotId) return;
+      current.current = null;
+      clearExpiryTimer();
+      release(expired);
+      setState({ status: 'expired' });
+    },
+    [clearExpiryTimer, release],
+  );
 
   const ensure = useCallback<FeedbackDiagnostics['ensure']>(
     (scope) => {
@@ -89,7 +93,7 @@ export function useFeedbackDiagnostics(
             setState({ status: 'ready', snapshot });
             const remaining = Date.parse(snapshot.expiresAt) - Date.now();
             expiryTimer.current = setTimeout(
-              markExpired,
+              () => markExpired(snapshot.id),
               Math.min(Math.max(remaining, 0), MAX_TIMER_MS),
             );
             return snapshot;

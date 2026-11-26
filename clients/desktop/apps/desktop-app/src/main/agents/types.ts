@@ -80,6 +80,12 @@ export interface AgentSessionOptions {
    * capability signature, so the two never share a live session.
    */
   accountResolution?: 'unattended';
+  /**
+   * An unattended turn's allowed writes on its project's shared connections
+   * (CAN-6252), tool names by connection id; absent allows none. Part of the
+   * session's capability signature.
+   */
+  sharedConnectionWrites?: Readonly<Record<string, readonly string[]>>;
   /** Host-private snapshot of this turn's successfully materialized home content. */
   inheritedCapabilityOverlay?: MaterializedCapabilityOverlay;
   /**

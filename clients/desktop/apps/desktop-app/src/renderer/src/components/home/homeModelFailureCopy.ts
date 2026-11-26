@@ -7,12 +7,13 @@ import type { HomeModelRefusalReason } from './homeModelPreflight';
 /**
  * CAN-5021 — the one source of copy for a first send its model refused.
  *
- * Every message names the attempted model and the way out. A billing cause is
+ * Every message names the attempted model. The notice's Choose model button
+ * is the way out, so most messages stop at what happened. A billing cause is
  * named only when the pre-flight established it; a late `false`, exception,
  * or unexplained rejection uses `model-rejected`.
  */
 
-export const FIRST_SEND_FAILED_TITLE = 'Couldn’t send';
+export const FIRST_SEND_FAILED_TITLE = 'Message not sent';
 
 export type HomeModelFailureCause = HomeModelRefusalReason | 'model-rejected';
 
@@ -49,18 +50,16 @@ export function homeModelFailureMessage(
   const model =
     label.length === 0 || label === FALLBACK_MODEL_LABEL ? 'This model' : label;
   switch (cause) {
+    // shortcut: Home has no Buy button yet, so a model that needs credits
+    // offers only another model. Add "Buy some, or" once Home can buy.
     case 'needs-account':
-      return `${model} needs an account and AI Credits. Choose another model or sign in.`;
     case 'needs-purchase':
-      return `${model} isn’t included in your AI Credits yet. Choose another model.`;
+      return `${model} needs credits. Choose another model.`;
     case 'not-routable':
-      return `${model} isn’t available on AI Credits. Choose another model.`;
     case 'org-policy':
-      return `${model} is blocked by your organization’s model policy. Choose another model.`;
     case 'org-gateway':
-      return `${model} isn’t on your organization’s AI gateway. Choose another model.`;
     case 'unknown-model':
     case 'model-rejected':
-      return `${model} couldn’t be used to start this chat. Choose another model.`;
+      return `${model} couldn’t start this chat.`;
   }
 }

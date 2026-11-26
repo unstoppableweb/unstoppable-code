@@ -20,6 +20,7 @@ import {
   collectionEntryId,
   type CanopyCallerDescriptor,
   type CatalogCollectionMembers,
+  type CatalogCollectionShareDocument,
 } from '@canopy/protocol/canopy-core';
 import type { InstalledSkillInfo } from '@canopy/desktop-shared/types/skills';
 import type { DesktopCanopyDispatcher } from '../canopy-runtime/desktop-runtime';
@@ -30,12 +31,39 @@ import type * as CloudAccountStore from '../lib/canopy-cloud-account-store';
 import type * as ServerClient from '../collections/canopy-server-client';
 import type * as SharedItemSubscriptions from '../canopy-cloud/shared-item-subscriptions';
 import type * as FsPromises from 'node:fs/promises';
+import { analyzeCapabilityPackage } from '@canopy/desktop-shared/node';
+import {
+  CAPABILITY_PACKAGE_SUBJECT_BINDING_KEY,
+  type PipelinePackageAnalysisSummary,
+  type PipelinePackageEnvironmentRequirement,
+  type PipelinePackageInvocationDismissal,
+} from '@canopy/protocol/pipelines';
+import type * as PackageService from '../pipelines/pipeline-package-service';
+import {
+  listPipelinePackageDismissals,
+  replacePipelinePackageDismissals,
+} from '../pipelines/pipeline-package-dismissal-store';
+import type * as CloudClient from '../canopy-cloud/client';
+import type * as McpConnections from '../canopy-cloud/mcp-connections';
+import type * as PublicShareClient from '../canopy-cloud/public-share-client';
+import type * as ConnectionStatus from '../mcp/connection-status';
+import type * as SecureStoragePolicy from '../lib/secure-storage-policy';
+import type * as PathLookup from '@canopy/execution-engine/node/lib/path-lookup';
 
 // Resource contexts are off unless a case turns them on, with the signed-in
 // account below and an organization whose context the foreground refuses.
-const mockContext: { enabled: boolean; refusedOrganization: string | null } = {
+// A case bumps an epoch to switch the selected context, or the signed-in
+// account, mid-read.
+const mockContext: {
+  enabled: boolean;
+  refusedOrganization: string | null;
+  epoch: number;
+  accountEpoch: number;
+} = {
   enabled: false,
   refusedOrganization: null,
+  epoch: 0,
+  accountEpoch: 0,
 };
 jest.mock('../lib/resource-context', () => {
   const decide = (resource: { owner?: unknown }): Promise<void> => {
@@ -51,8 +79,18 @@ jest.mock('../lib/resource-context', () => {
   };
   return {
     resourceContextEnabled: (): boolean => mockContext.enabled,
-    resourceContextSnapshot: (): Promise<string> => Promise.resolve('context'),
-    assertResourceContextSnapshot: (): Promise<void> => Promise.resolve(),
+    resourceContextSnapshot: (): Promise<string> =>
+      Promise.resolve(`context-${mockContext.epoch}`),
+    assertResourceContextSnapshot: (snapshot: string): Promise<void> =>
+      snapshot === `context-${mockContext.epoch}`
+        ? Promise.resolve()
+        : Promise.reject(new Error('Resource unavailable (context-mismatch)')),
+    resourceAccountSnapshot: (): Promise<number> =>
+      Promise.resolve(mockContext.accountEpoch),
+    assertResourceAccountSnapshot: (snapshot: number): Promise<void> =>
+      snapshot === mockContext.accountEpoch
+        ? Promise.resolve()
+        : Promise.reject(new Error('Resource unavailable (context-mismatch)')),
     assertResourceContext: decide,
     assertResourceContextForContext: decide,
   };
@@ -63,6 +101,27 @@ jest.mock('../lib/canopy-cloud-account-store', () => {
   );
   return {
     ...actual,
+    // CAN-4170 PR 4b-1: a signed-in account whose cached capabilities are
+    // cold, and every capability write the cloud client makes for it.
+    getCanopyCloudCredentials: (
+      ...args: Parameters<typeof actual.getCanopyCloudCredentials>
+    ): ReturnType<typeof actual.getCanopyCloudCredentials> =>
+      mockColdAccount.on
+        ? Promise.resolve({
+            baseUrl: 'https://cloud.golden.test',
+            apiKey: 'golden-cold-key',
+            capabilities: [],
+            memorySearchOrganizationExternalIds: [],
+          })
+        : actual.getCanopyCloudCredentials(...args),
+    mergeCanopyCloudAccountCapabilities: (
+      ...args: Parameters<typeof actual.mergeCanopyCloudAccountCapabilities>
+    ): ReturnType<typeof actual.mergeCanopyCloudAccountCapabilities> => {
+      if (!mockColdAccount.on)
+        return actual.mergeCanopyCloudAccountCapabilities(...args);
+      mockColdAccount.writes.push([...args[0]]);
+      return Promise.resolve(null);
+    },
     readCanopyCloudAccountWithStatus: (
       ...args: Parameters<typeof actual.readCanopyCloudAccountWithStatus>
     ): Promise<unknown> =>
@@ -72,16 +131,66 @@ jest.mock('../lib/canopy-cloud-account-store', () => {
             entry: { account: { id: 'account-1' } },
           })
         : actual.readCanopyCloudAccountWithStatus(...args),
+    // CAN-4170 PR 4c: the signed-in account an analysis is made under, read
+    // locally; a case switches it.
+    loadCanopyCloudAccount: (): ReturnType<
+      typeof actual.loadCanopyCloudAccount
+    > => {
+      mockSignedIn.onRead?.();
+      return Promise.resolve(
+        mockSignedIn.accountId === null
+          ? null
+          : {
+              apiKey: 'golden-fixture-key',
+              capabilities: [],
+              createdAt: STAMP,
+              updatedAt: STAMP,
+              account: {
+                id: mockSignedIn.accountId,
+                name: 'Golden',
+                email: 'golden@example.test',
+                role: 'DEVELOPER',
+              },
+            },
+      );
+    },
   };
 });
+const mockColdAccount: { on: boolean; writes: string[][] } = {
+  on: false,
+  writes: [],
+};
+const mockSignedIn: {
+  accountId: string | null;
+  /** Runs on each account read; a case cancels a call during it. */
+  onRead: (() => void) | null;
+} = { accountId: null, onRead: null };
 // Only the outside organization's share is still live; every other share an
-// installed collection came from has been revoked.
+// installed collection came from has been revoked. Each hosted read is
+// counted, as are the cloud capability check and the MCP connection list.
+const mockHostedReads: string[] = [];
+// CAN-4170 PR 4b-1: shares a case answers; any other is the default above.
+const mockShares: {
+  scoped: Map<string, (signal?: AbortSignal) => Promise<unknown>>;
+  public: Map<string, (signal?: AbortSignal) => Promise<unknown>>;
+} = { scoped: new Map(), public: new Map() };
+/** When set, the next hosted read waits for it before answering. */
+const mockHostedReadHold: { next: Promise<void> | null } = { next: null };
 jest.mock('../collections/canopy-server-client', () => ({
   ...jest.requireActual<typeof ServerClient>(
     '../collections/canopy-server-client',
   ),
-  getSharedCollection: (remoteId: string): Promise<unknown> =>
-    remoteId === 'remote-outside'
+  getSharedCollection: async (
+    remoteId: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> => {
+    mockHostedReads.push(`shared:${remoteId}`);
+    const hold = mockHostedReadHold.next;
+    mockHostedReadHold.next = null;
+    if (hold) await hold;
+    const shared = mockShares.scoped.get(remoteId);
+    if (shared) return shared(signal);
+    return remoteId === 'remote-outside'
       ? Promise.resolve({
           id: 'remote-outside',
           owner: {
@@ -92,7 +201,230 @@ jest.mock('../collections/canopy-server-client', () => ({
           shareScope: 'organization',
           contentHash: 'a'.repeat(64),
         })
-      : Promise.reject(new Error('Shared collection not found')),
+      : Promise.reject(new Error('Shared collection not found'));
+  },
+}));
+jest.mock('../canopy-cloud/client', () => {
+  const actual = jest.requireActual<typeof CloudClient>(
+    '../canopy-cloud/client',
+  );
+  return {
+    ...actual,
+    assertCanopyCloudCapability: (
+      ...args: Parameters<typeof actual.assertCanopyCloudCapability>
+    ): ReturnType<typeof actual.assertCanopyCloudCapability> => {
+      mockHostedReads.push('capability');
+      return mockCapability.check
+        ? mockCapability.check()
+        : actual.assertCanopyCloudCapability(...args);
+    },
+    // CAN-4170 PR 4b-1: the credentials a readiness capability check uses,
+    // the real account's when the check itself is real.
+    resolveCanopyCloudCredentialContext: (
+      ...args: Parameters<typeof actual.resolveCanopyCloudCredentialContext>
+    ): ReturnType<typeof actual.resolveCanopyCloudCredentialContext> =>
+      mockCapability.check
+        ? Promise.resolve(MOCK_CLOUD_CONTEXT)
+        : actual.resolveCanopyCloudCredentialContext(...args),
+    // CAN-4170 PR 4c: the one account a commit's capability check and upload use.
+    resolveCanopyCloudCredentialContextWithCapability: (
+      capability: string,
+    ): Promise<CloudClient.CanopyCloudCredentialContext> => {
+      mockHostedReads.push(`capability:${capability}`);
+      return mockCloudContext.next();
+    },
+  };
+});
+const ACCOUNT_A = 'account-a';
+const mockCapability: { check: (() => Promise<void>) | null } = {
+  check: null,
+};
+jest.mock('../canopy-cloud/public-share-client', () => ({
+  ...jest.requireActual<typeof PublicShareClient>(
+    '../canopy-cloud/public-share-client',
+  ),
+  getPublicCollectionShareSnapshot: (
+    remoteId: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> => {
+    mockHostedReads.push(`public:${remoteId}`);
+    const shared = mockShares.public.get(remoteId);
+    return shared
+      ? shared(signal)
+      : Promise.reject(new Error('no public share expected'));
+  },
+}));
+// The MCP status probes a requirement makes, as the IPC readiness makes them,
+// and how many are in flight at once.
+const mockMcpProbes: string[] = [];
+const mockMcpInFlight = { now: 0, max: 0 };
+/** Runs as each catalog probe starts; a case cancels a read during it. */
+const mockMcpProbeHook: { onCatalog: (() => void) | null } = {
+  onCatalog: null,
+};
+jest.mock('../mcp/connection-status', () => {
+  const actual = jest.requireActual<typeof ConnectionStatus>(
+    '../mcp/connection-status',
+  );
+  return {
+    ...actual,
+    getMcpServerStatusByCatalogId: async (
+      catalogId: string,
+    ): ReturnType<typeof actual.getMcpServerStatusByCatalogId> => {
+      mockMcpProbes.push(`catalog:${catalogId}`);
+      mockMcpProbeHook.onCatalog?.();
+      mockMcpInFlight.now += 1;
+      mockMcpInFlight.max = Math.max(mockMcpInFlight.max, mockMcpInFlight.now);
+      try {
+        return await actual.getMcpServerStatusByCatalogId(catalogId);
+      } finally {
+        mockMcpInFlight.now -= 1;
+      }
+    },
+    getMcpServerStatusByName: (
+      name: string,
+    ): ReturnType<typeof actual.getMcpServerStatusByName> => {
+      mockMcpProbes.push(`name:${name}`);
+      return actual.getMcpServerStatusByName(name);
+    },
+  };
+});
+// The PATH probes command requirements make, with a hook as each starts.
+const mockPathProbes: string[] = [];
+const mockPathProbeHook: { onProbe: (() => void) | null } = { onProbe: null };
+jest.mock('@canopy/execution-engine/node/lib/path-lookup', () => {
+  const actual = jest.requireActual<typeof PathLookup>(
+    '@canopy/execution-engine/node/lib/path-lookup',
+  );
+  return {
+    ...actual,
+    findExecutableOnPath: (
+      ...args: Parameters<typeof actual.findExecutableOnPath>
+    ): ReturnType<typeof actual.findExecutableOnPath> => {
+      mockPathProbes.push(args[0]);
+      mockPathProbeHook.onProbe?.();
+      return actual.findExecutableOnPath(...args);
+    },
+  };
+});
+// CAN-4170 PR 4b-1: the MCP OAuth token store's encryption, reversible here.
+jest.mock('../lib/secure-storage-policy', () => ({
+  ...jest.requireActual<typeof SecureStoragePolicy>(
+    '../lib/secure-storage-policy',
+  ),
+  getSecureStorageFailure: (): null => null,
+  getSecretStoragePolicy: (): Omit<
+    SecureStoragePolicy.SecretStoragePolicy,
+    'getStatus'
+  > => ({
+    isWriteAvailable: (): boolean => true,
+    nativeEncryptionAvailable: (): boolean => true,
+    assertCanRead: (): void => undefined,
+    assertCanWrite: (): void => undefined,
+    encrypt: (text: string): Buffer => Buffer.from(`enc:${text}`),
+    decrypt: (ciphertext: Buffer): string =>
+      ciphertext.toString().replace(/^enc:/, ''),
+  }),
+}));
+const MOCK_CLOUD_CONTEXT = {
+  baseUrl: 'https://cloud.test',
+  apiKey: 'golden-fixture-key',
+  account: {
+    id: ACCOUNT_A,
+    name: 'Golden',
+    email: 'golden@example.test',
+    role: 'DEVELOPER' as const,
+  },
+};
+const mockCloudContext: {
+  next: () => Promise<CloudClient.CanopyCloudCredentialContext>;
+} = { next: () => Promise.resolve(MOCK_CLOUD_CONTEXT) };
+jest.mock('../canopy-cloud/mcp-connections', () => {
+  const actual = jest.requireActual<typeof McpConnections>(
+    '../canopy-cloud/mcp-connections',
+  );
+  return {
+    ...actual,
+    listAccountMcpConnections: (
+      ...args: Parameters<typeof actual.listAccountMcpConnections>
+    ): ReturnType<typeof actual.listAccountMcpConnections> => {
+      mockHostedReads.push('mcp-connections');
+      return actual.listAccountMcpConnections(...args);
+    },
+  };
+});
+// The package analyzer has its own goldens; here it answers what each case
+// sets, so a case sees what core sends it and what core keeps.
+const mockAnalyzer: {
+  inputs: PackageService.AnalyzeSubjectCapabilityPackageInput[];
+  dropped: string[];
+  /** The analyses the service still holds: answered and not dropped. */
+  live: Set<string>;
+  /** Runs on each liveness read; a case cancels a commit during it. */
+  onLiveRead: (() => void) | null;
+  respond: (
+    input: PackageService.AnalyzeSubjectCapabilityPackageInput,
+  ) => Promise<PipelinePackageAnalysisSummary>;
+} = {
+  inputs: [],
+  dropped: [],
+  live: new Set(),
+  onLiveRead: null,
+  respond: () => Promise.reject(new Error('no analysis expected')),
+};
+type CommitUpload = Awaited<
+  ReturnType<typeof PackageService.createSubjectCapabilityPackage>
+>;
+// The upload (prepare, blobs, commit) has its own goldens; here it records
+// what a commit sends it and answers what each case sets.
+const mockCommitter: {
+  calls: Array<{
+    analysisId: string;
+    selectedOptionalResourceIds: string[] | undefined;
+    credentialContext: CloudClient.CanopyCloudCredentialContext | undefined;
+  }>;
+  respond: (stillInTime: () => void) => Promise<CommitUpload>;
+} = {
+  calls: [],
+  respond: () => Promise.reject(new Error('no commit expected')),
+};
+jest.mock('../pipelines/pipeline-package-service', () => ({
+  ...jest.requireActual<typeof PackageService>(
+    '../pipelines/pipeline-package-service',
+  ),
+  analyzeSubjectCapabilityPackage: async (
+    input: PackageService.AnalyzeSubjectCapabilityPackageInput,
+  ): Promise<PipelinePackageAnalysisSummary> => {
+    mockAnalyzer.inputs.push(input);
+    const summary = await mockAnalyzer.respond(input);
+    mockAnalyzer.live.add(summary.analysisId);
+    return summary;
+  },
+  cancelPackageAnalysis: (analysisId: string): void => {
+    mockAnalyzer.dropped.push(analysisId);
+    mockAnalyzer.live.delete(analysisId);
+  },
+  packageAnalysisConsentFacts: (
+    analysisId: string,
+  ): PackageService.PackageConsentFacts | null => {
+    mockAnalyzer.onLiveRead?.();
+    return mockAnalyzer.live.has(analysisId)
+      ? { contentHash: '', ready: true, files: [], withheld: [] }
+      : null;
+  },
+  createSubjectCapabilityPackage: (
+    request: { analysisId: string; selectedOptionalResourceIds?: string[] },
+    _getWindow: unknown,
+    credentialContext?: CloudClient.CanopyCloudCredentialContext,
+    stillInTime?: () => void,
+  ): Promise<CommitUpload> => {
+    mockCommitter.calls.push({
+      analysisId: request.analysisId,
+      selectedOptionalResourceIds: request.selectedOptionalResourceIds,
+      credentialContext,
+    });
+    return mockCommitter.respond(stillInTime ?? ((): void => undefined));
+  },
 }));
 // Installs and uninstalls are not synced to the hosted service from here.
 jest.mock('../canopy-cloud/shared-item-subscriptions', () => ({
@@ -228,6 +560,12 @@ const ID_ESCAPED = '1f1f1f1f-0000-4000-8000-00000000001c';
 const ID_FRACTION = '2a2a2a2a-0000-4000-8000-00000000001d';
 const ID_LATE = '2b2b2b2b-0000-4000-8000-00000000001e';
 const ID_FLAKY = '2c2c2c2c-0000-4000-8000-00000000001f';
+const ID_KIT = '3a3a3a3a-0000-4000-8000-000000000020';
+const ID_KIT_MCP = '3b3b3b3b-0000-4000-8000-000000000021';
+const ID_KIT_ORG = '3c3c3c3c-0000-4000-8000-000000000022';
+const ID_KIT_REVOKED = '3d3d3d3d-0000-4000-8000-000000000023';
+const ID_KIT_OUTSIDE = '3e3e3e3e-0000-4000-8000-000000000024';
+const ID_KIT_EDIT = '3f3f3f3f-0000-4000-8000-000000000025';
 const UNREADABLE = {
   kind: 'failed_precondition',
   code: 'core.catalog.entryUnreadable',
@@ -1012,7 +1350,7 @@ describe('Local collections through core.catalog.entry (CAN-4170)', () => {
     ).toMatchObject({ kind: 'permission_denied' });
   });
 
-  it('leaves shared updates and import for later PRs', async () => {
+  it('leaves shared updates for a later PR, and answers import readiness', async () => {
     const unavailable = { kind: 'capability_unavailable' };
     expect({
       sharedRevision: await refusal(
@@ -1027,22 +1365,36 @@ describe('Local collections through core.catalog.entry (CAN-4170)', () => {
           },
         }),
       ),
-      importReadiness: await refusal(
-        dispatcher.query(
+    }).toMatchObject({
+      sharedRevision: unavailable,
+    });
+    // PR 4b-1 ends the import readiness refusal this test pinned: the read
+    // now answers the share's hash, package and requirements.
+    mockCapability.check = (): Promise<void> => Promise.resolve();
+    try {
+      expect(
+        await dispatcher.query(
           'core.catalog.entry.get',
           {
             kind: 'collection',
             read: 'importReadiness',
-            remoteId: 'remote-1',
+            remoteId: 'remote-outside',
             fromPublicShare: false,
           },
           { caller: caller(['core.catalog.read']) },
         ),
-      ),
-    }).toMatchObject({
-      sharedRevision: unavailable,
-      importReadiness: unavailable,
-    });
+      ).toEqual({
+        read: 'importReadiness',
+        readiness: {
+          remoteId: 'remote-outside',
+          contentHash: 'a'.repeat(64),
+          package: null,
+          requirements: [],
+        },
+      });
+    } finally {
+      mockCapability.check = null;
+    }
     expect(storedCollection(ID_A).revision).toBe('rev-Alpha');
   });
 
@@ -1680,5 +2032,2528 @@ describe('Local collections through core.catalog.entry (CAN-4170)', () => {
 
   it('never writes selections', () => {
     expect(readFileSync(preferencesPath(), 'utf8')).toBe(preferencesBefore);
+  });
+});
+
+// CAN-4170 PR 4a: core.catalog.entry.import mode analyze.
+const MEMBER_ITEMS = [
+  {
+    type: 'skill',
+    source: { type: 'builtin', id: 'user' },
+    skill_name: 'deploy',
+  },
+  { type: 'custom_skill', clientKey: 'k1', skill_name: 'ghost' },
+  {
+    type: 'claude_plugin',
+    marketplace: { type: 'github', repo: 'owner/tools' },
+    plugin_name: 'linter',
+  },
+];
+const documentOf = (items: unknown[]): CatalogCollectionShareDocument => ({
+  rawCollection: JSON.stringify({
+    version: 1,
+    name: 'Kit',
+    description: '',
+    items,
+  }),
+  customSkills: [
+    { clientKey: 'k1', name: 'ghost', rawSkill: '---\nname: ghost\n---\n' },
+  ],
+});
+const DOCUMENT = documentOf(MEMBER_ITEMS);
+const ANY_STRING: unknown = expect.any(String);
+// The stored deploy skill as the real analyzer reads it: it invokes /release,
+// which nothing installed answers, so its analysis blocks until dismissed.
+const RELEASE = { provider: 'claude' as const, token: '/release' };
+const DEPLOY_SKILL =
+  '---\nname: deploy\ndescription: Deploys.\n---\nWhen done, run /release.\n';
+const DEPLOY_GUIDE = 'How to deploy.\n';
+const DEPLOY_DIR = mkdtempSync(join(tmpdir(), 'can-4170-4a-deploy-'));
+writeFileSync(join(DEPLOY_DIR, 'SKILL.md'), DEPLOY_SKILL);
+writeFileSync(join(DEPLOY_DIR, 'guide.md'), DEPLOY_GUIDE);
+const LINEAR: PipelinePackageEnvironmentRequirement = {
+  id: 'mcp:linear',
+  kind: 'mcp',
+  displayName: 'Linear',
+  required: true,
+  affectedSteps: [],
+  setupHint: 'Connect Linear.',
+};
+
+/**
+ * What the share service answers for the stored members: the real analyzer's
+ * summary, so a fixture can't drift from the shape it produces (CAN-4170 PR
+ * 4a R1). The service adds the labels it can't package.
+ */
+async function analyzedSummary(
+  dismissedInvocations: PipelinePackageInvocationDismissal[] = [],
+): Promise<PipelinePackageAnalysisSummary> {
+  const key = 'skill:user:deploy';
+  const { summary } = await analyzeCapabilityPackage({
+    rawContent: DOCUMENT.rawCollection,
+    invocableInventory: {
+      version: 6,
+      builtAt: '2026-11-24T00:00:00.000Z',
+      entries: [
+        {
+          id: 'e1',
+          provider: 'claude',
+          kind: 'skill',
+          name: 'deploy',
+          displayName: 'deploy',
+          description: '',
+          insertText: '/deploy',
+          invocationKey: 'deploy',
+          enableRef: { kind: 'skill', sourceId: 'user', skillName: 'deploy' },
+        },
+      ],
+    },
+    capabilityInventoryEntryIdsByKey: { [key]: ['e1'] },
+    sourceByInventoryEntryId: {
+      e1: {
+        sourceRoot: DEPLOY_DIR,
+        memberPath: '.',
+        sourceVisibility: 'local',
+        runtimeKind: 'standalone_skill',
+        rootName: 'deploy',
+      },
+    },
+    requests: [
+      {
+        key,
+        provider: 'claude',
+        required: true,
+        bindingKey: CAPABILITY_PACKAGE_SUBJECT_BINDING_KEY,
+      },
+    ],
+    environmentRequirements: [LINEAR],
+    dismissedInvocations,
+  });
+  return { ...summary, unpackageableSelectionLabels: ['ghost'] };
+}
+
+/** A blocker on an invocation nothing installed answers, offering its dismissal. */
+const offered = (
+  token: string,
+): PipelinePackageAnalysisSummary['blockers'][number] => ({
+  code: 'UNRESOLVED_INVOCATION',
+  subject: token,
+  message: `The deploy skill invokes ${token}.`,
+  occurrences: [],
+  dismissal: { provider: 'claude', token },
+});
+
+let realSummary: PipelinePackageAnalysisSummary | null = null;
+let analysisCount = 0;
+/** The real summary, ready, with a fresh id; `over` replaces fields. */
+const summaryOf = (
+  over: Partial<PipelinePackageAnalysisSummary> = {},
+): PipelinePackageAnalysisSummary => {
+  if (realSummary === null) throw new Error('no real summary yet');
+  return {
+    ...realSummary,
+    analysisId: `analysis-${(analysisCount += 1)}`,
+    state: 'ready',
+    blockers: [],
+    dismissedInvocations: [],
+    expiresAt: '2026-11-23T22:00:00.000Z',
+    ...over,
+  };
+};
+
+function analyze(
+  id: string,
+  options: {
+    expectedRevision: string;
+    document?: CatalogCollectionShareDocument;
+    dismissed?: Array<{ provider: 'claude' | 'codex'; token: string }>;
+    /** Leaves dismissedInvocations out, so the saved ones apply. */
+    omitDismissals?: boolean;
+    key?: string;
+    signal?: AbortSignal;
+  },
+): Promise<unknown> {
+  const idempotencyKey = options.key ?? `collection-analyze-${(keyCount += 1)}`;
+  return dispatcher.instruction(
+    'core.catalog.entry.import',
+    {
+      kind: 'collection',
+      mode: 'analyze',
+      entryId: collectionEntryId(id),
+      expectedRevision: options.expectedRevision,
+      document: options.document ?? DOCUMENT,
+      ...(options.omitDismissals === true
+        ? {}
+        : { dismissedInvocations: options.dismissed ?? [] }),
+      _meta: { idempotencyKey },
+    },
+    {
+      caller: caller(['core.catalog.write']),
+      metadata: { idempotencyKey },
+      ...(options.signal ? { signal: options.signal } : {}),
+    },
+  );
+}
+
+/** The analysis a call answered. */
+function analysisIn(result: unknown): Record<string, unknown> {
+  if (
+    typeof result !== 'object' ||
+    result === null ||
+    !('analysis' in result) ||
+    typeof result.analysis !== 'object' ||
+    result.analysis === null
+  )
+    throw new Error('expected an analysis');
+  return { ...result.analysis };
+}
+
+/** Until the analyzer has dropped `analysisId`, for at most a second. */
+async function droppedEventually(analysisId: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (mockAnalyzer.dropped.includes(analysisId)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return false;
+}
+
+/**
+ * Until the analyzer has seen `count` requests, for at most a second; fails
+ * as soon as `calls` holds a settled request the analyzer hasn't seen.
+ */
+async function analyzerSees(
+  count: number,
+  calls: Array<{ settled: boolean }>,
+): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (mockAnalyzer.inputs.length >= count) return;
+    if (
+      calls.filter((call) => call.settled).length > mockAnalyzer.inputs.length
+    )
+      throw new Error('a request settled before the analyzer saw it');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`the analyzer saw ${mockAnalyzer.inputs.length} of ${count}`);
+}
+
+/**
+ * Until `count` import operations are running, for at most a second. A
+ * running one has been admitted, so while an earlier analysis of its
+ * collection is held it is waiting for its turn.
+ */
+async function importsRunning(count: number): Promise<void> {
+  let running = 0;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const listed = await dispatcher.query(
+      'core.operation.list',
+      { kinds: ['core.catalog.entry.import'], statuses: ['running'] },
+      { caller: caller(['core.operation.read']) },
+    );
+    running = listed.items.length;
+    if (running >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`${running} of ${count} imports are running`);
+}
+
+/**
+ * An analyzer that holds its first call until released and answers later
+ * ones at once, so a regression fails on an expectation instead of hanging.
+ */
+function holdingAnalyzer(): Array<() => void> {
+  const held: Array<() => void> = [];
+  mockAnalyzer.respond = (input): Promise<PipelinePackageAnalysisSummary> => {
+    const summary = summaryOf({
+      dismissedInvocations: input.dismissedInvocations ?? [],
+    });
+    if (held.length > 0) return Promise.resolve(summary);
+    return new Promise((resolve) => {
+      held.push((): void => resolve(summary));
+    });
+  };
+  return held;
+}
+
+/** A call whose settlement `analyzerSees` can watch. */
+function tracked(call: Promise<unknown>): {
+  settled: boolean;
+  outcome: Promise<PromiseSettledResult<unknown>>;
+} {
+  const state = {
+    settled: false,
+    outcome: Promise.allSettled([call]).then((outcomes) => {
+      state.settled = true;
+      return outcomes[0];
+    }),
+  };
+  return state;
+}
+
+/** The dismissals an analysis answered, or why it was refused. */
+async function echoOf(call: {
+  outcome: Promise<PromiseSettledResult<unknown>>;
+}): Promise<unknown> {
+  const outcome = await call.outcome;
+  if (outcome.status === 'fulfilled')
+    return analysisIn(outcome.value).dismissedInvocations;
+  return outcome.reason instanceof CanopyOperationError
+    ? outcome.reason.payload.kind
+    : 'rejected';
+}
+
+describe('core.catalog.entry.import mode analyze (CAN-4170 PR 4a)', () => {
+  beforeAll(async () => {
+    seedConfig(ID_KIT, 'Kit', { mcpServers: [] });
+    seedConfig(ID_KIT_MCP, 'KitMcp');
+    seedConfig(ID_KIT_EDIT, 'KitEdit', { mcpServers: [] });
+    realSummary = await analyzedSummary([RELEASE]);
+  });
+  afterAll(() => {
+    rmSync(DEPLOY_DIR, { recursive: true, force: true });
+  });
+  beforeEach(() => {
+    mockAnalyzer.inputs.length = 0;
+    mockAnalyzer.dropped.length = 0;
+    mockHostedReads.length = 0;
+    mockAnalyzer.respond = (): Promise<PipelinePackageAnalysisSummary> =>
+      Promise.reject(new Error('no analysis expected'));
+  });
+
+  it('analyzes the stored members for the exact document bytes, then applies a dismissal and echoes it', async () => {
+    // Blocked on /release until it is dismissed; then the real analysis.
+    mockAnalyzer.respond = (input): Promise<PipelinePackageAnalysisSummary> =>
+      (input.dismissedInvocations ?? []).some(
+        (dismissal) => dismissal.token === RELEASE.token,
+      )
+        ? analyzedSummary(input.dismissedInvocations)
+        : Promise.resolve(
+            summaryOf({ state: 'blocked', blockers: [offered('/release')] }),
+          );
+    const blocked = analysisIn(
+      await analyze(ID_KIT, { expectedRevision: 'rev-Kit' }),
+    );
+    expect(blocked).toMatchObject({
+      state: 'blocked',
+      blockers: [
+        {
+          code: 'UNRESOLVED_INVOCATION',
+          subject: '/release',
+          message: 'The deploy skill invokes /release.',
+          dismissal: RELEASE,
+        },
+      ],
+      dismissedInvocations: [],
+    });
+    expect(mockAnalyzer.inputs[0]).toMatchObject({
+      rawContent: DOCUMENT.rawCollection,
+      scopeKey: `collection:${ID_KIT}`,
+      selections: {
+        collectionIds: [],
+        skillRefs: MEMBERS.skills,
+        pluginRefs: MEMBERS.plugins,
+        mcpServerRefs: [],
+      },
+    });
+    // The resources come from the analysis's manifest, counted file by file.
+    expect(
+      analysisIn(
+        await analyze(ID_KIT, {
+          expectedRevision: 'rev-Kit',
+          dismissed: [RELEASE],
+        }),
+      ),
+    ).toEqual({
+      analysisId: ANY_STRING,
+      state: 'ready',
+      blockers: [],
+      resources: [
+        {
+          resourceId: ANY_STRING,
+          displayName: 'deploy',
+          fileCount: 2,
+          totalBytes:
+            Buffer.byteLength(DEPLOY_SKILL) + Buffer.byteLength(DEPLOY_GUIDE),
+        },
+      ],
+      requirements: [
+        {
+          id: 'mcp:linear',
+          kind: 'mcp',
+          displayName: 'Linear',
+          required: true,
+          setupHint: 'Connect Linear.',
+        },
+      ],
+      unpackageableMemberLabels: ['ghost'],
+      dismissedInvocations: [RELEASE],
+      expiresAt: ANY_STRING,
+    });
+    expect(mockAnalyzer.dropped).toEqual([]);
+  });
+
+  it('replays an analysis under its key without analyzing again, even once the analysis has expired', async () => {
+    mockAnalyzer.respond = (): Promise<PipelinePackageAnalysisSummary> =>
+      Promise.resolve(summaryOf());
+    const first = await analyze(ID_KIT, {
+      expectedRevision: 'rev-Kit',
+      key: 'analyze-replay',
+    });
+    expect(
+      await analyze(ID_KIT, {
+        expectedRevision: 'rev-Kit',
+        key: 'analyze-replay',
+      }),
+    ).toEqual(first);
+    expect(mockAnalyzer.inputs).toHaveLength(1);
+  });
+
+  it('answers a collection with an MCP server member blocked, after only the authorization reads a get makes and before any MCP connection read', async () => {
+    await recordInstall(ID_KIT_ORG, 'remote-outside', {
+      kind: 'organization',
+      organizationId: ORG_OUTSIDE,
+    });
+    await withResourceContext(async () => {
+      mockHostedReads.length = 0;
+      await get(ID_KIT_ORG);
+      const getReads = [...mockHostedReads];
+      mockHostedReads.length = 0;
+      const answer = analysisIn(
+        await analyze(ID_KIT_ORG, { expectedRevision: 'rev-Outside' }),
+      );
+      expect({ answer, reads: mockHostedReads }).toEqual({
+        answer: {
+          analysisId: ANY_STRING,
+          state: 'blocked',
+          blockers: [
+            {
+              code: 'MCP_SHARE_BLOCKED',
+              subject: null,
+              message:
+                'Collections with MCP server configs cannot be shared. Remove MCP servers before sharing.',
+            },
+          ],
+          resources: [],
+          requirements: [],
+          unpackageableMemberLabels: [],
+          dismissedInvocations: [],
+          expiresAt: ANY_STRING,
+        },
+        reads: getReads,
+      });
+      // get's authorization: the store's installed-context check and its
+      // shared-source check each read the shared collection, and nothing else.
+      expect(getReads).toEqual([
+        'shared:remote-outside',
+        'shared:remote-outside',
+      ]);
+    });
+    expect(
+      analysisIn(await analyze(ID_KIT_MCP, { expectedRevision: 'rev-KitMcp' })),
+    ).toMatchObject({
+      state: 'blocked',
+      blockers: [{ code: 'MCP_SHARE_BLOCKED' }],
+    });
+    expect(mockAnalyzer.inputs).toEqual([]);
+  });
+
+  it('answers cancelled, and records nothing blocked, for a request cancelled while its collection read is pending', async () => {
+    await recordInstall(ID_KIT_ORG, 'remote-outside', {
+      kind: 'organization',
+      organizationId: ORG_OUTSIDE,
+    });
+    await withResourceContext(async () => {
+      mockHostedReads.length = 0;
+      let release = (): void => undefined;
+      mockHostedReadHold.next = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const key = `collection-analyze-held-read-${(keyCount += 1)}`;
+      const aborting = new AbortController();
+      const call = tracked(
+        analyze(ID_KIT_ORG, {
+          expectedRevision: 'rev-Outside',
+          key,
+          signal: aborting.signal,
+        }),
+      );
+      try {
+        for (let attempt = 0; mockHostedReads.length === 0; attempt += 1) {
+          if (attempt === 200 || call.settled)
+            throw new Error('the collection read never started');
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        // The read is pending; the MCP gate would answer blocked after it.
+        aborting.abort();
+      } finally {
+        release();
+        mockHostedReadHold.next = null;
+      }
+      expect(await echoOf(call)).toBe('cancelled');
+      // The same key replays what was recorded: cancelled, never blocked.
+      expect(
+        await refusal(
+          analyze(ID_KIT_ORG, { expectedRevision: 'rev-Outside', key }),
+        ),
+      ).toMatchObject({ kind: 'cancelled' });
+    });
+    expect(mockAnalyzer.inputs).toEqual([]);
+  });
+
+  it('authorizes an installed collection exactly as get does, with resource contexts on', async () => {
+    await recordInstall(
+      ID_KIT_OUTSIDE,
+      'remote-outside',
+      {
+        kind: 'organization',
+        organizationId: ORG_OUTSIDE,
+      },
+      { mcpServers: [] },
+    );
+    await recordInstall(
+      ID_KIT_REVOKED,
+      'remote-revoked',
+      {
+        kind: 'personal',
+      },
+      { mcpServers: [] },
+    );
+    mockAnalyzer.respond = (): Promise<PipelinePackageAnalysisSummary> =>
+      Promise.resolve(summaryOf());
+    await withResourceContext(async () => {
+      expect(
+        analysisIn(
+          await analyze(ID_KIT_OUTSIDE, { expectedRevision: 'rev-Outside' }),
+        ),
+      ).toMatchObject({ state: 'ready' });
+      expect({
+        get: await refusal(get(ID_KIT_REVOKED)),
+        analyze: await refusal(
+          analyze(ID_KIT_REVOKED, { expectedRevision: 'rev-Outside' }),
+        ),
+      }).toEqual({
+        get: { ...UNREADABLE, details: undefined },
+        analyze: { ...UNREADABLE, details: undefined },
+      });
+      mockContext.refusedOrganization = ORG_OUTSIDE;
+      expect({
+        get: await refusal(get(ID_KIT_OUTSIDE)),
+        analyze: await refusal(
+          analyze(ID_KIT_OUTSIDE, { expectedRevision: 'rev-Outside' }),
+        ),
+      }).toEqual({
+        get: { ...UNREADABLE, details: undefined },
+        analyze: { ...UNREADABLE, details: undefined },
+      });
+    });
+    expect(mockAnalyzer.inputs).toHaveLength(1);
+  });
+
+  it('refuses a document whose items do not name the stored members, before analyzing anything', async () => {
+    const invalid = {
+      kind: 'failed_precondition',
+      code: 'core.catalog.entryInvalid',
+      details: undefined,
+    };
+    const documents = {
+      renamed: documentOf([
+        ...MEMBER_ITEMS.slice(0, 2),
+        { ...MEMBER_ITEMS[2], plugin_name: 'formatter' },
+      ]),
+      extra: documentOf([
+        ...MEMBER_ITEMS,
+        { type: 'custom_skill', clientKey: 'k2', skill_name: 'notes' },
+      ]),
+      missing: documentOf(MEMBER_ITEMS.slice(1)),
+      mcp: documentOf([...MEMBER_ITEMS, { type: 'mcp_server', id: SERVER }]),
+      // Publish knows only claude_plugin and codex_plugin.
+      pluginTyped: documentOf([
+        ...MEMBER_ITEMS.slice(0, 2),
+        { ...MEMBER_ITEMS[2], type: 'plugin' },
+      ]),
+      notJson: { rawCollection: '{ not json' },
+    };
+    const answers: Record<string, unknown> = {};
+    for (const [name, document] of Object.entries(documents))
+      answers[name] = await refusal(
+        analyze(ID_KIT, { expectedRevision: 'rev-Kit', document }),
+      );
+    expect(answers).toEqual({
+      renamed: invalid,
+      extra: invalid,
+      missing: invalid,
+      mcp: invalid,
+      pluginTyped: invalid,
+      notJson: invalid,
+    });
+    expect(mockAnalyzer.inputs).toEqual([]);
+  });
+
+  it('passes a same-named skill from another source, analyzing the document bytes as sent (known limit)', async () => {
+    // Sources aren't compared; the hosted hash binding still keeps analyzed
+    // bytes equal to published bytes.
+    mockAnalyzer.respond = (): Promise<PipelinePackageAnalysisSummary> =>
+      Promise.resolve(summaryOf());
+    const elsewhere = documentOf([
+      { ...MEMBER_ITEMS[0], source: { type: 'github', repo: 'other/skills' } },
+      ...MEMBER_ITEMS.slice(1),
+    ]);
+    expect(
+      analysisIn(
+        await analyze(ID_KIT, {
+          expectedRevision: 'rev-Kit',
+          document: elsewhere,
+        }),
+      ),
+    ).toMatchObject({ state: 'ready' });
+    expect(mockAnalyzer.inputs).toHaveLength(1);
+    expect(mockAnalyzer.inputs[0]).toMatchObject({
+      rawContent: elsewhere.rawCollection,
+      selections: { skillRefs: MEMBERS.skills },
+    });
+  });
+
+  it('offers only dismissals the dismissal store can save, and refuses unsavable ones before the operation runs, under any retry', async () => {
+    mockAnalyzer.respond = (): Promise<PipelinePackageAnalysisSummary> =>
+      Promise.resolve(
+        summaryOf({
+          state: 'blocked',
+          blockers: [
+            offered('/'),
+            offered(`/${'x'.repeat(200)}`),
+            offered('/release'),
+          ],
+        }),
+      );
+    const answer = analysisIn(
+      await analyze(ID_KIT, { expectedRevision: 'rev-Kit' }),
+    );
+    expect(answer.blockers).toEqual([
+      {
+        code: 'UNRESOLVED_INVOCATION',
+        subject: '/',
+        message: 'The deploy skill invokes /.',
+      },
+      {
+        code: 'UNRESOLVED_INVOCATION',
+        subject: `/${'x'.repeat(200)}`,
+        message: `The deploy skill invokes /${'x'.repeat(200)}.`,
+      },
+      {
+        code: 'UNRESOLVED_INVOCATION',
+        subject: '/release',
+        message: 'The deploy skill invokes /release.',
+        dismissal: RELEASE,
+      },
+    ]);
+    mockAnalyzer.inputs.length = 0;
+
+    const invalid = {
+      kind: 'invalid_argument',
+      code: undefined,
+      details: undefined,
+    };
+    const tooMany = Array.from({ length: 51 }, (_, index) => ({
+      provider: 'claude' as const,
+      token: `/skill-${index}`,
+    }));
+    const unsavable = {
+      bare: [{ provider: 'claude' as const, token: '/' }],
+      long: [{ provider: 'claude' as const, token: `/${'x'.repeat(200)}` }],
+      tooMany,
+    };
+    for (const dismissed of Object.values(unsavable)) {
+      const key = `collection-analyze-unsavable-${(keyCount += 1)}`;
+      // Nothing is recorded, so a retry is refused the same way and the key
+      // stays free for a request the store can take.
+      expect(
+        await refusal(
+          analyze(ID_KIT, { expectedRevision: 'rev-Kit', dismissed, key }),
+        ),
+      ).toEqual(invalid);
+      expect(
+        await refusal(
+          analyze(ID_KIT, { expectedRevision: 'rev-Kit', dismissed, key }),
+        ),
+      ).toEqual(invalid);
+      expect(
+        analysisIn(
+          await analyze(ID_KIT, {
+            expectedRevision: 'rev-Kit',
+            dismissed: [RELEASE],
+            key,
+          }),
+        ),
+      ).toMatchObject({ state: 'blocked' });
+    }
+    // 50 distinct dismissals, repeated, are still savable.
+    expect(
+      analysisIn(
+        await analyze(ID_KIT, {
+          expectedRevision: 'rev-Kit',
+          dismissed: [...tooMany.slice(0, 50), ...tooMany.slice(0, 50)],
+        }),
+      ),
+    ).toMatchObject({ state: 'blocked' });
+    expect(mockAnalyzer.inputs).toHaveLength(4);
+  });
+
+  it('runs one analysis of a collection at a time, from its read to its answer, so each echoes the dismissals it was given', async () => {
+    const held = holdingAnalyzer();
+    const other = { provider: 'codex' as const, token: '$notes' };
+    const calls = [
+      tracked(
+        analyze(ID_KIT, { expectedRevision: 'rev-Kit', dismissed: [RELEASE] }),
+      ),
+    ];
+    let seenWhileQueued = 0;
+    try {
+      await analyzerSees(1, calls);
+      calls.push(
+        tracked(
+          analyze(ID_KIT, { expectedRevision: 'rev-Kit', dismissed: [other] }),
+        ),
+      );
+      // Admitted while the first is held, so it waits for its turn.
+      await importsRunning(2);
+      seenWhileQueued = mockAnalyzer.inputs.length;
+      held[0]?.();
+      await analyzerSees(2, calls);
+    } finally {
+      for (const release of held) release();
+    }
+    expect({
+      seenWhileQueued,
+      echoes: await Promise.all(calls.map(echoOf)),
+    }).toEqual({ seenWhileQueued: 1, echoes: [[RELEASE], [other]] });
+    expect(
+      mockAnalyzer.inputs.map((input) => input.dismissedInvocations),
+    ).toEqual([[RELEASE], [other]]);
+  });
+
+  it('answers a request cancelled while it waits for its turn as cancelled, never reading or analyzing it', async () => {
+    const held = holdingAnalyzer();
+    const abandoned = { provider: 'codex' as const, token: '$notes' };
+    const waiting = new AbortController();
+    const calls = [
+      tracked(
+        analyze(ID_KIT, { expectedRevision: 'rev-Kit', dismissed: [RELEASE] }),
+      ),
+    ];
+    try {
+      await analyzerSees(1, calls);
+      calls.push(
+        tracked(
+          analyze(ID_KIT, {
+            expectedRevision: 'rev-Kit',
+            dismissed: [abandoned],
+            signal: waiting.signal,
+          }),
+        ),
+      );
+      await importsRunning(2);
+      waiting.abort();
+      held[0]?.();
+      expect(await Promise.all(calls.map(echoOf))).toEqual([
+        [RELEASE],
+        'cancelled',
+      ]);
+    } finally {
+      for (const release of held) release();
+    }
+    // The analyzer, which saves a request's dismissals, never saw it.
+    expect(
+      mockAnalyzer.inputs.map((input) => input.dismissedInvocations),
+    ).toEqual([[RELEASE]]);
+    expect(mockAnalyzer.dropped).toEqual([]);
+  });
+
+  it('reads the current revision when its turn comes, refusing a request whose collection changed while it waited', async () => {
+    const held = holdingAnalyzer();
+    const calls = [
+      tracked(analyze(ID_KIT_EDIT, { expectedRevision: 'rev-KitEdit' })),
+    ];
+    let replaced: unknown = null;
+    try {
+      await analyzerSees(1, calls);
+      calls.push(
+        tracked(analyze(ID_KIT_EDIT, { expectedRevision: 'rev-KitEdit' })),
+      );
+      await importsRunning(2);
+      replaced = await upsert({
+        entryId: collectionEntryId(ID_KIT_EDIT),
+        expectedRevision: 'rev-KitEdit',
+        name: 'KitEdit',
+        members: { ...MEMBERS, mcpServers: [] },
+      });
+      held[0]?.();
+      await Promise.all(calls.map((call) => call.outcome));
+    } finally {
+      for (const release of held) release();
+    }
+    const revision = (): unknown =>
+      typeof replaced === 'object' &&
+      replaced !== null &&
+      'entry' in replaced &&
+      typeof replaced.entry === 'object' &&
+      replaced.entry !== null &&
+      'revision' in replaced.entry
+        ? replaced.entry.revision
+        : null;
+    const second = await calls[1]?.outcome;
+    expect({
+      revision: revision(),
+      refused:
+        second?.status === 'rejected' &&
+        second.reason instanceof CanopyOperationError
+          ? {
+              kind: second.reason.payload.kind,
+              code: second.reason.payload.code,
+              details: second.reason.payload.details,
+            }
+          : second?.status,
+    }).toEqual({
+      revision: ANY_STRING,
+      refused: {
+        kind: 'conflict',
+        code: 'core.catalog.revisionConflict',
+        details: { currentRevision: revision() },
+      },
+    });
+    expect(mockAnalyzer.inputs).toHaveLength(1);
+  });
+
+  it('applies the saved dismissals when the field is left out, and replaces them with any list sent, an empty one included', async () => {
+    const storePath = join(DEPLOY_DIR, 'dismissals.json');
+    // As the share service resolves them: a sent list replaces the
+    // collection's saved dismissals; a left-out one applies the saved ones.
+    mockAnalyzer.respond = async (
+      input,
+    ): Promise<PipelinePackageAnalysisSummary> => {
+      if (input.dismissedInvocations !== undefined)
+        await replacePipelinePackageDismissals(
+          storePath,
+          input.scopeKey,
+          input.dismissedInvocations,
+        );
+      const saved = await listPipelinePackageDismissals(
+        storePath,
+        input.scopeKey,
+      );
+      return summaryOf({
+        dismissedInvocations: saved.map(({ provider, token }) => ({
+          provider,
+          token,
+        })),
+      });
+    };
+    const echo = async (options: {
+      dismissed?: Array<{ provider: 'claude' | 'codex'; token: string }>;
+      omitDismissals?: boolean;
+    }): Promise<unknown> =>
+      analysisIn(
+        await analyze(ID_KIT, { expectedRevision: 'rev-Kit', ...options }),
+      ).dismissedInvocations;
+    // Sent, then left out on a reopen: the saved list still applies.
+    expect(await echo({ dismissed: [RELEASE] })).toEqual([RELEASE]);
+    expect(await echo({ omitDismissals: true })).toEqual([RELEASE]);
+    // An empty list is a real "no dismissals", and clears the saved ones.
+    expect(await echo({ dismissed: [] })).toEqual([]);
+    expect(await echo({ omitDismissals: true })).toEqual([]);
+    // The left-out field reaches the analyzer left out, never as a list.
+    expect(
+      mockAnalyzer.inputs.map((input) =>
+        'dismissedInvocations' in input ? input.dismissedInvocations : 'saved',
+      ),
+    ).toEqual([[RELEASE], 'saved', [], 'saved']);
+  });
+
+  it('refuses a stale revision and a missing collection', async () => {
+    expect({
+      stale: await refusal(analyze(ID_KIT, { expectedRevision: 'rev-old' })),
+      missing: await refusal(
+        analyze(ID_NONE, { expectedRevision: 'rev-None' }),
+      ),
+    }).toEqual({
+      stale: {
+        kind: 'conflict',
+        code: 'core.catalog.revisionConflict',
+        details: { currentRevision: 'rev-Kit' },
+      },
+      missing: {
+        kind: 'not_found',
+        code: 'core.catalog.entryNotFound',
+        details: undefined,
+      },
+    });
+    expect(mockAnalyzer.inputs).toEqual([]);
+  });
+
+  it('refuses an analysis too large to record and drops it, and answers one just under the bound', async () => {
+    const withBlockers =
+      (count: number) => (): Promise<PipelinePackageAnalysisSummary> =>
+        Promise.resolve(
+          summaryOf({
+            state: 'blocked',
+            blockers: Array.from({ length: count }, (_, index) => ({
+              code: 'SUSPECTED_SECRET' as const,
+              subject: `file-${index}`,
+              message: 'm'.repeat(4096),
+              occurrences: [],
+            })),
+          }),
+        );
+    mockAnalyzer.respond = withBlockers(9);
+    expect(
+      await refusal(analyze(ID_KIT, { expectedRevision: 'rev-Kit' })),
+    ).toMatchObject({ kind: 'resource_exhausted' });
+    expect(mockAnalyzer.dropped).toEqual([`analysis-${analysisCount}`]);
+    mockAnalyzer.respond = withBlockers(6);
+    expect(
+      analysisIn(await analyze(ID_KIT, { expectedRevision: 'rev-Kit' }))
+        .blockers,
+    ).toHaveLength(6);
+    expect(mockAnalyzer.dropped).toHaveLength(1);
+  });
+
+  it('keeps no analysis from a call cancelled before or after the analyzer returns', async () => {
+    let release: () => void = () => undefined;
+    const before = new AbortController();
+    mockAnalyzer.respond = (): Promise<PipelinePackageAnalysisSummary> =>
+      new Promise((resolve) => {
+        release = (): void => resolve(summaryOf());
+      });
+    const held = refusal(
+      analyze(ID_KIT, { expectedRevision: 'rev-Kit', signal: before.signal }),
+    );
+    while (mockAnalyzer.inputs.length === 0)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    before.abort();
+    expect(await held).toMatchObject({ kind: 'cancelled' });
+    release();
+    expect(await droppedEventually(`analysis-${analysisCount}`)).toBe(true);
+
+    const after = new AbortController();
+    mockAnalyzer.respond = (): Promise<PipelinePackageAnalysisSummary> => {
+      const summary = summaryOf();
+      after.abort();
+      return Promise.resolve(summary);
+    };
+    expect(
+      await refusal(
+        analyze(ID_KIT, { expectedRevision: 'rev-Kit', signal: after.signal }),
+      ),
+    ).toMatchObject({ kind: 'cancelled' });
+    expect(await droppedEventually(`analysis-${analysisCount}`)).toBe(true);
+  });
+
+  it('runs no analysis, saving no dismissals, for a call cancelled during its account read', async () => {
+    const abandoned = { provider: 'codex' as const, token: '$notes' };
+    const during = new AbortController();
+    mockSignedIn.onRead = (): void => {
+      mockSignedIn.onRead = null;
+      during.abort();
+    };
+    expect(
+      await refusal(
+        analyze(ID_KIT, {
+          expectedRevision: 'rev-Kit',
+          dismissed: [abandoned],
+          signal: during.signal,
+        }),
+      ),
+    ).toMatchObject({ kind: 'cancelled' });
+    // The next analysis waits for the cancelled one's turn to end.
+    mockAnalyzer.respond = (): Promise<PipelinePackageAnalysisSummary> =>
+      Promise.resolve(summaryOf());
+    analysisIn(await analyze(ID_KIT, { expectedRevision: 'rev-Kit' }));
+    // The analyzer, which saves a request's dismissals, never saw it.
+    expect(
+      mockAnalyzer.inputs.map((input) => input.dismissedInvocations),
+    ).toEqual([[]]);
+  });
+
+  it('still refuses install on every collection', async () => {
+    const idempotencyKey = `collection-import-${(keyCount += 1)}`;
+    expect(
+      await refusal(
+        dispatcher.instruction(
+          'core.catalog.entry.import',
+          {
+            kind: 'collection',
+            mode: 'install',
+            remoteId: 'remote-1',
+            fromPublicShare: false,
+            expectedContentHash: SHARE_HASH,
+            package: { version: 1, digest: `pp:v1:${'A'.repeat(43)}` },
+            target: { create: { name: 'Kit', description: '' } },
+            _meta: { idempotencyKey },
+          },
+          {
+            caller: caller(['core.catalog.write']),
+            metadata: { idempotencyKey },
+          },
+        ),
+      ),
+    ).toMatchObject({ kind: 'capability_unavailable' });
+    expect(mockAnalyzer.inputs).toEqual([]);
+  });
+});
+
+// CAN-4170 PR 4c: core.catalog.entry.import mode commit.
+const ID_COMMIT = '4a4a4a4a-0000-4000-8000-000000000026';
+const ID_COMMIT_EDIT = '4b4b4b4b-0000-4000-8000-000000000027';
+const DIGEST = `pp:v1:${'B'.repeat(43)}`;
+const LATER = '2099-01-01T00:00:00.000Z';
+const UPLOADED: CommitUpload = {
+  capabilityPackage: { version: 1, digest: DIGEST },
+  committedPackageUploadId: 'upload-1',
+};
+const COMMITTED = {
+  kind: 'collection',
+  mode: 'commit',
+  package: { version: 1, digest: DIGEST },
+  committedPackageUploadId: 'upload-1',
+};
+const refused = (kind: string, code: string): unknown => ({
+  kind,
+  code: `core.catalog.${code}`,
+  details: undefined,
+});
+const NOT_FOUND = refused('not_found', 'analysisNotFound');
+const BLOCKED = refused('failed_precondition', 'packageBlocked');
+const STALE = refused('conflict', 'packageStale');
+const DENIED = refused('permission_denied', 'remoteAccessDenied');
+const UNREACHABLE = refused('unavailable', 'remoteUnavailable');
+// CAN-4170 PR 4b-1b: a readiness answer past the relay's reply cap.
+const TOO_LARGE_TO_ANSWER = {
+  kind: 'resource_exhausted',
+  code: undefined,
+  details: undefined,
+};
+
+function commit(
+  id: string,
+  options: {
+    expectedRevision: string;
+    analysisId: string;
+    selected?: string[];
+    key?: string;
+    signal?: AbortSignal;
+  },
+): Promise<unknown> {
+  const idempotencyKey = options.key ?? `collection-commit-${(keyCount += 1)}`;
+  return dispatcher.instruction(
+    'core.catalog.entry.import',
+    {
+      kind: 'collection',
+      mode: 'commit',
+      entryId: collectionEntryId(id),
+      expectedRevision: options.expectedRevision,
+      analysisId: options.analysisId,
+      selectedOptionalResourceIds: options.selected ?? [],
+      _meta: { idempotencyKey },
+    },
+    {
+      caller: caller(['core.catalog.write']),
+      metadata: { idempotencyKey },
+      ...(options.signal ? { signal: options.signal } : {}),
+    },
+  );
+}
+
+/** A live analysis of `id` at `revision`, ready unless `over` says otherwise. */
+async function liveAnalysis(
+  id: string,
+  revision: string,
+  over: Partial<PipelinePackageAnalysisSummary> = {},
+): Promise<string> {
+  mockAnalyzer.respond = (): Promise<PipelinePackageAnalysisSummary> =>
+    Promise.resolve(summaryOf({ expiresAt: LATER, ...over }));
+  const { analysisId } = analysisIn(
+    await analyze(id, { expectedRevision: revision }),
+  );
+  if (typeof analysisId !== 'string') throw new Error('expected an analysis');
+  return analysisId;
+}
+
+describe('core.catalog.entry.import mode commit (CAN-4170 PR 4c)', () => {
+  beforeAll(async () => {
+    seedConfig(ID_COMMIT, 'Commit', { mcpServers: [] });
+    seedConfig(ID_COMMIT_EDIT, 'CommitEdit', { mcpServers: [] });
+    seedConfig(ID_KIT_MCP, 'KitMcp');
+    realSummary ??= await analyzedSummary([RELEASE]);
+  });
+  beforeEach(() => {
+    mockAnalyzer.inputs.length = 0;
+    mockAnalyzer.dropped.length = 0;
+    mockHostedReads.length = 0;
+    mockCommitter.calls.length = 0;
+    mockCommitter.respond = (): Promise<CommitUpload> =>
+      Promise.resolve(UPLOADED);
+    mockCloudContext.next =
+      (): Promise<CloudClient.CanopyCloudCredentialContext> =>
+        Promise.resolve(MOCK_CLOUD_CONTEXT);
+    mockSignedIn.accountId = ACCOUNT_A;
+  });
+  afterAll(() => {
+    mockSignedIn.accountId = null;
+  });
+
+  it('answers analysisNotFound, uploading nothing, for an analysis made under another account or none', async () => {
+    const asA = await liveAnalysis(ID_COMMIT, 'rev-Commit');
+    mockSignedIn.accountId = null;
+    const signedOut = await liveAnalysis(ID_COMMIT, 'rev-Commit');
+    // The person switched to account B before committing.
+    mockSignedIn.accountId = 'account-b';
+    mockCloudContext.next =
+      (): Promise<CloudClient.CanopyCloudCredentialContext> =>
+        Promise.resolve({
+          ...MOCK_CLOUD_CONTEXT,
+          account: { ...MOCK_CLOUD_CONTEXT.account, id: 'account-b' },
+        });
+    mockHostedReads.length = 0;
+    expect({
+      switched: await refusal(
+        commit(ID_COMMIT, { expectedRevision: 'rev-Commit', analysisId: asA }),
+      ),
+      signedOut: await refusal(
+        commit(ID_COMMIT, {
+          expectedRevision: 'rev-Commit',
+          analysisId: signedOut,
+        }),
+      ),
+    }).toEqual({ switched: NOT_FOUND, signedOut: NOT_FOUND });
+    // Both are refused from the local account store: no capability read.
+    expect(mockHostedReads).toEqual([]);
+    expect(mockCommitter.calls).toEqual([]);
+  });
+
+  it('answers analysisNotFound, uploading nothing, for an account switch during a capability read that succeeds', async () => {
+    const asA = await liveAnalysis(ID_COMMIT, 'rev-Commit');
+    // The capability read resolves A's credentials and succeeds, but B is
+    // signed in by the time it answers.
+    mockCloudContext.next =
+      (): Promise<CloudClient.CanopyCloudCredentialContext> => {
+        mockSignedIn.accountId = 'account-b';
+        return Promise.resolve(MOCK_CLOUD_CONTEXT);
+      };
+    const key = `collection-commit-switch-probe-ok-${(keyCount += 1)}`;
+    expect(
+      await refusal(
+        commit(ID_COMMIT, {
+          expectedRevision: 'rev-Commit',
+          analysisId: asA,
+          key,
+        }),
+      ),
+    ).toEqual(NOT_FOUND);
+    expect(
+      await refusal(
+        commit(ID_COMMIT, {
+          expectedRevision: 'rev-Commit',
+          analysisId: asA,
+          key,
+        }),
+      ),
+    ).toEqual(NOT_FOUND);
+    expect(mockCommitter.calls).toEqual([]);
+  });
+
+  it('answers analysisNotFound, not remoteUnavailable, for an account switch during the capability read', async () => {
+    const asA = await liveAnalysis(ID_COMMIT, 'rev-Commit');
+    const { CanopyCloudClientError } = await import('../canopy-cloud/client');
+    // The local check passes as A; B is signed in by the time the capability
+    // read answers, and B lacks it.
+    mockCloudContext.next =
+      (): Promise<CloudClient.CanopyCloudCredentialContext> => {
+        mockSignedIn.accountId = 'account-b';
+        return Promise.reject(
+          new CanopyCloudClientError(
+            'unsupported-capability',
+            'This account lacks the capability.',
+          ),
+        );
+      };
+    const key = `collection-commit-switch-probe-${(keyCount += 1)}`;
+    expect(
+      await refusal(
+        commit(ID_COMMIT, {
+          expectedRevision: 'rev-Commit',
+          analysisId: asA,
+          key,
+        }),
+      ),
+    ).toEqual(NOT_FOUND);
+    // Its replay answers the same.
+    expect(
+      await refusal(
+        commit(ID_COMMIT, {
+          expectedRevision: 'rev-Commit',
+          analysisId: asA,
+          key,
+        }),
+      ),
+    ).toEqual(NOT_FOUND);
+    expect(mockCommitter.calls).toEqual([]);
+  });
+
+  it('answers analysisNotFound, not remoteUnavailable, for an analysis made under another account when this one lacks the capability', async () => {
+    const asA = await liveAnalysis(ID_COMMIT, 'rev-Commit');
+    mockSignedIn.accountId = 'account-b';
+    const { CanopyCloudClientError } = await import('../canopy-cloud/client');
+    mockCloudContext.next =
+      (): Promise<CloudClient.CanopyCloudCredentialContext> =>
+        Promise.reject(
+          new CanopyCloudClientError(
+            'unsupported-capability',
+            'This account lacks the capability.',
+          ),
+        );
+    mockHostedReads.length = 0;
+    expect(
+      await refusal(
+        commit(ID_COMMIT, { expectedRevision: 'rev-Commit', analysisId: asA }),
+      ),
+    ).toEqual(NOT_FOUND);
+    expect(mockHostedReads).toEqual([]);
+    expect(mockCommitter.calls).toEqual([]);
+  });
+
+  it('answers analysisNotFound, with no cloud call, for an analysis made signed out while still signed out', async () => {
+    mockSignedIn.accountId = null;
+    const signedOut = await liveAnalysis(ID_COMMIT, 'rev-Commit');
+    const { CanopyCloudClientError } = await import('../canopy-cloud/client');
+    mockCloudContext.next =
+      (): Promise<CloudClient.CanopyCloudCredentialContext> =>
+        Promise.reject(
+          new CanopyCloudClientError('missing-api-key', 'Sign in first.'),
+        );
+    mockHostedReads.length = 0;
+    expect(
+      await refusal(
+        commit(ID_COMMIT, {
+          expectedRevision: 'rev-Commit',
+          analysisId: signedOut,
+        }),
+      ),
+    ).toEqual(NOT_FOUND);
+    expect(mockHostedReads).toEqual([]);
+    expect(mockCommitter.calls).toEqual([]);
+  });
+
+  it('records no account for an analysis during which the signed-in account changed, so its commit uploads nothing', async () => {
+    let release = (): void => undefined;
+    mockAnalyzer.respond = (): Promise<PipelinePackageAnalysisSummary> =>
+      new Promise((resolve) => {
+        release = (): void => resolve(summaryOf({ expiresAt: LATER }));
+      });
+    const analyzing = analyze(ID_COMMIT, { expectedRevision: 'rev-Commit' });
+    for (let attempt = 0; mockAnalyzer.inputs.length === 0; attempt += 1) {
+      if (attempt === 200) throw new Error('the analyzer never started');
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    // Switched from A to B while the analysis ran, then committed as B.
+    mockSignedIn.accountId = 'account-b';
+    mockCloudContext.next =
+      (): Promise<CloudClient.CanopyCloudCredentialContext> =>
+        Promise.resolve({
+          ...MOCK_CLOUD_CONTEXT,
+          account: { ...MOCK_CLOUD_CONTEXT.account, id: 'account-b' },
+        });
+    release();
+    const { analysisId } = analysisIn(await analyzing);
+    expect(
+      await refusal(
+        commit(ID_COMMIT, {
+          expectedRevision: 'rev-Commit',
+          analysisId: typeof analysisId === 'string' ? analysisId : '',
+        }),
+      ),
+    ).toEqual(NOT_FOUND);
+    expect(mockCommitter.calls).toEqual([]);
+  });
+
+  it('answers analysisNotFound, not packageStale, for an analysis dropped during its upload, expired or not', async () => {
+    const analysisId = await liveAnalysis(ID_COMMIT, 'rev-Commit');
+    const { PackageAnalysisMissingError } =
+      await import('../sharing/share-operation-result');
+    // Evicted after the preflight, long before its expiry: the package read
+    // finds it missing.
+    mockCommitter.respond = (): Promise<CommitUpload> => {
+      mockAnalyzer.live.delete(analysisId);
+      return Promise.reject(new PackageAnalysisMissingError());
+    };
+    expect(
+      await refusal(
+        commit(ID_COMMIT, { expectedRevision: 'rev-Commit', analysisId }),
+      ),
+    ).toEqual(NOT_FOUND);
+  });
+
+  it('answers cancelled, with no capability read, for a commit cancelled during its preflight, and replays that', async () => {
+    const analysisId = await liveAnalysis(ID_COMMIT, 'rev-Commit');
+    const aborting = new AbortController();
+    const key = `collection-commit-preflight-cancel-${(keyCount += 1)}`;
+    mockAnalyzer.onLiveRead = (): void => {
+      mockAnalyzer.onLiveRead = null;
+      aborting.abort();
+    };
+    // Meanwhile the person switched accounts: a refusal, were it reached.
+    mockCloudContext.next =
+      (): Promise<CloudClient.CanopyCloudCredentialContext> =>
+        Promise.resolve({
+          ...MOCK_CLOUD_CONTEXT,
+          account: { ...MOCK_CLOUD_CONTEXT.account, id: 'account-b' },
+        });
+    mockHostedReads.length = 0;
+    expect(
+      await refusal(
+        commit(ID_COMMIT, {
+          expectedRevision: 'rev-Commit',
+          analysisId,
+          key,
+          signal: aborting.signal,
+        }),
+      ),
+    ).toMatchObject({ kind: 'cancelled' });
+    expect(
+      await refusal(
+        commit(ID_COMMIT, { expectedRevision: 'rev-Commit', analysisId, key }),
+      ),
+    ).toMatchObject({ kind: 'cancelled' });
+    expect(mockHostedReads).toEqual([]);
+    expect(mockCommitter.calls).toEqual([]);
+  });
+
+  it('uploads a ready analysis with the chosen optional resources under the one account its capability check resolved', async () => {
+    const analysisId = await liveAnalysis(ID_COMMIT, 'rev-Commit');
+    mockHostedReads.length = 0;
+    expect(
+      await commit(ID_COMMIT, {
+        expectedRevision: 'rev-Commit',
+        analysisId,
+        selected: ['resource-1'],
+      }),
+    ).toEqual(COMMITTED);
+    expect(mockCommitter.calls).toEqual([
+      {
+        analysisId,
+        selectedOptionalResourceIds: ['resource-1'],
+        credentialContext: MOCK_CLOUD_CONTEXT,
+      },
+    ]);
+    expect(mockCommitter.calls[0]?.credentialContext).toBe(MOCK_CLOUD_CONTEXT);
+    expect(mockHostedReads).toEqual(['capability:collections-crud-v1']);
+  });
+
+  it('replays a commit under its key without uploading again, even once its analysis is gone', async () => {
+    const analysisId = await liveAnalysis(ID_COMMIT, 'rev-Commit');
+    const request = {
+      expectedRevision: 'rev-Commit',
+      analysisId,
+      key: `collection-commit-replay-${(keyCount += 1)}`,
+    };
+    expect(await commit(ID_COMMIT, request)).toEqual(COMMITTED);
+    mockAnalyzer.live.delete(analysisId);
+    expect(await commit(ID_COMMIT, request)).toEqual(COMMITTED);
+    expect(
+      await refusal(
+        commit(ID_COMMIT, { ...request, selected: ['resource-1'] }),
+      ),
+    ).toMatchObject({ kind: 'conflict' });
+    expect(mockCommitter.calls).toHaveLength(1);
+  });
+
+  it('answers analysisNotFound, before any cloud call, for an analysis this collection never made or the service no longer holds', async () => {
+    const other = await liveAnalysis(ID_COMMIT_EDIT, 'rev-CommitEdit');
+    const evicted = await liveAnalysis(ID_COMMIT, 'rev-Commit');
+    mockAnalyzer.live.delete(evicted);
+    const expired = await liveAnalysis(ID_COMMIT, 'rev-Commit', {
+      expiresAt: '2020-01-01T00:00:00.000Z',
+    });
+    // A skill's analysis in the shared service, which no collection made.
+    mockAnalyzer.live.add('skill-analysis-1');
+    mockHostedReads.length = 0;
+    const ids = {
+      unknown: 'analysis-unknown',
+      other,
+      skill: 'skill-analysis-1',
+      evicted,
+      expired,
+    };
+    const answers: Record<string, unknown> = {};
+    for (const [name, analysisId] of Object.entries(ids))
+      answers[name] = await refusal(
+        commit(ID_COMMIT, { expectedRevision: 'rev-Commit', analysisId }),
+      );
+    expect(answers).toEqual({
+      unknown: NOT_FOUND,
+      other: NOT_FOUND,
+      skill: NOT_FOUND,
+      evicted: NOT_FOUND,
+      expired: NOT_FOUND,
+    });
+    expect(mockCommitter.calls).toEqual([]);
+    expect(mockHostedReads).toEqual([]);
+  });
+
+  it('forgets the oldest analysis beyond the newest 16, answering analysisNotFound for it, not internal', async () => {
+    const ids: string[] = [];
+    for (let count = 0; count < 17; count += 1)
+      ids.push(await liveAnalysis(ID_COMMIT, 'rev-Commit'));
+    expect(
+      await refusal(
+        commit(ID_COMMIT, {
+          expectedRevision: 'rev-Commit',
+          analysisId: ids[0] ?? '',
+        }),
+      ),
+    ).toEqual(NOT_FOUND);
+    expect(mockCommitter.calls).toEqual([]);
+    expect(
+      await commit(ID_COMMIT, {
+        expectedRevision: 'rev-Commit',
+        analysisId: ids[1] ?? '',
+      }),
+    ).toEqual(COMMITTED);
+  });
+
+  it('refuses an analysis of another revision as packageStale, and a collection that moved on as revisionConflict', async () => {
+    const analysisId = await liveAnalysis(ID_COMMIT_EDIT, 'rev-CommitEdit');
+    seedConfig(ID_COMMIT_EDIT, 'CommitEdit', {
+      mcpServers: [],
+      revision: 'rev-CommitEdit-2',
+    });
+    expect({
+      moved: await refusal(
+        commit(ID_COMMIT_EDIT, {
+          expectedRevision: 'rev-CommitEdit',
+          analysisId,
+        }),
+      ),
+      stale: await refusal(
+        commit(ID_COMMIT_EDIT, {
+          expectedRevision: 'rev-CommitEdit-2',
+          analysisId,
+        }),
+      ),
+    }).toEqual({
+      moved: {
+        kind: 'conflict',
+        code: 'core.catalog.revisionConflict',
+        details: { currentRevision: 'rev-CommitEdit-2' },
+      },
+      stale: STALE,
+    });
+    expect(mockCommitter.calls).toEqual([]);
+    // The files the analysis read changed since: the upload refuses it.
+    const changed = await liveAnalysis(ID_COMMIT_EDIT, 'rev-CommitEdit-2');
+    const { ShareOperationError } =
+      await import('../sharing/share-operation-result');
+    // As the package service does, the stale analysis is dropped first.
+    mockCommitter.respond = (): Promise<CommitUpload> => {
+      mockAnalyzer.live.delete(changed);
+      return Promise.reject(
+        new ShareOperationError(
+          'dependency-review',
+          'Dependency files changed since analysis.',
+          'prepare',
+        ),
+      );
+    };
+    expect(
+      await refusal(
+        commit(ID_COMMIT_EDIT, {
+          expectedRevision: 'rev-CommitEdit-2',
+          analysisId: changed,
+        }),
+      ),
+    ).toEqual(STALE);
+    expect(mockCommitter.calls).toHaveLength(1);
+  });
+
+  it('answers packageBlocked with no capability or MCP connection read for a blocked analysis or a collection with an MCP server member', async () => {
+    const blocked = await liveAnalysis(ID_COMMIT, 'rev-Commit', {
+      state: 'blocked',
+      blockers: [offered('/release')],
+    });
+    const { analysisId: mcpBlocked } = analysisIn(
+      await analyze(ID_KIT_MCP, { expectedRevision: 'rev-KitMcp' }),
+    );
+    const ready = await liveAnalysis(ID_COMMIT, 'rev-Commit');
+    mockHostedReads.length = 0;
+    expect({
+      blocked: await refusal(
+        commit(ID_COMMIT, {
+          expectedRevision: 'rev-Commit',
+          analysisId: blocked,
+        }),
+      ),
+      mcp: await refusal(
+        commit(ID_KIT_MCP, {
+          expectedRevision: 'rev-KitMcp',
+          analysisId: typeof mcpBlocked === 'string' ? mcpBlocked : '',
+        }),
+      ),
+      // The stored MCP member is refused before the analysis is looked up.
+      mcpWithAnother: await refusal(
+        commit(ID_KIT_MCP, {
+          expectedRevision: 'rev-KitMcp',
+          analysisId: ready,
+        }),
+      ),
+    }).toEqual({ blocked: BLOCKED, mcp: BLOCKED, mcpWithAnother: BLOCKED });
+    expect(mockCommitter.calls).toEqual([]);
+    expect(mockHostedReads).toEqual([]);
+  });
+
+  it('answers packageBlocked for a package the upload refuses as holding a secret or as blocked', async () => {
+    const analysisId = await liveAnalysis(ID_COMMIT, 'rev-Commit');
+    const { SkillSecretDetectedError, PackageAnalysisBlockedError } =
+      await import('../sharing/share-operation-result');
+    const answers: unknown[] = [];
+    for (const error of [
+      new SkillSecretDetectedError(
+        'The deploy skill looks like it holds a secret.',
+        'prepare',
+      ),
+      new PackageAnalysisBlockedError(),
+    ]) {
+      mockCommitter.respond = (): Promise<CommitUpload> =>
+        Promise.reject(error);
+      answers.push(
+        await refusal(
+          commit(ID_COMMIT, { expectedRevision: 'rev-Commit', analysisId }),
+        ),
+      );
+    }
+    expect(answers).toEqual([BLOCKED, BLOCKED]);
+  });
+
+  it('authorizes the collection exactly as get does, before any capability read or upload, with resource contexts on', async () => {
+    await recordInstall(
+      ID_KIT_OUTSIDE,
+      'remote-outside',
+      { kind: 'organization', organizationId: ORG_OUTSIDE },
+      { mcpServers: [] },
+    );
+    await recordInstall(
+      ID_KIT_REVOKED,
+      'remote-revoked',
+      { kind: 'personal' },
+      { mcpServers: [] },
+    );
+    await withResourceContext(async () => {
+      const analysisId = await liveAnalysis(ID_KIT_OUTSIDE, 'rev-Outside');
+      mockContext.refusedOrganization = ORG_OUTSIDE;
+      mockHostedReads.length = 0;
+      expect({
+        revoked: await refusal(
+          commit(ID_KIT_REVOKED, {
+            expectedRevision: 'rev-Outside',
+            analysisId,
+          }),
+        ),
+        outside: await refusal(
+          commit(ID_KIT_OUTSIDE, {
+            expectedRevision: 'rev-Outside',
+            analysisId,
+          }),
+        ),
+      }).toEqual({
+        revoked: { ...UNREADABLE, details: undefined },
+        outside: { ...UNREADABLE, details: undefined },
+      });
+      // Only get's authorization reads each installed share; no capability
+      // read.
+      expect(mockHostedReads).toEqual([
+        'shared:remote-revoked',
+        'shared:remote-outside',
+      ]);
+    });
+    expect(mockCommitter.calls).toEqual([]);
+  });
+
+  it('answers cancelled, recording it, for a commit cancelled before or during its read or during the upload', async () => {
+    const analysisId = await liveAnalysis(ID_COMMIT, 'rev-Commit');
+    const before = new AbortController();
+    before.abort();
+    expect(
+      await refusal(
+        commit(ID_COMMIT, {
+          expectedRevision: 'rev-Commit',
+          analysisId,
+          signal: before.signal,
+        }),
+      ),
+    ).toMatchObject({ kind: 'cancelled' });
+    // During the upload: it stops at its next request.
+    const during = new AbortController();
+    const key = `collection-commit-upload-cancel-${(keyCount += 1)}`;
+    mockCommitter.respond = (stillInTime): Promise<CommitUpload> =>
+      new Promise((resolve) => {
+        during.abort();
+        stillInTime();
+        resolve(UPLOADED);
+      });
+    expect(
+      await refusal(
+        commit(ID_COMMIT, {
+          expectedRevision: 'rev-Commit',
+          analysisId,
+          key,
+          signal: during.signal,
+        }),
+      ),
+    ).toMatchObject({ kind: 'cancelled' });
+    mockCommitter.respond = (): Promise<CommitUpload> =>
+      Promise.resolve(UPLOADED);
+    expect(
+      await refusal(
+        commit(ID_COMMIT, { expectedRevision: 'rev-Commit', analysisId, key }),
+      ),
+    ).toMatchObject({ kind: 'cancelled' });
+    expect(mockCommitter.calls).toHaveLength(1);
+    // During the read: an MCP member would answer packageBlocked after it.
+    await recordInstall(ID_KIT_ORG, 'remote-outside', {
+      kind: 'organization',
+      organizationId: ORG_OUTSIDE,
+    });
+    await withResourceContext(async () => {
+      mockHostedReads.length = 0;
+      let release = (): void => undefined;
+      mockHostedReadHold.next = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const heldKey = `collection-commit-held-read-${(keyCount += 1)}`;
+      const aborting = new AbortController();
+      const call = tracked(
+        commit(ID_KIT_ORG, {
+          expectedRevision: 'rev-Outside',
+          analysisId,
+          key: heldKey,
+          signal: aborting.signal,
+        }),
+      );
+      try {
+        for (let attempt = 0; mockHostedReads.length === 0; attempt += 1) {
+          if (attempt === 200 || call.settled)
+            throw new Error('the collection read never started');
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        aborting.abort();
+      } finally {
+        release();
+        mockHostedReadHold.next = null;
+      }
+      const outcome = await call.outcome;
+      expect(
+        outcome.status === 'rejected' &&
+          outcome.reason instanceof CanopyOperationError
+          ? outcome.reason.payload.kind
+          : outcome.status,
+      ).toBe('cancelled');
+      expect(
+        await refusal(
+          commit(ID_KIT_ORG, {
+            expectedRevision: 'rev-Outside',
+            analysisId,
+            key: heldKey,
+          }),
+        ),
+      ).toMatchObject({ kind: 'cancelled' });
+    });
+    expect(mockCommitter.calls).toHaveLength(1);
+  });
+
+  it('records, and replays, a commit whose upload finished after its caller cancelled', async () => {
+    const analysisId = await liveAnalysis(ID_COMMIT, 'rev-Commit');
+    const late = new AbortController();
+    const key = `collection-commit-late-cancel-${(keyCount += 1)}`;
+    mockCommitter.respond = (): Promise<CommitUpload> => {
+      late.abort();
+      return Promise.resolve(UPLOADED);
+    };
+    // The dispatcher answers the caller who left; the finished upload is what
+    // the run records, so the same key answers it.
+    expect(
+      await refusal(
+        commit(ID_COMMIT, {
+          expectedRevision: 'rev-Commit',
+          analysisId,
+          key,
+          signal: late.signal,
+        }),
+      ),
+    ).toMatchObject({ kind: 'cancelled' });
+    expect(
+      await commit(ID_COMMIT, {
+        expectedRevision: 'rev-Commit',
+        analysisId,
+        key,
+      }),
+    ).toEqual(COMMITTED);
+    expect(mockCommitter.calls).toHaveLength(1);
+  });
+
+  it('maps the cloud refusing access or being unreachable, recording each refusal under its key', async () => {
+    const analysisId = await liveAnalysis(ID_COMMIT, 'rev-Commit');
+    const { ShareOperationError, ShareStageError } =
+      await import('../sharing/share-operation-result');
+    const { CanopyCloudClientError } = await import('../canopy-cloud/client');
+    const offline = new ShareStageError(
+      'upload',
+      new CanopyCloudClientError('network-error', 'offline'),
+    );
+    const failures: Record<string, Error> = {
+      permission: new ShareStageError(
+        'prepare',
+        new ShareOperationError('permission', 'No access.', 'prepare'),
+      ),
+      authentication: new ShareOperationError(
+        'authentication',
+        'Sign in again.',
+        'prepare',
+      ),
+      offline,
+    };
+    const answers: Record<string, unknown> = {};
+    for (const [name, error] of Object.entries(failures)) {
+      mockCommitter.respond = (): Promise<CommitUpload> =>
+        Promise.reject(error);
+      answers[name] = await refusal(
+        commit(ID_COMMIT, { expectedRevision: 'rev-Commit', analysisId }),
+      );
+    }
+    mockCloudContext.next =
+      (): Promise<CloudClient.CanopyCloudCredentialContext> =>
+        Promise.reject(
+          new CanopyCloudClientError('unsupported-capability', 'unsupported'),
+        );
+    answers.capability = await refusal(
+      commit(ID_COMMIT, { expectedRevision: 'rev-Commit', analysisId }),
+    );
+    expect(answers).toEqual({
+      permission: DENIED,
+      authentication: DENIED,
+      offline: UNREACHABLE,
+      capability: UNREACHABLE,
+    });
+    // A refusal replays under its key; only a new key reaches the cloud again.
+    mockCloudContext.next =
+      (): Promise<CloudClient.CanopyCloudCredentialContext> =>
+        Promise.resolve(MOCK_CLOUD_CONTEXT);
+    const key = `collection-commit-offline-${(keyCount += 1)}`;
+    mockCommitter.respond = (): Promise<CommitUpload> =>
+      Promise.reject(offline);
+    await refusal(
+      commit(ID_COMMIT, { expectedRevision: 'rev-Commit', analysisId, key }),
+    );
+    mockCommitter.respond = (): Promise<CommitUpload> =>
+      Promise.resolve(UPLOADED);
+    expect(
+      await refusal(
+        commit(ID_COMMIT, { expectedRevision: 'rev-Commit', analysisId, key }),
+      ),
+    ).toEqual(UNREACHABLE);
+    expect(
+      await commit(ID_COMMIT, { expectedRevision: 'rev-Commit', analysisId }),
+    ).toEqual(COMMITTED);
+    expect(mockCommitter.calls).toHaveLength(5);
+  });
+});
+
+// CAN-4170 PR 4b-1: core.catalog.entry.get read importReadiness.
+const SLACK: PipelinePackageEnvironmentRequirement = {
+  id: 'connector:slack',
+  kind: 'connector',
+  displayName: 'Slack',
+  required: false,
+  affectedSteps: [],
+  setupHint: 'Connect Slack.',
+};
+const SHARED_PACKAGE = {
+  digest: DIGEST,
+  version: 1,
+  resources: [],
+  environmentRequirements: [LINEAR, SLACK],
+};
+const READY_REQUIREMENTS = [
+  {
+    id: 'mcp:linear',
+    kind: 'mcp',
+    displayName: 'Linear',
+    required: true,
+    setupHint: 'Connect Linear.',
+    status: 'missing',
+  },
+  {
+    id: 'connector:slack',
+    kind: 'connector',
+    displayName: 'Slack',
+    required: false,
+    setupHint: 'Connect Slack.',
+    status: 'unknown',
+  },
+];
+
+function readiness(
+  remoteId: string,
+  fromPublicShare: boolean,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  return dispatcher.query(
+    'core.catalog.entry.get',
+    { kind: 'collection', read: 'importReadiness', remoteId, fromPublicShare },
+    { caller: caller(['core.catalog.read']), ...(signal ? { signal } : {}) },
+  );
+}
+
+/** Lets a read the caller left run on until it next waits on I/O. */
+async function settled(): Promise<void> {
+  for (let turn = 0; turn < 5; turn += 1)
+    await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+/** A share requirement on the MCP server named, under its own id. */
+function mcpRequirement(
+  id: string,
+  displayName: string,
+): PipelinePackageEnvironmentRequirement {
+  return {
+    id,
+    kind: 'mcp',
+    displayName,
+    required: true,
+    affectedSteps: [],
+    setupHint: `Connect ${displayName}.`,
+  };
+}
+
+describe('core.catalog.entry.get read importReadiness (CAN-4170 PR 4b-1)', () => {
+  let filesBefore: Record<string, string> = {};
+  beforeEach(() => {
+    mockShares.scoped.clear();
+    mockShares.public.clear();
+    mockCapability.check = (): Promise<void> => Promise.resolve();
+    mockHostedReads.length = 0;
+    mockMcpProbes.length = 0;
+    filesBefore = collectionFiles();
+  });
+  afterEach(() => {
+    // A readiness read writes nothing.
+    expect(collectionFiles()).toEqual(filesBefore);
+    expect(readFileSync(preferencesPath(), 'utf8')).toBe(preferencesBefore);
+  });
+  afterAll(() => {
+    mockCapability.check = null;
+  });
+
+  it('answers the revision, package and requirements of a shared collection, probing them exactly as the import readiness channel does', async () => {
+    mockShares.scoped.set(
+      'remote-ready',
+      (): Promise<unknown> =>
+        Promise.resolve({ contentHash: SHARE_HASH, package: SHARED_PACKAGE }),
+    );
+    expect(await readiness('remote-ready', false)).toEqual({
+      read: 'importReadiness',
+      readiness: {
+        remoteId: 'remote-ready',
+        contentHash: SHARE_HASH,
+        package: { version: 1, digest: DIGEST },
+        requirements: READY_REQUIREMENTS,
+      },
+    });
+    // The channel's capability check, then the share; no other hosted read.
+    expect(mockHostedReads).toEqual(['capability', 'shared:remote-ready']);
+    // The same MCP status probes as the channel, which reach the account's
+    // MCP connections for an account-routed server (N4).
+    const probes = [...mockMcpProbes];
+    expect(probes).toEqual(['catalog:Linear', 'name:Linear']);
+    mockMcpProbes.length = 0;
+    const { inspectSharedCollectionImport } =
+      await import('../collections/collection-handlers');
+    const channel = await inspectSharedCollectionImport('remote-ready');
+    expect(mockMcpProbes).toEqual(probes);
+    expect(
+      channel.requirements.map(
+        ({ id, status }): { id: string; status: string } => ({ id, status }),
+      ),
+    ).toEqual(
+      READY_REQUIREMENTS.map(
+        ({ id, status }): { id: string; status: string } => ({ id, status }),
+      ),
+    );
+  });
+
+  it('answers a public share from its public snapshot, with no capability check', async () => {
+    mockShares.public.set(
+      'remote-public',
+      (): Promise<unknown> =>
+        Promise.resolve({ contentHash: SHARE_HASH, package: SHARED_PACKAGE }),
+    );
+    expect(await readiness('remote-public', true)).toEqual({
+      read: 'importReadiness',
+      readiness: {
+        remoteId: 'remote-public',
+        contentHash: SHARE_HASH,
+        package: { version: 1, digest: DIGEST },
+        requirements: READY_REQUIREMENTS,
+      },
+    });
+    expect(mockHostedReads).toEqual(['public:remote-public']);
+    expect(mockMcpProbes).toEqual(['catalog:Linear', 'name:Linear']);
+  });
+
+  it('answers a null package and no requirements for a share without a package', async () => {
+    const bare = (): Promise<unknown> =>
+      Promise.resolve({ contentHash: SHARE_HASH });
+    mockShares.scoped.set('remote-bare', bare);
+    mockShares.public.set('remote-bare', bare);
+    const bareReadiness = {
+      read: 'importReadiness',
+      readiness: {
+        remoteId: 'remote-bare',
+        contentHash: SHARE_HASH,
+        package: null,
+        requirements: [],
+      },
+    };
+    expect({
+      scoped: await readiness('remote-bare', false),
+      public: await readiness('remote-bare', true),
+    }).toEqual({ scoped: bareReadiness, public: bareReadiness });
+    expect(mockMcpProbes).toEqual([]);
+  });
+
+  it('maps a missing share, a refused account and an unreachable cloud, scoped and public', async () => {
+    const { CanopyCloudClientError } = await import('../canopy-cloud/client');
+    const failures: Record<string, () => Error> = {
+      missing: () => new CanopyCloudClientError('http-error', 'Not found', 404),
+      forbidden: () =>
+        new CanopyCloudClientError('http-error', 'Forbidden', 403),
+      signedOut: () =>
+        new CanopyCloudClientError('missing-api-key', 'Sign in first.'),
+      serverError: () =>
+        new CanopyCloudClientError('http-error', 'Unavailable', 503),
+      offline: () => new CanopyCloudClientError('network-error', 'offline'),
+    };
+    const answers: Record<string, unknown> = {};
+    for (const [name, failure] of Object.entries(failures))
+      for (const fromPublicShare of [false, true]) {
+        const shares = fromPublicShare ? mockShares.public : mockShares.scoped;
+        shares.set(
+          'remote-failing',
+          (): Promise<unknown> => Promise.reject(failure()),
+        );
+        answers[`${name}:${fromPublicShare ? 'public' : 'scoped'}`] =
+          await refusal(readiness('remote-failing', fromPublicShare));
+      }
+    // The organization context refuses the share's owner.
+    mockShares.scoped.set(
+      'remote-failing',
+      (): Promise<unknown> =>
+        Promise.reject(new Error('Resource unavailable (context)')),
+    );
+    answers.context = await refusal(readiness('remote-failing', false));
+    // The cloud lacks the capability: refused before the share is read.
+    mockHostedReads.length = 0;
+    mockCapability.check = (): Promise<void> =>
+      Promise.reject(
+        new CanopyCloudClientError('unsupported-capability', 'unsupported'),
+      );
+    answers.capability = await refusal(readiness('remote-failing', false));
+    expect(mockHostedReads).toEqual(['capability']);
+    // A 404 from the capability check never read the share: unavailable.
+    mockCapability.check = (): Promise<void> =>
+      Promise.reject(
+        new CanopyCloudClientError('http-error', 'Not found', 404),
+      );
+    answers.capabilityNotFound = await refusal(
+      readiness('remote-failing', false),
+    );
+    const notFound = refused('not_found', 'remoteNotFound');
+    expect(answers).toEqual({
+      'missing:scoped': notFound,
+      'missing:public': notFound,
+      'forbidden:scoped': DENIED,
+      'forbidden:public': DENIED,
+      'signedOut:scoped': DENIED,
+      'signedOut:public': DENIED,
+      'serverError:scoped': UNREACHABLE,
+      'serverError:public': UNREACHABLE,
+      'offline:scoped': UNREACHABLE,
+      'offline:public': UNREACHABLE,
+      context: DENIED,
+      capability: UNREACHABLE,
+      capabilityNotFound: UNREACHABLE,
+    });
+  });
+
+  it('checks a cold capability cache without writing the signed-in account', async () => {
+    mockShares.scoped.set(
+      'remote-cold',
+      (): Promise<unknown> => Promise.resolve({ contentHash: SHARE_HASH }),
+    );
+    mockCapability.check = null;
+    mockColdAccount.on = true;
+    mockColdAccount.writes.length = 0;
+    const discovery = jest
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(
+        (): Promise<Response> =>
+          Promise.resolve(
+            new Response(
+              JSON.stringify({ capabilities: ['collections-crud-v1'] }),
+              { status: 200, headers: { 'content-type': 'application/json' } },
+            ),
+          ),
+      );
+    try {
+      expect(await readiness('remote-cold', false)).toMatchObject({
+        readiness: { remoteId: 'remote-cold', contentHash: SHARE_HASH },
+      });
+      // The real check ran live discovery, and saved nothing it found.
+      expect(discovery).toHaveBeenCalledTimes(1);
+      expect(mockColdAccount.writes).toEqual([]);
+    } finally {
+      discovery.mockRestore();
+      mockColdAccount.on = false;
+    }
+  });
+
+  it('refuses a scoped share when the selected context changes while its requirements are probed', async () => {
+    mockContext.enabled = true;
+    mockShares.scoped.set('remote-switched', (): Promise<unknown> => {
+      // The share is read in one context; the probes finish in another.
+      mockContext.epoch += 1;
+      return Promise.resolve({
+        contentHash: SHARE_HASH,
+        package: SHARED_PACKAGE,
+      });
+    });
+    try {
+      expect(await refusal(readiness('remote-switched', false))).toEqual(
+        DENIED,
+      );
+    } finally {
+      mockContext.enabled = false;
+    }
+  });
+
+  it('answers a published requirement whatever its name and setup hint length, and refuses an answer too large to send', async () => {
+    // Publish caps neither, so neither does readiness (PR 4b-1b).
+    for (const longer of [
+      { ...SLACK, setupHint: 'x'.repeat(4097) },
+      { ...SLACK, displayName: 'x'.repeat(513) },
+    ]) {
+      mockShares.scoped.set(
+        'remote-long-hint',
+        (): Promise<unknown> =>
+          Promise.resolve({
+            contentHash: SHARE_HASH,
+            package: { ...SHARED_PACKAGE, environmentRequirements: [longer] },
+          }),
+      );
+      expect(await readiness('remote-long-hint', false)).toMatchObject({
+        readiness: {
+          requirements: [
+            {
+              id: longer.id,
+              displayName: longer.displayName,
+              setupHint: longer.setupHint,
+              status: 'unknown',
+            },
+          ],
+        },
+      });
+    }
+    // An answer past the relay's 1 MiB reply cap is refused as too large.
+    mockShares.scoped.set(
+      'remote-long-hint',
+      (): Promise<unknown> =>
+        Promise.resolve({
+          contentHash: SHARE_HASH,
+          package: {
+            ...SHARED_PACKAGE,
+            environmentRequirements: [
+              { ...SLACK, setupHint: 'x'.repeat(1024 * 1024) },
+            ],
+          },
+        }),
+    );
+    expect(await refusal(readiness('remote-long-hint', false))).toEqual(
+      TOO_LARGE_TO_ANSWER,
+    );
+  });
+
+  it('refuses a scoped share when the signed-in account changes while its requirements are probed, with organization contexts off', async () => {
+    mockShares.scoped.set('remote-account-switched', (): Promise<unknown> => {
+      // Read under one account; the probes finish under another.
+      mockContext.accountEpoch += 1;
+      return Promise.resolve({
+        contentHash: SHARE_HASH,
+        package: SHARED_PACKAGE,
+      });
+    });
+    expect(await refusal(readiness('remote-account-switched', false))).toEqual(
+      DENIED,
+    );
+  });
+
+  it('refuses a public share when the signed-in account or the selected context changes while its requirements are probed', async () => {
+    const switched = (move: () => void) => (): Promise<unknown> => {
+      // Read in one account or context; the probes finish in another.
+      move();
+      return Promise.resolve({
+        contentHash: SHARE_HASH,
+        package: SHARED_PACKAGE,
+      });
+    };
+    mockShares.public.set(
+      'remote-public-switched',
+      switched((): void => {
+        mockContext.accountEpoch += 1;
+      }),
+    );
+    const accountSwitch = await refusal(
+      readiness('remote-public-switched', true),
+    );
+    mockContext.enabled = true;
+    mockShares.public.set(
+      'remote-public-switched',
+      switched((): void => {
+        mockContext.epoch += 1;
+      }),
+    );
+    let contextSwitch: unknown;
+    try {
+      contextSwitch = await refusal(readiness('remote-public-switched', true));
+    } finally {
+      mockContext.enabled = false;
+    }
+    expect({ accountSwitch, contextSwitch }).toEqual({
+      accountSwitch: DENIED,
+      contextSwitch: DENIED,
+    });
+  });
+
+  it('refuses a public share as access denied when the cloud is not configured', async () => {
+    const { CanopyCloudConfigError } = await import('../canopy-cloud/config');
+    mockShares.public.set(
+      'remote-no-cloud',
+      (): Promise<unknown> =>
+        Promise.reject(
+          new CanopyCloudConfigError(
+            'base-url-not-configured',
+            'The cloud is not configured.',
+          ),
+        ),
+    );
+    expect(await refusal(readiness('remote-no-cloud', true))).toEqual(DENIED);
+  });
+
+  it('stops a cancelled read before its share read and before its probes', async () => {
+    mockShares.scoped.set(
+      'remote-cancelled',
+      (): Promise<unknown> =>
+        Promise.resolve({ contentHash: SHARE_HASH, package: SHARED_PACKAGE }),
+    );
+    // Cancelled during the capability check: the share is never read.
+    const duringCheck = new AbortController();
+    mockCapability.check = (): Promise<void> => {
+      duringCheck.abort();
+      return Promise.resolve();
+    };
+    expect(
+      await refusal(readiness('remote-cancelled', false, duringCheck.signal)),
+    ).toMatchObject({ kind: 'cancelled' });
+    await settled();
+    expect(mockHostedReads).toEqual(['capability']);
+    // Cancelled during the share read: nothing is probed.
+    mockCapability.check = (): Promise<void> => Promise.resolve();
+    for (const fromPublicShare of [false, true]) {
+      const aborting = new AbortController();
+      const shares = fromPublicShare ? mockShares.public : mockShares.scoped;
+      shares.set('remote-cancelled', (): Promise<unknown> => {
+        aborting.abort();
+        return Promise.resolve({
+          contentHash: SHARE_HASH,
+          package: SHARED_PACKAGE,
+        });
+      });
+      expect(
+        await refusal(
+          readiness('remote-cancelled', fromPublicShare, aborting.signal),
+        ),
+      ).toMatchObject({ kind: 'cancelled' });
+    }
+    await settled();
+    expect(mockMcpProbes).toEqual([]);
+  });
+
+  it('sends no further share request once a read is cancelled during its retry wait', async () => {
+    const actual = jest.requireActual<typeof ServerClient>(
+      '../collections/canopy-server-client',
+    );
+    // The real scoped share client, against a cloud that is briefly down.
+    mockShares.scoped.set(
+      'remote-retrying',
+      (signal?: AbortSignal): Promise<unknown> =>
+        actual.getSharedCollection('remote-retrying', signal),
+    );
+    mockColdAccount.on = true;
+    jest.useFakeTimers({
+      doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'],
+    });
+    const requests = jest.spyOn(globalThis, 'fetch').mockImplementation(
+      (): Promise<Response> =>
+        Promise.resolve(
+          new Response('{}', {
+            status: 503,
+            headers: { 'retry-after': '1' },
+          }),
+        ),
+    );
+    try {
+      const aborting = new AbortController();
+      const call = refusal(
+        readiness('remote-retrying', false, aborting.signal),
+      );
+      for (
+        let turn = 0;
+        turn < 50 && requests.mock.calls.length === 0;
+        turn += 1
+      )
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      // The first request failed and its one-second retry wait is scheduled.
+      await settled();
+      expect(requests).toHaveBeenCalledTimes(1);
+      aborting.abort();
+      await jest.advanceTimersByTimeAsync(2000);
+      await settled();
+      expect(await call).toMatchObject({ kind: 'cancelled' });
+      expect(requests).toHaveBeenCalledTimes(1);
+    } finally {
+      requests.mockRestore();
+      jest.useRealTimers();
+      mockColdAccount.on = false;
+    }
+  });
+
+  it('starts no probe once a cancel lands between synchronous probes', async () => {
+    // The host's READINESS_PROBE_CONCURRENCY: the probes admitted at once.
+    const HOST_PROBE_CONCURRENCY = 8;
+    mockShares.public.set(
+      'remote-cancel-probing',
+      (): Promise<unknown> =>
+        Promise.resolve({
+          contentHash: SHARE_HASH,
+          package: {
+            ...SHARED_PACKAGE,
+            environmentRequirements: Array.from(
+              { length: 20 },
+              (_, index): PipelinePackageEnvironmentRequirement => ({
+                id: `command:tool-${index}`,
+                kind: 'command',
+                displayName: `canopy-absent-tool-${index}`,
+                required: true,
+                setupHint: '',
+                affectedSteps: [],
+              }),
+            ),
+          },
+        }),
+    );
+    const aborting = new AbortController();
+    mockPathProbes.length = 0;
+    // PATH probes don't yield; the cancel arrives as its own event once the
+    // first one starts.
+    mockPathProbeHook.onProbe = (): void => {
+      mockPathProbeHook.onProbe = null;
+      setImmediate(() => aborting.abort());
+    };
+    try {
+      expect(
+        await refusal(
+          readiness('remote-cancel-probing', true, aborting.signal),
+        ),
+      ).toMatchObject({ kind: 'cancelled' });
+      for (let turn = 0; turn < 40; turn += 1) await settled();
+    } finally {
+      mockPathProbeHook.onProbe = null;
+    }
+    // The probes admitted before the cancel ran; none started after it.
+    expect(
+      mockPathProbes.filter((name) => name.startsWith('canopy-absent-tool-')),
+    ).toHaveLength(HOST_PROBE_CONCURRENCY);
+  });
+
+  it('refuses a requirement too large to answer without serializing it', async () => {
+    // A long hint, and one under the cap in characters that JSON escapes to
+    // six bytes apiece.
+    for (const hint of [
+      'x'.repeat(3 * 1024 * 1024),
+      '\u0001'.repeat(900_000),
+    ]) {
+      mockShares.public.set(
+        'remote-huge-hint',
+        (): Promise<unknown> =>
+          Promise.resolve({
+            contentHash: SHARE_HASH,
+            package: {
+              ...SHARED_PACKAGE,
+              environmentRequirements: [
+                { ...mcpRequirement('mcp:huge', 'Huge'), setupHint: hint },
+              ],
+            },
+          }),
+      );
+      const stringify = jest.spyOn(JSON, 'stringify');
+      try {
+        expect(await refusal(readiness('remote-huge-hint', true))).toEqual(
+          TOO_LARGE_TO_ANSWER,
+        );
+        expect(
+          stringify.mock.calls.some((call): boolean => {
+            const value: unknown = call[0];
+            return (
+              typeof value === 'object' &&
+              value !== null &&
+              'setupHint' in value &&
+              value.setupHint === hint
+            );
+          }),
+        ).toBe(false);
+      } finally {
+        stringify.mockRestore();
+      }
+    }
+    expect(mockMcpProbes).toEqual([]);
+  });
+
+  it('refuses a share whose answer must exceed the reply cap before any probe, and answers one just under it', async () => {
+    const hinted = (
+      count: number,
+      hintLength: number,
+    ): PipelinePackageEnvironmentRequirement[] =>
+      Array.from(
+        { length: count },
+        (_, index): PipelinePackageEnvironmentRequirement => ({
+          ...mcpRequirement(`mcp:hinted-${index}`, `Hinted ${index}`),
+          setupHint: 'x'.repeat(hintLength),
+        }),
+      );
+    // Two requirements of 600,000 characters can't fit in 1 MiB.
+    mockShares.public.set(
+      'remote-near-cap',
+      (): Promise<unknown> =>
+        Promise.resolve({
+          contentHash: SHARE_HASH,
+          package: {
+            ...SHARED_PACKAGE,
+            environmentRequirements: hinted(2, 600_000),
+          },
+        }),
+    );
+    expect(await refusal(readiness('remote-near-cap', true))).toEqual(
+      TOO_LARGE_TO_ANSWER,
+    );
+    expect(mockMcpProbes).toEqual([]);
+    // One a few kilobytes under the cap is answered.
+    mockShares.public.set(
+      'remote-near-cap',
+      (): Promise<unknown> =>
+        Promise.resolve({
+          contentHash: SHARE_HASH,
+          package: {
+            ...SHARED_PACKAGE,
+            environmentRequirements: hinted(1, 1024 * 1024 - 4096),
+          },
+        }),
+    );
+    expect(await readiness('remote-near-cap', true)).toMatchObject({
+      readiness: { requirements: [{ id: 'mcp:hinted-0', status: 'missing' }] },
+    });
+  });
+
+  it('probes each requirement target once, at most 8 at a time, and refuses a share too large to answer before probing', async () => {
+    // 20 requirements naming 10 servers, each twice under its own id.
+    const requirements = Array.from(
+      { length: 20 },
+      (_, index): PipelinePackageEnvironmentRequirement =>
+        mcpRequirement(`mcp:server-${index}`, `Server ${index % 10}`),
+    );
+    mockShares.public.set(
+      'remote-many',
+      (): Promise<unknown> =>
+        Promise.resolve({
+          contentHash: SHARE_HASH,
+          package: { ...SHARED_PACKAGE, environmentRequirements: requirements },
+        }),
+    );
+    mockMcpInFlight.max = 0;
+    expect(await readiness('remote-many', true)).toMatchObject({
+      readiness: {
+        requirements: requirements.map(({ id }) => ({ id, status: 'missing' })),
+      },
+    });
+    expect(mockMcpProbes).toHaveLength(20);
+    expect(new Set(mockMcpProbes).size).toBe(20);
+    expect(mockMcpInFlight.max).toBeLessThanOrEqual(8);
+    // 1025 requirements, past the old cap, are answered, and probed once.
+    mockMcpProbes.length = 0;
+    const many = (length: number): PipelinePackageEnvironmentRequirement[] =>
+      Array.from(
+        { length },
+        (_, index): PipelinePackageEnvironmentRequirement =>
+          mcpRequirement(`mcp:linear-${index}`, 'Linear'),
+      );
+    const share =
+      (requirements: PipelinePackageEnvironmentRequirement[]) =>
+      (): Promise<unknown> =>
+        Promise.resolve({
+          contentHash: SHARE_HASH,
+          package: { ...SHARED_PACKAGE, environmentRequirements: requirements },
+        });
+    mockShares.public.set('remote-oversize', share(many(1025)));
+    expect(await readiness('remote-oversize', true)).toMatchObject({
+      readiness: { requirements: many(1025).map(({ id }) => ({ id })) },
+    });
+    expect(mockMcpProbes).toEqual(['catalog:Linear', 'name:Linear']);
+    // More than a 1 MiB answer can hold: refused as too large, with no probe.
+    mockMcpProbes.length = 0;
+    for (const shares of [mockShares.scoped, mockShares.public])
+      shares.set('remote-oversize', share(many(16385)));
+    expect({
+      scoped: await refusal(readiness('remote-oversize', false)),
+      public: await refusal(readiness('remote-oversize', true)),
+    }).toEqual({
+      scoped: TOO_LARGE_TO_ANSWER,
+      public: TOO_LARGE_TO_ANSWER,
+    });
+    expect(mockMcpProbes).toEqual([]);
+  });
+
+  it('leaves a token bound to the local server it names untouched, evicting only one bound to another upstream', async () => {
+    const [paths, tokens] = await Promise.all([
+      import('../lib/paths'),
+      import('../mcp/oauth-token-store'),
+    ]);
+    const servers = [
+      { id: 'golden-mcp-kept', name: 'Golden Kept', bound: '/mcp' },
+      { id: 'golden-mcp-stale', name: 'Golden Stale', bound: '/old-mcp' },
+    ];
+    const indexPath = paths.getMcpServersIndexFilePath();
+    mkdirSync(dirname(indexPath), { recursive: true });
+    writeFileSync(
+      indexPath,
+      JSON.stringify({
+        version: 1,
+        servers: servers.map(({ id, name }) => ({
+          id,
+          name,
+          description: '',
+          type: 'http',
+          configs: [{ id: 'config-1', name: 'Default', enabled: true }],
+          updatedAt: STAMP,
+        })),
+      }),
+    );
+    try {
+      for (const { id, name, bound } of servers) {
+        const serverPath = paths.getMcpServerFilePath(id);
+        mkdirSync(dirname(serverPath), { recursive: true });
+        writeFileSync(
+          serverPath,
+          JSON.stringify({
+            version: 1,
+            server: {
+              definition: {
+                id,
+                name,
+                description: '',
+                type: 'http',
+                url: 'https://mcp.golden.test/mcp',
+                createdAt: STAMP,
+                updatedAt: STAMP,
+              },
+              configs: [
+                {
+                  id: 'config-1',
+                  name: 'Default',
+                  description: '',
+                  enabled: true,
+                  envVars: {},
+                  extraArgs: [],
+                  extraHeaders: {},
+                  createdAt: STAMP,
+                  updatedAt: STAMP,
+                },
+              ],
+            },
+          }),
+        );
+        await tokens.saveMcpOAuthToken({
+          serverId: id,
+          configId: 'config-1',
+          accessToken: `access-${id}`,
+          upstreamUrl: `https://mcp.golden.test${bound}`,
+          tokenType: 'Bearer',
+          updatedAt: STAMP,
+        });
+      }
+      // The share names local servers only; their definitions stay local.
+      mockShares.public.set(
+        'remote-names-servers',
+        (): Promise<unknown> =>
+          Promise.resolve({
+            contentHash: SHARE_HASH,
+            package: {
+              ...SHARED_PACKAGE,
+              environmentRequirements: servers.map(({ id, name }) =>
+                mcpRequirement(`mcp:${id}`, name),
+              ),
+            },
+          }),
+      );
+      expect(await readiness('remote-names-servers', true)).toMatchObject({
+        readiness: {
+          requirements: [
+            { id: 'mcp:golden-mcp-kept' },
+            { id: 'mcp:golden-mcp-stale' },
+          ],
+        },
+      });
+      expect(
+        (await tokens.getMcpOAuthToken('golden-mcp-kept', 'config-1'))
+          ?.accessToken,
+      ).toBe('access-golden-mcp-kept');
+      // The shared status read drops a token that can't reach this upstream.
+      expect(
+        await tokens.getMcpOAuthToken('golden-mcp-stale', 'config-1'),
+      ).toBeNull();
+    } finally {
+      rmSync(indexPath, { force: true });
+      for (const { id } of servers) {
+        rmSync(paths.getMcpServerFilePath(id), { force: true });
+        await tokens.clearMcpOAuthToken(id, 'config-1');
+      }
+    }
+  });
+
+  it('answers a failure that is not the cloud as internal, scoped and public', async () => {
+    for (const shares of [mockShares.scoped, mockShares.public])
+      shares.set(
+        'remote-broken',
+        (): Promise<unknown> => Promise.reject(new TypeError('broken')),
+      );
+    expect({
+      scoped: await refusal(readiness('remote-broken', false)),
+      public: await refusal(readiness('remote-broken', true)),
+    }).toMatchObject({
+      scoped: { kind: 'internal' },
+      public: { kind: 'internal' },
+    });
   });
 });

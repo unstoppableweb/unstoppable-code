@@ -2,7 +2,7 @@
 
 import type { JSX } from 'react';
 import { buttonClassName } from '@canopy/ui-shared/components';
-import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
+import { PageHeader } from '@canopy/ui-shared/primitives/PageHeader';
 import { SettingsLink, useSettingsPathname } from '../host';
 import {
   accountNavItem,

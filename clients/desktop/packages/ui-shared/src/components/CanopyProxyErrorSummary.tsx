@@ -12,8 +12,9 @@ import type { CanopyProxyError } from '@canopy/protocol';
 import { createCanopyProxyAppError } from '@canopy/protocol/app-errors';
 import { CanopyProxyErrorPresentation } from './CanopyProxyErrorPresentation';
 import { AiCreditsStopLine } from './AiCreditsStopLine';
-import { NoticeButton } from './Notice';
+import { NoticeButton } from '../primitives/Notice';
 import { recordSurfacedError } from '../lib/surfaced-error-port';
+import { CopyDetailsButton } from '../primitives/CopyDetailsButton';
 
 const AccountRecoveryContext = createContext<(() => void) | null>(null);
 
@@ -70,6 +71,37 @@ export function CanopyProxySettingsAction({
   );
 }
 
+/**
+ * The catalog copy for a refusal, recorded as a surfaced error once per
+ * reference id. Hosts that own their notice read the title and description
+ * here instead of nesting the summary inside it. Pass `shown: false` while
+ * the host hides its notice, so a refusal nobody saw is not recorded.
+ */
+export function useCanopyProxyErrorCopy(
+  error: CanopyProxyError,
+  shown = true,
+): ReturnType<typeof createCanopyProxyAppError>['copy'] {
+  const { code, correlationId } = error;
+  const appError = useMemo(
+    () => createCanopyProxyAppError({ code, correlationId, message: null }),
+    [code, correlationId],
+  );
+  const recorded = useRef<string | null>(null);
+  useEffect(() => {
+    if (!shown || recorded.current === appError.referenceId) return;
+    recorded.current = appError.referenceId;
+    // Rebuilt on every mount, so a reopened transcript would refill the
+    // feedback slot with a fresh timestamp: record it, never remember it.
+    recordSurfacedError({
+      chokePoint: 'notice',
+      identifier: 'chat-ai-credits-refusal',
+      surface: 'inline',
+      error: appError,
+    });
+  }, [appError, shown]);
+  return appError.copy;
+}
+
 export interface CanopyProxyErrorSummaryProps {
   error: CanopyProxyError;
   dataTestId?: string;
@@ -112,85 +144,84 @@ export function CanopyProxyErrorSummary({
       current = false;
     };
   }, [code, recovery, messageId]);
-  const appError = useMemo(
-    () => createCanopyProxyAppError({ code, correlationId, message: null }),
-    [code, correlationId],
-  );
-  const recorded = useRef<string | null>(null);
-  useEffect(() => {
-    if (recorded.current === appError.referenceId) return;
-    recorded.current = appError.referenceId;
-    recordSurfacedError({
-      chokePoint: 'notice',
-      identifier: 'chat-ai-credits-refusal',
-      surface: 'inline',
-      error: appError,
-    });
-  }, [appError]);
+  const copy = useCanopyProxyErrorCopy(error);
   if (code === 'no_billing_source')
     return <AiCreditsStopLine dataTestId={dataTestId} />;
-  const summary = (
-    <span data-testid={dataTestId} className="text-xs fg-tertiary text-pretty">
-      {appError.copy.title}
-      {appError.copy.description ? ` ${appError.copy.description}` : ''}
-    </span>
-  );
+  const description = copy.description ?? null;
+  const copyDetails = correlationId ? (
+    <CopyDetailsButton
+      details={correlationId}
+      data-testid={`${dataTestId}-copy-details`}
+    />
+  ) : null;
   if (code === 'upstream_unavailable' && recovery) {
     return (
       <CanopyProxyErrorPresentation
         state="unresolved"
-        diagnostics="inline"
         announcement="live"
-        correlationId={correlationId}
         dataTestId={`${dataTestId}-notice`}
+        title={copy.title}
         actions={
-          available && messageId ? (
-            <NoticeButton
-              variant="primary"
-              data-testid={`${dataTestId}-retry`}
-              disabled={retrying}
-              onClick={() => {
-                if (sending.current) return;
-                sending.current = true;
-                setRetrying(true);
-                void recovery
-                  .retry(messageId)
-                  .then(
-                    () => setAvailability(null),
-                    () => setAvailability(null),
-                  )
-                  .finally(() => {
-                    sending.current = false;
-                    setRetrying(false);
-                  });
-              }}
-            >
-              Try again
-            </NoticeButton>
+          copyDetails !== null || (available && Boolean(messageId)) ? (
+            <>
+              {copyDetails}
+              {available && messageId ? (
+                <NoticeButton
+                  variant="primary"
+                  data-testid={`${dataTestId}-retry`}
+                  disabled={retrying}
+                  onClick={() => {
+                    if (sending.current) return;
+                    sending.current = true;
+                    setRetrying(true);
+                    void recovery
+                      .retry(messageId)
+                      .then(
+                        () => setAvailability(null),
+                        () => setAvailability(null),
+                      )
+                      .finally(() => {
+                        sending.current = false;
+                        setRetrying(false);
+                      });
+                  }}
+                >
+                  Try again
+                </NoticeButton>
+              ) : null}
+            </>
           ) : undefined
         }
       >
-        {summary}
+        {description}
       </CanopyProxyErrorPresentation>
     );
   }
   return code === 'credentials_unavailable' && openSettings ? (
     <CanopyProxyErrorPresentation
       state="unresolved"
-      diagnostics="inline"
       announcement="live"
-      correlationId={correlationId}
       dataTestId={`${dataTestId}-notice`}
+      title={copy.title}
       actions={
-        <CanopyProxySettingsAction
-          onClick={openSettings}
-          dataTestId={`${dataTestId}-open-settings`}
-        />
+        <>
+          {copyDetails}
+          <CanopyProxySettingsAction
+            onClick={openSettings}
+            dataTestId={`${dataTestId}-open-settings`}
+          />
+        </>
       }
     >
-      {summary}
+      {description}
     </CanopyProxyErrorPresentation>
   ) : (
-    summary
+    // A plain inline line inside an assistant message, not a notice.
+    <span data-testid={dataTestId} className="text-xs text-pretty">
+      <span className="fg-primary">{copy.title}</span>
+      {description ? (
+        <span className="fg-tertiary">{` ${description}`}</span>
+      ) : null}
+    </span>
   );
 }

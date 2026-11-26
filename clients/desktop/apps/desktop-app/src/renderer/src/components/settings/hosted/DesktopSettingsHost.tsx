@@ -40,6 +40,7 @@ import { AI_CREDIT_TOP_UP_FEE_PERCENT } from '@canopy/protocol/settings/top-up-f
 import {
   SettingsHostProvider,
   type SettingsBrand,
+  type SettingsFileDownload,
   type SettingsImageProps,
   type SettingsLinkProps,
   type SettingsLogger,
@@ -49,11 +50,17 @@ import {
   type SettingsWorkspaceContext,
 } from '@canopy/ui-app/settings/host';
 import { CreditsPurchaseProvider } from '@canopy/ui-app/credits';
+import { DesktopSlackSettingsProvider } from './DesktopSlackSettings';
 import {
   OrganizationSettingsSlotsProvider,
   type OrganizationPromotionDialogProps,
   type OrganizationSettingsSlots,
 } from '@canopy/ui-app/settings/organization/organization-settings-slots';
+import {
+  MemorySettingsSlotsProvider,
+  type MemorySettingsSlots,
+  type MemoryTranscriptMessageProps,
+} from '@canopy/ui-app/settings/memory/memory-settings-slots';
 import {
   REPLAY_BLOCK_CLASS,
   REPLAY_MASK_CLASS,
@@ -609,6 +616,28 @@ function useDesktopSettingsWorkspaceContext(): SettingsWorkspaceContext {
   );
 }
 
+/**
+ * Organization transcript downloads go through main, which validates the
+ * path, shows the save dialog and fetches with the signed-in account's own
+ * credential and origin. The renderer never handles the credential.
+ */
+function useDesktopDownloadFile(): SettingsFileDownload | null {
+  const { account, settingsApi } = useDesktopSettingsHostContext();
+  const accountId = account.status === 'signed_in' ? account.accountId : null;
+  return useMemo(
+    (): SettingsFileDownload | null =>
+      settingsApi === null || accountId === null
+        ? null
+        : (request) =>
+            settingsApi.downloadTranscriptFile({
+              accountId,
+              path: request.path,
+              suggestedName: request.suggestedName,
+            }),
+    [settingsApi, accountId],
+  );
+}
+
 function createDesktopSettingsHost(
   client: AccountOrganizationSettingsClient,
   storage: SettingsSelectionStorage,
@@ -638,6 +667,7 @@ function createDesktopSettingsHost(
     deviceAiGatewayChoice: desktopDeviceAiGatewayChoice,
     useAiGatewayDeviceKey: useDesktopAiGatewayDeviceKey,
     useAiGatewayDeviceUse: useDesktopAiGatewayDeviceUse,
+    useDownloadFile: useDesktopDownloadFile,
   };
 }
 
@@ -664,6 +694,29 @@ const LazyDesktopSettingsPromotionDialog = lazy(() =>
     default: module.DesktopSettingsPromotionDialog,
   })),
 );
+
+// Only memory source transcripts and transcript sessions render it, so the
+// shared chat message view loads with the first such page.
+const LazyDesktopTranscriptMessage = lazy(() =>
+  import('./DesktopTranscriptMessage').then((module) => ({
+    default: module.DesktopTranscriptMessage,
+  })),
+);
+
+function DesktopTranscriptMessageSlot(
+  props: MemoryTranscriptMessageProps,
+): JSX.Element {
+  return (
+    <Suspense fallback={null}>
+      <LazyDesktopTranscriptMessage {...props} />
+    </Suspense>
+  );
+}
+
+/** Desktop's pieces for the shared Memory and Transcripts pages. */
+const DESKTOP_MEMORY_SETTINGS_SLOTS: MemorySettingsSlots = {
+  TranscriptMessage: DesktopTranscriptMessageSlot,
+};
 
 function DesktopSettingsPromotionDialogSlot(
   props: OrganizationPromotionDialogProps,
@@ -847,9 +900,16 @@ export function DesktopHostedSettingsProvider({
             accountId={settingsApi === null ? null : accountId}
           >
             <OrganizationSettingsSlotsProvider slots={organizationSlots}>
-              <DesktopSettingsAnchorBoundary>
-                {children}
-              </DesktopSettingsAnchorBoundary>
+              {/* Connect Slack on this computer and its Slack switch. */}
+              <DesktopSlackSettingsProvider>
+                <DesktopSettingsAnchorBoundary>
+                  <MemorySettingsSlotsProvider
+                    slots={DESKTOP_MEMORY_SETTINGS_SLOTS}
+                  >
+                    {children}
+                  </MemorySettingsSlotsProvider>
+                </DesktopSettingsAnchorBoundary>
+              </DesktopSlackSettingsProvider>
             </OrganizationSettingsSlotsProvider>
           </CreditsPurchaseProvider>
         </SettingsHostProvider>

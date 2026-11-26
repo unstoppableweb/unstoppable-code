@@ -105,9 +105,7 @@ export function useFileDiffSnapshot(
             key,
             snapshot: null,
             error:
-              error instanceof Error
-                ? error.message
-                : 'Unable to load changes.',
+              error instanceof Error ? error.message : "Couldn't load changes.",
           });
       });
     return (): void => {

@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { ChatDetail } from '@canopy/protocol/chat-detail';
-import { buttonClassName } from './Button';
+import { buttonClassName } from '../primitives/Button';
 
 /**
  * The contexts that shape how transcript parts draw. Every host draws the

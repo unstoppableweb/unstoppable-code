@@ -1,7 +1,7 @@
-import { Badge } from '../Badge';
+import { Badge } from '../../primitives/Badge';
 import { useMemo, type JSX } from 'react';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
-import { Button } from '../Button';
+import { Button } from '../../primitives/Button';
 import {
   APPROVAL_FILE_CHANGE_COMPACT_LIMITS,
   APPROVAL_FILE_CHANGE_EXPANDED_LIMITS,

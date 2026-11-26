@@ -19,7 +19,7 @@ import type {
 } from '../operations/ledger/ledger';
 import {
   OperationCancelRefusedError,
-  type OperationService,
+  type OperationServicePort,
 } from '../operations/service';
 
 export const CORE_CATALOG_DOMAIN = 'core.catalog';
@@ -33,6 +33,7 @@ export const CORE_CATALOG_MUTATION_KINDS = [
   'core.catalog.entry.unpublish',
   'core.catalog.entry.upsert',
   'core.catalog.entry.delete',
+  'core.catalog.entry.import',
   'core.catalog.skill.install',
   'core.catalog.skill.update',
   'core.catalog.skill.remove',
@@ -141,11 +142,11 @@ function failure(error: unknown): {
  * effect never runs twice for one (caller, kind, key).
  */
 export class CatalogMutationRuns {
-  private readonly operations: OperationService;
+  private readonly operations: OperationServicePort;
   /** Terminal outcomes whose ledger write failed, by operation id. */
   private readonly unrecorded = new Map<string, TerminalOutcome>();
 
-  constructor(options: { operations: OperationService }) {
+  constructor(options: { operations: OperationServicePort }) {
     this.operations = options.operations;
     this.operations.registerDomain({
       domain: CORE_CATALOG_DOMAIN,

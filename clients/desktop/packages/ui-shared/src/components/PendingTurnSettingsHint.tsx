@@ -3,7 +3,7 @@ import {
   clampThinkingLevelToDeclared,
   isThinkingLevel,
 } from '@canopy/protocol/thinking';
-import { Badge } from './Badge';
+import { Badge } from '../primitives/Badge';
 
 /**
  * When a live session applies a model or thinking-level change: at once, or

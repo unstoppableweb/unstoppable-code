@@ -1,4 +1,4 @@
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import { DialogActionFooter } from '@canopy/ui-shared/components';
 import { memo, useMemo, useState, type JSX } from 'react';
 import {

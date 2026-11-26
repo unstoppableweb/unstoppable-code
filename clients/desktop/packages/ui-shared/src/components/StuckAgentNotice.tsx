@@ -1,13 +1,15 @@
 'use client';
 
 import { useEffect, useRef, useState, type JSX } from 'react';
-import { Notice, NoticeButton } from './Notice';
+import { Notice, NoticeButton } from '../primitives/Notice';
 
 export type StuckAgentCheckResult = 'running' | 'settled';
 
 export interface StuckAgentNoticeProps {
   minutes: number;
   onCheckStatus: () => Promise<StuckAgentCheckResult>;
+  /** Closes the notice. The host shows it again when the turn stalls anew. */
+  onDismiss?: () => void;
 }
 
 type CheckState = 'unchecked' | 'checking' | 'running' | 'failed';
@@ -16,6 +18,7 @@ type CheckState = 'unchecked' | 'checking' | 'running' | 'failed';
 export function StuckAgentNotice({
   minutes,
   onCheckStatus,
+  onDismiss,
 }: StuckAgentNoticeProps): JSX.Element {
   const [checkState, setCheckState] = useState<CheckState>('unchecked');
   const checkInFlightRef = useRef(false);
@@ -55,6 +58,7 @@ export function StuckAgentNotice({
       intent="attention"
       title={title}
       data-testid="stuck-agent-warning"
+      onDismiss={onDismiss}
       {...(checkState === 'failed'
         ? { detail: "Couldn't check the agent's status." }
         : {})}

@@ -25,6 +25,7 @@ import { writeJson } from '../seeders/fsHelpers.mjs';
 import {
   checkoutPath,
   crashKeepingData,
+  createW5Teardown,
   GATE_WORKTREE_ADD,
   gateEntries,
   git,
@@ -51,8 +52,10 @@ const PROJECT_ID = 'alpha';
 let fixtures;
 let userDataDir;
 let repoPath;
+let w5Teardown;
 
 test.beforeEach(() => {
+  w5Teardown = createW5Teardown();
   fixtures = realpathSync(
     mkdtempSync(path.join(os.tmpdir(), 'canopy-w5-worktree-')),
   );
@@ -67,9 +70,13 @@ test.beforeEach(() => {
   });
 });
 
-test.afterEach(() => {
-  reapCliChildren();
-  rmSync(fixtures, { recursive: true, force: true });
+test.afterEach(async ({}, testInfo) => {
+  try {
+    await w5Teardown.end(testInfo.status !== testInfo.expectedStatus);
+  } finally {
+    reapCliChildren();
+    rmSync(fixtures, { recursive: true, force: true });
+  }
 });
 
 function createWorktree(window, request) {
@@ -441,17 +448,18 @@ async function interruptHeldCreate(interrupt) {
       { id: response.id, branchName: 'held', setupPhase: 'git-pending' },
     ]);
   } catch (error) {
-    // The interrupt never ran, so this helper still owns the app.
-    releaseGitGate(gateDir);
+    // The interrupt never ran, so this helper still owns the app. The close
+    // does not confirm a stop either, so the gate stays closed.
     await closeCanopy(launched.electronApp, userDataDir, {
       keepUserData: true,
     }).catch(() => undefined);
     throw error;
   }
 
+  // A rejected interrupt has not confirmed the runtime stopped, so the gate
+  // stays closed; the held command exits with the process that ran it.
+  await interrupt(launched);
   try {
-    await interrupt(launched);
-
     // Row-first: the reservation is durable, the checkout never started.
     expect(rowSummaries()).toEqual([
       { id: response.id, branchName: 'held', setupPhase: 'git-pending' },
@@ -541,30 +549,26 @@ test('worktree_create_local/crash_restart: next launch promotes a git-pending ro
     ],
   });
 
-  const launched = await launchW5App({ userDataDir });
-  try {
-    await expect
-      .poll(() => rowSummaries(), { timeout: 30_000 })
-      .toEqual([
-        {
-          id: 'pending-with-checkout',
-          branchName: 'pending-with-checkout',
-          setupPhase: 'git-ready',
-        },
-      ]);
-    const listed = await launched.window.evaluate(async (projectId) => {
-      const { items } = await window.api.loadProjects();
-      return items
-        .find((item) => item.id === projectId)
-        ?.worktrees.map((row) => row.id);
-    }, PROJECT_ID);
-    expect(listed).toEqual(['pending-with-checkout']);
-    // The checkout with no row stays on disk and registered, reported nowhere.
-    expect(existsSync(checkout('orphan'))).toBe(true);
-    expect(registeredWorktreePaths(repoPath)).toContain(checkout('orphan'));
-  } finally {
-    await closeCanopy(launched.electronApp, userDataDir);
-  }
+  const launched = await launchW5App({ userDataDir }, w5Teardown);
+  await expect
+    .poll(() => rowSummaries(), { timeout: 30_000 })
+    .toEqual([
+      {
+        id: 'pending-with-checkout',
+        branchName: 'pending-with-checkout',
+        setupPhase: 'git-ready',
+      },
+    ]);
+  const listed = await launched.window.evaluate(async (projectId) => {
+    const { items } = await window.api.loadProjects();
+    return items
+      .find((item) => item.id === projectId)
+      ?.worktrees.map((row) => row.id);
+  }, PROJECT_ID);
+  expect(listed).toEqual(['pending-with-checkout']);
+  // The checkout with no row stays on disk and registered, reported nowhere.
+  expect(existsSync(checkout('orphan'))).toBe(true);
+  expect(registeredWorktreePaths(repoPath)).toContain(checkout('orphan'));
 });
 
 test('worktree_create_local/client_disconnect: a renderer reload while git worktree add is held still completes the checkout and promotes the row', async () => {

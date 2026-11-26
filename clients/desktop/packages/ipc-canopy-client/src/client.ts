@@ -38,6 +38,8 @@ import {
 import type { MarketplaceSourcesClient } from '@canopy/app-core/client';
 import type { AccountOrganizationSettingsClient } from '@canopy/app-core/settings';
 import type { TranscriptReadClient } from '@canopy/app-core';
+import type { HarnessSetupClient } from '@canopy/app-core';
+import { createChannelHarnessSetupClient } from './harness-setup';
 import {
   extractIpcErrorMessage,
   extractIpcErrorName,
@@ -46,6 +48,7 @@ import {
   WorktreeRecoveryListResultSchema,
   WorktreeRecoveryResolveResultSchema,
   WorktreeRecoveryFinishResultSchema,
+  WorktreeRecoverySetAsideResultSchema,
   CORE_SHARED_MULTI_REPO_INSTRUCTIONS,
   CORE_SHARED_MULTI_REPO_QUERIES,
 } from '@canopy/protocol/canopy-core';
@@ -230,6 +233,10 @@ const LIFECYCLE_JOURNAL_HOST_OUTDATED =
 // only fix.
 const WORKTREE_RECOVERY_HOST_OUTDATED =
   'Update the desktop app to resolve this archive.';
+// A computer on an older release refuses the harness setup channels from a
+// browser (gap 1 of CAN-6718); updating it is the only fix.
+const HARNESS_SETUP_HOST_OUTDATED =
+  'Update the desktop app on the paired computer to set up agents from here.';
 
 /**
  * An older computer's refusal, reworded as the fix. It keeps the refusal's
@@ -416,6 +423,7 @@ class PortableIpcCanopyClient implements CanopyClient {
   readonly marketplaceSources?: MarketplaceSourcesClient;
   readonly settings?: AccountOrganizationSettingsClient;
   readonly sharedMultiRepo: NonNullable<CanopyClient['sharedMultiRepo']>;
+  readonly harnessSetup?: HarnessSetupClient;
 
   private readonly channels: ChannelClient;
   private readonly ports: IpcCanopyClientPorts;
@@ -474,6 +482,14 @@ class PortableIpcCanopyClient implements CanopyClient {
     }
     if (ports.settings) this.settings = ports.settings;
     const channels = this.channels;
+    // Only under the capability (gap 1 of CAN-6718): a host without it has
+    // no harness setup rows to drive.
+    if (ports.capabilities.harnessSetup === true)
+      this.harnessSetup = createChannelHarnessSetupClient(
+        channels,
+        (channel, invoke) =>
+          onOutdatedHost(HARNESS_SETUP_HOST_OUTDATED, invoke, channel),
+      );
     this.sharedMultiRepo = {
       prepare: async (params): Promise<PreparedSharedMultiRepo> =>
         CORE_SHARED_MULTI_REPO_QUERIES[
@@ -561,6 +577,7 @@ class PortableIpcCanopyClient implements CanopyClient {
       ...(ports.uploadFile !== undefined
         ? { uploadFile: ports.uploadFile }
         : {}),
+      ...(ports.plans !== undefined ? { plans: ports.plans } : {}),
     });
     this.queryHandlers = {
       ...this.createQueryHandlers(terminal),
@@ -1190,15 +1207,18 @@ class PortableIpcCanopyClient implements CanopyClient {
         readChatHistory(channels, args, this.ports.toolFamilyFor),
       'chat.readVisual': (args) => readChatVisual(channels, args),
       'plan.get': async (args) => {
-        const plan = await channels.invoke(
-          C.trackedPlansGet,
-          nullableRecordReply<WireTrackedPlan>(),
-          {
-            projectId: args.projectId,
-            worktreeId: args.worktreeId,
-            planId: args.planId,
-          },
-        );
+        const request = {
+          projectId: args.projectId,
+          worktreeId: args.worktreeId,
+          planId: args.planId,
+        };
+        const plan = this.ports.plans
+          ? await this.ports.plans.get(request)
+          : await channels.invoke(
+              C.trackedPlansGet,
+              nullableRecordReply<WireTrackedPlan>(),
+              request,
+            );
         const detail = plan
           ? toRequestedRemoteControlPlanDetail(plan, args.revisionNumber)
           : null;
@@ -1279,6 +1299,16 @@ class PortableIpcCanopyClient implements CanopyClient {
           recordReply<CommandMap['delegation.extendLifetimeLimit']['result']>(),
           args,
         ),
+      // A probing registry read: the host checks every provider, then pushes
+      // the fresh catalogs and provider availability itself. `recheck` marks
+      // it as Check again, which also re-reads the provider setup facts; an
+      // older host ignores it.
+      'models.refresh': async () => {
+        await channels.invoke(C.modelRegistryGet, anyReply<unknown>(), {
+          probe: true,
+          recheck: true,
+        });
+      },
       // CAN-7433: exactly `{ provider }`; answers the fresh projection.
       'providerUsage.refresh': async ({ provider }) =>
         readProviderUsage(
@@ -1807,6 +1837,29 @@ class PortableIpcCanopyClient implements CanopyClient {
           C.worktreeRecoveryFinish,
         );
       },
+      'worktree.recovery.setAside': async (args) => {
+        if (
+          this.capabilities.worktreeRecoveryResolution !== true ||
+          this.capabilities.worktreeRecoverySetAside !== true
+        )
+          throw new UnsupportedOperationError(
+            'worktree.recovery.setAside',
+            'Archive recovery is unavailable on this target.',
+          );
+        return onOutdatedHost(
+          WORKTREE_RECOVERY_HOST_OUTDATED,
+          () =>
+            channels.invoke(
+              C.worktreeRecoverySetAside,
+              reply<CommandMap['worktree.recovery.setAside']['result']>(
+                (value) =>
+                  WorktreeRecoverySetAsideResultSchema.safeParse(value).success,
+              ),
+              args,
+            ),
+          C.worktreeRecoverySetAside,
+        );
+      },
       // A CAN-7439 to CAN-7443 computer also refuses a browser's `recovery`
       // here, with the same code, so the same update message covers it.
       'worktree.discard.describe': (args) =>
@@ -2145,10 +2198,19 @@ class PortableIpcCanopyClient implements CanopyClient {
           projectId,
           worktreeId,
         });
+        // A run chosen against another worktree's copy finds the workflow
+        // there; main reads, checks and runs that copy (CAN-7513).
+        const definitionCwd =
+          args.definitionWorktreeId === undefined
+            ? cwd
+            : await channels.invoke(C.worktreeGetPath, isString, {
+                projectId,
+                worktreeId: args.definitionWorktreeId,
+              });
         const discovered = await channels.invoke(
           C.pipelinesDiscoverProject,
           isIpcResult<WirePipelineInfo[]>(),
-          cwd,
+          definitionCwd,
         );
         if (!discovered.success || !discovered.data) {
           throw new Error(discovered.error ?? 'Unable to discover pipelines.');
@@ -2162,7 +2224,7 @@ class PortableIpcCanopyClient implements CanopyClient {
         const detail = await channels.invoke(
           C.pipelinesGet,
           isIpcResult<WirePipelineData>(),
-          { id: info.id, cwd, filePath: info.filePath },
+          { id: info.id, cwd: definitionCwd, filePath: info.filePath },
         );
         if (!detail.success || !detail.data) {
           throw new Error(detail.error ?? 'Unable to load pipeline.');
@@ -2184,6 +2246,14 @@ class PortableIpcCanopyClient implements CanopyClient {
               ? { inputs: args.inputs }
               : {}),
             ...(modelConfig ? { modelConfig } : {}),
+            // Main refuses the run when the file it loads is not the
+            // revision the run was chosen against (CAN-7513).
+            ...(args.expectedRevision !== undefined
+              ? { expectedRevision: args.expectedRevision }
+              : {}),
+            ...(args.definitionWorktreeId !== undefined
+              ? { definitionWorktreeId: args.definitionWorktreeId }
+              : {}),
             // The run location (CAN-6187): main starts a targeted run
             // elsewhere or refuses it, never runs it here.
             ...(args.targetId !== undefined ? { targetId: args.targetId } : {}),
@@ -2325,11 +2395,14 @@ class PortableIpcCanopyClient implements CanopyClient {
         });
       },
       'plan.update': async (args) => {
-        const updated = await channels.invoke(
-          C.trackedPlansUpdate,
-          anyReply<unknown>(),
-          toUpdateTrackedPlanRequest(args),
-        );
+        const request = toUpdateTrackedPlanRequest(args);
+        const updated = this.ports.plans
+          ? await this.ports.plans.update(request)
+          : await channels.invoke(
+              C.trackedPlansUpdate,
+              anyReply<unknown>(),
+              request,
+            );
         if (!updated) {
           throw new Error('Plan not found.');
         }
@@ -2532,6 +2605,12 @@ class PortableIpcCanopyClient implements CanopyClient {
         channels.listen(C.desktopSessionSnapshotStale, anyPayload, () => {
           handler({ occurredAt: this.now() });
         }),
+      'onboardingTips.changed': (handler) =>
+        this.capabilities.onboardingTips === true
+          ? channels.listen(C.preferencesChanged, anyPayload, () => {
+              handler({ occurredAt: this.now() });
+            })
+          : noopUnsubscribe,
       'chat.message': (handler, filter) =>
         subscribeChatMessages(
           {

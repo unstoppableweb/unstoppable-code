@@ -64,6 +64,11 @@ export interface MemberProfilePageProps {
   /** Whether the viewer clears the org's usage-stats role threshold. */
   viewerCanViewStats: boolean;
   /**
+   * An owner with the transcript browser on: session rows link to their
+   * shared transcripts. Absent from older servers.
+   */
+  viewerCanViewTranscripts?: boolean;
+  /**
    * Non-null when the viewer may edit this profile's name/PFP, carrying which
    * transport to use: `{ mode: 'self' }` for the viewer's own global identity,
    * `{ mode: 'org-member', … }` for an admin editing this member's org-scoped
@@ -96,6 +101,7 @@ export function MemberProfilePage({
   org,
   member,
   viewerCanViewStats,
+  viewerCanViewTranscripts = false,
   editContext,
   showDigestsTab = false,
   isOwnProfile = false,
@@ -239,6 +245,7 @@ export function MemberProfilePage({
                 orgId={org.id}
                 userId={member.id}
                 viewerCanViewStats={viewerCanViewStats}
+                viewerCanViewTranscripts={viewerCanViewTranscripts}
                 memberName={member.name}
               />
             </div>

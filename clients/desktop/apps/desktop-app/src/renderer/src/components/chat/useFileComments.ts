@@ -275,6 +275,12 @@ export function useFileComments(
                   ? { expectedRevision: base.revision }
                   : {}),
               });
+              // An `outcome: 'unknown'` answer (installed, flush failed) retires
+              // the edit like a done save, so it never replays; its document is
+              // the stored one and wins. Main drops the field on later saves.
+              // shortcut: if another writer changed the comment before the
+              // re-read, our edit is dropped with no 'may not be saved' notice;
+              // add one with CAN-7920.
               session.pending.shift();
               rebases = 0;
               acknowledge(session, saved);

@@ -51,12 +51,7 @@ import { GUEST_WORK_PRESERVED } from '@/lib/guest-cta-copy';
 import { brandText } from '@/lib/brand';
 import { isCanopyCloudConnected } from '@/lib/canopy-cloud';
 import { useSettingsLocationLabel } from '@/lib/navigation/settings-destinations';
-import {
-  Notice,
-  Skeleton,
-  Stack,
-  TextLinkButton,
-} from '@canopy/ui-shared/components';
+import { Notice, Skeleton, Stack } from '@canopy/ui-shared/components';
 
 const CLOUD_NAME = `${brandText.appName} Cloud`;
 
@@ -429,9 +424,14 @@ export function RemoteControlModal({
     >
       {devicesPairedLabel(pairedCount)}
       {' · '}
-      <TextLinkButton onClick={manage} data-testid="remote-control-manage">
+      <Button
+        onClick={manage}
+        data-testid="remote-control-manage"
+        variant="link"
+        data-settings-control="link"
+      >
         {MANAGE_BUTTON}
-      </TextLinkButton>
+      </Button>
     </span>
   ) : null;
 

@@ -290,6 +290,11 @@ export async function readPipelineSetupFactVersion(
   root: string,
   fact: Pick<WorkerPipelineSetupFact, 'root' | 'relativePath' | 'projection'>,
   operatingSystem: PlatformOperatingSystem | null = null,
+  options: {
+    readonly frozenAiCreditsConsent?: boolean;
+    readonly requireAiCreditsConsent?: boolean;
+    readonly expectedPreferencesVersion?: string;
+  } = {},
 ): Promise<string | undefined> {
   if (
     !path.isAbsolute(root) ||
@@ -305,7 +310,8 @@ export async function readPipelineSetupFactVersion(
       throw error;
     });
     if (!projectedRoot)
-      return fact.projection === 'local-plugin'
+      return fact.projection === 'local-plugin' ||
+        options.requireAiCreditsConsent
         ? undefined
         : hash.update('absent-root').digest('hex');
     hash.update(projectedRoot);
@@ -321,7 +327,8 @@ export async function readPipelineSetupFactVersion(
         throw error;
       });
       if (!entry)
-        return fact.projection === 'local-plugin'
+        return fact.projection === 'local-plugin' ||
+          options.requireAiCreditsConsent
           ? undefined
           : hash.update('absent').digest('hex');
       if (entry.isSymbolicLink()) return undefined;
@@ -353,6 +360,8 @@ export async function readPipelineSetupFactVersion(
         JSON.stringify([relative, before.isDirectory() ? 'directory' : 'file']),
       );
       if (before.isDirectory()) {
+        if (fact.projection === 'preferences')
+          throw new Error('Preferences must be a file');
         const children = (await readdir(file)).sort();
         for (const child of children)
           await visit(path.join(file, child), `${relative}/${child}`);
@@ -428,9 +437,28 @@ export async function readPipelineSetupFactVersion(
           )
             throw new Error('Invalid preferences');
           const preferences = value.preferences;
+          if (
+            options.requireAiCreditsConsent &&
+            (preferences.aiCreditsRoutingMode !== 'on' ||
+              hash
+                .copy()
+                .update(
+                  JSON.stringify(
+                    PREFERENCE_FACT_KEYS.map((key) => [key, preferences[key]]),
+                  ),
+                )
+                .digest('hex') !== options.expectedPreferencesVersion)
+          )
+            throw new Error(
+              'AI Credits consent not established for the admitted preferences',
+            );
           hash.update(
             JSON.stringify(
-              PREFERENCE_FACT_KEYS.map((key) => [key, preferences[key]]),
+              PREFERENCE_FACT_KEYS.filter(
+                (key) =>
+                  !options.frozenAiCreditsConsent ||
+                  key !== 'aiCreditsRoutingMode',
+              ).map((key) => [key, preferences[key]]),
             ),
           );
         } else

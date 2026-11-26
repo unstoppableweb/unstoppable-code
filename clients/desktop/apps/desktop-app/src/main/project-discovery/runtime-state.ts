@@ -54,7 +54,7 @@ export function runtimeStateFromEvidence(
     case 'completed':
       return 'idle';
     case 'cancelled':
-      return runtime.error?.code === 'interrupted' ? 'interrupted' : 'unknown';
+      return runtime.error?.code === 'interrupted' ? 'interrupted' : 'idle';
   }
 }
 

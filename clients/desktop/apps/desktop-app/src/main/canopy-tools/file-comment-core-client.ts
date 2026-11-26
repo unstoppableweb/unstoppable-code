@@ -74,6 +74,18 @@ function isReadOnlyScope(error: unknown): boolean {
   );
 }
 
+// The reply was installed but its folder flush failed; a blind retry would
+// post it twice.
+const REPLY_OUTCOME_UNKNOWN =
+  'The reply may already be saved. Reload the thread before trying again.';
+
+function isOutcomeUnknown(error: unknown): boolean {
+  return (
+    error instanceof CanopyOperationError &&
+    error.payload.code === ANNOTATION_ERROR_CODES.OUTCOME_UNKNOWN
+  );
+}
+
 /** Thread ids the operations accept; any other id names no thread. */
 function isOperationThreadId(threadId: string): boolean {
   return threadId.length > 0 && threadId.length <= 512;
@@ -167,6 +179,8 @@ export async function respondToFileComment(
     if (isNotFound(error)) return notFound;
     if (isReadOnlyScope(error))
       return { ok: false, resolved: false, error: READ_ONLY_SCOPE_ERROR };
+    if (isOutcomeUnknown(error))
+      return { ok: false, resolved: false, error: REPLY_OUTCOME_UNKNOWN };
     throw error;
   }
 }

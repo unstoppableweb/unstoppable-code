@@ -200,6 +200,16 @@ function wakeBoundaryMessage(
 
 export function reorderMessagesForDisplay(
   messages: ChatMessage[],
+  options: {
+    /**
+     * Keep the placement main's transcript turn index has always used: the
+     * legacy timer, then timers with no anchor in the transcript, then the
+     * anchor's own timers newest first. The index settles a prompt, picks its
+     * reply and counts its work from this grouping; display alone folds a
+     * later run with no prompt and no recorded cause into the turn it follows.
+     */
+    readonly indexOrder?: boolean;
+  } = {},
 ): ChatMessage[] {
   // A canonical timer shows at the end of its anchor's turn wherever it was
   // appended, and every execution's timer shows (turn-state phase 40b).
@@ -214,8 +224,12 @@ export function reorderMessagesForDisplay(
   // A prompt's later executions (a Stop and Resume) after its tools-loaded
   // continuation belong to that continuation's turn.
   const continuations = new Map<string, string>();
-  for (const message of messages) {
+  // Where each timer row was appended. Executions are ordered by it, not by
+  // `startedAt`, which a closing timer recomputes from the provider's duration.
+  const timerPositions = new Map<ChatMessage, number>();
+  for (const [position, message] of messages.entries()) {
     if (message.hidden || !isTurnTimerMessage(message)) continue;
+    timerPositions.set(message, position);
     const canonical = canonicalTimer(message);
     const anchor = canonical?.anchor;
     if (anchor === undefined || !turnIds.has(anchor)) continue;
@@ -232,16 +246,39 @@ export function reorderMessagesForDisplay(
   const pendingCanonicalTimers: ChatMessage[] = [];
   let currentTurnId: string | undefined;
   const flushTurn = (): void => {
-    if (pendingTimer) {
-      result.push(pendingTimer);
+    // Newest first: a turn closes at its first timer, so the latest
+    // execution's timer owns the turn and a resumed turn stays live. That
+    // includes an execution with no prompt and no recorded cause, such as one
+    // a reply from another chat started: it continues the turn it follows.
+    // Before any turn boundary (a page that starts after its prompt) there is
+    // no turn to own them; they stay as their own rows, in transcript order.
+    const anchored =
+      currentTurnId === undefined
+        ? []
+        : (anchoredTimers.get(currentTurnId) ?? []);
+    if (options.indexOrder === true) {
+      if (pendingTimer) result.push(pendingTimer);
       pendingTimer = null;
+      result.push(
+        ...pendingCanonicalTimers.splice(0),
+        ...[...anchored].reverse(),
+      );
+      return;
     }
-    result.push(...pendingCanonicalTimers.splice(0));
-    if (currentTurnId !== undefined) {
-      // Newest first: a turn closes at its first timer, so the latest
-      // execution's timer owns the turn and a resumed turn stays live.
-      result.push(...[...(anchoredTimers.get(currentTurnId) ?? [])].reverse());
-    }
+    const timers = [
+      ...(pendingTimer ? [pendingTimer] : []),
+      ...pendingCanonicalTimers.splice(0),
+      ...anchored,
+    ];
+    pendingTimer = null;
+    const newestFirst = currentTurnId === undefined ? -1 : 1;
+    result.push(
+      ...timers.sort(
+        (a, b) =>
+          newestFirst *
+          ((timerPositions.get(b) ?? 0) - (timerPositions.get(a) ?? 0)),
+      ),
+    );
   };
 
   for (let index = 0; index < messages.length; index += 1) {

@@ -1,12 +1,15 @@
 'use client';
 
 import { useRef, useState, type JSX } from 'react';
-import { FloatingMenu, FloatingMenuPointAnchor } from './FloatingMenu';
+import {
+  FloatingMenu,
+  FloatingMenuPointAnchor,
+} from '../primitives/FloatingMenu';
 import {
   ActionMenuItems,
   ActionMenuRowStyle,
   type ActionMenuItem,
-} from './ActionMenuItems';
+} from '../primitives/ActionMenuItems';
 
 /**
  * A right-click menu row. Tab, message and other point-anchored menus use the

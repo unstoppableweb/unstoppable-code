@@ -352,6 +352,153 @@ export function getTriggerTypes(
   return Array.from(new Set(rawTypes));
 }
 
+/**
+ * Read the input definitions for a specific trigger type from a trigger value.
+ * Returns `undefined` when the trigger type is not present or has no inputs.
+ */
+export function getTriggerInputDefs(
+  trigger: PipelineTrigger | undefined | null,
+  type: PipelineTriggerType,
+): Record<string, PipelineInputDef> | undefined {
+  if (trigger == null || typeof trigger === 'string') {
+    return undefined;
+  }
+
+  const triggerConfig = trigger[type];
+  if (!triggerConfig || typeof triggerConfig !== 'object') {
+    return undefined;
+  }
+
+  return triggerConfig.inputs;
+}
+
+/**
+ * Build a new PipelineTrigger from the given trigger types.
+ *
+ * When multiple trigger types are selected, dispatch, plan_ready, task_ready
+ * and workflow configuration (e.g. inputs) is preserved from `current`. When switching
+ * to a single trigger, only that trigger's config is preserved.
+ */
+export function setTriggerTypes(
+  current: PipelineTrigger,
+  nextTypes: PipelineTriggerType[],
+): PipelineTrigger {
+  const uniqueTypes = Array.from(new Set(nextTypes));
+
+  if (uniqueTypes.length === 0) {
+    return 'dispatch';
+  }
+
+  if (uniqueTypes.length === 1 && uniqueTypes[0] === 'dispatch') {
+    const hasInputs =
+      typeof current !== 'string' && current.dispatch?.inputs !== undefined;
+    if (!hasInputs) {
+      return 'dispatch';
+    }
+  }
+
+  if (uniqueTypes.length === 1 && uniqueTypes[0] === 'plan_ready') {
+    const existingPlanReady =
+      typeof current !== 'string' ? current.plan_ready : undefined;
+    if (existingPlanReady && Object.keys(existingPlanReady).length > 0) {
+      return { plan_ready: existingPlanReady };
+    }
+    return 'plan_ready';
+  }
+
+  if (uniqueTypes.length === 1 && uniqueTypes[0] === 'task_ready') {
+    const existingTaskReady =
+      typeof current !== 'string' ? current.task_ready : undefined;
+    if (existingTaskReady && Object.keys(existingTaskReady).length > 0) {
+      return { task_ready: existingTaskReady };
+    }
+    return 'task_ready';
+  }
+
+  if (uniqueTypes.length === 1 && uniqueTypes[0] === 'workflow') {
+    const existingWorkflow =
+      typeof current !== 'string' ? current.workflow : undefined;
+    if (existingWorkflow && Object.keys(existingWorkflow).length > 0) {
+      return { workflow: existingWorkflow };
+    }
+    return 'workflow';
+  }
+
+  const config: PipelineTriggerConfig = {};
+
+  if (uniqueTypes.includes('dispatch')) {
+    const existingDispatch =
+      typeof current !== 'string' ? current.dispatch : undefined;
+    config.dispatch = existingDispatch ?? {};
+  }
+
+  if (uniqueTypes.includes('plan_ready')) {
+    const existingPlanReady =
+      typeof current !== 'string' ? current.plan_ready : undefined;
+    config.plan_ready = existingPlanReady ?? {};
+  }
+
+  if (uniqueTypes.includes('task_ready')) {
+    const existingTaskReady =
+      typeof current !== 'string' ? current.task_ready : undefined;
+    config.task_ready = existingTaskReady ?? {};
+  }
+
+  if (uniqueTypes.includes('workflow')) {
+    const existingWorkflow =
+      typeof current !== 'string' ? current.workflow : undefined;
+    config.workflow = existingWorkflow ?? {};
+  }
+
+  return config;
+}
+
+/**
+ * Update the input definitions for a specific trigger type on a PipelineTrigger.
+ *
+ * Ensures the target trigger type is present in the resulting value, preserves
+ * sibling trigger configuration (including other inputs), and collapses to a
+ * simple trigger-type string when no inputs are defined anywhere.
+ */
+export function setTriggerInputDefs(
+  current: PipelineTrigger,
+  type: PipelineTriggerType,
+  inputs: Record<string, PipelineInputDef> | undefined,
+): PipelineTrigger {
+  const currentTypes = getTriggerTypes(current);
+  const activeTypes: PipelineTriggerType[] = currentTypes.includes(type)
+    ? currentTypes
+    : [...currentTypes, type];
+
+  const normalizedInputs =
+    inputs && Object.keys(inputs).length > 0 ? inputs : undefined;
+
+  const config: PipelineTriggerConfig = {};
+  for (const t of activeTypes) {
+    const existingInputs =
+      t === type ? normalizedInputs : getTriggerInputDefs(current, t);
+    if (t === 'dispatch') {
+      config.dispatch = existingInputs ? { inputs: existingInputs } : {};
+    } else if (t === 'plan_ready') {
+      config.plan_ready = existingInputs ? { inputs: existingInputs } : {};
+    } else if (t === 'task_ready') {
+      config.task_ready = existingInputs ? { inputs: existingInputs } : {};
+    } else if (t === 'workflow') {
+      config.workflow = existingInputs ? { inputs: existingInputs } : {};
+    }
+  }
+
+  if (activeTypes.length === 1) {
+    const only = activeTypes[0];
+    const onlyConfig = config[only];
+    if (!onlyConfig?.inputs) {
+      return only;
+    }
+  }
+
+  return config;
+}
+
 export interface Pipeline {
   name: string;
   description?: string;

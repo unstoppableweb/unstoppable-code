@@ -35,7 +35,7 @@ import {
   reconcileArchivedGitRefsForWorkspace,
   recoverArchivedGitTeardownsForWorkspace,
 } from './archived-container-git';
-import { hasUnresolvedDestructiveRecovery } from './w5-destructive-recovery';
+import { readDestructiveRecoveryProtection } from './w5-destructive-recovery';
 
 export { DEFAULT_ARCHIVE_RETENTION_DAYS };
 
@@ -236,6 +236,8 @@ export async function purgeExpiredArchivedContainersForWorkspace(
     projectId,
     async (): Promise<number> => {
       let count = 0;
+      const recoveryProtection =
+        await readDestructiveRecoveryProtection(projectId);
       for (const manifest of await listArchivedContainerManifests(projectId)) {
         // Locked containers are exempt until the user unlocks them (which
         // also restarts the retention window from the unlock time).
@@ -249,7 +251,7 @@ export async function purgeExpiredArchivedContainersForWorkspace(
         ) {
           continue;
         }
-        if (await hasUnresolvedDestructiveRecovery(projectId, manifest.id)) {
+        if (recoveryProtection.protects(manifest.id)) {
           continue;
         }
         // Keep it until its Ledger mapping is durable elsewhere.

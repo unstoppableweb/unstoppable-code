@@ -59,9 +59,9 @@ export function LocalAgentInstalledAction({
   return (
     <CustomizeRowSplitButton
       // The title names it; labels keep its name out of replay.
-      entryName="this agent"
+      entryName="this model preset"
       idPrefix={`agent-detail-${entry.id}`}
-      action={{ ...action, accessibleName: 'This agent is installed' }}
+      action={{ ...action, accessibleName: 'This model preset is installed' }}
       items={[]}
     />
   );
@@ -183,7 +183,7 @@ export function LocalAgentMarketplaceDetail({
               <ExecutionActionButton
                 placement="detail"
                 label="Edit"
-                ariaLabel="Edit this agent"
+                ariaLabel="Edit this model preset"
                 onClick={onEdit}
                 disabled={editDisabled}
                 dataTestId="local-agent-detail-edit"
@@ -201,7 +201,7 @@ export function LocalAgentMarketplaceDetail({
           layout.loadFailed ? (
             <span className="inline-flex flex-wrap items-center gap-1.5 text-s">
               <DetailFactError
-                error="Couldn't load your agents"
+                error="Couldn't load your model presets"
                 testId="local-agent-detail-error"
               />
               {layout.onRetry && (

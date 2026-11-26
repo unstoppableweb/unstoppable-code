@@ -182,15 +182,64 @@ export type PlatformEndpointServices =
   | PlatformSocketEndpointServices
   | PlatformPipeEndpointServices;
 
+/**
+ * Why a path is not provably private. Closed and content-free, unlike
+ * `reason`, which may name a path or SID. Additive.
+ */
+export type PlatformPermissionCause =
+  /** An ACL entry grants another account access (Windows). */
+  | 'foreign_trustee'
+  /** Another account owns the path. */
+  | 'foreign_owner'
+  /** A null DACL grants everyone access (Windows). */
+  | 'null_dacl'
+  /** Mode bits grant the group or others access (POSIX). */
+  | 'broad_mode'
+  /** An extended ACL is present (macOS). */
+  | 'extended_acl'
+  /** The path is, or may be, a reparse point (Windows). */
+  | 'reparse_point'
+  | 'symlink'
+  | 'wrong_kind'
+  | 'hard_link'
+  | 'path_changed'
+  /** The check itself failed or its receipt could not be read. */
+  | 'unverifiable';
+
+/** A path admitted only because its caller opted into `foreignTrustees: 'accept'`. */
+export interface PlatformPermissionAcceptance {
+  /** Closed and content-free: the only part telemetry may report. */
+  readonly cause: 'accepted_foreign_trustee';
+  /** The accepted SIDs, deduplicated: for the local log only, like `reason`. */
+  readonly trustees: readonly string[];
+}
+
 export type PlatformPermissionResult =
-  | { readonly state: 'private' }
-  | { readonly state: 'insecure' | 'unverifiable'; readonly reason: string };
+  | {
+      readonly state: 'private';
+      /** Present only when a foreign trustee was accepted (CAN-7915). */
+      readonly accepted?: PlatformPermissionAcceptance;
+    }
+  | {
+      readonly state: 'insecure' | 'unverifiable';
+      readonly reason: string;
+      /** Absent from adapters that predate it. */
+      readonly cause?: PlatformPermissionCause;
+    };
 
 export interface PlatformPermissionRequest {
   readonly path: string;
   readonly kind: 'file' | 'directory';
   readonly mode: 'owner-only' | 'owner-executable';
   readonly action: 'verify' | 'restrict';
+  /**
+   * Windows only; POSIX ignores it. `accept` admits allow entries for other
+   * accounts and reports them in `accepted`; ownership, reparse points, null
+   * DACLs and every other check still refuse. Only the app's own data root,
+   * `runtime/` and its files, `secure-storage/` and the internal-root
+   * migration folder opt in (CAN-7915). Defaults to `refuse`.
+   */
+  readonly foreignTrustees?: 'refuse' | 'accept';
 }
 
 export interface PlatformRenameRequest {
@@ -214,7 +263,10 @@ export type PlatformRenameResult =
 /** Host paths only. Callers supply already-private parent directories. */
 export interface PlatformSecureFileServices {
   readonly permissionModel: 'posix-mode' | 'windows-dacl';
-  /** POSIX uses 0600/0700 and removes Darwin ACLs. Windows verifies without repair. */
+  /**
+   * POSIX uses 0600/0700 and removes Darwin ACLs. Windows verifies without
+   * repair, and refuses other accounts' entries unless the request opts in.
+   */
   permissions(
     request: PlatformPermissionRequest,
   ): Promise<PlatformPermissionResult>;

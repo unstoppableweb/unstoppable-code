@@ -247,6 +247,13 @@ describe('pipeline owner requests', () => {
         operation: 'core.ledger.owners.list',
         params: {},
       },
+      'owner.agentActions.open': { attemptKey: 'a' },
+      'owner.agentActions.call': {
+        toolsKey: 'k',
+        key: 'dispatch_action',
+        arguments: {},
+        invocationId: 'claude:toolu_1',
+      },
       'owner.claude.modAdmission': { cwd: '/tmp/run', settingSources: [] },
       'owner.model.agentAlias': { agentId: 'agent_model_1' },
       'owner.plan.create': { content: '# Plan' },
@@ -370,6 +377,63 @@ describe('pipeline owner requests', () => {
       WorkerPipelineHostResultSchema.safeParse({
         status: 'owner',
         value: { kind: 'ledger.codexToolExecute', response: large },
+      }).success,
+    ).toBe(true);
+    // CAN-7742: agent action calls name only the two tools, an id of at most
+    // 512 characters and arguments within the 1 MiB tool bound; the owner
+    // answers no tools, or at most two definitions within the 64 KiB spec
+    // bound.
+    for (const body of [
+      { ...minimal['owner.agentActions.call'], key: 'spawn_agent' },
+      { ...minimal['owner.agentActions.call'], invocationId: '' },
+      { ...minimal['owner.agentActions.call'], invocationId: 'x'.repeat(513) },
+      {
+        ...minimal['owner.agentActions.call'],
+        arguments: { payload: 'x'.repeat(2 * 1024 * 1024) },
+      },
+      { ...minimal['owner.agentActions.call'], projectId: 'p' },
+      { ...minimal['owner.agentActions.open'], executionId: 'e' },
+    ])
+      expect(
+        WorkerPipelineHostActionRequestSchema.safeParse({
+          action: Object.hasOwn(body, 'toolsKey')
+            ? 'owner.agentActions.call'
+            : 'owner.agentActions.open',
+          ...body,
+        }).success,
+      ).toBe(false);
+    const definition = {
+      key: 'search_actions',
+      description: 'Search',
+      inputSchema: { type: 'object' },
+    };
+    for (const [tools, ok] of [
+      [null, true],
+      [{ toolsKey: 'k', definitions: [definition] }, true],
+      [
+        { toolsKey: 'k', definitions: [definition, definition, definition] },
+        false,
+      ],
+      [
+        {
+          toolsKey: 'k',
+          definitions: [
+            { ...definition, inputSchema: { pad: 'x'.repeat(70_000) } },
+          ],
+        },
+        false,
+      ],
+    ] as const)
+      expect(
+        WorkerPipelineHostResultSchema.safeParse({
+          status: 'owner',
+          value: { kind: 'agentActions.open', tools },
+        }).success,
+      ).toBe(ok);
+    expect(
+      WorkerPipelineHostResultSchema.safeParse({
+        status: 'owner',
+        value: { kind: 'agentActions.call', text: 'posted', isError: false },
       }).success,
     ).toBe(true);
   });

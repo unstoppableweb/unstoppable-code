@@ -16,7 +16,7 @@ export interface AccountSettingsNavFlags {
   digestsEnabled: boolean;
   integrationsEnabled: boolean;
   /**
-   * The External agents (MCP) page is on for this user. Web only: it is a
+   * The External agents page is on for this user. Web only: it is a
    * hosted page, not a shared settings route, so absent hides its item.
    */
   externalAgentsEnabled?: boolean;
@@ -55,6 +55,9 @@ export const ORGANIZATION_SETTINGS_NAV_TABS = [
   'groups',
   'projects',
   'memory',
+  // Never sent in the bootstrap's `visibleTabs`: shipped desktops reject an
+  // unknown tab, so the server sends `transcriptsEnabled` instead.
+  'transcripts',
   'settings',
 ] as const;
 

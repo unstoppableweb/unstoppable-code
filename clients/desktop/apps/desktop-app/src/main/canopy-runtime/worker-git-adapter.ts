@@ -34,6 +34,7 @@ import type {
   CanopyQueryOptions,
 } from '@canopy/core-runtime';
 import {
+  inspectWorktreeHealth,
   createWorkerGitBranchListHandlers,
   createWorkerGitBranchWriteHandlers,
   createWorkerGitDiffHandlers,
@@ -640,26 +641,77 @@ export async function queryDiffStatsForLegacyIpc(
 }
 
 /**
- * Dispatches `worker.git.worktree.health.get` in the projection context and
- * returns the canonical result with the host's full legacy issue, paths,
- * names, messages and Git error included, for the IPC channel to record and
- * return byte for byte.
+ * Dispatches `worker.git.worktree.health.get` in the projection context, or
+ * through `route` when one may send it to the daemon, and returns the
+ * canonical result with the host's full legacy issue, paths, names, messages
+ * and Git error included, for the IPC channel to record and return byte for
+ * byte.
  */
 export async function queryWorktreeHealthForLegacyIpc(
   dispatcher: WorkerGitDispatcher,
   params: WorkerGitWorktreeHealthGetParams,
   options: CanopyQueryOptions,
+  route?: (
+    direct: () => Promise<WorkerGitWorktreeHealthGetResult>,
+    settle: (result: WorkerGitWorktreeHealthGetResult) => Promise<void>,
+  ) => Promise<WorkerGitWorktreeHealthGetResult>,
 ): Promise<{
   canonicalResult: WorkerGitWorktreeHealthGetResult;
   legacyResult: WorktreeHealthIssue | null;
 }> {
   const capture: HealthCapture = { observed: false, issue: null };
-  const canonicalResult = await healthCapture.run(capture, () =>
-    dispatcher.query('worker.git.worktree.health.get', params, options),
-  );
-  if (!capture.observed)
+  const direct = (): Promise<WorkerGitWorktreeHealthGetResult> =>
+    dispatcher.query('worker.git.worktree.health.get', params, options);
+  // The daemon answered with codes only (q-49). A broken worktree's paths,
+  // names and Git error are read again here until CAN-7188 moves them, while
+  // the route holds the request (a retired document drops the answer).
+  const settled: { done: boolean; issue: WorktreeHealthIssue | null } = {
+    done: false,
+    issue: null,
+  };
+  // Aborted once the route gives up on the request (a retired document, the
+  // deadline or cancellation): a read or Git already started may finish, but
+  // the second look starts no new one.
+  const stopped = new AbortController();
+  const live = <T>(read: () => Promise<T>): Promise<T> => {
+    stopped.signal.throwIfAborted();
+    return read();
+  };
+  const settle = async (
+    result: WorkerGitWorktreeHealthGetResult,
+  ): Promise<void> => {
+    if (!result.healthy) {
+      const { workspaceId, worktreeId } = params.scope;
+      const sources = desktopWorktreeHealthSources(
+        workspaceId,
+        worktreeId,
+        resolveWorktreeCwd(workspaceId, worktreeId),
+        stopped.signal,
+      );
+      settled.issue = await inspectWorktreeHealth({
+        ...sources,
+        readWorkspace: () => live(() => sources.readWorkspace()),
+        listRepositoryEntries: () =>
+          live(() => sources.listRepositoryEntries()),
+        readIncludedRepoIds: () => live(() => sources.readIncludedRepoIds()),
+        stat: (path) => live(() => sources.stat(path)),
+        lstat: (path) => live(() => sources.lstat(path)),
+        readText: (path) => live(() => sources.readText(path)),
+        confirmWorkTree: (path) => live(() => sources.confirmWorkTree(path)),
+      });
+    }
+    settled.done = true;
+  };
+  const canonicalResult = await healthCapture
+    .run(capture, () => (route ? route(direct, settle) : direct()))
+    .catch((error: unknown) => {
+      stopped.abort();
+      throw error;
+    });
+  if (capture.observed) return { canonicalResult, legacyResult: capture.issue };
+  if (!settled.done)
     throw new Error('Worktree health projection was not captured.');
-  return { canonicalResult, legacyResult: capture.issue };
+  return { canonicalResult, legacyResult: settled.issue };
 }
 
 /**

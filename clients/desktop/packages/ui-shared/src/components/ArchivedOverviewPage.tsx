@@ -4,7 +4,7 @@ import type { JSX, ReactNode } from 'react';
 import { BackIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import type { ArchivedContainerState } from '../lib/archived-state';
-import { Count } from './Badge';
+import { Count } from '../primitives/Badge';
 import {
   ARCHIVED_LIST_CONTAINER_CLASS_NAME,
   ArchivedOverviewRow,
@@ -12,9 +12,9 @@ import {
 import { ArchivedStateFilterDropdown } from './ArchivedStateFilterDropdown';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
 import { HeaderActionButton } from './HeaderActionButton';
-import { SearchEmptyState, SearchField } from './SearchField';
-import { Skeleton } from './Skeleton';
-import { Surface } from './Surface';
+import { SearchEmptyState, SearchField } from '../primitives/SearchField';
+import { Skeleton } from '../primitives/Skeleton';
+import { Surface } from '../primitives/Surface';
 
 export interface ArchivedOverviewPageProps {
   workspaceId: string;

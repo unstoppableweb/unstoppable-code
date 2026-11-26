@@ -44,6 +44,13 @@ import type { DynamicToolCallParams } from '../../codex-runtime/generated/v2/Dyn
 import type { DynamicToolCallResponse } from '../../codex-runtime/generated/v2/DynamicToolCallResponse';
 import type { DynamicToolSpec } from '../../codex-runtime/generated/v2/DynamicToolSpec';
 import { ledgerCodexToolPolicy } from '../../ledger-tools/codex';
+import {
+  AGENT_ACTION_NOT_SENT,
+  agentActionLostAnswer,
+  agentActionMcpTools,
+  mergeAgentActionCodexTools,
+  type PipelineAgentActionToolsHandle,
+} from '../../ledger-tools/agent-action-tools';
 import { headlessLedgerToolAllowed } from '../../ledger-tools/headless-approval';
 import {
   startLedgerToolsMcpRoute,
@@ -388,8 +395,80 @@ export function createDaemonPipelineOwnerPorts(
       readonly tools: LedgerToolsRuntime;
       readonly ownerSignal?: AbortSignal;
       readonly setCwd: (cwd: string) => void;
+      /** The step's agent action tools, asked once per attempt (CAN-7742). */
+      readonly agentActions: (
+        cwd: string,
+      ) => Promise<PipelineAgentActionToolsHandle | null>;
+      readonly isLive: () => boolean;
     }
   >();
+
+  /**
+   * Asks a local owner for an attempt's agent action tools (CAN-7742): only
+   * a step the app lets post a code review as the GitHub App gets them. Any
+   * refusal or failure, including an app that doesn't know the request,
+   * means none; it never fails the step or its Feed tools. A remote owner is
+   * never asked.
+   */
+  const openAgentActions = async (
+    ownerAttemptKey: string,
+    cwd: string,
+    at: Parameters<typeof step>[1],
+    ownerSignal: AbortSignal | undefined,
+  ): Promise<PipelineAgentActionToolsHandle | null> => {
+    if (run.ledgerOwner === undefined || ownerSignal?.aborted) return null;
+    let tools: ResultOf<'agentActions.open'>['tools'];
+    try {
+      tools = expectKind(
+        await ask(
+          {
+            action: 'owner.agentActions.open',
+            attemptKey: ownerAttemptKey,
+            cwd,
+          },
+          // The step's agent waits for its tools: an app that can't answer
+          // quickly leaves the step without them.
+          PIPELINE_OWNER_DEADLINE_MS.start,
+          ownerSignal,
+          at,
+        ),
+        'agentActions.open',
+      ).tools;
+    } catch {
+      return null;
+    }
+    if (tools === null || ownerSignal?.aborted) return null;
+    const { toolsKey } = tools;
+    return {
+      definitions: tools.definitions,
+      call: async (key, args, invocationId, signal) => {
+        const json = toolCallJson.safeParse(args).data;
+        if (ownerSignal?.aborted || signal.aborted || json === undefined)
+          return AGENT_ACTION_NOT_SENT;
+        try {
+          const answer = expectKind(
+            await ask(
+              {
+                action: 'owner.agentActions.call',
+                toolsKey,
+                key,
+                arguments: json,
+                invocationId,
+              },
+              PIPELINE_OWNER_DEADLINE_MS.long,
+              ownerSignal ? AbortSignal.any([signal, ownerSignal]) : signal,
+              at,
+            ),
+            'agentActions.call',
+          );
+          return { text: answer.text, isError: answer.isError };
+        } catch {
+          // Sent but unanswered: the owner may have posted (CAN-7742).
+          return agentActionLostAnswer(key);
+        }
+      },
+    };
+  };
   const hostedOwner = ledgerGlobalOwnerOf(run.owner);
   const hostedLedgerTools =
     run.remoteLedgerTools === true || run.ledgerOwner !== undefined;
@@ -614,6 +693,24 @@ export function createDaemonPipelineOwnerPorts(
         );
       },
     };
+    let agentActions:
+      | Promise<PipelineAgentActionToolsHandle | null>
+      | undefined;
+    const agentActionsAt = (
+      folder: string,
+    ): Promise<PipelineAgentActionToolsHandle | null> => {
+      // The app grants them only to a `dangerous_all` step and stays the
+      // authority for it; no other step waits for a certain refusal.
+      if (request.permissionPreset !== 'dangerous_all')
+        return Promise.resolve(null);
+      agentActions ??= openAgentActions(
+        opened.attemptKey,
+        folder,
+        at,
+        ownerSignal,
+      );
+      return agentActions;
+    };
     hostedAttempts.set(attemptKey, {
       session,
       tools,
@@ -622,6 +719,8 @@ export function createDaemonPipelineOwnerPorts(
       },
       ...(ownerSignal && { ownerSignal }),
       permissionPreset: request.permissionPreset,
+      agentActions: agentActionsAt,
+      isLive: () => live && ownerSignal?.aborted !== true,
     });
     let route: Promise<LedgerToolsMcpRoute> | undefined;
     return {
@@ -632,8 +731,12 @@ export function createDaemonPipelineOwnerPorts(
         if (!live) throw new Error('The pipeline agent attempt has ended.');
         const hosted = hostedAttempts.get(attemptKey);
         hosted?.setCwd(cwd);
-        route ??= startLedgerToolsMcpRoute(tools, (tool) =>
-          headlessLedgerToolAllowed(request.permissionPreset, tool),
+        route ??= agentActionsAt(cwd).then((actions) =>
+          startLedgerToolsMcpRoute(
+            tools,
+            (tool) => headlessLedgerToolAllowed(request.permissionPreset, tool),
+            actions === null ? undefined : agentActionMcpTools(actions),
+          ),
         );
         const open = await route;
         return {
@@ -674,16 +777,21 @@ export function createDaemonPipelineOwnerPorts(
       hosted.setCwd(cwd);
       // A remote owner's attempt: the tools run here, and an unattended step
       // may call exactly the three Feed tools.
-      const { specs, policy } = ledgerCodexToolPolicy(
-        hosted.tools,
-        (_call, tool) =>
-          Promise.resolve(
-            // A withdrawn epoch can only execute the no-Ledger facade above.
-            // Let it answer explicitly instead of substituting a policy denial.
-            hosted.ownerSignal?.aborted === true ||
-              headlessLedgerToolAllowed(hosted.permissionPreset, tool),
-          ),
+      const ledger = ledgerCodexToolPolicy(hosted.tools, (_call, tool) =>
+        Promise.resolve(
+          // A withdrawn epoch can only execute the no-Ledger facade above.
+          // Let it answer explicitly instead of substituting a policy denial.
+          hosted.ownerSignal?.aborted === true ||
+            headlessLedgerToolAllowed(hosted.permissionPreset, tool),
+        ),
       );
+      // A step the app lets post a review as the GitHub App also gets the
+      // two action tools; Codex takes one policy per turn (CAN-7742).
+      const actions = await hosted.agentActions(cwd);
+      const { specs, policy } =
+        actions === null
+          ? ledger
+          : mergeAgentActionCodexTools(ledger, actions, hosted.isLive);
       return {
         instructions: hosted.session.systemPrompt(),
         specs,

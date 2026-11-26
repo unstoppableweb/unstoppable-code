@@ -89,6 +89,7 @@ import {
   type ChatTurnStateCommit,
   type ChatTurnStateScope,
   type ChatTurnStateHandoffSnapshot,
+  type ChatTurnStopStage,
 } from './chat-turn-state-handoff';
 export type {
   ChatTurnStateChange,
@@ -103,6 +104,7 @@ import {
 import { publishForeignChatActivity } from './foreign-activity-sources';
 import type { AgentSession } from '../agents/types';
 import { settleInputExecution } from './chat-input-delivery-state';
+import type { ChatTurnStopIdentity } from '../lib/chat-turn-cancel';
 import {
   detachInputDelivery,
   validOrdinaryContinuation,
@@ -165,6 +167,7 @@ import {
   withCommittedToolVisuals,
   type ToolOccurrenceAdmission,
   type ProviderEventIngestResult,
+  type CommittedChatTurnCancellation,
 } from './provider-event-admission';
 import {
   CHILD_TOOLS_ENDED_EVENT_TYPE,
@@ -390,6 +393,7 @@ import {
 } from '../lib/worktree-git-setup';
 import {
   beginChatTurnPreparation,
+  cancelChatTurnPreparations,
   type PendingChatTurnPreparation,
 } from '../lib/chat-turn-preparation';
 import {
@@ -445,6 +449,7 @@ export interface ProviderEventInput extends ChatScopeKey {
   mutationId?: string;
   source?: 'provider' | 'terminal';
   turnUserMessageId?: string;
+  explicitStop?: ChatTurnStopIdentity;
   /**
    * Called once the event's commit holds its place in the scope's commit
    * order. Its producer may then submit its next event without waiting for
@@ -4211,18 +4216,21 @@ export class ChatStateService implements ChatStateCommandPort {
     runtime: ChatRuntimeState,
     /** Host writers: project only while a canonical turn runs. */
     onlyRunning = false,
+    receiptOverride?: PersistedChatTurnState,
   ): ChatRuntimeState {
     // Receipt state can still be loading, and an end receipt precedes its
     // durable settle: a running committed turn stays authoritative until the
     // snapshot that settles it commits, together with its timer close.
     const receipt = this.turnHandoff.getState(scope);
-    const turn = receipt?.current
-      ? receipt
-      : runtime.turn?.current
-        ? runtime.turn
-        : (receipt ??
-          runtime.turn ??
-          serializeChatTurnState(initialChatTurnState()));
+    const turn =
+      receiptOverride ??
+      (receipt?.current
+        ? receipt
+        : runtime.turn?.current
+          ? runtime.turn
+          : (receipt ??
+            runtime.turn ??
+            serializeChatTurnState(initialChatTurnState())));
     const live =
       runtime.status === 'starting' ||
       runtime.status === 'streaming' ||
@@ -4428,6 +4436,7 @@ export class ChatStateService implements ChatStateCommandPort {
     options: Parameters<ChatStateRepositoryPort['transactWith']>[2],
     visualAdmission?: { resolveToolKey: VisualToolIdentityResolver },
     requireTurnPlacement = false,
+    stagedStop?: () => ChatTurnStopStage | undefined,
   ): Promise<ChatStateCommit> {
     const snapshots: Array<{
       snapshot: ChatTurnStateHandoffSnapshot;
@@ -4515,12 +4524,16 @@ export class ChatStateService implements ChatStateCommandPort {
           target,
           current.runtimeByChatId[chatId]?.turn,
         );
-        const snapshot = this.turnHandoff.snapshotNow(target);
+        const stage = stagedStop?.();
+        const snapshot =
+          stage?.scope.chatId === chatId
+            ? this.turnHandoff.stagedSnapshot(stage)
+            : this.turnHandoff.snapshotNow(target);
         if (!snapshot || !this.turnHandoff.isCurrent(snapshot)) continue;
         // An unplaced snapshot stays unacknowledged for the fallback commit.
         if (!this.attachTurnSnapshot(merged, current, chatId, snapshot)) {
           if (requireTurnPlacement)
-            throw new Error('Canonical turn pause could not be committed');
+            throw new Error('Canonical turn snapshot could not be committed');
           continue;
         }
         snapshots.push({
@@ -5130,6 +5143,49 @@ export class ChatStateService implements ChatStateCommandPort {
           ? { endReason: 'unaccepted' }
           : {}),
     };
+  }
+
+  private committedCancellation(
+    commit: ChatStateCommit,
+    target: ChatScopeKey & { chatId: string },
+    turn: ChatTurnStopIdentity,
+  ): CommittedChatTurnCancellation | undefined {
+    const state = commit.state;
+    const tab =
+      state.tabsFile.tabs.find((candidate) => candidate.id === target.chatId) ??
+      state.archivesFile.archived.find(
+        (candidate) => candidate.tab.id === target.chatId,
+      )?.tab;
+    if (recordedTurnEnd(tab?.turnEnds, turn.userMessageId) !== 'cancelled')
+      return undefined;
+    const endedAt = tab?.turnEnds?.[turn.userMessageId]?.endedAt;
+    const runtime = state.runtimeByChatId[target.chatId];
+    const receipt = runtime?.turn;
+    if (receipt?.current?.userMessageId === turn.userMessageId)
+      return undefined;
+    if (endedAt === undefined) return undefined;
+    if (turn.executionTurnId !== undefined) {
+      const record = receipt?.lastEnded;
+      if (
+        record?.id !== turn.executionTurnId ||
+        record?.userMessageId !== turn.userMessageId ||
+        record.outcome !== 'cancelled' ||
+        record.endedAtMs !== endedAt
+      )
+        return undefined;
+    }
+    return { ...turn, endedAt };
+  }
+
+  private stopExecutionRecord(
+    target: ChatTurnStateScope,
+    turnId: string,
+    receipt: PersistedChatTurnState | undefined,
+  ): ChatTurnRecord | undefined {
+    if (receipt?.lastEnded?.id === turnId) return receipt.lastEnded;
+    return this.retainedTerminalTurns
+      .get(JSON.stringify([target.projectId, target.worktreeId, target.chatId]))
+      ?.get(turnId);
   }
 
   /**
@@ -6858,6 +6914,37 @@ export class ChatStateService implements ChatStateCommandPort {
     return (await this.ingestProviderEventWithResult(input)).outcome;
   }
 
+  public async journalIdleStop(
+    target: ChatTurnStateScope,
+    mutationId: string,
+  ): Promise<void> {
+    await this.repository.transactWith(
+      { projectId: target.projectId, worktreeId: target.worktreeId },
+      (current) => {
+        const tab = current.tabsFile.tabs.find(
+          (candidate) => candidate.id === target.chatId,
+        );
+        if (!isEditablePersistedChatTab(tab)) return [];
+        const runtime = current.runtimeByChatId[target.chatId];
+        const ownership = getChatTurnOwnership().getSnapshot(target);
+        if (
+          runtime?.turn?.current ||
+          runtime?.status === 'starting' ||
+          runtime?.status === 'streaming' ||
+          runtime?.status === 'awaiting_input' ||
+          runtime?.status === 'completing' ||
+          this.turnHandoff.getState(target)?.current ||
+          ownership.dispatchOwners.length > 0
+        )
+          return [];
+        return [
+          { type: 'tab.metadata_patched', tabId: target.chatId, patch: {} },
+        ];
+      },
+      { source: 'provider', mutationId, chatIds: [target.chatId] },
+    );
+  }
+
   public async ingestProviderEventWithResult(
     providerInput: ProviderEventInput,
   ): Promise<ProviderEventIngestResult> {
@@ -7006,59 +7093,74 @@ export class ChatStateService implements ChatStateCommandPort {
     let abandonedTurns: string[] = [];
     let admissionTools: ToolOccurrenceAdmission[] = [];
     let admissionLimited = false;
-    const commit = await this.transactWithTurnHandoff(
-      input,
-      async (current, _revision, context) => {
-        const reduction = await this.reduceProviderEvent(
-          current,
-          input,
-          mutationId,
-          checkpoint,
-          refreshCapabilities,
-          capabilities,
-          messageAnchor,
-          streamDelegation,
-          context,
-        );
-        activityOnly = reduction.activityOnly;
-        admissionTools = reduction.admissionTools;
-        admissionLimited = reduction.admissionLimited;
-        shouldResolveInputHistory = reduction.shouldResolveInputHistory;
-        canonicalAdmissionRejectionReason =
-          reduction.canonicalAdmissionRejectionReason;
-        canonicalAdmissionOwnerTurnUserMessageId =
-          reduction.canonicalAdmissionOwnerTurnUserMessageId;
-        emptyCompletionDiagnostic = reduction.emptyCompletionDiagnostic;
-        rootTerminalTurnId = reduction.rootTerminalTurnId;
-        terminalAttributionAmbiguous =
-          reduction.terminalAttributionAmbiguous === true;
-        abandonedTurns = reduction.abandonedTurns ?? [];
-        return reduction.mutations;
-      },
-      {
-        ...{
-          source: input.source ?? 'provider',
-          mutationId,
-          checkpoint,
+    let stagedStop: ChatTurnStopStage | undefined;
+    let commit: ChatStateCommit;
+    try {
+      commit = await this.transactWithTurnHandoff(
+        input,
+        async (current, _revision, context) => {
+          const reduction = await this.reduceProviderEvent(
+            current,
+            input,
+            mutationId,
+            checkpoint,
+            refreshCapabilities,
+            capabilities,
+            messageAnchor,
+            streamDelegation,
+            context,
+            (stage) => {
+              stagedStop = stage;
+            },
+          );
+          activityOnly = reduction.activityOnly;
+          admissionTools = reduction.admissionTools;
+          admissionLimited = reduction.admissionLimited;
+          shouldResolveInputHistory = reduction.shouldResolveInputHistory;
+          canonicalAdmissionRejectionReason =
+            reduction.canonicalAdmissionRejectionReason;
+          canonicalAdmissionOwnerTurnUserMessageId =
+            reduction.canonicalAdmissionOwnerTurnUserMessageId;
+          emptyCompletionDiagnostic = reduction.emptyCompletionDiagnostic;
+          rootTerminalTurnId = reduction.rootTerminalTurnId;
+          terminalAttributionAmbiguous =
+            reduction.terminalAttributionAmbiguous === true;
+          abandonedTurns = reduction.abandonedTurns ?? [];
+          return reduction.mutations;
         },
-        chatIds: [input.chatId],
-        fullTranscript,
-        ...(fullTranscript ? { rewriteReason: 'prompt_relocation' } : {}),
-        ...(streamDelegation ? { rawStreamCards: true } : {}),
-        ...(messageAnchor ? { messageAnchor } : {}),
-        ...(input.onCommitQueued ? { onQueued: input.onCommitQueued } : {}),
-      },
-      isNativeVisualToolResultEvent(input)
-        ? {
-            resolveToolKey: visualResolverForEvent(
-              input,
-              this.claudeToolNames,
-              this.codexToolNames,
-              this.cursorToolUse,
-            ),
-          }
-        : undefined,
-    );
+        {
+          ...{
+            source: input.source ?? 'provider',
+            mutationId,
+            checkpoint,
+          },
+          chatIds: [input.chatId],
+          fullTranscript,
+          ...(fullTranscript ? { rewriteReason: 'prompt_relocation' } : {}),
+          ...(streamDelegation ? { rawStreamCards: true } : {}),
+          ...(messageAnchor ? { messageAnchor } : {}),
+          ...(input.onCommitQueued ? { onQueued: input.onCommitQueued } : {}),
+        },
+        isNativeVisualToolResultEvent(input)
+          ? {
+              resolveToolKey: visualResolverForEvent(
+                input,
+                this.claudeToolNames,
+                this.codexToolNames,
+                this.cursorToolUse,
+              ),
+            }
+          : undefined,
+        input.explicitStop !== undefined,
+        () => stagedStop,
+      );
+    } finally {
+      // A failed write must not leave a Stop for the handoff fallback to flush.
+      if (stagedStop) this.turnHandoff.discardStop(stagedStop);
+    }
+    const cancellation = input.explicitStop
+      ? this.committedCancellation(commit, input, input.explicitStop)
+      : undefined;
     // Fence later frames only once the terminal is durable (a failed write
     // throws above, so its retry is still admitted).
     if (rootTerminalTurnId !== undefined) {
@@ -7120,6 +7222,7 @@ export class ChatStateService implements ChatStateCommandPort {
       }
       return {
         outcome: 'applied',
+        ...(cancellation ? { cancellation } : {}),
         ...(admissionTools.length > 0
           ? {
               admission: {
@@ -7143,7 +7246,10 @@ export class ChatStateService implements ChatStateCommandPort {
           : {}),
       };
     }
-    return { outcome: activityOnly ? 'activity-only' : 'not-applied' };
+    return {
+      outcome: activityOnly ? 'activity-only' : 'not-applied',
+      ...(cancellation ? { cancellation } : {}),
+    };
   }
 
   private async reduceProviderEvent(
@@ -7156,6 +7262,7 @@ export class ChatStateService implements ChatStateCommandPort {
     messageAnchor: ChatReadSelection['messageAnchor'],
     streamDelegation: boolean,
     context: ChatStateTransactionContext,
+    onStopStaged: (stage: ChatTurnStopStage) => void,
   ): Promise<ProviderEventReduction> {
     let activityOnly = false;
     const admissionTools: ToolOccurrenceAdmission[] = [];
@@ -7375,6 +7482,74 @@ export class ChatStateService implements ChatStateCommandPort {
       return finish([]);
     const runtime = current.runtimeByChatId[input.chatId];
     const activeTurnUserMessageId = runtime?.activeTurn?.userMessageId;
+    const explicitStop = input.explicitStop;
+    const stoppedAt = explicitStop ? this.now() : undefined;
+    let stagedTurn: PersistedChatTurnState | undefined;
+    if (explicitStop && stoppedAt !== undefined) {
+      const receipt = this.turnHandoff.getState(input) ?? runtime?.turn;
+      const live = receipt?.current;
+      const stoppedId = explicitStop.userMessageId;
+      const executionId = explicitStop.executionTurnId;
+      if (live && live.id === executionId && live.userMessageId === stoppedId) {
+        const stage = this.turnHandoff.stageStop(
+          input,
+          live.id,
+          stoppedAt,
+          runtime?.turn,
+        );
+        if (!stage) return finish([]);
+        onStopStaged(stage);
+        stagedTurn = this.turnHandoff.stagedSnapshot(stage)?.turn;
+      } else {
+        if (live?.userMessageId === stoppedId) return finish([]);
+        const ended = recordedTurnEnd(tab.turnEnds, stoppedId);
+        const record =
+          executionId === undefined
+            ? undefined
+            : this.stopExecutionRecord(input, executionId, receipt);
+        const cancelledAt =
+          executionId === undefined
+            ? ended === 'cancelled'
+              ? tab.turnEnds?.[stoppedId]?.endedAt
+              : undefined
+            : record?.userMessageId === stoppedId &&
+                record.outcome === 'cancelled'
+              ? record.endedAtMs
+              : undefined;
+        if (
+          ended === 'cancelled' &&
+          cancelledAt !== undefined &&
+          tab.turnEnds?.[stoppedId]?.endedAt === cancelledAt
+        ) {
+          if (!isInputLedger(tab.inputDelivery)) return finish([]);
+          const ledger = settleInputExecution(
+            tab.inputDelivery,
+            stoppedId,
+            'cancelled',
+            cancelledAt,
+            true,
+          );
+          if (ledger === tab.inputDelivery) return finish([]);
+          shouldResolveInputHistory = true;
+          return finish([
+            {
+              type: 'tab.metadata_patched',
+              tabId: tab.id,
+              patch: { inputDelivery: ledger },
+            },
+          ]);
+        }
+        if (
+          executionId !== undefined ||
+          live !== undefined ||
+          ended !== undefined ||
+          activeTurnUserMessageId !== stoppedId ||
+          runtime === undefined ||
+          !UNFINISHED_RUNTIME_STATUSES.includes(runtime.status)
+        )
+          return finish([]);
+      }
+    }
     const providerTurnIsSettled =
       runtime !== undefined &&
       ['completed', 'failed', 'cancelled', 'interrupted'].includes(
@@ -7422,6 +7597,7 @@ export class ChatStateService implements ChatStateCommandPort {
           )?.userMessageId === input.turnUserMessageId)
       );
     if (
+      !explicitStop &&
       input.turnUserMessageId &&
       !startsOrAcknowledgesTurn &&
       !reconcilesEmptyCompletion &&
@@ -7503,7 +7679,7 @@ export class ChatStateService implements ChatStateCommandPort {
       admissionBytes += bytes;
       admissionTools.push(mapping);
     };
-    const now = this.now();
+    const now = stoppedAt ?? this.now();
     const succession =
       data.type === 'canopy_user_prompt' &&
       typeof data.canopy_turn_user_message_id === 'string'
@@ -7616,6 +7792,7 @@ export class ChatStateService implements ChatStateCommandPort {
         ? persistedMetadata.sdkSessionId
         : tab.sdkSessionId;
     const effectiveTurnUserMessageId =
+      explicitStop?.userMessageId ??
       input.turnUserMessageId ??
       (typeof data.canopy_turn_user_message_id === 'string'
         ? data.canopy_turn_user_message_id
@@ -7699,6 +7876,8 @@ export class ChatStateService implements ChatStateCommandPort {
         chatId: tab.id,
       },
       eventRuntime,
+      false,
+      stagedTurn,
     );
     const turnEnds = reclassifyEmptyCompletionEnd(
       metadataTab.turnEnds,
@@ -7710,11 +7889,13 @@ export class ChatStateService implements ChatStateCommandPort {
     // The auto-archive marker belongs to one turn (CAN-6014): the event's own
     // turn when its agent sets it, else the one running now.
     const liveTurn =
+      stagedTurn ??
       this.turnHandoff.getState({
         projectId: input.projectId,
         worktreeId: input.worktreeId,
         chatId: tab.id,
-      }) ?? currentRuntime?.turn;
+      }) ??
+      currentRuntime?.turn;
     const turnOf = (userMessageId: string | undefined): string | undefined =>
       userMessageId === undefined
         ? undefined
@@ -7750,7 +7931,7 @@ export class ChatStateService implements ChatStateCommandPort {
         worktreeId: input.worktreeId,
         chatId: tab.id,
       };
-      const receipt = this.turnHandoff.getState(scope);
+      const receipt = stagedTurn ?? this.turnHandoff.getState(scope);
       const history = this.turnHandoff.snapshotNow(scope)?.turnRecords ?? [];
       const candidates = new Map<
         string,
@@ -7804,16 +7985,18 @@ export class ChatStateService implements ChatStateCommandPort {
             turn.origin === 'autonomous',
           );
       const taggedInputId =
+        explicitStop?.userMessageId ??
         input.turnUserMessageId ??
         (typeof data.canopy_turn_user_message_id === 'string'
           ? data.canopy_turn_user_message_id
           : undefined);
       const executionId =
-        typeof data.canopy_execution_turn_id === 'string'
+        explicitStop?.executionTurnId ??
+        (typeof data.canopy_execution_turn_id === 'string'
           ? data.canopy_execution_turn_id
           : typeof data.canopy_wake_turn_id === 'string'
             ? data.canopy_wake_turn_id
-            : undefined;
+            : undefined);
       const matches =
         taggedInputId === undefined
           ? []
@@ -7900,9 +8083,12 @@ export class ChatStateService implements ChatStateCommandPort {
       const previousInputDelivery = metadataTab.inputDelivery;
       const nextInputDelivery = settleInputExecution(
         previousInputDelivery,
-        input.turnUserMessageId ?? activeTurnUserMessageId,
-        nextRuntime.status,
+        explicitStop?.userMessageId ??
+          input.turnUserMessageId ??
+          activeTurnUserMessageId,
+        explicitStop ? 'cancelled' : nextRuntime.status,
         now,
+        explicitStop !== undefined,
       );
       metadataTab.inputDelivery = nextInputDelivery;
       shouldResolveInputHistory =
@@ -12147,6 +12333,27 @@ export class ChatStateService implements ChatStateCommandPort {
   }
 
   /**
+   * Stops a send still waiting for its worktree's setup, before any hand-off
+   * to its provider began (CAN-7873). `ended` once its turn's cancelled end
+   * is saved, `end_unsaved` when that write failed and only a retry is
+   * scheduled, `not_waiting` when the send was not waiting for setup.
+   */
+  public async cancelSendAwaitingWorktreeSetup(
+    target: ChatScopeKey & { chatId: string; userMessageId: string },
+  ): Promise<'not_waiting' | 'ended' | 'end_unsaved'> {
+    const key = awaitingSetupKey(target, target);
+    const held = this.heldSends.get(key);
+    const preparation = held?.preparation;
+    if (held?.state !== 'held' || preparation === undefined)
+      return 'not_waiting';
+    await cancelChatTurnPreparations(
+      target,
+      (candidate) => candidate === preparation,
+    );
+    return this.unrecordedTurnEnds.has(key) ? 'end_unsaved' : 'ended';
+  }
+
+  /**
    * Mark a chat's turn as being dispatched by this process, so a snapshot read
    * meanwhile cannot settle its runtime as interrupted by an app restart.
    * Callers outside the send command (hook, rebase, builtin chats) hold this
@@ -13473,6 +13680,9 @@ export class ChatStateService implements ChatStateCommandPort {
     const routedTab = admittedCommand.turnOverride
       ? await this.commitTurnOverrideModel(scope, admittedCommand, tab)
       : tab;
+    // A Stop can end the send while that write is saved: cancelling its
+    // preparation settles it at once (CAN-7873).
+    if (held.state !== 'held' || this.draining) return;
     const request = {
       ...admittedSendRequest(scope, admittedCommand, routedTab, {
         startsNewTrackedChat: dispatch.startsNewTrackedChat,

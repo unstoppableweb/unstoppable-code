@@ -3,7 +3,7 @@ import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { BeingWatchedIcon } from '../icons/AppIcons';
 import { DrawerInspectorAction } from './DrawerInspectorAction';
 import { ExecutionActionButton } from './ExecutionActionButton';
-import { RichHoverTooltip } from './RichHoverTooltip';
+import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
 
 export interface DrawerWatcherPreviewRow {
   readonly id: string;

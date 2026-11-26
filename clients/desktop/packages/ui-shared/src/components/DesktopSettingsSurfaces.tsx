@@ -1,4 +1,4 @@
-import { ListRowFrame } from './ListRow';
+import { ListRowFrame } from '../primitives/ListRow';
 import type { ComponentPropsWithRef, JSX } from 'react';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 

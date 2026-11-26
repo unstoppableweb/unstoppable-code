@@ -3,6 +3,7 @@ import {
   type MarketplaceShareLinkKind,
 } from '@canopy/protocol/marketplace';
 import { isUuid } from '@canopy/protocol/uuid';
+import { MODEL_PRESET_LABEL } from '@canopy/ui-shared/lib/model-preset-labels';
 import {
   deriveExistingShare,
   type ExistingShareFacts,
@@ -14,7 +15,7 @@ export const SHARED_LINK_KIND_LABELS: Readonly<Record<SharedLinkKind, string>> =
   {
     skill: 'skill',
     plugin: 'plugin',
-    agent: 'agent',
+    agent: MODEL_PRESET_LABEL.toLowerCase(),
     collection: 'collection',
     pipeline: 'workflow',
     automation: 'automation',

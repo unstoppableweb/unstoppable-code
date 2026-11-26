@@ -81,3 +81,21 @@ export async function claudeTerminalTurnStates(): Promise<
   return (chat) =>
     service.getState(chat.projectId, chat.worktreeId, chat.chatId)?.turnState;
 }
+
+/**
+ * Whether a chat's managed Claude Code terminal runs a turn now, read from
+ * the live terminal sessions only: it opens no chat storage, so a chat or
+ * scope that no longer exists reads false.
+ */
+export async function hasLiveClaudeTerminalTurn(chat: {
+  projectId: string;
+  worktreeId: string;
+  chatId: string;
+}): Promise<boolean> {
+  const turnState = (await claudeTerminalTurnStates())(chat);
+  return (
+    turnState === 'starting' ||
+    turnState === 'running' ||
+    turnState === 'cleaning_up'
+  );
+}

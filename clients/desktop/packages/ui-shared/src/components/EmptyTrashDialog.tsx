@@ -1,7 +1,7 @@
-import { Stack } from './Stack';
+import { Stack } from '../primitives/Stack';
 import type { JSX, ReactNode } from 'react';
-import { ConfirmDialog } from './ConfirmDialog';
-import { Surface } from './Surface';
+import { ConfirmDialog } from '../primitives/ConfirmDialog';
+import { Surface } from '../primitives/Surface';
 import { ArchivedStateIcon } from '../icons/ArchivedStateIcon';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 

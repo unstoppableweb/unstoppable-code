@@ -3,11 +3,17 @@ import {
   CANOPY_INSTRUCTION_DEFINITIONS,
   CANOPY_STREAM_DEFINITIONS,
   CORE_TRANSPORT_QUERY_DEFINITIONS,
+  CORE_CLOUD_ACCOUNT_CUSTODY_INSTRUCTION_DEFINITIONS,
+  CORE_CLOUD_ACCOUNT_CUSTODY_QUERY_DEFINITIONS,
+  CORE_CLOUD_ACCOUNT_INSTRUCTION_DEFINITIONS,
   CORE_VAULT_QUERY_DEFINITIONS,
   CORE_VAULT_INSTRUCTION_DEFINITIONS,
   CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
   CORE_MIGRATION_INSTRUCTION_DEFINITIONS,
   CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
+  CORE_OPERATION_LEDGER_INSTRUCTION_DEFINITIONS,
+  CORE_OPERATION_LEDGER_QUERY_DEFINITIONS,
+  CORE_OPERATION_LEDGER_STREAM_DEFINITIONS,
   CORE_MUTATION_FENCE_STREAM_DEFINITIONS,
   CORE_W5_RECOVERY_INSTRUCTIONS,
   CORE_TRANSPORT_STREAM_DEFINITIONS,
@@ -19,6 +25,8 @@ import {
   WORKER_SCRIPT_STREAM_DEFINITIONS,
   WORKER_TERMINAL_INSTRUCTION_DEFINITIONS,
   WORKER_TERMINAL_QUERY_DEFINITIONS,
+  WORKER_TERMINAL_RECORD_INSTRUCTION_DEFINITIONS,
+  WORKER_TERMINAL_RECORD_QUERY_DEFINITIONS,
   WORKER_TERMINAL_SESSION_INSTRUCTION_DEFINITIONS,
   WORKER_TERMINAL_STREAM_DEFINITIONS,
   type CanopyInstructionDefinitionMap,
@@ -49,8 +57,14 @@ const CATALOG = {
     ...CORE_TRANSPORT_QUERY_DEFINITIONS,
     // Admission only: the daemon explicitly installs these, never Electron.
     ...CORE_VAULT_QUERY_DEFINITIONS,
+    // CAN-6997: only a daemon holding the Cloud account installs these.
+    ...CORE_CLOUD_ACCOUNT_CUSTODY_QUERY_DEFINITIONS,
     ...CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
     ...WORKER_TERMINAL_QUERY_DEFINITIONS,
+    // Admission only: the ledger owner's internal reads (CAN-6986 L3).
+    ...CORE_OPERATION_LEDGER_QUERY_DEFINITIONS,
+    // The worktree terminal record the daemon's terminal module composes (CAN-7051).
+    ...WORKER_TERMINAL_RECORD_QUERY_DEFINITIONS,
   },
   instruction: {
     ...CANOPY_INSTRUCTION_DEFINITIONS,
@@ -58,10 +72,16 @@ const CATALOG = {
     ...CORE_MIGRATION_INSTRUCTION_DEFINITIONS,
     ...CORE_W5_RECOVERY_INSTRUCTIONS,
     ...CORE_VAULT_INSTRUCTION_DEFINITIONS,
+    // CAN-6997: the daemon's account authority; never composed by Electron.
+    ...CORE_CLOUD_ACCOUNT_INSTRUCTION_DEFINITIONS,
+    ...CORE_CLOUD_ACCOUNT_CUSTODY_INSTRUCTION_DEFINITIONS,
     ...CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
     // Admission only: the desktop owner's split-lock fences (CAN-4730 E2-G);
     // the daemon installs this, never Electron, and no interface profile.
     ...CORE_MUTATION_FENCE_INSTRUCTION_DEFINITIONS,
+    // Admission only: the ledger owner's internal writes (CAN-6986 L3); the
+    // daemon installs these, never Electron, and no interface profile.
+    ...CORE_OPERATION_LEDGER_INSTRUCTION_DEFINITIONS,
     // The W5 metadata commands the qualification daemon composes (W7a-3);
     // their own registries, not re-listed.
     'core.workspace.update':
@@ -71,6 +91,7 @@ const CATALOG = {
     // (CAN-5088); the web core serves the first set too (CAN-4160).
     ...WORKER_TERMINAL_INSTRUCTION_DEFINITIONS,
     ...WORKER_TERMINAL_SESSION_INSTRUCTION_DEFINITIONS,
+    ...WORKER_TERMINAL_RECORD_INSTRUCTION_DEFINITIONS,
   },
   stream: {
     ...CANOPY_STREAM_DEFINITIONS,
@@ -80,6 +101,8 @@ const CATALOG = {
     ...WORKER_SCRIPT_STREAM_DEFINITIONS,
     // The generation queue stream the daemon's code-graph module composes (CAN-5628).
     ...WORKER_CODE_GRAPH_STREAM_DEFINITIONS,
+    // Admission only: the ledger's events for its owner (CAN-6986 L3).
+    ...CORE_OPERATION_LEDGER_STREAM_DEFINITIONS,
     // Admission only: the daemon's write activity for its owner (CAN-4730
     // E2 2b); the daemon installs this, never Electron, and no interface.
     ...CORE_MUTATION_FENCE_STREAM_DEFINITIONS,

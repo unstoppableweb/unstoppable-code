@@ -526,6 +526,19 @@ Additional JSON control-plane routes:
   Isolated synthetic scenarios may opt in to `llm.captureRequestBodies: true`
   to include a cloned `body` for failure diagnostics. Headers are never captured;
   do not enable this for live-provider or real-profile fixtures.
+- `POST /__mock/inference-journal` with `{ name, ownerPid }` opens or empties a
+  named journal. Until `DELETE /__mock/inference-journal?name=<encoded-name>`
+  closes it, every inference request is appended, Claude token counts
+  included, whatever its marker, prompt or credential. Only one journal may be
+  open: while another journal's `ownerPid` is alive the open returns 409, and a
+  dead owner's journal is dropped. Journal specs therefore run in the
+  single-worker `survival` lane. `GET /__mock/inference-journal?name=<encoded-name>` returns
+  `{ requests: [{ index, transport, route, model, tag, helper, brokerAuthenticated, fixtureCredentialLabel }] }`
+  (absent strings are `null`), or 404 when the journal is not open.
+  `fixtureCredentialLabel` is the `cloud.credentialLabel` (`initial` or
+  `replacement`) of the scenario registered under the request's credential,
+  never the credential itself. `helper` is the matched helper fingerprint id,
+  such as `session-title`. Resetting all scenarios closes every journal.
 
 Instruction guards follow the harness's actual wire placement:
 `llm.requiredSystemText` checks system/developer text, whereas

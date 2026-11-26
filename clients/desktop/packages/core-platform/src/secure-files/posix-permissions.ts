@@ -19,13 +19,17 @@ const checkNode = (
   checkShape(stats, kind) ??
   (stats.uid === BigInt(uid)
     ? null
-    : fail('insecure', 'owned by another user'));
+    : fail('insecure', 'owned by another user', 'foreign_owner'));
 
 function checkMode(stats: BigIntStats, expected: number): PermissionResult {
   const actual = Number(stats.mode) & 0o7777;
   return actual === expected
     ? PRIVATE
-    : fail('insecure', `mode ${actual.toString(8)} is not private`);
+    : fail(
+        'insecure',
+        `mode ${actual.toString(8)} is not private`,
+        'broad_mode',
+      );
 }
 
 /**
@@ -39,7 +43,8 @@ export async function posixPermissions(
   uid: number | undefined,
   darwinAcl: DarwinAclProbe | null,
 ): Promise<PermissionResult> {
-  if (uid === undefined) return fail('unverifiable', 'user id is unavailable');
+  if (uid === undefined)
+    return fail('unverifiable', 'user id is unavailable', 'unverifiable');
   const before = await lstat(request.path, { bigint: true });
   const problem = checkNode(before, request, uid);
   if (problem) return problem;
@@ -59,7 +64,7 @@ export async function posixPermissions(
     const opened = await handle.stat({ bigint: true });
     const changed = sameNode(before, opened)
       ? checkNode(opened, request, uid)
-      : fail('insecure', 'path changed while opening');
+      : fail('insecure', 'path changed while opening', 'path_changed');
     if (changed) return changed;
     if (request.action === 'restrict') await handle.chmod(expected);
     const acl =
@@ -71,7 +76,7 @@ export async function posixPermissions(
           );
     const after = await handle.stat({ bigint: true });
     if (!sameNode(after, await lstat(request.path, { bigint: true }))) {
-      return fail('insecure', PATH_CHANGED_DURING_CHECK);
+      return fail('insecure', PATH_CHANGED_DURING_CHECK, 'path_changed');
     }
     return acl ?? checkNode(after, request, uid) ?? checkMode(after, expected);
   } finally {

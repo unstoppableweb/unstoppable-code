@@ -31,6 +31,7 @@ import {
   seedWorktreeChat,
 } from '../seeders/index.mjs';
 import {
+  readChatStorageIndexes,
   readChatStorageMessages,
   readChatStorageTabs,
 } from '../readChatStorage.mjs';
@@ -1656,7 +1657,13 @@ test('the desktop refuses forbidden effects from a valid delegated hosted sessio
     const archive = await settle(
       session.transport.invoke('chat:command', {
         ...envelope,
-        command: { type: 'chat.archive_tab', tabId: SEEDED_CHAT.id },
+        // A hosted archive names only the tab (CAN-7446): keeping the
+        // session is refused.
+        command: {
+          type: 'chat.archive_tab',
+          tabId: SEEDED_CHAT.id,
+          keepSession: true,
+        },
       }),
     );
     expect(archive.ok).toBe(false);
@@ -1690,6 +1697,263 @@ test('the desktop refuses forbidden effects from a valid delegated hosted sessio
   } finally {
     session.stop();
   }
+});
+
+/** The worktrees the desktop lists for the demo project. */
+async function demoWorktrees() {
+  const { items } = await desktop.window.evaluate(() =>
+    window.api.loadProjects(),
+  );
+  return items.find((item) => item.id === WORKSPACE_ID)?.worktrees ?? [];
+}
+
+function archivedContainers(projectId) {
+  return desktop.window.evaluate(
+    (id) => window.api.archivedContainers.list({ projectId: id }),
+    projectId,
+  );
+}
+
+/**
+ * Waits for one archived container that `matches`, expects it locked, and
+ * returns it.
+ */
+async function expectLockedArchive(projectId, matches) {
+  let containers = [];
+  try {
+    await expect
+      .poll(async () => {
+        containers = await archivedContainers(projectId);
+        return containers.filter(matches).map((row) => Boolean(row.lockedAt));
+      }, POLL)
+      .toEqual([true]);
+  } catch (error) {
+    throw new Error(
+      `No locked archive; containers=${JSON.stringify(
+        containers.map(({ id, kind, branchName, lockedAt }) => ({
+          id,
+          kind,
+          branchName,
+          lockedAt,
+        })),
+      )}`,
+      { cause: error },
+    );
+  }
+  return containers.find(matches);
+}
+
+/**
+ * Calls a tool that always asks first (`task_delete`): confirms the pending
+ * action as the signed-in person, then retries the same call with the same
+ * arguments until it settles.
+ */
+async function callConfirmed(name, args) {
+  let result = await agentA.call(name, args);
+  if (result.structuredContent?.code !== 'confirmation_required') return result;
+  const { pendingActionId } = result.structuredContent;
+  const decided = await fetch(
+    `${REMOTE_CONTROL_WEB_ORIGIN_LOOPBACK}/api/v1/external-agents/pending-actions/${pendingActionId}/decision`,
+    {
+      method: 'POST',
+      headers: sameOriginJsonHeaders(userA),
+      body: JSON.stringify({ pendingActionId, decision: 'confirm' }),
+    },
+  );
+  expect(decided.ok, await decided.text()).toBe(true);
+  await expect
+    .poll(async () => {
+      result = await agentA.call(name, args);
+      return ['confirmation_required', 'host_in_progress'].includes(
+        result.structuredContent?.code,
+      );
+    }, CREATE_POLL)
+    .toBe(false);
+  return result;
+}
+
+test('task_chat_archive and task_delete archive chats and tasks on the computer as locked, keeping the branch; a delete is refused (CAN-7446)', async () => {
+  test.setTimeout(360_000);
+  const before = new Set((await demoWorktrees()).map((row) => row.id));
+  const marker = `Canopy-CHOSTEDARCHIVE${randomBytes(4).toString('hex')}`;
+  await registerScenario(DEFAULT_MOCK_BASE_URL, marker, {
+    llm: {
+      steps: [{ text: 'Archive task turn complete.', stopReason: 'end_turn' }],
+    },
+  });
+  const { created } = await createTaskSettled({
+    projectId: target.projectId,
+    chat: { prompt: `[${marker}] Summarize the README.` },
+  });
+  await waitForChat(
+    created,
+    (current) => current.lastTurn?.status === 'complete',
+    'the archive task turn to complete',
+  );
+  const added = await agentA.ok('task_chat_create', {
+    host: target.host,
+    taskId: created.taskId,
+    idempotencyKey: randomUUID(),
+  });
+  const worktree = (await demoWorktrees()).find((row) => !before.has(row.id));
+  expect(worktree, 'the created task has a worktree').toBeTruthy();
+  const scope = workspaceRoot(WORKSPACE_ID);
+  const archivedTabIds = () =>
+    readChatStorageIndexes(scope, worktree.id).archive.archived.map(
+      (entry) => entry.tab.id,
+    );
+  const liveTabIds = () =>
+    readChatStorageTabs(scope, worktree.id).tabs.map((tab) => tab.id);
+  await expect
+    .poll(() => chatIdsOf(created.taskId), TOOL_POLL)
+    .toEqual(expect.arrayContaining([created.chatId, added.chatId]));
+  const liveBefore = liveTabIds();
+  expect(archivedTabIds()).toEqual([]);
+
+  // One chat archived: its tab leaves the live index for the archive one.
+  const archivedChat = await agentA.ok('task_chat_archive', {
+    host: target.host,
+    taskId: created.taskId,
+    chatId: added.chatId,
+    idempotencyKey: randomUUID(),
+  });
+  expect(archivedChat).toMatchObject({
+    chatId: added.chatId,
+    lifecycle: 'archived',
+    receipt: { operation: 'task_chat_archive' },
+  });
+  await expect
+    .poll(() => chatIdsOf(created.taskId), TOOL_POLL)
+    .not.toContain(added.chatId);
+  await expect.poll(() => archivedTabIds().length, POLL).toBe(1);
+  const [archivedTab] = archivedTabIds();
+  expect(liveBefore).toContain(archivedTab);
+  expect(liveTabIds()).not.toContain(archivedTab);
+
+  // The last chats may be archived too. The task stays, and the desktop
+  // shows its empty state: one fresh, empty chat in place of the archived ones.
+  const remaining = await chatIdsOf(created.taskId);
+  expect(remaining).toContain(created.chatId);
+  for (const chatId of remaining) {
+    await agentA.ok('task_chat_archive', {
+      host: target.host,
+      taskId: created.taskId,
+      chatId,
+      idempotencyKey: randomUUID(),
+    });
+  }
+  let emptyState = [];
+  await expect
+    .poll(async () => {
+      emptyState = (
+        await agentA.ok('task_get', {
+          host: target.host,
+          taskId: created.taskId,
+        })
+      ).chats;
+      return emptyState.some((chat) => remaining.includes(chat.chatId));
+    }, TOOL_POLL)
+    .toBe(false);
+  expect(emptyState, JSON.stringify(emptyState)).toHaveLength(1);
+  expect(emptyState[0]).toMatchObject({ title: 'New Chat', lastTurn: null });
+  expect(archivedTabIds()).toEqual(expect.arrayContaining(liveBefore));
+  const [freshTab, ...otherTabs] = readChatStorageTabs(scope, worktree.id).tabs;
+  expect(otherTabs).toEqual([]);
+  expect(liveBefore).not.toContain(freshTab.id);
+  expect(freshTab.messages ?? []).toEqual([]);
+  expect((await demoWorktrees()).map((row) => row.id)).toContain(worktree.id);
+
+  // A delete is refused before it asks or writes; the task is unchanged.
+  expectToolError(
+    await agentA.call('task_delete', {
+      host: target.host,
+      taskId: created.taskId,
+      archive: false,
+      idempotencyKey: randomUUID(),
+    }),
+    'host_unsupported',
+  );
+  expect((await demoWorktrees()).map((row) => row.id)).toContain(worktree.id);
+
+  // The task archives as locked, and its branch stays.
+  const archivedTask = await callConfirmed('task_delete', {
+    host: target.host,
+    taskId: created.taskId,
+    idempotencyKey: randomUUID(),
+  });
+  expect(
+    archivedTask.isError,
+    JSON.stringify(archivedTask.structuredContent),
+  ).toBe(false);
+  expect(archivedTask.structuredContent).toMatchObject({
+    taskId: created.taskId,
+    lifecycle: 'archived',
+    receipt: { operation: 'task_delete' },
+  });
+  await expect
+    .poll(
+      async () => (await demoWorktrees()).some((row) => row.id === worktree.id),
+      POLL,
+    )
+    .toBe(false);
+  const container = await expectLockedArchive(
+    WORKSPACE_ID,
+    (row) => row.kind === 'worktree' && row.id === worktree.id,
+  );
+  // The branch the archive recorded (the checkout's own, which a turn may
+  // have renamed) is still in the repository.
+  expect(container.branchName).toBeTruthy();
+  expect(
+    execFileSync('git', ['branch', '--list', container.branchName], {
+      cwd: demoWorktreePath(),
+      encoding: 'utf8',
+    }).trim(),
+  ).not.toBe('');
+
+  // A no-repository task archives as locked too.
+  const projects = await agentA.ok('project_list', {
+    host: target.host,
+    limit: 50,
+  });
+  const cowork = projects.items.find((item) => item.name === COWORK.name);
+  expect(cowork, JSON.stringify(projects)).toBeTruthy();
+  const entryMarker = `Canopy-CHOSTEDARCHIVEENTRY${randomBytes(4).toString('hex')}`;
+  await registerScenario(DEFAULT_MOCK_BASE_URL, entryMarker, {
+    llm: {
+      steps: [{ text: 'Unexpected turn.', stopReason: 'end_turn' }],
+      stepsByRequestTag: OPEN_STEPS,
+    },
+  });
+  const entry = await startWorkEntryChat(cowork.projectId, entryMarker);
+  const containersBefore = new Set(
+    (await archivedContainers(COWORK.id)).map((row) => row.id),
+  );
+  const archivedEntry = await callConfirmed('task_delete', {
+    host: target.host,
+    taskId: entry.taskId,
+    archive: true,
+    idempotencyKey: randomUUID(),
+  });
+  expect(
+    archivedEntry.isError,
+    JSON.stringify(archivedEntry.structuredContent),
+  ).toBe(false);
+  expect(archivedEntry.structuredContent).toMatchObject({
+    taskId: entry.taskId,
+    lifecycle: 'archived',
+  });
+  const entryIds = async () =>
+    (
+      await desktop.window.evaluate(
+        (projectId) => window.api.workEntries.list({ projectId }),
+        COWORK.id,
+      )
+    ).entries.map((row) => row.id);
+  await expect.poll(entryIds, POLL).not.toContain(entry.entryId);
+  await expectLockedArchive(
+    COWORK.id,
+    (row) => row.kind === 'work-entry' && !containersBefore.has(row.id),
+  );
 });
 
 test('a Slack session reaches the Orchestrator only behind its gate, in one Slack conversations tab per thread and sender that closes after each turn (CAN-7604)', async () => {

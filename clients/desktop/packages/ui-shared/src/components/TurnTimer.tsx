@@ -10,7 +10,7 @@ import { ChatToolStepGroup } from './ChatToolStepGroup';
 import { ChatCopyAction } from './chat/ChatCopyAction';
 import { PlanCopyAction, type PlanCopyState } from './chat/PlanCopyAction';
 import type { TurnCompletionStatus } from './chat/turn-completion-status';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 import {
   completionStampTooltip,
   formatCompletionTimestamp,
@@ -139,7 +139,8 @@ export interface TurnTimerProps {
 const TURN_COMPLETION_LABELS: Record<TurnCompletionStatus, string> = {
   complete: 'Completed',
   failed: 'Failed',
-  cancelled: 'Cancelled',
+  // The user pressed Stop; the status key stays `cancelled`.
+  cancelled: 'Stopped',
   interrupted: 'Interrupted',
 };
 

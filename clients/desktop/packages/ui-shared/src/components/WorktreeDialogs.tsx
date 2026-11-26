@@ -1,6 +1,6 @@
 'use client';
 
-import { Stack } from './Stack';
+import { Stack } from '../primitives/Stack';
 import {
   useId,
   useRef,
@@ -11,13 +11,13 @@ import {
   type RefObject,
   type SyntheticEvent,
 } from 'react';
-import { Fact, FactList } from './FactList';
-import { Button } from './Button';
-import { DialogModal } from './DialogModal';
-import { DialogFormField } from './DialogFormField';
-import { ListRow } from './ListRow';
-import { TextInput } from './Field';
-import { ErrorBanner } from './StatusBlocks';
+import { Fact, FactList } from '../primitives/FactList';
+import { Button } from '../primitives/Button';
+import { DialogModal } from '../primitives/DialogModal';
+import { DialogFormField } from '../primitives/DialogFormField';
+import { ListRow } from '../primitives/ListRow';
+import { TextInput } from '../primitives/Field';
+import { ErrorBanner } from '../primitives/StatusBlocks';
 
 function stopPropagation(event: SyntheticEvent): void {
   event.stopPropagation();

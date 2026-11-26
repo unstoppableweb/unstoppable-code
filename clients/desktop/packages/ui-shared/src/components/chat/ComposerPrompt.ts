@@ -9,20 +9,18 @@
  */
 
 /**
+ * The answer row's class is defined with the control recipes, which draw it
+ * as the `plan-approval-start` presentation; it is re-exported here for the
+ * prompts that compose it.
+ */
+export { COMPOSER_PROMPT_ROW_CLASS } from '../../primitives/control-button-shared';
+
+/**
  * The 32px circle that leads each answer with its number, drawn like + at
  * the start of the composer's row.
  */
 export const COMPOSER_PROMPT_ROW_GLYPH_CLASS =
   'flex size-8 shrink-0 items-center justify-center rounded-full inset-ring-[length:var(--border-hairline)] inset-ring-line-secondary text-xs tabular-nums fg-secondary';
-
-/**
- * An answer: a list row that acts on click (nothing is selected first), so
- * it lights up only under the pointer or keyboard focus. Its 4px padding is
- * even on every side and its ends fully round, so a highlighted circle sits
- * concentric in it.
- */
-export const COMPOSER_PROMPT_ROW_CLASS =
-  'flex w-full items-center gap-3 rounded-full p-1 text-left text-s fg-primary outline-none hover:bg-subtle focus-visible:bg-subtle disabled:opacity-60 disabled:hover:bg-transparent';
 
 /** The answers' list: 4px between rows, so highlights never touch. */
 export const COMPOSER_PROMPT_ROWS_CLASS = 'flex flex-col gap-1';

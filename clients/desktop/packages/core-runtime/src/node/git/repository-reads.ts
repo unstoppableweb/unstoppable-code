@@ -95,15 +95,25 @@ export class GitRepositoryReadError extends Error {
   readonly code: GitIgnoreHostFailureCode;
   /** `exit_status` only: Git's exit code, `null` when a signal ended it. */
   readonly exitCode: number | null | undefined;
+  /**
+   * `exit_status` only: Git warned that it would not fetch a partial clone's
+   * missing object (CAN-4729). No Git output leaves the read host.
+   */
+  readonly lazyFetchBlocked: boolean;
 
   constructor(
     code: GitIgnoreHostFailureCode,
-    detail: { readonly exitCode?: number | null } = {},
+    detail: {
+      readonly exitCode?: number | null;
+      readonly lazyFetchBlocked?: boolean;
+    } = {},
   ) {
     super(GIT_REPOSITORY_READ_FAILURE_MESSAGES[code]);
     this.name = 'GitRepositoryReadError';
     this.code = code;
     this.exitCode = code === 'exit_status' ? detail.exitCode : undefined;
+    this.lazyFetchBlocked =
+      code === 'exit_status' && detail.lazyFetchBlocked === true;
   }
 }
 

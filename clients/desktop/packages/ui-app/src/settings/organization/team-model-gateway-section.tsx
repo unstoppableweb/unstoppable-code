@@ -41,7 +41,7 @@ import { joinClassNames } from './settings/join-class-names';
 import { getOrganizationConfig, updateModelGatewayConfig } from './team-api';
 import type { SettingsFailure } from '../errors';
 import { Divider, Surface } from '@canopy/ui-shared/components';
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 
 interface TeamModelGatewaySectionProps {
   detail: OrganizationDetail;

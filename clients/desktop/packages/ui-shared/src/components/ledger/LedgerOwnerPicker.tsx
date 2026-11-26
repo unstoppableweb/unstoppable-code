@@ -14,9 +14,9 @@ import {
   REPLAY_BLOCK_CLASS,
   REPLAY_MASK_CLASS,
 } from '../../lib/replay-privacy';
-import { Button } from '../Button';
-import { Skeleton } from '../Skeleton';
-import { Tooltip } from '../Tooltip';
+import { Button } from '../../primitives/Button';
+import { Skeleton } from '../../primitives/Skeleton';
+import { Tooltip } from '../../primitives/Tooltip';
 import {
   FloatingPickerMenu,
   PickerMenuFooter,
@@ -30,7 +30,7 @@ import {
   PickerTrigger,
   PickerTriggerChevron,
   type PickerTriggerVariant,
-} from '../PickerMenu';
+} from '../../primitives/PickerMenu';
 import { LedgerInPlaceTrigger } from './LedgerInPlaceTrigger';
 
 export interface LedgerOwnerPickerProps {

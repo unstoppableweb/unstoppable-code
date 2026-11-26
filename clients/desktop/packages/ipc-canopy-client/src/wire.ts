@@ -6,6 +6,10 @@
  * at the transport boundary (`./decoders`) before any field is read.
  */
 import type { CodexSpeed } from '@canopy/protocol/automations';
+import type {
+  RemoteControlAskUserQuestion,
+  RemoteControlAskUserQuestionAnswer,
+} from '@canopy/protocol/remote-control/shell';
 import type { ThinkingLevel } from '@canopy/protocol/thinking';
 
 /** `SidebarItem`: one entry of `projects:load` (`ProjectsFile.items`). */
@@ -223,10 +227,23 @@ export interface WireChatCancelResult {
   readonly outcome?: 'stop_requested' | 'turn_not_active';
 }
 
+/** `PersistedPendingQuestion` as read from the desktop chat snapshot. */
+export interface WirePendingQuestion {
+  readonly requestId: string;
+  readonly chatId: string;
+  readonly delivery?: 'async';
+  readonly questions: RemoteControlAskUserQuestion[];
+  readonly answers?: RemoteControlAskUserQuestionAnswer[];
+  readonly answeredAt?: number;
+  readonly dismissedAt?: number;
+  readonly toolUseId?: string;
+}
+
 /** `ChatStateSnapshot` fields a tab close and the Orchestrator read (`chat:get-state`). */
 export interface WireChatState {
   readonly tabsFile: {
     readonly activeTabId?: string;
+    readonly pendingQuestions?: readonly WirePendingQuestion[];
     readonly tabs: readonly {
       readonly id: string;
       readonly kind?: string;

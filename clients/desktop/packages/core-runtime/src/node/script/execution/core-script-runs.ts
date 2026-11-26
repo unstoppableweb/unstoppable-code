@@ -15,7 +15,7 @@ import { stableStringify } from '@canopy/protocol/plans';
 
 import { OperationLedgerRefusedError } from '../../operations/ledger/errors';
 import type { LocalWorkerExecution } from '../../operations/local-worker';
-import type { OperationService } from '../../operations/service';
+import type { OperationServicePort } from '../../operations/service';
 import type { ScriptExecutionObserver } from './worker-scripts';
 
 /** The parent operation of one script run; its child is the dispatch. */
@@ -172,7 +172,7 @@ interface InFlightScriptRun extends ScriptRunIdentity {
 export class CoreScriptRuns {
   constructor(
     private readonly options: {
-      operations: OperationService;
+      operations: OperationServicePort;
       localWorker: LocalWorkerExecution;
       /** The worker's in-process observation, until CAN-5087's stream. */
       observe: (

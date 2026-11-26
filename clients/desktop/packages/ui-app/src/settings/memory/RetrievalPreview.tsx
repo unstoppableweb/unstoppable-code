@@ -1,6 +1,6 @@
 'use client';
 
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import { useRef, useState, type FormEvent, type JSX } from 'react';
 import type { ExplorerRetrievalPreview } from '@canopy/protocol/settings/organization-memory';
 import { buildPreviewQuery } from '@canopy/protocol/settings/memory-preview-query';

@@ -88,6 +88,23 @@ function remoteInstallFailure(stored: string, reason: string): string {
 }
 
 /**
+ * Why a restricted copy may not be cloned from `sourceUrl`, or `undefined`
+ * when {@link assertSafeExternalPluginCloneUrl} accepts it.
+ */
+export async function restrictedPluginSourceRefusal(
+  sourceUrl: string,
+): Promise<string | undefined> {
+  try {
+    await assertSafeExternalPluginCloneUrl(sourceUrl);
+    return undefined;
+  } catch (error) {
+    if (error instanceof UnsafeExternalPluginUrlError)
+      return `${REMOTE_PLUGIN_SOURCE_REFUSAL} ${error.message}`;
+    throw error;
+  }
+}
+
+/**
  * Runs a renderer plugin install by who asked for it (CAN-5764). A remote
  * principal (a Remote Control bridge sender) gets the Portal's rule: the source
  * must pass {@link assertSafeExternalPluginCloneUrl} and the clone refuses
@@ -128,16 +145,8 @@ export async function installPluginForPrincipal(
       sourceUrl !== controllerCredentialFreeGitUrl(stored))
   )
     return { success: false, error: REMOTE_PLUGIN_SOURCE_MISMATCH };
-  try {
-    await assertSafeExternalPluginCloneUrl(stored);
-  } catch (error) {
-    if (error instanceof UnsafeExternalPluginUrlError)
-      return {
-        success: false,
-        error: `${REMOTE_PLUGIN_SOURCE_REFUSAL} ${error.message}`,
-      };
-    throw error;
-  }
+  const refusal = await restrictedPluginSourceRefusal(stored);
+  if (refusal !== undefined) return { success: false, error: refusal };
   const result = await install(marketplaceId, pluginName, stored, {
     disableRedirects: true,
   });

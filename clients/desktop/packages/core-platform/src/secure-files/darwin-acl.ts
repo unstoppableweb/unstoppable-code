@@ -111,7 +111,7 @@ export function checkDarwinAcl(
   try {
     receipt = JSON.parse(text);
   } catch {
-    return fail('unverifiable', 'malformed ACL receipt');
+    return fail('unverifiable', 'malformed ACL receipt', 'unverifiable');
   }
   if (
     typeof receipt !== 'object' ||
@@ -127,7 +127,7 @@ export function checkDarwinAcl(
         receipt.entries <= 1024)
     )
   ) {
-    return fail('unverifiable', 'malformed ACL receipt');
+    return fail('unverifiable', 'malformed ACL receipt', 'unverifiable');
   }
   const stat = Buffer.from(receipt.st, 'base64');
   if (
@@ -136,9 +136,13 @@ export function checkDarwinAcl(
     BigInt.asUintN(64, BigInt(stat.readInt32LE(0))) !== opened.dev ||
     stat.readBigUInt64LE(8) !== opened.ino
   ) {
-    return fail('unverifiable', 'ACL receipt identity mismatch');
+    return fail(
+      'unverifiable',
+      'ACL receipt identity mismatch',
+      'unverifiable',
+    );
   }
   return receipt.entries !== null && receipt.entries > 0
-    ? fail('insecure', 'extended ACL is present')
+    ? fail('insecure', 'extended ACL is present', 'extended_acl')
     : null;
 }

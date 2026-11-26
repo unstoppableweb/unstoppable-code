@@ -315,6 +315,7 @@ describe('core.catalog collection contract (CAN-4170)', () => {
         mode: 'analyze',
         entryId,
         expectedRevision: 'rev-1',
+        document,
         dismissedInvocations: [{ provider: 'claude', token: '/deploy' }],
       }).success,
     ).toBe(true);
@@ -393,6 +394,7 @@ describe('core.catalog collection contract (CAN-4170)', () => {
         resources: [],
         requirements: [],
         unpackageableMemberLabels: [],
+        dismissedInvocations: [],
         expiresAt: '2026-11-17T12:00:00.000Z',
       },
     });
@@ -411,6 +413,7 @@ describe('core.catalog collection contract (CAN-4170)', () => {
         mode: 'analyze',
         entryId,
         expectedRevision: 'rev-1',
+        document,
         dismissedInvocations: returned,
       }).success,
     ).toBe(true);
@@ -432,8 +435,73 @@ describe('core.catalog collection contract (CAN-4170)', () => {
           resources: [],
           requirements: [],
           unpackageableMemberLabels: [],
+          dismissedInvocations: [],
           expiresAt: '2026-11-17T12:00:00.000Z',
         },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('analyzes the document a share will publish and echoes the dismissals it applied (CAN-4170 PR 4a)', () => {
+    const analyze = {
+      kind: 'collection',
+      _meta: keyed,
+      mode: 'analyze',
+      entryId,
+      expectedRevision: 'rev-1',
+      document,
+      dismissedInvocations: [],
+    };
+    expect(importing.params.safeParse(analyze).success).toBe(true);
+    // Left out, the saved dismissals apply; a list, even empty, replaces them.
+    const { dismissedInvocations: sent, ...savedDismissals } = analyze;
+    expect(sent).toEqual([]);
+    expect(importing.params.safeParse(savedDismissals).success).toBe(true);
+    const { document: omitted, ...withoutDocument } = analyze;
+    expect(omitted).toBe(document);
+    expect(importing.params.safeParse(withoutDocument).success).toBe(false);
+    expect(
+      importing.params.safeParse({
+        ...analyze,
+        document: { rawCollection: '' },
+      }).success,
+    ).toBe(false);
+    expect(
+      importing.params.safeParse({
+        kind: 'collection',
+        _meta: keyed,
+        mode: 'commit',
+        entryId,
+        expectedRevision: 'rev-1',
+        analysisId: 'analysis-1',
+        selectedOptionalResourceIds: [],
+        document,
+      }).success,
+    ).toBe(false);
+    const analysis = {
+      analysisId: 'analysis-1',
+      state: 'ready',
+      blockers: [],
+      resources: [],
+      requirements: [],
+      unpackageableMemberLabels: [],
+      dismissedInvocations: [{ provider: 'codex', token: '$notes' }],
+      expiresAt: '2026-11-17T12:00:00.000Z',
+    };
+    expect(
+      importing.result.safeParse({
+        kind: 'collection',
+        mode: 'analyze',
+        analysis,
+      }).success,
+    ).toBe(true);
+    const { dismissedInvocations: echoed, ...withoutEcho } = analysis;
+    expect(echoed).toHaveLength(1);
+    expect(
+      importing.result.safeParse({
+        kind: 'collection',
+        mode: 'analyze',
+        analysis: withoutEcho,
       }).success,
     ).toBe(false);
   });

@@ -1,6 +1,13 @@
+import { join } from 'node:path';
+import {
+  beginDirectoryDeletion,
+  directoryRemovalOutcome,
+  drainDirectoryEffects,
+} from './directory-effect-admission';
 import { rm, stat } from 'node:fs/promises';
 import { PLAN_EXPLORE_CHAT_PROJECT_ID } from '@canopy/desktop-shared/types';
 import { removePersistedWorktreeDataDirectory } from '@canopy/desktop-shared/node/lib/worktree-data-cleanup';
+import { terminalPersistenceStore } from '../terminal/persistence';
 import { removeTreeWithoutAsar } from './remove-tree-without-asar';
 import { getChatSearchService } from '../chat-search/service';
 import { getChatStateService } from '../services/chat-state-service';
@@ -97,6 +104,7 @@ function buildSentinelSteps(
 ): CleanupStep[] {
   const scope = { projectId: PLAN_EXPLORE_CHAT_PROJECT_ID, worktreeId: planId };
   const steps: CleanupStep[] = [];
+  let chatScopeRemoved = !hasChatScope;
   if (hasChatScope) {
     // Sessions (and any claude-terminal sidecars) must be gone before the
     // chat-state deletion boundary; the scope key is the sentinel + plan id.
@@ -109,7 +117,10 @@ function buildSentinelSteps(
     // drops the manifest and the whole v2 storage closure.
     steps.push({
       label: 'chat state',
-      run: (): Promise<void> => getChatStateService().deleteScope(scope),
+      run: async (): Promise<void> => {
+        await getChatStateService().deleteScope(scope);
+        chatScopeRemoved = true;
+      },
     });
     steps.push({
       label: 'chat search index',
@@ -141,11 +152,29 @@ function buildSentinelSteps(
   });
   steps.push({
     label: 'runtime metadata',
-    run: (): Promise<void> =>
-      removePersistedWorktreeDataDirectory(scope.projectId, scope.worktreeId, {
-        worktreeDataRootDir: getWorktreeDataRootDir(scope.projectId),
-        removeTree: removeTreeWithoutAsar,
-      }),
+    run: async (): Promise<void> => {
+      // A refused canonical deletion retains its terminal history and metadata.
+      if (!chatScopeRemoved) return;
+      const path = join(
+        getWorktreeDataRootDir(scope.projectId),
+        scope.worktreeId,
+      );
+      const directory = beginDirectoryDeletion(path);
+      try {
+        await terminalPersistenceStore.retireTerminalRecord(scope);
+        await drainDirectoryEffects(path);
+        await removePersistedWorktreeDataDirectory(
+          scope.projectId,
+          scope.worktreeId,
+          {
+            worktreeDataRootDir: getWorktreeDataRootDir(scope.projectId),
+            removeTree: removeTreeWithoutAsar,
+          },
+        );
+      } finally {
+        directory.settle(await directoryRemovalOutcome(path));
+      }
+    },
   });
   return steps;
 }

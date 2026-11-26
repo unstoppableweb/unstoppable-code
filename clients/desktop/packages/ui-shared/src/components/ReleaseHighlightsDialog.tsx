@@ -1,11 +1,10 @@
 'use client';
 
-import { ButtonLink } from './ButtonLink';
 import type { JSX, RefObject } from 'react';
 import { useRef } from 'react';
 import type { ReleaseNotesEntry } from '@canopy/protocol/release-notes';
-import { Button } from './Button';
-import { DialogModal } from './DialogModal';
+import { Button } from '../primitives/Button';
+import { DialogModal } from '../primitives/DialogModal';
 import { ReleaseHighlightsList } from './ReleaseHighlightsList';
 
 export interface ReleaseHighlightsDialogProps {
@@ -64,7 +63,7 @@ export function ReleaseHighlightsDialog({
     );
   } else if (fullNotesHref) {
     fullNotesAction = (
-      <ButtonLink
+      <Button
         href={fullNotesHref}
         target="_blank"
         rel="noopener noreferrer"
@@ -73,7 +72,7 @@ export function ReleaseHighlightsDialog({
         data-testid="release-highlights-full-notes"
       >
         View full release notes
-      </ButtonLink>
+      </Button>
     );
   }
 

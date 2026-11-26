@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 import { SettingsLink } from '../host';
-import { Surface } from '@canopy/ui-shared/components/Surface';
+import { Surface } from '@canopy/ui-shared/primitives/Surface';
 
 export { digestNeighbors } from './digest-neighbors';
 

@@ -529,11 +529,19 @@ export async function importCuratedPipeline(
     const { importRemotePipeline } =
       await import('../canopy-runtime/pipeline-definition-dispatch');
     let imported: PipelineInfo;
+    const owner = (): Promise<
+      { owner: string; agentAuthor: null } | undefined
+    > =>
+      selectedOwnerContext().then(
+        (context) => ({ owner: context, agentAuthor: null }),
+        () => undefined,
+      );
     try {
       imported = await importRemotePipeline({
         remoteDefinitionId: `curated:${key}`,
         expectedRemoteVersion: expectedContentHash,
         nameOverride: null,
+        owner,
       });
     } catch (error) {
       throw curatedImportError(error);

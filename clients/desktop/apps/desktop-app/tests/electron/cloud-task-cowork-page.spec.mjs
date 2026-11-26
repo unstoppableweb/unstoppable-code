@@ -383,7 +383,11 @@ test("a cloud task whose chats don't load says why, and Try again loads them", a
     const notice = window.getByTestId('standalone-chat-load-error');
     await expect(notice).toBeVisible({ timeout: 30_000 });
     await expect(notice).toContainText('Couldn’t load this task’s chats');
-    await expect(notice).toContainText(refusal);
+    // The refusal rides behind Copy details, never in the copy.
+    await expect(notice).not.toContainText(refusal);
+    await expect(
+      window.getByTestId('standalone-chat-load-copy-details'),
+    ).toBeVisible();
     await expect(window.getByTestId('chat-panel')).toHaveCount(0);
 
     cloud.world.state.extraAnswers.delete('core.chat.list');

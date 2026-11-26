@@ -8,11 +8,15 @@ import {
 } from '@canopy/ui-shared/icons/AppIcons';
 import { type JSX, type ReactNode } from 'react';
 import { Divider, InlineTextInput } from '@canopy/ui-shared/components';
-import type { ActivePanel, MainView } from '../../hooks/usePipelineEditor';
+import type {
+  ActivePanel,
+  MainView,
+  ReadView,
+} from '../../hooks/usePipelineEditor';
 import { Tooltip } from '@canopy/ui-shared';
 import {
   Button,
-  IconToggleButton,
+  ControlButton,
   SegmentedControl,
   type SegmentedControlOption,
 } from '@canopy/ui-shared/components';
@@ -36,8 +40,8 @@ interface PipelineToolbarProps {
   readonly?: boolean;
   /** Read-only definition detail owns its own content toggle controls. */
   readDetail?: boolean;
-  readDetailView?: 'flowchart' | 'details';
-  onReadDetailViewChange?: (view: 'flowchart' | 'details') => void;
+  readDetailView?: ReadView;
+  onReadDetailViewChange?: (view: ReadView) => void;
   /**
    * When provided the toolbar renders a `Share` button. Only `source: 'user'`
    * pipelines get the entry point — bundled / project / shared pipelines are
@@ -51,30 +55,43 @@ export type PipelineViewModeControlsProps =
   | {
       /** A read-only definition toggles its Flow and Details views. */
       readonly mode: 'read';
-      readonly view: 'flowchart' | 'details';
-      readonly onViewChange: (view: 'flowchart' | 'details') => void;
+      readonly view: ReadView;
+      readonly onViewChange: (view: ReadView) => void;
     }
   | {
-      /** An editable pipeline toggles Flow, List and Raw. */
+      /** An editable pipeline toggles Flow, Designer, List and Raw. */
       readonly mode: 'edit';
       readonly view: MainView;
       readonly onViewChange: (view: MainView) => void;
     };
 
-const READ_VIEW_OPTIONS: readonly SegmentedControlOption<
-  'flowchart' | 'details'
->[] = [
-  { value: 'flowchart', label: 'Flow', dataTestId: 'pipeline-mode-flow' },
+// The Designer is every pipeline's default view (CAN-4224 phase 05). Map is
+// the job graph, and YAML the raw text; their test IDs are unchanged.
+const DESIGNER_OPTION = {
+  value: 'designer',
+  label: 'Designer',
+  dataTestId: 'pipeline-mode-designer',
+} as const;
+const MAP_OPTION = {
+  value: 'map',
+  label: 'Map',
+  dataTestId: 'pipeline-mode-map',
+} as const;
+
+const READ_VIEW_OPTIONS: readonly SegmentedControlOption<ReadView>[] = [
+  DESIGNER_OPTION,
+  MAP_OPTION,
   { value: 'details', label: 'Details', dataTestId: 'pipeline-mode-details' },
 ];
 
 const EDIT_VIEW_OPTIONS: readonly SegmentedControlOption<MainView>[] = [
-  { value: 'flowchart', label: 'Flow', dataTestId: 'pipeline-mode-flow' },
+  DESIGNER_OPTION,
+  MAP_OPTION,
   { value: 'list', label: 'List', dataTestId: 'pipeline-mode-visual' },
-  { value: 'raw', label: 'Raw', dataTestId: 'pipeline-mode-raw' },
+  { value: 'raw', label: 'YAML', dataTestId: 'pipeline-mode-raw' },
 ];
 
-/** The segmented view switch: Flow/Details when read-only, else Flow/List/Raw. */
+/** The segmented view switch: Designer/Map/Details when read-only, else Designer/Map/List/YAML. */
 export function PipelineViewModeControls(
   props: PipelineViewModeControlsProps,
 ): JSX.Element {
@@ -125,14 +142,18 @@ export function PipelineSettingsToggle({
   onToggle,
 }: PipelineSettingsToggleProps): JSX.Element {
   return (
-    <IconToggleButton
-      pressed={open}
-      label="Workflow settings"
-      tooltip="Workflow settings"
-      icon={<AppCatalogSettingsIcon size="sm" />}
-      onClick={onToggle}
-      testId="pipeline-editor-settings-toggle"
-    />
+    <Tooltip label="Workflow settings" delay="long">
+      <ControlButton
+        presentation="icon-toggle"
+        appearance={{ pressed: open }}
+        aria-pressed={open}
+        aria-label="Workflow settings"
+        onClick={onToggle}
+        data-testid="pipeline-editor-settings-toggle"
+      >
+        {<AppCatalogSettingsIcon size="sm" />}
+      </ControlButton>
+    </Tooltip>
   );
 }
 
@@ -199,7 +220,7 @@ export function PipelineToolbar({
   onAddJob,
   readonly = false,
   readDetail = false,
-  readDetailView = 'flowchart',
+  readDetailView = 'designer',
   onReadDetailViewChange,
   onShare,
   headerAction,
@@ -253,8 +274,8 @@ export function PipelineToolbar({
         />
       )}
 
-      {/* Add Job (hidden in raw mode) */}
-      {!readonly && mainView !== 'raw' && (
+      {/* Add Job (hidden in Raw, and in the Designer until CAN-4224 phase 02) */}
+      {!readonly && mainView !== 'raw' && mainView !== 'designer' && (
         <PipelineAddJobButton onAddJob={onAddJob} />
       )}
 

@@ -19,6 +19,8 @@ import type {
   SharedRunCommentThread,
   SharedRunDetail,
 } from '@canopy/protocol/runs';
+import { BRAND } from '@canopy/brand/current';
+import { CanopyOperationError } from '@canopy/core-runtime';
 import { isUuid } from '@canopy/protocol/uuid';
 import type * as FsPromises from 'node:fs/promises';
 import type { CanopyCallerDescriptor } from '@canopy/protocol/canopy-core';
@@ -58,6 +60,7 @@ import {
   type OwnedDataRoot,
   type RecordedRequest,
 } from './helpers/shared-runs-golden-harness';
+import { relayAllows } from '../canopy-runtime/renderer-relay/surface-allowlist';
 
 jest.setTimeout(30_000);
 
@@ -1283,5 +1286,627 @@ describe('shared runs (CAN-4169 golden)', () => {
       (await registry.readSharedRunCommentEntry(target))
         ?.lastSeenCommentRevision,
     ).toBe(3);
+  });
+  it('keeps the comment list, create, reply and update off the renderer relay, in every mode', () => {
+    // One legal thread can pass the relay's 1 MiB reply limit, and a write
+    // that committed must not then fail on its reply size.
+    const offRelay = {
+      query: ['core.publication.comment.list'],
+      instruction: [
+        'core.publication.comment.create',
+        'core.publication.comment.reply',
+        'core.publication.comment.update',
+      ],
+    } as const;
+    for (const kind of ['query', 'instruction'] as const)
+      for (const method of offRelay[kind])
+        for (const mode of ['authority', 'read-only'] as const)
+          expect(relayAllows('main', kind, method, mode)).toBe(false);
+    // markSeen answers two counters and stays relayed.
+    expect(
+      relayAllows('main', 'instruction', 'core.publication.comment.markSeen'),
+    ).toBe(true);
+  });
+
+  describe('core.publication.comment list, create, reply and update (CAN-4169 PR 3b)', () => {
+    const WRITE_CALLER: CanopyCallerDescriptor = {
+      ...RENDERER,
+      grants: ['core.publication.write', 'core.workspace.write'],
+    };
+    const COMMENTS = `<api>/runs/${RUN_1}/comments`;
+    const create = (
+      body: string,
+      idempotencyKey: string,
+      chatId = 'chat-shared',
+    ): Promise<unknown> =>
+      must(dispatcher).instruction(
+        'core.publication.comment.create',
+        { ...session(chatId), body },
+        { caller: WRITE_CALLER, metadata: { idempotencyKey } },
+      );
+    // The refusal a dispatcher call rejects with, or what it resolves to.
+    const outcome = (call: Promise<unknown>): Promise<unknown> =>
+      call.then(
+        (resolved: unknown) => ({ resolved }),
+        (error: unknown) => ({
+          rejected:
+            error instanceof CanopyOperationError
+              ? error.payload
+              : String(error),
+        }),
+      );
+    const posts = (): string[] =>
+      newRequests()
+        .filter(({ method }) => method !== 'GET')
+        .map(({ method, path }) => `${method} ${path}`);
+    // The next write reaches the hosted service, which applies it; then its
+    // reply is lost as `lose` says.
+    function loseNextWriteReply(
+      lose: (signal: AbortSignal | null | undefined) => Promise<Response>,
+    ): void {
+      const fetchSpy = jest.mocked(globalThis.fetch);
+      const original = must(fetchSpy.getMockImplementation());
+      fetchSpy.mockImplementation((input, init) => {
+        if ((init?.method ?? 'GET') === 'GET') return original(input, init);
+        fetchSpy.mockImplementation(original);
+        void fakeCloud(input, init);
+        return lose(init?.signal);
+      });
+    }
+
+    beforeAll(async () => {
+      cloud.capabilities = ['runs-crud-v1', 'run-comments-v1'];
+      await saveAccount(['runs-crud-v1', 'run-comments-v1']);
+    });
+
+    it('answers a write whose reply is lost after it was sent as commentSendUncertain, never, and never resends it', async () => {
+      // A timeout: the hosted request hangs until the client gives up.
+      loseNextWriteReply(
+        (signal) =>
+          new Promise<Response>((_resolve, reject) => {
+            signal?.addEventListener('abort', () =>
+              reject(new DOMException('aborted', 'AbortError')),
+            );
+          }),
+      );
+      const timedOut = outcome(create('Lost to a timeout', 'send-timeout'));
+      await until(() => posts().length === 1, 'the write leaves the process');
+      jest.advanceTimersByTime(15_000);
+      const uncertain = {
+        kind: 'unavailable',
+        code: 'core.publication.commentSendUncertain',
+        retry: { kind: 'never' },
+      };
+      expect(await timedOut).toMatchObject({ rejected: uncertain });
+      // The same key replays the refusal; nothing is sent again.
+      expect(
+        await outcome(create('Lost to a timeout', 'send-timeout')),
+      ).toMatchObject({ rejected: uncertain });
+
+      // A reset after the hosted service applied the write.
+      loseNextWriteReply(() => Promise.reject(new TypeError('fetch failed')));
+      expect(
+        await outcome(create('Lost to a reset', 'send-reset')),
+      ).toMatchObject({ rejected: uncertain });
+      expect(posts()).toEqual([`POST ${COMMENTS}`, `POST ${COMMENTS}`]);
+
+      // A 2xx reply that isn't a run detail: the write may have landed.
+      mark();
+      loseNextWriteReply(() => Promise.resolve(json(200, {})));
+      expect(
+        await outcome(create('Unreadable reply', 'send-malformed')),
+      ).toMatchObject({ rejected: uncertain });
+      expect(
+        await outcome(create('Unreadable reply', 'send-malformed')),
+      ).toMatchObject({ rejected: uncertain });
+      expect(posts()).toEqual([`POST ${COMMENTS}`]);
+    });
+
+    it('resends a contended write under its key after the delay, refuses other params under it, and refuses the thread cap for good', async () => {
+      fault(
+        'POST',
+        COMMENTS,
+        409,
+        'Another comment was posted at the same time. Please try again.',
+      );
+      expect(await outcome(create('Contended', 'contended-key'))).toMatchObject(
+        {
+          rejected: {
+            kind: 'conflict',
+            code: 'core.publication.commentWriteContended',
+            retry: { kind: 'same_idempotency_key', delayMs: 1_000 },
+          },
+        },
+      );
+      // Rolled back, the key still holds its params: others are refused.
+      expect(
+        await outcome(create('Other params', 'contended-key')),
+      ).toMatchObject({
+        rejected: { kind: 'conflict', retry: { kind: 'never' } },
+      });
+      // The rolled-back write is not kept: its key reaches the hosted service
+      // again and lands.
+      const landed = await outcome(create('Contended', 'contended-key'));
+      expect(landed).toHaveProperty('resolved.comments.commentThreads');
+      expect(
+        await outcome(create('Other params', 'contended-key')),
+      ).toMatchObject({
+        rejected: { kind: 'conflict', retry: { kind: 'never' } },
+      });
+      expect(posts()).toEqual([`POST ${COMMENTS}`, `POST ${COMMENTS}`]);
+
+      mark();
+      fault(
+        'POST',
+        COMMENTS,
+        429,
+        'This run has reached the maximum number of comment threads',
+      );
+      expect(await outcome(create('Over the cap', 'cap-key'))).toMatchObject({
+        rejected: {
+          kind: 'resource_exhausted',
+          code: 'core.publication.commentLimitReached',
+          retry: { kind: 'never' },
+        },
+      });
+    });
+
+    it('replays a landed write by re-reading the run, never resending it, and fails closed once access is revoked', async () => {
+      const first = await outcome(create('Replayed once', 'replay-key'));
+      expect(first).toHaveProperty('resolved.comments');
+      webComment(RUN_1, 'Posted from the web after the write.');
+      mark();
+      // The replay shows the run as it is now, not the stored snapshot.
+      const replayed = await outcome(create('Replayed once', 'replay-key'));
+      expect(posts()).toEqual([]);
+      expect(JSON.stringify(replayed)).toContain(
+        'Posted from the web after the write.',
+      );
+      const run1 = must(serverRuns.get(RUN_1));
+      run1.revoked = true;
+      try {
+        mark();
+        expect(
+          await outcome(create('Replayed once', 'replay-key')),
+        ).toMatchObject({ rejected: { kind: 'not_found' } });
+        expect(posts()).toEqual([]);
+      } finally {
+        run1.revoked = false;
+      }
+    });
+
+    it('sends nothing for a write cancelled while its capability probe is pending', async () => {
+      const wellKnown = `/.well-known/${BRAND.web.wellKnownNamespace}`;
+      await saveAccount(['runs-crud-v1']);
+      const fetchSpy = jest.mocked(globalThis.fetch);
+      const original = must(fetchSpy.getMockImplementation());
+      let releaseProbe = (): void => undefined;
+      let probing = false;
+      const probeHeld = new Promise<void>((resolve) => {
+        releaseProbe = resolve;
+      });
+      fetchSpy.mockImplementation((input, init) => {
+        const url = input instanceof Request ? input.url : input;
+        if (new URL(url).pathname !== wellKnown) return original(input, init);
+        probing = true;
+        return probeHeld.then(() => original(input, init));
+      });
+      try {
+        const cancel = new AbortController();
+        const cancelled = outcome(
+          must(dispatcher).instruction(
+            'core.publication.comment.create',
+            { ...session('chat-shared'), body: 'Cancelled before sending' },
+            {
+              caller: WRITE_CALLER,
+              metadata: { idempotencyKey: 'cancel-during-probe' },
+              signal: cancel.signal,
+            },
+          ),
+        );
+        await until(() => probing, 'the capability probe starts');
+        cancel.abort();
+        releaseProbe();
+        expect(await cancelled).toMatchObject({
+          rejected: { kind: 'cancelled', retry: { kind: 'never' } },
+        });
+        await quiet();
+        expect(posts()).toEqual([]);
+        // The key answers what the caller was told: cancelled, never sent.
+        expect(
+          await outcome(
+            create('Cancelled before sending', 'cancel-during-probe'),
+          ),
+        ).toMatchObject({
+          rejected: { kind: 'cancelled', retry: { kind: 'never' } },
+        });
+        expect(posts()).toEqual([]);
+      } finally {
+        releaseProbe();
+        fetchSpy.mockImplementation(original);
+        await saveAccount(['runs-crud-v1', 'run-comments-v1']);
+      }
+    });
+
+    it('never resends a landed write once its outcome is evicted, and still refuses other params under its key', async () => {
+      const chat = 'chat-evict';
+      await sharedRun(chat, {});
+      const run = must(
+        [...serverRuns.values()].find((c) => c.clientChatId === chat),
+      );
+      saveShare(chat, teamShare(run.externalId));
+      expect(
+        await outcome(create('Before eviction', 'evicted-key', chat)),
+      ).toHaveProperty('resolved.comments');
+      fault(
+        'POST',
+        `<api>/runs/${run.externalId}/comments`,
+        429,
+        'This run has reached the maximum number of comment threads',
+      );
+      expect(
+        await outcome(create('Refused', 'refused-key', chat)),
+      ).toMatchObject({ rejected: { kind: 'resource_exhausted' } });
+      // 512 later writes, on another run, push the first ones out of the
+      // settled outcomes.
+      const fillerChat = 'chat-evict-filler';
+      await sharedRun(fillerChat, {});
+      saveShare(
+        fillerChat,
+        teamShare(
+          must(
+            [...serverRuns.values()].find((c) => c.clientChatId === fillerChat),
+          ).externalId,
+        ),
+      );
+      await Promise.all(
+        Array.from({ length: 512 }, (_, index) =>
+          create(`Filler ${index}`, `filler-${index}`, fillerChat),
+        ),
+      );
+      mark();
+      const replayed = await outcome(
+        create('Before eviction', 'evicted-key', chat),
+      );
+      expect(posts()).toEqual([]);
+      expect(JSON.stringify(replayed)).toContain('Before eviction');
+      expect(
+        await outcome(create('Other params', 'evicted-key', chat)),
+      ).toMatchObject({
+        rejected: { kind: 'conflict', retry: { kind: 'never' } },
+      });
+      expect(posts()).toEqual([]);
+      // A refusal the cloud confirmed landed nothing, so it keeps no receipt:
+      // once evicted, its key is sent again, once, and the run is still at
+      // its cap.
+      fault(
+        'POST',
+        `<api>/runs/${run.externalId}/comments`,
+        429,
+        'This run has reached the maximum number of comment threads',
+      );
+      expect(
+        await outcome(create('Refused', 'refused-key', chat)),
+      ).toMatchObject({ rejected: { kind: 'resource_exhausted' } });
+      expect(posts()).toEqual([`POST <api>/runs/${run.externalId}/comments`]);
+    });
+
+    it('answers a replay after sign-out as sign in again, with no second POST', async () => {
+      expect(
+        await outcome(create('Before sign-out', 'signed-out-key')),
+      ).toHaveProperty('resolved.comments');
+      const store = await import('../lib/canopy-cloud-account-store');
+      await store.clearCanopyCloudAccount();
+      try {
+        mark();
+        expect(
+          await outcome(create('Before sign-out', 'signed-out-key')),
+        ).toMatchObject({
+          rejected: {
+            kind: 'unauthenticated',
+            retry: { kind: 'after_refresh' },
+          },
+        });
+        expect(posts()).toEqual([]);
+      } finally {
+        await saveAccount(['runs-crud-v1', 'run-comments-v1']);
+      }
+    });
+
+    it("replays a write against the run it was sent to, not the chat's replacement run", async () => {
+      const chat = 'chat-reshare';
+      await sharedRun(chat, {});
+      const runOf = (title?: string): ServerRun =>
+        must(
+          [...serverRuns.values()]
+            .reverse()
+            .find(
+              (candidate) =>
+                candidate.clientChatId === chat &&
+                (title === undefined || candidate.title === title),
+            ),
+        );
+      const first = runOf();
+      saveShare(chat, teamShare(first.externalId));
+      expect(
+        await outcome(create('Before the re-share', 'reshare-key', chat)),
+      ).toHaveProperty('resolved.comments');
+      // Unshared, which deletes the hosted run (it answers 404 from now on),
+      // and shared again: the chat now names a new hosted run.
+      first.revoked = true;
+      await sharedRun(chat, { title: 'Replacement run' });
+      const replacement = runOf('Replacement run').externalId;
+      saveShare(chat, teamShare(replacement));
+      mark();
+      expect(
+        await outcome(create('Before the re-share', 'reshare-key', chat)),
+      ).toMatchObject({ rejected: { kind: 'not_found' } });
+      const requests = newRequests().map(
+        ({ method, path }) => `${method} ${path}`,
+      );
+      expect(requests).toContain(`GET <api>/runs/${first.externalId}`);
+      expect(requests).not.toContain(`GET <api>/runs/${replacement}`);
+      expect(requests.filter((request) => !request.startsWith('GET'))).toEqual(
+        [],
+      );
+    });
+
+    it('answers a hosted read that is not a run as unavailable, retryable, on the list and a replay', async () => {
+      const LIST_CALLER = {
+        ...RENDERER,
+        grants: ['core.publication.read', 'core.workspace.read'],
+      } satisfies CanopyCallerDescriptor;
+      fault('GET', `<api>/runs/${RUN_1}`, 200, 'Not a run detail.');
+      expect(
+        await outcome(
+          must(dispatcher).query(
+            'core.publication.comment.list',
+            session('chat-shared'),
+            { caller: LIST_CALLER },
+          ),
+        ),
+      ).toMatchObject({
+        rejected: { kind: 'unavailable', retry: { kind: 'same_request' } },
+      });
+      expect(
+        await outcome(create('Replayed over a bad read', 'replay-bad-read')),
+      ).toHaveProperty('resolved.comments');
+      fault('GET', `<api>/runs/${RUN_1}`, 200, 'Not a run detail.');
+      expect(
+        await outcome(create('Replayed over a bad read', 'replay-bad-read')),
+      ).toMatchObject({
+        rejected: {
+          kind: 'unavailable',
+          retry: { kind: 'same_idempotency_key' },
+        },
+      });
+    });
+
+    it('refuses a chat that is not shared before anything is sent', async () => {
+      expect(
+        await outcome(create('Not shared', 'unshared-key', 'chat-unshared')),
+      ).toMatchObject({
+        rejected: {
+          kind: 'failed_precondition',
+          message: 'This chat is not currently shared as a run.',
+          retry: { kind: 'after_refresh' },
+        },
+      });
+      expect(newRequests()).toEqual([]);
+    });
+
+    it('lists the comment state without the run detail, and answers a failed read as unavailable, same request', async () => {
+      const LIST_CALLER = {
+        ...RENDERER,
+        grants: ['core.publication.read', 'core.workspace.read'],
+      } satisfies CanopyCallerDescriptor;
+      const list = (): Promise<unknown> =>
+        must(dispatcher).query(
+          'core.publication.comment.list',
+          session('chat-shared'),
+          { caller: LIST_CALLER },
+        );
+      const listed = await outcome(list());
+      expect(listed).toHaveProperty('resolved.comments.commentRevision');
+      expect(listed).toHaveProperty('resolved.lastSeenCommentRevision');
+      fault('GET', `<api>/runs/${RUN_1}`, 500, 'Internal server error.');
+      expect(await outcome(list())).toMatchObject({
+        rejected: { kind: 'unavailable', retry: { kind: 'same_request' } },
+      });
+
+      // A capability probe that fails is an outage, not a Cloud without
+      // comments; one that answers without run-comments-v1 is.
+      await saveAccount(['runs-crud-v1']);
+      try {
+        const wellKnown = `/.well-known/${BRAND.web.wellKnownNamespace}`;
+        fault('GET', wellKnown, 500, 'Internal server error.');
+        expect(await outcome(list())).toMatchObject({
+          rejected: { kind: 'unavailable', retry: { kind: 'same_request' } },
+        });
+        cloud.capabilities = ['runs-crud-v1'];
+        expect(await outcome(list())).toMatchObject({
+          resolved: { comments: null },
+        });
+      } finally {
+        cloud.capabilities = ['runs-crud-v1', 'run-comments-v1'];
+        await saveAccount(['runs-crud-v1', 'run-comments-v1']);
+      }
+    });
+
+    it('previews a long anchored message with whitespace collapsed and cut at 256', async () => {
+      const longChat = 'chat-long-anchor';
+      const text = `\n\n  ${'word\t\t'.repeat(60_000)}${'😀'.repeat(200)}`;
+      // Collapsed, "word word …" cut at 256 code units ends on "w".
+      const preview = 'word '.repeat(52).slice(0, 256);
+      await sharedRun(longChat, {
+        messages: [
+          {
+            messageId: 'long-1',
+            chatId: longChat,
+            role: 'assistant',
+            status: 'complete',
+            text,
+            createdAtMs: Date.parse(FIXED_TIME),
+          },
+        ],
+      });
+      const run = [...serverRuns.values()].find(
+        (candidate) => candidate.clientChatId === longChat,
+      );
+      for (let n = 0; n < 3; n += 1)
+        addThread(
+          must(run),
+          { kind: 'message', messageId: 'long-1' },
+          comment(OWNER_USER, `Thread ${n}`),
+        );
+      saveShare(longChat, teamShare(must(run).externalId));
+      const listed = await must(dispatcher).query(
+        'core.publication.comment.list',
+        session(longChat),
+        {
+          caller: {
+            ...RENDERER,
+            grants: ['core.publication.read', 'core.workspace.read'],
+          },
+        },
+      );
+      expect(
+        must(listed.comments).commentThreads.map(
+          ({ anchorText }) => anchorText,
+        ),
+      ).toEqual([preview, preview, preview]);
+    });
+
+    it('answers runs:comments:list and the writes with anchorText and no run detail', async () => {
+      const listed = await invoke(
+        IPC_CHANNELS.runsCommentsList,
+        session('chat-shared'),
+      );
+      const anchored = {
+        anchor: { kind: 'message', messageId: ANCHORED_MESSAGE },
+        anchorState: 'matched',
+        anchorText: 'I changed the retry loop.',
+      };
+      // Thread 1, created on the anchored message by the first case.
+      const firstThread = ['resolved', 'comments', 'commentThreads', 0];
+      expect(listed).toHaveProperty(
+        firstThread,
+        expect.objectContaining(anchored),
+      );
+      const replied = await invoke(IPC_CHANNELS.runsCommentsReply, {
+        ...session('chat-shared'),
+        threadId: threadId(1),
+        body: 'Still anchored.',
+      });
+      expect(replied).toHaveProperty(
+        firstThread,
+        expect.objectContaining(anchored),
+      );
+      for (const reply of [listed, replied])
+        for (const field of [
+          'detail',
+          'messages',
+          'transcript',
+          'diff',
+          'plans',
+          'externalId',
+        ])
+          expect(JSON.stringify(reply)).not.toContain(`"${field}"`);
+    });
+
+    it('refuses list, create, reply and update on the production renderer relay in every mode, while the dispatcher serves them', async () => {
+      const { createRendererRelay } =
+        await import('../canopy-runtime/renderer-relay/relay');
+      const { createInterimInMemoryBindingProvider } =
+        await import('../canopy-runtime/renderer-relay/interim-in-memory-binding');
+      const { resolveTrustedRelaySurface } =
+        await import('../canopy-runtime/renderer-relay/trusted-surface');
+      const { RENDERER_RELAY_GRANTS } =
+        await import('../ipc/canopy-core-relay');
+      const url = 'file:///app/renderer/index.html';
+      const frame = {
+        url,
+        detached: false,
+        isDestroyed: (): boolean => false,
+      };
+      const mainWindow = {
+        id: 1,
+        mainFrame: frame,
+        getURL: (): string => url,
+        isDestroyed: (): boolean => false,
+        on: (): undefined => undefined,
+        removeListener: (): undefined => undefined,
+      };
+      const ops = [
+        ['core.publication.comment.list', session('chat-shared')],
+        [
+          'core.publication.comment.create',
+          { ...session('chat-shared'), body: 'Over the relay' },
+        ],
+        [
+          'core.publication.comment.reply',
+          {
+            ...session('chat-shared'),
+            threadId: threadId(1),
+            body: 'Over the relay',
+          },
+        ],
+        [
+          'core.publication.comment.update',
+          { ...session('chat-shared'), threadId: threadId(1), status: 'open' },
+        ],
+      ] as const;
+      for (const accessMode of ['authority', 'read-only'] as const) {
+        const relay = createRendererRelay({
+          accessMode,
+          bindingProvider: createInterimInMemoryBindingProvider(
+            must(dispatcher),
+          ),
+          resolveSurface: (event) =>
+            resolveTrustedRelaySurface(
+              event,
+              [
+                {
+                  surface: 'main',
+                  window: {
+                    isDestroyed: (): boolean => false,
+                    webContents: mainWindow,
+                  },
+                  url,
+                },
+              ],
+              RENDERER_RELAY_GRANTS,
+            ),
+        });
+        try {
+          for (const [method, params] of ops)
+            await expect(
+              relay.invoke(
+                { sender: mainWindow, senderFrame: frame },
+                { kind: 'request', method, params },
+              ),
+            ).resolves.toMatchObject({
+              ok: false,
+              error: { kind: 'capability_unavailable' },
+            });
+        } finally {
+          relay.dispose();
+        }
+      }
+      expect(posts()).toEqual([]);
+      // The same list is served off the relay.
+      await expect(
+        must(dispatcher).query(
+          'core.publication.comment.list',
+          session('chat-shared'),
+          {
+            caller: {
+              ...RENDERER,
+              grants: ['core.publication.read', 'core.workspace.read'],
+            },
+          },
+        ),
+      ).resolves.toHaveProperty('comments.commentThreads');
+    });
   });
 });

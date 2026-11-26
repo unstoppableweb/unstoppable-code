@@ -13,19 +13,12 @@ import {
   isCurrentFailureNotice,
 } from '@canopy/agent-transcript';
 import {
-  AI_CREDITS_STOP_COPY,
   MODEL_LIBRARY_UNLOCK_COPY,
   CanopyProxyErrorPresentation,
-  CanopyProxyErrorSummary,
   CanopyProxySettingsAction,
   NoticeButton,
+  useCanopyProxyErrorCopy,
 } from '@canopy/ui-shared/components';
-import { brandText } from '@/lib/brand';
-import {
-  GUEST_MODEL_NOT_ALLOWED_BODY,
-  GUEST_WORK_PRESERVED,
-  guestModelGateTitle,
-} from '@/lib/guest-cta-copy';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import {
   CONTACT_ORG_ADMIN_COPY,
@@ -70,122 +63,50 @@ type NoticeAction =
   | 'unlock'
   | 'organizations';
 
-interface NoticeCopy {
-  title: string;
-  body: string;
-  action: NoticeAction;
-}
-
 /**
- * Copy rules (CAN-2413): the whole path is named "the AI provider" in every
- * row. The internal split between the local proxy, the hosted proxy, and the
- * gateway is real in the code and meaningless to a customer, so none of
- * "gateway", "proxy", or "upstream" appears here. "AI Credits" stays out of the
- * failure copy too, since it names a balance the user buys rather than the
- * thing that just failed; the only billing language is the reconnect action,
- * which points at the account.
+ * The notice's recovery action for each refusal. What the notice says comes
+ * from the shared app-error catalog (`CanopyProxyErrorPresentation`), so this
+ * table holds only the action.
  *
- * No HTTP status, no attempt count, no elapsed time, and no raw JSON reaches
- * the UI. Those live in the diagnostics sink, and the correlation id rendered
- * underneath is the bridge between what the user sees and what we recorded.
- *
- * Four codes are documented exceptions to the "AI Credits stays out of the
- * failure copy" rule above, each because who pays is precisely what failed:
+ * Four codes name who pays, because who pays is what failed:
  * `no_billing_source` (the empty balance), `guest_model_not_allowed` (signing
  * in changes who pays), `work_owner_not_member` (the work belongs to an
  * organization the user has left, CAN-3462), and `model_locked` (the model
- * needs a first AI Credit purchase, CAN-4028). For every other code the balance
- * is beside the point. The list is kept in `docs/ux-writing.md` under "AI
- * provider failure notices".
+ * needs a first AI Credit purchase, CAN-4028).
  */
-function noticeCopy(code: CanopyProxyErrorCode): NoticeCopy {
-  const brand = brandText.appName;
+function noticeAction(code: CanopyProxyErrorCode): NoticeAction {
   switch (code) {
     case 'credentials_unavailable':
-      return {
-        title: `Can't connect to the AI provider`,
-        body: `${brand} couldn't sign in to the AI provider for this message. Reconnect your ${brand} account, then send it again.`,
-        action: 'settings',
-      };
+      return 'settings';
     case 'upstream_unavailable':
-      return {
-        title: `The AI provider didn't respond`,
-        body: `${brand} tried a few times and couldn't reach the AI provider. This usually clears up quickly, so send your message again in a moment.`,
-        action: 'retry',
-      };
+      return 'retry';
     case 'invalid_request':
-      return {
-        title: `The AI provider couldn't accept this message`,
-        body: `The AI provider turned this message down. That's a bug on our side, so please report it with this id.`,
-        action: 'copy-id',
-      };
+      return 'copy-id';
     case 'no_billing_source':
       // Not rendered here: the transcript shows the shared stop line and the
       // composer's No billing source banner owns the payment choice
-      // (CAN-5160). Kept for exhaustiveness, with the same words.
-      return {
-        title: AI_CREDITS_STOP_COPY,
-        body: '',
-        action: 'copy-id',
-      };
+      // (CAN-5160). Kept for exhaustiveness.
+      return 'copy-id';
     case 'session_budget_exhausted':
-      return {
-        title: 'This session hit its AI Credits spending ceiling',
-        body: `This ${brand} session has used its AI Credits spending limit. Start a new session to continue.`,
-        // Adding credits cannot raise the ceiling stamped on this session, and
-        // retrying would hit the same 402. Keep the diagnostic copy affordance
-        // without offering either misleading recovery action.
-        action: 'copy-id',
-      };
+      // Buying credits can't raise the limit stamped on this chat, and trying
+      // again hits the same 402, so the notice offers neither.
+      return 'copy-id';
     case 'guest_model_not_allowed':
-      // The second documented exception to "AI Credits stays out of the failure
-      // copy", and for the same reason as `no_billing_source`: what failed here
-      // is specifically who is paying. Names the remedy (sign in) rather than
-      // the absence, per `docs/ux-writing.md`, and reuses the guest gate's own
-      // wording so the notice and the picker's sign-in gate agree.
-      //
-      // `settings` rather than `retry`: retrying sends the same model and hits
-      // the same wall, billing nothing but wasting the user's turn. The account
-      // section is where the guest actually signs in.
-      return {
-        title: guestModelGateTitle(),
-        body: `${GUEST_MODEL_NOT_ALLOWED_BODY} ${GUEST_WORK_PRESERVED}`,
-        action: 'settings',
-      };
+      // Trying again sends the same model and hits the same refusal. The
+      // account section is where the guest signs in.
+      return 'settings';
     case 'model_locked':
-      // CAN-4028: the fourth documented exception. The account is signed in
-      // and may well hold spendable credits that do not unlock advanced
-      // models, so this is NOT the `billing` action. That
-      // action's coverage read treats the problem as solved whenever any
-      // credit is spendable, which here would tell a non-payer the same and
-      // send them into the same refusal.
-      //
-      // No Retry for the same reason as the billing branch: until the
-      // purchase lands a retry fails identically. Copy is shared with the web
-      // summary so both name the same remedy.
-      return {
-        title: MODEL_LIBRARY_UNLOCK_COPY.proxyRefusalTitle,
-        body: MODEL_LIBRARY_UNLOCK_COPY.proxyRefusalBody,
-        action: 'unlock',
-      };
+      // CAN-4028: the account is signed in and may hold spendable credits that
+      // don't unlock advanced models, so this is NOT the `billing` action,
+      // whose coverage read would call the problem solved. No Try again: until
+      // the purchase lands, it fails the same way.
+      return 'unlock';
     case 'proxy_internal_error':
-      return {
-        title: 'Something went wrong reaching the AI provider',
-        body: `${brand} hit a problem on our side while contacting the AI provider. Please report it with this id.`,
-        action: 'copy-id',
-      };
+      return 'copy-id';
     case 'work_owner_not_member':
-      // CAN-3462: this work belongs to an organization the user has left, so
-      // the hosted proxy refused to bill it to that organization. The third
-      // documented exception to "AI Credits stays out of the failure copy":
-      // what failed is who pays. Retrying hits the same refusal, so the
-      // notice offers the Organizations list, where the user can see their
-      // memberships and accept an invitation back, beside the id.
-      return {
-        title: `You're no longer in this organization`,
-        body: `This work belongs to an organization you've left, so its AI Credits can't pay for this message. Ask an admin to add you back, or continue in a personal project.`,
-        action: 'organizations',
-      };
+      // CAN-3462: trying again hits the same refusal, so the notice opens the
+      // Organizations list, where the user can accept an invitation back.
+      return 'organizations';
   }
 }
 
@@ -272,7 +193,7 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
 }: CanopyProxyErrorNoticeProps): JSX.Element | null {
   const [copied, setCopied] = useState(false);
   const [retrying, setRetrying] = useState(false);
-  const copy = noticeCopy(error.code);
+  const action = noticeAction(error.code);
   const correlationId = error.correlationId;
   // Resolve retry-ability so an unreachable target disables the button instead
   // of silently no-oping on click. Surfaces whose tabs are not registered in
@@ -389,7 +310,7 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
       mountedRef.current = false;
     };
   }, []);
-  const isUnlockBranch = copy.action === 'unlock';
+  const isUnlockBranch = action === 'unlock';
   const unlockScope = useChatTargetAiCreditsScope(retryTarget);
   const unlockModels = useUnlockModelsAction(unlockScope);
   // `undefined` is unknown: no read has landed for this account and owner yet,
@@ -632,7 +553,7 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
   // The unlock branch's outcome line, in the same supporting slot. A resolved
   // notice says so in its title instead, and drops every recovery line.
   const unlockOutcome =
-    copy.action === 'unlock' && !unlocked ? unlockResult?.outcome : undefined;
+    action === 'unlock' && !unlocked ? unlockResult?.outcome : undefined;
   const unlockStatus =
     unlockOutcome === 'opened' ? (
       <div data-testid="chat-canopy-proxy-error-unlock-waiting">
@@ -644,30 +565,30 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
       </div>
     ) : unlockOutcome === 'failed' ? (
       <div data-testid="chat-canopy-proxy-error-unlock-failed">
-        We couldn’t open your browser. Try again.
+        {"Couldn't open your browser."}
       </div>
     ) : null;
 
   const detail = unlockStatus ?? undefined;
 
   // One recommended action per state: Retry where it is offered, otherwise
-  // the action the copy points at (Open settings, the unlock purchase, or
-  // Copy id when reporting the id IS the next step). Copy id is the quiet
-  // alternative everywhere else.
-  const copyIdVariant = copy.action === 'copy-id' ? 'primary' : 'secondary';
+  // the action the notice points at (Open settings, the unlock purchase, or
+  // Copy details when reporting the id IS the next step). Copy details is the
+  // quiet alternative everywhere else.
+  const copyIdVariant = action === 'copy-id' ? 'primary' : 'secondary';
 
   // A resolved notice drops its error id with the failure it described, so
-  // Copy id goes too.
+  // Copy details goes too.
   const offersCopyId = Boolean(correlationId) && !unlocked;
 
   // Never hand the notice an empty actions row (an unlocked notice has
   // nothing left to offer).
   const hasActions =
     offersCopyId ||
-    copy.action === 'settings' ||
-    copy.action === 'organizations' ||
-    (copy.action === 'unlock' && !unlocked) ||
-    copy.action === 'retry';
+    action === 'settings' ||
+    action === 'organizations' ||
+    (action === 'unlock' && !unlocked) ||
+    action === 'retry';
 
   const actions = hasActions ? (
     <>
@@ -677,13 +598,13 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
           data-testid="chat-canopy-proxy-error-copy-id"
           onClick={handleCopyId}
         >
-          {copied ? 'Copied' : 'Copy id'}
+          {copied ? 'Copied' : 'Copy details'}
         </NoticeButton>
       ) : null}
-      {copy.action === 'settings' ? (
+      {action === 'settings' ? (
         <CanopyProxySettingsAction onClick={handleOpenSettings} />
       ) : null}
-      {copy.action === 'organizations' ? (
+      {action === 'organizations' ? (
         <NoticeButton
           variant="primary"
           data-testid="chat-canopy-proxy-error-view-organizations"
@@ -694,7 +615,7 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
           View organizations
         </NoticeButton>
       ) : null}
-      {copy.action === 'unlock' && !unlocked ? (
+      {action === 'unlock' && !unlocked ? (
         <NoticeButton
           variant="primary"
           data-testid="chat-canopy-proxy-error-unlock"
@@ -708,21 +629,21 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
             : MODEL_LIBRARY_UNLOCK_COPY.purchaseAction}
         </NoticeButton>
       ) : null}
-      {copy.action === 'retry' ? (
+      {action === 'retry' ? (
         <NoticeButton
           variant="primary"
           data-testid="chat-canopy-proxy-error-retry"
           onClick={handleRetry}
           disabled={retrying || !canRetry || isStreaming || !isLatestFailure}
           {...(!canRetry
-            ? { title: 'This chat is no longer available to retry.' }
+            ? { title: 'This chat is no longer open.' }
             : isStreaming
               ? {
                   title: 'This chat is already running. Wait for it to finish.',
                 }
               : !isLatestFailure
                 ? {
-                    title: 'This chat has already moved on from this problem.',
+                    title: 'This chat has moved on since this failed.',
                   }
                 : {})}
         >
@@ -734,29 +655,24 @@ export const CanopyProxyErrorNotice = memo(function CanopyProxyErrorNotice({
 
   // A failed attempt may still be inside a live automatic retry cycle. Its
   // countdown/cancel banner owns recovery until main ends that cycle.
-  if (
+  const hidden =
     error.code === 'upstream_unavailable' &&
     isLatestFailure &&
-    automaticRetry &&
-    !automaticRetry.exhausted
-  ) {
-    return null;
-  }
+    automaticRetry !== null &&
+    !automaticRetry.exhausted;
+  const copy = useCanopyProxyErrorCopy(error, !hidden);
+  if (hidden) return null;
 
   return (
     <CanopyProxyErrorPresentation
       state={unlocked ? 'resolved' : 'unresolved'}
-      diagnostics="inline"
       announcement="live"
-      correlationId={correlationId}
       dataTestId="chat-canopy-proxy-error"
+      title={copy.title}
       {...(detail !== undefined ? { detail } : {})}
       {...(actions !== undefined ? { actions } : {})}
     >
-      <CanopyProxyErrorSummary
-        error={error}
-        dataTestId="chat-canopy-proxy-error-body"
-      />
+      {copy.description}
     </CanopyProxyErrorPresentation>
   );
 });

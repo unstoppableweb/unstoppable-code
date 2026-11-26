@@ -375,7 +375,7 @@ test.describe('Credits notice', () => {
       // offered the default credits model).
       await expect(
         dialog.getByTestId('provider-choice-detail-credits'),
-      ).toHaveText(/^Stays on \S.* after you add credits$/);
+      ).toHaveText(/^Stays on \S.* after you buy credits$/);
 
       // Buy hands off to the browser once, the dialog closes, and the notice
       // waits on it.
@@ -508,7 +508,7 @@ test.describe('Credits notice', () => {
       // The admin line moved to the credits row, which offers no purchase.
       await expect(
         dialog.getByTestId('provider-choice-detail-credits'),
-      ).toHaveText('Contact your org admin to increase your spend quota.', {
+      ).toHaveText('Ask an org admin to raise your spending limit.', {
         timeout: 15_000,
       });
       await expect(
@@ -661,7 +661,7 @@ test.describe('Credits notice', () => {
 
       // Before send: the signed-out notice, and no card claiming credits.
       await expect(notice).toBeVisible({ timeout: 30_000 });
-      await expect(notice).toContainText('Signed out of Claude');
+      await expect(notice).toContainText('This chat needs a provider');
       await expect(card).toHaveCount(0);
 
       // The send is refused before any provider or gateway request, and the

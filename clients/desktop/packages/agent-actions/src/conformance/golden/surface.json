@@ -273,7 +273,7 @@
               "enabled": { "type": "boolean" },
               "destination": {
                 "type": "object",
-                "description": "Settings destination for settings.open. Account pages: account, profile, digests, notifications, integrations, plugins, mcp, security, model-providers, ai-gateway, billing, labs, appearance. Organization pages: feed (the Timeline), statistics, digests, members, groups, projects, memory, settings (subtab ai-gateway for the AI gateway).",
+                "description": "Settings destination for settings.open. Account pages: account, profile, digests, notifications, integrations, plugins, mcp, security, model-providers, ai-gateway, billing, labs, appearance. Organization pages: feed (the Timeline), statistics, digests, members, groups, projects, memory, transcripts (owners only, where available), settings (subtab ai-gateway for the AI gateway).",
                 "properties": {
                   "scope": {
                     "type": "string",
@@ -307,6 +307,7 @@
                       "groups",
                       "projects",
                       "memory",
+                      "transcripts",
                       "settings"
                     ]
                   },
@@ -316,6 +317,7 @@
                       "general",
                       "policies",
                       "project-defaults",
+                      "connectors",
                       "integrations",
                       "usage",
                       "ai-gateway",

@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { Notice, NoticeButton } from './Notice';
+import { Notice, NoticeButton } from '../primitives/Notice';
 
 export interface SharedContainerOwnerDepartureFeedbackProps {
   kind: 'load' | 'dismiss';

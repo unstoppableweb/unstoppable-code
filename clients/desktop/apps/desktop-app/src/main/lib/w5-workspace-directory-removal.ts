@@ -1,3 +1,4 @@
+import { drainDirectoryEffects } from './directory-effect-admission';
 import type { BigIntStats } from 'node:fs';
 import { lstat, readdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -56,6 +57,7 @@ export async function removeWorkspaceNonW5Children(
   workspaceId: string,
 ): Promise<void> {
   assertOutsideCommit();
+  await drainDirectoryEffects(getWorkspaceDir(workspaceId));
   const directory = getWorkspaceDir(workspaceId);
   let original;
   try {
@@ -110,6 +112,7 @@ export async function removeWorkspaceDirectoryAfterRecordRemoval(
   workspaceId: string,
 ): Promise<void> {
   assertOutsideCommit();
+  await drainDirectoryEffects(getWorkspaceDir(workspaceId));
   try {
     await removeDestructiveWorkspaceDirectory(workspaceId);
   } catch (error) {

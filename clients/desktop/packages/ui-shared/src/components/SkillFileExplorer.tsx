@@ -1,4 +1,4 @@
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import {
   useMemo,
   useState,
@@ -18,9 +18,9 @@ import { useHorizontalOverflowScroll } from '../lib/useHorizontalOverflowScroll'
 import { DocumentProse } from './DocumentProse';
 import { FileTreeRow } from './FileTreeRow';
 import { Markdown } from './Markdown';
-import { OverlayScrollArea } from './OverlayScrollArea';
-import { RichHoverTooltip } from './RichHoverTooltip';
-import { Tooltip } from './Tooltip';
+import { OverlayScrollArea } from '../primitives/OverlayScrollArea';
+import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
+import { Tooltip } from '../primitives/Tooltip';
 
 export function SkillMarkdownBody({
   markdown,

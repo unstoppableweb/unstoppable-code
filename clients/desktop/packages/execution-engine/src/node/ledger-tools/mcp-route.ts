@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   createServer,
   type IncomingMessage,
@@ -6,7 +6,10 @@ import {
   type ServerResponse,
 } from 'node:http';
 import { BRAND } from '@canopy/brand/current';
-import { CANOPY_INJECTED_TOOL_REGISTRY } from '../../lib/canopy-injected-tools';
+import {
+  CANOPY_INJECTED_TOOL_REGISTRY,
+  CANOPY_MCP_TOOL_TIMEOUT_MS,
+} from '../../lib/canopy-injected-tools';
 import {
   ADD_LEDGER_ENTRY_DESCRIPTION,
   SEARCH_LEDGER_ENTRIES_DESCRIPTION,
@@ -23,7 +26,9 @@ import type { LedgerToolKey, LedgerToolsRuntime } from './runtime';
  * for a Claude action subprocess on a cloud runner (CAN-6422). It speaks the
  * JSON subset desktop's own route does (initialize, tools/list, tools/call)
  * over HTTP POST, takes only the step's bearer token, and serves exactly the
- * three Feed tools of one attempt, until the attempt closes it.
+ * three Feed tools of one attempt, until the attempt closes it. A local
+ * daemon step that may post a code review as the GitHub App also gets the
+ * owner's SearchActions and DispatchAction beside them (CAN-7742).
  */
 
 /** A request body larger than this is refused unread. */
@@ -60,6 +65,26 @@ export interface LedgerToolsMcpRoute {
   /** The tools a Claude subprocess may call, by their Claude names. */
   readonly allowedTools: readonly string[];
   close(): Promise<void>;
+}
+
+/**
+ * Tools the route serves beside the Feed tools (CAN-7742): listed after them
+ * and run by `call`, which settles every outcome as a tool result.
+ */
+export interface LedgerToolsMcpExtraTools {
+  readonly tools: readonly {
+    /** The MCP short name. */
+    readonly name: string;
+    /** The Claude name a subprocess allows it by. */
+    readonly claudeToolName: string;
+    readonly description: string;
+    readonly inputSchema: unknown;
+  }[];
+  call(
+    name: string,
+    args: Record<string, unknown>,
+    context: { readonly invocationId: string; readonly signal: AbortSignal },
+  ): Promise<{ readonly text: string; readonly isError?: boolean }>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -124,6 +149,7 @@ const NOT_ALLOWED = 'This workflow step may not use this tool.';
 interface RouteRequest {
   readonly tools: LedgerToolsRuntime;
   readonly authorize: LedgerToolsRouteAuthorize;
+  readonly extra?: LedgerToolsMcpExtraTools;
   /** Aborts when the client hangs up. */
   readonly signal: AbortSignal;
   /** The calls in flight on this route, by session and JSON-RPC ID. */
@@ -161,17 +187,34 @@ async function answer(
     });
   if (method === 'tools/list')
     return rpcResult(id, {
-      tools: TOOLS.map(({ key, description, inputSchema }) => ({
-        name: CANOPY_INJECTED_TOOL_REGISTRY[key].displayName,
-        description,
-        inputSchema,
-      })),
+      tools: [
+        ...TOOLS.map(({ key, description, inputSchema }) => ({
+          name: CANOPY_INJECTED_TOOL_REGISTRY[key].displayName,
+          description,
+          inputSchema,
+        })),
+        ...(route.extra?.tools ?? []).map(
+          ({ name, description, inputSchema }) => ({
+            name,
+            description,
+            inputSchema,
+          }),
+        ),
+      ],
     });
   if (method !== 'tools/call') return rpcError(id, -32601, 'Method not found');
   const params = isRecord(message.params) ? message.params : {};
   const tool = TOOLS.find(
     ({ key }) => CANOPY_INJECTED_TOOL_REGISTRY[key].displayName === params.name,
   );
+  const extra = route.extra;
+  if (
+    tool === undefined &&
+    extra !== undefined &&
+    typeof params.name === 'string' &&
+    extra.tools.some(({ name }) => name === params.name)
+  )
+    return callExtra(route, extra, id, params.name, params);
   if (tool === undefined) return rpcError(id, -32602, 'Unknown tool');
   // The subprocess runs outside any chat, so no hook checks its calls: each
   // passes the step's approval here, and a denial is the tool's error.
@@ -203,12 +246,48 @@ async function answer(
 }
 
 /**
+ * Runs one extra tool call. Its key is the call's tool_use id, as for the
+ * Feed tools, which a retry resends; without one, a key of its own that
+ * never replays another call but can't dedupe a retry.
+ */
+async function callExtra(
+  route: RouteRequest,
+  extra: LedgerToolsMcpExtraTools,
+  id: unknown,
+  name: string,
+  params: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const key = callKey(route.session, id);
+  const call = new AbortController();
+  route.calls.set(key, call);
+  let result: Awaited<ReturnType<LedgerToolsMcpExtraTools['call']>>;
+  try {
+    result = await extra.call(
+      name,
+      isRecord(params.arguments) ? params.arguments : {},
+      {
+        invocationId:
+          invocationOf(params).invocationId ?? `mcp:${randomUUID()}`,
+        signal: AbortSignal.any([route.signal, call.signal]),
+      },
+    );
+  } finally {
+    if (route.calls.get(key) === call) route.calls.delete(key);
+  }
+  return rpcResult(id, {
+    content: [{ type: 'text', text: result.text }],
+    ...(result.isError === true ? { isError: true } : {}),
+  });
+}
+
+/**
  * Starts the Feed tools' MCP route for one attempt on a random loopback
- * port, behind a random bearer token.
+ * port, behind a random bearer token, with any extra tools beside them.
  */
 export async function startLedgerToolsMcpRoute(
   tools: LedgerToolsRuntime,
   authorize: LedgerToolsRouteAuthorize,
+  extra?: LedgerToolsMcpExtraTools,
 ): Promise<LedgerToolsMcpRoute> {
   const token = randomBytes(32).toString('base64url');
   const tokenBytes = Buffer.from(token, 'utf8');
@@ -250,6 +329,7 @@ export async function startLedgerToolsMcpRoute(
     const route: RouteRequest = {
       tools,
       authorize,
+      ...(extra !== undefined ? { extra } : {}),
       signal: cancelled.signal,
       calls,
       session,
@@ -292,12 +372,17 @@ export async function startLedgerToolsMcpRoute(
         url: `http://127.0.0.1:${String(address.port)}${path}`,
         headers: { Authorization: `Bearer ${token}` },
         alwaysLoad: true,
+        // A review the GitHub App posts can take its publish deadline.
+        ...(extra !== undefined ? { timeout: CANOPY_MCP_TOOL_TIMEOUT_MS } : {}),
       },
     },
     token,
-    allowedTools: TOOLS.map(
-      ({ key }) => CANOPY_INJECTED_TOOL_REGISTRY[key].claudeToolName,
-    ),
+    allowedTools: [
+      ...TOOLS.map(
+        ({ key }) => CANOPY_INJECTED_TOOL_REGISTRY[key].claudeToolName,
+      ),
+      ...(extra?.tools ?? []).map(({ claudeToolName }) => claudeToolName),
+    ],
     close: () =>
       new Promise<void>((resolve) => {
         server.close(() => resolve());

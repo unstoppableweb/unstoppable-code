@@ -487,6 +487,18 @@ export interface OrgProjectLifecycleRequest {
   action: OrgProjectLifecycleAction;
 }
 
+/** The project after a lifecycle action. */
+export interface OrgProjectLifecycleResult extends OrgProjectDetail {
+  /**
+   * After an archive, for an organization owner or admin: the organization's
+   * shared connections the project used that no active project uses now, so
+   * the page can offer to disconnect them (CAN-6253). Absent when there are
+   * none, for other actions and for anyone else. An older server never sends
+   * it, so the page offers nothing.
+   */
+  sharedConnectionsToDisconnect?: { id: string; name: string }[];
+}
+
 export interface ClaimOrgProjectInstanceRequest {
   materializationVersion?: 1;
   expectedDefinitionRevision?: number;

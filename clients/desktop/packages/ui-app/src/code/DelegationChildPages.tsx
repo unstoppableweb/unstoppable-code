@@ -22,7 +22,7 @@ import {
   useDelegationPagesStore,
   useWorkspaceCapabilities,
 } from '@canopy/app-state';
-import { Button, Notice } from '@canopy/ui-shared/components';
+import { Button, Notice, NoticeButton } from '@canopy/ui-shared/components';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   ToolOutputReaderContext,
@@ -602,37 +602,42 @@ function ChildWindow({
         {loading ? 'Loading messages…' : null}
       </div>
       {newMessages && (
-        <Notice role="status" intent="neutral" surface="none">
-          <span>New messages</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={loading}
-            onClick={() => {
-              void load('newest', true);
-            }}
-          >
-            Show latest
-          </Button>
+        <Notice
+          role="status"
+          intent="neutral"
+          surface="none"
+          actions={
+            <NoticeButton
+              disabled={loading}
+              onClick={() => {
+                void load('newest', true);
+              }}
+            >
+              Show latest
+            </NoticeButton>
+          }
+        >
+          New messages
         </Notice>
       )}
       {failed && (
-        <Notice intent="neutral" surface="none">
-          <span>
-            {source.standaloneHistory && source.archivedContainerId
-              ? "Couldn't load archived messages."
-              : "Couldn't load messages."}
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={loading}
-            onClick={() => {
-              void load('newest', true);
-            }}
-          >
-            Reload messages
-          </Button>
+        <Notice
+          intent="neutral"
+          surface="none"
+          actions={
+            <NoticeButton
+              disabled={loading}
+              onClick={() => {
+                void load('newest', true);
+              }}
+            >
+              Try again
+            </NoticeButton>
+          }
+        >
+          {source.standaloneHistory && source.archivedContainerId
+            ? "Couldn't load archived messages."
+            : "Couldn't load messages."}
         </Notice>
       )}
       {window.pages.some((item) => item.page.runTruncated) && (

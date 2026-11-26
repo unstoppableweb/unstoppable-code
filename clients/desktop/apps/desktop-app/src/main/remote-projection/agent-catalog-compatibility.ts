@@ -29,8 +29,9 @@ const modelCatalogListeners = new Set<ModelCatalogListener>();
 
 /**
  * Subscribes to model catalog changes (provider accounts, default models,
- * local runtimes). Returns the removal. Portal's catalog refresh is the one
- * listener until CAN-5986 deletes it.
+ * local runtimes). Returns the removal. Listeners don't push projections;
+ * the provider setup facts mark themselves stale here and push when they
+ * change (`provider-setup-status.ts`).
  */
 export function onModelCatalogChanged(
   listener: ModelCatalogListener,

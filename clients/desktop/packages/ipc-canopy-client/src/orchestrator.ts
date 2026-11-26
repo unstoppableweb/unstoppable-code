@@ -16,9 +16,14 @@
  *   the question's chat. Any other renderer request (file panels, browser
  *   tools) is refused at once, as mobile refuses them, rather than left to
  *   time out.
+ * - Persisted async questions belong to the chat. They come from its state
+ *   snapshot and settle through `chat:command`.
  *
  * Without the surface port the client reports no `appAdvisorChats` and every
- * operation here refuses before the transport.
+ * operation here refuses before the transport. Every operation also refuses a
+ * `botId` other than the default Bot's before the transport: these handlers
+ * only reach the Orchestrator's project, and no computer serves other Bots
+ * over Remote Control yet (CAN-7400).
  */
 import type {
   CommandMap,
@@ -33,10 +38,14 @@ import {
   type RemoteControlAppAdvisorChatSummary,
   type RemoteControlAppAdvisorWorkEntry,
   type RemoteControlAskUserQuestion,
+  type RemoteControlAskUserQuestionAnswer,
   type RemoteControlAskUserQuestionState,
   type RemoteControlChatFileReference,
 } from '@canopy/protocol/remote-control/shell';
-import { APP_ADVISOR_PROJECT_ID } from '@canopy/protocol/chat-targets';
+import {
+  APP_ADVISOR_BOT_ID,
+  APP_ADVISOR_PROJECT_ID,
+} from '@canopy/protocol/chat-targets';
 import { REMOTE_IPC_CHANNELS as C } from '@canopy/protocol/remote-control/channels';
 import {
   UnsupportedOperationError,
@@ -50,6 +59,7 @@ import type {
   WireChatSendResult,
   WireChatState,
   WireCreatedWorkEntry,
+  WirePendingQuestion,
   WireWorkEntry,
   WireWorkEntryList,
 } from './wire';
@@ -91,6 +101,8 @@ const CHAT_NOT_FOUND = 'This Orchestrator chat is no longer available.';
 const QUESTION_GONE = 'This question is no longer waiting for an answer.';
 const UNKNOWN_MODEL = "This model isn't available on this computer.";
 const FILE_REFERENCE_UNKNOWN = 'Pick the file again, then send.';
+const OTHER_BOT_UNAVAILABLE =
+  'Only the Orchestrator is available here. Open other Bots on the computer.';
 const UNSUPPORTED_VIEW =
   'This view is unavailable in the browser. Open it on your computer.';
 
@@ -148,6 +160,14 @@ function unsupported(operation: string, message: string): Promise<never> {
   return Promise.reject(new UnsupportedOperationError(operation, message));
 }
 
+/**
+ * Whether a caller's `botId` names the default Bot. It takes `unknown`
+ * because payloads arrive from untyped callers too.
+ */
+function isDefaultBotTarget(botId: unknown): boolean {
+  return botId === undefined || botId === APP_ADVISOR_BOT_ID;
+}
+
 function accepted(
   commandId: string,
   result: Record<string, unknown> = {},
@@ -174,6 +194,20 @@ type ChatTab = WireChatState['tabsFile']['tabs'][number];
 
 function isChatTab(tab: ChatTab): boolean {
   return (tab.kind ?? 'chat') === 'chat' && tab.archivedAt === undefined;
+}
+
+function chatOwnedQuestions(
+  state: WireChatState,
+  chatId: string,
+): readonly WirePendingQuestion[] {
+  return (state.tabsFile.pendingQuestions ?? []).filter(
+    (entry) =>
+      entry.chatId === chatId &&
+      entry.delivery === 'async' &&
+      entry.questions.every(
+        (question) => !question.secret && question.secretRequest === undefined,
+      ),
+  );
 }
 
 function messageCountOf(tab: ChatTab): number {
@@ -209,6 +243,9 @@ export function createOrchestratorHandlers(
   const pending = new Map<string, PendingQuestion>();
   const questionKey = (chatId: string, requestId: string): string =>
     `${chatId}\u0000${requestId}`;
+  // Keep only the routing information from the last complete projection.
+  // Settlement always checks the host's current record.
+  let questionEntries = new Map<string, string>();
 
   // One surface listener however many subscribers; dropped with the last.
   const subscribers = new Set<
@@ -365,12 +402,18 @@ export function createOrchestratorHandlers(
       })
     ).entry.id;
 
-  const query = async (): Promise<QueryMap['appAdvisor.chats']['result']> => {
+  const query = async (
+    args: QueryMap['appAdvisor.chats']['args'],
+  ): Promise<QueryMap['appAdvisor.chats']['result']> => {
+    if (!isDefaultBotTarget(args.botId)) {
+      return unsupported('appAdvisor.chats', OTHER_BOT_UNAVAILABLE);
+    }
     if (surface === null) {
       return unsupported('appAdvisor.chats', ORCHESTRATOR_UNAVAILABLE);
     }
     const entries = await listEntries();
     const chats: RemoteControlAppAdvisorChatSummary[] = [];
+    const projectedQuestionEntries = new Map<string, string>();
     // Every entry, so one whose chats all closed stays in the nav (CAN-7604).
     const workEntries: RemoteControlAppAdvisorWorkEntry[] = entries.map(
       (entry, order) => ({
@@ -399,6 +442,24 @@ export function createOrchestratorHandlers(
         const questions = [...pending.values()]
           .filter((question) => question.chatId === tab.id)
           .map((question) => question.state);
+        for (const question of chatOwnedQuestions(state, tab.id)) {
+          const key = questionKey(tab.id, question.requestId);
+          if (question.dismissedAt !== undefined || pending.has(key)) {
+            continue;
+          }
+          projectedQuestionEntries.set(key, entry.id);
+          questions.push({
+            requestId: question.requestId,
+            ...(question.toolUseId === undefined
+              ? {}
+              : { toolUseId: question.toolUseId }),
+            questions: question.questions,
+            answered: question.answeredAt !== undefined,
+            ...(question.answeredAt !== undefined && question.answers
+              ? { answers: question.answers }
+              : {}),
+          });
+        }
         chats.push({
           localId: tab.id,
           chatId: tab.id,
@@ -432,25 +493,117 @@ export function createOrchestratorHandlers(
         });
       }
     }
+    questionEntries = projectedQuestionEntries;
     return { chats, workEntries };
   };
 
-  const answer = async (
-    operation: 'appAdvisor.answerQuestion' | 'appAdvisor.dismissQuestion',
+  const settleStoredQuestion = async (
+    commandId: string,
     chatId: string,
     requestId: string,
-    response: Record<string, unknown>,
+    answers: RemoteControlAskUserQuestionAnswer[] | undefined,
+  ): Promise<ShellCommandReceipt> => {
+    const entryId = questionEntries.get(questionKey(chatId, requestId));
+    if (entryId === undefined) return refused(commandId, QUESTION_GONE);
+    const readQuestion = async (): Promise<WirePendingQuestion | undefined> => {
+      const state = await readEntry(entryId);
+      if (
+        !state.tabsFile.tabs.some((tab) => tab.id === chatId && isChatTab(tab))
+      ) {
+        return undefined;
+      }
+      return chatOwnedQuestions(state, chatId).find(
+        (entry) => entry.requestId === requestId,
+      );
+    };
+    const stored = await readQuestion();
+    if (stored === undefined) return refused(commandId, QUESTION_GONE);
+    if (stored.answeredAt !== undefined || stored.dismissedAt !== undefined) {
+      return accepted(commandId);
+    }
+    try {
+      const result = await chatCommand(
+        entryId,
+        answers === undefined
+          ? { type: 'chat.dismiss_question', chatId, questionId: requestId }
+          : {
+              type: 'chat.answer_question',
+              chatId,
+              questionId: requestId,
+              answers,
+            },
+      );
+      if (!isApplied(result.reply)) {
+        return refused(result.commandId, result.reply.reason ?? QUESTION_GONE);
+      }
+      notify();
+      return accepted(result.commandId);
+    } catch (error) {
+      // A dropped reply can follow a committed answer. Reconcile before
+      // letting the composer present a retry.
+      const current = await readQuestion().catch(() => undefined);
+      if (
+        current?.answeredAt !== undefined ||
+        current?.dismissedAt !== undefined
+      ) {
+        notify();
+        return accepted(commandId);
+      }
+      throw error;
+    }
+  };
+
+  const settleQuestion = async (
+    chatId: string,
+    requestId: string,
+    answers?: RemoteControlAskUserQuestionAnswer[],
   ): Promise<ShellCommandReceipt> => {
     const on = surface;
-    if (on === null) return unsupported(operation, ORCHESTRATOR_UNAVAILABLE);
+    if (on === null) {
+      return unsupported(
+        answers === undefined
+          ? 'appAdvisor.dismissQuestion'
+          : 'appAdvisor.answerQuestion',
+        ORCHESTRATOR_UNAVAILABLE,
+      );
+    }
     const commandId = randomId();
     const key = questionKey(chatId, requestId);
     const question = pending.get(key);
-    if (question === undefined) return refused(commandId, QUESTION_GONE);
+    if (question === undefined) {
+      return settleStoredQuestion(commandId, chatId, requestId, answers);
+    }
+    const first = answers?.[0];
+    if (
+      answers !== undefined &&
+      (first === undefined || answers.length !== 1)
+    ) {
+      return refused(commandId, 'Answer the question before continuing.');
+    }
     await on.invoke(C.appAdvisorToolResponse, isAnyReply, {
       requestId,
       originChatId: chatId,
-      ...response,
+      ...(first === undefined
+        ? {
+            ok: false,
+            error: {
+              code: 'cancelled',
+              message: 'User dismissed the question.',
+            },
+          }
+        : {
+            ok: true,
+            answer: {
+              ...(first.questionId === undefined
+                ? {}
+                : { questionId: first.questionId }),
+              question: first.question,
+              selectedOptions: first.selectedOptions,
+              ...(first.freeformText === undefined
+                ? {}
+                : { freeformText: first.freeformText }),
+            },
+          }),
     });
     if (pending.get(key) === question) {
       pending.delete(key);
@@ -461,6 +614,9 @@ export function createOrchestratorHandlers(
 
   const commands: OrchestratorCommandHandlers = {
     'appAdvisor.send': async ({ payload }) => {
+      if (!isDefaultBotTarget(payload.botId)) {
+        return unsupported('appAdvisor.send', OTHER_BOT_UNAVAILABLE);
+      }
       if (surface === null) {
         return unsupported('appAdvisor.send', ORCHESTRATOR_UNAVAILABLE);
       }
@@ -549,6 +705,9 @@ export function createOrchestratorHandlers(
       return accepted(commandId, { userMessageId }, chatId);
     },
     'appAdvisor.cancel': async ({ payload }) => {
+      if (!isDefaultBotTarget(payload.botId)) {
+        return unsupported('appAdvisor.cancel', OTHER_BOT_UNAVAILABLE);
+      }
       if (surface === null) {
         return unsupported('appAdvisor.cancel', ORCHESTRATOR_UNAVAILABLE);
       }
@@ -563,6 +722,9 @@ export function createOrchestratorHandlers(
       return accepted(commandId);
     },
     'appAdvisor.setModel': async ({ payload }) => {
+      if (!isDefaultBotTarget(payload.botId)) {
+        return unsupported('appAdvisor.setModel', OTHER_BOT_UNAVAILABLE);
+      }
       if (surface === null) {
         return unsupported('appAdvisor.setModel', ORCHESTRATOR_UNAVAILABLE);
       }
@@ -592,6 +754,9 @@ export function createOrchestratorHandlers(
           );
     },
     'appAdvisor.createTab': async ({ payload }) => {
+      if (!isDefaultBotTarget(payload.botId)) {
+        return unsupported('appAdvisor.createTab', OTHER_BOT_UNAVAILABLE);
+      }
       if (surface === null) {
         return unsupported('appAdvisor.createTab', ORCHESTRATOR_UNAVAILABLE);
       }
@@ -606,36 +771,17 @@ export function createOrchestratorHandlers(
         : refused(created.commandId, created.reply.reason ?? CHAT_NOT_FOUND);
     },
     'appAdvisor.answerQuestion': ({ payload }) => {
-      const first = payload.answers[0];
-      if (first === undefined || payload.answers.length !== 1) {
-        return Promise.resolve(
-          refused(randomId(), 'Answer the question before continuing.'),
-        );
+      if (!isDefaultBotTarget(payload.botId)) {
+        return unsupported('appAdvisor.answerQuestion', OTHER_BOT_UNAVAILABLE);
       }
-      return answer(
-        'appAdvisor.answerQuestion',
-        payload.chatId,
-        payload.requestId,
-        {
-          ok: true,
-          answer: {
-            ...(first.questionId === undefined
-              ? {}
-              : { questionId: first.questionId }),
-            question: first.question,
-            selectedOptions: first.selectedOptions,
-            ...(first.freeformText === undefined
-              ? {}
-              : { freeformText: first.freeformText }),
-          },
-        },
-      );
+      return settleQuestion(payload.chatId, payload.requestId, payload.answers);
     },
-    'appAdvisor.dismissQuestion': ({ payload }) =>
-      answer('appAdvisor.dismissQuestion', payload.chatId, payload.requestId, {
-        ok: false,
-        error: { code: 'cancelled', message: 'User dismissed the question.' },
-      }),
+    'appAdvisor.dismissQuestion': ({ payload }) => {
+      if (!isDefaultBotTarget(payload.botId)) {
+        return unsupported('appAdvisor.dismissQuestion', OTHER_BOT_UNAVAILABLE);
+      }
+      return settleQuestion(payload.chatId, payload.requestId);
+    },
   };
 
   return { query, commands, subscribe };

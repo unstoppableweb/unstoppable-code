@@ -4,7 +4,7 @@ import {
   CUSTOMIZE_ROW_GRID_CLASS,
   gridRowNeighbor,
 } from '../lib/customize-grid';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 
 export interface CustomizeInstalledListProps {
   readonly sectionId: string;

@@ -9,8 +9,8 @@ import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import { CircleCheckIcon, RecordIcon } from '../icons/AppIcons';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 import { GroupedDiffStats } from './GroupedDiffStats';
-import { CometSpinner } from './CometSpinner';
-import { Skeleton } from './Skeleton';
+import { CometSpinner } from '../primitives/CometSpinner';
+import { Skeleton } from '../primitives/Skeleton';
 import {
   ReferenceHoverCard,
   ReferenceHoverCardFact,

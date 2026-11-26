@@ -17,7 +17,7 @@ export interface OrganizationSettingsSubtabSlots {
    */
   readonly followGitHubInstallUrl?: (url: string) => void;
   /**
-   * The External agents (MCP) policy card in Settings → Policies. Only a host
+   * The External agents policy card in Settings → Policies. Only a host
    * that serves the hosted MCP servers supplies it; without it neither the
    * card nor its lapsed-owner access to Policies appears.
    */

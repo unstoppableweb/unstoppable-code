@@ -1,9 +1,12 @@
 import { create } from 'zustand';
 import type { CanopyClient } from '@canopy/app-core';
-import type {
-  OnboardingTipDismissals,
-  OnboardingTipId,
-  OnboardingTipsState,
+import {
+  isOnboardingTipId,
+  retainPermanentOnboardingDismissals,
+  type OnboardingDismissalId,
+  type OnboardingTipDismissals,
+  type OnboardingTipId,
+  type OnboardingTipsState,
 } from '@canopy/protocol/onboarding-tips';
 import type { RemoteControlChatSummaryEntity } from '@canopy/protocol/remote-control/shell';
 import { createClientStore } from '../create-client-store';
@@ -109,6 +112,7 @@ export interface OnboardingTipsStoreState {
    * Reads the dismissals once per client; later calls do nothing. After the
    * first read, the store reads again whenever the window regains focus, so a
    * change made on another surface (desktop or a Portal tab) arrives.
+   * Preference signals and reconnection also refresh permanent dismissals.
    */
   readonly load: () => void;
   /**
@@ -135,7 +139,7 @@ export interface OnboardingTipsStoreState {
    * Got it, the close button, or acting on the tip. The next tip waits for
    * the user's next arrival; dismissing never shows one in its place.
    */
-  readonly dismiss: (tipId: OnboardingTipId) => void;
+  readonly dismiss: (tipId: OnboardingDismissalId) => void;
   /**
    * "Show tips again": every tip shows again on its next arrival, under its
    * usual rules. It does not forget worktree history or lift a notice hold.
@@ -215,9 +219,11 @@ export function createOnboardingTipsStore(
   // raced the save, or a save that failed, never brings one back. A confirmed
   // dismissal leaves this set, so the host's record is the only truth after
   // that (a Portal paired with another desktop sees that desktop's record).
-  let sessionDismissed: Partial<Record<OnboardingTipId, string>> = {};
+  let sessionDismissed: OnboardingTipDismissals = {};
   let stopWatchingFocus: (() => void) | null = null;
   let stopWatchingSource: (() => void) | null = null;
+  let stopWatchingChanges: (() => void) | null = null;
+  let stopWatchingConnection: (() => void) | null = null;
   let sourceGeneration = 0;
   // Slots that arrived while another slot showed the tip, in arrival order.
   // When that slot goes away (unmounted or hidden), the first one with a tip
@@ -267,7 +273,11 @@ export function createOnboardingTipsStore(
       // A tip dismissed on another surface goes away here too.
       const accept = (stored: OnboardingTipDismissals): void => {
         const current = get().current;
-        const dismissed = { ...stored, ...sessionDismissed };
+        const dismissed = {
+          ...retainPermanentOnboardingDismissals(get().dismissed),
+          ...stored,
+          ...sessionDismissed,
+        };
         for (const arrival of Array.from(arrivals.values())) {
           if (
             arrival.ready &&
@@ -458,6 +468,23 @@ export function createOnboardingTipsStore(
         set({ current: tipId === undefined ? null : { tipId, slot } });
       };
 
+      const refreshPermanentDismissals = (): void => {
+        if (disposed || client.capabilities.onboardingTips !== true) return;
+        if (get().status !== 'ready') {
+          read();
+          return;
+        }
+        const sourceAtStart = sourceGeneration;
+        void client
+          .query('onboardingTips.get', {})
+          .then(({ dismissed }) => {
+            if (disposed || sourceAtStart !== sourceGeneration) return;
+            const permanent = retainPermanentOnboardingDismissals(dismissed);
+            set({ dismissed: { ...get().dismissed, ...permanent } });
+          })
+          .catch(() => undefined);
+      };
+
       return {
         status: 'idle',
         dismissed: {},
@@ -466,6 +493,18 @@ export function createOnboardingTipsStore(
         worktreeHistory: 'unknown',
         load: (): void => {
           if (disposed) return;
+          stopWatchingChanges ??= client.subscribe(
+            'onboardingTips.changed',
+            refreshPermanentDismissals,
+          );
+          stopWatchingConnection ??= client.subscribe(
+            'connection.status',
+            ({ status }) => {
+              if (disposed || status !== 'active') return;
+              if (get().status === 'ready') refreshPermanentDismissals();
+              else if (get().status === 'unavailable') read();
+            },
+          );
           if (stopWatchingSource === null) {
             stopWatchingSource =
               client.subscribeOnboardingTipsSourceChange?.(() => {
@@ -617,40 +656,63 @@ export function createOnboardingTipsStore(
         },
         dismiss: (tipId): void => {
           const { dismissed, current } = get();
+          const isTip = isOnboardingTipId(tipId);
+          if (!isTip && dismissed[tipId] !== undefined) return;
+          const sourceAtStart = sourceGeneration;
           const resetsAtStart = resets;
-          sessionDismissed = {
-            [tipId]: dismissed[tipId] ?? new Date().toISOString(),
-            ...sessionDismissed,
-          };
-          waiting.clear();
-          for (const arrival of Array.from(arrivals.values())) {
-            arrival.blocked = true;
-            arrival.worktree = null;
+          const dismissedAt = dismissed[tipId] ?? new Date().toISOString();
+          if (isTip) {
+            sessionDismissed = {
+              [tipId]: dismissedAt,
+              ...sessionDismissed,
+            };
+            waiting.clear();
+            for (const arrival of Array.from(arrivals.values())) {
+              arrival.blocked = true;
+              arrival.worktree = null;
+            }
+            set({
+              dismissed:
+                dismissed[tipId] === undefined
+                  ? { ...dismissed, [tipId]: dismissedAt }
+                  : dismissed,
+              current: current?.tipId === tipId ? null : current,
+            });
           }
-          set({
-            dismissed:
-              dismissed[tipId] === undefined
-                ? { ...dismissed, [tipId]: new Date().toISOString() }
-                : dismissed,
-            current: current?.tipId === tipId ? null : current,
-          });
           client
             .command('onboardingTips.update', { action: 'dismiss', tipId })
             .then((state) => {
-              if (disposed || resets !== resetsAtStart) return;
+              if (
+                disposed ||
+                sourceGeneration !== sourceAtStart ||
+                (isTip && resets !== resetsAtStart)
+              )
+                return;
+              // Permanent notices use their scoped local fallback until the
+              // host confirms. Older hosts may reject these newer IDs.
+              if (!isTip) {
+                set({
+                  dismissed: {
+                    ...get().dismissed,
+                    ...retainPermanentOnboardingDismissals(state.dismissed),
+                  },
+                });
+                return;
+              }
               if (state.dismissed[tipId] !== undefined) {
                 const unconfirmed = { ...sessionDismissed };
                 delete unconfirmed[tipId];
                 sessionDismissed = unconfirmed;
               }
+              if (resets !== resetsAtStart) return;
               // The saved record is the newest truth: a read that started
               // before the save landed must not replace it.
               generation += 1;
               accept(state.dismissed);
             })
             .catch(() => {
-              // Best effort: the tip stays hidden for this session even when
-              // the host could not save it.
+              // Tips keep their session fallback; permanent notices keep
+              // only their chat/launch-scoped local fallback on rejection.
             });
         },
         reset: async (): Promise<void> => {
@@ -658,7 +720,7 @@ export function createOnboardingTipsStore(
           // arrive before the reply, and it must not add these back.
           const unconfirmed = sessionDismissed;
           const sourceAtStart = sourceGeneration;
-          sessionDismissed = {};
+          sessionDismissed = retainPermanentOnboardingDismissals(unconfirmed);
           waiting.clear();
           for (const arrival of Array.from(arrivals.values())) {
             arrival.blocked = true;
@@ -680,7 +742,7 @@ export function createOnboardingTipsStore(
           }
           // A newer read or sync has already applied the reset record.
           if (disposed || request !== generation) return;
-          set({ status: 'ready', dismissed: state.dismissed, current: null });
+          accept(state.dismissed);
         },
         holdForNotice: (noticeKey): void => {
           if (noticeKey !== undefined) {
@@ -730,6 +792,10 @@ export function createOnboardingTipsStore(
     stopWatchingFocus = null;
     stopWatchingSource?.();
     stopWatchingSource = null;
+    stopWatchingChanges?.();
+    stopWatchingChanges = null;
+    stopWatchingConnection?.();
+    stopWatchingConnection = null;
   };
   return store;
 }

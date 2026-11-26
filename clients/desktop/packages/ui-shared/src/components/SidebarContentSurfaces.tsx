@@ -1,5 +1,5 @@
 import type { ComponentPropsWithRef, JSX } from 'react';
-import { ListRowFrame } from './ListRow';
+import { ListRowFrame } from '../primitives/ListRow';
 
 export function SidebarAccountRowSurface({
   tall,

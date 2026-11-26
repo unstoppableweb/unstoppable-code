@@ -8,7 +8,7 @@ import type {
 import { useObservabilityStore } from '@/stores/observabilityStore';
 import { useObservabilityEntriesInterest } from '@/lib/chat-interest';
 import { useEarlyAccessTitle } from '@/lib/earlyAccessTitles';
-import { Button } from '@canopy/ui-shared/components/Button';
+import { Button } from '@canopy/ui-shared/primitives/Button';
 import {
   CenteredLoadingSpinner,
   ChartEmpty,

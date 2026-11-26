@@ -30,9 +30,9 @@ import {
 } from './ProviderSupportIcons';
 import { getUnifiedTableItemKey } from './unified-table-virtualization';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
-import { Skeleton } from './Skeleton';
-import { SegmentedControl } from './SegmentedControl';
-import { Badge } from './Badge';
+import { Skeleton } from '../primitives/Skeleton';
+import { SegmentedControl } from '../primitives/SegmentedControl';
+import { Badge } from '../primitives/Badge';
 import {
   DataTableBody,
   DataTableCell,
@@ -40,16 +40,19 @@ import {
   DataTableHead,
   DataTableHeaderCell,
   DataTableRow,
-} from './DataTable';
-import { ControlButton, Button } from './Button';
-import { Checkbox, ChoiceField } from './Choice';
-import { Disclosure } from './Disclosure';
-import { Stack } from './Stack';
-import { SettingsSelect, type SettingsSelectOption } from './SettingsSelect';
-import { SearchEmptyState, SearchField } from './SearchField';
-import { DisplayAvatar } from './DisplayAvatar';
-import { Divider } from './Surface';
-import { FloatingMenu } from './FloatingMenu';
+} from '../primitives/DataTable';
+import { ControlButton, Button } from '../primitives/Button';
+import { Checkbox, ChoiceField } from '../primitives/Choice';
+import { Disclosure } from '../primitives/Disclosure';
+import { Stack } from '../primitives/Stack';
+import {
+  SettingsSelect,
+  type SettingsSelectOption,
+} from '../primitives/SettingsSelect';
+import { SearchEmptyState, SearchField } from '../primitives/SearchField';
+import { DisplayAvatar } from '../primitives/DisplayAvatar';
+import { Divider } from '../primitives/Surface';
+import { FloatingMenu } from '../primitives/FloatingMenu';
 
 /**
  * Row kinds. MCP servers are one kind however the host built the row: the

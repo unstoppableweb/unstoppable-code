@@ -1,4 +1,4 @@
-import { ListRowFrame } from '../ListRow';
+import { ListRowFrame } from '../../primitives/ListRow';
 import {
   createContext,
   forwardRef,
@@ -30,18 +30,18 @@ import {
 } from '../../icons/AppIcons';
 import { DRAWER_ITEM_ACTIONS_CLASS } from '../../lib/drawer-reveal';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
-import { ActionTooltip } from '../ActionTooltip';
-import { Button } from '../Button';
-import { copyTextToClipboard } from '../copy-to-clipboard';
+import { ActionTooltip } from '../../primitives/ActionTooltip';
+import { Button } from '../../primitives/Button';
+import { copyTextToClipboard } from '../../primitives/copy-to-clipboard';
 import {
   DropdownMenuDivider,
   DropdownMenuItem,
   DropdownMenuItemIcon,
   DropdownMenuRowStyleProvider,
   QUIET_MENU_ROW_STYLE,
-} from '../DropdownMenu';
-import { FLOATING_MENU_GAP, FloatingMenu } from '../FloatingMenu';
-import { Tooltip } from '../Tooltip';
+} from '../../primitives/DropdownMenu';
+import { FLOATING_MENU_GAP, FloatingMenu } from '../../primitives/FloatingMenu';
+import { Tooltip } from '../../primitives/Tooltip';
 import {
   useDoubleClickToEdit,
   type MessageEditHandler,

@@ -38,7 +38,9 @@ export {
   canopyDaemonRefusalError,
   canopyEndpointRepairRequiredError,
   canopyLaunchDetails,
+  canopyPathSharedWithAnotherAccount,
   type CanopyDaemonRefusal,
+  type CanopyLaunchDetails,
 } from './daemon-refusal';
 export type { CanopyClientEndpoint } from './endpoint';
 /** Hosts may extend the launch budget through their post-connect capability checks. */

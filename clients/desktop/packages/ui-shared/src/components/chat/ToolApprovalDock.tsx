@@ -18,8 +18,8 @@ import {
   ChevronLeftMediumIcon as AppCatalogChevronLeftMediumIcon,
   ChevronRightMediumIcon as AppCatalogChevronRightMediumIcon,
 } from '../../icons/AppIcons';
-import { getDocument } from '../../panels/window-registry';
-import { Button } from '../Button';
+import { getDocument } from '../../lib/window-registry';
+import { Button } from '../../primitives/Button';
 import {
   STATUS_ANNOUNCEMENT_DURATION_MS,
   type StatusAnnouncement,

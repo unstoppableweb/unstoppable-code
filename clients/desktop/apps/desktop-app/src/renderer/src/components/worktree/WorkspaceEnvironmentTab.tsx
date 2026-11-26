@@ -4,6 +4,7 @@ import {
   Stack,
   Button,
   DialogFormField,
+  CopyDetailsButton,
   Heading,
   Notice,
   type SettingsSaveState,
@@ -182,6 +183,7 @@ export function WorkspaceEnvironmentTab({
   const [saveStatus, setSaveStatus] = useState<
     'idle' | 'saving' | 'saved' | 'error'
   >('idle');
+  // The raw save failure, offered through Copy details and never shown.
   const [saveError, setSaveError] = useState<string | null>(null);
   const savedTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
@@ -409,11 +411,7 @@ export function WorkspaceEnvironmentTab({
       lastSaveFailedRef.current = true;
       if (!mountedRef.current) onSaveStateChangeRef.current?.('error');
       setSaveStatus('error');
-      setSaveError(
-        err instanceof Error
-          ? err.message
-          : 'Could not save environment assignments.',
-      );
+      setSaveError(err instanceof Error ? err.message : null);
     }
   }, [data, runSave, saveWorkspaceAssignments, workspaceId]);
   handleSaveRef.current = handleSave;
@@ -498,11 +496,7 @@ export function WorkspaceEnvironmentTab({
           })
           .catch((err: unknown) => {
             setSaveStatus('error');
-            setSaveError(
-              err instanceof Error
-                ? err.message
-                : 'Could not save environment assignments.',
-            );
+            setSaveError(err instanceof Error ? err.message : null);
           });
       }}
     />
@@ -546,8 +540,18 @@ export function WorkspaceEnvironmentTab({
             <Notice
               intent="attention"
               data-testid="workspace-environment-error"
+              {...(saveError === null
+                ? {}
+                : {
+                    actions: (
+                      <CopyDetailsButton
+                        details={saveError}
+                        data-testid="workspace-environment-error-copy-details"
+                      />
+                    ),
+                  })}
             >
-              {saveError ?? 'Could not save environment assignments.'}
+              Couldn&apos;t save environment assignments.
             </Notice>
           )}
         </SettingsSection>
@@ -634,8 +638,18 @@ export function WorkspaceEnvironmentTab({
               <Notice
                 intent="attention"
                 data-testid="workspace-environment-error"
+                {...(saveError === null
+                  ? {}
+                  : {
+                      actions: (
+                        <CopyDetailsButton
+                          details={saveError}
+                          data-testid="workspace-environment-error-copy-details"
+                        />
+                      ),
+                    })}
               >
-                {saveError ?? 'Could not save environment assignments.'}
+                Couldn&apos;t save environment assignments.
               </Notice>
             )}
             <Button

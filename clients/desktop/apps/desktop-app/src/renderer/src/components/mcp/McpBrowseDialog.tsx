@@ -59,6 +59,7 @@ export interface CuratedDetailProps<
   | 'logo'
   | 'publisher'
   | 'updated'
+  | 'otherVersions'
   | 'configuration'
   | 'related'
   | 'worksWith'

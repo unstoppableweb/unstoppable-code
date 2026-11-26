@@ -267,7 +267,7 @@ export function FactCorpusView({
         },
         {
           unexpected: 'Unexpected fact response',
-          fallback: 'Unable to load more facts',
+          fallback: "Couldn't load more facts",
         },
       );
       if (requestSequence.current !== sequence) return;

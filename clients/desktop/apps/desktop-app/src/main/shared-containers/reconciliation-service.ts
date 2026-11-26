@@ -181,6 +181,8 @@ type TrackingReleaseCause = Extract<
 
 const RECONCILE_DEBOUNCE_MS = 250;
 const FALLBACK_PULL_MS = 30_000;
+/** Fresh listings after the first, each one superseded by an authorization change. */
+const SUPERSEDED_LISTING_RETRIES = 2;
 
 type ChangedListener = (event: SharedContainerReplicaBroadcast) => void;
 type PhaseListener = (event: SharedContainerSyncPhaseEvent) => void;
@@ -279,12 +281,59 @@ export class SharedContainerReconciliationService {
     private readonly resolveCredentials: () => Promise<CanopyCloudCredentialContext> = resolveCanopyCloudCredentialContext,
   ) {}
 
+  /**
+   * A first-page listing aborted by an authorization change (an organization
+   * snapshot refresh, account change or purge, e.g. the account re-probe a
+   * renderer runs at startup) was superseded, not refused. Once that abort
+   * crosses IPC the renderer cannot tell it from a transport failure and shows
+   * "Could not load" until a manual retry, so wait for the change to settle
+   * and list again under the new authorization, as a fresh request would. A
+   * cursor page still aborts (its listing restarts from the first page), and a
+   * newer listing for the same scope is left to answer instead.
+   */
   async listSharedWithMe(
     request: ListSharedContainersWithMeRequest,
     // Returns the BARE wire response, not the widened IPC shape. The
     // `refusal` discriminant is added one layer up, in the IPC handler, after
     // this method's access-loss branch has purged the org's replicas — typing
     // it here would imply this service can produce a refusal it never sets.
+  ): Promise<ListSharedContainersResponse> {
+    const scopeKey =
+      request.organizationId ?? DIRECT_SHARED_CONTAINER_SCOPE_KEY;
+    for (let retry = 0; ; retry += 1) {
+      const authorizationEpoch = this.authorizationEpoch;
+      const authorizationGeneration =
+        this.manager.captureAuthorizationGeneration();
+      try {
+        return await this.listSharedWithMeOnce(request);
+      } catch (error) {
+        const authorizationChanged =
+          authorizationEpoch !== this.authorizationEpoch ||
+          authorizationGeneration !==
+            this.manager.captureAuthorizationGeneration() ||
+          this.manager.isAuthorizationTransitioning();
+        if (
+          request.cursor ||
+          retry >= SUPERSEDED_LISTING_RETRIES ||
+          !(error instanceof DOMException && error.name === 'AbortError') ||
+          !authorizationChanged ||
+          this.currentListingGenerations.has(scopeKey)
+        )
+          throw error;
+      }
+      await this.organizationCleanupTail;
+      await this.manager.settleAuthorizationTransition();
+      if (this.currentListingGenerations.has(scopeKey)) {
+        throw new DOMException(
+          'Shared-container listing was superseded',
+          'AbortError',
+        );
+      }
+    }
+  }
+
+  private async listSharedWithMeOnce(
+    request: ListSharedContainersWithMeRequest,
   ): Promise<ListSharedContainersResponse> {
     if (!this.transport.listSharedWithMe) {
       throw new Error('Shared-container listing is unavailable');

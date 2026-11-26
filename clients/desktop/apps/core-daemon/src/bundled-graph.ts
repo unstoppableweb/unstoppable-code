@@ -77,6 +77,7 @@ import {
   WORKER_SCRIPT_GRANTS,
   WORKER_PIPELINE_GRANTS,
   PIPELINE_DEFINITION_IMPORT_GRANTS,
+  OPERATION_LEDGER_OWNER_GRANTS,
   WORKER_TERMINAL_GRANTS,
   WORKER_OPERATION_RECEIPT_INSTRUCTION_DEFINITIONS,
   WORKER_OPERATION_RECEIPT_QUERY_DEFINITIONS,
@@ -172,6 +173,9 @@ export const DAEMON_OWNER_PRINCIPAL_ID = 'desktop-owner';
 export const WORKER_PIPELINE_OWNER_GRANTS = [
   WORKER_PIPELINE_GRANTS.host,
   ...PIPELINE_DEFINITION_IMPORT_GRANTS,
+  // CAN-6986 L3: the operation ledger's internal operations, under the same
+  // interim exception, where the daemon holds the ledger.
+  ...OPERATION_LEDGER_OWNER_GRANTS,
 ] as const;
 
 /**
@@ -480,6 +484,8 @@ interface DaemonCoreOptions {
   readonly mutationFence?: RuntimeModule;
   /** Runs on the core before any forwarded worker instruction. */
   readonly instructionGuard?: RuntimeInstructionGuard;
+  /** `core.integration.cloudAccount.*` once account authority is selected (CAN-6997). */
+  readonly cloudAccount?: RuntimeModule;
   readonly identity: CanopyRuntimeIdentity;
   /** Extra core services; tests use one to drive health-change events. */
   readonly services?: readonly RuntimeService[];
@@ -561,6 +567,7 @@ function coreModules(options: DaemonCoreOptions): RuntimeModule[] {
     ...(options.vault ? [options.vault] : []),
     ...(options.credentials ? [options.credentials] : []),
     ...(options.mutationFence ? [options.mutationFence] : []),
+    ...(options.cloudAccount ? [options.cloudAccount] : []),
   ];
 }
 

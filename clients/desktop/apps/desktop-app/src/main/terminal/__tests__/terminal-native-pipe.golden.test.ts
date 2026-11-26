@@ -324,6 +324,7 @@ describe('terminal native closed-peer golden (CAN-3238)', () => {
         peers[0].write('close\n');
         await until(() => seen('closed') && seen('tty-close'));
         if (phase === 'before') {
+          await until(() => (outstanding.get(0) ?? 0) === 0);
           const previous = { ...callbacks };
           record('write-start', { generation: 0, bytes: 16 });
           expect(engine.write(first.id, 'must-not-replay\r')).toBeUndefined();

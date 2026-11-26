@@ -29,6 +29,8 @@ export type DraftState =
 
 export interface FeedbackReportDialogContentProps extends FeedbackReportDialogProps {
   readonly openingDraft?: Promise<DraftState>;
+  /** The latest displayed error when this opening started. */
+  readonly recentError?: FeedbackReportError | undefined;
 }
 
 export type FeedbackReportDialogComponent = (

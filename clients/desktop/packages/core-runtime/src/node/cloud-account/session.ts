@@ -280,12 +280,26 @@ export class CloudAccountSessionStatus<TRecord, TCredential> {
     if (wasExpired !== this.#matches(record)) this.#notify();
   }
 
+  /**
+   * Orders an outcome that neither accepts nor rejects the credential (403,
+   * an unidentifiable snapshot): older probes are superseded, newer ones stay
+   * current. Called only inside the account operation queue.
+   */
+  observe(probe: CloudAccountSessionProbe): void {
+    if (this.isCurrent(probe)) this.#lastResult = probe.sequence;
+  }
+
   /** After readable credential state changes, including same-key replacement. */
   resetCredential(): void {
     this.#generation++;
     const changed = this.#rejected !== null;
     this.#rejected = null;
     if (changed) this.#notify();
+  }
+
+  /** An uncertain write retires probes, not a known credential rejection. */
+  invalidateProbes(): void {
+    this.#generation++;
   }
 
   isExpired(record: TRecord | null): boolean {

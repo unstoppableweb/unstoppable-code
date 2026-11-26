@@ -762,9 +762,12 @@ export function MemoryPanel({
           <TextLink
             variant="inherited"
             target={undefined}
-            rel={undefined}
+            rel={linked ? undefined : 'noopener noreferrer'}
             href={href ?? ''}
             onClick={(event) => {
+              // ⌘/Ctrl+click keeps the native gesture: desktop opens it in the
+              // system browser (CAN-6378), a web browser in a new tab.
+              if (!linked && (event.metaKey || event.ctrlKey)) return;
               event.preventDefault();
               if (linked) openDetail(linked);
               else if (href) client.openLink(href);

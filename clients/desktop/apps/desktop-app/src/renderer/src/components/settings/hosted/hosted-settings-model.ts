@@ -11,6 +11,7 @@ import {
   type SettingsRoute,
 } from '@canopy/protocol/settings';
 import {
+  organizationVisibleTabsFromBootstrap,
   selectSettingsNavRow,
   settingsNavModelFromBootstrap,
   type SettingsNavGroup,
@@ -232,7 +233,10 @@ export function persistedSettingsNavModelFrom(
   const requested = bootstrap.organization;
   if (requested !== null)
     organizations[requested.id] = {
-      visibleTabs: requested.visibleTabs.filter(isOrganizationNavTab),
+      visibleTabs:
+        organizationVisibleTabsFromBootstrap(requested).filter(
+          isOrganizationNavTab,
+        ),
       disabledTabs: requested.disabledTabs.filter(isOrganizationNavTab),
       billingNeedsAttention: requested.billingNeedsAttention,
       settingsSubtabs:
@@ -368,10 +372,10 @@ export function hostedSettingsRedirect(
       { scope: 'organizations' },
       { notice: 'access-lost' },
     );
-  if (organization.visibleTabs.includes(route.page)) return null;
-  const fallback = organization.visibleTabs.includes('feed')
-    ? 'feed'
-    : organization.visibleTabs[0];
+  // Transcripts arrives as `transcriptsEnabled`, not in `visibleTabs`.
+  const visibleTabs = organizationVisibleTabsFromBootstrap(organization);
+  if (visibleTabs.includes(route.page)) return null;
+  const fallback = visibleTabs.includes('feed') ? 'feed' : visibleTabs[0];
   if (fallback === undefined) return null;
   return hostedSettingsLocation({
     scope: 'organization',

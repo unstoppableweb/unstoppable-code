@@ -257,7 +257,9 @@ export type WorkerTerminalEventListener = (event: WorkerTerminalEvent) => void;
 
 /**
  * An app shutdown kills every terminal: their exits end no command, so none
- * gets an idle `runningChanged`. Exit signals and persistence are unchanged.
+ * gets an idle `runningChanged`. The in-process engine keeps PTY exit signals;
+ * revision 2 remote terminals use the quit reason, matching main's prior
+ * record stamp (CAN-7051).
  */
 export interface TerminalKillAllOptions {
   readonly reason: 'app-quit' | 'fatal-exit';

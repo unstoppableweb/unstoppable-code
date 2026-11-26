@@ -11,7 +11,7 @@ import {
   PickerMenuOptionLabel,
   PickerMenuOptionLeading,
   PickerMenuSectionLabel,
-} from '../../../PickerMenu';
+} from '../../../../primitives/PickerMenu';
 import { ChatIcon } from '../../../../icons/AppIcons';
 import { SubagentIcon } from '../../../../icons/SubagentIcon';
 import {

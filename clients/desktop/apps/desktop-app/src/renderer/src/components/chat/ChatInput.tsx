@@ -3141,6 +3141,18 @@ function ChatInputContent({
     tab?.id,
     composerTurn.confirmStuckTurn,
   );
+  // A closed stuck warning returns when the turn stalls again or the tab
+  // changes.
+  const stuck = stuckMinutes !== null;
+  const [stuckDismissed, setStuckDismissed] = useState(false);
+  useEffect((): void => {
+    setStuckDismissed(false);
+  }, [stuck, tab?.id]);
+  // A closed Stop failure returns after the next Stop attempt fails.
+  const [stopFailedDismissed, setStopFailedDismissed] = useState(false);
+  useEffect((): void => {
+    setStopFailedDismissed(false);
+  }, [cloudStop]);
 
   const resourceGuardBlock = useResourceMonitorStore(
     useShallow((s) => {
@@ -4655,8 +4667,10 @@ function ChatInputContent({
   const [turnLimitResumeError, setTurnLimitResumeError] = useState<
     string | null
   >(null);
+  const [turnLimitDismissed, setTurnLimitDismissed] = useState(false);
   useEffect((): void => {
     setTurnLimitResumeError(null);
+    setTurnLimitDismissed(false);
   }, [tab?.id, tab?.error]);
   const resumeTurnLimit = useCallback(async (): Promise<void> => {
     if (!sessionChatTarget || turnLimitResumeInFlight.current) return;
@@ -4665,7 +4679,7 @@ function ChatInputContent({
     setTurnLimitResumeError(null);
     try {
       const rejected = (): void => {
-        setTurnLimitResumeError('Could not resume this chat. Try again.');
+        setTurnLimitResumeError("Couldn't resume this chat.");
       };
       await sendMessage('Continue', undefined, sessionChatTarget, 'typed', {
         composerAttachmentsReserved: true,
@@ -4673,7 +4687,7 @@ function ChatInputContent({
         onPreDispatchRejected: rejected,
       });
     } catch {
-      setTurnLimitResumeError('Could not resume this chat. Try again.');
+      setTurnLimitResumeError("Couldn't resume this chat.");
     } finally {
       turnLimitResumeInFlight.current = false;
       setTurnLimitResumeBusy(false);
@@ -5024,6 +5038,9 @@ function ChatInputContent({
     ],
   );
   const [emptyCompletionBusy, setEmptyCompletionBusy] = useState(false);
+  // Closed per empty turn: the next empty turn has a new id and shows again.
+  const [dismissedEmptyCompletionTurnId, setDismissedEmptyCompletionTurnId] =
+    useState<string | null>(null);
   const [emptyCompletionError, setEmptyCompletionError] = useState<
     string | null
   >(null);
@@ -6983,6 +7000,9 @@ function ChatInputContent({
       chatId: tabId,
     };
   }, [selectedWorktree, tabId, targetOverride]);
+  const openModelPicker = useCallback((): void => {
+    if (composerShortcutTarget) requestModelPickerOpen(composerShortcutTarget);
+  }, [composerShortcutTarget]);
 
   useComposerActions(
     composerShortcutTarget,
@@ -7672,10 +7692,7 @@ function ChatInputContent({
                 },
               }
             : {}),
-          model: () => {
-            if (composerShortcutTarget)
-              requestModelPickerOpen(composerShortcutTarget);
-          },
+          model: openModelPicker,
           ...(scopeCapabilities.chatThinkingLevel === true
             ? { thinking: handleCycleThinkingLevel }
             : {}),
@@ -7809,7 +7826,7 @@ function ChatInputContent({
       composerMenu,
       openPluginsModal,
       handleImportAttachments,
-      composerShortcutTarget,
+      openModelPicker,
       handleCycleThinkingLevel,
       canUsePlanMode,
       togglePlanMode,
@@ -8559,10 +8576,7 @@ function ChatInputContent({
             testId="chat-input-model-unavailable"
             modelLabel={unbillableModelSwitch.modelLabel}
             reason={unbillableModelSwitch.reason}
-            switchModelLabel={unbillableModelSwitch.switchModelLabel}
-            onSwitch={(): void =>
-              handleModelChange(unbillableModelSwitch.switchModel)
-            }
+            onChooseModel={openModelPicker}
           />
         ) : null}
         {!unbillableModelSwitch && strandedGatewayModel ? (
@@ -8571,10 +8585,7 @@ function ChatInputContent({
               testId="chat-input-gateway-model-unavailable"
               modelLabel={strandedGatewayModel.modelLabel}
               reason={strandedGatewayModel.reason}
-              switchModelLabel={getModelDisplayName(strandedGatewaySwitchModel)}
-              onSwitch={(): void =>
-                handleModelChange(strandedGatewaySwitchModel)
-              }
+              onChooseModel={openModelPicker}
             />
           ) : (
             <Notice
@@ -8653,11 +8664,16 @@ function ChatInputContent({
         {/* A cloud Stop that couldn't name its turn: the turn may still run,
             and Stop stays to try again (CAN-6592). It says "select" rather
             than "click" so it reads for Esc and touch too. */}
-        {!isEditingQueued && isStreaming && cloudStop === 'not_stopped' ? (
+        {!isEditingQueued &&
+        isStreaming &&
+        cloudStop === 'not_stopped' &&
+        !stopFailedDismissed ? (
           <Notice
             errorSource="chat-input-stop-failed"
             intent="destructive"
             data-testid="chat-input-stop-failed"
+            onDismiss={(): void => setStopFailedDismissed(true)}
+            dismissLabel="Dismiss"
           >
             {"Couldn't stop the reply yet. Select Stop to try again."}
           </Notice>
@@ -8755,9 +8771,16 @@ function ChatInputContent({
               over, so it names the state the user is actually in. */}
         {!isEditingQueued &&
           sessionChatTarget !== null &&
-          emptyCompletionRecovery !== undefined && (
+          emptyCompletionRecovery !== undefined &&
+          emptyCompletionRecovery.turnUserMessageId !==
+            dismissedEmptyCompletionTurnId && (
             <EmptyCompletionRecoveryNotice
               recovery={emptyCompletionRecovery}
+              onDismiss={(): void =>
+                setDismissedEmptyCompletionTurnId(
+                  emptyCompletionRecovery.turnUserMessageId,
+                )
+              }
               busy={emptyCompletionBusy}
               error={emptyCompletionError}
               onResume={(): void => {
@@ -8773,17 +8796,23 @@ function ChatInputContent({
           sessionChatTarget !== null &&
           effectiveProviderType === 'claude' &&
           tab?.status === 'error' &&
-          isClaudeTurnLimitMessage(tab.error) && (
+          isClaudeTurnLimitMessage(tab.error) &&
+          !turnLimitDismissed && (
             <Notice
               errorSource="claude-turn-limit-notice"
               intent="destructive"
               title="Claude turn limit reached"
               data-testid="claude-turn-limit-notice"
+              onDismiss={(): void => setTurnLimitDismissed(true)}
+              dismissLabel="Dismiss"
               {...(turnLimitResumeError
                 ? { detail: turnLimitResumeError }
                 : {})}
               actions={
                 <>
+                  <NoticeButton onClick={(): void => openSettings('claude')}>
+                    Claude settings
+                  </NoticeButton>
                   <NoticeButton
                     variant="primary"
                     disabled={turnLimitResumeBusy}
@@ -8793,9 +8822,6 @@ function ChatInputContent({
                     data-testid="claude-turn-limit-resume"
                   >
                     Resume
-                  </NoticeButton>
-                  <NoticeButton onClick={(): void => openSettings('claude')}>
-                    Claude settings
                   </NoticeButton>
                 </>
               }
@@ -8864,11 +8890,13 @@ function ChatInputContent({
         {/* Stuck agent warning */}
         {!isEditingQueued &&
           stuckMinutes !== null &&
+          !stuckDismissed &&
           catchingUpLag === null && (
             <StuckAgentNotice
               key={tab?.id}
               minutes={stuckMinutes}
               onCheckStatus={handleCheckStatus}
+              onDismiss={(): void => setStuckDismissed(true)}
             />
           )}
 

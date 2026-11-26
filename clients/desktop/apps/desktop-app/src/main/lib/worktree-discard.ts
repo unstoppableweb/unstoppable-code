@@ -46,15 +46,12 @@ import type {
 } from '@canopy/protocol/remote-control/shell';
 import { W5CommitRefusedError } from '@canopy/desktop-shared/node/w5-commit-log/errors';
 import { runArchiveIoRequest } from '../archive/archive-io-runner';
-import { assertWorktreeCanBeRemoved } from '../agents/background-work';
-import {
-  assertNotSplitDestinationWorktreeClaimed,
-  assertNotSplitLocked,
-} from '../services/split-lock-service';
+import { assertWorktreeDiscardAdmitted } from './worktree-discard-admission';
 import {
   areOwnedPathsUnreplaced,
   canFinishArchiveCleanup,
   canResumeInterruptedArchive,
+  isInterruptedArchiveGitCapture,
   destructiveStep,
   hasUnfinishedWorkspaceDeletion,
   isDestructiveRecoveryOwnerless,
@@ -986,8 +983,10 @@ async function inspectWorktreeDiscard(
   if (unfinished) {
     // Source admission (CAN-5158) and owned-path guards can refuse that redo.
     // CAN-5717 admission alone must not hide an existing discard escape hatch.
+    // CAN-6776: a capture that keeps failing must not lose discard either.
     if (
       canResumeInterruptedArchive(unfinished) &&
+      !isInterruptedArchiveGitCapture(unfinished) &&
       (await areOwnedPathsUnreplaced(unfinished).catch(() => false)) &&
       !causes.includes('source-gone')
     )
@@ -1162,13 +1161,7 @@ function refusedWith(
 function admissionRefusal(inspection: Inspection): DiscardRefused | null {
   const { workspaceId, worktreeId } = inspection.description;
   try {
-    assertNotSplitLocked(workspaceId, worktreeId, 'discarding the worktree');
-    assertNotSplitDestinationWorktreeClaimed(
-      workspaceId,
-      worktreeId,
-      'discarding the worktree',
-    );
-    assertWorktreeCanBeRemoved(workspaceId, worktreeId);
+    assertWorktreeDiscardAdmitted(workspaceId, worktreeId);
     return null;
   } catch {
     return refusedWith(inspection, 'busy');

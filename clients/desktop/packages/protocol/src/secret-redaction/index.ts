@@ -15,6 +15,17 @@
 const REDACTED = '<redacted>';
 
 /**
+ * Canopy-issued credentials (`csk_` API keys, `cwc_` connection tokens,
+ * `camcp_at_`/`camcp_rt_`/`camcp_ac_` MCP OAuth tokens): a prefix and a
+ * 43-character base64url body. Requiring an uppercase letter in the body
+ * spares lowercase fixtures, placeholders and snake_case identifiers. The
+ * uppercase lookahead stays inside one body length, so a long run of repeated
+ * prefixes (`_csk_csk_…`) costs each start a bounded scan and stays linear.
+ */
+export const CANOPY_ISSUED_TOKEN_SOURCE =
+  '(?<![A-Za-z0-9])(?:csk|cwc|camcp_(?:at|rt|ac))_(?=[a-z0-9_-]{0,42}[A-Z])[A-Za-z0-9_-]{20,}';
+
+/**
  * The complete secret-bearing assignment-key vocabulary, as a regex
  * alternation source string. This is the single source of truth for which
  * key names mark an assignment value as a secret; the `key: value` and
@@ -24,6 +35,17 @@ const REDACTED = '<redacted>';
  */
 export const SECRET_ASSIGNMENT_KEYS_SOURCE =
   'api[_-]?key|access[_-]?key|secret[_-]?access[_-]?key|secret[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|secret|password|passwd|pwd';
+
+/** HTTP headers whose whole value is a credential. */
+export const CREDENTIAL_HEADER_NAMES = [
+  'Authorization',
+  'Proxy-Authorization',
+  'Cookie',
+  'Set-Cookie',
+  'X-Api-Key',
+  'X-Auth-Token',
+  'X-Amz-Security-Token',
+] as const;
 
 /**
  * The placeholders written by the passes from the header pass on, and by the
@@ -137,10 +159,15 @@ const SECRET_REDACTION_PASSES: ReadonlyArray<RedactionPass> = [
     pattern: /\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}/g,
     replacement: '<redacted-token>',
   },
+  // Canopy-issued keys and tokens.
+  {
+    pattern: new RegExp(CANOPY_ISSUED_TOKEN_SOURCE, 'g'),
+    replacement: '<redacted-token>',
+  },
   // Authorization / Cookie / common API-key headers (mask the whole value).
   {
     pattern: new RegExp(
-      `\\b(Authorization|Proxy-Authorization|Cookie|Set-Cookie|X-Api-Key|X-Auth-Token|X-Amz-Security-Token)\\s*:${notPlaceholdersBefore('[\\r\\n]', '\\s*')}\\s*([^\\r\\n]+)`,
+      `\\b(${CREDENTIAL_HEADER_NAMES.join('|')})\\s*:${notPlaceholdersBefore('[\\r\\n]', '\\s*')}\\s*([^\\r\\n]+)`,
       'gi',
     ),
     replacement: `$1: ${REDACTED}`,
@@ -225,7 +252,8 @@ const REDACTION_PASSES = [
  *
  * Coverage: API keys / tokens / secrets / passwords expressed as `key: value`
  * or `key=value`, `Authorization`/`Cookie`/`Bearer` headers, JWTs, GitHub
- * tokens, AWS access keys, OpenAI/Anthropic `sk-` keys, PEM private-key blocks,
+ * tokens, AWS access keys, OpenAI/Anthropic `sk-` keys, Stripe keys,
+ * Canopy-issued keys and tokens, PEM private-key blocks,
  * email addresses, IPv4 addresses, and user home-directory paths (the OS
  * username component is masked).
  */

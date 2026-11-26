@@ -12,7 +12,10 @@
  *
  * Effects the hosted profile must never reach: terminals, approval answers
  * (tool approval, permission, plan review, secret input), and destructive work
- * (delete, archive, discard, remove, force push, merge). No hosted call may
+ * (delete, archive, discard, remove, force push, merge), with one reviewed
+ * exception (CAN-7446): a locked, restorable archive of a task or chat that
+ * keeps the task's branch ({@link HOSTED_ARCHIVE_CHANNELS} and
+ * `chat.archive_tab`). No hosted call may
  * name a Bot project such as the Orchestrator (CAN-7604). Generic or
  * argument-sensitive channels also have an argument policy on the host
  * ({@link hostedInvocationAllowed}): `chat:command` may only start chats,
@@ -20,8 +23,8 @@
  * reviewed chat settings and steer a queued message; `chat:cancel` must name
  * the exact turn it stops; `work-entries:create` takes only its project;
  * `file:read-content` reads only inside one worktree's roots; and every
- * channel in {@link HOSTED_DIRECT_CHANNELS} added by CAN-7445 takes exactly
- * its reviewed argument shape.
+ * channel in {@link HOSTED_DIRECT_CHANNELS} added by CAN-7445 or CAN-7446
+ * takes exactly its reviewed argument shape.
  */
 import { SIDEBAR_ITEM_GROUP_COLORS } from '../canopy-core/sidebar-values';
 import { APP_ADVISOR_PROJECT_ID, isBotProjectId } from '../chat-targets';
@@ -131,6 +134,20 @@ export const HOSTED_TASK_CHANNELS = {
 } as const;
 
 /**
+ * Channels the hosted `task_delete` tool reaches for CAN-7446, each with an
+ * exact argument policy in {@link hostedInvocationAllowed}: only a locked,
+ * restorable archive that keeps the task's branch. The Delete path
+ * (`lockAfterArchive` absent or false), branch deletion, host paths and the
+ * remaining-order keys are refused. The desktop's `IPC_CHANNELS` holds the
+ * same values, and the host authorization golden keeps them equal.
+ */
+export const HOSTED_ARCHIVE_CHANNELS = {
+  worktreeArchive: 'worktree:archive',
+  workspaceArchiveWorktree: 'workspace:archive-worktree',
+  workEntriesDelete: 'work-entries:delete',
+} as const;
+
+/**
  * Channels the hosted tools call directly, outside the CanopyClient manifest,
  * each with one reviewed effect:
  *
@@ -177,6 +194,17 @@ export const HOSTED_TASK_CHANNELS = {
  * The group channels check the item ID's shape only, not that it names a
  * task in the scope; the web sends the authorized task's own item.
  *
+ * CAN-7446 (archive on a connected computer; every one argument checked):
+ *
+ * - `worktree:archive`, `workspace:archive-worktree`: archive a single-repo or
+ *   multi-repo task's worktree as locked, keeping its branch. No `repoPath`,
+ *   typed refusal or remaining-order keys; `deleteBranch` must be `false`.
+ * - `work-entries:delete`: archive a no-repository task as locked
+ *   (`lockAfterArchive: true`); the unlocked Delete path is refused.
+ *
+ * Each is a reviewed exemption from `/archive/` or `/delete/` in
+ * {@link HOSTED_FORBIDDEN_PATTERN_EXEMPTIONS}.
+ *
  * CAN-7604: `app-advisor:slack-turn-status` reads where one Slack message's
  * Orchestrator turn stands. Only a Slack session may use it; the computer
  * serves it itself, never through the bridge.
@@ -192,6 +220,7 @@ export const HOSTED_DIRECT_CHANNELS: readonly string[] = [
   'tracked-plans:list',
   HOSTED_WORK_ENTRY_CREATE_CHANNEL,
   ...Object.values(HOSTED_TASK_CHANNELS),
+  ...Object.values(HOSTED_ARCHIVE_CHANNELS),
   HOSTED_SLACK_TURN_STATUS_CHANNEL,
 ];
 
@@ -207,7 +236,7 @@ const HOSTED_CHAT_ENVELOPE_FIELDS: ReadonlySet<string> = new Set([
 /**
  * The chat commands a hosted controller may send, and the fields each may
  * carry. Anything else (approval mode, seeded tabs, attachments, plan review
- * approval, agent-send provenance, archive, close, reset, dismissals) is
+ * approval, agent-send provenance, close, discard, reset, dismissals) is
  * refused by the host. `chat.answer_question` answers an ordinary agent
  * question only: tool approvals, permissions and plan review are other
  * commands and channels, and the host also refuses an answer to a
@@ -219,6 +248,10 @@ const HOSTED_CHAT_ENVELOPE_FIELDS: ReadonlySet<string> = new Set([
  * selections) and `chat.steer_queued_message`. A hosted patch carries no
  * `expectedPluginSelections`, so it has no compare-and-set and overwrites a
  * concurrent edit by the person.
+ *
+ * CAN-7446 adds `chat.archive_tab` naming only the tab: no `keepSession` or
+ * `unread`. The computer refuses it for a busy chat and for any chat in a
+ * Work Entry project, whose main chat closes only with its task.
  */
 export const HOSTED_CHAT_COMMAND_FIELDS: ReadonlyMap<
   string,
@@ -245,6 +278,7 @@ export const HOSTED_CHAT_COMMAND_FIELDS: ReadonlyMap<
     'chat.steer_queued_message',
     new Set(['type', 'chatId', 'queuedMessageId', 'queuedMessageRevision']),
   ],
+  ['chat.archive_tab', new Set(['type', 'tabId'])],
 ]);
 
 /** `chat.patch_tab_settings` patch keys a hosted controller may set. */
@@ -293,6 +327,8 @@ const MAX_SELECTION_ENTRIES = 100;
 /** Worktree labels, work entry titles and group names. */
 const MAX_NAME_LENGTH = 512;
 const MAX_BRANCH_LENGTH = 256;
+/** A worktree's `createdAt` as the computer reports it (an ISO timestamp). */
+const MAX_TIMESTAMP_LENGTH = 64;
 // eslint-disable-next-line no-control-regex -- matching control characters is the point.
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
 
@@ -381,6 +417,8 @@ function hostedChatCommandAllowed(value: unknown): boolean {
         (command.queuedMessageRevision === undefined ||
           isNonNegativeInteger(command.queuedMessageRevision))
       );
+    case 'chat.archive_tab':
+      return isId(command.tabId);
     default:
       return false;
   }
@@ -696,9 +734,53 @@ function isGroupColor(value: unknown): boolean {
   return SIDEBAR_ITEM_GROUP_COLORS.some((color) => color === value);
 }
 
-const HOSTED_TASK_CHANNEL_NAMES: ReadonlySet<string> = new Set(
-  Object.values(HOSTED_TASK_CHANNELS),
-);
+const HOSTED_TASK_CHANNEL_NAMES: ReadonlySet<string> = new Set([
+  ...Object.values(HOSTED_TASK_CHANNELS),
+  ...Object.values(HOSTED_ARCHIVE_CHANNELS),
+]);
+
+/**
+ * The computer's own `createdAt` string for a worktree, as the web passes it
+ * through unchanged: a bounded string with no control characters, so an ISO
+ * timestamp's `:`, `.` and `+` are accepted.
+ */
+function isHostedTimestamp(value: unknown): boolean {
+  return isBoundedName(value, MAX_TIMESTAMP_LENGTH);
+}
+
+/**
+ * Whether the hosted policy admits this `expectedCreatedAt`. The web omits a
+ * snapshot value it refuses rather than fail the archive locally.
+ */
+export function isHostedExpectedCreatedAt(value: unknown): boolean {
+  return isHostedTimestamp(value);
+}
+
+/**
+ * A locked worktree archive that keeps the branch: `projectId` or
+ * `workspaceId` (by channel) and `worktreeId`, `lockAfterArchive: true`,
+ * `deleteBranch: false` and an optional `expectedCreatedAt`. Both flags are
+ * compared strictly. No `repoPath`, typed refusal, remaining-order or other
+ * key.
+ */
+function hostedWorktreeArchiveAllowed(
+  value: unknown,
+  scopeKey: 'projectId' | 'workspaceId',
+): boolean {
+  return (
+    hasShape(
+      value,
+      [scopeKey, 'worktreeId', 'lockAfterArchive', 'deleteBranch'],
+      ['expectedCreatedAt'],
+    ) &&
+    isId(value[scopeKey]) &&
+    isId(value.worktreeId) &&
+    value.lockAfterArchive === true &&
+    value.deleteBranch === false &&
+    (value.expectedCreatedAt === undefined ||
+      isHostedTimestamp(value.expectedCreatedAt))
+  );
+}
 
 /**
  * Undefined for a channel that isn't a task channel. A task channel is
@@ -786,6 +868,17 @@ function hostedTaskChannelAllowed(
           (isId(value.groupId) &&
             typeof value.groupId === 'string' &&
             value.groupId.startsWith('grp-')))
+      );
+    case HOSTED_ARCHIVE_CHANNELS.worktreeArchive:
+      return hostedWorktreeArchiveAllowed(value, 'projectId');
+    case HOSTED_ARCHIVE_CHANNELS.workspaceArchiveWorktree:
+      return hostedWorktreeArchiveAllowed(value, 'workspaceId');
+    case HOSTED_ARCHIVE_CHANNELS.workEntriesDelete:
+      return (
+        hasShape(value, ['projectId', 'entryId', 'lockAfterArchive']) &&
+        isId(value.projectId) &&
+        isId(value.entryId) &&
+        value.lockAfterArchive === true
       );
     default:
       return isTaskChannel ? false : undefined;
@@ -983,11 +1076,12 @@ function firstPartyCallAllowed(
  * ({@link slackOrchestratorCallAllowed} for Slack); any other client gets none.
  * Generic or argument-sensitive channels have
  * one: `chat:command` (new chats, messages, ordinary answers, a chat's model,
- * the reviewed settings patch keys and steering a queued message),
- * `chat:cancel` (one exact turn), `work-entries:create` (its project only),
- * `file:read-content` (one worktree's roots only) and each channel in
- * {@link HOSTED_TASK_CHANNELS} (exactly its reviewed argument). Every other
- * hosted channel has a single effect.
+ * the reviewed settings patch keys, steering a queued message and archiving
+ * one chat), `chat:cancel` (one exact turn), `work-entries:create` (its
+ * project only), `file:read-content` (one worktree's roots only) and each
+ * channel in {@link HOSTED_TASK_CHANNELS} and {@link HOSTED_ARCHIVE_CHANNELS}
+ * (exactly its reviewed argument). Every other hosted channel has a single
+ * effect.
  */
 export function hostedInvocationAllowed(
   channel: string,
@@ -1054,4 +1148,52 @@ export const HOSTED_FORBIDDEN_PATTERN_EXEMPTIONS: ReadonlyMap<string, string> =
       HOSTED_TASK_CHANNELS.chatQueueForce,
       'Sends one named queued message now, interrupting whichever turn is running: unlike hosted chat:cancel it names no turn, and the entry may be one the person queued. It deletes and force-pushes nothing, and the sign-off on task_chat_queue_update accepts the interrupt (CAN-7445).',
     ],
+    [
+      HOSTED_ARCHIVE_CHANNELS.workEntriesDelete,
+      'Archives one no-repository task as locked and restorable: the argument policy requires lockAfterArchive: true, so the unlocked Delete path is refused, and the task_delete sign-off confirms the archive (CAN-7446).',
+    ],
+    [
+      HOSTED_ARCHIVE_CHANNELS.workspaceArchiveWorktree,
+      "Archives one multi-repo task's worktree as locked and restorable: lockAfterArchive must be true and deleteBranch false, so no branch is deleted and the Delete path is refused; no host path or remaining-order key is accepted (CAN-7446).",
+    ],
+    [
+      HOSTED_ARCHIVE_CHANNELS.worktreeArchive,
+      "Archives one single-repo task's worktree as locked and restorable: lockAfterArchive must be true and deleteBranch false, so no branch is deleted and the Delete path is refused; no repoPath, typed refusal or remaining-order key is accepted (CAN-7446).",
+    ],
   ]);
+
+/*
+ * Refusal reasons a paired computer returns for a Slack send (CAN-7604). The
+ * web's Slack dispatch worker (CAN-7607) compares a `rejected` send's reason
+ * with these values to pick what it tells the sender, so the text is a
+ * contract between desktop and web: never edit a string, only add new ones.
+ * An older computer keeps sending the text it shipped with.
+ */
+
+/** The computer's Slack gate is off. */
+export const HOSTED_SLACK_REQUESTS_OFF_REFUSAL =
+  "This computer isn't listening for Slack mentions. Turn it on in Settings → Integrations on this computer.";
+
+/** The gate is unavailable. No setting to point at: the flag hides it there. */
+export const HOSTED_SLACK_REQUESTS_UNAVAILABLE_REFUSAL =
+  "This computer isn't listening for Slack mentions yet.";
+
+/** The Slack thread's chat is gone from the computer. */
+export const SLACK_THREAD_REMOVED_REFUSAL =
+  "This Slack thread's chat was removed from this computer.";
+
+/** The Slack thread's chat closed while the send was checked; retry. */
+export const SLACK_THREAD_JUST_CLOSED_REFUSAL =
+  "This Slack thread's chat just closed. Send the message again.";
+
+/** The Slack thread's chat is too long to check for a repeated message. */
+export const SLACK_THREAD_TOO_LONG_REFUSAL =
+  "This Slack thread's chat is too long to check for a repeated message.";
+
+/*
+ * The whole final answer an Orchestrator gives to a Slack thread follow-up
+ * that isn't meant for it (CAN-7832). The web's reply worker posts nothing
+ * when a follow-up's answer is exactly this marker; desktop guidance names it
+ * in the Slack turn prompt. A contract between desktop and web: never edit it.
+ */
+export const SLACK_NO_REPLY_MARKER = '[[no-reply-needed]]';

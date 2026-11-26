@@ -115,6 +115,8 @@ import {
   isAncestor,
   isBranchNameAvailable,
   listCheckedOutBranches,
+  resolveExactRefSha,
+  resolveLocalDefaultStartPoint,
 } from './git';
 import { resolveWorktreeCwd } from './resolve-worktree';
 import { relocateExecutionCheckout } from '../pipelines/execution-checkout-location';
@@ -131,6 +133,10 @@ import {
   removeWorkEntryRow,
 } from './cowork-work-entries';
 import { cleanupPersistedWorktreeData } from './worktree-data-cleanup';
+import {
+  archiveRestoreRelocation,
+  getWorktreeItemStore,
+} from './worktree-item-store';
 import { restoreEntryCostArchive } from '../cost-index/lifecycle';
 import { createElectronExecutionRuntime } from '../pipelines/execution-runtime';
 import { relocateExecutionStateArtifactPaths } from '../pipelines/execution-state-relocation';
@@ -141,8 +147,14 @@ import { validateId } from './validation';
 import {
   assertArchivedGitStateRestorable,
   resolveArchivedContainerRestoreBaseBranches,
+  resolveArchivedGitRestoreAttributeSources,
   restoreArchivedContainerGitState,
+  type ArchivedContainerRestoreBaseBranches,
 } from './archived-container-git';
+import {
+  assertScopedStartPointAttributes,
+  runWithGitAttributeSources,
+} from './git-attribute-source-scope';
 import {
   detachedWorkCallback,
   settleAll,
@@ -589,7 +601,8 @@ async function installArchivedChatProviderData(args: {
   }
 }
 
-async function installChatPayloads(args: {
+/** Electron's item store runs this copy as restore's relocation (CAN-4098). */
+export async function installChatPayloads(args: {
   manifest: ArchivedContainerManifest;
   destinationId: string;
   destinationCreatedAt: string;
@@ -816,6 +829,22 @@ async function resolveRestoreBranch(
             reuseBlockedReason = `its ${repository.repoName} history no longer contains archived commit ${repository.headCommit.slice(0, 8)}`;
             break;
           }
+          // CAN-6776: changes replayed onto later commits would pass through
+          // the attributes and filters the snapshot was captured without, so
+          // a policy archive restores at its commit on a new branch.
+          if (
+            repository.attributePolicy !== undefined &&
+            (await resolveExactRefSha(
+              repository.referenceRepoPath,
+              `refs/heads/${preferredBranch}`,
+            )) !== repository.headCommit
+          ) {
+            // States what the user can check; the attribute policy behind it
+            // has no user-facing name.
+            reuseBlockedReason =
+              'it has new commits since this worktree was archived';
+            break;
+          }
         }
         if (!reuseBlockedReason) {
           for (const repoPath of repoPaths) {
@@ -982,18 +1011,40 @@ async function createRestoredWorktree(
     !!commit.expectedRevisions || !!commit.beforeDecision,
     attempt,
   );
-  const restoreBases =
+  const restoreBases: ArchivedContainerRestoreBaseBranches =
     manifest.version === 2
       ? await resolveArchivedContainerRestoreBaseBranches(manifest)
-      : { baseBranchesByRepo: {}, warnings: [] };
+      : { baseRefsByRepo: new Map(), warnings: [] };
   warnings.push(...restoreBases.warnings);
+  // A new branch with no base starts from the start point its check read,
+  // not from a fetched remote default.
+  const defaultStartPointsByRepo = new Map<string, string>();
+  if (manifest.version === 2) {
+    // Checked before the creator adds any repository's checkout, so a refusal
+    // leaves no sibling behind; each `worktree add` repeats the check in case
+    // a ref moved (`runWithGitAttributeSources`). The creator receives the
+    // same full base refs, so it starts from exactly the commit checked here.
+    for (const repository of manifest.gitState.repositories) {
+      const repoPath = repository.referenceRepoPath;
+      const startPoint = branch.existingBranch
+        ? `refs/heads/${branch.existingBranch}`
+        : restoreBases.baseRefsByRepo.get(repository.repoId);
+      const checked = await assertScopedStartPointAttributes(
+        repoPath,
+        startPoint ??
+          ((): Promise<string> => resolveLocalDefaultStartPoint(repoPath)),
+      );
+      if (startPoint === undefined && checked !== undefined)
+        defaultStartPointsByRepo.set(repository.repoId, checked);
+    }
+  }
   if (manifest.workspaceType === 'single-repo') {
-    const baseBranch =
+    const onlyRepoId =
       manifest.version === 2
-        ? restoreBases.baseBranchesByRepo[
-            manifest.gitState.repositories[0]?.repoId ?? ''
-          ]
-        : undefined;
+        ? (manifest.gitState.repositories[0]?.repoId ?? '')
+        : '';
+    const baseRef = restoreBases.baseRefsByRepo.get(onlyRepoId);
+    const defaultStartPoint = defaultStartPointsByRepo.get(onlyRepoId);
     return createSingleRepoWorktree({
       w5BoundaryCommit: commit,
       w5BoundaryAttempt: attempt,
@@ -1003,7 +1054,10 @@ async function createRestoredWorktree(
         : branch.branchName
           ? { branchName: branch.branchName }
           : {}),
-      ...(baseBranch ? { baseBranch } : {}),
+      ...(baseRef
+        ? { baseBranch: baseRef, baseBranchIsQualified: true as const }
+        : {}),
+      ...(defaultStartPoint ? { defaultStartPoint } : {}),
       allowBaseBranchNetwork: false,
       startPostCreateSetup: false,
       seedPanelLayoutMode: false,
@@ -1030,9 +1084,13 @@ async function createRestoredWorktree(
       : branch.branchName
         ? { branchName: branch.branchName }
         : {}),
-    ...(Object.keys(restoreBases.baseBranchesByRepo).length > 0
-      ? { baseBranchesByRepo: restoreBases.baseBranchesByRepo }
+    ...(restoreBases.baseRefsByRepo.size > 0
+      ? {
+          baseBranchesByRepo: Object.fromEntries(restoreBases.baseRefsByRepo),
+          baseBranchIsQualified: true as const,
+        }
       : {}),
+    ...(defaultStartPointsByRepo.size > 0 ? { defaultStartPointsByRepo } : {}),
     allowBaseBranchNetwork: false,
     startPostCreateSetup: false,
     seedPanelLayoutMode: false,
@@ -1535,9 +1593,12 @@ async function restoreWorktree(
   execution: RestoreExecution,
 ): Promise<ArchivedContainerRestoreResponse> {
   const warnings: string[] = [];
+  let attributeSources: ReadonlyMap<string, string> = new Map();
   if (manifest.version === 2 && !manifest.restoredTo) {
     // Source/ref/object failures must be reported before destination creation.
     await assertArchivedGitStateRestorable(manifest);
+    attributeSources =
+      await resolveArchivedGitRestoreAttributeSources(manifest);
   }
   const executionIds = await listArchivedExecutionIds(manifest);
   if (manifest.restoredTo) {
@@ -1583,11 +1644,15 @@ async function restoreWorktree(
     });
   }
 
-  const created = await createRestoredWorktree(
-    manifest,
-    warnings,
-    execution.commit,
-    execution.attempt,
+  // The destination's own checkout must already read attributes the way the
+  // snapshot was captured, or it can run a smudge filter the archive avoided.
+  const created = await runWithGitAttributeSources(attributeSources, () =>
+    createRestoredWorktree(
+      manifest,
+      warnings,
+      execution.commit,
+      execution.attempt,
+    ),
   );
   let committedManifest = manifest;
   execution.attempt?.beforeEffects();
@@ -1603,14 +1668,16 @@ async function restoreWorktree(
         preserveDescendantHead: created.reuseExistingBranch,
       });
     }
-    await installChatPayloads({
-      manifest,
-      destinationId: created.id,
-      destinationCreatedAt: created.createdAt,
-      workEntry: false,
-      portableWarnings: !!execution.attempt,
-      warnings,
-    });
+    await getWorktreeItemStore().relocate(
+      archiveRestoreRelocation({
+        manifest,
+        destinationId: created.id,
+        destinationCreatedAt: created.createdAt,
+        workEntry: false,
+        portableWarnings: !!execution.attempt,
+        warnings,
+      }),
+    );
     const relocatedRepositories =
       manifest.version === 3
         ? await restoreArchivedRecoveryWorkspaceRootFiles(
@@ -1736,14 +1803,16 @@ async function restoreWorkEntry(
   });
   const destinationId = created.entry.id;
   try {
-    await installChatPayloads({
-      manifest,
-      destinationId,
-      destinationCreatedAt: created.entry.createdAt,
-      workEntry: true,
-      portableWarnings: !!execution.attempt,
-      warnings,
-    });
+    await getWorktreeItemStore().relocate(
+      archiveRestoreRelocation({
+        manifest,
+        destinationId,
+        destinationCreatedAt: created.entry.createdAt,
+        workEntry: true,
+        portableWarnings: !!execution.attempt,
+        warnings,
+      }),
+    );
     await commitArchivedContainer({
       ...manifest,
       restoredTo: {

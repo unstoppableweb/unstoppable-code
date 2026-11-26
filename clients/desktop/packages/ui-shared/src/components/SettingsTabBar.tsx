@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react';
-import { TabBar, type TabBarItem } from './TabBar';
+import { TabBar, type TabBarItem } from '../primitives/TabBar';
 
 export interface SettingsTab<T extends string> {
   id: T;

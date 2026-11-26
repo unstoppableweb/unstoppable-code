@@ -139,6 +139,7 @@ export function w5ResourceNamespace(
 export interface W5RecordPortTransport {
   capture(
     request: W5CaptureRequest,
+    signal?: AbortSignal,
   ): Promise<CoreWorkspaceRecordsCaptureResult>;
   recovery(): Promise<CoreWorkspaceRecordsRecovery>;
   commit(

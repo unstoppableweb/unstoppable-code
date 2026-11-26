@@ -15,17 +15,17 @@ import {
   MAX_ARCHIVE_RETENTION_DAYS,
 } from '@canopy/protocol/archive-retention';
 import { WORKSPACE_LABEL } from '@canopy/protocol';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 import { ColorSwatchPicker } from './ColorSwatchPicker';
-import { DialogModal } from './DialogModal';
+import { DialogModal } from '../primitives/DialogModal';
 import { InstructionsEditor } from './InstructionsEditor';
-import { FieldError, Select, TextArea, TextInput } from './Field';
-import { SegmentedControl } from './SegmentedControl';
-import { Surface } from './Surface';
+import { FieldError, Select, TextArea, TextInput } from '../primitives/Field';
+import { SegmentedControl } from '../primitives/SegmentedControl';
+import { Surface } from '../primitives/Surface';
 import { SettingsDangerConfirmBlock } from './SettingsDangerConfirmBlock';
 import { SettingsSaveStatus } from './SettingsSaveStatus';
-import { ErrorBanner } from './StatusBlocks';
-import { StatusLabel } from './StatusLabel';
+import { ErrorBanner } from '../primitives/StatusBlocks';
+import { StatusLabel } from '../primitives/StatusLabel';
 import { SettingsRowsGroup, SettingsRowsRow } from './settings/SettingsRows';
 import { WORKSPACE_COLOR_PALETTE } from './workspace-color-palette';
 

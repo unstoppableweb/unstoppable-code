@@ -3,9 +3,9 @@ import type {
   SubagentWorktreeFile,
   SubagentWorktreeSummaryState,
 } from '../types';
-import { Button } from '../../../Button';
+import { Button } from '../../../../primitives/Button';
 import { FileChangeMetadata } from '../../../FileChangeMetadata';
-import { ErrorBanner } from '../../../StatusBlocks';
+import { ErrorBanner } from '../../../../primitives/StatusBlocks';
 import { GitCommitIcon } from '../../../../icons/AppIcons';
 import {
   SUBAGENT_SHOW_CHANGES_LABEL,
@@ -28,7 +28,7 @@ import {
   subagentTopFilesShownLabel,
 } from '../subagent-copy';
 import { SubagentChangesLabel } from '../common/SubagentChangesLabel';
-import { Fact, FactList } from '../../../FactList';
+import { Fact, FactList } from '../../../../primitives/FactList';
 
 export interface SubagentWorktreeDetailsProps {
   readonly state: SubagentWorktreeSummaryState;

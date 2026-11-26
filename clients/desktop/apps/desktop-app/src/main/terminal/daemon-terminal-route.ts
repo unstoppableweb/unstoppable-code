@@ -12,10 +12,11 @@ import {
   type CanopyWorkspaceScope,
   type WorkerTerminalAttachItem,
   type WorkerTerminalListResult,
+  type WorkerTerminalRestoreParams,
 } from '@canopy/protocol/canopy-core';
 import { isSafePortableRelativePath } from '@canopy/protocol/safe-relative-path';
 import { SHARED_CONTAINER_VIEWER_PROJECT_ID } from '@canopy/desktop-shared/types';
-import type { TerminalKind } from '@canopy/protocol/terminal';
+import type { TerminalKind, TerminalSession } from '@canopy/protocol/terminal';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import {
   resolveWorktreeCwd,
@@ -33,9 +34,16 @@ import { recordDaemonRoute } from '../canopy-runtime/daemon-route-telemetry';
 import {
   RemoteTerminals,
   type RemoteTerminalFrame,
+  type RemoteTerminalRecordAttribution,
+  type RemoteTerminalRecreate,
   type RemoteTerminalTransport,
 } from '@canopy/core-runtime/node/terminal';
 import { terminalPersistenceStore } from './persistence';
+import { TerminalRecordAdmissionDeferred } from './record-admission';
+import {
+  keepsTerminalRecords,
+  noteTerminalRecordSession,
+} from './record-client';
 import { createDesktopTerminalHost, workerTerminal } from './worker-terminal';
 
 /**
@@ -389,6 +397,8 @@ export function daemonRestoreDirectory(
  * reached daemon is not.
  */
 export function noteDaemonTerminalFallback(error: unknown): boolean {
+  // Custody was deferred before create/recreate dispatch, not a daemon failure.
+  if (error instanceof TerminalRecordAdmissionDeferred) return true;
   const reason = daemonUnreachableReason(error);
   if (reason !== null) {
     getElectronDaemonHealth().noteFallback('terminals', reason);
@@ -435,6 +445,11 @@ function errorPayload(error: unknown): { kind: unknown; retry: unknown } {
 
 const owner = new AbortController();
 
+/** Main's terminal session with the daemon, for the record client (CAN-7051). */
+export function daemonTerminalSession(): Promise<ElectronDaemonClient> {
+  return client();
+}
+
 /**
  * Main's own terminal session with the daemon, for every daemon terminal,
  * under the verified local authority the daemon serves.
@@ -449,8 +464,69 @@ async function client(): Promise<ElectronDaemonClient> {
     interfaceKind: 'desktop',
     grants: [WORKER_TERMINAL_GRANTS.read, WORKER_TERMINAL_GRANTS.write],
   };
-  return (await getElectronDaemonConnections().get(caller, owner.signal))
-    .client;
+  const session = (
+    await getElectronDaemonConnections().get(caller, owner.signal)
+  ).client;
+  noteTerminalRecordSession(session);
+  return session;
+}
+
+/**
+ * The history source a restore chose on one negotiated session (CAN-7279):
+ * that session's record, or else main's legacy snapshot.
+ */
+export interface DaemonRestoreSession {
+  readonly signal: AbortSignal | null;
+  readonly records: boolean;
+}
+
+/** Never throws: an unreachable or latched daemon chooses the snapshot. */
+export async function negotiateDaemonRestore(): Promise<DaemonRestoreSession> {
+  // A latched daemon is not contacted: the restore would respawn it.
+  if (getElectronDaemonHealth().isLatched())
+    return { signal: null, records: false };
+  try {
+    const session = await client();
+    return { signal: session.signal, records: keepsTerminalRecords(session) };
+  } catch {
+    return { signal: null, records: false };
+  }
+}
+
+const restoreSessions = new Map<string, DaemonRestoreSession>();
+
+/**
+ * Recreates a persisted shell on the history source its caller prepared. A
+ * session change that would serve the other source, or a record not drained
+ * on the dispatching session, defers it before dispatch.
+ */
+export async function recreateDaemonTerminal(
+  bound: DaemonRestoreSession,
+  request: RemoteTerminalRecreate,
+): Promise<TerminalSession> {
+  // A concurrent caller joins the first one's restore, and so its binding.
+  const own = !restoreSessions.has(request.terminalId);
+  if (own) restoreSessions.set(request.terminalId, bound);
+  try {
+    return await getDaemonTerminals().recreate(request);
+  } finally {
+    if (own) restoreSessions.delete(request.terminalId);
+  }
+}
+
+function admitRestore(
+  params: WorkerTerminalRestoreParams,
+  session: ElectronDaemonClient,
+): void {
+  const bound = restoreSessions.get(params.terminalId);
+  if (!bound || params.restoreMode !== 'recreate_if_exited') return;
+  const record = params.historyFrom === 'record';
+  // The snapshot is main's own state, valid on any session.
+  if (
+    record !== bound.records ||
+    (record && (session.signal !== bound.signal || session.signal.aborted))
+  )
+    throw new TerminalRecordAdmissionDeferred();
 }
 
 function frameOf(
@@ -462,10 +538,19 @@ function frameOf(
 }
 
 const transport: RemoteTerminalTransport = {
-  create: async (params) =>
-    (await client()).instruction('worker.terminal.create', params),
-  restore: async (params) =>
-    (await client()).instruction('worker.terminal.restore', params),
+  create: async (params) => {
+    const session = await client();
+    // Attribution awaited on an earlier session; a legacy successor rejects
+    // the record fields, so the create opens in process instead.
+    if (params.revision !== undefined && !keepsTerminalRecords(session))
+      throw new TerminalRecordAdmissionDeferred();
+    return session.instruction('worker.terminal.create', params);
+  },
+  restore: async (params) => {
+    const session = await client();
+    admitRestore(params, session);
+    return session.instruction('worker.terminal.restore', params);
+  },
   write: async (params) =>
     (await client()).instruction('worker.terminal.write', params),
   resize: async (params) =>
@@ -512,6 +597,25 @@ export function getDaemonTerminals(): RemoteTerminals {
   const daemon = new RemoteTerminals({
     transport,
     persistence: terminalPersistenceStore,
+    // A daemon that keeps the worktree record gets each terminal's
+    // attribution, and main records none of its output (CAN-7051, q-28 (4)).
+    recordAttribution: async ({
+      projectId,
+      worktreeId,
+    }): Promise<RemoteTerminalRecordAttribution | null> => {
+      try {
+        if (!keepsTerminalRecords(await client())) return null;
+      } catch {
+        return null;
+      }
+      return {
+        client: await terminalPersistenceStore.recordClientFor(
+          projectId,
+          worktreeId,
+        ),
+        persistence: terminalPersistenceStore.recordedTerminals,
+      };
+    },
     resources: host.resources,
     emit: (event): void => workerTerminal.emit(event),
     log: (message, details): void => logMainProcessWarn(message, details),

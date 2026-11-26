@@ -216,8 +216,16 @@ class TerminalUnsupportedPlatformError extends Error {
   }
 }
 
+interface TerminalReleaseDrain {
+  completion: Promise<void>;
+  /** The exit reason to restore if the drain fails. */
+  previousOverride: string | null;
+  /** Only this revision belongs to the drain; a newer kill owns its reason. */
+  overrideRevision: number | null;
+}
+
 interface TerminalRecord {
-  archiveDrain?: Promise<void>;
+  archiveDrain?: TerminalReleaseDrain;
   session: TerminalSession;
   pty: TerminalPty;
   dataDisposable: { dispose(): void } | null;
@@ -250,6 +258,7 @@ interface TerminalRecord {
   windowsPromptTail: string;
   exited: boolean;
   pendingExitSignalOverride: string | null;
+  exitSignalOverrideRevision: number;
   /**
    * Killed by an app shutdown or under a signal that ends no command: no
    * idle reaches listeners before its exit, whatever the exit signal.
@@ -323,6 +332,15 @@ export function isRestorableExitSignal(signal: string | null): boolean {
     signal === 'fatal-exit' ||
     signal === 'pipe-error' ||
     signal === TERMINAL_CONNECTION_LOST_SIGNAL
+  );
+}
+
+/** A deliberate close never comes out restorable, whichever came first. */
+function keepsExitReason(current: string | null, next: string): boolean {
+  return (
+    current !== null &&
+    !isRestorableExitSignal(current) &&
+    isRestorableExitSignal(next)
   );
 }
 
@@ -892,6 +910,7 @@ export class TerminalEngine
       windowsPromptTail: '',
       exited: false,
       pendingExitSignalOverride: null,
+      exitSignalOverrideRevision: 0,
       killEndsNoCommand: false,
       heldIdle: null,
       pendingUserInterruptAt: null,
@@ -914,10 +933,12 @@ export class TerminalEngine
 
     try {
       record.dataDisposable = pty.onData((data: string): void => {
+        if (this.records.get(session.id) !== record || record.exited) return;
         this.handlePtyData(session.id, Buffer.from(data, 'utf8'));
       });
 
       record.exitDisposable = pty.onExit((event): void => {
+        if (this.records.get(session.id) !== record || record.exited) return;
         this.handlePtyExit(
           session.id,
           event.exitCode,
@@ -1150,6 +1171,10 @@ export class TerminalEngine
     record.pty.resize(cols, rows);
   }
 
+  /**
+   * Its exit reports `signal`, unless a restorable one would replace a
+   * deliberate close's (a quit during a cleanup, CAN-7051).
+   */
   public kill(
     terminalId: string,
     options: { signal?: string | null } = {},
@@ -1159,9 +1184,21 @@ export class TerminalEngine
       return;
     }
 
-    if (options.signal) {
-      record.pendingExitSignalOverride = options.signal;
-      record.killEndsNoCommand ||= exitEndsNoCommand(options.signal);
+    const signal = options.signal;
+    if (signal) {
+      const drain = record.archiveDrain;
+      if (!keepsExitReason(record.pendingExitSignalOverride, signal)) {
+        record.pendingExitSignalOverride = signal;
+        record.exitSignalOverrideRevision += 1;
+      } else if (
+        drain &&
+        drain.overrideRevision === record.exitSignalOverrideRevision &&
+        !keepsExitReason(drain.previousOverride, signal)
+      ) {
+        // The drain's reason wins; this kill's is the one its failure restores.
+        drain.previousOverride = signal;
+      }
+      record.killEndsNoCommand ||= exitEndsNoCommand(signal);
     }
     this.forceKill(record.pty);
     this.scheduleForcedExitCleanup(record);
@@ -1357,14 +1394,14 @@ export class TerminalEngine
           : null;
       record.running = running;
       record.lastProcessName = processName;
-      return { terminalId: session.id, running, processName };
+      return { terminalId: session.id, record, running, processName };
     });
 
     queueMicrotask((): void => {
       for (const update of updates) {
         if (!update) continue;
         const record = this.records.get(update.terminalId);
-        if (!record) {
+        if (record !== update.record || record.exited) {
           continue;
         }
 
@@ -1394,6 +1431,7 @@ export class TerminalEngine
         record.session.worktreeId === worktreeId
       ) {
         record.pendingExitSignalOverride = TERMINAL_WORKTREE_CLEANUP_SIGNAL;
+        record.exitSignalOverrideRevision += 1;
         record.killEndsNoCommand = true;
         this.forceKill(record.pty);
         this.scheduleForcedExitCleanup(record);
@@ -1401,13 +1439,47 @@ export class TerminalEngine
     }
   }
 
-  public async release(terminalId: string): Promise<void> {
+  /**
+   * Stops the terminal's process tree. Its exit reports `signal`, or a
+   * worktree cleanup without one. A reason a kill or an earlier release
+   * already named stands unless it is restorable and this one is not
+   * (CAN-7051); a failed drain restores the reason from before it.
+   */
+  public async release(
+    terminalId: string,
+    options: { signal?: string | null } = {},
+  ): Promise<void> {
     const record = this.records.get(terminalId);
     if (!record) return;
-    if (!record.archiveDrain) {
-      record.pendingExitSignalOverride = TERMINAL_WORKTREE_CLEANUP_SIGNAL;
-      const ownedPid = record.pty.pid;
-      record.archiveDrain = this.host.processes
+    const signal = options.signal || TERMINAL_WORKTREE_CLEANUP_SIGNAL;
+    const current = record.pendingExitSignalOverride;
+    // A deliberate close never comes out restorable, whichever came first.
+    const outranks =
+      current === null ||
+      (isRestorableExitSignal(current) && !isRestorableExitSignal(signal));
+    const joined = record.archiveDrain;
+    if (joined) {
+      if (outranks) {
+        // A kill since the drain began owns the reason a failure restores.
+        if (record.exitSignalOverrideRevision !== joined.overrideRevision)
+          joined.previousOverride = current;
+        record.pendingExitSignalOverride = signal;
+        joined.overrideRevision = ++record.exitSignalOverrideRevision;
+      }
+      await joined.completion;
+      return;
+    }
+    let overrideRevision: number | null = null;
+    // Without a reason, a release reports a cleanup over any kill's (slice 1).
+    if (!options.signal || outranks) {
+      record.pendingExitSignalOverride = signal;
+      overrideRevision = ++record.exitSignalOverrideRevision;
+    }
+    const ownedPid = record.pty.pid;
+    const drain: TerminalReleaseDrain = {
+      previousOverride: current,
+      overrideRevision,
+      completion: this.host.processes
         .drainOwned(
           ownedPid,
           () =>
@@ -1416,6 +1488,8 @@ export class TerminalEngine
             record.pty.pid === ownedPid,
         )
         .then(() => {
+          // A restorable exit can replace this lifetime before its drain ends.
+          if (this.records.get(terminalId) !== record || record.exited) return;
           this.handlePtyExit(
             terminalId,
             null,
@@ -1424,13 +1498,18 @@ export class TerminalEngine
         })
         .catch((error: unknown) => {
           record.archiveDrain = undefined;
+          if (record.exitSignalOverrideRevision === drain.overrideRevision) {
+            record.pendingExitSignalOverride = drain.previousOverride;
+            record.exitSignalOverrideRevision += 1;
+          }
           const held = record.heldIdle;
           if (held && !record.exited)
             this.emitRunningChanged(record, held.interruptedByUser);
           throw error;
-        });
-    }
-    await record.archiveDrain;
+        }),
+    };
+    record.archiveDrain = drain;
+    await drain.completion;
   }
 
   public async releaseWorktree({
@@ -1605,7 +1684,7 @@ export class TerminalEngine
     record.flushScheduled = true;
     queueMicrotask((): void => {
       const queuedRecord = this.records.get(terminalId);
-      if (!queuedRecord) {
+      if (queuedRecord !== record || record.exited) {
         return;
       }
 
@@ -1709,6 +1788,8 @@ export class TerminalEngine
       return;
     }
 
+    // Fence reentrant PTY callbacks before disposal; final output is flushed
+    // synchronously below, not by the now-fenced output microtask.
     record.exited = true;
     this.disposeRecordResources(record, { destroyPty: true });
     this.flushQueuedOutput(terminalId);

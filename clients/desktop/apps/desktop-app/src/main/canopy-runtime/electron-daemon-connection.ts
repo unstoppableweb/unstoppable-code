@@ -1,4 +1,7 @@
-import { canopyDaemonRefusal } from '@canopy/core-client/node';
+import {
+  canopyDaemonRefusal,
+  canopyPathSharedWithAnotherAccount,
+} from '@canopy/core-client/node';
 import {
   CanopyClientError,
   createCanopyAuthorityRegistry,
@@ -26,7 +29,8 @@ export type ElectronDaemonReachability =
   /**
    * A connected client dropped while its session was live or still in setup.
    * That session reports the restart's outcome: a reach,
-   * `reconnect_failed` / `endpoint_repair_required`, or `abandoned`.
+   * `reconnect_failed` or a kept diagnosis such as `data_folder_shared`, or
+   * `abandoned`.
    */
   | { readonly kind: 'lost' }
   /**
@@ -110,6 +114,16 @@ const failure = (
 const unreachable = new WeakMap<object, BackgroundServiceUnreachableReason>();
 
 /**
+ * Typed diagnoses a later failure can't disprove: a reconnect or restart
+ * failure keeps them, and only reaching the service clears them.
+ */
+export const DIAGNOSED_UNREACHABLE_REASONS: ReadonlySet<BackgroundServiceUnreachableReason> =
+  new Set<BackgroundServiceUnreachableReason>([
+    'endpoint_repair_required',
+    'data_folder_shared',
+  ]);
+
+/**
  * Why a `get` failure means the daemon couldn't be reached, or `null` for a
  * refusal or cancellation. The failure keeps its identity.
  */
@@ -155,11 +169,15 @@ function attachFailureReason(
     return null;
   if (canopyDaemonRefusal(error) === 'endpoint_repair_required')
     return 'endpoint_repair_required';
+  if (canopyPathSharedWithAnotherAccount(error)) return 'data_folder_shared';
   if (!(error instanceof CanopyClientError)) return 'start_failed';
   return error.payload.kind === 'deadline_exceeded'
     ? 'connect_timeout'
     : 'start_failed';
 }
+
+/** Sessions a window keeps open at once, one per grant set its routes ask with. */
+const SESSIONS_PER_CLIENT = 4;
 
 /** One connection/lease per trusted caller lifetime, shared by its migrated consumers. */
 export function createElectronDaemonConnectionService<C extends Connection>(
@@ -204,7 +222,10 @@ export function createElectronDaemonConnectionService<C extends Connection>(
       throw failure('unauthenticated', 'Desktop caller identity is invalid.');
     const caller = parsed.data;
     const scope = stableStringify(caller);
-    const existing = entries.get(caller.clientInstanceId);
+    // Keyed by the whole caller, so a window's Files and Git-read sessions
+    // coexist instead of closing each other.
+    const key = `${caller.clientInstanceId}\0${scope}`;
+    const existing = entries.get(key);
     if (
       existing?.scope === scope &&
       existing.owner === owner &&
@@ -215,7 +236,15 @@ export function createElectronDaemonConnectionService<C extends Connection>(
       return existing.pending;
     if (existing) {
       await existing.close();
-      entries.delete(caller.clientInstanceId);
+      entries.delete(key);
+    }
+    const siblings = Array.from(entries).filter(([other]) =>
+      other.startsWith(`${caller.clientInstanceId}\0`),
+    );
+    if (siblings.length >= SESSIONS_PER_CLIENT) {
+      const [oldestKey, oldest] = siblings[0];
+      await oldest.close();
+      if (entries.get(oldestKey) === oldest) entries.delete(oldestKey);
     }
     if (disposed || owner.aborted)
       throw failure('cancelled', 'Desktop connection owner is closed.');
@@ -271,11 +300,10 @@ export function createElectronDaemonConnectionService<C extends Connection>(
         }
       })().then(() => {
         closing = Promise.resolve();
-        const cached = entries.get(caller.clientInstanceId);
+        const cached = entries.get(key);
         if (cached?.pending !== pending) return;
         const retire = (): void => {
-          if (entries.get(caller.clientInstanceId) === cached)
-            entries.delete(caller.clientInstanceId);
+          if (entries.get(key) === cached) entries.delete(key);
         };
         if (cached.failedAt === undefined) retire();
         else
@@ -445,11 +473,13 @@ export function createElectronDaemonConnectionService<C extends Connection>(
             ownedLease.client.signal.aborted
           ) {
             setRestarting(false);
+            const diagnosed = daemonUnreachableReason(error);
             observe({
               kind: 'unreachable',
               reason:
-                daemonUnreachableReason(error) === 'endpoint_repair_required'
-                  ? 'endpoint_repair_required'
+                diagnosed !== null &&
+                DIAGNOSED_UNREACHABLE_REASONS.has(diagnosed)
+                  ? diagnosed
                   : 'reconnect_failed',
             });
           }
@@ -517,7 +547,7 @@ export function createElectronDaemonConnectionService<C extends Connection>(
         lease?.state !== 'failed' &&
         lease?.state !== 'released',
     };
-    entries.set(caller.clientInstanceId, entry);
+    entries.set(key, entry);
     owner.addEventListener('abort', onLoss, { once: true });
     if (owner.aborted) onLoss();
     void pending.catch(async (error: unknown) => {
@@ -527,7 +557,7 @@ export function createElectronDaemonConnectionService<C extends Connection>(
         // Lost mid-setup, its restart failed: reported like an established
         // lease giving up, since health shows nothing else while it restarts.
         const shown =
-          restarting && reason !== 'endpoint_repair_required'
+          restarting && !DIAGNOSED_UNREACHABLE_REASONS.has(reason)
             ? 'reconnect_failed'
             : reason;
         setRestarting(false);

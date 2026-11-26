@@ -866,8 +866,9 @@ async function automationPackageOverlay(
 /**
  * A run an automation started sends as the automation's own chat actions did
  * (CAN-4551): the `automation_info` banner, the automation usage source, the
- * run's owner, a scheduled run's chat staying behind the current tab and, for
- * a converted install, its package.
+ * run's owner, a scheduled run's chat staying behind the current tab, the
+ * writes a converted chat automation allowed on shared connections (CAN-6252)
+ * and, for a converted install, its package.
  */
 async function automationRunDispatch(
   caller: PipelineHostActionCaller,
@@ -878,6 +879,10 @@ async function automationRunDispatch(
   const { initiator } = caller;
   if (initiator?.kind !== 'automation') return {};
   const packageOverlay = await automationPackageOverlay(caller, target);
+  const { ownedPipelineSendSharedConnectionWrites } =
+    await import('../automations/owned-pipeline-writes');
+  const sharedConnectionWrites =
+    await ownedPipelineSendSharedConnectionWrites(caller);
   return {
     automationDispatch: {
       version: 1,
@@ -885,6 +890,7 @@ async function automationRunDispatch(
       presentation: initiator.background ? 'background' : 'foreground',
       executionContext: caller.executionContext ?? 'personal',
       ...(packageOverlay ? { packageOverlay } : {}),
+      ...(sharedConnectionWrites ? { sharedConnectionWrites } : {}),
     },
   };
 }

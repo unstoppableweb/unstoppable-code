@@ -20,7 +20,8 @@ export type ToolDenialAttribution =
   | 'safety-rule'
   | 'saved-rule'
   | 'user'
-  | 'policy';
+  | 'policy'
+  | 'unanswered';
 
 export interface ToolDenial {
   attribution: ToolDenialAttribution;
@@ -43,6 +44,7 @@ const TOOL_DENIAL_HEADINGS: Record<ToolDenialAttribution, string> = {
   'saved-rule': 'Blocked by saved rule',
   user: 'Denied by you',
   policy: 'Blocked by approval system',
+  unanswered: 'Not answered in time',
 };
 
 /** The Claude SDK's wrapper around a PreToolUse hook's deny reason. */
@@ -61,6 +63,15 @@ const CLAUDE_USER_REJECTED_MESSAGE = 'User rejected tool use';
  * `Error: The user denied this tool call: …` (REG-3132).
  */
 const CLAUDE_ERROR_PREFIX = 'Error: ';
+
+/**
+ * How Agentic Core's result opens for a cloud approval or question still
+ * waiting after the turn ended (REG-3134).
+ */
+const UNANSWERED_MESSAGE_OPENINGS = [
+  'The user has not answered this approval yet.',
+  'The user has not answered this question yet.',
+];
 
 const SAVED_RULE_SCOPES: readonly SavedRuleDenialScope[] = [
   'session',
@@ -97,7 +108,7 @@ export function stripHookErrorPrefix(output: string): string {
 export function classifyToolDenial(output: string): ToolDenial | null {
   const displayMessage = stripHookErrorPrefix(output).trimStart();
   const message = displayMessage.trimEnd();
-  // Only the person's denial sentence may carry the CLI's prefix.
+  // Only the person's denial and an unanswered result may carry the CLI's prefix.
   const userMessage = displayMessage.startsWith(CLAUDE_ERROR_PREFIX)
     ? displayMessage.slice(CLAUDE_ERROR_PREFIX.length)
     : displayMessage;
@@ -111,6 +122,13 @@ export function classifyToolDenial(output: string): ToolDenial | null {
     const userReason = userMessage.slice(USER_DENIED_REASON_PREFIX.length);
     if (userReason.trim() === '') return null;
     return { attribution: 'user', message: userMessage, userReason };
+  }
+  if (
+    UNANSWERED_MESSAGE_OPENINGS.some((opening) =>
+      userMessage.startsWith(opening),
+    )
+  ) {
+    return { attribution: 'unanswered', message: userMessage.trimEnd() };
   }
   if (POLICY_MESSAGES.has(message)) {
     return { attribution: 'policy', message };

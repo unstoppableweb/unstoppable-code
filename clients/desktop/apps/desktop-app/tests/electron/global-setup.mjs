@@ -24,12 +24,13 @@ import {
   runCoreDaemonSmoke,
 } from '../../../../scripts/lib/e2e-core-daemon-artifact.mjs';
 import {
-  installProductDaemon,
+  stageIsolatedProductDaemonBridge,
   productDaemonTargets,
 } from '../../../../scripts/lib/e2e-daemon-product-bridge.mjs';
 import {
   DAEMON_DRY_RUN_DIRECTORY,
   DAEMON_DRY_RUN_ID_ENV,
+  DAEMON_LANE_RUNTIME_ROOT_ENV,
 } from './launchCanopy.mjs';
 
 const repoRoot = path.resolve(import.meta.dirname, '../../../..');
@@ -121,6 +122,11 @@ const gitHead = (cwd) =>
  * local `pnpm run dev:core-daemon` output that matches its sources. A stale
  * local build is always refused; with neither, CI refuses the lane and a
  * local run only warns.
+ *
+ * The artifact goes only to an isolated lane root, never the checkout, so a
+ * run killed before teardown cannot leave its E2E daemon where ordinary
+ * source launches find it. W5 source CLI fixtures receive that layout
+ * through host composition.
  */
 export function prepareLaneDaemon({
   env = process.env,
@@ -130,7 +136,7 @@ export function prepareLaneDaemon({
   brand,
   tmpdir = os.tmpdir(),
   sourceSha = () => gitHead(runtimeRoot),
-  install = installProductDaemon,
+  install = stageIsolatedProductDaemonBridge,
   inspectLocalBuild = ({ runtimeRoot: root, ...rest }) =>
     inspectDevCoreDaemon({ root, ...rest }),
   smoke = runCoreDaemonSmoke,
@@ -143,15 +149,17 @@ export function prepareLaneDaemon({
   const startedAt = now();
   let source;
   let executable;
+  let installation;
   if (existsSync(path.join(runtimeRoot, E2E_DAEMON_DIRECTORY))) {
     source = 'artifact';
-    ({ executable } = install({
+    installation = install({
       runtimeRoot,
       sourceSha: sourceSha(),
       platform,
       arch,
       brand,
-    }));
+    });
+    ({ executable } = installation);
   } else if (isLaunchableLocalBuild(targets)) {
     const stale = staleLocalBuild({
       inspect: inspectLocalBuild,
@@ -177,7 +185,12 @@ export function prepareLaneDaemon({
     return { state: 'missing', socket };
   }
   const installedAt = now();
-  smoke({ root: runtimeRoot, executable });
+  try {
+    smoke({ root: runtimeRoot, executable });
+  } catch (error) {
+    installation?.cleanup?.();
+    throw error;
+  }
   return {
     state: 'ready',
     source,
@@ -185,6 +198,10 @@ export function prepareLaneDaemon({
     socket,
     installMs: installedAt - startedAt,
     smokeMs: now() - installedAt,
+    ...(installation?.runtimeRoot && {
+      runtimeRoot: installation.runtimeRoot,
+      cleanup: () => installation.cleanup(),
+    }),
   };
 }
 
@@ -298,24 +315,41 @@ export function verifyDaemonDryRunLaunches({
 export default function globalSetup() {
   const result = prepareLaneDaemon();
   if (result.state === 'inert') return undefined;
+  // Give the lane a clean product lookup tree, not permission to overwrite a
+  // local production daemon with its deliberately different E2E composition.
+  if (result.runtimeRoot)
+    process.env[DAEMON_LANE_RUNTIME_ROOT_ENV] = result.runtimeRoot;
+  else delete process.env[DAEMON_LANE_RUNTIME_ROOT_ENV];
   // Workers inherit it; it keeps earlier runs' files out of this run's check.
   const runId = randomUUID();
   process.env[DAEMON_DRY_RUN_ID_ENV] = runId;
   console.log(`Files dry run lane daemon: ${JSON.stringify(result)}`);
-  // Beside the per-launch evidence, for the per-lane time delta.
-  mkdirSync(DAEMON_DRY_RUN_DIRECTORY, { recursive: true });
-  writeFileSync(
-    path.join(DAEMON_DRY_RUN_DIRECTORY, `global-setup-${process.pid}.json`),
-    `${JSON.stringify({
-      at: new Date().toISOString(),
-      runId,
-      lane: process.env.CANOPY_UI_TIMINGS_LANE ?? null,
-      ...result,
-    })}\n`,
-  );
+  try {
+    // Beside the per-launch evidence, for the per-lane time delta.
+    mkdirSync(DAEMON_DRY_RUN_DIRECTORY, { recursive: true });
+    writeFileSync(
+      path.join(DAEMON_DRY_RUN_DIRECTORY, `global-setup-${process.pid}.json`),
+      `${JSON.stringify({
+        at: new Date().toISOString(),
+        runId,
+        lane: process.env.CANOPY_UI_TIMINGS_LANE ?? null,
+        ...result,
+      })}\n`,
+    );
+  } catch (error) {
+    // Playwright runs no teardown for a setup that throws.
+    result.cleanup?.();
+    delete process.env[DAEMON_LANE_RUNTIME_ROOT_ENV];
+    throw error;
+  }
   // Playwright runs a returned function as the global teardown.
   return () => {
-    const summary = verifyDaemonDryRunLaunches({ runId });
-    console.log(`Files dry run launches: ${JSON.stringify(summary)}`);
+    try {
+      const summary = verifyDaemonDryRunLaunches({ runId });
+      console.log(`Files dry run launches: ${JSON.stringify(summary)}`);
+    } finally {
+      result.cleanup?.();
+      delete process.env[DAEMON_LANE_RUNTIME_ROOT_ENV];
+    }
   };
 }

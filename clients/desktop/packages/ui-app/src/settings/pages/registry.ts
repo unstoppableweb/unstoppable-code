@@ -181,6 +181,16 @@ export const HOSTED_SETTINGS_PAGES: HostedSettingsPageRegistry = {
       default: m.OrganizationMemoryFactPage,
     })),
   ),
+  'organization.transcripts': lazy(() =>
+    import('../organization/transcripts/OrganizationTranscriptsPage').then(
+      (m) => ({ default: m.OrganizationTranscriptsPage }),
+    ),
+  ),
+  'organization.transcripts.session': lazy(() =>
+    import('../organization/transcripts/OrganizationTranscriptSessionPage').then(
+      (m) => ({ default: m.OrganizationTranscriptSessionPage }),
+    ),
+  ),
   'organization.settings': lazy(() =>
     import('../organization/OrganizationSettingsPage').then((m) => ({
       default: m.OrganizationSettingsPage,

@@ -7,6 +7,7 @@ import {
   openClaudeAmbientSecretEnv,
   type ClaudeAmbientSecretEnv,
 } from '../agent-secrets/ambient-env';
+import { unattendedPluginOptions } from './turn-account-resolution';
 import {
   APPROVAL_CANCELLED_MESSAGE,
   APPROVAL_CHECK_FAILED_MESSAGE,
@@ -3334,9 +3335,7 @@ export class ClaudeCodeProvider implements AgentProvider {
               ...(opts.packageOverlay
                 ? { packageOverlay: opts.packageOverlay }
                 : {}),
-              ...(opts.accountResolution
-                ? { accountResolution: opts.accountResolution }
-                : {}),
+              ...unattendedPluginOptions(opts),
               ...(pluginContext.preferences
                 ? { preferences: pluginContext.preferences }
                 : {}),

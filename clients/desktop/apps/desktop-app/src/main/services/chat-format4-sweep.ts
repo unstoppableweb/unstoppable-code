@@ -272,11 +272,24 @@ async function scopeIdsUnder(
  * The stored chat scopes below `dataDir`, with each one's format read from
  * its manifest alone (no lease, no load). A stored scope whose canonical
  * resolver doesn't land back on the same storage is counted as unmapped, so
- * the sweep never reports itself complete while one exists.
+ * the sweep never reports itself complete while one exists. `formatOnly`
+ * reads only the format of a scope already at format 4, or whose format it
+ * couldn't read: their size and last use only order the scopes left to
+ * promote. `readFormat` replaces the manifest read, so the pre-handoff pass
+ * can bound each one by its deadline.
  */
 export async function listChatFormat4SweepCandidates(
   dataDir: string,
   resolveStore: (scope: ChatScopeKey) => ChatStorageV2,
+  {
+    formatOnly = false,
+    readFormat = (store): Promise<ChatFormat4SweepFormat> => store.format(),
+  }: {
+    readonly formatOnly?: boolean;
+    readonly readFormat?: (
+      store: ChatStorageV2,
+    ) => Promise<ChatFormat4SweepFormat>;
+  } = {},
 ): Promise<ChatFormat4SweepInventory> {
   const candidates: ChatFormat4SweepCandidate[] = [];
   let unmapped = 0;
@@ -303,7 +316,7 @@ export async function listChatFormat4SweepCandidates(
     seen.add(store.directory);
     let format: ChatFormat4SweepFormat;
     try {
-      format = await store.format();
+      format = await readFormat(store);
     } catch {
       format = 'unknown';
     }
@@ -317,11 +330,14 @@ export async function listChatFormat4SweepCandidates(
       directory: store.directory,
       format,
       bytes:
-        format === 'v4'
+        format === 'v4' || (formatOnly && format === 'unknown')
           ? 0
           : (await treeBytes(store.directory)) +
             (await legacyBytes(legacyPaths)),
-      usedAt: await latestMtime([store.manifestPath, ...legacyPaths]),
+      usedAt:
+        formatOnly && (format === 'v4' || format === 'unknown')
+          ? 0
+          : await latestMtime([store.manifestPath, ...legacyPaths]),
     });
   };
 
@@ -710,15 +726,10 @@ export class ChatFormat4Sweep {
     );
   }
 
-  private async hasRoom(
-    candidate: ChatFormat4SweepCandidate,
-  ): Promise<boolean> {
-    const free = await this.options.conditions.freeBytes(
-      await nearestExisting(dirname(candidate.directory)),
+  private hasRoom(candidate: ChatFormat4SweepCandidate): Promise<boolean> {
+    return chatFormat4CandidateHasRoom(candidate, (path) =>
+      this.options.conditions.freeBytes(path),
     );
-    // Unknown free space is not room: the sweep waits rather than guess.
-    if (free === undefined) return false;
-    return free >= candidate.bytes * 2 + CHAT_FORMAT4_SWEEP_DISK_MARGIN_BYTES;
   }
 
   private async recordFailure(
@@ -870,6 +881,22 @@ export class ChatFormat4Sweep {
 }
 
 /** Free bytes on `path`'s volume, or undefined where it can't be read. */
+/**
+ * Whether the volume holding a scope has room to promote it: twice its size
+ * plus the margin. Unknown free space is not room, so a caller waits rather
+ * than guess.
+ */
+export async function chatFormat4CandidateHasRoom(
+  candidate: Pick<ChatFormat4SweepCandidate, 'directory' | 'bytes'>,
+  freeBytes: (path: string) => Promise<number | undefined>,
+): Promise<boolean> {
+  const free = await freeBytes(
+    await nearestExisting(dirname(candidate.directory)),
+  );
+  if (free === undefined) return false;
+  return free >= candidate.bytes * 2 + CHAT_FORMAT4_SWEEP_DISK_MARGIN_BYTES;
+}
+
 export async function chatFormat4FreeBytes(
   path: string,
 ): Promise<number | undefined> {
@@ -904,6 +931,22 @@ export interface ChatFormat4SweepAdmission {
 }
 
 /**
+ * Whether `admission` lets a scope be promoted now: not while the chat state
+ * service deletes it, and a code-review scope only once its namespace has
+ * qualified.
+ */
+export function chatFormat4ScopeAdmitted(
+  scope: ChatScopeKey,
+  admission: ChatFormat4SweepAdmission,
+): boolean {
+  return (
+    admission.isScopeDeleting?.(scope) !== true &&
+    (scope.projectId !== CODE_REVIEW_CHAT_PROJECT_ID ||
+      admission.codeReviewQualified?.() === true)
+  );
+}
+
+/**
  * The repository's sweep admission, with a failure's cause reduced to its
  * code. A scope being deleted, or a code-review scope whose namespace hasn't
  * qualified, is held without a read or a write and offered again later.
@@ -918,10 +961,7 @@ export function repositoryChatFormat4SweepTarget(
     async sweepFormat4(scope): Promise<ChatFormat4SweepAttempt> {
       // Checked again under the scope's lease, just before its load, so a
       // namespace that stopped qualifying meanwhile still holds the scope.
-      const admit = (): boolean =>
-        admission.isScopeDeleting?.(scope) !== true &&
-        (scope.projectId !== CODE_REVIEW_CHAT_PROJECT_ID ||
-          admission.codeReviewQualified?.() === true);
+      const admit = (): boolean => chatFormat4ScopeAdmitted(scope, admission);
       if (!admit()) return { outcome: 'held' };
       const attempt = await repository.sweepFormat4(scope, { admit });
       return attempt.outcome === 'failed'

@@ -1,9 +1,9 @@
-import { CUSTOMIZE_CRUMB_CLASS } from './control-button-shared';
-import { ControlButton } from './Button';
+import { CUSTOMIZE_CRUMB_CLASS } from '../primitives/control-button-shared';
+import { ControlButton } from '../primitives/Button';
 import type { JSX, ReactNode } from 'react';
 import { ChevronRightMediumIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 
 export interface CustomizeBreadcrumbItem {
   /** Stable React key. */

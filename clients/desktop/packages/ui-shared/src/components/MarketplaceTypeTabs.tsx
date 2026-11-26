@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { TabBar } from './TabBar';
+import { TabBar } from '../primitives/TabBar';
 import {
   marketplaceTypeTabs,
   type MarketplaceTypeTab,

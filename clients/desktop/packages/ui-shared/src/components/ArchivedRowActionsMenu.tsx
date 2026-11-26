@@ -9,16 +9,16 @@ import {
   TrashPermanentlyIcon,
 } from '../icons/AppIcons';
 import { menuDismissalSwallowsClick } from '../lib/menu-open-body-flag';
-import { ActionMenuRowStyle } from './ActionMenuItems';
+import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
 import { ARCHIVED_ROW_ACTIONS_VISIBLE_WIDE } from './ArchivedOverviewRow';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 import {
   DropdownMenuDivider,
   DropdownMenuItem,
   DropdownMenuItemIcon,
   DropdownMenuLabel,
-} from './DropdownMenu';
-import { FLOATING_MENU_GAP, FloatingMenu } from './FloatingMenu';
+} from '../primitives/DropdownMenu';
+import { FLOATING_MENU_GAP, FloatingMenu } from '../primitives/FloatingMenu';
 
 export interface ArchivedRowActionsMenuProps {
   /** Item title, used for the trigger's and menu's accessible names. */

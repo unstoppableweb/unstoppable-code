@@ -1,3 +1,4 @@
+import { canonicalCatalogEndpoint } from './catalogIntegrationKey';
 import type { HarnessCompatibilityHarness } from '@canopy/protocol/plugins';
 import { withCopiesIdentity } from './customizeCopyIdentity';
 import {
@@ -10,6 +11,7 @@ import {
 } from '@canopy/ui-shared/lib';
 import { mergeEntryHarnessInstalls } from '@canopy/ui-shared/lib/unified-plugin-entry';
 import { marketplaceEntryIsInstalled } from './marketplaceBrowse';
+import { curatedMcpConnectionState } from './unifiedPluginEntries';
 
 /**
  * New Customize (CAN-6811): one row per integration. Copies that share an
@@ -36,6 +38,52 @@ function joinsIntegration(
 /** A plugin, or the curated integration card a plugin folded into. */
 function isPluginCopy(entry: UnifiedPluginEntry): boolean {
   return entry.kind === 'plugin' || entry.integration?.plugin !== undefined;
+}
+
+/** A device index only carries the hostname. The catalog carries the endpoint. */
+function mcpVersionKey(entry: UnifiedPluginEntry): string | undefined {
+  if (
+    !joinsIntegration(entry) ||
+    entry.ref.type !== 'curated-mcp' ||
+    !entry.siteUrl
+  )
+    return undefined;
+  const endpoint = canonicalCatalogEndpoint(entry.siteUrl);
+  return endpoint === undefined
+    ? undefined
+    : JSON.stringify([entry.integrationKey, endpoint]);
+}
+
+function mcpVersion(entry: UnifiedPluginEntry): UnifiedPluginEntry {
+  const { integration } = entry;
+  if (!integration?.plugin) return entry;
+  return {
+    ...entry,
+    state: curatedMcpConnectionState(
+      integration.connections,
+      entry.surface === 'desktop',
+    ),
+    harnessInstalls: integration.mcpHarnessInstalls,
+  };
+}
+
+/** Same search group as the standalone server, under the original copy ids. */
+export function customizeMcpVersionCopies(
+  entry: UnifiedPluginEntry,
+  entries: readonly UnifiedPluginEntry[],
+): UnifiedPluginEntry[] {
+  const key = mcpVersionKey(entry);
+  if (key === undefined) return [];
+  const copies = entries.filter(
+    (copy) =>
+      copy.id !== entry.id &&
+      mcpVersionKey(copy) === key &&
+      copy.installedEntryId !== entry.id &&
+      copy.id !== entry.installedEntryId,
+  );
+  return entry.accountProxyMcp || copies.some((copy) => copy.accountProxyMcp)
+    ? copies.map(mcpVersion)
+    : [];
 }
 
 const PROVIDER_OF: Record<CustomizeDefaultHarness, 'Claude' | 'Codex'> = {
@@ -323,11 +371,17 @@ export function mergeCustomizeIntegrations(
   entries: readonly UnifiedPluginEntry[],
   harness: CustomizeDefaultHarness,
   states?: InstalledEntryStatusStates,
+  splitSearchResults = false,
 ): CustomizeIntegrationRows {
   const groups = new Groups();
   const keyOf = (
     entry: UnifiedPluginEntry & { integrationKey: string },
-  ): string => `key:${entry.integrationKey}`;
+  ): string => {
+    if (!splitSearchResults || isPluginCopy(entry))
+      return `key:${entry.integrationKey}`;
+    const versionKey = mcpVersionKey(entry);
+    return versionKey !== undefined ? `mcp:${versionKey}` : `entry:${entry.id}`;
+  };
   for (const entry of entries) {
     if (!joinsIntegration(entry)) continue;
     groups.find(keyOf(entry));
@@ -359,16 +413,25 @@ export function mergeCustomizeIntegrations(
   const rowIdOf = new Map<string, string>();
   for (const [root, members] of membersByRoot) {
     if (members.length < 2) continue;
-    const representative = customizeIntegrationRepresentative(
-      members,
-      harness,
-      isInstalled,
-    );
+    const proxy = splitSearchResults
+      ? members
+          .filter((member) => member.accountProxyMcp === true)
+          .sort((a, b) => a.id.localeCompare(b.id))[0]
+      : undefined;
+    const representative =
+      proxy ??
+      customizeIntegrationRepresentative(members, harness, isInstalled);
     if (representative === undefined) continue;
     const ordered = [
       representative,
       ...members.filter((member) => member !== representative),
     ];
+    if (splitSearchResults && mcpVersionKey(representative) !== undefined) {
+      merged.set(root, withCopiesIdentity(representative, members));
+      membersOf.set(representative.id, ordered);
+      for (const member of members) rowIdOf.set(member.id, representative.id);
+      continue;
+    }
     const providers = [
       ...new Set(members.flatMap((member) => member.marketplaceProvider ?? [])),
     ].sort();

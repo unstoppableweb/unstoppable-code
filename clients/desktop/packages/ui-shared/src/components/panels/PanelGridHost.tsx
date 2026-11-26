@@ -9,9 +9,9 @@ import {
   type ReactNode,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { DisposableStore, toDisposable } from '../../panels/disposable';
+import { DisposableStore, toDisposable } from '../../lib/disposable';
 import { DragAndDropObserver } from '../../panels/dnd-observer';
-import { getWindow } from '../../panels/window-registry';
+import { getWindow } from '../../lib/window-registry';
 import type {
   PanelContentProps,
   PanelGroupModel,

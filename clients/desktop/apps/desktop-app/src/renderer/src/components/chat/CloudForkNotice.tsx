@@ -39,7 +39,7 @@ export function CloudForkNotice({
       onDismiss={() => dismissCloudFork(target)}
     >
       {fork.reason === 'core.chat.revisionConflict'
-        ? 'It changed while forking. Try again.'
+        ? 'It changed while forking.'
         : 'Nothing was copied.'}
     </Notice>
   );

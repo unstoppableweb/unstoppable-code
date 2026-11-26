@@ -590,6 +590,8 @@ export interface AccountMcpConnection {
    * Absent from older cloud releases.
    */
   authMode?: 'OAUTH' | 'BEARER' | 'NONE';
+  /** The broker's last sign-in error code, or null when there is none. */
+  lastError?: string | null;
   /**
    * Hostname of the upstream server; never its path, query or credentials.
    * Absent from older cloud releases.
@@ -618,6 +620,22 @@ export interface AccountMcpConnection {
    * clients fall back to {@link accountMcpDefaultConnection}'s rule.
    */
   isDefault?: boolean;
+}
+
+/** A broker row can remain PENDING after its authorization has ended. */
+export function isAccountMcpAuthorizationPending(
+  connection: Pick<AccountMcpConnection, 'status' | 'lastError'>,
+): boolean {
+  return (
+    connection.status === 'PENDING' &&
+    ![
+      'access_denied',
+      'oauth_error',
+      'browser_account_refused',
+      'account_mismatch',
+      'invalid_state',
+    ].includes(connection.lastError ?? '')
+  );
 }
 
 /** Longest account label, in characters after trimming. */
@@ -848,6 +866,11 @@ export interface AccountMcpUpstreamTool {
   name: string;
   title?: string;
   description?: string;
+  /**
+   * The server's `readOnlyHint` annotation: true when it says the tool
+   * changes nothing. A hint, not a guarantee; absent when not given.
+   */
+  readOnly?: boolean;
 }
 
 /** `GET /mcp-connections/{id}/tools`. */

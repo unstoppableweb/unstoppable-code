@@ -154,7 +154,7 @@ export function useSharedMarketplaceShares({
         for (const row of response.agents) rows.set(row.id, row);
         cursor = response.nextCursor ?? undefined;
         if (cursor && cursors.has(cursor))
-          throw new Error('Shared agents could not be loaded. Try again.');
+          throw new Error("Couldn't load shared model presets. Try again.");
         if (cursor) cursors.add(cursor);
       } while (cursor && pages < MAX_SHARED_AGENT_PAGES);
       return Array.from(rows.values());

@@ -15,7 +15,7 @@ import type { UnifiedTableRow } from '@/hooks/useUnifiedTableData';
  * live in the backend share client.
  */
 export const AGENT_SHARE_BLOCKED_MESSAGE =
-  'Agents with Collections, local-only plugins, MCP servers, or MCP auth ' +
+  'Model presets with Collections, local-only plugins, MCP servers, or MCP auth ' +
   'preferences cannot be shared. Remove them before sharing.';
 
 export type AgentShareablePluginsResult =

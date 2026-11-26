@@ -6,6 +6,7 @@ import {
   CLOUD_SANDBOX_SLEEPING_REASON,
   isCloudSandboxNotAwakeCode,
 } from '@canopy/protocol/cloud-session/sandbox-status';
+import type { WEB_CORE_AUTHORITY_ID } from '@canopy/protocol/authority-qualified-id';
 
 /**
  * Keyed instructions this host serves without a retained outcome (CAN-4733).
@@ -72,7 +73,7 @@ export function relayableErrorDetails(
 }
 
 /** The one non-local authority the relay can reach; absent means the local core. */
-export type CanopyCoreRelayAuthority = 'web-core';
+export type CanopyCoreRelayAuthority = typeof WEB_CORE_AUTHORITY_ID;
 
 /** One channel; stream reads pull one frame at a time to bound renderer delivery. */
 export type CanopyCoreRelayRequest = {

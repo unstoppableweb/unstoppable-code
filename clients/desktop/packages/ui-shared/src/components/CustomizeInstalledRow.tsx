@@ -1,5 +1,5 @@
-import { ListRowFrame } from './ListRow';
-import { ControlButton } from './Button';
+import { ListRowFrame } from '../primitives/ListRow';
+import { ControlButton } from '../primitives/Button';
 import type { ComponentType, JSX, MouseEvent, ReactNode } from 'react';
 import {
   sourceLabelProvider,
@@ -37,9 +37,9 @@ import {
   EntrySourceProviderMark,
   entrySourceTextWithoutProvider,
 } from './EntrySourceLabel';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 import { MarketplaceTypeLabel } from './MarketplaceTypeLabel';
-import { Badge } from './Badge';
+import { Badge } from '../primitives/Badge';
 import {
   CustomizeRowSplitButton,
   type CustomizeRowSplitAction,
@@ -876,6 +876,7 @@ export interface CustomizeInstalledRowProps {
    * its skills names them on an "Includes" line.
    */
   readonly skillMatch?: CustomizeSkillMatch;
+  readonly recommended?: boolean;
   /**
    * New Customize row polish (CAN-6813): Works with harness chips, and the
    * publisher's bundled mark for a row whose catalog supplies no logo.
@@ -1028,6 +1029,7 @@ export function CustomizeInstalledRow({
   dimmed = false,
   updateBadge = false,
   skillMatch,
+  recommended = false,
   discovery = false,
   splitAction,
   onRetryHarnessInstall,
@@ -1162,6 +1164,11 @@ export function CustomizeInstalledRow({
           label={entry.typeLabel}
           dataTestId={`customize-row-type-${entry.id}`}
         />
+      )}
+      {recommended && (
+        <Badge tone="neutral" className="shrink-0">
+          Recommended
+        </Badge>
       )}
       {placement !== undefined && placement !== 'account' && (
         <EntrySurfaceIcon

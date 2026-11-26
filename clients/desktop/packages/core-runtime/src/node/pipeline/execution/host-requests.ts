@@ -2,10 +2,10 @@ import {
   WORKER_PIPELINE_GRANTS,
   WORKER_PIPELINE_OWNER_RESULT_KIND,
   WORKER_PIPELINE_OWNER_SCOPE_PENDING_MAX,
-  WORKER_PIPELINE_OWNER_SERVED_REVISIONS,
   isWorkerPipelineHostWithdrawal,
   isWorkerPipelineOwnerAction,
   isWorkerPipelineOwnerScope,
+  workerPipelineOwnerRequestRevision,
   type CanopyCallerDescriptor,
   type CanopyInstructionHandler,
   type CanopyStreamHandlerMap,
@@ -80,14 +80,15 @@ export interface PipelineHostSubscription {
 
 type Subscriber = (item: WorkerPipelineHostRequestsItem) => void;
 
-/** The revision each served kind is served at (CAN-7522). */
-const SERVED_REVISIONS: ReadonlyMap<string, number> = new Map(
-  Object.entries(WORKER_PIPELINE_OWNER_SERVED_REVISIONS),
-);
-
-/** The revision a kind is served at, or undefined when every owner answers it. */
-function servedRevision(action: string): number | undefined {
-  return SERVED_REVISIONS.get(action);
+/** Whether a subscription serves `kind` at `revision` or later. */
+function servesKind(
+  subscription: PipelineHostSubscription,
+  kind: string,
+  revision: number,
+): boolean {
+  return (subscription.serves ?? []).some(
+    (served) => served.kind === kind && served.revision >= revision,
+  );
 }
 
 /** Whether a subscriber with these declarations may receive the request. */
@@ -95,12 +96,9 @@ function serves(
   subscription: PipelineHostSubscription,
   request: WorkerPipelineHostRequest,
 ): boolean {
-  const required = servedRevision(request.request.action);
+  const required = workerPipelineOwnerRequestRevision(request.request);
   if (required === undefined) return true;
-  return (subscription.serves ?? []).some(
-    (served) =>
-      served.kind === request.request.action && served.revision >= required,
-  );
+  return servesKind(subscription, request.request.action, required);
 }
 
 /** What a host step settles with: never an owner answer (CAN-5095). */
@@ -113,6 +111,13 @@ export type PipelineHostStepResult = Exclude<
 export interface PipelineOwnerSettlement {
   readonly result: WorkerPipelineHostResult;
   readonly values?: WorkerPipelineOwnerValues;
+  /**
+   * A detached run pauses instead of turning a refreshed policy denial into
+   * an error. `ai-credits` marks a daemon decline for lack of AI Credits
+   * consent (CAN-7730): a connected app routes the step, otherwise the run
+   * checkpoints for AI Credits.
+   */
+  readonly checkpoint?: 'policy' | 'ai-credits';
 }
 
 /** A host step's answer and its host-local values (CAN-5771). */
@@ -193,6 +198,13 @@ export class PipelineHostRequestBroker {
 
   constructor(options: { readonly announceWithdrawals?: boolean } = {}) {
     this.announceWithdrawals = options.announceWithdrawals === true;
+  }
+
+  /** Whether a subscriber serves owner requests of `kind` at `revision`. */
+  servesOwner(kind: string, revision: number): boolean {
+    for (const subscription of this.subscribers.values())
+      if (servesKind(subscription, kind, revision)) return true;
+    return false;
   }
 
   /** Whether a core is subscribed to settle requests. */

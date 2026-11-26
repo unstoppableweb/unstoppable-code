@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isGitHubPullRequestUrl } from '@canopy/protocol/portable-tasks/pull-request-reference';
 import {
   IPC_CHANNELS,
   type AppLinkBrowserEvent,
@@ -194,6 +195,18 @@ export async function routeAppLink(args: {
     (await requestRendererSettingsOpen(args.sender, url, settingsPath))
   ) {
     return 'settings';
+  }
+  // Pull requests clicked inside the app always open in the system browser,
+  // where the user is signed in to GitHub, whatever the app-link setting says.
+  // OS-delivered links keep their routing: when this app is the system
+  // default, an external open would only hand the link back to us. The shared
+  // matcher is HTTPS-only, so an http:// link is matched as its HTTPS form.
+  if (
+    args.source === 'app-link' &&
+    isGitHubPullRequestUrl(url.replace(/^http:/, 'https:'))
+  ) {
+    await openExternalGuarded(url);
+    return 'external';
   }
   const preferences = await readPreferencesFile();
   // Links clicked inside the app follow the app-link setting. Links handed to

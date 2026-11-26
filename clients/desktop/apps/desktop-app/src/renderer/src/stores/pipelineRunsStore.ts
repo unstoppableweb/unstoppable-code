@@ -1,3 +1,4 @@
+import { PIPELINE_REVISION_CHANGED_MESSAGE } from '@canopy/desktop-shared/constants/pipeline-revision';
 import { create } from 'zustand';
 import type {
   Pipeline,
@@ -151,6 +152,11 @@ export interface PendingPipelineExecution {
    */
   modelAliasPreferences?: Record<string, PipelineModelAliasPreference>;
   pipelinePreferenceLocator?: PipelinePreferenceLocator;
+  /**
+   * Main refuses the run if the definition it admits when the worktree is
+   * ready differs from `pipelineContent`, which was checked (CAN-7513).
+   */
+  requireSentDefinition?: true;
   /** Display label for the queued-pipeline UI ("Queued — waiting for setup"). */
   pipelineName: string;
   /** Mirror of eventData.task_ready.task_text for UI tooltips. */
@@ -169,6 +175,13 @@ export interface PendingPipelineExecution {
   enqueuedAt: number;
 }
 
+/**
+ * Worktrees whose Git setup failed and hasn't succeeded since, with the
+ * failure, so a run queued after the failure is held too (CAN-7513). Not
+ * store state: nothing renders it.
+ */
+const setupFailedWorktrees = new Map<string, string>();
+
 export interface FailedPendingPipelineExecution {
   localId: string;
   projectId: string;
@@ -178,6 +191,20 @@ export interface FailedPendingPipelineExecution {
   taskText: string;
   error: string;
   failedAt: number;
+  /**
+   * The queued request, kept so Retry starts the same run again on this
+   * worktree with the inputs, watcher and model choices it was queued with.
+   * Queuing it again gives it a new id and time.
+   */
+  request: PendingPipelineExecution;
+  /**
+   * False when the same request cannot succeed yet: main refused it because
+   * the workflow changed after it was chosen (CAN-7513), or the worktree's
+   * setup failed and has not succeeded since.
+   */
+  retryable: boolean;
+  /** The worktree's Git setup failed; Retry waits for it to succeed. */
+  awaitsSetup?: boolean;
 }
 
 /**
@@ -256,11 +283,30 @@ interface PipelineRunsState {
   ) => string;
   cancelPendingExecution: (localId: string) => void;
   dismissFailedPendingExecution: (localId: string) => void;
+  /** Queues a failed queued run again with the request it was queued with. */
+  retryFailedPendingExecution: (localId: string) => void;
   flushPendingForWorktree: (
     projectId: string,
     worktreeId: string,
   ) => Promise<void>;
   dropPendingForWorktree: (projectId: string, worktreeId: string) => void;
+  /**
+   * Turns the worktree's queued runs into failed ones that keep their
+   * requests, for Retry, when the worktree's setup fails.
+   */
+  failPendingForWorktree: (
+    projectId: string,
+    worktreeId: string,
+    error: string,
+  ) => void;
+  /**
+   * The worktree's Git setup succeeded (or it was repaired): runs that
+   * failed with its setup can be retried.
+   */
+  releaseSetupFailedForWorktree: (
+    projectId: string,
+    worktreeId: string,
+  ) => void;
   handleQueueEvent: (event: PipelineQueueEvent) => void;
   cancelQueuedPipelineExecution: (queueId: string) => Promise<void>;
   dismissFailedQueuedExecution: (queueId: string) => void;
@@ -1092,6 +1138,33 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
     };
     const key = buildWorktreeKey(params.projectId, params.worktreeId);
     if (!key) return localId;
+    // A worktree whose Git setup already failed doesn't run it: the run waits
+    // as a failed run, held until setup succeeds (CAN-7513).
+    const setupError = setupFailedWorktrees.get(key);
+    if (setupError !== undefined) {
+      set((prev) => ({
+        failedPendingExecutions: {
+          ...prev.failedPendingExecutions,
+          [key]: [
+            ...(prev.failedPendingExecutions[key] ?? []),
+            {
+              localId,
+              projectId: params.projectId,
+              worktreeId: params.worktreeId,
+              pipelineId: params.pipelineId,
+              pipelineName: params.pipelineName,
+              taskText: params.taskText,
+              error: setupError,
+              failedAt: Date.now(),
+              request: entry,
+              retryable: false,
+              awaitsSetup: true,
+            },
+          ],
+        },
+      }));
+      return localId;
+    }
     const foundProject = useProjectsStore
       .getState()
       .projects.find((project) => project.id === params.projectId);
@@ -1152,9 +1225,75 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
     });
   },
 
+  retryFailedPendingExecution: (localId): void => {
+    const failed = Object.values(get().failedPendingExecutions)
+      .flat()
+      .find((entry) => entry.localId === localId);
+    if (failed === undefined || !failed.retryable) return;
+    get().dismissFailedPendingExecution(localId);
+    get().enqueuePendingExecution(failed.request);
+  },
+
+  failPendingForWorktree: (projectId, worktreeId, error): void => {
+    const key = buildWorktreeKey(projectId, worktreeId);
+    if (!key) return;
+    // Remembered for runs queued after the failure arrives, too.
+    setupFailedWorktrees.set(key, error);
+    set((prev) => {
+      const queued = prev.pendingExecutions[key];
+      if (!queued || queued.length === 0) return prev;
+      const next = { ...prev.pendingExecutions };
+      delete next[key];
+      const failedAt = Date.now();
+      return {
+        pendingExecutions: next,
+        failedPendingExecutions: {
+          ...prev.failedPendingExecutions,
+          [key]: [
+            ...(prev.failedPendingExecutions[key] ?? []),
+            ...queued.map((entry) => ({
+              localId: entry.localId,
+              projectId,
+              worktreeId,
+              pipelineId: entry.pipelineId,
+              pipelineName: entry.pipelineName,
+              taskText: entry.taskText,
+              error,
+              failedAt,
+              request: entry,
+              retryable: false,
+              awaitsSetup: true,
+            })),
+          ],
+        },
+      };
+    });
+  },
+
+  releaseSetupFailedForWorktree: (projectId, worktreeId): void => {
+    const key = buildWorktreeKey(projectId, worktreeId);
+    if (!key) return;
+    setupFailedWorktrees.delete(key);
+    set((prev) => {
+      const failed = prev.failedPendingExecutions[key];
+      if (!failed?.some((entry) => entry.awaitsSetup)) return prev;
+      return {
+        failedPendingExecutions: {
+          ...prev.failedPendingExecutions,
+          [key]: failed.map((entry) =>
+            entry.awaitsSetup
+              ? { ...entry, awaitsSetup: false, retryable: true }
+              : entry,
+          ),
+        },
+      };
+    });
+  },
+
   dropPendingForWorktree: (projectId, worktreeId): void => {
     const key = buildWorktreeKey(projectId, worktreeId);
     if (!key) return;
+    setupFailedWorktrees.delete(key);
     set((prev) => {
       if (
         !(key in prev.pendingExecutions) &&
@@ -1347,6 +1486,9 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
             ...(entry.modelAliasPreferences
               ? { modelAliasPreferences: entry.modelAliasPreferences }
               : {}),
+            ...(entry.requireSentDefinition
+              ? { requireSentDefinition: true }
+              : {}),
             modelConfig: entry.modelConfig,
             ...(entry.watcherDestination
               ? {
@@ -1392,6 +1534,8 @@ export const usePipelineRunsStore = create<PipelineRunsState>((set, get) => ({
                   taskText: entry.taskText,
                   error: errorMessage,
                   failedAt: Date.now(),
+                  request: entry,
+                  retryable: errorMessage !== PIPELINE_REVISION_CHANGED_MESSAGE,
                 },
               ],
             },

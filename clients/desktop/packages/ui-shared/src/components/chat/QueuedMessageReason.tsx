@@ -1,7 +1,7 @@
 import { memo, type JSX, type ReactNode } from 'react';
-import { Stack } from '../Stack';
+import { Stack } from '../../primitives/Stack';
 import type { QueuedMessageWaitingReason } from '@canopy/protocol/remote-control/shell';
-import { Tooltip } from '../Tooltip';
+import { Tooltip } from '../../primitives/Tooltip';
 
 /**
  * Copy for each host-reported reason a queued message is waiting. Product

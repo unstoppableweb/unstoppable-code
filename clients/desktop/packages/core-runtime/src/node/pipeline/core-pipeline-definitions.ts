@@ -510,7 +510,41 @@ function createReplay(
   const variant = ((parseInt(hex[16] ?? '0', 16) & 0x3) | 0x8).toString(16);
   return {
     createId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`,
+    ...ownerReplay(context),
   };
+}
+
+/**
+ * The key under which the app registers a routed write's owner before
+ * sending it (CAN-7507): a digest of the caller's client instance and the
+ * idempotency key, so the raw key never reaches the owner, and the same key
+ * from another client never matches.
+ */
+export function pipelineDefinitionOwnerKey(
+  clientInstanceId: string,
+  idempotencyKey: string,
+): string {
+  return createHash('sha256')
+    .update(
+      ['pipeline-definition-owner', clientInstanceId, idempotencyKey].join(
+        '\0',
+      ),
+    )
+    .digest('hex');
+}
+
+function ownerReplay(context: CanopyHandlerContext): {
+  readonly ownerKey?: string;
+} {
+  const key = context.metadata.idempotencyKey;
+  return key === undefined
+    ? {}
+    : {
+        ownerKey: pipelineDefinitionOwnerKey(
+          context.caller.clientInstanceId,
+          key,
+        ),
+      };
 }
 
 /** A definition a receipt names, unless a later write has moved it on. */
@@ -706,7 +740,11 @@ export function createCorePipelineDefinitionHandlers(
       ): Promise<PipelineDefinitionImportResult> =>
         replayImport(context, params, async () => {
           assertServingAuthority(host, params.targetScope.authorityId);
-          return (await host.load()).import(params, context.signal);
+          return (await host.load()).import(
+            params,
+            context.signal,
+            ownerReplay(context),
+          );
         }),
       'core.pipeline.definition.setEnabled': (
         params,

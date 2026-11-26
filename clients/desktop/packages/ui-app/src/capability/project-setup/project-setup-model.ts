@@ -5,13 +5,14 @@ import {
   type CapabilitySetupItem,
   type CapabilitySetupItemRef,
   type CatalogProjectSetupGetResult,
+  type StoredProjectConnectorSetup,
 } from '@canopy/protocol/canopy-core';
 
 /**
  * The sections of an organization project's shared setup (CAN-6239) that come
  * from the organization, in the order the panel shows them. Each kind is one
- * section of rows with a source; connectors (Release 3) join as a kind of
- * their own. Scripts and hooks, which come from the project's checkout, are
+ * section of rows with a source; connections (Release 3) follow in a
+ * section of their own (`project-connectors-model.ts`). Scripts and hooks, which come from the project's checkout, are
  * the `PROJECT_LOCAL_SECTION_KINDS` that follow them (phase 08). Agents
  * (phase 10a) and pipelines (phase 10b) are kinds of their own while
  * organization projects are on; off, every write keeps theirs as stored.
@@ -28,6 +29,17 @@ export type ProjectSetupSectionKind =
 
 /** Where a row comes from: the organization's defaults, or this project. */
 export type ProjectSetupRowSource = 'organization' | 'project';
+
+/**
+ * The quiet provenance line under each row's name, in every section of the
+ * panel (connections too).
+ */
+export const PROJECT_SETUP_SOURCE_LABEL: Readonly<
+  Record<ProjectSetupRowSource, string>
+> = {
+  organization: 'Organization default',
+  project: 'Added to this project',
+};
 
 /** One row of a section. */
 export interface ProjectSetupRow {
@@ -58,6 +70,7 @@ export type ProjectSetupState = Pick<
   | 'removed'
   | 'dismissedRecommendations'
   | 'canEdit'
+  | 'connectors'
 >;
 
 /** The project's own part of its setup, as a save sends it. */
@@ -65,6 +78,11 @@ export interface ProjectSetupWrite {
   readonly added: CapabilitySetupItemRef[];
   readonly removed: CapabilitySetupItemRef[];
   readonly dismissedRecommendations: string[];
+  /**
+   * The project's connections, sent only by a connector change: left out,
+   * the stored connections stay as they are.
+   */
+  readonly connectors?: StoredProjectConnectorSetup;
 }
 
 /** The section a ref belongs to, or null for a kind the panel does not list. */
@@ -166,9 +184,12 @@ export function projectSetupCandidates(
  * The project's own part as it stands, ready to save: the additions that
  * are still available (the service refuses one that is gone, so resending it
  * would block every save), every switched-off default, and the dismissed
- * repository recommendations untouched.
+ * repository recommendations untouched. Connections are left out, so the
+ * write keeps them as stored.
  */
-function currentWrite(state: ProjectSetupState): ProjectSetupWrite {
+export function projectSetupCurrentWrite(
+  state: ProjectSetupState,
+): ProjectSetupWrite {
   return {
     added: state.added.filter((item) => item.available).map((item) => item.ref),
     removed: [...state.removed],
@@ -190,7 +211,7 @@ export function withDefaultSwitched(
   ref: CapabilitySetupItemRef,
   on: boolean,
 ): ProjectSetupWrite {
-  const write = currentWrite(state);
+  const write = projectSetupCurrentWrite(state);
   const removed = without(write.removed, ref);
   return { ...write, removed: on ? removed : [...removed, ref] };
 }
@@ -200,7 +221,7 @@ export function withItemAdded(
   state: ProjectSetupState,
   ref: CapabilitySetupItemRef,
 ): ProjectSetupWrite {
-  const write = currentWrite(state);
+  const write = projectSetupCurrentWrite(state);
   return { ...write, added: [...without(write.added, ref), ref] };
 }
 
@@ -209,7 +230,7 @@ export function withItemRemoved(
   state: ProjectSetupState,
   ref: CapabilitySetupItemRef,
 ): ProjectSetupWrite {
-  const write = currentWrite(state);
+  const write = projectSetupCurrentWrite(state);
   return { ...write, added: without(write.added, ref) };
 }
 
@@ -284,7 +305,7 @@ export function withRecommendationDismissed(
   state: ProjectSetupState,
   ref: MarketplaceRef,
 ): ProjectSetupWrite {
-  const write = currentWrite(state);
+  const write = projectSetupCurrentWrite(state);
   const key = capabilitySetupItemKey(ref);
   const dismissed = [
     ...write.dismissedRecommendations.filter((entry) => entry !== key),

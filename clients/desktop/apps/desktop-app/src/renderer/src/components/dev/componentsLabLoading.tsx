@@ -12,7 +12,6 @@ import {
   CenteredLoadingSpinner,
   DelayedLoadingPlaceholder,
   InlineMeasuredSkeleton,
-  LoadingButton,
   LoadingIndicatorStyleProvider,
   LoadingSpinner,
   PickerMenuSampleOptions,
@@ -119,20 +118,20 @@ export function LoadingSpecimen(): JSX.Element {
         hint="The spinner lives in the control whose work runs"
       >
         <SpecimenGrid min={200}>
-          <SpecimenCell label="LoadingButton, busy keeps its width">
-            <LoadingButton
+          <SpecimenCell label="Button loading, busy keeps its width">
+            <Button
               variant="primary"
               loading={busy}
               loadingLabel="Applying…"
               onClick={(): void => setBusy(!busy)}
             >
               Apply
-            </LoadingButton>
+            </Button>
           </SpecimenCell>
-          <SpecimenCell label="LoadingButton at rest">
-            <LoadingButton onClick={(): void => setBusy(!busy)}>
+          <SpecimenCell label="Button loading, at rest">
+            <Button loading={false} onClick={(): void => setBusy(!busy)}>
               Apply
-            </LoadingButton>
+            </Button>
           </SpecimenCell>
           <SpecimenCell label="BusyLabel, text style (default)">
             <BusyLabel busy busyText="Loading more…">

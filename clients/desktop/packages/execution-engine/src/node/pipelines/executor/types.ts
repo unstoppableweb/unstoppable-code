@@ -1405,6 +1405,26 @@ export type ExecutePipelineRequestOptions = Pick<
    */
   requestedOwner?: string;
   pipelineFilePath?: string;
+  /**
+   * Revision of `pipelineFilePath` the run was chosen against (CAN-7513):
+   * main refuses the run when the file it loads has another. Checked before
+   * the run starts and never passed to the executor.
+   */
+  expectedRevision?: string;
+  /**
+   * Main refuses the run when the definition it admits (a project file it
+   * reads, or a stored definition it substitutes) differs from the one sent
+   * (CAN-7513): the caller checked the sent one. Never passed to the
+   * executor.
+   */
+  requireSentDefinition?: boolean;
+  /**
+   * A worktree of the same project whose copy of the project workflow at
+   * `pipelineFilePath` the run was chosen against (CAN-7513). Main reads
+   * that file once, checks it against `expectedRevision`, and runs those
+   * bytes in `cwd` as the definition. Never passed to the executor.
+   */
+  definitionWorktreeId?: string;
 };
 
 /**

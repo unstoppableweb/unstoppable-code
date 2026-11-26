@@ -79,6 +79,8 @@ export interface UnifiedEntryFoldedConnector {
 export interface UnifiedEntryIntegration {
   readonly curatedKey: string;
   readonly plugin?: UnifiedEntryFoldedPlugin;
+  /** MCP harness results before a folded plugin contributes its own results. */
+  readonly mcpHarnessInstalls?: UnifiedEntryHarnessInstalls;
   readonly connector?: UnifiedEntryFoldedConnector;
   readonly connections: readonly UnifiedEntryConnection[];
 }
@@ -603,6 +605,8 @@ export interface UnifiedPluginEntry {
   placement?: UnifiedEntryPlacement;
   /** Number of concrete configuration/binding targets behind an MCP row. */
   mcpTargetCount?: number;
+  /** A curated MCP server with a connection supported by the account proxy. */
+  accountProxyMcp?: true;
   recommended: boolean;
   /** Stable catalog order used only as a browse-ranking fallback. */
   catalogSortOrder?: number;

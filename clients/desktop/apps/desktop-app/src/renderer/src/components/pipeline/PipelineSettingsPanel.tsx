@@ -1,4 +1,4 @@
-import type { JSX } from 'react';
+import { useState, type JSX } from 'react';
 import type {
   Pipeline,
   PipelineDefaults,
@@ -17,6 +17,7 @@ import {
   Stack,
   ChoiceList,
   ChoiceListRow,
+  ConfirmDialog,
   Heading,
 } from '@canopy/ui-shared/components';
 import { PipelineRelatedSections } from './PipelineRelatedSections';
@@ -53,7 +54,19 @@ import { Tooltip } from '@canopy/ui-shared';
 import { Button } from '@canopy/ui-shared/components';
 import { CloseIcon as AppCatalogCloseIcon } from '@canopy/ui-shared/icons/AppIcons';
 
+/**
+ * What Settings' trigger list needs beyond the document (CAN-5782): whether
+ * a package installed it, and how many workflow pages run it as a step. The
+ * editor's document projection carries neither.
+ */
+export interface PipelineSettingsTriggerFacts {
+  readonly packageInstalled: boolean;
+  readonly workflowCallers: number;
+}
+
 interface PipelineSettingsPanelProps {
+  /** The pipeline list's facts for the trigger list (CAN-5782). */
+  triggerFacts?: PipelineSettingsTriggerFacts;
   pipeline: Pipeline;
   onUpdateField: (field: keyof Pipeline, value: unknown) => void;
   onUpdateDefaults: (defaults: PipelineDefaults) => void;
@@ -132,15 +145,48 @@ const TRIGGER_OPTIONS: TriggerOption[] = [
 ];
 
 /**
- * Whether the panel offers a trigger. `workflow` is shown only once a
- * pipeline declares it, so it can be removed but not added: adding it waits
- * for a release every desktop and web can read (CAN-5782).
+ * Whether the panel offers a trigger. A package-installed pipeline isn't
+ * offered `workflow`, since its package checks the YAML it installed
+ * (CAN-5782); one that declares it can still remove it.
  */
 function isOfferedTrigger(
   type: PipelineTriggerType,
   activeTriggerTypes: readonly PipelineTriggerType[],
+  packageInstalled: boolean,
 ): boolean {
-  return type !== 'workflow' || activeTriggerTypes.includes('workflow');
+  return (
+    type !== 'workflow' ||
+    !packageInstalled ||
+    activeTriggerTypes.includes('workflow')
+  );
+}
+
+/**
+ * The triggers after a row's toggle (CAN-5782). Turning Workflow or Manual
+ * on starts its inputs from the other's, so schedules keep resolving their
+ * saved inputs whichever trigger they run as.
+ */
+export function toggledTriggers(
+  on: Pipeline['on'],
+  type: PipelineTriggerType,
+): Pipeline['on'] {
+  const active = getTriggerTypes(on);
+  if (active.includes(type)) {
+    const remaining = active.filter((t) => t !== type);
+    // A pipeline keeps at least one trigger; removing the last would leave
+    // a bare Manual without its inputs.
+    return remaining.length === 0 ? on : setTriggerTypes(on, remaining);
+  }
+  const next = setTriggerTypes(on, [...active, type]);
+  const source =
+    type === 'workflow' ? 'dispatch' : type === 'dispatch' ? 'workflow' : null;
+  const inputs =
+    source !== null && active.includes(source)
+      ? getTriggerInputDefs(on, source)
+      : undefined;
+  return inputs && Object.keys(inputs).length > 0
+    ? setTriggerInputDefs(next, type, structuredClone(inputs))
+    : next;
 }
 
 function buildShellOptions(): PipelineShellOption[] {
@@ -165,9 +211,30 @@ export function PipelineSettingsPanel({
   returnToPipeline,
   returnToMarketplace,
   onRelatedNavigate,
+  triggerFacts,
 }: PipelineSettingsPanelProps): JSX.Element {
   const run: RunDefaults = pipeline.defaults?.run ?? {};
   const activeTriggerTypes = getTriggerTypes(pipeline.on);
+  const packageInstalled =
+    triggerFacts?.packageInstalled === true ||
+    pipelineInfo?.distributionMode === 'package';
+  // CAN-5782: turning Workflow on for a pipeline other workflows run as a
+  // child asks first: their runs started from a schedule or the Workflows
+  // page then run it as Workflow too.
+  const workflowCallers =
+    triggerFacts?.workflowCallers ?? pipelineInfo?.workflowCallers ?? 0;
+  const [confirmWorkflow, setConfirmWorkflow] = useState(false);
+  function toggleTrigger(type: PipelineTriggerType): void {
+    if (
+      type === 'workflow' &&
+      !activeTriggerTypes.includes('workflow') &&
+      workflowCallers > 0
+    ) {
+      setConfirmWorkflow(true);
+      return;
+    }
+    onUpdateField('on', toggledTriggers(pipeline.on, type));
+  }
   const selectedScopes = readPipelineScopeSelection(pipeline.scope);
 
   function toggleExecutionScope(
@@ -287,7 +354,11 @@ export function PipelineSettingsPanel({
             </Heading>
             <ChoiceList aria-label="Triggers">
               {TRIGGER_OPTIONS.filter((trigger) =>
-                isOfferedTrigger(trigger.type, activeTriggerTypes),
+                isOfferedTrigger(
+                  trigger.type,
+                  activeTriggerTypes,
+                  packageInstalled,
+                ),
               ).map((trigger) => {
                 const isActive = activeTriggerTypes.includes(trigger.type);
                 return (
@@ -296,15 +367,7 @@ export function PipelineSettingsPanel({
                     data-testid={`pipeline-trigger-row-${trigger.type}`}
                     selected={isActive}
                     disabled={readonly}
-                    onClick={(): void => {
-                      const updated = isActive
-                        ? activeTriggerTypes.filter((t) => t !== trigger.type)
-                        : [...activeTriggerTypes, trigger.type];
-                      onUpdateField(
-                        'on',
-                        setTriggerTypes(pipeline.on, updated),
-                      );
-                    }}
+                    onClick={(): void => toggleTrigger(trigger.type)}
                   >
                     <span className="block font-medium">{trigger.label}</span>
                     <span className="block text-xs fg-secondary">
@@ -314,6 +377,28 @@ export function PipelineSettingsPanel({
                 );
               })}
             </ChoiceList>
+            {packageInstalled ? (
+              <p
+                className="text-xs fg-secondary"
+                data-testid="pipeline-trigger-workflow-package"
+              >
+                This workflow comes from a package, so its Workflow trigger
+                changes when the package is updated.
+              </p>
+            ) : null}
+            {confirmWorkflow ? (
+              <ConfirmDialog
+                title="Turn on the Workflow trigger?"
+                message={`${String(workflowCallers)} ${workflowCallers === 1 ? 'workflow runs' : 'workflows run'} this one as a step. When ${workflowCallers === 1 ? 'that workflow runs' : 'one of them runs'} as Workflow, this step will run as Workflow too.`}
+                confirmLabel="Turn on"
+                onConfirm={(): void => {
+                  setConfirmWorkflow(false);
+                  onUpdateField('on', toggledTriggers(pipeline.on, 'workflow'));
+                }}
+                onCancel={(): void => setConfirmWorkflow(false)}
+                dataTestId="pipeline-trigger-workflow-confirm"
+              />
+            ) : null}
           </section>
 
           {/* Execution Scope */}
@@ -412,7 +497,8 @@ export function PipelineSettingsPanel({
               <p className="text-xs fg-secondary">
                 Named model choices that agent steps can use via{' '}
                 <code>with.model</code>. Aliases can provide workflow defaults,
-                point to a local agent, or require configuration at dispatch.
+                point to a local model preset, or require configuration at
+                dispatch.
               </p>
             </Stack>
             <ModelAliasesEditor

@@ -5,6 +5,7 @@
  * main window through runOpenCodeConnectionForWindow.
  */
 import type * as AgentCatalogCompatibility from '../../remote-projection/agent-catalog-compatibility';
+import type * as OpenCodeConnection from '../../opencode/connection';
 import { EventEmitter } from 'node:events';
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 
@@ -48,6 +49,7 @@ jest.mock('../../opencode/runtime-availability', () => ({
 }));
 
 let mockRelease: () => void = () => undefined;
+const mockRevokeChecks: Array<(() => void) | undefined> = [];
 const mockConnectSignals: AbortSignal[] = [];
 jest.mock('../../opencode/connection', () => ({
   opencodeConnectionStatus: (): Promise<object> =>
@@ -56,22 +58,65 @@ jest.mock('../../opencode/connection', () => ({
   connectOpenCode: (
     signal: AbortSignal,
     progress: (status: object) => void,
+    options?: { beforeRevoke?: () => void },
   ): Promise<object> => {
     mockConnectSignals.push(signal);
+    // The real connect revokes the OpenCode runtimes after awaited work.
+    mockRevokeChecks.push(options?.beforeRevoke);
     progress({ phase: 'downloading' });
     return new Promise((resolve, reject) => {
       mockRelease = (): void => resolve({ connected: true });
       signal.addEventListener('abort', () => reject(new Error('aborted')));
     });
   },
-  disconnectOpenCode: (): Promise<void> => Promise.resolve(),
+  disconnectOpenCode: (options?: {
+    beforeRevoke?: () => void;
+  }): Promise<void> => {
+    mockRevokeChecks.push(options?.beforeRevoke);
+    return Promise.resolve();
+  },
   revokeOpenCodeRuntimes: (): Promise<void> => Promise.resolve(),
+}));
+
+// The real disconnect's state, for the refused-disconnect case (CAN-6718).
+let mockPreferences: Record<string, unknown> = { opencodeEnabled: true };
+jest.mock('../../lib/preferences-store', () => ({
+  readPreferencesFile: (): Promise<Record<string, unknown>> =>
+    Promise.resolve(mockPreferences),
+  updatePreferencesFile: async (
+    update: (preferences: Record<string, unknown>) => Record<string, unknown>,
+  ): Promise<Record<string, unknown>> => {
+    await new Promise((resolve) => setImmediate(resolve));
+    mockPreferences = update(mockPreferences);
+    return mockPreferences;
+  },
+  getOpenCodeEnabledRevision: (): number => 0,
+}));
+jest.mock('../../lib/preferences-broadcast', () => ({
+  broadcastPreferencesChanged: (): void => undefined,
+}));
+const mockObservedConnections: unknown[] = [];
+jest.mock('../../lib/provider-connection-events', () => ({
+  ...jest.requireActual<object>('../../lib/provider-connection-events'),
+  observeProviderConnection: (options: unknown): void => {
+    mockObservedConnections.push(options);
+  },
+}));
+
+// A remote bridge window carries another computer's calls (CAN-6718).
+jest.mock('../../remote-control/host/bridge-window', () => ({
+  resolveRemoteBridgeSender: (sender: { id: number }): string | null =>
+    sender.id === 99 ? 'controller-device' : null,
 }));
 
 import {
   registerOpenCodeConnectionHandlers,
   runOpenCodeConnectionForWindow,
 } from '../opencode-connection';
+import {
+  openCodeSetupHeldByAnother,
+  setOpenCodeSignInOwnerCheck,
+} from '../sign-in-owner-guard';
 
 class FakeContents extends EventEmitter {
   public readonly mainFrame = {};
@@ -202,5 +247,129 @@ describe('OpenCode connection ownership (CAN-6008)', () => {
     await expect(
       Promise.resolve(disconnect?.(event(main))),
     ).resolves.toBeUndefined();
+  });
+
+  // CAN-6718 review: connect and disconnect revoke every live OpenCode
+  // runtime, which ends a sign-in running on one. A bridge may not do that
+  // to a sign-in another window started; this computer's window still may.
+  it('refuses a bridge’s connect and disconnect over another window’s OpenCode sign-in', async () => {
+    const bridge = new FakeContents(99);
+    const main = new FakeContents(6);
+    windowFor(bridge);
+    windowFor(main);
+    const connect = handlers.get(IPC_CHANNELS.opencodeConnectionConnect);
+    const disconnect = handlers.get(IPC_CHANNELS.opencodeConnectionDisconnect);
+    if (!connect || !disconnect) throw new Error('handlers missing');
+    const askedFor: unknown[] = [];
+    setOpenCodeSignInOwnerCheck((sender) => {
+      askedFor.push(sender);
+      return true;
+    });
+    try {
+      for (const handler of [connect, disconnect])
+        await expect(
+          new Promise((resolve) => resolve(handler(event(bridge)))),
+        ).rejects.toThrow('A sign-in is already running on the computer.');
+      expect(askedFor).toEqual([bridge, bridge]);
+      expect(mockConnectSignals).toEqual([]);
+      const running = Promise.resolve(connect(event(main), 'op-main'));
+      await settle();
+      expect(mockConnectSignals).toHaveLength(1);
+      mockRelease();
+      await expect(running).resolves.toEqual({ connected: true });
+    } finally {
+      setOpenCodeSignInOwnerCheck(() => false);
+    }
+  });
+
+  // CAN-6718 review: the check holds up to the revoke itself. A sign-in
+  // another window starts while connect probes its status, or disconnect
+  // writes its preference, still stops the bridge's revoke.
+  it('checks again right before a bridge’s connect or disconnect revokes', async () => {
+    const bridge = new FakeContents(99);
+    const main = new FakeContents(7);
+    windowFor(bridge);
+    windowFor(main);
+    const connect = handlers.get(IPC_CHANNELS.opencodeConnectionConnect);
+    const disconnect = handlers.get(IPC_CHANNELS.opencodeConnectionDisconnect);
+    if (!connect || !disconnect) throw new Error('handlers missing');
+    let signInRunning = false;
+    setOpenCodeSignInOwnerCheck(() => signInRunning);
+    mockRevokeChecks.length = 0;
+    try {
+      const connecting = Promise.resolve(connect(event(bridge), 'op-race'));
+      await settle();
+      mockRelease();
+      await connecting;
+      await Promise.resolve(disconnect(event(bridge)));
+      const [connectCheck, disconnectCheck] = mockRevokeChecks;
+      expect(mockRevokeChecks).toHaveLength(2);
+      // Another window's OpenCode sign-in starts during the wait.
+      signInRunning = true;
+      expect(() => connectCheck?.()).toThrow(
+        'A sign-in is already running on the computer.',
+      );
+      expect(() => disconnectCheck?.()).toThrow(
+        'A sign-in is already running on the computer.',
+      );
+      // This computer's window keeps no such check.
+      mockRevokeChecks.length = 0;
+      await Promise.resolve(disconnect(event(main))).catch(() => undefined);
+      expect(mockRevokeChecks).toEqual([undefined]);
+    } finally {
+      setOpenCodeSignInOwnerCheck(() => false);
+    }
+  });
+
+  // CAN-6718 review: a disconnect refused right before its revoke changes
+  // nothing: OpenCode stays enabled and its account connection is kept.
+  it('leaves OpenCode as it was when a disconnect is refused before its revoke', async () => {
+    const actual = jest.requireActual<typeof OpenCodeConnection>(
+      '../../opencode/connection',
+    );
+    mockPreferences = { opencodeEnabled: true };
+    mockObservedConnections.length = 0;
+    let signInRunning = false;
+    const refused = actual.disconnectOpenCode({
+      beforeRevoke: () => {
+        if (signInRunning)
+          throw new Error('A sign-in is already running on the computer.');
+      },
+    });
+    // Another window's OpenCode sign-in starts while the preference is
+    // being written.
+    signInRunning = true;
+    await expect(refused).rejects.toThrow(
+      'A sign-in is already running on the computer.',
+    );
+    expect(mockPreferences.opencodeEnabled).toBe(true);
+    expect(mockObservedConnections).toEqual([]);
+  });
+
+  // CAN-6718 review: a bridge's OpenCode setup holds other windows' OpenCode
+  // sign-in starts until it settles, so none starts between its checks and
+  // its revoke. This computer's window's setup holds nothing.
+  it('holds other windows’ OpenCode sign-ins while a bridge’s setup runs', async () => {
+    const bridge = new FakeContents(99);
+    const main = new FakeContents(8);
+    windowFor(bridge);
+    windowFor(main);
+    const connect = handlers.get(IPC_CHANNELS.opencodeConnectionConnect);
+    if (!connect) throw new Error('handlers missing');
+    const asHolder = (contents: FakeContents): boolean =>
+      openCodeSetupHeldByAnother(
+        contents as unknown as Parameters<typeof openCodeSetupHeldByAnother>[0],
+      );
+    const bridgeSetup = Promise.resolve(connect(event(bridge), 'op-hold'));
+    await settle();
+    expect([asHolder(main), asHolder(bridge)]).toEqual([true, false]);
+    mockRelease();
+    await bridgeSetup;
+    expect(asHolder(main)).toBe(false);
+    const mainSetup = Promise.resolve(connect(event(main), 'op-main-hold'));
+    await settle();
+    expect(asHolder(bridge)).toBe(false);
+    mockRelease();
+    await mainSetup;
   });
 });

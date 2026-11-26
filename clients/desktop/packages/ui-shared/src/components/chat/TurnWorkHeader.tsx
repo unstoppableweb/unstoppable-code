@@ -5,7 +5,7 @@ import {
   type ReactNode,
 } from 'react';
 import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
-import { LoadingSpinner } from '../LoadingSpinner';
+import { LoadingSpinner } from '../../primitives/LoadingSpinner';
 import { STEP_ROW_TEXT_CLASS, StepRow } from './StepRow';
 import {
   TURN_WAITING_LABEL,

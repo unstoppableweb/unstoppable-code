@@ -5,6 +5,7 @@ import {
   canonicalStoragePath,
 } from '@canopy/core-platform/build-storage-startup';
 import { assertDaemonSecureStorageReady } from '@canopy/core-runtime/node/build-storage-startup';
+import { CLOUD_ACCOUNT_AUTHORITY_COMPOSITION_SELECTED } from '@canopy/core-runtime/node/cloud-account/activation';
 import {
   compiledBuildIdentity,
   dataDirectoryOverride,
@@ -34,6 +35,7 @@ import {
   parseCanopyDaemonArguments,
 } from './arguments';
 import { consumeDaemonHandoff } from './claim-handoff';
+import { readDaemonCloudEndpoint } from './cloud-account';
 import { startCanopyDaemon } from './daemon';
 import {
   setInvalidRemoteDefaultSink,
@@ -60,6 +62,27 @@ declare const __CANOPY_DAEMON_SECURE_DIR_NAMES__:
   | undefined;
 declare const __CANOPY_DAEMON_BUILD_BRAND_ID__: string | undefined;
 declare const __CANOPY_DAEMON_BUILD_COWORK_DIR_NAME__: string | undefined;
+
+declare const __CANOPY_DAEMON_CLOUD_ENDPOINT__: unknown;
+declare const __CANOPY_DAEMON_E2E_CLOUD__:
+  | { readonly wellKnownNamespace: string; readonly apiNamespace: string }
+  | null
+  | undefined;
+
+/**
+ * An E2E build's per-run Cloud (CAN-6997), as the app's
+ * `CANOPY_E2E_CLOUD_BASE_URL` override. Other builds define the constant
+ * null, so this is eliminated and the variable is never read.
+ */
+function e2eCloudEndpoint(): unknown {
+  if (
+    typeof __CANOPY_DAEMON_E2E_CLOUD__ === 'undefined' ||
+    __CANOPY_DAEMON_E2E_CLOUD__ === null
+  )
+    return null;
+  const baseUrl = process.env.CANOPY_E2E_CLOUD_BASE_URL;
+  return baseUrl ? { ...__CANOPY_DAEMON_E2E_CLOUD__, baseUrl } : null;
+}
 
 declare const __CANOPY_DAEMON_BUILD_ID__: string | undefined;
 declare const __CANOPY_DAEMON_BUILD_FLAVOR__: string | undefined;
@@ -252,6 +275,12 @@ async function main(lifetime: DaemonLifetime): Promise<DaemonOutcome> {
     env: process.env,
     openStream: () => process.stdin,
   });
+  const cloudEndpoint = readDaemonCloudEndpoint(
+    e2eCloudEndpoint() ??
+      (typeof __CANOPY_DAEMON_CLOUD_ENDPOINT__ === 'undefined'
+        ? null
+        : __CANOPY_DAEMON_CLOUD_ENDPOINT__),
+  );
   const daemon = await startCanopyDaemon({
     startupSignal: stops.signal,
     recordStartupSeal: (sealed) => lifetime.recordSeal(sealed),
@@ -304,12 +333,46 @@ async function main(lifetime: DaemonLifetime): Promise<DaemonOutcome> {
     scripts: true,
     // CAN-5086: workflows in a supervised pipeline host.
     pipelines: {},
+    // CAN-6997: composed but inert until account authority activation.
+    cloudAccount: {
+      cloud: cloudEndpoint,
+    },
     buildVersion:
       typeof __CANOPY_DAEMON_BUILD_VERSION__ === 'string'
         ? __CANOPY_DAEMON_BUILD_VERSION__
         : '0.0.0-dev',
   }).finally(() => ownerSecret?.fill(0));
-  const reason = await stops.next(daemon.idle);
+  let e2eCompositionReceipt: string | undefined;
+  let e2eReceiptFailure: { readonly error: unknown } | undefined;
+  // A lane-only receipt: boolean composition facts, never an endpoint or key.
+  if (
+    typeof __CANOPY_DAEMON_E2E_CLOUD__ !== 'undefined' &&
+    __CANOPY_DAEMON_E2E_CLOUD__ !== null
+  ) {
+    e2eCompositionReceipt = join(
+      options.dataRoot,
+      'runtime/e2e-cloud-composition.json',
+    );
+    try {
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(
+        e2eCompositionReceipt,
+        JSON.stringify({
+          selectorReceived: process.env.CANOPY_E2E_DAEMON_CLOUD_ACCOUNT === '1',
+          activationSelected: CLOUD_ACCOUNT_AUTHORITY_COMPOSITION_SELECTED,
+          cloudEndpointConfigured: cloudEndpoint !== null,
+        }),
+        { mode: 0o600 },
+      );
+    } catch (error) {
+      // The lane needs the receipt: stop and seal the started daemon below,
+      // then fail with the write's error.
+      e2eReceiptFailure = { error };
+    }
+  }
+  const reason = e2eReceiptFailure
+    ? 'e2e composition receipt failed'
+    : await stops.next(daemon.idle);
   let report: ShutdownReport;
   try {
     report = await daemon.stop(reason);
@@ -318,7 +381,41 @@ async function main(lifetime: DaemonLifetime): Promise<DaemonOutcome> {
     lifetime.recordSeal(await daemon.seal());
     // After the seal, which ends the Git host, so no later selection is missed.
     lifetime.recordGitSelections(daemon.gitSelections());
+    // The smoke requires an empty runtime directory after clean shutdown.
+    if (e2eCompositionReceipt) {
+      const { rm } = await import('node:fs/promises');
+      // A partly written receipt is removed too; the write's error stays the
+      // one thrown.
+      await rm(e2eCompositionReceipt, { force: true }).catch(
+        (error: unknown) => {
+          if (!e2eReceiptFailure) throw error;
+        },
+      );
+    }
   }
+  // A lane-only shutdown receipt beside runtime/, which must end empty: the
+  // stop reason and phase statuses only. Best-effort, so it never changes the
+  // stop or the exit. Gated on the build constant, so it is eliminated.
+  if (
+    typeof __CANOPY_DAEMON_E2E_CLOUD__ !== 'undefined' &&
+    __CANOPY_DAEMON_E2E_CLOUD__ !== null
+  ) {
+    try {
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(
+        join(options.dataRoot, `e2e-daemon-shutdown-${process.pid}.json`),
+        JSON.stringify({
+          pid: process.pid,
+          reason,
+          phases: report.phases.map(({ id, status }) => ({ id, status })),
+        }),
+        { mode: 0o600 },
+      );
+    } catch {
+      // The lane reads a missing receipt as an unproven stop.
+    }
+  }
+  if (e2eReceiptFailure) throw e2eReceiptFailure.error;
   return shutdownOutcome(report);
 }
 

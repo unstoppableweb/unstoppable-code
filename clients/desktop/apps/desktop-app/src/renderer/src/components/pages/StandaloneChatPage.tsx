@@ -65,7 +65,11 @@ import { PanelGridLoadingCard } from '@canopy/ui-shared/components/panels';
 import { isCoworkChatTarget } from '@/lib/cowork';
 import type { WorktreeSelection } from '@canopy/desktop-shared/types';
 import { ForkedContainerNotice } from '@/components/shared-containers/ForkedContainerNotice';
-import { Notice, NoticeButton } from '@canopy/ui-shared/components';
+import {
+  CopyDetailsButton,
+  Notice,
+  NoticeButton,
+} from '@canopy/ui-shared/components';
 import {
   CHAT_STATE_LOAD_ERROR_HEADING,
   CHAT_STATE_REFRESH_RETRY_LABEL,
@@ -541,7 +545,7 @@ export function StandaloneChatPage(): JSX.Element {
               className=""
               error={orgDefaultChatsError.message}
               testId="org-default-chats-provision-error"
-              secondaryAction={
+              primaryAction={
                 <NoticeButton
                   variant="primary"
                   data-testid="org-default-chats-provision-retry"
@@ -568,21 +572,29 @@ export function StandaloneChatPage(): JSX.Element {
               intent="destructive"
               title={CHAT_STATE_LOAD_ERROR_HEADING}
               actions={
-                <NoticeButton
-                  variant="primary"
-                  data-testid="standalone-chat-load-retry"
-                  onClick={(): void => {
-                    retryChatStateRefresh(
-                      activeChatProjectId,
-                      activeWorkEntryId,
-                    );
-                  }}
-                >
-                  {CHAT_STATE_REFRESH_RETRY_LABEL}
-                </NoticeButton>
+                <>
+                  {activeLoadFailure === '' ? null : (
+                    <CopyDetailsButton
+                      details={activeLoadFailure}
+                      data-testid="standalone-chat-load-copy-details"
+                    />
+                  )}
+                  <NoticeButton
+                    variant="primary"
+                    data-testid="standalone-chat-load-retry"
+                    onClick={(): void => {
+                      retryChatStateRefresh(
+                        activeChatProjectId,
+                        activeWorkEntryId,
+                      );
+                    }}
+                  >
+                    {CHAT_STATE_REFRESH_RETRY_LABEL}
+                  </NoticeButton>
+                </>
               }
             >
-              {activeLoadFailure}
+              {null}
             </Notice>
           </div>
         ) : ready && !activeEntryLoading ? (

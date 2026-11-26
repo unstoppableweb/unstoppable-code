@@ -10,6 +10,7 @@ import {
   isWorkerPipelineOwnerAction,
   WORKER_PIPELINE_OWNER_TOOL_JSON_MAX_BYTES,
   WORKER_PIPELINE_OWNER_LEDGER_JSON_MAX_BYTES,
+  WORKER_PIPELINE_OWNER_AGENT_ACTION_NOT_SENT_TEXT,
   LedgerErrorDetailsSchema,
   type CanopyJsonValue,
   type WorkerPipelineHostRequest,
@@ -55,8 +56,11 @@ import {
 import { daemonPipelineOwnerGeneration } from './daemon-pipeline-owner';
 import {
   createDesktopPipelineLedgerPort,
+  isPipelineLedgerAttemptOpen,
+  openPipelineAgentActionsForAttempt,
   openPipelineLedgerCodexTools,
   operatePipelineLedgerAttempt,
+  type PipelineAgentActionTools,
   type PipelineLedgerCodexTools,
 } from './pipeline-ledger';
 import {
@@ -131,6 +135,24 @@ interface OpenCodexTools {
   readonly tools: PipelineLedgerCodexTools;
   readonly policies: Map<string, CodexHostToolPolicy>;
 }
+
+/** An attempt's agent action tools a daemon step holds by `toolsKey` (CAN-7742). */
+interface OpenAgentActions {
+  readonly attemptKey: string;
+  readonly tools: PipelineAgentActionTools;
+  readonly definitions: readonly {
+    readonly key: 'search_actions' | 'dispatch_action';
+    readonly description: string;
+    readonly inputSchema: CanopyJsonValue;
+  }[];
+}
+
+/** An agent action call refused before it ran: nothing was posted. */
+const AGENT_ACTION_NOT_SENT: WorkerPipelineOwnerResult = {
+  kind: 'agentActions.call',
+  text: WORKER_PIPELINE_OWNER_AGENT_ACTION_NOT_SENT_TEXT,
+  isError: true,
+};
 
 function owner(value: WorkerPipelineOwnerResult): WorkerPipelineHostResult {
   return { status: 'owner', value };
@@ -257,6 +279,9 @@ export class PipelineOwnerRunContext {
   private readonly mcp: PipelineOwnerMcpCredentials;
   private readonly attempts = new Map<string, OpenAttempt>();
   private readonly codexTools = new Map<string, OpenCodexTools>();
+  /** Agent action tools by `toolsKey`, and each attempt's key (CAN-7742). */
+  private readonly agentActions = new Map<string, OpenAgentActions>();
+  private readonly agentActionsByAttempt = new Map<string, string>();
   /** The tracked plans this run kept (CAN-6327), which its writes may revise. */
   private readonly plans = new Set<string>();
   private readonly inFlight = new Set<Promise<PipelineOwnerSettlement>>();
@@ -557,7 +582,78 @@ export class PipelineOwnerRunContext {
           this.attempts.delete(action.attemptKey);
           open.attempt.close(action.outcome);
         }
+        // The attempt's agent action tools end with it; a later call is
+        // refused before it runs.
+        this.releaseAgentActions(action.attemptKey);
         return settled({ kind: 'ledger.close' });
+      }
+      case 'owner.agentActions.open': {
+        if (!this.attempts.has(action.attemptKey))
+          return failed('This Ledger attempt is not open.');
+        const cwd = action.cwd ?? state.folder;
+        if (!(await insideRunFolder(cwd, state)))
+          return failed('This step folder is outside the workflow run.');
+        const existing = this.agentActionsByAttempt.get(action.attemptKey);
+        const held =
+          existing === undefined ? undefined : this.agentActions.get(existing);
+        if (existing !== undefined && held !== undefined)
+          return settled({
+            kind: 'agentActions.open',
+            tools: { toolsKey: existing, definitions: [...held.definitions] },
+          });
+        // Only a `dangerous_all` Claude or Codex step in a real project gets
+        // them; the execution, project and worktree are the attempt's own.
+        const tools = openPipelineAgentActionsForAttempt(
+          action.attemptKey,
+          cwd,
+        );
+        if (tools === null)
+          return settled({ kind: 'agentActions.open', tools: null });
+        const definitions: OpenAgentActions['definitions'][number][] = [];
+        for (const definition of tools.definitions) {
+          const inputSchema = toolSpecJson.safeParse(
+            definition.inputSchema,
+          ).data;
+          if (inputSchema === undefined) return failed(UNANSWERED);
+          definitions.push({
+            key: definition.key,
+            description: definition.description,
+            inputSchema,
+          });
+        }
+        const toolsKey = randomUUID();
+        this.agentActions.set(toolsKey, {
+          attemptKey: action.attemptKey,
+          tools,
+          definitions,
+        });
+        this.agentActionsByAttempt.set(action.attemptKey, toolsKey);
+        return settled({
+          kind: 'agentActions.open',
+          tools: { toolsKey, definitions },
+        });
+      }
+      case 'owner.agentActions.call': {
+        const open = this.agentActions.get(action.toolsKey);
+        if (
+          open === undefined ||
+          !this.attempts.has(open.attemptKey) ||
+          !isPipelineLedgerAttemptOpen(open.attemptKey)
+        )
+          return settled(AGENT_ACTION_NOT_SENT);
+        if (!(await open.tools.authorize(action.key, action.invocationId)))
+          return settled(AGENT_ACTION_NOT_SENT);
+        // Runs with the attempt's own scope; nothing the daemon or the
+        // arguments name is used as scope.
+        const result = await open.tools.execute(action.key, action.arguments, {
+          toolUseId: action.invocationId,
+          signal,
+        });
+        return settled({
+          kind: 'agentActions.call',
+          text: result.text,
+          isError: result.isError === true,
+        });
       }
       case 'owner.ledger.operation': {
         if (!this.attempts.has(action.attemptKey))
@@ -821,6 +917,14 @@ export class PipelineOwnerRunContext {
     return policy;
   }
 
+  /** Releases an attempt's agent action tools (CAN-7742). */
+  private releaseAgentActions(attemptKey: string): void {
+    const toolsKey = this.agentActionsByAttempt.get(attemptKey);
+    if (toolsKey === undefined) return;
+    this.agentActionsByAttempt.delete(attemptKey);
+    this.agentActions.delete(toolsKey);
+  }
+
   /**
    * Release every route the run's steps still hold, close its open Ledger
    * attempts (`paused` with the state's checkpoint when the run is paused,
@@ -838,6 +942,8 @@ export class PipelineOwnerRunContext {
     this.routes.clear();
     for (const open of this.codexTools.values()) open.tools.dispose();
     this.codexTools.clear();
+    this.agentActions.clear();
+    this.agentActionsByAttempt.clear();
     for (const open of this.attempts.values())
       open.attempt.close(attemptOutcome(open, finalState));
     this.attempts.clear();

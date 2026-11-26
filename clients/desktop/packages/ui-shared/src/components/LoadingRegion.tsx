@@ -6,7 +6,7 @@ import {
   SLOW_LOAD_NOTE_DELAY_MS,
   useDelayedFlag,
 } from '../lib/useDelayedFlag';
-import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
+import { CenteredLoadingSpinner } from '../primitives/CenteredLoadingSpinner';
 import { SlowLoadNote } from './SlowLoadNote';
 
 export interface LoadingRegionProps {

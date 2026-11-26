@@ -1,3 +1,5 @@
+import { CANOPY_ISSUED_TOKEN_SOURCE } from '../secret-redaction';
+
 /** Shared file metadata used by capability-package and capability-bundle manifests. */
 export interface CapabilityFileEntryBase {
   path: string;
@@ -128,6 +130,8 @@ const SECRET_RULES: readonly {
   { rule: 'npm_token', pattern: /\bnpm_[A-Za-z0-9]{36}\b/ },
   { rule: 'aws_access_key', pattern: /\bAKIA[0-9A-Z]{16}\b/ },
   { rule: 'api_key_prefix', pattern: /\bsk-[A-Za-z0-9_-]{16,}/ },
+  { rule: 'api_key_prefix', pattern: /\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}/ },
+  { rule: 'api_key_prefix', pattern: new RegExp(CANOPY_ISSUED_TOKEN_SOURCE) },
   {
     rule: 'auth_header',
     pattern:

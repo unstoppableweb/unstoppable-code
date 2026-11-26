@@ -8,9 +8,11 @@ import type { BackgroundServiceStatus } from '@canopy/protocol/remote-control/sh
  */
 export {
   BACKGROUND_SERVICE_UNREACHABLE_REASONS,
+  BACKGROUND_SERVICE_BACKUP_WARNINGS,
   BackgroundServiceStatusSchema,
   INITIAL_BACKGROUND_SERVICE_STATUS,
   type BackgroundServiceHandoffFailure,
+  type BackgroundServiceBackupWarning,
   type BackgroundServiceStatus,
   type BackgroundServiceUnreachableReason,
 } from '@canopy/protocol/remote-control/shell/background-service';

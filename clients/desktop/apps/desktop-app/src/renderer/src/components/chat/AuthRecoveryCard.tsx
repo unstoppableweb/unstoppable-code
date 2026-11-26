@@ -38,26 +38,37 @@ interface AuthRecoveryCopy {
  * here instead of silently rendering an empty card — which is exactly what an
  * HTTP 403 did before this component existed.
  */
+// A model provider's row has no Resume, so it asks for the message again;
+// MCP and integration rows can resume, so theirs only asks to reconnect.
+const PROVIDER_SIGNED_OUT_COPY: AuthRecoveryCopy = {
+  before: '',
+  after: ' is signed out. Reconnect it, then send your message again.',
+};
+const SIGNED_OUT_COPY: AuthRecoveryCopy = {
+  before: '',
+  after: ' is signed out. Reconnect it to keep going.',
+};
+
 const FAILURE_COPY: Record<AuthFailureClass, AuthRecoveryCopy> = {
-  unauthenticated: { before: '', after: ' needs to be reconnected.' },
-  expired: { before: '', after: ' needs to be reconnected.' },
-  revoked: { before: '', after: ' needs to be reconnected.' },
-  reauthorization_required: {
-    before: '',
-    after: ' needs to be reconnected.',
-  },
+  unauthenticated: SIGNED_OUT_COPY,
+  expired: SIGNED_OUT_COPY,
+  revoked: SIGNED_OUT_COPY,
+  reauthorization_required: SIGNED_OUT_COPY,
   insufficient_scope: {
     before: '',
     after:
-      ' refused this request — the connection is missing a required permission. Reconnecting will not grant it.',
+      " refused this request. Its connection lacks a permission, and reconnecting won't add it.",
   },
-  quota_exceeded: { before: '', after: ' is over its usage limit.' },
-  provider_outage: { before: '', after: ' is unavailable right now.' },
-  network_error: { before: 'Could not reach ', after: '.' },
-  misconfigured: { before: '', after: ' is not fully configured.' },
+  quota_exceeded: { before: '', after: ' reached its usage limit.' },
+  provider_outage: { before: '', after: " isn't responding." },
+  network_error: {
+    before: "Couldn't reach ",
+    after: '. Check your connection.',
+  },
+  misconfigured: { before: '', after: " isn't set up yet." },
   unsupported_auth_method: {
     before: '',
-    after: ' uses an authentication method that cannot be completed here.',
+    after: " uses a sign-in method this app doesn't support.",
   },
 };
 
@@ -135,9 +146,16 @@ export interface AuthRecoveryCardProps {
   sourceMessageId?: string;
 }
 
+function failureCopy(failure: AuthDependencyFailure): AuthRecoveryCopy {
+  const copy = FAILURE_COPY[failure.failureClass];
+  return copy === SIGNED_OUT_COPY && failure.dependencyClass === 'provider'
+    ? PROVIDER_SIGNED_OUT_COPY
+    : copy;
+}
+
 /** Plain-text form of the card's headline, used for tests and copy review. */
 export function authRecoveryMessage(failure: AuthDependencyFailure): string {
-  const copy = FAILURE_COPY[failure.failureClass];
+  const copy = failureCopy(failure);
   return `${copy.before}${failure.displayName}${copy.after}`;
 }
 
@@ -336,7 +354,7 @@ const AuthRecoveryRow = memo(function AuthRecoveryRow({
   const action = resolveAuthRecoveryAction(failure);
   const mcpTarget = action?.kind === 'mcp-oauth' ? action.target : null;
   const recovery = useMcpAuthRecovery(mcpTarget);
-  const copy = FAILURE_COPY[failure.failureClass];
+  const copy = failureCopy(failure);
 
   const connected = mcpTarget !== null && recovery.status === 'connected';
   useEffect(() => {
@@ -478,8 +496,8 @@ const AuthRecoveryRow = memo(function AuthRecoveryRow({
           <CopyButton
             value={recovery.authorizationUrl}
             dataTestId="auth-recovery-copy-url"
-            ariaLabel="Copy the authorization link"
-            title="Copy the authorization link"
+            ariaLabel="Copy sign-in link"
+            title="Copy sign-in link"
           />
         </div>
       ) : null}
@@ -490,7 +508,7 @@ const AuthRecoveryRow = memo(function AuthRecoveryRow({
         >
           {recovery.timedOut
             ? 'Still not connected. Switch to your browser to finish signing in, then try again.'
-            : (recovery.error ?? 'The reconnect could not be started.')}
+            : `Couldn't reconnect ${failure.displayName}.`}
         </p>
       ) : null}
       {loginOpen && action?.kind === 'provider-login' ? (
@@ -566,16 +584,19 @@ export const AuthRecoveryCard = memo(function AuthRecoveryCard({
         data-testid="auth-recovery-card"
         data-blocker-count={rows.length}
         data-chat-notice=""
+        title={
+          rows.length > 1 ? (
+            <span data-testid="auth-recovery-checklist-header">
+              {`${rows.length} connections need attention before this chat can continue.`}
+            </span>
+          ) : (
+            'A connection needs attention before this chat can continue.'
+          )
+        }
+        detail={recovery.error ? "Couldn't resume." : undefined}
+        announceDetail
       >
         <div className="flex flex-col gap-2">
-          {rows.length > 1 ? (
-            <p
-              data-testid="auth-recovery-checklist-header"
-              className="min-w-0 break-words fg-secondary"
-            >
-              {`${rows.length} connections need attention before this can continue.`}
-            </p>
-          ) : null}
           {rows.map((row) => (
             <AuthRecoveryRow
               key={row.dependencyId}
@@ -595,11 +616,6 @@ export const AuthRecoveryCard = memo(function AuthRecoveryCard({
             >
               {recovery.resuming ? 'Resuming…' : 'Resume'}
             </Button>
-          ) : null}
-          {recovery.error ? (
-            <p role="status" className="fg-secondary">
-              {recovery.error}
-            </p>
           ) : null}
         </div>
       </Notice>

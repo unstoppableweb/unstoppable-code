@@ -1,5 +1,15 @@
 import { KeyedOutcomes } from '../keyed-outcomes';
 import { basename, join } from 'node:path';
+import {
+  WORKER_TERMINAL_RECORD_SCHEMA_REVISION,
+  type WorkerTerminalRecordAttribution,
+  type WorkerTerminalRecordClient,
+} from '@canopy/protocol/canopy-core';
+import {
+  TERMINAL_USER_CLOSE_SIGNAL,
+  TERMINAL_WORKTREE_CLEANUP_SIGNAL,
+  type TerminalSession,
+} from '@canopy/protocol/terminal';
 import type {
   CanopyErrorPayload,
   CanopyWorkspaceScope,
@@ -22,6 +32,7 @@ import type {
 } from '@canopy/protocol/canopy-core';
 import { isSafePortableRelativePath } from '@canopy/protocol/safe-relative-path';
 import {
+  canopyCancelledError,
   CanopyOperationError,
   type SpawnFailureDetails,
 } from '../../../runtime/errors';
@@ -30,6 +41,11 @@ import type {
   CanopyStreamSink,
 } from '../../../runtime/types';
 import type { TerminalEnvironment } from '../ports';
+import { isDrawerOwnedTerminal } from '../record/codec';
+import type {
+  TerminalRecordAttribution,
+  TerminalRecordRegistration,
+} from '../record/authority';
 import type { TerminalHostItem, TerminalHostTerminal } from './protocol';
 import {
   TerminalHostRequestError,
@@ -48,7 +64,38 @@ export interface WorkerTerminalHandlerOptions {
   ) => Promise<string>;
   /** The shortest interval between an attachment's deliveries of output. */
   readonly flushIntervalMs?: number;
+  /**
+   * The worktree terminal record (CAN-7051): attributes revision 2 creates
+   * and restores, and supplies a restore's history and close veto. Absent,
+   * revision 2 attribution is ignored and explicit record history restores
+   * empty.
+   */
+  readonly record?: WorkerTerminalRecordPort;
+  /** Pure record-path validation, shared with the daemon's record operations. */
+  readonly validateRecordTarget?: (client: WorkerTerminalRecordClient) => void;
+  /** An attributed lifetime's source offset before any newly appended bytes. */
+  readonly onOutputStart?: (
+    terminal: TerminalHostTerminal,
+    fromOffset: number,
+    registration: TerminalRecordRegistration,
+  ) => void;
+  readonly log?: (message: string, details: Record<string, unknown>) => void;
 }
+
+/** What the handlers need of the record authority. */
+export interface WorkerTerminalRecordPort {
+  attribute(
+    attribution: TerminalRecordAttribution,
+  ): TerminalRecordRegistration | undefined;
+  restoreHistoryTail(
+    client: WorkerTerminalRecordClient,
+    terminalId: string,
+    maxChars: number,
+  ): { scrollback: string; signal: string | null } | null;
+}
+
+/** The newest output a recreated terminal replays: its restore window. */
+const RESTORE_HISTORY_MAX_CHARS = 1024 * 1024;
 
 type Handler<P, R> = (params: P, context: CanopyHandlerContext) => Promise<R>;
 
@@ -100,6 +147,57 @@ interface Descriptor {
   cwdRelativePath: string;
   profileId: WorkerTerminalCreateParams['profileId'] | null;
   initialCommand: string | null;
+  /**
+   * The host PTY lifetime it describes. Progress of an earlier lifetime of
+   * the same id, such as an attachment still draining it, never applies.
+   */
+  readonly lifetimeId: number | undefined;
+  /** The furthest output offset reported for its lifetime (CAN-7051). */
+  outputOffset: number;
+  /** When it first wrote live output (CAN-7051); never set by a replay. */
+  firstOutputAt?: number;
+}
+
+interface RecentExit {
+  readonly descriptor: Descriptor;
+  readonly lifetimeId: number | undefined;
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+  readonly outputOffset: number;
+}
+
+/**
+ * A terminal's output offset: its host reply's, or further progress reported
+ * for the same lifetime since that reply was taken.
+ */
+function outputOffsetOf(
+  terminal: TerminalHostTerminal,
+  descriptor: Descriptor | undefined,
+  exit: RecentExit | undefined,
+): number {
+  return Math.max(
+    terminal.outputOffset,
+    descriptor !== undefined && descriptor.lifetimeId === terminal.lifetimeId
+      ? descriptor.outputOffset
+      : 0,
+    exit !== undefined && exit.lifetimeId === terminal.lifetimeId
+      ? exit.outputOffset
+      : 0,
+  );
+}
+
+/** The client session a revision 2 call attributes, under the client's ids. */
+function attributedSession(
+  terminalId: string,
+  client: WorkerTerminalRecordClient,
+  session: WorkerTerminalRecordAttribution,
+): TerminalSession {
+  return {
+    ...session,
+    id: terminalId,
+    projectId: client.projectId,
+    worktreeId: client.worktreeId,
+  };
 }
 
 /**
@@ -137,6 +235,16 @@ function notFound(): CanopyOperationError {
     'The terminal is not live on this worker.',
     'worker.terminal.notFound',
   );
+}
+
+/** A revision 2 kill or release's exit reason (CAN-7051). */
+function exitSignalOf(params: {
+  readonly revision?: number;
+  readonly exitSignal?: string;
+}): string | undefined {
+  return params.revision === WORKER_TERMINAL_RECORD_SCHEMA_REVISION
+    ? params.exitSignal
+    : undefined;
 }
 
 /** Host failures as the operation's typed errors; host details stay here. */
@@ -218,6 +326,8 @@ class AttachmentPacer {
   private from: number;
   private truncated = false;
   private exit: WorkerTerminalAttachItem['exit'] = null;
+  /** The exit follows output this attachment never received. */
+  private exitTruncated = false;
   private ending: 'completed' | 'cancelled' | null = null;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private lastFlush = Number.NEGATIVE_INFINITY;
@@ -245,8 +355,11 @@ class AttachmentPacer {
       this.bytes += item.data.length;
       while (this.bytes > PENDING_MAX_BYTES) this.dropOldest();
     } else if (this.bytes === 0) this.from = item.toOffset;
-    if (item.exit)
+    if (item.exit) {
       this.exit = { code: item.exit.exitCode, signal: item.exit.signal };
+      if (item.truncatedBefore && item.data.length === 0)
+        this.exitTruncated = true;
+    }
     this.schedule();
   }
 
@@ -344,14 +457,16 @@ class AttachmentPacer {
     if (beforeMore) return;
     if (this.exit) {
       const exit = this.exit;
+      const truncatedBefore = this.exitTruncated;
       this.exit = null;
+      this.exitTruncated = false;
       this.emit({
         terminalId: this.terminalId,
         fromOffset: this.from,
         toOffset: this.from,
         data: '',
         encoding: 'base64',
-        truncatedBefore: false,
+        truncatedBefore,
         exit,
       });
     }
@@ -387,26 +502,144 @@ export function createWorkerTerminalHandlers(
     );
   const creates = new KeyedOutcomes<WorkerTerminalCreateResult>(reusedKey);
   const restores = new KeyedOutcomes<WorkerTerminalRestoreResult>(reusedKey);
-  const offsets = new Map<string, number>();
-  const recentExits = new Map<
+  const pendingRestores = new Map<
     string,
-    { exitCode: number | null; signal: string | null; outputOffset: number }
+    Promise<WorkerTerminalRestoreResult>
   >();
+  const serializeRestore = (
+    terminalId: string,
+    restore: () => Promise<WorkerTerminalRestoreResult>,
+  ): Promise<WorkerTerminalRestoreResult> => {
+    const previous = pendingRestores.get(terminalId);
+    // Read history only after the previous restore has applied its reports.
+    const outcome = previous ? previous.then(restore, restore) : restore();
+    pendingRestores.set(terminalId, outcome);
+    const finished = (): void => {
+      if (pendingRestores.get(terminalId) === outcome)
+        pendingRestores.delete(terminalId);
+    };
+    void outcome.then(finished, finished);
+    return outcome;
+  };
+  const firstOutputs = new Map<
+    string,
+    { lifetimeId: number | undefined; at: number }
+  >();
+  /** The live descriptor of exactly this lifetime of `terminalId`. */
+  const descriptorOf = (
+    terminalId: string,
+    lifetimeId: number | undefined,
+  ): Descriptor | undefined => {
+    const descriptor = descriptors.get(terminalId);
+    return descriptor?.lifetimeId === lifetimeId ? descriptor : undefined;
+  };
+  const noteOffset = (
+    terminalId: string,
+    lifetimeId: number | undefined,
+    offset: number,
+  ): void => {
+    const descriptor = descriptorOf(terminalId, lifetimeId);
+    if (descriptor)
+      descriptor.outputOffset = Math.max(descriptor.outputOffset, offset);
+  };
+  // Output progress reaches the handlers outside any attachment (CAN-7051).
+  supervisor.onReport((report) => {
+    if (report.type === 'offset')
+      noteOffset(report.terminalId, report.lifetimeId, report.outputOffset);
+    else if (report.type === 'output')
+      noteOffset(report.terminalId, report.lifetimeId, report.toOffset);
+    else {
+      const descriptor = descriptorOf(report.terminalId, report.lifetimeId);
+      if (descriptor && descriptor.firstOutputAt === undefined)
+        descriptor.firstOutputAt = report.at;
+      firstOutputs.set(report.terminalId, {
+        lifetimeId: report.lifetimeId,
+        at: report.at,
+      });
+    }
+  });
+  const attribute = (
+    attribution: TerminalRecordAttribution,
+  ): TerminalRecordRegistration | undefined => {
+    try {
+      return options.record?.attribute(attribution);
+    } catch (error) {
+      // The terminal runs either way; its record catches up on next use.
+      options.log?.('Could not attribute a terminal to its record', {
+        name: error instanceof Error ? error.name : 'error',
+      });
+      return undefined;
+    }
+  };
+  const recordAttribution = (params: {
+    revision?: number;
+    client?: WorkerTerminalRecordClient;
+    session?: WorkerTerminalRecordAttribution;
+  }): {
+    client: WorkerTerminalRecordClient;
+    session: WorkerTerminalRecordAttribution;
+  } | null => {
+    if (
+      params.revision !== WORKER_TERMINAL_RECORD_SCHEMA_REVISION ||
+      !options.record ||
+      !params.client ||
+      !params.session
+    )
+      return null;
+    try {
+      options.validateRecordTarget?.(params.client);
+      return { client: params.client, session: params.session };
+    } catch (error) {
+      // An impossible record target must not block a shell or accrue retry debt.
+      options.log?.('Starting a terminal without record attribution', {
+        name: error instanceof Error ? error.name : 'error',
+      });
+      return null;
+    }
+  };
+  // An unreadable record never blocks a restore: no history, no close veto.
+  const recordRestoreHistory = (
+    client: WorkerTerminalRecordClient,
+    terminalId: string,
+  ): { scrollback: string; signal: string | null } | null => {
+    try {
+      return (
+        options.record?.restoreHistoryTail(
+          client,
+          terminalId,
+          RESTORE_HISTORY_MAX_CHARS,
+        ) ?? null
+      );
+    } catch (error) {
+      options.log?.('Restoring a terminal without reading its record', {
+        name: error instanceof Error ? error.name : 'error',
+      });
+      return null;
+    }
+  };
+  const recentExits = new Map<string, RecentExit>();
   let revision = 0;
   supervisor.onEvent((event) => {
     if (event.type !== 'exit') return;
-    if (!descriptors.delete(event.terminalId)) return;
+    if (firstOutputs.get(event.terminalId)?.lifetimeId === event.lifetimeId)
+      firstOutputs.delete(event.terminalId);
+    const descriptor = descriptors.get(event.terminalId);
+    if (!descriptor) return;
+    descriptors.delete(event.terminalId);
     revision += 1;
     recentExits.set(event.terminalId, {
+      descriptor,
+      lifetimeId: event.lifetimeId,
       exitCode: event.exitCode,
       signal: event.signal,
       // Output written while no client was attached counts too.
       outputOffset: Math.max(
         event.outputOffset ?? 0,
-        offsets.get(event.terminalId) ?? 0,
+        descriptor.lifetimeId === event.lifetimeId
+          ? descriptor.outputOffset
+          : 0,
       ),
     });
-    offsets.delete(event.terminalId);
     while (recentExits.size > MAX_RECENT_EXITS) {
       const oldest = recentExits.keys().next().value;
       if (oldest === undefined) break;
@@ -438,13 +671,16 @@ export function createWorkerTerminalHandlers(
       rows: terminal.rows,
       exitCode: exit?.exitCode ?? null,
       signal: exit?.signal ?? null,
-      outputOffset: terminal.outputOffset,
+      outputOffset: outputOffsetOf(terminal, descriptor, exit),
       running: exit ? false : terminal.running,
       processName: terminal.processName,
       pid: terminal.pid,
       createdAt: terminal.session.createdAt,
       shellBasename: terminal.session.shellBasename,
       kind: descriptor.kind,
+      ...(descriptor.firstOutputAt !== undefined && {
+        firstOutputAt: descriptor.firstOutputAt,
+      }),
     };
   };
 
@@ -495,7 +731,8 @@ export function createWorkerTerminalHandlers(
       'worker.terminal.create': (params, context) =>
         creates.run(context, params, async () => {
           const { workspaceId, worktreeId } = worktreeOf(params.scope);
-          if (params.kind !== 'interactive' && params.kind !== 'managed')
+          const kind = params.kind;
+          if (kind !== 'interactive' && kind !== 'managed')
             throw terminalError(
               'capability_unavailable',
               'This worker opens interactive terminals only.',
@@ -520,6 +757,10 @@ export function createWorkerTerminalHandlers(
             params.cwdRootId,
           );
           const cwd = directoryIn(root, params.cwdRelativePath);
+          const recorded = recordAttribution(params);
+          const persist =
+            recorded !== null && isDrawerOwnedTerminal(recorded.session);
+          let known: Descriptor | undefined;
           const terminal = await hosted(() =>
             supervisor.create(
               {
@@ -536,98 +777,229 @@ export function createWorkerTerminalHandlers(
                 ...(params.initialCommand && {
                   initialCommand: params.initialCommand,
                 }),
+                persist,
               },
               params.cols,
               params.rows,
+              (created) => {
+                const firstOutput = firstOutputs.get(created.session.id);
+                known = {
+                  kind,
+                  scope: params.scope,
+                  cwdRootId: params.cwdRootId,
+                  cwdRelativePath: params.cwdRelativePath,
+                  profileId: params.profileId ?? null,
+                  initialCommand: params.initialCommand ?? null,
+                  lifetimeId: created.lifetimeId,
+                  outputOffset: 0,
+                  ...(firstOutput !== undefined &&
+                    firstOutput.lifetimeId === created.lifetimeId && {
+                      firstOutputAt: firstOutput.at,
+                    }),
+                };
+                descriptors.set(created.session.id, known);
+                const registration = recorded
+                  ? attribute({
+                      terminalId: created.session.id,
+                      client: recorded.client,
+                      session: attributedSession(
+                        created.session.id,
+                        recorded.client,
+                        recorded.session,
+                      ),
+                      persist,
+                    })
+                  : undefined;
+                if (registration !== undefined)
+                  options.onOutputStart?.(created, 0, registration);
+                revision += 1;
+                return registration;
+              },
             ),
           );
-          descriptors.set(terminal.session.id, {
-            kind: params.kind,
-            scope: params.scope,
-            cwdRootId: params.cwdRootId,
-            cwdRelativePath: params.cwdRelativePath,
-            profileId: params.profileId ?? null,
-            initialCommand: params.initialCommand ?? null,
-          });
-          revision += 1;
           return {
-            ...wire(terminal),
+            ...wire(terminal, known),
             profileId: params.profileId ?? null,
             initialCommand: params.initialCommand ?? null,
           };
         }),
       'worker.terminal.restore': (params, context) =>
-        restores.run(context, params, async () => {
-          const { terminalId, cols, rows, snapshot } = params;
-          if (supervisor.isLive(terminalId)) {
-            const { terminal } = await hosted(() =>
-              supervisor.restore({ op: 'restore', terminalId, cols, rows }),
+        restores.run(context, params, () => {
+          const revision2 =
+            params.revision === WORKER_TERMINAL_RECORD_SCHEMA_REVISION;
+          const recordHistory = revision2 && params.historyFrom === 'record';
+          if (recordHistory && !params.client)
+            return Promise.reject(
+              terminalError(
+                'invalid_argument',
+                'Record history requires a terminal record client.',
+              ),
+            );
+          // Without recreation data, absent targets need no root-lookup barrier.
+          if (
+            (params.restoreMode !== 'recreate_if_exited' || !params.snapshot) &&
+            !supervisor.isLive(params.terminalId)
+          )
+            return Promise.reject(notFound());
+          // Only queued restores gain cancellation points; keep the fast path.
+          const queued = pendingRestores.has(params.terminalId);
+          return serializeRestore(params.terminalId, async () => {
+            if (queued && context.signal.aborted) throw canopyCancelledError();
+            const { terminalId, cols, rows, snapshot } = params;
+            if (supervisor.isLive(terminalId)) {
+              try {
+                const { terminal } = await supervisor.restore({
+                  op: 'restore',
+                  terminalId,
+                  cols,
+                  rows,
+                });
+                return {
+                  terminalId,
+                  state: supervisor.isLive(terminalId) ? 'running' : 'exited',
+                  restored: true,
+                  recreated: false,
+                  outputOffset: outputOffsetOf(
+                    terminal,
+                    descriptors.get(terminalId),
+                    supervisor.isLive(terminalId)
+                      ? undefined
+                      : recentExits.get(terminalId),
+                  ),
+                  pid: terminal.pid,
+                  createdAt: terminal.session.createdAt,
+                };
+              } catch (error) {
+                if (
+                  !(error instanceof TerminalHostRequestError) ||
+                  error.error.code !== 'notFound' ||
+                  params.restoreMode !== 'recreate_if_exited' ||
+                  !snapshot
+                )
+                  throw translate(error);
+                // The host queues notFound behind that lifetime's final reports.
+              }
+            }
+            if (params.restoreMode !== 'recreate_if_exited' || !snapshot)
+              throw notFound();
+            const recorded = recordAttribution(params);
+            const persist =
+              recorded !== null && isDrawerOwnedTerminal(recorded.session);
+            // Only recreation needs a worktree scope; live reattach does not.
+            const { workspaceId, worktreeId } = worktreeOf(params.scope);
+            const scope = params.scope ?? { workspaceId, worktreeId };
+            const root = await options.resolveRoot(scope, snapshot.cwdRootId);
+            if (queued && context.signal.aborted) throw canopyCancelledError();
+            // A directory that left the root restarts in the root, as in process.
+            const cwd = isSafePortableRelativePath(snapshot.cwdRelativePath)
+              ? directoryIn(root, snapshot.cwdRelativePath)
+              : root;
+            // Read in either replay mode: the record also carries the close veto.
+            const history =
+              revision2 && params.client
+                ? recordRestoreHistory(params.client, terminalId)
+                : null;
+            const scrollback = recordHistory
+              ? (history?.scrollback ?? '')
+              : snapshot.scrollback;
+            // Only deliberate closes veto recreation; crashed shells stay restorable.
+            if (
+              history?.signal === TERMINAL_USER_CLOSE_SIGNAL ||
+              history?.signal === TERMINAL_WORKTREE_CLEANUP_SIGNAL
+            )
+              throw terminalError(
+                'failed_precondition',
+                "Couldn't restore this terminal because it was closed. Open a new terminal.",
+                'worker.terminal.invalidState',
+              );
+            // Keep the shell if retirement races dispatch; revisit at slice 3's attribution/retire cutover.
+            const { terminal, recreated } = await hosted(() =>
+              supervisor.restore(
+                {
+                  op: 'restore',
+                  terminalId,
+                  cols,
+                  rows,
+                  recreate: {
+                    projectId: workspaceId,
+                    worktreeId,
+                    root,
+                    cwd,
+                    environment: environmentOf(snapshot.env),
+                    shell: {
+                      shell: snapshot.shell,
+                      args: snapshot.args,
+                      shellBasename: basename(snapshot.shell),
+                    },
+                    ...(snapshot.initialCommand && {
+                      initialCommand: snapshot.initialCommand,
+                    }),
+                    scrollback,
+                    persist,
+                  },
+                },
+                (restoredTerminal, wasRecreated) => {
+                  // Another restore may already have registered and exited it.
+                  if (!wasRecreated && !supervisor.isLive(terminalId)) return;
+                  // A concurrent restore may have recreated it first: this one
+                  // adopts the live terminal without changing its snapshot.
+                  if (wasRecreated || !descriptors.has(terminalId)) {
+                    descriptors.set(terminalId, {
+                      kind: 'interactive',
+                      scope,
+                      cwdRootId: snapshot.cwdRootId,
+                      cwdRelativePath: snapshot.cwdRelativePath,
+                      profileId: null,
+                      initialCommand: snapshot.initialCommand ?? null,
+                      lifetimeId: restoredTerminal.lifetimeId,
+                      outputOffset: 0,
+                    });
+                    const registration =
+                      recorded && wasRecreated
+                        ? attribute({
+                            terminalId,
+                            client: recorded.client,
+                            session: attributedSession(
+                              terminalId,
+                              recorded.client,
+                              recorded.session,
+                            ),
+                            persist,
+                          })
+                        : undefined;
+                    if (registration !== undefined)
+                      options.onOutputStart?.(
+                        restoredTerminal,
+                        Buffer.byteLength(scrollback, 'utf8'),
+                        registration,
+                      );
+                    revision += 1;
+                    return registration;
+                  }
+                },
+              ),
             );
             return {
               terminalId,
-              state: 'running',
+              state: supervisor.isLive(terminalId) ? 'running' : 'exited',
               restored: true,
-              recreated: false,
-              outputOffset: terminal.outputOffset,
+              recreated,
+              // Only legacy recreations seed locally; live restores replay from zero.
+              outputOffset:
+                recreated &&
+                params.revision !== WORKER_TERMINAL_RECORD_SCHEMA_REVISION
+                  ? terminal.outputOffset
+                  : outputOffsetOf(
+                      terminal,
+                      descriptors.get(terminalId),
+                      supervisor.isLive(terminalId)
+                        ? undefined
+                        : recentExits.get(terminalId),
+                    ),
               pid: terminal.pid,
               createdAt: terminal.session.createdAt,
             };
-          }
-          if (params.restoreMode !== 'recreate_if_exited' || !snapshot)
-            throw notFound();
-          const { workspaceId, worktreeId } = worktreeOf(params.scope);
-          const scope = params.scope ?? { workspaceId, worktreeId };
-          const root = await options.resolveRoot(scope, snapshot.cwdRootId);
-          // A directory that left the root restarts in the root, as in process.
-          const cwd = isSafePortableRelativePath(snapshot.cwdRelativePath)
-            ? directoryIn(root, snapshot.cwdRelativePath)
-            : root;
-          const { terminal, recreated } = await hosted(() =>
-            supervisor.restore({
-              op: 'restore',
-              terminalId,
-              cols,
-              rows,
-              recreate: {
-                projectId: workspaceId,
-                worktreeId,
-                root,
-                cwd,
-                environment: environmentOf(snapshot.env),
-                shell: {
-                  shell: snapshot.shell,
-                  args: snapshot.args,
-                  shellBasename: basename(snapshot.shell),
-                },
-                ...(snapshot.initialCommand && {
-                  initialCommand: snapshot.initialCommand,
-                }),
-                scrollback: snapshot.scrollback,
-              },
-            }),
-          );
-          // A concurrent restore may have recreated it first: this one then
-          // adopts the live terminal, and its snapshot changes nothing.
-          if (recreated || !descriptors.has(terminalId)) {
-            descriptors.set(terminalId, {
-              kind: 'interactive',
-              scope,
-              cwdRootId: snapshot.cwdRootId,
-              cwdRelativePath: snapshot.cwdRelativePath,
-              profileId: null,
-              initialCommand: snapshot.initialCommand ?? null,
-            });
-            revision += 1;
-          }
-          return {
-            terminalId,
-            state: 'running',
-            restored: true,
-            recreated,
-            outputOffset: terminal.outputOffset,
-            pid: terminal.pid,
-            createdAt: terminal.session.createdAt,
-          };
+          });
         }),
       'worker.terminal.write': async (params) => {
         if (!descriptors.has(params.terminalId)) throw notFound();
@@ -669,18 +1041,23 @@ export function createWorkerTerminalHandlers(
             'This worker kills a terminal without a grace period.',
           );
         return wire(
-          await hosted(() => supervisor.kill(params.terminalId)),
+          await hosted(() =>
+            supervisor.kill(params.terminalId, exitSignalOf(params)),
+          ),
           known,
         );
       },
       'worker.terminal.release': async (params) => ({
-        released: await hosted(() => supervisor.release(params.terminalId)),
+        released: await hosted(() =>
+          supervisor.release(params.terminalId, exitSignalOf(params)),
+        ),
       }),
     },
     streams: {
       'worker.terminal.attach': async (params, _context, sink) => {
+        const descriptor = descriptors.get(params.terminalId);
         const recent = recentExits.get(params.terminalId);
-        if (!descriptors.has(params.terminalId) && recent) {
+        const complete = (exited: NonNullable<typeof recent>): (() => void) => {
           // Exited while this client was away: report the exit, flagging
           // the output it can no longer read.
           sink.emit({
@@ -689,13 +1066,14 @@ export function createWorkerTerminalHandlers(
             toOffset: params.fromOffset,
             data: '',
             encoding: 'base64',
-            truncatedBefore: recent.outputOffset > params.fromOffset,
-            exit: { code: recent.exitCode, signal: recent.signal },
+            truncatedBefore: exited.outputOffset > params.fromOffset,
+            exit: { code: exited.exitCode, signal: exited.signal },
           });
           sink.end('completed');
           return () => undefined;
-        }
-        if (!descriptors.has(params.terminalId)) throw notFound();
+        };
+        if (!descriptor && recent) return complete(recent);
+        if (!descriptor) throw notFound();
         const pacer = new AttachmentPacer(
           params.terminalId,
           sink,
@@ -705,7 +1083,8 @@ export function createWorkerTerminalHandlers(
         const unsubscribe = supervisor.onEvent((event) => {
           if (
             event.type !== 'runningChanged' ||
-            event.terminalId !== params.terminalId
+            event.terminalId !== params.terminalId ||
+            descriptors.get(params.terminalId) !== descriptor
           )
             return;
           pacer.running({
@@ -732,10 +1111,8 @@ export function createWorkerTerminalHandlers(
             {
               item: (item, id) => {
                 attachmentId = id;
-                offsets.set(
-                  params.terminalId,
-                  Math.max(offsets.get(params.terminalId) ?? 0, item.toOffset),
-                );
+                if (descriptors.get(params.terminalId) === descriptor)
+                  noteOffset(params.terminalId, item.lifetimeId, item.toOffset);
                 // The host is never held back: pacing and truncation for
                 // a slow client happen here, where the stream's bound is.
                 supervisor.acknowledge(id, item.toOffset);
@@ -750,12 +1127,20 @@ export function createWorkerTerminalHandlers(
           attachmentId = opened.attachmentId;
           // The foreground process as of this attachment, ahead of any
           // later change, so a client that was away does not keep a stale one.
-          pacer.running({
-            running: opened.terminal.running,
-            processName: opened.terminal.processName,
-          });
+          if (descriptors.get(params.terminalId) === descriptor)
+            pacer.running({
+              running: opened.terminal.running,
+              processName: opened.terminal.processName,
+            });
         } catch (error) {
           close();
+          const exited = recentExits.get(params.terminalId);
+          if (
+            error instanceof TerminalHostRequestError &&
+            error.error.code === 'notFound' &&
+            exited?.descriptor === descriptor
+          )
+            return complete(exited);
           throw translate(error);
         }
         return () => {

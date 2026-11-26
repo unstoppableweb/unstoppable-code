@@ -644,6 +644,12 @@ function serveControlConnection(
           .filter(({ kind }) => kind === 'stream')
           .map(({ name }) => name),
         channels: channelKindsForCaller,
+        // What the client may ask for above version 1 (protocol rule 5).
+        schemaRevisions: Object.fromEntries(
+          reachable.flatMap(({ name, schemaRevision }) =>
+            typeof schemaRevision === 'number' ? [[name, schemaRevision]] : [],
+          ),
+        ),
       },
       limits: {
         ...(connection.maxMessageBytes !== undefined && {

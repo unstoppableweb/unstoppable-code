@@ -1,8 +1,8 @@
-import { Badge } from './Badge';
+import { Badge } from '../primitives/Badge';
 import type { JSX } from 'react';
 import { CheckIcon, DownloadIcon, StopIcon } from '../icons';
-import { Button } from './Button';
-import { Tooltip } from './Tooltip';
+import { Button } from '../primitives/Button';
+import { Tooltip } from '../primitives/Tooltip';
 import { RefreshSpinner } from './RefreshSpinner';
 
 // ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
-import { Notice, NoticeButton } from './Notice';
+import { Notice, NoticeButton } from '../primitives/Notice';
+import { CopyDetailsButton } from '../primitives/CopyDetailsButton';
 import { curatedPipelineStaleMessage } from './CuratedPipelineCatalog';
 
 export interface CuratedCatalogNoticeProps {
@@ -24,9 +25,14 @@ export function CuratedCatalogNotice({
         role="none"
         title="Couldn't load curated workflows."
         data-testid="plugins-curated-pipelines-error"
-        actions={<NoticeButton onClick={onRetry}>Try again</NoticeButton>}
+        actions={
+          <>
+            <CopyDetailsButton details={error} />
+            <NoticeButton onClick={onRetry}>Try again</NoticeButton>
+          </>
+        }
       >
-        {error}
+        {null}
       </Notice>
     );
   if (stale)

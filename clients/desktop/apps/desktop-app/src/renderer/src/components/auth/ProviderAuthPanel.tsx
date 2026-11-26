@@ -41,9 +41,7 @@ import {
   StatusLabel,
   TextInput,
   Heading,
-  type ProviderStatusDotTone,
 } from '@canopy/ui-shared/components';
-import { ProviderSourceRow } from '@canopy/ui-app/providers';
 import { ClaudeLogo, CodexLogo } from '@canopy/ui-shared/icons';
 import {
   EyeIcon,
@@ -53,10 +51,8 @@ import {
 import { brandText } from '@/lib/brand';
 import { AuthLoginModal } from '@/components/settings/AuthLoginModal';
 import { ProviderCarryoverNote } from '@/components/settings/ProviderCarryoverNote';
-import {
-  signedInProviderLine,
-  useDesktopProviderSignIn,
-} from './useDesktopProviderSignIn';
+import { useDesktopProviderSignIn } from './useDesktopProviderSignIn';
+import { ProviderSignInRow } from '@canopy/ui-app/harness-setup';
 import {
   SettingsRow,
   SettingsSegmentedControl,
@@ -208,41 +204,13 @@ function TerminalProviderAuthPanel({
   const statusDot = status ? <StatusDot ok={status.authenticated} /> : null;
 
   if (layout === 'row') {
-    // The same tones as `StatusDot`, on the shared provider row.
-    const rowStatus: ProviderStatusDotTone | undefined = status
-      ? status.authenticated
-        ? 'connected'
-        : 'failed'
-      : undefined;
-    // One status line: the account and plan when signed in, the provider's
-    // own error otherwise.
-    let statusLine: ReactNode;
-    if (!status) {
-      statusLine = 'Checking sign-in…';
-    } else if (status.authenticated) {
-      statusLine = signedInProviderLine(status, detailText);
-    } else {
-      statusLine = (
-        <StatusLabel>{status.error || unauthenticatedText}</StatusLabel>
-      );
-    }
+    // The shared Claude / Codex row (`@canopy/ui-app/harness-setup`).
     return (
-      <ProviderSourceRow
-        dataTestId={`auth-panel-${provider}`}
-        icon={logo}
-        name={name}
-        {...(rowStatus !== undefined ? { status: rowStatus } : {})}
-        description={statusLine}
-        control={
-          <Button
-            onClick={openSignIn}
-            disabled={status === null}
-            data-testid={`auth-panel-${provider}-connect`}
-            size="compact"
-          >
-            {loginLabel}
-          </Button>
-        }
+      <ProviderSignInRow
+        provider={provider}
+        status={status}
+        detail={detailText}
+        onSignIn={openSignIn}
       >
         {/* What carries over from the provider's own setup is detail under
             the row, so the row keeps one subtitle line. */}
@@ -252,7 +220,7 @@ function TerminalProviderAuthPanel({
           refreshKey={refreshKey}
         />
         {loginModal}
-      </ProviderSourceRow>
+      </ProviderSignInRow>
     );
   }
 

@@ -12,6 +12,12 @@ export interface AntigravityRuntimeStatus {
   executable?: string;
   phase: 'idle' | 'downloading' | 'verifying' | 'installed' | 'failed';
   error?: string;
+  /**
+   * Set only on the answer to an install this window joined and then
+   * cancelled: it stopped waiting, and the install goes on in the window
+   * that started it, still in `phase`.
+   */
+  detached?: true;
 }
 
 export interface AntigravityRuntimeApi {

@@ -322,4 +322,17 @@ describe('operation ledger persistence qualification', () => {
     ledger = open();
     expect(ledger.get(kept.operationId)).toEqual(kept);
   });
+
+  it('issues no record when the host cannot confirm the backup folder was flushed', async () => {
+    ledger.accept(request());
+    await expect(
+      backupOperationLedger(ledger, {
+        dataRoot: dir,
+        backupPath: 'backups/operation-ledger-unflushed.sqlite',
+        isOutsideCheckouts: outside,
+        syncDirectory: (): Promise<'unsupported'> =>
+          Promise.resolve('unsupported'),
+      }),
+    ).rejects.toMatchObject({ code: 'BACKUP_UNVERIFIED' });
+  });
 });

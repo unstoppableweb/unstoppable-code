@@ -1,11 +1,11 @@
 'use client';
 
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import {
   PipelineDetailTag,
   PipelineDetailJobHeader,
 } from '@canopy/ui-shared/components';
-import { Count } from '@canopy/ui-shared/components/Badge';
+import { Count } from '@canopy/ui-shared/primitives/Badge';
 import { type JSX, type ReactNode, useState } from 'react';
 import type { RemoteControlPipelineDefinitionViewModel } from '@canopy/protocol/remote-control/shell';
 import { PipelineIcon } from '@canopy/ui-shared';

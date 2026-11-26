@@ -245,6 +245,9 @@ export function createNativeArtifactAuthorizer(
           kind,
           mode: 'owner-only',
           action: 'verify',
+          // The data root admits other accounts; the snapshot stays strict (CAN-7915).
+          foreignTrustees:
+            path === options.canonicalDataRoot ? 'accept' : 'refuse',
         })
       ).state !== 'private'
     )

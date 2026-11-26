@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { WorkerTerminalRecordRetireParamsSchema } from '../../canopy-core/worker/terminal';
 
 export {
   LIFECYCLE_JOURNAL_DIRECTORY_UNREADABLE_REFUSAL,
@@ -146,6 +147,8 @@ export const journalSchema = z.object({
   ),
   outcome: z.unknown().optional(),
   cleanupRequired: z.boolean().optional(),
+  /** Exact terminal lifetime intent, transferred durably to main's outbox. */
+  terminalRecordRetirement: WorkerTerminalRecordRetireParamsSchema.optional(),
   archiveRecoveryCleanup: z
     .array(
       z.object({

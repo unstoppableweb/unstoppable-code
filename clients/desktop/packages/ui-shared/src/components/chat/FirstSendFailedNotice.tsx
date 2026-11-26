@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, type JSX } from 'react';
-import { Notice, NoticeButton } from '../Notice';
+import { Notice, NoticeButton } from '../../primitives/Notice';
 
 export const FIRST_SEND_FAILED_CHOOSE_MODEL_LABEL = 'Choose another model';
 export const FIRST_SEND_FAILED_RETRY_LABEL = 'Try again';
@@ -27,6 +27,8 @@ export interface FirstSendFailedNoticeProps {
    * A key that arrives while `busy` is applied once the retry settles.
    */
   focusKey?: string | null;
+  /** Closes the notice. The host shows it again for a new failure. */
+  onDismiss?: () => void;
   /** Placement only (margins, width); the surface is the shared `Notice`. */
   className?: string;
   'data-testid'?: string;
@@ -50,6 +52,7 @@ export function FirstSendFailedNotice({
   onRetry,
   busy = false,
   focusKey,
+  onDismiss,
   className,
   'data-testid': testId = 'first-send-failed-notice',
 }: FirstSendFailedNoticeProps): JSX.Element {
@@ -76,6 +79,7 @@ export function FirstSendFailedNotice({
       aria-busy={busy || undefined}
       className={className}
       data-testid={testId}
+      onDismiss={onDismiss}
       actions={
         <>
           {onRetry !== undefined && (

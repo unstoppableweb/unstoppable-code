@@ -49,7 +49,7 @@ export function linuxUpdateCopy(
     manual: apt
       ? `${apt.introduction} ${apt.command}.`
       : `Linux updates must be installed manually. Download ${brand.displayName} from the official site and verify its published checksum before installing with your package manager.`,
-    unsupported: `Linux update checks need ${brand.displayName} installed from its official .deb or pacman package on x64 or arm64. Other installs and architectures are not supported.`,
+    unsupported: `Linux update checks need ${brand.displayName} installed from its official .deb package (x64 or arm64) or pacman package (x64). Other installs and architectures are not supported.`,
     unavailable: `${brand.displayName} Linux updates are unavailable. Check your connection and try again. A verified .deb release for this architecture may not be published for this channel yet.`,
     authentication: `Connect GitHub in Settings > Account to check internal or RC Linux releases of ${brand.displayName}.`,
     verification: apt

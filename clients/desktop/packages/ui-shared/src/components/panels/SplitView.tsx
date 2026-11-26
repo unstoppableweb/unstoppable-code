@@ -1,8 +1,8 @@
 import { useLayoutEffect, useRef, type JSX, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { DisposableStore, toDisposable } from '../../panels/disposable';
-import { Emitter, type Event } from '../../panels/emitter';
-import { getWindow } from '../../panels/window-registry';
+import { DisposableStore, toDisposable } from '../../lib/disposable';
+import { Emitter, type Event } from '../../lib/emitter';
+import { getWindow } from '../../lib/window-registry';
 import type { Sash as SashInstance } from '../../panels/sash';
 import {
   type IView,

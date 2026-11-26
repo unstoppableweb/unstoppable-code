@@ -332,7 +332,9 @@ export function bootstrapPayload(state, organizationId) {
       digestsEnabled: true,
       // `hostedSettings.integrationsEnabled: false` models a server with the
       // Cloud Git (Integrations) page off.
-      integrationsEnabled: state.integrationsEnabled !== false,
+      // CAN-7606: Integrations also lists Slack where it is offered.
+      integrationsEnabled:
+        state.integrationsEnabled !== false || Boolean(state.slack),
       delegationEnabled: state.delegationEnabled === true,
       freeAccess: true,
     },
@@ -1093,8 +1095,16 @@ function accountPageData(state, kind, route) {
       return { data: {} };
     case 'account.integrations':
       // The web page guard 404s while the server's Integrations flag is off.
-      if (state.integrationsEnabled === false) return null;
-      return { data: { userId: state.viewer.id } };
+      // CAN-7606: GitHub is on unless the flag is off; Slack follows the
+      // scenario's `slack` slice.
+      if (state.integrationsEnabled === false && !state.slack) return null;
+      return {
+        data: {
+          userId: state.viewer.id,
+          githubCloud: state.integrationsEnabled !== false,
+          slack: Boolean(state.slack),
+        },
+      };
     case 'account.security':
       return {
         data: {

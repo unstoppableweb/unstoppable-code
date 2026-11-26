@@ -20,6 +20,7 @@ import type {
   ArchivedGitRepositoryState,
   ArchivedPullRequestCapture,
 } from '@canopy/desktop-shared/types';
+import { archivedGitStateVersion } from '@canopy/desktop-shared/lib/archived-container-contracts';
 import { killProcessGroupByPid } from '@canopy/execution-engine/node/lib/process-kill';
 import type { Stats } from 'node:fs';
 import { assertArchiveWorktreeRemoval } from '../lib/archive-worktree-postconditions';
@@ -45,6 +46,7 @@ import {
   createSnapshotCommit,
   setGitTreeSnapshotRuntime,
 } from '../lib/git-tree-snapshot';
+import { isWorktreeSnapshotRefusalError } from '../lib/worktree-snapshot-refusal';
 import type {
   ArchiveGitCaptureRepositoryInput,
   ArchiveGitCommandEnvironment,
@@ -267,7 +269,7 @@ export async function completeArchiveGitCapture(args: {
   pullRequestMetadata: ArchivedPullRequestCapture;
 }): Promise<void> {
   await writeJsonDurably(args.stagedDescriptorPath, {
-    version: 1,
+    version: archivedGitStateVersion(args.repositories),
     status: 'ready',
     repositories: args.repositories,
     gitChanges: args.gitChanges,
@@ -434,7 +436,7 @@ export async function captureArchiveGit(args: {
   >();
   const captureErrors: Error[] = [];
   await writeJsonDurably(args.stagedDescriptorPath, {
-    version: 1,
+    version: archivedGitStateVersion(captured),
     status: 'capturing',
     repositories: captured,
   });
@@ -453,7 +455,11 @@ export async function captureArchiveGit(args: {
           signal: args.signal,
           child: args.child,
         });
-        await assertWorktreeSnapshotSupported(input.worktreeRepoPath);
+        const { attributePolicy, attributes } =
+          await assertWorktreeSnapshotSupported(
+            input.worktreeRepoPath,
+            'negotiate',
+          );
         const headCommit = await captureHeadCommitSha(input.worktreeRepoPath);
         if (!headCommit) {
           throw new Error(`Repository ${input.repoName} has no HEAD commit.`);
@@ -464,7 +470,7 @@ export async function captureArchiveGit(args: {
             cwd: input.worktreeRepoPath,
             arguments: ['rev-parse', `${headCommit}^{tree}`],
           }),
-          captureIndexTreeSha(input.worktreeRepoPath),
+          captureIndexTreeSha(input.worktreeRepoPath, attributes),
         ]);
         const indexSnapshotCommit =
           indexTree === headTree
@@ -475,7 +481,16 @@ export async function captureArchiveGit(args: {
                 parentCommit: headCommit,
                 message: 'Archived index snapshot',
               });
-        const workingTree = await captureWorkingTreeSha(input.worktreeRepoPath);
+        // Under an attribute source this pins decrypted git-crypt bytes under
+        // refs/app/archived-containers. Accepted by the owner (CAN-6776 q-4):
+        // the plaintext is already in the checkout and Canopy never pushes
+        // those refs; the acceptance also covers anyone who can read the
+        // source repository's local object store after the worktree is gone.
+        // Revisit if it starts publishing them or sharing that repository.
+        const workingTree = await captureWorkingTreeSha(
+          input.worktreeRepoPath,
+          attributes,
+        );
         const worktreeSnapshotCommit =
           workingTree === indexTree
             ? indexSnapshotCommit
@@ -541,6 +556,7 @@ export async function captureArchiveGit(args: {
           indexSnapshotCommit,
           worktreeSnapshotCommit,
           snapshotRef: input.snapshotRef,
+          ...(attributePolicy ? { attributePolicy } : {}),
         };
         publication = publication.then(async () => {
           captured.push(repository);
@@ -548,7 +564,7 @@ export async function captureArchiveGit(args: {
             left.repoId.localeCompare(right.repoId),
           );
           await writeJsonDurably(args.stagedDescriptorPath, {
-            version: 1,
+            version: archivedGitStateVersion(captured),
             status: 'capturing',
             repositories: captured,
           });
@@ -584,10 +600,17 @@ export async function captureArchiveGit(args: {
         ...rollbackErrors,
       ]);
     }
+    // A files-only recovery may follow only when every repository failed in
+    // a way it covers. Any other failure wins, so a refusal in one repository
+    // never masks a raw Git failure in another.
     throw (
       captureErrors.find(
-        (error) => !(error instanceof ArchiveGitRecoveryRequiredError),
-      ) ?? captureErrors[0]
+        (error) =>
+          !(error instanceof ArchiveGitRecoveryRequiredError) &&
+          !isWorktreeSnapshotRefusalError(error),
+      ) ??
+      captureErrors.find(isWorktreeSnapshotRefusalError) ??
+      captureErrors[0]
     );
   }
   const capturedAt = new Date().toISOString();

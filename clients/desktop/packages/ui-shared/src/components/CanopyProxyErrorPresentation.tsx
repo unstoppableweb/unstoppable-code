@@ -1,15 +1,12 @@
 import type { JSX, ReactNode } from 'react';
 import { MODEL_LIBRARY_UNLOCK_COPY } from './creditsPromptCopy';
-import { Notice } from './Notice';
+import { Notice } from '../primitives/Notice';
 
 export interface CanopyProxyErrorPresentationProps {
   state: 'unresolved' | 'resolved';
   dataTestId: string;
   title?: ReactNode;
   children?: ReactNode;
-  correlationId?: string | null;
-  /** Inline diagnostics in a message, or a supporting line in a short replay. */
-  diagnostics: 'inline' | 'supporting';
   /**
    * How a failure is announced: `live` interrupts (`alert`) because it just
    * happened; `replay` is history and stays polite (`status`). A resolved
@@ -20,45 +17,20 @@ export interface CanopyProxyErrorPresentationProps {
   actions?: ReactNode;
 }
 
-/** Proxy refusal display shared by interactive notices and read-only replays. */
+/**
+ * Proxy refusal display shared by interactive notices and read-only replays.
+ * It never prints the error id: Copy details in `actions` carries it.
+ */
 export function CanopyProxyErrorPresentation({
   state,
   dataTestId,
   title,
   children,
-  correlationId,
-  diagnostics,
   announcement,
   detail,
   actions,
 }: CanopyProxyErrorPresentationProps): JSX.Element {
   const resolved = state === 'resolved';
-  // A resolved notice reports that nothing is wrong any more, so it carries no
-  // error id: "Error id" under a confirmation reads as a fresh failure.
-  const errorId =
-    correlationId && !resolved ? (
-      diagnostics === 'inline' ? (
-        <span className="whitespace-nowrap">
-          Error id{' '}
-          <span
-            data-testid={`${dataTestId}-correlation-id`}
-            className="font-mono select-all"
-          >
-            {correlationId}
-          </span>
-        </span>
-      ) : (
-        <>
-          Error id:{' '}
-          <span
-            className="font-mono text-2xs"
-            data-testid={`${dataTestId}-correlation-id`}
-          >
-            {correlationId}
-          </span>
-        </>
-      )
-    ) : null;
   return (
     <Notice
       intent={resolved ? 'positive' : 'attention'}
@@ -77,17 +49,11 @@ export function CanopyProxyErrorPresentation({
           title
         )
       }
-      detail={
-        resolved ? undefined : diagnostics === 'supporting' ? errorId : detail
-      }
+      detail={resolved ? undefined : detail}
       actions={actions}
     >
-      {resolved ? null : (
-        <>
-          {children}
-          {diagnostics === 'inline' && errorId ? <> {errorId}</> : null}
-        </>
-      )}
+      {/* The refused message was never sent, and nothing resends it. */}
+      {resolved ? 'Send your message again.' : children}
     </Notice>
   );
 }

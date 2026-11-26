@@ -2927,6 +2927,28 @@ const LucideMinus = /* @__PURE__ */ React.memo(function LucideMinus(
   );
 });
 
+const LucideMonitor = /* @__PURE__ */ React.memo(function LucideMonitor(
+  props: AppIconBaseProps,
+): JSX.Element {
+  return (
+    <AppIconBase
+      {...props}
+      viewBox="0 0 24 24"
+      artworkFamily="lucide"
+      fill={props.fill ?? 'none'}
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      data-glyph="monitor"
+    >
+      <rect width="20" height="14" x="2" y="3" rx="2" />
+      <line x1="8" x2="16" y1="21" y2="21" />
+      <line x1="12" x2="12" y1="17" y2="21" />
+    </AppIconBase>
+  );
+});
+
 const LucideMonitorDown = /* @__PURE__ */ React.memo(function LucideMonitorDown(
   props: AppIconBaseProps,
 ): JSX.Element {
@@ -3272,6 +3294,29 @@ const LucidePlay = /* @__PURE__ */ React.memo(function LucidePlay(
       data-glyph="play"
     >
       <path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z" />
+    </AppIconBase>
+  );
+});
+
+const LucidePlug = /* @__PURE__ */ React.memo(function LucidePlug(
+  props: AppIconBaseProps,
+): JSX.Element {
+  return (
+    <AppIconBase
+      {...props}
+      viewBox="0 0 24 24"
+      artworkFamily="lucide"
+      fill={props.fill ?? 'none'}
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      data-glyph="plug"
+    >
+      <path d="M12 22v-5" />
+      <path d="M15 8V2" />
+      <path d="M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z" />
+      <path d="M9 8V2" />
     </AppIconBase>
   );
 });
@@ -4711,6 +4756,7 @@ export const IconMicrophone: AppGlyph = LucideMic;
 export const IconMinimax: AppGlyph = SimpleIconsMinimaxInset2;
 export const IconMinimize45: AppGlyph = LucideMinimize2;
 export const IconMinusSmall: AppGlyph = LucideMinus;
+export const IconMonitor: AppGlyph = LucideMonitor;
 export const IconMonitorDown: AppGlyph = LucideMonitorDown;
 export const IconMoon: AppGlyph = LucideMoon;
 export const IconNoteText: AppGlyph = LucideStickyNote;
@@ -4732,6 +4778,7 @@ export const IconPinFilled: AppGlyph = LucidePinFill1;
 export const IconPlanning: AppGlyph = LucideListChecks;
 export const IconPlay: AppGlyph = LucidePlay;
 export const IconPlayCircle: AppGlyph = LucideCirclePlay;
+export const IconPlug: AppGlyph = LucidePlug;
 export const IconPlusLarge: AppGlyph = LucidePlus;
 export const IconPlusMedium: AppGlyph = LucidePlus;
 export const IconPlusSmall: AppGlyph = LucidePlus;

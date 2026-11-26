@@ -2,7 +2,7 @@
 
 import { ControlButton } from '@canopy/ui-shared/components';
 import { SidebarAccountRowSurface } from '@canopy/ui-shared/components';
-import { Dot, type DotTone } from '@canopy/ui-shared/components/Badge';
+import { Dot, type DotTone } from '@canopy/ui-shared/primitives/Badge';
 import { useId, useRef, useState, type JSX, type ReactNode } from 'react';
 import {
   DisplayAvatar,

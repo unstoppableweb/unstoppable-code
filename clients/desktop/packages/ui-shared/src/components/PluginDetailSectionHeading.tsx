@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react';
-import { Heading } from './Heading';
+import { Heading } from '../primitives/Heading';
 
 export interface PluginDetailSectionHeadingProps {
   as?: 'h3' | 'span';

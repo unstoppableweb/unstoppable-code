@@ -1,4 +1,10 @@
 /// <reference lib="es2021.promise" />
+import {
+  answerUncertainDirectoryDeletions,
+  beginDirectoryDeletion,
+  directoryRemovalOutcome,
+} from './directory-effect-admission';
+import type { WorkerTerminalRecordRetireParams } from '@canopy/protocol/canopy-core';
 import type { ProjectDeletionPendingRecovery } from '@canopy/protocol/remote-control/shell/project-deletion-discard';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -27,6 +33,7 @@ import {
   withArchiveFailureTelemetry,
 } from './archive-failure-telemetry';
 import { WorkspaceDeletionRefusedError } from './workspace-deletion-refusal';
+import { terminalPersistenceStore } from '../terminal/persistence';
 export {
   WorkspaceDeletionRefusedError,
   type WorkspaceDeletionRefusal,
@@ -45,6 +52,7 @@ import {
   withExclusiveLifecycleJournalAccess,
   withdrawInterruptedWorkspaceDeletion,
   destructiveStep,
+  journalTerminalRecordRetirement,
   markDestructiveCleanupRequired,
   destructiveCleanup,
   protectDestructivePath,
@@ -61,6 +69,7 @@ import {
 import {
   withW5Commit,
   desktopW5FileStore,
+  isDefiniteW5Refusal,
   W5RevisionConflictError,
   type W5CommitOptions,
 } from './w5-commit-log-file-store';
@@ -98,7 +107,11 @@ import {
 import { listWorkEntryIds } from './cowork-work-entries';
 import { deleteCoworkWorkspace } from './cowork-workspace-crud';
 import { recordWorkspaceCrudTelemetry } from './desktop-telemetry';
-import { w5RecordReadPaths, getDefaultReposDir } from './paths';
+import {
+  w5RecordReadPaths,
+  getDefaultReposDir,
+  getWorkspaceDir,
+} from './paths';
 import { isPathInside } from './path-safety';
 import { cleanupUnreferencedRepoShadows } from './repo-shadow';
 import { syncCodeGraphBaseRepositories } from './code-graph-base-manager';
@@ -115,10 +128,7 @@ import {
   applyWorkspaceIndexRemoval,
   applyWorkspaceRecordsRemoval,
 } from './workspace-record-decision-port';
-import {
-  removeWorkspaceNonW5Children,
-  removeWorkspaceDirectoryAfterRecordRemoval,
-} from './w5-workspace-directory-removal';
+import { getWorktreeItemStore } from './worktree-item-store';
 import { readWorkspaceConfigDetailed } from './workspace-persistence';
 import { getSidebarItemsPreserveWorkspaceIds } from './sidebar-items-preservation';
 import { validateId } from './validation';
@@ -352,13 +362,15 @@ async function deleteWorkspaceAdmitted(
           typeof superseded === 'string' &&
           z.string().uuid().safeParse(superseded).success &&
           idempotencyKey === undefined &&
-          USER_DELETION_SOURCES.has(request.source)
-        )
-          await withdrawInterruptedWorkspaceDeletion(
+          USER_DELETION_SOURCES.has(request.source) &&
+          (await withdrawInterruptedWorkspaceDeletion(
             workspaceId,
             superseded,
             () => isWorkspaceIndexed(workspaceId),
-          );
+          ))
+        )
+          // Still indexed: the interrupted removal never applied.
+          answerUncertainDirectoryDeletions(getWorkspaceDir(workspaceId));
         await admitLifecycleJournals(attempt, () =>
           assertNoStrandedRecoveryOrArchive(
             workspaceId,
@@ -1018,6 +1030,43 @@ async function deleteWorkspaceWithLease(
   request: WorkspaceDeletionRequest,
   options: W5CommitOptions,
 ): Promise<WorkspaceDeletionOutcome> {
+  const directory = beginDirectoryDeletion(
+    getWorkspaceDir(request.workspaceId),
+  );
+  const removal: { state: CanonicalRemovalState } = { state: 'none' };
+  try {
+    const retirement =
+      await terminalPersistenceStore.prepareTerminalRecordRetirement({
+        projectId: request.workspaceId,
+      });
+    return await deleteWorkspaceWithTerminalRetirement(
+      request,
+      options,
+      retirement,
+      (state) => {
+        removal.state = state;
+      },
+    );
+  } finally {
+    directory.settle(
+      removal.state === 'applied'
+        ? await directoryRemovalOutcome(getWorkspaceDir(request.workspaceId))
+        : removal.state === 'staged'
+          ? 'uncertain'
+          : 'abandoned',
+    );
+  }
+}
+
+/** Only a staged removal without a definite W5 answer keeps the directory fence. */
+type CanonicalRemovalState = 'none' | 'staged' | 'refused' | 'applied';
+
+async function deleteWorkspaceWithTerminalRetirement(
+  request: WorkspaceDeletionRequest,
+  options: W5CommitOptions,
+  terminalRetirement: WorkerTerminalRecordRetireParams,
+  onRemoval: (state: CanonicalRemovalState) => void,
+): Promise<WorkspaceDeletionOutcome> {
   const { workspaceId, source: telemetrySource } = request;
   const { kind, managedRepoPath } = await readDeletionTarget(request);
   if (managedRepoPath) await protectDestructivePath(managedRepoPath);
@@ -1043,7 +1092,11 @@ async function deleteWorkspaceWithLease(
         async () => {
           // Keep confirmed superseding of interrupted index removals unchanged.
           if (kind !== 'cowork')
-            await removeWorkspaceNonW5Children(workspaceId);
+            await getWorktreeItemStore().purge({
+              scope: 'workspace',
+              workspaceId,
+              stage: 'items',
+            });
           await withW5Commit(
             {
               ...options,
@@ -1064,11 +1117,16 @@ async function deleteWorkspaceWithLease(
               ),
             },
             async () => {
-              await afterW5Apply(() => {
+              await afterW5Apply(async () => {
                 recordsApplied = true;
+                onRemoval('applied');
+                await terminalPersistenceStore.retirePreparedTerminalRecord(
+                  terminalRetirement,
+                );
               });
               await removeDeletedWorkspaceIndexEntry();
               recordsStaged = true;
+              onRemoval('staged');
             },
           );
         },
@@ -1082,8 +1140,10 @@ async function deleteWorkspaceWithLease(
           workspaceId,
           layerChanged: true,
         });
-      else if (recordsStaged)
+      else if (recordsStaged) {
         reconcileWorkspaceRemovalPluginDefaults(workspaceId);
+        if (isDefiniteW5Refusal(error)) onRemoval('refused');
+      }
       throw error;
     }
   }
@@ -1146,6 +1206,9 @@ async function deleteWorkspaceWithLease(
     workspaceId,
     archivedManifests,
   );
+  // Existing destructive steps save this intent before their first effect;
+  // only the canonical removal commits it, so admission can still refuse.
+  journalTerminalRecordRetirement(terminalRetirement);
   // Unregistered once the directory removal takes their checkouts (CAN-5011).
   let worktreeRegistrations: ProjectWorktreeRegistrations | undefined;
   if (kind === 'cowork') {
@@ -1194,7 +1257,12 @@ async function deleteWorkspaceWithLease(
           commitTaskBrowserRetirement(workspaceId, entry.worktreeId),
         );
       await destructiveStep('workspace-directory-removal', () =>
-        removeWorkspaceDirectoryAfterRecordRemoval(workspaceId),
+        getWorktreeItemStore().purge({
+          scope: 'workspace',
+          workspaceId,
+          stage: 'folder',
+          worktreeIds: [],
+        }),
       );
     } catch (error) {
       if (!ownerCommitted)

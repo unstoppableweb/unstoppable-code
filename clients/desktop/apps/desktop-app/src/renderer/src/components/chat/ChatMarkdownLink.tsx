@@ -69,12 +69,14 @@ async function resolveCloudFileLink(
 
 interface ChatMarkdownLinkProps extends ComponentPropsWithoutRef<'a'> {
   originChatTabId?: string;
+  onWebLinkClick?: ComponentPropsWithoutRef<'a'>['onClick'];
 }
 
 export function ChatMarkdownLink({
   href,
   children,
   originChatTabId,
+  onWebLinkClick,
 }: ChatMarkdownLinkProps): JSX.Element {
   const target = useContext(ChatMarkdownFileTargetContext);
   const [error, setError] = useState<FileLinkFailure | null>(null);
@@ -95,6 +97,7 @@ export function ChatMarkdownLink({
         target="_blank"
         rel="noopener noreferrer"
         variant="inline"
+        onClick={/^https?:/i.test(href) ? onWebLinkClick : undefined}
       >
         {children}
       </TextLink>

@@ -6,7 +6,7 @@ import {
   PickerMenuOptionCheck,
   PickerMenuOptionContent,
   PickerMenuOptionLabel,
-} from './PickerMenu';
+} from '../primitives/PickerMenu';
 
 export interface DirectoryPickerOptionRowProps {
   readonly name: string;

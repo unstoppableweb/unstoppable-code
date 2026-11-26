@@ -440,7 +440,7 @@ export function resolveModelRowGate(input: ModelRowGateInput): ModelRowGate {
     return {
       kind: 'hard-disabled',
       cause: 'stale-agent',
-      reason: 'This agent’s base model is unavailable.',
+      reason: "This model preset's base model is unavailable.",
     };
   }
 

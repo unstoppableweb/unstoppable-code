@@ -1,9 +1,9 @@
 'use client';
 
 import { useLayoutEffect, useRef, type JSX, type ReactNode } from 'react';
-import { DialogModal } from './DialogModal';
-import { LoadingButton } from './LoadingButton';
+import { DialogModal } from '../primitives/DialogModal';
 import { focusableWithin } from '../lib/focusable';
+import { Button } from '../primitives/Button';
 
 /**
  * The install review for a shared resource (CAN-3710): one small dialog with
@@ -185,7 +185,7 @@ export function ShareInstallDialog({
           <div className="flex items-center justify-end gap-2 pt-1">
             {menu}
             {primary !== undefined && (
-              <LoadingButton
+              <Button
                 type="button"
                 variant="primary"
                 size="lg"
@@ -201,7 +201,7 @@ export function ShareInstallDialog({
                 onClick={primary.onClick}
               >
                 {primary.label}
-              </LoadingButton>
+              </Button>
             )}
           </div>
         )}

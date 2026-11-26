@@ -9,17 +9,17 @@ export type HelperNoBillingSourceProvider = 'claude' | 'codex';
  * for the work (CAN-7062).
  *
  * It names the same way out as the composer's No billing source banner
- * (`signedOutCopy` in `@canopy/ui-shared/components`): connect the provider
- * again, or pick another one. It does not offer credits, because a guest can't
- * buy them and some users can't turn routing on, and "for this chat" is
- * dropped because a commit message or a scheduled summary is not a chat.
- * Keep the provider sentence in step with that banner.
+ * (`NO_PROVIDER_COPY` in `@canopy/ui-shared/components`): use another
+ * provider. It does not offer credits, because a guest can't buy them and
+ * some users can't turn routing on. It does not reuse the banner's "This chat
+ * needs a provider", because a commit message or a scheduled summary is not
+ * a chat.
  */
 export function helperNoBillingSourceMessage(
   provider: HelperNoBillingSourceProvider,
 ): string {
   const providerLabel = getModelCatalogProviderLabel(provider);
-  return `You're signed out of ${providerLabel}. Connect ${providerLabel} again, or choose another provider.`;
+  return `You're signed out of ${providerLabel}. Reconnect it, or choose another provider.`;
 }
 
 /**

@@ -16,7 +16,7 @@ const CATEGORIES: ReadonlyArray<{
 }> = [
   { key: 'skills', singular: 'skill', plural: 'skills' },
   { key: 'pipelines', singular: 'pipeline', plural: 'pipelines' },
-  { key: 'agents', singular: 'Agent', plural: 'Agents' },
+  { key: 'agents', singular: 'model preset', plural: 'model presets' },
   { key: 'automations', singular: 'automation', plural: 'automations' },
   { key: 'hooks', singular: 'hook', plural: 'hooks' },
 ];

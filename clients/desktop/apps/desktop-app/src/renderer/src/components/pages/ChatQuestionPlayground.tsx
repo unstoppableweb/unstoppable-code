@@ -1,4 +1,4 @@
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import { QuestionPlaygroundPhase } from '@canopy/ui-shared/components';
 import { useEffect, useState, type JSX } from 'react';
 import { ChatContent } from '../chat/ChatContent';

@@ -129,7 +129,6 @@ export interface AttachmentsSectionTestIds {
   readonly empty: string;
   readonly loading: string;
   readonly error: string;
-  readonly retry: string;
   readonly row: string;
   /** The row's open button, where the row opens its file. */
   readonly rowContent?: string;
@@ -159,7 +158,6 @@ export function attachmentsSectionTestIds(
     empty: `${prefix}-empty`,
     loading: `${prefix}-loading`,
     error: `${prefix}-error`,
-    retry: `${prefix}-retry`,
     row: `${prefix}-row`,
     mention: `${prefix}-mention`,
     reveal: `${prefix}-reveal`,
@@ -768,19 +766,13 @@ export function AttachmentsSectionBody({
               </DelayedLoadingPlaceholder>
             ) : null}
             {load.kind === 'error' ? (
-              <div
-                className="flex flex-col items-center gap-2 py-3 text-center text-xs fg-secondary"
-                data-testid={testIds.error}
-              >
-                <span>Unable to load attachments.</span>
-                <Button
-                  size="compact"
-                  data-testid={testIds.retry}
-                  onClick={load.retry}
-                >
-                  Try again
-                </Button>
-              </div>
+              <ErrorBanner
+                errorSource="attachments-section-load"
+                className=""
+                error="Couldn't load attachments."
+                testId={testIds.error}
+                onRetry={load.retry}
+              />
             ) : null}
             {load.kind === 'ready' &&
             rows.length === 0 &&

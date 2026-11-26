@@ -9,7 +9,6 @@ import {
   mkdir,
   readFile,
   readdir,
-  readlink,
   rename,
   rm,
   writeFile,
@@ -28,7 +27,11 @@ import {
   getAccountProxyLocalRuntimeDir,
 } from '../lib/paths';
 import { ManagedRuntimeInstaller } from '../lib/managed-runtime-installer';
-import { listeningInodes, netstatShowsListener } from './listener-owner';
+import {
+  pidOwnsLoopbackListener,
+  registerCanopyProcess,
+  reserveLoopbackPort,
+} from '../lib/loopback-listeners';
 import {
   closeLocalAccountProxyLaunchKeys,
   mintLocalAccountProxyLaunchKeys,
@@ -83,15 +86,24 @@ interface RuntimeDeps {
   readonly allowLoopbackDownload: boolean;
   readonly isProcessAlive: (pid: number) => boolean;
   readonly kill: (pid: number, signal: NodeJS.Signals) => void;
-  /** The command line of `pid`, or null where it cannot be read. */
-  readonly commandLine: (pid: number) => Promise<string | null>;
+  /**
+   * The command line of `pid`, or null where it cannot be read or `signal`
+   * stopped the read.
+   */
+  readonly commandLine: (
+    pid: number,
+    signal?: AbortSignal,
+  ) => Promise<string | null>;
   /** Whether `pid` holds the listening socket on loopback `port`. */
   readonly ownsListener: (pid: number, port: number) => Promise<boolean>;
   /** Opens the connection that probes whether a port is taken. */
   readonly connect: (options: { host: string; port: number }) => Socket;
 }
 
-function readCommandLine(pid: number): Promise<string | null> {
+function readCommandLine(
+  pid: number,
+  signal?: AbortSignal,
+): Promise<string | null> {
   const os = hostPlatformOperatingSystem();
   if (os === 'linux') {
     return readFile(`/proc/${String(pid)}/cmdline`, 'utf8').then(
@@ -100,82 +112,31 @@ function readCommandLine(pid: number): Promise<string | null> {
     );
   }
   if (os === 'darwin') {
+    // Settles once ps has closed, also when `signal` stopped it: Node
+    // reports an abort as soon as it signals the process.
     return new Promise((resolve) => {
+      let output: string | null | undefined;
+      let closed = false;
+      const settle = (): void => {
+        if (output !== undefined && closed) resolve(output);
+      };
       execFile(
         '/bin/ps',
         ['-p', String(pid), '-o', 'command='],
-        { timeout: 2_000 },
-        (error, stdout) => resolve(error ? null : stdout),
-      );
+        { timeout: 2_000, signal },
+        (error, stdout) => {
+          output = error ? null : stdout;
+          settle();
+        },
+      ).once('close', () => {
+        closed = true;
+        settle();
+      });
     });
   }
   // Windows: a crashed launch's proxy is not identified, so it is left alone
   // and the next start moves to another port.
   return Promise.resolve(null);
-}
-
-function runForOutput(
-  file: string,
-  args: readonly string[],
-): Promise<string | null> {
-  return new Promise((resolve) => {
-    execFile(
-      file,
-      args,
-      { timeout: 5_000, windowsHide: true },
-      (error, stdout) => resolve(error ? null : stdout),
-    );
-  });
-}
-
-/**
- * Whether `pid` is the process listening on loopback `port`. A health check
- * alone cannot tell: something else can answer on the port while the proxy
- * fails to bind it, and must not then be sent the key.
- */
-async function readOwnsListener(pid: number, port: number): Promise<boolean> {
-  const os = hostPlatformOperatingSystem();
-  if (os === 'linux') {
-    const tables = await Promise.all(
-      ['/proc/net/tcp', '/proc/net/tcp6'].map((file) =>
-        readFile(file, 'utf8').catch(() => ''),
-      ),
-    );
-    const inodes = new Set<string>();
-    for (const table of tables) {
-      listeningInodes(table, port).forEach((inode) => inodes.add(inode));
-    }
-    if (inodes.size === 0) return false;
-    const fdDir = `/proc/${String(pid)}/fd`;
-    const fds = await readdir(fdDir).catch((): string[] => []);
-    const links = await Promise.all(
-      fds.map((fd) => readlink(join(fdDir, fd)).catch(() => '')),
-    );
-    return links.some((link) => {
-      const inode = /^socket:\[(\d+)\]$/.exec(link)?.[1];
-      return inode !== undefined && inodes.has(inode);
-    });
-  }
-  if (os === 'darwin') {
-    const output = await runForOutput('/usr/sbin/lsof', [
-      '-nP',
-      '-a',
-      '-p',
-      String(pid),
-      `-iTCP:${String(port)}`,
-      '-sTCP:LISTEN',
-      '-t',
-    ]);
-    return output?.trim().split('\n').includes(String(pid)) ?? false;
-  }
-  if (os === 'win32') {
-    const output = await runForOutput(
-      join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'netstat.exe'),
-      ['-ano', '-p', 'TCP'],
-    );
-    return netstatShowsListener(output ?? '', pid, port);
-  }
-  return false;
 }
 
 /**
@@ -243,13 +204,14 @@ const defaultDeps: RuntimeDeps = {
     try {
       process.kill(pid, 0);
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      // EPERM: it runs, as a process this user may not signal.
+      return errorCode(error) === 'EPERM';
     }
   },
   kill: (pid, signal) => process.kill(pid, signal),
   commandLine: readCommandLine,
-  ownsListener: readOwnsListener,
+  ownsListener: pidOwnsLoopbackListener,
   connect: (options) => connect(options),
 };
 let deps: RuntimeDeps = defaultDeps;
@@ -413,31 +375,68 @@ function yamlString(value: string): string {
   return JSON.stringify(value);
 }
 
-async function readRecord(file: string): Promise<ProcessRecord | null> {
+/** A record's fields, or null for content this version can't read. */
+function parseRecord(text: string): ProcessRecord | null {
+  let value: unknown;
   try {
-    const value: unknown = JSON.parse(await readFile(file, 'utf8'));
-    if (
-      typeof value === 'object' &&
-      value !== null &&
-      'pid' in value &&
-      typeof value.pid === 'number' &&
-      Number.isSafeInteger(value.pid) &&
-      value.pid > 0 &&
-      'port' in value &&
-      typeof value.port === 'number'
-    ) {
-      const config =
-        'config' in value &&
-        typeof value.config === 'string' &&
-        value.config.startsWith(paths().configPrefix)
-          ? value.config
-          : `${paths().configPrefix}.yaml`;
-      return { pid: value.pid, port: value.port, config };
-    }
+    value = JSON.parse(text);
   } catch {
-    // No record, or one this version cannot read: nothing to stop.
+    return null;
+  }
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    'pid' in value &&
+    typeof value.pid === 'number' &&
+    Number.isSafeInteger(value.pid) &&
+    value.pid > 0 &&
+    'port' in value &&
+    typeof value.port === 'number'
+  ) {
+    const config =
+      'config' in value &&
+      typeof value.config === 'string' &&
+      value.config.startsWith(paths().configPrefix)
+        ? value.config
+        : `${paths().configPrefix}.yaml`;
+    return { pid: value.pid, port: value.port, config };
   }
   return null;
+}
+
+async function readRecord(file: string): Promise<ProcessRecord | null> {
+  // No record, or one this version cannot read: nothing to stop.
+  return readFile(file, 'utf8').then(parseRecord, () => null);
+}
+
+/** An error's errno code, read structurally: Node's own errors may come from another realm. */
+function errorCode(error: unknown): unknown {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? error.code
+    : undefined;
+}
+
+function isMissingFileError(error: unknown): boolean {
+  const code = errorCode(error);
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+/**
+ * A record for web preview's owner lookup: null when there is none, or
+ * when its content names no process (a half-written one is this launch's,
+ * which its port reservation and process registration already cover). A
+ * record or folder that exists but can't be read throws, so the lookup
+ * refuses rather than miss a proxy it names.
+ */
+async function readRecordForLookup(
+  file: string,
+): Promise<ProcessRecord | null> {
+  try {
+    return parseRecord(await readFile(file, 'utf8'));
+  } catch (error) {
+    if (isMissingFileError(error)) return null;
+    throw error;
+  }
 }
 
 /** CLIProxyAPI's default bcrypt cost for its management secret. */
@@ -662,6 +661,105 @@ async function stopOrphan(
     : 'unconfirmed';
 }
 
+/** The orphan records beside this launch's process record. */
+async function orphanRecordFiles(): Promise<string[]> {
+  const { root } = paths();
+  const names = await readdir(root).catch((): string[] => []);
+  return names
+    .filter((name) => /^orphan-\d+\.json$/.test(name))
+    .map((name) => join(root, name));
+}
+
+/** This launch's process record and every orphan record beside it. */
+async function recordFiles(): Promise<string[]> {
+  return [paths().record, ...(await orphanRecordFiles())];
+}
+
+/**
+ * Every record, read so that cleanup renaming this launch's record into an
+ * orphan one meanwhile can't hide it: the record is read before the orphans
+ * are listed and again after they are read, and the reads are merged. Once
+ * `signal` aborts it starts no further read and answers no records; the
+ * caller no longer wants the answer, and treats an abandoned lookup as
+ * unknown (`loopbackListenerOwner`).
+ */
+async function recordSnapshot(signal?: AbortSignal): Promise<ProcessRecord[]> {
+  const { root, record } = paths();
+  const abandoned = (): boolean => signal?.aborted === true;
+  const before = await readRecordForLookup(record);
+  if (abandoned()) return [];
+  const names = await readdir(root).catch((error: unknown) => {
+    if (isMissingFileError(error)) return [];
+    throw error;
+  });
+  if (abandoned()) return [];
+  // Every read settles before the snapshot does, even after one fails.
+  const reads = await Promise.allSettled(
+    names
+      .filter((name) => /^orphan-\d+\.json$/.test(name))
+      .map((name) => readRecordForLookup(join(root, name))),
+  );
+  const orphans: Array<ProcessRecord | null> = [];
+  for (const read of reads) {
+    if (read.status === 'rejected')
+      throw new Error('An account proxy record could not be read.');
+    orphans.push(read.value);
+  }
+  if (abandoned()) return [];
+  const after = await readRecordForLookup(record);
+  const found = new Map<string, ProcessRecord>();
+  for (const entry of [before, ...orphans, after])
+    if (entry) found.set(`${String(entry.pid)}:${String(entry.port)}`, entry);
+  return Array.from(found.values());
+}
+
+/**
+ * The proxies the records name that may still be running, this launch's
+ * and any an earlier run left. Remote Control web preview counts them as
+ * Canopy's own (CAN-7679), whether or not this launch started the proxy:
+ * a process whose command line names this device's config is the proxy, so
+ * its pid and its recorded port are Canopy's, the port holding even where
+ * no owner lookup exists; one whose command line can't be read may be, so
+ * only its recorded port is; one running something else reused the pid
+ * after the proxy exited, so it counts as nothing.
+ */
+async function recordedProxies(
+  signal?: AbortSignal,
+): Promise<{ pids: number[]; ports: number[] }> {
+  const records = await recordSnapshot(signal);
+  const pids: number[] = [];
+  const ports: number[] = [];
+  // Its caller no longer wants the answer.
+  const abandoned = (): boolean => signal?.aborted === true;
+  for (const found of records) {
+    if (abandoned()) break;
+    if (!deps.isProcessAlive(found.pid)) continue;
+    const commandLine = await deps.commandLine(found.pid, signal);
+    if (abandoned()) break;
+    if (commandLine === null) {
+      ports.push(found.port);
+    } else if (commandLine.includes(paths().configPrefix)) {
+      pids.push(found.pid);
+      ports.push(found.port);
+    }
+  }
+  return { pids, ports };
+}
+
+/** See `recordedProxies`: the proxies' pids, by their command lines. */
+export async function recordedLocalAccountProxyPids(
+  signal?: AbortSignal,
+): Promise<number[]> {
+  return (await recordedProxies(signal)).pids;
+}
+
+/** See `recordedProxies`: ports of the proxies and of ones that may be. */
+export async function recordedLocalAccountProxyPorts(
+  signal?: AbortSignal,
+): Promise<number[]> {
+  return (await recordedProxies(signal)).ports;
+}
+
 /**
  * Stops the proxies earlier runs left behind. A stopped one's record goes;
  * one that may still be running keeps a record of its own, out of the way of
@@ -669,13 +767,7 @@ async function stopOrphan(
  */
 async function stopOrphans(): Promise<ReadonlySet<string>> {
   const { root, record } = paths();
-  const names = await readdir(root).catch((): string[] => []);
-  const files = [
-    record,
-    ...names
-      .filter((name) => /^orphan-\d+\.json$/.test(name))
-      .map((name) => join(root, name)),
-  ];
+  const files = await recordFiles();
   const keep = new Set<string>();
   for (const file of files) {
     const found = await readRecord(file);
@@ -842,9 +934,13 @@ async function launchOnce(
 ): Promise<LaunchOutcome> {
   const minted = mintLocalAccountProxyLaunchKeys();
   const config = launchConfigPath(minted);
+  // Remote Control never tunnels to the proxy, from before it binds the
+  // port until it exits (CAN-7679).
+  const releasePort = reserveLoopbackPort(port);
   try {
     await writeConfig(launch, port, minted, config);
   } catch (error) {
+    releasePort();
     closeLocalAccountProxyLaunchKeys(minted.keys);
     await removeLaunchConfig(config).catch(() => undefined);
     throw error;
@@ -856,6 +952,12 @@ async function launchOnce(
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   });
+  const forgetProcess =
+    started.pid === undefined ? null : registerCanopyProcess(started.pid);
+  const released = (): void => {
+    releasePort();
+    forgetProcess?.();
+  };
   child = started;
   childConfig = config;
   // Set from the process callbacks, which the loop below reads.
@@ -868,8 +970,11 @@ async function launchOnce(
   started.stderr?.on('data', keepTail);
   started.once('error', (error) => {
     exit.reason = error.message;
+    // A process that failed to start emits no exit.
+    if (started.pid === undefined) released();
   });
   started.once('exit', (code, signal) => {
+    released();
     exit.reason = signal ? `signal ${signal}` : `code ${String(code)}`;
     // Whatever stopped it, its keys open nothing any more.
     closeLocalAccountProxyLaunchKeys(minted.keys);

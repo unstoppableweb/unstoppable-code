@@ -17,6 +17,7 @@ import {
 import { validateId } from './validation';
 import { exactArchiveJournal } from './w5-destructive-recovery';
 import { listWorktreeRecovery } from './worktree-recovery-description';
+import { checkArchiveFinishAdmission } from './worktree-recovery-finish-admission';
 import {
   finishInterruptedArchiveCleanup,
   runWithWorktreeArchiveDeletionLifecycle,
@@ -35,7 +36,7 @@ class FinishRefused extends W5CommitRefusedError {
   }
 }
 
-async function readAdmittedFinishOperation(
+export async function readAdmittedFinishOperation(
   request: WorktreeRecoveryFinishParams,
 ): Promise<ArchiveJournalOperation> {
   const diagnosis = await listWorktreeRecovery({
@@ -64,15 +65,8 @@ async function readAdmittedFinishOperation(
     operation.revision !== request.revision
   )
     throw new FinishRefused('review-changed');
-  if (
-    operation.record.state === 'completed' &&
-    !operation.record.steps.some(
-      (step) =>
-        step.phase === 'deferred-browser-retirement' ||
-        (step.phase === 'turn-diff-cleanup' && step.state !== 'done'),
-    )
-  )
-    throw new FinishRefused('unknown-cleanup-debt');
+  const refused = await checkArchiveFinishAdmission(operation);
+  if (refused) throw new FinishRefused(refused);
   return operation;
 }
 

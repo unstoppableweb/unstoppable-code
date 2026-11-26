@@ -1,6 +1,6 @@
 import type { ComponentPropsWithRef, JSX } from 'react';
 import { SIDEBAR_STATUS_SURFACE_CLASSNAME } from '../lib/sidebar-status-surface';
-import { ListRowFrame } from './ListRow';
+import { ListRowFrame } from '../primitives/ListRow';
 
 type DivProps = Omit<ComponentPropsWithRef<'div'>, 'className'>;
 

@@ -13,14 +13,14 @@ import {
   ExternalIcon,
 } from '../icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import { Button } from './Button';
-import { CometSpinner } from './CometSpinner';
-import { WindowPage } from './DialogModal';
+import { Button } from '../primitives/Button';
+import { CometSpinner } from '../primitives/CometSpinner';
+import { WindowPage } from '../primitives/DialogModal';
 import {
   MediaThumbnail,
   type MediaThumbnailKind,
 } from './chat/MessageImageAttachments';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 
 export interface MediaViewerItem {
   /** Stable identity (the file's path or id). */

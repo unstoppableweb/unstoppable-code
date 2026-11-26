@@ -1,7 +1,7 @@
 'use client';
 
 import type { JSX } from 'react';
-import { Notice, NoticeButton } from '../../../Notice';
+import { Notice, NoticeButton } from '../../../../primitives/Notice';
 
 export type LifetimeLimitNoticeDisplayProps =
   | { readonly state: 'gated' }

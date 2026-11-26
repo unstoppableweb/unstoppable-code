@@ -14,11 +14,11 @@ import {
   DropdownMenuItemIcon,
   DropdownMenuRowStyleProvider,
   QUIET_MENU_ROW_STYLE,
-} from './DropdownMenu';
-import { FloatingMenu } from './FloatingMenu';
+} from '../primitives/DropdownMenu';
+import { FloatingMenu } from '../primitives/FloatingMenu';
 import { InstalledItemStatusIcon } from './InstalledItemStatusPicker';
 import { ItemStateMark, useItemStateMarks } from './ItemStateMark';
-import { PickerTrigger, PickerTriggerChevron } from './PickerMenu';
+import { PickerTrigger, PickerTriggerChevron } from '../primitives/PickerMenu';
 
 /**
  * Any status / Active / Available / Disabled filter after the Customize

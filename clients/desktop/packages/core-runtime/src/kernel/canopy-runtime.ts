@@ -113,6 +113,8 @@ export interface CreateCanopyRuntimeOptions<
   /** Owners of every host operation; `core.runtime` owns the runtime's own. */
   owners: readonly RuntimeOperationOwner[];
   services: readonly RuntimeService[];
+  /** Minor schema revisions (protocol rule 5) the manifest advertises. */
+  schemaRevisions?: Readonly<Record<string, number>>;
   /** Resolves authenticated host bindings; absent resolution advertises nothing. */
   principalFor?: (context: CanopyHandlerContext) => RuntimePrincipal | null;
   /** Per shutdown phase; phase 3 must outlast the dispatcher's own drain. */
@@ -154,6 +156,7 @@ export function createCanopyRuntime<
   const { profile } = options;
   // Snapshot: later caller mutation must not change descriptors.
   const { runtimeId, hostId, authorityId } = options.identity;
+  const schemaRevisions = { ...options.schemaRevisions };
   const host = options.definitions;
   for (const name of [HEALTH, EVENTS, MANIFEST])
     for (const map of [host.queries, host.instructions, host.streams])
@@ -222,7 +225,17 @@ export function createCanopyRuntime<
             principal: options.principalFor?.(context) ?? null,
             grants: context.caller.grants,
             includeUnavailable: params.includeUnavailable,
-          }),
+          }).map((operation) =>
+            Object.prototype.hasOwnProperty.call(
+              schemaRevisions,
+              operation.name,
+            )
+              ? {
+                  ...operation,
+                  schemaRevision: schemaRevisions[operation.name],
+                }
+              : operation,
+          ),
           generatedAt: new Date().toISOString(),
         }),
         [HEALTH]: () => {

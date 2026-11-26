@@ -11,7 +11,7 @@ import type { ModelLibraryAccess } from '@canopy/protocol/models';
  * state: it never authorizes a pick, and recovery stays with the host.
  */
 export const MODEL_PICKER_ROW_CUE_COPY = {
-  needsProviderSignIn: 'Sign in',
+  needsProviderSignIn: 'Connect',
   needsProviderSignInHint: (provider: string): string =>
     `Connect ${provider} to use this model.`,
   /**

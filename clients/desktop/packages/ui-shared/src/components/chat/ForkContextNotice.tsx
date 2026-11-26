@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { Notice } from '../Notice';
+import { Notice } from '../../primitives/Notice';
 
 /** The same context disclosure on a local transcript and its paired view. */
 export function ForkContextNotice({

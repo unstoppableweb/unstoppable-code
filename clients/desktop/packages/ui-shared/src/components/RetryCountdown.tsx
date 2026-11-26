@@ -30,7 +30,7 @@ export function RetryCountdown({
   const countdown = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
   if (exhausted)
     return <>{`Gave up after ${attempt} of ${maxAttempts} attempts.`}</>;
-  const attemptText = `attempt ${attempt} of ${maxAttempts}.`;
+  const attemptText = `try ${attempt} of ${maxAttempts}.`;
   // Hosts render this inside a live region, so the ticking clock is hidden
   // from screen readers; they hear the text only when the state changes.
   return (

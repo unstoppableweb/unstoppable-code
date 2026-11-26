@@ -25,7 +25,6 @@ import {
   DialogFormField,
   Heading,
   Inline,
-  LoadingButton,
   Notice,
   NoticeButton,
   Stack,
@@ -443,7 +442,7 @@ export function McpRemovalRepair({
                   {candidates.incomplete && (
                     <Notice
                       intent="attention"
-                      title="Some servers could not be listed"
+                      title="Couldn't list some servers"
                     >
                       The list may be incomplete. A server selected after a
                       failed deletion can still be inspected.
@@ -473,7 +472,7 @@ export function McpRemovalRepair({
                 />
               </DialogFormField>
               <div>
-                <LoadingButton
+                <Button
                   loading={busy && confirmation === null}
                   loadingLabel="Inspecting server…"
                   disabled={busy || serverId.trim() === ''}
@@ -483,7 +482,7 @@ export function McpRemovalRepair({
                   data-testid="mcp-removal-inspect"
                 >
                   Inspect server
-                </LoadingButton>
+                </Button>
               </div>
               {inspection && (
                 <>

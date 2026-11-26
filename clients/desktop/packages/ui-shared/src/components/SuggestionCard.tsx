@@ -1,8 +1,7 @@
 'use client';
 
 import type { JSX, MouseEvent, ReactNode } from 'react';
-import { Button } from './Button';
-import { Notice, NoticeButton } from './Notice';
+import { Notice, NoticeButton } from '../primitives/Notice';
 
 /** One button on a suggestion card. */
 export interface SuggestionCardAction {
@@ -97,16 +96,15 @@ export function SuggestionCard({
             </NoticeButton>
             {permanentDismiss ? (
               <div className="basis-full">
-                <Button
-                  variant="ghost"
-                  size="sm"
+                <NoticeButton
+                  variant="secondary"
                   disabled={permanentDismiss.disabled}
-                  aria-busy={permanentDismiss.busy}
+                  busy={permanentDismiss.busy}
                   onClick={permanentDismiss.onClick}
                   data-testid={permanentDismiss.testId}
                 >
                   {permanentDismiss.label}
-                </Button>
+                </NoticeButton>
               </div>
             ) : null}
           </>

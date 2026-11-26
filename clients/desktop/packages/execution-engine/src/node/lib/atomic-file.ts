@@ -4,7 +4,7 @@ import {
   type StorageAdmissionTarget,
 } from './storage-admission';
 import {
-  admittedStorageRowForPath,
+  admittedStorageRowForSyncWrite,
   admittedStorageRowForWrite,
   isAdmittedStorageCandidate,
   OWNERSHIP_OVERRIDE_NAMESPACE,
@@ -36,6 +36,7 @@ import {
   fchmodSync,
   fsyncSync,
   openSync,
+  realpathSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -70,10 +71,11 @@ export interface AtomicFileWriteOptions {
   /**
    * Runs once the temporary file is complete, just before it is installed,
    * and again before each rename retry; a rejection removes it and installs
-   * nothing. A writer whose admission
+   * nothing. Receives the staged path so a caller can identify its own install
+   * for post-await compensation. A writer whose admission
    * can end while the file is written checks it again here (CAN-6198).
    */
-  beforeInstall?: () => Promise<void>;
+  beforeInstall?: (temporaryPath: string) => Promise<void>;
   /** A W5 write: ownership-checked, and admitted by its operation. */
   storage?: StorageAdmissionTarget;
   /**
@@ -282,7 +284,8 @@ function renameWithRetrySync(source: string, target: string): void {
  * no other writer in the process interleaves. It blocks the calling thread,
  * including `fsync` when `durable` and short sleeps between rename retries.
  * It writes a row with `admittedWriters` only as one of them; without the data
- * root, which it cannot load synchronously, it checks file shapes in any folder.
+ * root, which it cannot load synchronously, legacy rows check file shapes in
+ * any folder. New terminal rows use the already-registered data root instead.
  */
 export function writeFileAtomicallySync(
   targetPath: string,
@@ -290,7 +293,7 @@ export function writeFileAtomicallySync(
   options?: AtomicFileWriteSyncOptions,
 ): void {
   assertAdmittedRow(
-    admittedStorageRowForPath(targetPath, null),
+    admittedStorageRowForSyncWrite(targetPath, realpathSync.native),
     options?.admittedWriter,
     'undeclared',
   );
@@ -403,7 +406,7 @@ async function installFile(
       await handle.close();
       handle = null;
     }
-    await options?.beforeInstall?.();
+    await options?.beforeInstall?.(tempPath);
     if (options?.overwrite === false) {
       // A same-directory hard link atomically publishes the already-complete
       // temporary file without replacing a destination created by another
@@ -414,7 +417,11 @@ async function installFile(
     } else {
       await renameWithRetry(tempPath, targetPath, {
         // Each retry checks again: the backoff can outlast an admission.
-        ...(options?.beforeInstall && { beforeRetry: options.beforeInstall }),
+        ...(options?.beforeInstall && {
+          beforeRetry: async (): Promise<void> => {
+            await options.beforeInstall?.(tempPath);
+          },
+        }),
       });
     }
     installed = true;

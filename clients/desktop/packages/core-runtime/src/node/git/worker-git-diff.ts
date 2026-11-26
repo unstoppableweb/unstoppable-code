@@ -1,17 +1,21 @@
-import type {
-  CanopyQueryHandler,
-  WorkerGitDiffGetParams,
-  WorkerGitDiffGetResult,
+import {
+  WORKER_GIT_DIFF_READS_REVISION,
+  type CanopyQueryHandler,
+  type WorkerGitDiffGetParams,
+  type WorkerGitDiffGetResult,
+  type WorkerGitDiffRead,
 } from '@canopy/protocol/canopy-core';
 import { CanopyOperationError } from '../../runtime/errors';
 import type { CanopyHandlerContext } from '../../runtime/types';
 import {
   GIT_OBJECT_ID_PATTERN,
+  parseGitPathListZ,
   sampleGitChangeSet,
   toWorkerGitChangedFiles,
   type GitChangeSetRange,
   type GitChangeSetReader,
   type GitChangeSetSample,
+  type GitReadOutcome,
 } from './change-set';
 import { withGitPatches, type GitPatchReader } from './change-set-patch';
 import { WorkerGitScopeError } from './worker-git-branch-list';
@@ -92,11 +96,94 @@ function scopeError(error: WorkerGitScopeError): CanopyOperationError {
   );
 }
 
+const tooLarge = (): CanopyOperationError =>
+  new CanopyOperationError({
+    kind: 'resource_exhausted',
+    message: 'The comparison is too large for one result.',
+    retry: { kind: 'after_refresh', resource: 'repository' },
+  });
+
 const isObjectId = (value: string): boolean =>
   GIT_OBJECT_ID_PATTERN.test(value);
 
+const MiB = 1024 * 1024;
 // The 8 MiB default frame, less headroom for the response envelope.
-const WORKER_GIT_DIFF_RESULT_BYTES = 8 * 1024 * 1024 - 64 * 1024;
+const WORKER_GIT_DIFF_RESULT_BYTES = 8 * MiB - 64 * 1024;
+
+/**
+ * Revision 3's raw bound per read. The legacy listing blanks a list whose
+ * newline text is over 8 MiB; name-status, untracked and unmerged `-z` output
+ * is never longer than that text, but numstat names a rename by both full
+ * paths where the text prints one `pre{a => b}suf` name, at most twice over.
+ */
+const WORKER_GIT_DIFF_READ_BYTES = 8 * MiB;
+const WORKER_GIT_DIFF_NUMSTAT_READ_BYTES = 16 * MiB;
+
+/**
+ * Revision 3's whole-answer cap, sent in message parts over 8 MiB frames:
+ * every read at its bound is 40 MiB of output, and its JSON adds about two
+ * bytes a field. Names JSON escapes heavily, like control characters, can
+ * still exceed it.
+ */
+export const WORKER_GIT_DIFF_READS_RESULT_BYTES = 48 * MiB;
+
+function exitCodeOf(error: unknown): number | null {
+  // A read host's rejection carries `exitCode`, the desktop's runGit `code`.
+  for (const key of ['exitCode', 'code']) {
+    const value: unknown = Reflect.get(Object(error), key);
+    if (typeof value === 'number' && Number.isInteger(value)) return value;
+  }
+  return null;
+}
+
+function wireRead(outcome: GitReadOutcome, bound: number): WorkerGitDiffRead {
+  if (!outcome.ok) return { ok: false, exitCode: exitCodeOf(outcome.error) };
+  return Buffer.byteLength(outcome.stdout) > bound
+    ? { ok: true, fields: [], overCap: true }
+    : { ok: true, fields: parseGitPathListZ(outcome.stdout) };
+}
+
+/** Revision 3's answer: the sample's reads, failures included. */
+function readsResult(sample: GitChangeSetSample): WorkerGitDiffGetResult {
+  const outcomes = [
+    sample.nameStatus,
+    sample.numstat,
+    sample.untracked,
+    sample.unmerged,
+  ];
+  if (
+    outcomes.some(
+      (outcome) =>
+        outcome?.ok === false &&
+        Reflect.get(Object(outcome.error), 'lazyFetchBlocked') === true,
+    )
+  )
+    throw new CanopyOperationError({
+      kind: 'failed_precondition',
+      code: 'worker.git.diff.objectMissing',
+      message: 'A read needs an object this repository does not have.',
+      retry: { kind: 'never' },
+    });
+  return {
+    files: [],
+    truncated: false,
+    reads: {
+      nameStatus: wireRead(sample.nameStatus, WORKER_GIT_DIFF_READ_BYTES),
+      numstat: wireRead(sample.numstat, WORKER_GIT_DIFF_NUMSTAT_READ_BYTES),
+      untracked: sample.untracked
+        ? wireRead(sample.untracked, WORKER_GIT_DIFF_READ_BYTES)
+        : null,
+      unmerged: sample.unmerged
+        ? wireRead(sample.unmerged, WORKER_GIT_DIFF_READ_BYTES)
+        : null,
+      untrackedEstimates: sample.untrackedEstimates.map((estimate) => ({
+        insertions: estimate.insertions,
+        binary: estimate.binary,
+        ...(estimate.confined === true && { confined: true }),
+      })),
+    },
+  };
+}
 
 /**
  * The range a `base`..`head` pair names, or the refusal for one outside the
@@ -152,8 +239,9 @@ export function createWorkerGitDiffHandlers<Repository>(
       params,
       context,
     ): Promise<WorkerGitDiffGetResult> => {
-      // The web core's revision (CAN-6093); this host advertises none.
-      if (params.revision !== undefined)
+      // The web core's revision 2 (CAN-6093) is not served here; revision 3 is.
+      const reads = params.revision === WORKER_GIT_DIFF_READS_REVISION;
+      if (params.revision !== undefined && !reads)
         throw new CanopyOperationError({
           kind: 'capability_unavailable',
           message: 'This worker does not serve this revision.',
@@ -181,6 +269,11 @@ export function createWorkerGitDiffHandlers<Repository>(
           'contextLines is not supported.',
         );
       const { paths } = params;
+      if (reads && paths !== undefined)
+        throw refusal(
+          'capability_unavailable',
+          'Revision 3 answers no patches.',
+        );
       if (paths !== undefined && host.patchReads === undefined)
         throw refusal('capability_unavailable', 'This host serves no patches.');
       let repository: Repository | null;
@@ -199,6 +292,16 @@ export function createWorkerGitDiffHandlers<Repository>(
       const reader = host.reads(repository, context);
       const sample = await sampleGitChangeSet(reader, range);
       host.observe?.(repository, sample);
+      if (reads) {
+        const answer = readsResult(sample);
+        // Measured before the transport buffers or splits it.
+        if (
+          Buffer.byteLength(JSON.stringify(answer)) >
+          WORKER_GIT_DIFF_READS_RESULT_BYTES
+        )
+          throw tooLarge();
+        return answer;
+      }
       const listed = await toWorkerGitChangedFiles(reader, sample);
       const result =
         paths === undefined || host.patchReads === undefined
@@ -213,11 +316,7 @@ export function createWorkerGitDiffHandlers<Repository>(
       if (
         Buffer.byteLength(JSON.stringify(result)) > WORKER_GIT_DIFF_RESULT_BYTES
       )
-        throw new CanopyOperationError({
-          kind: 'resource_exhausted',
-          message: 'The comparison is too large for one result.',
-          retry: { kind: 'after_refresh', resource: 'repository' },
-        });
+        throw tooLarge();
       return result;
     },
   };

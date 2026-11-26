@@ -20,7 +20,7 @@ import type {
 } from '../../operations/local-worker';
 import {
   OperationCancelRefusedError,
-  type OperationService,
+  type OperationServicePort,
 } from '../../operations/service';
 
 export const CORE_AGENT_SUBAGENT_RUN_KIND = 'core.agent.subagent.run';
@@ -95,7 +95,7 @@ export class CoreSubagentRuns {
 
   constructor(
     private readonly options: {
-      operations: OperationService;
+      operations: OperationServicePort;
       localWorker: LocalWorkerExecution;
       onError?: (error: unknown, context: string) => void;
       stopNative?: (target: SubagentNativeStopTarget) => Promise<void>;
@@ -285,7 +285,7 @@ export class CoreSubagentRuns {
 
   private async finish(
     operationId: string,
-    terminal: Parameters<OperationService['finish']>[1],
+    terminal: Parameters<OperationServicePort['finish']>[1],
   ): Promise<void> {
     try {
       await this.options.operations.finish(operationId, terminal);

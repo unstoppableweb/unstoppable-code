@@ -1,5 +1,8 @@
 import type { JSX } from 'react';
-import { SPINNER_TONE_CLASS_NAMES, type SpinnerTone } from './spinner-tone';
+import {
+  SPINNER_TONE_CLASS_NAMES,
+  type SpinnerTone,
+} from '../primitives/spinner-tone';
 import {
   RefreshIcon as AppCatalogRefreshIcon,
   type IconSize,

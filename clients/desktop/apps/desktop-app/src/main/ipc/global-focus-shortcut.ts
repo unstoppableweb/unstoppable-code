@@ -9,11 +9,9 @@ import {
   toShortcutPlatform,
   validateGlobalShortcut,
 } from '@canopy/desktop-shared/lib/global-shortcut-accelerator';
-import {
-  getGlobalFocusShortcutService,
-  tryGetGlobalFocusShortcutService,
-} from '../lifecycle/global-focus-shortcut';
+import { getGlobalFocusShortcutService } from '../lifecycle/global-focus-shortcut';
 import { broadcastPreferencesSynced } from '../lib/preferences-broadcast';
+import type { FocusShortcutPort } from '../lib/preference-native-effects';
 import {
   projectPreferencesForRuntime,
   readPreferencesFile,
@@ -171,11 +169,12 @@ export async function handleUpdateGlobalFocusShortcut(
  * next launch would come up blocked on a chord that never worked. The
  * dedicated `global-focus-shortcut:update` IPC is the intended writer; this
  * exists so a plain preference save can never leave file and OS disagreeing.
+ * `service` is the host's shortcut port, or null before it starts.
  */
 export async function syncGlobalFocusShortcutFromPreferences(
   normalized: PreferencesData,
+  service: FocusShortcutPort | null,
 ): Promise<void> {
-  const service = tryGetGlobalFocusShortcutService();
   if (service === null) return;
   const config = {
     enabled: normalized.globalFocusShortcutEnabled,

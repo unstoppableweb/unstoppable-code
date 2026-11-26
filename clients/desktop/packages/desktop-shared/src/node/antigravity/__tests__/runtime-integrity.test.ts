@@ -47,9 +47,19 @@ import { verifyManagedExecutable } from '../../managed-runtime/verification';
 import type { ProviderProcessSpawner } from '../../provider-process/spawn';
 import type * as RuntimeArtifacts from '../runtime-artifacts';
 import type { AntigravityRuntimeArtifact } from '../runtime-artifacts';
+import type {
+  AcpClientOptions,
+  AcpPermissionRequest,
+} from '@canopy/desktop-shared/node/acp';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import type { ProviderProcess } from '../../provider-process/spawn';
 import { antigravityEnvironment, openAntigravityRuntime } from '../runtime';
+import { ANTIGRAVITY_RUNTIME_VERSION } from '../runtime-metadata';
 import {
   assertAntigravityExecutableUnchanged,
+  antigravityExecutableIdentityForLaunch,
+  assertAntigravityExecutableIdentity,
   verifyAntigravityExecutable,
 } from '../runtime-integrity';
 
@@ -161,9 +171,13 @@ jest.mock('../runtime-artifacts', () => {
   };
 });
 
+// A case that sets mockConnect receives the opener's client options; every
+// other case must never reach ACP.
+let mockConnect: ((options: AcpClientOptions) => unknown) | undefined;
 jest.mock('@canopy/desktop-shared/node/acp', () => ({
-  connectAcp: (): never => {
-    throw new Error('ACP reached');
+  connectAcp: (options: AcpClientOptions): unknown => {
+    if (!mockConnect) throw new Error('ACP reached');
+    return mockConnect(options);
   },
 }));
 
@@ -173,6 +187,7 @@ let mockTrustExecutable = false;
 interface RuntimeIntegrity {
   verifyAntigravityExecutable: typeof verifyAntigravityExecutable;
   assertAntigravityExecutableUnchanged: typeof assertAntigravityExecutableUnchanged;
+  antigravityExecutableIdentityForLaunch: typeof antigravityExecutableIdentityForLaunch;
 }
 jest.mock('../runtime-integrity', () => {
   const actual = jest.requireActual<RuntimeIntegrity>('../runtime-integrity');
@@ -190,6 +205,12 @@ jest.mock('../runtime-integrity', () => {
       mockTrustExecutable
         ? Promise.resolve()
         : actual.assertAntigravityExecutableUnchanged(...args),
+    antigravityExecutableIdentityForLaunch: (
+      ...args: Parameters<typeof actual.antigravityExecutableIdentityForLaunch>
+    ): ReturnType<typeof actual.antigravityExecutableIdentityForLaunch> =>
+      mockTrustExecutable
+        ? Promise.resolve('trusted')
+        : actual.antigravityExecutableIdentityForLaunch(...args),
   };
 });
 
@@ -245,6 +266,7 @@ beforeEach(() => {
   requests = [];
   mockTrustExecutable = false;
   mockPinnedSha256 = undefined;
+  mockConnect = undefined;
   fsTimingHook = undefined;
 });
 
@@ -260,9 +282,11 @@ const supportedIt = darwin || linux ? it : it.skip;
 const otherIt = darwin || linux ? it.skip : it;
 
 /** The refusal copy for the host's check. */
-const REFUSAL = linux
-  ? /isn't Google's 1\.5\.1 release/
-  : /Google's signed release/;
+/** The Linux refusal names the pinned release. */
+const PINNED_REFUSAL = new RegExp(
+  `isn't Google's ${ANTIGRAVITY_RUNTIME_VERSION.replace(/\./g, '\\.')} release`,
+);
+const REFUSAL = linux ? PINNED_REFUSAL : /Google's signed release/;
 
 function sha256(file: string): string {
   return createHash('sha256').update(readFileSync(file)).digest('hex');
@@ -313,7 +337,7 @@ describe('Antigravity executable integrity', () => {
   linuxIt('refuses an executable that is not the pinned build', async () => {
     const { file, marker } = markerScript();
     await expect(open(file)).rejects.toThrow(
-      "This Antigravity CLI isn't Google's 1.5.1 release. Install Antigravity CLI 1.5.1 from Settings.",
+      `This Antigravity CLI isn't Google's ${ANTIGRAVITY_RUNTIME_VERSION} release. Install Antigravity CLI ${ANTIGRAVITY_RUNTIME_VERSION} from Settings.`,
     );
     expect(spawned).toEqual([]);
     expect(existsSync(marker)).toBe(false);
@@ -323,7 +347,7 @@ describe('Antigravity executable integrity', () => {
     const { file, marker } = markerScript();
     const link = join(root, 'linked-agy');
     symlinkSync(file, link);
-    await expect(open(link)).rejects.toThrow(/isn't Google's 1\.5\.1 release/);
+    await expect(open(link)).rejects.toThrow(PINNED_REFUSAL);
     expect(spawned).toEqual([]);
     expect(existsSync(marker)).toBe(false);
   });
@@ -331,7 +355,7 @@ describe('Antigravity executable integrity', () => {
   linuxIt('refuses a system binary that is not the CLI', async () => {
     const file = join(root, 'agy');
     copyFileSync('/usr/bin/true', file);
-    await expect(open(file)).rejects.toThrow(/isn't Google's 1\.5\.1 release/);
+    await expect(open(file)).rejects.toThrow(PINNED_REFUSAL);
     expect(spawned).toEqual([]);
   });
 
@@ -349,9 +373,7 @@ describe('Antigravity executable integrity', () => {
       expect(existsSync(marker)).toBe(false);
       appendFileSync(file, '# one more byte\n');
       spawned = [];
-      await expect(open(link)).rejects.toThrow(
-        /isn't Google's 1\.5\.1 release/,
-      );
+      await expect(open(link)).rejects.toThrow(PINNED_REFUSAL);
       expect(spawned).toEqual([]);
     },
   );
@@ -393,7 +415,7 @@ describe('Antigravity executable integrity', () => {
       // The check itself, as the launch runs it, so only its own file calls
       // drive the swaps.
       await expect(verifyAntigravityExecutable(file)).rejects.toThrow(
-        /isn't Google's 1\.5\.1 release|changed during launch/,
+        new RegExp(`${PINNED_REFUSAL.source}|changed during launch`),
       );
       // Both swaps happened, so the check really raced them.
       expect(phase).toBe('restored');
@@ -403,9 +425,7 @@ describe('Antigravity executable integrity', () => {
       await expect(assertAntigravityExecutableUnchanged(file)).rejects.toThrow(
         /changed before launch|changed during launch/,
       );
-      await expect(open(file)).rejects.toThrow(
-        /isn't Google's 1\.5\.1 release/,
-      );
+      await expect(open(file)).rejects.toThrow(PINNED_REFUSAL);
       expect(spawned).toEqual([]);
       expect(existsSync(marker)).toBe(false);
     },
@@ -417,7 +437,7 @@ describe('Antigravity executable integrity', () => {
       const { file } = markerScript();
       mockPinnedSha256 = null;
       await expect(verifyAntigravityExecutable(file)).rejects.toThrow(
-        /isn't Google's 1\.5\.1 release/,
+        PINNED_REFUSAL,
       );
     },
   );
@@ -677,6 +697,33 @@ stubbedDescribe('verification with a stubbed platform check', () => {
     );
   });
 
+  // CAN-6718 review round 11: the identity a launch confirmed stays its
+  // own. A later verification of another file at the same path updates the
+  // shared verdict, which the cache check then accepts; the exact-identity
+  // check refuses it.
+  it('holds a launch to the identity it confirmed when the path is re-verified', async () => {
+    const file = signedFile();
+    await verifyAntigravityExecutable(file);
+    const confirmed = await antigravityExecutableIdentityForLaunch(file);
+    await expect(
+      assertAntigravityExecutableIdentity(file, confirmed),
+    ).resolves.toBeUndefined();
+    const replacement = join(root, 'agy.other');
+    writeFileSync(replacement, 'signed release\nanother build\n', {
+      mode: 0o755,
+    });
+    signed.add(replacement);
+    renameSync(replacement, file);
+    signed.add(file);
+    await expect(verifyAntigravityExecutable(file)).resolves.toBe(file);
+    await expect(assertAntigravityExecutableUnchanged(file)).resolves.toBe(
+      undefined,
+    );
+    await expect(
+      assertAntigravityExecutableIdentity(file, confirmed),
+    ).rejects.toThrow(/changed during launch/);
+  });
+
   it('cancels a waiting launch while the shared run caches', async () => {
     const file = signedFile();
     const gate = deferred();
@@ -693,4 +740,116 @@ stubbedDescribe('verification with a stubbed platform check', () => {
     await expect(verifyAntigravityExecutable(file)).resolves.toBe(file);
     expect(codesign).toHaveBeenCalledTimes(1);
   });
+});
+
+/** A provider process that stays open until stopped; ACP is stubbed. */
+class OpenProcess extends EventEmitter implements ProviderProcess {
+  readonly pid = 1;
+  readonly stdin = new PassThrough();
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  readonly stop = (): Promise<void> => {
+    this.stdout.end();
+    return Promise.resolve();
+  };
+}
+
+function permissionRequest(
+  toolCall: Record<string, unknown>,
+  signal = new AbortController().signal,
+): AcpPermissionRequest {
+  return {
+    requestId: 1,
+    resourceGeneration: 1,
+    request: {
+      sessionId: 's',
+      toolCall: { toolCallId: 't', ...toolCall },
+      options: [
+        { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+        { optionId: 'deny', name: 'Deny', kind: 'reject_once' },
+      ],
+    },
+    signal,
+  };
+}
+
+// Antigravity 1.5.14 asks ACP permission for MCP calls, which 1.5.1 ran
+// without asking. The opener answers a routed server's calls itself, since
+// the host route authorizes each one at execution; every other request keeps
+// the existing path.
+describe('Antigravity opener permission answers', () => {
+  supportedIt(
+    'allows only routed MCP calls and sends native calls to the host',
+    async () => {
+      mockTrustExecutable = true;
+      let answer: AcpClientOptions['onPermission'];
+      mockConnect = (options): unknown => {
+        answer = options.onPermission;
+        return {
+          getInitialization: (): { agentInfo: { version: string } } => ({
+            agentInfo: { version: ANTIGRAVITY_RUNTIME_VERSION },
+          }),
+          close: (): void => undefined,
+        };
+      };
+      const host = jest.fn(
+        (): Promise<'allow' | 'deny'> => Promise.resolve('allow'),
+      );
+      const { file } = markerScript();
+      process.env.ANTIGRAVITY_EXECUTABLE = file;
+      const runtime = await openAntigravityRuntime({
+        cwd: root,
+        profile: join(root, 'profile'),
+        spawnProcess: () => new OpenProcess(),
+        assertEnabled: () => undefined,
+        owner: { kind: 'discovery', id: 'runtime-permission' },
+        onUpdate: () => undefined,
+        onPermission: host,
+        mcpServerNames: ['canopy', 'sel-ected'],
+        managedRootDir: join(root, 'no-managed-runtime'),
+      });
+      try {
+        if (!answer)
+          throw new Error('The opener passed no permission handler.');
+        const decide = answer;
+        for (const name of ['mcp_canopy_GetGitPreferences', 'mcp_sel-ected_x'])
+          await expect(
+            decide(permissionRequest({ name, kind: 'other' })),
+          ).resolves.toBe('allow');
+        for (const name of [
+          'mcp_other_tool',
+          'mcp_canopy_',
+          'mcp_canopyX_tool',
+          'mcp_canopy_tool\n',
+          'invoke_subagent',
+        ])
+          await expect(
+            decide(permissionRequest({ name, kind: 'other' })),
+          ).resolves.toBe('deny');
+        const aborted = new AbortController();
+        aborted.abort();
+        await expect(
+          decide(
+            permissionRequest(
+              { name: 'mcp_canopy_GetGitPreferences', kind: 'other' },
+              aborted.signal,
+            ),
+          ),
+        ).resolves.toBe('deny');
+        expect(host).not.toHaveBeenCalled();
+        await expect(
+          decide(
+            permissionRequest({
+              name: 'run_command',
+              kind: 'execute',
+              rawInput: { CommandLine: 'pwd' },
+            }),
+          ),
+        ).resolves.toBe('allow');
+        expect(host).toHaveBeenCalledTimes(1);
+      } finally {
+        await runtime.close();
+      }
+    },
+  );
 });

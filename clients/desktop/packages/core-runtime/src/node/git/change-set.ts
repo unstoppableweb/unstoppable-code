@@ -81,6 +81,8 @@ export function gitChangeSetReadArgs(read: GitChangeSetRead): string[] {
 export interface GitUntrackedEstimate {
   readonly insertions: number;
   readonly binary: boolean;
+  /** A confined estimate skipped the file: its parent resolves outside the root. */
+  readonly confined?: true;
 }
 
 /** At most this many untracked files are listed, in Git's listing order. */

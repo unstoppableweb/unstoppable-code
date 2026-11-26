@@ -1606,12 +1606,31 @@ export const TurnGroupRenderer = memo(function TurnGroupRenderer({
   const promptHead = group.userMessage.role === 'user';
   // One resolved end for the summary, header and footer, so none of them
   // says "Completed" for a turn the others call interrupted.
+  // The head's record is the turn's end: main writes it, and can record a
+  // run as failed where its timer says completed (an empty provider
+  // completion); the run's own timer outcome fills in when there is none. A
+  // later execution with no prompt that owns the turn (a continuation another
+  // chat's reply started) never reaches the head's record, so its own timer's
+  // outcome is the turn's end instead. A wake's head row is built from its
+  // own timer (`${timer.id}:wake`).
+  const canonicalOwner = timerBlock?.turnId !== undefined ? timerBlock : null;
+  const ownerIsHeadRun =
+    canonicalOwner === null ||
+    (promptHead
+      ? canonicalOwner.userMessageId === group.userMessage.id
+      : group.userMessage.id === `${group.timerMessage.id}:wake`);
+  const recordedOutcome = ownerIsHeadRun
+    ? (turnOutcome ?? canonicalOwner?.outcome)
+    : canonicalOwner.outcome;
+  // A restart that cut off the head's run marks the head interrupted; it
+  // says nothing about a later continuation that owns the turn.
+  const ownerInterrupted = ownerIsHeadRun && turnInterrupted;
   const completionStatus = resolveTurnCompletionStatus({
     settled: turnSettled,
     recorded:
-      turnOutcome === 'failed' || turnOutcome === 'cancelled'
-        ? turnOutcome
-        : turnInterrupted
+      recordedOutcome === 'failed' || recordedOutcome === 'cancelled'
+        ? recordedOutcome
+        : ownerInterrupted
           ? 'interrupted'
           : undefined,
     outcomes,

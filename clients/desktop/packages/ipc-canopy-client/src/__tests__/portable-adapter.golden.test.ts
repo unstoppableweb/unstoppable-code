@@ -48,7 +48,9 @@ import {
 import type { RemoteControlPrActionPayload } from '@canopy/protocol/remote-control/shell';
 import {
   channelUnavailableMessage,
+  ARGUMENTS_REFUSED_CODE,
   CHANNEL_UNAVAILABLE_CODE,
+  RemoteArgumentsRefusedError,
   RemoteChannelUnavailableError,
   type RemoteIpcTransport,
 } from '@canopy/protocol/remote-control';
@@ -490,6 +492,7 @@ const CAPABILITIES: CanopyCapabilities = {
   overviewNotifications: true,
   worktreeRecovery: true,
   worktreeRecoveryResolution: true,
+  worktreeRecoverySetAside: true,
   worktreeRecoveryReads: true,
 };
 
@@ -4013,6 +4016,15 @@ const COMMAND_SCENARIOS: CommandScenarios = {
       C.managedDelegationExtendLifetimeLimit,
       'extend',
     ),
+  'models.refresh': [
+    {
+      name: 'reads the model registry with a probe and answers nothing',
+      args: { workspaceLocalId: 'project-1' },
+      replies: { [C.modelRegistryGet]: () => ({}) },
+      calls: [call(C.modelRegistryGet, { probe: true, recheck: true })],
+      result: (value) => expect(value).toBeUndefined(),
+    },
+  ],
   'providerUsage.refresh': [
     {
       name: 'sends exactly the provider and answers the projection',
@@ -5068,6 +5080,202 @@ const COMMAND_SCENARIOS: CommandScenarios = {
       },
       channels: [C.worktreeRecoveryFinish],
       rejects: /^Recovery evidence belongs to this desktop\.$/,
+    },
+  ],
+  'worktree.recovery.setAside': [
+    {
+      name: 'asks for a desktop update when an older computer refuses Set aside (with its code)',
+      args: {
+        workspaceId: 'single',
+        operationId: '12345678-1234-4234-8234-123456789abc',
+        revision: 'a'.repeat(64),
+      },
+      replies: {
+        [C.worktreeRecoverySetAside]: () => {
+          throw new RemoteChannelUnavailableError(C.worktreeRecoverySetAside);
+        },
+      },
+      channels: [C.worktreeRecoverySetAside],
+      rejects: /^Update the desktop app to resolve this archive\.$/,
+    },
+    {
+      name: 'asks for a desktop update when an older computer refuses Set aside (Electron-wrapped)',
+      args: {
+        workspaceId: 'single',
+        operationId: '12345678-1234-4234-8234-123456789abc',
+        revision: 'a'.repeat(64),
+      },
+      replies: {
+        [C.worktreeRecoverySetAside]: () => {
+          throw new Error(
+            `Error invoking remote method '${C.worktreeRecoverySetAside}': Error: ${channelUnavailableMessage(C.worktreeRecoverySetAside)}`,
+          );
+        },
+      },
+      channels: [C.worktreeRecoverySetAside],
+      rejects: /^Update the desktop app to resolve this archive\.$/,
+    },
+    {
+      name: 'passes another Set aside failure through unchanged',
+      args: {
+        workspaceId: 'single',
+        operationId: '12345678-1234-4234-8234-123456789abc',
+        revision: 'a'.repeat(64),
+      },
+      replies: {
+        [C.worktreeRecoverySetAside]: () => {
+          throw new Error('Recovery evidence belongs to this desktop.');
+        },
+      },
+      channels: [C.worktreeRecoverySetAside],
+      rejects: /^Recovery evidence belongs to this desktop\.$/,
+    },
+    {
+      name: 'preserves the put-back mapping for an unconfirmed move',
+      args: {
+        workspaceId: 'single',
+        operationId: '12345678-1234-4234-8234-123456789abc',
+        revision: 'a'.repeat(64),
+      },
+      replies: {
+        [C.worktreeRecoverySetAside]: () => ({
+          status: 'interrupted',
+          operationId: '12345678-1234-4234-8234-123456789abc',
+          check: 'unconfirmed',
+          moved: {
+            originalName: '12345678-1234-4234-8234-123456789abc.json',
+            quarantinedName: 'set-aside-moved.json',
+            journalLocationLabel: '<data>/w5/destructive-lifecycles',
+            quarantineLocationLabel: '<data>/w5/quarantined-lifecycles',
+          },
+        }),
+      },
+      calls: [
+        call(C.worktreeRecoverySetAside, {
+          workspaceId: 'single',
+          operationId: '12345678-1234-4234-8234-123456789abc',
+          revision: 'a'.repeat(64),
+        }),
+      ],
+      result: (value: unknown) =>
+        expect(value).toEqual({
+          status: 'interrupted',
+          operationId: '12345678-1234-4234-8234-123456789abc',
+          check: 'unconfirmed',
+          moved: {
+            originalName: '12345678-1234-4234-8234-123456789abc.json',
+            quarantinedName: 'set-aside-moved.json',
+            journalLocationLabel: '<data>/w5/destructive-lifecycles',
+            quarantineLocationLabel: '<data>/w5/quarantined-lifecycles',
+          },
+        }),
+    },
+    {
+      name: 'preserves an unconfirmed reservation for support review',
+      args: {
+        workspaceId: 'single',
+        operationId: '12345678-1234-4234-8234-123456789abc',
+        revision: 'a'.repeat(64),
+      },
+      replies: {
+        [C.worktreeRecoverySetAside]: () => ({
+          status: 'interrupted',
+          operationId: '12345678-1234-4234-8234-123456789abc',
+          check: 'unconfirmed',
+          reservation: {
+            quarantinedName: 'set-aside-reservation.json',
+            quarantineLocationLabel: '<data>/w5/quarantined-lifecycles',
+          },
+        }),
+      },
+      calls: [
+        call(C.worktreeRecoverySetAside, {
+          workspaceId: 'single',
+          operationId: '12345678-1234-4234-8234-123456789abc',
+          revision: 'a'.repeat(64),
+        }),
+      ],
+      result: (value: unknown) =>
+        expect(value).toEqual({
+          status: 'interrupted',
+          operationId: '12345678-1234-4234-8234-123456789abc',
+          check: 'unconfirmed',
+          reservation: {
+            quarantinedName: 'set-aside-reservation.json',
+            quarantineLocationLabel: '<data>/w5/quarantined-lifecycles',
+          },
+        }),
+    },
+    {
+      name: 'sets aside the exact reviewed record',
+      args: {
+        workspaceId: 'single',
+        operationId: '12345678-1234-4234-8234-123456789abc',
+        revision: 'a'.repeat(64),
+      },
+      replies: {
+        [C.worktreeRecoverySetAside]: () => ({
+          status: 'set-aside',
+          operationId: '12345678-1234-4234-8234-123456789abc',
+          quarantinedNames: [
+            '20261118T000000000Z-abcdef12-12345678-1234-4234-8234-123456789abc.json',
+          ],
+          putBackCopies: [
+            {
+              quarantinedName:
+                '20261118T000000000Z-abcdef12-12345678-1234-4234-8234-123456789abc.json',
+              originalName: '12345678-1234-4234-8234-123456789abc.json',
+            },
+          ],
+          journalLocationLabel: '<data>/w5/destructive-lifecycles',
+          quarantineLocationLabel: '<data>/w5/quarantined-lifecycles',
+        }),
+      },
+      calls: [
+        call(C.worktreeRecoverySetAside, {
+          workspaceId: 'single',
+          operationId: '12345678-1234-4234-8234-123456789abc',
+          revision: 'a'.repeat(64),
+        }),
+      ],
+      result: (value: unknown) =>
+        expect(value).toMatchObject({
+          status: 'set-aside',
+          putBackCopies: [
+            {
+              quarantinedName:
+                '20261118T000000000Z-abcdef12-12345678-1234-4234-8234-123456789abc.json',
+              originalName: '12345678-1234-4234-8234-123456789abc.json',
+            },
+          ],
+          journalLocationLabel: '<data>/w5/destructive-lifecycles',
+        }),
+    },
+    {
+      name: 'refuses before invoking a host without set aside',
+      args: {
+        workspaceId: 'single',
+        operationId: '12345678-1234-4234-8234-123456789abc',
+        revision: 'a'.repeat(64),
+      },
+      ports: {
+        capabilities: { ...CAPABILITIES, worktreeRecoverySetAside: undefined },
+      },
+      rejects: /Archive recovery is unavailable/,
+      calls: [],
+    },
+    {
+      name: 'refuses set aside when live recovery resolution is unavailable',
+      args: {
+        workspaceId: 'single',
+        operationId: '12345678-1234-4234-8234-123456789abc',
+        revision: 'a'.repeat(64),
+      },
+      ports: {
+        capabilities: { ...CAPABILITIES, worktreeRecoveryResolution: false },
+      },
+      rejects: /Archive recovery is unavailable/,
+      calls: [],
     },
   ],
   'worktree.discard.describe': [
@@ -6231,6 +6439,15 @@ const EVENT_SCENARIOS: EventScenarios = {
       expected: (events) => expect(events).toEqual([{ occurredAt: NOW }]),
     },
   ],
+  'onboardingTips.changed': [
+    {
+      name: 'invalidates the narrow preference read without including preferences',
+      ports: { capabilities: { ...CAPABILITIES, onboardingTips: true } },
+      // The host's payload-free preferences:changed signal invalidates this read.
+      pushes: [[C.preferencesChanged, undefined]],
+      expected: (events) => expect(events).toEqual([{ occurredAt: NOW }]),
+    },
+  ],
   'chat.message': [
     {
       name: 'projects runtime events for the filtered chat',
@@ -6674,6 +6891,290 @@ describe('portable CanopyClient adapter (golden)', () => {
     );
   });
 
+  // Gap 1 of CAN-6718: the harness setup member maps each call to its
+  // channel with the exact arguments the browser policies accept, reads
+  // every reply and push through the protocol readers, and never uses
+  // `codex-login:open-browser` or `auth-terminal:resize`.
+  test('harnessSetup maps each member to its channel', async () => {
+    const runtime = {
+      supported: true,
+      installed: true,
+      enabled: true,
+      version: '1.0.0',
+      phase: 'connected',
+    };
+    const antigravity = {
+      supported: true,
+      installed: true,
+      managed: false,
+      version: '1.5.1',
+      phase: 'installed',
+      executable: '/home/person/.local/bin/agy',
+      future: 'dropped',
+    };
+    const codex = {
+      attemptId: 'attempt-1',
+      phase: 'waiting',
+      activeWorkCount: 0,
+      method: 'chatgptDeviceCode',
+      userCode: 'ABCD-1234',
+      verificationUrl: 'https://auth.openai.com/codex/device',
+    };
+    const auth = {
+      authenticated: true,
+      accountLabel: 'person@example.com',
+      detail: null,
+      error: null,
+      authFingerprint: 'fp',
+    };
+    const operationId = '00000000-0000-4000-8000-000000000001';
+    const context = harness(
+      {
+        [C.antigravityRuntimeStatus]: () => antigravity,
+        [C.antigravityRuntimeInstall]: () => antigravity,
+        [C.cursorConnectionStatus]: () => runtime,
+        [C.cursorConnectionConnect]: () => ({
+          ...runtime,
+          account: { email: 'person@example.com' },
+        }),
+        [C.cursorConnectionAccount]: () => null,
+        [C.cursorConnectionChangeAccount]: () => runtime,
+        [C.copilotConnectionStatus]: () => runtime,
+        [C.copilotConnectionConnect]: () => runtime,
+        [C.copilotConnectionAccount]: () => ({
+          host: 'github.com',
+          login: 'person',
+        }),
+        [C.copilotConnectionChangeAccount]: () => runtime,
+        [C.opencodeConnectionStatus]: () => runtime,
+        [C.opencodeConnectionConnect]: () => runtime,
+        [C.settingsClaudeAuthStatus]: () => auth,
+        [C.settingsCodexAuthStatus]: () => auth,
+        [C.codexLoginStart]: () => codex,
+        [C.codexLoginCancel]: () => ({ ...codex, phase: 'complete' }),
+        [C.codexLoginRetryVerification]: () => codex,
+        [C.authTerminalStart]: () => ({ sessionId: 'session-1' }),
+      },
+      { capabilities: { ...CAPABILITIES, harnessSetup: true } },
+    );
+    const setup = context.client.harnessSetup;
+    if (!setup) throw new Error('missing harnessSetup');
+    await expect(setup.antigravity.status()).resolves.toStrictEqual({
+      supported: true,
+      installed: true,
+      managed: false,
+      version: '1.5.1',
+      phase: 'installed',
+      executable: '/home/person/.local/bin/agy',
+    });
+    await setup.antigravity.install(operationId);
+    await setup.antigravity.cancel(operationId);
+    await setup.cursor.status();
+    await expect(setup.cursor.connect()).resolves.toMatchObject({
+      account: { email: 'person@example.com' },
+    });
+    await setup.cursor.cancel();
+    await setup.cursor.disconnect();
+    await expect(setup.cursor.account()).resolves.toBeNull();
+    await setup.cursor.changeAccount('sign-in');
+    await setup.copilot.status();
+    await setup.copilot.connect();
+    await setup.copilot.cancel();
+    await setup.copilot.disconnect();
+    await expect(setup.copilot.account()).resolves.toStrictEqual({
+      host: 'github.com',
+      login: 'person',
+    });
+    await setup.copilot.changeAccount();
+    await setup.opencode.status();
+    await setup.opencode.connect();
+    await setup.opencode.cancel();
+    await setup.opencode.disconnect();
+    await expect(setup.providerAuth.status('claude')).resolves.toStrictEqual({
+      authenticated: true,
+      accountLabel: 'person@example.com',
+      detail: null,
+      error: null,
+    });
+    await setup.providerAuth.status('codex', { forceRefresh: true });
+    await expect(
+      setup.codexLogin.startDeviceCode({ confirmPause: false }),
+    ).resolves.toMatchObject({
+      userCode: 'ABCD-1234',
+      verificationUrl: 'https://auth.openai.com/codex/device',
+    });
+    await setup.codexLogin.cancel();
+    await setup.codexLogin.retryVerification();
+    await expect(setup.signIn.start('antigravity')).resolves.toStrictEqual({
+      sessionId: 'session-1',
+    });
+    await setup.signIn.submitLine('session-1', '4/0AbCd');
+    await expect(
+      setup.signIn.submitLine('session-1', 'a\u0003b'),
+    ).rejects.toThrow('Paste the code on one line.');
+    await setup.signIn.stop('session-1');
+    expect(context.fake.calls).toEqual([
+      call(C.antigravityRuntimeStatus),
+      call(C.antigravityRuntimeInstall, operationId),
+      call(C.antigravityRuntimeCancel, operationId),
+      call(C.cursorConnectionStatus),
+      call(C.cursorConnectionConnect, { signInLink: true }),
+      call(C.cursorConnectionCancel),
+      call(C.cursorConnectionDisconnect),
+      call(C.cursorConnectionAccount),
+      call(C.cursorConnectionChangeAccount, 'sign-in', { signInLink: true }),
+      call(C.copilotConnectionStatus),
+      call(C.copilotConnectionConnect),
+      call(C.copilotConnectionCancel),
+      call(C.copilotConnectionDisconnect),
+      call(C.copilotConnectionAccount),
+      call(C.copilotConnectionChangeAccount),
+      call(C.opencodeConnectionStatus),
+      call(C.opencodeConnectionConnect),
+      call(C.opencodeConnectionCancel),
+      call(C.opencodeConnectionDisconnect),
+      call(C.settingsClaudeAuthStatus),
+      call(C.settingsCodexAuthStatus, { forceRefresh: true }),
+      call(C.codexLoginStart, {
+        confirmPause: false,
+        method: 'chatgptDeviceCode',
+      }),
+      call(C.codexLoginCancel),
+      call(C.codexLoginRetryVerification),
+      call(C.authTerminalStart, {
+        provider: 'antigravity',
+        cols: 100,
+        rows: 30,
+      }),
+      call(C.authTerminalWrite, { sessionId: 'session-1', data: '4/0AbCd\r' }),
+      call(C.authTerminalStop, { sessionId: 'session-1' }),
+    ]);
+
+    // Pushes are read the same way; a payload that is not the shape drops.
+    const received: unknown[] = [];
+    const offs = [
+      setup.antigravity.onProgress((status) => received.push(status.phase)),
+      setup.cursor.onProgress((status) => received.push(status.signInUrl)),
+      setup.copilot.onProgress((status) => received.push(status.userCode)),
+      setup.opencode.onProgress((status) => received.push(status.phase)),
+      setup.codexLogin.onState((state) => received.push(state.userCode)),
+      setup.signIn.onOutput((output) => received.push(output.data)),
+      setup.signIn.onExit((exit) => received.push(exit.exitCode)),
+    ];
+    context.fake.emit(C.antigravityRuntimeProgress, {
+      ...antigravity,
+      phase: 'downloading',
+    });
+    context.fake.emit(C.cursorConnectionProgress, {
+      ...runtime,
+      phase: 'signing-in',
+      signInUrl: 'https://cursor.com/loginDeepControl',
+    });
+    context.fake.emit(C.copilotConnectionProgress, {
+      ...runtime,
+      phase: 'authorizing',
+      userCode: 'WXYZ-0000',
+    });
+    context.fake.emit(C.opencodeConnectionProgress, { phase: 'connected' });
+    context.fake.emit(C.codexLoginState, codex);
+    context.fake.emit(C.authTerminalOutput, {
+      sessionId: 'session-1',
+      data: 'Open this link',
+    });
+    context.fake.emit(C.authTerminalExit, {
+      sessionId: 'session-1',
+      exitCode: 0,
+      signal: null,
+    });
+    for (const off of offs) off();
+    expect(received).toEqual([
+      'downloading',
+      'https://cursor.com/loginDeepControl',
+      'WXYZ-0000',
+      'ABCD-1234',
+      'Open this link',
+      0,
+    ]);
+    // A browser-method state never surfaces a page to open.
+    const browserMethod: unknown[] = [];
+    const off = setup.codexLogin.onState((state) =>
+      browserMethod.push(state.verificationUrl),
+    );
+    context.fake.emit(C.codexLoginState, {
+      ...codex,
+      method: 'chatgpt',
+      verificationUrl: 'https://auth.openai.com/oauth/authorize?state=pkce',
+    });
+    off();
+    expect(browserMethod).toEqual([undefined]);
+
+    expectWithinManifest(
+      REMOTE_MEMBER_CHANNELS.harnessSetup,
+      context.fake.calls.map((entryCall) => entryCall.channel),
+      context.fake.listened,
+    );
+    observe(
+      observedInvokes,
+      'member:harnessSetup',
+      context.fake.calls.map((entryCall) => entryCall.channel),
+    );
+    observe(observedListens, 'member:harnessSetup', context.fake.listened);
+    // Without the capability there is no member.
+    expect(harness().client.harnessSetup).toBeUndefined();
+    // An older computer's refusal reads as the fix, keeping its code.
+    const outdated = harness(
+      {
+        [C.cursorConnectionStatus]: () => {
+          throw new RemoteChannelUnavailableError(C.cursorConnectionStatus);
+        },
+      },
+      { capabilities: { ...CAPABILITIES, harnessSetup: true } },
+    );
+    await expect(
+      outdated.client.harnessSetup?.cursor.status(),
+    ).rejects.toMatchObject({
+      message:
+        'Update the desktop app on the paired computer to set up agents from here.',
+      code: CHANNEL_UNAVAILABLE_CODE,
+    });
+  });
+
+  // CAN-6718 review W1: a value the computer's browser policy would refuse
+  // is refused here with what to fix, and nothing is sent; a computer that
+  // refuses a value anyway answers with its own code, which never reads as
+  // an older computer.
+  test('harnessSetup refuses a value the computer would refuse, before sending it', async () => {
+    const context = harness(
+      {
+        [C.authTerminalWrite]: () => {
+          throw new RemoteArgumentsRefusedError(C.authTerminalWrite);
+        },
+      },
+      { capabilities: { ...CAPABILITIES, harnessSetup: true } },
+    );
+    const setup = context.client.harnessSetup;
+    if (!setup) throw new Error('missing harnessSetup');
+    await expect(
+      setup.signIn.submitLine('session-1', 'a\nb'),
+    ).rejects.toMatchObject({
+      message: 'Paste the code on one line.',
+      inputRefused: true,
+    });
+    expect(context.fake.calls).toEqual([]);
+
+    const hostRefusal = await setup.signIn
+      .submitLine('session-1', '4/0AbCd')
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect(hostRefusal).toMatchObject({ code: ARGUMENTS_REFUSED_CODE });
+    expect(hostRefusal).not.toHaveProperty('hostOutdated');
+    expect(context.fake.calls).toEqual([
+      call(C.authTerminalWrite, { sessionId: 'session-1', data: '4/0AbCd\r' }),
+    ]);
+  });
+
   // CAN-7432: delegate transcript reads over the delegation channels for a
   // controller without a transcript port. Reads resolve, never reject.
   test('transcripts maps each read to its delegation channel', async () => {
@@ -6849,6 +7350,47 @@ describe('portable CanopyClient adapter (golden)', () => {
     expect(harness().client.transcripts).toBeUndefined();
     const port = harness({}, { capabilities, transcripts: reads });
     expect(port.client.transcripts).toBe(reads);
+  });
+
+  test("a host's plans port takes its plan writes, which never reach the tracked-plans channels (CAN-4165 PR 7b)", async () => {
+    const writes: unknown[] = [];
+    const plans = {
+      get: (): Promise<null> => Promise.resolve(null),
+      update: (request: unknown): Promise<typeof APPROVED_PLAN> => {
+        writes.push(['update', request]);
+        return Promise.resolve(APPROVED_PLAN);
+      },
+      delete: (request: unknown): Promise<void> => {
+        writes.push(['delete', request]);
+        return Promise.resolve();
+      },
+    };
+    const context = harness(
+      { [C.chatGetState]: planExitState(PENDING_PLAN_TAB) },
+      { plans },
+    );
+    await context.client.command('plan.update', {
+      ...WORKTREE,
+      planId: 'plan-1',
+      hidden: true,
+    });
+    await context.client.command('plan.delete', {
+      payload: { ...WORKTREE, planId: 'plan-1' },
+    });
+    await expect(
+      context.client.command('chat.resolvePlanExit', {
+        ...CHAT,
+        approval: PLAN_APPROVAL,
+      }),
+    ).resolves.toEqual({ outcome: 'started' });
+    expect(writes).toEqual([
+      ['update', { ...WORKTREE, planId: 'plan-1', hidden: true }],
+      ['delete', { ...WORKTREE, planId: 'plan-1' }],
+      ['update', PLAN_REVIEW_SYNC.args[0]],
+    ]);
+    const channels = context.fake.calls.map(({ channel }) => channel);
+    expect(channels).not.toContain(C.trackedPlansUpdate);
+    expect(channels).not.toContain(C.trackedPlansDelete);
   });
 
   test('every manifest channel is exercised by some scenario', () => {
@@ -7328,6 +7870,9 @@ describe('archive recovery actions on an older computer (CAN-7444)', () => {
       [C.worktreeRecoveryFinish]: () => {
         throw new RemoteChannelUnavailableError(C.worktreeRecoveryFinish);
       },
+      [C.worktreeRecoverySetAside]: () => {
+        throw new RemoteChannelUnavailableError(C.worktreeRecoverySetAside);
+      },
     });
     await expect(
       refused.client.command('worktree.recovery.resolve', {
@@ -7343,6 +7888,13 @@ describe('archive recovery actions on an older computer (CAN-7444)', () => {
       refused.client.command('worktree.recovery.finish', target),
     ).rejects.toMatchObject({
       message: 'Update the desktop app to resolve this archive.',
+      hostOutdated: true,
+    });
+    await expect(
+      refused.client.command('worktree.recovery.setAside', target),
+    ).rejects.toMatchObject({
+      message: 'Update the desktop app to resolve this archive.',
+      code: CHANNEL_UNAVAILABLE_CODE,
       hostOutdated: true,
     });
   });

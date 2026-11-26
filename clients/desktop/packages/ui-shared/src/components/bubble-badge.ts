@@ -1,3 +1,5 @@
+import { BUBBLE_BADGE_CHROME } from '../primitives/desktop-control-recipes';
+export { BUBBLE_BADGE_CHROME } from '../primitives/desktop-control-recipes';
 /**
  * A bubble's edge: exactly one device pixel in both color modes.
  * `shadow-bubble` owns the recipe, since the two modes need different ones. On
@@ -34,24 +36,6 @@ export const BUBBLE_MUTED_SURFACE_CLASS = 'rounded-xl bg-muted px-3 py-2';
  * (watcher-fired) messages. Only the tint changes; the hairline stays.
  */
 export const BUBBLE_INFO_SURFACE_CLASS = `rounded-xl bg-info-subtle px-3 py-2 ${BUBBLE_SURFACE_HAIRLINE}`;
-
-/**
- * Shared chrome for the badges pinned to a chat bubble's corners — the
- * leading voice indicator on a user message and the remaining raw-button
- * badges. The copy/revert/edit/clear actions on user, queued and delivery
- * bubbles are the 28px secondary icon `Button`, which carries the same round
- * quaternary surface, elevation and hairline ring.
- *
- * Kept in one place so the passive indicator and the interactive actions
- * cannot drift apart in shape, surface, or elevation. Size is applied
- * separately: the passive indicator is a compact dot, while the action
- * buttons stay large enough for a comfortable pointer target. The badges
- * overlap a bubble on the same quaternary surface, so they carry the house
- * hairline ring (`ring-[length:var(--border-hairline)] ring-line-secondary`, as on the send button
- * and Open dropdown) to stay legible against it in dark mode.
- */
-export const BUBBLE_BADGE_CHROME =
-  'flex items-center justify-center rounded-full bg-quaternary fg-secondary shadow-sm ring-[length:var(--border-hairline)] ring-line-secondary';
 
 /** Compact badge for the passive leading indicator (10px glyph). */
 export const BUBBLE_INDICATOR_BADGE_CLASS = `${BUBBLE_BADGE_CHROME} h-5 w-5`;

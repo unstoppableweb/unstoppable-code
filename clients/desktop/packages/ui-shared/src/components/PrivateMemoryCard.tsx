@@ -1,13 +1,13 @@
 import { useId, type JSX } from 'react';
 import { InfoIcon } from '../icons/InfoIcon';
-import { Button } from './Button';
-import { Disclosure } from './Disclosure';
+import { Button } from '../primitives/Button';
+import { Disclosure } from '../primitives/Disclosure';
 import { SettingsRowsRow } from './settings/SettingsRows';
-import { Stack } from './Stack';
-import { Surface } from './Surface';
-import { ToggleSwitch, ToggleSwitchField } from './ToggleSwitch';
-import { ErrorBanner } from './StatusBlocks';
-import { Tooltip } from './Tooltip';
+import { Stack } from '../primitives/Stack';
+import { Surface } from '../primitives/Surface';
+import { ToggleSwitch, ToggleSwitchField } from '../primitives/ToggleSwitch';
+import { ErrorBanner } from '../primitives/StatusBlocks';
+import { Tooltip } from '../primitives/Tooltip';
 
 const PRIVATE_MEMORY_LABEL = 'Private memory';
 

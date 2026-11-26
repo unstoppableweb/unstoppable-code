@@ -21,6 +21,7 @@ import type { Pipeline } from '@canopy/pipeline-interop';
 import { createCanopyDispatcher } from '../../../runtime/dispatcher';
 import { CanopyOperationError } from '../../../runtime/errors';
 import { STORAGE_OWNERSHIP, type StorageOwnershipRow } from '../../../storage';
+import { pipelineDefinitionOwnerKey } from '../core-pipeline-definitions';
 import {
   createDaemonDefinitionOwnerEffects,
   createDaemonPipelineDefinitionHost,
@@ -651,5 +652,195 @@ describe('definition owner effects (CAN-7522)', () => {
     firstHandle.close();
     secondHandle.close();
     await dispatcher.shutdown();
+  });
+});
+
+// CAN-7507: a routed create, import or copy raises its owner effect before
+// the commit with a key bound to its sender, so the app records the owner it
+// registered for the write; only an owner serving effects revision 2 is sent
+// the key or an import's effects, and a revision-1 owner keeps today's.
+describe('the owner of a routed write before its commit (CAN-7507)', () => {
+  const OWNER_KEY = 'a'.repeat(64);
+  const curatedImport = {
+    remoteDefinitionId: 'curated:release',
+    targetScope: {},
+    expectedRemoteVersion: null,
+    nameOverride: null,
+  };
+
+  function keyedService(effectsRevision: number): {
+    log: string[];
+    requests: WorkerPipelineHostRequest[];
+    service: ReturnType<typeof createPipelineDefinitionService>;
+    install: { entered?: () => void; pause?: Promise<void> };
+  } {
+    const log: string[] = [];
+    const store = memoryStore(log);
+    const install: { entered?: () => void; pause?: Promise<void> } = {};
+    const curated: PipelineDefinitionSourcePort = {
+      sources: ['curated'],
+      list: () => Promise.resolve([]),
+      read: () => Promise.resolve(null),
+      remote: () =>
+        Promise.resolve({
+          document: {
+            name: 'Curated',
+            description: '',
+            icon: '',
+            format: 'yaml',
+            text: SOURCE_TEXT,
+          },
+          remoteVersion: 'sha256:curated',
+          install: async (write) => {
+            install.entered?.();
+            await install.pause;
+            const document = stored(write.definitionId, write.name);
+            store.docs.set(write.definitionId, document);
+            log.push(`store install ${write.definitionId}`);
+            return document;
+          },
+        }),
+    };
+    const channel = createPipelineOwnerChannel();
+    const requests: WorkerPipelineHostRequest[] = [];
+    channel.broker.subscribe(
+      (item) => {
+        if (isWorkerPipelineHostWithdrawal(item)) return;
+        requests.push(item);
+        log.push(describeRequest(item));
+        queueMicrotask(() =>
+          channel.broker.respond(
+            item.executionId,
+            item.requestId,
+            item.request.action === 'owner.definition.precheck'
+              ? allowed
+              : applied,
+          ),
+        );
+      },
+      {
+        serves: [
+          { kind: 'owner.definition.precheck', revision: 1 },
+          { kind: 'owner.definition.effects', revision: effectsRevision },
+        ],
+      },
+    );
+    let next = 0;
+    const service = createPipelineDefinitionService({
+      ports: [store.port, curated],
+      writer: store.writer,
+      ownerEffects: createDaemonDefinitionOwnerEffects(channel),
+      createDefinitionId: () => `imported-${(next += 1)}`,
+    });
+    return { log, requests, service, install };
+  }
+  const keyed = (request: WorkerPipelineHostRequest | undefined): unknown =>
+    (request?.request as { ownerKey?: string } | undefined)?.ownerKey;
+
+  it('a keyed create has its owner effect raised before the commit, with its key, and no check', async () => {
+    const { log, requests, service } = keyedService(2);
+    await service.upsert(
+      { ...edit(), definitionId: null, expectedRevision: null },
+      signal,
+      { createId: 'created-2', ownerKey: OWNER_KEY },
+    );
+    expect(log).toEqual([
+      'owner beforeCommit upsert created-2',
+      'store upsert created-2',
+      'owner afterCommit upsert created-2',
+    ]);
+    expect(requests.map(keyed)).toEqual([OWNER_KEY, undefined]);
+    for (const request of requests)
+      expect(WorkerPipelineHostRequestSchema.parse(request)).toEqual(request);
+  });
+
+  it("a keyed import has its effects raised around its install, and a copy's check carries its key before the commit", async () => {
+    const { log, requests, service } = keyedService(2);
+    await service.import(curatedImport, signal, { ownerKey: OWNER_KEY });
+    await service.duplicate(
+      { sourceDefinitionId: 'source-1', scope: {} },
+      signal,
+      { createId: 'copy-1', ownerKey: OWNER_KEY },
+    );
+    expect(log).toEqual([
+      'owner beforeCommit import imported-1',
+      'store install imported-1',
+      'owner afterCommit import imported-1',
+      'owner precheck duplicate -',
+      'owner beforeCommit duplicate copy-1',
+      'store copy copy-1',
+      'owner afterCommit duplicate copy-1',
+    ]);
+    expect(requests.map(keyed)).toEqual([
+      OWNER_KEY,
+      undefined,
+      undefined,
+      OWNER_KEY,
+      undefined,
+    ]);
+  });
+
+  it('a revision-1 owner is sent no key, no import effects and no create effect before the commit', async () => {
+    const { log, requests, service } = keyedService(1);
+    await service.upsert(
+      { ...edit(), definitionId: null, expectedRevision: null },
+      signal,
+      { createId: 'created-3', ownerKey: OWNER_KEY },
+    );
+    await service.import(curatedImport, signal, { ownerKey: OWNER_KEY });
+    await service.duplicate(
+      { sourceDefinitionId: 'source-1', scope: {} },
+      signal,
+      { createId: 'copy-2', ownerKey: OWNER_KEY },
+    );
+    expect(log).toEqual([
+      'store upsert created-3',
+      'owner afterCommit upsert created-3',
+      'store install imported-1',
+      'owner precheck duplicate -',
+      'owner beforeCommit duplicate copy-2',
+      'store copy copy-2',
+      'owner afterCommit duplicate copy-2',
+    ]);
+    expect(requests.map(keyed)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("the owner key is bound to the sender's client instance and never carries the idempotency key", () => {
+    const mine = pipelineDefinitionOwnerKey('desktop-main', 'save-1');
+    expect(mine).toMatch(/^[0-9a-f]{64}$/);
+    expect(mine).not.toContain('save-1');
+    expect(pipelineDefinitionOwnerKey('cli', 'save-1')).not.toBe(mine);
+    expect(pipelineDefinitionOwnerKey('desktop-main', 'save-1')).toBe(mine);
+  });
+
+  it('a reconcile waits for an import whose owner was recorded and whose install is in flight', async () => {
+    const { log, service, install } = keyedService(2);
+    let entered = (): void => undefined;
+    const inside = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release = (): void => undefined;
+    install.entered = entered;
+    install.pause = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const importing = service.import(curatedImport, signal, {
+      ownerKey: OWNER_KEY,
+    });
+    await inside;
+    const reconcile = service.reconcileOwnerEffects(signal);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(log.some((line) => line.includes('reconcile'))).toBe(false);
+    release();
+    await importing;
+    await reconcile;
+    expect(log.indexOf('store install imported-1')).toBeLessThan(
+      log.findIndex((line) => line.includes('reconcile')),
+    );
   });
 });

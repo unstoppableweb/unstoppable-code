@@ -16,11 +16,11 @@ import {
   initCodexModels,
   initOllamaModels,
   resolveKnownModel,
-  type PreferencesData,
   type TerminalPreset,
   type UpdateTerminalSettingsRequest,
 } from '@canopy/desktop-shared/types';
 import { DESKTOP_PREFERENCES_CODEC } from '@canopy/desktop-shared/node/preferences/desktop-preferences-codec';
+import type { DomainPreferencesData } from '@canopy/desktop-shared/node/preferences/client-local-preferences';
 import { installPreferencesNormalizationEnvironment } from '@canopy/desktop-shared/node/preferences/normalization-environment';
 import {
   createDesktopTerminalSettingsStore,
@@ -81,7 +81,7 @@ class MemoryDocument implements PreferencesDocument {
 
 function fixture(): {
   doc: MemoryDocument;
-  repo: PreferencesRepository<PreferencesData>;
+  repo: PreferencesRepository<DomainPreferencesData>;
   store: TerminalSettingsStore;
 } {
   const doc = new MemoryDocument();

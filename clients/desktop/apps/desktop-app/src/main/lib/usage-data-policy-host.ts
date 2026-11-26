@@ -17,6 +17,9 @@ import {
 import {
   getUsageDataPolicy,
   initializeUsageDataPolicy,
+  PENDING_USAGE_DATA_CONSENT,
+  usageDataConsentStateOf,
+  type UsageDataConsentState,
   type UsageDataPolicy,
   type UsageDataPreferencesState,
   type UsageDataProhibitionState,
@@ -26,14 +29,33 @@ import type { WorkspaceContextService } from './workspace-context-service';
 /** Delay before retrying a startup preferences read that rejected outright. */
 export const USAGE_DATA_PREFERENCES_RETRY_MS = 5_000;
 
+/** The stored choices with the consent read from the same document. */
+type StoredUsageDataState =
+  | {
+      readonly usageData: UsageDataPreferences;
+      readonly consent: UsageDataConsentState;
+    }
+  | 'unreadable';
+
 /**
- * Read the member's stored choices for the policy. A latched failed recovery
- * serves defaults or a last-good copy that may predate the latest save, so
- * it is `'unreadable'` too; the latch refuses saves until restart.
+ * Read the member's stored choices and consent for the policy. A latched
+ * failed recovery serves defaults or a last-good copy that may predate the
+ * latest save, so it is `'unreadable'` too; the latch refuses saves until
+ * restart.
  */
-async function readUsageDataPreferencesState(): Promise<UsageDataPreferencesState> {
+async function readUsageDataPreferencesState(): Promise<StoredUsageDataState> {
   const stored = await readPreferencesFile();
-  return arePreferencesUnconfirmed() ? 'unreadable' : stored.usageData;
+  return arePreferencesUnconfirmed()
+    ? 'unreadable'
+    : { usageData: stored.usageData, consent: usageDataConsentStateOf(stored) };
+}
+
+function preferencesOf(state: StoredUsageDataState): UsageDataPreferencesState {
+  return state === 'unreadable' ? 'unreadable' : state.usageData;
+}
+
+function consentOf(state: StoredUsageDataState): UsageDataConsentState {
+  return state === 'unreadable' ? PENDING_USAGE_DATA_CONSENT : state.consent;
 }
 
 /**
@@ -45,13 +67,13 @@ async function readUsageDataPreferencesState(): Promise<UsageDataPreferencesStat
 function retryRejectedPreferencesRead(): void {
   const timer = setTimeout((): void => {
     void readUsageDataPreferencesState().then(
-      (preferences): void => {
+      (state): void => {
         const policy = getUsageDataPolicy();
         const stillUnreadable =
           policy.getUsageDataPolicySnapshot().prohibitedBy.productAnalytics
             ?.preferencesUnreadable === true;
-        if (stillUnreadable && preferences !== 'unreadable') {
-          policy.setPreferences(preferences);
+        if (stillUnreadable && state !== 'unreadable') {
+          policy.setStored(state.usageData, state.consent);
         }
       },
       (): void => undefined,
@@ -71,7 +93,7 @@ export async function initializeStartupUsageDataPolicy(): Promise<void> {
   const [preferences, prohibitions] = await Promise.all([
     // The member's own opt-out may be what we failed to read: keep the
     // prohibitable flows off until real preferences replace this.
-    readUsageDataPreferencesState().catch((): UsageDataPreferencesState => {
+    readUsageDataPreferencesState().catch((): StoredUsageDataState => {
       retryRejectedPreferencesRead();
       return 'unreadable';
     }),
@@ -85,7 +107,11 @@ export async function initializeStartupUsageDataPolicy(): Promise<void> {
       },
     ),
   ]);
-  initializeUsageDataPolicy(preferences, prohibitions);
+  initializeUsageDataPolicy(
+    preferencesOf(preferences),
+    consentOf(preferences),
+    prohibitions,
+  );
 }
 
 /**

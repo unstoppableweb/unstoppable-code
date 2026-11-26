@@ -1,6 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir, open, readFile, rename, stat, unlink } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import {
+  type ConfirmedFolders,
+  ensureFolderChainDurable,
+  type FolderChainPorts,
+  folderIdentityOf,
+} from '../../storage/folder-chain-durability';
+import { StorageOutcomeUnknownError } from '../../storage/outcome-unknown';
 import { damagedCopyPath, pruneDamagedCopies } from '../damaged-copies';
 
 /*
@@ -71,9 +78,16 @@ export async function readAnnotationStateText(
 export async function keepDamagedAnnotationStateCopy(
   statePath: string,
   content: Uint8Array,
+  dataRoot: string,
+  flush?: AnnotationFolderFlush,
 ): Promise<boolean> {
   try {
-    await writeAnnotationStateText(damagedCopyPath(statePath), content);
+    await writeAnnotationStateText(
+      damagedCopyPath(statePath),
+      content,
+      dataRoot,
+      flush,
+    );
   } catch {
     return false;
   }
@@ -81,21 +95,83 @@ export async function keepDamagedAnnotationStateCopy(
   return true;
 }
 
-/** Replaces the state file atomically through a sibling temporary file. */
+/** A host's folder flush: rejects when the folder's entries may not persist. */
+export type AnnotationFolderFlush = (directoryPath: string) => Promise<unknown>;
+
+/**
+ * The default folder flush, a POSIX `fsync`; any open, flush or close failure
+ * rejects. Windows refuses to flush a read-only handle, so a Windows host
+ * passes its own (the desktop passes core-platform's `flushDirectory`).
+ */
+async function syncDirectory(directoryPath: string): Promise<void> {
+  const handle = await open(directoryPath, 'r');
+  try {
+    await handle.sync();
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    throw error;
+  }
+  await handle.close();
+}
+
+/** Folders this process confirmed durable (`ensureFolderChainDurable`). */
+const confirmedFolders: ConfirmedFolders = new Map();
+
+const folderChainPorts: Omit<FolderChainPorts, 'flush'> = {
+  mkdir: (folder) => mkdir(folder, { recursive: true }),
+  identity: async (folder) => {
+    const stats = await stat(folder, { bigint: true });
+    if (!stats.isDirectory()) {
+      throw Object.assign(new Error(`ENOTDIR: not a directory, ${folder}`), {
+        code: 'ENOTDIR',
+      });
+    }
+    return folderIdentityOf(stats);
+  },
+  dirname,
+};
+
+/**
+ * Replaces the state file atomically and durably (CAN-4735). Its folder is
+ * made durable up to `dataRoot` first, the complete temporary file is synced
+ * before it is renamed over the state file, and the folder is flushed after,
+ * so an acknowledged write survives a crash. A flush that fails after the
+ * rename rejects with `StorageOutcomeUnknownError`: the new content is
+ * visible, but either version may remain after a crash. All async.
+ */
 export async function writeAnnotationStateText(
   statePath: string,
   content: string | Uint8Array,
+  dataRoot: string,
+  flush: AnnotationFolderFlush = syncDirectory,
 ): Promise<void> {
-  await mkdir(dirname(statePath), { recursive: true });
-  const tempPath = join(
-    dirname(statePath),
-    `.file-annotations-${randomUUID()}.tmp`,
-  );
+  const directory = dirname(statePath);
+  const ports: FolderChainPorts = { ...folderChainPorts, flush };
+  await ensureFolderChainDurable([resolve(directory)], ports, {
+    dataRoot: resolve(dataRoot),
+    confirmed: confirmedFolders,
+  });
+  const tempPath = join(directory, `.file-annotations-${randomUUID()}.tmp`);
   try {
-    await writeFile(tempPath, content, 'utf8');
+    const handle = await open(tempPath, 'wx');
+    try {
+      await handle.writeFile(content, 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     await rename(tempPath, statePath);
   } catch (error) {
     await unlink(tempPath).catch(() => undefined);
     throw error;
+  }
+  try {
+    await flush(directory);
+  } catch (cause) {
+    throw new StorageOutcomeUnknownError(
+      'directory_flush',
+      cause,
+      'file_annotations',
+    );
   }
 }

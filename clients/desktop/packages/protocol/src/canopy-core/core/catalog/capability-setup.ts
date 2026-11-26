@@ -29,6 +29,13 @@ import { CATALOG_GRANTS } from './operations';
 //
 //   shared(project) = added ∪ (organizationDefaults − removed)
 //
+// Organization connections (CAN-6246, CAN-6248) are kept beside the other
+// items, in fields of their own (`connectors`), never in `items`, `added` or
+// `removed`: a reader or writer from before them keeps working, and a write
+// that leaves `connectors` out leaves the stored connectors unchanged. A
+// project may also limit a connection's tools; the limit applies wherever the
+// connection comes from.
+//
 // Served by the web core only. The desktop core does not install these
 // operations and answers capability_unavailable; desktop main reads them from
 // the web core.
@@ -105,6 +112,87 @@ const ItemRefListSchema = z
   .array(CapabilitySetupItemRefSchema)
   .max(CAPABILITY_SETUP_ITEM_LIMIT);
 
+/** An organization-owned connection (`McpConnection`) by its external id. */
+export const CapabilitySetupConnectorRefSchema = z.strictObject({
+  kind: z.literal('connector'),
+  id: HostedIdSchema,
+});
+export type CapabilitySetupConnectorRef = z.output<
+  typeof CapabilitySetupConnectorRefSchema
+>;
+
+const ConnectorRefListSchema = z
+  .array(CapabilitySetupConnectorRefSchema)
+  .max(CAPABILITY_SETUP_ITEM_LIMIT);
+
+/** The most tools a project's limit on one connection names. */
+export const CAPABILITY_SETUP_CONNECTOR_TOOL_LIMIT = 512;
+
+/**
+ * The tools a project allows on a connection: only these, intersected with
+ * the connection's own tool policy. An empty list allows none.
+ */
+export const CapabilitySetupConnectorToolLimitSchema = z
+  .array(z.string().min(1).max(256))
+  .max(CAPABILITY_SETUP_CONNECTOR_TOOL_LIMIT);
+export type CapabilitySetupConnectorToolLimit = z.output<
+  typeof CapabilitySetupConnectorToolLimitSchema
+>;
+
+/** Tool limits by connection external id. */
+const ConnectorToolLimitsSchema = z
+  .record(HostedIdSchema, CapabilitySetupConnectorToolLimitSchema)
+  .refine(
+    (limits) => Object.keys(limits).length <= CAPABILITY_SETUP_ITEM_LIMIT,
+    'Too many connection limits.',
+  );
+
+/** A project's own connector setup, as stored and as written. */
+export const StoredProjectConnectorSetupSchema = z.strictObject({
+  added: ConnectorRefListSchema,
+  removed: ConnectorRefListSchema,
+  limits: ConnectorToolLimitsSchema,
+});
+export type StoredProjectConnectorSetup = z.output<
+  typeof StoredProjectConnectorSetupSchema
+>;
+
+/** The organization's default connections (`connectorItems`). */
+export const StoredOrganizationConnectorDefaultsSchema = ConnectorRefListSchema;
+
+/** A connection as a reader sees it. */
+export const CapabilitySetupConnectorItemSchema = z
+  .object({
+    ref: CapabilitySetupConnectorRefSchema,
+    /** Its label, else the service's name. */
+    name: z.string().max(CAPABILITY_SETUP_NAME_MAX_LENGTH),
+    serverKey: z.string().max(CAPABILITY_SETUP_NAME_MAX_LENGTH),
+    /**
+     * Its config id: with the server key and the organization owner it names
+     * the connection in a selection ref (CAN-6246). Absent from a server from
+     * before it, and for an unavailable connection.
+     */
+    configId: z.string().max(CAPABILITY_SETUP_NAME_MAX_LENGTH).optional(),
+    /** Who the service sees acting: the person who signed in, or a bot. */
+    identityKind: z.enum(['user', 'bot']),
+    /** `needsSignIn` when it must be connected again. */
+    status: z.enum(['pending', 'connected', 'needsSignIn', 'disconnected']),
+    /**
+     * False when the connection was deleted or is no longer the
+     * organization's. An unavailable connection loads nowhere; it stays listed
+     * so an admin can remove it.
+     */
+    available: z.boolean(),
+  })
+  .catchall(CanopyJsonValueSchema);
+export type CapabilitySetupConnectorItem = z.output<
+  typeof CapabilitySetupConnectorItemSchema
+>;
+
+const ConnectorItemListSchema = z
+  .array(CapabilitySetupConnectorItemSchema)
+  .max(CAPABILITY_SETUP_ITEM_LIMIT * 4);
+
 /** An item as a reader sees it. */
 export const CapabilitySetupItemSchema = z
   .object({
@@ -145,6 +233,8 @@ export const StoredProjectCapabilitySetupSchema = z.strictObject({
   dismissedRecommendations: z
     .array(z.string().min(1).max(1024))
     .max(CAPABILITY_SETUP_DISMISSED_RECOMMENDATION_LIMIT),
+  /** The project's connections (CAN-6246); absent means none. */
+  connectors: StoredProjectConnectorSetupSchema.optional(),
 });
 export type StoredProjectCapabilitySetup = z.output<
   typeof StoredProjectCapabilitySetupSchema
@@ -223,6 +313,61 @@ export function resolveProjectCapabilitySet<
   ];
 }
 
+export interface ResolvedProjectConnector {
+  readonly ref: CapabilitySetupConnectorRef;
+  readonly source: CapabilitySetupItemSource;
+  /** The project's tool limit, or null for the connection's own policy. */
+  readonly limit: CapabilitySetupConnectorToolLimit | null;
+}
+
+/**
+ * The connections every member of a project may use, by the same rule as
+ * the other items: `added ∪ (organizationDefaults − removed)`, each with the
+ * project's tool limit for it.
+ */
+export function resolveProjectConnectorSet(input: {
+  readonly organizationDefaults: readonly CapabilitySetupConnectorRef[];
+  readonly setup: StoredProjectConnectorSetup | undefined;
+}): ResolvedProjectConnector[] {
+  const limits = input.setup?.limits ?? {};
+  const added = uniqueConnectorRefs(input.setup?.added ?? []);
+  const addedIds = new Set(added.map((ref) => ref.id));
+  const removedIds = new Set((input.setup?.removed ?? []).map((ref) => ref.id));
+  const limitOf = (
+    ref: CapabilitySetupConnectorRef,
+  ): CapabilitySetupConnectorToolLimit | null =>
+    Object.prototype.hasOwnProperty.call(limits, ref.id)
+      ? (limits[ref.id] ?? null)
+      : null;
+  const inherited = uniqueConnectorRefs(input.organizationDefaults).filter(
+    (ref) => !removedIds.has(ref.id) && !addedIds.has(ref.id),
+  );
+  return [
+    ...inherited.map((ref) => ({
+      ref,
+      source: 'organization' as const,
+      limit: limitOf(ref),
+    })),
+    ...added.map((ref) => ({
+      ref,
+      source: 'project' as const,
+      limit: limitOf(ref),
+    })),
+  ];
+}
+
+/** `refs` in order with later duplicates dropped. */
+export function uniqueConnectorRefs(
+  refs: readonly CapabilitySetupConnectorRef[],
+): CapabilitySetupConnectorRef[] {
+  const seen = new Set<string>();
+  return refs.filter((ref) => {
+    if (seen.has(ref.id)) return false;
+    seen.add(ref.id);
+    return true;
+  });
+}
+
 const SETUP_CODES = [
   'core.catalog.capabilitySetup.revisionConflict',
   'core.catalog.capabilitySetup.notFound',
@@ -248,6 +393,17 @@ export const CatalogOrganizationDefaultsGetResultSchema = z
     candidates: ItemListSchema,
     /** Whether the caller may change the defaults (an owner or admin). */
     canEdit: z.boolean(),
+    /**
+     * The organization's default connections and the connections an admin
+     * can mark as defaults (CAN-6246). Absent from a server from before them.
+     */
+    connectors: z
+      .object({
+        items: ConnectorItemListSchema,
+        candidates: ConnectorItemListSchema,
+      })
+      .catchall(CanopyJsonValueSchema)
+      .optional(),
   })
   .catchall(CanopyJsonValueSchema);
 export type CatalogOrganizationDefaultsGetResult = z.output<
@@ -261,6 +417,8 @@ export const CatalogOrganizationDefaultsUpdateParamsSchema = z.strictObject({
   /** The revision the caller read; any other refuses the write. */
   expectedRevision: z.number().int().min(0),
   items: ItemRefListSchema,
+  /** The default connections; absent leaves them unchanged. */
+  connectors: ConnectorRefListSchema.optional(),
   _meta: CanopyRequestMetadataSchema.extend({
     idempotencyKey: z.string().min(1).max(512),
   }),
@@ -271,6 +429,10 @@ export const CatalogOrganizationDefaultsUpdateResultSchema = z
     organizationId: OrganizationIdSchema,
     revision: z.number().int().min(0),
     items: ItemListSchema,
+    connectors: z
+      .object({ items: ConnectorItemListSchema })
+      .catchall(CanopyJsonValueSchema)
+      .optional(),
   })
   .catchall(CanopyJsonValueSchema);
 
@@ -290,6 +452,51 @@ export type CatalogProjectSetupItem = z.output<
   typeof CatalogProjectSetupItemSchema
 >;
 
+export const CatalogProjectConnectorSetupItemSchema = z
+  .object({
+    item: CapabilitySetupConnectorItemSchema,
+    source: CapabilitySetupItemSourceSchema,
+    /** The project's tool limit, or null for the connection's own policy. */
+    limit: CapabilitySetupConnectorToolLimitSchema.nullable(),
+  })
+  .catchall(CanopyJsonValueSchema);
+export type CatalogProjectConnectorSetupItem = z.output<
+  typeof CatalogProjectConnectorSetupItemSchema
+>;
+
+export const CatalogProjectConnectorSetupSchema = z
+  .object({
+    organizationDefaults: ConnectorItemListSchema,
+    added: ConnectorItemListSchema,
+    removed: ConnectorRefListSchema,
+    limits: ConnectorToolLimitsSchema,
+    /** What every member of the project may use, with source and limit. */
+    effective: z
+      .array(CatalogProjectConnectorSetupItemSchema)
+      .max(CAPABILITY_SETUP_ITEM_LIMIT * 2),
+    /**
+     * The organization's connections an admin can add; empty unless the
+     * caller may change the project's connections.
+     */
+    candidates: ConnectorItemListSchema,
+    /**
+     * Whether the caller may change the project's connections: an
+     * organization owner or admin who may administer the project. Stricter
+     * than the setup's `canEdit`, which a member project's creator holds.
+     */
+    canEdit: z.boolean(),
+    /**
+     * Whether the caller's chats in this project may use its connections:
+     * they were added to the project directly or through a team (CAN-6247).
+     * Absent from a server from before it.
+     */
+    canUse: z.boolean().optional(),
+  })
+  .catchall(CanopyJsonValueSchema);
+export type CatalogProjectConnectorSetup = z.output<
+  typeof CatalogProjectConnectorSetupSchema
+>;
+
 export const CatalogProjectSetupGetResultSchema = z
   .object({
     projectId: ProjectIdSchema,
@@ -307,6 +514,8 @@ export const CatalogProjectSetupGetResultSchema = z
       .max(CAPABILITY_SETUP_ITEM_LIMIT * 2),
     /** Whether the caller may change this project's setup. */
     canEdit: z.boolean(),
+    /** The project's connections (CAN-6246). Absent from an older server. */
+    connectors: CatalogProjectConnectorSetupSchema.optional(),
   })
   .catchall(CanopyJsonValueSchema);
 export type CatalogProjectSetupGetResult = z.output<
@@ -324,6 +533,8 @@ export const CatalogProjectSetupUpdateParamsSchema = z.strictObject({
   dismissedRecommendations: z
     .array(z.string().min(1).max(1024))
     .max(CAPABILITY_SETUP_DISMISSED_RECOMMENDATION_LIMIT),
+  /** The project's connections; absent leaves them unchanged. */
+  connectors: StoredProjectConnectorSetupSchema.optional(),
   _meta: CanopyRequestMetadataSchema.extend({
     idempotencyKey: z.string().min(1).max(512),
   }),

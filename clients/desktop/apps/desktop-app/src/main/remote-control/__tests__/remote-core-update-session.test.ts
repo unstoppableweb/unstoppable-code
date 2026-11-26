@@ -44,9 +44,12 @@ import {
   createRemoteCoreAccess,
   type RemoteCoreAccess,
 } from '../host/remote-core-access';
+import { oneWindowControllerProfile } from '@canopy/protocol/remote-control/channels';
 import {
   CoreCallResultSchema,
+  DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION,
   HelloResultSchema,
+  REMOTE_CORE_OPERATIONS,
   REMOTE_EVENTS,
   REMOTE_METHODS,
   REMOTE_PROTOCOL_VERSION,
@@ -720,6 +723,43 @@ describe('updates over a remote session, across protocol versions', () => {
       expect(current.installs).toEqual([]);
     },
   );
+
+  it('serves a one-window controller below the floor its update operations and nothing else (CAN-7758)', async () => {
+    current = await harness();
+    const { controller } = current;
+    const hello = HelloResultSchema.parse(
+      await controller.request(REMOTE_METHODS.hello, {
+        version: OLD_CONTROLLER,
+        controller: oneWindowControllerProfile(),
+      }),
+    );
+    expect(OLD_CONTROLLER.protocolVersion).toBeLessThan(
+      DESKTOP_ONE_WINDOW_MIN_PROTOCOL_VERSION,
+    );
+    expect(hello.version).toEqual(HOST_VERSION);
+    expect(hello.features?.oneWindow).toBeUndefined();
+    expect(Object.keys(hello.coreOperations ?? {}).sort()).toEqual(
+      Object.keys(REMOTE_CORE_OPERATIONS).sort(),
+    );
+    expect(
+      Object.keys(REMOTE_CORE_OPERATIONS).every((operation) =>
+        operation.startsWith('core.update.'),
+      ),
+    ).toBe(true);
+    expect(await call(controller, 'core.update.status.get', {})).toMatchObject({
+      ok: true,
+    });
+    // Not a listed operation, and no channel, even one on the one-window list.
+    expect(await call(controller, 'core.chat.list', {})).toMatchObject({
+      ok: false,
+      error: { kind: 'capability_unavailable' },
+    });
+    for (const channel of ['chat:get-state', 'update:get-state']) {
+      await expect(
+        controller.request(REMOTE_METHODS.invoke, { channel, args: [] }),
+      ).rejects.toMatchObject({ code: 'remote_protocol_mismatch' });
+    }
+  });
 
   it('does not enable core calls after a refused controller profile', async () => {
     current = await harness();

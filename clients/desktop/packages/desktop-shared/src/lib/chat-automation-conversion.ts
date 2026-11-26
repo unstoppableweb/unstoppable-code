@@ -40,6 +40,7 @@ import type {
   PipelinePluginDefault,
   Step,
 } from '@canopy/execution-engine/types/pipeline';
+import { getTriggerTypes } from '@canopy/execution-engine/types/pipeline';
 import { getPipelinePluginDefaultKey } from '@canopy/execution-engine/pipelines/plugin-collections';
 import type { ConfiguredPromptReference } from '@canopy/protocol/configured-prompt-references';
 import type {
@@ -48,6 +49,7 @@ import type {
 } from '@canopy/agent-transcript/types';
 import { parseSendAgentMessageInputs } from '@canopy/execution-engine/pipelines/host-send-agent-message';
 import { normalizePluginSelections } from '@canopy/execution-engine/lib/plugin-selections-normalization';
+import { isSharedConnectionWriteList } from './automations';
 
 /** The generated pipeline's only job. */
 export const CHAT_AUTOMATION_JOB = 'chat';
@@ -67,6 +69,45 @@ const REPLY_TIMEOUT_MINUTES = '720';
  * through conversion (CAN-5479).
  */
 const SCHEDULED_SEND_INPUT = 'purpose';
+
+/**
+ * The automation input that keeps the writes a chat automation allowed on its
+ * project's shared connections (CAN-6252), as JSON. No step reads it: main
+ * reads it for the send step of a run the automation started, and the edit
+ * form reads it back, so a converted automation keeps its list.
+ */
+export const SHARED_CONNECTION_WRITES_INPUT = 'shared_connection_writes';
+
+/** The automation input for an action's allowed writes, if any. */
+function sharedConnectionWritesInput(
+  action: ChatAutomationAction,
+): Record<string, string> {
+  return action.sharedConnectionWrites === undefined
+    ? {}
+    : {
+        [SHARED_CONNECTION_WRITES_INPUT]: JSON.stringify(
+          action.sharedConnectionWrites,
+        ),
+      };
+}
+
+/**
+ * The allowed writes an owned pipeline's automation inputs keep, or
+ * `undefined` when they keep none or a list that isn't valid.
+ */
+export function sharedConnectionWritesFromInputs(
+  inputs: Readonly<Record<string, string>> | undefined,
+): Record<string, string[]> | undefined {
+  const raw = inputs?.[SHARED_CONNECTION_WRITES_INPUT];
+  if (raw === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  return isSharedConnectionWriteList(parsed) ? parsed : undefined;
+}
 
 /** A Work Entry title is at most this long (`create-bot-entry`). */
 const ENTRY_TITLE_MAX = 200;
@@ -458,10 +499,48 @@ const input = (name: string): string => `\${{ inputs.${name} }}`;
 const output = (step: string, name: string): string =>
   `\${{ steps.${step}.outputs.${name} }}`;
 
-function dispatchInputs(names: readonly string[]): Pipeline['on'] {
-  const inputs: Record<string, PipelineInputDef> = {};
-  for (const name of names) inputs[name] = { required: false };
-  return { dispatch: { inputs } };
+/**
+ * The triggers a converted chat automation's pipeline may declare
+ * (CAN-5782): Workflow, Manual (`dispatch`), or both, each with the same
+ * inputs.
+ */
+export type ChatAutomationTrigger = 'workflow' | 'dispatch';
+
+/** What a new conversion declares: Workflow and Manual. */
+export const CHAT_AUTOMATION_TRIGGERS: readonly ChatAutomationTrigger[] = [
+  'workflow',
+  'dispatch',
+];
+
+/**
+ * The chat automation triggers a stored pipeline declares, or `undefined`
+ * when it declares neither. A regeneration keeps this set exactly, so it
+ * never adds or removes Workflow or Manual; any other trigger it declares is
+ * dropped by the regeneration and reads as a hand edit.
+ */
+export function chatAutomationTriggers(
+  pipeline: Pick<Pipeline, 'on'>,
+): readonly ChatAutomationTrigger[] | undefined {
+  const declared = getTriggerTypes(pipeline.on);
+  const triggers = CHAT_AUTOMATION_TRIGGERS.filter((trigger) =>
+    declared.includes(trigger),
+  );
+  return triggers.length > 0 ? triggers : undefined;
+}
+
+function triggerInputs(
+  names: readonly string[],
+  triggers: readonly ChatAutomationTrigger[],
+): Pipeline['on'] {
+  const on: Partial<
+    Record<ChatAutomationTrigger, { inputs: Record<string, PipelineInputDef> }>
+  > = {};
+  for (const trigger of triggers) {
+    const inputs: Record<string, PipelineInputDef> = {};
+    for (const name of names) inputs[name] = { required: false };
+    on[trigger] = { inputs };
+  }
+  return on;
 }
 
 function replyStep(
@@ -750,6 +829,12 @@ export interface ChatAutomationToPipelineOptions {
    * preference on this machine.
    */
   portable?: ChatPluginPortability;
+  /**
+   * The triggers the pipeline declares (CAN-5782); without it, both
+   * Workflow and Manual. A regeneration passes the stored set, and a shared
+   * conversion passes Manual alone, which curated records still require.
+   */
+  triggers?: readonly ChatAutomationTrigger[];
 }
 
 /**
@@ -775,14 +860,21 @@ export function chatAutomationToPipeline(
   if (!isChatAutomationAction(action))
     throw new Error("This automation can't convert (not_a_chat_action).");
   const built = steps(activity, action);
-  const inputs = { ...built.inputs, ...valueInputs(action) };
+  const inputs = {
+    ...built.inputs,
+    ...valueInputs(action),
+    ...sharedConnectionWritesInput(action),
+  };
   const agent = isAgentModel(action.model) ? action.model : undefined;
   const plugins = chatPluginCollection(action, options.portable);
   return {
     pipeline: {
       name: activity.name,
       scope: 'global',
-      on: dispatchInputs(Object.keys(inputs)),
+      on: triggerInputs(
+        Object.keys(inputs),
+        options.triggers ?? CHAT_AUTOMATION_TRIGGERS,
+      ),
       ...(agent !== undefined
         ? {
             model_aliases: [
@@ -1364,13 +1456,22 @@ export function ownedPipelineToChatAction(
     plugins,
   );
   if (!found || !isChatAutomationAction(found.action)) return null;
-  const activity = { name: found.name, action: found.action };
+  const writes = sharedConnectionWritesFromInputs(inputs);
+  const action: ChatAutomationAction =
+    writes === undefined
+      ? found.action
+      : { ...found.action, sharedConnectionWrites: writes };
+  const activity = { name: found.name, action };
   if (!convertibleChatAutomation(activity).convertible) return null;
   // Each selection travels as the default it was read from, so the
   // regenerated defaults are the stored ones unless someone changed them.
   // The converter never writes `required`, so a default that sets it is a
   // hand edit a regeneration would otherwise drop.
+  // CAN-5782: Manual, Workflow or both read back alike; a pipeline that
+  // declares neither regenerates with both and reads as a hand edit.
+  const triggers = chatAutomationTriggers(pipeline);
   const regenerated = chatAutomationToPipeline(activity, {
+    ...(triggers !== undefined ? { triggers } : {}),
     portable: (selection) => {
       const stored = plugins.defaults.find((ref) => {
         const recorded = recordedSelection(plugins, ref);
@@ -1410,6 +1511,6 @@ export function ownedPipelineToChatAction(
       regenerated.pluginCollectionPreferences ?? {},
       pluginCollectionPreferences,
     )
-    ? found.action
+    ? action
     : null;
 }

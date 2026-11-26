@@ -27,14 +27,17 @@ jest.mock('../terminal/worker-terminal', () => ({}));
 
 const mockHandlers = new Map<
   string,
-  (event: unknown, request?: { probe?: boolean }) => Promise<unknown>
+  (
+    event: unknown,
+    request?: { probe?: boolean; recheck?: boolean },
+  ) => Promise<unknown>
 >();
 jest.mock('../ipc/register', () => ({
   registerIpcHandler: (
     channel: string,
     handler: (
       event: unknown,
-      request?: { probe?: boolean },
+      request?: { probe?: boolean; recheck?: boolean },
     ) => Promise<unknown>,
   ): void => {
     mockHandlers.set(channel, handler);
@@ -117,6 +120,24 @@ jest.mock('../remote-projection/agent-catalog-compatibility', () => ({
   notifyModelCatalogChanged: (): Promise<void> =>
     mockRemoteControlCatalogChanged(),
 }));
+const mockFactsRefresh = jest.fn<Promise<boolean>, [{ fresh?: boolean }?]>(
+  async (): Promise<boolean> => {
+    await Promise.resolve();
+    order.push('facts');
+    return false;
+  },
+);
+const mockPublish = jest.fn((): void => {
+  order.push('publish');
+});
+let mockSetupWatched = true;
+jest.mock('../remote-projection/provider-setup-status', () => ({
+  isProviderSetupWatched: (): boolean => mockSetupWatched,
+  refreshProviderSetupFacts: (options?: {
+    fresh?: boolean;
+  }): Promise<boolean> => mockFactsRefresh(options),
+  publishProviderSetupProjections: (): void => mockPublish(),
+}));
 const mockRefresh = jest.fn(async (): Promise<void> => {
   await Promise.resolve();
   order.push('refresh');
@@ -192,7 +213,7 @@ function register(resolveCaller: () => CanopyCallerDescriptor): void {
 
 function asyncHandler(): (
   event: unknown,
-  request?: { probe?: boolean },
+  request?: { probe?: boolean; recheck?: boolean },
 ) => Promise<unknown> {
   const handler = mockHandlers.get(IPC_CHANNELS.modelRegistryGet);
   if (!handler) throw new Error('model-registry:get handler not registered');
@@ -204,6 +225,9 @@ beforeEach(() => {
   mockListeners.clear();
   mockBuild.mockClear();
   mockRefresh.mockClear();
+  mockFactsRefresh.mockClear();
+  mockPublish.mockClear();
+  mockSetupWatched = true;
   order.length = 0;
   resourceContext = false;
 });
@@ -265,5 +289,40 @@ it('explicit model refresh probes through worker.agent.provider.list', async () 
     { scope: {}, probe: true },
     expect.anything(),
   );
+  expect(mockRemoteControlCatalogChanged).toHaveBeenCalledTimes(1);
+});
+
+it('Check again re-reads the provider setup facts before it re-projects', async () => {
+  register(() => trustedCaller);
+  await asyncHandler()({ sender: {} }, { probe: true, recheck: true });
+  expect(mockFactsRefresh).toHaveBeenCalledWith({ fresh: true });
+  // The facts were read again before the push controllers re-project on.
+  expect(order.filter((step) => step !== 'build')).toEqual([
+    'facts',
+    'publish',
+  ]);
+});
+
+// CAN-6718 review: a computer no remote session has attached to keeps its
+// probe as it was, with no setup read and no session-stale push.
+it('Check again reads no setup facts before a remote session attaches', async () => {
+  mockSetupWatched = false;
+  mockRemoteControlCatalogChanged.mockClear();
+  register(() => trustedCaller);
+  await asyncHandler()({ sender: {} }, { probe: true, recheck: true });
+  expect(mockFactsRefresh).not.toHaveBeenCalled();
+  expect(mockPublish).not.toHaveBeenCalled();
+  expect(mockRemoteControlCatalogChanged).toHaveBeenCalledTimes(1);
+});
+
+// CAN-6718 review: the sign-in dialog's two-second poll probes too, but
+// only Check again forces a setup read and a session-stale push, so the poll
+// keeps the one-minute throttle while a remote session is attached.
+it('a probe without Check again keeps the setup facts throttled', async () => {
+  mockRemoteControlCatalogChanged.mockClear();
+  register(() => trustedCaller);
+  await asyncHandler()({ sender: {} }, { probe: true });
+  expect(mockFactsRefresh).not.toHaveBeenCalled();
+  expect(mockPublish).not.toHaveBeenCalled();
   expect(mockRemoteControlCatalogChanged).toHaveBeenCalledTimes(1);
 });

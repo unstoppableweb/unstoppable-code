@@ -22,7 +22,7 @@ import { Stack } from '@canopy/ui-shared/components';
  * and collapses to 0px inside an unconstrained `min-h` block (see
  * `StandaloneArchiveViewer`). No composer is ever rendered here.
  */
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import {
   lazy,
   Suspense,
@@ -1032,12 +1032,13 @@ export function ArchivedContainerView({
             <Notice
               intent="attention"
               data-testid="archived-file-recovery-banner"
+              {...(summary.recovery.gitCleanupPending
+                ? { detail: 'Git registration cleanup is still pending.' }
+                : {})}
             >
               {summary.recovery.source === 'absent'
                 ? 'Restore brings back the remaining chats and saved artifacts. The original checkout is unavailable.'
                 : 'Restore brings back the remaining files. Git history and staging require separate recovery.'}
-              {summary.recovery.gitCleanupPending &&
-                ' Git registration cleanup is still pending.'}
             </Notice>
           )}
 

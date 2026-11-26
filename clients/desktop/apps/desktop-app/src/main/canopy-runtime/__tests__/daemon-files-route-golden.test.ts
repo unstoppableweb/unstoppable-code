@@ -552,7 +552,6 @@ const RESERVED_GIT_READS: ReadonlyArray<
   readonly [GitReadRouteOperation, 'CAN-4729' | 'CAN-4103']
 > = [
   ['git.remote.get', 'CAN-4729'],
-  ['git.worktree.health.get', 'CAN-4729'],
   ['git.executable.get', 'CAN-4729'],
   ['git.status.get', 'CAN-4103'],
   ['git.diff.get', 'CAN-4103'],

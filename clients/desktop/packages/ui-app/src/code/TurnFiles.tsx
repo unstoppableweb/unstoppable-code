@@ -14,6 +14,7 @@ import {
   formatTurnFilesHeading,
   useToolApprovalWait,
 } from '@canopy/ui-shared/components';
+import { FileTypeIcon } from '@canopy/ui-shared/icons';
 import { useTranscriptFileLinkInteraction } from './TranscriptFileLinks';
 import {
   InlineReplyFilePreview,
@@ -223,6 +224,10 @@ export function TurnFiles({
   ]);
   if (!heading) return null;
   const previewScope = interaction.previewScope;
+  const soleFile =
+    located.length + pending.length === 1
+      ? (located[0] ?? pending[0])?.file
+      : undefined;
   const entries = [
     ...located.map((entry) => (
       <TranscriptFileControl
@@ -250,7 +255,6 @@ export function TurnFiles({
               <InlineReplyFilePreview
                 key={identity}
                 path={file.path}
-                readDocument={interaction.readPreviewDocument}
                 {...previewScope}
                 {...file.target}
               />
@@ -258,6 +262,11 @@ export function TurnFiles({
         : null}
       <TurnFilesSummaryView
         heading={heading}
+        fileIcon={
+          soleFile ? (
+            <FileTypeIcon filename={soleFile.path} size="md" />
+          ) : undefined
+        }
         turnId={turnId}
         expanded={expanded}
         onToggle={(): void => setExpanded((value) => !value)}

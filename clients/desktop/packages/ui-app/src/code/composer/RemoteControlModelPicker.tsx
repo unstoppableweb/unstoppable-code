@@ -7,6 +7,7 @@ import {
   managedOpenCodeAutoUnavailableReason,
   ModelPickerMenu,
   modelLibraryRowLock,
+  modelPickerHarnessSetupReason,
   Notice,
   preferredGatewayTabId,
   resolveModelPickerRowCue,
@@ -15,11 +16,13 @@ import {
   type ModelCatalogProvider,
   type ModelPickerAutoOption,
   type ModelPickerGatewayTab,
+  type ModelPickerManagedHarness,
   type ModelPickerOptionState,
   type ModelPickerRowFact,
   type ModelPickerSelectionContext,
+  UNAVAILABLE_MODEL_PRESET_REASON,
 } from '@canopy/ui-shared';
-import { ButtonLink } from '@canopy/ui-shared/components';
+import { Button } from '@canopy/ui-shared/components';
 import { parseAgentRouteModelId } from '@canopy/protocol/agents';
 import {
   resolveModelSelectionMetadata,
@@ -94,6 +97,11 @@ export interface RemoteControlModelPickerProps {
     readonly creditsSufficient: ModelPickerRowFact;
   };
   readonly onSelect: (modelId: string, harness?: AgentExecutionHarness) => void;
+  /**
+   * Asks the paired desktop to re-check its providers, after a provider was
+   * set up there. Offered beside a provider's setup reason.
+   */
+  readonly onRefreshModels?: () => void;
   /** Why the work owner's AI gateway models are missing, with where to fix it. */
   readonly gatewayNotice?: {
     /** The state in a few words, shown ahead of the message. */
@@ -183,6 +191,29 @@ function optionHarness(
   return undefined;
 }
 
+function isManagedHarness(id: string): id is ModelPickerManagedHarness {
+  return (
+    id === 'antigravity' ||
+    id === 'cursor' ||
+    id === 'copilot' ||
+    id === 'opencode'
+  );
+}
+
+/**
+ * The reason a managed provider can't run on the paired desktop, from its
+ * projected setup state; undefined when it is ready, unreleased, or the
+ * desktop predates the setup states.
+ */
+function managedSetupReason(
+  availability: RemoteControlChatProviderAvailability | undefined,
+  harness: ModelPickerManagedHarness,
+): string | undefined {
+  const state = availability?.setup?.[harness];
+  if (!state || state === 'ready' || state === 'flag_off') return undefined;
+  return modelPickerHarnessSetupReason(harness, state, { kind: 'paired' });
+}
+
 /** Portal wiring for the browser-safe shared model picker. */
 export function RemoteControlModelPicker({
   openSignal,
@@ -206,6 +237,7 @@ export function RemoteControlModelPicker({
   hideBilling = false,
   rowReadiness,
   onSelect,
+  onRefreshModels,
   gatewayNotice,
 }: RemoteControlModelPickerProps): JSX.Element {
   const catalog = useMemo(
@@ -553,6 +585,9 @@ export function RemoteControlModelPicker({
       // keeps the row disabled with connect guidance. This branch must stay
       // ahead of the generic provider check below, whose "not signed in"
       // wording does not describe a runtime that is simply not connected.
+      // A paired desktop that reports why a managed provider isn't ready
+      // (`providerAvailability.setup`) gets that reason; an older one keeps
+      // the generic connect guidance.
       if (
         (option.provider === 'antigravity' ||
           option.harness === 'antigravity') &&
@@ -561,6 +596,7 @@ export function RemoteControlModelPicker({
         return {
           disabled: true,
           unavailableReason:
+            managedSetupReason(providerAvailability, 'antigravity') ??
             'Connect your personal Google account on the paired computer.',
         };
       }
@@ -573,6 +609,7 @@ export function RemoteControlModelPicker({
         return {
           disabled: true,
           unavailableReason:
+            managedSetupReason(providerAvailability, 'cursor') ??
             'Connect Cursor in the desktop app to use it here.',
         };
       if (
@@ -584,6 +621,7 @@ export function RemoteControlModelPicker({
         return {
           disabled: true,
           unavailableReason:
+            managedSetupReason(providerAvailability, 'copilot') ??
             'Connect Copilot in the desktop app to use it here.',
         };
       if (
@@ -595,6 +633,7 @@ export function RemoteControlModelPicker({
         return {
           disabled: true,
           unavailableReason:
+            managedSetupReason(providerAvailability, 'opencode') ??
             'Connect OpenCode in the desktop app to use it here.',
         };
       if (!option.available) {
@@ -602,7 +641,7 @@ export function RemoteControlModelPicker({
           disabled: true,
           unavailableReason:
             option.kind === 'agent'
-              ? 'This agent is unavailable — its base model is not registered on the desktop app.'
+              ? UNAVAILABLE_MODEL_PRESET_REASON
               : 'This model is unavailable for this selection.',
         };
       }
@@ -833,25 +872,34 @@ export function RemoteControlModelPicker({
       'ollama',
     ] as const
   )
-    .filter((id) =>
-      menuCatalog.some(
-        (option) =>
-          optionHarness(option) === id ||
-          option.provider === id ||
-          option.harnessChoices?.some((choice) => choice.harness === id),
-      ),
+    .filter(
+      (id) =>
+        menuCatalog.some(
+          (option) =>
+            optionHarness(option) === id ||
+            option.provider === id ||
+            option.harnessChoices?.some((choice) => choice.harness === id),
+        ) ||
+        // A managed provider with no rows still gets its tab, showing why.
+        (isManagedHarness(id) &&
+          managedSetupReason(providerAvailability, id) !== undefined),
     )
-    .map((id) => ({
-      id,
-      connected:
-        id === 'ollama' ||
-        (id === 'antigravity' ||
-        id === 'opencode' ||
-        id === 'cursor' ||
-        id === 'copilot'
-          ? providerAvailability?.[id] === true
-          : providerAvailability?.[id] !== false),
-    }));
+    .map((id) => {
+      const reason = isManagedHarness(id)
+        ? managedSetupReason(providerAvailability, id)
+        : undefined;
+      return {
+        id,
+        connected:
+          id === 'ollama' ||
+          (isManagedHarness(id)
+            ? providerAvailability?.[id] === true
+            : providerAvailability?.[id] !== false),
+        ...(reason && providerAvailability?.[id] !== true
+          ? { unavailableReason: reason }
+          : {}),
+      };
+    });
   return (
     <ModelPickerMenu
       disabled={disabled}
@@ -883,7 +931,13 @@ export function RemoteControlModelPicker({
             ? selectedHarness
             : 'all'),
         ...(gatewayTabs.length > 0 ? { gatewayTabs } : {}),
-        ...(supportsChoices ? { runnableHarnesses: runnable } : {}),
+        // A provider with a setup reason and no rows exists only in this
+        // list, so it is passed whenever one does, not only with choices.
+        ...(supportsChoices ||
+        runnable.some((harness) => harness.unavailableReason !== undefined)
+          ? { runnableHarnesses: runnable }
+          : {}),
+        ...(onRefreshModels ? { onRecheckHarnesses: onRefreshModels } : {}),
         supportedModelIds,
         favoriteModelAliases,
       }}
@@ -914,7 +968,7 @@ export function RemoteControlModelPicker({
                 title={gatewayNotice.title}
                 actions={
                   gatewayNotice.href && gatewayNotice.linkLabel ? (
-                    <ButtonLink
+                    <Button
                       target={undefined}
                       rel={undefined}
                       href={gatewayNotice.href}
@@ -923,7 +977,7 @@ export function RemoteControlModelPicker({
                       className="max-w-full whitespace-nowrap"
                     >
                       {gatewayNotice.linkLabel}
-                    </ButtonLink>
+                    </Button>
                   ) : undefined
                 }
               >

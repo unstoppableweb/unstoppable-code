@@ -34,6 +34,7 @@ import type { AgentCatalogSelection } from './agent-selection';
 export * from './cloud-model-catalog';
 export * from './guest-model-access';
 export * from './model-library-access';
+export * from './model-id';
 
 /**
  * The concrete providers a projected catalog model can belong to. Mirrors the

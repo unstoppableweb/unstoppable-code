@@ -28,7 +28,6 @@ function describeCanopyCloudStatus(
   status: CanopyServerStatus,
   account: CanopyCloudAccountPublicState,
 ): CanopyCloudErrorMessage | null {
-  const cloudName = `${brandText.appName} Cloud`;
   const storageFailure = account.secureStorageFailure;
   if (storageFailure)
     return { message: getSecureStorageNotice(storageFailure).description };
@@ -37,7 +36,7 @@ function describeCanopyCloudStatus(
   }
   if (status.missingCapabilities.length > 0) {
     return {
-      message: `Missing required capability: ${status.missingCapabilities.join(', ')}`,
+      message: `This server is missing something the app needs: ${status.missingCapabilities.join(', ')}`,
     };
   }
   if (
@@ -52,7 +51,10 @@ function describeCanopyCloudStatus(
             'Your credentials were not saved. Try again when secure storage is available.',
         };
   }
-  return { message: `Invalid API key or unable to reach ${cloudName}.` };
+  return {
+    message:
+      "Couldn't sign in with this key. Check the key and your connection.",
+  };
 }
 
 /**
@@ -625,7 +627,9 @@ export function useCanopyCloudAuth({
           sequence === apiKeySaveSequence.current &&
           latestApiKeyInputRef.current.trim().length === 0
         ) {
-          setErrorMessage(`Invalid API key or unable to reach ${cloudName}.`);
+          setErrorMessage(
+            "Couldn't sign in with this key. Check the key and your connection.",
+          );
         }
       } finally {
         if (apiKeyWriteInFlightRef.current === sequence) {
@@ -640,7 +644,7 @@ export function useCanopyCloudAuth({
         }
       }
     },
-    [cloudName, dispatchAccountChanged, loading],
+    [dispatchAccountChanged, loading],
   );
 
   const saveApiKeyCandidate = useCallback(
@@ -767,7 +771,9 @@ export function useCanopyCloudAuth({
           sequence === apiKeySaveSequence.current &&
           latestApiKeyInputRef.current.trim() === apiKey
         ) {
-          setErrorMessage(`Invalid API key or unable to reach ${cloudName}.`);
+          setErrorMessage(
+            "Couldn't sign in with this key. Check the key and your connection.",
+          );
         }
       } finally {
         if (apiKeyWriteInFlightRef.current === sequence) {
@@ -782,7 +788,7 @@ export function useCanopyCloudAuth({
         }
       }
     },
-    [announceConnectSuccess, cloudName, dispatchAccountChanged, loading],
+    [announceConnectSuccess, dispatchAccountChanged, loading],
   );
 
   const scheduleApiKeySave = useCallback(
@@ -1026,7 +1032,7 @@ export function useCanopyCloudAuth({
         pendingApiKeyFlushRef.current = false;
         setApiKeyInput('');
         if (replacingManual) {
-          setSuccessMessage('Stored API key was replaced by OAuth sign-in.');
+          setSuccessMessage('Your saved API key was replaced by this sign-in.');
         }
         window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
         // See the matching note in `saveApiKeyCandidate`: the ordering here is
@@ -1101,7 +1107,7 @@ export function useCanopyCloudAuth({
       window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
     } catch {
       if (mountedRef.current) {
-        setErrorMessage(`Unable to disconnect ${cloudName} account.`);
+        setErrorMessage(`Couldn't sign out of ${cloudName}.`);
       }
     } finally {
       if (mountedRef.current) setDisconnecting(false);
@@ -1140,9 +1146,7 @@ export function useCanopyCloudAuth({
       setApiKeyInput('');
       setCloudMode(resolveInitialCloudMode(result.account));
       if (result.status === 'reset') {
-        setSuccessMessage(
-          'Saved sign-in was reset. Sign in again to reconnect.',
-        );
+        setSuccessMessage('Saved sign-in reset. Sign in again.');
       }
       window.dispatchEvent(new Event(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT));
       return true;
@@ -1152,7 +1156,7 @@ export function useCanopyCloudAuth({
       reportClientAppError(error);
       if (mountedRef.current) {
         setErrorMessage(
-          'Couldn’t reset the saved sign-in. Close other desktop builds and try again.',
+          "Couldn't reset the saved sign-in. Close other copies of the app, then try again.",
         );
       }
       return false;

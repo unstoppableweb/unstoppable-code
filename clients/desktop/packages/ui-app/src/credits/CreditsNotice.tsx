@@ -21,16 +21,17 @@ import {
   AI_CREDITS_REOPEN_BILLING_LABEL,
   AiCreditsArrivedNotice,
   AiCreditsStopLine,
-  ButtonLink,
   CreditsRecoveryNotice,
   DESKTOP_APP_ALTERNATIVE_LABEL,
   creditsPromptCopy,
+  MESSAGE_QUEUED_TITLE,
   ModelUnlockConfirmedNotice,
   ModelUnlockPendingNotice,
   NoticeButton,
-  retainedMessageCopy,
+  queuedMessageCopy,
   UsageLimitNotice,
   type NoticeActionsPlacement,
+  Button,
 } from '@canopy/ui-shared/components';
 import { TimeslotIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { DESKTOP_DOWNLOAD_PATH } from '../external-agents/paths';
@@ -205,6 +206,11 @@ export interface CreditsNoticeProps {
    */
   readonly secondaryAction?: ReactNode;
   /**
+   * `secondaryAction` is the notice's primary button, so it renders last:
+   * alternatives first, the single primary last.
+   */
+  readonly secondaryActionLeads?: boolean;
+  /**
    * Offer the desktop app as another way to keep going: a secondary link to
    * the desktop download, after `secondaryAction`. Shown only when the
    * client has the `desktopDownload` capability. Opt in only where the work
@@ -334,7 +340,7 @@ export function CreditsNotice({
     ...rest,
     desktopAlternativeControl:
       desktopAlternative && desktopDownload ? (
-        <ButtonLink
+        <Button
           href={DESKTOP_DOWNLOAD_PATH}
           variant="secondary"
           size="sm"
@@ -342,7 +348,7 @@ export function CreditsNotice({
           data-testid={`${rest['data-testid'] ?? 'credits-notice'}-desktop-app`}
         >
           {DESKTOP_APP_ALTERNATIVE_LABEL}
-        </ButtonLink>
+        </Button>
       ) : null,
   };
   const purchase = requested ?? { kind: 'shared' };
@@ -467,6 +473,7 @@ function CreditsNoticeView({
   owner,
   placement,
   secondaryAction,
+  secondaryActionLeads = false,
   desktopAlternativeControl,
   viewer = 'signed-in',
   billingEnabled = true,
@@ -627,7 +634,7 @@ function CreditsNoticeView({
     control != null;
   const actionItems = (
     <>
-      {shownSecondary}
+      {secondaryActionLeads ? null : shownSecondary}
       {shownDesktopAlternative}
       {reopen !== null && (
         <NoticeButton
@@ -643,6 +650,7 @@ function CreditsNoticeView({
         </NoticeButton>
       )}
       {control}
+      {secondaryActionLeads ? shownSecondary : null}
     </>
   );
   const actions = hasActions ? (
@@ -716,16 +724,18 @@ function CreditsNoticeView({
 
   // Waiting on a purchase is not a warning; only a failed check is.
   const waiting = step !== null && step.feedback !== 'check-failed';
-  const recoveryTitle = title ?? stepCopy?.title;
+  const recoveryTitle =
+    title ??
+    stepCopy?.title ??
+    (condition === 'queued_held' ? MESSAGE_QUEUED_TITLE : undefined);
   return (
     <CreditsRecoveryNotice
       {...shared}
       outOfCredits={outOfCredits && providerChoice === null && step === null}
       canConnectClaude={canConnectClaude}
       orgPoolUnavailable={orgPoolUnavailable}
-      // A detail sentence, so the admin sentence joins it rather than
-      // replacing it. Both run on after the message in one paragraph.
-      {...(detail !== undefined ? { detailLines: [detail] } : {})}
+      // A status on its own line under the copy, as on the quota branch.
+      {...detailProps}
       intent={waiting ? 'neutral' : 'attention'}
       {...(waiting
         ? { icon: <TimeslotIcon size={16} aria-hidden="true" /> }
@@ -744,8 +754,13 @@ function CreditsNoticeView({
       {children ??
         (condition === 'queued_held'
           ? providerChoice !== null
-            ? // Nothing on the notice buys, so the line only says it's saved.
-              retainedMessageCopy('queue', { canBuy: false })
+            ? // The purchase sits in the provider list, named only when the
+              // notice's button reads Choose provider.
+              queuedMessageCopy({
+                orgFunds: prompt.audience === 'org-member',
+                chooseProvider:
+                  providerChoice.primary.kind === 'choose-provider',
+              })
             : copy.message
           : stepCopy?.message)}
     </CreditsRecoveryNotice>

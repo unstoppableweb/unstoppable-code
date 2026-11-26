@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react';
-import { SegmentedControl } from './SegmentedControl';
+import { SegmentedControl } from '../primitives/SegmentedControl';
 
 export interface RailTabBarTab<TId extends string> {
   id: TId;

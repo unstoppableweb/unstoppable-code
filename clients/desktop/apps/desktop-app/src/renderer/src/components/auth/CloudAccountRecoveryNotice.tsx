@@ -23,8 +23,6 @@ import {
  * not to an accent-colored button inside the notice.
  */
 export interface CloudAccountRecoveryNoticeProps {
-  /** Brand-resolved product name (e.g. "Unstoppable Code Cloud"). */
-  cloudName: string;
   /** A reset is in flight; blocks both the opener and the confirm action. */
   resetting: boolean;
   /**
@@ -41,7 +39,6 @@ export interface CloudAccountRecoveryNoticeProps {
 }
 
 export function CloudAccountRecoveryNotice({
-  cloudName,
   resetting,
   errorMessage,
   onReset,
@@ -63,7 +60,7 @@ export function CloudAccountRecoveryNotice({
         // `text-left` guards against the sign-in wall's centered column.
         className={`text-left ${className ?? ''}`}
         data-testid="cloud-account-recovery-notice"
-        title="Saved sign-in can’t be read"
+        title="Saved sign-in can't be read"
         actions={
           <NoticeButton
             variant="secondary"
@@ -80,13 +77,12 @@ export function CloudAccountRecoveryNotice({
         {/* The consequences of a reset live in the confirmation dialog,
             which repeats them word for word; the notice carries only the
             state and its likely cause. */}
-        Another desktop build may have used the same {cloudName} secure storage;
-        reset it to sign in again.
+        Another copy of the app may have changed it. Reset it to sign in again.
       </Notice>
       {confirmOpen && (
         <ConfirmDialog
           title="Reset saved sign-in?"
-          message="Resetting keeps a local backup, removes downloaded shared-cloud data from this device, and requires you to sign in again. Your cloud account is not deleted."
+          message="Resetting keeps a local backup, removes downloaded shared-cloud data from this device, and you'll sign in again. Your cloud account isn't deleted."
           confirmLabel="Reset saved sign-in"
           busyLabel="Resetting…"
           busy={resetting}

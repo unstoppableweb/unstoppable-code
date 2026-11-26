@@ -1,5 +1,8 @@
 import { isAbsolute, relative, sep } from 'node:path';
-import { getCompletedRootMigration } from '@canopy/execution-engine/node/lib/completed-root-migration';
+import {
+  CompletedRootMigrationUnverifiedError,
+  getCompletedRootMigration,
+} from '@canopy/execution-engine/node/lib/completed-root-migration';
 import type { ArchivedContainerManifest } from '@canopy/desktop-shared/types';
 import { relocateCheckoutPath } from '../pipelines/execution-checkout-location';
 import { logMainProcessInfo, logMainProcessWarn } from './main-process-logging';
@@ -27,7 +30,13 @@ async function resolveRootRewrites(): Promise<readonly RootRewrite[]> {
     // their recorded paths and the Git integrity check keeps refusing them.
     logMainProcessWarn(
       'Archived worktree paths were not rebased: the data root migration journal could not be verified',
-      error instanceof Error ? error.message : String(error),
+      // The closed cause, when a private-path check refused (CAN-7917).
+      error instanceof CompletedRootMigrationUnverifiedError &&
+        error.privacy !== undefined
+        ? { message: error.message, cause: error.privacy }
+        : error instanceof Error
+          ? error.message
+          : String(error),
     );
     return [];
   }

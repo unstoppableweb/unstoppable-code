@@ -26,7 +26,7 @@ import type {
   LocalWorkerExecution,
 } from '../../operations/local-worker';
 import type { OperationAcceptResult } from '../../operations/ledger';
-import type { OperationService } from '../../operations/service';
+import type { OperationServicePort } from '../../operations/service';
 import {
   isTerminalPipelineExecution,
   type PipelineControlRequest,
@@ -230,7 +230,7 @@ export class CorePipelineRuns {
 
   constructor(
     private readonly options: {
-      operations: OperationService;
+      operations: OperationServicePort;
       localWorker: LocalWorkerExecution;
       worker: Pick<PipelineExecutionWorker, 'get' | 'observe'>;
     },
@@ -705,7 +705,7 @@ export class CorePipelineRuns {
   private afterControl(
     runId: string,
     target: string,
-    terminal: Parameters<OperationService['finish']>[1] | null,
+    terminal: Parameters<OperationServicePort['finish']>[1] | null,
   ): void {
     const remaining = (this.controlling.get(runId) ?? 1) - 1;
     if (remaining > 0) {

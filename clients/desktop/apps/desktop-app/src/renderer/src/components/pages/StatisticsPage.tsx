@@ -1,7 +1,7 @@
 import { type JSX, useEffect, useState } from 'react';
 import { PageTitlebar } from '../shared/PageTitlebar';
 import { PageContent } from '../shared/PageContent';
-import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
+import { PageHeader } from '@canopy/ui-shared/primitives/PageHeader';
 import { TabBar } from '@canopy/ui-shared/components';
 import {
   CHAT_UNIT_LABEL_PLURAL,

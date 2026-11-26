@@ -2,6 +2,8 @@ import {
   createPipelineDefinitionReplayStore as createPortableReplayStore,
   type PipelineDefinitionReplayStore,
 } from '@canopy/core-runtime/node/pipeline';
+import { assertRowWritable } from '@canopy/core-runtime/node/pipeline/store';
+import { dirname } from 'node:path';
 import { getPipelineDefinitionReplaysFilePath } from '../lib/paths';
 import { writeStoreFileDurably } from '../lib/durable-store-write';
 
@@ -15,5 +17,12 @@ export function createPipelineDefinitionReplayStore(
   return createPortableReplayStore({
     filePath,
     write: (file, contents) => writeStoreFileDurably(file, contents),
+    assertWritable: () =>
+      // The receipts file sits at the data root its owner record is under.
+      assertRowWritable(
+        dirname(filePath()),
+        'pipeline_definition_replays',
+        'electron_main',
+      ),
   });
 }

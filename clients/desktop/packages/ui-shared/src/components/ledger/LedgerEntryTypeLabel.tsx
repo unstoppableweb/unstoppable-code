@@ -4,8 +4,8 @@ import type { JSX } from 'react';
 import type { LedgerEntryType } from '@canopy/protocol/canopy-core';
 import { LedgerEntryTypeIcon } from '../../icons/LedgerEntryTypeIcon';
 import { LEDGER_ENTRY_TYPE_LABELS } from '../../lib/ledger-display';
-import { DisplayAvatar } from '../DisplayAvatar';
-import { RichHoverTooltip } from '../RichHoverTooltip';
+import { DisplayAvatar } from '../../primitives/DisplayAvatar';
+import { RichHoverTooltip } from '../../primitives/RichHoverTooltip';
 import {
   LEDGER_DISPLAY_AVATAR_SIZE,
   type LedgerActorAvatarSize,

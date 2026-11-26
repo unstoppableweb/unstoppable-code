@@ -1,11 +1,11 @@
 'use client';
 
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 import { useState, type JSX } from 'react';
 import { InfoIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
-import { ConfirmDialog } from './ConfirmDialog';
-import { RichHoverTooltip } from './RichHoverTooltip';
+import { ConfirmDialog } from '../primitives/ConfirmDialog';
+import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
 import {
   KeepLocalBranchToggle,
   DEFAULT_KEEP_LOCAL_BRANCH,

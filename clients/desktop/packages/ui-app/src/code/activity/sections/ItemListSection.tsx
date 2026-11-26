@@ -1,6 +1,6 @@
 'use client';
 
-import { Badge, type BadgeTone } from '@canopy/ui-shared/components/Badge';
+import { Badge, type BadgeTone } from '@canopy/ui-shared/primitives/Badge';
 import type { JSX } from 'react';
 import {
   ExecutionActionButton,

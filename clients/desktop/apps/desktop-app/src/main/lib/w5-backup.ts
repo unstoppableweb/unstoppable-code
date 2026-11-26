@@ -31,6 +31,13 @@ import {
   type W5RootEvidenceScope,
 } from '@canopy/core-runtime/node/w5/service-history';
 import { createReadOnlyW5BackupContext } from '@canopy/core-runtime/node/w5/readonly-backup-position';
+import { isW5CaptureWorkspaceId } from '@canopy/core-runtime/node/w5/commit-log/capture-contract';
+import {
+  readWorkspaceIndex,
+  readWorktreeList,
+  type WorkspaceFileRead,
+} from '@canopy/core-runtime/node/workspace/read-formats';
+import { CoreWorkspaceRecordsWorktreeIdSchema } from '@canopy/protocol/canopy-core';
 import type { W5CommitLogHost } from '../w5-commit-log/commit-log-host';
 import { getDataDir, getWorkspacesRootDir } from './paths';
 import { isErrnoException, isRecord } from './type-guards';
@@ -171,23 +178,32 @@ function resourceKey(resource: W5Resource): string {
       return `worktree:${resource.workspaceId}/${resource.worktreeId}`;
   }
 }
+/** The workspace ids the ordinary reader can name as W5 records. */
 function backupId(value: unknown, resource: string): asserts value is string {
-  try {
-    validateId(value, resource);
-  } catch {
+  if (!isW5CaptureWorkspaceId(value))
     throw new W5BackupRefusedError('corrupt-backup', resource);
-  }
+}
+function isWorktreeId(value: unknown): value is string {
+  return CoreWorkspaceRecordsWorktreeIdSchema.safeParse(value).success;
 }
 
 function resourceFromKey(key: string): W5Resource {
   if (key === 'workspaces') return { kind: 'workspaces' };
-  const [kind, identity] = key.split(':');
-  const [workspaceId, worktreeId] = (identity ?? '').split('/');
-  backupId(workspaceId, key);
-  if (kind === 'workspace') return { kind, workspaceId };
-  if (kind === 'worktrees') return { kind, workspaceId };
+  const separator = key.indexOf(':');
+  const kind = key.slice(0, separator);
+  const identity = key.slice(separator + 1);
+  if (kind === 'workspace' || kind === 'worktrees') {
+    backupId(identity, key);
+    return { kind, workspaceId: identity };
+  }
   if (kind === 'worktree') {
-    backupId(worktreeId, key);
+    const slash = identity.indexOf('/');
+    const workspaceId = identity.slice(0, slash);
+    const worktreeId = identity.slice(slash + 1);
+    backupId(workspaceId, key);
+    // Worktree ids are opaque text, not path segments; retain their delimiters.
+    if (slash < 0 || !isWorktreeId(worktreeId))
+      throw new W5BackupRefusedError('corrupt-backup', key);
     return { kind, workspaceId, worktreeId };
   }
   throw new W5BackupRefusedError('corrupt-backup', key);
@@ -230,17 +246,15 @@ export async function readW5FileBytes(
     throw new W5BackupRefusedError('source-unreadable', path, error);
   }
 }
-export function validateW5Document(
-  bytes: Buffer,
-  path: string,
-): Record<string, unknown> {
-  // Host.commit stores UTF-8 strings; refuse lossy decoding before capture.
-  const raw = bytes.toString('utf8');
-  if (!Buffer.from(raw).equals(bytes))
-    throw new W5BackupRefusedError('source-unreadable', path);
+/**
+ * What the ordinary repositories read (`read-formats.ts`): lossy UTF-8, a
+ * version 1 object, and a row array whose index rows are objects. Rows the
+ * reader skips stay in the copied bytes.
+ */
+function readW5Document(bytes: Buffer, path: string): Record<string, unknown> {
   let value: unknown;
   try {
-    value = JSON.parse(raw);
+    value = JSON.parse(bytes.toString('utf8'));
   } catch (error) {
     throw new W5BackupRefusedError('source-unreadable', path, error);
   }
@@ -248,6 +262,41 @@ export function validateW5Document(
     throw new W5BackupRefusedError('source-unreadable', path);
   if (value.version !== 1)
     throw new W5BackupRefusedError('schema-downgrade', path);
+  const namespace = namespaceFor(path);
+  if (
+    (namespace === 'workspace_index' &&
+      (!Array.isArray(value.workspaces) ||
+        !value.workspaces.every(isRecord))) ||
+    (namespace === 'worktree_list' && !Array.isArray(value.worktrees))
+  )
+    throw new W5BackupRefusedError('source-unreadable', path);
+  return value;
+}
+
+/** Any bytes for the rolling index backup, which the reader never parses. */
+function readW5Image(
+  bytes: Buffer,
+  path: string,
+): Record<string, unknown> | null {
+  if (path !== 'index.json.bak') return readW5Document(bytes, path);
+  try {
+    return readW5Document(bytes, path);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Strict form for maintenance diagnosis and adoption, which build paths from
+ * row ids; backup capture and restore use {@link readW5Document}.
+ */
+export function validateW5Document(
+  bytes: Buffer,
+  path: string,
+): Record<string, unknown> {
+  if (!Buffer.from(bytes.toString('utf8')).equals(bytes))
+    throw new W5BackupRefusedError('source-unreadable', path);
+  const value = readW5Document(bytes, path);
   const namespace = namespaceFor(path);
   if (namespace !== 'workspace_manifest') {
     const rows =
@@ -285,6 +334,33 @@ export function validateW5Document(
   }
   return value;
 }
+
+/**
+ * Restore only: replacing live rows the reader skips, or duplicate ids, would
+ * drop them unseen, so that needs the evidence override.
+ */
+function requireCompleteW5List(live: Buffer, path: string): void {
+  const namespace = namespaceFor(path);
+  if (namespace === 'workspace_manifest' || path === 'index.json.bak') return;
+  const input: WorkspaceFileRead = {
+    state: 'present',
+    raw: live.toString('utf8'),
+  };
+  let ids: string[] = [];
+  if (namespace === 'workspace_index') {
+    const read = readWorkspaceIndex(input, () => undefined);
+    ids = read.entries.map((entry) => entry.id);
+    if (read.authority !== 'ok' || !ids.every(isW5CaptureWorkspaceId))
+      throw new W5BackupRefusedError('source-unreadable', path);
+  } else {
+    const read = readWorktreeList(input);
+    if (read.authority === 'ok') ids = read.worktrees.map((row) => row.id);
+    if (read.authority !== 'ok' || !read.complete || !ids.every(isWorktreeId))
+      throw new W5BackupRefusedError('source-unreadable', path);
+  }
+  if (new Set(ids).size !== ids.length)
+    throw new W5BackupRefusedError('source-unreadable', path);
+}
 function fileRevisions(
   path: string,
   position: Position,
@@ -300,7 +376,7 @@ function fileRevisions(
     const rows = parsed?.workspaces;
     if (Array.isArray(rows))
       for (const row of rows)
-        if (isRecord(row) && typeof row.id === 'string')
+        if (isRecord(row) && isW5CaptureWorkspaceId(row.id))
           result[`workspace:${row.id}`] =
             position.revisions[`workspace:${row.id}`] ?? 0;
   } else if (namespace === 'workspace_manifest') {
@@ -314,7 +390,7 @@ function fileRevisions(
     const rows = parsed?.worktrees;
     if (Array.isArray(rows))
       for (const row of rows)
-        if (isRecord(row) && typeof row.id === 'string')
+        if (isRecord(row) && isWorktreeId(row.id))
           result[`worktree:${workspaceId}/${row.id}`] =
             position.revisions[`worktree:${workspaceId}/${row.id}`] ?? 0;
   }
@@ -325,27 +401,42 @@ async function scan(root: string, position: Position): Promise<Image[]> {
   const index = await readW5FileBytes(root, 'index.json');
   if (index === null)
     throw new W5BackupRefusedError('missing-source', 'index.json');
-  const parsed = validateW5Document(index, 'index.json');
+  const parsed = readW5Document(index, 'index.json');
+  const shown = readWorkspaceIndex(
+    { state: 'present', raw: index.toString('utf8') },
+    () => undefined,
+  ).entries;
+  // A row whose id names no record keeps its index bytes; its files are not W5 records.
   const ids = new Set<string>();
   if (Array.isArray(parsed.workspaces))
     for (const row of parsed.workspaces)
-      if (isRecord(row) && typeof row.id === 'string') ids.add(row.id);
+      if (isRecord(row) && isW5CaptureWorkspaceId(row.id)) ids.add(row.id);
   let entries;
   try {
     entries = await readdir(root, { withFileTypes: true });
   } catch (error) {
     throw new W5BackupRefusedError('source-unreadable', 'workspaces', error);
   }
-  for (const entry of entries) {
-    if (entry.isDirectory() || entry.isSymbolicLink()) {
-      try {
-        validateId(entry.name, 'workspace directory');
-      } catch (error) {
-        throw new W5BackupRefusedError('source-unreadable', entry.name, error);
-      }
-      ids.add(entry.name);
+  const listed = new Set(entries.map((entry) => entry.name));
+  // An unlisted spelling that still opens is a case-insensitive alias of
+  // another directory; the reader refuses aliased record paths.
+  for (const id of Array.from(ids)) {
+    if (listed.has(id)) continue;
+    try {
+      await lstat(join(root, id));
+    } catch (error) {
+      if (isErrnoException(error) && error.code === 'ENOENT') continue;
+      throw new W5BackupRefusedError('source-unreadable', id, error);
     }
+    throw new W5BackupRefusedError('source-unreadable', id);
   }
+  for (const entry of entries)
+    // Other names are stray entries the reader never opens.
+    if (
+      isW5CaptureWorkspaceId(entry.name) &&
+      (entry.isDirectory() || entry.isSymbolicLink())
+    )
+      ids.add(entry.name);
   const paths = [
     'index.json',
     'index.json.bak',
@@ -357,30 +448,25 @@ async function scan(root: string, position: Position): Promise<Image[]> {
   for (const path of paths) {
     const bytes =
       path === 'index.json' ? index : await readW5FileBytes(root, path);
-    // Preserve optional absence (Cowork lists, orphan metadata, index backup).
-    // An indexed workspace must have its canonical manifest.
+    // Preserve optional absence (Cowork lists, orphan metadata, index backup,
+    // rows the reader skips). A workspace it shows must have its manifest.
     if (
       bytes === null &&
       path.endsWith('/workspace.json') &&
-      Array.isArray(parsed.workspaces) &&
-      parsed.workspaces.some(
-        (row) => isRecord(row) && row.id === path.split('/')[0],
-      )
+      shown.some((entry) => entry.id === path.split('/')[0])
     )
       throw new W5BackupRefusedError('missing-source', path);
     if (
       bytes === null &&
       path.endsWith('/worktrees.json') &&
-      Array.isArray(parsed.workspaces) &&
-      parsed.workspaces.some(
-        (row) =>
-          isRecord(row) &&
-          row.id === path.split('/')[0] &&
-          (row.type === 'single-repo' || row.type === 'multi-repo'),
+      shown.some(
+        (entry) =>
+          entry.id === path.split('/')[0] &&
+          (entry.type === 'single-repo' || entry.type === 'multi-repo'),
       )
     )
       throw new W5BackupRefusedError('missing-source', path);
-    const value = bytes === null ? null : validateW5Document(bytes, path);
+    const value = bytes === null ? null : readW5Image(bytes, path);
     images.push({
       bytes,
       file: {
@@ -481,13 +567,15 @@ async function trialRestore(
   try {
     for (const { file, bytes } of images) {
       if (bytes === null) continue;
-      await durableWrite(join(temporary, file.path), bytes);
+      // Rehearse the text restore commits; see restoreW5Backup.
+      const text = Buffer.from(bytes.toString('utf8'));
+      await durableWrite(join(temporary, file.path), text);
       const restored = await readFile(join(temporary, file.path));
       if (
-        !restored.equals(bytes) ||
+        !restored.equals(text) ||
         !isDeepStrictEqual(
-          validateW5Document(restored, file.path),
-          validateW5Document(bytes, file.path),
+          readW5Image(restored, file.path),
+          readW5Image(bytes, file.path),
         )
       )
         throw new W5BackupRefusedError('corrupt-backup', file.path);
@@ -600,7 +688,7 @@ async function checkImages(
       (bytes === null ? null : digest(bytes)) !== file.sha256
     )
       throw new W5BackupRefusedError('corrupt-backup', file.path);
-    if (bytes !== null) validateW5Document(bytes, file.path);
+    if (bytes !== null) readW5Image(bytes, file.path);
     images.push({ file, bytes });
   }
   return images;
@@ -827,10 +915,10 @@ export async function restoreW5Backup(
       if (file.sha256 === null && live !== null)
         throw new W5BackupRefusedError('newer-writes', file.path);
       if (live !== null) {
-        if (!Buffer.from(live.toString('utf8')).equals(live))
-          throw new W5BackupRefusedError('source-unreadable', file.path);
         try {
-          validateW5Document(live, file.path);
+          readW5Image(live, file.path);
+          if (bytes === null || !bytes.equals(live))
+            requireCompleteW5List(live, file.path);
         } catch (error) {
           if (
             !(error instanceof W5BackupRefusedError) ||
@@ -859,16 +947,22 @@ export async function restoreW5Backup(
       }
       files.push({
         path: join(root, file.path),
+        // Commit contents are text: non-UTF-8 bytes restore as the reader
+        // decodes them, not byte-identically.
         contents: bytes === null ? null : bytes.toString('utf8'),
-        previousFingerprint: live === null ? null : digest(live),
+        // The commit log fingerprints the text it reads, as the reader decodes it.
+        previousFingerprint:
+          live === null ? null : digest(live.toString('utf8')),
       });
       for (const key of Object.keys(file.revisions))
         resources.set(key, resourceFromKey(key));
     }
     const backedPaths = new Set(record.files.map((file) => file.path));
     for (const entry of await readdir(root, { withFileTypes: true })) {
-      if (entry.isDirectory() || entry.isSymbolicLink()) {
-        validateId(entry.name, 'workspace directory');
+      if (
+        isW5CaptureWorkspaceId(entry.name) &&
+        (entry.isDirectory() || entry.isSymbolicLink())
+      ) {
         for (const name of ['workspace.json', 'worktrees.json']) {
           const path = `${entry.name}/${name}`;
           if (

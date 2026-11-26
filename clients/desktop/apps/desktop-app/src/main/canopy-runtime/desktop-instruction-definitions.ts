@@ -22,6 +22,7 @@ import {
   CORE_MANAGED_DELEGATION_INSTRUCTION_DEFINITIONS,
   CORE_PLAN_INSTRUCTION_DEFINITIONS,
   CORE_PUBLICATION_COMMENT_INSTRUCTION_DEFINITIONS,
+  CORE_PUBLICATION_COMMENT_THREAD_INSTRUCTION_DEFINITIONS,
   CORE_PUBLICATION_SHARED_CONTAINER_INSTRUCTION_DEFINITIONS,
   CORE_REVIEW_INSTRUCTION_DEFINITIONS,
   type WORKER_FILESYSTEM_WRITE_INSTRUCTION_DEFINITIONS,
@@ -58,12 +59,10 @@ const {
 } = CORE_REVIEW_INSTRUCTION_DEFINITIONS;
 void reviewCreate;
 void reviewResolve;
-// Local collections (CAN-4170 PR 3b); import joins in PR 4.
-const {
-  'core.catalog.entry.import': collectionImport,
-  ...CORE_CATALOG_COLLECTION_LOCAL_INSTRUCTION_DEFINITIONS
-} = CORE_CATALOG_COLLECTION_INSTRUCTION_DEFINITIONS;
-void collectionImport;
+// Local collections (CAN-4170 PR 3b), and import: PR 4a serves its analyze
+// mode, PR 4c its commit mode, and install answers capability_unavailable.
+const CORE_CATALOG_COLLECTION_LOCAL_INSTRUCTION_DEFINITIONS =
+  CORE_CATALOG_COLLECTION_INSTRUCTION_DEFINITIONS;
 
 /**
  * The desktop dispatcher's instructions: the composed registry, which carries
@@ -86,7 +85,8 @@ void collectionImport;
  * account connect (CAN-6176 PR 4a), the worktree setup cancel (CAN-4097),
  * the tracked-plan writes (CAN-4165 PR 3b-2), import (PR 5a) and the
  * detected-plan writes (PR 5b), the code review state writes (CAN-4167
- * PR 2c), the shared-run comment seen marker (CAN-4169 PR 2) and the
+ * PR 2c), the shared-run comment seen marker (CAN-4169 PR 2) and comment
+ * thread writes (PR 3b), and the
  * shared-container scope save (CAN-6501 PR 6), this
  * dispatcher only.
  * Composing throws on a name two maps define, so a registry that later
@@ -128,6 +128,7 @@ export const DESKTOP_INSTRUCTION_DEFINITIONS =
     CORE_PLAN_INSTRUCTION_DEFINITIONS,
     CORE_REVIEW_STATE_INSTRUCTION_DEFINITIONS,
     CORE_PUBLICATION_COMMENT_INSTRUCTION_DEFINITIONS,
+    CORE_PUBLICATION_COMMENT_THREAD_INSTRUCTION_DEFINITIONS,
     CORE_CATALOG_COLLECTION_LOCAL_INSTRUCTION_DEFINITIONS,
     CORE_PUBLICATION_SHARED_CONTAINER_INSTRUCTION_DEFINITIONS,
   );

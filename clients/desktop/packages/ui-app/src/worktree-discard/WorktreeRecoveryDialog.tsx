@@ -1,24 +1,28 @@
 import type {
   WorktreeRecoveryFinishResult,
   WorktreeRecoveryResolveResult,
+  WorktreeRecoverySetAsideParams,
+  WorktreeRecoverySetAsideResult,
 } from '@canopy/protocol/canopy-core';
-import type { JSX } from 'react';
+import { useEffect, useState, type JSX } from 'react';
 import type { WorktreeRecoveryDescription } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import {
   formatWorktreeRecoveryReason,
+  worktreeRecoveryOfferedActions,
   worktreeRecoveryResolutionAction,
 } from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import {
   Button,
   CodeBlock,
+  ConfirmDialog,
   CopyButton,
   DialogModal,
   Disclosure,
   ErrorBanner,
   Heading,
-  LoadingButton,
 } from '@canopy/ui-shared/components';
 import {
+  WORKTREE_RECOVERY_SET_ASIDE_CONFIRM,
   WORKTREE_REMOVAL_UNCONFIRMED,
   worktreeRecoveryRetainedFact,
   worktreeRecoveryResultCopy,
@@ -32,12 +36,15 @@ export function WorktreeRecoveryDialog({
   recovery,
   busy,
   error,
-  unconfirmedAction,
+  unconfirmedAction: recoveryUnconfirmedAction,
+  outcome: recoveryOutcome,
+  setAsideResult = null,
   hostOutdated,
-  outcome,
   canResolve = false,
+  canSetAside = false,
   onAction,
   onDiscard,
+  onSetAside,
   onRefresh,
   onClose,
 }: {
@@ -50,17 +57,22 @@ export function WorktreeRecoveryDialog({
     | 'discard'
     | 'keepWorktree'
     | 'release'
+    | 'setAside'
     | null;
   readonly canResolve?: boolean;
+  readonly canSetAside?: boolean;
   readonly outcome?:
     | WorktreeRecoveryFinishResult
-    | WorktreeRecoveryResolveResult;
+    | WorktreeRecoveryResolveResult
+    | WorktreeRecoverySetAsideResult;
+  readonly setAsideResult?: WorktreeRecoverySetAsideResult | null;
   readonly error: 'transport-failed' | 'unconfirmed' | null;
   readonly unconfirmedAction?:
     | 'keep-worktree'
     | 'release'
     | 'finish'
-    | 'finish-cleanup';
+    | 'finish-cleanup'
+    | 'set-aside';
   /**
    * An older computer refused the last action or check, so nothing ran
    * (CAN-7444): its update message, shown instead of the unconfirmed copy.
@@ -70,24 +82,86 @@ export function WorktreeRecoveryDialog({
     action: 'retry' | 'finishArchive' | 'keepWorktree' | 'release',
   ) => void;
   readonly onDiscard: () => void;
+  /** Runs after this dialog's own confirmation. */
+  readonly onSetAside?: (target: WorktreeRecoverySetAsideParams) => void;
   readonly onRefresh: () => void;
   readonly onClose: () => void;
 }): JSX.Element {
+  const outcome = setAsideResult ?? recoveryOutcome;
+  const unconfirmedAction =
+    setAsideResult?.status === 'interrupted'
+      ? 'set-aside'
+      : recoveryUnconfirmedAction;
+  const canDismiss = busy === null || setAsideResult !== null;
+  const [confirmingSetAside, setConfirmingSetAside] = useState<{
+    readonly recovery: WorktreeRecoveryDescription;
+    readonly name: string;
+    readonly target: WorktreeRecoverySetAsideParams;
+  } | null>(null);
+  useEffect(() => {
+    setConfirmingSetAside(null);
+  }, [recovery, name, outcome, error]);
+  useEffect(() => {
+    if (hostOutdated) setConfirmingSetAside(null);
+  }, [hostOutdated]);
   const resolution = canResolve
     ? worktreeRecoveryResolutionAction(recovery)
     : null;
+  const offered = worktreeRecoveryOfferedActions(recovery, {
+    canResolve,
+    canSetAside: canSetAside && onSetAside !== undefined,
+  });
+  // A submitted Set aside stays until its result; an unsubmitted one closes
+  // once the offer is withdrawn (for example, a relay disconnect).
+  const setAsideLive = offered.includes('set-aside') || busy === 'setAside';
+  useEffect(() => {
+    if (!setAsideLive) setConfirmingSetAside(null);
+  }, [setAsideLive]);
   const settled =
     outcome && outcome.status !== 'refused' && outcome.status !== 'interrupted';
   const completedCleanup =
     recovery.check === 'completed-turn-diff-cleanup' ||
     unconfirmedAction === 'finish-cleanup';
-  const recommended =
-    resolution === 'finish' ||
-    (!canResolve && recovery.actions.finishArchive.eligible)
-      ? 'finishArchive'
-      : recovery.actions.retry.eligible
-        ? 'retry'
-        : null;
+  const offeredResolution = offered.includes('keep-worktree')
+    ? 'keep-worktree'
+    : offered.includes('release')
+      ? 'release'
+      : null;
+  const recommended = offered.includes('finish')
+    ? 'finishArchive'
+    : offered.includes('retry')
+      ? 'retry'
+      : null;
+  if (
+    confirmingSetAside &&
+    confirmingSetAside.recovery === recovery &&
+    confirmingSetAside.name === name &&
+    setAsideLive &&
+    onSetAside &&
+    !outcome &&
+    !error
+  )
+    return (
+      <ConfirmDialog
+        title={
+          <>
+            Set aside the archive record for{' '}
+            <span className={REPLAY_MASK_CLASS}>“{name}”</span>?
+          </>
+        }
+        message={WORKTREE_RECOVERY_SET_ASIDE_CONFIRM}
+        confirmLabel="Set aside record"
+        busyLabel="Setting aside…"
+        busy={busy === 'setAside'}
+        // Lifts this worktree's archive fence: Enter must not confirm by accident.
+        focusCancel
+        onConfirm={() => onSetAside(confirmingSetAside.target)}
+        onCancel={() => {
+          if (busy === null) setConfirmingSetAside(null);
+        }}
+        dataTestId="worktree-recovery-set-aside-confirm"
+      />
+    );
   const assets: (keyof WorktreeRecoveryDescription['retained'])[] = [
     'checkout',
     'stagedCopy',
@@ -120,9 +194,9 @@ export function WorktreeRecoveryDialog({
       maxWidth="lg"
       trapFocus
       initialFocus="dialog"
-      closeButtonDisabled={busy !== null}
-      closeOnBackdrop={busy === null}
-      closeOnEscape={busy === null}
+      closeButtonDisabled={!canDismiss}
+      closeOnBackdrop={canDismiss}
+      closeOnEscape={canDismiss}
       dataTestId="worktree-recovery-dialog"
       footer={
         <>
@@ -131,7 +205,7 @@ export function WorktreeRecoveryDialog({
               Done
             </Button>
           ) : outcome ? (
-            <LoadingButton
+            <Button
               variant="primary"
               disabled={busy !== null}
               loading={busy === 'refresh'}
@@ -139,35 +213,62 @@ export function WorktreeRecoveryDialog({
               onClick={onRefresh}
             >
               Check again
-            </LoadingButton>
+            </Button>
           ) : (
             <>
-              {resolution === 'keep-worktree' || resolution === 'release' ? (
-                <LoadingButton
+              {offeredResolution ? (
+                <Button
                   variant="secondary"
                   disabled={busy !== null}
                   loading={busy === 'keepWorktree' || busy === 'release'}
                   loadingLabel={
-                    resolution === 'release'
+                    offeredResolution === 'release'
                       ? 'Releasing…'
                       : 'Keeping worktree…'
                   }
                   onClick={() =>
                     onAction(
-                      resolution === 'release' ? 'release' : 'keepWorktree',
+                      offeredResolution === 'release'
+                        ? 'release'
+                        : 'keepWorktree',
                     )
                   }
                   data-testid={
-                    resolution === 'release'
+                    offeredResolution === 'release'
                       ? 'worktree-recovery-release'
                       : 'worktree-recovery-keepWorktree'
                   }
                 >
-                  {resolution === 'release' ? 'Release' : 'Keep worktree'}
-                </LoadingButton>
+                  {offeredResolution === 'release'
+                    ? 'Release'
+                    : 'Keep worktree'}
+                </Button>
               ) : null}
-              {recovery.actions.discard.eligible ? (
-                <LoadingButton
+              {offered.includes('set-aside') ? (
+                <Button
+                  variant="secondary"
+                  disabled={busy !== null}
+                  loading={busy === 'setAside'}
+                  loadingLabel="Setting aside…"
+                  onClick={() => {
+                    if (!recovery.diagnosis) return;
+                    setConfirmingSetAside({
+                      recovery,
+                      name,
+                      target: {
+                        workspaceId: recovery.subject.workspaceId,
+                        operationId: recovery.diagnosis.operationId,
+                        revision: recovery.diagnosis.revision,
+                      },
+                    });
+                  }}
+                  data-testid="worktree-recovery-setAside"
+                >
+                  Set aside record
+                </Button>
+              ) : null}
+              {offered.includes('discard') ? (
+                <Button
                   variant="secondary"
                   disabled={busy !== null}
                   loading={busy === 'discard'}
@@ -176,10 +277,10 @@ export function WorktreeRecoveryDialog({
                   data-testid="worktree-recovery-discard"
                 >
                   Discard worktree
-                </LoadingButton>
+                </Button>
               ) : null}
-              {recovery.actions.retry.eligible && recommended !== 'retry' ? (
-                <LoadingButton
+              {offered.includes('retry') && recommended !== 'retry' ? (
+                <Button
                   variant="secondary"
                   disabled={busy !== null}
                   loading={busy === 'retry'}
@@ -188,10 +289,10 @@ export function WorktreeRecoveryDialog({
                   data-testid="worktree-recovery-retry"
                 >
                   Try again
-                </LoadingButton>
+                </Button>
               ) : null}
               {recommended ? (
-                <LoadingButton
+                <Button
                   variant="primary"
                   disabled={busy !== null}
                   loading={busy === recommended}
@@ -210,9 +311,9 @@ export function WorktreeRecoveryDialog({
                     : completedCleanup
                       ? 'Finish cleanup'
                       : 'Finish archive'}
-                </LoadingButton>
+                </Button>
               ) : (
-                <LoadingButton
+                <Button
                   variant="primary"
                   disabled={busy !== null}
                   loading={busy === 'refresh'}
@@ -221,7 +322,7 @@ export function WorktreeRecoveryDialog({
                   data-testid="worktree-recovery-refresh"
                 >
                   Check again
-                </LoadingButton>
+                </Button>
               )}
             </>
           )}
@@ -236,7 +337,15 @@ export function WorktreeRecoveryDialog({
         >
           {worktreeRecoveryResultCopy(
             outcome,
-            completedCleanup ? 'finish-cleanup' : (resolution ?? undefined),
+            outcome.status === 'set-aside' ||
+              unconfirmedAction === 'set-aside' ||
+              (offered.includes('set-aside') &&
+                (outcome.status === 'refused' ||
+                  outcome.status === 'interrupted'))
+              ? 'set-aside'
+              : completedCleanup
+                ? 'finish-cleanup'
+                : (resolution ?? undefined),
           )}
         </p>
       ) : null}
@@ -250,6 +359,15 @@ export function WorktreeRecoveryDialog({
             : resolution === 'release'
               ? 'Withdraw the archive attempt with no listed worktree or working folder. Saved recovery material stays separate and can be deleted later.'
               : 'Finish removing this worktree using the saved archive. Any separate cleanup still pending will be reported.'}
+        </p>
+      ) : null}
+      {!outcome && offered.includes('set-aside') ? (
+        <p
+          className="text-pretty"
+          data-testid="worktree-recovery-set-aside-help"
+        >
+          This archive can't continue from here. Set its record aside so it
+          stops blocking this worktree. Nothing else is moved or deleted.
         </p>
       ) : null}
       {!outcome ? (

@@ -1,7 +1,7 @@
 'use client';
 
 import type { JSX } from 'react';
-import { Notice } from './Notice';
+import { Notice } from '../primitives/Notice';
 
 export interface CatchingUpNoticeProps {
   lagMs: number;

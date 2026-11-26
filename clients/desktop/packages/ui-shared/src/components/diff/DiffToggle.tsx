@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { SegmentedControl } from '../SegmentedControl';
+import { SegmentedControl } from '../../primitives/SegmentedControl';
 
 /**
  * The shared segmented picker for independent diff comparison and layout

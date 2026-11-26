@@ -12,6 +12,12 @@ import {
   buildWorktreeInventoryScopeKey,
   type DesktopInventoryPayloadMap,
 } from '@canopy/protocol/desktop-inventory';
+import { runWithW5Caller } from '@canopy/desktop-shared/node/work-counters';
+import {
+  readThroughDesktopW5Cache,
+  W5_DISCOVER_REQUEST,
+  w5WorkspaceFileRequest,
+} from '../canopy-runtime/w5-read-cache-server';
 import { readAllSidebarItemsSnapshot } from '../lib/sidebar-items';
 import { logMainProcessError } from '../lib/main-process-logging';
 import { fitPipelineListResult } from '../remote-projection/pipeline-list-budget';
@@ -51,7 +57,11 @@ export interface WorktreePipelineInventoryRead {
  * reported (`complete: false`) rather than synced as an empty list, and a
  * discovery bound is reported as a truncated payload.
  */
-export async function listWorktreePipelineInventoryDocuments(): Promise<WorktreePipelineInventoryRead> {
+export function listWorktreePipelineInventoryDocuments(): Promise<WorktreePipelineInventoryRead> {
+  return runWithW5Caller('background:inventory-sync', readInventoryDocuments);
+}
+
+async function readInventoryDocuments(): Promise<WorktreePipelineInventoryRead> {
   // One snapshot: the items and the authority of the very reads they came
   // from (the workspace index and every workspace.json / worktrees.json).
   // The sidebar reads an unreadable or partly malformed file as whatever it
@@ -61,7 +71,9 @@ export async function listWorktreePipelineInventoryDocuments(): Promise<Worktree
   const {
     file: { items, warnings },
     authority,
-  } = await readAllSidebarItemsSnapshot();
+  } = await readThroughDesktopW5Cache(W5_DISCOVER_REQUEST, () =>
+    readAllSidebarItemsSnapshot(),
+  );
   let complete =
     (authority === 'ok' || authority === 'absent') &&
     (!warnings || warnings.length === 0);
@@ -69,7 +81,10 @@ export async function listWorktreePipelineInventoryDocuments(): Promise<Worktree
   const nonPersonalWorkspaceIds: string[] = [];
   for (const item of items) {
     if (!('worktrees' in item)) continue;
-    const detail = await readWorkspaceConfigDetailed(item.id);
+    const detail = await readThroughDesktopW5Cache(
+      w5WorkspaceFileRequest('manifest', item.id),
+      () => readWorkspaceConfigDetailed(item.id),
+    );
     if (detail.authority !== 'ok') {
       complete = false;
       continue;

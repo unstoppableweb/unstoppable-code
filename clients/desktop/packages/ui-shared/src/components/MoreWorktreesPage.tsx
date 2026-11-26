@@ -20,27 +20,27 @@ import {
   TrashIcon,
   TrashPermanentlyIcon,
 } from '../icons/AppIcons';
-import { ActionMenuRowStyle } from './ActionMenuItems';
-import { Count } from './Badge';
-import { Button } from './Button';
+import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
+import { Count } from '../primitives/Badge';
+import { Button } from '../primitives/Button';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
 import {
   DropdownMenuDivider,
   DropdownMenuItem,
   DropdownMenuItemIcon,
-} from './DropdownMenu';
-import { FLOATING_MENU_GAP, FloatingMenu } from './FloatingMenu';
-import { Heading } from './Heading';
+} from '../primitives/DropdownMenu';
+import { FLOATING_MENU_GAP, FloatingMenu } from '../primitives/FloatingMenu';
+import { Heading } from '../primitives/Heading';
 import { PageColumn } from './PageColumn';
-import { PageHeader } from './PageHeader';
+import { PageHeader } from '../primitives/PageHeader';
 import { PageSearchField, PageSearchRow } from './PageSearchRow';
-import { SearchEmptyState } from './SearchField';
-import { Skeleton } from './Skeleton';
-import { Stack } from './Stack';
-import { Surface } from './Surface';
+import { SearchEmptyState } from '../primitives/SearchField';
+import { Skeleton } from '../primitives/Skeleton';
+import { Stack } from '../primitives/Stack';
+import { Surface } from '../primitives/Surface';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
-import { TabBar } from './TabBar';
-import { Tooltip } from './Tooltip';
+import { TabBar } from '../primitives/TabBar';
+import { Tooltip } from '../primitives/Tooltip';
 
 /**
  * The More page: one place for a project's put-away worktrees. Hidden ones

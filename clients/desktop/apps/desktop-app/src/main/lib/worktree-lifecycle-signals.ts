@@ -13,13 +13,14 @@ export type WorktreeLifecycleChange =
   /** A `projects:load` completed; the first one starts enrollment. */
   | 'projects-loaded'
   | 'projects-saved'
-  /** A worktree list write added, removed, or finished setting up a row. */
+  /**
+   * A worktree list write added, removed, or finished setting up a row, or
+   * another writer (the CLI) changed a list's membership.
+   */
   | 'worktree-list-membership'
   /** An archive or delete settled, whether or not it removed the row. */
   | 'worktree-removal-settled'
-  | 'workspace-deleted'
-  /** Another writer (the CLI) changed a workspace's worktree list. */
-  | 'external-snapshot';
+  | 'workspace-deleted';
 
 type Listener = (change: WorktreeLifecycleChange) => void;
 

@@ -31,7 +31,14 @@ import {
   type DaemonPipelineOwnerAnswer,
 } from './daemon-pipeline-owner';
 import {
+  clearDefinitionOwnerInFlight,
+  isDefinitionOwnerInFlight,
+  markDefinitionOwnerInFlight,
+  pendingDefinitionOwner,
+} from './daemon-definition-pending-owners';
+import {
   deleteUserPipelineLocalMetadata,
+  recordUserPipelineOwnerReported,
   userPipelineLocalMetadataIds,
 } from './pipeline-local-metadata-store';
 import {
@@ -121,10 +128,18 @@ async function applyEffects(
   }
   const { definitionId } = action;
   if (definitionId === null) throw new Error('A write names its definition.');
+  if (action.phase === 'beforeCommit' && action.ownerKey !== undefined)
+    recordPendingOwner(action.ownerKey, definitionId);
+  else if (action.phase === 'afterCommit')
+    clearDefinitionOwnerInFlight(definitionId);
   switch (action.op) {
     case 'upsert':
       if (action.phase === 'afterCommit')
         applyUserPipelineSaveEffects(definitionId);
+      return;
+    case 'import':
+      if (action.phase === 'afterCommit')
+        notifyDesktopInventoryChanged(['pipelines']);
       return;
     case 'delete':
       if (action.phase === 'afterCommit')
@@ -137,6 +152,30 @@ async function applyEffects(
         notifyDesktopInventoryChanged(['pipelines']);
       return;
   }
+}
+
+/**
+ * Records the owner main registered for a routed create, import or copy
+ * before its commit (CAN-7507). A key with no owner registered in this
+ * owner session, such as another client's write, records nothing. A save
+ * that can't be shown durable refuses the write for a same-key resend, so
+ * nothing is committed without its owner.
+ */
+function recordPendingOwner(ownerKey: string, definitionId: string): void {
+  const pending = pendingDefinitionOwner(ownerKey);
+  if (!pending) return;
+  markDefinitionOwnerInFlight(definitionId);
+  const outcome = recordUserPipelineOwnerReported(
+    definitionId,
+    pending.owner,
+    pending.agentAuthor,
+  );
+  if (outcome === 'written') return;
+  clearDefinitionOwnerInFlight(definitionId);
+  throw new PipelineDefinitionSourceError(
+    'core.pipeline.sourceUnavailable',
+    `The workflow's owner could not be saved before it was written (${outcome}).`,
+  );
 }
 
 type DefinitionPresence = 'present' | 'absent' | 'unreadable';
@@ -205,8 +244,14 @@ export async function reconcileDaemonDefinitionOwnerState(
     }
   }
 
-  for (const id of userPipelineLocalMetadataIds() ?? [])
-    if (absent(id)) deleteUserPipelineLocalMetadata(id);
+  for (const id of userPipelineLocalMetadataIds() ?? []) {
+    if (
+      !isDefinitionOwnerInFlight(id) &&
+      absent(id) &&
+      deleteUserPipelineLocalMetadata(id) === 'unreadable'
+    )
+      unreadable.add(id);
+  }
 
   signal.throwIfAborted();
   await prunePipelinePreferenceSelections((entries) => {

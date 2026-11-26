@@ -12,7 +12,7 @@ import {
 } from '@canopy/ui-shared/components';
 import type { WorkflowsTabId } from '@canopy/ui-shared/lib';
 import { useNavigationStore } from '@/stores/navigationStore';
-import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
+import { PageHeader } from '@canopy/ui-shared/primitives/PageHeader';
 import { WorkflowsTabContext } from './workflowsTabContext';
 
 export interface WorkflowsPageHeaderProps {

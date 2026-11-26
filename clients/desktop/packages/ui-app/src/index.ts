@@ -20,7 +20,6 @@ export {
   InlineReplyFilePreview,
   isInlineReplyOutput,
   type InlineReplyPreviewContent,
-  type InlineReplyDocumentReader,
 } from './code/InlineReplyFilePreview';
 export * from './code/subagents/LifetimeLimitNoticeContainer';
 export {
@@ -1010,6 +1009,12 @@ export {
   type ComposerMenuProps,
 } from './code/composer/ComposerMenu';
 export {
+  ATTACH_WORKFLOW_COPY,
+  buildWorkflowMenuItem,
+  CreateWorkflowButton,
+  type ComposerWorkflowMenuOptions,
+} from './code/composer/workflow-menu-item';
+export {
   ComposerEditorMenu,
   type ComposerEditorMenuProps,
 } from './code/composer/ComposerEditorMenu';
@@ -1162,5 +1167,4 @@ export {
   SidebarAutoDeleteNotice,
 } from './code/shell/SidebarAutoDelete';
 
-export { readInlineReplyDocument } from './code/read-inline-reply-document';
 export { delegateTrayAgent } from './code/activity/background-tray/AgentRow';

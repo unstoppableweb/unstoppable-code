@@ -1,7 +1,10 @@
 import * as fs from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
+import type { LookupAddress } from 'node:dns';
+import { installPluginForPrincipal } from '../remote-install-source-gate';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import * as atomicFile from '@canopy/execution-engine/node/lib/atomic-file';
 import {
   StorageOutcomeUnknownError,
@@ -23,12 +26,14 @@ import {
   enqueueDetachedPluginMutation,
 } from '../plugin-mutation-queue';
 import { refreshInvocableInventoryAfterMutation } from '../invocable-inventory-service';
+import { pluginCopyProviderEvidence } from '../plugin-copy-provider-evidence';
 import {
   readPluginCatalog,
   readPluginCacheIndex,
 } from '@canopy/execution-engine/node/plugins/catalog-read-health';
 import * as scanner from '../plugin-scanner';
 import * as readHealth from '@canopy/execution-engine/node/plugins/catalog-read-health';
+import * as copyReferences from '@canopy/execution-engine/node/plugins/plugin-copy-references';
 import type * as ConfigPaths from '../../pipelines/config-paths';
 import * as configPaths from '../../pipelines/config-paths';
 import {
@@ -53,6 +58,7 @@ import {
   prepareCodexCompatibilityPlugin,
   readPluginCatalogHealth,
   readPluginIndexHealth,
+  resolvePluginRepairIdentity,
   refreshMarketplaces,
   resetBuiltInMarketplaceScanCacheForTests,
   scanManagedMarketplacesFresh,
@@ -66,16 +72,18 @@ import {
   updateMarketplace,
   flushMarketplaceSelectionPruneForTests,
 } from '../plugin-service';
+import * as pluginService from '../plugin-service';
 import * as curatedSync from '../curated-plugin-sync';
 import { runCuratedMcpRefresh } from '../../mcp/refresh-scheduler';
 import {
   readPreferencesFile,
   updatePreferencesFile,
 } from '../../lib/preferences-store';
-import { cloneRepo } from '../../lib/git';
+import { cloneRepo, getHeadCommitSha } from '../../lib/git';
 import type * as GitModule from '../../lib/git';
 import { execFileSync } from 'node:child_process';
 import { getMcpServersIndexFilePath } from '../../lib/paths';
+import * as pluginPaths from '../../lib/paths';
 import { runClaudeCliProcessOffMain } from '../../agents/claude-process-host-runner';
 import {
   addCodexMarketplace,
@@ -85,11 +93,22 @@ import {
   refreshCuratedCodexPlugins,
 } from '../codex-marketplace-service';
 import { materializeCodexPluginsOffMain } from '../codex-plugin-materialization-runner';
+import type * as CodexAvailability from '../../codex/codex-executable-availability';
 import { readInstalledItemPolicy } from '../../installed-items/installed-item-policy';
 import {
   resolveEffectivePluginSelectionRefs,
   resolvePluginInfoPath,
+  resolvePlugins as resolveSessionPlugins,
 } from '../plugin-resolver';
+
+const lookupMock = jest.fn<Promise<LookupAddress[]>, [string]>();
+const codexPluginListRequest = jest.fn<
+  ReturnType<typeof listCodexPlugins>,
+  []
+>();
+jest.mock('node:dns/promises', () => ({
+  lookup: (host: string): Promise<LookupAddress[]> => lookupMock(host),
+}));
 
 jest.mock('node:fs', () => ({
   __esModule: true,
@@ -121,6 +140,15 @@ jest.mock('../../agents/claude-process-host-runner', () => ({
 jest.mock('../codex-plugin-materialization-runner', () => ({
   materializeCodexPluginsOffMain: jest.fn(),
 }));
+jest.mock('../../codex/runtime-service', () => ({
+  getCodexRuntimeService: (): {
+    admin: () => { request: typeof codexPluginListRequest };
+  } => ({
+    admin: (): { request: typeof codexPluginListRequest } => ({
+      request: codexPluginListRequest,
+    }),
+  }),
+}));
 jest.mock('../codex-marketplace-service', () => ({
   isStructuralCodexMarketplaceFailure: jest.fn(),
   addCodexMarketplace: jest.fn(),
@@ -131,11 +159,24 @@ jest.mock('../codex-marketplace-service', () => ({
   listCodexPlugins: jest.fn(),
   refreshCuratedCodexPlugins: jest.fn(),
 }));
-jest.mock('../../codex/codex-executable-availability', () => ({
-  withOptionalCodex: (read: () => Promise<unknown>): Promise<unknown> => read(),
-}));
+// Pass-through by default; a test opts into the real executable pre-check.
+const mockCodexAvailability = { real: false };
+jest.mock('../../codex/codex-executable-availability', () => {
+  const actual = jest.requireActual<typeof CodexAvailability>(
+    '../../codex/codex-executable-availability',
+  );
+  return {
+    CodexNotInstalledError: actual.CodexNotInstalledError,
+    probeCodexExecutableInstalled: actual.probeCodexExecutableInstalled,
+    withOptionalCodex: (read: () => Promise<unknown>): Promise<unknown> =>
+      read(),
+    withInstalledCodex: (read: () => Promise<unknown>): Promise<unknown> =>
+      mockCodexAvailability.real ? actual.withInstalledCodex(read) : read(),
+  };
+});
 jest.mock('../../lib/preferences-store', () => ({
   readPreferencesFile: jest.fn(),
+  writePreferencesFile: jest.fn(),
   updatePreferencesFile: jest.fn(),
   peekPreferencesLoadError: (): null => null,
 }));
@@ -251,12 +292,12 @@ function withExtensions(value: unknown): unknown {
 function write(value: unknown, file = catalogPath): void {
   fs.writeFileSync(file, JSON.stringify(value));
 }
-function resolve(): ReturnType<typeof resolvePlugins> {
+function resolve(pluginName = 'p'): ReturnType<typeof resolvePlugins> {
   return resolvePlugins(
     {
       collectionIds: [],
       skillRefs: [],
-      pluginRefs: [{ marketplaceId: 'm', pluginName: 'p' }],
+      pluginRefs: [{ marketplaceId: 'm', pluginName }],
     },
     'project',
     'worktree',
@@ -1725,11 +1766,23 @@ describe('catalog persistence contract shared by desktop and pipeline execution 
     if (index.state !== 'valid') throw new Error('expected valid index');
     expect(index.data.entries['m/p'].cachePath).toBe(installedPath);
     await removeInstalledPluginCache('m', 'p');
-    expect(fs.existsSync(installedPath)).toBe(false);
-    expect(readPluginIndexHealth()).toEqual({
+    expect(fs.existsSync(installedPath)).toBe(true);
+    const retiredIndex = readPluginIndexHealth();
+    if (retiredIndex.state !== 'valid') throw new Error('expected valid index');
+    expect(retiredIndex).toEqual({
       state: 'valid',
-      data: { version: 1, entries: {} },
+      data: {
+        version: 1,
+        entries: {},
+        retired: [
+          {
+            cachePath: installedPath,
+            retiredAt: retiredIndex.data.retired?.[0].retiredAt,
+          },
+        ],
+      },
     });
+    expect(typeof retiredIndex.data.retired?.[0].retiredAt).toBe('string');
     expect(readPluginCatalogHealth().state).toBe('valid');
   });
 
@@ -2416,7 +2469,13 @@ test('installed empty manifest paths publish default components readable by both
 test('healthy reinstall publishes readable documents and retires only the prior payload', async () => {
   const previousPayload = path.join(root, 'plugin-cache', 'previous-install');
   fs.mkdirSync(previousPayload, { recursive: true });
-  write(healthy());
+  const cache = healthy();
+  cache.marketplaces[0].plugins[0].provenance = {
+    sourceUrl: 'https://github.com/o/p',
+    installedAt: '',
+    marketplaceEntryName: 'p',
+  };
+  write(cache);
   write(
     {
       version: 1,
@@ -2424,6 +2483,11 @@ test('healthy reinstall publishes readable documents and retires only the prior 
         'm/p': {
           cachePath: previousPayload,
           sourceUrl: 'https://github.com/o/p',
+          provenance: {
+            sourceUrl: 'https://github.com/o/p',
+            installedAt: '',
+            marketplaceEntryName: 'p',
+          },
           cachedAt: '',
         },
       },
@@ -2453,8 +2517,7148 @@ test('healthy reinstall publishes readable documents and retires only the prior 
   if (index.state !== 'valid') throw new Error('index did not decode');
   expect(index.data.entries['m/p'].cachePath).toBe(result.data?.cachePath);
   expect(fs.existsSync(index.data.entries['m/p'].cachePath)).toBe(true);
-  expect(fs.existsSync(previousPayload)).toBe(false);
+  expect(fs.existsSync(previousPayload)).toBe(true);
+  expect(index.data.retired).toEqual([
+    expect.objectContaining({ cachePath: previousPayload }),
+  ]);
+  expect(typeof index.data.retired?.[0].retiredAt).toBe('string');
   expect(fs.existsSync(pluginPath)).toBe(true);
+});
+
+describe('downloaded copy provenance and retirement (CAN-4481 R31b)', () => {
+  const head = 'a'.repeat(40);
+  let marketplaceRoot: string;
+  beforeEach(() => {
+    marketplaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'marketplace-'));
+  });
+  afterEach(async () => {
+    await settleDetachedWork();
+    fs.rmSync(marketplaceRoot, { recursive: true, force: true });
+  });
+  function cloneFixture(installedName = 'p'): void {
+    jest.mocked(getHeadCommitSha).mockResolvedValue(head);
+    jest.mocked(cloneRepo).mockImplementation((_url, dir) => {
+      fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
+      fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.git', 'HEAD'), head);
+      write(
+        { name: installedName },
+        path.join(dir, '.claude-plugin', 'plugin.json'),
+      );
+      return Promise.resolve();
+    });
+  }
+  function marketplaceFixture(
+    sourceUrl: string,
+    sourceType = 'url',
+    marketplaceId = 'm',
+    entryName = 'p',
+    manifestName = marketplaceId,
+  ): void {
+    fs.mkdirSync(path.join(root, 'plugins'), { recursive: true });
+    fs.mkdirSync(path.join(marketplaceRoot, '.claude-plugin'), {
+      recursive: true,
+    });
+    write(
+      {
+        [marketplaceId]: {
+          source: { source: 'github', repo: 'owner/m' },
+          installLocation: marketplaceRoot,
+          lastUpdated: '',
+        },
+      },
+      path.join(root, 'plugins', 'known_marketplaces.json'),
+    );
+    write(
+      {
+        name: manifestName,
+        plugins: [
+          {
+            name: entryName,
+            source: {
+              source: sourceType,
+              url: sourceUrl,
+              sha: 'requested-not-cloned',
+            },
+          },
+        ],
+      },
+      path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+    );
+    listCodexThroughEvidence({
+      marketplaces: [],
+      marketplaceLoadErrors: [],
+      featuredPluginIds: [],
+    });
+    jest
+      .mocked(addCodexMarketplace)
+      .mockResolvedValue({ accepted: false, error: 'not supported' });
+    // Update scans Codex by the existing marketplace name even after a rejected add.
+    jest
+      .mocked(resolveCodexPluginInstallRoots)
+      .mockResolvedValue({ locations: [], unresolved: [] });
+    jest
+      .mocked(runClaudeCliProcessOffMain)
+      .mockResolvedValue({ stdout: '', stderr: '' });
+  }
+
+  /** The sweep admits only a judged listing: mock the runtime request, not the boundary. */
+  function listCodexThroughEvidence(
+    response:
+      | Awaited<ReturnType<typeof listCodexPlugins>>
+      | (() => ReturnType<typeof listCodexPlugins>),
+  ): void {
+    const actual = jest.requireActual<{
+      listCodexPlugins: typeof listCodexPlugins;
+    }>('../codex-marketplace-service');
+    jest.mocked(listCodexPlugins).mockImplementation(actual.listCodexPlugins);
+    if (typeof response === 'function')
+      codexPluginListRequest.mockImplementation(response);
+    else codexPluginListRequest.mockResolvedValue(response);
+  }
+
+  function baseCatalog(): PluginsCache {
+    const cache = healthy();
+    cache.marketplaces[0].installLocation = marketplaceRoot;
+    return cache;
+  }
+  function catalog(): PluginsCache {
+    const current = readPluginCatalogHealth();
+    if (current.state !== 'valid') throw new Error('expected catalog');
+    return current.data;
+  }
+  function index(): readHealth.PluginCacheIndex {
+    const current = readPluginIndexHealth();
+    if (current.state !== 'valid') throw new Error('expected index');
+    return current.data;
+  }
+  /** `uncertain` fails the directory flush after installing, as production does. */
+  function failIndexWrite(
+    failure: string,
+  ): jest.SpiedFunction<typeof atomicFile.writeFileAtomically> {
+    const realWrite = atomicFile.writeFileAtomically;
+    return jest
+      .spyOn(atomicFile, 'writeFileAtomically')
+      .mockImplementation(async (target, data, options) => {
+        if (target !== indexPath) return realWrite(target, data, options);
+        if (failure !== 'uncertain') throw new Error('index write failed');
+        await realWrite(target, data, options);
+        throw new StorageOutcomeUnknownError(
+          'directory_flush',
+          new Error('index flush failed'),
+          'plugin_cache_index',
+        );
+      });
+  }
+  async function install(source = 'owner/p'): Promise<string> {
+    const result = await installPlugin('m', 'p', source, { skipRefresh: true });
+    expect(result.success).toBe(true);
+    if (!result.data?.cachePath) throw new Error('expected copy');
+    return result.data.cachePath;
+  }
+  async function refreshed(): Promise<void> {
+    expect((await refreshMarketplaces()).success).toBe(true);
+  }
+
+  async function refreshedInIsolatedLifetime(): Promise<void> {
+    const providers = await import('../codex-marketplace-service');
+    const actualProviders = jest.requireActual<{
+      listCodexPlugins: typeof listCodexPlugins;
+    }>('../codex-marketplace-service');
+    jest
+      .mocked(providers.listCodexPlugins)
+      .mockImplementation(actualProviders.listCodexPlugins);
+    codexPluginListRequest.mockResolvedValue({
+      marketplaces: [],
+      marketplaceLoadErrors: [],
+      featuredPluginIds: [],
+    });
+    jest.mocked(providers.addCodexMarketplace).mockResolvedValue({
+      accepted: false,
+      error: 'not supported',
+    });
+    jest.mocked(providers.resolveCodexPluginInstallRoots).mockResolvedValue({
+      locations: [],
+      unresolved: [],
+    });
+    const cli = await import('../../agents/claude-process-host-runner');
+    jest.mocked(cli.runClaudeCliProcessOffMain).mockResolvedValue({
+      stdout: '',
+      stderr: '',
+    });
+    const preferences = await import('../../lib/preferences-store');
+    jest.mocked(preferences.readPreferencesFile).mockResolvedValue({
+      ...DEFAULT_PREFERENCES,
+    });
+    const { refreshMarketplaces: refresh } = await import('../plugin-service');
+    expect((await refresh()).success).toBe(true);
+    const { settleDetachedWork: settle } =
+      await import('@canopy/desktop-shared/node/lib/detached-work');
+    await settle();
+  }
+
+  test.each(['cache-root', 'copy-directory'])(
+    'marketplace source %s protects overlapping retired copies',
+    async (location) => {
+      marketplaceFixture('owner/p');
+      write(baseCatalog());
+      await refreshed();
+      const copy = path.join(root, 'plugin-cache', 'source-1234abcd');
+      const unused = path.join(root, 'plugin-cache', 'unused-1234abcd');
+      for (const candidate of [copy, unused]) {
+        fs.mkdirSync(candidate, { recursive: true });
+        fs.writeFileSync(path.join(candidate, 'payload'), 'keep');
+      }
+      const snapshot = catalog();
+      snapshot.marketplaces[0].sourceUrl =
+        location === 'cache-root' ? path.dirname(copy) : copy;
+      write(snapshot);
+      const retired = [copy, unused].map((cachePath) => ({
+        cachePath,
+        retiredAt: '2000-01-01T00:00:00Z',
+      }));
+      write({ version: 1, entries: {}, retired }, indexPath);
+      write(
+        {
+          m: {
+            source: { source: 'git', url: snapshot.marketplaces[0].sourceUrl },
+            installLocation: marketplaceRoot,
+            lastUpdated: '',
+          },
+        },
+        path.join(root, 'plugins', 'known_marketplaces.json'),
+      );
+      await refreshed();
+      expect(catalog().marketplaces[0].sourceUrl).toBe(
+        snapshot.marketplaces[0].sourceUrl,
+      );
+      expect(fs.existsSync(copy)).toBe(true);
+      expect(fs.readFileSync(path.join(copy, 'payload'), 'utf8')).toBe('keep');
+      expect(fs.existsSync(unused)).toBe(location === 'cache-root');
+      expect(index().retired).toEqual(
+        location === 'cache-root' ? retired : [retired[0]],
+      );
+    },
+  );
+
+  test('an observed managed-root ancestor survives metadata replacement until restart', async () => {
+    marketplaceFixture('owner/p');
+    const copy = path.join(root, 'plugin-cache', 'old-1234abcd');
+    fs.mkdirSync(copy, { recursive: true });
+    const retired = [{ cachePath: copy, retiredAt: '2000-01-01T00:00:00Z' }];
+    write({ version: 1, entries: {}, retired }, indexPath);
+    await jest.isolateModulesAsync(async () => {
+      const { readPluginCatalog: readSnapshot } =
+        await import('@canopy/execution-engine/node/plugins/catalog-read-health');
+      const snapshot = baseCatalog();
+      snapshot.marketplaces[0].sourceUrl = path.dirname(copy);
+      write(snapshot);
+      expect(readSnapshot(catalogPath).state).toBe('valid');
+      write(baseCatalog());
+      await refreshedInIsolatedLifetime();
+      expect(fs.existsSync(copy)).toBe(true);
+      expect(index().retired).toEqual(retired);
+    });
+    // A fresh lifetime without the observation must still reclaim it.
+    await jest.isolateModulesAsync(refreshedInIsolatedLifetime);
+    expect(fs.existsSync(copy)).toBe(false);
+    expect(index().retired).toEqual([]);
+  });
+
+  test('a queued automatic repair yields to a same-entry restricted reinstall', async () => {
+    const source = 'https://github.com/owner/p';
+    marketplaceFixture(source);
+    write(baseCatalog());
+    cloneFixture('installed-name');
+    await install(source);
+    const selected = catalog().marketplaces[0].plugins[0];
+    const repairIdentity = await resolvePluginRepairIdentity('m', selected);
+    if (!repairIdentity) throw new Error('expected repair identity');
+    let entered = (): void => {};
+    const installing = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const reinstall = runSerializedPluginMutation(async () => {
+      entered();
+      await gate;
+      return installPlugin('m', 'installed-name', source, {
+        skipRefresh: true,
+        disableRedirects: true,
+      });
+    });
+    await installing;
+    jest.mocked(cloneRepo).mockClear();
+    const repair = installPlugin('m', 'installed-name', source, {
+      skipRefresh: true,
+      repairIdentity: { ...repairIdentity, sourceUrl: source },
+    });
+    release();
+    const reinstalled = await reinstall;
+    expect(reinstalled.success).toBe(true);
+    const installedIndex = fs.readFileSync(indexPath, 'utf8');
+    const installedCatalog = fs.readFileSync(catalogPath, 'utf8');
+    // The yielded repair hands its session the user's new copy.
+    expect((await repair).data?.cachePath).toBe(reinstalled.data?.cachePath);
+    expect(reinstalled.data?.cachePath).toBeTruthy();
+    expect(cloneRepo).toHaveBeenCalledTimes(1);
+    expect(cloneRepo).toHaveBeenCalledWith(source, expect.any(String), {
+      followRedirects: false,
+    });
+    expect(index().entries['m/p'].provenance?.remoteSourceRestricted).toBe(
+      true,
+    );
+    expect(
+      catalog().marketplaces[0].plugins[0].provenance?.remoteSourceRestricted,
+    ).toBe(true);
+    expect(fs.readFileSync(indexPath, 'utf8')).toBe(installedIndex);
+    expect(fs.readFileSync(catalogPath, 'utf8')).toBe(installedCatalog);
+  });
+
+  test('a stale repair after another session repaired the copy loads that copy', async () => {
+    const source = 'https://github.com/owner/p';
+    marketplaceFixture(source);
+    write(
+      {
+        name: 'm',
+        plugins: [{ name: 'p', source: { source: 'url', url: source } }],
+      },
+      path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+    );
+    write(baseCatalog());
+    jest.mocked(getHeadCommitSha).mockResolvedValue(head);
+    jest.mocked(cloneRepo).mockImplementation((_url, dir) => {
+      fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
+      fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.git', 'HEAD'), head);
+      write({ name: 'p' }, path.join(dir, '.claude-plugin', 'plugin.json'));
+      return Promise.resolve();
+    });
+    lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+    await refreshed();
+    const installed = await installPlugin('m', 'p', source, {
+      skipRefresh: true,
+    });
+    if (!installed.data?.cachePath) throw new Error('expected copy');
+    fs.rmSync(path.join(installed.data.cachePath, '.git', 'HEAD'));
+    await refreshed();
+    const stale = catalog().marketplaces[0];
+    jest.mocked(cloneRepo).mockClear();
+    const repaired = await resolvePluginInfoPath(
+      stale.plugins[0],
+      stale,
+      [],
+      true,
+      'claude',
+    );
+    expect(repaired).toBe(index().entries['m/p'].cachePath);
+    const warnings: string[] = [];
+    expect(
+      await resolvePluginInfoPath(
+        stale.plugins[0],
+        stale,
+        warnings,
+        true,
+        'claude',
+      ),
+    ).toBe(repaired);
+    expect(warnings).toEqual([]);
+    expect(cloneRepo).toHaveBeenCalledTimes(1);
+  });
+
+  test('a repair cannot overwrite a restricted reinstall whose catalog publication failed', async () => {
+    const source = 'https://github.com/owner/p';
+    marketplaceFixture(source);
+    write(
+      {
+        name: 'm',
+        plugins: [{ name: 'p', source: { source: 'url', url: source } }],
+      },
+      path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+    );
+    write(baseCatalog());
+    jest.mocked(getHeadCommitSha).mockResolvedValue(head);
+    jest.mocked(cloneRepo).mockImplementation((_url, dir) => {
+      fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
+      fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.git', 'HEAD'), head);
+      write({ name: 'p' }, path.join(dir, '.claude-plugin', 'plugin.json'));
+      return Promise.resolve();
+    });
+    lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+    await refreshed();
+    const installed = await installPlugin('m', 'p', source, {
+      skipRefresh: true,
+    });
+    const oldCopy = installed.data?.cachePath;
+    if (!oldCopy) throw new Error('expected copy');
+    const realWrite = atomicFile.writeFileAtomically;
+    const failCatalog = jest
+      .spyOn(atomicFile, 'writeFileAtomically')
+      .mockImplementation((target, data, options) =>
+        target === catalogPath
+          ? Promise.reject(new Error('catalog install failed'))
+          : realWrite(target, data, options),
+      );
+    const reinstalled = await installPlugin('m', 'p', source, {
+      skipRefresh: true,
+      disableRedirects: true,
+    });
+    failCatalog.mockRestore();
+    expect(reinstalled.success).toBe(false);
+    // Index-first publication: the index has the user's copy, the catalog the old one.
+    const userBinding = index().entries['m/p'];
+    expect(userBinding.cachePath).not.toBe(oldCopy);
+    expect(userBinding.provenance?.remoteSourceRestricted).toBe(true);
+    const stale = catalog().marketplaces[0];
+    expect(stale.plugins[0].cachePath).toBe(oldCopy);
+    fs.rmSync(path.join(oldCopy, '.git', 'HEAD'));
+    jest.mocked(cloneRepo).mockClear();
+    // This caller reads its generation after the user's reinstall.
+    const warnings: string[] = [];
+    expect(
+      await resolvePluginInfoPath(
+        stale.plugins[0],
+        stale,
+        warnings,
+        true,
+        'claude',
+      ),
+    ).toBe(userBinding.cachePath);
+    expect(warnings).toEqual([]);
+    expect(cloneRepo).not.toHaveBeenCalled();
+    expect(index().entries['m/p']).toEqual(userBinding);
+    // Refresh then adopts the index binding the repair left in place.
+    await refreshed();
+    const refreshedRow = catalog().marketplaces[0].plugins[0];
+    expect(refreshedRow.cachePath).toBe(userBinding.cachePath);
+    expect(refreshedRow.provenance?.remoteSourceRestricted).toBe(true);
+  });
+
+  /** Reinstalls `p` while the catalog write fails, leaving the index ahead of its row. */
+  async function reinstallWithFailedCatalog(
+    source: string,
+    restricted: boolean,
+  ): Promise<readHealth.PluginCacheIndex['entries'][string]> {
+    const realWrite = atomicFile.writeFileAtomically;
+    const failCatalog = jest
+      .spyOn(atomicFile, 'writeFileAtomically')
+      .mockImplementation((target, data, options) =>
+        target === catalogPath
+          ? Promise.reject(new Error('catalog install failed'))
+          : realWrite(target, data, options),
+      );
+    try {
+      const reinstalled = await installPlugin('m', 'p', source, {
+        skipRefresh: true,
+        ...(restricted ? { disableRedirects: true } : {}),
+      });
+      expect(reinstalled.success).toBe(false);
+    } finally {
+      failCatalog.mockRestore();
+    }
+    return index().entries['m/p'];
+  }
+
+  test.each([
+    { restricted: true, catalogCopy: 'dropped', clock: 'forward' },
+    { restricted: false, catalogCopy: 'dropped', clock: 'forward' },
+    { restricted: true, catalogCopy: 'dropped', clock: 'rolled back' },
+    { restricted: true, catalogCopy: 'damaged', clock: 'rolled back' },
+  ] as const)(
+    'a repair cannot overwrite a reinstall whose catalog publication failed (restricted=$restricted, catalog copy $catalogCopy, clock $clock)',
+    async ({ restricted, catalogCopy, clock }) => {
+      const source = 'https://github.com/owner/p';
+      marketplaceFixture(source);
+      write(baseCatalog());
+      cloneFixture();
+      lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+      await refreshed();
+      const oldCopy = await install(source);
+      if (catalogCopy === 'dropped') {
+        fs.rmSync(oldCopy, { recursive: true });
+        await refreshed();
+        expect(catalog().marketplaces[0].plugins[0].cachePath).toBeUndefined();
+      } else {
+        fs.rmSync(path.join(oldCopy, '.git', 'HEAD'));
+      }
+      const userBinding = await reinstallWithFailedCatalog(source, restricted);
+      expect(userBinding.cachePath).not.toBe(oldCopy);
+      const userInstalledAt = userBinding.provenance?.installedAt;
+      if (!userInstalledAt) throw new Error('expected installation time');
+      if (clock === 'rolled back') {
+        // The reinstall's clock ran behind the stale row's installation time.
+        const later = new Date(
+          Date.parse(userInstalledAt) + 60 * 60 * 1000,
+        ).toISOString();
+        const rolledBack = catalog();
+        const row = rolledBack.marketplaces[0].plugins[0];
+        for (const provenance of [
+          row.provenance,
+          row.facets.claude?.provenance,
+        ])
+          if (provenance) provenance.installedAt = later;
+        write(rolledBack);
+        expect(
+          Date.parse(
+            catalog().marketplaces[0].plugins[0].provenance?.installedAt ?? '',
+          ),
+        ).toBeGreaterThan(Date.parse(userInstalledAt));
+      }
+      jest.mocked(cloneRepo).mockClear();
+      const stale = catalog().marketplaces[0];
+      const warnings: string[] = [];
+      expect(
+        await resolvePluginInfoPath(
+          stale.plugins[0],
+          stale,
+          warnings,
+          true,
+          'claude',
+        ),
+      ).toBe(userBinding.cachePath);
+      expect(warnings).toEqual([]);
+      expect(cloneRepo).not.toHaveBeenCalled();
+      expect(index().entries['m/p']).toEqual(userBinding);
+      expect(userBinding.provenance?.remoteSourceRestricted).toBe(
+        restricted ? true : undefined,
+      );
+    },
+  );
+
+  test('a repair re-clones at the user policy when a reinstall whose catalog publication failed lost its copy too', async () => {
+    const source = 'https://github.com/owner/p';
+    marketplaceFixture(source);
+    write(baseCatalog());
+    cloneFixture();
+    lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+    await refreshed();
+    const oldCopy = await install(source);
+    const userBinding = await reinstallWithFailedCatalog(source, true);
+    fs.rmSync(path.join(oldCopy, '.git', 'HEAD'));
+    fs.rmSync(userBinding.cachePath, { recursive: true });
+    jest.mocked(cloneRepo).mockClear();
+    lookupMock.mockClear();
+    const stale = catalog().marketplaces[0];
+    expect(stale.plugins[0].provenance?.remoteSourceRestricted).toBeUndefined();
+    const warnings: string[] = [];
+    const repaired = await resolvePluginInfoPath(
+      stale.plugins[0],
+      stale,
+      warnings,
+      true,
+      'claude',
+    );
+    expect(warnings).toEqual([]);
+    expect(lookupMock).toHaveBeenCalled();
+    expect(cloneRepo).toHaveBeenCalledTimes(1);
+    expect(cloneRepo).toHaveBeenCalledWith(source, expect.any(String), {
+      followRedirects: false,
+    });
+    expect(repaired).toBe(index().entries['m/p'].cachePath);
+    expect(repaired).not.toBe(userBinding.cachePath);
+    expect(index().entries['m/p'].provenance?.remoteSourceRestricted).toBe(
+      true,
+    );
+  });
+
+  test.each(['rejected', 'uncertain'])(
+    "a repair adopts the last reinstall copy that reached the index when a later reinstall's index write is %s",
+    async (failure) => {
+      const source = 'https://github.com/owner/p';
+      marketplaceFixture(source);
+      write(baseCatalog());
+      cloneFixture();
+      await refreshed();
+      const oldCopy = await install(source);
+      const first = await reinstallWithFailedCatalog(source, true);
+      const failedIndex = failIndexWrite(failure);
+      try {
+        const second = await installPlugin('m', 'p', source, {
+          skipRefresh: true,
+        });
+        expect(second.success).toBe(false);
+      } finally {
+        failedIndex.mockRestore();
+      }
+      const bound = index().entries['m/p'];
+      // An uncertain write still landed; a rejected one left the first copy.
+      if (failure === 'rejected') expect(bound).toEqual(first);
+      else expect(bound.cachePath).not.toBe(first.cachePath);
+      fs.rmSync(path.join(oldCopy, '.git', 'HEAD'));
+      jest.mocked(cloneRepo).mockClear();
+      const stale = catalog().marketplaces[0];
+      expect(stale.plugins[0].cachePath).toBe(oldCopy);
+      expect(
+        await resolvePluginInfoPath(
+          stale.plugins[0],
+          stale,
+          [],
+          true,
+          'claude',
+        ),
+      ).toBe(bound.cachePath);
+      expect(cloneRepo).not.toHaveBeenCalled();
+      expect(index().entries['m/p']).toEqual(bound);
+    },
+  );
+
+  test('a failed reinstall that never reached the index does not stop an earlier session repair', async () => {
+    const source = 'https://github.com/owner/p';
+    marketplaceFixture(source);
+    write(baseCatalog());
+    cloneFixture();
+    await refreshed();
+    const copy = await install(source);
+    fs.rmSync(path.join(copy, '.git', 'HEAD'));
+    const generation = pluginService.getPluginUserMutationGeneration();
+    const failedIndex = failIndexWrite('rejected');
+    try {
+      expect(
+        (await installPlugin('m', 'p', source, { skipRefresh: true })).success,
+      ).toBe(false);
+    } finally {
+      failedIndex.mockRestore();
+    }
+    expect(index().entries['m/p'].cachePath).toBe(copy);
+    jest.mocked(cloneRepo).mockClear();
+    const stale = catalog().marketplaces[0];
+    const warnings: string[] = [];
+    const repaired = await resolveAtGeneration(
+      generation,
+      stale.plugins[0],
+      stale,
+      warnings,
+      true,
+      'claude',
+    );
+    expect(warnings).toEqual([]);
+    expect(cloneRepo).toHaveBeenCalledTimes(1);
+    expect(repaired).toBe(index().entries['m/p'].cachePath);
+    expect(repaired).not.toBe(copy);
+  });
+
+  test.each(['public', 'now-private'])(
+    'an earlier session repairs a still-bound slot whose newer copy does not verify, at the stricter policy: %s source',
+    async (scenario) => {
+      const source = 'https://github.com/owner/p';
+      marketplaceFixture(source);
+      write(baseCatalog());
+      cloneFixture();
+      lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+      await refreshed();
+      const copy = await install(source);
+      fs.rmSync(path.join(copy, '.git', 'HEAD'));
+      const generation = pluginService.getPluginUserMutationGeneration();
+      const stale = catalog().marketplaces[0];
+      expect(
+        stale.plugins[0].provenance?.remoteSourceRestricted,
+      ).toBeUndefined();
+      const reinstalled = await installPlugin('m', 'p', source, {
+        skipRefresh: true,
+        disableRedirects: true,
+      });
+      const userCopy = reinstalled.data?.cachePath;
+      if (!userCopy) throw new Error('expected reinstalled copy');
+      // A current session repairs the user's damaged copy into another folder.
+      fs.rmSync(path.join(userCopy, '.git', 'HEAD'));
+      const current = catalog().marketplaces[0];
+      const rebound = await resolvePluginInfoPath(
+        current.plugins[0],
+        current,
+        [],
+        true,
+        'claude',
+      );
+      if (!rebound) throw new Error('expected repaired copy');
+      expect(rebound).not.toBe(userCopy);
+      await settleDetachedWork();
+      expect(catalog().marketplaces[0].plugins[0].cachePath).toBe(rebound);
+      fs.rmSync(path.join(rebound, '.git', 'HEAD'));
+      const reboundBinding = index().entries['m/p'];
+      jest.mocked(cloneRepo).mockClear();
+      lookupMock.mockClear();
+      if (scenario === 'now-private')
+        lookupMock.mockResolvedValue([{ address: '10.0.0.5', family: 4 }]);
+      const warnings: string[] = [];
+      const repaired = await resolveAtGeneration(
+        generation,
+        stale.plugins[0],
+        stale,
+        warnings,
+        true,
+        'claude',
+      );
+      // The unrestricted snapshot repairs at the restriction the slot now
+      // records, including the clone-URL check a fresh session would run.
+      expect(lookupMock).toHaveBeenCalled();
+      if (scenario === 'now-private') {
+        expect(repaired).toBeNull();
+        expect(cloneRepo).not.toHaveBeenCalled();
+        expect(warnings).toContainEqual(
+          expect.stringContaining('resolves to a non-public address'),
+        );
+        expect(index().entries['m/p']).toEqual(reboundBinding);
+        return;
+      }
+      expect(warnings).toEqual([]);
+      expect(cloneRepo).toHaveBeenCalledTimes(1);
+      expect(cloneRepo).toHaveBeenCalledWith(source, expect.any(String), {
+        followRedirects: false,
+      });
+      expect(repaired).toBe(index().entries['m/p'].cachePath);
+      expect(repaired).not.toBe(rebound);
+      expect(index().entries['m/p'].provenance?.remoteSourceRestricted).toBe(
+        true,
+      );
+    },
+  );
+
+  test.each(['public', 'now-private'])(
+    'after a restart a reinstall whose catalog publication failed gets the ordinary repair, at its restricted policy: %s source',
+    async (scenario) => {
+      const source = 'https://github.com/owner/p';
+      marketplaceFixture(source);
+      write(baseCatalog());
+      cloneFixture();
+      lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+      await refreshed();
+      const oldCopy = await install(source);
+      const userBinding = await reinstallWithFailedCatalog(source, true);
+      expect(userBinding.provenance?.remoteSourceRestricted).toBe(true);
+      fs.rmSync(path.join(oldCopy, '.git', 'HEAD'));
+      const stale = catalog().marketplaces[0];
+      expect(
+        stale.plugins[0].provenance?.remoteSourceRestricted,
+      ).toBeUndefined();
+      await settleDetachedWork();
+      lookupMock.mockClear();
+      if (scenario === 'now-private')
+        lookupMock.mockResolvedValue([{ address: '10.0.0.5', family: 4 }]);
+      // Accepted gap: the user-install record is in-process only, so a fresh
+      // lifetime repairs as develop did instead of adopting. The repair still
+      // never skips the plugin, and clones at the policy the slot records.
+      await jest.isolateModulesAsync(async () => {
+        const git = await import('../../lib/git');
+        jest.mocked(git.getHeadCommitSha).mockResolvedValue(head);
+        jest.mocked(git.cloneRepo).mockImplementation((_url, dir) => {
+          fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
+          fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+          fs.writeFileSync(path.join(dir, '.git', 'HEAD'), head);
+          write({ name: 'p' }, path.join(dir, '.claude-plugin', 'plugin.json'));
+          return Promise.resolve();
+        });
+        jest.mocked(git.cloneRepo).mockClear();
+        const preferences = await import('../../lib/preferences-store');
+        jest.mocked(preferences.readPreferencesFile).mockResolvedValue({
+          ...DEFAULT_PREFERENCES,
+        });
+        const { resolvePluginInfoPath: resolveInLifetime } =
+          await import('../plugin-resolver');
+        const warnings: string[] = [];
+        const repaired = await resolveInLifetime(
+          stale.plugins[0],
+          stale,
+          warnings,
+          true,
+          'claude',
+        );
+        const { settleDetachedWork: settle } =
+          await import('@canopy/desktop-shared/node/lib/detached-work');
+        await settle();
+        // The stale row still matches the session's, so only the index slot
+        // records the restriction; the clone-URL check runs as in a fresh session.
+        expect(lookupMock).toHaveBeenCalled();
+        if (scenario === 'now-private') {
+          expect(repaired).toBeNull();
+          expect(git.cloneRepo).not.toHaveBeenCalled();
+          expect(warnings).toContainEqual(
+            expect.stringContaining('resolves to a non-public address'),
+          );
+          expect(index().entries['m/p']).toEqual(userBinding);
+          return;
+        }
+        expect(warnings).toEqual([]);
+        expect(git.cloneRepo).toHaveBeenCalledTimes(1);
+        expect(git.cloneRepo).toHaveBeenCalledWith(source, expect.any(String), {
+          followRedirects: false,
+        });
+        expect(repaired).toBe(index().entries['m/p'].cachePath);
+        expect(repaired).not.toBe(userBinding.cachePath);
+        expect(index().entries['m/p'].provenance?.remoteSourceRestricted).toBe(
+          true,
+        );
+      });
+    },
+  );
+
+  test('after a restart a legacy row repairs at the policy of the copy its literal-name reinstall bound', async () => {
+    const source = 'https://github.com/owner/p';
+    marketplaceFixture(source);
+    write(baseCatalog());
+    cloneFixture('installed-name');
+    lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+    await refreshed();
+    const oldCopy = await install(source);
+    const legacy = catalog();
+    forgetIdentity(legacy);
+    write(legacy);
+    const realWrite = atomicFile.writeFileAtomically;
+    const failCatalog = jest
+      .spyOn(atomicFile, 'writeFileAtomically')
+      .mockImplementation((target, data, options) =>
+        target === catalogPath
+          ? Promise.reject(new Error('catalog install failed'))
+          : realWrite(target, data, options),
+      );
+    try {
+      const reinstalled = await installPlugin('m', 'installed-name', source, {
+        skipRefresh: true,
+        disableRedirects: true,
+      });
+      expect(reinstalled.success).toBe(false);
+    } finally {
+      failCatalog.mockRestore();
+    }
+    // A legacy row's user reinstall binds its literal key, not the entry
+    // repair infers for it.
+    const userBinding = index().entries['m/installed-name'];
+    expect(userBinding.provenance?.remoteSourceRestricted).toBe(true);
+    expect(index().entries['m/p']?.cachePath).not.toBe(userBinding.cachePath);
+    const stale = catalog().marketplaces[0];
+    expect(stale.plugins[0].provenance).toBeUndefined();
+    // An unverifiable legacy copy is kept; a missing one is repaired.
+    fs.rmSync(oldCopy, { recursive: true, force: true });
+    await settleDetachedWork();
+    lookupMock.mockClear();
+    await jest.isolateModulesAsync(async () => {
+      const git = await import('../../lib/git');
+      jest.mocked(git.getHeadCommitSha).mockResolvedValue(head);
+      jest.mocked(git.cloneRepo).mockImplementation((_url, dir) => {
+        fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
+        fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+        fs.writeFileSync(path.join(dir, '.git', 'HEAD'), head);
+        write(
+          { name: 'installed-name' },
+          path.join(dir, '.claude-plugin', 'plugin.json'),
+        );
+        return Promise.resolve();
+      });
+      jest.mocked(git.cloneRepo).mockClear();
+      const preferences = await import('../../lib/preferences-store');
+      jest.mocked(preferences.readPreferencesFile).mockResolvedValue({
+        ...DEFAULT_PREFERENCES,
+      });
+      const { resolvePluginInfoPath: resolveInLifetime } =
+        await import('../plugin-resolver');
+      const warnings: string[] = [];
+      const repaired = await resolveInLifetime(
+        stale.plugins[0],
+        stale,
+        warnings,
+        true,
+        'claude',
+      );
+      const { settleDetachedWork: settle } =
+        await import('@canopy/desktop-shared/node/lib/detached-work');
+      await settle();
+      expect(warnings).toEqual([]);
+      expect(repaired).not.toBeNull();
+      expect(lookupMock).toHaveBeenCalled();
+      expect(git.cloneRepo).toHaveBeenCalledTimes(1);
+      expect(git.cloneRepo).toHaveBeenCalledWith(source, expect.any(String), {
+        followRedirects: false,
+      });
+      expect(
+        Object.values(index().entries).find(
+          (binding) => binding.cachePath === repaired,
+        )?.provenance?.remoteSourceRestricted,
+      ).toBe(true);
+    });
+  });
+
+  test.each([
+    [
+      'superseded copy stamped earlier',
+      -60 * 60 * 1000,
+      'superseded',
+      'damaged',
+    ],
+    ['superseded copy stamped at the same time', 0, 'superseded', 'damaged'],
+    ['superseded copy stamped later', 60 * 60 * 1000, 'superseded', 'damaged'],
+    [
+      'superseded copy with an unparseable time',
+      undefined,
+      'superseded',
+      'damaged',
+    ],
+    [
+      'superseded copy after refresh dropped the missing path',
+      -60 * 60 * 1000,
+      'superseded',
+      'dropped',
+    ],
+    [
+      "catalog's own copy restamped later",
+      60 * 60 * 1000,
+      'catalog',
+      'damaged',
+    ],
+  ] as const)(
+    'a repair yields only to the copy a user install left in the index: %s',
+    async (_label, offset, bound, catalogCopyState) => {
+      const source = 'https://github.com/owner/p';
+      marketplaceFixture(source);
+      write(baseCatalog());
+      cloneFixture();
+      lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+      await refreshed();
+      const catalogCopy = await install(source);
+      const catalogInstalledAt =
+        catalog().marketplaces[0].plugins[0].provenance?.installedAt;
+      if (!catalogInstalledAt) throw new Error('expected installation time');
+      // A partial restore leaves the index on a verifiable, superseded copy.
+      const superseded = path.join(
+        path.dirname(catalogCopy),
+        'superseded-1234abcd',
+      );
+      fs.cpSync(catalogCopy, superseded, { recursive: true });
+      if (catalogCopyState === 'dropped') {
+        fs.rmSync(catalogCopy, { recursive: true });
+        await refreshed();
+        expect(catalog().marketplaces[0].plugins[0].cachePath).toBeUndefined();
+      } else {
+        fs.rmSync(path.join(catalogCopy, '.git', 'HEAD'));
+      }
+      const installedAt =
+        offset === undefined
+          ? 'not-a-time'
+          : new Date(Date.parse(catalogInstalledAt) + offset).toISOString();
+      const current = index();
+      const binding = current.entries['m/p'];
+      write(
+        {
+          ...current,
+          entries: {
+            ...current.entries,
+            'm/p': {
+              ...binding,
+              cachePath: bound === 'superseded' ? superseded : catalogCopy,
+              cachedAt: installedAt,
+              provenance: { ...binding.provenance, installedAt },
+            },
+          },
+        },
+        indexPath,
+      );
+      jest.mocked(cloneRepo).mockClear();
+      const stale = catalog().marketplaces[0];
+      const warnings: string[] = [];
+      const repaired = await resolvePluginInfoPath(
+        stale.plugins[0],
+        stale,
+        warnings,
+        true,
+        'claude',
+      );
+      expect(cloneRepo).toHaveBeenCalledTimes(1);
+      expect(repaired).toBe(index().entries['m/p'].cachePath);
+      expect(repaired).not.toBe(superseded);
+      expect(repaired).not.toBe(catalogCopy);
+      expect(warnings).toEqual([]);
+    },
+  );
+
+  const selectedSource = 'https://github.com/owner/p';
+  test.each([
+    {
+      label: 'another repository',
+      userSource: 'https://github.com/other/p',
+      adopted: false,
+    },
+    {
+      label: 'a redacted credential-bearing source',
+      userSource: 'https://user:token@github.com/owner/p',
+      adopted: false,
+    },
+    {
+      // A newer unmarked installation clears the recorded policy, and adoption
+      // fetches nothing; a restricted re-clone would fail on the redirect.
+      label: 'a less restricted copy whose source now redirects',
+      catalogRestricted: true,
+      sourceNowRedirects: true,
+      adopted: true,
+    },
+    {
+      label: 'a GitHub transport alias',
+      userSource: 'git@github.com:Owner/p.git',
+      adopted: true,
+    },
+    {
+      label: 'the same credential-bearing clone URL',
+      source: 'https://user:token@github.com/owner/p',
+      userSource: 'https://user:token@github.com/owner/p',
+      adopted: true,
+    },
+    { label: 'a more restricted copy', userRestricted: true, adopted: true },
+  ])(
+    'a repair adopts a later index copy only as the same requested plugin: $label',
+    async ({
+      source = selectedSource,
+      userSource = selectedSource,
+      catalogRestricted = false,
+      userRestricted = false,
+      sourceNowRedirects = false,
+      adopted,
+    }) => {
+      marketplaceFixture(source);
+      write(baseCatalog());
+      cloneFixture();
+      lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+      await refreshed();
+      const installed = await installPlugin('m', 'p', source, {
+        skipRefresh: true,
+        ...(catalogRestricted ? { disableRedirects: true } : {}),
+      });
+      const catalogCopy = installed.data?.cachePath;
+      if (!catalogCopy) throw new Error('expected copy');
+      const realWrite = atomicFile.writeFileAtomically;
+      const failCatalog = jest
+        .spyOn(atomicFile, 'writeFileAtomically')
+        .mockImplementation((target, data, options) =>
+          target === catalogPath
+            ? Promise.reject(new Error('catalog install failed'))
+            : realWrite(target, data, options),
+        );
+      const reinstalled = await installPlugin('m', 'p', userSource, {
+        skipRefresh: true,
+        ...(userRestricted ? { disableRedirects: true } : {}),
+      });
+      failCatalog.mockRestore();
+      expect(reinstalled.success).toBe(false);
+      // Index-first publication: the catalog still records the selected source.
+      const userBinding = index().entries['m/p'];
+      expect(userBinding.cachePath).not.toBe(catalogCopy);
+      expect(userBinding.sourceUrl).toBe(userSource);
+      const stale = catalog().marketplaces[0];
+      expect(stale.plugins[0]).toMatchObject({
+        cachePath: catalogCopy,
+        externalSource: { url: source },
+      });
+      // A missing copy reaches repair even when its provenance is redacted.
+      fs.rmSync(catalogCopy, { recursive: true });
+      jest.mocked(cloneRepo).mockClear();
+      if (sourceNowRedirects)
+        jest.mocked(cloneRepo).mockRejectedValue(new Error('redirect refused'));
+      const warnings: string[] = [];
+      const repaired = await resolvePluginInfoPath(
+        stale.plugins[0],
+        stale,
+        warnings,
+        true,
+        'claude',
+      );
+      expect(warnings).toEqual([]);
+      if (adopted) {
+        expect(repaired).toBe(userBinding.cachePath);
+        expect(cloneRepo).not.toHaveBeenCalled();
+        expect(index().entries['m/p']).toEqual(userBinding);
+        return;
+      }
+      // Not the same requested plugin: the ordinary repair restores the selected source.
+      expect(cloneRepo).toHaveBeenCalledTimes(1);
+      expect(cloneRepo).toHaveBeenCalledWith(source, expect.any(String), {
+        followRedirects: !catalogRestricted,
+      });
+      expect(repaired).toBe(index().entries['m/p'].cachePath);
+      expect(repaired).not.toBe(userBinding.cachePath);
+      expect(repaired).not.toBe(catalogCopy);
+      expect(index().entries['m/p'].sourceUrl).toBe(source);
+      expect(index().entries['m/p'].provenance?.remoteSourceRestricted).toBe(
+        catalogRestricted ? true : undefined,
+      );
+    },
+  );
+
+  test('a session snapshot cannot repair over a reinstall made while an earlier selection resolves', async () => {
+    const source = (name: string): string => `https://github.com/owner/${name}`;
+    marketplaceFixture(source('p'));
+    write(
+      {
+        name: 'm',
+        plugins: ['p', 'q'].map((name) => ({
+          name,
+          source: { source: 'url', url: source(name) },
+        })),
+      },
+      path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+    );
+    write(baseCatalog());
+    jest.mocked(getHeadCommitSha).mockResolvedValue(head);
+    jest.mocked(cloneRepo).mockImplementation((url, dir) => {
+      fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
+      fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.git', 'HEAD'), head);
+      write(
+        { name: path.basename(url) },
+        path.join(dir, '.claude-plugin', 'plugin.json'),
+      );
+      return Promise.resolve();
+    });
+    lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+    await refreshed();
+    for (const name of ['p', 'q']) {
+      const installed = await installPlugin('m', name, source(name), {
+        skipRefresh: true,
+        disableRedirects: name === 'p',
+      });
+      if (!installed.data?.cachePath) throw new Error('expected copy');
+      fs.rmSync(installed.data.cachePath, { recursive: true });
+    }
+    await refreshed();
+    const stale = catalog().marketplaces[0];
+    let validating = (): void => {};
+    const paused = new Promise<void>((resolve) => {
+      validating = resolve;
+    });
+    let release = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // p's restricted repair validates its URL before the mutation slot.
+    lookupMock.mockImplementationOnce(async () => {
+      validating();
+      await gate;
+      return [{ address: '140.82.112.3', family: 4 }];
+    });
+    const session = resolveSessionPlugins(
+      {
+        collectionIds: [],
+        skillRefs: [],
+        pluginRefs: ['p', 'q'].map((pluginName) => ({
+          marketplaceId: 'm',
+          pluginName,
+        })),
+      },
+      'project',
+      'worktree',
+      'chat',
+      {
+        installExternalPlugins: true,
+        skipMcpServers: true,
+        claudeModAdmissionContext: undefined,
+        preferences: { ...DEFAULT_PREFERENCES },
+      },
+    );
+    try {
+      await paused;
+      const reinstalled = await installPlugin('m', 'q', source('q'), {
+        skipRefresh: true,
+        disableRedirects: true,
+      });
+      const userCopy = reinstalled.data?.cachePath;
+      if (!userCopy) throw new Error('expected reinstalled copy');
+      const userBinding = index().entries['m/q'];
+      jest.mocked(cloneRepo).mockClear();
+      release();
+      const resolved = await session;
+      expect(cloneRepo).toHaveBeenCalledTimes(1);
+      expect(cloneRepo).toHaveBeenCalledWith(
+        source('p'),
+        expect.any(String),
+        expect.anything(),
+      );
+      expect(index().entries['m/q']).toEqual(userBinding);
+      expect(userBinding.provenance?.remoteSourceRestricted).toBe(true);
+      const row = catalog().marketplaces[0].plugins.find(
+        (plugin) => plugin.name === 'q',
+      );
+      expect(row?.cachePath).toBe(userCopy);
+      expect(row?.provenance?.remoteSourceRestricted).toBe(true);
+      expect(fs.existsSync(userCopy)).toBe(true);
+      expect(index().retired ?? []).not.toContainEqual(
+        expect.objectContaining({ cachePath: userCopy }),
+      );
+      expect(resolved.sdkPlugins).toContainEqual({
+        type: 'local',
+        path: index().entries['m/p'].cachePath,
+      });
+      // The cancelled repair loads the user's copy instead of skipping q.
+      expect(resolved.sdkPlugins).toContainEqual({
+        type: 'local',
+        path: userCopy,
+      });
+      // A single-row caller reads its generation late; the binding check still applies.
+      const staleRow = stale.plugins.find((plugin) => plugin.name === 'q');
+      if (!staleRow) throw new Error('expected stale row');
+      jest.mocked(cloneRepo).mockClear();
+      expect(
+        await resolvePluginInfoPath(staleRow, stale, [], true, 'claude'),
+      ).toBe(userCopy);
+      expect(cloneRepo).not.toHaveBeenCalled();
+      expect(index().entries['m/q']).toEqual(userBinding);
+    } finally {
+      release();
+      await session.catch(() => undefined);
+    }
+  });
+
+  test.each(['facet', 'no-facet'])(
+    'R38 automatic repair cannot undo uninstall during copy verification: %s',
+    async (resolver) => {
+      const source = 'https://github.com/owner/p';
+      marketplaceFixture(source);
+      write(baseCatalog());
+      cloneFixture('installed-name');
+      await install(source);
+      const selected = catalog().marketplaces[0];
+      const row = selected.plugins[0];
+      if (!row.cachePath) throw new Error('expected bound copy');
+      // Both integrity checks must see the damage, including the facet sourcePath fallback.
+      fs.writeFileSync(
+        path.join(row.cachePath, '.git', 'HEAD'),
+        'b'.repeat(40),
+      );
+      let started = (): void => {};
+      const verifying = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      let release = (): void => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const read = jest
+        .spyOn(fs.promises, 'readFile')
+        .mockImplementationOnce(async () => {
+          started();
+          await gate;
+          return 'b'.repeat(40);
+        });
+      const repair = resolvePluginInfoPath(
+        resolver === 'no-facet' ? { ...row, facets: {} } : row,
+        selected,
+        [],
+        true,
+        resolver === 'facet' ? 'claude' : undefined,
+      );
+      try {
+        expect(
+          await Promise.race([
+            verifying.then(() => 'verifying'),
+            repair.then(() => 'finished'),
+          ]),
+        ).toBe('verifying');
+        await removeInstalledPluginCache('m', 'installed-name');
+        expect(index().entries['m/p']).toBeUndefined();
+        const beforeIndex = fs.readFileSync(indexPath, 'utf8');
+        const beforeCatalog = fs.readFileSync(catalogPath, 'utf8');
+        jest.mocked(cloneRepo).mockClear();
+        release();
+        expect(await repair).toBeNull();
+        await settleDetachedWork();
+        expect(cloneRepo).not.toHaveBeenCalled();
+        expect(fs.readFileSync(indexPath, 'utf8')).toBe(beforeIndex);
+        expect(fs.readFileSync(catalogPath, 'utf8')).toBe(beforeCatalog);
+      } finally {
+        release();
+        await repair;
+        read.mockRestore();
+      }
+    },
+  );
+
+  test.each(['facet', 'no-facet'])(
+    'automatic repair cannot undo uninstall during validation: %s',
+    async (resolver) => {
+      const source = 'https://github.com/owner/p';
+      marketplaceFixture(source);
+      write(baseCatalog());
+      cloneFixture('installed-name');
+      const installed = await installPlugin('m', 'p', source, {
+        skipRefresh: true,
+        disableRedirects: true,
+      });
+      if (!installed.data?.cachePath) throw new Error('expected copy');
+      const selected = catalog().marketplaces[0];
+      const row = selected.plugins[0];
+      fs.rmSync(installed.data.cachePath, { recursive: true });
+      let started = (): void => {};
+      const validating = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      let release = (): void => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      lookupMock.mockImplementationOnce(async () => {
+        started();
+        await gate;
+        return [{ address: '140.82.112.3', family: 4 }];
+      });
+      const repair = resolvePluginInfoPath(
+        resolver === 'no-facet' ? { ...row, facets: {} } : row,
+        selected,
+        [],
+        true,
+        resolver === 'facet' ? 'claude' : undefined,
+      );
+      try {
+        expect(
+          await Promise.race([
+            validating.then(() => 'validating'),
+            repair.then(() => 'finished'),
+          ]),
+        ).toBe('validating');
+        await removeInstalledPluginCache('m', 'installed-name');
+        expect(index().entries['m/p']).toBeUndefined();
+        const beforeIndex = fs.readFileSync(indexPath, 'utf8');
+        const beforeCatalog = fs.readFileSync(catalogPath, 'utf8');
+        jest.mocked(cloneRepo).mockClear();
+        release();
+        expect(await repair).toBeNull();
+        await settleDetachedWork();
+        expect(cloneRepo).not.toHaveBeenCalled();
+        expect(fs.readFileSync(indexPath, 'utf8')).toBe(beforeIndex);
+        expect(fs.readFileSync(catalogPath, 'utf8')).toBe(beforeCatalog);
+        const reinstalled = await installPlugin('m', 'p', source, {
+          skipRefresh: true,
+        });
+        expect(reinstalled.success).toBe(true);
+        expect(reinstalled.data?.cachePath).toBe(
+          index().entries['m/p'].cachePath,
+        );
+      } finally {
+        release();
+        await repair;
+      }
+    },
+  );
+
+  test.each(['manifest-bytes'])(
+    'refresh preserves legacy provider discovery with uncertain %s and defers cleanup',
+    async (input) => {
+      write(baseCatalog());
+      marketplaceFixture('owner/p');
+      if (input === 'manifest-bytes') {
+        fs.writeFileSync(
+          path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+          Buffer.from(
+            JSON.stringify({
+              name: 'm',
+              description: 'café',
+              plugins: [{ name: 'p', source: { url: 'owner/p' } }],
+            }),
+            'latin1',
+          ),
+        );
+      } else {
+        fs.writeFileSync(
+          path.join(root, 'plugins', 'known_marketplaces.json'),
+          Buffer.from(
+            JSON.stringify({
+              m: {
+                source:
+                  input === 'registration-shape'
+                    ? { repo: 'owner/m' }
+                    : { source: 'github', repo: 'owner/m' },
+                installLocation: marketplaceRoot,
+                description: 'café',
+                lastUpdated: '',
+              },
+            }),
+            input === 'registration-bytes' ? 'latin1' : 'utf8',
+          ),
+        );
+      }
+      const copy = path.join(root, 'plugin-cache', 'unused-1234abcd');
+      fs.mkdirSync(copy, { recursive: true });
+      write(
+        {
+          version: 1,
+          entries: {},
+          retired: [{ cachePath: copy, retiredAt: '2000-01-01T00:00:00Z' }],
+        },
+        indexPath,
+      );
+      await jest.isolateModulesAsync(async () => {
+        await refreshedInIsolatedLifetime();
+        const { readPluginCatalogHealth: read } =
+          await import('../plugin-service');
+        const snapshot = read();
+        if (snapshot.state !== 'valid') throw new Error('expected catalog');
+        const marketplace = snapshot.data.marketplaces.find(
+          (row) => row.id === 'm',
+        );
+        expect(marketplace?.plugins.map((plugin) => plugin.name)).toEqual([
+          'p',
+        ]);
+        expect(fs.existsSync(copy)).toBe(true);
+      });
+      marketplaceFixture('owner/p');
+      await jest.isolateModulesAsync(refreshedInIsolatedLifetime);
+      expect(fs.existsSync(copy)).toBe(false);
+    },
+  );
+
+  test('uninstall retires a catalog-only copy, then a fresh lifetime reclaims it after grace', async () => {
+    write(baseCatalog());
+    marketplaceFixture('owner/p');
+    cloneFixture();
+    const copy = await install();
+    write({ version: 1, entries: {} }, indexPath);
+    await removeInstalledPluginCache('m', 'p');
+    expect(index().entries).toEqual({});
+    const retired = index().retired;
+    expect(retired).toEqual([
+      { cachePath: copy, retiredAt: retired?.[0].retiredAt },
+    ]);
+    expect(typeof retired?.[0].retiredAt).toBe('string');
+    expect(catalog().marketplaces[0].plugins[0].cachePath).toBeUndefined();
+    expect(fs.existsSync(copy)).toBe(true);
+    await jest.isolateModulesAsync(async () => {
+      await refreshedInIsolatedLifetime();
+    });
+    expect(fs.existsSync(copy)).toBe(true);
+    const clock = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(Date.now() + 2 * 60 * 60 * 1000);
+    try {
+      await refreshed();
+      expect(fs.existsSync(copy)).toBe(true);
+      await jest.isolateModulesAsync(async () => {
+        await refreshedInIsolatedLifetime();
+      });
+      expect(fs.existsSync(copy)).toBe(false);
+      expect(index().retired).toEqual([]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test.each(['rejected', 'uncertain'])(
+    'uninstall that only retires a copy still clears the catalog when the index write is %s',
+    async (failure) => {
+      write(baseCatalog());
+      marketplaceFixture('owner/p');
+      cloneFixture();
+      const copy = await install();
+      write({ version: 1, entries: {} }, indexPath);
+      const writes = failIndexWrite(failure);
+      await removeInstalledPluginCache('m', 'p');
+      expect(writes.mock.calls.map(([target]) => target)).toContain(indexPath);
+      const row = catalog().marketplaces[0].plugins[0];
+      expect(row.cachePath).toBeUndefined();
+      expect(row.facets.claude?.cachePath).toBeUndefined();
+      expect(fs.existsSync(copy)).toBe(true);
+      if (failure === 'rejected') {
+        // The unrecorded copy leaks rather than failing a provider uninstall.
+        expect(index()).toEqual({ version: 1, entries: {} });
+      } else {
+        expect(index()).toEqual({
+          version: 1,
+          entries: {},
+          retired: [expect.objectContaining({ cachePath: copy })],
+        });
+      }
+    },
+  );
+
+  test('uninstall that removes a binding still fails when the index write fails', async () => {
+    write(baseCatalog());
+    marketplaceFixture('owner/p');
+    cloneFixture();
+    const copy = await install();
+    const before = index();
+    failIndexWrite('rejected');
+    await expect(removeInstalledPluginCache('m', 'p')).rejects.toThrow(
+      'index write failed',
+    );
+    expect(index()).toEqual(before);
+    expect(catalog().marketplaces[0].plugins[0].cachePath).toBe(copy);
+  });
+
+  test('uninstall retires every case-folded key copy except a key another entry owns', async () => {
+    marketplaceFixture('owner/Tool', 'url', 'm', 'Tool');
+    write(
+      {
+        name: 'm',
+        plugins: ['Tool', 'tool'].map((name) => ({
+          name,
+          source: { source: 'url', url: `owner/${name}` },
+        })),
+      },
+      path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+    );
+    const bound = path.join(root, 'plugin-cache', 'Tool-aaaa1111');
+    const variant = path.join(root, 'plugin-cache', 'TOOL-bbbb2222');
+    const foreign = path.join(root, 'plugin-cache', 'tool-cccc3333');
+    for (const copy of [bound, variant, foreign])
+      fs.mkdirSync(copy, { recursive: true });
+    const cache = baseCatalog();
+    const row = cache.marketplaces[0].plugins[0];
+    row.name = 'Tool';
+    row.cachePath = bound;
+    if (!row.facets.claude) throw new Error('expected Claude facet');
+    row.facets.claude.name = 'Tool';
+    row.facets.claude.cachePath = bound;
+    row.facets.claude.externalSource = { source: 'url', url: 'owner/Tool' };
+    // Uninstall names its entry by the recorded entry name, never by source.
+    row.facets.claude.provenance = {
+      sourceUrl: 'owner/Tool',
+      installedAt: '',
+      marketplaceEntryName: 'Tool',
+    };
+    write(cache);
+    write(
+      {
+        version: 1,
+        entries: {
+          'm/Tool': { cachePath: bound, sourceUrl: 'owner/Tool', cachedAt: '' },
+          'm/TOOL': {
+            cachePath: variant,
+            sourceUrl: 'owner/TOOL',
+            cachedAt: '',
+          },
+          'm/tool': {
+            cachePath: foreign,
+            sourceUrl: 'owner/tool',
+            cachedAt: '',
+          },
+        },
+      },
+      indexPath,
+    );
+    await removeInstalledPluginCache('m', 'Tool');
+    const retired = (index().retired ?? []).map((entry) => entry.cachePath);
+    expect(retired).toEqual(expect.arrayContaining([bound, variant]));
+    expect(retired).not.toContain(foreign);
+    expect(Object.keys(index().entries).sort()).toEqual(['m/TOOL', 'm/tool']);
+    for (const copy of [bound, variant, foreign])
+      expect(fs.existsSync(copy)).toBe(true);
+    const clock = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(Date.now() + 2 * 60 * 60 * 1000);
+    try {
+      await jest.isolateModulesAsync(async () => {
+        await refreshedInIsolatedLifetime();
+      });
+      expect(fs.existsSync(bound)).toBe(false);
+      // A retired copy stays while a binding still names it.
+      expect(fs.existsSync(variant)).toBe(true);
+      expect(fs.existsSync(foreign)).toBe(true);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test.each([false, true])(
+    'Update retires its own key copy and leaves the request literal key bound (owned elsewhere: %s)',
+    async (ownedElsewhere) => {
+      marketplaceFixture('owner/p');
+      cloneFixture();
+      write(baseCatalog());
+      const previous = await install();
+      if (ownedElsewhere)
+        write(
+          {
+            name: 'm',
+            plugins: ['p', 'P'].map((name) => ({
+              name,
+              source: { source: 'url', url: `owner/${name}` },
+            })),
+          },
+          path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+        );
+      const literal = path.join(root, 'plugin-cache', 'P-bbbb2222');
+      fs.mkdirSync(literal, { recursive: true });
+      const current = index();
+      current.entries['m/P'] = {
+        cachePath: literal,
+        sourceUrl: 'owner/P',
+        cachedAt: '',
+      };
+      write(current, indexPath);
+      const result = await installPlugin('m', 'P', 'owner/p', {
+        skipRefresh: true,
+      });
+      expect(result.success).toBe(true);
+      const retired = (index().retired ?? []).map((entry) => entry.cachePath);
+      expect(retired).toContain(previous);
+      // The recorded entry names the key; another literal key keeps its binding.
+      expect(retired).not.toContain(literal);
+      expect(index().entries['m/P']).toEqual({
+        cachePath: literal,
+        sourceUrl: 'owner/P',
+        cachedAt: '',
+      });
+      expect(fs.existsSync(previous)).toBe(true);
+      expect(fs.existsSync(literal)).toBe(true);
+    },
+  );
+
+  function addNeighborManifest(
+    id: string,
+    entryName: string,
+    sourceUrl: string,
+    manifestName = id,
+  ): void {
+    const location = path.join(marketplaceRoot, 'neighbor');
+    fs.mkdirSync(path.join(location, '.claude-plugin'), { recursive: true });
+    write(
+      {
+        name: manifestName,
+        plugins: [
+          { name: entryName, source: { source: 'url', url: sourceUrl } },
+        ],
+      },
+      path.join(location, '.claude-plugin', 'marketplace.json'),
+    );
+    const file = path.join(root, 'plugins', 'known_marketplaces.json');
+    const known: unknown = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!known || typeof known !== 'object' || Array.isArray(known))
+      throw new Error('expected known marketplaces');
+    write(
+      {
+        ...known,
+        [id]: {
+          source: { source: 'github', repo: 'owner/neighbor' },
+          installLocation: location,
+          lastUpdated: '',
+        },
+      },
+      file,
+    );
+  }
+
+  function forgetIdentity(cache: PluginsCache): void {
+    for (const marketplace of cache.marketplaces)
+      for (const row of marketplace.plugins) {
+        delete row.provenance;
+        if (row.facets.claude) delete row.facets.claude.provenance;
+      }
+  }
+
+  test.each(['Update', 'uninstall'])(
+    'entry ownership: legacy prefix/path neighbor survives %s independently',
+    async (operation) => {
+      write(baseCatalog());
+      marketplaceFixture('owner/p');
+      addNeighborManifest('m/x', 'p', 'owner/neighbor');
+      cloneFixture('installed-name');
+      const copy = await install();
+      const cache = catalog();
+      forgetIdentity(cache);
+      write(cache);
+      const foreign = {
+        cachePath: copy,
+        sourceUrl: 'owner/neighbor',
+        cachedAt: '',
+      };
+      write({ version: 1, entries: { 'm/x/p': foreign } }, indexPath);
+      if (operation === 'Update')
+        expect(
+          (
+            await installPlugin('m', 'installed-name', 'owner/new', {
+              skipRefresh: true,
+            })
+          ).success,
+        ).toBe(true);
+      else await removeInstalledPluginCache('m', 'installed-name');
+      expect(index().entries['m/x/p']).toEqual(foreign);
+      expect(fs.existsSync(copy)).toBe(true);
+      if (operation === 'uninstall')
+        expect(catalog().marketplaces[0].plugins[0].sourcePath).toBe('');
+    },
+  );
+
+  test.each(['Update', 'uninstall'])(
+    'overlapping entry and installed names: %s selects the installed row by its recorded entry',
+    async (operation) => {
+      const cache = baseCatalog();
+      cache.marketplaces[0].plugins = [];
+      write(cache);
+      marketplaceFixture('owner/alpha', 'url', 'm', 'alpha');
+      const copies = [
+        { entry: 'alpha', installed: 'beta', folder: 'alpha-1111aaaa' },
+        { entry: 'beta', installed: 'gamma', folder: 'beta-2222bbbb' },
+      ].map((copy) => ({
+        ...copy,
+        cachePath: path.join(root, 'plugin-cache', copy.folder),
+        sourceUrl: `owner/${copy.entry}`,
+      }));
+      write(
+        {
+          name: 'm',
+          plugins: copies.map((copy) => ({
+            name: copy.entry,
+            source: { source: 'url', url: copy.sourceUrl },
+          })),
+        },
+        path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+      );
+      for (const copy of copies) {
+        fs.mkdirSync(path.join(copy.cachePath, '.claude-plugin'), {
+          recursive: true,
+        });
+        write(
+          { name: copy.installed },
+          path.join(copy.cachePath, '.claude-plugin', 'plugin.json'),
+        );
+        fs.writeFileSync(path.join(copy.cachePath, 'payload'), copy.entry);
+      }
+      write(
+        {
+          version: 1,
+          entries: Object.fromEntries(
+            copies.map((copy) => [
+              `m/${copy.entry}`,
+              {
+                cachePath: copy.cachePath,
+                sourceUrl: copy.sourceUrl,
+                cachedAt: '',
+              },
+            ]),
+          ),
+        },
+        indexPath,
+      );
+      await refreshed();
+      const neighbor = catalog().marketplaces[0].plugins.find(
+        (row) => row.name === 'gamma',
+      );
+      expect(neighbor?.cachePath).toBe(copies[1].cachePath);
+      const neighborBinding = index().entries['m/beta'];
+      if (operation === 'Update') {
+        cloneFixture('beta');
+        const result = await installPlugin('m', 'beta', 'owner/new-alpha', {
+          skipRefresh: true,
+        });
+        expect(result.success).toBe(true);
+        expect(result.data?.cachePath).toBeTruthy();
+        expect(result.data?.cachePath).not.toBe(copies[0].cachePath);
+        expect(index().entries['m/alpha'].cachePath).toBe(
+          result.data?.cachePath,
+        );
+        expect(index().retired).toContainEqual(
+          expect.objectContaining({ cachePath: copies[0].cachePath }),
+        );
+        expect(index().retired).not.toContainEqual(
+          expect.objectContaining({ cachePath: copies[1].cachePath }),
+        );
+      } else {
+        await removeInstalledPluginCache('m', 'beta');
+        expect(index().entries['m/alpha']).toBeUndefined();
+        expect(fs.existsSync(copies[0].cachePath)).toBe(true);
+        expect(index().retired).toContainEqual(
+          expect.objectContaining({ cachePath: copies[0].cachePath }),
+        );
+        expect(
+          catalog().marketplaces[0].plugins.find((row) => row.name === 'beta'),
+        ).toMatchObject({
+          sourcePath: '',
+          facets: { claude: { sourcePath: '' } },
+        });
+      }
+      expect(index().entries['m/beta']).toEqual(neighborBinding);
+      expect(
+        catalog().marketplaces[0].plugins.find((row) => row.name === 'gamma'),
+      ).toEqual(neighbor);
+      expect(
+        fs.readFileSync(path.join(copies[1].cachePath, 'payload'), 'utf8'),
+      ).toBe('beta');
+    },
+  );
+
+  test.each(['original-first'])(
+    'uninstall drops active provenance before refresh with a colliding entry: %s',
+    async (order) => {
+      write(baseCatalog());
+      marketplaceFixture('owner/p');
+      cloneFixture('installed-name');
+      await install();
+      const installed = catalog().marketplaces[0].plugins[0];
+      expect(installed.provenance?.installedName).toBe('installed-name');
+      expect(installed.facets.claude?.provenance?.installedName).toBe(
+        'installed-name',
+      );
+
+      await removeInstalledPluginCache('m', 'installed-name');
+      expect(index().entries['m/p']).toBeUndefined();
+      const removed = catalog().marketplaces[0].plugins[0];
+      const entries = [
+        { name: 'p', source: { source: 'url', url: 'owner/p' } },
+        {
+          name: 'installed-name',
+          source: { source: 'url', url: 'owner/neighbor' },
+        },
+      ];
+      write(
+        {
+          name: 'm',
+          plugins: order === 'original-first' ? entries : entries.reverse(),
+        },
+        path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+      );
+      // Both the initial and repeated refresh must retain both marketplace entries.
+      for (let refresh = 0; refresh < 2; refresh++) {
+        await refreshed();
+        const rows = catalog().marketplaces[0].plugins;
+        expect(rows.map((row) => row.name).sort()).toEqual([
+          'installed-name',
+          'p',
+        ]);
+        expect(rows.find((row) => row.name === 'p')?.externalSource?.url).toBe(
+          'owner/p',
+        );
+        expect(
+          rows.find((row) => row.name === 'installed-name')?.externalSource
+            ?.url,
+        ).toBe('owner/neighbor');
+        expect(index().entries).toEqual({});
+      }
+      expect(removed.provenance).toBeUndefined();
+      expect(removed.facets.claude?.provenance).toBeUndefined();
+    },
+  );
+
+  test('uninstall unbinds an entry whose indexed copy exists while the managed cache folder is gone', async () => {
+    write(baseCatalog());
+    marketplaceFixture('owner/p');
+    cloneFixture('installed-name');
+    await install();
+    fs.rmSync(path.join(root, 'plugin-cache'), {
+      recursive: true,
+      force: true,
+    });
+    const current = index();
+    expect(Object.keys(current.entries)).toEqual(['m/p']);
+    current.entries['m/p'] = {
+      ...current.entries['m/p'],
+      cachePath: pluginPath,
+    };
+    write(current, indexPath);
+    await removeInstalledPluginCache('m', 'installed-name');
+    expect(index().entries['m/p']).toBeUndefined();
+    expect(fs.existsSync(pluginPath)).toBe(true);
+    const row = catalog().marketplaces[0].plugins[0];
+    expect(row.cachePath).toBeUndefined();
+    expect(row.provenance).toBeUndefined();
+  });
+
+  test.each(['./local', 'owner/shared'])(
+    'entry ownership: a known-ownership row (%s) cannot claim a foreign removal key',
+    async (source) => {
+      const cache = baseCatalog();
+      cache.marketplaces[0].plugins[0].name = 'x/p';
+      // Every registration maps to one catalog marketplace, so legacy ownership is known.
+      const neighbor = structuredClone(healthy().marketplaces[0]);
+      neighbor.id = 'm/x';
+      neighbor.name = 'm/x';
+      neighbor.installLocation = path.join(marketplaceRoot, 'neighbor');
+      neighbor.plugins[0].marketplaceId = 'm/x';
+      cache.marketplaces.push(neighbor);
+      write(cache);
+      marketplaceFixture('owner/p');
+      write(
+        {
+          name: 'm',
+          plugins: [
+            {
+              name: 'x/p',
+              source:
+                source === './local' ? source : { source: 'url', url: source },
+            },
+            { name: 'q', source: { source: 'url', url: 'owner/q' } },
+          ],
+        },
+        path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+      );
+      addNeighborManifest('m/x', 'p', 'owner/neighbor');
+      const foreignCopy = path.join(root, 'plugin-cache', 'p-aaaa1111');
+      const ownedCopy = path.join(root, 'plugin-cache', 'q-bbbb2222');
+      for (const copy of [foreignCopy, ownedCopy])
+        fs.mkdirSync(copy, { recursive: true });
+      const foreign = {
+        cachePath: foreignCopy,
+        sourceUrl: 'owner/neighbor',
+        cachedAt: '',
+      };
+      const owned = {
+        cachePath: ownedCopy,
+        sourceUrl: 'owner/q',
+        cachedAt: '',
+      };
+      write(
+        { version: 1, entries: { 'm/x/p': foreign, 'm/q': owned } },
+        indexPath,
+      );
+      const result = await removeMarketplace('m', { providers: ['claude'] });
+      expect(result.success).toBe(true);
+      expect(result.data?.removedProviders).toContain('claude');
+      expect(
+        catalog().marketplaces.find((row) => row.id === 'm'),
+      ).toBeUndefined();
+      expect(index().entries['m/q']).toBeUndefined();
+      expect(index().entries['m/x/p']).toEqual(foreign);
+      expect(fs.existsSync(foreignCopy)).toBe(true);
+    },
+  );
+
+  test.each([
+    {
+      context: 'row',
+      operation: 'Update',
+    },
+    {
+      context: 'row',
+      operation: 'uninstall',
+    },
+  ])(
+    'explicit legacy request: $operation uses its literal key with $context and no manifest',
+    async ({ context, operation }) => {
+      const cache = baseCatalog();
+      if (context === 'no-row') cache.marketplaces[0].plugins = [];
+      write(cache);
+      cloneFixture();
+      const copy = path.join(root, 'plugin-cache', 'literal-aaaa1111');
+      fs.mkdirSync(copy, { recursive: true });
+      fs.writeFileSync(path.join(copy, 'payload'), 'legacy');
+      const binding = { cachePath: copy, sourceUrl: 'repo', cachedAt: '' };
+      write({ version: 1, entries: { 'm/p': binding } }, indexPath);
+      if (operation === 'Update') {
+        const result = await installPlugin('m', 'p', 'owner/new', {
+          skipRefresh: true,
+        });
+        expect(result.success).toBe(true);
+        expect(result.data?.cachePath).not.toBe(copy);
+        expect(index().entries['m/p'].cachePath).toBe(result.data?.cachePath);
+        expect(index().retired).toContainEqual(
+          expect.objectContaining({ cachePath: copy }),
+        );
+      } else {
+        await removeInstalledPluginCache('m', 'p');
+        expect(index().entries['m/p']).toBeUndefined();
+        expect(fs.existsSync(copy)).toBe(true);
+        expect(index().retired).toContainEqual(
+          expect.objectContaining({ cachePath: copy }),
+        );
+        if (context === 'row')
+          expect(catalog().marketplaces[0].plugins[0].sourcePath).toBe('');
+      }
+    },
+  );
+
+  test.each(['Update', 'uninstall', 'removal'])(
+    "entry ownership: recorded foreign tuple's copy survives %s",
+    async (operation) => {
+      let updatedCopy: string | undefined;
+      marketplaceFixture('owner/shared', 'url', 'm', 'x/p');
+      addNeighborManifest('m/x', 'p', 'owner/shared');
+      const copy = path.join(root, 'plugin-cache', 'foreign-aaaa1111');
+      fs.mkdirSync(copy, { recursive: true });
+      fs.writeFileSync(path.join(copy, 'payload'), 'foreign');
+      const cache = baseCatalog();
+      const row = cache.marketplaces[0].plugins[0];
+      row.name = 'x/p';
+      row.cachePath = copy;
+      row.provenance = {
+        sourceUrl: 'owner/shared',
+        installedAt: '',
+        marketplaceEntryName: 'x/p',
+      };
+      if (!row.facets.claude) throw new Error('expected facet');
+      row.facets.claude.provenance = row.provenance;
+      row.facets.claude.cachePath = copy;
+      row.facets.claude.externalSource = { source: 'url', url: 'owner/shared' };
+      const binding = {
+        cachePath: copy,
+        sourceUrl: 'owner/shared',
+        cachedAt: '',
+        provenance: {
+          sourceUrl: 'owner/shared',
+          installedAt: '',
+          marketplaceEntryName: 'p',
+        },
+      };
+      if (operation === 'Update') {
+        // The foreign tuple's own catalog row, recorded as installed.
+        const neighbor = structuredClone(cache.marketplaces[0]);
+        neighbor.id = 'm/x';
+        neighbor.name = 'm/x';
+        neighbor.sourceUrl = 'https://github.com/owner/neighbor';
+        neighbor.installLocation = path.join(marketplaceRoot, 'neighbor');
+        const neighborRow = neighbor.plugins[0];
+        neighborRow.name = 'p';
+        neighborRow.marketplaceId = neighbor.id;
+        neighborRow.provenance = binding.provenance;
+        if (neighborRow.facets.claude)
+          neighborRow.facets.claude.provenance = binding.provenance;
+        cache.marketplaces.push(neighbor);
+      }
+      write(cache);
+      write({ version: 1, entries: { 'm/x/p': binding } }, indexPath);
+      cloneFixture('x/p');
+      if (operation === 'Update') {
+        const result = await installPlugin('m', 'x/p', 'owner/new', {
+          skipRefresh: true,
+        });
+        expect(result.success).toBe(true);
+        if (!result.data?.cachePath) throw new Error('expected new copy');
+        expect(result.data.cachePath).not.toBe(copy);
+        updatedCopy = result.data.cachePath;
+        const updated = catalog().marketplaces[0];
+        expect(updated.plugins[0].cachePath).toBe(result.data.cachePath);
+        expect(
+          await resolvePluginInfoPath(
+            updated.plugins[0],
+            updated,
+            [],
+            false,
+            'claude',
+          ),
+        ).toBe(result.data.cachePath);
+        expect(
+          fs.existsSync(
+            path.join(result.data.cachePath, '.claude-plugin', 'plugin.json'),
+          ),
+        ).toBe(true);
+        // Taking the shared slot leaves the neighbor runnable from its own copy.
+        for (let pass = 0; pass < 2; pass++) {
+          await refreshed();
+          for (const [id, expected] of [
+            ['m', result.data.cachePath],
+            ['m/x', copy],
+          ]) {
+            const current = catalog().marketplaces.find((row) => row.id === id);
+            const plugin = current?.plugins[0];
+            if (!current || !plugin) throw new Error(`expected ${id} row`);
+            expect(plugin.cachePath).toBe(expected);
+            expect(
+              await resolvePluginInfoPath(plugin, current, [], false, 'claude'),
+            ).toBe(expected);
+          }
+        }
+      } else if (operation === 'uninstall') {
+        await removeInstalledPluginCache('m', 'x/p');
+        const selected = catalog().marketplaces[0];
+        const removed = selected.plugins[0];
+        expect(removed).toMatchObject({
+          sourcePath: '',
+          facets: {
+            claude: {
+              sourcePath: '',
+              installLocation: '',
+            },
+          },
+        });
+        expect(removed.cachePath).toBeUndefined();
+        expect(removed.details).toBeUndefined();
+        expect(removed.facets.claude?.cachePath).toBeUndefined();
+        expect(removed.facets.claude?.details).toBeUndefined();
+        expect(
+          await resolvePluginInfoPath(removed, selected, [], false, 'claude'),
+        ).toBeNull();
+      } else {
+        const result = await removeMarketplace('m', { providers: ['claude'] });
+        expect(result.success).toBe(true);
+        expect(result.data?.providerOutcomes.claude.error).toBeUndefined();
+        expect(result.data?.removedProviders).toContain('claude');
+        expect(
+          catalog().marketplaces.find((row) => row.id === 'm'),
+        ).toBeUndefined();
+      }
+      // Update takes the slot under its recorded entry name; the foreign copy stays.
+      if (updatedCopy)
+        expect(index().entries['m/x/p']).toMatchObject({
+          cachePath: updatedCopy,
+          provenance: { marketplaceEntryName: 'x/p' },
+        });
+      else expect(index().entries['m/x/p']).toEqual(binding);
+      expect(fs.existsSync(copy)).toBe(true);
+      expect(fs.readFileSync(path.join(copy, 'payload'), 'utf8')).toBe(
+        'foreign',
+      );
+    },
+  );
+
+  test('entry ownership: an unreadable neighbor manifest keeps a shared legacy key through removal', async () => {
+    marketplaceFixture('owner/shared', 'url', 'm', 'x/p');
+    addNeighborManifest('m/x', 'p', 'owner/shared');
+    fs.writeFileSync(
+      path.join(
+        marketplaceRoot,
+        'neighbor',
+        '.claude-plugin',
+        'marketplace.json',
+      ),
+      '{ damaged',
+    );
+    const copy = path.join(root, 'plugin-cache', 'foreign-aaaa1111');
+    fs.mkdirSync(copy, { recursive: true });
+    const cache = baseCatalog();
+    const row = cache.marketplaces[0].plugins[0];
+    row.name = 'x/p';
+    // The removed row naming the kept copy must not retire it either.
+    row.cachePath = copy;
+    if (row.facets.claude) row.facets.claude.cachePath = copy;
+    write(cache);
+    const binding = {
+      cachePath: copy,
+      sourceUrl: 'owner/shared',
+      cachedAt: '',
+    };
+    write({ version: 1, entries: { 'm/x/p': binding } }, indexPath);
+    const result = await removeMarketplace('m', { providers: ['claude'] });
+    expect(result.success).toBe(true);
+    expect(result.data?.removedProviders).toContain('claude');
+    expect(
+      catalog().marketplaces.find((row) => row.id === 'm'),
+    ).toBeUndefined();
+    expect(index().entries['m/x/p']).toEqual(binding);
+    expect(index().retired ?? []).not.toContainEqual(
+      expect.objectContaining({ cachePath: copy }),
+    );
+    expect(fs.existsSync(copy)).toBe(true);
+  });
+
+  test.each(['{ damaged', 'null', '{"m/x":"no location"}'])(
+    'entry ownership: an unreadable registry or registration (%s) keeps a shared legacy key through removal',
+    async (registry) => {
+      marketplaceFixture('owner/shared', 'url', 'm', 'x/p');
+      addNeighborManifest('m/x', 'p', 'owner/shared');
+      const copy = path.join(root, 'plugin-cache', 'foreign-aaaa1111');
+      fs.mkdirSync(copy, { recursive: true });
+      const cache = baseCatalog();
+      const row = cache.marketplaces[0].plugins[0];
+      row.name = 'x/p';
+      row.provenance = {
+        sourceUrl: 'owner/shared',
+        installedAt: '',
+        marketplaceEntryName: 'x/p',
+      };
+      row.cachePath = copy;
+      if (row.facets.claude) row.facets.claude.cachePath = copy;
+      write(cache);
+      const binding = {
+        cachePath: copy,
+        sourceUrl: 'owner/shared',
+        cachedAt: '',
+      };
+      write({ version: 1, entries: { 'm/x/p': binding } }, indexPath);
+      fs.writeFileSync(
+        path.join(root, 'plugins', 'known_marketplaces.json'),
+        registry,
+      );
+      const result = await removeMarketplace('m', { providers: ['claude'] });
+      expect(result.success).toBe(true);
+      expect(result.data?.removedProviders).toContain('claude');
+      expect(
+        catalog().marketplaces.find((row) => row.id === 'm'),
+      ).toBeUndefined();
+      expect(index().entries['m/x/p']).toEqual(binding);
+      expect(index().retired ?? []).not.toContainEqual(
+        expect.objectContaining({ cachePath: copy }),
+      );
+      expect(fs.existsSync(copy)).toBe(true);
+    },
+  );
+
+  test.each(['Update', 'uninstall'])(
+    'entry ownership: a reassigned source leaves the other entry binding through %s',
+    async (operation) => {
+      write(baseCatalog());
+      const installCopy = async (name: string): Promise<string> => {
+        marketplaceFixture('owner/s', 'url', 'm', name);
+        cloneFixture(name);
+        const result = await installPlugin('m', name, 'owner/s', {
+          skipRefresh: true,
+        });
+        if (!result.data?.cachePath) throw new Error('expected copy');
+        return result.data.cachePath;
+      };
+      const mineCopy = await installCopy('mine');
+      // The manifest now maps the legacy installation's source to `other`.
+      const otherCopy = await installCopy('other');
+      const cache = catalog();
+      const mine = cache.marketplaces[0].plugins.find(
+        (row) => row.name === 'mine',
+      );
+      if (!mine?.facets.claude) throw new Error('expected legacy row');
+      delete mine.provenance;
+      delete mine.facets.claude.provenance;
+      write(cache);
+      const legacy = index();
+      delete legacy.entries['m/mine'].provenance;
+      write(legacy, indexPath);
+      const otherBinding = legacy.entries['m/other'];
+      if (operation === 'Update') {
+        cloneFixture('mine');
+        const result = await installPlugin('m', 'mine', 'owner/s2', {
+          skipRefresh: true,
+        });
+        expect(result.success).toBe(true);
+        expect(index().entries['m/mine'].cachePath).toBe(
+          result.data?.cachePath,
+        );
+      } else {
+        await removeInstalledPluginCache('m', 'mine');
+        expect(index().entries['m/mine']).toBeUndefined();
+      }
+      const retired = (index().retired ?? []).map((entry) => entry.cachePath);
+      expect(retired).toContain(mineCopy);
+      expect(retired).not.toContain(otherCopy);
+      expect(fs.existsSync(mineCopy)).toBe(true);
+      expect(index().entries['m/other']).toEqual(otherBinding);
+      expect(fs.existsSync(otherCopy)).toBe(true);
+      const clock = jest
+        .spyOn(Date, 'now')
+        .mockReturnValue(Date.now() + 2 * 60 * 60 * 1000);
+      try {
+        await jest.isolateModulesAsync(async () => {
+          await refreshedInIsolatedLifetime();
+        });
+      } finally {
+        clock.mockRestore();
+      }
+      expect(fs.existsSync(mineCopy)).toBe(false);
+      expect(index().entries['m/other']).toEqual(otherBinding);
+      expect(fs.existsSync(otherCopy)).toBe(true);
+    },
+  );
+
+  test.each(['Update', 'uninstall'])(
+    'entry ownership: a source reassigned to an empty entry keeps the requested binding through %s',
+    async (operation) => {
+      write(baseCatalog());
+      marketplaceFixture('owner/s', 'url', 'm', 'mine');
+      cloneFixture('mine');
+      const first = await installPlugin('m', 'mine', 'owner/s', {
+        skipRefresh: true,
+      });
+      if (!first.data?.cachePath) throw new Error('expected copy');
+      const mineCopy = first.data.cachePath;
+      // The manifest now maps the legacy installation's source to an empty `other`.
+      write(
+        {
+          name: 'm',
+          plugins: [
+            { name: 'mine', source: { source: 'url', url: 'owner/s2' } },
+            { name: 'other', source: { source: 'url', url: 'owner/s' } },
+          ],
+        },
+        path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+      );
+      const cache = catalog();
+      forgetIdentity(cache);
+      write(cache);
+      const legacy = index();
+      delete legacy.entries['m/mine'].provenance;
+      write(legacy, indexPath);
+      let replacement: string | undefined;
+      if (operation === 'Update') {
+        cloneFixture('mine');
+        const result = await installPlugin('m', 'mine', 'owner/s2', {
+          skipRefresh: true,
+        });
+        expect(result.success).toBe(true);
+        replacement = result.data?.cachePath;
+        expect(replacement).toBeDefined();
+        expect(index().entries['m/mine'].cachePath).toBe(replacement);
+      } else {
+        await removeInstalledPluginCache('m', 'mine');
+        expect(index().entries['m/mine']).toBeUndefined();
+      }
+      expect(index().entries['m/other']).toBeUndefined();
+      expect((index().retired ?? []).map((entry) => entry.cachePath)).toContain(
+        mineCopy,
+      );
+      expect(fs.existsSync(mineCopy)).toBe(true);
+      await refreshed();
+      const rows = catalog().marketplaces[0].plugins;
+      const cachePathOf = (name: string): string | undefined =>
+        rows.find((plugin) => plugin.name === name)?.facets.claude?.cachePath;
+      expect(rows.map((plugin) => plugin.name)).toEqual(
+        expect.arrayContaining(['mine', 'other']),
+      );
+      expect(cachePathOf('mine')).toBe(replacement);
+      expect(cachePathOf('other')).toBeUndefined();
+      expect(
+        rows.filter((plugin) => plugin.facets.claude?.cachePath === mineCopy),
+      ).toEqual([]);
+      const clock = jest
+        .spyOn(Date, 'now')
+        .mockReturnValue(Date.now() + 2 * 60 * 60 * 1000);
+      try {
+        await jest.isolateModulesAsync(async () => {
+          await refreshedInIsolatedLifetime();
+        });
+      } finally {
+        clock.mockRestore();
+      }
+      expect(fs.existsSync(mineCopy)).toBe(false);
+      expect(index().entries['m/other']).toBeUndefined();
+      expect(index().entries['m/mine']?.cachePath).toBe(replacement);
+      if (replacement) expect(fs.existsSync(replacement)).toBe(true);
+    },
+  );
+
+  test('uninstall keeps an inline plugin resolvable from the marketplace checkout', async () => {
+    write(baseCatalog());
+    marketplaceFixture('owner/p');
+    const inline = path.join(marketplaceRoot, 'plugins', 'inline');
+    fs.mkdirSync(path.join(inline, '.claude-plugin'), { recursive: true });
+    write(
+      { name: 'inline' },
+      path.join(inline, '.claude-plugin', 'plugin.json'),
+    );
+    write(
+      { name: 'm', plugins: [{ name: 'inline', source: './plugins/inline' }] },
+      path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+    );
+    await refreshed();
+    await removeInstalledPluginCache('m', 'inline');
+    const marketplace = catalog().marketplaces[0];
+    const row = marketplace.plugins.find((plugin) => plugin.name === 'inline');
+    if (!row) throw new Error('expected inline row');
+    expect(row.facets.claude?.sourcePath).toBe('./plugins/inline');
+    expect(row.facets.claude?.installLocation).toBe(inline);
+    expect(
+      await resolvePluginInfoPath(row, marketplace, [], false, 'claude'),
+    ).toBe(inline);
+  });
+
+  test.each(['managed', 'outside'])(
+    'entry ownership: Update keeps an aliased legacy key whose source moved to another entry (%s copy)',
+    async (location) => {
+      write(baseCatalog());
+      marketplaceFixture('owner/p');
+      cloneFixture('installed-name');
+      const installed = await install();
+      const copy = location === 'managed' ? installed : pluginPath;
+      const cache = catalog();
+      forgetIdentity(cache);
+      write(cache);
+      write(
+        {
+          version: 1,
+          entries: {
+            'm/installed-name': {
+              cachePath: copy,
+              sourceUrl: 'owner/p',
+              cachedAt: '',
+            },
+          },
+        },
+        indexPath,
+      );
+      const manifestPath = path.join(
+        marketplaceRoot,
+        '.claude-plugin',
+        'marketplace.json',
+      );
+      const entries = [
+        { name: 'p', source: { source: 'url', url: 'owner/p2' } },
+        { name: 'other', source: { source: 'url', url: 'owner/p' } },
+      ];
+      write({ name: 'm', plugins: entries }, manifestPath);
+      const result = await installPlugin('m', 'installed-name', 'owner/p2', {
+        skipRefresh: true,
+      });
+      expect(result.success).toBe(true);
+      const replacement = result.data?.cachePath;
+      if (!replacement) throw new Error('expected replacement');
+      // Develop's literal key: no other entry's slot, no superseded binding.
+      expect(Object.keys(index().entries)).toEqual(['m/installed-name']);
+      expect(index().entries['m/installed-name']).toMatchObject({
+        cachePath: replacement,
+        provenance: { marketplaceEntryName: 'installed-name' },
+      });
+      // Update retires a managed copy instead of deleting it.
+      expect(fs.existsSync(copy)).toBe(true);
+      // The outside copy is not admitted; the replaced row's managed copy is.
+      expect((index().retired ?? []).map((entry) => entry.cachePath)).toEqual([
+        installed,
+      ]);
+      // A later listing that reuses the old name finds only the replacement.
+      write(
+        {
+          name: 'm',
+          plugins: [
+            ...entries,
+            {
+              name: 'installed-name',
+              source: { source: 'url', url: 'owner/zzz' },
+            },
+          ],
+        },
+        manifestPath,
+      );
+      await refreshed();
+      const rows = catalog().marketplaces[0].plugins;
+      const row = (name: string): (typeof rows)[number] | undefined =>
+        rows.find((plugin) => plugin.name === name);
+      expect(row('other')).toBeDefined();
+      expect(row('other')?.facets.claude?.cachePath).toBeUndefined();
+      expect(row('installed-name')?.facets.claude?.cachePath).toBe(replacement);
+      expect(row('installed-name')?.sourceChanged).toBe(true);
+      expect(
+        rows.map((plugin) => plugin.facets.claude?.cachePath),
+      ).not.toContain(copy);
+    },
+  );
+
+  test.each(['manifest', 'registry'])(
+    'entry ownership: a FIFO %s cannot stall marketplace removal',
+    async (file) => {
+      write(baseCatalog());
+      marketplaceFixture('owner/p');
+      cloneFixture('installed-name');
+      await install();
+      const target =
+        file === 'manifest'
+          ? path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json')
+          : path.join(root, 'plugins', 'known_marketplaces.json');
+      const fifo = path.join(marketplaceRoot, 'fifo');
+      execFileSync('mkfifo', [fifo]);
+      fs.rmSync(target);
+      fs.symlinkSync(fifo, target);
+      const result = await removeMarketplace('m', { providers: ['claude'] });
+      expect(result.success).toBe(true);
+      expect(result.data?.removedProviders).toContain('claude');
+      // Unknown legacy ownership still drops the binding provenance records.
+      expect(index().entries['m/p']).toBeUndefined();
+    },
+  );
+
+  test('entry ownership: installing an entry named like the installed name of another entry binds its own key', async () => {
+    write(baseCatalog());
+    marketplaceFixture('owner/a', 'url', 'm', 'a');
+    write(
+      {
+        name: 'm',
+        plugins: [
+          { name: 'x', source: { source: 'url', url: 'owner/x' } },
+          { name: 'a', source: { source: 'url', url: 'owner/a' } },
+        ],
+      },
+      path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+    );
+    cloneFixture('x');
+    const a = await installPlugin('m', 'a', 'owner/a', { skipRefresh: true });
+    const aCopy = a.data?.cachePath;
+    if (!aCopy) throw new Error('expected copy');
+    await refreshed();
+    cloneFixture('x-copy');
+    const x = await installPlugin('m', 'x', 'owner/x', { skipRefresh: true });
+    expect(x.success).toBe(true);
+    // Develop's literal key; entry a keeps its copy.
+    expect(index().entries['m/x'].cachePath).toBe(x.data?.cachePath);
+    expect(index().entries['m/a'].cachePath).toBe(aCopy);
+    expect(fs.existsSync(aCopy)).toBe(true);
+    cloneFixture('x');
+    const update = await installPlugin('m', 'x', 'owner/a', {
+      skipRefresh: true,
+    });
+    expect(update.success).toBe(true);
+    expect(index().entries['m/a'].cachePath).toBe(update.data?.cachePath);
+    expect(index().entries['m/x'].cachePath).toBe(x.data?.cachePath);
+  });
+
+  test('entry ownership: two entries installing the same manifest name publish one selectable row', async () => {
+    write(baseCatalog());
+    marketplaceFixture('owner/a', 'url', 'm', 'a');
+    write(
+      {
+        name: 'm',
+        plugins: [
+          { name: 'b', source: { source: 'url', url: 'owner/b' } },
+          { name: 'a', source: { source: 'url', url: 'owner/a' } },
+        ],
+      },
+      path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+    );
+    const selectionNames = (): string[] =>
+      (
+        catalog().marketplaces.find((market) => market.id === 'm')?.plugins ??
+        []
+      ).map((row) => row.name.toLowerCase());
+    cloneFixture('a');
+    await refreshed();
+    expect(
+      (await installPlugin('m', 'a', 'owner/a', { skipRefresh: true })).success,
+    ).toBe(true);
+    await refreshed();
+    // b's own row and, once refresh lets a's row win, a missing row.
+    for (let pass = 0; pass < 2; pass++) {
+      const b = await installPlugin('m', 'b', 'owner/b', { skipRefresh: true });
+      expect(b.success).toBe(true);
+      expect(index().entries['m/b'].cachePath).toBe(b.data?.cachePath);
+      expect(selectionNames().filter((name) => name === 'a')).toHaveLength(1);
+      expect(resolve('a').sdkPlugins).toEqual([
+        { type: 'local', path: b.data?.cachePath },
+      ]);
+      await refreshed();
+      expect(selectionNames().filter((name) => name === 'a')).toHaveLength(1);
+    }
+  });
+
+  test('entry ownership: refresh keeps the history of a bound row off the entry its source moved to', async () => {
+    write(baseCatalog());
+    marketplaceFixture('owner/p');
+    cloneFixture('installed-name');
+    const copy = await install();
+    await refreshed();
+    const cache = catalog();
+    for (const row of cache.marketplaces[0].plugins) {
+      if (row.provenance) delete row.provenance.marketplaceEntryName;
+      if (row.facets.claude?.provenance)
+        delete row.facets.claude.provenance.marketplaceEntryName;
+    }
+    write(cache);
+    write(
+      {
+        version: 1,
+        entries: {
+          'm/p': { cachePath: copy, sourceUrl: 'owner/p', cachedAt: '' },
+        },
+      },
+      indexPath,
+    );
+    write(
+      {
+        name: 'm',
+        plugins: [
+          { name: 'p', source: { source: 'url', url: 'owner/p2' } },
+          { name: 'other', source: { source: 'url', url: 'owner/p' } },
+        ],
+      },
+      path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+    );
+    await refreshed();
+    const rows = catalog().marketplaces[0].plugins;
+    expect(
+      rows.find((row) => row.facets.claude?.cachePath === copy),
+    ).toMatchObject({ sourceChanged: true });
+    const other = rows.find((row) => row.name === 'other');
+    expect(other).toBeDefined();
+    expect(other?.provenance).toBeUndefined();
+    expect(other?.facets.claude?.provenance).toBeUndefined();
+  });
+
+  test('entry ownership: damaged-index recovery persists entry identity through removal and re-add', async () => {
+    write(baseCatalog());
+    marketplaceFixture('owner/p');
+    cloneFixture('installed-name');
+    const copy = await install();
+    const cache = catalog();
+    forgetIdentity(cache);
+    write(cache);
+    write({ version: 1, entries: { bad: { cachePath: 7 } } }, indexPath);
+    await refreshed();
+    const recovered = catalog().marketplaces.find((row) => row.id === 'm')
+      ?.plugins[0];
+    expect(recovered?.provenance?.marketplaceEntryName).toBe('p');
+    expect(
+      (await removeMarketplace('m', { providers: ['claude'] })).success,
+    ).toBe(true);
+    expect(index().entries['m/p']).toBeUndefined();
+    expect((await addMarketplace('owner/m')).success).toBe(true);
+    const readdedMarketplace = catalog().marketplaces.find(
+      (row) => row.id === 'm',
+    );
+    expect(readdedMarketplace).toBeDefined();
+    const readded = readdedMarketplace?.plugins.find(
+      (plugin) => plugin.name === 'p',
+    );
+    expect(readded).toBeDefined();
+    expect(readded?.name).toBe('p');
+    expect(readded?.externalSource?.url).toBe('owner/p');
+    expect(readded?.cachePath).toBeUndefined();
+    expect(index().entries['m/p']).toBeUndefined();
+    expect(fs.existsSync(copy)).toBe(true);
+  });
+
+  test('entry ownership: removal captures a differently named legacy provider before deletion', async () => {
+    write(baseCatalog());
+    marketplaceFixture('owner/p');
+    cloneFixture('installed-name');
+    const copy = await install();
+    const cache = catalog();
+    forgetIdentity(cache);
+    cache.marketplaces[0].providerStatus.claude.marketplaceName =
+      'provider-name';
+    write(cache);
+    marketplaceFixture('owner/p', 'url', 'provider-name');
+    write(
+      {
+        version: 1,
+        entries: {
+          'm/p': { cachePath: copy, sourceUrl: 'owner/p', cachedAt: '' },
+        },
+      },
+      indexPath,
+    );
+    jest.mocked(runClaudeCliProcessOffMain).mockImplementation(() => {
+      fs.unlinkSync(
+        path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+      );
+      fs.unlinkSync(path.join(root, 'plugins', 'known_marketplaces.json'));
+      return Promise.resolve({ stdout: '', stderr: '' });
+    });
+    expect(
+      (await removeMarketplace('m', { providers: ['claude'] })).success,
+    ).toBe(true);
+    expect(index().entries['m/p']).toBeUndefined();
+    expect(fs.existsSync(copy)).toBe(true);
+  });
+
+  test('Installed Items uninstall unbinds the stored mixed-case legacy entry despite ambiguous sources', async () => {
+    marketplaceFixture('owner/shared', 'url', 'm', 'Tool');
+    // This is a Canopy-only install, with no Claude CLI installation to remove.
+    write(
+      { version: 2, plugins: {} },
+      path.join(root, 'plugins', 'installed_plugins.json'),
+    );
+    write({ enabledPlugins: {} }, path.join(root, 'settings.json'));
+    // Uninstall also prunes legacy selections for the implicit default project.
+    const defaultProjectFile =
+      pluginPaths.getChatProjectProjectFilePath('default');
+    fs.mkdirSync(path.dirname(defaultProjectFile), { recursive: true });
+    write({ projects: [] }, pluginPaths.getChatProjectsFilePath());
+    write({}, defaultProjectFile);
+    write({ tabs: [] }, pluginPaths.getChatProjectChatTabsFilePath('default'));
+    write(
+      {
+        name: 'm',
+        plugins: ['Tool', 'other'].map((name) => ({
+          name,
+          source: { source: 'url', url: 'owner/shared' },
+        })),
+      },
+      path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+    );
+    const copy = path.join(root, 'plugin-cache', 'Tool-aaaa1111');
+    fs.mkdirSync(copy, { recursive: true });
+    const cache = baseCatalog();
+    const row = cache.marketplaces[0].plugins[0];
+    row.name = 'Tool';
+    row.cachePath = copy;
+    if (!row.facets.claude) throw new Error('expected Claude facet');
+    row.facets.claude.name = 'Tool';
+    row.facets.claude.cachePath = copy;
+    row.facets.claude.externalSource = { source: 'url', url: 'owner/shared' };
+    write(cache);
+    write(
+      {
+        version: 1,
+        entries: {
+          'm/Tool': {
+            cachePath: copy,
+            sourceUrl: 'owner/shared',
+            cachedAt: '',
+          },
+        },
+      },
+      indexPath,
+    );
+    const { installedItemService } =
+      await import('../../installed-items/installed-item-service');
+    const target = {
+      kind: 'plugin',
+      marketplaceId: 'm',
+      pluginName: 'tool',
+    } as const;
+    expect((await installedItemService.listStatus()).items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ target, removable: true }),
+      ]),
+    );
+    const result = await installedItemService.uninstall({
+      target,
+    });
+    expect(result.errors).toEqual([]);
+    expect(index().entries['m/Tool']).toBeUndefined();
+    await refreshed();
+    expect(
+      catalog()
+        .marketplaces.find((entry) => entry.id === 'm')
+        ?.plugins.some((plugin) => plugin.cachePath === copy),
+    ).toBe(false);
+    expect(fs.existsSync(copy)).toBe(true);
+    expect(index().retired).toContainEqual(
+      expect.objectContaining({ cachePath: copy }),
+    );
+  });
+
+  test('entry ownership: healthy partial index provenance gains entry without losing copy metadata', async () => {
+    write(baseCatalog());
+    marketplaceFixture('owner/p');
+    cloneFixture('installed-name');
+    await install();
+    const before = index();
+    const provenance = before.entries['m/p'].provenance;
+    if (!provenance) throw new Error('expected provenance');
+    delete provenance.marketplaceEntryName;
+    write(before, indexPath);
+    await refreshed();
+    expect(
+      catalog().marketplaces.find((row) => row.id === 'm')?.plugins[0]
+        .provenance,
+    ).toEqual({ ...provenance, marketplaceEntryName: 'p' });
+  });
+
+  test('entry ownership: partial facet does not hide row identity during Update', async () => {
+    write(baseCatalog());
+    marketplaceFixture('owner/p');
+    cloneFixture('installed-name');
+    const oldCopy = await install();
+    const cache = catalog();
+    const row = cache.marketplaces[0].plugins[0];
+    if (!row.facets.claude) throw new Error('expected facet');
+    row.facets.claude.provenance = { sourceUrl: 'owner/p', installedAt: '' };
+    write(cache);
+    // Only the row's recorded entry name links the installed alias to m/p.
+    marketplaceFixture('owner/new');
+    const result = await installPlugin('m', 'installed-name', 'owner/new', {
+      skipRefresh: true,
+    });
+    expect(result.success).toBe(true);
+    expect(result.data?.cachePath).not.toBe(oldCopy);
+    expect(catalog().marketplaces[0].plugins).toHaveLength(1);
+    expect(catalog().marketplaces[0].plugins[0].cachePath).toBe(
+      result.data?.cachePath,
+    );
+    expect(index().entries['m/p'].cachePath).toBe(result.data?.cachePath);
+    expect(index().entries['m/installed-name']).toBeUndefined();
+  });
+
+  test.each(['recorded-row', 'unrecorded'])(
+    'entry ownership: duplicate exact sources during %s recovery',
+    async (identity) => {
+      write(baseCatalog());
+      marketplaceFixture('owner/p');
+      cloneFixture('installed-name');
+      const copy = await install();
+      const cache = catalog();
+      const row = cache.marketplaces[0].plugins[0];
+      if (!row.facets.claude) throw new Error('expected facet');
+      row.facets.claude.provenance = { sourceUrl: 'owner/p', installedAt: '' };
+      if (identity === 'unrecorded') delete row.provenance;
+      write(cache);
+      write(
+        {
+          name: 'm',
+          plugins: ['other', 'p'].map((name) => ({
+            name,
+            source: { source: 'url', url: 'owner/p' },
+          })),
+        },
+        path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+      );
+      write({ version: 1, entries: { bad: { cachePath: 7 } } }, indexPath);
+      await refreshed();
+      const marketplace = catalog().marketplaces.find((row) => row.id === 'm');
+      expect(marketplace).toBeDefined();
+      if (!marketplace) throw new Error('expected marketplace');
+      const plugins = marketplace.plugins;
+      expect(plugins.map((plugin) => plugin.name).sort()).toEqual(
+        identity === 'recorded-row'
+          ? ['installed-name', 'other']
+          : ['other', 'p'],
+      );
+      const bound = plugins.filter((plugin) => plugin.cachePath === copy);
+      expect(bound).toHaveLength(identity === 'recorded-row' ? 1 : 0);
+      if (identity === 'recorded-row')
+        expect(bound[0].provenance?.marketplaceEntryName).toBe('p');
+    },
+  );
+
+  test.each(['raw', 'redacted-only'])(
+    'entry ownership: %s legacy source evidence never binds recovery to a redaction-equal entry',
+    async (evidence) => {
+      write(baseCatalog());
+      const raw = 'https://h.example/r?x=1';
+      marketplaceFixture(raw);
+      cloneFixture('installed-name');
+      const copy = await install(raw);
+      const cache = catalog();
+      const row = cache.marketplaces[0].plugins[0];
+      if (!row.facets.claude) throw new Error('expected facet');
+      delete row.provenance;
+      row.facets.claude.provenance = { sourceUrl: raw, installedAt: '' };
+      if (evidence === 'redacted-only') delete row.facets.claude.externalSource;
+      write(cache);
+      // Redaction turns p's install URL into q's.
+      write(
+        {
+          name: 'm',
+          plugins: [
+            {
+              name: 'q',
+              source: { source: 'url', url: 'https://h.example/r' },
+            },
+            { name: 'p', source: { source: 'url', url: raw } },
+          ],
+        },
+        path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+      );
+      write({ version: 1, entries: { bad: { cachePath: 7 } } }, indexPath);
+      await refreshed();
+      const bound = (
+        catalog().marketplaces.find((market) => market.id === 'm')?.plugins ??
+        []
+      ).filter((plugin) => plugin.cachePath === copy);
+      // Raw evidence recovers p; redacted-only evidence leaves the copy unbound.
+      expect(
+        bound.map((plugin) => plugin.provenance?.marketplaceEntryName),
+      ).toEqual(evidence === 'raw' ? ['p'] : []);
+      expect(fs.existsSync(copy)).toBe(true);
+    },
+  );
+
+  test('first install with an empty colliding slot stays executable after refresh', async () => {
+    marketplaceFixture('owner/shared', 'url', 'm', 'x/p');
+    addNeighborManifest('m/x', 'p', 'owner/shared');
+    const cache = baseCatalog();
+    cache.marketplaces[0].plugins = [];
+    cache.marketplaces[0].pluginCount = 0;
+    write(cache);
+    write({ version: 1, entries: {} }, indexPath);
+    cloneFixture('installed-name');
+    const result = await installPlugin('m', 'x/p', 'owner/shared', {
+      skipRefresh: true,
+    });
+    expect(result.success).toBe(true);
+    const copy = result.data?.cachePath;
+    if (!copy) throw new Error('expected installed copy');
+    const ownBinding = {
+      cachePath: copy,
+      provenance: { marketplaceEntryName: 'x/p' },
+    };
+    expect(index().entries['m/x/p']).toMatchObject(ownBinding);
+    fs.writeFileSync(path.join(copy, 'README.md'), 'installed details');
+    for (let pass = 0; pass < 2; pass++) {
+      await refreshed();
+      const current = catalog().marketplaces.find(
+        (market) => market.id === 'm',
+      );
+      if (!current) throw new Error('expected marketplace');
+      const row = current.plugins[0];
+      expect(row).toMatchObject({
+        name: 'installed-name',
+        cachePath: copy,
+        provenance: { marketplaceEntryName: 'x/p', commit: head },
+        facets: { claude: { cachePath: copy, installLocation: copy } },
+        details: { hasReadme: true },
+      });
+      expect(
+        await resolvePluginInfoPath(row, current, [], false, 'claude'),
+      ).toBe(copy);
+      expect(index().entries['m/x/p']).toMatchObject(ownBinding);
+      expect(
+        catalog().marketplaces.find((market) => market.id === 'm/x')?.plugins[0]
+          .cachePath,
+      ).toBeUndefined();
+    }
+  });
+
+  test.each([
+    'refresh',
+    'Update',
+    'Update-missing',
+    'Update-incomplete',
+    'Update-incomplete-same-source',
+    'uninstall',
+    'removal',
+  ])(
+    'entry ownership: joined-key collision keeps the legacy copy during %s',
+    async (operation) => {
+      let updatedCopy: string | undefined;
+      marketplaceFixture(
+        'owner/shared',
+        'url',
+        'selected-registration',
+        'x/p',
+        'm',
+      );
+      addNeighborManifest('neighbor-registration', 'p', 'owner/shared', 'm/x');
+      const cache = baseCatalog();
+      cache.marketplaces[0].providerStatus.claude.marketplaceName =
+        'selected-registration';
+      const row = cache.marketplaces[0].plugins[0];
+      row.name = 'x/p';
+      row.cachePath = pluginPath;
+      if (!row.facets.claude) throw new Error('expected facet');
+      row.facets.claude.cachePath = pluginPath;
+      row.facets.claude.externalSource = { source: 'url', url: 'owner/shared' };
+      const neighbor = structuredClone(cache.marketplaces[0]);
+      neighbor.id = 'm/x';
+      neighbor.providerStatus.claude.marketplaceName = 'neighbor-registration';
+      neighbor.sourceUrl = 'https://github.com/owner/neighbor';
+      neighbor.installLocation = path.join(marketplaceRoot, 'neighbor');
+      neighbor.plugins[0].name = 'p';
+      neighbor.plugins[0].marketplaceId = neighbor.id;
+      cache.marketplaces.push(neighbor);
+      forgetIdentity(cache);
+      write(cache);
+      const binding = {
+        cachePath: pluginPath,
+        sourceUrl: 'owner/shared',
+        cachedAt: '',
+      };
+      write({ version: 1, entries: { 'm/x/p': binding } }, indexPath);
+      fs.writeFileSync(path.join(pluginPath, 'payload'), 'foreign');
+      cloneFixture('x/p');
+      const alignRegistrationsForRefresh = (): void => {
+        // Refresh's pre-existing source merge keeps the registration ID. Identity
+        // ownership is tested above that boundary, with both catalog rows present.
+        marketplaceFixture('owner/shared', 'url', 'm', 'x/p');
+        addNeighborManifest('m/x', 'p', 'owner/shared');
+      };
+      if (operation === 'refresh') {
+        alignRegistrationsForRefresh();
+        await refreshed();
+        for (const [id, name] of [
+          ['m', 'x/p'],
+          ['m/x', 'p'],
+        ]) {
+          const current = catalog().marketplaces.find((row) => row.id === id);
+          expect(current).toBeDefined();
+          if (!current) throw new Error('expected marketplace');
+          expect(current.plugins.map((plugin) => plugin.name)).toEqual([name]);
+          expect(
+            current.plugins[0].provenance?.marketplaceEntryName,
+          ).toBeUndefined();
+        }
+      } else if (operation.startsWith('Update')) {
+        // Refresh advertises owner/shared, so an owner/new Update has drifted.
+        const updateSource =
+          operation === 'Update-incomplete-same-source'
+            ? 'owner/shared'
+            : 'owner/new';
+        const result = await installPlugin('m', 'x/p', updateSource, {
+          skipRefresh: true,
+        });
+        expect(result.success).toBe(true);
+        if (!result.data?.cachePath) throw new Error('expected new copy');
+        expect(result.data.cachePath).not.toBe(pluginPath);
+        updatedCopy = result.data.cachePath;
+        const updated = catalog().marketplaces.find((row) => row.id === 'm');
+        if (!updated) throw new Error('expected selected marketplace');
+        expect(updated.plugins[0].cachePath).toBe(result.data.cachePath);
+        expect(
+          await resolvePluginInfoPath(
+            updated.plugins[0],
+            updated,
+            [],
+            false,
+            'claude',
+          ),
+        ).toBe(result.data.cachePath);
+        expect(
+          fs.existsSync(
+            path.join(result.data.cachePath, '.claude-plugin', 'plugin.json'),
+          ),
+        ).toBe(true);
+        // Reconciliation must not undo a successful Update over a joined-key collision.
+        fs.writeFileSync(
+          path.join(result.data.cachePath, 'README.md'),
+          'new details',
+        );
+        // Refresh keeps every existing copy bound; resolution verifies it, so a
+        // same-source refresh cannot lose the path a later drift keeps (CAN-7698).
+        const kept = operation !== 'Update-missing';
+        if (operation === 'Update-missing')
+          fs.rmSync(result.data.cachePath, { recursive: true });
+        if (operation.startsWith('Update-incomplete'))
+          fs.rmSync(path.join(result.data.cachePath, '.git', 'HEAD'));
+        const unused = path.join(root, 'plugin-cache', 'unused-1234abcd');
+        fs.mkdirSync(unused, { recursive: true });
+        write(
+          {
+            ...index(),
+            retired: [{ cachePath: unused, retiredAt: '2000-01-01T00:00:00Z' }],
+          },
+          indexPath,
+        );
+        alignRegistrationsForRefresh();
+        for (let pass = 0; pass < 2; pass++) {
+          await refreshed();
+          const current = catalog().marketplaces.find((row) => row.id === 'm')
+            ?.plugins[0];
+          expect(current?.cachePath).toBe(
+            kept ? result.data.cachePath : undefined,
+          );
+          expect(current?.facets.claude?.installLocation).toBe(
+            kept ? result.data.cachePath : '',
+          );
+          expect(current?.details?.hasReadme).toBe(kept ? true : undefined);
+          expect(current?.provenance?.sourceUrl).toBe(updateSource);
+        }
+        expect(fs.existsSync(unused)).toBe(false);
+        if (operation === 'Update-incomplete') {
+          // Damage must not turn the advertised source change into an implicit Update.
+          const selected = catalog().marketplaces.find((row) => row.id === 'm');
+          if (!selected) throw new Error('expected selected marketplace');
+          const warnings: string[] = [];
+          jest.mocked(cloneRepo).mockClear();
+          expect(
+            await resolvePluginInfoPath(
+              selected.plugins[0],
+              selected,
+              warnings,
+              true,
+              'claude',
+            ),
+          ).toBe(result.data.cachePath);
+          expect(warnings.length).toBeGreaterThan(0);
+          expect(cloneRepo).not.toHaveBeenCalled();
+        }
+        if (operation === 'Update-incomplete-same-source') {
+          // Same-source refreshes keep the path, so later drift still keeps the copy.
+          marketplaceFixture('owner/drifted', 'url', 'm', 'x/p');
+          addNeighborManifest('m/x', 'p', 'owner/shared');
+          await refreshed();
+          const selected = catalog().marketplaces.find((row) => row.id === 'm');
+          if (!selected) throw new Error('expected selected marketplace');
+          expect(selected.plugins[0]).toMatchObject({
+            cachePath: result.data.cachePath,
+            sourceChanged: true,
+          });
+          const warnings: string[] = [];
+          jest.mocked(cloneRepo).mockClear();
+          expect(
+            await resolvePluginInfoPath(
+              selected.plugins[0],
+              selected,
+              warnings,
+              true,
+              'claude',
+            ),
+          ).toBe(result.data.cachePath);
+          expect(warnings.length).toBeGreaterThan(0);
+          expect(cloneRepo).not.toHaveBeenCalled();
+        }
+      } else if (operation === 'uninstall') {
+        await removeInstalledPluginCache('m', 'x/p');
+        const selected = catalog().marketplaces.find((row) => row.id === 'm');
+        if (!selected) throw new Error('expected selected marketplace');
+        const removed = selected.plugins[0];
+        expect(removed).toMatchObject({
+          sourcePath: '',
+          facets: {
+            claude: {
+              sourcePath: '',
+              installLocation: '',
+            },
+          },
+        });
+        expect(removed?.cachePath).toBeUndefined();
+        expect(removed?.details).toBeUndefined();
+        expect(removed?.facets.claude?.cachePath).toBeUndefined();
+        expect(removed?.facets.claude?.details).toBeUndefined();
+        expect(
+          await resolvePluginInfoPath(removed, selected, [], false, 'claude'),
+        ).toBeNull();
+      } else {
+        const result = await removeMarketplace('m', { providers: ['claude'] });
+        expect(result.success).toBe(true);
+        expect(result.data?.providerOutcomes.claude.error).toBeUndefined();
+        expect(result.data?.removedProviders).toContain('claude');
+        expect(
+          catalog().marketplaces.find((row) => row.id === 'm'),
+        ).toBeUndefined();
+      }
+      // Update takes the slot under its recorded entry name; the legacy copy stays.
+      if (updatedCopy)
+        expect(index().entries['m/x/p']).toMatchObject({
+          cachePath: updatedCopy,
+          provenance: { marketplaceEntryName: 'x/p' },
+        });
+      else expect(index().entries['m/x/p']).toEqual(binding);
+      expect(fs.existsSync(pluginPath)).toBe(true);
+      expect(fs.readFileSync(path.join(pluginPath, 'payload'), 'utf8')).toBe(
+        'foreign',
+      );
+    },
+  );
+
+  test.each(['raw-file-source', 'claude-installed'])(
+    'refresh retirement retains a sole %s reference and deletes an unused copy',
+    async (evidence) => {
+      // Raw # remains portable; literal ? filenames are covered in scratch on POSIX.
+      if (evidence === 'raw-file-source') {
+        const oldRoot = root;
+        root = `${root}#raw-data`;
+        fs.renameSync(oldRoot, root);
+        catalogPath = path.join(root, 'plugins-cache.json');
+        indexPath = path.join(root, 'plugin-cache-index.json');
+        pluginPath = path.join(root, 'plugin');
+        process.env.CANOPY_DATA_DIR = root;
+        process.env.CLAUDE_CONFIG_DIR = root;
+      }
+      const copy = path.join(root, 'plugin-cache', 'source-1234abcd');
+      const unused = path.join(root, 'plugin-cache', 'unused-1234abcd');
+      for (const candidate of [copy, unused]) {
+        fs.mkdirSync(candidate, { recursive: true });
+        fs.writeFileSync(path.join(candidate, 'payload'), 'source');
+      }
+      marketplaceFixture(
+        evidence === 'raw-file-source' ? `file://${copy}` : 'owner/p',
+      );
+      const cache = baseCatalog();
+      if (evidence.startsWith('marketplace-')) {
+        const sourceUrl =
+          evidence === 'marketplace-path' ? copy : pathToFileURL(copy).href;
+        cache.marketplaces[0].sourceUrl = sourceUrl;
+        write(
+          {
+            m: {
+              source: { source: 'url', url: sourceUrl },
+              installLocation: marketplaceRoot,
+              lastUpdated: '',
+            },
+          },
+          path.join(root, 'plugins', 'known_marketplaces.json'),
+        );
+      }
+      if (evidence === 'claude-installed')
+        write(
+          {
+            version: 2,
+            plugins: {
+              'unlisted@other': [{ scope: 'user', installPath: copy }],
+            },
+          },
+          path.join(root, 'plugins', 'installed_plugins.json'),
+        );
+      write(cache);
+      const retired = [copy, unused].map((cachePath) => ({
+        cachePath,
+        retiredAt: '2000-01-01T00:00:00Z',
+      }));
+      write({ version: 1, entries: {}, retired }, indexPath);
+      await refreshed();
+      await refreshed();
+      expect(fs.existsSync(copy)).toBe(true);
+      expect(fs.readFileSync(path.join(copy, 'payload'), 'utf8')).toBe(
+        'source',
+      );
+      expect(fs.existsSync(unused)).toBe(false);
+      expect(index().retired).toEqual([retired[0]]);
+      expect(index().entries).toEqual({});
+    },
+  );
+
+  test('uninstall retains another marketplace source but clears the selected row and binding', async () => {
+    marketplaceFixture('owner/p');
+    cloneFixture();
+    write(baseCatalog());
+    const copy = await install();
+    fs.writeFileSync(path.join(copy, 'payload'), 'shared marketplace source');
+    const cache = catalog();
+    const neighbor = structuredClone(cache.marketplaces[0]);
+    neighbor.id = 'other';
+    neighbor.sourceUrl = pathToFileURL(copy).href;
+    neighbor.plugins = [];
+    cache.marketplaces.push(neighbor);
+    write(cache);
+    const unused = path.join(root, 'plugin-cache', 'unused-1234abcd');
+    fs.mkdirSync(unused, { recursive: true });
+    write(
+      {
+        ...index(),
+        retired: [{ cachePath: unused, retiredAt: '2000-01-01T00:00:00Z' }],
+      },
+      indexPath,
+    );
+    await removeInstalledPluginCache('m', 'p');
+    expect(index().entries['m/p']).toBeUndefined();
+    expect(catalog().marketplaces[0].plugins[0].cachePath).toBeUndefined();
+    expect(catalog().marketplaces[0].plugins[0].details).toBeUndefined();
+    expect(
+      catalog().marketplaces[0].plugins[0].facets.claude?.cachePath,
+    ).toBeUndefined();
+    expect(
+      catalog().marketplaces[0].plugins[0].facets.claude?.details,
+    ).toBeUndefined();
+    expect(fs.existsSync(copy)).toBe(true);
+    const sharedRetirement = index().retired?.find(
+      (entry) => entry.cachePath === copy,
+    );
+    expect(sharedRetirement?.cachePath).toBe(copy);
+    expect(typeof sharedRetirement?.retiredAt).toBe('string');
+    expect(fs.existsSync(unused)).toBe(true);
+    // Past the grace period in a fresh lifetime, only the neighbor's source
+    // reference keeps the shared copy.
+    const clock = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(Date.now() + 2 * 60 * 60 * 1000);
+    try {
+      await jest.isolateModulesAsync(refreshedInIsolatedLifetime);
+    } finally {
+      clock.mockRestore();
+    }
+    expect(fs.existsSync(unused)).toBe(false);
+    expect(fs.existsSync(copy)).toBe(true);
+    expect(fs.readFileSync(path.join(copy, 'payload'), 'utf8')).toBe(
+      'shared marketplace source',
+    );
+    expect(index().retired).toEqual([sharedRetirement]);
+  });
+
+  test.each([
+    'failure',
+    'partial',
+    'unlocatable source',
+    'unlocatable marketplace',
+    'empty without its manifest',
+    'empty while its manifest lists plugins',
+    'empty without a path',
+  ])(
+    'refresh succeeds but skips retirement after a provider listing %s',
+    async (evidence) => {
+      marketplaceFixture('owner/p');
+      write(baseCatalog());
+      const codexManifest = path.join(
+        root,
+        'codex-market',
+        '.agents',
+        'plugins',
+        'marketplace.json',
+      );
+      const emptyListing = (
+        manifestPath: string | null,
+      ): Awaited<ReturnType<typeof listCodexPlugins>> => ({
+        marketplaces: [
+          {
+            name: 'local-market',
+            path: manifestPath,
+            interface: null,
+            plugins: [],
+          },
+        ],
+        marketplaceLoadErrors: [],
+        featuredPluginIds: [],
+      });
+      const unused = path.join(root, 'plugin-cache', 'unused-1234abcd');
+      fs.mkdirSync(unused, { recursive: true });
+      write(
+        {
+          version: 1,
+          entries: {},
+          retired: [{ cachePath: unused, retiredAt: '2000-01-01T00:00:00Z' }],
+        },
+        indexPath,
+      );
+      // Keep listCodexPlugins' evidence boundary; mock only the runtime request.
+      const actual = jest.requireActual<{
+        listCodexPlugins: typeof listCodexPlugins;
+      }>('../codex-marketplace-service');
+      jest.mocked(listCodexPlugins).mockImplementation(actual.listCodexPlugins);
+      if (evidence === 'failure')
+        codexPluginListRequest.mockRejectedValue(
+          new Error('provider unavailable'),
+        );
+      else if (evidence === 'empty without its manifest')
+        // Codex lists a missing or unreadable manifest as an empty marketplace.
+        codexPluginListRequest.mockResolvedValue(emptyListing(codexManifest));
+      else if (evidence === 'empty while its manifest lists plugins') {
+        fs.mkdirSync(path.dirname(codexManifest), { recursive: true });
+        write(
+          {
+            name: 'local-market',
+            plugins: [
+              {
+                name: 'p',
+                source: { source: 'local', path: './plugins/p' },
+              },
+            ],
+          },
+          codexManifest,
+        );
+        codexPluginListRequest.mockResolvedValue(emptyListing(codexManifest));
+      } else if (evidence === 'empty without a path')
+        codexPluginListRequest.mockResolvedValue(emptyListing(null));
+      else if (evidence === 'unlocatable marketplace')
+        // The protocol requires an absolute or null marketplace path. The
+        // listing is otherwise valid, so the path is its only defect.
+        codexPluginListRequest.mockResolvedValue(
+          listedPlugin(
+            '.agents/plugins/marketplace.json',
+            path.join(root, 'codex-market', 'plugins', 'p'),
+          ),
+        );
+      else if (evidence === 'unlocatable source')
+        // The protocol requires absolute local paths; a relative one names no copy.
+        codexPluginListRequest.mockResolvedValue(
+          listedPlugin(null, 'plugins/p'),
+        );
+      else
+        codexPluginListRequest.mockResolvedValue({
+          marketplaces: [],
+          marketplaceLoadErrors: [
+            { marketplacePath: '/unavailable', message: 'load failed' },
+          ],
+          featuredPluginIds: [],
+        });
+      await refreshed();
+      expect(fs.existsSync(unused)).toBe(true);
+      // A genuinely empty marketplace stays eligible: its manifest lists nothing.
+      fs.mkdirSync(path.dirname(codexManifest), { recursive: true });
+      write({ name: 'local-market', plugins: [] }, codexManifest);
+      codexPluginListRequest.mockResolvedValue(emptyListing(codexManifest));
+      await refreshed();
+      expect(fs.existsSync(unused)).toBe(false);
+    },
+  );
+
+  function listedPlugin(
+    marketplacePath: string | null,
+    sourcePath: string,
+  ): Awaited<ReturnType<typeof listCodexPlugins>> {
+    return {
+      marketplaces: [
+        {
+          name: 'local-market',
+          path: marketplacePath,
+          interface: null,
+          plugins: [
+            {
+              id: 'p@local-market',
+              remotePluginId: null,
+              version: null,
+              localVersion: null,
+              name: 'p',
+              shareContext: null,
+              source: { type: 'local', path: sourcePath },
+              installed: true,
+              installedAt: null,
+              enabled: true,
+              installPolicy: 'AVAILABLE',
+              installPolicySource: null,
+              mustShowInstallationInterstitial: null,
+              authPolicy: 'ON_INSTALL',
+              availability: 'AVAILABLE',
+              disabledReason: null,
+              eligiblePlanTypes: null,
+              interface: null,
+              keywords: [],
+            },
+          ],
+        },
+      ],
+      marketplaceLoadErrors: [],
+      featuredPluginIds: [],
+    };
+  }
+
+  test('refresh reclaims retired copies when the Codex CLI is not installed', async () => {
+    marketplaceFixture('owner/p');
+    write(baseCatalog());
+    const unused = path.join(root, 'plugin-cache', 'unused-1234abcd');
+    fs.mkdirSync(unused, { recursive: true });
+    write(
+      {
+        version: 1,
+        entries: {},
+        retired: [{ cachePath: unused, retiredAt: '2000-01-01T00:00:00Z' }],
+      },
+      indexPath,
+    );
+    const actual = jest.requireActual<{
+      listCodexPlugins: typeof listCodexPlugins;
+    }>('../codex-marketplace-service');
+    jest.mocked(listCodexPlugins).mockImplementation(actual.listCodexPlugins);
+    const previousExecutable = process.env.CODEX_EXECUTABLE;
+    // The real pre-check rejects this absolute path before any runtime request.
+    const executable = path.join(root, 'missing-codex');
+    process.env.CODEX_EXECUTABLE = executable;
+    mockCodexAvailability.real = true;
+    const restored = path.join(root, 'plugin-cache', 'restored-1234abcd');
+    try {
+      await refreshed();
+      expect(jest.mocked(listCodexPlugins)).toHaveBeenCalled();
+      expect(codexPluginListRequest).not.toHaveBeenCalled();
+      expect(fs.existsSync(unused)).toBe(false);
+      expect(index().retired).toEqual([]);
+      // Restored while the pre-check still caches its miss: absence is unproven.
+      fs.mkdirSync(restored, { recursive: true });
+      write(
+        {
+          version: 1,
+          entries: {},
+          retired: [{ cachePath: restored, retiredAt: '2000-01-01T00:00:00Z' }],
+        },
+        indexPath,
+      );
+      fs.writeFileSync(executable, '', { mode: 0o755 });
+      await refreshed();
+    } finally {
+      mockCodexAvailability.real = false;
+      if (previousExecutable === undefined) delete process.env.CODEX_EXECUTABLE;
+      else process.env.CODEX_EXECUTABLE = previousExecutable;
+    }
+    expect(fs.existsSync(restored)).toBe(true);
+  });
+
+  test('refresh stops reclaiming once the Codex CLI is restored between deletions', async () => {
+    marketplaceFixture('owner/p');
+    write(baseCatalog());
+    const copies = ['first-1234abcd', 'second-1234abcd', 'third-1234abcd'].map(
+      (name) => path.join(root, 'plugin-cache', name),
+    );
+    for (const copy of copies) fs.mkdirSync(copy, { recursive: true });
+    const retired = copies.map((cachePath) => ({
+      cachePath,
+      retiredAt: '2000-01-01T00:00:00Z',
+    }));
+    write({ version: 1, entries: {}, retired }, indexPath);
+    const actual = jest.requireActual<{
+      listCodexPlugins: typeof listCodexPlugins;
+    }>('../codex-marketplace-service');
+    jest.mocked(listCodexPlugins).mockImplementation(actual.listCodexPlugins);
+    const previousExecutable = process.env.CODEX_EXECUTABLE;
+    const executable = path.join(root, 'missing-codex');
+    process.env.CODEX_EXECUTABLE = executable;
+    mockCodexAvailability.real = true;
+    // As the sweep first inspects each candidate: leave Codex missing, restore
+    // it, then remove it again. Only a stopped cycle keeps the third copy.
+    const steps = [
+      (): void => undefined,
+      (): void => fs.writeFileSync(executable, '', { mode: 0o755 }),
+      (): void => fs.rmSync(executable),
+    ];
+    const realLstat = fs.promises.lstat;
+    const inspected: string[] = [];
+    jest
+      .spyOn(fs.promises, 'lstat')
+      .mockImplementation(async (...args: Parameters<typeof realLstat>) => {
+        const [target] = args;
+        if (
+          typeof target === 'string' &&
+          copies.includes(target) &&
+          !inspected.includes(target)
+        ) {
+          steps[inspected.length]?.();
+          inspected.push(target);
+        }
+        return realLstat(...args);
+      });
+    try {
+      await refreshed();
+    } finally {
+      mockCodexAvailability.real = false;
+      if (previousExecutable === undefined) delete process.env.CODEX_EXECUTABLE;
+      else process.env.CODEX_EXECUTABLE = previousExecutable;
+    }
+    // Pins the window: the listing judged Codex absent, then the sweep reached each candidate.
+    expect(codexPluginListRequest).not.toHaveBeenCalled();
+    expect(inspected).toHaveLength(copies.length);
+    const [reclaimed, ...kept] = inspected;
+    expect(fs.existsSync(reclaimed)).toBe(false);
+    for (const copy of kept) expect(fs.existsSync(copy)).toBe(true);
+    expect(index().retired).toEqual(
+      expect.arrayContaining(
+        retired.filter(({ cachePath }) => cachePath !== reclaimed),
+      ),
+    );
+    expect(index().retired).toHaveLength(kept.length);
+  });
+
+  test.each([
+    { change: 'installed registry row', token: 'e0000001' },
+    { change: 'known marketplace', token: 'e0000002' },
+    { change: 'manifest rewritten in place', token: 'e0000003' },
+    { change: 'catalog replaced', token: 'e0000004' },
+    { change: 'damaged preimage', token: 'e0000005' },
+    { change: 'nothing', token: 'e0000006' },
+  ] as const)(
+    'refresh stops reclaiming once evidence it read changes between deletions: $change',
+    async ({ change, token }) => {
+      marketplaceFixture('owner/p');
+      write(baseCatalog());
+      // Process history matches copy basenames: a per-case token keeps one
+      // case's observed reference from protecting the next case's copy.
+      const copies = [`first-${token}`, `second-${token}`].map((name) =>
+        path.join(root, 'plugin-cache', name),
+      );
+      for (const copy of copies) fs.mkdirSync(copy, { recursive: true });
+      const retired = copies.map((cachePath) => ({
+        cachePath,
+        retiredAt: '2000-01-01T00:00:00Z',
+      }));
+      write({ version: 1, entries: {}, retired }, indexPath);
+      const manifestPath = path.join(
+        marketplaceRoot,
+        '.claude-plugin',
+        'marketplace.json',
+      );
+      // Each change names the copy through a file the sweep already read, and
+      // changes its size: coarse timestamps alone may not reveal a rewrite.
+      const name = (copy: string): void => {
+        if (change === 'installed registry row')
+          write(
+            {
+              version: 2,
+              plugins: { 'late@m': [{ scope: 'user', installPath: copy }] },
+            },
+            path.join(root, 'plugins', 'installed_plugins.json'),
+          );
+        else if (change === 'known marketplace') {
+          const late = path.join(root, 'late-market');
+          fs.mkdirSync(path.join(late, '.claude-plugin'), { recursive: true });
+          write(
+            { name: 'late', plugins: [{ name: 'late', source: copy }] },
+            path.join(late, '.claude-plugin', 'marketplace.json'),
+          );
+          const registry = path.join(
+            root,
+            'plugins',
+            'known_marketplaces.json',
+          );
+          const parsed: unknown = JSON.parse(fs.readFileSync(registry, 'utf8'));
+          if (typeof parsed !== 'object' || parsed === null)
+            throw new Error('expected registry');
+          write(
+            {
+              ...parsed,
+              late: {
+                source: { source: 'github', repo: 'owner/late' },
+                installLocation: late,
+                lastUpdated: '',
+              },
+            },
+            registry,
+          );
+        } else if (change === 'manifest rewritten in place')
+          fs.writeFileSync(
+            manifestPath,
+            JSON.stringify({
+              name: 'm',
+              plugins: [{ name: 'late', source: copy }],
+            }),
+          );
+        else if (change === 'catalog replaced') {
+          const next = baseCatalog();
+          next.marketplaces[0].plugins[0].cachePath = copy;
+          write(next, `${catalogPath}.tmp`);
+          fs.renameSync(`${catalogPath}.tmp`, catalogPath);
+        } else if (change === 'damaged preimage') {
+          const preimage = baseCatalog();
+          preimage.marketplaces[0].plugins[0].cachePath = copy;
+          write(preimage, `${catalogPath}.damaged-${Date.now()}`);
+        }
+      };
+      const realLstat = fs.promises.lstat;
+      const inspected: string[] = [];
+      jest
+        .spyOn(fs.promises, 'lstat')
+        .mockImplementation(async (...args: Parameters<typeof realLstat>) => {
+          const [target] = args;
+          if (
+            typeof target === 'string' &&
+            copies.includes(target) &&
+            !inspected.includes(target)
+          ) {
+            // After the first copy's removal, before the second's recheck.
+            if (inspected.length === 1) name(target);
+            inspected.push(target);
+          }
+          return realLstat(...args);
+        });
+      await refreshed();
+      expect(inspected).toHaveLength(copies.length);
+      const [reclaimed, named] = inspected;
+      expect(fs.existsSync(reclaimed)).toBe(false);
+      if (change === 'nothing') {
+        // The sweep's own removal and effects never trip the recheck.
+        expect(fs.existsSync(named)).toBe(false);
+        expect(index().retired).toEqual([]);
+        return;
+      }
+      expect(fs.existsSync(named)).toBe(true);
+      expect(index().retired).toEqual(
+        retired.filter(({ cachePath }) => cachePath === named),
+      );
+    },
+  );
+
+  test('refresh skips cleanup while marketplace text exceeds the token-index cap', async () => {
+    marketplaceFixture('owner/p');
+    write(baseCatalog());
+    const unused = path.join(root, 'plugin-cache', 'unused-1234abcd');
+    fs.mkdirSync(unused, { recursive: true });
+    write(
+      {
+        version: 1,
+        entries: {},
+        retired: [{ cachePath: unused, retiredAt: '2000-01-01T00:00:00Z' }],
+      },
+      indexPath,
+    );
+    const actualCollector = copyReferences.pluginCopyReferenceCollector;
+    const collectors = jest
+      .spyOn(copyReferences, 'pluginCopyReferenceCollector')
+      .mockImplementation(() => actualCollector({ maxTokenOccurrences: 100 }));
+    const manifestPath = path.join(
+      marketplaceRoot,
+      '.claude-plugin',
+      'marketplace.json',
+    );
+    const before = fs.readFileSync(manifestPath);
+    const manifest: unknown = JSON.parse(before.toString('utf8'));
+    if (typeof manifest !== 'object' || manifest === null)
+      throw new Error('expected manifest');
+    // Publisher text within the file-size limit: one token record per match.
+    write({ ...manifest, notes: 'x-0badf00d '.repeat(1000) }, manifestPath);
+    await refreshed();
+    expect(collectors).toHaveBeenCalled();
+    expect(fs.existsSync(unused)).toBe(true);
+    expect(index().retired).toEqual([
+      { cachePath: unused, retiredAt: '2000-01-01T00:00:00Z' },
+    ]);
+    // The same cap admits ordinary evidence: only the over-cap cycle leaks.
+    fs.writeFileSync(manifestPath, before);
+    await refreshed();
+    expect(fs.existsSync(unused)).toBe(false);
+  });
+
+  test.each([
+    { name: 'installed_plugins.json', damage: 'unreadable' },
+    { name: 'installed_plugins.json', damage: 'over-long file URL' },
+  ])(
+    'refresh skips cleanup for $damage evidence in $name and resumes when repaired',
+    async ({ name, damage }) => {
+      marketplaceFixture('owner/p');
+      write(baseCatalog());
+      const unused = path.join(root, 'plugin-cache', 'unused-1234abcd');
+      fs.mkdirSync(unused, { recursive: true });
+      write(
+        {
+          version: 1,
+          entries: {},
+          retired: [{ cachePath: unused, retiredAt: '2000-01-01T00:00:00Z' }],
+        },
+        indexPath,
+      );
+      const file = path.join(root, 'plugins', name);
+      const before = fs.existsSync(file)
+        ? fs.readFileSync(file)
+        : Buffer.from(
+            JSON.stringify(
+              name === 'installed_plugins.json'
+                ? { version: 2, plugins: {} }
+                : {},
+            ),
+          );
+      if (damage === 'unreadable') {
+        fs.writeFileSync(file, '{');
+        await refreshed();
+        expect(fs.existsSync(unused)).toBe(true);
+        fs.writeFileSync(file, before);
+        await refreshed();
+        expect(fs.existsSync(unused)).toBe(false);
+        return;
+      }
+      // Over the per-string cap: never normalized, so unmappable until restart.
+      write(
+        {
+          version: 2,
+          plugins: {},
+          note: `file:///${'a'.repeat(140_000)}`,
+        },
+        file,
+      );
+      await jest.isolateModulesAsync(refreshedInIsolatedLifetime);
+      expect(fs.existsSync(unused)).toBe(true);
+      fs.writeFileSync(file, before);
+      await jest.isolateModulesAsync(refreshedInIsolatedLifetime);
+      expect(fs.existsSync(unused)).toBe(false);
+    },
+  );
+
+  test.each([
+    { file: 'installed_plugins.json', row: { scope: 'user' } },
+    { file: 'installed_plugins.json', row: { scope: 'user', installPath: '' } },
+    {
+      file: 'installed_plugins.json',
+      row: { scope: 'user', installPath: 'relative/p' },
+    },
+    {
+      file: 'known_marketplaces.json',
+      row: { source: { source: 'github', repo: 'o/x' }, installLocation: '' },
+    },
+    {
+      // installLocation is replaced by an existing checkout without a manifest.
+      file: 'known_marketplaces.json',
+      row: {
+        source: { source: 'github', repo: 'o/x' },
+        installLocation: 'checkout without .claude-plugin/marketplace.json',
+      },
+    },
+  ])(
+    'refresh skips cleanup while $file has a row its reader cannot locate: $row',
+    async ({ file, row }) => {
+      const checkout = path.join(root, 'manifestless-checkout');
+      fs.mkdirSync(checkout, { recursive: true });
+      const written =
+        row.installLocation?.startsWith('checkout') === true
+          ? { ...row, installLocation: checkout }
+          : row;
+      marketplaceFixture('owner/p');
+      write(baseCatalog());
+      const unused = path.join(root, 'plugin-cache', 'unused-1234abcd');
+      fs.mkdirSync(unused, { recursive: true });
+      write(
+        {
+          version: 1,
+          entries: {},
+          retired: [{ cachePath: unused, retiredAt: '2000-01-01T00:00:00Z' }],
+        },
+        indexPath,
+      );
+      const target = path.join(root, 'plugins', file);
+      const before = fs.existsSync(target)
+        ? fs.readFileSync(target)
+        : Buffer.from(JSON.stringify({ version: 2, plugins: {} }));
+      const parsed: unknown = JSON.parse(before.toString('utf8'));
+      if (typeof parsed !== 'object' || parsed === null)
+        throw new Error('expected provider file');
+      write(
+        file === 'installed_plugins.json'
+          ? { version: 2, plugins: { 'p@other': [written] } }
+          : { ...parsed, other: written },
+        target,
+      );
+      await refreshed();
+      expect(fs.existsSync(unused)).toBe(true);
+      fs.writeFileSync(target, before);
+      await refreshed();
+      expect(fs.existsSync(unused)).toBe(false);
+    },
+  );
+
+  test.each([
+    { name: 'elsewhere', protects: false, unlocatable: false },
+    { name: 'at the retired copy', protects: true, unlocatable: false },
+    { name: 'without a path', protects: true, unlocatable: true },
+  ])(
+    'refresh reads a singleton Claude install record $name',
+    async ({ protects, unlocatable }) => {
+      marketplaceFixture('owner/p');
+      write(baseCatalog());
+      const unused = path.join(root, 'plugin-cache', 'unused-1234abcd');
+      fs.mkdirSync(unused, { recursive: true });
+      write(
+        {
+          version: 1,
+          entries: {},
+          retired: [{ cachePath: unused, retiredAt: '2000-01-01T00:00:00Z' }],
+        },
+        indexPath,
+      );
+      const installPath = protects
+        ? unused
+        : path.join(root, 'claude-installs', 'p');
+      fs.mkdirSync(path.join(root, 'plugins'), { recursive: true });
+      write(
+        {
+          version: 2,
+          plugins: {
+            'p@other': unlocatable
+              ? { scope: 'user' }
+              : { scope: 'user', installPath },
+          },
+        },
+        path.join(root, 'plugins', 'installed_plugins.json'),
+      );
+      // Observed references outlive a refresh; keep them out of later cases.
+      await jest.isolateModulesAsync(refreshedInIsolatedLifetime);
+      expect(fs.existsSync(unused)).toBe(protects);
+    },
+  );
+
+  test.each(['scanned', 'cached', 'dropped-facet'])(
+    'refresh skips cleanup while the curated Codex listing omits a known plugin (%s)',
+    async (variant) => {
+      // No external marketplace: its provider rechecks would advance the
+      // generation and stale a memo warmed before them.
+      write({ ...baseCatalog(), marketplaces: [] });
+      jest
+        .mocked(resolveCodexPluginInstallRoots)
+        .mockResolvedValue({ locations: [], unresolved: [] });
+      jest
+        .mocked(runClaudeCliProcessOffMain)
+        .mockResolvedValue({ stdout: '', stderr: '' });
+      resetBuiltInMarketplaceScanCacheForTests();
+      const curatedRoot = path.join(root, 'curated-plugins', 'marketplace');
+      const p = path.join(curatedRoot, 'plugins', 'p');
+      for (const kind of ['.claude-plugin', '.codex-plugin']) {
+        fs.mkdirSync(path.join(p, kind), { recursive: true });
+        write({ name: 'p' }, path.join(p, kind, 'plugin.json'));
+      }
+      fs.mkdirSync(path.join(curatedRoot, '.claude-plugin'), {
+        recursive: true,
+      });
+      fs.mkdirSync(path.join(curatedRoot, '.agents', 'plugins'), {
+        recursive: true,
+      });
+      write(
+        { name: 'curated', plugins: [{ name: 'p', source: './plugins/p' }] },
+        path.join(curatedRoot, '.claude-plugin', 'marketplace.json'),
+      );
+      const codexManifest = path.join(
+        curatedRoot,
+        '.agents',
+        'plugins',
+        'marketplace.json',
+      );
+      // A manifest-named plugin with no local tree never becomes a facet.
+      const names = variant === 'dropped-facet' ? ['p', 'q'] : ['p', 'r'];
+      if (variant !== 'dropped-facet') {
+        const r = path.join(curatedRoot, 'plugins', 'r', '.codex-plugin');
+        fs.mkdirSync(r, { recursive: true });
+        write({ name: 'r' }, path.join(r, 'plugin.json'));
+      }
+      write(
+        {
+          name: 'curated',
+          plugins: names.map((name) => ({
+            name,
+            source: { source: 'local', path: `./plugins/${name}` },
+          })),
+        },
+        codexManifest,
+      );
+      jest.spyOn(curatedSync, 'syncCuratedPlugins').mockResolvedValue({
+        status: 'skipped',
+        added: [],
+        changed: [],
+        removed: [],
+        errors: [],
+      });
+      const unused = path.join(root, 'plugin-cache', 'unused-1234abcd');
+      fs.mkdirSync(unused, { recursive: true });
+      write(
+        {
+          version: 1,
+          entries: {},
+          retired: [{ cachePath: unused, retiredAt: '2000-01-01T00:00:00Z' }],
+        },
+        indexPath,
+      );
+      const curatedListing = (
+        listed: string[],
+      ): Awaited<ReturnType<typeof listCodexPlugins>> => ({
+        marketplaces: [
+          {
+            name: curatedSync.getCuratedPluginMarketplaceName(),
+            path: null,
+            interface: null,
+            plugins: listed.map((name) => ({
+              id: `${name}@${curatedSync.getCuratedPluginMarketplaceName()}`,
+              remotePluginId: null,
+              version: null,
+              localVersion: null,
+              name,
+              shareContext: null,
+              source: { type: 'local', path: path.join(curatedRoot, name) },
+              installed: false,
+              installedAt: null,
+              enabled: false,
+              installPolicy: 'AVAILABLE',
+              installPolicySource: null,
+              mustShowInstallationInterstitial: null,
+              authPolicy: 'ON_INSTALL',
+              availability: 'AVAILABLE',
+              disabledReason: null,
+              eligiblePlanTypes: null,
+              interface: null,
+              keywords: [],
+            })),
+          },
+        ],
+        marketplaceLoadErrors: [],
+        featuredPluginIds: [],
+      });
+      // Non-empty, so the empty-marketplace guard passes it and only the
+      // curated completeness check can refuse a listing that omits a plugin.
+      const partial = curatedListing(
+        variant === 'dropped-facet' ? ['p'] : ['r'],
+      );
+      let warming = false;
+      let warmed = false;
+      listCodexThroughEvidence(async () => {
+        if (variant !== 'cached') return partial;
+        if (warming) return curatedListing(names);
+        // Warm once: a refresh scan that misses the memo then reads the
+        // partial listing instead of re-warming in a retry loop.
+        if (warmed) return partial;
+        // A concurrent reader, outside the refresh's evidence, scans a complete
+        // listing in this generation; its memo must not vouch for the refresh.
+        warmed = true;
+        warming = true;
+        try {
+          await pluginCopyProviderEvidence.exit(scanManagedMarketplacesFresh);
+        } finally {
+          warming = false;
+        }
+        return partial;
+      });
+      try {
+        const result = await refreshMarketplaces();
+        expect(result).toMatchObject({ success: true });
+        const row = result.data?.marketplaces
+          .flatMap((marketplace) => marketplace.plugins)
+          .find((plugin) => plugin.curated && plugin.name === 'p');
+        // Only a listed summary sets `enabled`: in the cached variant it proves
+        // the refresh scan reused the warmed row, not the partial listing.
+        expect(row?.globalInstallStatus?.codex).toEqual(
+          variant === 'scanned'
+            ? {
+                available: true,
+                installed: false,
+                version: '',
+                error: 'Incomplete curated Codex plugin listing.',
+              }
+            : {
+                available: true,
+                installed: false,
+                enabled: false,
+                version: '',
+              },
+        );
+        expect(fs.existsSync(unused)).toBe(true);
+        codexPluginListRequest.mockReset();
+        // Listing every manifest-named plugin lets the sweep reclaim.
+        listCodexThroughEvidence(curatedListing(names));
+        resetBuiltInMarketplaceScanCacheForTests();
+        await refreshed();
+        expect(fs.existsSync(unused)).toBe(false);
+      } finally {
+        resetBuiltInMarketplaceScanCacheForTests();
+      }
+    },
+  );
+
+  test.each([
+    {
+      damage: 'missing',
+      resolver: 'facet',
+      scenario: 'allowed',
+    },
+    {
+      damage: 'missing',
+      resolver: 'facet',
+      scenario: 'now-private',
+    },
+    {
+      damage: 'missing',
+      resolver: 'facet',
+      scenario: 'trusted-ssh',
+    },
+    {
+      damage: 'missing',
+      resolver: 'facet',
+      scenario: 'trusted-private',
+    },
+    {
+      damage: 'incomplete',
+      resolver: 'no-facet',
+      scenario: 'allowed',
+    },
+    {
+      damage: 'incomplete',
+      resolver: 'no-facet',
+      scenario: 'now-private',
+    },
+    {
+      damage: 'incomplete',
+      resolver: 'no-facet',
+      scenario: 'trusted-ssh',
+    },
+    {
+      damage: 'incomplete',
+      resolver: 'no-facet',
+      scenario: 'trusted-private',
+    },
+  ])(
+    'metadata-only automatic repair: $damage $resolver $scenario keeps installation policy after recovery',
+    async ({ damage, resolver, scenario }) => {
+      write(baseCatalog());
+      const trusted = scenario.startsWith('trusted');
+      const source =
+        scenario === 'trusted-ssh'
+          ? 'git@github.com:owner/p.git'
+          : 'https://github.com/owner/p';
+      marketplaceFixture(source);
+      cloneFixture('installed-name');
+      lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+      const installed = await installPluginForPrincipal(
+        {
+          remote: !trusted,
+          marketplaceId: 'm',
+          pluginName: 'p',
+          sourceUrl: source,
+        },
+        (id, name, url, options) =>
+          installPlugin(id, name, url, { ...options, skipRefresh: true }),
+        // The marketplace fixture records `source` for this plugin.
+        () => Promise.resolve(source),
+      );
+      expect(installed.success).toBe(true);
+      if (!installed.data?.cachePath) throw new Error('expected copy');
+      if (damage === 'missing')
+        fs.rmSync(installed.data.cachePath, { recursive: true });
+      else
+        fs.writeFileSync(
+          path.join(installed.data.cachePath, '.git', 'HEAD'),
+          'b'.repeat(40),
+        );
+      await refreshed();
+      write({ version: 1, entries: { bad: { cachePath: 7 } } }, indexPath);
+      // A row without a readable copy is named by its marketplace entry.
+      const rowName = damage === 'missing' ? 'p' : 'installed-name';
+      for (let scan = 0; scan < 2; scan++) {
+        await refreshed();
+        const current = catalog()
+          .marketplaces.find((row) => row.id === 'm')
+          ?.plugins.find((row) => row.name === rowName);
+        expect(current).toBeDefined();
+        expect(current?.provenance).toMatchObject({
+          sourceUrl: source,
+          installedName: 'installed-name',
+          marketplaceEntryName: 'p',
+        });
+        expect(current?.provenance?.remoteSourceRestricted).toBe(
+          trusted ? undefined : true,
+        );
+        expect(current?.facets.claude?.provenance).toEqual(current?.provenance);
+        // Refresh drops only a missing copy; resolution verifies an existing one.
+        const kept =
+          damage === 'incomplete' ? installed.data.cachePath : undefined;
+        expect(current?.cachePath).toBe(kept);
+        expect(current?.details === undefined).toBe(kept === undefined);
+        expect(current?.facets.claude?.installLocation).toBe(kept ?? '');
+        expect(current?.facets.claude?.sourcePath).toBe(kept ?? '');
+        expect(current?.facets.claude?.cachePath).toBe(kept);
+        expect(current?.facets.claude?.details === undefined).toBe(
+          kept === undefined,
+        );
+      }
+      const marketplace = catalog().marketplaces.find((row) => row.id === 'm');
+      const row = marketplace?.plugins.find(
+        (plugin) => plugin.name === rowName,
+      );
+      if (!marketplace || !row) throw new Error('expected installed metadata');
+      jest.mocked(cloneRepo).mockClear();
+      lookupMock.mockClear();
+      if (scenario === 'now-private' || scenario === 'trusted-private')
+        lookupMock.mockResolvedValue([{ address: '10.0.0.5', family: 4 }]);
+      const warnings: string[] = [];
+      const repaired = await resolvePluginInfoPath(
+        resolver === 'no-facet' ? { ...row, facets: {} } : row,
+        marketplace,
+        warnings,
+        true,
+        resolver === 'facet' ? 'claude' : undefined,
+      );
+      await settleDetachedWork();
+      if (scenario === 'now-private') {
+        expect(repaired).toBeNull();
+        expect(cloneRepo).not.toHaveBeenCalled();
+        expect(warnings.length).toBeGreaterThan(0);
+      } else {
+        expect(repaired).not.toBeNull();
+        expect(repaired).not.toBe(installed.data.cachePath);
+        expect(cloneRepo).toHaveBeenCalledTimes(1);
+        expect(cloneRepo).toHaveBeenCalledWith(source, expect.any(String), {
+          followRedirects: trusted,
+        });
+        expect(index().entries['m/p'].cachePath).toBe(repaired);
+        expect(index().entries['m/p'].provenance?.remoteSourceRestricted).toBe(
+          trusted ? undefined : true,
+        );
+      }
+      if (trusted) expect(lookupMock).not.toHaveBeenCalled();
+      else expect(lookupMock).toHaveBeenCalled();
+    },
+  );
+
+  test.each([
+    {
+      scan: 'standalone',
+      identity: 'exact',
+    },
+    {
+      scan: 'standalone',
+      identity: 'ambiguous',
+    },
+    {
+      scan: 'refresh',
+      identity: 'alias',
+    },
+    {
+      scan: 'refresh',
+      identity: 'ambiguous',
+    },
+  ])(
+    'curated metadata-only identity: $scan $identity uses the current managed manifest',
+    async ({ scan, identity }) => {
+      const source = 'https://github.com/owner/p';
+      const curatedRoot = path.join(root, 'curated-plugins', 'marketplace');
+      fs.mkdirSync(path.join(curatedRoot, '.claude-plugin'), {
+        recursive: true,
+      });
+      write(
+        {
+          name: 'curated',
+          plugins: [
+            {
+              name: 'p',
+              source: {
+                source: 'github',
+                url:
+                  identity === 'alias' ? 'git@github.com:owner/p.git' : source,
+              },
+            },
+            ...(identity === 'ambiguous'
+              ? [
+                  {
+                    name: 'neighbor',
+                    source: { source: 'github', url: source },
+                  },
+                ]
+              : []),
+          ],
+        },
+        path.join(curatedRoot, '.claude-plugin', 'marketplace.json'),
+      );
+      const previous = baseCatalog();
+      const marketplace = previous.marketplaces[0];
+      marketplace.id = CURATED_PLUGIN_MARKETPLACE_ID;
+      marketplace.sourceType = 'curated';
+      marketplace.installLocation = curatedRoot;
+      const row = marketplace.plugins[0];
+      row.marketplaceId = marketplace.id;
+      row.name = 'installed-name';
+      row.sourcePath = '';
+      delete row.details;
+      row.provenance = {
+        sourceUrl: source,
+        installedAt: '',
+        installedName: 'installed-name',
+        remoteSourceRestricted: true,
+      };
+      row.facets.claude = {
+        provider: 'claude',
+        mode: 'native',
+        name: 'installed-name',
+        sourcePath: '',
+        installLocation: '',
+        externalSource: { source: 'github', url: source },
+        provenance: row.provenance,
+      };
+      write(previous);
+      write({ version: 1, entries: {} }, indexPath);
+      jest.spyOn(curatedSync, 'syncCuratedPlugins').mockResolvedValue({
+        status: 'skipped',
+        added: [],
+        changed: [],
+        removed: [],
+        errors: [],
+      });
+      jest.mocked(listCodexPlugins).mockResolvedValue({
+        marketplaces: [],
+        marketplaceLoadErrors: [],
+        featuredPluginIds: [],
+      });
+      try {
+        const marketplaces =
+          scan === 'standalone'
+            ? await scanManagedMarketplacesFresh()
+            : (await refreshMarketplaces()).data?.marketplaces;
+        const current = marketplaces?.find(
+          (market) => market.id === marketplace.id,
+        );
+        expect(current).toBeDefined();
+        if (!current) throw new Error('expected curated marketplace');
+        if (identity === 'ambiguous') {
+          expect(current.plugins.map((plugin) => plugin.name).sort()).toEqual([
+            'neighbor',
+            'p',
+          ]);
+          expect(
+            current.plugins.every((plugin) => plugin.provenance === undefined),
+          ).toBe(true);
+        } else {
+          expect(current.plugins).toHaveLength(1);
+          const installed = current.plugins[0];
+          // A row without bytes keeps its entry name; provenance keeps the alias.
+          expect(installed.name).toBe('p');
+          expect(installed.provenance).toEqual({
+            ...row.provenance,
+            marketplaceEntryName: 'p',
+          });
+          // Historical remote provenance has not proved lossless clone identity.
+          expect(installed.sourceChanged).toBe(true);
+          expect(installed.cachePath).toBeUndefined();
+          expect(installed.details).toBeUndefined();
+          expect(installed.facets.claude?.sourcePath).toBe('');
+          expect(installed.facets.claude?.installLocation).toBe('');
+        }
+        expect(index().entries).toEqual({});
+        expect(cloneRepo).not.toHaveBeenCalled();
+      } finally {
+        resetBuiltInMarketplaceScanCacheForTests();
+      }
+    },
+  );
+
+  test.each(['absent'])(
+    'metadata-only refresh: %s index preserves unique installation history without paths',
+    async (state) => {
+      write(baseCatalog());
+      const source = 'https://github.com/owner/p';
+      marketplaceFixture(source, 'github');
+      cloneFixture('installed-name');
+      const result = await installPlugin('m', 'p', source, {
+        skipRefresh: true,
+        disableRedirects: true,
+      });
+      expect(result.success).toBe(true);
+      const copy = result.data?.cachePath;
+      if (!copy) throw new Error('expected copy');
+      if (state === 'absent') fs.unlinkSync(indexPath);
+      else write({ version: 1, entries: {} }, indexPath);
+      marketplaceFixture('owner/new', 'github');
+      for (let scan = 0; scan < 2; scan++) {
+        await refreshed();
+        const row = catalog()
+          .marketplaces.find((market) => market.id === 'm')
+          ?.plugins.find((plugin) => plugin.name === 'p');
+        expect(row).toBeDefined();
+        expect(row?.provenance).toMatchObject({
+          sourceUrl: source,
+          installedName: 'installed-name',
+          marketplaceEntryName: 'p',
+          remoteSourceRestricted: true,
+        });
+        expect(row?.sourceChanged).toBe(true);
+        expect(row?.cachePath).toBeUndefined();
+        expect(row?.details).toBeUndefined();
+        expect(row?.facets.claude?.sourcePath).toBe('');
+      }
+      expect(fs.existsSync(copy)).toBe(true);
+    },
+  );
+
+  test.each([
+    {
+      resolver: 'facet',
+      snapshot: 'bound',
+    },
+    {
+      resolver: 'no-facet',
+      snapshot: 'refreshed-damage',
+    },
+  ])(
+    'shorthand automatic repair: $resolver $snapshot uses exact source before GitHub aliases',
+    async ({ resolver, snapshot }) => {
+      write(baseCatalog());
+      marketplaceFixture('owner/p', 'github');
+      cloneFixture();
+      const copy = await install();
+      await refreshed();
+      expect(catalog().marketplaces[0].plugins[0].sourceChanged).toBe(false);
+      fs.writeFileSync(path.join(copy, '.git', 'HEAD'), 'b'.repeat(40));
+      if (snapshot === 'refreshed-damage') await refreshed();
+      const marketplace = catalog().marketplaces[0];
+      const row = marketplace.plugins[0];
+      expect(row.sourceChanged).toBe(false);
+      jest.mocked(cloneRepo).mockClear();
+      const warnings: string[] = [];
+      const resolved = await resolvePluginInfoPath(
+        resolver === 'no-facet' ? { ...row, facets: {} } : row,
+        marketplace,
+        warnings,
+        true,
+        resolver === 'facet' ? 'claude' : undefined,
+      );
+      await settleDetachedWork();
+      expect(resolved).not.toBeNull();
+      expect(resolved).not.toBe(copy);
+      expect(cloneRepo).toHaveBeenCalledTimes(1);
+      expect(warnings).toEqual([]);
+    },
+  );
+
+  test.each(['recorded', 'exact', 'ambiguous'])(
+    'metadata-only entry identity: %s history never marks a neighboring entry',
+    async (identity) => {
+      write(baseCatalog());
+      const source = 'https://github.com/owner/p';
+      marketplaceFixture(source, 'github');
+      cloneFixture('installed-name');
+      expect(
+        (
+          await installPlugin('m', 'p', source, {
+            skipRefresh: true,
+            disableRedirects: true,
+          })
+        ).success,
+      ).toBe(true);
+      const previous = catalog();
+      const installed = previous.marketplaces[0].plugins[0];
+      if (identity !== 'recorded') {
+        if (installed.provenance)
+          delete installed.provenance.marketplaceEntryName;
+        if (installed.facets.claude?.provenance)
+          delete installed.facets.claude.provenance.marketplaceEntryName;
+      }
+      if (identity === 'duplicate-records') {
+        const duplicate = structuredClone(installed);
+        duplicate.name = 'another-installed-name';
+        previous.marketplaces[0].plugins.push(duplicate);
+      }
+      write(previous);
+      write({ version: 1, entries: {} }, indexPath);
+      write(
+        {
+          name: 'm',
+          plugins: [
+            {
+              name: 'p',
+              source: {
+                source: 'github',
+                url:
+                  identity === 'alias' ? 'git@github.com:owner/p.git' : source,
+              },
+            },
+            {
+              name: 'neighbor',
+              source: {
+                source: 'github',
+                url:
+                  identity === 'ambiguous' || identity === 'recorded'
+                    ? source
+                    : identity === 'exact'
+                      ? 'git@github.com:owner/p.git'
+                      : 'owner/neighbor',
+              },
+            },
+          ],
+        },
+        path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+      );
+      await refreshed();
+      const plugins = catalog().marketplaces[0].plugins;
+      const recovered = plugins.filter(
+        (row) => row.provenance?.remoteSourceRestricted,
+      );
+      if (identity === 'ambiguous' || identity === 'duplicate-records') {
+        expect(recovered).toEqual([]);
+        expect(plugins.map((row) => row.name).sort()).toEqual([
+          'neighbor',
+          'p',
+        ]);
+      } else {
+        expect(recovered).toHaveLength(1);
+        expect(recovered[0]).toMatchObject({
+          name: 'p',
+          provenance: {
+            marketplaceEntryName: 'p',
+            installedName: 'installed-name',
+            sourceUrl: source,
+          },
+        });
+        expect(recovered[0].cachePath).toBeUndefined();
+        const neighbor = plugins.find((row) => row.name === 'neighbor');
+        expect(neighbor).toBeDefined();
+        expect(neighbor?.provenance).toBeUndefined();
+      }
+    },
+  );
+
+  test('metadata-only refresh: an installed alias naming another entry keeps both rows', async () => {
+    write(baseCatalog());
+    marketplaceFixture('owner/p');
+    cloneFixture('q');
+    await install();
+    fs.unlinkSync(indexPath);
+    write(
+      {
+        name: 'm',
+        plugins: [
+          { name: 'p', source: { source: 'url', url: 'owner/p' } },
+          { name: 'q', source: { source: 'url', url: 'owner/q' } },
+        ],
+      },
+      path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+    );
+    for (let refresh = 0; refresh < 2; refresh++) {
+      await refreshed();
+      const rows = catalog().marketplaces[0].plugins;
+      expect(rows.map((row) => row.name).sort()).toEqual(['p', 'q']);
+      const installed = rows.find((row) => row.name === 'p');
+      expect(installed?.externalSource?.url).toBe('owner/p');
+      expect(installed?.provenance).toMatchObject({
+        installedName: 'q',
+        marketplaceEntryName: 'p',
+      });
+      const neighbor = rows.find((row) => row.name === 'q');
+      expect(neighbor?.externalSource?.url).toBe('owner/q');
+      expect(neighbor?.provenance).toBeUndefined();
+    }
+  });
+
+  test.each([
+    {
+      resolver: 'facet',
+      sameSource: true,
+    },
+    {
+      resolver: 'no-facet',
+      sameSource: false,
+    },
+  ])(
+    'effective installed source: $resolver sameSource=$sameSource uses provenance, not the operational URL',
+    async ({ resolver, sameSource }) => {
+      write(baseCatalog());
+      marketplaceFixture('https://github.com/owner/old');
+      cloneFixture();
+      const copy = await install('https://github.com/owner/old');
+      marketplaceFixture('https://github.com/owner/new');
+      const changed = index();
+      const binding = changed.entries['m/p'];
+      if (!binding.provenance) throw new Error('expected provenance');
+      binding.sourceUrl = sameSource
+        ? 'https://github.com/owner/old'
+        : 'https://github.com/owner/new';
+      binding.provenance.sourceUrl = sameSource
+        ? 'https://github.com/owner/new'
+        : 'https://github.com/owner/old';
+      write(changed, indexPath);
+      fs.writeFileSync(path.join(copy, '.git', 'HEAD'), 'b'.repeat(40));
+      await refreshed();
+      const marketplace = catalog().marketplaces[0];
+      const row = marketplace.plugins[0];
+      expect(row).toMatchObject({
+        sourceChanged: !sameSource,
+        provenance: { sourceUrl: binding.provenance.sourceUrl },
+      });
+      // Refresh keeps the damaged copy's path either way; resolution decides.
+      expect(row.cachePath).toBe(copy);
+      jest.mocked(cloneRepo).mockClear();
+      const warnings: string[] = [];
+      const resolved = await resolvePluginInfoPath(
+        resolver === 'no-facet' ? { ...row, facets: {} } : row,
+        marketplace,
+        warnings,
+        true,
+        resolver === 'facet' ? 'claude' : undefined,
+      );
+      if (sameSource) {
+        expect(resolved).not.toBeNull();
+        expect(resolved).not.toBe(copy);
+        expect(cloneRepo).toHaveBeenCalledTimes(1);
+        expect(warnings).toEqual([]);
+      } else {
+        expect(resolved).toBe(copy);
+        expect(cloneRepo).not.toHaveBeenCalled();
+        expect(warnings.length).toBeGreaterThan(0);
+      }
+    },
+  );
+
+  test.each([true, false])(
+    'index-first policy: restricted=%s reinstall survives failed catalog publication',
+    async (restricted) => {
+      write(baseCatalog());
+      const source = 'https://github.com/owner/p';
+      marketplaceFixture(source);
+      cloneFixture('old-installed-name');
+      expect(
+        (
+          await installPlugin('m', 'p', source, {
+            skipRefresh: true,
+            disableRedirects: !restricted,
+          })
+        ).success,
+      ).toBe(true);
+      expect(
+        catalog().marketplaces[0].plugins[0].provenance?.remoteSourceRestricted,
+      ).toBe(restricted ? undefined : true);
+      const realWrite = atomicFile.writeFileAtomically;
+      const failedWrite = jest
+        .spyOn(atomicFile, 'writeFileAtomically')
+        .mockImplementation((target, data, options) =>
+          target === catalogPath
+            ? Promise.reject(new Error('catalog install failed'))
+            : realWrite(target, data, options),
+        );
+      cloneFixture('new-installed-name');
+      const result = await installPlugin('m', 'p', source, {
+        skipRefresh: true,
+        disableRedirects: restricted,
+      });
+      expect(result.success).toBe(false);
+      failedWrite.mockRestore();
+      expect(catalog().marketplaces[0].plugins[0]).toMatchObject({
+        name: 'old-installed-name',
+      });
+      expect(
+        catalog().marketplaces[0].plugins[0].provenance?.remoteSourceRestricted,
+      ).toBe(restricted ? undefined : true);
+      const selected = index().entries['m/p'];
+      expect(selected.provenance?.remoteSourceRestricted).toBe(
+        restricted ? true : undefined,
+      );
+      await refreshed();
+      const row = catalog().marketplaces[0].plugins[0];
+      expect(row.name).toBe('new-installed-name');
+      expect(row.cachePath).toBe(selected.cachePath);
+      expect(row.provenance).toEqual(selected.provenance);
+      expect(row.facets.claude?.provenance).toEqual(selected.provenance);
+    },
+  );
+
+  test.each([
+    {
+      resolver: 'facet',
+      identity: 'ambiguous',
+    },
+    {
+      resolver: 'no-facet',
+      identity: 'unmatched',
+    },
+    {
+      resolver: 'facet',
+      identity: 'ambiguous',
+      indexRestricted: true,
+    },
+    {
+      resolver: 'no-facet',
+      identity: 'unmatched',
+      indexRestricted: true,
+    },
+    {
+      resolver: 'no-facet',
+      identity: 'unmatched',
+      indexRestricted: true,
+      nowPrivate: true,
+    },
+  ])(
+    'automatic repair identity: $resolver $identity legacy owner reinstalls from the advertised source (restricted index copy: $indexRestricted, now private: $nowPrivate)',
+    async ({
+      resolver,
+      identity,
+      indexRestricted = false,
+      nowPrivate = false,
+    }) => {
+      write(baseCatalog());
+      const source = 'https://github.com/owner/p';
+      marketplaceFixture(source);
+      cloneFixture('installed-name');
+      lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+      const copy = await install(source);
+      const legacy = catalog();
+      forgetIdentity(legacy);
+      write(legacy);
+      if (indexRestricted) {
+        // Only the index binding of the row's copy records the restriction.
+        const current = index();
+        const binding = current.entries['m/p'];
+        expect(binding.cachePath).toBe(copy);
+        write(
+          {
+            ...current,
+            entries: {
+              ...current.entries,
+              'm/p': {
+                ...binding,
+                provenance: {
+                  ...binding.provenance,
+                  remoteSourceRestricted: true,
+                },
+              },
+            },
+          },
+          indexPath,
+        );
+      }
+      fs.rmSync(copy, { recursive: true });
+      write(
+        {
+          name: 'm',
+          plugins: ['p', 'q'].map((name) => ({
+            name,
+            source: {
+              source: 'url',
+              url: identity === 'ambiguous' ? source : `${source}-${name}`,
+            },
+          })),
+        },
+        path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+      );
+      const marketplace = legacy.marketplaces[0];
+      const row = marketplace.plugins[0];
+      jest.mocked(cloneRepo).mockClear();
+      lookupMock.mockClear();
+      if (nowPrivate)
+        lookupMock.mockResolvedValue([{ address: '10.0.0.5', family: 4 }]);
+      const indexBefore = index();
+      const warnings: string[] = [];
+      const resolved = await resolvePluginInfoPath(
+        resolver === 'no-facet' ? { ...row, facets: {} } : row,
+        marketplace,
+        warnings,
+        true,
+        resolver === 'facet' ? 'claude' : undefined,
+      );
+      await settleDetachedWork();
+      if (nowPrivate) {
+        // A refusal fails this repair only, as a fresh session's check does.
+        expect(resolved).toBeNull();
+        expect(cloneRepo).not.toHaveBeenCalled();
+        expect(warnings).toContainEqual(
+          expect.stringContaining('resolves to a non-public address'),
+        );
+        expect(index()).toEqual(indexBefore);
+        return;
+      }
+      expect(resolved).not.toBeNull();
+      expect(resolved).not.toBe(copy);
+      if (!resolved) throw new Error('expected reinstalled copy');
+      expect(
+        fs.readFileSync(
+          path.join(resolved, '.claude-plugin', 'plugin.json'),
+          'utf8',
+        ),
+      ).toBe(JSON.stringify({ name: 'installed-name' }));
+      expect(cloneRepo).toHaveBeenCalledWith(source, resolved, {
+        followRedirects: !indexRestricted,
+      });
+      expect(lookupMock).toHaveBeenCalledTimes(indexRestricted ? 1 : 0);
+      expect(
+        Object.values(index().entries).find(
+          (binding) => binding.cachePath === resolved,
+        )?.provenance?.remoteSourceRestricted,
+      ).toBe(indexRestricted ? true : undefined);
+    },
+  );
+
+  test.each(['facet', 'no-facet'])(
+    'automatic repair identity: %s unproven selection keeps base repair after an installed-name change',
+    async (resolver) => {
+      write(baseCatalog());
+      const source = 'https://github.com/owner/p';
+      marketplaceFixture(source);
+      cloneFixture('installed-name');
+      const copy = await install(source);
+      const legacy = catalog();
+      forgetIdentity(legacy);
+      const marketplace = legacy.marketplaces[0];
+      const row = marketplace.plugins[0];
+      row.provenance = {
+        sourceUrl: source,
+        installedAt: '',
+        remoteSourceRestricted: true,
+      };
+      if (!row.facets.claude) throw new Error('expected Claude facet');
+      row.facets.claude.provenance = { ...row.provenance };
+      write(legacy);
+      fs.rmSync(copy, { recursive: true });
+      write(
+        {
+          name: 'm',
+          plugins: ['p', 'q'].map((name) => ({
+            name,
+            source: { source: 'url', url: source },
+          })),
+        },
+        path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+      );
+      let validationStarted = (): void => {};
+      const validating = new Promise<void>((resolve) => {
+        validationStarted = resolve;
+      });
+      let releaseValidation = (): void => {};
+      const validationGate = new Promise<void>((resolve) => {
+        releaseValidation = resolve;
+      });
+      lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+      lookupMock.mockImplementationOnce(async () => {
+        validationStarted();
+        await validationGate;
+        return [{ address: '140.82.112.3', family: 4 }];
+      });
+      const repair = resolvePluginInfoPath(
+        resolver === 'no-facet' ? { ...row, facets: {} } : row,
+        marketplace,
+        [],
+        true,
+        resolver === 'facet' ? 'claude' : undefined,
+      );
+      try {
+        expect(
+          await Promise.race([
+            validating.then(() => 'validating'),
+            repair.then(() => 'finished'),
+          ]),
+        ).toBe('validating');
+        cloneFixture('renamed');
+        const updated = await installPlugin('m', row.name, source, {
+          skipRefresh: true,
+          disableRedirects: true,
+        });
+        expect(updated.success).toBe(true);
+        expect(updated.data?.name).toBe('renamed');
+        cloneFixture('repaired-name');
+        jest.mocked(cloneRepo).mockClear();
+        lookupMock.mockClear();
+        releaseValidation();
+        const repaired = await repair;
+        // The clone URL is checked again once the repair holds its slot.
+        expect(lookupMock).toHaveBeenCalled();
+        expect(repaired).not.toBeNull();
+        expect(repaired).not.toBe(updated.data?.cachePath);
+        if (!repaired) throw new Error('expected reinstalled copy');
+        expect(
+          fs.readFileSync(
+            path.join(repaired, '.claude-plugin', 'plugin.json'),
+            'utf8',
+          ),
+        ).toBe(JSON.stringify({ name: 'repaired-name' }));
+        expect(cloneRepo).toHaveBeenCalledTimes(1);
+        expect(cloneRepo).toHaveBeenCalledWith(source, repaired, {
+          followRedirects: false,
+        });
+      } finally {
+        releaseValidation();
+        await repair;
+      }
+    },
+  );
+
+  test.each(['facet', 'no-facet'])(
+    'automatic repair identity: %s legacy source keeps its inferred entry through publication',
+    async (resolver) => {
+      write(baseCatalog());
+      const source = 'https://github.com/owner/p';
+      marketplaceFixture(source);
+      cloneFixture('installed-name');
+      const copy = await install(source);
+      const legacy = catalog();
+      const marketplace = legacy.marketplaces[0];
+      const row = marketplace.plugins[0];
+      forgetIdentity(legacy);
+      if (resolver === 'no-facet') row.facets = {};
+      write(legacy);
+      fs.rmSync(copy, { recursive: true });
+      const repaired = await resolvePluginInfoPath(
+        row,
+        marketplace,
+        [],
+        true,
+        resolver === 'facet' ? 'claude' : undefined,
+      );
+      expect(repaired).not.toBeNull();
+      expect(repaired).not.toBe(copy);
+      await settleDetachedWork();
+      expect(index().entries['m/p'].cachePath).toBe(repaired);
+      expect(index().entries['m/installed-name']).toBeUndefined();
+      expect(catalog().marketplaces[0].plugins[0]).toMatchObject({
+        cachePath: repaired,
+        provenance: { marketplaceEntryName: 'p' },
+      });
+    },
+  );
+
+  /** Resolves as a session that read its generation before later user changes. */
+  async function resolveAtGeneration(
+    generation: number,
+    ...args: Parameters<typeof resolvePluginInfoPath>
+  ): Promise<string | null> {
+    const stale = jest
+      .spyOn(pluginService, 'getPluginUserMutationGeneration')
+      .mockReturnValueOnce(generation);
+    try {
+      return await resolvePluginInfoPath(...args);
+    } finally {
+      stale.mockRestore();
+    }
+  }
+
+  test.each([
+    { resolver: 'facet', failCatalogWrite: false },
+    { resolver: 'no-facet', failCatalogWrite: true },
+  ])(
+    'automatic repair identity: $resolver legacy snapshot yields to a later restricted reinstall (failCatalogWrite=$failCatalogWrite)',
+    async ({ resolver, failCatalogWrite }) => {
+      write(baseCatalog());
+      const source = 'https://github.com/owner/p';
+      marketplaceFixture(source);
+      cloneFixture('installed-name');
+      lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+      const copy = await install(source);
+      const legacy = catalog();
+      forgetIdentity(legacy);
+      write(legacy);
+      const legacyIndex = index();
+      delete legacyIndex.entries['m/p'].provenance;
+      write(legacyIndex, indexPath);
+      fs.rmSync(copy, { recursive: true });
+      const generation = pluginService.getPluginUserMutationGeneration();
+      const stale = catalog().marketplaces[0];
+      const row = stale.plugins[0];
+      const realWrite = atomicFile.writeFileAtomically;
+      const failCatalog = failCatalogWrite
+        ? jest
+            .spyOn(atomicFile, 'writeFileAtomically')
+            .mockImplementation((target, data, options) =>
+              target === catalogPath
+                ? Promise.reject(new Error('catalog install failed'))
+                : realWrite(target, data, options),
+            )
+        : undefined;
+      const user = await installPlugin('m', row.name, source, {
+        skipRefresh: true,
+        disableRedirects: true,
+      });
+      failCatalog?.mockRestore();
+      expect(user.success).toBe(!failCatalogWrite);
+      // Without a recorded entry name, the reinstall binds the row's literal key.
+      const userBinding = index().entries['m/installed-name'];
+      expect(userBinding.provenance?.remoteSourceRestricted).toBe(true);
+      const userIndex = fs.readFileSync(indexPath, 'utf8');
+      jest.mocked(cloneRepo).mockClear();
+      const repaired = await resolveAtGeneration(
+        generation,
+        resolver === 'no-facet' ? { ...row, facets: {} } : row,
+        stale,
+        [],
+        true,
+        resolver === 'facet' ? 'claude' : undefined,
+      );
+      await settleDetachedWork();
+      expect(cloneRepo).not.toHaveBeenCalled();
+      expect(fs.readFileSync(indexPath, 'utf8')).toBe(userIndex);
+      // The repair's inferred entry finds the copy the reinstall bound by name.
+      expect(repaired).toBe(userBinding.cachePath);
+    },
+  );
+
+  test.each([false, true])(
+    'automatic repair identity: a literal-key legacy snapshot re-clones a later restricted reinstall whose copy fails verification (failCatalogWrite=%s)',
+    async (failCatalogWrite) => {
+      write(baseCatalog());
+      const source = 'https://github.com/owner/p';
+      marketplaceFixture(source);
+      cloneFixture('installed-name');
+      lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+      const copy = await install(source);
+      const legacy = catalog();
+      forgetIdentity(legacy);
+      write(legacy);
+      // A pre-provenance installation bound only its literal key, so the
+      // snapshot's inferred entry has no slot of its own.
+      const legacyIndex = index();
+      const literal = legacyIndex.entries['m/p'];
+      delete literal.provenance;
+      delete legacyIndex.entries['m/p'];
+      legacyIndex.entries['m/installed-name'] = literal;
+      write(legacyIndex, indexPath);
+      fs.rmSync(copy, { recursive: true });
+      const generation = pluginService.getPluginUserMutationGeneration();
+      const stale = catalog().marketplaces[0];
+      const realWrite = atomicFile.writeFileAtomically;
+      const failCatalog = failCatalogWrite
+        ? jest
+            .spyOn(atomicFile, 'writeFileAtomically')
+            .mockImplementation((target, data, options) =>
+              target === catalogPath
+                ? Promise.reject(new Error('catalog install failed'))
+                : realWrite(target, data, options),
+            )
+        : undefined;
+      const user = await installPlugin('m', 'installed-name', source, {
+        skipRefresh: true,
+        disableRedirects: true,
+      });
+      failCatalog?.mockRestore();
+      expect(user.success).toBe(!failCatalogWrite);
+      const userCopy = index().entries['m/installed-name'].cachePath;
+      expect(index().entries['m/p']).toBeUndefined();
+      fs.rmSync(path.join(userCopy, '.git', 'HEAD'));
+      jest.mocked(cloneRepo).mockClear();
+      const warnings: string[] = [];
+      const repaired = await resolveAtGeneration(
+        generation,
+        stale.plugins[0],
+        stale,
+        warnings,
+        true,
+        'claude',
+      );
+      await settleDetachedWork();
+      // Never skipped, as on develop; the user's restriction is kept.
+      expect(warnings).toEqual([]);
+      expect(repaired).not.toBeNull();
+      expect(repaired).not.toBe(userCopy);
+      expect(cloneRepo).toHaveBeenCalledTimes(1);
+      expect(cloneRepo).toHaveBeenCalledWith(source, repaired, {
+        followRedirects: false,
+      });
+      await refreshed();
+      expect(catalog().marketplaces[0].plugins[0]).toMatchObject({
+        cachePath: repaired,
+        provenance: { remoteSourceRestricted: true },
+      });
+      expect(resolve('installed-name').sdkPlugins).toEqual([
+        { type: 'local', path: repaired },
+      ]);
+    },
+  );
+
+  test('automatic repair identity: a legacy snapshot yields to a later uninstall', async () => {
+    write(baseCatalog());
+    const source = 'https://github.com/owner/p';
+    marketplaceFixture(source);
+    cloneFixture('installed-name');
+    lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+    const copy = await install(source);
+    const legacy = catalog();
+    forgetIdentity(legacy);
+    write(legacy);
+    const legacyIndex = index();
+    delete legacyIndex.entries['m/p'].provenance;
+    write(legacyIndex, indexPath);
+    fs.rmSync(copy, { recursive: true });
+    const generation = pluginService.getPluginUserMutationGeneration();
+    const stale = catalog().marketplaces[0];
+    await removeInstalledPluginCache('m', stale.plugins[0].name);
+    const uninstalledIndex = fs.readFileSync(indexPath, 'utf8');
+    const uninstalledCatalog = fs.readFileSync(catalogPath, 'utf8');
+    jest.mocked(cloneRepo).mockClear();
+    // Without an installation time, only the entry's user-mutation generation
+    // shows the uninstall happened after the snapshot.
+    expect(
+      await resolveAtGeneration(
+        generation,
+        stale.plugins[0],
+        stale,
+        [],
+        true,
+        'claude',
+      ),
+    ).toBeNull();
+    await settleDetachedWork();
+    expect(cloneRepo).not.toHaveBeenCalled();
+    expect(fs.readFileSync(indexPath, 'utf8')).toBe(uninstalledIndex);
+    expect(fs.readFileSync(catalogPath, 'utf8')).toBe(uninstalledCatalog);
+  });
+
+  test('automatic repair identity: a legacy row whose copy is still bound repairs its own entry, not a matched entry a user changed', async () => {
+    write(baseCatalog());
+    lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+    const source = 'https://github.com/owner/s';
+    const installCopy = async (name: string): Promise<string> => {
+      marketplaceFixture(source, 'url', 'm', name);
+      cloneFixture(name);
+      const result = await installPlugin('m', name, source, {
+        skipRefresh: true,
+      });
+      if (!result.data?.cachePath) throw new Error('expected copy');
+      return result.data.cachePath;
+    };
+    const mineCopy = await installCopy('mine');
+    // The manifest now lists only `other`, so the legacy row's source infers it.
+    await installCopy('other');
+    const legacy = catalog();
+    const mine = legacy.marketplaces[0].plugins.find(
+      (plugin) => plugin.name === 'mine',
+    );
+    if (!mine?.facets.claude) throw new Error('expected legacy row');
+    delete mine.provenance;
+    delete mine.facets.claude.provenance;
+    write(legacy);
+    const legacyIndex = index();
+    delete legacyIndex.entries['m/mine'].provenance;
+    write(legacyIndex, indexPath);
+    fs.rmSync(mineCopy, { recursive: true });
+    const generation = pluginService.getPluginUserMutationGeneration();
+    const stale = catalog().marketplaces[0];
+    const row = stale.plugins.find((plugin) => plugin.name === 'mine');
+    if (!row) throw new Error('expected mine');
+    cloneFixture('other');
+    const user = await installPlugin('m', 'other', source, {
+      skipRefresh: true,
+      disableRedirects: true,
+    });
+    expect(user.success).toBe(true);
+    const otherBinding = index().entries['m/other'];
+    cloneFixture('mine');
+    jest.mocked(cloneRepo).mockClear();
+    const repaired = await resolveAtGeneration(
+      generation,
+      row,
+      stale,
+      [],
+      true,
+      'claude',
+    );
+    await settleDetachedWork();
+    expect(index().entries['m/other']).toEqual(otherBinding);
+    expect(repaired).not.toBeNull();
+    expect(repaired).not.toBe(mineCopy);
+    expect(repaired).not.toBe(otherBinding.cachePath);
+    expect(index().entries['m/mine'].cachePath).toBe(repaired);
+    expect(cloneRepo).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(['facet', 'no-facet'])(
+    'automatic repair identity: %s re-added marketplace with a different source keeps its new binding',
+    async (resolver) => {
+      write(baseCatalog());
+      const source = 'https://github.com/owner/p';
+      marketplaceFixture(source);
+      cloneFixture('installed-name');
+      const installed = await installPlugin('m', 'p', source, {
+        skipRefresh: true,
+        disableRedirects: true,
+      });
+      if (!installed.success || !installed.data?.cachePath)
+        throw new Error('expected copy');
+      const selected = catalog().marketplaces[0];
+      const row = selected.plugins[0];
+      fs.rmSync(installed.data.cachePath, { recursive: true });
+      let validationStarted = (): void => {};
+      const validating = new Promise<void>((resolve) => {
+        validationStarted = resolve;
+      });
+      let releaseValidation = (): void => {};
+      const validationGate = new Promise<void>((resolve) => {
+        releaseValidation = resolve;
+      });
+      lookupMock.mockImplementationOnce(async () => {
+        validationStarted();
+        await validationGate;
+        return [{ address: '140.82.112.3', family: 4 }];
+      });
+      const repair = resolvePluginInfoPath(
+        resolver === 'no-facet' ? { ...row, facets: {} } : row,
+        selected,
+        [],
+        true,
+        resolver === 'facet' ? 'claude' : undefined,
+      );
+      try {
+        expect(
+          await Promise.race([
+            validating.then(() => 'validating'),
+            repair.then(() => 'finished'),
+          ]),
+        ).toBe('validating');
+        const removed = await removeMarketplace('m', { providers: ['claude'] });
+        expect(removed.data?.removedProviders).toContain('claude');
+        expect(
+          catalog().marketplaces.find((entry) => entry.id === 'm'),
+        ).toBeUndefined();
+        const newSource = 'https://github.com/owner/new';
+        marketplaceFixture(newSource);
+        expect((await addMarketplace('owner/m')).success).toBe(true);
+        const replacement = await installPlugin('m', 'p', newSource, {
+          skipRefresh: true,
+        });
+        expect(replacement.success).toBe(true);
+        if (!replacement.data?.cachePath) throw new Error('expected new copy');
+        expect(index().entries['m/p'].sourceUrl).toBe(newSource);
+        expect(
+          catalog().marketplaces.find((entry) => entry.id === 'm')?.plugins[0]
+            .externalSource?.url,
+        ).toBe(newSource);
+        const beforeIndex = fs.readFileSync(indexPath, 'utf8');
+        const beforeCatalog = fs.readFileSync(catalogPath, 'utf8');
+        const manifestPath = path.join(
+          replacement.data.cachePath,
+          '.claude-plugin',
+          'plugin.json',
+        );
+        const manifest = fs.readFileSync(manifestPath, 'utf8');
+        jest.mocked(cloneRepo).mockClear();
+        releaseValidation();
+        expect(await repair).toBeNull();
+        await settleDetachedWork();
+        expect(cloneRepo).not.toHaveBeenCalled();
+        expect(fs.readFileSync(indexPath, 'utf8')).toBe(beforeIndex);
+        expect(fs.readFileSync(catalogPath, 'utf8')).toBe(beforeCatalog);
+        expect(fs.readFileSync(manifestPath, 'utf8')).toBe(manifest);
+      } finally {
+        releaseValidation();
+        await repair;
+      }
+    },
+  );
+
+  test.each([
+    {
+      resolver: 'facet',
+      owner: 'reused',
+    },
+    {
+      resolver: 'no-facet',
+      owner: 'absent',
+    },
+  ])(
+    'automatic repair identity: $resolver $owner installed name skips a stale selection',
+    async ({ resolver, owner }) => {
+      write(baseCatalog());
+      const source = 'https://github.com/owner/p';
+      marketplaceFixture(source);
+      cloneFixture('installed-name');
+      const installed = await installPlugin('m', 'p', source, {
+        skipRefresh: true,
+        disableRedirects: true,
+      });
+      if (!installed.success || !installed.data?.cachePath)
+        throw new Error('expected copy');
+      const selected = catalog().marketplaces[0];
+      const row = selected.plugins[0];
+      fs.writeFileSync(
+        path.join(installed.data.cachePath, '.git', 'HEAD'),
+        'b'.repeat(40),
+      );
+      let validationStarted = (): void => {};
+      const validating = new Promise<void>((resolve) => {
+        validationStarted = resolve;
+      });
+      let releaseValidation = (): void => {};
+      const validationGate = new Promise<void>((resolve) => {
+        releaseValidation = resolve;
+      });
+      lookupMock.mockImplementationOnce(async () => {
+        validationStarted();
+        await validationGate;
+        return [{ address: '140.82.112.3', family: 4 }];
+      });
+      const repair = resolvePluginInfoPath(
+        resolver === 'no-facet' ? { ...row, facets: {} } : row,
+        selected,
+        [],
+        true,
+        resolver === 'facet' ? 'claude' : undefined,
+      );
+      await validating;
+      try {
+        // The original entry changes installed name while another may reuse it.
+        cloneFixture('renamed');
+        expect(
+          (await installPlugin('m', 'p', source, { skipRefresh: true }))
+            .success,
+        ).toBe(true);
+        if (owner === 'reused') {
+          const otherSource = 'https://github.com/owner/q';
+          marketplaceFixture(otherSource, 'url', 'm', 'q');
+          cloneFixture('installed-name');
+          expect(
+            (
+              await installPlugin('m', 'q', otherSource, {
+                skipRefresh: true,
+              })
+            ).success,
+          ).toBe(true);
+        }
+        const beforeIndex = fs.readFileSync(indexPath, 'utf8');
+        const beforeCatalog = fs.readFileSync(catalogPath, 'utf8');
+        const copies = Object.values(index().entries).map((entry) => ({
+          path: entry.cachePath,
+          manifest: fs.readFileSync(
+            path.join(entry.cachePath, '.claude-plugin', 'plugin.json'),
+            'utf8',
+          ),
+        }));
+        jest.mocked(cloneRepo).mockClear();
+        releaseValidation();
+        expect(await repair).toBeNull();
+        await settleDetachedWork();
+        expect(cloneRepo).not.toHaveBeenCalled();
+        expect(fs.readFileSync(indexPath, 'utf8')).toBe(beforeIndex);
+        expect(fs.readFileSync(catalogPath, 'utf8')).toBe(beforeCatalog);
+        for (const copy of copies)
+          expect(
+            fs.readFileSync(
+              path.join(copy.path, '.claude-plugin', 'plugin.json'),
+              'utf8',
+            ),
+          ).toBe(copy.manifest);
+      } finally {
+        releaseValidation();
+        await repair;
+      }
+    },
+  );
+
+  test.each([
+    {
+      resolver: 'facet',
+      scenario: 'allowed',
+    },
+    {
+      resolver: 'facet',
+      scenario: 'now-private',
+    },
+    {
+      resolver: 'no-facet',
+      scenario: 'trusted-ssh',
+    },
+    {
+      resolver: 'no-facet',
+      scenario: 'trusted-private',
+    },
+  ])(
+    'restricted automatic repair: $resolver $scenario retains original clone policy',
+    async ({ resolver, scenario }) => {
+      write(baseCatalog());
+      const trusted = scenario.startsWith('trusted');
+      const source =
+        scenario === 'trusted-ssh'
+          ? 'git@github.com:owner/p.git'
+          : 'https://github.com/owner/p';
+      marketplaceFixture(source);
+      cloneFixture();
+      lookupMock.mockResolvedValue([{ address: '140.82.112.3', family: 4 }]);
+      const installed = await installPluginForPrincipal(
+        {
+          remote: !trusted,
+          marketplaceId: 'm',
+          pluginName: 'p',
+          sourceUrl: source,
+        },
+        (id, name, url, options) =>
+          installPlugin(id, name, url, { ...options, skipRefresh: true }),
+        // The marketplace fixture records `source` for this plugin.
+        () => Promise.resolve(source),
+      );
+      expect(installed.success).toBe(true);
+      if (!installed.data?.cachePath) throw new Error('expected copy');
+      // Repair must retain its policy through index recovery and catalog projection.
+      write({ version: 1, entries: { bad: { cachePath: 7 } } }, indexPath);
+      await refreshed();
+      const cache = catalog();
+      const marketplace = cache.marketplaces[0];
+      const row = marketplace.plugins[0];
+      fs.writeFileSync(
+        path.join(installed.data.cachePath, '.git', 'HEAD'),
+        'b'.repeat(40),
+      );
+      jest.mocked(cloneRepo).mockClear();
+      lookupMock.mockClear();
+      if (scenario === 'now-private' || scenario === 'trusted-private')
+        lookupMock.mockResolvedValue([{ address: '10.0.0.5', family: 4 }]);
+      const warnings: string[] = [];
+      const repaired = await resolvePluginInfoPath(
+        resolver === 'no-facet' ? { ...row, facets: {} } : row,
+        marketplace,
+        warnings,
+        true,
+        resolver === 'facet' ? 'claude' : undefined,
+      );
+      await settleDetachedWork();
+      if (scenario === 'now-private') {
+        expect(repaired).toBeNull();
+        expect(cloneRepo).not.toHaveBeenCalled();
+      } else {
+        expect(repaired).not.toBeNull();
+        expect(repaired).not.toBe(installed.data.cachePath);
+        expect(cloneRepo).toHaveBeenCalledTimes(1);
+        expect(cloneRepo).toHaveBeenCalledWith(source, repaired, {
+          followRedirects: trusted,
+        });
+        if (trusted) expect(lookupMock).not.toHaveBeenCalled();
+      }
+      expect(installed.data.provenance?.remoteSourceRestricted).toBe(
+        trusted ? undefined : true,
+      );
+    },
+  );
+
+  test.each([
+    {
+      resolver: 'facet',
+      prefix: 'file:///',
+      delimiter: '#',
+    },
+    {
+      resolver: 'no-facet',
+      prefix: '/',
+      delimiter: '#',
+    },
+  ])(
+    '$resolver Git local bound-copy repair preserves literal $delimiter in $prefix sources',
+    async ({ resolver, prefix, delimiter }) => {
+      write(baseCatalog());
+      cloneFixture();
+      const original = `${prefix}repos/plugins${delimiter}stable/tool`;
+      const advertised = `${prefix}repos/plugins${delimiter}preview/tool`;
+      marketplaceFixture(original);
+      const copy = await install(original);
+      marketplaceFixture(advertised);
+      await refreshed();
+      const current = catalog().marketplaces[0];
+      const row = current.plugins[0];
+      expect(row).toMatchObject({ cachePath: copy, sourceChanged: true });
+      expect(row.provenance?.sourceUrl).toBe(original);
+      expect(row.facets.claude?.provenance?.sourceUrl).toBe(original);
+      expect(row.facets.claude?.sourceChanged).toBe(true);
+      fs.writeFileSync(path.join(copy, '.git', 'HEAD'), 'b'.repeat(40));
+      const beforeIndex = index();
+      const beforeCatalog = catalog();
+      jest.mocked(cloneRepo).mockClear();
+      const warnings: string[] = [];
+      expect(
+        await resolvePluginInfoPath(
+          resolver === 'no-facet' ? { ...row, facets: {} } : row,
+          current,
+          warnings,
+          true,
+          resolver === 'facet' ? 'claude' : undefined,
+        ),
+      ).toBe(copy);
+      await settleDetachedWork();
+      expect(cloneRepo).not.toHaveBeenCalled();
+      expect(warnings.length).toBeGreaterThan(0);
+      expect(index()).toEqual(beforeIndex);
+      expect(catalog()).toEqual(beforeCatalog);
+      const updated = await install(advertised);
+      expect(updated).not.toBe(copy);
+      expect(cloneRepo).toHaveBeenCalledTimes(1);
+      expect(index().entries['m/p'].provenance?.sourceUrl).toBe(advertised);
+    },
+  );
+
+  test('a qualified GitHub transport alias repairs the bound copy', async () => {
+    write(baseCatalog());
+    cloneFixture();
+    const copy = await install('https://github.com/owner/p');
+    marketplaceFixture('git@github.com:OWNER/p.git');
+    await refreshed();
+    const current = catalog().marketplaces[0];
+    const row = current.plugins[0];
+    expect(row).toMatchObject({ cachePath: copy, sourceChanged: false });
+    fs.writeFileSync(path.join(copy, '.git', 'HEAD'), 'b'.repeat(40));
+    jest.mocked(cloneRepo).mockClear();
+    const resolved = await resolvePluginInfoPath(
+      row,
+      current,
+      [],
+      true,
+      'claude',
+    );
+    await settleDetachedWork();
+    expect(resolved).not.toBeNull();
+    expect(resolved).not.toBe(copy);
+    expect(cloneRepo).toHaveBeenCalledTimes(1);
+    expect(index().entries['m/p'].cachePath).toBe(resolved);
+  });
+
+  test.each(['facet', 'no-facet'])(
+    '%s bound-copy repair treats a GitHub SSH login case change as source drift',
+    async (resolver) => {
+      const original = 'ssh://git@github.com/owner/p.git';
+      const advertised = 'ssh://GIT@github.com/owner/p.git';
+      write(baseCatalog());
+      cloneFixture();
+      const copy = await install(original);
+      marketplaceFixture(advertised);
+      await refreshed();
+      const current = catalog().marketplaces[0];
+      const row = current.plugins[0];
+      expect(row).toMatchObject({ cachePath: copy, sourceChanged: true });
+      expect(row.facets.claude?.sourceChanged).toBe(true);
+      fs.writeFileSync(path.join(copy, '.git', 'HEAD'), 'b'.repeat(40));
+      const beforeIndex = index();
+      const beforeCatalog = catalog();
+      jest.mocked(cloneRepo).mockClear();
+      const warnings: string[] = [];
+      expect(
+        await resolvePluginInfoPath(
+          resolver === 'no-facet' ? { ...row, facets: {} } : row,
+          current,
+          warnings,
+          true,
+          resolver === 'facet' ? 'claude' : undefined,
+        ),
+      ).toBe(copy);
+      expect(cloneRepo).not.toHaveBeenCalled();
+      expect(warnings.length).toBeGreaterThan(0);
+      expect(index()).toEqual(beforeIndex);
+      expect(catalog()).toEqual(beforeCatalog);
+      const updated = await install(advertised);
+      expect(updated).not.toBe(copy);
+      expect(cloneRepo).toHaveBeenCalledTimes(1);
+      expect(index().entries['m/p'].provenance?.sourceUrl).toBe(advertised);
+    },
+  );
+
+  test.each(
+    ['facet', 'no-facet'].flatMap((resolver) =>
+      [true, false].map((loginChanged) => ({ resolver, loginChanged })),
+    ),
+  )(
+    '$resolver bound-copy repair of a complete SSH source (login changed: $loginChanged)',
+    async ({ resolver, loginChanged }) => {
+      write(baseCatalog());
+      cloneFixture();
+      const original = 'ssh://alice@private.example/owner/p';
+      const advertised = loginChanged
+        ? 'ssh://bob@private.example/owner/p'
+        : original;
+      const copy = await install(original);
+      expect(index().entries['m/p'].provenance).toMatchObject({
+        sourceUrl: original,
+        sourceIdentityComplete: true,
+      });
+      marketplaceFixture(advertised);
+      await refreshed();
+      const current = catalog().marketplaces[0];
+      const row = current.plugins[0];
+      expect(row).toMatchObject({
+        cachePath: copy,
+        sourceChanged: loginChanged,
+        provenance: { sourceUrl: original, sourceIdentityComplete: true },
+      });
+      fs.writeFileSync(path.join(copy, '.git', 'HEAD'), 'b'.repeat(40));
+      const beforeIndex = index();
+      const beforeCatalog = catalog();
+      jest.mocked(cloneRepo).mockClear();
+      const warnings: string[] = [];
+      const resolved = await resolvePluginInfoPath(
+        resolver === 'no-facet' ? { ...row, facets: {} } : row,
+        current,
+        warnings,
+        true,
+        resolver === 'facet' ? 'claude' : undefined,
+      );
+      if (!loginChanged) {
+        // The unchanged complete source repairs the damaged copy.
+        expect(warnings).toEqual([]);
+        expect(cloneRepo).toHaveBeenCalledTimes(1);
+        expect(cloneRepo).toHaveBeenCalledWith(
+          original,
+          expect.any(String),
+          expect.anything(),
+        );
+        expect(resolved).not.toBe(copy);
+        expect(resolved).toBe(index().entries['m/p'].cachePath);
+        return;
+      }
+      // Another SSH login can select another repository, so it is source drift.
+      expect(resolved).toBe(copy);
+      expect(warnings.length).toBeGreaterThan(0);
+      expect(cloneRepo).not.toHaveBeenCalled();
+      expect(index()).toEqual(beforeIndex);
+      expect(catalog()).toEqual(beforeCatalog);
+      const updated = await install(advertised);
+      expect(updated).not.toBe(copy);
+      expect(cloneRepo).toHaveBeenCalledTimes(1);
+      expect(index().entries['m/p'].provenance?.sourceUrl).toBe(advertised);
+    },
+  );
+
+  test.each(['facet', 'no-facet'])(
+    '%s bound-copy repair keeps a copy whose SSH password was redacted',
+    async (resolver) => {
+      write(baseCatalog());
+      cloneFixture();
+      const original = 'ssh://alice:old-secret@private.example/owner/p';
+      const copy = await install(original);
+      expect(index().entries['m/p'].provenance).toMatchObject({
+        sourceUrl: 'ssh://alice@private.example/owner/p',
+        sourceIdentityComplete: false,
+      });
+      expect(JSON.stringify(index().entries['m/p'].provenance)).not.toContain(
+        'old-secret',
+      );
+      // Even the unchanged source can't be confirmed from redacted provenance.
+      marketplaceFixture(original);
+      await refreshed();
+      const current = catalog().marketplaces[0];
+      const row = current.plugins[0];
+      expect(row).toMatchObject({
+        cachePath: copy,
+        sourceChanged: true,
+        provenance: { sourceUrl: 'ssh://alice@private.example/owner/p' },
+      });
+      expect(row.facets.claude?.sourceChanged).toBe(true);
+      expect(JSON.stringify(row.provenance)).not.toContain('old-secret');
+      fs.writeFileSync(path.join(copy, '.git', 'HEAD'), 'b'.repeat(40));
+      const beforeIndex = index();
+      const beforeCatalog = catalog();
+      jest.mocked(cloneRepo).mockClear();
+      const warnings: string[] = [];
+      expect(
+        await resolvePluginInfoPath(
+          resolver === 'no-facet' ? { ...row, facets: {} } : row,
+          current,
+          warnings,
+          true,
+          resolver === 'facet' ? 'claude' : undefined,
+        ),
+      ).toBe(copy);
+      expect(warnings.length).toBeGreaterThan(0);
+      expect(cloneRepo).not.toHaveBeenCalled();
+      expect(index()).toEqual(beforeIndex);
+      expect(catalog()).toEqual(beforeCatalog);
+      const updated = await install(
+        'ssh://bob:new-secret@private.example/owner/p',
+      );
+      expect(updated).not.toBe(copy);
+      expect(cloneRepo).toHaveBeenCalledTimes(1);
+      expect(index().entries['m/p'].provenance?.sourceUrl).toBe(
+        'ssh://bob@private.example/owner/p',
+      );
+    },
+  );
+
+  test.each(
+    ['facet', 'no-facet'].flatMap((resolver) =>
+      ['missing', 'manifest', 'head'].flatMap((damage) =>
+        [true, false].map((sourceChanged) => ({
+          resolver,
+          damage,
+          sourceChanged,
+        })),
+      ),
+    ),
+  )(
+    '$resolver bound-copy resolution: $damage with sourceChanged=$sourceChanged',
+    async ({ resolver, damage, sourceChanged }) => {
+      write(baseCatalog());
+      cloneFixture('installed-name');
+      const original = 'https://github.com/owner/p';
+      const advertised = sourceChanged
+        ? 'https://github.com/other/p'
+        : 'https://github.com/owner/p.git';
+      const clone = jest.mocked(cloneRepo).getMockImplementation();
+      if (!clone) throw new Error('expected clone fixture');
+      jest.mocked(cloneRepo).mockImplementation(async (url, dir, options) => {
+        if (url !== original && url !== advertised)
+          throw new Error('authenticated URL required');
+        await clone(url, dir, options);
+        fs.writeFileSync(path.join(dir, 'payload'), url);
+      });
+      const copy = await install(original);
+      expect(index().entries['m/p'].sourceUrl).toBe(original);
+      const provenance = catalog().marketplaces[0].plugins[0].provenance;
+      expect(provenance).toMatchObject({
+        sourceUrl: 'https://github.com/owner/p',
+        commit: head,
+        marketplaceEntryName: 'p',
+        installedName: 'installed-name',
+        reinstalled: false,
+      });
+      expect(typeof provenance?.installedAt).toBe('string');
+      marketplaceFixture(original, 'github');
+      await refreshed();
+      expect(catalog().marketplaces[0].plugins[0].sourceChanged).toBe(false);
+      marketplaceFixture(advertised);
+      await refreshed();
+      const installedMarketplace = catalog().marketplaces[0];
+      expect(installedMarketplace.plugins[0]).toMatchObject({
+        name: 'installed-name',
+        cachePath: copy,
+        sourceChanged,
+      });
+      expect(installedMarketplace.plugins[0].externalSource?.sha).toBe(
+        'requested-not-cloned',
+      );
+      expect(resolve('installed-name').sdkPlugins).toEqual([
+        { type: 'local', path: copy },
+      ]);
+      expect(cloneRepo).toHaveBeenCalledTimes(1);
+      const installedIndex = index();
+      if (damage === 'missing') fs.rmSync(copy, { recursive: true });
+      else if (damage === 'manifest')
+        fs.unlinkSync(path.join(copy, '.claude-plugin', 'plugin.json'));
+      else fs.writeFileSync(path.join(copy, '.git', 'HEAD'), 'b'.repeat(40));
+      expect(resolve('installed-name').sdkPlugins).toEqual([]);
+      await refreshed();
+      const current = catalog().marketplaces[0];
+      // Refresh keeps an existing copy's path; resolution decides whether it
+      // is kept (drift) or repaired (same source).
+      const keepsPath = damage !== 'missing';
+      const keepsBinding = sourceChanged && keepsPath;
+      // A row without a readable copy is named by its marketplace entry.
+      const rowName = damage === 'head' ? 'installed-name' : 'p';
+      expect(index()).toEqual(installedIndex);
+      expect(current.plugins[0].name).toBe(rowName);
+      expect(current.plugins[0].provenance).toEqual(provenance);
+      expect(current.plugins[0].sourceChanged).toBe(sourceChanged);
+      expect(current.plugins[0].cachePath).toBe(keepsPath ? copy : undefined);
+      expect(current.plugins[0].sourcePath).toBe(keepsPath ? copy : '');
+      expect(current.plugins[0].facets.claude?.cachePath).toBe(
+        keepsPath ? copy : undefined,
+      );
+      expect(current.plugins[0].facets.claude).toMatchObject({
+        name: rowName,
+        installLocation: keepsPath ? copy : '',
+        sourcePath: keepsPath ? copy : '',
+        sourceChanged,
+      });
+      if (keepsPath) {
+        expect(current.plugins[0].cachedAt).toBe(
+          installedMarketplace.plugins[0].cachedAt,
+        );
+        expect(current.plugins[0].facets.claude?.provenance).toEqual(
+          provenance,
+        );
+      }
+      const selected =
+        resolver === 'no-facet'
+          ? { ...current.plugins[0], facets: {} }
+          : current.plugins[0];
+      const beforeIndex = index();
+      const beforeCatalog = catalog();
+      const noInstallWarnings: string[] = [];
+      expect(
+        await resolvePluginInfoPath(
+          selected,
+          current,
+          noInstallWarnings,
+          false,
+          resolver === 'facet' ? 'claude' : undefined,
+        ),
+      ).toBe(keepsBinding ? copy : null);
+      expect(noInstallWarnings.length).toBeGreaterThan(0);
+      expect(cloneRepo).toHaveBeenCalledTimes(1);
+      expect(index()).toEqual(beforeIndex);
+      expect(catalog()).toEqual(beforeCatalog);
+      const warnings: string[] = [];
+      let repaired = await resolvePluginInfoPath(
+        selected,
+        current,
+        warnings,
+        true,
+        resolver === 'facet' ? 'claude' : undefined,
+      );
+      if (sourceChanged && damage !== 'missing') {
+        expect(repaired).toBe(copy);
+        expect(cloneRepo).toHaveBeenCalledTimes(1);
+        expect(warnings.length).toBeGreaterThan(0);
+        expect(fs.readFileSync(path.join(copy, 'payload'), 'utf8')).toBe(
+          original,
+        );
+        expect(index()).toEqual(beforeIndex);
+        expect(catalog()).toEqual(beforeCatalog);
+        expect(
+          await resolvePluginInfoPath(
+            selected,
+            current,
+            [],
+            false,
+            resolver === 'facet' ? 'claude' : undefined,
+          ),
+        ).toBe(copy);
+        expect(cloneRepo).toHaveBeenCalledTimes(1);
+        // Explicit catalog install/update can still adopt the advertised source.
+        repaired = await install(advertised);
+      }
+      expect(repaired).toBeTruthy();
+      expect(repaired).not.toBe(copy);
+      expect(cloneRepo).toHaveBeenCalledTimes(2);
+      expect(cloneRepo).toHaveBeenLastCalledWith(
+        advertised,
+        repaired,
+        expect.any(Object),
+      );
+      expect(
+        fs.readFileSync(path.join(repaired ?? '', 'payload'), 'utf8'),
+      ).toBe(advertised);
+      expect(index().entries['m/p'].sourceUrl).toBe(advertised);
+      expect(index().entries['m/p'].provenance).toMatchObject({
+        sourceUrl: sourceChanged
+          ? 'https://github.com/other/p'
+          : 'https://github.com/owner/p.git',
+        commit: head,
+        reinstalled: true,
+      });
+    },
+  );
+
+  function gitOutput(args: string[]): string {
+    return execFileSync('git', args, { stdio: 'pipe' }).toString().trim();
+  }
+  /** `git init --ref-format` arrived in Git 2.45; never skip these layouts. */
+  function requireReftableGit(): void {
+    const version = /(\d+)\.(\d+)/.exec(gitOutput(['--version']));
+    const [major, minor] = [Number(version?.[1]), Number(version?.[2])];
+    if (!(major > 2 || (major === 2 && minor >= 45)))
+      throw new Error(
+        `This golden requires git ≥ 2.45; found ${version?.[0] ?? 'none'}.`,
+      );
+  }
+  function commitPluginRepository(dir: string, refFormat: string): void {
+    gitOutput([
+      'init',
+      '-q',
+      '--object-format=sha1',
+      `--ref-format=${refFormat}`,
+      '-b',
+      'main',
+      dir,
+    ]);
+    fs.mkdirSync(path.join(dir, '.claude-plugin'), { recursive: true });
+    write({ name: 'p' }, path.join(dir, '.claude-plugin', 'plugin.json'));
+    gitOutput(['-C', dir, 'add', '-A']);
+    gitOutput([
+      '-C',
+      dir,
+      '-c',
+      'user.name=Golden',
+      '-c',
+      'user.email=golden@example.com',
+      'commit',
+      '-q',
+      '-m',
+      'plugin',
+    ]);
+  }
+
+  test.each(['legacy', 'manifest-free'])(
+    'availability exceptions keep %s copies executable without repeated clones',
+    async (layout) => {
+      write(baseCatalog());
+      marketplaceFixture('owner/p');
+      cloneFixture();
+      let copy = pluginPath;
+      if (layout === 'legacy') {
+        write(
+          {
+            version: 1,
+            entries: {
+              'm/p': { cachePath: copy, sourceUrl: 'owner/p', cachedAt: '' },
+            },
+          },
+          indexPath,
+        );
+      } else {
+        jest.mocked(cloneRepo).mockImplementation((_url, dir) => {
+          fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+          fs.writeFileSync(path.join(dir, '.git', 'HEAD'), head);
+          return Promise.resolve();
+        });
+        copy = await install();
+      }
+      await refreshed();
+      const current = catalog().marketplaces.find((row) => row.id === 'm');
+      if (!current) throw new Error('expected marketplace');
+      expect(resolve().sdkPlugins).toEqual([{ type: 'local', path: copy }]);
+      expect(
+        await resolvePluginInfoPath(
+          current.plugins[0],
+          current,
+          [],
+          true,
+          'claude',
+        ),
+      ).toBe(copy);
+      expect(cloneRepo).toHaveBeenCalledTimes(layout === 'legacy' ? 0 : 1);
+    },
+  );
+
+  test.each([
+    { layout: 'files worktree', refFormat: 'files', usable: true },
+    { layout: 'reftable worktree', refFormat: 'reftable', usable: true },
+    { layout: 'reftable', refFormat: 'reftable', usable: true },
+    {
+      layout: 'quoted reftable',
+      refFormat: 'reftable',
+      config: 'refStorage = "reftable"',
+      usable: true,
+    },
+    {
+      layout: 'commented reftable',
+      refFormat: 'reftable',
+      config: 'refstorage = reftable # ref backend',
+      usable: true,
+    },
+    {
+      // Negative control: a files backend still needs a resolvable HEAD.
+      layout: 'files with a missing HEAD ref',
+      refFormat: 'files',
+      config: 'refStorage = "files"',
+      usable: false,
+    },
+  ])(
+    'real Git $layout copies keep their recorded commit without repeated clones: usable=$usable',
+    async ({ layout, refFormat, config, usable }) => {
+      requireReftableGit();
+      const seeds = fs.mkdtempSync(path.join(os.tmpdir(), 'plugin-seed-'));
+      try {
+        const seed = path.join(seeds, 'seed');
+        const worktree = layout.endsWith('worktree');
+        if (worktree) commitPluginRepository(seed, refFormat);
+        write(baseCatalog());
+        marketplaceFixture('owner/p');
+        jest
+          .mocked(getHeadCommitSha)
+          .mockImplementation((dir) =>
+            Promise.resolve(gitOutput(['-C', dir, 'rev-parse', 'HEAD'])),
+          );
+        jest.mocked(cloneRepo).mockImplementation((_url, dir) => {
+          if (worktree)
+            gitOutput(['-C', seed, 'worktree', 'add', '-q', '--detach', dir]);
+          else commitPluginRepository(dir, refFormat);
+          if (config) {
+            const file = path.join(dir, '.git', 'config');
+            const text = fs.readFileSync(file, 'utf8');
+            const rewritten =
+              refFormat === 'reftable'
+                ? text.replace(/^\s*refstorage\s*=\s*reftable\s*$/im, config)
+                : text
+                    .replace(
+                      'repositoryformatversion = 0',
+                      'repositoryformatversion = 1',
+                    )
+                    .concat(`[extensions]\n\t${config}\n`);
+            // Another Git's config spelling must not leave the bare value in place.
+            expect(rewritten).not.toBe(text);
+            expect(rewritten).toContain(config);
+            fs.writeFileSync(file, rewritten);
+            // Git itself reads the rewritten value as the fixture's backend.
+            expect(
+              gitOutput([
+                'config',
+                '--file',
+                file,
+                '--get',
+                'extensions.refstorage',
+              ]),
+            ).toBe(refFormat);
+          }
+          return Promise.resolve();
+        });
+        const copy = await install();
+        const git = path.join(copy, '.git');
+        expect(fs.statSync(git).isFile()).toBe(worktree);
+        // Fixture sanity: Git resolves HEAD to the recorded commit.
+        const commit = index().entries['m/p'].provenance?.commit;
+        expect(commit).toMatch(/^[0-9a-f]{40}$/);
+        expect(gitOutput(['-C', copy, 'rev-parse', 'HEAD'])).toBe(commit);
+        if (!usable) {
+          fs.rmSync(path.join(git, 'refs', 'heads', 'main'));
+          expect(fs.existsSync(path.join(git, 'packed-refs'))).toBe(false);
+          expect(() => gitOutput(['-C', copy, 'rev-parse', 'HEAD'])).toThrow();
+        }
+        await refreshed();
+        const current = catalog().marketplaces.find((row) => row.id === 'm');
+        if (!current) throw new Error('expected marketplace');
+        if (usable)
+          expect(resolve().sdkPlugins).toEqual([{ type: 'local', path: copy }]);
+        else
+          expect(resolve().sdkPlugins).not.toContainEqual({
+            type: 'local',
+            path: copy,
+          });
+        const resolved = await resolvePluginInfoPath(
+          current.plugins[0],
+          current,
+          [],
+          true,
+          'claude',
+        );
+        if (usable) expect(resolved).toBe(copy);
+        else expect(resolved).not.toBe(copy);
+        expect(resolved).toBeTruthy();
+        expect(cloneRepo).toHaveBeenCalledTimes(usable ? 1 : 2);
+      } finally {
+        fs.rmSync(seeds, { recursive: true, force: true });
+      }
+    },
+  );
+
+  test('Git helper source provenance stays redacted through install and refresh', async () => {
+    write(baseCatalog());
+    const source =
+      'https::https://old:token@github.com/owner/p?token=old-query-secret#old-fragment-secret';
+    marketplaceFixture(source);
+    cloneFixture();
+    await install(source);
+    const redacted = 'https::https://github.com/owner/p';
+    expect(catalog().marketplaces[0].plugins[0].provenance?.sourceUrl).toBe(
+      redacted,
+    );
+    // Refresh must also sanitize provenance from historical local index rows.
+    const historical = index();
+    historical.entries['m/p'].provenance = {
+      ...historical.entries['m/p'].provenance,
+      sourceUrl: source,
+      installedAt: '',
+    };
+    write(historical, indexPath);
+    marketplaceFixture('https::https://github.com/owner/p');
+    await refreshed();
+    const row = catalog().marketplaces[0].plugins[0];
+    expect(row.provenance?.sourceUrl).toBe(redacted);
+    expect(row.facets.claude?.provenance?.sourceUrl).toBe(redacted);
+    expect(row.sourceChanged).toBe(true);
+    expect(row.provenance?.sourceIdentityComplete).toBe(false);
+    expect(index().entries['m/p'].sourceUrl).toBe(source);
+  });
+
+  test.each([
+    {
+      operation: 'pair publication',
+      sourceUrl:
+        'https::https://old:token@github.com/owner/q?token=old-query-secret#old-fragment-secret',
+    },
+    {
+      operation: 'cache-only read',
+      sourceUrl:
+        'https://github.com/owner/q?token=old-query-secret&access_token=other-query-secret#old-fragment-secret',
+    },
+    {
+      operation: 'presentation cache-only read',
+      sourceUrl: 'https://old:token@github.com/owner/q',
+    },
+    {
+      // libcurl, and so Git, accepts extra slashes before the login.
+      operation: 'pair publication',
+      sourceUrl: 'https:///old:token@github.com/owner/q',
+    },
+  ])(
+    '$operation strips historical provenance on untouched rows and every facet: $sourceUrl',
+    async ({ operation, sourceUrl }) => {
+      const cache = baseCatalog();
+      const provenance = {
+        sourceUrl,
+        installedAt: '',
+      };
+      const facet = {
+        name: 'q',
+        provenance,
+        installLocation: pluginPath,
+        sourcePath: pluginPath,
+      };
+      cache.marketplaces[0].plugins.push({
+        ...cache.marketplaces[0].plugins[0],
+        name: 'q',
+        provenance,
+        facets: {
+          claude: { ...facet, provider: 'claude', mode: 'native' },
+          codex: { ...facet, provider: 'codex', mode: 'native' },
+          codexCompatibility: { ...facet, provider: 'codex', mode: 'compat' },
+        },
+      });
+      write(cache);
+      const before = fs.readFileSync(catalogPath, 'utf8');
+      if (operation === 'pair publication') {
+        cloneFixture();
+        await install();
+      }
+      const loaded =
+        operation === 'presentation cache-only read'
+          ? await loadMarketplacesForPresentation(undefined, true)
+          : await loadMarketplacesCacheOnly();
+      expect(loaded.success).toBe(true);
+      const published = fs.readFileSync(catalogPath, 'utf8');
+      if (operation !== 'pair publication') {
+        expect(published).toBe(before);
+        expect(cloneRepo).not.toHaveBeenCalled();
+        expect(fs.existsSync(indexPath)).toBe(false);
+      }
+      const untouched = loaded.data?.marketplaces[0].plugins.find(
+        (plugin) => plugin.name === 'q',
+      );
+      expect(untouched?.provenance?.sourceUrl).toBe(
+        sourceUrl.startsWith('https::')
+          ? 'https::https://github.com/owner/q'
+          : 'https://github.com/owner/q',
+      );
+      for (const provider of ['claude', 'codex', 'codexCompatibility'] as const)
+        expect(untouched?.facets[provider]?.provenance?.sourceUrl).toBe(
+          sourceUrl.startsWith('https::')
+            ? 'https::https://github.com/owner/q'
+            : 'https://github.com/owner/q',
+        );
+      const projections = [JSON.stringify(loaded.data)];
+      if (operation === 'pair publication') projections.push(published);
+      for (const serialized of projections)
+        for (const secret of [
+          'old:token@',
+          'old-query-secret',
+          'other-query-secret',
+          'old-fragment-secret',
+        ])
+          expect(serialized).not.toContain(secret);
+    },
+  );
+
+  test.each(['loose', 'packed'])(
+    'standard %s refs verify the actual HEAD',
+    async (layout) => {
+      write(baseCatalog());
+      cloneFixture();
+      const copy = await install();
+      const git = path.join(copy, '.git');
+      fs.writeFileSync(
+        path.join(git, 'HEAD'),
+        'ref: refs/heads/release+stable',
+      );
+      fs.mkdirSync(path.join(git, 'refs', 'heads'), { recursive: true });
+      const ref =
+        layout === 'loose'
+          ? path.join(git, 'refs', 'heads', 'release+stable')
+          : path.join(git, 'packed-refs');
+      fs.writeFileSync(
+        ref,
+        layout === 'loose' ? head : `${head} refs/heads/release+stable\n`,
+      );
+      expect(resolve().sdkPlugins).toEqual([{ type: 'local', path: copy }]);
+      fs.writeFileSync(
+        ref,
+        layout === 'loose'
+          ? 'b'.repeat(40)
+          : `${'b'.repeat(40)} refs/heads/release+stable\n`,
+      );
+      expect(resolve().sdkPlugins).toEqual([]);
+    },
+  );
+
+  test('replacement and marketplace removal retire copies; re-add never restores removed bindings', async () => {
+    write(baseCatalog());
+    cloneFixture();
+    marketplaceFixture('owner/p');
+    const first = await install();
+    const second = await install();
+    expect(fs.existsSync(first)).toBe(true);
+    const before = index();
+    const other = { cachePath: second, sourceUrl: 'owner/other', cachedAt: '' };
+    before.entries['other/p'] = other;
+    write(before, indexPath);
+    jest
+      .mocked(runClaudeCliProcessOffMain)
+      .mockRejectedValueOnce(new Error('unavailable'));
+    await removeMarketplace('m', { providers: ['claude'] });
+    expect(index().entries['m/p'].cachePath).toBe(second);
+    const cache = catalog();
+    cache.marketplaces[0].plugins[0].facets.codex = {
+      name: 'p',
+      provider: 'codex',
+      mode: 'native',
+      installLocation: pluginPath,
+      sourcePath: pluginPath,
+    };
+    write(cache);
+    expect(
+      (await removeMarketplace('m', { providers: ['claude'] })).success,
+    ).toBe(true);
+    expect(index().entries['m/p']).toBeUndefined();
+    expect(index().entries['other/p']).toEqual(other);
+    expect(index().retired).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ cachePath: first }),
+        expect.objectContaining({ cachePath: second }),
+      ]),
+    );
+    expect(fs.existsSync(second)).toBe(true);
+    expect(catalog().marketplaces.find((row) => row.id === 'm')).toBeDefined();
+    jest.mocked(removeCodexMarketplace).mockResolvedValue({ accepted: true });
+    expect(
+      (await removeMarketplace('m', { providers: ['codex'] })).success,
+    ).toBe(true);
+    expect(
+      catalog().marketplaces.find((row) => row.id === 'm'),
+    ).toBeUndefined();
+    marketplaceFixture('other/p');
+    expect((await addMarketplace('owner/m')).success).toBe(true);
+    const readded = catalog().marketplaces.find((row) => row.id === 'm');
+    if (!readded) throw new Error('expected re-added marketplace');
+    expect(readded.sourceUrl).toBe('https://github.com/owner/m');
+    const plugin = readded.plugins.find((row) => row.name === 'p');
+    if (!plugin) throw new Error('expected re-added plugin');
+    expect(plugin.externalSource?.url).toBe('other/p');
+    expect(plugin.cachePath).toBeUndefined();
+    expect(index().entries['m/p']).toBeUndefined();
+    expect(cloneRepo).toHaveBeenCalledTimes(2);
+  });
+
+  test('marketplace removal with nothing to unbind or retire writes only the catalog', async () => {
+    marketplaceFixture('owner/p');
+    write(baseCatalog());
+    const other = {
+      cachePath: path.join(root, 'plugin-cache', 'other-1234abcd'),
+      sourceUrl: 'owner/other',
+      cachedAt: '',
+    };
+    write({ version: 1, entries: { 'other/p': other } }, indexPath);
+    const realWrite = atomicFile.writeFileAtomically;
+    const writes = jest
+      .spyOn(atomicFile, 'writeFileAtomically')
+      .mockImplementation((target, data, options) =>
+        target === indexPath
+          ? Promise.reject(new Error('index write failed'))
+          : realWrite(target, data, options),
+      );
+    const result = await removeMarketplace('m', { providers: ['claude'] });
+    expect(result.success).toBe(true);
+    expect(result.data?.marketplace).toBeNull();
+    expect(
+      catalog().marketplaces.find((row) => row.id === 'm'),
+    ).toBeUndefined();
+    expect(writes.mock.calls.map(([target]) => target)).not.toContain(
+      indexPath,
+    );
+    expect(index()).toEqual({ version: 1, entries: { 'other/p': other } });
+  });
+
+  test.each(['rejected', 'uncertain'])(
+    'marketplace removal that only retires a copy still leaves the catalog when the index write is %s',
+    async (failure) => {
+      marketplaceFixture('owner/p');
+      const copy = path.join(root, 'plugin-cache', 'catalog-only-1234abcd');
+      fs.mkdirSync(copy, { recursive: true });
+      const cache = baseCatalog();
+      const row = cache.marketplaces[0].plugins[0];
+      row.cachePath = copy;
+      if (row.facets.claude) row.facets.claude.cachePath = copy;
+      write(cache);
+      const other = {
+        cachePath: path.join(root, 'plugin-cache', 'other-1234abcd'),
+        sourceUrl: 'owner/other',
+        cachedAt: '',
+      };
+      write({ version: 1, entries: { 'other/p': other } }, indexPath);
+      const writes = failIndexWrite(failure);
+      const result = await removeMarketplace('m', { providers: ['claude'] });
+      expect(result).toMatchObject({ success: true });
+      expect(result.data?.marketplace).toBeNull();
+      expect(writes.mock.calls.map(([target]) => target)).toContain(indexPath);
+      expect(
+        catalog().marketplaces.find((entry) => entry.id === 'm'),
+      ).toBeUndefined();
+      expect(fs.existsSync(copy)).toBe(true);
+      if (failure === 'rejected') {
+        // The unrecorded copy leaks rather than blocking the removal.
+        expect(index()).toEqual({ version: 1, entries: { 'other/p': other } });
+      } else {
+        // The installed index stays visible; only its crash durability is unknown.
+        expect(index()).toEqual({
+          version: 1,
+          entries: { 'other/p': other },
+          retired: [expect.objectContaining({ cachePath: copy })],
+        });
+      }
+    },
+  );
+
+  test.each(['provenance', 'ambiguous-legacy', 'undiscoverable-legacy'])(
+    'marketplace removal unbinds slash entry names with %s identity and leaves unknown owners',
+    async (identity) => {
+      const marketplaceId = 'owner/repo';
+      const entryName = 'tools/lint';
+      const cache = baseCatalog();
+      const marketplace = cache.marketplaces[0];
+      marketplace.id = marketplaceId;
+      marketplace.plugins[0].marketplaceId = marketplaceId;
+      marketplace.plugins[0].name = entryName;
+      write(cache);
+      marketplaceFixture('owner/p', 'url', marketplaceId, entryName);
+      cloneFixture(identity === 'provenance' ? 'installed-name' : entryName);
+      const result = await installPlugin(marketplaceId, entryName, 'owner/p', {
+        skipRefresh: true,
+      });
+      expect(result.success).toBe(true);
+      const key = `${marketplaceId}/${entryName}`;
+      const before = index();
+      const copy = before.entries[key].cachePath;
+      const other = {
+        ...before.entries[key],
+        provenance: {
+          ...before.entries[key].provenance,
+          sourceUrl: 'owner/other',
+          installedAt: '',
+          marketplaceEntryName: 'other',
+        },
+      };
+      const unknown = {
+        cachePath: copy,
+        sourceUrl: 'owner/unknown',
+        cachedAt: '',
+      };
+      before.entries[`${marketplaceId}/tools/other`] = other;
+      before.entries[`${marketplaceId}/unknown`] = unknown;
+      if (identity !== 'provenance') {
+        delete before.entries[key].provenance;
+        const installed = catalog();
+        for (const plugin of installed.marketplaces[0].plugins) {
+          delete plugin.provenance;
+          if (plugin.facets.claude) delete plugin.facets.claude.provenance;
+        }
+        if (identity === 'ambiguous-legacy') {
+          const neighbor = baseCatalog().marketplaces[0];
+          neighbor.id = `${marketplaceId}/tools`;
+          neighbor.plugins[0].marketplaceId = neighbor.id;
+          neighbor.plugins[0].name = 'lint';
+          installed.marketplaces.push(neighbor);
+          addNeighborManifest(neighbor.id, 'lint', 'owner/neighbor');
+        }
+        write(installed);
+      }
+      if (identity === 'undiscoverable-legacy')
+        // No manifest names the entry, so no lookup discovers its legacy binding.
+        fs.rmSync(
+          path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+        );
+      write(before, indexPath);
+      const removal = await removeMarketplace(marketplaceId, {
+        providers: ['claude'],
+      });
+      expect(removal.success).toBe(true);
+      expect(index().entries[key]).toEqual(
+        identity === 'provenance' ? undefined : before.entries[key],
+      );
+      expect(index().entries[`${marketplaceId}/tools/other`]).toEqual(other);
+      expect(index().entries[`${marketplaceId}/unknown`]).toEqual(unknown);
+      // Unknown legacy ownership retires none of the copies legacy bindings hold.
+      expect(
+        (index().retired ?? []).some((entry) => entry.cachePath === copy),
+      ).toBe(identity !== 'undiscoverable-legacy');
+      expect(fs.existsSync(copy)).toBe(true);
+      expect(
+        catalog().marketplaces.find((row) => row.id === marketplaceId),
+      ).toBeUndefined();
+    },
+  );
+
+  test.each(['unique', 'unmapped-empty', 'unmapped-local-only'])(
+    'marketplace removal preserves a neighbor legacy binding with %s registration mapping',
+    async (mapping) => {
+      marketplaceFixture(
+        'owner/p',
+        'url',
+        'selected-registration',
+        'tools/lint',
+      );
+      addNeighborManifest('neighbor-registration', 'lint', 'owner/neighbor');
+      const neighborPlugins = mapping.endsWith('-empty')
+        ? []
+        : mapping.endsWith('-local-only')
+          ? [{ name: 'lint', source: './lint' }]
+          : undefined;
+      if (neighborPlugins)
+        write(
+          { name: 'neighbor-registration', plugins: neighborPlugins },
+          path.join(
+            marketplaceRoot,
+            'neighbor',
+            '.claude-plugin',
+            'marketplace.json',
+          ),
+        );
+      const cache = baseCatalog();
+      const selected = cache.marketplaces[0];
+      selected.id = 'owner/repo';
+      selected.providerStatus.claude.marketplaceName = 'selected-registration';
+      selected.plugins = [];
+      selected.pluginCount = 0;
+      const neighbor = baseCatalog().marketplaces[0];
+      neighbor.id = 'owner/repo/tools';
+      neighbor.providerStatus.claude.marketplaceName = mapping.startsWith(
+        'unmapped',
+      )
+        ? 'unknown-registration'
+        : 'neighbor-registration';
+      neighbor.plugins = [];
+      neighbor.pluginCount = 0;
+      cache.marketplaces.push(neighbor);
+      if (mapping.startsWith('ambiguous')) {
+        const duplicate = baseCatalog().marketplaces[0];
+        duplicate.id = 'another-owner';
+        duplicate.providerStatus.claude.marketplaceName =
+          'neighbor-registration';
+        duplicate.plugins = [];
+        cache.marketplaces.push(duplicate);
+      }
+      write(cache);
+      const copy = path.join(root, 'plugin-cache', 'neighbor-1234abcd');
+      const unused = path.join(root, 'plugin-cache', 'unused-1234abcd');
+      for (const candidate of [copy, unused]) {
+        fs.mkdirSync(candidate, { recursive: true });
+        fs.writeFileSync(path.join(candidate, 'payload'), 'keep');
+      }
+      const key = 'owner/repo/tools/lint';
+      const binding = {
+        cachePath: copy,
+        sourceUrl: 'owner/neighbor',
+        cachedAt: '',
+      };
+      write(
+        {
+          version: 1,
+          entries: { [key]: binding },
+          retired: [{ cachePath: unused, retiredAt: '2000-01-01T00:00:00Z' }],
+        },
+        indexPath,
+      );
+      const removal = await removeMarketplace(selected.id, {
+        providers: ['claude'],
+      });
+      expect(removal.success).toBe(true);
+      expect(removal.data?.removedProviders).toContain('claude');
+      expect(
+        catalog().marketplaces.find((row) => row.id === selected.id),
+      ).toBeUndefined();
+      expect(index().entries[key]).toEqual(binding);
+      expect(index().retired).not.toContainEqual(
+        expect.objectContaining({ cachePath: copy }),
+      );
+      await jest.isolateModulesAsync(refreshedInIsolatedLifetime);
+      expect(index().entries[key]).toEqual(binding);
+      expect(fs.readFileSync(path.join(copy, 'payload'), 'utf8')).toBe('keep');
+      expect(fs.existsSync(unused)).toBe(false);
+    },
+  );
+
+  test.each(['provenance', 'shared-path'])(
+    'Update and uninstall use one %s key and preserve other bindings and shared payloads',
+    async (identity) => {
+      write(baseCatalog());
+      marketplaceFixture('owner/p');
+      cloneFixture('installed-name');
+      const oldCopy = await install();
+      const cache = catalog();
+      const row = cache.marketplaces[0].plugins[0];
+      const before = index();
+      const original = before.entries['m/p'];
+      if (identity !== 'provenance') {
+        delete row.provenance;
+        if (!row.facets.claude) throw new Error('expected facet');
+        delete row.facets.claude.provenance;
+      } else {
+        // Facet identity wins even when the row-level projection disagrees.
+        row.provenance = {
+          sourceUrl: 'owner/other',
+          installedAt: '',
+          marketplaceEntryName: 'other',
+        };
+      }
+      if (identity === 'shared-path')
+        before.entries['m/alias'] = { ...original };
+      if (identity === 'different-path') {
+        // Payload location does not change the manifest entry identity.
+        before.entries['m/p'] = { ...original, cachePath: pluginPath };
+      }
+      before.entries['other/p'] = { ...original };
+      write(cache);
+      write(before, indexPath);
+      // Without a recorded entry name, develop's requested literal key.
+      const key = identity === 'provenance' ? 'm/p' : 'm/installed-name';
+      const result = await installPlugin('m', row.name, 'owner/new', {
+        skipRefresh: true,
+      });
+      expect(result.success).toBe(true);
+      const next = result.data?.cachePath;
+      if (!next) throw new Error('expected updated copy');
+      const after = index();
+      expect(after.entries[key].cachePath).toBe(next);
+      for (const [otherKey, binding] of Object.entries(before.entries))
+        if (otherKey !== key) expect(after.entries[otherKey]).toEqual(binding);
+      expect(fs.existsSync(oldCopy)).toBe(true);
+      const retained = catalog();
+      const installed = retained.marketplaces[0].plugins[0];
+      if (!installed.facets.claude) throw new Error('expected installed facet');
+      installed.facets.codex = {
+        ...installed.facets.claude,
+        provider: 'codex',
+        mode: 'native',
+      };
+      installed.providerSupport.codex = 'native';
+      const shared = structuredClone(retained.marketplaces[0].plugins[0]);
+      shared.name = 'shared';
+      if (!shared.facets.claude) throw new Error('expected shared facet');
+      shared.facets.claude.name = 'shared';
+      if (!shared.facets.codex) throw new Error('expected shared Codex facet');
+      shared.facets.codex.name = 'shared';
+      retained.marketplaces[0].plugins.push(shared);
+      write(retained);
+      expect(resolve('installed-name').sdkPlugins).toEqual([
+        { type: 'local', path: next },
+      ]);
+      expect(
+        await resolvePluginInfoPath(
+          installed,
+          retained.marketplaces[0],
+          [],
+          false,
+          'codex',
+        ),
+      ).toBe(next);
+      await removeInstalledPluginCache('m', 'installed-name');
+      expect(index().entries[key]).toBeUndefined();
+      expect(index().entries['other/p']).toEqual(original);
+      expect(fs.existsSync(next)).toBe(true);
+      const uninstalled = catalog().marketplaces[0];
+      const removed = uninstalled.plugins.find(
+        (plugin) => plugin.name === 'installed-name',
+      );
+      if (!removed) throw new Error('expected uninstalled row');
+      expect(resolve('installed-name').sdkPlugins).toEqual([]);
+      expect(removed.sourcePath).toBe('');
+      expect(removed.cachePath).toBeUndefined();
+      for (const provider of ['claude', 'codex'] as const) {
+        expect(
+          await resolvePluginInfoPath(
+            removed,
+            uninstalled,
+            [],
+            false,
+            provider,
+          ),
+        ).toBeNull();
+        expect(removed.facets[provider]).toMatchObject({
+          sourcePath: '',
+          installLocation: '',
+        });
+        expect(removed.facets[provider]?.cachePath).toBeUndefined();
+        expect(
+          await resolvePluginInfoPath(shared, uninstalled, [], false, provider),
+        ).toBe(next);
+      }
+      expect(resolve('shared').sdkPlugins).toEqual([
+        { type: 'local', path: next },
+      ]);
+      expect(
+        catalog().marketplaces[0].plugins.find(
+          (plugin) => plugin.name === 'shared',
+        ),
+      ).toEqual(shared);
+    },
+  );
+
+  test.each([
+    'exact',
+    'unique-normalized',
+    'ambiguous-normalized',
+    'provenance',
+  ])(
+    'recovered index binds catalog copies by %s entry identity',
+    async (matching) => {
+      write(baseCatalog());
+      cloneFixture('installed-name');
+      const source = 'git@github.com:owner/p.git';
+      marketplaceFixture(source);
+      const copy = await install(source);
+      const cache = catalog();
+      const row = cache.marketplaces[0].plugins[0];
+      if (!row.facets.claude) throw new Error('expected installed facet');
+      if (matching !== 'provenance') {
+        delete row.provenance;
+        delete row.facets.claude.provenance;
+      }
+      write(cache);
+      const httpsSource = { source: 'url', url: 'https://github.com/owner/p' };
+      write(
+        {
+          name: 'm',
+          plugins:
+            matching === 'unique-normalized'
+              ? [{ name: 'p', source: httpsSource }]
+              : matching === 'provenance'
+                ? [
+                    { name: 'p', source: httpsSource },
+                    {
+                      name: 'exact-entry',
+                      source: { source: 'url', url: source },
+                    },
+                  ]
+                : [
+                    { name: 'https-entry', source: httpsSource },
+                    {
+                      name: 'p',
+                      source:
+                        matching === 'exact'
+                          ? { source: 'url', url: source }
+                          : httpsSource,
+                    },
+                  ],
+        },
+        path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+      );
+      write({ version: 1, entries: { bad: { cachePath: 7 } } }, indexPath);
+      await refreshed();
+      const current = catalog().marketplaces.find((entry) => entry.id === 'm');
+      if (!current) throw new Error('expected recovered marketplace');
+      if (matching === 'ambiguous-normalized') {
+        expect(current.plugins.map((plugin) => plugin.cachePath)).toEqual([
+          undefined,
+          undefined,
+        ]);
+        expect(resolve('installed-name').sdkPlugins).toEqual([]);
+      } else {
+        const bound = current.plugins.find(
+          (plugin) => plugin.cachePath === copy,
+        );
+        expect(bound?.name).toBe('installed-name');
+        expect(bound?.externalSource?.url).toBe(
+          matching === 'exact' ? source : httpsSource.url,
+        );
+        expect(
+          current.plugins.filter((plugin) => plugin.cachePath),
+        ).toHaveLength(1);
+        expect(resolve('installed-name').sdkPlugins).toEqual([
+          { type: 'local', path: copy },
+        ]);
+      }
+      expect(cloneRepo).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test('recovered index then healthy write retains observed snapshots until a fresh module lifetime', async () => {
+    write(baseCatalog());
+    cloneFixture();
+    marketplaceFixture('owner/p');
+    const first = await install();
+    const snapshot = catalog();
+    const second = await install();
+    const recovered = index();
+    recovered.retired = [
+      { cachePath: first, retiredAt: '2000-01-01T00:00:00Z' },
+    ];
+    write(
+      {
+        ...recovered,
+        entries: { ...recovered.entries, 'other/bad': { cachePath: 7 } },
+      },
+      indexPath,
+    );
+    write({
+      ...snapshot,
+      marketplaces: snapshot.marketplaces.map((marketplace) => ({
+        ...marketplace,
+        plugins: [...marketplace.plugins, { name: 'malformed', cachePath: 7 }],
+      })),
+    });
+    expect(readPluginCatalogHealth()).toMatchObject({ recovered: 'damaged' });
+    await refreshed();
+    expect(
+      catalog().marketplaces.find((row) => row.id === 'm')?.plugins[0]
+        .cachePath,
+    ).toBe(second);
+    // Provider registration shape is irrelevant to index recovery.
+    write(
+      { m: { installLocation: 42 } },
+      path.join(root, 'plugins', 'known_marketplaces.json'),
+    );
+    // An ordinary install makes the recovered index healthy without changing the old retirement.
+    expect(
+      (await installPlugin('other', 'q', 'owner/q', { skipRefresh: true }))
+        .success,
+    ).toBe(true);
+    expect(
+      index().retired?.find((entry) => entry.cachePath === first)?.retiredAt,
+    ).toBe('2000-01-01T00:00:00Z');
+    marketplaceFixture('owner/p');
+    await refreshed();
+    expect(fs.existsSync(first)).toBe(true);
+    await jest.isolateModulesAsync(async () => {
+      await refreshedInIsolatedLifetime();
+    });
+    expect(fs.existsSync(first)).toBe(false);
+    expect(fs.existsSync(second)).toBe(true);
+  });
+
+  test.each(['encoded-parent-traversal-file-url'])(
+    'marketplace refresh publishes a %s local source before retiring unused copies',
+    async (source) => {
+      const copy = path.join(root, 'plugin-cache', 'source-1234abcd');
+      const unused = path.join(root, 'plugin-cache', 'unused-1234abcd');
+      for (const candidate of [copy, unused]) {
+        fs.mkdirSync(candidate, { recursive: true });
+        fs.writeFileSync(path.join(candidate, 'payload'), 'source');
+      }
+      if (source === 'encoded-parent-traversal-file-url')
+        fs.mkdirSync(path.join(copy, 'child'));
+      const sourceUrl =
+        source === 'path'
+          ? copy
+          : source === 'file-url'
+            ? pathToFileURL(copy).href
+            : source === 'encoded-separator-file-url'
+              ? pathToFileURL(copy).href.replace(/\/(?=[^/]+$)/, '%2F')
+              : `${pathToFileURL(copy).href}%2Fchild/..`;
+      marketplaceFixture(sourceUrl);
+      write(baseCatalog());
+      const retired = [copy, unused].map((cachePath) => ({
+        cachePath,
+        retiredAt: '2000-01-01T00:00:00Z',
+      }));
+      write({ version: 1, entries: {}, retired }, indexPath);
+      await refreshed();
+      await refreshed();
+      const published = catalog().marketplaces.find((entry) => entry.id === 'm')
+        ?.plugins[0];
+      expect(published?.externalSource?.url).toBe(sourceUrl);
+      expect(published?.facets.claude?.externalSource?.url).toBe(sourceUrl);
+      expect(fs.existsSync(copy)).toBe(true);
+      expect(fs.readFileSync(path.join(copy, 'payload'), 'utf8')).toBe(
+        'source',
+      );
+      expect(fs.existsSync(unused)).toBe(false);
+      expect(index().entries).toEqual({});
+      expect(index().retired).toEqual([retired[0]]);
+    },
+  );
+
+  test('a Git file source with a literal delimiter protects retired children of its resolved ancestor', async () => {
+    const copy = path.join(root, 'plugin-cache', 'source-1234abcd');
+    fs.mkdirSync(copy, { recursive: true });
+    fs.writeFileSync(path.join(copy, 'payload'), 'keep');
+    fs.mkdirSync(path.join(root, 'parent#literal'));
+    const source = `${pathToFileURL(root).href}/parent#literal/../plugin-cache`;
+    marketplaceFixture(source);
+    write(baseCatalog());
+    const retired = { cachePath: copy, retiredAt: '2000-01-01T00:00:00Z' };
+    write({ version: 1, entries: {}, retired: [retired] }, indexPath);
+    await refreshed();
+    expect(fs.readFileSync(path.join(copy, 'payload'), 'utf8')).toBe('keep');
+    expect(index().retired).toEqual([retired]);
+  });
+
+  test('marketplace refresh publishes an unmappable local source without deleting potentially referenced copies', async () => {
+    const copy = path.join(root, 'plugin-cache', 'source-1234abcd');
+    const unused = path.join(root, 'plugin-cache', 'unused-1234abcd');
+    for (const candidate of [copy, unused]) {
+      fs.mkdirSync(candidate, { recursive: true });
+      fs.writeFileSync(path.join(candidate, 'payload'), 'source');
+    }
+    marketplaceFixture('file:///%ZZ');
+    write(baseCatalog());
+    write(
+      {
+        version: 1,
+        entries: {},
+        retired: [copy, unused].map((cachePath) => ({
+          cachePath,
+          retiredAt: '2000-01-01T00:00:00Z',
+        })),
+      },
+      indexPath,
+    );
+    await jest.isolateModulesAsync(async () => {
+      const { readPluginCatalogHealth: readSnapshot } =
+        await import('../plugin-service');
+      await refreshedInIsolatedLifetime();
+      const uncertain = readSnapshot();
+      if (uncertain.state !== 'valid') throw new Error('expected catalog');
+      expect(
+        uncertain.data.marketplaces.find((entry) => entry.id === 'm')
+          ?.plugins[0].externalSource?.url,
+      ).toBe('file:///%ZZ');
+      expect(fs.existsSync(copy)).toBe(true);
+      expect(fs.existsSync(unused)).toBe(true);
+      marketplaceFixture(copy);
+      await refreshedInIsolatedLifetime();
+      const corrected = readSnapshot();
+      if (corrected.state !== 'valid') throw new Error('expected catalog');
+      expect(
+        corrected.data.marketplaces.find((entry) => entry.id === 'm')
+          ?.plugins[0].externalSource?.url,
+      ).toBe(copy);
+      expect(fs.existsSync(unused)).toBe(true);
+    });
+    // Uncertainty disables deletion for the lifetime, not refresh. Restart can sweep again.
+    await jest.isolateModulesAsync(async () => {
+      await refreshedInIsolatedLifetime();
+    });
+    expect(fs.readFileSync(path.join(copy, 'payload'), 'utf8')).toBe('source');
+    expect(fs.existsSync(unused)).toBe(false);
+    expect(index().retired?.map((entry) => entry.cachePath)).toEqual([copy]);
+  });
+  test.each(['file:///%ZZ'])(
+    'an unmappable local source %s skips cleanup without blocking refresh or uninstall',
+    async (sourceUrl) => {
+      marketplaceFixture('owner/p');
+      const copy = path.join(root, 'plugin-cache', 'uncertain-1234abcd');
+      fs.mkdirSync(copy, { recursive: true });
+      const entries = {
+        'other/source-user': { cachePath: pluginPath, sourceUrl, cachedAt: '' },
+      };
+      const retired = [{ cachePath: copy, retiredAt: '2000-01-01T00:00:00Z' }];
+      write(baseCatalog());
+      write({ version: 1, entries, retired }, indexPath);
+      // Unknown references disable cleanup only, not ordinary mutations.
+      await jest.isolateModulesAsync(async () => {
+        const service = await import('../plugin-service');
+        await service.sweepRetiredPluginCopies();
+        expect(fs.existsSync(copy)).toBe(true);
+        await refreshedInIsolatedLifetime();
+        expect(fs.existsSync(copy)).toBe(true);
+        const installed = baseCatalog();
+        installed.marketplaces[0].plugins[0].cachePath = copy;
+        write(installed);
+        write(
+          {
+            version: 1,
+            entries: {
+              ...entries,
+              'm/p': { cachePath: copy, sourceUrl: 'owner/p', cachedAt: '' },
+            },
+            retired,
+          },
+          indexPath,
+        );
+        await service.removeInstalledPluginCache('m', 'p');
+        expect(fs.existsSync(copy)).toBe(true);
+        const {
+          readPluginCacheIndex: readIndex,
+          readPluginCatalog: readSnapshot,
+        } =
+          await import('@canopy/execution-engine/node/plugins/catalog-read-health');
+        const remaining = readIndex(indexPath);
+        if (remaining.state !== 'valid') throw new Error('expected index');
+        expect(remaining.data.entries).toEqual(entries);
+        expect(remaining.data.retired).toEqual([
+          { cachePath: copy, retiredAt: remaining.data.retired?.[0].retiredAt },
+        ]);
+        expect(typeof remaining.data.retired?.[0].retiredAt).toBe('string');
+        expect(remaining.data.retired?.[0].retiredAt).not.toBe(
+          retired[0].retiredAt,
+        );
+        const snapshot = readSnapshot(catalogPath);
+        if (snapshot.state !== 'valid') throw new Error('expected catalog');
+        expect(
+          snapshot.data.marketplaces[0].plugins[0].cachePath,
+        ).toBeUndefined();
+      });
+    },
+  );
+
+  test('previously read local sources protect copies until successive restarts', async () => {
+    marketplaceFixture('owner/p');
+    const copy = path.join(root, 'plugin-cache', 'snapshot-1234abcd');
+    function retireCopy(): void {
+      fs.mkdirSync(copy, { recursive: true });
+      write(
+        {
+          version: 1,
+          entries: {},
+          retired: [{ cachePath: copy, retiredAt: '2000-01-01T00:00:00Z' }],
+        },
+        indexPath,
+      );
+    }
+    async function observeSource(source: string): Promise<void> {
+      const { readPluginCatalog: readSnapshot } =
+        await import('@canopy/execution-engine/node/plugins/catalog-read-health');
+      const snapshot = baseCatalog();
+      snapshot.marketplaces[0].plugins[0].externalSource = {
+        source: 'url',
+        url:
+          source === 'encoded-separator'
+            ? pathToFileURL(copy).href.replace(/\/(?=[^/]+$)/, '%2F')
+            : 'file:///%ZZ',
+      };
+      write(snapshot);
+      expect(readSnapshot(catalogPath).state).toBe('valid');
+      write(baseCatalog());
+      await refreshedInIsolatedLifetime();
+      expect(fs.existsSync(copy)).toBe(true);
+    }
+
+    retireCopy();
+    await jest.isolateModulesAsync(async () => {
+      await observeSource('encoded-separator');
+    });
+    await jest.isolateModulesAsync(async () => {
+      await refreshedInIsolatedLifetime();
+      expect(fs.existsSync(copy)).toBe(false);
+      // Prove reclamation before uncertainty can mask the known-path control.
+      retireCopy();
+      await observeSource('unmappable');
+    });
+    await jest.isolateModulesAsync(async () => {
+      await refreshedInIsolatedLifetime();
+    });
+    expect(fs.existsSync(copy)).toBe(false);
+  });
+
+  test('a recovered shared read during cleanup protects the next copy before removal', async () => {
+    write(baseCatalog());
+    marketplaceFixture('owner/p');
+    const copies = ['first-1234abcd', 'second-1234abcd'].map((name) =>
+      path.join(root, 'plugin-cache', name),
+    );
+    for (const copy of copies) fs.mkdirSync(copy, { recursive: true });
+    write(
+      {
+        version: 1,
+        entries: {},
+        retired: copies.map((cachePath) => ({
+          cachePath,
+          retiredAt: '2000-01-01T00:00:00Z',
+        })),
+      },
+      indexPath,
+    );
+    const remove = fs.promises.rm;
+    const removed: string[] = [];
+    jest
+      .spyOn(fs.promises, 'rm')
+      .mockImplementation(async (candidate, options) => {
+        if (typeof candidate === 'string' && copies.includes(candidate)) {
+          removed.push(candidate);
+          if (removed.length === 1) {
+            const observed = baseCatalog();
+            observed.marketplaces[0].plugins[0].cachePath = copies.find(
+              (copy) => copy !== candidate,
+            );
+            // A sibling of the live catalog: its observation root is the same
+            // cache, and leaving the live catalog untouched keeps the sweep's
+            // evidence recheck from masking the process-history guard.
+            const sibling = path.join(root, 'observed-plugins-cache.json');
+            write(
+              {
+                ...observed,
+                marketplaces: observed.marketplaces.map((marketplace) => ({
+                  ...marketplace,
+                  plugins: [
+                    ...marketplace.plugins,
+                    { name: 'bad', cachePath: 7 },
+                  ],
+                })),
+              },
+              sibling,
+            );
+            expect(
+              await readHealth.readPluginCatalogAsync(sibling),
+            ).toMatchObject({ recovered: 'damaged' });
+          }
+        }
+        await remove(candidate, options);
+      });
+    await refreshed();
+    expect(removed).toHaveLength(1);
+    expect(copies.filter((copy) => fs.existsSync(copy))).toHaveLength(1);
+  });
+
+  test('a publication candidate with an uncertain install protects its copy for this lifetime', async () => {
+    write(baseCatalog());
+    marketplaceFixture('owner/p');
+    const copy = path.join(root, 'plugin-cache', 'uncertain-1234abcd');
+    fs.mkdirSync(copy, { recursive: true });
+    const candidate = baseCatalog();
+    candidate.marketplaces[0].plugins[0].cachePath = copy;
+    // The real writer installs the candidate, then its directory flush fails.
+    const before = fs.readFileSync(catalogPath, 'utf8');
+    const realOpen = fsPromises.open;
+    const opened = jest
+      .spyOn(fsPromises, 'open')
+      .mockImplementation(async (...args) => {
+        const handle = await realOpen(...args);
+        if (args[0] === root && fs.readFileSync(catalogPath, 'utf8') !== before)
+          jest
+            .spyOn(handle, 'sync')
+            .mockRejectedValue(new Error('injected directory flush failure'));
+        return handle;
+      });
+    let failure: unknown;
+    try {
+      await publishPluginCatalog(candidate);
+    } catch (error) {
+      failure = error;
+    }
+    opened.mockRestore();
+    expect(failure).toBeInstanceOf(CatalogPublicationError);
+    if (!(failure instanceof CatalogPublicationError))
+      throw new Error('expected publication failure');
+    expect(failure.outcomes).toMatchObject([
+      { document: 'plugins_cache', state: 'installed_uncertain' },
+    ]);
+    // Raw bytes, not a catalog reader, so no read observes the reference.
+    const installed: unknown = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+    expect(installed).toMatchObject({
+      marketplaces: [{ plugins: [{ cachePath: copy }] }],
+    });
+    // A later catalog replaces the candidate before any detached read settles.
+    write(baseCatalog());
+    write(
+      {
+        version: 1,
+        entries: {},
+        retired: [{ cachePath: copy, retiredAt: '2000-01-01T00:00:00Z' }],
+      },
+      indexPath,
+    );
+    await settleDetachedWork();
+    await refreshed();
+    expect(fs.existsSync(copy)).toBe(true);
+  });
+
+  test('catalog snapshot copy-token-filter revision: outside and managed strings bound history without blocking reads, and cleanup resumes after successive restarts', async () => {
+    marketplaceFixture('owner/p');
+    const cacheRoot = path.join(root, 'plugin-cache');
+    const copy = path.join(cacheRoot, 'unused-1234abcd');
+    const active = path.join(cacheRoot, 'active-1234abcd');
+    const binding = {
+      cachePath: active,
+      sourceUrl: 'owner/live',
+      cachedAt: '',
+    };
+    function retireCopy(): void {
+      fs.mkdirSync(copy, { recursive: true });
+      fs.mkdirSync(active, { recursive: true });
+      write(
+        {
+          version: 1,
+          entries: { 'other/live': binding },
+          retired: [{ cachePath: copy, retiredAt: '2000-01-01T00:00:00Z' }],
+        },
+        indexPath,
+      );
+    }
+    async function observeHistory(location: string): Promise<void> {
+      const { readPluginCatalog: readSnapshot } =
+        await import('@canopy/execution-engine/node/plugins/catalog-read-health');
+      for (let generation = 0; generation < 2; generation++) {
+        const snapshot = baseCatalog();
+        const details = snapshot.marketplaces[0].plugins[0].details;
+        if (!details) throw new Error('expected plugin details');
+        details.mcpServers = [
+          {
+            name: 'publisher',
+            type: 'command',
+            command: 'cmd',
+            args: Array.from({ length: 6000 }, (_, offset) =>
+              path.join(
+                location === 'managed' ? cacheRoot : `${cacheRoot}-outside`,
+                location === 'managed'
+                  ? `publisher-${generation}-${offset.toString(16).padStart(8, '0')}`
+                  : `publisher-${generation}-${offset}`,
+              ),
+            ),
+          },
+        ];
+        write(snapshot);
+        expect(readSnapshot(catalogPath).state).toBe('valid');
+      }
+      write(baseCatalog());
+      await refreshedInIsolatedLifetime();
+      expect(fs.existsSync(copy)).toBe(location === 'managed');
+      expect(fs.existsSync(active)).toBe(true);
+      const { readPluginCacheIndex: readIndex } =
+        await import('@canopy/execution-engine/node/plugins/catalog-read-health');
+      const remaining = readIndex(indexPath);
+      if (remaining.state !== 'valid') throw new Error('expected index');
+      expect(remaining.data.entries['other/live']).toEqual(binding);
+      expect(remaining.data.retired).toEqual(
+        location === 'managed'
+          ? [{ cachePath: copy, retiredAt: '2000-01-01T00:00:00Z' }]
+          : [],
+      );
+    }
+
+    retireCopy();
+    await jest.isolateModulesAsync(async () => {
+      await observeHistory('outside');
+    });
+    await jest.isolateModulesAsync(async () => {
+      await refreshedInIsolatedLifetime();
+      expect(fs.existsSync(copy)).toBe(false);
+      expect(fs.existsSync(active)).toBe(true);
+      // Saturate history only after the outside-string deletion control passes.
+      retireCopy();
+      await observeHistory('managed');
+    });
+    await jest.isolateModulesAsync(async () => {
+      await refreshedInIsolatedLifetime();
+    });
+    expect(fs.existsSync(copy)).toBe(false);
+    expect(fs.existsSync(active)).toBe(true);
+  });
+
+  test.each(['invalid-utf8'])(
+    'refresh cleanup respects references and skips %s preimages and unsafe candidates',
+    async (damage) => {
+      write(baseCatalog());
+      marketplaceFixture('owner/p');
+      const cacheRoot = path.join(root, 'plugin-cache');
+      const names = [
+        'unused-1234abcd',
+        'executable-1234abcd',
+        'preimage-1234abcd',
+        'recent-1234abcd',
+        'orphan-1234abcd',
+        'codex-compatibility',
+        'unknown',
+        'Copy-1234abcd',
+      ];
+      fs.mkdirSync(cacheRoot, { recursive: true });
+      for (const name of names) fs.mkdirSync(path.join(cacheRoot, name));
+      const external = path.join(marketplaceRoot, 'external-1234abcd');
+      fs.mkdirSync(external);
+      const alias = path.join(cacheRoot, 'alias-1234abcd');
+      fs.symlinkSync(external, alias, 'junction');
+      const file = path.join(cacheRoot, 'file-1234abcd');
+      fs.writeFileSync(file, 'not a directory');
+      const detailsCopy = path.join(cacheRoot, names[1]);
+      const local = path.join(marketplaceRoot, 'local');
+      fs.mkdirSync(path.join(local, '.claude-plugin'), { recursive: true });
+      write(
+        { name: 'local' },
+        path.join(local, '.claude-plugin', 'plugin.json'),
+      );
+      // Publisher-controlled arguments must not overflow a function call's argument count.
+      write(
+        {
+          demo: {
+            command: path.join(detailsCopy, 'missing', '..', 'command'),
+            args: Array(150000).fill('.'),
+          },
+        },
+        path.join(local, '.mcp.json'),
+      );
+      write(
+        { name: 'm', plugins: [{ name: 'local', source: './local' }] },
+        path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+      );
+      const old = '2000-01-01T00:00:00Z';
+      const retired = [
+        ...names
+          .filter(
+            (name) => !name.startsWith('orphan') && !name.startsWith('Copy'),
+          )
+          .map((name) => path.join(cacheRoot, name)),
+        external,
+        alias,
+        file,
+        path.join(cacheRoot, 'missing-1234abcd'),
+        path.join(cacheRoot, 'copy-1234abcd'),
+      ].map((cachePath) => ({
+        cachePath,
+        retiredAt: cachePath.endsWith(names[3])
+          ? new Date().toISOString()
+          : old,
+      }));
+      write({ version: 1, entries: {}, retired }, indexPath);
+      write(
+        {
+          version: 1,
+          entries: {},
+          retired: [
+            {
+              cachePath: path.join(cacheRoot, names[2], 'missing'),
+              retiredAt: old,
+            },
+          ],
+        },
+        `${indexPath}.damaged-old`,
+      );
+      const damaged = Buffer.from(
+        JSON.stringify({
+          version: 2,
+          lastRefreshed: '',
+          marketplaces: [],
+          description: 'descriptive text',
+        }),
+      );
+      damaged[damaged.indexOf('descriptive text') + 1] = 0xff;
+      fs.writeFileSync(
+        `${catalogPath}.damaged-bad`,
+        damage === 'truncated' ? '{' : damaged,
+      );
+      await refreshed();
+      expect(fs.existsSync(path.join(cacheRoot, names[0]))).toBe(true);
+      fs.unlinkSync(`${catalogPath}.damaged-bad`);
+      jest.spyOn(process, 'cwd').mockReturnValue(path.parse(root).root);
+      await refreshed();
+      expect(fs.existsSync(path.join(cacheRoot, names[0]))).toBe(false);
+      for (const name of names.slice(1))
+        expect(fs.existsSync(path.join(cacheRoot, name))).toBe(true);
+      expect(fs.lstatSync(alias).isSymbolicLink()).toBe(true);
+      expect(fs.existsSync(external)).toBe(true);
+      expect(fs.readFileSync(file, 'utf8')).toBe('not a directory');
+      expect(index().retired).not.toContainEqual(
+        expect.objectContaining({
+          cachePath: path.join(cacheRoot, 'missing-1234abcd'),
+        }),
+      );
+    },
+  );
+  test('execution keeps the selected catalog snapshot until refresh reconciles an index-first install', async () => {
+    const before = baseCatalog();
+    const beforePlugin = before.marketplaces[0].plugins[0];
+    beforePlugin.externalSource = { url: 'owner/p' };
+    beforePlugin.cachePath = pluginPath;
+    if (!beforePlugin.facets.claude) throw new Error('expected Claude facet');
+    beforePlugin.facets.claude.externalSource = { url: 'owner/p' };
+    beforePlugin.facets.claude.cachePath = pluginPath;
+    write(before);
+    marketplaceFixture('owner/p');
+    cloneFixture();
+    const installed = await installPlugin('m', 'p', 'owner/p', {
+      skipRefresh: true,
+    });
+    expect(installed.success).toBe(true);
+    write(before);
+    expect(resolve().sdkPlugins).toEqual([{ type: 'local', path: pluginPath }]);
+    expect(
+      await resolvePluginInfoPath(
+        beforePlugin,
+        before.marketplaces[0],
+        [],
+        false,
+        'claude',
+      ),
+    ).toBe(pluginPath);
+    await refreshMarketplaces();
+    expect(resolve().sdkPlugins).toEqual([
+      { type: 'local', path: installed.data?.cachePath },
+    ]);
+  });
+
+  test('refresh leaves a UNC managed cache root and its retirement record untouched', async () => {
+    write(baseCatalog());
+    marketplaceFixture('owner/p');
+    const localRoot = path.join(root, 'plugin-cache');
+    const copy = path.join(localRoot, 'copy-1234abcd');
+    fs.mkdirSync(copy, { recursive: true });
+    fs.writeFileSync(path.join(copy, 'keep'), 'payload');
+    // Network-style root spelling backed by a local fixture, never a real share.
+    const cacheRoot =
+      process.platform === 'win32'
+        ? path.win32.toNamespacedPath(localRoot)
+        : `/${localRoot}`;
+    expect(cacheRoot).toMatch(/^[\\/]{2}/);
+    expect(path.isAbsolute(cacheRoot)).toBe(true);
+    const entry = {
+      cachePath: path.join(cacheRoot, 'copy-1234abcd'),
+      retiredAt: '2000-01-01T00:00:00Z',
+    };
+    write({ version: 1, entries: {}, retired: [entry] }, indexPath);
+    jest.spyOn(pluginPaths, 'getPluginCacheDir').mockReturnValue(cacheRoot);
+    const readDirectory = jest.spyOn(fs.promises, 'readdir');
+    expect((await refreshMarketplaces()).success).toBe(true);
+    expect(
+      readDirectory.mock.calls.map(([candidate]) => candidate),
+    ).not.toContain(cacheRoot);
+    const normalizedRoot =
+      process.platform === 'win32'
+        ? path.win32.normalize(cacheRoot).replace(/\\/g, '/')
+        : path.posix.normalize(cacheRoot);
+    expect(
+      readDirectory.mock.calls.map(([candidate]) => candidate),
+    ).not.toContain(normalizedRoot);
+    expect(readPluginIndexHealth()).toMatchObject({
+      data: { retired: [entry] },
+    });
+    expect(fs.readFileSync(path.join(copy, 'keep'), 'utf8')).toBe('payload');
+  });
 });
 
 function publicationGate(): { promise: Promise<void>; resolve: () => void } {
@@ -3025,9 +10229,9 @@ describe('admitted catalog publication and operation lifetimes (CAN-4481)', () =
       .mockImplementation((target, data, options) =>
         realWrite(target, data, {
           ...options,
-          beforeInstall: async () => {
+          beforeInstall: async (temporaryPath) => {
             notePluginCatalogEffects();
-            await options?.beforeInstall?.();
+            await options?.beforeInstall?.(temporaryPath);
           },
         }),
       );
@@ -3274,14 +10478,16 @@ describe('admitted catalog publication and operation lifetimes (CAN-4481)', () =
         },
         indexPath,
       );
-      const before = fs.readFileSync(indexPath, 'utf8');
-      await expect(removeInstalledPluginCache('m', 'p')).rejects.toThrow(
-        /separate owner/,
-      );
+      await expect(
+        removeInstalledPluginCache('m', 'p'),
+      ).resolves.toBeUndefined();
       expect(fs.readFileSync(path.join(payload, 'keep'), 'utf8')).toBe(
         'separately owned',
       );
-      expect(fs.readFileSync(indexPath, 'utf8')).toBe(before);
+      const health = readPluginIndexHealth();
+      expect(health.state).toBe('valid');
+      if (health.state !== 'valid') throw new Error('expected index');
+      expect(health.data.entries['m/p']).toBeUndefined();
     },
   );
 
@@ -3331,16 +10537,14 @@ describe('admitted catalog publication and operation lifetimes (CAN-4481)', () =
       const result = await installPlugin('m', 'p', 'https://github.com/o/p', {
         skipRefresh: true,
       });
-      expect(result.success).toBe(false);
-      expect(result.error).toMatch(
-        /separate owner|outside its managed directory/,
-      );
+      expect(result.success).toBe(true);
       expect(fs.readFileSync(marker, 'utf8')).toBe('unowned payload');
       const index = readPluginIndexHealth();
       if (index.state !== 'valid')
         throw new Error('expected valid installed index');
       expect(index.data.entries['m/p'].cachePath).not.toBe(previousPayload);
       expect(fs.existsSync(index.data.entries['m/p'].cachePath)).toBe(true);
+      expect(index.data.retired ?? []).toEqual([]);
     },
   );
 

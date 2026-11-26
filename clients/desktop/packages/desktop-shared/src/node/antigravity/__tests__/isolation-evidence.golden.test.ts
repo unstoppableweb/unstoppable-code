@@ -294,12 +294,12 @@ describe('summarizeIsolationEvidence', () => {
 });
 
 describe('committed isolation evidence', () => {
-  it('the committed 1.5.1 evidence meets every isolation statement', () => {
+  it('the committed 1.5.14 evidence meets every isolation statement', () => {
     const committed = JSON.parse(
       readFileSync(
         join(
           __dirname,
-          '../../../../../../docs/planning/2026-11-12-antigravity-parity/evidence/isolation-1.5.1.json',
+          '../../../../../../docs/planning/2026-11-12-antigravity-parity/evidence/isolation-1.5.14.json',
         ),
         'utf8',
       ),

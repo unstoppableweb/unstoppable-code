@@ -1,4 +1,4 @@
-import { Dot } from '@canopy/ui-shared/components/Badge';
+import { Dot } from '@canopy/ui-shared/primitives/Badge';
 import { useCallback, useMemo, useRef, useState, type JSX } from 'react';
 import { FilterIcon, SettingsIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {

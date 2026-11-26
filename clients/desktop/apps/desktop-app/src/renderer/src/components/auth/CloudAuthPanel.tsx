@@ -64,30 +64,20 @@ export const DEFAULT_CLOUD_AUTH_BENEFITS: CloudAuthBenefit[] = [
   },
 ];
 
-export const GUEST_CLOUD_AUTH_BENEFITS: CloudAuthBenefit[] =
-  DEFAULT_CLOUD_AUTH_BENEFITS.map((benefit) =>
-    benefit.id === 'keep-work'
-      ? { ...benefit, label: "Keep the work you've done as a guest" }
-      : benefit,
-  );
-
 /**
- * Supporting line under the title on the guest sign-in gate.
+ * Supporting line under the title on the sign-in gate.
  *
- * Deliberately says nothing about signing in. The title, the CTA, and the
- * microcopy under it already do; a fourth restatement ("Unlock the rest of
- * Canopy by signing in.") was the only line on the surface carrying no
- * information. The two facts the rest of the screen cannot show are that an
- * account costs nothing and that existing guest work survives the upgrade, so
- * this line carries those and the benefit rows carry the rest.
+ * It says nothing about signing in: the title, the button, and the line under
+ * it already do. It never says "free" (docs/ux-writing/sign-in.md) and never
+ * promises that guest work carries over, because that merge can be skipped or
+ * fail.
  *
  * No brand name on purpose: the title already names the app, and this reads the
  * same under any brand pack.
  */
-export const CLOUD_AUTH_DEFAULT_LEAD =
-  "Free account, no card, nothing you've built gets left behind.";
+export const CLOUD_AUTH_DEFAULT_LEAD = 'No card needed to sign up.';
 
-const OAUTH_MICROCOPY = 'Opens your browser. Takes about ten seconds.';
+const OAUTH_MICROCOPY = 'Opens your browser.';
 
 /**
  * Vertical rhythm, as three groups: the header (title plus the lead line that
@@ -194,9 +184,6 @@ export function CloudAuthPanel({
 
   const isSplash = layout === 'splash';
   const confirmedGuest = isGuestAccount(account);
-  const displayedBenefits = confirmedGuest
-    ? GUEST_CLOUD_AUTH_BENEFITS
-    : benefits;
   // Replacing a guest credential with a manual key cannot mint the link ticket
   // that preserves guest data. Keep that destructive path unavailable until it
   // has an explicit confirmation/rollback flow; OAuth is the supported upgrade.
@@ -364,7 +351,6 @@ export function CloudAuthPanel({
         data-testid="settings-account-canopy-cloud-recovery"
       >
         <CloudAccountRecoveryNotice
-          cloudName={cloudName}
           resetting={repairing}
           errorMessage={errorMessage}
           onReset={auth.resetUnreadableAccount}
@@ -382,7 +368,7 @@ export function CloudAuthPanel({
       >
         {leadSlot}
         <ul className={`flex flex-col gap-3 ${isSplash ? 'text-left' : ''}`}>
-          {displayedBenefits.map((benefit) => {
+          {benefits.map((benefit) => {
             const Icon = benefit.icon;
             return (
               <li

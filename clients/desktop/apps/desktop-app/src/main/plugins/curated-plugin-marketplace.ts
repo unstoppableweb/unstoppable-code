@@ -44,6 +44,10 @@ import {
   type PluginProviderFacet,
 } from '@canopy/execution-engine/types/plugins';
 import { safeReadJson } from '../lib/fs-utils';
+import {
+  readPluginCopyJsonWithRecovery,
+  isPluginCopyEvidenceRecord,
+} from './plugin-copy-provider-evidence';
 import { withCuratedPluginDisplay } from './curated-plugin-display';
 import {
   getCuratedPluginsMarketplaceDir,
@@ -84,7 +88,7 @@ export interface CuratedMarketplaceScanDeps {
     marketplaceId: string;
     marketplaceInstallDir: string;
     pluginEntries: MarketplacePluginEntry[];
-  }): PluginProviderFacet[];
+  }): PluginProviderFacet[] | Promise<PluginProviderFacet[]>;
   /** Codex-native facets for local (path-sourced) entries, nulls dropped. */
   readCodexFacets(input: {
     marketplaceRoot: string;
@@ -208,15 +212,31 @@ export async function scanCuratedMarketplace(
   }
 }
 
+function readCuratedCodexManifest(
+  file: string,
+): Promise<CuratedCodexMarketplaceManifest | null> {
+  const accepts = (value: unknown): value is CuratedCodexMarketplaceManifest =>
+    isPluginCopyEvidenceRecord(value) && Array.isArray(value.plugins);
+  return readPluginCopyJsonWithRecovery(file, accepts);
+}
+
+/** The curated Codex manifest the sweep's listing check compares against. */
+export function curatedCodexManifestPath(): string {
+  return getCuratedCodexManifestPath(getCuratedPluginsMarketplaceDir());
+}
+
 async function scanCuratedMarketplaceUncached(
   deps: CuratedMarketplaceScanDeps,
 ): Promise<MarketplaceInfo | null> {
   const root = getCuratedPluginsMarketplaceDir();
   const claudeManifestPath = getCuratedClaudeManifestPath(root);
   const codexManifestPath = getCuratedCodexManifestPath(root);
-  const claudeManifest = safeReadJson<MarketplaceManifest>(claudeManifestPath);
-  const codexManifest =
-    safeReadJson<CuratedCodexMarketplaceManifest>(codexManifestPath);
+  const acceptsClaude = (value: unknown): value is MarketplaceManifest =>
+    isPluginCopyEvidenceRecord(value) && Array.isArray(value.plugins);
+  const [claudeManifest, codexManifest] = await Promise.all([
+    readPluginCopyJsonWithRecovery(claudeManifestPath, acceptsClaude),
+    readCuratedCodexManifest(codexManifestPath),
+  ]);
   const claudeEntries =
     claudeManifest && Array.isArray(claudeManifest.plugins)
       ? claudeManifest.plugins
@@ -229,7 +249,7 @@ async function scanCuratedMarketplaceUncached(
     return null;
   }
 
-  const claudeFacets = deps.readClaudeFacets({
+  const claudeFacets = await deps.readClaudeFacets({
     marketplaceId: CURATED_PLUGIN_MARKETPLACE_ID,
     marketplaceInstallDir: root,
     pluginEntries: claudeEntries,

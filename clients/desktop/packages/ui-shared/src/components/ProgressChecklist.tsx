@@ -1,7 +1,7 @@
-import { Badge, type BadgeTone } from './Badge';
-import { Stack } from './Stack';
+import { Badge, type BadgeTone } from '../primitives/Badge';
+import { Stack } from '../primitives/Stack';
 import type { JSX, ReactNode } from 'react';
-import { StatusGlyph } from './StatusGlyph';
+import { StatusGlyph } from '../primitives/StatusGlyph';
 import type { StatusGlyphState } from '../lib/status-glyph';
 import { OPERATIONAL_STATUS_COLORS } from '../lib/operational-status-colors';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';

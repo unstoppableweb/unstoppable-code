@@ -7,6 +7,7 @@ import {
   PIPELINE_DEFINITION_REMOTE_CONTROL_CALLER,
   pipelineSourceFailure,
   readDesktopPipeline,
+  readDesktopPipelineSnapshot,
 } from '../canopy-runtime/pipeline-definition-dispatch';
 import {
   assertStoredPipelineContext,
@@ -57,6 +58,9 @@ import {
 } from '@canopy/protocol/pipelines';
 import { normalizeInstalledAt } from '@canopy/protocol/installed-items';
 import { sanitizePipelineSummaryForSync } from './sync-safe-pipeline-summary';
+import { pipelineDocumentRevision } from '../pipelines/pipeline-file-revision';
+import { normalizePipeline } from '@canopy/execution-engine/pipelines/normalize-pipeline';
+import { getDefaultShellTypeForCurrentProcess } from '@canopy/execution-engine/node/pipelines/default-shell';
 import { join, resolve } from 'node:path';
 import {
   validateId,
@@ -1153,12 +1157,12 @@ export async function listPipelines(
     infos = await listRemoteControlPipelineInfos(scope);
     return summarizePipelines(target, infos, {
       loadDefinition: (pipeline) =>
-        readDesktopPipeline(
+        readDesktopPipelineSnapshot(
           pipeline.id,
           scope,
           PIPELINE_DEFINITION_REMOTE_CONTROL_CALLER,
         ).then(
-          (data) => data.content,
+          (read) => ({ pipeline: read.data.content, document: read.document }),
           (): null => null,
         ),
     });
@@ -1308,6 +1312,46 @@ async function ownedByAutomations(): Promise<ReadonlySet<string>> {
   }
 }
 
+const sameSet = (
+  a: readonly string[] | undefined,
+  b: readonly string[] | undefined,
+): boolean =>
+  JSON.stringify([...(a ?? [])].sort()) ===
+  JSON.stringify([...(b ?? [])].sort());
+
+/** Reread definitions larger than this publish no revision (CAN-7513). */
+const REVISION_DEFINITION_MAX_SERIALIZED_BYTES = 1024 * 1024;
+
+/**
+ * Whether a reread definition still has the name, triggers and scopes its
+ * discovery record shows (CAN-7513). One that doesn't, is too large to
+ * normalize, or fails to normalize publishes no revision, so Send reviews
+ * it; none of these fail the listing.
+ */
+function rereadMatchesDiscovery(
+  definition: Pipeline,
+  pipeline: PipelineInfo,
+): boolean {
+  if (definition.name !== pipeline.name) return false;
+  if (!sameSet(getTriggerTypes(definition.on), pipeline.triggerTypes))
+    return false;
+  if (
+    measureSerializedBytes(definition, REVISION_DEFINITION_MAX_SERIALIZED_BYTES)
+      .exceeded
+  )
+    return false;
+  try {
+    return sameSet(
+      normalizePipeline(definition, {
+        defaultShell: getDefaultShellTypeForCurrentProcess(),
+      }).scope ?? ['directory'],
+      pipeline.scopes ?? ['directory'],
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function summarizePipelines(
   { workspaceLocalId, worktreeLocalId }: PipelineListTarget,
   pipelines: PipelineInfo[],
@@ -1319,15 +1363,26 @@ async function summarizePipelines(
      * projected at all and yields `null`.
      */
     definitionBudget?: { remainingBytes: number };
-    /** Reads a listed definition; the file on disk by default. */
-    loadDefinition?: (pipeline: PipelineInfo) => Promise<Pipeline | null>;
+    /**
+     * Reads a listed definition; the file on disk by default. A read that
+     * returns the document it authorized lets the row publish that
+     * document's revision (CAN-7513); the default read publishes none.
+     */
+    loadDefinition?: (
+      pipeline: PipelineInfo,
+    ) => Promise<{ pipeline: Pipeline; document?: string } | null>;
   } = {},
 ): Promise<(RemoteControlPipelineSummary | null)[]> {
-  const load =
+  const load: (
+    pipeline: PipelineInfo,
+  ) => Promise<{ pipeline: Pipeline; document?: string } | null> =
     options.loadDefinition ??
-    ((pipeline: PipelineInfo): Promise<Pipeline | null> =>
+    ((pipeline: PipelineInfo): Promise<{ pipeline: Pipeline } | null> =>
       pipeline.filePath
-        ? loadProjectPipelineFromDisk(pipeline.filePath).catch(() => null)
+        ? loadProjectPipelineFromDisk(pipeline.filePath).then(
+            (loaded) => ({ pipeline: loaded }),
+            (): null => null,
+          )
         : Promise.resolve(null));
   const owned = await ownedByAutomations();
   // The Portal never sees `workflow` (CAN-5782): a pipeline that can only
@@ -1339,13 +1394,24 @@ async function summarizePipelines(
         (pipeline) => !hasOnlyLocalPipelineTriggers(pipeline.triggerTypes),
       )
       .map(async (pipeline) => {
-        const definition =
+        const loaded =
           pipeline.filePath &&
           (pipeline.triggerTypes?.includes('dispatch') ||
             pipeline.triggerTypes?.includes('task_ready') ||
             pipeline.triggerTypes?.includes('plan_ready'))
             ? await load(pipeline)
             : null;
+        const definition = loaded?.pipeline ?? null;
+        // The row's inputs and its revision come from the one document core
+        // authorized and parsed (CAN-7513). Its name, triggers and scopes
+        // come from discovery's earlier read; a document that disagrees with
+        // them was edited in between, so the row publishes no revision and
+        // Send reviews it.
+        const revision =
+          loaded?.document !== undefined &&
+          rereadMatchesDiscovery(loaded.pipeline, pipeline)
+            ? pipelineDocumentRevision(loaded.document)
+            : undefined;
         if (definition && options.definitionBudget) {
           const budget = options.definitionBudget;
           const measured = measureSerializedBytes(
@@ -1431,6 +1497,9 @@ async function summarizePipelines(
           ...(planReadyInputs && Object.keys(planReadyInputs).length > 0
             ? projectRemoteControlPipelineMetadata({ planReadyInputs })
             : {}),
+          // Lets the web check that a workflow chosen earlier still runs the
+          // same steps before it starts it (CAN-7513).
+          ...(revision ? { revision } : {}),
         };
       }),
   );
@@ -1656,6 +1725,9 @@ export async function runPipeline(
   }
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
+  if (request.definitionWorktreeId !== undefined) {
+    validateId(request.definitionWorktreeId, 'definitionWorktreeId');
+  }
   // CAN-6187: a run located elsewhere never runs on this computer.
   if (request.targetId !== undefined) {
     const { remoteControlRunLocationRefusal } =
@@ -1752,8 +1824,17 @@ export async function runPipeline(
     // Project first, then the stored bundled/user pipeline (CAN-3019); see
     // `resolveLocalPipeline`. `pipelineFilePath` stays absent for a stored
     // pipeline, matching what the desktop's own plan-ready run passes.
+    // A run chosen against another worktree's copy finds the workflow
+    // there; the start reads and checks that copy (CAN-7513).
+    const definitionCwd =
+      request.definitionWorktreeId === undefined
+        ? cwd
+        : await resolvePipelineCwd(
+            request.projectId,
+            request.definitionWorktreeId,
+          );
     ({ pipeline, pipelineInfo } = await resolveLocalPipeline(
-      cwd,
+      definitionCwd,
       request.pipelineId,
     ));
   }
@@ -1827,6 +1908,13 @@ export async function runPipeline(
         ? { pipelineFilePath: pipelineInfo.filePath }
         : {}),
       inputs: request.inputs,
+      // Checked by the start against the bytes it reads and runs (CAN-7513).
+      ...(request.expectedRevision !== undefined
+        ? { expectedRevision: request.expectedRevision }
+        : {}),
+      ...(request.definitionWorktreeId !== undefined
+        ? { definitionWorktreeId: request.definitionWorktreeId }
+        : {}),
       modelConfig: remoteControlModelConfig,
       planId: remoteControlEvent.planId,
       eventName: remoteControlEvent.eventName,

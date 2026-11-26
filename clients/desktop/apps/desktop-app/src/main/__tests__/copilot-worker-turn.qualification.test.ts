@@ -1,7 +1,15 @@
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
-import { mkdtemp, rm, readFile, readdir } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  rm,
+  readFile,
+  readdir,
+  rename,
+} from 'node:fs/promises';
+import { materializeSelectedCapabilityRoot } from '@canopy/desktop-shared/node/cursor/capability-root';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import type { SessionEvent } from '@github/copilot-sdk';
 import type { createManagedDelegationSession } from '../agents/delegation/service';
 import type { CanopyWorktreeSessionRoute } from '../mcp/http-proxy-service';
@@ -39,6 +47,8 @@ import type {
   AgentSessionOptions,
   AgentSessionSendOptions,
 } from '../agents/types';
+import { KeyedAsyncLock } from '../lib/keyed-async-lock';
+import * as atomicFile from '../lib/atomic-file';
 import { windowAgentInterfacePort } from '../agents/agent-interface-port';
 
 type DelegationSessionOptions = Parameters<
@@ -50,6 +60,33 @@ jest.mock('@canopy/execution-engine/node/rtk/rewrite', () => ({
 }));
 
 jest.mock('../lib/chat-tabs-reader', () => ({ readChatTabsFile: jest.fn() }));
+
+jest.mock('../lib/atomic-file', () => {
+  const actual = jest.requireActual<typeof atomicFile>('../lib/atomic-file');
+  return {
+    ...actual,
+    writeFileAtomically: jest.fn(actual.writeFileAtomically),
+  };
+});
+
+const mockCommittedNoticeIds = new Set<string>();
+const mockConfirmNotice = jest.fn(
+  (id: string): Promise<boolean> =>
+    Promise.resolve(mockCommittedNoticeIds.has(id)),
+);
+jest.mock('../services/chat-state-service', () => ({
+  getChatStateService: () => ({
+    hasTranscriptMessage: (
+      scope: { projectId: string; worktreeId: string },
+      chatId: string,
+      messageId: string,
+    ) =>
+      scope.projectId === 'project' &&
+      scope.worktreeId === 'worktree' &&
+      chatId === 'chat' &&
+      mockConfirmNotice(messageId),
+  }),
+}));
 
 let mockCommands: CursorCapabilityProjection['commands'] = [];
 const mockManagedDelegationEnabled = jest.fn(() => false);
@@ -101,6 +138,7 @@ const mockRequestAnswersFromRenderer = jest.fn(
     return Promise.resolve([{ selectedOptions: ['One'] }]);
   },
 );
+let mockConnectionGeneration = 1;
 const mockRuntimeClose = jest.fn<Promise<void>, []>(() => Promise.resolve());
 jest.mock('../copilot/connection', () => ({
   assertCopilotModelAvailable: (model: string) =>
@@ -108,7 +146,7 @@ jest.mock('../copilot/connection', () => ({
   openManagedCopilotRuntime: jest.fn(() =>
     Promise.resolve({
       account: { login: 'test-account' },
-      generation: 1,
+      generation: mockConnectionGeneration,
       close: () => mockRuntimeClose(),
       // The handle runs the turn; the turn driver itself is mocked below.
       runTurn: (request: unknown) =>
@@ -242,6 +280,10 @@ jest.mock('../plugins/plugin-resolver', () => ({
   resolvePlugins: jest.fn(() =>
     Promise.resolve({
       mcpServers: {},
+      mcpServerBindings: {},
+      cursorNotices: mockClaudeEnabled
+        ? ['No supported capabilities in this Cursor session.']
+        : [],
       cursorCapabilities: { skills: [], commands: mockCommands },
     }),
   ),
@@ -283,6 +325,17 @@ const USAGE = {
   cache_creation_input_tokens: 0,
 };
 
+function recordNotice(event: unknown): void {
+  if (
+    event &&
+    typeof event === 'object' &&
+    'messageId' in event &&
+    typeof event.messageId === 'string'
+  ) {
+    mockCommittedNoticeIds.add(event.messageId);
+  }
+}
+
 function isTerminal(event: unknown): boolean {
   return (
     !!event &&
@@ -295,6 +348,7 @@ function isTerminal(event: unknown): boolean {
 describe('Copilot turns on the local worker (CAN-4119)', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockConnectionGeneration = 1;
     const emptyTabs: ChatTabsFile = { version: 1, tabs: [], activeTabId: '' };
     // Preserve the legacy nullable active-tab fixture after the type tightened.
     Reflect.set(emptyTabs, 'activeTabId', null);
@@ -498,51 +552,501 @@ describe('Copilot turns on the local worker (CAN-4119)', () => {
     }
   });
 
-  it('a saved session resumes with its id and saved capability digests', async () => {
-    const savedTurn = async (
-      config: Parameters<typeof runCopilotTurn>[0],
-    ): ReturnType<typeof runCopilotTurn> => {
-      await config.onToolsReady?.({ version: 1, digest: 'c'.repeat(64) }, []);
-      await config.onSession('new-session');
-      return { sessionId: 'new-session', text: 'Done', usage: USAGE };
-    };
-    jest.mocked(runCopilotTurn).mockImplementationOnce(savedTurn);
-    const events: unknown[] = [];
-    const first = await startSession((event) => events.push(event));
-    try {
-      await sendAndSettle(first.session, events, 'Hello');
-      const root = join(mockWorkspace.directory, 'copilot-sessions');
-      const [profile] = await readdir(root);
-      const binding: unknown = JSON.parse(
-        await readFile(join(root, profile, 'host-session.json'), 'utf8'),
-      );
-      expect(binding).toMatchObject({
-        version: 2,
-        sessionId: 'new-session',
-        nativeToolSnapshot: { version: 1, digest: 'c'.repeat(64) },
-        capabilitySnapshot: { version: 1 },
+  it.each([true, false])(
+    'a saved session resumes with its id, capability digests and committed notices (first notice commit succeeded: %s)',
+    async (firstNoticeCommitted) => {
+      mockCommittedNoticeIds.clear();
+      mockClaudeEnabled = new Map([['test@market', '/plugin']]);
+      let connected = false;
+      const savedTurn = async (
+        config: Parameters<typeof runCopilotTurn>[0],
+      ): ReturnType<typeof runCopilotTurn> => {
+        await config.onToolsReady?.({ version: 1, digest: 'c'.repeat(64) }, [
+          { name: 'slack', status: connected ? 'connected' : 'needs-auth' },
+        ]);
+        await config.onSession('new-session');
+        return { sessionId: 'new-session', text: 'Done', usage: USAGE };
+      };
+      jest.mocked(runCopilotTurn).mockImplementationOnce(savedTurn);
+      const events: unknown[] = [];
+      const first = await startSession((event) => {
+        events.push(event);
+        if (firstNoticeCommitted) recordNotice(event);
       });
-      expect(JSON.stringify(binding)).toMatch(/"digest":"[a-f0-9]{64}"/);
-      expect(JSON.stringify(binding)).not.toContain('ghu_test');
-    } finally {
-      await first.session.destroy();
-    }
-    jest.mocked(runCopilotTurn).mockImplementationOnce(savedTurn);
-    const resumed: unknown[] = [];
-    const second = await startSession((event) => resumed.push(event), {
-      sdkSessionId: 'new-session',
-    });
-    try {
-      await sendAndSettle(second.session, resumed, 'Continue');
-      expect(resumed.at(-1)).toMatchObject({ type: 'result', is_error: false });
-      expect(jest.mocked(runCopilotTurn).mock.calls[1]?.[0].sessionId).toBe(
-        'new-session',
+      try {
+        mockInherited.skipped = [
+          { label: 'sample skill', reason: 'unreadable' },
+        ];
+        const setup = Promise.withResolvers<void>();
+        jest
+          .mocked(materializeSelectedCapabilityRoot)
+          .mockImplementationOnce(async (_root, _projection, options) => {
+            const signal = options?.signal;
+            if (!signal) throw new Error('Expected a cancellable setup');
+            return new Promise((_resolve, reject) => {
+              signal.addEventListener(
+                'abort',
+                () => reject(new Error('Capability setup cancelled')),
+                {
+                  once: true,
+                },
+              );
+              setup.resolve();
+            });
+          });
+        send(first.session, 'Start setup');
+        await setup.promise;
+        await first.session.cancel();
+        expect(events.at(-1)).toMatchObject({ subtype: 'cancelled' });
+        expect(JSON.stringify(events)).not.toContain('sample skill');
+        await sendAndSettle(first.session, events, 'Hello');
+        expect(JSON.stringify(events)).toContain(
+          'could not be loaded: sample skill',
+        );
+        expect(JSON.stringify(events)).toContain('No supported capabilities');
+        expect(JSON.stringify(events)).toContain('needs sign-in');
+        const root = join(mockWorkspace.directory, 'copilot-sessions');
+        const [profile] = await readdir(root);
+        const binding: unknown = JSON.parse(
+          await readFile(join(root, profile, 'host-session.json'), 'utf8'),
+        );
+        expect(binding).toMatchObject({
+          version: 2,
+          sessionId: 'new-session',
+          nativeToolSnapshot: { version: 1, digest: 'c'.repeat(64) },
+          capabilitySnapshot: { version: 1 },
+        });
+        expect(JSON.stringify(binding)).toMatch(/"digest":"[a-f0-9]{64}"/);
+        expect(JSON.stringify(binding)).not.toContain('ghu_test');
+      } finally {
+        await first.session.destroy();
+      }
+      jest.mocked(runCopilotTurn).mockImplementationOnce(savedTurn);
+      const resumed: unknown[] = [];
+      const second = await startSession(
+        (event) => {
+          resumed.push(event);
+          recordNotice(event);
+        },
+        {
+          sdkSessionId: 'new-session',
+        },
       );
-      expect(JSON.stringify(resumed)).not.toContain('capabilities-changed');
+      try {
+        await sendAndSettle(second.session, resumed, 'Continue');
+        expect(resumed.at(-1)).toMatchObject({
+          type: 'result',
+          is_error: false,
+        });
+        expect(jest.mocked(runCopilotTurn).mock.calls[1]?.[0].sessionId).toBe(
+          'new-session',
+        );
+        for (const text of [
+          'No supported capabilities',
+          'sample skill',
+          'needs sign-in',
+        ]) {
+          expect(JSON.stringify(resumed).includes(text)).toBe(
+            !firstNoticeCommitted,
+          );
+        }
+        expect(JSON.stringify(resumed)).not.toContain('capabilities-changed');
+        connected = true;
+        jest.mocked(runCopilotTurn).mockImplementationOnce(savedTurn);
+        await sendAndSettle(second.session, resumed, 'Try Slack again');
+        expect(JSON.stringify(resumed)).toContain('connected again');
+      } finally {
+        await second.session.destroy();
+      }
+    },
+  );
+
+  it.each([false, true, 'native digest change'] as const)(
+    'keeps confirmed notices if tool setup fails before onSession (existing binding: %s)',
+    async (hasBinding) => {
+      mockCommittedNoticeIds.clear();
+      const events: unknown[] = [];
+      const observer = (event: unknown) => {
+        recordNotice(event);
+        events.push(event);
+      };
+      const { session } = await startSession(observer);
+      const savedId = 'setup-test';
+      const outageDigest =
+        hasBinding === 'native digest change' ? 'b'.repeat(64) : 'a'.repeat(64);
+      try {
+        if (hasBinding) {
+          jest.mocked(runCopilotTurn).mockImplementationOnce(async (config) => {
+            await config.onToolsReady?.(
+              { version: 1, digest: 'a'.repeat(64) },
+              [],
+            );
+            await config.onSession(savedId);
+            return { sessionId: savedId, text: 'Done', usage: USAGE };
+          });
+          await sendAndSettle(session, events, 'Start chat');
+          expect(events.at(-1)).toMatchObject({
+            type: 'result',
+            is_error: false,
+          });
+        }
+        if (hasBinding !== 'native digest change')
+          mockClaudeEnabled = new Map([['test@market', '/plugin']]);
+        jest.mocked(runCopilotTurn).mockImplementationOnce(async (config) => {
+          await config.onToolsReady?.({ version: 1, digest: outageDigest }, [
+            { name: 'slack', status: 'needs-auth' },
+          ]);
+          throw new Error('Setup failed before onSession');
+        });
+        await sendAndSettle(session, events, 'Send with plugin');
+        expect(events.at(-1)).toMatchObject({
+          type: 'error',
+          error: 'Setup failed before onSession',
+        });
+        if (hasBinding !== 'native digest change')
+          expect(JSON.stringify(events)).toContain('No supported capabilities');
+        expect(JSON.stringify(events)).toContain('needs sign-in');
+      } finally {
+        await session.destroy();
+      }
+      events.length = 0;
+      const retry = await startSession(
+        observer,
+        hasBinding ? { sdkSessionId: savedId } : {},
+      );
+      try {
+        jest.mocked(runCopilotTurn).mockImplementationOnce(async (config) => {
+          await config.onToolsReady?.({ version: 1, digest: outageDigest }, [
+            { name: 'slack', status: 'needs-auth' },
+          ]);
+          await config.onSession(savedId);
+          return { sessionId: savedId, text: 'Done', usage: USAGE };
+        });
+        await sendAndSettle(retry.session, events, 'Retry after restart');
+        expect(events.at(-1)).toMatchObject({
+          type: 'result',
+          is_error: false,
+        });
+        expect(JSON.stringify(events)).not.toContain(
+          'No supported capabilities',
+        );
+        expect(JSON.stringify(events)).not.toContain('needs sign-in');
+        if (hasBinding === 'native digest change')
+          expect(JSON.stringify(events)).not.toContain(
+            'Selected capabilities changed',
+          );
+      } finally {
+        await retry.session.destroy();
+      }
+    },
+  );
+
+  it('remembers notices across repeated read failures and saves them when storage recovers', async () => {
+    const events: unknown[] = [];
+    const receive = (event: unknown) => {
+      recordNotice(event);
+      events.push(event);
+    };
+    mockClaudeEnabled = new Map([['test@market', '/plugin']]);
+    let connected = false;
+    jest.mocked(runCopilotTurn).mockImplementation(async (config) => {
+      await config.onToolsReady?.({ version: 1, digest: 'a'.repeat(64) }, [
+        { name: 'slack', status: connected ? 'connected' : 'needs-auth' },
+      ]);
+      return { sessionId: 'storage-test', text: 'Done', usage: USAGE };
+    });
+    const seed = await startSession(receive);
+    await sendAndSettle(seed.session, events, 'Seed notice history');
+    await seed.session.destroy();
+    const root = join(mockWorkspace.directory, 'copilot-sessions');
+    const [profile] = await readdir(root);
+    const name = (await readdir(join(root, profile))).find((file) =>
+      file.startsWith('notices-'),
+    );
+    if (!name) throw new Error('Expected a notice history file');
+    const history = join(root, profile, name);
+    await rename(history, history + '.saved');
+    connected = true;
+    await mkdir(history);
+    const resumed = await startSession(receive);
+    try {
+      for (const first of [true, false]) {
+        events.length = 0;
+        await sendAndSettle(resumed.session, events, 'Unreadable history');
+        expect(
+          JSON.stringify(events).includes('No supported capabilities'),
+        ).toBe(first);
+      }
+      await rm(history, { recursive: true });
+      await rename(history + '.saved', history);
+      events.length = 0;
+      connected = false;
+      await sendAndSettle(
+        resumed.session,
+        events,
+        'Retry after storage recovery',
+      );
+      expect(JSON.stringify(events)).toContain('needs sign-in');
+      expect(JSON.parse(await readFile(history, 'utf8'))).toMatchObject({
+        announcedNotices: [expect.any(String)],
+      });
     } finally {
-      await second.session.destroy();
+      await resumed.session.destroy();
     }
   });
+
+  it.each(['failed', 'late', 'late failure'] as const)(
+    'retains the latest MCP notice history across a %s save and a restart',
+    async (scenario) => {
+      const realWrite =
+        jest.requireActual<typeof atomicFile>(
+          '../lib/atomic-file',
+        ).writeFileAtomically;
+      const firstWrite = Promise.withResolvers<void>();
+      const releaseWrite = Promise.withResolvers<void>();
+
+      let writing = false;
+      let overlap = false;
+      let lateCallback: Promise<void> | undefined;
+      const writer = jest.mocked(atomicFile.writeFileAtomically);
+      writer.mockImplementationOnce(async (...args) => {
+        firstWrite.resolve();
+        if (scenario === 'failed') throw new Error('Simulated storage outage');
+        writing = true;
+        try {
+          await releaseWrite.promise;
+          if (scenario === 'late failure')
+            throw new Error('Late storage outage');
+          return await realWrite(...args);
+        } finally {
+          writing = false;
+        }
+      });
+      writer.mockImplementation(async (...args) => {
+        if (writing) overlap = true;
+        return realWrite(...args);
+      });
+      const events: unknown[] = [];
+      const receive = (event: unknown) => {
+        recordNotice(event);
+        events.push(event);
+      };
+      let connected = false;
+      const savedTurn = async (
+        config: Parameters<typeof runCopilotTurn>[0],
+      ): ReturnType<typeof runCopilotTurn> => {
+        await config.onToolsReady?.({ version: 1, digest: 'c'.repeat(64) }, [
+          { name: 'slack', status: connected ? 'connected' : 'needs-auth' },
+        ]);
+        await config.onSession('history-retry');
+        return { sessionId: 'history-retry', text: 'Done', usage: USAGE };
+      };
+      jest.mocked(runCopilotTurn).mockImplementation(savedTurn);
+      const first = await startSession(receive);
+      try {
+        if (scenario !== 'failed') {
+          jest.mocked(runCopilotTurn).mockImplementationOnce(async (config) => {
+            lateCallback = Promise.resolve(
+              config.onToolsReady?.({ version: 1, digest: 'c'.repeat(64) }, [
+                { name: 'slack', status: 'needs-auth' },
+              ]),
+            );
+            await firstWrite.promise;
+            throw new Error('Tool setup timed out');
+          });
+        }
+        await sendAndSettle(first.session, events, 'Check tools');
+        expect(JSON.stringify(events)).toContain('needs sign-in');
+        events.length = 0;
+        connected = scenario === 'late';
+        const lock = jest.spyOn(KeyedAsyncLock.prototype, 'run');
+        try {
+          send(first.session, 'Check again');
+          if (scenario !== 'failed') {
+            const deadline = AbortSignal.timeout(2000);
+            while (
+              !lock.mock.calls.length &&
+              jest.mocked(runCopilotTurn).mock.calls.length < 2
+            ) {
+              deadline.throwIfAborted();
+              await new Promise<void>((resolve) => setTimeout(resolve, 5));
+            }
+            releaseWrite.resolve();
+            await lateCallback;
+          }
+        } finally {
+          lock.mockRestore();
+        }
+        await settled(events, 0);
+        expect(events.at(-1)).toMatchObject({
+          type: 'result',
+          is_error: false,
+        });
+        expect(overlap).toBe(false);
+      } finally {
+        releaseWrite.resolve();
+        await first.session.destroy();
+        writer.mockImplementation(realWrite);
+      }
+      events.length = 0;
+      connected = false;
+      const resumed = await startSession(receive, {
+        sdkSessionId: 'history-retry',
+      });
+      try {
+        await sendAndSettle(resumed.session, events, 'Check after restart');
+        expect(events.at(-1)).toMatchObject({
+          type: 'result',
+          is_error: false,
+        });
+        expect(JSON.stringify(events).includes('needs sign-in')).toBe(
+          scenario === 'late',
+        );
+      } finally {
+        await resumed.session.destroy();
+      }
+    },
+  );
+
+  it.each([true, false])(
+    'retries a missing recovery notice or announces a renewed outage (outage recurs: %s)',
+    async (recurs) => {
+      const events: unknown[] = [];
+      const receive = (event: unknown) => {
+        recordNotice(event);
+        events.push(event);
+      };
+      let connected = false;
+      jest.mocked(runCopilotTurn).mockImplementation(async (config) => {
+        await config.onToolsReady?.({ version: 1, digest: 'a'.repeat(64) }, [
+          { name: 'slack', status: connected ? 'connected' : 'needs-auth' },
+        ]);
+        return { sessionId: 'recovery', text: 'Done', usage: USAGE };
+      });
+      const first = await startSession(receive);
+      try {
+        await sendAndSettle(first.session, events, 'Initial outage');
+        expect(JSON.stringify(events)).toContain('needs sign-in');
+        events.length = 0;
+        connected = true;
+        mockConfirmNotice.mockResolvedValueOnce(false);
+        await sendAndSettle(first.session, events, 'First recovery');
+        expect(JSON.stringify(events)).toContain('connected again');
+      } finally {
+        await first.session.destroy();
+      }
+      events.length = 0;
+      connected = !recurs;
+      const next = await startSession(receive);
+      try {
+        await sendAndSettle(next.session, events, 'Check after restarting');
+        expect(JSON.stringify(events)).toContain(
+          recurs ? 'needs sign-in' : 'connected again',
+        );
+        events.length = 0;
+        await sendAndSettle(next.session, events, 'Unchanged');
+        expect(JSON.stringify(events)).not.toContain('needs sign-in');
+        expect(JSON.stringify(events)).not.toContain('connected again');
+      } finally {
+        await next.session.destroy();
+      }
+    },
+  );
+
+  it.each([true, false, 'failed write', 'late confirmation'] as const)(
+    'restores a confirmed notice when the provider changes during a save (cancel queued read: %s)',
+    async (cancelRead) => {
+      const writeStarted = Promise.withResolvers<void>();
+      const releaseWrite = Promise.withResolvers<void>();
+      const realWrite =
+        jest.requireActual<typeof atomicFile>(
+          '../lib/atomic-file',
+        ).writeFileAtomically;
+      if (cancelRead === 'late confirmation') {
+        mockConfirmNotice.mockImplementationOnce(async (id) => {
+          writeStarted.resolve();
+          await releaseWrite.promise;
+          return mockCommittedNoticeIds.has(id);
+        });
+      } else
+        jest
+          .mocked(atomicFile.writeFileAtomically)
+          .mockImplementationOnce(async (...args) => {
+            writeStarted.resolve();
+            await releaseWrite.promise;
+            if (cancelRead === 'failed write')
+              throw new Error('Storage offline');
+            return realWrite(...args);
+          });
+      const events: unknown[] = [];
+      const receive = (event: unknown) => {
+        recordNotice(event);
+        events.push(event);
+      };
+      const first = await startSession(receive);
+      const readiness = [{ name: 'slack', status: 'needs-auth' }] as const;
+      const manifest = { version: 1, digest: 'c'.repeat(64) } as const;
+      jest
+        .mocked(runCopilotTurn)
+        .mockImplementationOnce(async (config) => {
+          void config.onToolsReady?.(manifest, readiness);
+          await writeStarted.promise;
+          throw new Error('Tool setup timed out');
+        })
+        .mockImplementation(async (config) => {
+          await config.onToolsReady?.(manifest, readiness);
+          return { sessionId: 'replacement', text: 'Done', usage: USAGE };
+        });
+      await sendAndSettle(first.session, events, 'Check tools');
+      expect(JSON.stringify(events)).toContain('needs sign-in');
+      await first.session.destroy();
+      mockGetSessionKeyOwnership.mockImplementation((_key, session) =>
+        session === first.session ? 'replaced' : 'registered',
+      );
+      events.length = 0;
+      if (cancelRead === 'failed write') mockConnectionGeneration++;
+      const next = await startSession(receive);
+      const lock = jest.spyOn(KeyedAsyncLock.prototype, 'run');
+      try {
+        send(next.session, 'Check again');
+        const deadline = AbortSignal.timeout(2000);
+        while (
+          !lock.mock.calls.some(([key]) => basename(key).startsWith('notices-'))
+        ) {
+          deadline.throwIfAborted();
+          await new Promise<void>((resolve) => setTimeout(resolve, 5));
+        }
+        if (cancelRead === true) {
+          let timedOut = false;
+          const fallback = setTimeout(() => {
+            timedOut = true;
+            releaseWrite.resolve();
+          }, 1000);
+          try {
+            await next.session.cancel();
+            expect(timedOut).toBe(false);
+            expect(events.at(-1)).toMatchObject({ subtype: 'cancelled' });
+          } finally {
+            clearTimeout(fallback);
+          }
+          events.length = 0;
+          send(next.session, 'Retry after Stop');
+        }
+        releaseWrite.resolve();
+        await settled(events, 0);
+        expect(events.at(-1)).toMatchObject({
+          type: 'result',
+          is_error: false,
+        });
+        expect(JSON.stringify(events)).not.toContain('needs sign-in');
+      } finally {
+        releaseWrite.resolve();
+        lock.mockRestore();
+        mockGetSessionKeyOwnership.mockImplementation(() => 'registered');
+        await next.session.destroy();
+      }
+    },
+  );
 
   it('a missing native session starts a new conversation with the lost-context notice', async () => {
     const events: unknown[] = [];

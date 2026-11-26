@@ -9,6 +9,7 @@ import {
 } from '@canopy/desktop-shared/node/work-counters';
 import { trackSlowAction } from '../lib/slow-action-tracker';
 import { runRendererDeliveryBarriers } from '../lib/web-contents-send';
+import { refusePairedComputerIds } from './paired-computer-id-guard';
 
 const SLOW_ACTION_LABELS: Record<string, string> = {
   [IPC_CHANNELS.cursorConnectionConnect]: 'Connecting Cursor',
@@ -71,6 +72,7 @@ export function registerIpcHandler<Args extends unknown[], Result>(
     recordIpcInvoke(channel);
     let settled: Promise<Result>;
     try {
+      refusePairedComputerIds(args);
       settled = Promise.resolve(
         runWithW5Caller(channel, () => handler(event, ...args)),
       );

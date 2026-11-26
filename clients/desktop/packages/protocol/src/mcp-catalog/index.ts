@@ -137,6 +137,8 @@ export interface CuratedMcpServerEntry {
   transport: CuratedMcpTransport;
   /** Optional non-secret OAuth hints for pre-filling a setup dialog. */
   oauthHints?: CuratedMcpOAuthHints;
+  /** An active platform OAuth client is bound to this catalog server key. */
+  platformOAuth?: boolean;
   /** User-provided setup inputs required before connection. */
   requiredConfigFields?: CuratedMcpRequiredConfigField[];
   /** Optional selectable endpoint choices, typically for data residency. */
@@ -381,6 +383,8 @@ export function isCuratedMcpServerEntry(
     isCuratedMcpTransport(value.transport) &&
     (value.oauthHints === undefined ||
       isCuratedMcpOAuthHints(value.oauthHints)) &&
+    (value.platformOAuth === undefined ||
+      typeof value.platformOAuth === 'boolean') &&
     (value.providerConnector === undefined ||
       isCuratedMcpProviderConnector(value.providerConnector)) &&
     (value.availability === undefined ||
@@ -489,4 +493,29 @@ export function curatedMcpDesktopOnly(
   entry: CuratedMcpConnectionFields,
 ): boolean {
   return entry.availability === 'desktop' || curatedMcpProviderOnly(entry);
+}
+
+// ---------------------------------------------------------------------------
+// Identity kinds for shared connections (CAN-6250; spec FR-3.2). A connection
+// an organization holds acts for everyone on its projects, so it uses the
+// service's bot identity where one exists. Kept in code, not on
+// `curated_mcp_servers`, which is published to Datastream.
+// ---------------------------------------------------------------------------
+
+/** Who a shared connection acts as: the service's bot, or whoever signed in. */
+export type SharedConnectionIdentityKind = 'bot' | 'user';
+
+/** Servers that offer a bot identity, and use only it when shared. */
+const SHARED_BOT_SERVER_KEYS: ReadonlySet<string> = new Set(['slack']);
+
+/**
+ * The identity a shared connection to `serverKey` uses: the bot where the
+ * service offers one (and then a personal sign-in is never offered for
+ * shared use), else the sign-in of the person who connects it, with the
+ * "acts as you" warning.
+ */
+export function sharedConnectionIdentityKind(
+  serverKey: string,
+): SharedConnectionIdentityKind {
+  return SHARED_BOT_SERVER_KEYS.has(serverKey) ? 'bot' : 'user';
 }

@@ -9,7 +9,7 @@
  *  lint rules.
  *--------------------------------------------------------------------------------------------*/
 
-import { type IDisposable, toDisposable } from './disposable';
+import { type IDisposable, toDisposable } from '../lib/disposable';
 
 /**
  * The minimal shape of an event that can be stopped.

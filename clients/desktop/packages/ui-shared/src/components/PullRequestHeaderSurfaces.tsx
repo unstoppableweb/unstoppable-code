@@ -1,5 +1,5 @@
 import type { ComponentPropsWithRef, JSX } from 'react';
-import { TextLink, type TextLinkProps } from './TextLink';
+import { TextLink, type TextLinkProps } from '../primitives/TextLink';
 
 const STATUS_FRAME =
   'electron-no-drag inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-xs font-normal';

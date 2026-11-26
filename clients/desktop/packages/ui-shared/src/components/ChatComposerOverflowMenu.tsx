@@ -1,4 +1,4 @@
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import {
   useCallback,
   useEffect,
@@ -12,10 +12,10 @@ import {
 } from 'react';
 import { CheckIcon, MoreHorizontalIcon } from '../icons/AppIcons';
 import { focusMenuRow } from '../lib/input-modality';
-import { DropdownMenuItem } from './DropdownMenu';
-import { FloatingMenu } from './FloatingMenu';
-import { Tooltip } from './Tooltip';
-import { useOverlayEscape } from './useOverlayEscape';
+import { DropdownMenuItem } from '../primitives/DropdownMenu';
+import { FloatingMenu } from '../primitives/FloatingMenu';
+import { Tooltip } from '../primitives/Tooltip';
+import { useOverlayEscape } from '../primitives/useOverlayEscape';
 
 /**
  * One entry in the composer's `⋯` overflow menu (CAN-1229). The menu is the

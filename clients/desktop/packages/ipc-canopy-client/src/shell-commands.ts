@@ -56,6 +56,7 @@ import {
   createChatRecoveryHandlers,
   type ChatRecoveryHandlers,
 } from './chat-recovery';
+import type { PlanClient } from './ports';
 import { joinRootPath } from './projections';
 import type {
   WireChatCancelResult,
@@ -106,6 +107,8 @@ export interface ShellCommandDeps {
     scope: { readonly projectId: string; readonly worktreeId: string },
     reason: 'hooks' | 'scripts',
   ) => void;
+  /** The host's own plan writes; absent, the tracked-plans channels. */
+  readonly plans?: PlanClient;
 }
 
 /** Shown when a shell action has no mapping on this connection. */
@@ -520,6 +523,7 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
     channels,
     now: deps.now,
     chatCommand,
+    ...(deps.plans !== undefined ? { plans: deps.plans } : {}),
   });
 
   /** One revisioned chat change, as a receipt. */
@@ -1582,11 +1586,14 @@ export function createShellCommandHandlers(deps: ShellCommandDeps): {
     'hook.resume': ({ payload }) => changeHookPause('resume', payload),
     'plan.delete': async ({ payload }) => {
       const commandId = randomId();
-      await channels.invokeVoid(C.trackedPlansDelete, {
+      const request = {
         projectId: payload.projectId,
         worktreeId: payload.worktreeId,
         planId: payload.planId,
-      });
+      };
+      await (deps.plans
+        ? deps.plans.delete(request)
+        : channels.invokeVoid(C.trackedPlansDelete, request));
       return acceptedReceipt(commandId, {});
     },
     'summary.refresh': async ({ payload }) => {

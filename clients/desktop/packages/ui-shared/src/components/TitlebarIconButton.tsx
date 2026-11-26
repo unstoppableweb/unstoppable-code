@@ -1,4 +1,4 @@
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import {
   forwardRef,
   type ButtonHTMLAttributes,
@@ -6,7 +6,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { AppIcon } from '../icons/AppIcons';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 
 /**
  * Which ink drives the glyph. `top-bar` is the shared secondary ink that

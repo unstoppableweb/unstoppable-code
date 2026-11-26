@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 import { formatCompactAge } from '../lib/format-relative-time';
 import { useMinuteClock } from '../lib/useMinuteClock';
-import { SIDEBAR_ROW_TRAILING_CELL_CLASSNAME } from './sidebar-item-classes';
+import { SIDEBAR_ROW_TRAILING_CELL_CLASSNAME } from '../primitives/sidebar-item-classes';
 
 export interface SidebarRowAgeProps {
   /** When the row last had activity (epoch ms or ISO string). */

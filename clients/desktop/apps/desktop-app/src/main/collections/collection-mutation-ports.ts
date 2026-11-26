@@ -24,7 +24,11 @@ import {
   getCollectionPackageBlob,
   getPublicCollectionPackageBlob,
 } from './canopy-server-client';
-import { installSubjectCapabilityPackage } from '../skills/skill-package-install';
+import {
+  installSubjectCapabilityPackage,
+  MaterializationCheckTimeoutError,
+} from '../skills/skill-package-install';
+import { runSkillMutation } from '../skills/skill-mutations';
 import {
   installSkills,
   loadSkills,
@@ -260,9 +264,12 @@ export const collectionMutationPorts: CollectionMutationPorts = {
           ? getPublicCollectionPackageBlob(source.remoteId, ref.digest, hash)
           : getCollectionPackageBlob(source.remoteId, ref.digest, hash);
       },
-      onSkillFolderReserved: async () => {
-        await assertCurrent();
-      },
+      checkBeforeMaterialization: assertCurrent,
+      serializeMaterialization: runSkillMutation,
+    }).catch((error: unknown) => {
+      if (error instanceof MaterializationCheckTimeoutError)
+        throw new CollectionUpdateError('conflict', error.message);
+      throw error;
     });
     const customSkills = new Map<string, CollectionSkillRef>();
     for (const item of snapshot.collection.items) {

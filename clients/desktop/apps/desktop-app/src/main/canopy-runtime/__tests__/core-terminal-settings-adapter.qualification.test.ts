@@ -20,9 +20,9 @@ import {
   initCodexModels,
   initOllamaModels,
   resolveKnownModel,
-  type PreferencesData,
 } from '@canopy/desktop-shared/types';
 import { DESKTOP_PREFERENCES_CODEC } from '@canopy/desktop-shared/node/preferences/desktop-preferences-codec';
+import type { DomainPreferencesData } from '@canopy/desktop-shared/node/preferences/client-local-preferences';
 import { installPreferencesNormalizationEnvironment } from '@canopy/desktop-shared/node/preferences/normalization-environment';
 import {
   createDesktopTerminalSettingsStore,
@@ -118,7 +118,7 @@ const preset: CoreTerminalPreset = {
 const next = { disabledProfileIds: ['bash'] as const, presets: [preset] };
 function fixture(): {
   doc: MemoryDocument;
-  repo: PreferencesRepository<PreferencesData>;
+  repo: PreferencesRepository<DomainPreferencesData>;
   store: TerminalSettingsStore;
 } {
   const doc = new MemoryDocument();
@@ -196,11 +196,11 @@ describe('desktop terminal settings store (CAN-4148)', () => {
     const { repo, store } = fixture();
     await Promise.all([
       store.replace(0, next),
-      repo.update(() => ({ terminalDrawerHeight: 400 })),
+      repo.update(() => ({ fileAutoSave: true })),
     ]);
     await expect(repo.read('persisted')).resolves.toMatchObject({
       terminalSettingsRevision: 1,
-      terminalDrawerHeight: 400,
+      fileAutoSave: true,
       terminalPresets: [{ id: preset.presetId }],
     });
     await repo.flush();
@@ -297,7 +297,7 @@ describe('desktop terminal settings store (CAN-4148)', () => {
     const blocker = repo.update(async () => {
       began();
       await gate;
-      return { terminalDrawerHeight: 400 };
+      return { fileAutoSave: true };
     });
     await started;
     const store = createDesktopTerminalSettingsStore({
@@ -378,7 +378,7 @@ describe('desktop terminal settings store (CAN-4148)', () => {
     const blocker = repo.update(async () => {
       began();
       await gate;
-      return { terminalDrawerHeight: 400 };
+      return { fileAutoSave: true };
     });
     await started;
     const store = createDesktopTerminalSettingsStore({
@@ -472,7 +472,7 @@ describe('desktop terminal settings store (CAN-4148)', () => {
     const blocker = repo.update(async () => {
       began();
       await gate;
-      return { terminalDrawerHeight: 400 };
+      return { fileAutoSave: true };
     });
     await started;
     const store = createDesktopTerminalSettingsStore({

@@ -1,5 +1,5 @@
 import type { JSX } from 'react';
-import { Notice, NoticeButton } from './Notice';
+import { Notice, NoticeButton } from '../primitives/Notice';
 
 export interface ClaudeAiCreditsFallbackErrorNoticeProps {
   /** Omit when this host cannot start the native provider sign-in flow. */
@@ -25,14 +25,15 @@ export function ClaudeAiCreditsFallbackErrorNotice({
             data-testid="claude-fallback-sign-in"
             onClick={onSignIn}
           >
-            Sign in to Claude
+            Reconnect Claude
           </NoticeButton>
         ) : undefined
       }
     >
-      This request used AI Credits, but that connection could not read the
-      conversation.
-      {!onSignIn ? ' Sign in to Claude on your computer to continue.' : null}
+      {/* Credits can't stand in here: trying them again fails the same way. */}
+      {onSignIn
+        ? "Credits couldn't run this chat in its place. Reconnect Claude, then send your message again."
+        : "Credits couldn't run this chat in its place. Reconnect Claude on your computer, then send your message again."}
     </Notice>
   );
 }

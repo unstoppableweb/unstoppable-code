@@ -1,4 +1,4 @@
-import { ListRowFrame } from './ListRow';
+import { ListRowFrame } from '../primitives/ListRow';
 import type { ComponentPropsWithRef, JSX, ReactNode } from 'react';
 
 export function BackgroundTrayGroupLabel({

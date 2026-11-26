@@ -1,3 +1,10 @@
+import { BRAND } from '@canopy/brand/current';
+import { resolveCachedConnectorScope } from './connector-scope';
+import { SHARED_CONNECTION_CLAIM_HEADER } from '@canopy/protocol/canopy-core';
+import {
+  sharedConnectionSessions,
+  type SharedConnectionSessionRead,
+} from '../shared-connections/sessions';
 import { isOrganizationSkillSourceId } from '@canopy/desktop-shared/lib/organization-capabilities';
 import { organizationSkillAllowed } from '../organization-capabilities/service';
 import {
@@ -36,6 +43,7 @@ import {
 } from '@canopy/desktop-shared/lib/effective-plugin-selections';
 import type { AccountMcpConnection } from '@canopy/execution-engine/types/mcp-servers';
 import {
+  accountMcpProxyBaseUrl,
   resolveAccountMcpProxyTarget,
   type AccountMcpConnectionTarget,
 } from '../canopy-cloud/mcp-connections';
@@ -55,6 +63,10 @@ import { readCachedCuratedMcpDesktopOnlyKeys } from '../mcp/curated-catalog';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import {
+  isUsablePluginCopyAsync,
+  matchPluginSources,
+} from '@canopy/execution-engine/node/plugins/plugin-copy';
 import type { JsonValue } from '@canopy/execution-engine/node/codex-runtime/generated/serde_json/JsonValue';
 import {
   codexPluginMcpSnapshotKey,
@@ -158,8 +170,11 @@ import type {
 import { createGeneratedSkillName } from './codex-plugin-compat';
 import { scanPluginMods, resolveHooks } from './plugin-scanner';
 import { opencodeSupportsCommandHook } from '@canopy/plugin-interop/opencode-support';
+import { installPluginForPrincipal } from './remote-install-source-gate';
 import {
   installPlugin,
+  getPluginUserMutationGeneration,
+  resolvePluginRepairIdentity,
   loadMarketplaces,
   buildCodexCompatDisabledKey,
 } from './plugin-service';
@@ -403,6 +418,12 @@ export interface ResolvePluginsOptions {
    * account; with several and none named, the connector is left out.
    */
   accountResolution?: AccountMcpRefResolution;
+  /**
+   * An unattended resolution's allowed writes on its project's shared
+   * connections (CAN-6252), tool names by connection id; absent allows none.
+   * An unattended resolution asks for a scheduled claim with them.
+   */
+  sharedConnectionWrites?: Readonly<Record<string, readonly string[]>>;
 }
 
 const parentBrokeredStdioServers = new WeakSet<object>();
@@ -918,6 +939,12 @@ export interface EffectivePluginSelectionRefs {
   skillRefs: Array<{ sourceId: string; skillName: string }>;
   pluginRefs: Array<{ marketplaceId: string; pluginName: string }>;
   mcpServerRefs: Array<{ serverId: string; configId: string }>;
+  /**
+   * Connector refs the organization owns (CAN-6246): a project's shared
+   * connections, bound through a claim, never a device file or a person's
+   * own account.
+   */
+  sharedConnectionRefs?: SharedConnectionRef[];
   warnings: string[];
 }
 
@@ -1071,7 +1098,17 @@ export async function resolveEffectivePluginSelectionRefs(
     const ref = { marketplaceId, pluginName };
     pluginRefs.set(installedItemKey({ kind: 'plugin', ...ref }), ref);
   }
-  for (const { serverId, configId } of selections.mcpServerRefs ?? []) {
+  const sharedConnectionRefs = new Map<string, SharedConnectionRef>();
+  for (const { serverId, configId, owner } of selections.mcpServerRefs ?? []) {
+    // An organization's connector is one of its project's shared
+    // connections (CAN-6246), never the person's own of the same server.
+    if (owner?.type === 'organization') {
+      sharedConnectionRefs.set(
+        JSON.stringify([owner.organizationId, serverId, configId]),
+        { serverId, configId, organizationId: owner.organizationId },
+      );
+      continue;
+    }
     const ref = { serverId, configId };
     mcpRefs.set(installedItemKey({ kind: 'mcp-config', ...ref }), ref);
   }
@@ -1178,6 +1215,9 @@ export async function resolveEffectivePluginSelectionRefs(
     skillRefs: Array.from(skillRefs.values()),
     pluginRefs: Array.from(pluginRefs.values()),
     mcpServerRefs: Array.from(mcpRefs.values()),
+    ...(sharedConnectionRefs.size > 0
+      ? { sharedConnectionRefs: Array.from(sharedConnectionRefs.values()) }
+      : {}),
     disabledRefs: Array.from(disabledRefs.values()),
     warnings,
   };
@@ -1400,6 +1440,8 @@ export async function resolvePlugins(
     pluginName: string;
   }[] = [];
   if (effectiveRefs.pluginRefs.length > 0) {
+    // Read before the snapshot so a later user change makes its repairs stale.
+    const userMutationGeneration = getPluginUserMutationGeneration();
     const cacheResult = await loadMarketplaces();
     marketplaces =
       cacheResult.success && cacheResult.data
@@ -1415,6 +1457,7 @@ export async function resolvePlugins(
         options?.installExternalPlugins === true,
         purpose,
         codexCompatDisabledKeys,
+        userMutationGeneration,
       );
       if (!resolvedPlugin) {
         continue;
@@ -1614,8 +1657,18 @@ export async function resolvePlugins(
         warnings,
       )
     : rawStandaloneMcpServers;
+  // A project's shared connections (CAN-6246), behind local proxy routes.
+  const sharedConnectionServers = await resolveSharedConnectionServers({
+    refs: effectiveRefs.sharedConnectionRefs ?? [],
+    target: { projectId, worktreeId, chatId },
+    warnings,
+    options,
+    context: httpMcpContext,
+    proxyPortPreference: preferences.mcpProxyPort,
+  });
   const mcpServers: Record<string, unknown> = {
     ...standaloneMcpServers,
+    ...sharedConnectionServers,
   };
   const inheritedPluginBindings: InheritedPluginBinding[] = [];
   const resolvedPluginMcpServers: Record<string, unknown> = {};
@@ -1903,6 +1956,7 @@ export async function resolvePlugins(
     codexMcpServers = buildCodexPluginMcpServers(
       {
         ...standaloneMcpServers,
+        ...sharedConnectionServers,
         ...resolvedPluginMcpServers,
       },
       warnings,
@@ -2211,8 +2265,11 @@ async function registerAccountMcpProxyRoute(args: {
   configId: string;
   displayName: string;
   upstreamUrl: string;
+  /** Sent on every call to the cloud proxy; a shared connection's claim. */
+  headers?: Record<string, string>;
 }): Promise<ResolvedStandaloneMcpServer> {
   const { options } = args;
+  const headers = args.headers ?? {};
   if (!options.mcpHttpProxyService)
     throw new Error('the local proxy is unavailable');
   await withResolverTimeout(
@@ -2226,7 +2283,7 @@ async function registerAccountMcpProxyRoute(args: {
     serverId: args.serverId,
     configId: args.configId,
     upstreamUrl: args.upstreamUrl,
-    headers: {},
+    headers,
     oauthEnabled: false,
     oauthRequired: false,
   });
@@ -2237,7 +2294,7 @@ async function registerAccountMcpProxyRoute(args: {
       configId: args.configId,
       displayName: args.displayName,
       upstreamUrl: args.upstreamUrl,
-      headers: {},
+      headers,
       authSupplier: 'canopy-cloud',
       oauthEnabled: false,
       oauthRequired: false,
@@ -2709,6 +2766,150 @@ async function readStandaloneMcpServerFile(
     );
     return undefined;
   }
+}
+
+/** A connector ref the organization owns (CAN-6246). */
+interface SharedConnectionRef {
+  readonly serverId: string;
+  readonly configId: string;
+  readonly organizationId: string;
+}
+
+/** Whether a claim's connection list holds a shared ref. */
+function listsSharedRef(
+  session: SharedConnectionSessionRead,
+  ref: SharedConnectionRef,
+): boolean {
+  return (
+    session.kind === 'ok' &&
+    session.value.connections.some(
+      (entry) =>
+        entry.serverKey === ref.serverId && entry.configId === ref.configId,
+    )
+  );
+}
+
+/**
+ * Binds a project's shared connections (CAN-6246) for one chat: asks the web
+ * core for the chat's claim and the connections in force, and registers a
+ * cloud proxy route per connection that carries the claim. The proxy decides
+ * every call (CAN-6243); a ref the list does not hold is skipped with a
+ * reason. Outside an organization project or without a chat, nothing is
+ * bound. An unattended run asks for a scheduled claim limited to its
+ * allowed writes (CAN-6252).
+ */
+async function resolveSharedConnectionServers(args: {
+  refs: readonly SharedConnectionRef[];
+  target: { projectId: string; worktreeId: string; chatId: string };
+  warnings: string[];
+  options: ResolvePluginsOptions | undefined;
+  context: HttpMcpResolutionContext;
+  proxyPortPreference: number;
+}): Promise<Record<string, ResolvedStandaloneMcpServer>> {
+  const result: Record<string, ResolvedStandaloneMcpServer> = {};
+  if (args.refs.length === 0 || !args.target.chatId) return result;
+  const { options, warnings } = args;
+  // No one attends an automation's turn or a pipeline step: it asks for a
+  // scheduled claim, which may call read-only tools and the writes its
+  // automation allowed, nothing else (CAN-6252).
+  const scheduled =
+    (options?.accountResolution ?? 'attended') === 'unattended'
+      ? {
+          ...(options?.sharedConnectionWrites === undefined
+            ? {}
+            : { writes: options.sharedConnectionWrites }),
+        }
+      : undefined;
+  if (!args.context.proxyAvailable || !options?.mcpHttpProxyService) {
+    warnings.push(
+      'Shared connections skipped: the local proxy is unavailable.',
+    );
+    return result;
+  }
+  const scope = await resolveCachedConnectorScope(args.target);
+  if (scope.kind !== 'org-project') {
+    warnings.push(
+      'Shared connections skipped: they work only in an organization project.',
+    );
+    return result;
+  }
+  let session: SharedConnectionSessionRead;
+  try {
+    session = await sharedConnectionSessions().forChat(
+      scope.orgProjectId,
+      args.target.chatId,
+      scheduled === undefined ? undefined : { scheduled },
+    );
+    // A kept list may predate a connection just added to the project.
+    if (
+      session.kind === 'ok' &&
+      args.refs.some((ref) => !listsSharedRef(session, ref))
+    )
+      session = await sharedConnectionSessions().forChat(
+        scope.orgProjectId,
+        args.target.chatId,
+        { fresh: true, ...(scheduled === undefined ? {} : { scheduled }) },
+      );
+  } catch {
+    warnings.push(
+      `Shared connections skipped: couldn't reach your ${BRAND.displayName} account.`,
+    );
+    return result;
+  }
+  if (session.kind === 'unavailable') {
+    warnings.push(
+      `Shared connections skipped: your ${BRAND.displayName} account does not offer them yet.`,
+    );
+    return result;
+  }
+  if (session.kind === 'refused') {
+    warnings.push(`Shared connections skipped: ${session.message}`);
+    return result;
+  }
+  let base: string;
+  try {
+    base = await accountMcpProxyBaseUrl();
+  } catch (error) {
+    warnings.push(
+      `Shared connections skipped: ${error instanceof Error ? error.message : 'the cloud proxy is unavailable'}`,
+    );
+    return result;
+  }
+  for (const ref of args.refs) {
+    const connection = session.value.connections.find(
+      (entry) =>
+        entry.serverKey === ref.serverId && entry.configId === ref.configId,
+    );
+    if (!connection || ref.organizationId !== scope.organizationId) {
+      warnings.push(
+        `Shared connection "${ref.serverId}" skipped: it isn't shared with this project.`,
+      );
+      continue;
+    }
+    try {
+      const server = await registerAccountMcpProxyRoute({
+        options,
+        proxyPortPreference: args.proxyPortPreference,
+        serverId: connection.serverKey,
+        configId: connection.configId,
+        displayName: connection.name,
+        upstreamUrl: `${base}/api/v1/mcp-proxy/${encodeURIComponent(connection.routeId)}`,
+        headers: { [SHARED_CONNECTION_CLAIM_HEADER]: session.value.claim },
+      });
+      result[
+        buildAccountMcpServerName({
+          serverKey: connection.serverKey,
+          configId: connection.configId,
+          displayName: connection.name,
+        })
+      ] = server;
+    } catch (error) {
+      warnings.push(
+        `Shared connection "${connection.name}" skipped: ${error instanceof Error ? error.message : 'connection unavailable'}`,
+      );
+    }
+  }
+  return result;
 }
 
 async function resolveStandaloneMcpServers(
@@ -3734,6 +3935,7 @@ async function resolvePluginSelection(
   installExternalPlugins: boolean,
   purpose: ResolvePluginsOptions['purpose'],
   codexCompatDisabledKeys: ReadonlySet<string>,
+  userMutationGeneration?: number,
 ): Promise<PluginResolvedPath | null> {
   const marketplace = marketplaces.find((entry) => entry.id === marketplaceId);
   if (!marketplace) {
@@ -3761,6 +3963,7 @@ async function resolvePluginSelection(
         marketplace,
         warnings,
         installExternalPlugins,
+        userMutationGeneration,
       );
       if (!pluginPath) {
         return null;
@@ -3820,6 +4023,7 @@ async function resolvePluginSelection(
       marketplace,
       nativeWarnings,
       installExternalPlugins,
+      userMutationGeneration,
     );
     if (pluginPath) {
       return {
@@ -3871,6 +4075,7 @@ async function resolvePluginSelection(
     marketplace,
     warnings,
     installExternalPlugins,
+    userMutationGeneration,
   );
   if (!pluginPath) {
     return null;
@@ -3969,6 +4174,64 @@ export async function isConfiguredPromptPluginUsable(
   return resolved !== null;
 }
 
+async function canKeepBoundPluginCopy(
+  plugin: Pick<PluginInfo, 'name' | 'provenance' | 'externalSource'>,
+  cachePath: string,
+  warnings: string[],
+): Promise<boolean> {
+  if (await isUsablePluginCopyAsync(cachePath, plugin.provenance)) return true;
+  if (
+    plugin.provenance &&
+    plugin.externalSource?.url &&
+    matchPluginSources(
+      plugin.provenance.sourceUrl,
+      plugin.externalSource.url,
+      plugin.provenance.sourceIdentityComplete === true,
+    ) === 'different'
+  ) {
+    // Drift or unqualified provenance must not turn damage into an implicit Update.
+    warnings.push(
+      `Plugin "${plugin.name}" couldn't be verified, so its installed copy will be used. Its source changed or couldn't be confirmed; update it from the plugin catalog to replace it.`,
+    );
+    return true;
+  }
+  return false;
+}
+
+async function automaticallyInstallPlugin(
+  marketplaceId: string,
+  plugin: PluginInfo,
+  sourceUrl: string,
+  remoteSourceRestricted: boolean | undefined,
+  userMutationGeneration: number,
+): ReturnType<typeof installPlugin> {
+  const repairIdentity = await resolvePluginRepairIdentity(
+    marketplaceId,
+    plugin,
+    userMutationGeneration,
+  );
+  return installPluginForPrincipal(
+    {
+      remote: remoteSourceRestricted === true,
+      marketplaceId,
+      pluginName: plugin.name,
+      sourceUrl,
+    },
+    // Unprovable identities keep base's plain automatic install behavior,
+    // under the restricted policy any copy it replaces records.
+    (id, name, url, options) =>
+      installPlugin(id, name, url, {
+        ...options,
+        automaticRepair: true,
+        ...(repairIdentity && {
+          repairIdentity: { ...repairIdentity, sourceUrl },
+        }),
+      }),
+    // The repair source is already this computer's catalog record.
+    () => Promise.resolve(sourceUrl),
+  );
+}
+
 export async function resolvePluginInfoPath(
   plugin: PluginInfo,
   marketplace: MarketplaceInfo,
@@ -4004,7 +4267,12 @@ export async function resolvePluginInfoPath(
     return resolveFacetPath(plugin, facets.codex, marketplace, warnings, false);
   }
 
-  if (plugin.cachePath && fs.existsSync(plugin.cachePath)) {
+  const userMutationGeneration = getPluginUserMutationGeneration();
+  if (
+    plugin.cachePath &&
+    fs.existsSync(plugin.cachePath) &&
+    (await canKeepBoundPluginCopy(plugin, plugin.cachePath, warnings))
+  ) {
     return plugin.cachePath;
   }
 
@@ -4019,7 +4287,10 @@ export async function resolvePluginInfoPath(
       );
       return null;
     }
-    if (fs.existsSync(resolved)) {
+    if (
+      fs.existsSync(resolved) &&
+      (await isUsablePluginCopyAsync(resolved, plugin.provenance))
+    ) {
       return resolved;
     }
     warnings.push(`Local plugin path does not exist: ${resolved}`);
@@ -4035,10 +4306,12 @@ export async function resolvePluginInfoPath(
     }
 
     try {
-      const result = await installPlugin(
+      const result = await automaticallyInstallPlugin(
         marketplace.id,
-        plugin.name,
+        plugin,
         plugin.externalSource.url,
+        plugin.provenance?.remoteSourceRestricted,
+        userMutationGeneration,
       );
       if (result.success && result.data?.cachePath) {
         return result.data.cachePath;
@@ -4098,6 +4371,7 @@ function getPluginFacets(
         : undefined,
       cachePath: legacy.cachePath ?? undefined,
       cachedAt: legacy.cachedAt ?? undefined,
+      provenance: plugin.provenance,
       details: plugin.details,
     },
   };
@@ -4109,6 +4383,7 @@ async function resolveFacetPath(
   marketplace: MarketplaceInfo,
   warnings: string[],
   installExternalPlugins: boolean,
+  userMutationGeneration = getPluginUserMutationGeneration(),
 ): Promise<string | null> {
   const externalSource = facet.externalSource;
   const externalSourceUrl =
@@ -4118,14 +4393,19 @@ async function resolveFacetPath(
       ? externalSource.url
       : undefined;
 
-  if (facet.cachePath && fs.existsSync(facet.cachePath)) {
+  // Execution pins the catalog snapshot; index reconciliation belongs to refresh.
+  if (
+    facet.cachePath &&
+    fs.existsSync(facet.cachePath) &&
+    (await canKeepBoundPluginCopy(facet, facet.cachePath, warnings))
+  ) {
     return facet.cachePath;
   }
-
   if (
     !externalSourceUrl &&
     facet.installLocation &&
-    fs.existsSync(facet.installLocation)
+    fs.existsSync(facet.installLocation) &&
+    (await isUsablePluginCopyAsync(facet.installLocation, facet.provenance))
   ) {
     return facet.installLocation;
   }
@@ -4143,7 +4423,10 @@ async function resolveFacetPath(
       );
       return null;
     }
-    if (fs.existsSync(resolved)) {
+    if (
+      fs.existsSync(resolved) &&
+      (await isUsablePluginCopyAsync(resolved, facet.provenance))
+    ) {
       return resolved;
     }
   }
@@ -4157,10 +4440,13 @@ async function resolveFacetPath(
     }
 
     try {
-      const result = await installPlugin(
+      const result = await automaticallyInstallPlugin(
         marketplace.id,
-        plugin.name,
+        plugin,
         externalSourceUrl,
+        facet.provenance?.remoteSourceRestricted ??
+          plugin.provenance?.remoteSourceRestricted,
+        userMutationGeneration,
       );
       if (result.success && result.data?.cachePath) {
         return result.data.cachePath;

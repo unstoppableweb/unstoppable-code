@@ -29,6 +29,7 @@ import {
   readInternalRootStartup,
   assertOwnedStorageDirectory,
   canonicalStoragePath,
+  onInternalRootTrusteesAccepted,
   storagePathPresent,
 } from '../build-storage-startup';
 import {
@@ -607,6 +608,89 @@ it.each([canopy, unstoppable])(
     expect(startup).not.toThrow();
     expect(windowsStartup()).toBe('complete');
     expect(getuid).not.toHaveBeenCalled();
+    // CAN-7915: another account's allow entry on the migration folder, its
+    // journal or the data root is admitted and reported; another owner is not.
+    const sharedAcl = (path: string, owner = 'S-1-5-21-1'): string =>
+      JSON.stringify({
+        user: 'S-1-5-21-1',
+        owner,
+        reparse: false,
+        directory: path !== join(coordination, 'journal.json'),
+        dacl: true,
+        aces: [
+          { type: 0, sid: 'S-1-5-21-1' },
+          { type: 0, sid: 'S-1-5-11' },
+        ],
+      });
+    const acceptance = {
+      cause: 'accepted_foreign_trustee',
+      trustees: ['S-1-5-11'],
+    };
+    const sharedNodes = [
+      { path: coordination, role: 'internal_migration', acceptance },
+      {
+        path: join(coordination, 'journal.json'),
+        role: 'internal_migration',
+        acceptance,
+      },
+      { path: destination, role: 'data_root', acceptance },
+    ];
+    const accepted: unknown[] = [];
+    expect(
+      readInternalRootStartup({
+        home,
+        identity,
+        observation: { os: 'win32', getuid, readWindowsAcl: sharedAcl },
+        onTrusteesAccepted: (node) => accepted.push(node),
+      }),
+    ).toBe('complete');
+    expect(accepted).toEqual(sharedNodes);
+    const foreignOwner = jest.fn();
+    expect(
+      readInternalRootStartup({
+        home,
+        identity,
+        observation: {
+          os: 'win32',
+          getuid,
+          readWindowsAcl: (path) => sharedAcl(path, 'S-1-5-21-2'),
+        },
+        onTrusteesAccepted: foreignOwner,
+      }),
+    ).toBe('unsupported');
+    expect(foreignOwner).not.toHaveBeenCalled();
+    // A later refusal reports none of the folders admitted before it.
+    const refusedLater = jest.fn();
+    expect(
+      readInternalRootStartup({
+        home,
+        identity,
+        observation: {
+          os: 'win32',
+          getuid,
+          readWindowsAcl: (path) =>
+            sharedAcl(
+              path,
+              path === join(coordination, 'journal.json')
+                ? 'S-1-5-21-2'
+                : 'S-1-5-21-1',
+            ),
+        },
+        onTrusteesAccepted: refusedLater,
+      }),
+    ).toBe('unsupported');
+    expect(refusedLater).not.toHaveBeenCalled();
+    // Import-time checks run before a host can log: the sink gets them later.
+    expect(
+      readInternalRootStartup({
+        home,
+        identity,
+        observation: { os: 'win32', getuid, readWindowsAcl: sharedAcl },
+      }),
+    ).toBe('complete');
+    const buffered: unknown[] = [];
+    onInternalRootTrusteesAccepted((node) => buffered.push(node))();
+    expect(buffered).toEqual(sharedNodes);
     const posixStartup = (os: 'darwin' | 'linux'): string =>
       readInternalRootStartup({
         home,
@@ -637,9 +721,9 @@ it.each([canopy, unstoppable])(
     if (process.platform !== 'win32')
       expect(posixStartup('darwin')).toBe('incomplete');
     await save(journal);
+    // An Everyone entry is admitted since CAN-7915 (asserted above).
     for (const failure of [
       { owner: 'S-1-5-21-2' },
-      { aces: [{ type: 0, sid: 'S-1-1-0' }] },
       { dacl: false },
       { reparse: true },
     ]) {

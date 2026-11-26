@@ -3,7 +3,7 @@
 import { useState, type JSX, type ReactNode } from 'react';
 import { Plus, UserPlus } from '@canopy/ui-shared/icons/AppIcons';
 import { Button, buttonClassName, Notice } from '@canopy/ui-shared/components';
-import { PageHeader } from '@canopy/ui-shared/components/PageHeader';
+import { PageHeader } from '@canopy/ui-shared/primitives/PageHeader';
 import { useOptionalSettingsStoreApi } from '@canopy/app-state/settings';
 import {
   ORGANIZATION_SETTINGS_SUBTABS,
@@ -87,6 +87,11 @@ export interface TeamPageProps {
    */
   memoryContent?: ReactNode;
   /**
+   * The `transcripts` tab's content: the Sessions, Exports and Access history
+   * views, built by `OrganizationTranscriptsPage` from its own data.
+   */
+  transcriptsContent?: ReactNode;
+  /**
    * Set when the viewer arrived here straight from redeeming an invite
    * (`/organization/<id>?joined=1`). Renders a one-line confirmation so the
    * join is stated outright rather than inferred from an org page the viewer
@@ -136,6 +141,7 @@ export function TeamPage({
   highlightItemId,
   digestContent,
   memoryContent,
+  transcriptsContent,
   justJoined = false,
   inviteOnLoad = false,
   externalAgentsEnabled = false,
@@ -396,6 +402,8 @@ export function TeamPage({
         );
       case 'memory':
         return memoryContent ?? null;
+      case 'transcripts':
+        return transcriptsContent ?? null;
       case 'settings':
         return settingsSubtab === null ? null : (
           <TeamSettingsSection

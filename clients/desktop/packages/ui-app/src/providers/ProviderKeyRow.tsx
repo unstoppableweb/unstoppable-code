@@ -12,9 +12,15 @@ import type {
   ProviderKeyProvider,
   ProviderKeyStatus,
 } from '@canopy/protocol/canopy-core';
-import { Button, FieldError, TextInput } from '@canopy/ui-shared/components';
-import { ConfirmDialog } from '@canopy/ui-shared/components/ConfirmDialog';
+import {
+  Button,
+  FieldError,
+  TextInput,
+  TextLink,
+} from '@canopy/ui-shared/components';
+import { ConfirmDialog } from '@canopy/ui-shared/primitives/ConfirmDialog';
 import { ClaudeLogo, CodexLogo } from '@canopy/ui-shared/icons';
+import { ExternalLink } from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { ProviderSourceRow } from './ProviderSourceRow';
 
@@ -39,15 +45,30 @@ export interface ProviderKeyRowProps {
 
 const PROVIDER_ROW: Record<
   ProviderKeyProvider,
-  { readonly name: string; readonly icon: ReactNode }
+  {
+    readonly name: string;
+    readonly icon: ReactNode;
+    /** The provider's own page for creating a key, and what it's called. */
+    readonly keyPage: { readonly url: string; readonly label: string };
+  }
 > = {
   anthropic: {
     name: 'Claude API key',
     icon: <ClaudeLogo className="size-4" aria-hidden />,
+    keyPage: {
+      url: 'https://platform.claude.com/settings/keys',
+      label: 'Get a key from Claude Console',
+    },
   },
   openai: {
     name: 'ChatGPT API key',
     icon: <CodexLogo className="size-4" aria-hidden />,
+    // The key comes from OpenAI's console, so the link names that site even
+    // though the row is named for ChatGPT.
+    keyPage: {
+      url: 'https://platform.openai.com/api-keys',
+      label: 'Get a key from OpenAI Platform',
+    },
   },
 };
 
@@ -177,6 +198,10 @@ export function ProviderKeyRow({
   };
 
   const stored = status !== null && status.status !== 'none';
+  // Offered while a key is missing, rejected or being typed; a working key
+  // needs no pointer to where keys come from. Hidden while the status loads,
+  // so a row with a saved key never flashes it.
+  const showKeyPage = status !== null && (status.status !== 'saved' || editing);
   const control = editing ? undefined : status === null ? undefined : (
     <div className="flex items-center gap-2">
       {stored && (
@@ -215,7 +240,33 @@ export function ProviderKeyRow({
         name={row.name}
         status={statusTone(status)}
         statusTestId={`${testId}-status`}
-        description={<span role="status">{description(status)}</span>}
+        description={
+          <>
+            <span role="status">{description(status)}</span>
+            {showKeyPage && (
+              <>
+                {' '}
+                {/* `accent`, not `inline`: the link follows a full sentence
+                    rather than sitting inside one. No `withIcon` either, so
+                    the label wraps like text on a narrow row. */}
+                <TextLink
+                  href={row.keyPage.url}
+                  data-testid={`${testId}-get-key`}
+                >
+                  {row.keyPage.label}
+                  {/* A no-break space keeps the icon with the last word. */}
+                  {'\u00a0'}
+                  <ExternalLink
+                    size={12}
+                    className="inline align-baseline"
+                    aria-hidden
+                  />
+                  <span className="sr-only"> (opens in a new tab)</span>
+                </TextLink>
+              </>
+            )}
+          </>
+        }
         {...(error !== null && !editing && !removeOpen
           ? { error, errorTestId: `${testId}-error` }
           : {})}

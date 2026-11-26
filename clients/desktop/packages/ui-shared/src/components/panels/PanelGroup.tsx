@@ -9,14 +9,14 @@ import {
   type NamedExoticComponent,
   type ReactNode,
 } from 'react';
-import type { IDisposable } from '../../panels/disposable';
+import type { IDisposable } from '../../lib/disposable';
 import { DragAndDropObserver } from '../../panels/dnd-observer';
 import { PANEL_CONTENT_ADOPTED_EVENT } from '../../panels/panel-content-adoption';
 import {
   computeDropTarget,
   type DropTargetResult,
 } from '../../panels/drop-geometry';
-import { scheduleWindowAnimationFrame } from '../../panels/window-registry';
+import { scheduleWindowAnimationFrame } from '../../lib/window-registry';
 import type {
   PanelContentProps,
   PanelDropEdge,
@@ -24,7 +24,7 @@ import type {
   PanelIntentCallbacks,
   PanelTabModel,
 } from '../../panels/registry-types';
-import { Button } from '../Button';
+import { Button } from '../../primitives/Button';
 import {
   DEFAULT_PANEL_CHROME_LABELS,
   PanelChrome,

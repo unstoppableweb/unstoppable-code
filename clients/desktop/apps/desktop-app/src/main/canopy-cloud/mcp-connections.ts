@@ -701,6 +701,17 @@ export async function getCachedAccountMcpConnection(
   }
 }
 
+/**
+ * The cloud's MCP proxy base (`<cloud>`, without a trailing slash) once the
+ * signed-in cloud offers the proxy, for a route the caller already knows,
+ * such as a shared connection's (CAN-6246).
+ */
+export async function accountMcpProxyBaseUrl(): Promise<string> {
+  const credentials = await resolveCanopyCloudCredentialContext();
+  await assertCanopyCloudCapability('mcp-proxy-v1', credentials);
+  return credentials.baseUrl.replace(/\/$/, '');
+}
+
 export async function resolveAccountMcpProxyTarget(
   target: AccountMcpConnectionTarget,
 ): Promise<{ connection: AccountMcpConnection; upstreamUrl: string }> {

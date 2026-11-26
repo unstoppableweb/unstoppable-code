@@ -13,11 +13,13 @@ import { assertLegacyWorktreeBaseRequest } from '../worktree-base-capability';
 import {
   compatibleRemoteVersions,
   describeHostVersionMismatch,
+  oneWindowHostCompatible,
 } from '../protocol-version';
 import {
   AppAdvisorWindowParamsSchema,
   AccountProxySignInEndedParamsSchema,
   AccountProxySignInOpenParamsSchema,
+  DESKTOP_ONE_WINDOW_MODE,
   DialogOpenParamsSchema,
   FileReadResultSchema,
   HelloResultSchema,
@@ -62,8 +64,24 @@ export interface HostConnectionOptions {
   /** Diagnostics kept on this computer, such as a failed update step. */
   log?: (message: string, context?: unknown) => void;
   connect: () => Promise<SecureSession>;
-  /** `surface` absent: every window that shows the host. */
-  onPush: (channel: string, args: unknown[], surface?: RemoteSurface) => void;
+  /**
+   * The controller profile the hello sends. Absent for the window's
+   * full-tunnel session, whose hello has never sent one. A one-window
+   * profile (CAN-7758) admits a host from the one-window floor
+   * (`oneWindowHostCompatible`); any other session needs the exact protocol.
+   */
+  controllerProfile?: () => NonNullable<HelloParams['controller']>;
+  /**
+   * `surface` absent: every window that shows the host. `fromLiveSession`:
+   * the push came over the session whose hello this connection installed,
+   * including while it resumes, not a replacement still in its hello.
+   */
+  onPush: (
+    channel: string,
+    args: unknown[],
+    surface: RemoteSurface | undefined,
+    fromLiveSession: boolean,
+  ) => void;
   /** Shows a picker for a file dialog raised by a handler on the host. */
   onDialogOpen: (params: DialogOpenParams) => Promise<DialogOpenResult>;
   /** Shows, creates or hides this computer's App Advisor window for the host. */
@@ -140,6 +158,12 @@ export class RemoteHostConnection {
   private errorValue: string | null = null;
   private helloValue: HelloResult | null = null;
   /**
+   * The answer of the last host this computer could not use for its
+   * version, until a compatible hello or release. One of the two needs an
+   * update; the answer says which and on what version.
+   */
+  private incompatibleHelloValue: HelloResult | null = null;
+  /**
    * A session kept open on a protocol mismatch only for the host's
    * `core.update.*` operations, so this computer can update it (CAN-5899).
    * Never `rpc`: nothing else is sent over it.
@@ -169,6 +193,19 @@ export class RemoteHostConnection {
 
   get hostInfo(): HelloResult | null {
     return this.helloValue;
+  }
+
+  /** The hello of a host refused for its version; see `update`. */
+  get incompatibleHostInfo(): HelloResult | null {
+    return this.incompatibleHelloValue;
+  }
+
+  /**
+   * Whether the session `hostInfo` came from is still open, so a call made
+   * now goes out on it rather than on a replacement that `ensure()` opens.
+   */
+  get hasOpenSession(): boolean {
+    return this.rpc !== null && !this.rpc.isClosed;
   }
 
   /** One of the two computers needs an update before they can connect. */
@@ -250,6 +287,7 @@ export class RemoteHostConnection {
     this.pendingRpc = null;
     this.closeUpdateSession();
     this.staticUpdate = null;
+    this.incompatibleHelloValue = null;
     this.hadSession = false;
     this.options.onSessionEnded?.('released');
     this.setStatus('idle', null);
@@ -300,6 +338,36 @@ export class RemoteHostConnection {
     surface: RemoteSurface = 'main',
   ): Promise<unknown> {
     const rpc = await this.ensure();
+    return this.invokeOn(rpc, channel, args, surface);
+  }
+
+  /**
+   * Calls `channel` on the session open now, dispatched before this returns,
+   * so a caller's checks in the same turn still hold when it goes out. It
+   * never reconnects: without an open session it rejects.
+   */
+  invokeOnOpenSession(channel: string, args: unknown[]): Promise<unknown> {
+    const rpc = this.rpc;
+    if (!rpc || rpc.isClosed)
+      return Promise.reject(new RpcClosedError('closed'));
+    return this.invokeOn(rpc, channel, args, 'main');
+  }
+
+  /** Sends on the session open now, in this turn; dropped without one. */
+  postOnOpenSession(channel: string, args: unknown[]): void {
+    const rpc = this.rpc;
+    if (rpc && !rpc.isClosed)
+      rpc.notify(REMOTE_EVENTS.ipcSend, { channel, args });
+  }
+
+  // Runs synchronously up to the request, so it is dispatched in the turn
+  // the caller called it.
+  private async invokeOn(
+    rpc: RpcPeer,
+    channel: string,
+    args: unknown[],
+    surface: RemoteSurface,
+  ): Promise<unknown> {
     const exact = this.helloValue?.features?.exactWorktreeBaseBranch === true;
     if (!exact) assertLegacyWorktreeBaseRequest(channel, args[0]);
     // No deadline: local IPC has none, and a dropped session rejects.
@@ -461,6 +529,8 @@ export class RemoteHostConnection {
           const ended = SessionEndedParamsSchema.safeParse(payload);
           if (ended.success) {
             this.endedMessage = ENDED_MESSAGES[ended.data.reason];
+            // Ended on purpose: that, not an earlier version answer, is why.
+            this.incompatibleHelloValue = null;
           }
           return;
         }
@@ -482,6 +552,7 @@ export class RemoteHostConnection {
             parsed.data.channel,
             parsed.data.args,
             parsed.data.surface,
+            this.rpc === rpc,
           );
         }
       },
@@ -498,8 +569,10 @@ export class RemoteHostConnection {
     // Set when the session stays open for the host's updates.
     let keep = false;
     try {
+      const controller = this.options.controllerProfile?.();
       const params: HelloParams = {
         version: this.options.version,
+        ...(controller ? { controller } : {}),
         exactWorktreeBaseBranch: true,
         transport: { resume: REMOTE_TRANSPORT_RESUME_VERSION },
       };
@@ -520,10 +593,12 @@ export class RemoteHostConnection {
       if (generation !== this.generation) {
         throw new HostConnectionReleasedError();
       }
-      if (
-        !hello.version ||
-        !compatibleRemoteVersions(hello.version, this.options.version)
-      ) {
+      const compatible =
+        hello.version !== undefined &&
+        (controller?.mode === DESKTOP_ONE_WINDOW_MODE
+          ? oneWindowHostCompatible(hello, this.options.version)
+          : compatibleRemoteVersions(hello.version, this.options.version));
+      if (!compatible) {
         // Another protocol would read this computer's calls differently;
         // reopening the computer, after updating, tries again.
         const message = describeHostVersionMismatch(
@@ -532,6 +607,7 @@ export class RemoteHostConnection {
           hello.version ?? null,
           this.options.version,
         );
+        this.incompatibleHelloValue = hello;
         keep = this.handleMismatch(rpc, hello, message);
         throw classifyError(new Error(message), 'external.state_changed');
       }
@@ -555,6 +631,7 @@ export class RemoteHostConnection {
       if (this.pendingRpc === rpc) this.pendingRpc = null;
     }
     this.helloValue = hello;
+    this.incompatibleHelloValue = null;
     this.rpc = rpc;
     this.attempt = 0;
     // A host that came back compatible after an update shows a window that

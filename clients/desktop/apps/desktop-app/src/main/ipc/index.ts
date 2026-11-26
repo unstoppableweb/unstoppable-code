@@ -30,6 +30,7 @@ import type {
 import { isBotProjectId } from '@canopy/protocol/chat-targets';
 import { isOllamaSupportedOnPlatform } from '@canopy/desktop-shared/platform-capabilities';
 import { registerPreferenceHandlers } from './preferences';
+import { electronPreferenceNativeEffects } from '../lib/preference-native-effects';
 import { registerClaudeModsHandlers } from './claude-mods';
 import { registerInstalledItemHandlers } from './installed-items';
 import { registerProjectHandlers } from './projects';
@@ -299,7 +300,7 @@ export function registerAllIpcHandlers(
         }
       : undefined,
   );
-  registerPreferenceHandlers();
+  registerPreferenceHandlers(electronPreferenceNativeEffects);
   registerClaudeModsHandlers();
   registerUserEnvironmentHandlers();
   registerActivityPanelHandlers(getMainWindow, canopyRuntime);

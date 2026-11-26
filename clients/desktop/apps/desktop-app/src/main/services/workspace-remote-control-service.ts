@@ -5,7 +5,10 @@ import {
   readAllSidebarItemsSnapshot,
   type SidebarItemsSnapshot,
 } from '../lib/sidebar-items';
-import { runW5ReadView } from '../lib/w5-commit-log-file-store';
+import {
+  runDesktopW5CachedReadView,
+  W5_DISCOVER_REQUEST,
+} from '../canopy-runtime/w5-read-cache-server';
 import { workspaceStorageUnavailable } from '../lib/workspace-storage-availability';
 import { isWorkspaceTargetRemovalPending } from '../lib/workspace-target-exclusion';
 import { readPreferencesFile } from '../lib/preferences-store';
@@ -421,7 +424,7 @@ export async function listWorkspaceRemoteControlEntities(
   const workspaceListStartedAt = performance.now();
   const sidebarSnapshot =
     options?.sidebarSnapshot ??
-    (await runW5ReadView({ files: [], discoverWorkspaces: true }, (view) => {
+    (await runDesktopW5CachedReadView(W5_DISCOVER_REQUEST, (view) => {
       if (view.status === 'uncaptured' && view.error) throw view.error;
       return readAllSidebarItemsSnapshot();
     }));

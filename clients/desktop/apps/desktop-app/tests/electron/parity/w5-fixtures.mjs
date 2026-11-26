@@ -18,6 +18,7 @@ import {
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test } from '@playwright/test';
+import { require as tsRequire } from 'tsx/cjs/api';
 import { CanopyAppDriver } from '../canopyApp.mjs';
 import {
   captureDaemonDryRunEvidence,
@@ -29,6 +30,336 @@ import { writeJson } from '../seeders/fsHelpers.mjs';
 const repoRoot = fileURLToPath(new URL('../../../../../', import.meta.url));
 
 export const DEFAULT_COWORK_WORKSPACE_ID = 'cowork-default';
+
+// Each boot starts at the line logging this marker.
+const BOOT_START = /^(?=[^\n]*Main process file logging initialized)/m;
+
+// Existing path-free product warnings and the facts each one carries.
+const W5_FAILURE_WARNINGS = [
+  [
+    'handoff',
+    'W5 startup handoff failed; workspace records are read-only',
+    [
+      'reason',
+      'stage',
+      'errorKind',
+      'refusal',
+      'cause',
+      'code',
+      'errorName',
+      'errorCode',
+      'errno',
+      'nativeStage',
+      'exitCode',
+      'signal',
+      'operation',
+      'portKind',
+    ],
+  ],
+  [
+    'archive',
+    'Worktree archive failed',
+    [
+      'archive_trigger',
+      'phase',
+      'code',
+      'refusal_reason',
+      'refusal_phase',
+      'refusal_check',
+      'refusal_failure',
+      'refusal_cause_code',
+      'journal_stopping_phase',
+      'journal_stopping_state',
+      'journal_step_code',
+    ],
+  ],
+  ['service', 'Background service unavailable', ['reason']],
+];
+
+/**
+ * Boots in a data root's logs, oldest first. Each W5 test owns its root, so
+ * every boot is this test's; rotation moves older lines to main.old.log, and
+ * text before the first marker is a boot whose start was rotated away.
+ */
+function readW5Boots(userDataDir) {
+  const text = ['main.old.log', 'main.log']
+    .map((name) => path.join(userDataDir, 'logs', name))
+    .filter((file) => existsSync(file))
+    .map((file) => readFileSync(file, 'utf8'))
+    .join('\n');
+  const boots = text.split(BOOT_START);
+  const cropped = BOOT_START.test(boots[0] ?? '') ? undefined : boots.shift();
+  return { cropped: cropped?.trim() ? cropped : undefined, boots };
+}
+
+function reportW5WarningFacts(boot, label) {
+  for (const [kind, marker, fields] of W5_FAILURE_WARNINGS) {
+    for (
+      let start = boot.indexOf(marker);
+      start >= 0;
+      start = boot.indexOf(marker, start + marker.length)
+    ) {
+      // A record runs until the next timestamped line.
+      const warning = boot.slice(start, start + 4096).split('\n[')[0];
+      const facts = Object.fromEntries(
+        fields.flatMap((field) => {
+          // util.inspect keys are unquoted, so a key inside a JSON string
+          // value (`journal_steps`) never matches.
+          const value = warning.match(
+            new RegExp(`(?:^|[{,])\\s*${field}\\s*:\\s*["']?([\\w.:-]+)`, 'm'),
+          )?.[1];
+          return value ? [[field, value]] : [];
+        }),
+      );
+      console.warn(
+        `[w5-failure] ${kind}`,
+        JSON.stringify({ boot: label, ...facts }),
+      );
+    }
+  }
+}
+
+/** CI uploads screenshots only: keep path/value-free failure facts in its log. */
+function reportW5FailureFacts(userDataDir) {
+  const { cropped, boots } = readW5Boots(userDataDir);
+  console.warn(
+    '[w5-failure] boots',
+    JSON.stringify({ logged: boots.length, cropped: cropped !== undefined }),
+  );
+  if (cropped !== undefined) reportW5WarningFacts(cropped, 'cropped');
+  boots.forEach((boot, index) =>
+    reportW5WarningFacts(boot, `${index + 1}/${boots.length}`),
+  );
+  const directory = path.join(userDataDir, 'w5', 'destructive-lifecycles');
+  if (!existsSync(directory)) return;
+  let contract;
+  try {
+    // tsx, on failure only: a Playwright-transformed import of this graph breaks
+    // discovery of any spec that also imports a core-platform .ts.
+    contract = tsRequire(
+      '../../../src/main/lib/__tests__/fixtures/w5-journal-schema.ts',
+      import.meta.url,
+    );
+  } catch (error) {
+    warnW5Failure('could not load the recovery journal contract', error);
+    return;
+  }
+  const {
+    journalSchema,
+    LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN,
+    sanitizedDestructiveCode,
+    sanitizedDestructivePhase,
+  } = contract;
+  for (const file of readdirSync(directory).filter((name) =>
+    LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN.test(name),
+  )) {
+    let journal;
+    try {
+      const journalPath = path.join(directory, file);
+      if (!lstatSync(journalPath).isFile())
+        throw new Error('Recovery journal is not a regular file');
+      journal = journalSchema.parse(
+        JSON.parse(readFileSync(journalPath, 'utf8')),
+      );
+    } catch {
+      console.warn('[w5-failure] unreadable recovery journal');
+      continue;
+    }
+    console.warn(
+      '[w5-failure] recovery',
+      JSON.stringify({
+        // Schema enums; phases and codes use the production log sanitizers.
+        operation: journal.operation,
+        state: journal.state,
+        steps: journal.steps.map((step) => ({
+          phase: sanitizedDestructivePhase(step.phase),
+          state: step.state,
+          code:
+            step.code === undefined
+              ? undefined
+              : sanitizedDestructiveCode(step.code),
+        })),
+      }),
+    );
+  }
+}
+
+const terminalTupleFacts = (tuple) => ({
+  code: Number.isInteger(tuple?.code) ? tuple.code : undefined,
+  signal:
+    typeof tuple?.signal === 'string' && /^SIG[A-Z0-9]+$/.test(tuple.signal)
+      ? tuple.signal
+      : undefined,
+});
+
+/**
+ * Warns with allowlisted facts only: raw error text can carry launcher output
+ * and absolute paths into CI logs.
+ */
+function warnW5Failure(message, error) {
+  const name = typeof error?.name === 'string' ? error.name : undefined;
+  const code = typeof error?.code === 'string' ? error.code : undefined;
+  const result = error?.result;
+  console.warn(
+    `[w5-failure] ${message}`,
+    JSON.stringify({
+      name: name !== undefined && /^\w+$/.test(name) ? name : undefined,
+      code:
+        code !== undefined && /^[A-Z][A-Z0-9_]*$/.test(code) ? code : undefined,
+      exit: result === undefined ? undefined : terminalTupleFacts(result.exit),
+      close:
+        result === undefined ? undefined : terminalTupleFacts(result.close),
+    }),
+  );
+}
+
+/** Run after the app stops (main.log's async sink drains); never copy tokens. */
+function captureW5FailureDiagnostics(userDataDir) {
+  try {
+    reportW5FailureFacts(userDataDir);
+  } catch {
+    console.warn('[w5-failure] could not summarize failure facts');
+  }
+  try {
+    for (const [relative, outputName] of [
+      ['logs', 'w5-failure-logs'],
+      ['w5/destructive-lifecycles', 'w5-recovery-journals'],
+    ]) {
+      const source = path.join(userDataDir, relative);
+      if (!existsSync(source)) continue;
+      cpSync(source, test.info().outputPath(outputName), {
+        recursive: true,
+        filter: (source) => {
+          const entry = lstatSync(source);
+          return entry.isDirectory() || entry.isFile();
+        },
+      });
+    }
+  } catch (error) {
+    warnW5Failure('could not keep failure diagnostics', error);
+  }
+}
+
+/** Teardown after a failure only warns, so it never replaces that failure. */
+async function closeW5AppQuietly(electronApp, userDataDir, options) {
+  try {
+    await closeCanopy(electronApp, userDataDir, options);
+  } catch (error) {
+    warnW5Failure('teardown failed', error);
+  }
+}
+
+// Inside the W5 specs' test timeouts. Windows closeCanopy awaits app.quit()
+// in the main process with no deadline of its own. A close that is slow but
+// not hung is cut only in its launcher wait, after Electron has exited.
+const W5_FAILURE_CLOSE_DEADLINE_MS = 30_000;
+
+/**
+ * Waits for `work` until the failure deadline, then continues without it; the
+ * abandoned work keeps running in the background.
+ */
+async function untilW5FailureDeadline(work, description) {
+  let timer;
+  const expired = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(true), W5_FAILURE_CLOSE_DEADLINE_MS);
+  });
+  try {
+    if (await Promise.race([work.then(() => false), expired]))
+      console.warn(
+        `[w5-failure] ${description} still running after ${W5_FAILURE_CLOSE_DEADLINE_MS} ms; continuing without it`,
+      );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * A failed test's close, keeping the data root, that stops waiting at the
+ * deadline so the evidence is still captured. An abandoned close never
+ * removes a root.
+ */
+function closeW5AppBeforeCapture(electronApp, userDataDir) {
+  return untilW5FailureDeadline(
+    closeW5AppQuietly(electronApp, userDataDir, { keepUserData: true }),
+    'teardown',
+  );
+}
+
+/**
+ * The single owner of a W5 test's data root and its open app, which
+ * `launchW5App` and `crashKeepingData` keep current. Call `end` first in the
+ * spec's `afterEach`: Playwright 1.64 gives after-hooks a fresh slot of the
+ * test timeout, so the close and capture still run after the body times out,
+ * and before the spec removes fixtures the app may still use. The body is
+ * then abandoned, not stopped: `end` refuses its later launches and crashes,
+ * and waits (bounded) for the ones in flight so their app is closed before
+ * the capture. After a failure the close is bounded and keeps the root, which
+ * is captured once: the root, not the app handle, holds every boot's evidence.
+ *
+ * Every owner launch passes the test's caller-made root, registered before
+ * the launch starts: the launcher keeps a caller root on a rejected launch,
+ * so a launch that fails or never returns is still captured. A launch still
+ * booting at capture yields a partial main.log.
+ */
+export function createW5Teardown() {
+  let userDataDir;
+  let electronApp;
+  let ended = false;
+  // Set once `end` has chosen the app it closes; a later launch closes itself.
+  let closing = false;
+  const inFlight = [];
+  const start = (operation) => {
+    if (ended) throw new Error('W5 test already ended');
+    const running = operation();
+    inFlight.push(running.catch(() => undefined));
+    return running;
+  };
+  return {
+    launch(options, launchApp) {
+      if (options.userDataDir === undefined)
+        throw new Error('A W5 owner launch needs a caller-made data root');
+      if (userDataDir !== undefined && userDataDir !== options.userDataDir)
+        throw new Error('A W5 owner keeps one data root per test');
+      return start(async () => {
+        userDataDir = options.userDataDir;
+        const launched = await launchApp(options);
+        if (closing) {
+          await closeW5AppBeforeCapture(launched.electronApp, userDataDir);
+          throw new Error('W5 launch returned after its test ended');
+        }
+        electronApp = launched.electronApp;
+        return launched;
+      });
+    },
+    /** The owner keeps `app` unless `stopApp` resolves. */
+    stop(app, stopApp) {
+      return start(async () => {
+        await stopApp();
+        if (electronApp === app) electronApp = undefined;
+      });
+    },
+    async end(failed) {
+      ended = true;
+      if (!failed) {
+        await Promise.all(inFlight);
+        closing = true;
+        if (electronApp !== undefined)
+          await closeCanopy(electronApp, userDataDir);
+        return;
+      }
+      await untilW5FailureDeadline(
+        Promise.all(inFlight),
+        'launch or crash from the test body',
+      );
+      closing = true;
+      if (electronApp !== undefined)
+        await closeW5AppBeforeCapture(electronApp, userDataDir);
+      if (userDataDir !== undefined) captureW5FailureDiagnostics(userDataDir);
+      // Leak, never block: a resolved close does not prove the runtime
+      // stopped, so the data and -secure roots stay; they are temp dirs.
+    },
+  };
+}
 
 export function git(cwd, args) {
   return execFileSync(
@@ -229,7 +560,7 @@ export function runCli(userDataDir, args, extraEnv = {}) {
         '.bin',
         process.platform === 'win32' ? 'tsx.cmd' : 'tsx',
       ),
-      ['apps/desktop-cli/src/index.ts', ...args],
+      ['apps/desktop-app/tests/electron/parity/w5-cli-entry.mjs', ...args],
       {
         cwd: repoRoot,
         env: {
@@ -284,20 +615,33 @@ export async function loadProjectIds(window) {
 
 /**
  * Launches the app and waits until startup has provisioned the default Chats
- * project into the index, so later index reads see a settled baseline.
+ * project into the index, so later index reads see a settled baseline. With
+ * `teardown` (`createW5Teardown`), `options.userDataDir` is required; the
+ * launch is started through it and is its app as soon as it returns.
  */
-export async function launchW5App(options = {}) {
-  const launched = await launchCanopy(options);
-  const window = await launched.electronApp.firstWindow();
-  await new CanopyAppDriver(window).waitForShell({ timeout: 30_000 });
-  await expect
-    .poll(() =>
-      existsSync(indexPath(launched.userDataDir))
-        ? readIndexIds(launched.userDataDir)
-        : [],
-    )
-    .toContain(DEFAULT_COWORK_WORKSPACE_ID);
-  return { ...launched, window };
+export async function launchW5App(options = {}, teardown = undefined) {
+  const launched = await (teardown === undefined
+    ? launchCanopy(options)
+    : teardown.launch(options, launchCanopy));
+  try {
+    const window = await launched.electronApp.firstWindow();
+    await new CanopyAppDriver(window).waitForShell({ timeout: 30_000 });
+    await expect
+      .poll(() =>
+        existsSync(indexPath(launched.userDataDir))
+          ? readIndexIds(launched.userDataDir)
+          : [],
+      )
+      .toContain(DEFAULT_COWORK_WORKSPACE_ID);
+    return { ...launched, window };
+  } catch (error) {
+    // An adopted launch is closed and captured by its test's teardown.
+    // Otherwise kept even when fresh: a resolved close does not prove the
+    // runtime stopped.
+    if (teardown === undefined)
+      await closeW5AppBeforeCapture(launched.electronApp, launched.userDataDir);
+    throw error;
+  }
 }
 
 /**
@@ -351,16 +695,38 @@ function keepQuitLogs(userDataDir) {
       },
     });
   } catch (error) {
-    console.warn(`Could not keep the quit logs: ${String(error)}`);
+    warnW5Failure('could not keep the quit logs', error);
   }
 }
 
-/** SIGKILLs the app's process tree, then reaps it, keeping its data root. */
-export async function crashKeepingData(launched) {
-  await launched.killAbruptly();
-  await closeCanopy(launched.electronApp, launched.userDataDir, {
-    keepUserData: true,
-  });
+/**
+ * Abruptly stops the frozen W5 runtime tree (`crashW5SupervisedRuntime`)
+ * without invoking daemon.stop(). A rejection means the stop is unconfirmed,
+ * so a caller holding a Git gate keeps it closed.
+ */
+export async function crashKeepingData(launched, teardown = undefined) {
+  const closeCrashed = () =>
+    closeCanopy(launched.electronApp, launched.userDataDir, {
+      keepUserData: true,
+    });
+  if (teardown !== undefined) {
+    // A refused crash or a failed close leaves the app to `teardown`.
+    await teardown.stop(launched.electronApp, async () => {
+      await launched.crashW5Runtime();
+      await closeCrashed();
+    });
+    return;
+  }
+  try {
+    await launched.crashW5Runtime();
+  } catch (error) {
+    // Unbounded: reap the original launch before the caller fails.
+    await closeW5AppQuietly(launched.electronApp, launched.userDataDir, {
+      keepUserData: true,
+    });
+    throw error;
+  }
+  await closeCrashed();
 }
 
 /** Invokes a preload method from the renderer and returns its rejection text. */

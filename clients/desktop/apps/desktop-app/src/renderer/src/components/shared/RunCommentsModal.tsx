@@ -11,11 +11,7 @@ import {
   PlanReviewThread,
   Surface,
 } from '@canopy/ui-shared/components';
-import type {
-  SharedRunComment,
-  SharedRunCommentThread,
-  SharedRunDetail,
-} from '@canopy/protocol/runs';
+import type { ListRunCommentsResponse } from '@canopy/desktop-shared/types';
 import { POSTHOG_REPLAY_BLOCK_CLASS } from '@canopy/desktop-instrumentation/posthog-replay-privacy';
 import { DialogModal } from '@/components/shared/DialogModal';
 import { brandText } from '@/lib/brand';
@@ -33,6 +29,9 @@ const GENERIC_ERROR = 'Unable to load comments.';
 const SAVE_ERROR = 'Unable to save comment.';
 
 const MARKDOWN_OPTIONS = markdownOptions({});
+type RunComments = NonNullable<ListRunCommentsResponse['comments']>;
+type RunCommentThread = RunComments['commentThreads'][number];
+
 const PROSE_CLASS =
   'prose prose-sm [--tw-prose-body:var(--fg-primary)] dark:prose-invert max-w-none break-words prose-code:fg-accent prose-code:before:content-none prose-code:after:content-none prose-headings:fg-primary prose-strong:fg-primary';
 
@@ -42,7 +41,7 @@ const PROSE_CLASS =
  *
  * Comments are SERVER-AUTHORITATIVE. Every read and every mutation is a
  * pass-through to Canopy Cloud through `runs:comments:*` IPC, and each response
- * carries the full fresh `SharedRunDetail`, which replaces local state
+ * carries the run's fresh comment state, which replaces local state
  * wholesale. There is no desktop-local comment store, no optimistic write, and
  * no merge algorithm — the same rule the main process and the web viewer follow.
  */
@@ -54,7 +53,7 @@ export function RunCommentsModal({
   onClose: () => void;
 }): JSX.Element {
   const { projectId, worktreeId, chatId } = target;
-  const [detail, setDetail] = useState<SharedRunDetail | null>(null);
+  const [comments, setComments] = useState<RunComments | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newComment, setNewComment] = useState('');
@@ -82,7 +81,7 @@ export function RunCommentsModal({
         unreadCommentCount: 0,
       };
 
-      // Opening the authoritative detail means the user has seen this
+      // Opening the authoritative comments means the user has seen this
       // revision. Clear the presentation immediately while the two durable
       // writes (the comment registry and canonical tab metadata) settle.
       void useChatStore
@@ -107,10 +106,10 @@ export function RunCommentsModal({
     void window.api.runs
       .listComments({ projectId, worktreeId, chatId })
       .then((response) => {
-        setDetail(response.detail);
+        setComments(response.comments);
         setError(null);
-        if (response.detail) {
-          markSeen(response.detail.commentRevision);
+        if (response.comments) {
+          markSeen(response.comments.commentRevision);
         }
       })
       .catch(() => setError(GENERIC_ERROR))
@@ -121,14 +120,14 @@ export function RunCommentsModal({
     load();
   }, [load]);
 
-  /** Swap in the server's authoritative detail after a mutation. */
-  const applyDetail = useCallback(
-    (next: SharedRunDetail | null): boolean => {
+  /** Swap in the server's authoritative comments after a mutation. */
+  const applyComments = useCallback(
+    (next: RunComments | null): boolean => {
       if (!next) {
         setError(SAVE_ERROR);
         return false;
       }
-      setDetail(next);
+      setComments(next);
       setError(null);
       markSeen(next.commentRevision);
       return true;
@@ -149,7 +148,7 @@ export function RunCommentsModal({
         chatId,
         body,
       });
-      if (applyDetail(result.detail)) {
+      if (applyComments(result.comments)) {
         setNewComment('');
       }
     } catch {
@@ -159,7 +158,7 @@ export function RunCommentsModal({
     }
   };
 
-  const threads = detail?.commentThreads ?? [];
+  const threads = comments?.commentThreads ?? [];
 
   return (
     <DialogModal
@@ -170,13 +169,13 @@ export function RunCommentsModal({
       maxWidth="2xl"
       dataTestId="run-comments-modal"
     >
-      {loading && detail === null ? (
+      {loading && comments === null ? (
         <DelayedLoadingPlaceholder className="" slowNote={SLOW_LOADING_NOTE}>
           <div className="box-content flex min-h-full flex-1 py-12">
             <CenteredLoadingSpinner className="" />
           </div>
         </DelayedLoadingPlaceholder>
-      ) : detail === null ? (
+      ) : comments === null ? (
         <p className="text-s fg-secondary" data-testid="run-comments-empty">
           {error ?? UNAVAILABLE_LABEL}
         </p>
@@ -193,8 +192,8 @@ export function RunCommentsModal({
                 key={thread.id}
                 target={target}
                 thread={thread}
-                detail={detail}
-                onDetail={applyDetail}
+                viewerUserId={comments.viewerUserId}
+                onComments={applyComments}
               />
             ))
           )}
@@ -232,7 +231,7 @@ export function RunCommentsModal({
  * renders as an unresolvable name rather than dropping the comment.
  */
 function toReviewAuthor(
-  comment: SharedRunComment,
+  comment: RunCommentThread['comments'][number],
   viewerUserId: string | null,
 ): PlanReviewAuthor {
   const name =
@@ -250,10 +249,7 @@ function toReviewAuthor(
 }
 
 /** Short, single-line preview of the message a thread is anchored to. */
-function anchorReferenceText(
-  thread: SharedRunCommentThread,
-  detail: SharedRunDetail,
-): string | null {
+function anchorReferenceText(thread: RunCommentThread): string | null {
   if (thread.anchor.kind !== 'message') {
     return null;
   }
@@ -263,9 +259,8 @@ function anchorReferenceText(
     // hiding the thread.
     return 'Anchored message is no longer in this run';
   }
-  const anchorMessageId = thread.anchor.messageId;
-  const message = detail.messages.find((m) => m.messageId === anchorMessageId);
-  const text = message?.text.replace(/\s+/g, ' ').trim() ?? '';
+  // Main collapses whitespace and cuts it to 256 characters.
+  const text = thread.anchorText ?? '';
   if (text.length === 0) {
     return 'On a transcript message';
   }
@@ -275,13 +270,13 @@ function anchorReferenceText(
 function RunCommentThreadCard({
   target,
   thread,
-  detail,
-  onDetail,
+  viewerUserId,
+  onComments,
 }: {
   target: RunCommentsTarget;
-  thread: SharedRunCommentThread;
-  detail: SharedRunDetail;
-  onDetail: (detail: SharedRunDetail | null) => boolean;
+  thread: RunCommentThread;
+  viewerUserId: string | null;
+  onComments: (comments: RunComments | null) => boolean;
 }): JSX.Element {
   const [reply, setReply] = useState('');
   const [pending, setPending] = useState(false);
@@ -301,11 +296,11 @@ function RunCommentThreadCard({
         threadId: thread.id,
         body,
       });
-      if (onDetail(result.detail)) {
+      if (onComments(result.comments)) {
         setReply('');
       }
     } catch {
-      onDetail(null);
+      onComments(null);
     } finally {
       setPending(false);
     }
@@ -325,17 +320,17 @@ function RunCommentThreadCard({
         threadId: thread.id,
         status: next,
       });
-      if (onDetail(result.detail)) {
+      if (onComments(result.comments)) {
         setCollapsed(next === 'resolved');
       }
     } catch {
-      onDetail(null);
+      onComments(null);
     } finally {
       setPending(false);
     }
   };
 
-  const referenceText = anchorReferenceText(thread, detail);
+  const referenceText = anchorReferenceText(thread);
   const firstComment = thread.comments[0];
   const reference = referenceText
     ? { text: referenceText, outdated: thread.anchorState === 'orphaned' }
@@ -379,7 +374,7 @@ function RunCommentThreadCard({
         <PlanReviewComment
           key={comment.id}
           dataTestId="run-comment"
-          author={toReviewAuthor(comment, detail.viewerUserId)}
+          author={toReviewAuthor(comment, viewerUserId)}
           timestamp={comment.createdAt}
           compact
         >

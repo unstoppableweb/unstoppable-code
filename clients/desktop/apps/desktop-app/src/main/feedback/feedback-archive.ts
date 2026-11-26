@@ -32,13 +32,17 @@ import {
   type FeedbackScrubOptions,
 } from './feedback-scrub';
 export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+export const MAX_FEEDBACK_MANIFEST_BYTES = 1024 * 1024;
+const MAX_COLLECTION_PATHS = 5000;
 
 export class FeedbackArchiveSizeLimitError extends Error {
-  constructor(kind: 'contents' | 'archive') {
+  constructor(readonly kind: 'contents' | 'archive' | 'entries') {
     super(
-      kind === 'archive'
-        ? 'Diagnostics archive exceeds the size limit'
-        : 'Diagnostics contents exceed the size limit',
+      kind === 'entries'
+        ? 'Diagnostics contain too many entries'
+        : kind === 'archive'
+          ? 'Diagnostics archive exceeds the size limit'
+          : 'Diagnostics contents exceed the size limit',
     );
     this.name = 'FeedbackArchiveSizeLimitError';
   }
@@ -129,12 +133,22 @@ export interface FeedbackManifest {
   };
   includedFiles: string[];
   skippedFiles: SkippedFile[];
+  inventorySummary?: {
+    includedFilesOmitted: number;
+    skippedFilesOmitted: number;
+    skippedFileReasons: Partial<Record<SkippedReason, number>>;
+  };
+  collectionLimits?: {
+    traversalPaths: number;
+    cutoffPath: string;
+  };
 }
 
 interface AddFileOptions {
   sourceRoot: string;
   allowChatContent?: boolean;
   allowTranscript?: boolean;
+  omitForSize?: boolean;
   excludedZipPathPrefixes?: readonly string[];
   /** Withhold credential-shaped units as the file is written (CAN-7620). */
   scrub?: FeedbackScrubMode;
@@ -149,31 +163,55 @@ type LstatResult =
 
 type StaticFeedbackManifest = Omit<
   FeedbackManifest,
-  'includedFiles' | 'skippedFiles'
+  'includedFiles' | 'skippedFiles' | 'inventorySummary' | 'collectionLimits'
 >;
 type BundleEntry =
-  | { kind: 'buffer'; path: string; bytes: Buffer; stats?: Stats }
+  | {
+      kind: 'buffer';
+      path: string;
+      bytes: Buffer;
+      stats?: Stats;
+      omitForSize?: boolean;
+    }
   | {
       kind: 'file';
       path: string;
       source: string;
       sourceRoot: string;
       stats: Stats;
+      omitForSize: boolean;
       scrub?: FeedbackScrubMode;
       scrubOptions?: FeedbackScrubOptions;
     };
 
 export class FeedbackBundleBuilder {
   private sourceBytes = 0;
-  constructor(private readonly bounded = false) {}
+  private retainedBytes = 0;
+  constructor(
+    private readonly bounded = false,
+    private readonly reduceChatDetails = false,
+  ) {}
 
-  private reserveBytes(size: number): void {
+  // The reduced retry trims chat evidence after collection, so only other
+  // sources are capped at admission there, as with assertReservationLimit.
+  private reserveBytes(size: number, omitForSize: boolean): void {
     if (
       this.bounded &&
-      this.sourceBytes + size > MAX_FEEDBACK_ARCHIVE_EXPANDED_BYTES
+      !this.reduceChatDetails &&
+      this.entries.length >= MAX_FEEDBACK_ARCHIVE_ENTRIES - 1
+    )
+      throw new FeedbackArchiveSizeLimitError('entries');
+    const admittedBytes = this.reduceChatDetails
+      ? this.retainedBytes
+      : this.sourceBytes;
+    if (
+      this.bounded &&
+      !(this.reduceChatDetails && omitForSize) &&
+      admittedBytes + size > MAX_FEEDBACK_ARCHIVE_EXPANDED_BYTES
     )
       throw new FeedbackArchiveSizeLimitError('contents');
     this.sourceBytes += size;
+    if (!omitForSize) this.retainedBytes += size;
   }
   private readonly entries: BundleEntry[] = [];
   private manifest: StaticFeedbackManifest | undefined;
@@ -181,7 +219,17 @@ export class FeedbackBundleBuilder {
     'collecting';
   private readonly included = new Set<string>();
   private readonly reserved = new Set<string>();
+  private readonly retainedReservations = new Set<string>();
   private readonly skipped: SkippedFile[] = [];
+  private skippedFilesOmitted = 0;
+  private readonly skippedFileReasons: Partial<Record<SkippedReason, number>> =
+    {};
+  private traversalPaths = 0;
+  private traversalCutoffPath: string | undefined;
+
+  hasReachedCollectionLimit(): boolean {
+    return this.traversalCutoffPath !== undefined;
+  }
 
   isIncluded(zipPath: string): boolean {
     return this.included.has(zipPath);
@@ -201,23 +249,26 @@ export class FeedbackBundleBuilder {
     options: AddFileOptions,
   ): Promise<void> {
     this.assertCollecting();
+    if (options.omitForSize && this.hasReachedCollectionLimit()) return;
     const normalizedZipPath = normalizeZipPath(zipPath);
     if (normalizedZipPath === null) {
       this.recordSkipped(zipPath, 'out-of-root');
       return;
     }
+    if (!this.reservePath(normalizedZipPath, options.omitForSize === true)) {
+      return;
+    }
     if (!isPathWithinRoot(sourcePath, options.sourceRoot)) {
+      this.releasePath(normalizedZipPath);
       this.recordSkipped(normalizedZipPath, 'out-of-root');
       return;
     }
     if (!isAllowedZipPath(normalizedZipPath, options)) {
+      this.releasePath(normalizedZipPath);
       this.recordSkipped(normalizedZipPath, 'policy-excluded');
       return;
     }
-    if (!this.reservePath(normalizedZipPath)) {
-      return;
-    }
-
+    this.assertReservationLimit();
     const fileStatResult = await safeLstat(sourcePath);
     if (fileStatResult.status === 'inaccessible') {
       this.releasePath(normalizedZipPath);
@@ -245,7 +296,13 @@ export class FeedbackBundleBuilder {
       return;
     }
 
-    this.reserveBytes(fileStat.size);
+    try {
+      this.reserveBytes(fileStat.size, options.omitForSize === true);
+    } catch (error) {
+      // A caller may skip this file and continue; a rejected path never counts.
+      this.releasePath(normalizedZipPath);
+      throw error;
+    }
     this.entries.push(
       fileStat.size === 0
         ? {
@@ -253,6 +310,7 @@ export class FeedbackBundleBuilder {
             path: normalizedZipPath,
             bytes: Buffer.alloc(0),
             stats: fileStat,
+            omitForSize: options.omitForSize === true,
           }
         : {
             kind: 'file',
@@ -260,6 +318,7 @@ export class FeedbackBundleBuilder {
             source: sourcePath,
             sourceRoot: options.sourceRoot,
             stats: fileStat,
+            omitForSize: options.omitForSize === true,
             ...(options.scrub === undefined ? {} : { scrub: options.scrub }),
             ...(options.scrubOptions === undefined
               ? {}
@@ -275,23 +334,26 @@ export class FeedbackBundleBuilder {
     options: AddFileOptions,
   ): Promise<void> {
     this.assertCollecting();
+    if (options.omitForSize && this.hasReachedCollectionLimit()) return;
     const normalizedZipDir = normalizeZipPath(zipDir);
     if (normalizedZipDir === null) {
       this.recordSkipped(zipDir, 'out-of-root');
       return;
     }
+    if (!this.reservePath(normalizedZipDir, options.omitForSize === true)) {
+      return;
+    }
     if (!isPathWithinRoot(sourceDir, options.sourceRoot)) {
+      this.releasePath(normalizedZipDir);
       this.recordSkipped(normalizedZipDir, 'out-of-root');
       return;
     }
     if (!isAllowedZipPath(normalizedZipDir, options)) {
+      this.releasePath(normalizedZipDir);
       this.recordSkipped(normalizedZipDir, 'policy-excluded');
       return;
     }
-    if (!this.reservePath(normalizedZipDir)) {
-      return;
-    }
-
+    this.assertReservationLimit();
     const dirStatResult = await safeLstat(sourceDir);
     if (dirStatResult.status === 'inaccessible') {
       this.releasePath(normalizedZipDir);
@@ -314,6 +376,7 @@ export class FeedbackBundleBuilder {
       return;
     }
 
+    if (options.omitForSize && this.hasReachedCollectionLimit()) return;
     let entries: Dirent<string>[];
     try {
       entries = await readdir(sourceDir, { withFileTypes: true });
@@ -323,11 +386,28 @@ export class FeedbackBundleBuilder {
       return;
     }
 
+    // Preserve baseline sibling parallelism: an initial limit can reject before
+    // already-started metadata reads settle. The retry has its own builder.
     await Promise.all(
-      entries.map(async (entry) => {
+      entries.map(async (entry): Promise<void> => {
+        if (options.omitForSize && this.hasReachedCollectionLimit()) return;
         const childSource = join(sourceDir, entry.name);
-        const childZipPath = posix.join(normalizedZipDir, entry.name);
+        const rawChildZipPath = posix.join(normalizedZipDir, entry.name);
+        const childZipPath = normalizeZipPath(rawChildZipPath);
+        // ZIP writers interpret backslashes as separators, unlike POSIX fs.
+        // Record the raw name: the normalized one can match an included file.
+        if (childZipPath === null || entry.name.includes('\\')) {
+          if (!this.visitPath(rawChildZipPath, options.omitForSize === true))
+            return;
+          this.recordSkipped(
+            rawChildZipPath,
+            childZipPath === null ? 'out-of-root' : 'policy-excluded',
+          );
+          return;
+        }
         if (entry.isSymbolicLink()) {
+          if (!this.visitPath(childZipPath, options.omitForSize === true))
+            return;
           this.recordSkipped(childZipPath, 'symlink');
           return;
         }
@@ -337,7 +417,9 @@ export class FeedbackBundleBuilder {
         }
         if (entry.isFile()) {
           await this.addFileIfSafe(childSource, childZipPath, options);
+          return;
         }
+        this.visitPath(childZipPath, options.omitForSize === true);
       }),
     );
   }
@@ -358,11 +440,12 @@ export class FeedbackBundleBuilder {
       this.recordSkipped(normalizedZipPath, 'policy-excluded');
       return;
     }
-    if (!this.reservePath(normalizedZipPath)) {
+    if (!this.reservePath(normalizedZipPath, false)) {
       return;
     }
+    this.assertReservationLimit();
     const json = `${JSON.stringify(value, null, 2)}\n`;
-    this.reserveBytes(Buffer.byteLength(json, 'utf8'));
+    this.reserveBytes(Buffer.byteLength(json, 'utf8'), false);
     this.entries.push({
       kind: 'buffer',
       path: normalizedZipPath,
@@ -373,6 +456,7 @@ export class FeedbackBundleBuilder {
 
   async writeTo(fileHandle: FileHandle, bounded = false): Promise<void> {
     this.assertCollecting();
+    if (this.reduceChatDetails) this.omitLargestChatFiles();
     this.state = 'writing';
     const zip = new ZipFile();
     const controller = new AbortController();
@@ -505,17 +589,7 @@ export class FeedbackBundleBuilder {
         zip.addReadStreamLazy('feedback.json', (callback) => {
           let settled = false;
           try {
-            if (this.manifest === undefined)
-              throw new Error('Feedback manifest is required');
-            const manifest: FeedbackManifest = {
-              ...this.manifest,
-              includedFiles: this.includedFiles(),
-              skippedFiles: this.skippedFiles(),
-            };
-            const bytes = Buffer.from(
-              `${JSON.stringify(manifest, null, 2)}\n`,
-              'utf8',
-            );
+            const bytes = this.manifestBytes(bounded);
             settled = true;
             callback(null, Readable.from([bytes]));
           } catch (error) {
@@ -543,23 +617,160 @@ export class FeedbackBundleBuilder {
       throw new Error('Feedback builder is single-use');
   }
 
+  private omitLargestChatFiles(): void {
+    const entryBytes = (entry: BundleEntry): number =>
+      entry.kind === 'file' ? entry.stats.size : entry.bytes.length;
+    // Reserve the full inspectable manifest, plus ZIP headers and zlib's
+    // compressBound for each entry. Raw byte totals miss long-name overhead.
+    let projectedBytes =
+      22 + zipEntryBound('feedback.json', MAX_FEEDBACK_MANIFEST_BYTES);
+    for (const entry of this.entries)
+      projectedBytes += zipEntryBound(entry.path, entryBytes(entry));
+    const candidates = this.entries
+      .filter((entry) => entry.omitForSize)
+      .sort(
+        (a, b) => entryBytes(b) - entryBytes(a) || a.path.localeCompare(b.path),
+      );
+    const omitted = new Set<string>();
+    // Only after the dump-only retry fails: dropping all chat is deliberate
+    // when non-removable entries alone exceed the projection, to still attach.
+    for (const entry of candidates) {
+      // The manifest itself occupies one inventory entry. Directories do not.
+      const fitsInventory =
+        this.entries.length - omitted.size < MAX_FEEDBACK_ARCHIVE_ENTRIES;
+      if (projectedBytes <= MAX_FEEDBACK_ARCHIVE_BYTES && fitsInventory) break;
+      this.sourceBytes -= entryBytes(entry);
+      projectedBytes -= zipEntryBound(entry.path, entryBytes(entry));
+      omitted.add(entry.path);
+      this.included.delete(entry.path);
+      this.recordSkipped(entry.path, 'too-large');
+    }
+    for (let index = this.entries.length - 1; index >= 0; index -= 1) {
+      const entry = this.entries[index];
+      if (entry && omitted.has(entry.path)) this.entries.splice(index, 1);
+    }
+    if (this.sourceBytes > MAX_FEEDBACK_ARCHIVE_EXPANDED_BYTES)
+      throw new FeedbackArchiveSizeLimitError('contents');
+    if (this.entries.length >= MAX_FEEDBACK_ARCHIVE_ENTRIES)
+      throw new FeedbackArchiveSizeLimitError('entries');
+  }
+
   recordSkipped(path: string, reason: SkippedReason): void {
+    this.skippedFileReasons[reason] =
+      (this.skippedFileReasons[reason] ?? 0) + 1;
+    if (this.bounded && this.skipped.length >= MAX_COLLECTION_PATHS) {
+      this.skippedFilesOmitted += 1;
+      if (path === this.traversalCutoffPath && reason === 'too-large') {
+        // Keep the cutoff inspectable even when missing sources fill the list.
+        this.skipped.pop();
+        this.skipped.unshift({ path, reason });
+      }
+      return;
+    }
     this.skipped.push({ path, reason });
   }
 
-  private reservePath(path: string): boolean {
+  private manifestBytes(bounded: boolean): Buffer {
+    if (this.manifest === undefined)
+      throw new Error('Feedback manifest is required');
+    const includedFiles = this.includedFiles();
+    const skippedFiles = this.skippedFiles();
+    // The manifest also spends the expanded budget the other entries leave.
+    const limit = Math.min(
+      MAX_FEEDBACK_MANIFEST_BYTES,
+      MAX_FEEDBACK_ARCHIVE_EXPANDED_BYTES - this.sourceBytes,
+    );
+    let includedCount = includedFiles.length;
+    let skippedCount = skippedFiles.length;
+    for (;;) {
+      const includedFilesOmitted = includedFiles.length - includedCount;
+      const skippedFilesOmitted =
+        this.skippedFilesOmitted + skippedFiles.length - skippedCount;
+      const manifest: FeedbackManifest = {
+        ...this.manifest,
+        includedFiles: includedFiles.slice(0, includedCount),
+        skippedFiles: skippedFiles.slice(0, skippedCount),
+        ...(includedFilesOmitted + skippedFilesOmitted > 0
+          ? {
+              inventorySummary: {
+                includedFilesOmitted,
+                skippedFilesOmitted,
+                skippedFileReasons: this.skippedFileReasons,
+              },
+            }
+          : {}),
+        ...(this.traversalCutoffPath === undefined
+          ? {}
+          : {
+              collectionLimits: {
+                traversalPaths: MAX_COLLECTION_PATHS,
+                cutoffPath: this.traversalCutoffPath,
+              },
+            }),
+      };
+      const bytes = Buffer.from(
+        `${JSON.stringify(manifest, null, 2)}\n`,
+        'utf8',
+      );
+      if (!bounded || bytes.length <= limit) return bytes;
+      if (!this.reduceChatDetails || includedCount + skippedCount === 0)
+        throw new FeedbackArchiveSizeLimitError('contents');
+      // Inventory comes from the ZIP; shorten only its duplicate manifest list
+      // first, keeping omission reasons whenever they fit.
+      if (includedCount > 0) includedCount = Math.floor(includedCount / 2);
+      else skippedCount = Math.floor(skippedCount / 2);
+    }
+  }
+
+  private reservePath(path: string, omitForSize: boolean): boolean {
     if (this.reserved.has(path)) {
       return false;
     }
-    if (this.bounded && this.reserved.size >= MAX_FEEDBACK_ARCHIVE_ENTRIES)
-      throw new Error('Diagnostics contain too many entries');
+    if (!this.visitPath(path, omitForSize)) return false;
     this.reserved.add(path);
+    if (!omitForSize) this.retainedReservations.add(path);
+    return true;
+  }
+
+  // Call after root and policy checks, so released and excluded paths never
+  // count. The reduced retry can drop chat evidence, so only other sources
+  // count there: they fail rather than be cut off.
+  private assertReservationLimit(): void {
+    const reservations = this.reduceChatDetails
+      ? this.retainedReservations
+      : this.reserved;
+    if (this.bounded && reservations.size > MAX_FEEDBACK_ARCHIVE_ENTRIES)
+      throw new FeedbackArchiveSizeLimitError('entries');
+  }
+
+  // Only trimmable chat evidence spends the reduced retry's visit budget.
+  private visitPath(path: string, omitForSize: boolean): boolean {
+    if (!this.bounded || !this.reduceChatDetails || !omitForSize) return true;
+    if (this.traversalPaths >= MAX_COLLECTION_PATHS) {
+      if (this.traversalCutoffPath === undefined) {
+        this.traversalCutoffPath = path;
+        this.recordSkipped(path, 'too-large');
+      }
+      return false;
+    }
+    this.traversalPaths += 1;
     return true;
   }
 
   private releasePath(path: string): void {
     this.reserved.delete(path);
+    this.retainedReservations.delete(path);
   }
+}
+
+function zipEntryBound(path: string, size: number): number {
+  const deflateOverhead =
+    Math.floor(size / 4096) +
+    Math.floor(size / 16384) +
+    Math.floor(size / 33554432) +
+    13;
+  // Local + central headers, timestamp extra field and streaming descriptor.
+  return size + deflateOverhead + 128 + 2 * Buffer.byteLength(path, 'utf8');
 }
 
 async function openFeedbackSource(

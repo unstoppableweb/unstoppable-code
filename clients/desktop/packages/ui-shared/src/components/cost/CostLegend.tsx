@@ -6,7 +6,7 @@ import {
   type CostSegment,
 } from './cost-format';
 import { useCostCurrency } from './CostCurrencyContext';
-import { Fact, FactList } from '../FactList';
+import { Fact, FactList } from '../../primitives/FactList';
 import { ValueRow, ValueRows } from '../settings/ValueRows';
 
 export interface CostLegendProps {

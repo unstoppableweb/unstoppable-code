@@ -1,15 +1,15 @@
 'use client';
 
-import { StatusPill } from './StatusPill';
-import { Stack } from './Stack';
+import { StatusPill } from '../primitives/StatusPill';
+import { Stack } from '../primitives/Stack';
 import { useEffect, useId, useRef, type JSX, type RefObject } from 'react';
-import { ControlButton, Button } from './Button';
-import { TextInput } from './Field';
-import { FormField } from './FormField';
-import { LoadingSpinner } from './LoadingSpinner';
-import { Notice } from './Notice';
-import { PickerMenuOptionCheck } from './PickerMenu';
-import { ErrorBanner, ErrorState } from './StatusBlocks';
+import { ControlButton, Button } from '../primitives/Button';
+import { TextInput } from '../primitives/Field';
+import { FormField } from '../primitives/FormField';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
+import { Notice } from '../primitives/Notice';
+import { PickerMenuOptionCheck } from '../primitives/PickerMenu';
+import { ErrorBanner, ErrorState } from '../primitives/StatusBlocks';
 
 /**
  * One repository the picker can show. `id` is the host's stable identity for

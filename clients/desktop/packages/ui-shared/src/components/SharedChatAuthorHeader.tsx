@@ -1,6 +1,6 @@
 import { memo, type JSX } from 'react';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import { DisplayAvatar } from './DisplayAvatar';
+import { DisplayAvatar } from '../primitives/DisplayAvatar';
 
 export interface SharedChatAuthorHeaderProps {
   readonly author: {

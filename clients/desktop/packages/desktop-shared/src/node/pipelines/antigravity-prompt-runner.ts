@@ -74,6 +74,11 @@ export interface AntigravityPromptHost {
   open(input: {
     profile: string;
     signal: AbortSignal;
+    /**
+     * The selected MCP servers this step delivers to the session. The
+     * launcher allows the runtime's MCP permission requests only for these.
+     */
+    mcpServerNames: readonly string[];
     onUpdate: AcpClientOptions['onUpdate'];
     onPermission: NonNullable<AcpClientOptions['onPermission']>;
   }): Promise<AntigravityRuntime>;
@@ -371,6 +376,17 @@ export async function runAntigravityPipelinePrompt(
           readFile(join(root, `${digest(sessionId)}.json`), 'utf8'),
         ),
       );
+      // A session saved under another pinned runtime stays refused; the
+      // reason is a runtime update, not this workspace.
+      if (
+        isRecord(binding) &&
+        binding.version === 1 &&
+        binding.sessionId === sessionId &&
+        binding.runtimeVersion !== ANTIGRAVITY_RUNTIME_VERSION
+      )
+        throw new Error(
+          "This Google workflow session was started with an earlier Antigravity CLI, so it can't be resumed after the update. Run the step again from the start.",
+        );
       if (
         !isRecord(binding) ||
         binding.version !== 1 ||
@@ -480,6 +496,9 @@ export async function runAntigravityPipelinePrompt(
       .open({
         profile,
         signal,
+        mcpServerNames: capabilities
+          ? capabilities.servers.map((server) => server.name)
+          : [],
         onUpdate: (update) => {
           if (signal.aborted) return;
           const native = update.update;

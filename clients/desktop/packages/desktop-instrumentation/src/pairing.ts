@@ -27,7 +27,13 @@ export type RemoteControlTelemetryDeviceKind =
   | 'browser'
   | 'hosted';
 
-export type RemoteControlTelemetryPairMethod = 'link' | 'code';
+/**
+ * How a pairing was approved: `link` (a pairing-link proof), `code` (the
+ * person here compared codes) or `expected` (CAN-7606: the one hosted
+ * pairing this computer's own Connect Slack click armed, approved with no
+ * prompt).
+ */
+export type RemoteControlTelemetryPairMethod = 'link' | 'code' | 'expected';
 
 export type RemoteControlPairingFailureReason =
   | 'denied'

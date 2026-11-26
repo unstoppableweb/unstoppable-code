@@ -1,8 +1,8 @@
 'use client';
 
 import { useId, type JSX, type ReactNode } from 'react';
-import { TextArea } from './Field';
-import { Heading } from './Heading';
+import { TextArea } from '../primitives/Field';
+import { Heading } from '../primitives/Heading';
 
 export interface InstructionsEditorProps {
   readonly value: string;

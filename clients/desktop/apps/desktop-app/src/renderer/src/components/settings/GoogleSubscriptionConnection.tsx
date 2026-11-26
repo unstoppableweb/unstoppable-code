@@ -1,27 +1,52 @@
 import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
 import { useEffect, useRef, useState, type JSX } from 'react';
-import { brand } from '@/lib/brand';
 import { emitPreferencesUpdated } from '@/lib/preferences-events';
 import {
-  Button,
-  GoogleSubscriptionRow,
   SettingsRowsGroup,
   SettingsRowsSection,
 } from '@canopy/ui-shared/components';
-import type { AntigravityRuntimeStatus } from '@canopy/desktop-shared/types/antigravity-runtime';
+import type { HarnessSetupClient } from '@canopy/app-core';
+import { useOptionalCanopyClient } from '@canopy/app-state/CanopyClientProvider';
+import {
+  AntigravityConnectionRow,
+  useAntigravityRuntime,
+} from '@canopy/ui-app/harness-setup';
 import { useModelCatalogStore } from '@/stores/modelCatalogStore';
-import { useRemoteControlStore } from '@/stores/remoteControlStore';
 import { DesktopErrorBanner } from '@/components/shared/DesktopErrorBanner';
 import { type InlineFailure } from '@/lib/inline-app-error';
-import { AuthLoginModal } from './AuthLoginModal';
+import { DesktopHarnessSetupHost } from './DesktopHarnessSetupHost';
 
 interface GoogleSubscriptionConnectionProps {
   readonly placement?: 'section' | 'row';
 }
 
+/**
+ * The shared Antigravity row (`@canopy/ui-app/harness-setup`) with the
+ * desktop's connection setting (`googleSubscriptionDisconnected`) and model
+ * catalog. The managed CLI line comes from the shared row.
+ */
 export function GoogleSubscriptionConnection({
   placement = 'section',
-}: GoogleSubscriptionConnectionProps = {}): JSX.Element {
+}: GoogleSubscriptionConnectionProps = {}): JSX.Element | null {
+  const client = useOptionalCanopyClient()?.harnessSetup?.antigravity;
+  if (!client) return null;
+  return (
+    <DesktopHarnessSetupHost>
+      <DesktopGoogleSubscriptionConnection
+        client={client}
+        placement={placement}
+      />
+    </DesktopHarnessSetupHost>
+  );
+}
+
+function DesktopGoogleSubscriptionConnection({
+  client,
+  placement,
+}: {
+  readonly client: HarnessSetupClient['antigravity'];
+  readonly placement: 'section' | 'row';
+}): JSX.Element {
   const connected = useModelCatalogStore((state) =>
     Boolean(state.snapshot?.antigravity?.length),
   );
@@ -31,46 +56,6 @@ export function GoogleSubscriptionConnection({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<InlineFailure | null>(null);
-  const [runtime, setRuntime] = useState<AntigravityRuntimeStatus>();
-  // A window showing another computer reads that computer's status, but the
-  // install channel stays local, so it never offers the install.
-  const remote = useRemoteControlStore(
-    (store) => store.context.mode === 'remote',
-  );
-  const [installing, setInstalling] = useState(false);
-  const [runtimeError, setRuntimeError] = useState<string>();
-  const mounted = useRef(true);
-  // The install this card started; only it can cancel the download.
-  const operation = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    mounted.current = true;
-    const api = window.api.antigravityRuntime;
-    if (!api) return;
-    const off = api.onProgress((status) => {
-      if (mounted.current && operation.current) setRuntime(status);
-    });
-    void api
-      .status()
-      .then((status) => {
-        if (mounted.current && !operation.current) setRuntime(status);
-      })
-      .catch((reason: unknown) => {
-        reportClientAppError(reason);
-        if (mounted.current)
-          setRuntimeError(
-            "Couldn't check the Antigravity CLI. Reopen Settings to check again.",
-          );
-      });
-    return (): void => {
-      mounted.current = false;
-      off();
-      const pending = operation.current;
-      if (pending)
-        void api.cancel(pending).catch((reason: unknown) => {
-          reportClientAppError(reason);
-        });
-    };
-  }, []);
   useEffect(() => {
     let current = true;
     let synced = false;
@@ -114,7 +99,7 @@ export function GoogleSubscriptionConnection({
       if (!disconnectedRef.current && !snapshot.antigravity?.length)
         setError({
           error:
-            'No Gemini models are available. Check that Antigravity CLI 1.5.1 is installed, then sign in with your personal Google account.',
+            'No Gemini models are available. Check that Antigravity CLI is installed, then sign in with your personal Google account.',
         });
     } catch (reason) {
       reportClientAppError(reason);
@@ -155,65 +140,12 @@ export function GoogleSubscriptionConnection({
       setBusy(false);
     }
   };
-  const installRuntime = async (): Promise<void> => {
-    const api = window.api.antigravityRuntime;
-    if (!api || operation.current) return;
-    const operationId = crypto.randomUUID();
-    operation.current = operationId;
-    setInstalling(true);
-    setRuntimeError(undefined);
-    let final: AntigravityRuntimeStatus | undefined;
-    try {
-      final = await api.install(operationId);
-    } catch (reason) {
-      reportClientAppError(reason);
-      if (mounted.current)
-        setRuntimeError("Couldn't install the Antigravity CLI. Try again.");
-    } finally {
-      if (operation.current === operationId) operation.current = undefined;
-      if (mounted.current) setInstalling(false);
-    }
-    if (!final || !mounted.current) return;
-    setRuntime(final);
-    if (final.phase === 'installed') await refresh();
-  };
-  const cancelInstall = (): void => {
-    const pending = operation.current;
-    if (!pending) return;
-    void window.api.antigravityRuntime
-      ?.cancel(pending)
-      .catch((reason: unknown) => {
-        reportClientAppError(reason);
-        if (mounted.current)
-          setRuntimeError("Couldn't cancel the Antigravity CLI download.");
-      });
-  };
-  // Progress events reach only the window that started or joined an install.
-  // An install running in another window shows here only as the phase read
-  // when this card loaded status, without a Cancel button, and can stay stale
-  // until Settings is reopened.
-  const inProgress =
-    installing ||
-    runtime?.phase === 'downloading' ||
-    runtime?.phase === 'verifying';
-  const runtimeLabel = !runtime
-    ? undefined
-    : inProgress
-      ? runtime.phase === 'verifying'
-        ? 'Verifying…'
-        : 'Downloading…'
-      : runtime.installed && runtime.managed
-        ? `Antigravity CLI ${runtime.version}: installed (managed)`
-        : runtime.installed
-          ? `Antigravity CLI: your own copy at ${runtime.executable ?? 'agy'} (version checked at launch)`
-          : `Antigravity CLI ${runtime.version}: not installed`;
-  const runtimeFailure =
-    runtimeError ?? (inProgress ? undefined : runtime?.error);
+  const runtime = useAntigravityRuntime(client, { onInstalled: refresh });
   const row = (
-    <GoogleSubscriptionRow
-      connected={connected && !disconnected}
+    <AntigravityConnectionRow
+      runtime={runtime}
+      connected={connected}
       disconnected={disconnected}
-      appName={brand.displayName}
       busy={busy || loading}
       onDisconnect={(): void => {
         void changeConnection(true);
@@ -221,66 +153,11 @@ export function GoogleSubscriptionConnection({
       onReconnect={(): void => {
         void changeConnection(false);
       }}
-      onSignIn={(): void => setSignIn(true)}
       onRefresh={(): void => {
         void refresh();
       }}
-      runtime={
-        runtimeLabel || runtimeFailure ? (
-          <div
-            data-testid="antigravity-runtime"
-            className="flex flex-col gap-2"
-          >
-            {runtimeLabel ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <p role="status" className="text-xs fg-secondary">
-                  {runtimeLabel}
-                </p>
-                {installing ? (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    data-testid="antigravity-runtime-cancel"
-                    onClick={cancelInstall}
-                  >
-                    Cancel
-                  </Button>
-                ) : runtime?.supported &&
-                  !runtime.managed &&
-                  !inProgress &&
-                  remote ? (
-                  // Status follows the controlled computer, but install is
-                  // this computer's own download, so it can't install there.
-                  <p
-                    className="text-xs fg-secondary"
-                    data-testid="antigravity-runtime-remote-install"
-                  >
-                    Install it from Settings on the computer you&apos;re
-                    controlling.
-                  </p>
-                ) : runtime?.supported && !runtime.managed && !inProgress ? (
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    data-testid="antigravity-runtime-install"
-                    onClick={(): void => {
-                      void installRuntime();
-                    }}
-                  >
-                    {`Install managed ${runtime.version}`}
-                  </Button>
-                ) : null}
-              </div>
-            ) : null}
-            {runtimeFailure ? (
-              <DesktopErrorBanner
-                errorSource="antigravity-runtime-install"
-                error={runtimeFailure}
-              />
-            ) : null}
-          </div>
-        ) : undefined
-      }
+      signInOpen={signIn}
+      onSignInOpenChange={setSignIn}
       error={
         error ? (
           <DesktopErrorBanner
@@ -291,24 +168,11 @@ export function GoogleSubscriptionConnection({
       }
     />
   );
-  return (
-    <>
-      {placement === 'row' ? (
-        row
-      ) : (
-        <SettingsRowsSection>
-          <SettingsRowsGroup>{row}</SettingsRowsGroup>
-        </SettingsRowsSection>
-      )}
-      {signIn ? (
-        <AuthLoginModal
-          provider="antigravity"
-          onClose={(): void => {
-            setSignIn(false);
-            void refresh();
-          }}
-        />
-      ) : null}
-    </>
+  return placement === 'row' ? (
+    row
+  ) : (
+    <SettingsRowsSection>
+      <SettingsRowsGroup>{row}</SettingsRowsGroup>
+    </SettingsRowsSection>
   );
 }

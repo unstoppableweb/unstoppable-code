@@ -19,6 +19,12 @@ import {
   type DeviceKeyPair,
 } from '../../crypto/device-key';
 import { decodeEnvelope } from '../envelope';
+import { serialize } from 'node:v8';
+import {
+  SYNC_CODEC_BYTES,
+  zlibMessageCompressor,
+  type MessageCompressor,
+} from '../message-codec';
 import {
   RelayClient,
   type RelayClientDiagnostic,
@@ -257,7 +263,12 @@ afterEach(() => {
   for (const manager of managers.splice(0)) manager.dispose();
 });
 
-function side(relay: TestRelay, identity: DeviceKeyPair): Side {
+function side(
+  relay: TestRelay,
+  identity: DeviceKeyPair,
+  compressor?: MessageCompressor,
+  chains: { sendChainBytes?: number } = {},
+): Side {
   const endpoint = relay.endpoint(identity.deviceId);
   const created: Side = {
     identity,
@@ -271,16 +282,33 @@ function side(relay: TestRelay, identity: DeviceKeyPair): Side {
       onIncomingSession: (session) => created.incoming.push(session),
       resumeDeadlineMs: { initiator: 1_500, responder: 2_000 },
       resumeRetryMs: 50,
+      ...(compressor ? { compressor } : {}),
+      ...chains,
     }),
   };
   managers.push(created.manager);
   return created;
 }
 
-function pair(): Pair {
+function pair(
+  compressors: {
+    controller?: MessageCompressor;
+    host?: MessageCompressor;
+    sendChainBytes?: number;
+  } = {},
+): Pair {
   const relay = new TestRelay();
-  const controller = side(relay, generateDeviceKeyPair());
-  const host = side(relay, generateDeviceKeyPair());
+  const controller = side(
+    relay,
+    generateDeviceKeyPair(),
+    compressors.controller,
+    {
+      ...(compressors.sendChainBytes === undefined
+        ? {}
+        : { sendChainBytes: compressors.sendChainBytes }),
+    },
+  );
+  const host = side(relay, generateDeviceKeyPair(), compressors.host);
   relay.connect(controller.identity.deviceId);
   relay.connect(host.identity.deviceId);
   return { relay, controller, host };
@@ -379,6 +407,21 @@ async function waitFor(
   const deadline = Date.now() + timeoutMs;
   while (!check()) {
     if (Date.now() > deadline) throw new Error(`Timed out waiting: ${label}`);
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/** Opens every waiting zlib gate until `check` passes, within a deadline. */
+async function openGatesUntil(
+  gates: Array<() => void>,
+  check: () => boolean,
+  label: string,
+  timeoutMs = 10_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`Timed out waiting: ${label}`);
+    for (const open of gates.splice(0)) open();
     await new Promise<void>((resolve) => setTimeout(resolve, 5));
   }
 }
@@ -519,7 +562,9 @@ describe('session resume across relay drops', () => {
     const env = pair();
     const link = await connect(env);
     link.hostRpc.notify('big', randomBytes(20 * 1024 * 1024));
-    expect(link.hostSession.resumable).toBe(false);
+    // Sealed, and so held, once deflate on the thread pool finishes.
+    await waitFor(() => !link.hostSession.resumable, 'the buffer to overflow');
+    expect(link.hostSession.isClosed).toBe(false);
     env.relay.announce(env.host.identity.deviceId);
     send(link.hostRpc, range(0, 5));
     await waitFor(() => link.atController.length === 5, 'the stream');
@@ -670,8 +715,15 @@ describe('session resume across relay drops', () => {
       timeoutMs: null,
     });
     // More in flight than the resend buffer holds: not resumable for now,
-    // yet the session stays open.
-    expect(link.controllerSession.resumable).toBe(false);
+    // yet the session stays open. It is sealed once deflate on the thread
+    // pool finishes; setImmediate is not faked.
+    const overflowBy = Date.now() + 10_000;
+    while (link.controllerSession.resumable) {
+      if (Date.now() > overflowBy)
+        throw new Error('The buffer never overflowed.');
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(link.controllerSession.isClosed).toBe(false);
     await expect(upload).resolves.toBe(bytes.byteLength);
     const pending: Array<() => boolean> = [];
     const sendFrame = env.host.endpoint.sendFrame.bind(env.host.endpoint);
@@ -713,7 +765,11 @@ describe('session resume across relay drops', () => {
     const env = pair();
     const link = await connect(env);
     link.controllerRpc.notify('big', randomBytes(20 * 1024 * 1024));
-    expect(link.controllerSession.resumable).toBe(false);
+    await waitFor(
+      () => !link.controllerSession.resumable,
+      'the buffer to overflow',
+    );
+    expect(link.controllerSession.isClosed).toBe(false);
     env.relay.drop(env.controller.identity.deviceId);
     expect(link.closes.controller).toEqual(['peer_offline']);
     env.relay.connect(env.controller.identity.deviceId);
@@ -734,6 +790,8 @@ describe('session resume across relay drops', () => {
     await env.relay.settle();
     expect(link.controllerSession.state).toBe('suspended');
     link.controllerRpc.notify('big', randomBytes(20 * 1024 * 1024));
+    // Sealed while suspended once deflate on the thread pool finishes.
+    await waitFor(() => link.closes.controller.length > 0, 'the close');
     expect(link.closes.controller).toEqual(['transport_error']);
   });
 
@@ -887,6 +945,549 @@ class SocketRelay {
     });
   }
 }
+
+/**
+ * Deflate of messages over 32 KiB runs on the thread pool (CAN-7764). These
+ * hold the session's ordering rules (see `SecureSession`) with real zlib,
+ * slowed per message so that a later small message would overtake a large
+ * one if the send chain did not keep order.
+ */
+describe('ordered compression off main', () => {
+  const LARGE_TEXT = 'a line of build output for the transcript page\n'.repeat(
+    40_000,
+  );
+
+  function large(n: number): { n: number; text: string } {
+    return { n, text: `${n}:${LARGE_TEXT}` };
+  }
+
+  function order(values: unknown[]): number[] {
+    return values.map((value) =>
+      typeof value === 'number'
+        ? value
+        : typeof value === 'object' &&
+            value !== null &&
+            'n' in value &&
+            typeof value.n === 'number'
+          ? value.n
+          : -1,
+    );
+  }
+
+  /**
+   * Real zlib, held back: messages under 8 KiB skip it, so they would pass
+   * every compressed message ahead of them if the send chain did not keep order.
+   */
+  function slowZlib(delayMs: number): MessageCompressor {
+    const wait = (): Promise<void> =>
+      new Promise((resolve) => setTimeout(resolve, delayMs));
+    return {
+      deflate: async (serialized) => {
+        await wait();
+        return zlibMessageCompressor.deflate(serialized);
+      },
+    };
+  }
+
+  const rejections: unknown[] = [];
+  const onRejection = (reason: unknown): void => {
+    rejections.push(reason);
+  };
+  beforeEach(() => {
+    rejections.length = 0;
+    process.on('unhandledRejection', onRejection);
+  });
+  /** Gates of every gated zlib, opened after each test, failed or not. */
+  const allGates: Array<Array<() => void>> = [];
+  afterEach(() => {
+    process.off('unhandledRejection', onRejection);
+    for (const gates of allGates.splice(0)) {
+      for (const open of gates.splice(0)) open();
+    }
+  });
+
+  function sendMixed(rpc: RpcPeer, count: number): void {
+    for (let n = 0; n < count; n += 1) {
+      const kind = n % 3;
+      const payload =
+        kind === 0
+          ? large(n)
+          : kind === 1
+            ? { n, text: 'x'.repeat(20_000) }
+            : n;
+      rpc.notify('seq', payload);
+    }
+  }
+
+  it('delivers mixed sizes in the order they were sent, in both directions', async () => {
+    const env = pair({ controller: slowZlib(30), host: slowZlib(30) });
+    const link = await connect(env);
+    sendMixed(link.controllerRpc, 12);
+    sendMixed(link.hostRpc, 12);
+    await waitFor(
+      () => link.atHost.length === 12 && link.atController.length === 12,
+      'every message',
+    );
+    expect(order(link.atHost)).toEqual(range(0, 12));
+    expect(order(link.atController)).toEqual(range(0, 12));
+    expect(link.closes).toEqual({ controller: [], host: [] });
+    expect(rejections).toEqual([]);
+  });
+
+  it('keeps order across a drop and resume while a large message is still deflating', async () => {
+    const env = pair({ controller: slowZlib(60), host: slowZlib(60) });
+    const link = await connect(env);
+    link.controllerRpc.notify('seq', large(0));
+    send(link.controllerRpc, range(1, 4));
+    link.hostRpc.notify('seq', large(0));
+    send(link.hostRpc, range(1, 4));
+    // Both drop before either large message is sealed.
+    env.relay.drop(env.host.identity.deviceId);
+    env.relay.drop(env.controller.identity.deviceId);
+    await env.relay.settle();
+    send(link.controllerRpc, range(4, 6));
+    send(link.hostRpc, range(4, 6));
+    env.relay.connect(env.controller.identity.deviceId);
+    env.relay.connect(env.host.identity.deviceId);
+    await waitFor(
+      () => link.atHost.length >= 6 && link.atController.length >= 6,
+      'the resumed sessions',
+    );
+    await env.relay.settle();
+    expect(order(link.atHost)).toEqual(range(0, 6));
+    expect(order(link.atController)).toEqual(range(0, 6));
+    expect(link.closes).toEqual({ controller: [], host: [] });
+    expect(rejections).toEqual([]);
+  });
+
+  it('still sends what it accepted before an RPC close, in order and ahead of the close', async () => {
+    const env = pair({ controller: slowZlib(200) });
+    const link = await connect(env);
+    // Accepted while still deflating, then the RPC peer closes: they leave,
+    // compressed, before the close, and nothing more is accepted.
+    link.controllerRpc.notify('seq', large(0));
+    link.controllerRpc.notify('seq', 1);
+    link.controllerRpc.close();
+    expect(link.controllerRpc.notify('seq', 2)).toBe(false);
+    await waitFor(() => link.closes.host.length > 0, 'the host to close');
+    expect(link.closes.controller).toEqual(['closed']);
+    expect(order(link.atHost)).toEqual([0, 1]);
+    expect(link.closes.host).toEqual(['peer_closed']);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(rejections).toEqual([]);
+  });
+
+  it('drops what a revocation finds unsealed, and still delivers its ending', async () => {
+    const env = pair({ host: slowZlib(200) });
+    const link = await connect(env);
+    link.hostRpc.notify('seq', large(0));
+    link.hostRpc.notify('seq', 1);
+    // As the host's end() does: nothing accepted before the ending and not
+    // yet sealed may leave after it.
+    link.hostSession.discardUnsent();
+    link.hostRpc.notify('seq', 2);
+    link.hostRpc.close('revoked');
+    await waitFor(() => link.closes.controller.length > 0, 'the close');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(order(link.atController)).toEqual([2]);
+    expect(link.closes.controller).toEqual(['peer_closed']);
+    expect(rejections).toEqual([]);
+  });
+
+  it('still sends a small reply queued behind a deflate when a revocation drops the rest', async () => {
+    const env = pair({ host: slowZlib(300) });
+    const link = await connect(env);
+    link.hostRpc.notify('seq', large(0));
+    const queued = link.hostSession.heldBytes;
+    const reply = link.controllerRpc.request('echo', 'revoked: true');
+    // A file's contents, say: too large to keep past a revocation.
+    const contents = link.controllerRpc.request('echo', 'f'.repeat(40_000));
+    // The host answers while the large push ahead of it still deflates.
+    await waitFor(
+      () => link.hostSession.heldBytes > queued + 40_000,
+      'the replies to queue',
+    );
+    link.hostSession.discardUnsent();
+    link.hostRpc.notify('seq', 1);
+    link.hostRpc.close('revoked');
+    await expect(reply).resolves.toBe('revoked: true');
+    await expect(contents).rejects.toThrow();
+    await waitFor(() => link.closes.controller.length > 0, 'the close');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(order(link.atController)).toEqual([1]);
+    expect(link.closes.controller).toEqual(['peer_closed']);
+  });
+
+  it('lets an explicit end replace a close still waiting for a deflate', async () => {
+    const env = pair({ host: slowZlib(200) });
+    const link = await connect(env);
+    link.hostRpc.notify('seq', large(0));
+    link.hostRpc.close();
+    // As the host's end() does while that close still drains.
+    link.hostSession.discardUnsent();
+    expect(link.hostRpc.notify('seq', 1)).toBe(true);
+    link.hostRpc.close('revoked');
+    await waitFor(() => link.closes.controller.length > 0, 'the close');
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(order(link.atController)).toEqual([1]);
+    expect(link.closes.host).toEqual(['revoked']);
+  });
+
+  it('hands over what is still queued when the session manager shuts down, deflated', async () => {
+    const env = pair({ host: slowZlib(200) });
+    const link = await connect(env);
+    link.hostRpc.notify('seq', large(0));
+    // Behind it: a deflated mid-sized message and a small one.
+    link.hostRpc.notify('seq', { n: 1, text: 'm'.repeat(20_000) });
+    link.hostRpc.notify('seq', 2);
+    const sent: number[] = [];
+    const sendFrame = env.host.endpoint.sendFrame.bind(env.host.endpoint);
+    jest
+      .spyOn(env.host.endpoint, 'sendFrame')
+      .mockImplementation((peer, payload) => {
+        sent.push(payload.byteLength);
+        return sendFrame(peer, payload);
+      });
+    // Turning incoming control off disposes the manager while that deflates.
+    env.host.manager.dispose();
+    expect(link.closes.host).toEqual(['shutdown']);
+    // The large one, not deflated yet, is dropped rather than sent raw, so
+    // what follows it (an ending, here the last message) cannot be stranded
+    // behind megabytes in the relay socket; the rest goes deflated.
+    expect(sent.reduce((total, bytes) => total + bytes, 0)).toBeLessThan(
+      64 * 1024,
+    );
+    await waitFor(() => link.closes.controller.length > 0, 'the close');
+    expect(order(link.atController)).toEqual([1, 2]);
+    expect(link.closes.controller).toEqual(['peer_closed']);
+  });
+
+  it('reports a session as ending from the moment its close starts draining', async () => {
+    const env = pair({ host: slowZlib(200) });
+    const link = await connect(env);
+    expect(link.hostSession.isEnding).toBe(false);
+    link.hostRpc.notify('seq', large(0));
+    link.hostRpc.close();
+    // Still sending its last messages, but no longer serving its controller.
+    expect(link.hostSession.isClosed).toBe(false);
+    expect(link.hostSession.isEnding).toBe(true);
+    await waitFor(() => link.closes.host.length > 0, 'the close');
+    expect(link.hostSession.isEnding).toBe(true);
+  });
+
+  it('lets a suspended host close after a large message deflates, and delivers both on resume', async () => {
+    const env = pair({ host: slowZlib(100) });
+    const link = await connect(env);
+    env.relay.drop(env.controller.identity.deviceId);
+    await env.relay.settle();
+    expect(link.hostSession.state).toBe('suspended');
+    // 24 MiB serialized, more than the 16 MiB re-send buffer, but small
+    // once deflated: the host holds it, as it did when deflate was
+    // synchronous, instead of failing the linger.
+    link.hostRpc.notify('seq', { n: 0, text: 'c'.repeat(24 * 1024 * 1024) });
+    link.hostRpc.notify('seq', 1);
+    link.hostRpc.close();
+    await waitFor(() => link.closes.host.length > 0, 'the host to close');
+    expect(link.closes.host).toEqual(['closed']);
+    expect(link.hostSession.isLingering).toBe(true);
+    env.relay.connect(env.controller.identity.deviceId);
+    await waitFor(() => link.closes.controller.length > 0, 'the ending');
+    expect(order(link.atController)).toEqual([0, 1]);
+    expect(link.closes.controller).toEqual(['peer_closed']);
+    expect(rejections).toEqual([]);
+  });
+
+  /** Real zlib that waits for `open` per call, counting calls in flight. */
+  function gatedZlib(): {
+    compressor: MessageCompressor;
+    gates: Array<() => void>;
+    stats: { running: number; most: number };
+  } {
+    const gates: Array<() => void> = [];
+    allGates.push(gates);
+    const stats = { running: 0, most: 0 };
+    const gated = <T>(work: () => Promise<T>): Promise<T> => {
+      stats.running += 1;
+      stats.most = Math.max(stats.most, stats.running);
+      return new Promise<T>((resolve, reject) => {
+        gates.push(() => {
+          work().then(resolve, reject);
+        });
+      }).finally(() => {
+        stats.running -= 1;
+      });
+    };
+    return {
+      gates,
+      stats,
+      compressor: {
+        deflate: (serialized) =>
+          gated(() => zlibMessageCompressor.deflate(serialized)),
+      },
+    };
+  }
+
+  const MIB = 1024 * 1024;
+  const SEVEN_MIB = 'b'.repeat(7 * MIB);
+
+  it('counts messages still deflating as held, and runs one deflate per session at a time', async () => {
+    const { compressor, gates, stats } = gatedZlib();
+    const env = pair({ controller: compressor });
+    const link = await connect(env);
+    link.controllerRpc.notify('seq', { n: 0, text: SEVEN_MIB });
+    link.controllerRpc.notify('seq', 1);
+    link.controllerRpc.notify('seq', { n: 2, text: SEVEN_MIB });
+    send(link.controllerRpc, [3]);
+    // Waiting to be sealed counts against the senders that hold back.
+    expect(link.controllerSession.heldBytes).toBeGreaterThan(14 * MIB);
+    expect(gates).toHaveLength(1);
+    await openGatesUntil(gates, () => link.atHost.length >= 4, 'every message');
+    expect(order(link.atHost)).toEqual(range(0, 4));
+    expect(stats.most).toBe(1);
+    expect(link.closes).toEqual({ controller: [], host: [] });
+    expect(rejections).toEqual([]);
+  });
+
+  it('ends the session, sending nothing uncompressed, once the send chain is full', async () => {
+    const { compressor, gates } = gatedZlib();
+    const env = pair({ controller: compressor, sendChainBytes: 20 * MIB });
+    const link = await connect(env);
+    link.controllerRpc.notify('seq', { n: 0, text: SEVEN_MIB });
+    link.controllerRpc.notify('seq', { n: 1, text: SEVEN_MIB });
+    expect(link.controllerRpc.notify('seq', { n: 2, text: SEVEN_MIB })).toBe(
+      false,
+    );
+    expect(link.closes.controller).toEqual(['transport_error']);
+    for (const open of gates.splice(0)) open();
+    await waitFor(() => link.closes.host.length > 0, 'the host to close');
+    await env.relay.settle();
+    expect(link.atHost).toEqual([]);
+    expect(rejections).toEqual([]);
+  });
+
+  it('shares the send chain limit across a manager’s sessions', async () => {
+    const { compressor, gates } = gatedZlib();
+    const env = pair({ controller: compressor, sendChainBytes: 20 * MIB });
+    const first = await connect(env);
+    const second = await connect(env);
+    first.controllerRpc.notify('seq', { n: 0, text: SEVEN_MIB });
+    first.controllerRpc.notify('seq', { n: 1, text: SEVEN_MIB });
+    // Within its own share, but past what the two sessions may hold together.
+    expect(second.controllerRpc.notify('seq', { n: 0, text: SEVEN_MIB })).toBe(
+      false,
+    );
+    expect(second.closes.controller).toEqual(['transport_error']);
+    expect(first.closes.controller).toEqual([]);
+    await openGatesUntil(
+      gates,
+      () => first.atHost.length >= 2,
+      'the first session’s messages',
+    );
+    expect(order(first.atHost)).toEqual([0, 1]);
+    // Its bytes are released once sealed, so a new send fits again.
+    expect(first.controllerRpc.notify('seq', { n: 2, text: SEVEN_MIB })).toBe(
+      true,
+    );
+    await openGatesUntil(gates, () => first.atHost.length >= 3, 'the next');
+    expect(rejections).toEqual([]);
+  });
+
+  it('keeps a closed session’s running deflate charged until it settles', async () => {
+    const { compressor, gates, stats } = gatedZlib();
+    const env = pair({ controller: compressor, sendChainBytes: 20 * MIB });
+    const first = await connect(env);
+    const second = await connect(env);
+    first.controllerRpc.notify('seq', { n: 0, text: SEVEN_MIB });
+    expect(gates).toHaveLength(1);
+    // Its message is dropped, but the deflate still holds its 7 MiB.
+    first.controllerSession.close('closed');
+    second.controllerRpc.notify('seq', { n: 0, text: SEVEN_MIB });
+    expect(second.controllerRpc.notify('seq', { n: 1, text: SEVEN_MIB })).toBe(
+      false,
+    );
+    expect(second.closes.controller).toEqual(['transport_error']);
+    // Once both deflates settle, their bytes are free again.
+    expect(gates).toHaveLength(2);
+    for (const open of gates.splice(0)) open();
+    await waitFor(() => stats.running === 0, 'both deflates to settle');
+    await env.relay.settle();
+    const third = await connect(env);
+    third.controllerRpc.notify('seq', { n: 0, text: SEVEN_MIB });
+    expect(third.controllerRpc.notify('seq', { n: 1, text: SEVEN_MIB })).toBe(
+      true,
+    );
+    await openGatesUntil(gates, () => third.atHost.length >= 2, 'the third');
+    expect(order(third.atHost)).toEqual([0, 1]);
+    expect(rejections).toEqual([]);
+  });
+
+  it('still sends a small message at once when other sessions fill the send limit', async () => {
+    const { compressor, gates } = gatedZlib();
+    const env = pair({
+      controller: compressor,
+      sendChainBytes: 7 * MIB + 10 * 1024,
+    });
+    const first = await connect(env);
+    const second = await connect(env);
+    // Fills the shared limit to within 10 KiB while it deflates.
+    first.controllerRpc.notify('seq', sized(7 * MIB, 0));
+    expect(gates).toHaveLength(1);
+    // Deflated on main and sealed at once: never held, so never refused.
+    expect(second.controllerRpc.notify('seq', sized(20_000, 0))).toBe(true);
+    await waitFor(() => second.atHost.length === 1, 'the small message');
+    expect(second.closes.controller).toEqual([]);
+    await openGatesUntil(gates, () => first.atHost.length === 1, 'the large');
+    expect(first.closes.controller).toEqual([]);
+    expect(rejections).toEqual([]);
+  });
+
+  it('seals an ending at once after a revocation empties a batched send chain', async () => {
+    const host = gatedZlib();
+    const env = pair({ host: host.compressor });
+    const link = await connect(env);
+    link.hostRpc.notify('seq', large(0));
+    send(link.hostRpc, range(1, 1_000));
+    await waitFor(() => host.gates.length > 0, 'the host deflate');
+    // Right after the first batch, with its continuation pending: as the
+    // host revokes, it drops what is queued and sends its ending.
+    let frames = 0;
+    let endingSealedAtOnce: boolean | null = null;
+    env.host.endpoint.afterSend = (type): void => {
+      if (type !== 'data') return;
+      frames += 1;
+      if (frames !== 1) return;
+      queueMicrotask(() => {
+        link.hostSession.discardUnsent();
+        const before = frames;
+        link.hostRpc.notify('seq', 5_000);
+        endingSealedAtOnce = frames > before;
+      });
+    };
+    for (const open of host.gates.splice(0)) open();
+    await waitFor(() => endingSealedAtOnce !== null, 'the ending');
+    env.host.endpoint.afterSend = null;
+    expect(endingSealedAtOnce).toBe(true);
+    await waitFor(
+      () => order(link.atController).includes(5_000),
+      'the ending to arrive',
+    );
+    const received = order(link.atController);
+    expect(received.at(-1)).toBe(5_000);
+    expect(received.length).toBeLessThan(1_001);
+    expect(rejections).toEqual([]);
+  });
+
+  it('deflates messages up to 32 KiB on main, so a stalled thread pool delays none of them', async () => {
+    const stalled: MessageCompressor = {
+      deflate: () => new Promise<Buffer | null>(() => undefined),
+    };
+    const env = pair({ controller: stalled, host: stalled });
+    const link = await connect(env);
+    for (let n = 0; n < 5; n += 1) {
+      // About 20 KiB serialized, compressed on the wire.
+      link.controllerRpc.notify('seq', { n, text: `${n}`.repeat(20_000) });
+      link.hostRpc.notify('seq', { n, text: `${n}`.repeat(20_000) });
+    }
+    await waitFor(
+      () => link.atHost.length === 5 && link.atController.length === 5,
+      'every message',
+    );
+    expect(order(link.atHost)).toEqual(range(0, 5));
+    expect(order(link.atController)).toEqual(range(0, 5));
+  });
+
+  /** A `seq` payload whose RPC event serializes to exactly `bytes`. */
+  function sized(bytes: number, n: number): { n: number; text: string } {
+    let length = bytes;
+    for (;;) {
+      const payload = { n, text: 'y'.repeat(length) };
+      const actual = serialize({
+        kind: 'event',
+        name: 'seq',
+        payload,
+      }).byteLength;
+      if (actual === bytes) return payload;
+      length += bytes - actual;
+    }
+  }
+
+  it('deflates messages up to 32 KiB on main and gives larger ones to the thread pool, both ways', async () => {
+    const calls = { deflate: 0 };
+    const counting: MessageCompressor = {
+      deflate: (serialized) => {
+        calls.deflate += 1;
+        return zlibMessageCompressor.deflate(serialized);
+      },
+    };
+    const env = pair({ controller: counting, host: counting });
+    const link = await connect(env);
+    link.controllerRpc.notify('seq', sized(SYNC_CODEC_BYTES, 0));
+    link.hostRpc.notify('seq', sized(SYNC_CODEC_BYTES, 0));
+    await waitFor(
+      () => link.atHost.length === 1 && link.atController.length === 1,
+      'the messages at the bound',
+    );
+    expect(calls).toEqual({ deflate: 0 });
+    link.controllerRpc.notify('seq', sized(SYNC_CODEC_BYTES + 1, 1));
+    link.hostRpc.notify('seq', sized(SYNC_CODEC_BYTES + 1, 1));
+    await waitFor(
+      () => link.atHost.length === 2 && link.atController.length === 2,
+      'the messages past the bound',
+    );
+    expect(calls).toEqual({ deflate: 2 });
+    expect(order(link.atHost)).toEqual([0, 1]);
+    expect(order(link.atController)).toEqual([0, 1]);
+  });
+
+  it('still reads acks while an RPC close waits for a deflate', async () => {
+    const { compressor, gates } = gatedZlib();
+    const env = pair({ host: compressor });
+    const link = await connect(env);
+    // Sealed and held until the controller acknowledges them.
+    send(link.hostRpc, range(0, 20));
+    link.hostRpc.notify('seq', large(20));
+    link.hostRpc.close();
+    const held = link.hostSession.heldBytes;
+    // The controller acknowledges within its 250 ms cadence.
+    await waitFor(
+      () => link.hostSession.heldBytes < held,
+      'the ack to free held frames',
+    );
+    for (const open of gates.splice(0)) open();
+    await waitFor(() => link.closes.controller.length > 0, 'the close');
+    expect(order(link.atController)).toEqual(range(0, 21));
+    expect(link.closes.host).toEqual(['closed']);
+  });
+
+  it('seals a backlog freed by one deflate in order, over several turns', async () => {
+    const host = gatedZlib();
+    const env = pair({ host: host.compressor });
+    const link = await connect(env);
+    link.hostRpc.notify('seq', large(0));
+    send(link.hostRpc, range(1, 2_001));
+    await waitFor(() => host.gates.length > 0, 'the host deflate');
+    // Counts frames handed to the relay before main's next turn.
+    let frames = 0;
+    let firstTurn = -1;
+    env.host.endpoint.afterSend = (type): void => {
+      if (type !== 'data') return;
+      frames += 1;
+      if (frames === 1) {
+        setImmediate(() => {
+          firstTurn = frames;
+        });
+      }
+    };
+    for (const open of host.gates.splice(0)) open();
+    await waitFor(() => link.atController.length >= 2_001, 'every message');
+    env.host.endpoint.afterSend = null;
+    expect(order(link.atController)).toEqual(range(0, 2_001));
+    expect(firstTurn).toBeGreaterThan(0);
+    expect(firstTurn).toBeLessThan(2_001);
+    expect(link.closes).toEqual({ controller: [], host: [] });
+    expect(rejections).toEqual([]);
+  });
+});
 
 describe('socket-backed relay sessions', () => {
   const clients: RelayClient[] = [];

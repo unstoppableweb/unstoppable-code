@@ -1,4 +1,5 @@
 import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/delegation/watch-delegates-tombstone';
+import { unattendedPluginOptions } from './turn-account-resolution';
 import { observeRoutedCodexTurnStart } from './session-event-router';
 import { chatVisualsEligible } from '../lib/chat-visuals-feature-flag';
 import { createShowVisualHost } from '../canopy-tools/show-visual-host';
@@ -2956,9 +2957,7 @@ export class CodexProvider implements AgentProvider {
                       ...(opts.packageOverlay
                         ? { packageOverlay: opts.packageOverlay }
                         : {}),
-                      ...(opts.accountResolution
-                        ? { accountResolution: opts.accountResolution }
-                        : {}),
+                      ...unattendedPluginOptions(opts),
                       ...(pluginContext.preferences
                         ? { preferences: pluginContext.preferences }
                         : {}),

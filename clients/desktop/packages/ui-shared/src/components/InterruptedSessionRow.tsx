@@ -1,7 +1,11 @@
 import type { JSX, ReactNode } from 'react';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
-import { ChoiceField } from './Choice';
-import { SPACE_ROLE_GAP_CLASS, Stack, type SpaceRole } from './Stack';
+import { ChoiceField } from '../primitives/Choice';
+import {
+  SPACE_ROLE_GAP_CLASS,
+  Stack,
+  type SpaceRole,
+} from '../primitives/Stack';
 
 const LAYOUT_CLASS = {
   /** A selectable row in the resume dialog. */

@@ -1,4 +1,5 @@
 import type { MarketplaceShareLinkKind } from '@canopy/protocol/marketplace';
+import { MODEL_PRESET_LABEL } from './model-preset-labels';
 /**
  * Copy and failure classification for Unsharing an account share from its
  * Marketplace detail (CAN-4263). Both hosts render the same confirmation, so
@@ -20,7 +21,7 @@ export const MARKETPLACE_UNSHARE_KIND_LABELS: Readonly<
   skill: 'skill',
   collection: 'collection',
   plugin: 'plugin',
-  agent: 'agent',
+  agent: MODEL_PRESET_LABEL.toLowerCase(),
 };
 
 /** Whether a share kind is one an owner can Unshare from Marketplace. */

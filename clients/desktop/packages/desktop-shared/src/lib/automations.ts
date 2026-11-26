@@ -1050,7 +1050,37 @@ function validateAutomationPromptChatSettings(
   ) {
     return `${label} pluginSelections, when provided, must be valid chat plugin selections.`;
   }
+  if (
+    action.sharedConnectionWrites !== undefined &&
+    !isSharedConnectionWriteList(action.sharedConnectionWrites)
+  ) {
+    return `${label} sharedConnectionWrites, when provided, must list at most 64 tool names for each of at most 16 shared connections.`;
+  }
   return null;
+}
+
+/**
+ * An automation's allowed writes on its project's shared connections
+ * (CAN-6252): tool names by connection id, within the bounds a scheduled
+ * claim carries.
+ */
+export function isSharedConnectionWriteList(
+  value: unknown,
+): value is Record<string, string[]> {
+  if (!isPlainObject(value)) return false;
+  const entries = Object.entries(value);
+  if (entries.length > 16) return false;
+  const isName = (name: unknown): name is string =>
+    typeof name === 'string' && name.length > 0 && name.length <= 128;
+  return (
+    entries.every(
+      ([id, tools]) =>
+        isName(id) &&
+        Array.isArray(tools) &&
+        tools.length <= 64 &&
+        tools.every(isName),
+    ) && JSON.stringify(value).length <= 2048
+  );
 }
 
 function validateAutomationModelAliasPreferences(

@@ -77,6 +77,7 @@ export function AvatarEditor({
         data-testid="profile-avatar-edit"
         onClick={() => inputRef.current?.click()}
         disabled={busy}
+        aria-busy={busy || undefined}
         aria-label="Change profile photo"
         presentation={
           blockClassName === ''

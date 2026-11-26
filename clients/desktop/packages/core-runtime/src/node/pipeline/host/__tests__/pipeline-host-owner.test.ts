@@ -3,6 +3,9 @@
 // pauses owner-bound runs once the owner is gone. A fake host records
 // requests and lets each test answer.
 import { EventEmitter } from 'node:events';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type {
   CanopyHostExecution,
   WorkerPipelineExecution,
@@ -20,6 +23,7 @@ import {
   prepareNativePipelineSurvival,
   preparePipelineOwnerSetupLeases,
   pausedPipelineSurvivalAssessment,
+  readPipelineSetupFactVersion,
   unadmittedPipelineSetupFailure,
   type PipelineHostLaunch,
   type PipelineHostMessage,
@@ -682,6 +686,81 @@ describe('run-scoped daemon native model answers (CAN-6996)', () => {
     // Neither evidence nor an explanation from the app.
     expect(await pausedWith({})).toBe('daemon-route');
     expect(await pausedWith({ nativeRouteBlockers: [] })).toBe('daemon-route');
+  });
+
+  it('admits AI Credits only on the observed "on" consent, freezes it for survival only, and re-reads it for each new route (CAN-7730)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pipeline-credits-consent-'));
+    const fact = {
+      root: 'data',
+      relativePath: 'preferences.json',
+      projection: 'preferences',
+    } as const;
+    const write = (preferences: Record<string, unknown>): Promise<void> =>
+      writeFile(
+        join(root, 'preferences.json'),
+        JSON.stringify({ version: 1, preferences }),
+      );
+    const admit = (
+      expectedPreferencesVersion: string | undefined,
+    ): Promise<string | undefined> =>
+      readPipelineSetupFactVersion(root, fact, 'darwin', {
+        frozenAiCreditsConsent: true,
+        requireAiCreditsConsent: true,
+        ...(expectedPreferencesVersion !== undefined && {
+          expectedPreferencesVersion,
+        }),
+      });
+    const frozen = (): Promise<string | undefined> =>
+      readPipelineSetupFactVersion(root, fact, 'darwin', {
+        frozenAiCreditsConsent: true,
+      });
+    try {
+      await write({
+        aiCreditsRoutingMode: 'on',
+        defaultChatProvider: 'claude',
+      });
+      const observed = await readPipelineSetupFactVersion(root, fact, 'darwin');
+      expect(observed).toEqual(expect.any(String));
+      const admitted = await admit(observed);
+      expect(admitted).toEqual(expect.any(String));
+      expect(admitted).not.toBe(observed);
+      // Consent belongs to the launch's observation, not any later one.
+      expect(await admit('another-observation')).toBeUndefined();
+      // Opting out after admission does not strand the admitted run's other
+      // steps, but the re-read before a new AI Credits route sees it...
+      await write({
+        aiCreditsRoutingMode: 'off',
+        defaultChatProvider: 'claude',
+      });
+      expect(await frozen()).toBe(admitted);
+      expect(await admit(observed)).toBeUndefined();
+      // ...and opting back in restores the admitted consent...
+      await write({
+        aiCreditsRoutingMode: 'on',
+        defaultChatProvider: 'claude',
+      });
+      expect(await admit(observed)).toBe(admitted);
+      // ...while every other preference stays a live dependency.
+      await write({
+        aiCreditsRoutingMode: 'off',
+        defaultChatProvider: 'codex',
+      });
+      expect(await frozen()).not.toBe(admitted);
+      // Conditional consent and missing preferences are never consent.
+      await write({
+        aiCreditsRoutingMode: 'on-quota',
+        defaultChatProvider: 'claude',
+      });
+      expect(
+        await admit(await readPipelineSetupFactVersion(root, fact, 'darwin')),
+      ).toBeUndefined();
+      await rm(join(root, 'preferences.json'));
+      const absent = await readPipelineSetupFactVersion(root, fact, 'darwin');
+      expect(absent).toEqual(expect.any(String));
+      expect(await admit(absent)).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('keeps uncovered requests app-settled and native cleanup available after configuration changes', async () => {
@@ -1673,6 +1752,142 @@ describe('survivor owner requests across app subscriptions (CAN-6996)', () => {
     await h.supervisor.stop();
   });
 
+  it('checkpoints a detached policy denial before the step can fail', async () => {
+    const answer: PipelineOwnerRunAuthority['answer'] = () =>
+      Promise.resolve({
+        checkpoint: 'policy',
+        result: {
+          status: 'owner',
+          value: { kind: 'model.policy', answer: true },
+        },
+      });
+    const { h, host, owner } = await survivor(answer);
+    owner.stop();
+    await settle();
+    host.send({
+      kind: 'hostRequest',
+      request: {
+        ...hostRequest('run-1', 'policy-denied'),
+        request: {
+          action: 'owner.model.policy',
+          check: 'blocked',
+          modelId: 'sonnet',
+        },
+      },
+    });
+    await settle();
+    expect(host.of('invalidateSurvival')).toMatchObject([
+      {
+        op: 'invalidateSurvival',
+        executionId: 'run-1',
+        blocker: { code: 'policy' },
+      },
+    ]);
+    expect(settledFor(host, 'policy-denied')).toEqual([]);
+    host.reply(host.last('invalidateSurvival').id, null);
+    await settle();
+    expect(host.of('pause')).toEqual([
+      { op: 'pause', executionIds: ['run-1'] },
+    ]);
+    expect(settledFor(host, 'policy-denied')).toEqual([]);
+    host.reply(host.last('pause').id, { pausedCount: 1 });
+    await settle();
+    expect(settledFor(host, 'policy-denied')).toEqual([
+      {
+        op: 'hostSettled',
+        requestId: 'policy-denied',
+        settlement: { kind: 'unavailable' },
+      },
+    ]);
+    await h.supervisor.stop();
+  });
+
+  it('ends survival before delivering an app-hosted route switched mid-run, so quitting the app pauses the run', async () => {
+    const { h, host, owner } = await survivor(() => Promise.resolve(undefined));
+    host.send({
+      kind: 'hostRequest',
+      request: invocation('run-1', 'switched'),
+    });
+    await settle();
+    // A settings change since launch: the app now routes it through AI Credits.
+    const result = {
+      ...daemonInvocation,
+      value: { ...daemonInvocation.value, aiCreditsRouted: true },
+    };
+    await h.channel.handlers.instructions[
+      'worker.pipeline.hostRequest.respond'
+    ]({ executionId: 'run-1', requestId: 'switched', result }, context);
+    await settle();
+    expect(host.of('invalidateSurvival')).toMatchObject([
+      { executionId: 'run-1', blocker: { code: 'ai-credits' } },
+    ]);
+    expect(settledFor(host, 'switched')).toEqual([]);
+    host.reply(host.last('invalidateSurvival').id, null);
+    await settle();
+    expect(settledFor(host, 'switched')).toEqual([
+      {
+        op: 'hostSettled',
+        requestId: 'switched',
+        settlement: { kind: 'owner', settlement: { result } },
+      },
+    ]);
+    owner.stop();
+    await jest.advanceTimersByTimeAsync(120_001);
+    await settle();
+    expect(host.of('pause').flatMap((pause) => pause.executionIds)).toEqual([
+      'run-1',
+    ]);
+    await h.supervisor.stop();
+  });
+
+  it.each(['quits', 'is replaced'] as const)(
+    'checkpoints instead of delivering an app-hosted route when its app %s while survival ends',
+    async (departure) => {
+      const { h, host, owner } = await survivor(() =>
+        Promise.resolve(undefined),
+      );
+      host.send({
+        kind: 'hostRequest',
+        request: invocation('run-1', 'switched'),
+      });
+      await settle();
+      await h.channel.handlers.instructions[
+        'worker.pipeline.hostRequest.respond'
+      ](
+        {
+          executionId: 'run-1',
+          requestId: 'switched',
+          result: {
+            ...daemonInvocation,
+            value: { ...daemonInvocation.value, aiCreditsRouted: true },
+          },
+        },
+        context,
+      );
+      await settle();
+      owner.stop();
+      // The answering app's broker closed with it; a new app cannot serve it.
+      if (departure === 'is replaced') await subscribeOwner(h.channel);
+      await settle();
+      host.reply(host.last('invalidateSurvival').id, null);
+      await settle();
+      expect(settledFor(host, 'switched')).toEqual([]);
+      expect(host.of('pause').flatMap((pause) => pause.executionIds)).toEqual([
+        'run-1',
+      ]);
+      host.reply(host.last('pause').id, { pausedCount: 1 });
+      await settle();
+      expect(settledFor(host, 'switched')).toEqual([
+        {
+          op: 'hostSettled',
+          requestId: 'switched',
+          settlement: { kind: 'unavailable' },
+        },
+      ]);
+      await h.supervisor.stop();
+    },
+  );
+
   it('checkpoints a survivor whose in-flight request the daemon cannot answer, without replaying it', async () => {
     const answer = jest.fn<
       ReturnType<PipelineOwnerRunAuthority['answer']>,
@@ -2002,6 +2217,41 @@ describe('survivor owner requests across app subscriptions (CAN-6996)', () => {
     expect(host.of('invalidateSurvival')).toEqual([]);
     expect(host.of('pause')).toEqual([]);
     replacement.stop();
+    await h.supervisor.stop();
+  });
+
+  it('withdraws an app-dependent run’s in-flight agent action call instead of handing it to a later app (CAN-7742)', async () => {
+    const h = harness();
+    const owner = await subscribeOwner(h.channel);
+    const host = await startRun(h, 'run-1', true);
+    const dispatch: WorkerPipelineHostRequest = {
+      ...hostRequest('run-1', 'dispatch-in-flight'),
+      request: {
+        action: 'owner.agentActions.call',
+        toolsKey: 'tools-1',
+        key: 'dispatch_action',
+        arguments: {},
+        invocationId: 'claude:toolu_1',
+      },
+    };
+    host.send({ kind: 'hostRequest', request: dispatch });
+    await settle();
+    expect(requestIds(owner.items).requests).toEqual(['dispatch-in-flight']);
+    owner.stop();
+    await settle();
+    const reopened = await subscribeOwner(h.channel);
+    await settle();
+    // The app that left may have posted: a later app, which never issued the
+    // tools, must not answer "nothing posted".
+    expect(reopened.items).toEqual([]);
+    expect(settledFor(host, 'dispatch-in-flight')).toEqual([
+      {
+        op: 'hostSettled',
+        requestId: 'dispatch-in-flight',
+        settlement: { kind: 'unavailable' },
+      },
+    ]);
+    reopened.stop();
     await h.supervisor.stop();
   });
 
@@ -2793,6 +3043,418 @@ describe('pipeline host supervisor owner channel (CAN-5771)', () => {
     if (wrong?.settlement.kind !== 'owner') throw new Error('No answer.');
     expect(wrong.settlement.settlement.result.status).toBe('failure');
     owner.stop();
+    await h.supervisor.stop();
+  });
+
+  it('lets a daemon authority answer the requests it claims while the app is connected, and hands back the ones it declines (CAN-6997)', async () => {
+    const evidence = nativeEvidence();
+    const assessment = {
+      ...pausedPipelineSurvivalAssessment({
+        identity: evidence.identity,
+        evidence,
+        blockers: [],
+      }),
+      disposition: 'continues' as const,
+      coveredOwnerKinds: ['model.invocation', 'model.routing', 'model.policy'],
+      blockers: [],
+    };
+    const dispose = jest.fn();
+    const answer = jest
+      .fn<ReturnType<OwnerAnswer>, Parameters<OwnerAnswer>>()
+      .mockResolvedValueOnce({
+        result: {
+          status: 'owner',
+          value: { kind: 'model.policy', answer: false },
+        },
+      })
+      .mockResolvedValueOnce(undefined);
+    const claimed = new Set(['claimed', 'declined']);
+    const h = harness(undefined, (identity) =>
+      Promise.resolve({
+        survivalAssessment: assessment,
+        answer: (request, signal) => answer(request, identity, signal),
+        answersFirst: (request) => claimed.has(request.requestId),
+        dispose,
+      }),
+    );
+    const owner = await subscribeOwner(h.channel);
+    const starting = h.supervisor.start(
+      startParams('run-1'),
+      new AbortController().signal,
+      NO_EXECUTION_SECRETS,
+      hostExecution(true),
+    );
+    await settle();
+    const host = h.hosts[0];
+    host.reply(host.last('start').id, {
+      ...projection('run-1'),
+      survival: assessment,
+    });
+    await starting;
+    const policy: WorkerPipelineHostRequest = {
+      ...hostRequest('run-1', 'claimed'),
+      request: { action: 'owner.model.policy', check: 'active' },
+    };
+    host.send({ kind: 'hostRequest', request: policy });
+    host.send({
+      kind: 'hostRequest',
+      request: { ...policy, requestId: 'declined' },
+    });
+    host.send({
+      kind: 'hostRequest',
+      request: { ...policy, requestId: 'unclaimed' },
+    });
+    await settle();
+    // The fallback must not tear down broker routes of earlier in-flight steps.
+    expect(host.of('invalidateSurvival')).toHaveLength(1);
+    expect(dispose).not.toHaveBeenCalled();
+    host.reply(host.last('invalidateSurvival').id, null);
+    await settle();
+    expect(answer).toHaveBeenCalledTimes(2);
+    expect(host.of('hostSettled')).toContainEqual({
+      op: 'hostSettled',
+      requestId: 'claimed',
+      settlement: {
+        kind: 'owner',
+        settlement: {
+          result: {
+            status: 'owner',
+            value: { kind: 'model.policy', answer: false },
+          },
+        },
+      },
+    });
+    // Declined and unclaimed requests reach the app; nothing is refused.
+    expect(
+      owner.items
+        .map((item) => ('requestId' in item ? item.requestId : null))
+        .sort(),
+    ).toEqual(['declined', 'unclaimed']);
+    host.send({
+      kind: 'execution',
+      executionId: 'run-1',
+      event: 'execution:completed',
+      execution: { ...projection('run-1'), status: 'success' },
+    });
+    await settle();
+    expect(dispose).toHaveBeenCalledTimes(1);
+    owner.stop();
+    await h.supervisor.stop();
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['quits', 'is replaced'] as const)(
+    'checkpoints a declined request instead of handing it to the app when its app %s while survival ends (CAN-6997)',
+    async (departure) => {
+      const evidence = nativeEvidence();
+      const assessment = {
+        ...pausedPipelineSurvivalAssessment({
+          identity: evidence.identity,
+          evidence,
+          blockers: [],
+        }),
+        disposition: 'continues' as const,
+        coveredOwnerKinds: [
+          'model.invocation',
+          'model.routing',
+          'model.policy',
+        ],
+        blockers: [],
+      };
+      const h = harness(undefined, () =>
+        Promise.resolve({
+          survivalAssessment: assessment,
+          answer: () => Promise.resolve(undefined),
+          answersFirst: () => true,
+          dispose: () => undefined,
+        }),
+      );
+      const owner = await subscribeOwner(h.channel);
+      const starting = h.supervisor.start(
+        startParams('run-1'),
+        new AbortController().signal,
+        NO_EXECUTION_SECRETS,
+        hostExecution(true),
+      );
+      await settle();
+      const host = h.hosts[0];
+      host.reply(host.last('start').id, {
+        ...projection('run-1'),
+        survival: assessment,
+      });
+      await starting;
+      host.send({
+        kind: 'hostRequest',
+        request: {
+          ...hostRequest('run-1', 'declined'),
+          request: { action: 'owner.model.policy', check: 'active' },
+        },
+      });
+      await settle();
+      expect(host.of('invalidateSurvival')).toHaveLength(1);
+      // The app leaves while the host acknowledges the invalidation.
+      owner.stop();
+      const later =
+        departure === 'is replaced' ? await subscribeOwner(h.channel) : owner;
+      await settle();
+      host.reply(host.last('invalidateSurvival').id, null);
+      await settle();
+      expect(later.items).toEqual([]);
+      expect(owner.items).toEqual([]);
+      expect(host.of('pause').flatMap((pause) => pause.executionIds)).toEqual([
+        'run-1',
+      ]);
+      expect(
+        host
+          .of('hostSettled')
+          .filter((value) => value.requestId === 'declined'),
+      ).toEqual([]);
+      host.reply(host.last('pause').id, { pausedCount: 1 });
+      await settle();
+      expect(
+        host
+          .of('hostSettled')
+          .filter((value) => value.requestId === 'declined'),
+      ).toEqual([
+        {
+          op: 'hostSettled',
+          requestId: 'declined',
+          settlement: { kind: 'unavailable' },
+        },
+      ]);
+      later.stop();
+      await h.supervisor.stop();
+    },
+  );
+
+  it.each([
+    ['connected', 'hands it to the app without pausing'],
+    ['gone', 'checkpoints the run for AI Credits'],
+  ] as const)(
+    'when consent declines a new AI Credits route and the app is %s, %s (CAN-7730)',
+    async (app, _outcome) => {
+      void _outcome;
+      const evidence = nativeEvidence();
+      const assessment = {
+        ...pausedPipelineSurvivalAssessment({
+          identity: evidence.identity,
+          evidence,
+          blockers: [],
+        }),
+        disposition: 'continues' as const,
+        coveredOwnerKinds: ['model.invocation', 'model.routing'],
+        blockers: [],
+      };
+      const answer = jest.fn<ReturnType<OwnerAnswer>, Parameters<OwnerAnswer>>(
+        () =>
+          Promise.resolve({
+            result: {
+              status: 'failure',
+              failureReason: null,
+              message: 'AI Credits are off.',
+              outputs: {},
+            },
+            checkpoint: 'ai-credits',
+          }),
+      );
+      const h = harness(undefined, (identity) =>
+        Promise.resolve({
+          survivalAssessment: assessment,
+          answer: (request, signal) => answer(request, identity, signal),
+          answersFirst: () => true,
+          dispose: () => undefined,
+        }),
+      );
+      const owner = await subscribeOwner(h.channel);
+      const starting = h.supervisor.start(
+        startParams('run-1'),
+        new AbortController().signal,
+        NO_EXECUTION_SECRETS,
+        hostExecution(true),
+      );
+      await settle();
+      const host = h.hosts[0];
+      host.reply(host.last('start').id, {
+        ...projection('run-1'),
+        survival: assessment,
+      });
+      await starting;
+      if (app === 'gone') {
+        owner.stop();
+        await settle();
+      }
+      host.send({
+        kind: 'hostRequest',
+        request: {
+          ...hostRequest('run-1', 'credits'),
+          request: {
+            action: 'owner.model.invocation',
+            harness: 'claude',
+            model: 'sonnet',
+          },
+        },
+      });
+      await settle();
+      expect(answer).toHaveBeenCalledTimes(1);
+      expect(host.of('invalidateSurvival')).toEqual([
+        {
+          op: 'invalidateSurvival',
+          executionId: 'run-1',
+          blocker:
+            app === 'connected'
+              ? {
+                  code: 'ai-credits',
+                  explanation:
+                    'The background service could not route this model step, so the app routed it.',
+                }
+              : {
+                  code: 'ai-credits',
+                  explanation:
+                    'AI Credits are off, or could not be confirmed, for this workflow.',
+                },
+        },
+      ]);
+      host.reply(host.last('invalidateSurvival').id, null);
+      await settle();
+      const settled = (): unknown[] =>
+        host.of('hostSettled').filter((value) => value.requestId === 'credits');
+      if (app === 'connected') {
+        // As without the daemon: the app routes the step under its own setting.
+        expect(
+          owner.items.map((item) =>
+            'requestId' in item ? item.requestId : null,
+          ),
+        ).toEqual(['credits']);
+        const native = {
+          status: 'owner' as const,
+          value: {
+            kind: 'model.invocation' as const,
+            source: 'claude-managed',
+            harness: 'claude',
+            runtimeModel: 'sonnet',
+            aiCreditsRouted: false,
+            modelGatewayRouted: false,
+            accountProxyRouted: false,
+          },
+        };
+        await h.channel.handlers.instructions[
+          'worker.pipeline.hostRequest.respond'
+        ](
+          { executionId: 'run-1', requestId: 'credits', result: native },
+          context,
+        );
+        await settle();
+        expect(settled()).toEqual([
+          {
+            op: 'hostSettled',
+            requestId: 'credits',
+            settlement: { kind: 'owner', settlement: { result: native } },
+          },
+        ]);
+        expect(host.of('pause')).toEqual([]);
+      } else {
+        expect(owner.items).toEqual([]);
+        // One pause: the decline's checkpoint is the only one.
+        expect(host.of('pause')).toEqual([
+          { op: 'pause', executionIds: ['run-1'] },
+        ]);
+        expect(settled()).toEqual([]);
+        host.reply(host.last('pause').id, { pausedCount: 1 });
+        await settle();
+        expect(settled()).toEqual([
+          {
+            op: 'hostSettled',
+            requestId: 'credits',
+            settlement: { kind: 'unavailable' },
+          },
+        ]);
+      }
+      owner.stop();
+      await h.supervisor.stop();
+    },
+  );
+
+  it('lets the daemon answer a survivor request whose app left before the request reached it (CAN-6997)', async () => {
+    const evidence = nativeEvidence();
+    const assessment = {
+      ...pausedPipelineSurvivalAssessment({
+        identity: evidence.identity,
+        evidence,
+        blockers: [],
+      }),
+      disposition: 'continues' as const,
+      coveredOwnerKinds: ['model.invocation', 'model.routing'],
+      blockers: [],
+    };
+    const native = {
+      status: 'owner' as const,
+      value: {
+        kind: 'model.invocation' as const,
+        source: 'daemon',
+        harness: 'claude',
+        runtimeModel: 'sonnet',
+        aiCreditsRouted: false,
+        modelGatewayRouted: false,
+        accountProxyRouted: false,
+      },
+    };
+    const answer = jest.fn<ReturnType<OwnerAnswer>, Parameters<OwnerAnswer>>(
+      () => Promise.resolve({ result: native }),
+    );
+    let leave: (() => void) | undefined;
+    const h = harness(undefined, (identity) =>
+      Promise.resolve({
+        survivalAssessment: assessment,
+        answer: (request, signal) => answer(request, identity, signal),
+        // The app quits after the request was taken for it, unclaimed.
+        answersFirst: () => {
+          leave?.();
+          leave = undefined;
+          return false;
+        },
+        dispose: () => undefined,
+      }),
+    );
+    const owner = await subscribeOwner(h.channel);
+    const starting = h.supervisor.start(
+      startParams('run-1'),
+      new AbortController().signal,
+      NO_EXECUTION_SECRETS,
+      hostExecution(true),
+    );
+    await settle();
+    const host = h.hosts[0];
+    host.reply(host.last('start').id, {
+      ...projection('run-1'),
+      survival: assessment,
+    });
+    await starting;
+    leave = owner.stop;
+    host.send({
+      kind: 'hostRequest',
+      request: {
+        ...hostRequest('run-1', 'unclaimed'),
+        request: {
+          action: 'owner.model.invocation',
+          harness: 'claude',
+          model: 'sonnet',
+        },
+      },
+    });
+    await settle();
+    expect(owner.items).toEqual([]);
+    expect(answer).toHaveBeenCalledTimes(1);
+    expect(host.of('pause')).toEqual([]);
+    expect(host.of('invalidateSurvival')).toEqual([]);
+    expect(
+      host.of('hostSettled').filter((value) => value.requestId === 'unclaimed'),
+    ).toEqual([
+      {
+        op: 'hostSettled',
+        requestId: 'unclaimed',
+        settlement: { kind: 'owner', settlement: { result: native } },
+      },
+    ]);
     await h.supervisor.stop();
   });
 

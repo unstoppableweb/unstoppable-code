@@ -1378,10 +1378,16 @@ describe('pipeline runs and interrupted workflow updates (CAN-7308)', () => {
       }
     }
 
-    async function untilExists(path: string): Promise<void> {
+    /**
+     * Until a hook's marker holds text. The step is `printf … > "$MARKER"`,
+     * and the shell creates that file empty before printf writes, so
+     * existence alone can be read too early.
+     */
+    async function untilMarker(path: string): Promise<void> {
       const deadline = Date.now() + 60_000;
-      while (!existsSync(path)) {
-        if (Date.now() > deadline) throw new Error(`${path} was never written`);
+      while (!existsSync(path) || readFileSync(path, 'utf8') === '') {
+        if (Date.now() > deadline)
+          throw new Error(`${path} never held its marker`);
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
     }
@@ -1632,8 +1638,8 @@ describe('pipeline runs and interrupted workflow updates (CAN-7308)', () => {
         expect(existsSync(second)).toBe(false);
         await live.finishUnchanged();
         await expect(waiting.promise).resolves.toContain('"status":"started"');
-        await untilExists(first);
-        await untilExists(second);
+        await untilMarker(first);
+        await untilMarker(second);
         expect(readFileSync(first, 'utf8')).toBe('v1');
         expect(readFileSync(second, 'utf8')).toBe('other');
         await expect(queued.promise).resolves.toContain('"status":"queued"');
@@ -1668,7 +1674,7 @@ describe('pipeline runs and interrupted workflow updates (CAN-7308)', () => {
         await expect(waiting.promise).resolves.toContain(INSTALLING);
         expect(recordedRuns()).toBe(before);
         jest.useRealTimers();
-        await untilExists(second);
+        await untilMarker(second);
         expect(readFileSync(second, 'utf8')).toBe('other');
         expect(existsSync(first)).toBe(false);
       } finally {

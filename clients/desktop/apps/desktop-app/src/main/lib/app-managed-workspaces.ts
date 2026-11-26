@@ -19,6 +19,7 @@ import {
   PIPELINE_EDITOR_PROJECT_ID,
   PLAN_EXPLORE_CHAT_PROJECT_ID,
 } from '@canopy/desktop-shared/types';
+import { createDirectoryDurably, syncDirectory } from './atomic-file';
 import { hasMigrationRun, markMigrationRun } from './migrations';
 import {
   w5RecordReadPaths,
@@ -237,7 +238,9 @@ async function migrateLegacyAppAdvisorHome(): Promise<void> {
     if (!(await pathExists(stagedHome)) && (await pathExists(home))) {
       await movePath(home, stagedHome);
     }
-    await mkdir(migrationState, { recursive: true });
+    // The staging rename must persist before the marker that records it.
+    await syncDirectory(metadataRoot);
+    await createDirectoryDurably(migrationState, { dataRoot: getDataDir() });
   }
 
   await mkdir(home, { recursive: true });
@@ -316,7 +319,9 @@ async function migrateLegacyPipelineEditorHome(): Promise<void> {
     if (!(await pathExists(stagedHome)) && (await pathExists(home))) {
       await movePath(home, stagedHome);
     }
-    await mkdir(migrationState, { recursive: true });
+    // The staging rename must persist before the marker that records it.
+    await syncDirectory(metadataRoot);
+    await createDirectoryDurably(migrationState, { dataRoot: getDataDir() });
   }
 
   await mkdir(home, { recursive: true });

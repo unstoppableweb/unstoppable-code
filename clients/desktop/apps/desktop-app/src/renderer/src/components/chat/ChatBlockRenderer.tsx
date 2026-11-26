@@ -126,6 +126,9 @@ import {
 import { PluginMention } from './PluginMention';
 import { ChatMarkdownFileTargetContext } from './chat-markdown-file-target';
 import { ChatMarkdownLink } from './ChatMarkdownLink';
+import { openOrchestratorResponseLink } from './chat-message-link-actions';
+import { APP_ADVISOR_PROJECT_ID } from '@canopy/protocol/chat-targets';
+import { detectChatStoreSurface } from '@/stores/chat/surface';
 import {
   gitHubReferenceFromHref,
   gitHubReferenceLabel,
@@ -553,6 +556,7 @@ interface MentionDecorators {
   filePathIndex: FilePathMentionIndex | null | undefined;
   pluginIndex: PluginMentionIndex | null | undefined;
   originChatTabId: string | undefined;
+  openWebLinksExternally: boolean;
   /** Settled prose whose Linear references are eligible for decoration. */
   linear: LinearDecoration | null;
   /** Settled prose whose GitHub references are eligible for decoration. */
@@ -564,6 +568,7 @@ const NO_MENTION_DECORATORS: MentionDecorators = {
   filePathIndex: undefined,
   pluginIndex: undefined,
   originChatTabId: undefined,
+  openWebLinksExternally: false,
   linear: null,
   github: null,
 };
@@ -682,6 +687,11 @@ const MENTION_MARKDOWN_COMPONENTS: MarkdownOverrides = {
           <ChatMarkdownLink
             {...props}
             originChatTabId={decorators.originChatTabId}
+            onWebLinkClick={
+              decorators.openWebLinksExternally
+                ? openOrchestratorResponseLink
+                : undefined
+            }
           />
         )}
       </MentionDecoratorsContext.Provider>
@@ -1081,6 +1091,7 @@ interface TranscriptProseProps {
   filePathMentionIndex: FilePathMentionIndex | null | undefined;
   pluginMentionIndex: PluginMentionIndex | null | undefined;
   originChatTabId: string | undefined;
+  isAssistantMessage: boolean;
   markdownOptions: typeof MENTION_MARKDOWN_OPTIONS;
   streaming: boolean;
   progressiveMarkdown: boolean;
@@ -1094,6 +1105,7 @@ function TranscriptProse({
   filePathMentionIndex,
   pluginMentionIndex,
   originChatTabId,
+  isAssistantMessage,
   markdownOptions,
   streaming,
   progressiveMarkdown,
@@ -1106,12 +1118,18 @@ function TranscriptProse({
   // short. Decided at mount, like `Markdown`'s own choice.
   const smoothStreaming = useSmoothStreaming();
   const [smoothStreamed] = useState(() => streaming && smoothStreaming);
+  const target = useContext(ChatMarkdownFileTargetContext);
+  const openWebLinksExternally =
+    isAssistantMessage &&
+    target?.projectId === APP_ADVISOR_PROJECT_ID &&
+    detectChatStoreSurface() === 'app-advisor';
   const mentionDecorators = useMemo(
     (): MentionDecorators => ({
       invocableIndex: invocableMentionIndex,
       filePathIndex: filePathMentionIndex,
       pluginIndex: pluginMentionIndex,
       originChatTabId,
+      openWebLinksExternally,
       linear,
       github,
     }),
@@ -1120,6 +1138,7 @@ function TranscriptProse({
       invocableMentionIndex,
       pluginMentionIndex,
       originChatTabId,
+      openWebLinksExternally,
       linear,
       github,
     ],
@@ -1502,6 +1521,7 @@ export const ChatBlockRenderer = memo(function ChatBlockRenderer({
         filePathMentionIndex,
         pluginMentionIndex,
         originChatTabId,
+        isAssistantMessage,
         markdownOptions: textMarkdownOptions,
         streaming,
         progressiveMarkdown,

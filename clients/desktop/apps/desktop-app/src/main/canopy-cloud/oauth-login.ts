@@ -39,6 +39,7 @@ import { writeBrandedCallbackPage } from '../lib/branded-callback-page';
 import { openExternalGuarded } from '../lib/open-external';
 import { focusMainWindow } from '../lib/main-window-focus';
 import { isE2eBuild } from '../lib/e2e-gate';
+import { reserveServerPort } from '../lib/loopback-listeners';
 import { isRecord } from '../lib/type-guards';
 import { getInstallId } from '../lib/install-identity';
 import { getObservabilityService } from '../observability';
@@ -1280,6 +1281,8 @@ async function runCanopyCloudOAuthLogin(
       });
 
       server.on('error', (error) => abandon(error, 'listener_failed'));
+      // Remote Control never tunnels to the callback (CAN-7679).
+      reserveServerPort(server);
       server.listen(0, '127.0.0.1', (): void => {
         const address = server?.address();
         if (!address || typeof address === 'string') {

@@ -1,4 +1,4 @@
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import { TextLink, Stack } from '@canopy/ui-shared/components';
 import { type JSX } from 'react';
 import type { SplitPrMap } from '@canopy/desktop-shared/types/github';

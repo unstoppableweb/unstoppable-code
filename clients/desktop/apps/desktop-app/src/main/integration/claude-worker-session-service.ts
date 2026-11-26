@@ -23,9 +23,11 @@ import type { ClaudeTerminalHookCallbackBody } from '@canopy/desktop-shared/lib/
 import {
   CANOPY_INJECTED_TOOL_REGISTRY,
   LEDGER_INJECTED_TOOL_KEYS,
+  type CanopyInjectedToolKey,
 } from '@canopy/execution-engine/lib/canopy-injected-tools';
 import type { ApprovalRule } from '@canopy/desktop-shared/types';
 import type { LedgerToolsRuntime } from '../canopy-tools/ledger-tools-runtime';
+import { PIPELINE_AGENT_ACTION_TOOL_KEYS } from '../canopy-tools/pipeline-agent-actions';
 import type { HelperUsage } from '@canopy/execution-engine/lib/helper-usage';
 import { ensureClaudeWorkspaceTrust } from './claude-workspace-trust';
 import {
@@ -115,6 +117,15 @@ export interface ClaudeWorkerRunRequest<T> {
    */
   ledgerTools?: LedgerToolsRuntime;
   /**
+   * A pipeline agent step whose host passed the agent action exposure check
+   * (a `dangerous_all` step in a real project, CAN-7742). The worker lists
+   * SearchActions and DispatchAction restricted to posting a review as the
+   * GitHub App only when its launch permission is also read-write and it
+   * has an execution and project. Background helpers never pass it, and a
+   * resume decides it again from its own request.
+   */
+  pipelineAgentActions?: boolean;
+  /**
    * When set, the worker resumes this existing Claude session (`claude --resume`)
    * instead of starting a fresh one, and no system prompt is appended — the
    * session's original system prompt (incl. the autonomy instruction) is reused.
@@ -178,23 +189,39 @@ function allowWorkerMcpTool(tool: string): ApprovalRule {
 }
 
 /**
- * Adds the Ledger tools to a preset's allowed tools, when the preset lists
- * any, for a worker that serves them.
+ * Adds the injected tools a worker serves (its Ledger tools, its pipeline
+ * agent action tools) to a preset's allowed tools, when the preset lists any.
  */
-function withLedgerToolsAllowed(
+function withInjectedToolsAllowed(
   permission: ClaudeTerminalPermission | undefined,
-  ledgerTools: boolean,
+  keys: readonly CanopyInjectedToolKey[],
 ): ClaudeTerminalPermission | undefined {
-  if (!ledgerTools || permission?.allowedTools === undefined) return permission;
+  if (keys.length === 0 || permission?.allowedTools === undefined)
+    return permission;
   return {
     ...permission,
     allowedTools: [
       ...permission.allowedTools,
-      ...LEDGER_INJECTED_TOOL_KEYS.map(
-        (key) => CANOPY_INJECTED_TOOL_REGISTRY[key].claudeToolName,
-      ),
+      ...keys.map((key) => CANOPY_INJECTED_TOOL_REGISTRY[key].claudeToolName),
     ],
   };
+}
+
+/**
+ * Whether a worker launch serves the pipeline agent action tools: its host
+ * asked, its launch permission is read-write (the full built-in set), and it
+ * runs for an execution in a real project. Decided per launch request, never
+ * from a stored route.
+ */
+function pipelineAgentActionsExecutionId(
+  request: ClaudeWorkerRunRequest<unknown>,
+): string | undefined {
+  return request.pipelineAgentActions === true &&
+    resolveClaudeWorkerMemoryToolExposure(request.permission) ===
+      'read-write' &&
+    request.projectId !== undefined
+    ? request.pipelineExecutionId
+    : undefined;
 }
 
 function getClaudeWorkerAuthRequiredMessage(error: string | null): string {
@@ -689,6 +716,9 @@ export class DefaultClaudeWorkerSessionService {
       if (!this.isCurrentLaunch(record, launchGeneration)) return;
       this.updateCard(record, { status: 'starting' });
       const server = getDesktopIntegrationServer();
+      const agentActionsExecutionId = pipelineAgentActionsExecutionId(
+        record.request,
+      );
       await server.registerCanopyWorktreeSessionRoute({
         sessionKey,
         projectId: record.card.projectId ?? DEFAULT_PROJECT_ID,
@@ -708,6 +738,9 @@ export class DefaultClaudeWorkerSessionService {
         model: record.request.model,
         ...(record.request.ledgerTools
           ? { ledgerTools: record.request.ledgerTools }
+          : {}),
+        ...(agentActionsExecutionId !== undefined
+          ? { pipelineAgentActions: { executionId: agentActionsExecutionId } }
           : {}),
         reportStructuredResultSchema: record.schema,
         onReportStructuredResult: (payload) => {
@@ -777,6 +810,15 @@ export class DefaultClaudeWorkerSessionService {
                 ),
               )
             : []),
+          // The step's preset already allows everything; the rules keep its
+          // review publishing allowed when the approval mode would ask.
+          ...(agentActionsExecutionId !== undefined
+            ? PIPELINE_AGENT_ACTION_TOOL_KEYS.map((key) =>
+                allowWorkerMcpTool(
+                  CANOPY_INJECTED_TOOL_REGISTRY[key].displayName,
+                ),
+              )
+            : []),
         ],
         // Workers are unattended. Pipeline permission presets select their
         // explicit mode; an unexpected prompt therefore fails closed.
@@ -802,10 +844,12 @@ export class DefaultClaudeWorkerSessionService {
           : record.request.prompt,
         model: record.request.model,
         thinkingLevel: record.request.thinkingLevel,
-        permission: withLedgerToolsAllowed(
-          record.request.permission,
-          record.request.ledgerTools !== undefined,
-        ),
+        permission: withInjectedToolsAllowed(record.request.permission, [
+          ...(record.request.ledgerTools ? LEDGER_INJECTED_TOOL_KEYS : []),
+          ...(agentActionsExecutionId !== undefined
+            ? PIPELINE_AGENT_ACTION_TOOL_KEYS
+            : []),
+        ]),
         settingSources: record.request.settingSources,
         maxTurns: record.request.maxTurns,
         pluginSelections: record.request.pluginSelections,

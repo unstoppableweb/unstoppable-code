@@ -62,7 +62,56 @@ export type IPCResultWithAppError<T = void> = IPCResult<T> & {
  */
 export type IPCResultWithOutcome<T = void> = IPCResult<T> & {
   outcome?: 'unknown';
+  /**
+   * CAN-5782: the save was refused because of the workflow's schedules:
+   * `blocked` when it would break them, `needs_confirmation` when it would
+   * stop schedules an agent created, which a person may confirm.
+   */
+  scheduleRefusal?: 'blocked' | 'needs_confirmation';
+  /**
+   * With `needs_confirmation`: the schedules that would stop, which the
+   * person's confirmation names back.
+   */
+  stoppingScheduleIds?: string[];
 };
+
+/**
+ * CAN-5782: a person's **Approve for schedules** of a user pipeline's saved
+ * content. `contentDigest` is the digest of the content the page shows;
+ * main refuses when the stored revision or content differs.
+ */
+export interface ApprovePipelineForSchedulesRequest {
+  pipelineId: string;
+  revision: number;
+  contentDigest: string;
+  /**
+   * The installed package the page shows the workflow running with, or
+   * `null` for none; main refuses when the workflow runs with another.
+   */
+  packageDigest: string | null;
+}
+
+/** Why main refused an approval, beside the result's `error`. */
+export type ApprovePipelineForSchedulesRefusal =
+  | 'not_found'
+  | 'stale_revision'
+  | 'content_mismatch'
+  | 'package_mismatch'
+  | 'agent_granted'
+  | 'not_recorded';
+
+/** The stamp an approval recorded: the digest and its revision. */
+export interface PipelineScheduleApproval {
+  contentHash: string;
+  revision: number;
+  /** The installed package the approval names; absent for none. */
+  packageDigest?: string;
+}
+
+export type ApprovePipelineForSchedulesResult =
+  IPCResult<PipelineScheduleApproval> & {
+    refusal?: ApprovePipelineForSchedulesRefusal;
+  };
 
 export interface PipelineSaveInput {
   /** Shared source resolved again in main before a local install. */
@@ -83,4 +132,16 @@ export interface PipelineSaveInput {
    * pipeline whose stored revision differs is refused as a conflict.
    */
   expectedRevision?: number;
+  /**
+   * CAN-5782: the schedules an agent created that the person confirmed may
+   * stop once this save removes the Manual trigger, as the refusal named
+   * them. Main accepts it only for exactly that set.
+   */
+  confirmAgentSchedulesStop?: string[];
+  /**
+   * CAN-5782: the page's unsaved schedule inputs, by schedule ID, which it
+   * writes right after this save. The schedule check reads them in place of
+   * the stored ones; each schedule's own write is still checked.
+   */
+  pendingScheduleInputs?: Record<string, Record<string, string>>;
 }

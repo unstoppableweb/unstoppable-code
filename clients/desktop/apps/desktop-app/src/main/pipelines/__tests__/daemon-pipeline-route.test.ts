@@ -191,6 +191,8 @@ jest.mock('../daemon-pipeline-start-setup', () => {
 });
 
 import type * as StartSetupModule from '../daemon-pipeline-start-setup';
+import * as NativeAdmissionModule from '../daemon-pipeline-native-admission';
+import * as CloudAccountProvisioningModule from '../../canopy-cloud/daemon-account-provisioning';
 import type * as CodexPluginMcpModule from '@canopy/execution-engine/node/pipelines/daemon-host/codex-plugin-mcp';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -1270,6 +1272,124 @@ describe('daemon pipeline route (CAN-5086)', () => {
     expect(launch).not.toHaveProperty('nativeStartSetup');
     expect(launch).not.toHaveProperty('nativeRouteEvidence');
   });
+
+  it.each([
+    { blockers: ['ai-credits-on-quota'], waits: 0 },
+    { blockers: ['policy', 'ai-credits-on-quota'], waits: 0 },
+    { blockers: ['policy', 'gateway'], waits: 0 },
+    { blockers: ['policy', 'account-proxy'], waits: 0 },
+    { blockers: ['policy', 'native-auth-unknown'], waits: 0 },
+    { blockers: ['policy', 'unknown'], waits: 0 },
+    { blockers: [], waits: 0 },
+    { blockers: ['ai-credits'], waits: 1 },
+    { blockers: ['policy'], waits: 1 },
+  ] satisfies {
+    blockers: NativeAdmissionModule.NativePipelineRouteBlocker[];
+    waits: number;
+  }[])(
+    'reconciles only account-resolvable route blockers (%j)',
+    async ({ blockers, waits }) => {
+      const daemon = fakeDaemon();
+      mockGet.mockResolvedValue({ client: daemon.client });
+      mockOwnerPossible.mockReturnValue(true);
+      const inspect = jest
+        .spyOn(NativeAdmissionModule, 'inspectNativePipelineLaunch')
+        .mockResolvedValue({ blockers });
+      const identity = jest
+        .spyOn(
+          CloudAccountProvisioningModule,
+          'daemonCloudAccountAdmissionIdentity',
+        )
+        .mockResolvedValue(undefined);
+      mockNativeAdmission.current = async (input): NativeAdmissionResult => ({
+        routes: await input.inspectRoutes(),
+        blockers: [],
+      });
+      try {
+        await routed(MODEL_PIPELINE);
+        expect(identity).toHaveBeenCalledTimes(waits);
+        expect(mockExecutePipeline).not.toHaveBeenCalled();
+        expect(readField(sentLaunch(daemon), 'nativeRouteBlockers')).toEqual([
+          ...new Set([
+            ...blockers.map((blocker) =>
+              blocker === 'ai-credits-on-quota' ? 'ai-credits' : blocker,
+            ),
+            'setup-lease',
+          ]),
+        ]);
+      } finally {
+        inspect.mockRestore();
+        identity.mockRestore();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'sends managed launch evidence fields only to a daemon holding the account (holds: %s) (CAN-7730)',
+    async (holdsAccount) => {
+      const daemon = fakeDaemon();
+      mockGet.mockResolvedValue({ client: daemon.client });
+      mockOwnerPossible.mockReturnValue(true);
+      const active = jest
+        .spyOn(
+          CloudAccountProvisioningModule,
+          'isDaemonCloudAccountAuthorityActive',
+        )
+        .mockReturnValue(holdsAccount);
+      const evidence = {
+        version: 1 as const,
+        identity: {
+          executionId: 'run',
+          owner: 'personal',
+          runScope: 'worktree' as const,
+          workspaceId: null,
+          worktreeId: null,
+        },
+        configurationEpoch: 'epoch',
+        catalogFingerprint: 'catalog',
+        policy: 'required' as const,
+        policyScope: 'owner' as const,
+        expectedAccountIdentity: 'account-route',
+        aiCreditsAttribution: { workspaceName: 'Workspace' },
+        gateway: 'absent' as const,
+        accountProxy: 'absent' as const,
+        aiCredits: 'absent' as const,
+        futureSelections: 'closed' as const,
+        routes: [
+          {
+            harness: 'claude' as const,
+            selection: 'sonnet',
+            requestModel: 'sonnet',
+            runtimeModel: 'sonnet',
+            source: 'claude-managed' as const,
+            effectiveRoute: 'native' as const,
+            authentication: 'vendor-profile' as const,
+          },
+        ],
+      };
+      mockNativeAdmission.current = (): NativeAdmissionResult =>
+        Promise.resolve({
+          setup: nativeSetup(1, 1),
+          routes: { evidence, blockers: [] },
+          blockers: [],
+        });
+      try {
+        await routed(MODEL_PIPELINE);
+        expect(mockExecutePipeline).not.toHaveBeenCalled();
+        const legacy: Record<string, unknown> = { ...evidence };
+        delete legacy.policyScope;
+        delete legacy.expectedAccountIdentity;
+        delete legacy.aiCreditsAttribution;
+        // An older strict-v1 daemon rejects the new fields; without them it
+        // cannot admit the run as managed, so the run pauses at quit.
+        expect(readField(sentLaunch(daemon), 'nativeRouteEvidence')).toEqual(
+          holdsAccount ? evidence : legacy,
+        );
+      } finally {
+        active.mockRestore();
+      }
+    },
+  );
 
   it('route evidence over its launch bound still starts, without the evidence or the setup (CAN-6996)', async () => {
     const daemon = fakeDaemon();

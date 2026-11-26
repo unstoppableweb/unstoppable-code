@@ -9,6 +9,7 @@ import { useProjectsStore } from '@/stores/projectsStore';
 import { useStandaloneChatStore } from '@/stores/standaloneChatStore';
 import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 import { getSidebarScopingContext } from '@/components/sidebar/useSidebarScopingContext';
+import { getHomeScope, isHomeCloudTarget } from './homeScope';
 
 /**
  * CAN-7038: Home's catch-all send target, Personal's Chats workspace
@@ -472,4 +473,29 @@ export function useHomePendingDeadline(
     [],
   );
   return { expired: expiredKey === key, retry, generation };
+}
+
+/** Validate actual membership and cowork dispatch, including scoped windows. */
+export function isHomeSendTargetUsable(
+  workspaceId: string | null,
+  failedWorkspaceIds = useProjectsStore.getState().failedWorkspaceIds,
+): boolean {
+  if (workspaceId === null) return false;
+  const scoped = useStandaloneChatStore.getState().scopedWorkspaceId;
+  if (scoped !== null && scoped !== workspaceId) return false;
+  const scope = getHomeScope();
+  if (!scope.isInScope(workspaceId)) return false;
+  if (isHomeCloudTarget(workspaceId)) {
+    // Keep a selected offline or removed cloud project with its draft. The
+    // cloud send path reports why it cannot send; local target provisioning
+    // must not hide that refusal or redirect the draft to another project.
+    return true;
+  }
+  const state = useProjectsStore.getState();
+  const project = state.projects.find((item) => item.id === workspaceId);
+  return (
+    project !== undefined &&
+    !failedWorkspaceIds.has(workspaceId) &&
+    (project.type !== 'cowork' || isRegisteredCoworkWorkspaceId(workspaceId))
+  );
 }

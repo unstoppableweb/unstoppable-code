@@ -1,4 +1,4 @@
-import { Badge } from './Badge';
+import { Badge } from '../primitives/Badge';
 import type {
   CSSProperties,
   DragEvent,

@@ -120,6 +120,26 @@ const plainContracts: readonly { channel: RegExp; text: RegExp }[] = [
     // mistakes for a request to connect Linear. Keep this fixed refusal exact.
     text: /connect|auth|credential|token|^Error: Couldn’t reach Linear\. Try again\.$/i,
   },
+  // cursor/sign-in-link.ts: a controlling app too old to show the sign-in
+  // link is told what to do; an older controller shows this text as it is.
+  {
+    channel: /^cursor-connection:(?:connect|change-account)$/,
+    text: /^Error: Update the app on the computer you are using to sign in to Cursor from it\.$/,
+  },
+  // ipc/auth-terminal.ts and ipc/opencode-connection.ts: a controller's
+  // sign-in start, or an OpenCode setup that would end a sign-in, waits for
+  // someone else's sign-in; the dialogs show what to wait for (CAN-6718).
+  {
+    channel:
+      /^(?:auth-terminal:start|opencode-connection:(?:connect|disconnect))$/,
+    text: /^Error: A sign-in is already running on the computer\.$/,
+  },
+  // ipc/auth-terminal.ts: an OpenCode sign-in waits for a controller's
+  // OpenCode setup, which would end it (CAN-6718).
+  {
+    channel: /^auth-terminal:start$/,
+    text: /^Error: OpenCode setup is already running\.$/,
+  },
   // chat/slices/messaging.ts: sender reachability and stale Codex resumption.
   {
     channel: /^chat:send-message$/,

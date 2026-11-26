@@ -8,7 +8,9 @@ import {
   type CanopyQueryHandlerMap,
   type CoreOperationEventsItem,
   type CoreOperationEventsParams,
+  type CoreOperationListParams,
   type OperationRecord,
+  OPERATION_LEDGER_ERROR_CODES,
 } from '@canopy/protocol/canopy-core';
 
 import {
@@ -25,6 +27,7 @@ import {
   OperationLedgerRefusedError,
 } from './ledger/errors';
 import type { OperationLedgerEvent } from './ledger/ledger';
+import type { RemoteOperationService } from './remote';
 import type { OperationService } from './service';
 
 type OperationQueryHandlers = Pick<
@@ -288,6 +291,101 @@ export function createCoreOperationHandlers(
         replaying = false;
         for (const event of pending.splice(0)) deliver(event);
         return unsubscribe;
+      },
+    },
+  };
+}
+
+function listQuery(
+  params: CoreOperationListParams,
+): Parameters<OperationService['list']>[0] {
+  return {
+    ...(params.scope ? { scope: params.scope } : {}),
+    ...(params.statuses ? { statuses: params.statuses } : {}),
+    ...(params.kinds ? { kinds: params.kinds } : {}),
+    ...(params.parentOperationId !== undefined
+      ? { parentOperationId: params.parentOperationId }
+      : {}),
+    limit: params.pageSize ?? OPERATION_LIMITS.listPageDefault,
+    ...(params.cursor !== undefined
+      ? { after: decodeCursor(params.cursor) }
+      : {}),
+  };
+}
+
+/**
+ * The `core.operation.*` handlers of an owner whose ledger another process
+ * holds (CAN-6986 L3): reads and events come from the ledger over the owner
+ * connection, at the ledger's own cursors, and a cancellation is applied by
+ * the owning domain here, so the window's and Remote Control's cancels keep
+ * going through this process.
+ */
+export function createRemoteCoreOperationHandlers(
+  service: RemoteOperationService,
+): CoreOperationHandlers {
+  return {
+    queries: {
+      'core.operation.get': (params) =>
+        translated(async () => {
+          const operation = await service.get(params.operationId);
+          if (!operation) throw notFound(params.operationId);
+          return { operation };
+        }),
+      'core.operation.list': (params) =>
+        translated(async () => {
+          const query = listQuery(params);
+          const ledgerId = await service.ledgerId();
+          const page = await service.list(query);
+          return {
+            items: page.items,
+            nextCursor: page.next ? encodeCursor(page.next) : null,
+            eventsCursor: { daemonEpoch: ledgerId, sequence: page.eventsHead },
+          };
+        }),
+    },
+    instructions: {
+      'core.operation.cancel': (params, context) =>
+        translated(() =>
+          service.cancel(params.operationId, {
+            reason: params.reason,
+            requestedBy: context.caller.principalId,
+            ...(params.expectedRevision !== undefined
+              ? { expectedRevision: params.expectedRevision }
+              : {}),
+          }),
+        ),
+    },
+    streams: {
+      'core.operation.events': async (
+        params,
+        _context,
+        sink,
+      ): Promise<(() => void) | void> => {
+        const ledgerId = await translated(() => service.ledgerId());
+        let ended = false;
+        let close = (): void => undefined;
+        close = await translated(() =>
+          service.streamEvents(
+            params.cursor ?? null,
+            (cursor, event) => {
+              if (ended || !matchesScope(event.operation, params)) return;
+              ended = sink.emitAt(cursor, toItem(ledgerId, event)) === null;
+              if (ended) close();
+            },
+            (error) => {
+              if (ended) return;
+              ended = true;
+              sink.end(
+                'error',
+                error?.code === OPERATION_LEDGER_ERROR_CODES.snapshotRequired
+                  ? snapshotRequired().payload
+                  : canopyUnavailableError('Operation records are unavailable.')
+                      .payload,
+              );
+            },
+          ),
+        );
+        return close;
       },
     },
   };

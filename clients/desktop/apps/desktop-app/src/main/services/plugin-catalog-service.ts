@@ -480,6 +480,7 @@ function toPluginRow(
     // A listing not fetched yet isn't installed for any harness.
     ...(withHarnessRows
       ? {
+          ...(plugin.parked === true ? { parked: true } : {}),
           harnessRows: pluginInfoHarnessRows(
             plugin,
             offeredHarnesses(),

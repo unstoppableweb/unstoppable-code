@@ -5,7 +5,7 @@ import { useSettingsSearchParams } from '../host';
 import { DigestPreferencesSection } from './digest-preferences-section';
 import { InstallUpdateEmailsSection } from './install-update-emails-section';
 import { PushPreferencesSection } from './push-preferences-section';
-import { Notice } from '@canopy/ui-shared/components/Notice';
+import { Notice } from '@canopy/ui-shared/primitives/Notice';
 
 /**
  * `/account/notifications`: how the product reaches out to the viewer. Hosts

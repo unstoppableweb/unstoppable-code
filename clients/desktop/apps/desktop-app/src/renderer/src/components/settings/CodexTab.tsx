@@ -48,7 +48,6 @@ import {
   ChoiceListRow,
   Notice,
   NoticeButton,
-  TextLinkButton,
   ToggleSwitch,
   FieldError,
 } from '@canopy/ui-shared/components';
@@ -136,16 +135,18 @@ function CodexDefaultSpeed({
       description={
         <>
           Each chat can change it for its next message. {CODEX_SPEED_USAGE_HELP}{' '}
-          <TextLinkButton
+          <Button
             data-testid="settings-codex-speed-help"
             onClick={(): void => {
               void window.api.browser.openExternal({
                 url: CODEX_SPEED_HELP_URL,
               });
             }}
+            variant="link"
+            data-settings-control="link"
           >
             Learn more
-          </TextLinkButton>
+          </Button>
         </>
       }
     >

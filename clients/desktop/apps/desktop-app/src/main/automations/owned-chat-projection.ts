@@ -5,8 +5,9 @@
  * reports the stored action; only the automations list and its push are
  * projected.
  *
- * CAN-5782: given every activity, it also marks each schedule of a workflow
- * page (`workflowSchedule`), and an owner whose pipeline other schedules
+ * CAN-5782: given every activity, it also marks each record that runs a
+ * user workflow as one of its schedules (`workflowSchedule`), and an owner
+ * whose pipeline other schedules
  * share is not chat-editable: one record's chat action would regenerate the
  * steps the others run.
  *
@@ -29,7 +30,6 @@ import { cachedCloudRecord, projectCloudScheduleStub } from './cloud-schedules';
 import {
   isAgentGrantedPipeline,
   isSharedByOtherSchedules,
-  isWorkflowPagePipeline,
   scheduledUserPipelineId,
   userPipelineMetadata,
 } from './workflow-schedules';
@@ -91,8 +91,7 @@ function finishProjection(
   const schedule =
     activities !== undefined &&
     scheduled !== undefined &&
-    metadata !== undefined &&
-    isWorkflowPagePipeline(activities, scheduled, metadata)
+    metadata !== undefined
       ? {
           workflowSchedule: {
             pipelineId: scheduled,

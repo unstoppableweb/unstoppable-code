@@ -493,6 +493,15 @@ export function createAntigravityDelegationRunner(options: {
         const cwd = prepared.tools.cwd;
         if (request.resumeSessionId) {
           const binding = await readBinding(bindingFile);
+          // Still refused, but named as a runtime update, not this workspace.
+          if (
+            binding &&
+            binding.sessionId === request.resumeSessionId &&
+            binding.runtimeVersion !== ANTIGRAVITY_RUNTIME_VERSION
+          )
+            throw unavailable(
+              "This Antigravity delegate was started with an earlier Antigravity CLI, so it can't be resumed after the update. Start a new delegate.",
+            );
           if (
             !binding ||
             binding.sessionId !== request.resumeSessionId ||
@@ -590,7 +599,7 @@ export function createAntigravityDelegationRunner(options: {
             proxy.unregisterCanopyWorktreeSessionRoute(key);
             return Promise.resolve();
           });
-          // Antigravity 1.5.1 does not ask ACP permission for MCP calls. Every
+          // The runtime opener allows routed MCP calls without a prompt. Every
           // managed call is authorized here, at its host execution.
           await proxy.registerCanopyWorktreeSessionRoute({
             sessionKey: key,

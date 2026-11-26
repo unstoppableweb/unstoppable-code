@@ -233,6 +233,7 @@ import { DeleteConfirmModal } from '../shared/DeleteConfirmModal';
 import { DeleteAgentMessage } from './DeleteAgentMessage';
 import { useAgentsStore } from '@/stores/agentsStore';
 import { extractIpcErrorMessage } from '@/lib/errors';
+import { modelPresetErrorMessage } from '@/lib/modelPresetErrors';
 import type { SaveAgentModelRequest } from '@canopy/execution-engine/types/agent-models';
 import type { SharedSkillSummary } from '@canopy/desktop-shared/types/skills';
 import { resolveSharedResourceErrorMessage } from '@/lib/sharedResourceErrors';
@@ -1064,6 +1065,8 @@ export function PluginsPage({
   );
   const installedStatuses = useDesktopInstalledItemStatuses();
   const offeredHarnesses = useOfferedPluginHarnesses();
+  const splitSearchMcp =
+    discoveryEnabled && kindFilter === null && deferredQuery.trim() !== '';
   const entries = useMemo(
     () =>
       buildUnifiedPluginEntries({
@@ -1083,9 +1086,10 @@ export function PluginsPage({
         mcpServers: pickerServers,
         mcpStatuses,
         curatedMcpServers,
-        // The integration card's detail installs the folded plugin here
-        // (REG-3033); the portal's MCP panel cannot, so it keeps plugin cards.
-        foldSingleKeyPlugins: true,
+        // Outside New Customize All search, Desktop's integration detail
+        // can still install the folded plugin (REG-3033).
+        foldSingleKeyPlugins: !splitSearchMcp,
+        customizeAllSearch: splitSearchMcp,
         providerConnectors: providerConnectors ?? [],
         pipelines: capabilityInventory.pipelines,
         // An automation's own pipeline lists under it (CAN-4551).
@@ -1120,6 +1124,7 @@ export function PluginsPage({
       marketplaces,
       installedStatuses.state,
       discoveryEnabled,
+      splitSearchMcp,
       offeredHarnesses,
       publisherSkills.skills,
       installedSkills,
@@ -3268,7 +3273,9 @@ export function PluginsPage({
           }
         } catch (error: unknown) {
           const appError = toAppError(resolveClientAppError(error));
-          setAgentDeleteError(extractIpcErrorMessage(error));
+          setAgentDeleteError(
+            modelPresetErrorMessage(extractIpcErrorMessage(error)),
+          );
           setAgentDeleteRecorded(appError?.recordedBy !== undefined);
         } finally {
           agentDeleteInFlightRef.current = false;
@@ -4234,7 +4241,7 @@ export function PluginsPage({
                         </NoticeButton>
                       }
                     >
-                      Couldn't load your agents.
+                      Couldn't load your model presets.
                     </Notice>
                   )}
 
@@ -4429,8 +4436,8 @@ export function PluginsPage({
                           ) : kindFilter === 'agent' &&
                             !showLocalAgentsError ? (
                             <EmptyState
-                              title="No agents yet"
-                              subtitle="Create an agent to reuse instructions and plugins from model pickers and workflows."
+                              title="No model presets yet"
+                              subtitle="Create a model preset to reuse a model, instructions, and plugins in chats and workflows."
                               action={
                                 <Button
                                   size="compact"
@@ -4439,7 +4446,7 @@ export function PluginsPage({
                                     openAgentDialog({ mode: 'create' })
                                   }
                                 >
-                                  New agent
+                                  New model preset
                                 </Button>
                               }
                             />
@@ -4681,9 +4688,9 @@ export function PluginsPage({
         agentDialog?.mode === 'delete' &&
         agentDialogTarget && (
           <DeleteConfirmModal
-            title="Delete agent"
+            title="Delete model preset"
             message={<DeleteAgentMessage modelId={agentDialogTarget.id} />}
-            confirmLabel="Delete agent"
+            confirmLabel="Delete model preset"
             pending={agentDeletePending}
             {...(agentDeleteRecorded
               ? {

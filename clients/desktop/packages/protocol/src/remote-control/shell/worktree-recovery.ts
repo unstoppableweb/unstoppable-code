@@ -100,6 +100,8 @@ export interface WorktreeRecoveryDescription {
     finishArchive: WorktreeRecoveryAction;
     discard: WorktreeRecoveryAction;
     keepWorktree: WorktreeRecoveryAction;
+    /** CAN-7014: moving the readable archive record aside. Absent from older hosts. */
+    setAside?: WorktreeRecoveryAction;
   };
   destination:
     | { kind: 'recovery' }
@@ -271,4 +273,45 @@ export function worktreeRecoveryResolutionAction(
     default:
       return null;
   }
+}
+
+/** A recovery action the shared dialog offers as a button; "Check again" is not one. */
+export type WorktreeRecoveryOfferedAction =
+  | 'keep-worktree'
+  | 'release'
+  | 'finish'
+  | 'retry'
+  | 'discard'
+  | 'set-aside';
+
+/**
+ * CAN-7014: the one derivation of the recovery dialog's action buttons. Set
+ * aside is a fallback, offered only when nothing else is (decision q-26 1a).
+ */
+export function worktreeRecoveryOfferedActions(
+  recovery: WorktreeRecoveryDescription,
+  host: { readonly canResolve: boolean; readonly canSetAside: boolean },
+): WorktreeRecoveryOfferedAction[] {
+  const resolution = host.canResolve
+    ? worktreeRecoveryResolutionAction(recovery)
+    : null;
+  const offered: WorktreeRecoveryOfferedAction[] = [];
+  if (resolution === 'keep-worktree' || resolution === 'release')
+    offered.push(resolution);
+  if (recovery.actions.discard.eligible) offered.push('discard');
+  if (recovery.actions.retry.eligible) offered.push('retry');
+  if (
+    resolution === 'finish' ||
+    (!host.canResolve && recovery.actions.finishArchive.eligible)
+  )
+    offered.push('finish');
+  if (
+    offered.length === 0 &&
+    host.canResolve &&
+    host.canSetAside &&
+    recovery.destination.kind === 'recovery' &&
+    recovery.actions.setAside?.eligible === true
+  )
+    offered.push('set-aside');
+  return offered;
 }

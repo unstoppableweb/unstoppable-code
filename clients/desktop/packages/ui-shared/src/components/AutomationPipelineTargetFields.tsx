@@ -1,9 +1,9 @@
 import { useId, type JSX } from 'react';
 import { WORKTREE_UNIT_LABEL } from '@canopy/protocol';
-import { ChoiceField } from './Choice';
-import { Notice, NoticeButton } from './Notice';
-import { TRY_AGAIN_LABEL } from './useRetry';
-import { Select, type SelectOption, FieldError } from './Field';
+import { ChoiceField } from '../primitives/Choice';
+import { Notice, NoticeButton } from '../primitives/Notice';
+import { TRY_AGAIN_LABEL } from '../primitives/useRetry';
+import { Select, type SelectOption, FieldError } from '../primitives/Field';
 
 /**
  * Where a pipeline automation on a project runs. A pipeline with no project

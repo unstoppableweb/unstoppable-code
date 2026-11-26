@@ -103,6 +103,8 @@ export const WORKER_PIPELINE_OWNER_ACTIONS = [
   'owner.ledger.codexToolExecute',
   'owner.ledger.codexToolsDispose',
   'owner.ledger.operation',
+  'owner.agentActions.open',
+  'owner.agentActions.call',
   'owner.claude.modAdmission',
   'owner.model.agentAlias',
   'owner.plan.create',
@@ -129,6 +131,8 @@ export type WorkerPipelineOwnerAction =
  * step runs on, and its answer carries that folder's install paths.
  * `owner.mcp.*` present a credential the host's own app holds (CAN-6168),
  * and `owner.codex.pluginRefs` applies that app's own installed-item policy.
+ * `owner.agentActions.*` (CAN-7742) post as the host's own app's signed-in
+ * person.
  */
 export const WORKER_PIPELINE_LOCAL_OWNER_ACTIONS = [
   'owner.claude.modAdmission',
@@ -136,6 +140,8 @@ export const WORKER_PIPELINE_LOCAL_OWNER_ACTIONS = [
   'owner.mcp.authorize',
   'owner.mcp.rejected',
   'owner.codex.pluginRefs',
+  'owner.agentActions.open',
+  'owner.agentActions.call',
 ] as const satisfies readonly WorkerPipelineOwnerAction[];
 export type WorkerPipelineLocalOwnerAction =
   (typeof WORKER_PIPELINE_LOCAL_OWNER_ACTIONS)[number];
@@ -171,12 +177,30 @@ export const WORKER_PIPELINE_OWNER_SCOPE_PENDING_MAX = 64;
  * Owner requests an owner answers only when it says so (CAN-7522): it names
  * each kind and the revision it serves when it subscribes, and a subscriber
  * that names none never receives them. Every other owner request goes to any
- * owner, as before.
+ * owner, as before. Effects revision 2 adds an import's effects and a
+ * routed write's owner key (CAN-7507).
  */
 export const WORKER_PIPELINE_OWNER_SERVED_REVISIONS = Object.freeze({
   'owner.definition.precheck': 1,
-  'owner.definition.effects': 1,
+  'owner.definition.effects': 2,
 } as const satisfies Partial<Record<WorkerPipelineOwnerAction, number>>);
+
+/**
+ * The revision an owner must serve to receive `request` (CAN-7522), or
+ * undefined when every owner answers it. Only an import's effects and a
+ * request carrying an owner key need effects revision 2.
+ */
+export function workerPipelineOwnerRequestRevision(request: {
+  readonly action: string;
+  readonly op?: unknown;
+  readonly ownerKey?: unknown;
+}): number | undefined {
+  if (request.action === 'owner.definition.effects')
+    return request.op === 'import' || request.ownerKey !== undefined ? 2 : 1;
+  if (request.action === 'owner.definition.precheck')
+    return WORKER_PIPELINE_OWNER_SERVED_REVISIONS['owner.definition.precheck'];
+  return undefined;
+}
 
 /** What a pipeline definition write is, to the owner that checks it. */
 export const WORKER_PIPELINE_OWNER_DEFINITION_OPS = [
@@ -200,6 +224,34 @@ const toolJson = canopyJsonValueSchemaWithin(
   WORKER_PIPELINE_OWNER_TOOL_JSON_MAX_BYTES,
 );
 const toolSpec = canopyJsonValueSchemaWithin(65_536);
+
+/**
+ * The agent action tools a local owner may serve beside an attempt's Feed
+ * tools (CAN-7742): SearchActions and DispatchAction, restricted by the
+ * owner to posting a code review as the GitHub App.
+ */
+export const WORKER_PIPELINE_OWNER_AGENT_ACTION_TOOL_KEYS = [
+  'search_actions',
+  'dispatch_action',
+] as const;
+export type WorkerPipelineOwnerAgentActionToolKey =
+  (typeof WORKER_PIPELINE_OWNER_AGENT_ACTION_TOOL_KEYS)[number];
+const agentActionToolKey = z.enum(WORKER_PIPELINE_OWNER_AGENT_ACTION_TOOL_KEYS);
+
+/**
+ * The answer to an agent action call that never reached the owner, or that
+ * the owner refused before running it: nothing was posted, so the agent may
+ * post another way (CAN-7742).
+ */
+export const WORKER_PIPELINE_OWNER_AGENT_ACTION_NOT_SENT_TEXT =
+  'Posting a code review as the GitHub App is unavailable for this workflow step. Nothing was posted, so posting another way is safe.';
+
+/**
+ * The answer to an agent action call whose outcome is unknown: it reached
+ * the owner, which may have posted before the answer was lost (CAN-7742).
+ */
+export const WORKER_PIPELINE_OWNER_AGENT_ACTION_OUTCOME_UNKNOWN_TEXT =
+  'The GitHub App review may already be posted: its answer was lost. Do not post this review again another way.';
 
 /**
  * The Ledger operations a remote owner serves for an open attempt
@@ -489,6 +541,29 @@ export const WORKER_PIPELINE_OWNER_REQUEST_MEMBERS = [
     operation: z.enum(WORKER_PIPELINE_OWNER_LEDGER_OPERATIONS),
     params: ledgerJson,
   }),
+  /**
+   * The agent action tools of an open attempt (CAN-7742). The owner answers
+   * them only for a step it lets post a code review as the GitHub App, and
+   * a second request for the attempt gets the same tools. Only a local
+   * owner receives it; `cwd` defaults to the attempt's own folder.
+   */
+  z.strictObject({
+    action: z.literal('owner.agentActions.open'),
+    attemptKey: id,
+    cwd: hostPath.optional(),
+  }),
+  /**
+   * One agent action tool call (CAN-7742). The owner runs it with the
+   * attempt's own execution, project, worktree and folder, never a scope the
+   * arguments name; `invocationId` keys its replays.
+   */
+  z.strictObject({
+    action: z.literal('owner.agentActions.call'),
+    toolsKey: id,
+    key: agentActionToolKey,
+    arguments: toolJson,
+    invocationId: id,
+  }),
   z.strictObject({
     action: z.literal('owner.claude.modAdmission'),
     cwd: hostPath,
@@ -644,10 +719,23 @@ export const WORKER_PIPELINE_OWNER_REQUEST_MEMBERS = [
   z
     .strictObject({
       action: z.literal('owner.definition.effects'),
-      op: z.enum([...WORKER_PIPELINE_OWNER_DEFINITION_OPS, 'reconcile']),
+      op: z.enum([
+        ...WORKER_PIPELINE_OWNER_DEFINITION_OPS,
+        'import',
+        'reconcile',
+      ]),
       phase: z.enum(['beforeCommit', 'afterCommit', 'reconcile']),
       definitionId: id.nullable(),
       origin: definitionOrigin.optional(),
+      /**
+       * The routed write's owner key (CAN-7507), a digest of its caller's
+       * client instance and idempotency key, so the app finds the owner it
+       * registered for this write before sending it. Never the key itself.
+       */
+      ownerKey: z
+        .string()
+        .regex(/^[0-9a-f]{64}$/)
+        .optional(),
     })
     .refine(
       (value) =>
@@ -733,6 +821,28 @@ export const WorkerPipelineOwnerResultSchema = z.discriminatedUnion('kind', [
     response: toolJson,
   }),
   z.strictObject({ kind: z.literal('ledger.codexToolsDispose') }),
+  z.strictObject({
+    kind: z.literal('agentActions.open'),
+    tools: z
+      .strictObject({
+        toolsKey: id,
+        definitions: z
+          .array(
+            z.strictObject({
+              key: agentActionToolKey,
+              description: text(8192),
+              inputSchema: toolSpec,
+            }),
+          )
+          .max(2),
+      })
+      .nullable(),
+  }),
+  z.strictObject({
+    kind: z.literal('agentActions.call'),
+    text: text(WORKER_PIPELINE_OWNER_TOOL_JSON_MAX_BYTES),
+    isError: z.boolean(),
+  }),
   z.strictObject({
     kind: z.literal('ledger.operation'),
     /** The operation's result, or the Ledger's typed refusal of it. */
@@ -905,6 +1015,8 @@ export const WORKER_PIPELINE_OWNER_RESULT_KIND: Readonly<
   'owner.ledger.codexToolExecute': 'ledger.codexToolExecute',
   'owner.ledger.codexToolsDispose': 'ledger.codexToolsDispose',
   'owner.ledger.operation': 'ledger.operation',
+  'owner.agentActions.open': 'agentActions.open',
+  'owner.agentActions.call': 'agentActions.call',
   'owner.claude.modAdmission': 'claude.modAdmission',
   'owner.model.agentAlias': 'model.agentAlias',
   'owner.plan.create': 'plan.create',

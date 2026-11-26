@@ -4341,6 +4341,21 @@ it("a cloud turn that ends while its events were missed reads the project's work
   expect(filesChanged).toEqual([SCOPE]);
 });
 
+/**
+ * The queue re-read backoff is a real timer (1 ms, then 2, then 4). A fixed
+ * 30 ms window misses those reads when the worker is busy (CAN-7196).
+ */
+async function untilQueueReread(
+  ready: () => boolean,
+  failure: () => string,
+): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!ready()) {
+    if (Date.now() > deadline) throw new Error(failure());
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 // CAN-7196 (review round 5): a queued prompt's Cancel whose answer never
 // came answers only once its queue was read again, so the notice it raises
 // is true. A failed read is tried again on the web's backoff until one is in,
@@ -4417,7 +4432,11 @@ it("reads a cloud queued prompt's queue again before a Cancel that may have land
     void shown.then(() => {
       landed = true;
     });
-    await wait(30);
+    await untilQueueReread(
+      () => reads() > before + 2,
+      () =>
+        `The queue was read ${reads()} times; a backoff re-read past ${before + 2} never arrived`,
+    );
     expect(reads()).toBeGreaterThan(before + 2);
     expect(landed).toBe(false);
     core.snapshotFailsFor = null;
@@ -4533,11 +4552,20 @@ describe("a queued prompt's queue re-read after a Cancel that may have landed (C
       ).length;
     const path = await unread({ base: 1, max: 4 });
     const before = path.reads();
-    await wait(30);
+    // Same real-timer backoff as the case above: wait for the re-reads, and
+    // then for one of them to land, instead of a fixed 30 ms.
+    await untilQueueReread(
+      () => path.reads() > before + 2,
+      () =>
+        `The queue was read ${path.reads()} times; a backoff re-read past ${before + 2} never arrived`,
+    );
     expect(path.reads()).toBeGreaterThan(before + 2);
     expect(lostReads()).toBe(1);
     core.snapshotFailsFor = null;
-    await wait(30);
+    await untilQueueReread(
+      () => path.landed(),
+      () => 'A queue read never landed once the snapshot could be read',
+    );
     expect(path.landed()).toBe(true);
     expect(lostReads()).toBe(1);
     path.desktop.backend.closeAll();

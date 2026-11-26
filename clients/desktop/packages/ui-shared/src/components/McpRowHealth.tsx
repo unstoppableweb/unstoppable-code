@@ -1,10 +1,10 @@
 import type { JSX } from 'react';
 import type { McpRowHealthModel } from '../lib/mcp-row-health';
-import { Dot } from './Badge';
-import { Tooltip } from './Tooltip';
-import { ControlButton } from './Button';
+import { Dot } from '../primitives/Badge';
+import { Tooltip } from '../primitives/Tooltip';
+import { ControlButton } from '../primitives/Button';
 import { AlertTriangle, CheckIcon } from '../icons/AppIcons';
-import { LoadingSpinner } from './LoadingSpinner';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
 import { useItemStateMarks } from './ItemStateMark';
 
 const DOT_TONE = {

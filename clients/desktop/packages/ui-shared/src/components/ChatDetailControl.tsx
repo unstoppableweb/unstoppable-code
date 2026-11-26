@@ -2,7 +2,7 @@
 
 import type { JSX } from 'react';
 import { CHAT_DETAILS, type ChatDetail } from '@canopy/protocol/chat-detail';
-import { SegmentedControl } from './SegmentedControl';
+import { SegmentedControl } from '../primitives/SegmentedControl';
 
 export const CHAT_DETAIL_LABEL = 'Chat detail';
 

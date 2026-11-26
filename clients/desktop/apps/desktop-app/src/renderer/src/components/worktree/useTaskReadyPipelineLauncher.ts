@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useRef,
   useState,
   type Dispatch,
   type SetStateAction,
@@ -8,7 +9,13 @@ import {
   WORKSPACE_ROOT_REPO_ID,
   WORKSPACE_ROOT_REPO_NAME,
 } from '@canopy/desktop-shared/types';
-import type { PipelineData } from '@canopy/execution-engine/types/pipeline';
+import type {
+  PipelineData,
+  PipelineInfo,
+  PipelineLookupRequest,
+} from '@canopy/execution-engine/types/pipeline';
+import { reportClientAppError } from '@canopy/desktop-instrumentation/client';
+import { loadDisabledPipelineIdsBestEffort } from '@/lib/pipelineEnablement';
 import type { PipelineExecutionScope } from '@canopy/protocol/pipelines';
 import type {
   PipelineRepoChoice,
@@ -20,6 +27,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useProjectsStore } from '@/stores/projectsStore';
 import { useNavigationStore } from '@/stores/navigationStore';
 import { usePipelineRunsStore } from '@/stores/pipelineRunsStore';
+import { useWorkspaceContextStore } from '@/stores/workspaceContextStore';
 
 /**
  * Resolved launch target for a `task_ready` pipeline run, decoupled from
@@ -55,6 +63,61 @@ export interface TaskReadyPipelineLaunchContext {
    * concept).
    */
   executionScope: PipelineExecutionScope;
+  /** The workflow the picker opens on, captured with this launch's task. */
+  initialPipeline?: TaskReadyPipelinePick;
+  /**
+   * `attach` opens the picker to choose a workflow for the composer
+   * (CAN-7513): its main action inserts the workflow instead of running it.
+   * Absent for a run.
+   */
+  purpose?: 'attach';
+  /**
+   * An attached workflow Send could not run as inserted (CAN-7513): its
+   * definition or target changed since Insert, or its run failed. The picker
+   * opens on it with its inserted settings for review.
+   */
+  review?: TaskReadyPipelineInsertion;
+}
+
+/** How a `launch` of an attached workflow ended. */
+export type TaskReadyPipelineLaunchOutcome =
+  /** The run was dispatched. */
+  | 'dispatched'
+  /** The picker opened on the workflow for review (see `review`). */
+  | 'review'
+  /** The target could not be resolved, or a later Send replaced this one. */
+  | 'unresolved';
+
+/** A remembered workflow pick: which definition, not just its id. */
+export interface TaskReadyPipelinePick {
+  readonly id: string;
+  readonly source: PipelineInfo['source'];
+}
+
+/** Per-launch choices `open` stores with the launch's task and target. */
+export interface TaskReadyPipelineLaunchOptions {
+  /** Preselects this workflow in the picker (CAN-7261). */
+  initialPipeline?: TaskReadyPipelinePick;
+  /** See {@link TaskReadyPipelineLaunchContext.purpose}. */
+  purpose?: 'attach';
+  /**
+   * Settings to start the picker from: the attached workflow's, when it is
+   * opened again to change it (CAN-7513).
+   */
+  review?: TaskReadyPipelineInsertion;
+}
+
+/**
+ * A workflow inserted into the composer with everything its run needs, as
+ * the picker's settings step left them (CAN-7513). `launch` runs it without
+ * opening the picker.
+ */
+export interface TaskReadyPipelineInsertion extends TaskReadyPipelinePick {
+  readonly pipeline: PipelineData;
+  readonly inputs: Record<string, string> | undefined;
+  readonly selectedRepoId: string | undefined;
+  readonly pluginCollectionContext: PipelinePluginCollectionRunContext;
+  readonly watcherSelection: PipelineWatcherSelection | null;
 }
 
 export interface UseTaskReadyPipelineLauncherResult {
@@ -78,6 +141,7 @@ export interface UseTaskReadyPipelineLauncherResult {
     workspaceId: string,
     taskText: string,
     target: TaskReadyPipelineLaunchTarget,
+    options?: TaskReadyPipelineLaunchOptions,
   ) => Promise<boolean>;
   /** No-ops while a run is in flight, matching the original inline handler. */
   close: () => void;
@@ -106,6 +170,20 @@ export interface UseTaskReadyPipelineLauncherResult {
     selectedRepoId: string | undefined,
     pluginCollectionContext: PipelinePluginCollectionRunContext,
   ) => Promise<boolean>;
+  /**
+   * Resolves the target like `open`, then runs an inserted workflow straight
+   * away, without the picker (CAN-7513), but only as it was inserted: the
+   * definition is read again and must match the one inserted, turned on, and
+   * `targetChanged` false. Otherwise, or when the run fails, the picker opens
+   * on the workflow for review with its inserted settings.
+   */
+  launch: (
+    workspaceId: string,
+    taskText: string,
+    target: TaskReadyPipelineLaunchTarget,
+    insertion: TaskReadyPipelineInsertion,
+    targetChanged: boolean,
+  ) => Promise<TaskReadyPipelineLaunchOutcome>;
 }
 
 /**
@@ -114,54 +192,107 @@ export interface UseTaskReadyPipelineLauncherResult {
  * pipeline-mode send can open and run the `task_ready` pipeline picker flow
  * without duplicating the cwd-resolution and deferred-enqueue logic.
  */
+/** Where an inserted workflow's definition is read again, by its source. */
+function currentDefinitionLookup(
+  insertion: TaskReadyPipelineInsertion,
+  cwd: string,
+): PipelineLookupRequest | null {
+  const info = insertion.pipeline.info;
+  switch (info.source) {
+    case 'project':
+      return info.filePath
+        ? { id: info.id, cwd, filePath: info.filePath }
+        : null;
+    case 'shared':
+      return info.remoteId
+        ? { source: 'shared', remoteId: info.remoteId }
+        : null;
+    default:
+      return { id: info.id, source: info.source };
+  }
+}
+
+/** The inserted workflow's definition as it is now, or null when gone. */
+async function readCurrentDefinition(
+  insertion: TaskReadyPipelineInsertion,
+  cwd: string,
+): Promise<PipelineData | null> {
+  const lookup = currentDefinitionLookup(insertion, cwd);
+  if (lookup === null) return null;
+  try {
+    const result = await window.pipelines.get(lookup);
+    return result.success && result.data ? result.data : null;
+  } catch (error: unknown) {
+    // An unreadable definition is reviewed, never run blind.
+    reportClientAppError(error);
+    return null;
+  }
+}
+
+/** Whether two reads of a workflow define the same run. */
+function isSameDefinition(a: PipelineData, b: PipelineData): boolean {
+  return (
+    a.info.source === b.info.source &&
+    JSON.stringify(a.content) === JSON.stringify(b.content)
+  );
+}
+
 export function useTaskReadyPipelineLauncher(): UseTaskReadyPipelineLauncherResult {
   const projects = useProjectsStore((state) => state.projects);
   const [ctx, setCtx] = useState<TaskReadyPipelineLaunchContext | null>(null);
+  const openGenerationRef = useRef(0);
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [watcherSelection, setWatcherSelection] =
     useState<PipelineWatcherSelection | null>(null);
 
-  const open = useCallback(
+  /**
+   * The launch context for `target`: its working directory, repository
+   * choices and execution scope. `null` when the target can't be resolved.
+   */
+  const resolveContext = useCallback(
     async (
       workspaceId: string,
       taskText: string,
       target: TaskReadyPipelineLaunchTarget,
-    ): Promise<boolean> => {
+      options: TaskReadyPipelineLaunchOptions,
+    ): Promise<TaskReadyPipelineLaunchContext | null> => {
+      const launchOptions = {
+        ...(options.initialPipeline === undefined
+          ? {}
+          : { initialPipeline: options.initialPipeline }),
+        ...(options.purpose === undefined ? {} : { purpose: options.purpose }),
+      };
       const workspace = projects.find((p) => p.id === workspaceId);
-      if (!workspace) return false;
+      if (!workspace) return null;
 
       if (target.kind === 'cowork') {
-        if (workspace.type !== 'cowork') return false;
-
+        if (workspace.type !== 'cowork') return null;
         let cwd: string;
         try {
           cwd = await window.api.homeGetCoworkRoot({ workspaceId });
         } catch {
-          return false;
+          return null;
         }
-        if (!cwd) return false;
-
-        setRunError(null);
-        setCtx({
+        if (!cwd) return null;
+        return {
           workspaceId,
           taskText,
           cwd,
           repoChoices: [],
           target,
           executionScope: 'directory',
-        });
-        return true;
+          ...launchOptions,
+        };
       }
 
-      if (workspace.type === 'cowork') return false;
+      if (workspace.type === 'cowork') return null;
 
       if (target.kind === 'worktree') {
         const worktreeExists = workspace.worktrees.some(
           (worktree) => worktree.id === target.worktreeId,
         );
-        if (!worktreeExists) return false;
-
+        if (!worktreeExists) return null;
         let cwd: string;
         try {
           cwd = await window.api.getWorktreePath({
@@ -169,20 +300,18 @@ export function useTaskReadyPipelineLauncher(): UseTaskReadyPipelineLauncherResu
             worktreeId: target.worktreeId,
           });
         } catch {
-          return false;
+          return null;
         }
-        if (!cwd) return false;
-
-        setRunError(null);
-        setCtx({
+        if (!cwd) return null;
+        return {
           workspaceId,
           taskText,
           cwd,
           repoChoices: [],
           target,
           executionScope: 'worktree',
-        });
-        return true;
+          ...launchOptions,
+        };
       }
 
       // `new-worktree` / `branch` — resolve the workspace-level cwd (single-repo
@@ -204,20 +333,48 @@ export function useTaskReadyPipelineLauncher(): UseTaskReadyPipelineLauncherResu
           repoChoices.push({ repoId: repo.id, repoName: repo.name });
         }
       }
-      if (!cwd) return false;
-
-      setRunError(null);
-      setCtx({
+      if (!cwd) return null;
+      return {
         workspaceId,
         taskText,
         cwd,
         repoChoices,
         target,
         executionScope: 'worktree',
-      });
-      return true;
+        ...launchOptions,
+      };
     },
     [projects],
+  );
+
+  const open = useCallback(
+    async (
+      workspaceId: string,
+      taskText: string,
+      target: TaskReadyPipelineLaunchTarget,
+      options: TaskReadyPipelineLaunchOptions = {},
+    ): Promise<boolean> => {
+      // Only the newest open or launch publishes: an earlier one still
+      // resolving its path must not land its task and target after a later
+      // Send.
+      const generation = ++openGenerationRef.current;
+      const resolved = await resolveContext(
+        workspaceId,
+        taskText,
+        target,
+        options,
+      );
+      if (resolved === null || generation !== openGenerationRef.current)
+        return false;
+      setRunError(null);
+      setCtx(
+        options.review === undefined
+          ? resolved
+          : { ...resolved, review: options.review },
+      );
+      return true;
+    },
+    [resolveContext],
   );
 
   const close = useCallback((): void => {
@@ -250,6 +407,8 @@ export function useTaskReadyPipelineLauncher(): UseTaskReadyPipelineLauncherResu
       pipeline: PipelineData,
       inputs: Record<string, string> | undefined,
       pluginCollectionContext: PipelinePluginCollectionRunContext,
+      watcher: PipelineWatcherSelection | null,
+      checkedDefinition: boolean,
     ): Promise<boolean> => {
       try {
         const result = await window.pipelines.execute(pipeline.content, {
@@ -266,8 +425,29 @@ export function useTaskReadyPipelineLauncher(): UseTaskReadyPipelineLauncherResu
           eventName: 'task_ready',
           eventData: { task_ready: { task_text: taskText } },
           ...(inputs && Object.keys(inputs).length > 0 ? { inputs } : {}),
+          // Main refuses the run if what it loads is not what was checked.
+          ...(checkedDefinition ? { requireSentDefinition: true } : {}),
+          // The watcher chosen in the dialog, as the queued path sends it.
+          ...(watcher
+            ? {
+                appAdvisorPipelineWatchers: [
+                  {
+                    destination: watcher.destination,
+                    watcher: watcher.followUpInstruction
+                      ? { followUpInstruction: watcher.followUpInstruction }
+                      : {},
+                  },
+                ],
+              }
+            : {}),
           pluginCollectionPreferences: pluginCollectionContext.preferences,
           modelConfig: pluginCollectionContext.modelConfig,
+          ...(pluginCollectionContext.modelAliasPreferences
+            ? {
+                modelAliasPreferences:
+                  pluginCollectionContext.modelAliasPreferences,
+              }
+            : {}),
           ...(pluginCollectionContext.pipelinePreferenceLocator
             ? {
                 pipelinePreferenceLocator:
@@ -319,16 +499,19 @@ export function useTaskReadyPipelineLauncher(): UseTaskReadyPipelineLauncherResu
     [],
   );
 
-  const run = useCallback(
+  /** Runs `pipeline` for the launch `ctx`, with `watcher` for deferred runs. */
+  const runInContext = useCallback(
     async (
+      ctx: TaskReadyPipelineLaunchContext,
+      watcher: PipelineWatcherSelection | null,
       pipelineId: string,
       pipeline: PipelineData,
       inputs: Record<string, string> | undefined,
       selectedRepoId: string | undefined,
       pluginCollectionContext: PipelinePluginCollectionRunContext,
+      /** The definition was checked against the one inserted (CAN-7513). */
+      checkedDefinition = false,
     ): Promise<boolean> => {
-      if (!ctx) return false;
-
       setRunning(true);
       setRunError(null);
 
@@ -342,6 +525,8 @@ export function useTaskReadyPipelineLauncher(): UseTaskReadyPipelineLauncherResu
           pipeline,
           inputs,
           pluginCollectionContext,
+          watcher,
+          checkedDefinition,
         );
       }
 
@@ -402,8 +587,15 @@ export function useTaskReadyPipelineLauncher(): UseTaskReadyPipelineLauncherResu
           eventName: 'task_ready',
           eventData: { task_ready: { task_text: ctx.taskText } },
           ...(inputs && Object.keys(inputs).length > 0 ? { inputs } : {}),
+          ...(checkedDefinition ? { requireSentDefinition: true } : {}),
           pluginCollectionPreferences: pluginCollectionContext.preferences,
           modelConfig: pluginCollectionContext.modelConfig,
+          ...(pluginCollectionContext.modelAliasPreferences
+            ? {
+                modelAliasPreferences:
+                  pluginCollectionContext.modelAliasPreferences,
+              }
+            : {}),
           ...(pluginCollectionContext.pipelinePreferenceLocator
             ? {
                 pipelinePreferenceLocator:
@@ -422,13 +614,12 @@ export function useTaskReadyPipelineLauncher(): UseTaskReadyPipelineLauncherResu
             : {}),
           pipelineName: pipeline.info.name,
           taskText: ctx.taskText,
-          ...(watcherSelection
+          ...(watcher
             ? {
-                watcherDestination: watcherSelection.destination,
-                ...(watcherSelection.followUpInstruction
+                watcherDestination: watcher.destination,
+                ...(watcher.followUpInstruction
                   ? {
-                      watcherFollowUpInstruction:
-                        watcherSelection.followUpInstruction,
+                      watcherFollowUpInstruction: watcher.followUpInstruction,
                     }
                   : {}),
               }
@@ -449,7 +640,85 @@ export function useTaskReadyPipelineLauncher(): UseTaskReadyPipelineLauncherResu
         return false;
       }
     },
-    [ctx, watcherSelection, runImmediately],
+    [runImmediately],
+  );
+
+  const run = useCallback(
+    async (
+      pipelineId: string,
+      pipeline: PipelineData,
+      inputs: Record<string, string> | undefined,
+      selectedRepoId: string | undefined,
+      pluginCollectionContext: PipelinePluginCollectionRunContext,
+    ): Promise<boolean> =>
+      ctx === null
+        ? false
+        : runInContext(
+            ctx,
+            watcherSelection,
+            pipelineId,
+            pipeline,
+            inputs,
+            selectedRepoId,
+            pluginCollectionContext,
+          ),
+    [ctx, watcherSelection, runInContext],
+  );
+
+  const launch = useCallback(
+    async (
+      workspaceId: string,
+      taskText: string,
+      target: TaskReadyPipelineLaunchTarget,
+      insertion: TaskReadyPipelineInsertion,
+      targetChanged: boolean,
+    ): Promise<TaskReadyPipelineLaunchOutcome> => {
+      const generation = ++openGenerationRef.current;
+      // A launch belongs to the account it started under: one that changes
+      // while it resolves drops the launch, with nothing run or reviewed.
+      const accountEpoch = useWorkspaceContextStore.getState().accountEpoch;
+      const isCurrent = (): boolean =>
+        generation === openGenerationRef.current &&
+        accountEpoch === useWorkspaceContextStore.getState().accountEpoch;
+      const resolved = await resolveContext(workspaceId, taskText, target, {
+        initialPipeline: { id: insertion.id, source: insertion.source },
+      });
+      if (resolved === null || !isCurrent()) return 'unresolved';
+      const review = (): TaskReadyPipelineLaunchOutcome => {
+        setCtx({ ...resolved, review: insertion });
+        return 'review';
+      };
+      // The one check: the definition Send would run is the one inserted.
+      const [current, disabledIds] = await Promise.all([
+        targetChanged
+          ? Promise.resolve(null)
+          : readCurrentDefinition(insertion, resolved.cwd),
+        loadDisabledPipelineIdsBestEffort(),
+      ]);
+      if (!isCurrent()) return 'unresolved';
+      if (
+        current === null ||
+        disabledIds.has(insertion.id) ||
+        !isSameDefinition(current, insertion.pipeline)
+      ) {
+        setRunError(null);
+        return review();
+      }
+      const dispatched = await runInContext(
+        resolved,
+        insertion.watcherSelection,
+        insertion.id,
+        current,
+        insertion.inputs,
+        insertion.selectedRepoId,
+        insertion.pluginCollectionContext,
+        true,
+      );
+      if (dispatched) return 'dispatched';
+      // A failed run shows `runError` in the picker.
+      return isCurrent() ? review() : 'unresolved';
+    },
+    [resolveContext, runInContext],
   );
 
   return {
@@ -461,5 +730,6 @@ export function useTaskReadyPipelineLauncher(): UseTaskReadyPipelineLauncherResu
     open,
     close,
     run,
+    launch,
   };
 }

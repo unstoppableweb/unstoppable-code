@@ -40,6 +40,16 @@ import {
   seedRetainedActiveChatWatchers,
 } from './retained-worktrees.mjs';
 import { w5StoreLaunchEnv } from './w5-store-arms.mjs';
+import {
+  REMOTE_CONTROL_ELECTRON_ARGS,
+  connectRemoteControl,
+  markRemoteControlCaptureEnd,
+  markRemoteControlCaptureStart,
+  prepareRemoteControl,
+  remoteControlPartialEvidence,
+  teardownRemoteControl,
+  verifyRemoteControlCapture,
+} from './remote-control-connected/connected.mjs';
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
@@ -105,11 +115,7 @@ import {
   summarizeLabTranscriptCheckpoint,
   updateLabTranscript,
 } from '../electron/lab-transcript-driver.mjs';
-import {
-  CanopyAppDriver,
-  closePanelTab,
-  expandDefaultActivityRail,
-} from '../electron/canopyApp.mjs';
+import { CanopyAppDriver, closePanelTab } from '../electron/canopyApp.mjs';
 import { selectModelOption } from '../electron/model-selection-fixture.mjs';
 import {
   commitArchiveSiblingProviderMarker,
@@ -8100,7 +8106,11 @@ const FRAME_SMOOTHNESS_WEBSITE_SETTLE_MS = 1_200;
 async function sweepWindowSize(electronApp, page, axis) {
   const { bounds, minimum } = await electronApp.evaluate(
     ({ BrowserWindow }) => {
-      const [window] = BrowserWindow.getAllWindows();
+      // Not a hidden Remote Control bridge window (a `data:` page that
+      // `--remote-control host` opens and getAllWindows may list first).
+      const window = BrowserWindow.getAllWindows().find(
+        (candidate) => !candidate.webContents.getURL().startsWith('data:'),
+      );
       const [width, height] = window.getMinimumSize();
       return { bounds: window.getBounds(), minimum: { width, height } };
     },
@@ -8114,7 +8124,13 @@ async function sweepWindowSize(electronApp, page, axis) {
   const setSize = (size) =>
     electronApp.evaluate(
       ({ BrowserWindow }, next) => {
-        BrowserWindow.getAllWindows()[0].setBounds(next);
+        // Not a hidden Remote Control bridge window (a `data:` page that
+        // `--remote-control host` opens and getAllWindows may list first).
+        BrowserWindow.getAllWindows()
+          .find(
+            (candidate) => !candidate.webContents.getURL().startsWith('data:'),
+          )
+          .setBounds(next);
       },
       { ...bounds, [axis]: size },
     );
@@ -8136,7 +8152,11 @@ async function sweepWindowSize(electronApp, page, axis) {
  */
 async function startWebsiteResizeProbe(electronApp) {
   await electronApp.evaluate(({ BrowserWindow, View }) => {
-    const [window] = BrowserWindow.getAllWindows();
+    // Not a hidden Remote Control bridge window (a `data:` page that
+    // `--remote-control host` opens and getAllWindows may list first).
+    const window = BrowserWindow.getAllWindows().find(
+      (candidate) => !candidate.webContents.getURL().startsWith('data:'),
+    );
     const stats = {
       windowResizes: 0,
       viewMoves: 0,
@@ -8273,13 +8293,19 @@ async function measureWebsiteResize({ electronApp, page, tasks, iterations }) {
     }, binding.browserId);
   const nativeViews = () =>
     electronApp.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].contentView.children.map((view) => ({
-        kind: view.constructor.name,
-        bounds: view.getBounds(),
-        visible:
-          typeof view.getVisible === 'function' ? view.getVisible() : null,
-        children: view.children.length,
-      })),
+      // Not a hidden Remote Control bridge window (a `data:` page that
+      // `--remote-control host` opens and getAllWindows may list first).
+      BrowserWindow.getAllWindows()
+        .find(
+          (candidate) => !candidate.webContents.getURL().startsWith('data:'),
+        )
+        .contentView.children.map((view) => ({
+          kind: view.constructor.name,
+          bounds: view.getBounds(),
+          visible:
+            typeof view.getVisible === 'function' ? view.getVisible() : null,
+          children: view.children.length,
+        })),
     );
   const before = { pane: await paneState(), views: await nativeViews() };
   await startWebsiteResizeProbe(electronApp);
@@ -17499,7 +17525,9 @@ async function runPlanOpen({ page, app, config, tasks, fixture }) {
       // row (the side-open policy collapses the full-height rail it splits
       // from); re-expand it so the next iteration can click the row again.
       // Kept outside both the 'plan_close' and next 'plan_open' timed steps.
-      await expandDefaultActivityRail(page);
+      // Through the rail's own control: release-like bundles have no panel
+      // test API, which expandDefaultActivityRail requires.
+      await openActivityRail(page);
     }
   }
 
@@ -22988,6 +23016,10 @@ async function runPerformanceScenarioAttempt(
   let monitor;
   let diskIo = null;
   let fixture;
+  // `--remote-control` (CAN-7852), either role: set up between the shell and
+  // the measured window, verified after it, torn down before the app closes.
+  let remoteControl = null;
+  let remoteControlEvidence;
 
   try {
     fixture = await definition.prepare(userDataDir, config, {
@@ -22995,6 +23027,20 @@ async function runPerformanceScenarioAttempt(
     });
     if (options.releaseLike === true) {
       seedReleaseLikeAiCreditsRoutingMode(userDataDir);
+    }
+    if (config.remoteControl) {
+      if (
+        definition.monitorFromDomContentLoaded ||
+        options.releaseLike === true
+      )
+        throw new Error(
+          `Performance scenario ${name} cannot run with --remote-control ${config.remoteControl.role}`,
+        );
+      remoteControl = await prepareRemoteControl({
+        config: config.remoteControl,
+        runtime: options.remoteControlRuntime,
+        userDataDir,
+      });
     }
     // `--renderer-code-cache-scheme`: launchCanopy seeds the Experiments
     // preference from its local env switch before every launch.
@@ -23070,6 +23116,7 @@ async function runPerformanceScenarioAttempt(
     const electronArgs = [
       ...(diagnosticLaunch?.electronArgs ?? []),
       ...(startupTracePath ? startupTraceElectronArgs(startupTracePath) : []),
+      ...(remoteControl ? REMOTE_CONTROL_ELECTRON_ARGS : []),
     ];
     // Per-process disk bytes for the whole app tree; the hidden browser-profile
     // study keeps its exact footprint. The reader, a native helper build on
@@ -23255,6 +23302,11 @@ async function runPerformanceScenarioAttempt(
         ]);
       } else {
         await waitForShell();
+        if (remoteControl)
+          await connectRemoteControl(remoteControl, {
+            page,
+            electronApp,
+          });
         await definition.beforeCapture?.({
           page,
           app,
@@ -23267,6 +23319,8 @@ async function runPerformanceScenarioAttempt(
         });
         if (definition.beforeCapture) measuredStartedAt = performance.now();
         await startCapture();
+        // The Remote Control window opens once the monitor is running.
+        if (remoteControl) await markRemoteControlCaptureStart(remoteControl);
         await tasks.traceMark?.('workload:start')?.catch(() => undefined);
         counters = await definition.run({
           page,
@@ -23303,9 +23357,26 @@ async function runPerformanceScenarioAttempt(
         foreground.atEnd = await measuredWindowState(electronApp, page);
       // Start the closing disk read at the boundary in parallel with monitor
       // stop, then await both before post-capture checks can issue any I/O.
+      // One cutoff for everything: the Remote Control window's end is taken
+      // as the monitor and disk sampler start stopping, and its evidence is
+      // gathered while they stop, not before.
+      let remoteControlClosingError = null;
+      const remoteControlClosing = remoteControl
+        ? markRemoteControlCaptureEnd(remoteControl).catch((error) => {
+            remoteControlClosingError = error;
+          })
+        : null;
       const diskClosing = diskIo?.stop();
       monitoring = await monitor.stop();
       const disk = await diskClosing;
+      await remoteControlClosing;
+      // Reported once the collectors have stopped, through the sample's
+      // normal error path, so teardown still runs.
+      if (remoteControlClosingError) throw remoteControlClosingError;
+      // Every hold must have stayed connected through the measured window;
+      // a throw fails the sample like one from `run`.
+      if (remoteControl)
+        remoteControlEvidence = await verifyRemoteControlCapture(remoteControl);
       // Heavy checks (heap snapshots, transcript paging) stay outside capture;
       // a throw fails the scenario like one from `run`.
       // Graph verification still counts in wall_ms, like projects-retention's
@@ -23417,6 +23488,9 @@ async function runPerformanceScenarioAttempt(
         ...(windowEvidence ? { windowEvidence } : { foreground }),
         monitoring,
         responsiveness,
+        ...(remoteControlEvidence
+          ? { remoteControl: remoteControlEvidence }
+          : {}),
         ...(gitAttributionCapture
           ? {
               gitAttribution: gitAttributionCapture.summarize({
@@ -23490,6 +23564,9 @@ async function runPerformanceScenarioAttempt(
           ...(clientFeatureFlags ? { clientFeatureFlags } : {}),
           monitoring,
           responsiveness,
+          ...(remoteControl
+            ? { remoteControl: remoteControlPartialEvidence(remoteControl) }
+            : {}),
           ...(gitAttributionCapture
             ? {
                 gitAttribution: gitAttributionCapture.summarize({
@@ -23509,6 +23586,13 @@ async function runPerformanceScenarioAttempt(
           ...(windowEvidence ? { windowEvidence } : { foreground }),
           launch: { firstWindowMs, domContentLoadedMs, shellReadyMs },
           monitoring,
+          ...(remoteControl
+            ? {
+                remoteControl:
+                  error.remoteControl ??
+                  remoteControlPartialEvidence(remoteControl),
+              }
+            : {}),
           ...(gitAttributionCapture
             ? {
                 gitAttribution: gitAttributionCapture.summarize({
@@ -23525,6 +23609,9 @@ async function runPerformanceScenarioAttempt(
       throw error;
     }
   } finally {
+    // Before the app closes, whatever failed: release any holds and stop
+    // every scripted peer, so none outlives the sample.
+    if (remoteControl) await teardownRemoteControl(remoteControl);
     if (definition.cleanup) {
       await definition.cleanup(fixture).catch((error) => {
         console.error(`[perf] Failed to clean up ${name}:`, error);

@@ -1,4 +1,5 @@
 export {
+  activateWorktreeDiscardComputer,
   worktreeDiscardStoreFor,
   worktreeRemovalRetryable,
   type WorktreeDiscardAttemptError,

@@ -148,7 +148,7 @@ function prompt(
  *    checkout has no browser to return from, so its pending state keeps the
  *    purchase action.
  * 6. A queued message offers Try again beside the purchase
- *    (`QUEUED_MESSAGE_RETAINED_COPY`).
+ *    (`queuedMessageCopy`).
  */
 export function resolveCreditsPrompt(state: CreditsPromptState): CreditsPrompt {
   if (state.viewer === 'guest') {

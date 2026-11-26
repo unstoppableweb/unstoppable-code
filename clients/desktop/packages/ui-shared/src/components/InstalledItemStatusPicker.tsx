@@ -1,6 +1,6 @@
 'use client';
 
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 import { useId, useRef, useState, type JSX } from 'react';
 import type {
   InstalledItemStatus,
@@ -14,10 +14,13 @@ import {
   INSTALLED_ITEM_STATUS_ORDER,
   installedItemStatusDescription,
 } from '../lib/installed-item-status';
-import { DropdownMenuItem, DropdownMenuItemIcon } from './DropdownMenu';
-import { FloatingMenu } from './FloatingMenu';
-import { LoadingSpinner } from './LoadingSpinner';
-import { Tooltip } from './Tooltip';
+import {
+  DropdownMenuItem,
+  DropdownMenuItemIcon,
+} from '../primitives/DropdownMenu';
+import { FloatingMenu } from '../primitives/FloatingMenu';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
+import { Tooltip } from '../primitives/Tooltip';
 
 /**
  * Active / Available / Disabled picker for one installed item (CAN-4255).

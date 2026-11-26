@@ -5,7 +5,7 @@ import {
   FieldError,
   Notice,
   NoticeButton,
-  TextLinkButton,
+  Button,
 } from '@canopy/ui-shared/components';
 import { parseStrictGitHubPullRequestReference } from '@canopy/protocol/portable-tasks/pull-request-reference';
 import type { ReviewApprovalReadinessInput } from '@canopy/protocol/settings/github-review-approvals';
@@ -100,7 +100,7 @@ export function ReviewApprovalLinkNotice({
       >
         <p className="fg-tertiary text-pretty">
           {copy.body}{' '}
-          <TextLinkButton
+          <Button
             data-testid="review-approval-link-action"
             // `aria-disabled`, not `disabled`: focus stays on the button.
             aria-disabled={busy ? true : undefined}
@@ -109,9 +109,11 @@ export function ReviewApprovalLinkNotice({
             onClick={() => {
               if (!busy) onLink();
             }}
+            variant="link"
+            data-settings-control="link"
           >
             {busy ? 'Linking…' : label}
-          </TextLinkButton>
+          </Button>
         </p>
         {error === null ? null : (
           <FieldError id={errorId} announce>

@@ -1,4 +1,4 @@
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import { useEffect, useState, type JSX } from 'react';
 import type {
   DetectedMcpServerInfo,

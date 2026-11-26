@@ -17,6 +17,10 @@ export {
   type SidebarNoneFoundRowProps,
 } from './SidebarNoneFoundRow';
 export {
+  SidebarComputerStatusRow,
+  type SidebarComputerStatusRowProps,
+} from './SidebarComputerStatusRow';
+export {
   SidebarOfflineRow,
   type SidebarOfflineRowProps,
 } from './SidebarOfflineRow';

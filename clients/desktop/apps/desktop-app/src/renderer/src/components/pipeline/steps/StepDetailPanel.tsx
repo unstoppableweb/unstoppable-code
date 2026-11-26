@@ -1,4 +1,4 @@
-import type { JSX } from 'react';
+import { useRef, useState, type JSX } from 'react';
 import type {
   LogFormatHint,
   PipelineScalar,
@@ -8,9 +8,11 @@ import {
   Stack,
   Divider,
   Heading,
+  Notice,
   SegmentedControl,
   type SegmentedControlOption,
 } from '@canopy/ui-shared/components';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { FormField } from '../shared/FormField';
 import { TextField } from '../shared/TextField';
 import { TextAreaField } from '../shared/TextAreaField';
@@ -47,6 +49,19 @@ interface StepDetailPanelProps {
   onChange: (step: Step) => void;
   onClose: () => void;
   readonly?: boolean;
+  /**
+   * Sets the step's ID through a check, and returns why a new ID was
+   * refused, or null once applied. The Designer
+   * passes its checked rename (CAN-4224 phase 02), which refuses an ID that
+   * another step reads.
+   */
+  onRenameId?: (id: string | undefined) => string | null;
+  /**
+   * Keeps the whole step read-only and says why. The Designer sets it on a
+   * router step that isn't a split it draws as paths: other jobs'
+   * conditions read its routes, and it can't change both together.
+   */
+  lockedReason?: string;
   /**
    * Values the steps' `inputs.*` stand for, such as a workflow's first
    * schedule's (CAN-5782), to resolve a create step's project.
@@ -122,12 +137,43 @@ export function StepDetailPanel({
   stepIndex,
   onChange,
   onClose,
-  readonly = false,
+  readonly: readonlyProp = false,
+  onRenameId,
+  lockedReason,
   inputValues,
   sendAs,
 }: StepDetailPanelProps): JSX.Element {
+  const readonly = readonlyProp || lockedReason !== undefined;
+  const [idDraft, setIdDraft] = useState(step.id ?? '');
+  const [idError, setIdError] = useState<string | null>(null);
+  // An ID changed elsewhere (undo, YAML) shows in the field. Each selection
+  // mounts its own panel, so a draft never carries to another step.
+  const shownId = useRef(step.id);
+  if (shownId.current !== step.id) {
+    shownId.current = step.id;
+    setIdDraft(step.id ?? '');
+    setIdError(null);
+  }
+
+  /**
+   * Applies each change as it is typed, like the panel's other fields, so
+   * the draft always holds the ID shown or says why it was refused.
+   */
+  function changeId(value: string): void {
+    setIdDraft(value);
+    if (!onRenameId) return;
+    const next = value.trim() || undefined;
+    const refused = next === (step.id || undefined) ? null : onRenameId(next);
+    setIdError(
+      refused === null
+        ? null
+        : `${refused} The step keeps ${step.id ? `the ID “${step.id}”` : 'no ID'}.`,
+    );
+  }
+
   const mode = getMode(step);
-  const headerLabel = step.id || `Step ${stepIndex + 1}`;
+  // By number: a step's ID is authored, and its field shows it below.
+  const headerLabel = `Step ${String(stepIndex + 1)}`;
 
   function handleModeSwitch(newMode: StepMode): void {
     if (newMode === mode) return;
@@ -215,16 +261,47 @@ export function StepDetailPanel({
 
   return (
     <PipelineDetailPanelShell title={headerLabel} onClose={onClose}>
+      {lockedReason !== undefined && (
+        <Notice intent="attention" role="none">
+          {lockedReason}
+        </Notice>
+      )}
       {/* Step ID */}
-      <FormField label="Step ID" hint="Optional identifier for this step">
-        <TextField
-          value={step.id || ''}
-          onChange={(e): void =>
-            handleFieldChange('id', e.target.value || undefined)
-          }
-          placeholder="e.g. build, test, deploy"
-          disabled={readonly}
-        />
+      <FormField
+        label="Step ID"
+        hint="Optional identifier for this step"
+        {...(idError !== null
+          ? {
+              // It can quote another step's authored name: never recorded.
+              error: <span className={REPLAY_BLOCK_CLASS}>{idError}</span>,
+            }
+          : {})}
+      >
+        {onRenameId ? (
+          <TextField
+            value={idDraft}
+            onChange={(e): void => changeId(e.target.value)}
+            onBlur={(): void => {
+              // Refused text never outlives the field's focus: it shows the
+              // ID the step has, which is the one a save writes.
+              if (idError !== null) {
+                setIdDraft(step.id ?? '');
+                setIdError(null);
+              }
+            }}
+            placeholder="e.g. build, test, deploy"
+            disabled={readonly}
+          />
+        ) : (
+          <TextField
+            value={step.id || ''}
+            onChange={(e): void =>
+              handleFieldChange('id', e.target.value || undefined)
+            }
+            placeholder="e.g. build, test, deploy"
+            disabled={readonly}
+          />
+        )}
       </FormField>
 
       {/* Step Name */}

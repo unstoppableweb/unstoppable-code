@@ -124,7 +124,10 @@ export function recoveryProjects(state: ArchiveListCase): RecoveryProject[] {
         : state === 'cleanup only' || state === 'cleanup unavailable'
           ? [cleanupRecovery(state === 'cleanup only')]
           : state === 'several'
-            ? recoveryActions.map(archiveRecovery)
+            ? [
+                ...recoveryActions.map(archiveRecovery),
+                setAsideRecovery(recoveryActions.length),
+              ]
             : [archiveRecovery()],
       resolutions: hasHold
         ? [
@@ -140,9 +143,26 @@ export function recoveryProjects(state: ArchiveListCase): RecoveryProject[] {
   ];
 }
 
+/** CAN-7014: nothing else is offered, so the record can be set aside. */
+export function setAsideRecovery(index = 1): WorktreeRecoveryDescription {
+  const recovery = archiveRecovery('release', index);
+  recovery.stoppingPoint = { phase: 'git-worktree-removal', state: 'failed' };
+  recovery.retained.gitSnapshot = {
+    presence: 'unknown',
+    verification: 'unknown',
+  };
+  if (recovery.diagnosis) {
+    recovery.diagnosis.verdict = 'refused';
+    recovery.diagnosis.check = 'quarantine-unqualified';
+  }
+  recovery.actions.setAside = { eligible: true };
+  return recovery;
+}
+
 export function cleanupRecovery(eligible = true): WorktreeRecoveryDescription {
   const recovery = archiveRecovery('finish');
-  recovery.check = 'completed-turn-diff-cleanup';
+  // Describe marks only eligible cleanup; a refused one keeps the generic check.
+  recovery.check = eligible ? 'completed-turn-diff-cleanup' : 'unknown';
   recovery.stoppingPoint = { phase: 'turn-diff-cleanup', state: 'failed' };
   recovery.actions.finishArchive = { eligible: false, reason: 'not-admitted' };
   if (recovery.diagnosis) {
@@ -152,6 +172,7 @@ export function cleanupRecovery(eligible = true): WorktreeRecoveryDescription {
       ? 'completed-turn-diff-cleanup'
       : 'cleanup-repositories-unavailable';
   }
+  if (!eligible) recovery.actions.setAside = { eligible: true };
   for (const key of [
     'checkout',
     'stagedCopy',

@@ -131,8 +131,12 @@ function DrawerReveal({
         className={`flow-root px-1 ${!expanded ? 'absolute inset-x-0 bottom-0' : ''} transition-[clip-path,translate,opacity] ease-drawer ${
           animate ? (expanded ? 'duration-200' : 'duration-150') : 'duration-0'
         } ${
+          // Open, the card rests on `translate: none`, which the rise
+          // eases to as it does to 0: any other value, 0 included, makes the
+          // card the containing block of the queue's fixed drag overlay,
+          // which then draws away from the pointer and drops on the wrong row.
           expanded
-            ? 'translate-y-0 opacity-100 drawer-card-clip-open'
+            ? 'translate-none opacity-100 drawer-card-clip-open'
             : 'translate-y-2 opacity-0 drawer-card-clip-closed'
         }`}
       >

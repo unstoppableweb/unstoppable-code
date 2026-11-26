@@ -8,6 +8,7 @@ import {
   SETTINGS_ACTION_TYPES,
   TRANSCRIPT_READ_ACTION_TYPES,
 } from '@canopy/agent-actions';
+import { SLACK_THREAD_ACTION_TYPES } from '@canopy/agent-actions/families/slack-thread/actions';
 import { CanopyGrantNameSchema } from '@canopy/protocol/canopy-core';
 import {
   APP_ADVISOR_ACTION_DISPOSITIONS,
@@ -29,6 +30,9 @@ const DISPATCH_ACTION_TYPES = [
     ...REMOTE_CONTROL_ACTION_TYPES,
     ...SETTINGS_ACTION_TYPES,
     ...PIPELINES_ACTION_TYPES,
+    // CAN-7749: main-only Orchestrator reads, accepted by DispatchAction but
+    // kept out of the renderer's catalog.
+    ...SLACK_THREAD_ACTION_TYPES,
   ]),
 ].sort();
 
@@ -67,7 +71,7 @@ describe('App Advisor action dispositions (CAN-4133)', () => {
       legacyReads: count((d) => d.kind === 'legacy' && d.access === 'read'),
     }).toEqual({
       coreWrites: 180,
-      coreReads: 120,
+      coreReads: 122,
       hostPresentation: 5,
       presentation: 87,
       legacyWrites: 36,

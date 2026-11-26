@@ -103,6 +103,8 @@ export const WorktreeRecoveryDescriptionSchema: z.ZodType<WorktreeRecoveryDescri
         finishArchive: action,
         discard: action,
         keepWorktree: action,
+        // Optional: an older desktop never sends it.
+        setAside: action.optional(),
       }),
       destination: z.discriminatedUnion('kind', [
         z.object({ kind: z.literal('recovery') }),
@@ -126,7 +128,8 @@ export const WorktreeRecoveryDescriptionSchema: z.ZodType<WorktreeRecoveryDescri
         (description.code === 'external.worktree_recovery_unreadable' &&
           !description.actions.retry.eligible &&
           !description.actions.finishArchive.eligible &&
-          !description.actions.discard.eligible),
+          !description.actions.discard.eligible &&
+          description.actions.setAside?.eligible !== true),
       { message: 'Unreadable journal review cannot authorize removal actions' },
     );
 

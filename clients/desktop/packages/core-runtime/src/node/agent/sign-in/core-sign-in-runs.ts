@@ -11,7 +11,7 @@ import {
 } from '@canopy/protocol/canopy-core';
 
 import type { LocalWorkerExecution } from '../../operations/local-worker';
-import type { OperationService } from '../../operations/service';
+import type { OperationServicePort } from '../../operations/service';
 
 export const CORE_SIGN_IN_RUN_KIND = 'core.signIn.run';
 export const WORKER_AGENT_SIGN_IN_RUN = 'worker.agent.signIn.run';
@@ -80,7 +80,7 @@ export type CoreSignInRunResult =
 export class CoreSignInRuns {
   constructor(
     private readonly options: {
-      operations: OperationService;
+      operations: OperationServicePort;
       localWorker: LocalWorkerExecution;
     },
   ) {

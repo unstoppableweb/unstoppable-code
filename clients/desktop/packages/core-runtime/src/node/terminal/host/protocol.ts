@@ -22,6 +22,11 @@ export interface TerminalHostLaunch {
   environment: TerminalEnvironment;
   shell: ResolvedTerminalShell;
   initialCommand?: string;
+  /**
+   * The terminal's output belongs in its worktree record (CAN-7051): the
+   * host reports its bytes. Every terminal reports first output and offsets.
+   */
+  persist?: boolean;
 }
 
 export type TerminalHostRequest =
@@ -41,8 +46,9 @@ export type TerminalHostRequest =
     }
   | { op: 'write'; terminalId: string; data: string }
   | { op: 'resize'; terminalId: string; cols: number; rows: number }
-  | { op: 'kill'; terminalId: string }
-  | { op: 'release'; terminalId: string }
+  /** `signal` is the exit reason the terminal reports (CAN-7051). */
+  | { op: 'kill'; terminalId: string; signal?: string }
+  | { op: 'release'; terminalId: string; signal?: string }
   | { op: 'list' }
   | {
       op: 'attach';
@@ -60,6 +66,8 @@ export type TerminalHostOperation = TerminalHostRequest['op'];
 
 /** One live terminal of the host. */
 export interface TerminalHostTerminal {
+  /** Monotonic within this host, never a public terminal id. */
+  lifetimeId?: number;
   session: TerminalSession;
   pid: number | null;
   cols: number;
@@ -89,6 +97,8 @@ export interface TerminalHostExit {
 
 export interface TerminalHostItem {
   terminalId: string;
+  /** The PTY lifetime the attachment opened on; it drains past that exit. */
+  lifetimeId?: number;
   fromOffset: number;
   toOffset: number;
   data: Uint8Array;
@@ -96,7 +106,7 @@ export interface TerminalHostItem {
   exit: TerminalHostExit | null;
 }
 
-export type TerminalHostEvent =
+export type TerminalHostEvent = { lifetimeId?: number } & (
   | {
       type: 'runningChanged';
       terminalId: string;
@@ -109,7 +119,20 @@ export type TerminalHostEvent =
       terminalId: string;
       /** Offset just past the terminal's last byte; absent when its host died. */
       outputOffset?: number;
-    } & TerminalHostExit);
+    } & TerminalHostExit)
+);
+
+/**
+ * What a terminal host tells its worker about output outside any attachment
+ * (CAN-7051): the bytes of a persisted terminal, in order and before its
+ * exit; a terminal's first live output (never its restored replay); and its
+ * output offset, coalesced.
+ */
+export type TerminalHostReport = { lifetimeId?: number } & (
+  | { type: 'output'; terminalId: string; toOffset: number; data: Uint8Array }
+  | { type: 'firstOutput'; terminalId: string; at: number }
+  | { type: 'offset'; terminalId: string; outputOffset: number }
+);
 
 /** Worker to host. */
 export interface TerminalHostRequestMessage {
@@ -130,7 +153,8 @@ export type TerminalHostMessage =
       outcome: 'completed' | 'cancelled';
       offset: number;
     }
-  | { kind: 'event'; event: TerminalHostEvent };
+  | { kind: 'event'; event: TerminalHostEvent }
+  | { kind: 'report'; report: TerminalHostReport };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -154,6 +178,7 @@ const HOST_MESSAGE_KINDS = new Set([
   'item',
   'end',
   'event',
+  'report',
 ]);
 
 export function isTerminalHostMessage(

@@ -24,6 +24,7 @@ export {
   getStoredPipelinePath as getPipelinePath,
   getStoredPipelineText as getPipelineText,
   listStoredPipelines as listPipelines,
+  readStoredPipelineRevision,
   saveStoredPipeline as savePipeline,
   writeStoredPipelineRemoteMetadata as writePipelineRemoteMetadata,
   updateStoredPipeline as updatePipeline,

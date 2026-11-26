@@ -41,6 +41,8 @@ interface TranscriptFieldReaderCopy {
   readonly openLabel: string;
   readonly loadingLabel: string;
   readonly unavailableMessage: string;
+  /** A read that failed; its raw reason goes behind Copy details. */
+  readonly failedMessage: string;
 }
 
 const TRANSCRIPT_FIELD_READER_COPY: Record<
@@ -51,26 +53,31 @@ const TRANSCRIPT_FIELD_READER_COPY: Record<
     openLabel: 'View full output',
     loadingLabel: 'Loading output…',
     unavailableMessage: "Couldn't load full output in this view.",
+    failedMessage: "Couldn't load full output.",
   },
   input: {
     openLabel: 'View full input',
     loadingLabel: 'Loading input…',
     unavailableMessage: "Couldn't load full input in this view.",
+    failedMessage: "Couldn't load full input.",
   },
   text: {
     openLabel: 'View full text',
     loadingLabel: 'Loading text…',
     unavailableMessage: "Couldn't load full text in this view.",
+    failedMessage: "Couldn't load full text.",
   },
   partialText: {
     openLabel: 'View full partial text',
     loadingLabel: 'Loading partial text…',
     unavailableMessage: "Couldn't load full partial text in this view.",
+    failedMessage: "Couldn't load full partial text.",
   },
   finalText: {
     openLabel: 'View full final text',
     loadingLabel: 'Loading final text…',
     unavailableMessage: "Couldn't load full final text in this view.",
+    failedMessage: "Couldn't load full final text.",
   },
 };
 
@@ -109,6 +116,7 @@ export const DeferredToolOutput = memo(function DeferredToolOutput({
   const [opened, setOpened] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
+  const [errorDetails, setErrorDetails] = useState<string>();
   const [page, setPage] = useState<ToolOutputPage>();
   const [offsets, setOffsets] = useState([0]);
   const [position, setPosition] = useState(0);
@@ -123,6 +131,7 @@ export const DeferredToolOutput = memo(function DeferredToolOutput({
     setOpened(false);
     setLoading(false);
     setError(undefined);
+    setErrorDetails(undefined);
     setPage(undefined);
     setOffsets([0]);
     setPosition(0);
@@ -141,6 +150,7 @@ export const DeferredToolOutput = memo(function DeferredToolOutput({
     setOpened(true);
     setLoading(true);
     setError(undefined);
+    setErrorDetails(undefined);
     try {
       if (!read) throw new Error(transcriptFieldUnavailable(field));
       const result = await read(identity, offset, nextController.signal);
@@ -152,11 +162,16 @@ export const DeferredToolOutput = memo(function DeferredToolOutput({
       if (request.current === token) {
         const message =
           failure instanceof Error ? failure.message : String(failure);
-        setError(
-          message === "Couldn't load full output in this view."
-            ? transcriptFieldUnavailable(field)
-            : message,
-        );
+        // Hosts that can't read a field say so with our own sentence.
+        if (
+          message === "Couldn't load full output in this view." ||
+          message === transcriptFieldUnavailable(field)
+        ) {
+          setError(transcriptFieldUnavailable(field));
+        } else {
+          setError(fieldCopy.failedMessage);
+          setErrorDetails(message);
+        }
       }
     } finally {
       if (request.current === token) setLoading(false);
@@ -173,6 +188,7 @@ export const DeferredToolOutput = memo(function DeferredToolOutput({
       opened={opened}
       loading={loading}
       error={error}
+      {...(errorDetails === undefined ? {} : { details: errorDetails })}
       openLabel={fieldCopy.openLabel}
       loadingLabel={fieldCopy.loadingLabel}
       hasPrevious={position > 0}
@@ -198,6 +214,7 @@ export const DeferredToolOutput = memo(function DeferredToolOutput({
         setPage(undefined);
         setLoading(false);
         setError(undefined);
+        setErrorDetails(undefined);
       }}
     />
   );

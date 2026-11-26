@@ -46,6 +46,8 @@ export interface SignInTerminalInput {
   cols: number;
   rows: number;
   verifiedOpenCodeExecutable?: string;
+  /** See `SignInTerminalStartRequest.remote`. */
+  remote?: boolean;
   emitter: SignInTerminalEmitter;
 }
 
@@ -196,7 +198,7 @@ export function signInCommandFor(
   verifiedOpenCodeExecutable?: string,
 ): { executable: string; args: string[] } {
   if (provider === 'antigravity')
-    throw new Error('Google sign-in uses the native ACP authentication flow.');
+    throw new Error('Google sign-in uses the native Antigravity sign-in flow.');
   if (provider === 'claude')
     return { executable: paths.claude(), args: ['auth', 'login'] };
   if (provider === 'github')
@@ -267,9 +269,13 @@ export class SignInTerminal {
       LANG: enhancedEnv.LANG ?? DEFAULT_LANG,
       // Claude Code opens the system browser with its localhost callback URL,
       // so sign-in finishes without pasting a code; overriding BROWSER would
-      // discard that URL. E2E builds must never open an OS browser. GitHub's
-      // device flow also keeps its defaults.
-      ...((provider === 'claude' && !__CANOPY_E2E__) || provider === 'github'
+      // discard that URL. That only works at this computer: a sign-in another
+      // computer started through Remote Control gets BROWSER=echo, so Claude
+      // Code prints its link and paste-code prompt into the tunneled terminal
+      // instead of opening a browser here. E2E builds must never open an OS
+      // browser. GitHub's device flow also keeps its defaults.
+      ...((provider === 'claude' && !__CANOPY_E2E__ && input.remote !== true) ||
+      provider === 'github'
         ? {}
         : { BROWSER: 'echo' }),
     };

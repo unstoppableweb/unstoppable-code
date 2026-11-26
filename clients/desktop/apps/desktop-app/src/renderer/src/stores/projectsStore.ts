@@ -462,6 +462,12 @@ export interface ProjectsState {
   } | null;
   projectLoadWarningKeys: Set<string>;
   failedWorkspaceIds: Set<string>;
+  /**
+   * Warnings from the latest applied inventory load, written in the same
+   * update as `failedWorkspaceIds`. They keep the name and failure code of a
+   * project that never reached `projects`, so Home can name it.
+   */
+  projectLoadWarnings: readonly SidebarItemsLoadWarning[];
   appliedProjectWorktreeScripts: AppliedProjectWorktreeScripts;
   appliedProjectWorktreeHooks: AppliedProjectWorktreeHooks;
   diffStats: Record<string, DiffStats>;
@@ -2509,6 +2515,10 @@ function applyWorktreeGitReadyEvent(
 
   drainPendingTaskBranchNaming(projectId, worktreeId, get);
 
+  // Setup succeeded: runs that failed with an earlier setup can be retried.
+  usePipelineRunsStore
+    .getState()
+    .releaseSetupFailedForWorktree(projectId, worktreeId);
   void usePipelineRunsStore
     .getState()
     .flushPendingForWorktree(projectId, worktreeId);
@@ -2687,8 +2697,15 @@ function applyWorktreeGitFailedEvent(
   const { projectId, worktreeId } = event;
 
   // Main ends a turn it held for this setup as failed, in the chat itself, so
-  // the chat state stays.
-  usePipelineRunsStore.getState().dropPendingForWorktree(projectId, worktreeId);
+  // the chat state stays. Queued workflow runs stay too, as failed runs that
+  // keep what they were queued with, for Retry once the worktree is fixed.
+  usePipelineRunsStore
+    .getState()
+    .failPendingForWorktree(
+      projectId,
+      worktreeId,
+      'Worktree setup failed before the workflow could start.',
+    );
   get().clearPendingTaskBranchNaming(projectId, worktreeId);
 
   if (!hasWorktreeRow(get().projects, projectId, worktreeId)) {
@@ -4198,6 +4215,14 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     const { state: nextState, changed: diffStatsChanged } =
       stabilizeDiffStatsState(previousDiffStatsState, stateForStabilization);
 
+    // A worktree whose health check passes has working Git again: runs held
+    // after its setup failed can be retried (CAN-7513).
+    for (const item of params.response) {
+      if (item.mode !== 'diff_only' && !item.healthIssue)
+        usePipelineRunsStore
+          .getState()
+          .releaseSetupFailedForWorktree(item.projectId, item.worktreeId);
+    }
     const currentProjects = get().projects;
     const { hasBranchChange, hasHealthChange } = detectProjectMetadataChanges(
       currentProjects,
@@ -4620,6 +4645,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     projectInventorySnapshot: null,
     projectLoadWarningKeys: new Set<string>(),
     failedWorkspaceIds: new Set<string>(),
+    projectLoadWarnings: [],
     appliedProjectWorktreeScripts: {},
     appliedProjectWorktreeHooks: {},
     ...initialPersistedDiffStatsState,
@@ -5269,6 +5295,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
             failedWorkspaceIds: new Set(
               loadWarnings.map((warning) => warning.workspaceId),
             ),
+            projectLoadWarnings: loadWarnings,
           });
           settlementStage = 'post-apply';
           if (__CANOPY_E2E__)

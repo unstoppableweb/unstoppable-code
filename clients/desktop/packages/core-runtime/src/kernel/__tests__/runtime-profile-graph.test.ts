@@ -17,6 +17,10 @@ import {
   WORKER_EXAMPLE_STREAMS,
 } from '../../runtime/__tests__/worker-example-definitions';
 import { canopyUnavailableError } from '../../runtime/errors';
+import {
+  dispatchTagPrincipal,
+  peerScopedDispatchTag,
+} from '../../runtime/dispatch-tag-scope';
 import type {
   CanopyDispatcherInstructionHandlerMap,
   CanopyDispatcherStreamHandlerMap,
@@ -24,6 +28,24 @@ import type {
   CanopyStreamHandle,
 } from '../../runtime/types';
 import type * as Manifest from '../runtime-profile-manifest';
+import type * as ExecutorReceipts from '../../runtime/worker-executor-receipts';
+
+/** The options each worker's executor receipts were created with. */
+const mockReceiptOptions: unknown[] = [];
+jest.mock('../../runtime/worker-executor-receipts', () => {
+  const actual = jest.requireActual<typeof ExecutorReceipts>(
+    '../../runtime/worker-executor-receipts',
+  );
+  return {
+    ...actual,
+    createWorkerExecutorReceipts: (
+      ...args: Parameters<typeof actual.createWorkerExecutorReceipts>
+    ): ReturnType<typeof actual.createWorkerExecutorReceipts> => {
+      mockReceiptOptions.push(args[1]);
+      return actual.createWorkerExecutorReceipts(...args);
+    },
+  };
+});
 
 jest.mock('../runtime-profile-manifest', () => {
   const actual = jest.requireActual<typeof Manifest>(
@@ -544,6 +566,101 @@ it('carries bundled worker instructions and streams across the binding', async (
     expect(pair.server.send).toHaveBeenCalledWith(
       expect.objectContaining({ method: 'worker.example.events.item' }),
     );
+  } finally {
+    await graph.shutdown('test');
+  }
+});
+
+it('scopes a dispatch tag to its caller on a graph that serves no receipts, so the worker runs it', async () => {
+  const pair = serializingWorkerPair();
+  const graph = bundled([files(), example()], pair);
+  try {
+    await expect(
+      graph.dispatcher.instruction('worker.example.write', write, {
+        caller: exampleCaller,
+        metadata: { idempotencyKey: 'tagged', dispatchId: 'tag-1' },
+      }),
+    ).resolves.toEqual(write);
+    const sent = pair.client.send.mock.calls
+      .map(([message]) => message)
+      .find(
+        (message) =>
+          'method' in message && message.method === 'worker.example.write',
+      );
+    expect(sent).toMatchObject({
+      params: {
+        _meta: { dispatchId: peerScopedDispatchTag(exampleCaller, 'tag-1') },
+      },
+    });
+    // The three-part form: the caller's principal, its peer, then the tag.
+    const forwarded = (sent as { params: { _meta: { dispatchId: string } } })
+      .params._meta.dispatchId;
+    expect(forwarded.split(':')).toEqual([
+      'peer',
+      dispatchTagPrincipal(exampleCaller.principalId),
+      expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+      expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+    ]);
+  } finally {
+    await graph.shutdown('test');
+  }
+});
+
+it('gives the worker it composes no per-principal tag bound, as the daemon runs today', async () => {
+  mockReceiptOptions.length = 0;
+  const graph = bundled([files(), example()]);
+  try {
+    expect(mockReceiptOptions).not.toHaveLength(0);
+    for (const options of mockReceiptOptions)
+      expect(options).not.toHaveProperty('maxDispatchTagsForPrincipal');
+  } finally {
+    await graph.shutdown('test');
+  }
+});
+
+it('holds one principal reconnecting through 16 peers to the principal bound its host composes, leaving another principal working', async () => {
+  const pair = serializingWorkerPair();
+  const bounded = dispatchTagPrincipal(exampleCaller.principalId);
+  const graph = createRuntimeProfileGraph({
+    profile: 'core+worker',
+    modules: [files(), example()],
+    workerCaller: exampleCaller,
+    workerBinding: pair,
+    identity: { runtimeId: 'runtime', hostId: 'host', authorityId: null },
+    phaseDeadlineMs: 1000,
+    shutdownTimeoutMs: 50,
+    maxDispatchTagsForPrincipal: (principal) =>
+      principal === bounded ? 16 : undefined,
+  });
+  const send = (peer: CanopyCallerDescriptor, tag: string): Promise<unknown> =>
+    graph.dispatcher.instruction('worker.example.write', write, {
+      caller: peer,
+      metadata: {
+        idempotencyKey: `${peer.clientInstanceId}:${tag}`,
+        dispatchId: tag,
+      },
+    });
+  const reconnect = (count: number): CanopyCallerDescriptor => ({
+    ...exampleCaller,
+    clientInstanceId: `reconnect-${count}`,
+  });
+  try {
+    for (let count = 1; count <= 16; count += 1)
+      await expect(send(reconnect(count), 'tag')).resolves.toEqual(write);
+    await expect(send(reconnect(17), 'tag')).rejects.toMatchObject({
+      payload: {
+        kind: 'resource_exhausted',
+        message:
+          "This caller's principal may record no more dispatch tags on this worker, from any of its sessions, until it restarts.",
+        retry: { kind: 'never' },
+      },
+    });
+    await expect(
+      send(
+        { ...exampleCaller, principalId: 'other', clientInstanceId: 'other' },
+        'tag',
+      ),
+    ).resolves.toEqual(write);
   } finally {
     await graph.shutdown('test');
   }

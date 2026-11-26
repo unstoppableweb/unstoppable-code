@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type JSX } from 'react';
-import { Notice, NoticeButton } from './Notice';
+import { Notice, NoticeButton } from '../primitives/Notice';
 
 /**
  * Why automatic replies to background work are paused. `delegation_limit`:

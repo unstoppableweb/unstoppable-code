@@ -1,9 +1,5 @@
 import type { JSX } from 'react';
-import {
-  Badge,
-  ExternalTextLink,
-  TextLinkButton,
-} from '@canopy/ui-shared/components';
+import { Badge, TextLink, Button } from '@canopy/ui-shared/components';
 import {
   REVIEW_APPROVAL_REASONS,
   type ReviewApprovalReason,
@@ -120,8 +116,8 @@ export function GitHubReviewOutcome({
     notConnected = known && reason === 'requester_not_connected';
   }
   return (
-    // `text-xs` sizes the "Link GitHub" link action like `ExternalTextLink`'s
-    // "View review", which sets it for itself.
+    // `text-xs` sizes the "Link GitHub" link action like the `TextLink`
+    // (`size="xs"`) "View review", which sets it for itself.
     <span
       className="inline-flex flex-wrap items-center gap-2 text-xs"
       data-testid="github-review-outcome"
@@ -134,19 +130,28 @@ export function GitHubReviewOutcome({
         {copy}
       </Badge>
       {notConnected && onLinkGitHub !== undefined ? (
-        <TextLinkButton
+        <Button
           aria-disabled={linkBusy ? true : undefined}
           aria-busy={linkBusy ? true : undefined}
           onClick={(): void => {
             if (!linkBusy) onLinkGitHub();
           }}
           data-testid="github-review-outcome-link-github"
+          variant="link"
+          data-settings-control="link"
         >
           Link GitHub
-        </TextLinkButton>
+        </Button>
       ) : null}
       {reviewUrl ? (
-        <ExternalTextLink href={reviewUrl} label="View review" />
+        <TextLink
+          href={reviewUrl}
+          size="xs"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          View review
+        </TextLink>
       ) : null}
     </span>
   );

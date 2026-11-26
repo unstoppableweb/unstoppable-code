@@ -3,9 +3,9 @@ import {
   normalizeGitHubStarPromptRecord,
   normalizePlanModeHintRecord,
 } from '@canopy/protocol/onboarding';
-import type { PreferencesData } from '../../types';
-import { DEFAULT_PREFERENCES } from './defaults';
-import { normalizePreferences } from './normalize-preferences';
+import { DEFAULT_DOMAIN_PREFERENCES } from './defaults';
+import { normalizeDomainPreferences } from './normalize-preferences';
+import type { DomainPreferencesData } from './client-local-preferences';
 import { mergePreferenceUpdate } from './merge-preference-update';
 
 export function inspectPreferencesPayload(
@@ -28,11 +28,16 @@ export function inspectPreferencesPayload(
   }
   return null;
 }
-export const DESKTOP_PREFERENCES_CODEC: PreferencesCodec<PreferencesData> = {
-  defaults: DEFAULT_PREFERENCES,
-  normalize: (payload, view) => normalizePreferences(payload, view),
-  project: (value) => normalizePreferences(value),
-  inspect: inspectPreferencesPayload,
-  merge: (existing, patch, context) =>
-    mergePreferenceUpdate(existing, patch, context),
-};
+/**
+ * The domain preferences document's codec: no client-local key (CAN-4472).
+ * The desktop store wraps it with `preserveStoredKeys`.
+ */
+export const DESKTOP_PREFERENCES_CODEC: PreferencesCodec<DomainPreferencesData> =
+  {
+    defaults: DEFAULT_DOMAIN_PREFERENCES,
+    normalize: (payload, view) => normalizeDomainPreferences(payload, view),
+    project: (value) => normalizeDomainPreferences(value),
+    inspect: inspectPreferencesPayload,
+    merge: (existing, patch, context) =>
+      mergePreferenceUpdate(existing, patch, context),
+  };

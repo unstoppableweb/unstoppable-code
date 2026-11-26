@@ -11,7 +11,7 @@ import {
 import {
   RichHoverTooltip,
   type TooltipTriggerProps,
-} from '../RichHoverTooltip';
+} from '../../primitives/RichHoverTooltip';
 
 interface WatcherFiredTitleProps {
   watcherFired: ChatWatcherFiredInfo;

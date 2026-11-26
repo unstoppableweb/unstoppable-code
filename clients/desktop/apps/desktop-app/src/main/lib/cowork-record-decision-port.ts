@@ -12,10 +12,7 @@ import {
 } from './w5-composition-operation';
 import { afterW5Apply, outsideW5CommitScope } from './w5-commit-scope';
 import { applyWorkspaceRecordsRemoval } from './workspace-record-decision-port';
-import {
-  removeWorkspaceNonW5Children,
-  removeWorkspaceDirectoryAfterRecordRemoval,
-} from './w5-workspace-directory-removal';
+import { getWorktreeItemStore } from './worktree-item-store';
 import { allocateSafeWorkspaceId } from '@canopy/core-runtime/node/identifiers';
 import { workspaceCreationPathOccupied } from './w5-workspace-creation-commit';
 import {
@@ -421,13 +418,22 @@ export function applyCoworkDiscardDecision(
     if (status !== 'removed') return status;
     // Outer reservations keep both proofs locked without reentering their updaters.
     await outsideW5CommitScope(() =>
-      removeWorkspaceNonW5Children(decision.workspaceId),
+      getWorktreeItemStore().purge({
+        scope: 'workspace',
+        workspaceId: decision.workspaceId,
+        stage: 'items',
+      }),
     );
     await applyWorkspaceRecordsRemoval(decision.workspaceId, {
       kind: 'workspace.delete.records',
     });
     await afterW5Apply(() =>
-      removeWorkspaceDirectoryAfterRecordRemoval(decision.workspaceId),
+      getWorktreeItemStore().purge({
+        scope: 'workspace',
+        workspaceId: decision.workspaceId,
+        stage: 'folder',
+        worktreeIds: [],
+      }),
     );
     return status;
   };

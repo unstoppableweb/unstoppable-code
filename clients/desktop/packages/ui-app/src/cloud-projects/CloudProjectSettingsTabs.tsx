@@ -8,7 +8,7 @@ import {
   TextArea,
   TextInput,
 } from '@canopy/ui-shared';
-import { FieldError } from '@canopy/ui-shared/components/Field';
+import { FieldError } from '@canopy/ui-shared/primitives/Field';
 import { Divider, TextLink } from '@canopy/ui-shared/components';
 import { ACTIVE_PLUGINS_LABEL } from '@canopy/ui-shared/lib';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';

@@ -1,12 +1,12 @@
 import type { JSX } from 'react';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 import {
   StoreBadgeLink,
   type MobileAppStoreLink,
   type StoreBadgeActivation,
 } from './StoreBadgeLink';
-import { Heading } from './Heading';
-import { Stack } from './Stack';
+import { Heading } from '../primitives/Heading';
+import { Stack } from '../primitives/Stack';
 
 /**
  * Presentation of a mobile-app promotion.

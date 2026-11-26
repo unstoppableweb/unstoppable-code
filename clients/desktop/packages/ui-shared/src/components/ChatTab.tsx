@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { CloseIcon as AppCatalogCloseIcon } from '../icons/AppIcons';
 

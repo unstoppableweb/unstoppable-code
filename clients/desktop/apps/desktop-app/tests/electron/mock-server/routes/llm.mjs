@@ -50,6 +50,7 @@ import {
   keyFromApiKey,
   keyFromBearer,
   markerFromText,
+  recordInferenceJournalEntry,
   recordRequest,
   recordScenarioActivity,
   resolveStepAttempt,
@@ -977,13 +978,43 @@ function observationRoute(route) {
   return route;
 }
 
+function fixtureCredentialLabelFor(context) {
+  const label = getScenario(context.key)?.cloud?.credentialLabel;
+  return label === 'initial' || label === 'replacement' ? label : null;
+}
+
+// Every credential-bearing inference request, token counts included.
+function journalInferenceRequest(body, protocol, context, requestTag) {
+  recordInferenceJournalEntry({
+    transport: context.transport,
+    route: observationRoute(context.route),
+    model: typeof body.model === 'string' ? body.model : null,
+    tag: requestTag,
+    helper: matchHelperFingerprint(
+      protocol === 'anthropic'
+        ? collectAnthropicSystemText(body)
+        : collectOpenAiSystemText(body),
+    )?.id,
+    fixtureCredentialLabel: fixtureCredentialLabelFor(context),
+    brokerAuthenticated: context.broker === true,
+  });
+}
+
 function recordLlmRequest(body, protocol, context, scenarioKey, metadata) {
   if (!context) return undefined;
+  const fixtureCredentialLabel = fixtureCredentialLabelFor(context);
+  journalInferenceRequest(body, protocol, context, metadata.requestTag);
   const observation = recordRequest(scenarioKey, {
     transport: context.transport,
     route: observationRoute(context.route),
     stepId: metadata.stepId,
     tag: metadata.requestTag,
+    ...(getScenario(scenarioKey)?.llm?.captureBrokerAuthentication === true
+      ? {
+          fixtureCredentialLabel,
+          brokerAuthenticated: context.broker === true,
+        }
+      : {}),
     attempt: metadata.attempt,
     model: typeof body.model === 'string' ? body.model : null,
     toolNames: currentRequestToolNames(body),
@@ -2200,7 +2231,23 @@ export async function handleLlmRequest(request, response, url) {
   }
 
   if (pathname === '/v1/messages/count_tokens') {
-    await readJsonBody(request);
+    const parsed = await readJsonBody(request);
+    const body = parsed && typeof parsed === 'object' ? parsed : {};
+    // Journal only: token counts are not scenario steps, so they stay out of
+    // per-key request observations.
+    journalInferenceRequest(
+      body,
+      'anthropic',
+      {
+        key:
+          keyFromBearer(request) ??
+          keyFromApiKey(request, { header: 'x-api-key' }),
+        transport: 'http',
+        route: pathname,
+        broker: proxyTag !== null,
+      },
+      mockRequestTagFromText(collectAnthropicUserText(body)),
+    );
     jsonResponse(response, 200, { input_tokens: 1200 });
     return true;
   }
@@ -2229,7 +2276,12 @@ export async function handleLlmRequest(request, response, url) {
 
   const credentialKey =
     keyFromBearer(request) ?? keyFromApiKey(request, { header: 'x-api-key' });
-  const context = { key: credentialKey, transport: 'http', route: pathname };
+  const context = {
+    key: credentialKey,
+    transport: 'http',
+    route: pathname,
+    broker: proxyTag !== null,
+  };
 
   const userText = isAnthropic
     ? collectAnthropicUserText(body)
@@ -2346,6 +2398,14 @@ export async function handleLlmRequest(request, response, url) {
       markerFromText(userText) ?? scenarioKey,
       `helperRequests:${helperId}`,
     );
+  }
+  if (proxyTag && getScenario(credentialKey).cloud?.managedSurvival === true) {
+    recordScenarioActivity(credentialKey, 'managedProxyAuthenticated');
+    if (requestTag)
+      recordScenarioActivity(
+        credentialKey,
+        `managedProxyAuthenticated:${requestTag}`,
+      );
   }
   if (proxyTag) {
     // Lets a spec assert the turn was carried by the AI Credits gateway rather

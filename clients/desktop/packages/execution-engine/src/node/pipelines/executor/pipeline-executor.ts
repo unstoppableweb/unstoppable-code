@@ -46,6 +46,8 @@ import {
   findResumePoint,
   isExecutionCancellationRequested,
   loadExecutionState,
+  loadExecutionStateRevision,
+  saveExecutionStateIfUnchanged,
   prepareActiveExecutionResume,
   prepareExecutionResume,
   prepareMatrixJobRetryState,
@@ -1288,6 +1290,9 @@ export function createInitialState(
     env: withExecutionOutputDirEnv(options.env, executionOutputDir),
     inputs: { ...resolvedInputs },
     pipeline_file_dir: options.pipelineFileDir,
+    ...(options.pipelineSource === undefined
+      ? {}
+      : { pipeline_source: options.pipelineSource }),
     ...(pipelineAssets === undefined
       ? {}
       : { pipeline_assets: pipelineAssets }),
@@ -1384,6 +1389,35 @@ export function buildNeedsContext(
   );
 }
 
+/**
+ * Installs a run's start or resume image unless a cancel finalized the run
+ * first (CAN-7703), and returns that cancelled state instead. `install` takes
+ * the revision to replace, or none for an unconditional save. A store it
+ * cannot read, or that keeps changing, gets the unconditional save starts
+ * always made.
+ */
+async function installUnlessCancelled(
+  executionId: string,
+  executionsDir: string,
+  install: (expectedRevision?: string) => Promise<boolean>,
+  observedRevision?: string,
+): Promise<ExecutionState | null> {
+  let expectedRevision = observedRevision;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (expectedRevision !== undefined && (await install(expectedRevision)))
+      return null;
+    const stored = await loadExecutionStateRevision(
+      executionId,
+      executionsDir,
+    ).catch(() => undefined);
+    if (!stored) break;
+    if (stored.state.status === 'cancelled') return stored.state;
+    expectedRevision = stored.revision;
+  }
+  await install();
+  return null;
+}
+
 function executeState(
   state: ExecutionState,
   options: Omit<ExecutionOptions, 'pipelineId' | 'executionId'> & {
@@ -1437,6 +1471,32 @@ function executeState(
   forgetUnsavedSettledState(currentState.id, options.runtime.executionsDir);
   /** Settles once every queued save has; it never rejects (CAN-7095). */
   let persistQueue = Promise.resolve();
+  const installSnapshot = async (
+    snapshot: ExecutionState,
+    expectedRevision?: string,
+  ): Promise<boolean> => {
+    try {
+      if (expectedRevision === undefined) {
+        await saveExecutionState(snapshot, options.runtime.executionsDir);
+        return true;
+      }
+      return await saveExecutionStateIfUnchanged(
+        snapshot,
+        options.runtime.executionsDir,
+        expectedRevision,
+      );
+    } catch (error) {
+      // The first failure is kept: later saves carry it, and the run's
+      // settle reports it. A fenced incarnation records nothing.
+      if (!fenced)
+        currentState.persist_failure_code ??=
+          executionPersistFailureCode(error);
+      // The settle reports a failed save; the executor's catch must not
+      // report it again as an engine failure (CAN-7118).
+      markRunStateSaveError(error);
+      throw error;
+    }
+  };
   const persistState = (
     type: ExecutionEvent['type'] = 'execution.updated',
     mutator?: () => void,
@@ -1447,25 +1507,37 @@ function executeState(
       // readiness in the same durable pause image.
       if (type === 'execution.paused') revokeReplayedSurvival(currentState);
       const snapshot = cloneState(currentState);
-      try {
-        await saveExecutionState(snapshot, options.runtime.executionsDir);
-      } catch (error) {
-        // The first failure is kept: later saves carry it, and the run's
-        // settle reports it. A fenced incarnation records nothing.
-        if (!fenced)
-          currentState.persist_failure_code ??=
-            executionPersistFailureCode(error);
-        // The settle reports a failed save; the executor's catch must not
-        // report it again as an engine failure (CAN-7118).
-        markRunStateSaveError(error);
-        throw error;
-      }
+      await installSnapshot(snapshot);
       // A save admitted before the fence closed reports nothing (CAN-6198).
       if (!fenced) emitEvent(type, snapshot);
     });
     // Its caller sees this save's failure; the next save still runs.
     persistQueue = save.catch(() => undefined);
     return save;
+  };
+  /**
+   * The run's first save. A cancel can finalize the pending image its caller
+   * saved before this installs (CAN-7703); the run then starts nothing and
+   * resolves that cancelled image.
+   */
+  const persistStart = (): Promise<ExecutionState | null> => {
+    const start = persistQueue.then(
+      async (): Promise<ExecutionState | null> => {
+        const snapshot = cloneState(currentState);
+        const cancelled = await installUnlessCancelled(
+          snapshot.id,
+          options.runtime.executionsDir,
+          (expectedRevision) => installSnapshot(snapshot, expectedRevision),
+        );
+        if (!cancelled && !fenced) emitEvent('execution.started', snapshot);
+        return cancelled;
+      },
+    );
+    persistQueue = start.then(
+      () => undefined,
+      () => undefined,
+    );
+    return start;
   };
   const stateWriter = {
     persist: (
@@ -1651,8 +1723,12 @@ function executeState(
         normalizedJob.env,
       ),
       pipelineFileDir: currentState.pipeline_file_dir,
-      ...(options.pipelineSource
-        ? { pipelineSource: options.pipelineSource }
+      // A resumed run keeps the source its definition was read from.
+      ...((options.pipelineSource ?? currentState.pipeline_source)
+        ? {
+            pipelineSource:
+              options.pipelineSource ?? currentState.pipeline_source,
+          }
         : {}),
       ...(options.inlinePipelineResource
         ? { inlinePipelineResource: options.inlinePipelineResource }
@@ -2264,7 +2340,21 @@ function executeState(
       currentState.status = 'running';
       currentState.completed_at = undefined;
       endExecutionPause(currentState);
-      await persistState('execution.started');
+      const cancelledBeforeStart = await persistStart();
+      if (cancelledBeforeStart) {
+        acceptingLiveResumes = false;
+        for (const key of Object.keys(currentState))
+          if (!(key in cancelledBeforeStart))
+            Reflect.deleteProperty(currentState, key);
+        Object.assign(currentState, cancelledBeforeStart);
+        if (!fenced) emitEvent('execution.cancelled', currentState);
+        await clearExecutionCancellation(
+          currentState.id,
+          options.runtime.executionsDir,
+        ).catch(() => undefined);
+        completionResolve(cloneState(currentState));
+        return;
+      }
       // Before any job: a run that still needs Google fails now, not hours
       // later when its Google step is reached (CAN-6703).
       await assertGoogleAvailableForRun(
@@ -2765,10 +2855,7 @@ function executeState(
         refreshAllJobGroups(currentState);
         currentState.report_outputs = collectReportOutputs(currentState);
         await persistState('execution.paused');
-        await clearExecutionCancellation(
-          currentState.id,
-          options.runtime.executionsDir,
-        ).catch(() => undefined);
+        // A concurrent cancel remains durable until terminal settlement.
         completionResolve(cloneState(currentState));
         return;
       }
@@ -2811,10 +2898,6 @@ function executeState(
         currentState.pending_input =
           pendingInputs.length === 1 ? pendingInputs[0] : undefined;
         await persistState('execution.paused');
-        await clearExecutionCancellation(
-          currentState.id,
-          options.runtime.executionsDir,
-        ).catch(() => undefined);
         completionResolve(cloneState(currentState));
         return;
       }
@@ -3114,22 +3197,25 @@ export async function resumePipeline(
     pipelineId?: string;
   },
 ): Promise<ExecutionHandle> {
-  const storedState = await loadExecutionState(
+  const stored = await loadExecutionStateRevision(
     executionId,
     options.runtime.executionsDir,
   );
-  const loadedState = storedState
-    ? await resolveReplayLocation(storedState, options.runtime)
+  const loadedState = stored
+    ? await resolveReplayLocation(stored.state, options.runtime)
     : null;
   if (!loadedState) {
     throw new PipelineExecutionNotFoundError(executionId);
   }
 
-  if (['success', 'failure', 'cancelled'].includes(loadedState.status)) {
-    throw new Error(
-      `Execution "${executionId}" cannot be resumed because it is ${loadedState.status}`,
-    );
-  }
+  const refuseSettled = (status: ExecutionState['status']): void => {
+    if (['success', 'failure', 'cancelled'].includes(status)) {
+      throw new Error(
+        `Execution "${executionId}" cannot be resumed because it is ${status}`,
+      );
+    }
+  };
+  refuseSettled(loadedState.status);
 
   const explicitStatusReasonIds = options.statusReasonIds;
   if (explicitStatusReasonIds) {
@@ -3327,9 +3413,21 @@ export async function resumePipeline(
   }
   recordRemoteControlCommandReceipt(recoveredState, options.portalCommandId);
   revokeReplayedSurvival(recoveredState);
-  await saveExecutionState(recoveredState, options.runtime.executionsDir, {
-    cancellation: 'clear_before',
-  });
+  const cancelledFirst = await installUnlessCancelled(
+    executionId,
+    options.runtime.executionsDir,
+    (expectedRevision) =>
+      saveExecutionStateIfUnchanged(
+        recoveredState,
+        options.runtime.executionsDir,
+        expectedRevision,
+        { cancellation: 'clear_before' },
+      ),
+    stored?.revision,
+  );
+  // A cancel that finalized the pause after it was read refuses this resume
+  // as one read after it would.
+  if (cancelledFirst) refuseSettled(cancelledFirst.status);
   // The resume is saved: agents paused on the checkpoints it consumed run
   // again, so the host stops offering them as Ledger owners. A nested
   // pipeline's checkpoints are consumed when its own resume runs.
@@ -3733,6 +3831,12 @@ export async function rerunPipelineExecution(
               options.pipelineFileDir ?? sourceState.pipeline_file_dir,
           }
         : {}),
+      // A rerun resolves child workflows from the checkout the source run's
+      // definition came from (CAN-7513).
+      ...(options.pipelineSource === undefined &&
+      sourceState.pipeline_source !== undefined
+        ? { pipelineSource: sourceState.pipeline_source }
+        : {}),
       // A rerun works in the source run's kept workspace (CAN-6317).
       ...(sourceState.global_workspace_dir === undefined
         ? {}
@@ -3854,6 +3958,31 @@ export async function cancelPipelineExecution(
   runtime: ExecutionRuntime,
   options?: { allowRecoveredFallback?: boolean },
 ): Promise<ExecutionState> {
+  const allowRecoveredFallback = options?.allowRecoveredFallback !== false;
+  const settled = await settleCancelledExecution(
+    executionId,
+    runtime,
+    allowRecoveredFallback,
+  );
+  if (
+    !allowRecoveredFallback &&
+    (settled.status === 'running' || settled.status === 'pending')
+  ) {
+    // Archive teardown requires proof that the owning executor settled. Keep
+    // both its live state and durable cancellation marker intact so the live
+    // executor retains authority to publish its eventual terminal state.
+    throw new Error(
+      `Execution "${executionId}" did not settle after cancellation`,
+    );
+  }
+  return settled;
+}
+
+async function settleCancelledExecution(
+  executionId: string,
+  runtime: ExecutionRuntime,
+  allowRecoveredFallback: boolean,
+): Promise<ExecutionState> {
   const loadedState = await loadExecutionState(
     executionId,
     runtime.executionsDir,
@@ -3872,7 +4001,15 @@ export async function cancelPipelineExecution(
     return loadedState;
   }
 
-  if (loadedState.status === 'paused' || loadedState.status === 'pending') {
+  const finalizePaused = async (): Promise<ExecutionState | undefined> => {
+    const observed = await loadExecutionStateRevision(
+      executionId,
+      runtime.executionsDir,
+    );
+    if (!observed) throw new PipelineExecutionNotFoundError(executionId);
+    const loadedState = observed.state;
+    if (loadedState.status !== 'paused' && loadedState.status !== 'pending')
+      return undefined;
     const cancelledState = cloneState(loadedState);
     // The incarnation that recorded a save failure reported it (CAN-7095).
     delete cancelledState.persist_failure_code;
@@ -3888,10 +4025,18 @@ export async function cancelPipelineExecution(
     cancelledState.pending_input = undefined;
     cancelledState.status_reasons = [];
     try {
-      await saveExecutionState(cancelledState, runtime.executionsDir, {
-        cancellation: 'clear_after',
-        durable: true,
-      });
+      if (
+        !(await saveExecutionStateIfUnchanged(
+          cancelledState,
+          runtime.executionsDir,
+          observed.revision,
+          {
+            cancellation: 'clear_after',
+            durable: true,
+          },
+        ))
+      )
+        return undefined;
       runtime.lifecycle?.onExecutionStart?.(loadedState);
       runtime.lifecycle?.onExecutionSettled?.(cancelledState);
       await cleanupExecutionTempDir(cancelledState, runtime);
@@ -3900,6 +4045,11 @@ export async function cancelPipelineExecution(
       if (!isExecutionStateWriteRefusal(error, 'owned_by_other_process'))
         throw error;
     }
+    return undefined;
+  };
+  if (loadedState.status === 'paused' || loadedState.status === 'pending') {
+    const cancelled = await finalizePaused();
+    if (cancelled) return cancelled;
   }
 
   await requestExecutionCancellation(executionId, runtime.executionsDir);
@@ -3913,6 +4063,12 @@ export async function cancelPipelineExecution(
     if (!currentState) {
       throw new PipelineExecutionNotFoundError(executionId);
     }
+    // A checkpoint may finish after the initial running read. Finalize that
+    // pause under the same owner and revision fences, not a stale snapshot.
+    if (currentState.status === 'paused' || currentState.status === 'pending') {
+      const cancelled = await finalizePaused();
+      if (cancelled) return cancelled;
+    }
     if (
       currentState.status === 'cancelled' ||
       currentState.status === 'success' ||
@@ -3923,33 +4079,56 @@ export async function cancelPipelineExecution(
     }
   }
 
-  const latestState = await loadExecutionState(
+  const latest = await loadExecutionStateRevision(
     executionId,
     runtime.executionsDir,
   );
-  if (!latestState) {
+  if (!latest) {
     throw new PipelineExecutionNotFoundError(executionId);
+  }
+  const latestState = latest.state;
+
+  if (latestState.status === 'paused') {
+    const cancelled = await finalizePaused();
+    if (cancelled) return cancelled;
+    // A foreign owner or concurrent resume keeps the newer revision. Report
+    // its actual state without withdrawing the durable cancellation request.
+    const current = await loadExecutionState(
+      executionId,
+      runtime.executionsDir,
+    );
+    if (!current) throw new PipelineExecutionNotFoundError(executionId);
+    return current;
   }
 
   if (latestState.status === 'running' || latestState.status === 'pending') {
-    if (options?.allowRecoveredFallback === false) {
-      // Archive teardown requires proof that the owning executor settled. Keep
-      // both its running state and durable cancellation marker intact so the
-      // live executor retains authority to publish its eventual terminal state.
-      throw new Error(
-        `Execution "${executionId}" did not settle after cancellation`,
-      );
-    }
+    if (!allowRecoveredFallback) return latestState;
     // A running owner in another live process keeps authority over its state.
     // Its durable cancellation request stays in place; once that process exits,
     // orphan recovery or a later cancel settles the run. An owner in this process
     // may still be force-finalized after the cooperative window.
     const cancelledState = cancelRecoveredExecutionState(latestState);
     try {
-      await saveExecutionState(cancelledState, runtime.executionsDir, {
-        cancellation: 'clear_after',
-        durable: true,
-      });
+      if (
+        !(await saveExecutionStateIfUnchanged(
+          cancelledState,
+          runtime.executionsDir,
+          latest.revision,
+          {
+            cancellation: 'clear_after',
+            durable: true,
+          },
+        ))
+      ) {
+        // A resumed/re-checkpointed incarnation keeps its state and the
+        // cancellation marker; a stale recovered image cannot replace it.
+        const current = await loadExecutionState(
+          executionId,
+          runtime.executionsDir,
+        );
+        if (!current) throw new PipelineExecutionNotFoundError(executionId);
+        return current;
+      }
     } catch (error) {
       if (isExecutionStateWriteRefusal(error, 'owned_by_other_process'))
         return latestState;

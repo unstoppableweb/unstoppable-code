@@ -1,6 +1,6 @@
 'use client';
 
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import { useRef, useState, type JSX } from 'react';
 import {
   FeedbackDiagnosticsExpiredError,

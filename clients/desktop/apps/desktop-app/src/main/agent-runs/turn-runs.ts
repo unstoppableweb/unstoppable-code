@@ -1,21 +1,29 @@
 import { randomUUID } from 'node:crypto';
+import { realpath } from 'node:fs/promises';
 import {
   WORKER_AGENT_TURN_FAILED_CODE,
   WORKER_AGENT_TURN_FAILED_MESSAGE,
   WORKER_AGENT_TURN_PAYLOAD_FORMAT,
   type OperationOrigin,
   type WorkerAgentTurnEvent,
+  type WorkerAgentTurnLaunch,
   type WorkerAgentTurnOutcome,
   type WorkerAgentTurnRunResult,
   type WorkerAgentTurnWaitKind,
   type WorkerAgentTurnWaitResolution,
 } from '@canopy/protocol/canopy-core';
-import type { TurnEventSink } from '@canopy/core-runtime/node/agent/turns';
+import type {
+  CoreChatTurnApproval,
+  TurnEventSink,
+} from '@canopy/core-runtime/node/agent/turns';
 import { CanopyOperationError } from '@canopy/core-runtime';
+import { readFilesystemScope } from '@canopy/core-runtime/node';
 import type { UsageInitiationSource } from '@canopy/desktop-shared/types';
 import { getActiveDesktopRuntimeIfAccepting } from '../canopy-runtime/desktop-runtime';
 import { LOCAL_DESKTOP_AUTHORITY_ID } from '../canopy-runtime/desktop-runtime-identity';
 import { stopChatTurnExactly } from '../canopy-runtime/chat-turn-stop';
+import { getDaemonScopeResolver } from '../canopy-runtime/daemon-scope-resolver';
+import type { AgentSessionOptions } from '../agents/types';
 import {
   getChatTurnAuditStatus,
   isRootTerminalChatEventData,
@@ -23,9 +31,12 @@ import {
   readCodexRootTurnId,
 } from '../lib/chat-turn-audit';
 import { logMainProcessWarn } from '../lib/main-process-logging';
+import { resolveWorktreeTargetIds } from '../lib/resolve-worktree';
 import { isRecord } from '../lib/type-guards';
 import { StagedAgentRun, discardStagedAgentRun } from './staged-agent-run';
-import { stageTurn } from './turn-worker-host';
+import type { ChatTurnAdmittedRules } from './turn-approval-revision';
+import { toPortableTurnLaunch } from './turn-launch';
+import { stageTurn, type TurnLaunchShadow } from './turn-worker-host';
 
 export class TurnWorkerUnavailableError extends Error {
   declare readonly cause?: unknown;
@@ -60,6 +71,22 @@ export interface BeginChatTurnRunRequest {
    * thread's terminal would read as the root terminal.
    */
   codexRootThreadId?: string;
+  /**
+   * The session options the staged run serves, and the approval revision
+   * they were read at (CAN-6995). When they cross exactly, the run carries a
+   * portable launch and the worker checks it against the staged run; the
+   * staged run is served either way.
+   */
+  launch?: ChatTurnLaunchInput;
+}
+
+export interface ChatTurnLaunchInput {
+  surface: WorkerAgentTurnLaunch['surface'];
+  options: AgentSessionOptions;
+  /** chatTurnApprovalRevision before the caller read the turn's approval. */
+  approvalRevision: number;
+  /** The canonical user message; null when it cannot cross yet. */
+  prompt: string | null;
 }
 
 /**
@@ -187,6 +214,79 @@ export function emitChatTurnWait(
   return liveTurnWaitEmitters.get(turnWaitKey(scope))?.(event) ?? false;
 }
 
+const canonical = (path: string): Promise<string | null> =>
+  realpath(path).catch(() => null);
+
+/**
+ * The catalog root the daemon resolves to the session's directory, read from
+ * the tracking records the daemon reads; null when none matches.
+ */
+async function findWorkerRoot(
+  scope: { workspaceId: string; worktreeId: string },
+  cwd: string,
+): Promise<{ id: string; path: string } | null> {
+  const ids = resolveWorktreeTargetIds(scope.workspaceId, scope.worktreeId);
+  if (!ids) return null;
+  const wanted = await canonical(cwd);
+  if (wanted === null) return null;
+  const rootsScope = { workspaceId: ids.projectId, worktreeId: ids.worktreeId };
+  // An unreadable catalog means no launch: the staged run serves as today.
+  try {
+    const catalog = await readFilesystemScope(
+      rootsScope,
+      await (
+        await getDaemonScopeResolver()
+      )(rootsScope, 'roots'),
+      'roots',
+    );
+    for (const root of catalog.roots) {
+      if (root.kind === 'attachments') continue;
+      if ((await canonical(root.absolutePath)) === wanted)
+        return { id: root.id, path: root.absolutePath };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+interface PreparedTurnLaunch {
+  launch: WorkerAgentTurnLaunch;
+  approval: CoreChatTurnApproval<ChatTurnAdmittedRules>;
+  rootPath: string;
+}
+
+/** The launch for a turn whose options cross exactly; null keeps today's run. */
+async function prepareTurnLaunch(
+  request: BeginChatTurnRunRequest,
+  input: ChatTurnLaunchInput,
+): Promise<PreparedTurnLaunch | null> {
+  const rules = input.options.sessionApprovalRules;
+  if (input.prompt === null || rules === undefined) return null;
+  const root = await findWorkerRoot(request.scope, input.options.cwd);
+  if (root === null) return null;
+  const admissionId = randomUUID();
+  const built = toPortableTurnLaunch(input.options, {
+    cwdRootId: root.id,
+    surface: input.surface,
+    approval: { admissionId, policyRevision: input.approvalRevision },
+    prompt: {
+      messageId: request.turnId,
+      blocks: [{ type: 'text', text: input.prompt }],
+    },
+  });
+  if (!built.ok) return null;
+  return {
+    launch: built.launch,
+    approval: {
+      admissionId,
+      policyRevision: input.approvalRevision,
+      admitted: rules,
+    },
+    rootPath: root.path,
+  };
+}
+
 function isTurnRunActive(error: unknown): boolean {
   return (
     error instanceof CanopyOperationError &&
@@ -208,6 +308,9 @@ export async function beginChatTurnRun(
   if (!runtime) throw new TurnWorkerUnavailableError();
   const { scope, turnId } = request;
   const turnRunId = randomUUID();
+  const prepared = request.launch
+    ? await prepareTurnLaunch(request, request.launch)
+    : null;
   const staged = new StagedAgentRun({ kind: 'turn', runId: turnRunId });
   const controller = new AbortController();
   let resolveSettlement: (result: WorkerAgentTurnRunResult) => void = () =>
@@ -298,6 +401,20 @@ export async function beginChatTurnRun(
       settleOnce('cancelled');
     }
   };
+  const shadow: TurnLaunchShadow | undefined =
+    prepared && request.launch
+      ? {
+          options: request.launch.options,
+          port: {
+            rootPath: (id) =>
+              id === prepared.launch.cwdRootId ? prepared.rootPath : null,
+            admittedApprovalRules: (id) =>
+              runtime.chatTurnApprovals.admitted.read(id, { turnRunId, scope }),
+            // A routed turn builds no launch yet (it has no route id).
+            aiCreditsRouting: () => null,
+          },
+        }
+      : undefined;
   stageTurn(turnRunId, {
     run: staged,
     attach: (sink) => {
@@ -305,6 +422,7 @@ export async function beginChatTurnRun(
     },
     settlement,
     stop,
+    ...(shadow ? { shadow } : {}),
   });
 
   let run: Awaited<ReturnType<typeof runtime.chatTurnRuns.begin>>;
@@ -319,7 +437,9 @@ export async function beginChatTurnRun(
           providerId: request.providerId.slice(0, 64),
           model: request.model?.slice(0, 256) || null,
           materializationId: null,
+          ...(prepared ? { launch: prepared.launch } : {}),
         },
+        ...(prepared ? { approval: prepared.approval } : {}),
         origin: turnOrigin(request.initiationSource),
         owner: { kind: 'system', id: LOCAL_DESKTOP_AUTHORITY_ID },
         transcript: async (event, local) => {

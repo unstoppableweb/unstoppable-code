@@ -552,6 +552,13 @@ export const DESKTOP_OPERATIONS = {
     posthogEvent: 'daemon:route_select',
     contextKeys: ['route_family', 'route_host', 'route_reason'],
   },
+  // CAN-7915: a data folder admitted although other accounts can open it.
+  // Closed codes only; never a path or SID.
+  'canopy.daemon_data_folder': {
+    kind: 'product',
+    posthogEvent: 'daemon:data_folder_update',
+    contextKeys: ['permission_outcome', 'path_role'],
+  },
   'canopy.chat_storage_load': {
     kind: 'product',
     posthogEvent: 'chat:storage_load_fail',

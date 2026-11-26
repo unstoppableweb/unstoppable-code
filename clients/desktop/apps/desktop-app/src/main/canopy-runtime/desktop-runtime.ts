@@ -14,6 +14,7 @@ import { setSessionInterfaceToolRegistry } from '../agents/interface-tool-bindin
 import {
   CoreChatTurnRuns,
   CoreSubagentRuns,
+  type CoreChatTurnApprovalAuthority,
 } from '@canopy/core-runtime/node/agent/turns';
 import {
   CoreDeferredToolReloads,
@@ -24,6 +25,7 @@ import {
   type WorkerAgentAdapter,
 } from './worker-agent-adapter';
 import { stopChatTurnExactly } from './chat-turn-stop';
+import { desktopDispatchTagsForPrincipal } from './desktop-dispatch-tag-bounds';
 import {
   CoreSummarySchedule,
   type CoreSummaryScheduleHost,
@@ -81,6 +83,7 @@ import {
   createCanopyRuntime,
   createDirectLocalWorkerTransport,
   createWorkerExecutorReceipts,
+  scopeForwardedDispatchTags,
   type CanopyDispatcher,
   type CanopyDispatcherStreamHandlerMap,
   type CanopyDispatcherHandlerMap,
@@ -125,6 +128,10 @@ import {
   type CoreChatQuestionHost,
 } from './core-chat-question-adapter';
 import { stopSubagentNatively } from '../agent-runs/subagent-native-stop';
+import {
+  createChatTurnApprovalAuthority,
+  type ChatTurnAdmittedRules,
+} from '../agent-runs/turn-approval-revision';
 import { respondToChatQuestion } from '../chat-questions/respond';
 import { getDesktopChatWaits } from '../chat-waits/desktop-chat-waits';
 import { installQuestionTurnWaits } from '../chat-questions/question-turn-waits';
@@ -159,6 +166,10 @@ import {
   createDesktopChatLocateHost,
   type CoreChatLocateHost,
 } from './core-chat-locate-adapter';
+import {
+  createCoreChatDirectoryAdapter,
+  type CoreChatDirectoryHost,
+} from './core-chat-directory-adapter';
 import {
   createCoreChatTransferAdapter,
   type CoreChatTransferHost,
@@ -481,6 +492,8 @@ export interface CreateDesktopRuntimeOptions {
   chatSettingsHost?: CoreChatSettingsHost | null;
   /** Work Entry lookup behind `core.chat.locate`; tests may inject one. */
   chatLocateHost?: CoreChatLocateHost;
+  /** Chat reads behind `core.chat.directory.list`; tests may inject one. */
+  chatDirectoryHost?: CoreChatDirectoryHost;
   /** Session transfer behind core.chat.transfer.*; tests may inject one. */
   chatTransferHost?: CoreChatTransferHost;
   /** Effects behind `core.chat.turn.cancel`; default to the desktop Stop. */
@@ -789,6 +802,8 @@ type FileTreeWatchHandle = CanopyStreamHandle<
 interface WorkspaceProjectionContext {
   /** Trusted scoped legacy read: finish before projecting or pinning a page. */
   completeWorktreeRead?: () => never;
+  /** Unpaged legacy list read: finish before projecting or pinning pages. */
+  completeListing?: () => never;
   sidebar?: SidebarItemsFile;
   sidebarDetail?: CoreWorkspaceReadDetail;
   config?: WorkspaceConfigFile;
@@ -909,7 +924,9 @@ export interface DesktopCanopyDispatcher extends CanopyDispatcher<
   /** Deferred-tool reloads (CAN-4127): the core drives search/load reloads and their resume. */
   readonly deferredToolReloads: CoreDeferredToolReloads<DesktopDeferredToolReloadPayload>;
   /** Chat turns (CAN-4115): each a core.chat.turn.run operation whose worker.agent.turn.run dispatch runs on the local worker. */
-  readonly chatTurnRuns: CoreChatTurnRuns;
+  readonly chatTurnRuns: CoreChatTurnRuns<ChatTurnAdmittedRules>;
+  /** The approval authority chat turn launches are admitted against (CAN-6995). */
+  readonly chatTurnApprovals: CoreChatTurnApprovalAuthority<ChatTurnAdmittedRules>;
   /** Managed subagent runs (CAN-4115). */
   readonly subagentRuns: CoreSubagentRuns;
   /** Lease-bound interface agent tools (CAN-4131). In memory; leases are opened by the renderer relay host. */
@@ -931,6 +948,11 @@ export interface DesktopCanopyDispatcher extends CanopyDispatcher<
   readonly pipelineRuns: CorePipelineRuns;
   /** The local worker's host step requests, which core settles. */
   readonly pipelineHostRequests: PipelineHostRequestBroker;
+  /**
+   * Without `pageSize` or `cursor`, a listing that spans pages ends at its
+   * legacy capture: `canonicalResult` is null and no continuation is pinned
+   * (CAN-7181). Callers that page pass `pageSize`.
+   */
   queryWorkspaceListForLegacyIpc(
     params: CanopyQueryParams<'core.workspace.list'>,
     options: CanopyQueryOptions,
@@ -949,6 +971,11 @@ export interface DesktopCanopyDispatcher extends CanopyDispatcher<
     /** Authority of the read that produced `legacyResult`, when known. */
     legacyAuthority?: CoreWorkspaceReadDetail;
   }>;
+  /**
+   * Without `pageSize` or `cursor`, a listing that spans pages ends at its
+   * legacy capture: `canonicalResult` is null and no continuation is pinned
+   * (CAN-7181). Callers that page pass `pageSize`.
+   */
   queryWorktreeListForLegacyIpc(
     params: CanopyQueryParams<'core.worktree.list'>,
     options: CanopyQueryOptions,
@@ -1182,6 +1209,9 @@ export function createDesktopRuntime(
         context.worktree = result;
         context.worktreeDetail = detail;
       },
+      listingSpansPages: (): void => {
+        workspaceProjectionContext.getStore()?.completeListing?.();
+      },
     },
     workspaceReadSnapshots,
   );
@@ -1333,6 +1363,9 @@ export function createDesktopRuntime(
         chatAdapter['core.chat.transcript.blocks.page'],
       'core.chat.visual.read': chatAdapter['core.chat.visual.read'],
       'core.chat.locate': chatLocateAdapter['core.chat.locate'],
+      'core.chat.directory.list': createCoreChatDirectoryAdapter(
+        options.chatDirectoryHost,
+      )['core.chat.directory.list'],
       'worker.filesystem.roots.list': (params, context) => {
         const direct = (): Promise<WorkerFilesystemRootsListResult> =>
           translateAdapterCall(() =>
@@ -1572,7 +1605,9 @@ export function createDesktopRuntime(
   );
   const workerScriptAdapter =
     options.workerScriptAdapter ?? createWorkerScriptAdapter();
-  const chatTurnRunsRef: { current: CoreChatTurnRuns | null } = {
+  const chatTurnRunsRef: {
+    current: CoreChatTurnRuns<ChatTurnAdmittedRules> | null;
+  } = {
     current: null,
   };
   const workerAgentAdapter =
@@ -1867,8 +1902,10 @@ export function createDesktopRuntime(
         name !== 'worker.filesystem.directory.create',
     ),
   );
-  const workerReceipts = createWorkerExecutorReceipts(workerInstructions);
-  const workerHandlers = workerReceipts.wrap(
+  const workerReceipts = createWorkerExecutorReceipts(workerInstructions, {
+    maxDispatchTagsForPrincipal: desktopDispatchTagsForPrincipal,
+  });
+  const receiptHandlers = workerReceipts.wrap(
     Object.fromEntries(
       Object.entries({ ...instructions, ...mutationAdapter }).flatMap(
         ([name, handler]) =>
@@ -1878,6 +1915,9 @@ export function createDesktopRuntime(
       ),
     ),
   );
+  // The desktop dispatcher is its in-process worker's core: it scopes each
+  // dispatch tag to the interface caller, as the daemon core does (CAN-4733).
+  const workerHandlers = scopeForwardedDispatchTags(receiptHandlers);
   const owned = (
     name: string,
     ...maps: Array<object | undefined>
@@ -1931,6 +1971,7 @@ export function createDesktopRuntime(
           'core.chat.transcript.blocks.page',
           'core.chat.visual.read',
           'core.chat.locate',
+          'core.chat.directory.list',
         ],
       },
       owned(
@@ -2143,9 +2184,11 @@ export function createDesktopRuntime(
   summarySchedule.registerHost(
     options.summaryScheduleHost ?? createDesktopSummaryScheduleHost(),
   );
+  const chatTurnApprovals = createChatTurnApprovalAuthority();
   const chatTurnRuns = new CoreChatTurnRuns({
     operations: operationAdapter.service,
     localWorker,
+    approvals: chatTurnApprovals,
     onError: (error, context): void =>
       logMainProcessWarn(`[chat-turn-runs] ${context} failed`, error),
   });
@@ -2673,6 +2716,56 @@ export function createDesktopRuntime(
       },
     };
   };
+  /**
+   * Dispatches a legacy workspace read whose `context` may end it at the
+   * legacy capture by throwing `completion`, and resolves null when it did.
+   * The dispatcher preserves this request-local identity in runtimeCause;
+   * neither it nor the W5 read view logs or counts that rejection as a read
+   * failure. Completion bypasses the dispatcher's post-handler deadline
+   * check, so this rechecks shutdown, cancellation and the deadline after
+   * the read view has closed, including its deferred cleanup.
+   */
+  const queryEndingAtCapture = async <Result>(
+    context: WorkspaceProjectionContext,
+    completion: Error,
+    queryOptions: CanopyQueryOptions,
+    query: () => Promise<Result>,
+  ): Promise<Result | null> => {
+    const signal = queryOptions.signal;
+    const deadlineAt = queryOptions.metadata?.deadlineAt
+      ? Date.parse(queryOptions.metadata.deadlineAt)
+      : undefined;
+    try {
+      return await workspaceProjectionContext.run(context, query);
+    } catch (error) {
+      if (
+        !(error instanceof CanopyOperationError) ||
+        error.runtimeCause !== completion
+      )
+        throw error;
+      if (shuttingDown) throw canopyUnavailableError();
+      if (signal?.aborted) throw canopyCancelledError();
+      if (deadlineAt !== undefined && deadlineAt <= Date.now())
+        throw canopyDeadlineExceededError();
+      return null;
+    }
+  };
+  /**
+   * A legacy list read with neither page size nor cursor pages nothing, so
+   * a listing that spans pages ends at its capture (CAN-7181): projecting
+   * and pinning rows only its caller could page would be discarded.
+   */
+  const legacyListContext = (
+    params: { pageSize?: number; cursor?: string },
+    completion: Error,
+  ): WorkspaceProjectionContext =>
+    params.pageSize === undefined && params.cursor === undefined
+      ? {
+          completeListing: (): never => {
+            throw completion;
+          },
+        }
+      : {};
   const queryWorkspaceListForLegacyIpc = async (
     params: CanopyQueryParams<'core.workspace.list'>,
     queryOptions: CanopyQueryOptions,
@@ -2681,14 +2774,16 @@ export function createDesktopRuntime(
     legacyResult: SidebarItemsFile;
     legacyAuthority?: CoreWorkspaceReadDetail;
   }> => {
-    const context: WorkspaceProjectionContext = {};
-    const canonicalResult = await workspaceProjectionContext
-      .run(context, () =>
-        dispatcher.query('core.workspace.list', params, queryOptions),
-      )
-      .catch((error: unknown) =>
-        recoverLegacyWorkspaceRead(error, context.sidebar),
-      );
+    const completion = new Error('Unpaged legacy workspace list completed.');
+    const context = legacyListContext(params, completion);
+    const canonicalResult = await queryEndingAtCapture(
+      context,
+      completion,
+      queryOptions,
+      () => dispatcher.query('core.workspace.list', params, queryOptions),
+    ).catch((error: unknown) =>
+      recoverLegacyWorkspaceRead(error, context.sidebar),
+    );
     if (!context.sidebar)
       throw new Error('Workspace list projection was not captured.');
     return {
@@ -2733,14 +2828,16 @@ export function createDesktopRuntime(
     legacyResult: SidebarItemsFile | WorktreeData[];
     legacyAuthority?: CoreWorkspaceReadDetail;
   }> => {
-    const context: WorkspaceProjectionContext = {};
-    const canonicalResult = await workspaceProjectionContext
-      .run(context, () =>
-        dispatcher.query('core.worktree.list', params, queryOptions),
-      )
-      .catch((error: unknown) =>
-        recoverLegacyWorkspaceRead(error, context.worktrees ?? context.sidebar),
-      );
+    const completion = new Error('Unpaged legacy worktree list completed.');
+    const context = legacyListContext(params, completion);
+    const canonicalResult = await queryEndingAtCapture(
+      context,
+      completion,
+      queryOptions,
+      () => dispatcher.query('core.worktree.list', params, queryOptions),
+    ).catch((error: unknown) =>
+      recoverLegacyWorkspaceRead(error, context.worktrees ?? context.sidebar),
+    );
     const legacyResult = context.worktrees ?? context.sidebar;
     if (!legacyResult)
       throw new Error('Worktree list projection was not captured.');
@@ -2763,40 +2860,20 @@ export function createDesktopRuntime(
     // The dispatcher still validates the request, grants and scope. Its
     // handler publishes the full legacy read before canonical projection.
     // End only this request there, rather than invent a truncated canonical
-    // result or allocate a continuation the caller cannot consume. The
-    // dispatcher preserves this private identity in runtimeCause; neither it
-    // nor the W5 read view logs/counts a handler rejection as a read failure.
-    const completed = new Error('Scoped legacy worktree read completed.');
-    const signal = queryOptions.signal;
-    const deadlineAt = queryOptions.metadata?.deadlineAt
-      ? Date.parse(queryOptions.metadata.deadlineAt)
-      : undefined;
+    // result or allocate a continuation the caller cannot consume.
+    const completion = new Error('Scoped legacy worktree read completed.');
     const context: WorkspaceProjectionContext = {
       completeWorktreeRead: (): never => {
-        throw completed;
+        throw completion;
       },
     };
-    try {
-      await workspaceProjectionContext.run(context, () =>
-        dispatcher.query(
-          'core.worktree.list',
-          { scope: { workspaceId } },
-          queryOptions,
-        ),
-      );
-    } catch (error) {
-      if (
-        !(error instanceof CanopyOperationError) ||
-        error.runtimeCause !== completed
-      )
-        throw error;
-      // Completion bypasses the dispatcher's post-handler deadline check.
-      // Recheck after the read view has closed, including deferred cleanup.
-      if (shuttingDown) throw canopyUnavailableError();
-      if (signal?.aborted) throw canopyCancelledError();
-      if (deadlineAt !== undefined && deadlineAt <= Date.now())
-        throw canopyDeadlineExceededError();
-    }
+    await queryEndingAtCapture(context, completion, queryOptions, () =>
+      dispatcher.query(
+        'core.worktree.list',
+        { scope: { workspaceId } },
+        queryOptions,
+      ),
+    );
     if (!context.worktrees)
       throw new Error('Worktree list projection was not captured.');
     return {
@@ -2854,6 +2931,7 @@ export function createDesktopRuntime(
     summarySchedule,
     deferredToolReloads,
     chatTurnRuns,
+    chatTurnApprovals,
     subagentRuns,
     interfaceTools,
     initiatedWork,

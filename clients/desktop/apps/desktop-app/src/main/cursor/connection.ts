@@ -15,6 +15,12 @@ import { updatePreferencesFile } from '../lib/preferences-store';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import type { ProviderAccountConnectSource } from '../auth/provider-auth-state';
 import { openExternalGuarded } from '../lib/open-external';
+import { isProviderSignInLink } from '@canopy/desktop-shared/lib/provider-sign-in-links';
+import {
+  assertCursorSignInReachable,
+  cursorSignInLinkOpener,
+  type CursorSignInOptions,
+} from './sign-in-link';
 import { getEnhancedEnv } from '../pipelines/config-paths';
 import {
   CursorRuntimeInstaller,
@@ -134,18 +140,22 @@ export async function getManagedCursorRuntime(
   );
   return { launch, env, target };
 }
+export type { CursorSignInOptions } from './sign-in-link';
+
 export async function connectCursor(
   signal: AbortSignal,
   progress: (status: CursorConnectionStatus) => void,
+  options: CursorSignInOptions = {},
 ): Promise<CursorConnectionStatus> {
   return withProviderConnectionAttempt('cursor', 'native_login', signal, () =>
-    connectCursorImpl(signal, progress),
+    connectCursorImpl(signal, progress, options),
   );
 }
 
 async function connectCursorImpl(
   signal: AbortSignal,
   progress: (status: CursorConnectionStatus) => void,
+  options: CursorSignInOptions,
 ): Promise<CursorConnectionStatus> {
   const { installer } = runtime();
   const status: CursorConnectionStatus = {
@@ -185,8 +195,21 @@ async function connectCursorImpl(
   // read is treated the same way here: `login` on a live session is harmless,
   // unlike the sign-out an account change would run.
   if (signIn.state !== 'signed-in') {
-    progress({ ...status, installed: true, phase: 'signing-in' });
-    await signInWithBrowser(launch, env, signal);
+    assertCursorSignInReachable(options);
+    const signingIn: CursorConnectionStatus = {
+      ...status,
+      installed: true,
+      phase: 'signing-in',
+    };
+    progress(signingIn);
+    await signInWithBrowser(
+      launch,
+      env,
+      signal,
+      cursorSignInLinkOpener(options, (signInUrl) =>
+        progress({ ...signingIn, signInUrl }),
+      ),
+    );
     // `login` exiting cleanly is not proof of a session; require the CLI to
     // report authentication before this app records the runtime as connected.
     signIn = await readCursorSignIn(launch, env, signal);
@@ -288,6 +311,7 @@ async function signInWithBrowser(
   launch: CursorLaunch,
   env: NodeJS.ProcessEnv,
   signal: AbortSignal,
+  openUrl: (url: string) => Promise<void> = openExternalGuarded,
 ): Promise<void> {
   let opened = false;
   let openFailed = false;
@@ -311,17 +335,11 @@ async function signInWithBrowser(
       );
       if (!match) return;
       const url = new URL(match[0]);
-      if (
-        url.protocol !== 'https:' ||
-        url.hostname !== 'cursor.com' ||
-        url.username ||
-        url.password
-      )
-        return;
+      if (!isProviderSignInLink('cursor', url.href)) return;
       opened = true;
       // A browser that cannot open ends the sign-in wait immediately instead
       // of leaving the CLI to run out its five-minute deadline.
-      opening = openExternalGuarded(url.href).catch(() => {
+      opening = openUrl(url.href).catch(() => {
         openFailed = true;
         loginAbort.abort();
       });
@@ -492,9 +510,10 @@ export async function changeCursorAccount(
    * state must not do so until this fires.
    */
   onBeforeChange: () => Promise<void> = (): Promise<void> => Promise.resolve(),
+  options: CursorSignInOptions = {},
 ): Promise<CursorConnectionStatus> {
   return withProviderConnectionAttempt('cursor', 'native_login', signal, () =>
-    changeCursorAccountImpl(signal, progress, intent, onBeforeChange),
+    changeCursorAccountImpl(signal, progress, intent, onBeforeChange, options),
   );
 }
 
@@ -508,7 +527,11 @@ async function changeCursorAccountImpl(
    * state must not do so until this fires.
    */
   onBeforeChange: () => Promise<void> = (): Promise<void> => Promise.resolve(),
+  options: CursorSignInOptions = {},
 ): Promise<CursorConnectionStatus> {
+  // Before any read or sign-out: a controller that can't show the link
+  // could never finish the sign-in this would leave pending.
+  assertCursorSignInReachable(options);
   // The returned status must not out-claim reality: read the real one rather
   // than asserting this runtime is supported, installed and enabled.
   const base = await cursorConnectionStatus();
@@ -541,7 +564,14 @@ async function changeCursorAccountImpl(
       throw new Error('Could not sign out of Cursor. Try again.');
   }
   progress(status);
-  await signInWithBrowser(launch, env, signal);
+  await signInWithBrowser(
+    launch,
+    env,
+    signal,
+    cursorSignInLinkOpener(options, (signInUrl) =>
+      progress({ ...status, signInUrl }),
+    ),
+  );
   const signIn = await readCursorSignIn(launch, env, signal);
   if (signIn.state !== 'signed-in')
     throw new Error('Cursor sign-in did not finish. Try again.');

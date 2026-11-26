@@ -337,6 +337,8 @@ export const REMOTE_COMMAND_CHANNELS = {
     requires: ['providerQuotas'],
     invoke: [C.providerUsageRefresh],
   },
+  // A probing registry read; the host re-projects its catalogs afterwards.
+  'models.refresh': { invoke: [C.modelRegistryGet] },
   'cloneJobs.cancel': { requires: ['cloneJobs'], invoke: [C.cloneJobsCancel] },
   'cloneJobs.dismiss': {
     requires: ['cloneJobs'],
@@ -493,6 +495,10 @@ export const REMOTE_COMMAND_CHANNELS = {
   'worktree.recovery.finish': {
     requires: ['worktreeRecoveryResolution'],
     invoke: [C.worktreeRecoveryFinish],
+  },
+  'worktree.recovery.setAside': {
+    requires: ['worktreeRecoveryResolution', 'worktreeRecoverySetAside'],
+    invoke: [C.worktreeRecoverySetAside],
   },
   'worktree.discard.describe': {
     requires: ['worktreeDiscard'],
@@ -921,6 +927,10 @@ export const REMOTE_EVENT_CHANNELS = {
   },
   'connection.status': { local: 'port' },
   'session.snapshot-stale': { listen: [C.desktopSessionSnapshotStale] },
+  'onboardingTips.changed': {
+    requires: ['onboardingTips'],
+    listen: [C.preferencesChanged],
+  },
   'chat.message': { listen: [C.chatEvent] },
   'chat.transientRetry': {
     requires: ['chatFailureRetry'],
@@ -971,6 +981,7 @@ export const REMOTE_EVENT_CHANNELS = {
 
 /**
  * Optional `CanopyClient` members the adapter serves over the transport.
+ * `harnessSetup` is served only under its capability (gap 1 of CAN-6718).
  * Port-owned members (settings, feedback, marketplace sources,
  * `openExternalUrl`) use no adapter channel. Transcript reads stay port-owned
  * on the desktop; a controller without that port reads delegate transcripts
@@ -997,6 +1008,55 @@ export const REMOTE_MEMBER_CHANNELS = {
       C.orgProjectsSharedMultiRepoListCreations,
       C.orgProjectsRefresh,
       C.orgProjectsSetupCancel,
+    ],
+  },
+  /**
+   * The computer's agent harness setup (gap 1 of CAN-6718): each managed
+   * runtime's status, connect, cancel, disconnect and progress, Claude's and
+   * Codex's sign-in status, the Codex device-code sign-in and the fixed
+   * sign-in commands' text stream. `codex-login:open-browser` and
+   * `auth-terminal:resize` are never used: the browser opens pages itself
+   * and reads the sign-in as text.
+   */
+  harnessSetup: {
+    requires: ['harnessSetup'],
+    invoke: [
+      C.antigravityRuntimeStatus,
+      C.antigravityRuntimeInstall,
+      C.antigravityRuntimeCancel,
+      C.cursorConnectionStatus,
+      C.cursorConnectionConnect,
+      C.cursorConnectionCancel,
+      C.cursorConnectionDisconnect,
+      C.cursorConnectionAccount,
+      C.cursorConnectionChangeAccount,
+      C.copilotConnectionStatus,
+      C.copilotConnectionConnect,
+      C.copilotConnectionCancel,
+      C.copilotConnectionDisconnect,
+      C.copilotConnectionAccount,
+      C.copilotConnectionChangeAccount,
+      C.opencodeConnectionStatus,
+      C.opencodeConnectionConnect,
+      C.opencodeConnectionCancel,
+      C.opencodeConnectionDisconnect,
+      C.settingsClaudeAuthStatus,
+      C.settingsCodexAuthStatus,
+      C.codexLoginStart,
+      C.codexLoginCancel,
+      C.codexLoginRetryVerification,
+      C.authTerminalStart,
+      C.authTerminalWrite,
+      C.authTerminalStop,
+    ],
+    listen: [
+      C.antigravityRuntimeProgress,
+      C.cursorConnectionProgress,
+      C.copilotConnectionProgress,
+      C.opencodeConnectionProgress,
+      C.codexLoginState,
+      C.authTerminalOutput,
+      C.authTerminalExit,
     ],
   },
 } as const satisfies OperationTable;

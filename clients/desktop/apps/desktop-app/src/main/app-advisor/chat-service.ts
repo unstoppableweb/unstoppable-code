@@ -86,6 +86,7 @@ import { describeChatEventData } from '../lib/chat-event-description';
 import { getResourceMonitorService } from '../resource-monitor';
 import { createAppAdvisorToolRuntime } from './runtime';
 import type { AppAdvisorToolRuntimeSurfaces } from './runtime';
+import { slackTurnGuidanceFor } from './slack-turn-guidance';
 import { APP_ADVISOR_SYSTEM_PROMPT } from './system-prompt';
 import { chatAddressPrompt } from '@canopy/desktop-shared/lib/chat-address-prompt';
 import { APP_ADVISOR_BOT_ID } from '@canopy/protocol/chat-targets';
@@ -494,13 +495,21 @@ export async function dispatchAppAdvisorChatMessage(
         'App Advisor execution harness does not match host-owned routing',
       );
     }
-    const appAdvisorSystemPrompt = `${APP_ADVISOR_SYSTEM_PROMPT}\n\n${chatAddressPrompt(
-      {
+    // A Slack tab's turn (CAN-7608) adds the Slack-turn guidance between the
+    // base prompt and the address; Global Instructions still come last.
+    const slackTurnGuidance = await slackTurnGuidanceFor(
+      request.worktreeId,
+      request.chatId,
+    );
+    const appAdvisorSystemPrompt = [
+      APP_ADVISOR_SYSTEM_PROMPT,
+      ...(slackTurnGuidance === null ? [] : [slackTurnGuidance]),
+      chatAddressPrompt({
         botId: APP_ADVISOR_BOT_ID,
         taskId: request.worktreeId,
         chatId: request.chatId,
-      },
-    )}`;
+      }),
+    ].join('\n\n');
     const runtime = await resolveAgentModelRuntime({
       projectId: APP_ADVISOR_PROJECT_ID,
       model: selectedModel,

@@ -1,9 +1,9 @@
-import { costRowClasses } from '../control-button-shared';
-import { ControlButton } from '../Button';
+import { costRowClasses } from '../../primitives/control-button-shared';
+import { ControlButton } from '../../primitives/Button';
 import { useId, type JSX, type ReactNode } from 'react';
 import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
 import { ArchivedStateIcon } from '../../icons/ArchivedStateIcon';
-import { ThinkingSpinner } from '../ThinkingSpinner';
+import { ThinkingSpinner } from '../../primitives/ThinkingSpinner';
 import { CostSplitBar } from './CostSplitBar';
 import type { CostSegment } from './cost-format';
 

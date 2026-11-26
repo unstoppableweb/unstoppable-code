@@ -1,5 +1,14 @@
 import type * as SidebarModule from '../../lib/sidebar-items';
 import type * as W5FileStoreModule from '../../lib/w5-commit-log-file-store';
+import type * as CorePlatform from '@canopy/core-platform';
+import type * as W5FlipGate from '../../lib/w5-flip-gate';
+import { hostPlatformOperatingSystem } from '@canopy/core-platform';
+import { isW5DaemonFlipCompiled } from '../../lib/w5-flip-gate';
+import {
+  createDesktopW5CachedWorkspaceServices,
+  isDesktopW5ReadCacheSelected,
+  runDesktopW5CachedReadView,
+} from '../w5-cached-workspace-services';
 import { createHash } from 'node:crypto';
 import {
   CoreWorkspaceSchema,
@@ -45,6 +54,67 @@ import {
   publishableRevisions,
   type CoreWorkspaceReadProvenance,
 } from '../core-workspace-read-provenance';
+
+jest.mock('@canopy/core-platform', () => {
+  const actual = jest.requireActual<typeof CorePlatform>(
+    '@canopy/core-platform',
+  );
+  return {
+    ...actual,
+    hostPlatformOperatingSystem: jest.fn(actual.hostPlatformOperatingSystem),
+  };
+});
+jest.mock('../../lib/w5-flip-gate', () => {
+  const actual = jest.requireActual<typeof W5FlipGate>(
+    '../../lib/w5-flip-gate',
+  );
+  return {
+    ...actual,
+    isW5DaemonFlipCompiled: jest.fn(actual.isW5DaemonFlipCompiled),
+  };
+});
+
+describe('dispatcher cache selection (CAN-7646)', () => {
+  afterEach(() => {
+    jest
+      .mocked(hostPlatformOperatingSystem)
+      .mockImplementation(
+        jest.requireActual<typeof CorePlatform>('@canopy/core-platform')
+          .hostPlatformOperatingSystem,
+      );
+    jest
+      .mocked(isW5DaemonFlipCompiled)
+      .mockImplementation(
+        jest.requireActual<typeof W5FlipGate>('../../lib/w5-flip-gate')
+          .isW5DaemonFlipCompiled,
+      );
+  });
+
+  it.each([
+    ['darwin', true, true],
+    ['linux', true, true],
+    ['win32', true, false],
+    ['darwin', false, false],
+    ['linux', false, false],
+    ['win32', false, false],
+  ] as const)(
+    '%s with compiled flip %s selects cached workspace services: %s',
+    (platform, flip, selected) => {
+      jest.mocked(hostPlatformOperatingSystem).mockReturnValue(platform);
+      jest.mocked(isW5DaemonFlipCompiled).mockReturnValue(flip);
+
+      expect(isDesktopW5ReadCacheSelected()).toBe(selected);
+      const services = createDesktopW5CachedWorkspaceServices();
+      if (selected) {
+        expect(services).toMatchObject({
+          readView: runDesktopW5CachedReadView,
+        });
+      } else {
+        expect(services).toBeUndefined();
+      }
+    },
+  );
+});
 
 const caller = {
   principalId: 'test-user',
@@ -2406,17 +2476,20 @@ describe('cached read views answer as a fresh capture (CAN-7155 Seam A)', () => 
       items: worktrees.slice(0, 100).map(({ id }) => ({ worktreeId: id })),
     };
     const sidebar = { items: ids.map((id) => ({ id })) };
+    // Unpaged reads spanning pages stop at the complete legacy capture (CAN-7181).
+    const unpagedWorkspacePage = ids.length > 100 ? null : workspacePage;
+    const unpagedWorktreePage = ids.length > 100 ? null : worktreePage;
     expect(results.slice(0, 8)).toMatchObject([
-      { canonicalResult: workspacePage, legacyResult: sidebar },
+      { canonicalResult: unpagedWorkspacePage, legacyResult: sidebar },
       {
         canonicalResult: {
           items: ids.slice(0, 7).map((workspaceId) => ({ workspaceId })),
         },
         legacyResult: sidebar,
       },
-      { canonicalResult: workspacePage, legacyResult: sidebar },
+      { canonicalResult: unpagedWorkspacePage, legacyResult: sidebar },
       {
-        canonicalResult: worktreePage,
+        canonicalResult: unpagedWorktreePage,
         legacyResult: {
           items: ids.map((id, i) => ({
             id,
@@ -2424,14 +2497,83 @@ describe('cached read views answer as a fresh capture (CAN-7155 Seam A)', () => 
           })),
         },
       },
-      { canonicalResult: worktreePage, legacyResult: worktrees },
+      { canonicalResult: unpagedWorktreePage, legacyResult: worktrees },
       {
         canonicalResult: { items: [{ worktreeId: 'wt-2' }] },
         legacyResult: worktrees,
       },
-      { canonicalResult: worktreePage, legacyResult: worktrees },
+      { canonicalResult: unpagedWorktreePage, legacyResult: worktrees },
       { legacyResult: worktrees },
     ]);
+    // Explicit pages retain canonical and continuation parity above 100 rows.
+    async function readPages(
+      read: (cursor?: string) => Promise<{
+        canonicalResult: { items: unknown[]; nextCursor: string | null } | null;
+        legacyResult: unknown;
+        legacyAuthority?: unknown;
+      }>,
+      items: unknown[],
+      legacyResult: unknown,
+    ): Promise<unknown[]> {
+      const first = await read();
+      expect(first).toMatchObject({
+        canonicalResult: {
+          items: items.slice(0, 100),
+        },
+        legacyResult,
+      });
+      const cursor = first.canonicalResult?.nextCursor;
+      if (ids.length > 100) {
+        expect(cursor).toMatch(/.+/);
+      } else {
+        expect(cursor).toBeNull();
+      }
+      if (!cursor) return [first];
+      const next = await read(cursor);
+      expect(next).toMatchObject({
+        canonicalResult: { items: items.slice(100), nextCursor: null },
+      });
+      expect(next.legacyResult).toEqual(first.legacyResult);
+      expect(next.legacyAuthority).toEqual(first.legacyAuthority);
+      return [first, next];
+    }
+    results.push(
+      ...(await Promise.all([
+        ...[{}, { organizationId }].map((scope) =>
+          readPages(
+            (cursor) =>
+              runtime.queryWorkspaceListForLegacyIpc(
+                { scope, pageSize: 100, ...(cursor && { cursor }) },
+                { caller },
+              ),
+            ids.map((workspaceId) => ({ workspaceId })),
+            sidebar,
+          ),
+        ),
+        ...[
+          {},
+          { workspaceId: 'ws-1' },
+          { workspaceId: 'ws-1', organizationId },
+        ].map((scope) =>
+          readPages(
+            (cursor) =>
+              runtime.queryWorktreeListForLegacyIpc(
+                { scope, pageSize: 100, ...(cursor && { cursor }) },
+                { caller },
+              ),
+            worktrees.map(({ id }) => ({ worktreeId: id })),
+            'workspaceId' in scope
+              ? worktrees
+              : {
+                  items: ids.map((id, i) => ({
+                    id,
+                    worktrees: i === 0 ? worktrees : [],
+                  })),
+                },
+          ),
+        ),
+      ])),
+    );
     // Continuation tokens differ per runtime; everything else must not.
     return results.map((result): unknown => {
       const plain: unknown = JSON.parse(

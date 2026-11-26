@@ -316,11 +316,30 @@ function blocksMatch(a: DisplayBlock[], b: DisplayBlock[]): boolean {
  * true the caller can reuse the cached object reference so that React.memo
  * skips re-rendering.
  */
+/** Whether two folded-timer id lists hold the same ids in the same order. */
+function sameIds(
+  a: readonly string[] | undefined,
+  b: readonly string[] | undefined,
+): boolean {
+  if (a === b) return true;
+  const left = a ?? [];
+  const right = b ?? [];
+  return left.length === right.length && left.every((id, i) => id === right[i]);
+}
+
 function turnGroupsMatch(a: TurnGroup, b: TurnGroup): boolean {
   if (a === b) return true;
   if (a.isComplete !== b.isComplete) return false;
   // A wake's head row gains its label and link once older history loads.
   if (!blocksMatch(a.userMessage.blocks, b.userMessage.blocks)) return false;
+  // A later execution can take over the turn without adding a visible row.
+  if (
+    a.timerMessage.id !== b.timerMessage.id ||
+    !blocksMatch(a.timerMessage.blocks, b.timerMessage.blocks) ||
+    !sameIds(a.foldedTimerIds, b.foldedTimerIds)
+  ) {
+    return false;
+  }
   if (a.assistantMessages.length !== b.assistantMessages.length) return false;
   for (let i = 0; i < a.assistantMessages.length; i++) {
     if (a.assistantMessages[i].id !== b.assistantMessages[i].id) return false;
@@ -344,6 +363,8 @@ function sameTurnRevision(cached: TurnGroup, next: TurnGroup): boolean {
   if (
     cached.isComplete !== next.isComplete ||
     cached.userMessage !== next.userMessage ||
+    cached.timerMessage !== next.timerMessage ||
+    !sameIds(cached.foldedTimerIds, next.foldedTimerIds) ||
     cached.assistantMessages.length !== next.assistantMessages.length
   ) {
     return false;

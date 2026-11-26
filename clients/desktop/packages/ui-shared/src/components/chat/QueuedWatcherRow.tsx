@@ -4,7 +4,7 @@ import type {
   QueuedMessageWaitingReason,
 } from '@canopy/protocol/remote-control/shell';
 import { TrashIcon } from '../../icons/AppIcons';
-import { Button } from '../Button';
+import { Button } from '../../primitives/Button';
 import { WakeTurnBoundary } from '../WakeTurnBoundary';
 import { QueuedMessageReason } from './QueuedMessageReason';
 import { watcherFiredPresentation } from './WatcherFiredTitle';

@@ -23,6 +23,8 @@ import {
 import type {
   AgentProviderAuthStatus,
   AgentProviderType,
+  AuthTerminalExitEvent,
+  AuthTerminalOutputEvent,
   AuthTerminalProvider,
 } from '@canopy/desktop-shared/types';
 import {
@@ -58,10 +60,17 @@ import {
   OtherAccountSnapshotsPanel,
 } from '@/components/pages/usage/OtherAccountSnapshots';
 import { findClaudeLoginFailure } from './claudeLoginOutput';
+import { findAntigravityLoginFailure } from './antigravityLoginOutput';
+import {
+  isRemoteSignIn,
+  openSignInLink,
+} from '@/lib/remote-control/open-sign-in-link';
 
 const NOW_TICK_MS = 30_000;
 
 const STATUS_POLL_MS = 2000;
+/** The most events kept while a start is pending (a link and a prompt). */
+const MAX_EARLY_EVENTS = 256;
 const TERMINAL_AREA_HEIGHT = 380;
 // Claude Code prints nothing when the browser fails to open, so the
 // paste-code fallback opens on its own after a while.
@@ -178,13 +187,13 @@ function StatusFooter({
       <div className="min-w-0 flex-1 text-s">
         {status === null && (
           <span className="fg-secondary">
-            Checking {providerLabel(provider)} status&hellip;
+            Checking your {providerLabel(provider)} account&hellip;
           </span>
         )}
         {status?.authenticated && (
           <span className="inline-flex flex-wrap items-baseline gap-2 fg-secondary">
             <span>
-              Signed in
+              Connected
               {status.accountLabel ? (
                 <>
                   {' as '}
@@ -214,7 +223,6 @@ function StatusFooter({
 
 function LoginFailedView({
   provider,
-  exitCode,
   detail,
   failure,
   timedOut,
@@ -222,7 +230,6 @@ function LoginFailedView({
   onCancel,
 }: {
   provider: AuthTerminalProvider;
-  exitCode: number | null;
   detail?: string;
   failure?: InlineFailure;
   timedOut?: boolean;
@@ -236,14 +243,15 @@ function LoginFailedView({
     >
       <div className="flex flex-col gap-1">
         <Heading level={3} variant="section">
-          {providerLabel(provider)} sign-in did not complete
+          Couldn't connect {providerLabel(provider)}
         </Heading>
         {timedOut ? (
           <p
             className="text-s fg-secondary"
             data-testid="auth-login-failure-detail"
           >
-            Sign-in timed out. Try again.
+            The sign-in timed out after {CLAUDE_ATTEMPT_TIMEOUT_MS / 60_000}{' '}
+            minutes.
           </p>
         ) : failure ? (
           <DesktopErrorBanner
@@ -264,11 +272,7 @@ function LoginFailedView({
           </p>
         ) : (
           <p className="text-s fg-secondary">
-            The {providerLabel(provider)} sign-in process exited
-            {exitCode !== null && exitCode !== 0
-              ? ` with code ${exitCode}`
-              : ''}{' '}
-            without authenticating. Try again, or cancel to close this window.
+            {providerLabel(provider)} closed before the sign-in finished.
           </p>
         )}
       </div>
@@ -287,7 +291,7 @@ function LoginFailedView({
           onClick={onLogin}
           data-testid="auth-login-submit"
         >
-          Sign in
+          Try again
         </Button>
       </div>
     </div>
@@ -313,9 +317,14 @@ function TerminalAuthLoginModal({
   introTestId,
   onCancel,
 }: AuthLoginModalProps): JSX.Element {
+  // Claude Code exits 0 only after a sign-in completes, wherever it runs, and
+  // ends a failed one with a `Login failed: …` line.
+  const claudeSignIn = provider === 'claude';
   // Claude Code finishes sign-in through its own browser callback; its
-  // terminal stays available only as the paste-code fallback.
-  const browserSignIn = provider === 'claude';
+  // terminal stays available only as the paste-code fallback. Started from
+  // another computer, the host prints the link and paste-code prompt instead
+  // of opening its own browser, so the terminal is the sign-in.
+  const browserSignIn = claudeSignIn && !isRemoteSignIn();
   const terminalFrameRef = useRef<HTMLDivElement | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -487,9 +496,7 @@ function TerminalAuthLoginModal({
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
-    const disposeLinks = installTerminalLinks(term, (url) => {
-      void window.api.browser.openExternal({ url });
-    });
+    const disposeLinks = installTerminalLinks(term, openSignInLink);
     terminalRef.current = term;
     // Drop focus into the terminal as soon as it mounts — some login flows
     // (notably `gh auth login`) prompt for input immediately, and the
@@ -511,7 +518,21 @@ function TerminalAuthLoginModal({
       reportClientAppError(error);
     }
 
-    const offOutput = window.api.authTerminal.onOutput((event) => {
+    // Events that arrive while the start is pending, before this dialog
+    // knows its session: a sign-in can print its link, or even exit, before
+    // the start answers. Replayed in order once the answer names the session.
+    let starting = true;
+    const early: (
+      | { kind: 'output'; event: AuthTerminalOutputEvent }
+      | { kind: 'exit'; event: AuthTerminalExitEvent }
+    )[] = [];
+    const keepEarly = (entry: (typeof early)[number]): boolean => {
+      if (!starting || sessionIdRef.current !== null) return false;
+      if (early.length < MAX_EARLY_EVENTS) early.push(entry);
+      return true;
+    };
+
+    const handleOutput = (event: AuthTerminalOutputEvent): void => {
       if (event.sessionId !== sessionIdRef.current) {
         return;
       }
@@ -519,9 +540,12 @@ function TerminalAuthLoginModal({
       loginOutputRef.current = `${loginOutputRef.current}${event.data}`.slice(
         -32_768,
       );
+    };
+    const offOutput = window.api.authTerminal.onOutput((event) => {
+      if (!keepEarly({ kind: 'output', event })) handleOutput(event);
     });
 
-    const offExit = window.api.authTerminal.onExit((event) => {
+    const handleExit = (event: AuthTerminalExitEvent): void => {
       if (event.sessionId !== sessionIdRef.current) {
         return;
       }
@@ -535,9 +559,12 @@ function TerminalAuthLoginModal({
       setView({ kind: 'exit-checking', exitCode });
       void refreshStatus().then((result) => {
         // Claude Code exits 0 only after a sign-in completes; a failed account
-        // change can leave the previous account signed in.
+        // change can leave the previous account signed in. Antigravity's
+        // sign-in also exits 0 only on success, and an older Google
+        // credential on the host still lists models after a rejected code.
+        const exitDecides = claudeSignIn || provider === 'antigravity';
         if (
-          (result?.authenticated && (!browserSignIn || exitCode === 0)) ||
+          (result?.authenticated && (!exitDecides || exitCode === 0)) ||
           (provider === 'opencode' && exitCode === 0)
         ) {
           if (
@@ -556,19 +583,26 @@ function TerminalAuthLoginModal({
           setView({
             kind: 'login-failed',
             exitCode,
-            detail: browserSignIn
+            detail: claudeSignIn
               ? (findClaudeLoginFailure(loginOutputRef.current) ?? undefined)
-              : undefined,
+              : provider === 'antigravity'
+                ? (findAntigravityLoginFailure(loginOutputRef.current) ??
+                  undefined)
+                : undefined,
           });
         }
       });
+    };
+    const offExit = window.api.authTerminal.onExit((event) => {
+      if (!keepEarly({ kind: 'exit', event })) handleExit(event);
     });
 
     const fallbackTimer = browserSignIn
       ? setTimeout(() => setFallbackOpen(true), CLAUDE_FALLBACK_REVEAL_MS)
       : null;
-    // Leaving `running` tears this effect down, which stops the session.
-    const attemptTimer = browserSignIn
+    // Leaving `running` tears this effect down, which stops the session. A
+    // remote sign-in is bounded the same way: its paste prompt waits forever.
+    const attemptTimer = claudeSignIn
       ? setTimeout(
           () =>
             setView({ kind: 'login-failed', exitCode: null, timedOut: true }),
@@ -666,6 +700,7 @@ function TerminalAuthLoginModal({
     void window.api.authTerminal
       .start({ provider, cols, rows })
       .then((response) => {
+        starting = false;
         if (disposed) {
           void window.api.authTerminal
             .stop({ sessionId: response.sessionId })
@@ -675,6 +710,10 @@ function TerminalAuthLoginModal({
           return;
         }
         sessionIdRef.current = response.sessionId;
+        for (const entry of early.splice(0)) {
+          if (entry.kind === 'output') handleOutput(entry.event);
+          else handleExit(entry.event);
+        }
 
         if (typeof ResizeObserver !== 'undefined') {
           resizeObserver = new ResizeObserver(() => {
@@ -706,6 +745,8 @@ function TerminalAuthLoginModal({
         }
       })
       .catch((error: unknown) => {
+        starting = false;
+        early.length = 0;
         const appError = toAppError(resolveClientAppError(error));
         if (!appError || disposed) return;
         // Say so instead of waiting on a browser that never opened (Claude's
@@ -715,7 +756,7 @@ function TerminalAuthLoginModal({
           exitCode: null,
           failure: inlineFailure(
             appError,
-            `Couldn't start ${providerLabel(provider)} sign-in.`,
+            `The ${providerLabel(provider)} sign-in didn't open.`,
           ),
         });
       });
@@ -765,6 +806,7 @@ function TerminalAuthLoginModal({
   }, [
     attempt,
     browserSignIn,
+    claudeSignIn,
     openResumePrompt,
     preLoginStatusSettled,
     provider,
@@ -827,11 +869,9 @@ function TerminalAuthLoginModal({
     <DialogModal
       inset="flush"
       onClose={onClose}
-      title={`Sign in to ${providerLabel(provider)}`}
+      title={`Connect ${providerLabel(provider)}`}
       subtitle={
-        browserSignIn
-          ? undefined
-          : 'Complete the sign-in flow in the terminal below.'
+        browserSignIn ? undefined : 'Follow the steps in the terminal below.'
       }
       maxWidth={snapshotsPanelOpen ? '4xl' : '3xl'}
       closeOnBackdrop
@@ -869,7 +909,7 @@ function TerminalAuthLoginModal({
               >
                 <StatusGlyph state="running" size={12} />
                 {view.kind === 'running'
-                  ? 'Finish signing in in your browser. This window updates when you’re done.'
+                  ? "Finish signing in in your browser. This window updates when you're done."
                   : `Checking your ${providerLabel(provider)} account…`}
               </div>
               <Disclosure
@@ -892,7 +932,6 @@ function TerminalAuthLoginModal({
             <div className="px-6 pt-2 pb-4">
               <LoginFailedView
                 provider={provider}
-                exitCode={view.exitCode}
                 detail={view.detail}
                 {...(view.failure === undefined
                   ? {}

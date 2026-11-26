@@ -83,6 +83,7 @@ import { runSkillMutation } from '../../skills/skill-mutations';
 import * as skillContext from '../../skills/skill-install-context';
 import { readSkillLockSnapshot } from '../../skills/skill-lock-snapshot';
 import { createDesktopSkillCatalogHost } from '../core-skill-catalog-host';
+import { __resetUsageDataPolicyForTests } from '../../lib/usage-data-policy';
 import type { InstalledSkillInfo } from '@canopy/protocol/skills';
 
 const caller = (
@@ -186,6 +187,7 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
 }
 
 beforeEach(() => {
+  __resetUsageDataPolicyForTests();
   root = mkdtempSync(join(tmpdir(), 'can-4124-'));
   mockDataDir = join(root, 'data');
   mockBundledDir = join(root, 'bundled');
@@ -207,6 +209,7 @@ beforeEach(() => {
   });
 });
 afterEach(() => {
+  __resetUsageDataPolicyForTests();
   operations.close();
   rmSync(root, { recursive: true, force: true });
 });
@@ -667,6 +670,9 @@ describe('desktop skill catalog host (CAN-4124)', () => {
   });
 
   it('discovery returns the audit result and an audit failure stays non-blocking', async () => {
+    __resetUsageDataPolicyForTests({
+      consent: { accepted: true, analyticsDeclinedAtOnboarding: false },
+    });
     const dispatcher = compose();
     mockAudit = (): Promise<string> =>
       Promise.resolve(JSON.stringify({ x: { socket: { alerts: 2 } } }));

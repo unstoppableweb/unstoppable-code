@@ -1,4 +1,5 @@
 import type * as ArchiveFilesystem from 'node:fs/promises';
+import fsPromises from 'node:fs/promises';
 import * as archiveDurability from '@canopy/execution-engine/node/lib/atomic-file';
 import * as archiveHostPlatform from '@canopy/core-platform/host-platform';
 import * as archiveDirectoryFlush from '@canopy/core-platform/directory-flush';
@@ -62,12 +63,187 @@ describe('core.worktree.recovery.resolve persistence contract', () => {
     sourceRecord: {},
     capture: 'none' as const,
   });
+  test.each(['absent', 'directory', 'file'])(
+    'preparation admission is read-only and agrees with publication (%s staging)',
+    async (shape) => {
+      const store = new ArchiveRecoveryStore(root);
+      const input = preparation();
+      const staging = store.stagingPath(input);
+      if (shape !== 'absent') {
+        await mkdir(dirname(staging), { recursive: true });
+        if (shape === 'file') await writeFile(staging, 'foreign occupant');
+        else {
+          await mkdir(staging);
+          await writeFile(join(staging, 'saved.txt'), 'kept bytes');
+        }
+      }
+      if (shape === 'file') {
+        await expect(store.readOfferPreparation(input)).rejects.toThrow(
+          'Recovery staging is not a canonical directory.',
+        );
+        await expect(store.readAdmittedPreparation(input)).rejects.toThrow(
+          'Recovery staging is not a canonical directory.',
+        );
+        await expect(store.prepare(input)).rejects.toThrow(
+          'Recovery staging is not a canonical directory.',
+        );
+        expect(await readFile(staging, 'utf8')).toBe('foreign occupant');
+      } else {
+        await expect(store.readOfferPreparation(input)).resolves.toEqual({
+          existing: null,
+        });
+        const { receipt, existing } =
+          await store.readAdmittedPreparation(input);
+        expect(existing).toBeNull();
+        expect(await store.read('ws', input.operationId)).toBeNull();
+        await expect(lstat(store.directory(input))).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+        expect(await store.prepare(input)).toEqual(receipt);
+        if (shape === 'directory')
+          expect(await readFile(join(staging, 'saved.txt'), 'utf8')).toBe(
+            'kept bytes',
+          );
+      }
+    },
+  );
+  test.each([0, 65535, 65536, 65537, 196625])(
+    'preparation persists the exact payload digest (%s bytes)',
+    async (size) => {
+      const store = new ArchiveRecoveryStore(root);
+      const input = preparation();
+      const staging = store.stagingPath(input);
+      const contents = Buffer.alloc(size);
+      for (let index = 0; index < size; index += 1)
+        contents[index] = index % 251;
+      await mkdir(staging, { recursive: true });
+      await writeFile(join(staging, 'saved.bin'), contents);
+      const receipt = await store.prepare(input);
+      const persisted = await store.read('ws', input.operationId);
+      expect(persisted).toEqual(receipt);
+      expect(persisted?.staging?.entries).toEqual([
+        {
+          path: 'saved.bin',
+          kind: 'file',
+          size,
+          digest: archiveRecoveryDigest(contents),
+        },
+      ]);
+      expect(await readFile(join(staging, 'saved.bin'))).toEqual(contents);
+    },
+  );
+
+  test.each(['read-error', 'same-size-drift'])(
+    'retained payload deletion preserves the receipt and files on %s',
+    async (failure) => {
+      const store = new ArchiveRecoveryStore(root);
+      const input = preparation();
+      const staging = store.stagingPath(input);
+      await mkdir(staging, { recursive: true });
+      await writeFile(join(staging, 'saved.bin'), 'original');
+      let receipt = await store.prepare(input);
+      receipt = await store.publishRetention(receipt);
+      receipt = await store.resetStaging(receipt);
+      receipt = await store.writeStage(receipt, 'withdrawal-intent');
+      receipt = await store.writeStage(receipt, 'withdrawn');
+      receipt = await store.writeStage(receipt, 'completed');
+      const saved = join(store.payloadPath(receipt), 'saved.bin');
+      const receiptFile = join(store.directory(receipt), 'receipt.json');
+      const before = await readFile(receiptFile);
+      if (failure === 'same-size-drift') await writeFile(saved, 'replaced');
+      const open = fsPromises.open;
+      const fault = jest
+        .spyOn(fsPromises, 'open')
+        .mockImplementation(async (...args) => {
+          const file = await open(...args);
+          if (failure === 'read-error' && args[0] === saved)
+            jest
+              .spyOn(file, 'read')
+              .mockRejectedValueOnce(new Error('Injected payload read'));
+          return file;
+        });
+      try {
+        await expect(store.beginDeletion(receipt)).rejects.toThrow(
+          failure === 'read-error'
+            ? 'Injected payload read'
+            : 'Retained payload changed.',
+        );
+        expect(await readFile(receiptFile)).toEqual(before);
+        expect(await store.read('ws', input.operationId)).toEqual(receipt);
+        expect(await readFile(saved, 'utf8')).toBe(
+          failure === 'read-error' ? 'original' : 'replaced',
+        );
+      } finally {
+        fault.mockRestore();
+      }
+    },
+  );
+
+  test.each(
+    (['offer', 'execution'] as const).flatMap((mode) =>
+      (['added-file', 'symlink-directory'] as const).map((change) => ({
+        mode,
+        change,
+      })),
+    ),
+  )(
+    '$mode refuses staging directory drift during inventory ($change)',
+    async ({ mode, change }) => {
+      const store = new ArchiveRecoveryStore(root);
+      const input = preparation();
+      const staging = store.stagingPath(input);
+      const directory =
+        change === 'added-file' ? staging : join(staging, 'nested');
+      const moved = join(root, 'moved');
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, 'saved.bin'), 'saved bytes');
+      const actualAccess = fsPromises.access;
+      let injected = false;
+      const accessSpy = jest
+        .spyOn(fsPromises, 'access')
+        .mockImplementation(async (...args) => {
+          await actualAccess(...args);
+          // The directory's names were already read before visiting this file.
+          if (!injected && args[0] === join(directory, 'saved.bin')) {
+            injected = true;
+            if (change === 'added-file')
+              await writeFile(join(directory, 'late.bin'), 'late bytes');
+            else {
+              await rename(directory, moved);
+              await symlink(moved, directory, 'dir');
+            }
+          }
+        });
+      try {
+        await expect(
+          mode === 'offer'
+            ? store.readOfferPreparation(input)
+            : store.prepare(input),
+        ).rejects.toThrow('Recovery staging changed.');
+        expect(injected).toBe(true);
+        expect(await store.read('ws', input.operationId)).toBeNull();
+        expect(await readFile(join(directory, 'saved.bin'), 'utf8')).toBe(
+          'saved bytes',
+        );
+        if (change === 'added-file')
+          expect(await readFile(join(directory, 'late.bin'), 'utf8')).toBe(
+            'late bytes',
+          );
+        else expect((await lstat(directory)).isSymbolicLink()).toBe(true);
+      } finally {
+        accessSpy.mockRestore();
+      }
+    },
+  );
+
   test.each(['empty', 'partial', 'full', 'published-link', 'stage-temp'])(
     'exclusive publication normalization settles %s twice without promoting temps',
     async (shape) => {
       const store = new ArchiveRecoveryStore(root);
       const input = preparation();
       const directory = store.directory(input);
+      await store.assertWorkspaceNormalizable('ws');
+      expect(await readdir(root)).toEqual([]);
       await mkdir(directory, { recursive: true });
       const temporary = join(
         directory,
@@ -95,6 +271,13 @@ describe('core.worktree.recovery.resolve persistence contract', () => {
       // Ordinary reads never normalize, and unpublished bytes never become authority.
       if (shape !== 'published-link' && shape !== 'stage-temp')
         expect(await store.read('ws', input.operationId)).toBeNull();
+      const namesBefore = await readdir(directory);
+      const temporaryBefore =
+        shape === 'empty' ? null : await readFile(temporary, 'utf8');
+      await store.assertWorkspaceNormalizable('ws');
+      expect(await readdir(directory)).toEqual(namesBefore);
+      if (shape !== 'empty')
+        expect(await readFile(temporary, 'utf8')).toBe(temporaryBefore);
       await store.normalize('ws', input.operationId);
       await store.normalize('ws', input.operationId);
       const receipt = await store.prepare(input);
@@ -117,6 +300,11 @@ describe('core.worktree.recovery.resolve persistence contract', () => {
         );
       if (shape === 'unknown')
         await writeFile(join(directory, 'unknown'), 'not disposable');
+      const namesBefore = await readdir(directory);
+      await expect(
+        store.assertWorkspaceNormalizable('ws'),
+      ).rejects.toBeInstanceOf(ArchiveRecoveryRefusedError);
+      expect(await readdir(directory)).toEqual(namesBefore);
       await expect(
         store.normalize('ws', receipt.operationId),
       ).rejects.toBeInstanceOf(ArchiveRecoveryRefusedError);
@@ -273,6 +461,8 @@ describe('core.worktree.recovery.resolve persistence contract', () => {
       }
       if (shape === 'unexpected-payload')
         await mkdir(store.payloadPath(receipt));
+      expect(await store.read('ws', input.operationId)).toEqual(receipt);
+      await store.assertWorkspaceNormalizable('ws');
       expect(await store.read('ws', input.operationId)).toEqual(receipt);
       if (shape.startsWith('unlink-') || shape === 'rmdir-after') {
         const archiveFilesystem =

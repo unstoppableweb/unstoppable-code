@@ -2,7 +2,7 @@
 
 import { ControlButton } from '@canopy/ui-shared/components';
 import { ImageThumbnail } from '@canopy/ui-shared/components';
-import { Badge, Dot } from '@canopy/ui-shared/components/Badge';
+import { Badge, Dot } from '@canopy/ui-shared/primitives/Badge';
 import { useEffect, useId, useMemo, useRef, useState, type JSX } from 'react';
 import type { IncomingTeamInvitation } from '@canopy/protocol/settings/organization';
 import type {

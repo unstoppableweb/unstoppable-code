@@ -1,10 +1,10 @@
-import { TextLink } from './TextLink';
+import { TextLink } from '../primitives/TextLink';
 import type { JSX } from 'react';
 import {
   mcpClientSetupCollectsClient,
   mcpClientSetupExplanation,
 } from '../lib/mcp-connect-errors';
-import { CopyButton } from './CopyButton';
+import { CopyButton } from '../primitives/CopyButton';
 
 export interface McpClientSetupDetailsProps {
   /** Catalog or connection name, used in the explanation. */

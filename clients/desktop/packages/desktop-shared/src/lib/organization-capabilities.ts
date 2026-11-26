@@ -9,6 +9,11 @@
 // into the organization layer a chat inherits, and decide which
 // organization-owned refs a chat may still use. Framework-free, so main and
 // the renderer agree.
+//
+// A project's shared connections (CAN-6246) ride the same layer as
+// connector refs owned by the organization. Nothing is installed for them:
+// the desktop's copy is for display and selection only, and the hosted
+// proxy decides every call (CAN-6243).
 // ---------------------------------------------------------------------------
 
 import { z } from 'zod';
@@ -97,6 +102,19 @@ export type InstalledOrganizationItem =
       readonly status: 'failed' | 'unsupported';
     };
 
+/** One shared connection of a project, as this desktop last read it. */
+export interface OrganizationSharedConnection {
+  /** `capabilitySetupItemKey`-style key: `connector:<connection id>`. */
+  readonly key: string;
+  readonly connectionId: string;
+  readonly name: string;
+  readonly source: 'organization' | 'project';
+  readonly serverKey: string;
+  readonly configId: string;
+  readonly identityKind: 'user' | 'bot';
+  readonly status: 'pending' | 'connected' | 'needsSignIn' | 'disconnected';
+}
+
 export interface OrganizationCapabilitySnapshot {
   readonly scope: OrganizationCapabilityScope;
   /** The signed-in account that read it; never served to another. */
@@ -113,6 +131,11 @@ export interface OrganizationCapabilitySnapshot {
    * Absent when there are none.
    */
   readonly switchedOffPipelines?: readonly string[];
+  /**
+   * The project's shared connections (CAN-6246). Absent when there are none,
+   * and for an organization workspace with no project, where none apply.
+   */
+  readonly connections?: readonly OrganizationSharedConnection[];
 }
 
 /**
@@ -133,8 +156,19 @@ export function organizationLayerSelections(
     if (item.skillRef) skillRefs.push({ ...item.skillRef, owner });
     if (item.pluginRef) pluginRefs.push({ ...item.pluginRef, owner });
   }
-  return { collectionIds: [], skillRefs, pluginRefs, mcpServerRefs: [] };
+  const mcpServerRefs = (snapshot.connections ?? []).map((connection) => ({
+    serverId: connection.serverKey,
+    configId: connection.configId,
+    owner,
+  }));
+  return { collectionIds: [], skillRefs, pluginRefs, mcpServerRefs };
 }
+
+/** The key of a connector ref without its owner. */
+export const organizationConnectorRefKey = (ref: {
+  serverId: string;
+  configId: string;
+}): string => JSON.stringify([ref.serverId, ref.configId]);
 
 const skillKey = (ref: { sourceId: string; skillName: string }): string =>
   JSON.stringify([ref.sourceId, ref.skillName]);
@@ -166,6 +200,9 @@ export function withOnlyAllowedOrganizationRefs(
   const allowedPlugins = new Set(
     (allowed?.selections.pluginRefs ?? []).map(pluginKey),
   );
+  const allowedConnectors = new Set(
+    (allowed?.selections.mcpServerRefs ?? []).map(organizationConnectorRefKey),
+  );
   const ownedByAllowed = (owner: SelectionRefOwner | undefined): boolean =>
     owner !== undefined &&
     allowed !== undefined &&
@@ -182,12 +219,18 @@ export function withOnlyAllowedOrganizationRefs(
     ref.owner === undefined
       ? true
       : ownedByAllowed(ref.owner) && allowedPlugins.has(pluginKey(ref));
+  // A shared connection stays only while the workspace's project shares it
+  // (CAN-6246); the proxy refuses it otherwise anyway (CAN-6243).
+  const keepConnector = (
+    ref: NonNullable<ChatTabPluginSelections['mcpServerRefs']>[number],
+  ): boolean =>
+    ref.owner === undefined
+      ? true
+      : ownedByAllowed(ref.owner) &&
+        allowedConnectors.has(organizationConnectorRefKey(ref));
   const skillRefs = selections.skillRefs.filter(keepSkill);
   const pluginRefs = selections.pluginRefs.filter(keepPlugin);
-  // Connectors carry no organization owner in this release.
-  const mcpServerRefs = (selections.mcpServerRefs ?? []).filter(
-    (ref) => ref.owner === undefined,
-  );
+  const mcpServerRefs = (selections.mcpServerRefs ?? []).filter(keepConnector);
   return {
     selections: {
       ...selections,
@@ -200,7 +243,7 @@ export function withOnlyAllowedOrganizationRefs(
       skillRefs: selections.skillRefs.filter((ref) => !keepSkill(ref)),
       pluginRefs: selections.pluginRefs.filter((ref) => !keepPlugin(ref)),
       mcpServerRefs: (selections.mcpServerRefs ?? []).filter(
-        (ref) => ref.owner !== undefined,
+        (ref) => !keepConnector(ref),
       ),
     },
   };
@@ -220,6 +263,19 @@ export interface OrganizationLayerItem {
         readonly kind: 'plugin';
         readonly marketplaceId: string;
         readonly pluginName: string;
+      }
+    | {
+        /** A shared connection of the project (CAN-6246). */
+        readonly kind: 'connector';
+        readonly serverId: string;
+        readonly configId: string;
+        readonly connectionId: string;
+        readonly identityKind: 'user' | 'bot';
+        readonly status:
+          | 'pending'
+          | 'connected'
+          | 'needsSignIn'
+          | 'disconnected';
       };
 }
 
@@ -251,6 +307,19 @@ export function organizationLayerItems(
         ref: { kind: 'plugin', ...item.pluginRef },
       });
   }
+  for (const connection of snapshot.connections ?? [])
+    items.push({
+      name: connection.name,
+      source: connection.source,
+      ref: {
+        kind: 'connector',
+        serverId: connection.serverKey,
+        configId: connection.configId,
+        connectionId: connection.connectionId,
+        identityKind: connection.identityKind,
+        status: connection.status,
+      },
+    });
   return items;
 }
 
@@ -279,7 +348,15 @@ const OrganizationLayerViewSchema = z.object({
         owner: SelectionRefOwnerSchema,
       }),
     ),
-    mcpServerRefs: z.array(z.never()).optional(),
+    mcpServerRefs: z
+      .array(
+        z.object({
+          serverId: z.string(),
+          configId: z.string(),
+          owner: SelectionRefOwnerSchema,
+        }),
+      )
+      .optional(),
   }),
   items: z.array(
     z.object({
@@ -295,6 +372,19 @@ const OrganizationLayerViewSchema = z.object({
           kind: z.literal('plugin'),
           marketplaceId: z.string(),
           pluginName: z.string(),
+        }),
+        z.object({
+          kind: z.literal('connector'),
+          serverId: z.string(),
+          configId: z.string(),
+          connectionId: z.string(),
+          identityKind: z.enum(['user', 'bot']),
+          status: z.enum([
+            'pending',
+            'connected',
+            'needsSignIn',
+            'disconnected',
+          ]),
         }),
       ]),
     }),
@@ -352,6 +442,10 @@ export function withSelectionOwnersRestored(
     context.organization?.layer.pluginRefs,
     pluginKey,
   );
+  const organizationConnectors = collect(
+    context.organization?.layer.mcpServerRefs,
+    mcpKey,
+  );
   const expand = <T extends { owner?: SelectionRefOwner }>(
     ref: T,
     owners: Owners | undefined,
@@ -386,7 +480,11 @@ export function withSelectionOwnersRestored(
     ...(chosen.mcpServerRefs
       ? {
           mcpServerRefs: chosen.mcpServerRefs.flatMap((ref) =>
-            expand(ref, previousMcp.get(mcpKey(ref))),
+            expand(
+              ref,
+              previousMcp.get(mcpKey(ref)) ??
+                organizationConnectors.get(mcpKey(ref)),
+            ),
           ),
         }
       : {}),

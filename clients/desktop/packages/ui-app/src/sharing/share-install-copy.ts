@@ -16,6 +16,7 @@ import {
   SCHEDULED_WORKFLOW_ITEM_LABEL,
   WORKFLOW_ITEM_LABEL,
 } from '@canopy/ui-shared/lib/workflow-labels';
+import { MODEL_PRESET_LABEL } from '@canopy/ui-shared/lib/model-preset-labels';
 
 /** Every shared resource that installs; a shared container is accepted, not installed. */
 export type ShareInstallEntity = Exclude<
@@ -45,7 +46,7 @@ const ENTITY_NOUN: Readonly<Record<ShareInstallEntity, string>> = {
   plugin: 'plugin',
   pipeline: WORKFLOW_ITEM_LABEL.toLowerCase(),
   automation: SCHEDULED_WORKFLOW_ITEM_LABEL.toLowerCase(),
-  agent: 'agent',
+  agent: MODEL_PRESET_LABEL.toLowerCase(),
   collection: 'collection',
   workspace: 'project',
 };
@@ -55,7 +56,7 @@ const DEFAULT_DESCRIPTION: Readonly<Record<ShareInstallEntity, string>> = {
   plugin: 'A plugin that adds tools and skills to your agents.',
   pipeline: 'A workflow you can run on a project when you need it.',
   automation: 'A workflow that runs a task for you on a schedule.',
-  agent: 'An agent you can start from any chat.',
+  agent: 'A model preset you can select in chat.',
   collection: 'A set of skills and plugins that install together.',
   workspace: 'A project template with its setup ready to use.',
 };

@@ -290,7 +290,8 @@ function stickySectionContainsMessage(
     item.kind === 'turn-group'
       ? item.userMessage.id === messageId ||
         item.assistantMessages.some((message) => message.id === messageId) ||
-        item.timerMessage.id === messageId
+        item.timerMessage.id === messageId ||
+        item.foldedTimerIds?.includes(messageId) === true
       : item.message.id === messageId,
   );
 }
@@ -593,16 +594,15 @@ const StickyUserMessageHeader = memo(function StickyUserMessageHeader({
           surface's own padding, outside this box. A band running past the
           last row is what read as a black bar laid across the transcript. */}
       <StickyPromptBacking>
-        {/* Only paints while a follow-up user bubble is sliding behind the
-            head (`data-underlap`). The head is opaque, so it already hides
-            the bubble — but it ends in a hard edge, and the bubble emerging
-            from under it reads as a flat-topped, square-cornered slab. This
+        {/* Only paints while the head is stuck (`data-stuck`). The head is
+            opaque, so it hides the transcript scrolling behind it, but it
+            ends in a hard edge that cuts text and bubbles in half. This
             gradient starts at the backing's bottom edge (the hairline when
-            the turn header is pinned) and fades out below it, so the bubble
-            dissolves across the seam instead of being cut by it.
+            the turn header is pinned) and fades out below it, so content
+            dissolves across the seam, matching the fade above the composer.
 
-            An overlay rather than a clip or mask on the bubble: those crop
-            the bubble's box shadow, which must stay intact.
+            An overlay rather than a clip or mask on the content: those crop
+            a bubble's box shadow, which must stay intact.
 
             Rendered BEFORE the bubble on purpose. Both are positioned, so DOM
             order decides paint order — first here means the bubble's own drop
@@ -1516,7 +1516,8 @@ export function ChatMessageList({
         if (
           item.userMessage.id === atId ||
           item.assistantMessages.some((m) => m.id === atId) ||
-          item.timerMessage.id === atId
+          item.timerMessage.id === atId ||
+          item.foldedTimerIds?.includes(atId) === true
         ) {
           return i;
         }
@@ -2075,17 +2076,13 @@ export function ChatMessageList({
     [scrollButtonVisibility],
   );
 
-  // Scroll pass for the pinned head's bottom edge. A follow-up user bubble
-  // (steering, watcher-fired) that STRADDLES the head's bottom edge — part
-  // hidden behind the opaque backing, part emerging below it — reads as a
-  // flat-topped, square-cornered slab, so the head is flagged
-  // (`data-underlap`) to fade it across the seam. Both halves of the test are
-  // load-bearing: a bubble resting entirely above the edge is fully hidden
-  // and has no seam, and without the `top` half every bubble below the head
-  // would qualify. An imperative DOM attribute styled by a CSS variant, so no
-  // React re-render happens per scroll frame; it only paints the fade, never
-  // the backing, so a late frame costs nothing but the softening.
-  const updateStickyUnderlapState = useCallback((el: HTMLElement): void => {
+  // Scroll pass for the pinned head. A stuck head has transcript content
+  // scrolling under its bottom edge, so it is flagged (`data-stuck`) to fade
+  // that content in below the seam instead of cutting it at a hard line. An
+  // imperative DOM attribute styled by a CSS variant, so no React re-render
+  // happens per scroll frame; it only paints the fade, never the backing, so a
+  // late frame costs nothing but the softening.
+  const updateStickyHeadState = useCallback((el: HTMLElement): void => {
     const sections = el.querySelectorAll<HTMLElement>(
       '[data-chat-sticky-section]',
     );
@@ -2098,29 +2095,12 @@ export function ChatMessageList({
         '[data-testid="sticky-user-message"]',
       );
       if (!header) return;
-      const sectionRect = section.getBoundingClientRect();
-      const headerRect = header.getBoundingClientRect();
       // A sticky head is stuck exactly when it is displaced downward from
       // its natural position at the section top.
-      const stuck = headerRect.top > sectionRect.top + 1;
-      // The seam is the backing's edge (the header's hairline), not the
-      // head's box, which keeps unpainted padding below the hairline.
-      const edge = (
-        header.querySelector('[data-sticky-backing]') ?? header
-      ).getBoundingClientRect().bottom;
-      // The hoisted head sits outside every `data-chat-turn-group` wrapper,
-      // so its own bubble never matches.
-      const straddling =
-        stuck &&
-        Array.from(
-          section.querySelectorAll<HTMLElement>(
-            '[data-chat-turn-group] [data-testid="remote-control-chat-message-content"]',
-          ),
-        ).some((bubble) => {
-          const rect = bubble.getBoundingClientRect();
-          return rect.top < edge - 1 && rect.bottom > edge;
-        });
-      header.toggleAttribute('data-underlap', straddling);
+      const stuck =
+        header.getBoundingClientRect().top >
+        section.getBoundingClientRect().top + 1;
+      header.toggleAttribute('data-stuck', stuck);
     });
     finishPerformanceStage();
   }, []);
@@ -2131,8 +2111,8 @@ export function ChatMessageList({
   // ResizeObserver).
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) updateStickyUnderlapState(el);
-  }, [stickySections, updateStickyUnderlapState]);
+    if (el) updateStickyHeadState(el);
+  }, [stickySections, updateStickyHeadState]);
 
   const applyScrollTop = useCallback(
     (el: HTMLElement, top: number): void => {
@@ -2355,7 +2335,7 @@ export function ChatMessageList({
     };
     const onScroll = (): void => {
       pageViewportRef.current = { height: el.scrollHeight, top: el.scrollTop };
-      updateStickyUnderlapState(el);
+      updateStickyHeadState(el);
       growTranscriptOverscan(pageViewportRef.current.top);
       // A user can scroll before our programmatic-scroll frame settles. Only
       // suppress the event for the offset we actually applied (after clamping).
@@ -2397,7 +2377,7 @@ export function ChatMessageList({
         width: el.offsetWidth,
         height: el.offsetHeight,
       });
-      updateStickyUnderlapState(el);
+      updateStickyHeadState(el);
       growTranscriptOverscan(pageViewportRef.current.top);
       if (reapplyAfterAdoption) {
         reapplyIntendedPosition();
@@ -2450,7 +2430,7 @@ export function ChatMessageList({
     pinToBottom,
     restorePendingPosition,
     updateScrollState,
-    updateStickyUnderlapState,
+    updateStickyHeadState,
   ]);
 
   // A worktree/workspace transition normally unmounts the whole panel. Save

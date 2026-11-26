@@ -553,6 +553,18 @@ jest.mock('../lib/preferences-store', () => ({
     mockUpdatePreferencesFile(...(args as [(previous: unknown) => unknown])),
 }));
 
+// The bridges this test marks as a one-window session's (CAN-7854), each
+// with whether its pairing still holds.
+const mockOneWindowSenders = new Map<number, () => boolean>();
+jest.mock('../remote-control/host/bridge-window', () => ({
+  ...jest.requireActual<object>('../remote-control/host/bridge-window'),
+  remoteBridgeIsOneWindow: (sender: { id: number }): boolean =>
+    mockOneWindowSenders.has(sender.id),
+  remoteBridgeCommitGuard: (sender: {
+    id: number;
+  }): (() => boolean) | undefined => mockOneWindowSenders.get(sender.id),
+}));
+
 jest.mock('../lib/workspace-registry', () => ({
   getWorkspaceType: (workspaceId: string): unknown =>
     mockGetWorkspaceType(workspaceId),
@@ -1427,5 +1439,86 @@ describe('chat:send-message IPC qualification (CAN-5897)', () => {
     expect(mockHoldLocalSendForWorktreeSetup).not.toHaveBeenCalled();
     expect(submit).not.toHaveBeenCalled();
     expect(mockedGetOrCreateSession).not.toHaveBeenCalled();
+  });
+
+  // CAN-7854: a turn its managed terminal drives runs outside the chat
+  // queue, in a worktree or a Work Entry, so a one-window Stop could not
+  // reach it. It is refused instead of answering that the turn is not
+  // running.
+  it.each([
+    ['a worktree', 'proj'],
+    ['a Work Entry', 'cowork-default'],
+  ])(
+    'a one-window Stop of a chat its terminal drives in %s is refused, not reported as not running',
+    async (_where, projectId) => {
+      mockClaudeTerminalGetState.mockReturnValue({ turnState: 'running' });
+      mockOneWindowSenders.set(7, () => true);
+      try {
+        await expect(
+          getHandler(IPC_CHANNELS.chatCancel)(
+            { sender: { id: 7 } },
+            {
+              projectId,
+              worktreeId: 'worktree',
+              chatId: 'chat',
+              expectedUserMessageId: 'terminal-turn',
+            },
+          ),
+        ).rejects.toThrow(
+          'This chat runs in a terminal on the other computer.',
+        );
+        // Read from the live terminals only: no chat storage is opened, so
+        // a Stop for a deleted chat recreates nothing.
+        expect(mockReadChatTabsFile).not.toHaveBeenCalled();
+      } finally {
+        mockOneWindowSenders.delete(7);
+      }
+    },
+  );
+
+  // CAN-7854: a Work Entry's exact Stop loads its chat state before it
+  // checks the turn. A one-window Stop of a turn that is not running, as for
+  // a deleted Work Entry, answers from live state and opens no storage.
+  it('a one-window Stop of a Work Entry turn that is not running opens no chat storage', async () => {
+    mockOneWindowSenders.set(7, () => true);
+    try {
+      await expect(
+        getHandler(IPC_CHANNELS.chatCancel)(
+          { sender: { id: 7 } },
+          {
+            projectId: 'cowork-default',
+            worktreeId: 'worktree',
+            chatId: 'chat',
+            expectedUserMessageId: 'gone-turn',
+          },
+        ),
+      ).resolves.toEqual({ outcome: 'turn_not_active' });
+      expect(mockGetChatState).not.toHaveBeenCalled();
+      expect(mockReadChatTabsFile).not.toHaveBeenCalled();
+    } finally {
+      mockOneWindowSenders.delete(7);
+    }
+  });
+
+  // CAN-7854: the terminal check awaits, so a pairing removed meanwhile
+  // refuses the Stop.
+  it('a one-window Stop whose pairing is removed during its terminal check stops nothing', async () => {
+    mockOneWindowSenders.set(7, () => false);
+    try {
+      await expect(
+        getHandler(IPC_CHANNELS.chatCancel)(
+          { sender: { id: 7 } },
+          {
+            projectId: 'proj',
+            worktreeId: 'worktree',
+            chatId: 'chat',
+            expectedUserMessageId: 'running-turn',
+          },
+        ),
+      ).rejects.toThrow('This session is no longer paired.');
+      expect(mockReadChatTabsFile).not.toHaveBeenCalled();
+    } finally {
+      mockOneWindowSenders.delete(7);
+    }
   });
 });

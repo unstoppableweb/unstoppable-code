@@ -1,12 +1,12 @@
-import { CompositeListRow } from './ListRow';
+import { CompositeListRow } from '../primitives/ListRow';
 import { useRef, useState, type JSX, type KeyboardEvent } from 'react';
 import type { ModelCatalogProvider } from '@canopy/protocol/models';
 import { ArchiveIcon, MoreHorizontalIcon } from '../icons/AppIcons';
 import { ModelProviderIcon } from '../icons/ModelProviderIcon';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { RailIconButton } from './RailIconButton';
-import { FloatingMenu } from './FloatingMenu';
-import { ActionMenuRowStyle } from './ActionMenuItems';
+import { FloatingMenu } from '../primitives/FloatingMenu';
+import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
 import { WorkEntryRowMenuItems } from './WorkEntryRow';
 
 export type StandaloneChatProviderType = ModelCatalogProvider;

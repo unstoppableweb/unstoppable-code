@@ -15,7 +15,10 @@ import { ownedPipelineToChatAction } from '@canopy/desktop-shared/lib/chat-autom
 import { isCoworkWorkspace } from '../lib/workspace-registry';
 import { getSharedPipelineForExecutionContext } from '../pipelines/canopy-server-client';
 import { readChatTabsFile } from '../lib/chat-tabs-reader';
-import { loadExecutionState } from '@canopy/execution-engine/node/pipelines/executor';
+import {
+  loadExecutionState,
+  resolvePipelineInputs,
+} from '@canopy/execution-engine/node/pipelines/executor';
 import type { ChildPipelineAuthorization } from '@canopy/execution-engine/node/pipelines/executor/child-pipeline-resolver';
 import {
   backgroundExecutionDeniedMessage,
@@ -142,6 +145,21 @@ import {
 } from '../lib/default-model-lane-resolver';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
 import { getTriggerTypes } from '@canopy/execution-engine/types/pipeline';
+import { scheduleRunEvent } from '@canopy/desktop-shared/lib/schedule-run-event';
+import {
+  SCHEDULE_DISPATCH_REQUIRED_MESSAGE,
+  SCHEDULE_LIVE_SHARE_WORKFLOW_MESSAGE,
+  SCHEDULE_PROJECT_WORKFLOW_MESSAGE,
+  SCHEDULE_AUTOMATION_PACKAGE_WORKFLOW_MESSAGE,
+  SCHEDULE_UNAPPROVED_WORKFLOW_MESSAGE,
+  SCHEDULE_UNREADABLE_PACKAGE_MESSAGE,
+  SCHEDULED_WORKFLOW_REFUSAL_CODE,
+  ScheduledWorkflowRefusal,
+} from './scheduled-workflow-refusal';
+import { readApprovedStoredUserPipeline } from '../pipelines/pipeline-person-approval';
+import { withPipelineScheduleGuard } from '../pipelines/pipeline-schedule-guard';
+import { agentDispatchTargetRefusal } from './agent-dispatch-target';
+import { executorInputDefs } from './schedule-save-check';
 import { getPersistedClaudeChatInterfaceMode } from '../lib/claude-tui-chats';
 import {
   getNextCronRun,
@@ -235,7 +253,10 @@ import {
   getChatProjectsFilePath,
 } from '../lib/paths';
 import { reportMainAppError } from '@canopy/desktop-instrumentation/electron/main';
-import { logMainProcessError } from '../lib/main-process-logging';
+import {
+  logMainProcessError,
+  logMainProcessWarn,
+} from '../lib/main-process-logging';
 import { isCursorRuntimeAvailable } from '../cursor/runtime-availability';
 import { rebindAgentSenderRequest } from '../agent-messaging/sender-context';
 import {
@@ -292,6 +313,8 @@ import {
 } from '@canopy/execution-engine/pipelines/scope';
 import {
   discoverProjectPipelines,
+  readProjectPipelinesWithinBounds,
+  UNATTENDED_PROJECT_DISCOVERY_LIMITS,
   loadProjectPipelineFromDisk,
 } from '../pipelines/project-pipeline-discovery';
 import { startPipelineExecutionFromMain } from '../pipelines/pipeline-handlers';
@@ -299,7 +322,10 @@ import {
   getUserPipelineOwner,
   validatePipelineOwnerTargetsOnSave,
 } from '../pipelines/pipeline-owner-policy';
-import { isPipelineLocalMetadataReadable } from '../pipelines/pipeline-local-metadata-store';
+import {
+  isPipelineLocalMetadataReadable,
+  pipelineMarkerRefusalMessage,
+} from '../pipelines/pipeline-local-metadata-store';
 import { listWorkEntryIds } from '../lib/cowork-work-entries';
 import type { AppAdvisorToolRuntimeSurfaces } from '../app-advisor/runtime';
 import { normalizePipelinePluginCollectionPreferences } from '@canopy/execution-engine/node/pipelines/plugin-collection-store';
@@ -339,10 +365,10 @@ import {
   installSuccessor,
   reconcileInstalledPipelineOwner,
   isSharedByOtherSchedules,
-  isWorkflowPagePipeline,
   keepLastScheduleValues,
   keptWorkflowPipeline,
   markSharedWorkflowPage,
+  pipelineOwnerRecord,
   pipelineSchedules,
   releaseOwnedPipeline,
   scheduledUserPipelineId,
@@ -356,6 +382,7 @@ import {
   verifyOwnedPipelinePackage,
 } from './owned-pipeline-package';
 import type { OwnedPipelineReplacement } from './chat-automation-conversion';
+import { refusesNativeChatDispatch } from './native-chat-dispatch';
 import {
   assertAgentRouteModel,
   formatInheritedAgentRoute,
@@ -393,6 +420,23 @@ interface AutomationsFile {
 
 const SHARED_PIPELINE_REVIEW_MESSAGE =
   'This workflow was updated, so take a look before it runs again.';
+
+export const UNCONVERTED_CHAT_AUTOMATION_MESSAGE =
+  'This automation has to move to a workflow before it can run. Restart the app to move it, then run it again.';
+
+/**
+ * A chat automation that converts to a workflow reached the native chat
+ * dispatch, which only automations that stay native still use (deferred.md
+ * item 2). The migration missed it, so its run fails instead of sending.
+ */
+export class UnconvertedChatAutomationError extends Error {
+  readonly code = 'unconverted_chat_automation';
+
+  constructor() {
+    super(UNCONVERTED_CHAT_AUTOMATION_MESSAGE);
+    this.name = 'UnconvertedChatAutomationError';
+  }
+}
 
 class SharedPipelineReviewRequiredError extends Error {
   readonly remoteId: string;
@@ -756,6 +800,29 @@ async function globalAutomationOwner(
  * resolves. `cwd` is `undefined` when the project has none; callers refuse
  * instead of falling back.
  */
+/** Whether `pipeline` is the project workflow a pipeline action names. */
+function namesProjectPipeline(
+  action: Extract<AutomationAction, { type: 'worktree_pipeline' }>,
+  pipeline: { id: string; filename: string },
+): boolean {
+  return (
+    pipeline.id === action.pipelineId ||
+    (action.projectPipelineFilename !== undefined &&
+      pipeline.filename === action.projectPipelineFilename)
+  );
+}
+
+/** The project workflow a pipeline action names, found in `cwd`. */
+async function findProjectPipelineInfo(
+  action: Extract<AutomationAction, { type: 'worktree_pipeline' }>,
+  cwd: string,
+): Promise<
+  Awaited<ReturnType<typeof discoverProjectPipelines>>[number] | undefined
+> {
+  const pipelines = await discoverProjectPipelines(cwd);
+  return pipelines.find((pipeline) => namesProjectPipeline(action, pipeline));
+}
+
 function projectRootPipelineCwd(
   workspace: SidebarItem,
   repoId: string | undefined,
@@ -1453,6 +1520,8 @@ const ACTIVITY_RUNNING_RETRY =
 export type OwnedPipelineReplaceFailure =
   | { stage: 'not_found' }
   | { stage: 'activity_running' }
+  /** Another write changed it after the revision the caller converts. */
+  | { stage: 'changed' }
   | { stage: 'save'; cause: unknown }
   | { stage: 'automations_write' };
 
@@ -1462,14 +1531,19 @@ export type OwnedPipelineReplaceResponse =
   | { ok: false; error: string; failure: OwnedPipelineReplaceFailure };
 
 /** Puts back the pipeline a conversion or regeneration saved. */
-function rollBackOwnedPipeline(
+async function rollBackOwnedPipeline(
   replacement: OwnedPipelineReplacement,
-): Promise<void> {
-  return replacement.rollback().catch(() =>
+): Promise<boolean> {
+  try {
+    await replacement.rollback();
+    return true;
+  } catch (error) {
     logMainProcessError('Failed to roll back an automation’s workflow', {
       operation: 'rollback-owned-pipeline',
-    }),
-  );
+      errorType: error instanceof Error ? error.name : typeof error,
+    });
+    return false;
+  }
 }
 
 function isActivityRunning(file: AutomationsFile, activityId: string): boolean {
@@ -1661,6 +1735,26 @@ type AutomationPromptAction = Extract<
   AutomationAction,
   { type: 'app_advisor_prompt' | 'standalone_prompt' | 'worktree_prompt' }
 >;
+
+/**
+ * The writes an automation allowed on its project's shared connections
+ * (CAN-6252), for its turn's dispatch; empty when it allowed none.
+ */
+function automationSharedConnectionWrites(
+  activity: Pick<ScheduledActivity, 'action'>,
+): { sharedConnectionWrites?: Record<string, string[]> } {
+  const action = activity.action;
+  if (
+    action.type !== 'app_advisor_prompt' &&
+    action.type !== 'standalone_prompt' &&
+    action.type !== 'worktree_prompt' &&
+    action.type !== 'worktree_session_prompt'
+  )
+    return {};
+  return action.sharedConnectionWrites === undefined
+    ? {}
+    : { sharedConnectionWrites: action.sharedConnectionWrites };
+}
 
 function normalizeAutomationAction(action: AutomationAction): AutomationAction {
   if (
@@ -2001,8 +2095,19 @@ export class AutomationsService {
   // Local-only dedupe key for the last reported due-check failure; never sent.
   private lastDueCheckFailureKey: string | null = null;
   private dueCheckRequested = false;
+  /**
+   * Convertible chat automations the due check held back this process
+   * (deferred item 2), so the hold is logged once per automation.
+   */
+  private readonly unconvertedDueHoldsLogged = new Set<string>();
   private ifCommandAbortHandlers: Set<() => void> = new Set();
   private cancellableRuns = new Map<string, IfCommandAbortController>();
+  /**
+   * How many of an activity's runs an agent started (CAN-5782), counted so
+   * a run that ends never clears the marker of another that is still
+   * running; while any is, the activity's runs need `dispatch`.
+   */
+  private readonly agentRunActivities = new Map<string, number>();
   private enabledIntentRevisions = new Map<string, number>();
   private usageResumeEditTokens = new WeakMap<ScheduledActivity, object>();
   private readonly archive = getAutomationRunArchive();
@@ -2512,15 +2617,10 @@ export class AutomationsService {
    */
   private async workflowScheduleDestinationRefusal(
     activity: ScheduledActivity,
-    activities: readonly ScheduledActivity[],
   ): Promise<string | null> {
     const { action } = activity;
     const pipelineId = scheduledUserPipelineId(activity);
-    if (
-      action.type !== 'worktree_pipeline' ||
-      pipelineId === undefined ||
-      !isWorkflowPagePipeline(activities, pipelineId)
-    )
+    if (action.type !== 'worktree_pipeline' || pipelineId === undefined)
       return null;
     const stored = pipelineStore.getStoredPipelineBySource('user', pipelineId);
     // A pipeline that can't be read fails its runs with its own error.
@@ -2563,6 +2663,153 @@ export class AutomationsService {
       : 'Choose an existing chat in the automation editor.';
   }
 
+  /**
+   * An agent's schedule, and an agent's Run now, run only as `dispatch`, as
+   * they did before CAN-5782.
+   */
+  private requiresDispatch(
+    activityId: string | undefined,
+    agentAuthored: boolean,
+  ): boolean {
+    return (
+      agentAuthored ||
+      (activityId !== undefined &&
+        (this.agentRunActivities.get(activityId) ?? 0) > 0)
+    );
+  }
+
+  /** The execute paths' trigger check, on the definition they start. */
+  private assertRunnableTriggers(
+    pipeline: Pipeline,
+    activityId: string | undefined,
+    identity: AutomationRunIdentity | undefined,
+  ): void {
+    const event = scheduleRunEvent(getTriggerTypes(pipeline.on));
+    if (
+      event === 'unsupported' ||
+      (event !== 'dispatch' &&
+        this.requiresDispatch(activityId, identity?.agentOrigin !== undefined))
+    )
+      throw new ScheduledWorkflowRefusal(SCHEDULE_DISPATCH_REQUIRED_MESSAGE);
+  }
+
+  /**
+   * The trigger rules a schedule applies to the real definition it runs
+   * (CAN-5782). It runs a definition that declares `dispatch` or `workflow`;
+   * an agent's needs `dispatch`. One whose only trigger is `workflow` runs on
+   * a schedule only from a saved copy a person approved: a live share or a
+   * project file is refused, and a user pipeline needs the person's
+   * approval when the schedule is created or enabled and at each timed fire.
+   * A person's Run now runs what they see.
+   */
+  private async assertScheduleTriggers(
+    activity: ScheduledActivity,
+    action: PipelineAutomationAction,
+    pipeline: Pipeline,
+    mode: { readonly running: boolean; readonly timed: boolean },
+  ): Promise<void> {
+    const event = scheduleRunEvent(getTriggerTypes(pipeline.on));
+    // A run an agent started needs `dispatch`; a change to the record needs
+    // it only when the record's author is an agent, so a person's edit isn't
+    // held to an agent's Run now waiting on the same schedule.
+    const agentRule = mode.running
+      ? this.requiresDispatch(activity.id, activity.agentAuthor !== undefined)
+      : activity.agentAuthor !== undefined;
+    if (event === 'unsupported' || (event !== 'dispatch' && agentRule))
+      throw new ScheduledWorkflowRefusal(SCHEDULE_DISPATCH_REQUIRED_MESSAGE);
+    if (event !== 'workflow') return;
+    const source = action.pipelineSource;
+    if (source === 'bundled') return;
+    if (source === 'shared' || source === 'curated')
+      throw new ScheduledWorkflowRefusal(SCHEDULE_LIVE_SHARE_WORKFLOW_MESSAGE);
+    const stored =
+      source === 'user' ||
+      (source === undefined &&
+        pipelineStore.getStoredPipelineBySource('user', action.pipelineId)
+          .success);
+    if (!stored)
+      throw new ScheduledWorkflowRefusal(SCHEDULE_PROJECT_WORKFLOW_MESSAGE);
+    // A person's Run now runs what they see.
+    if (mode.running && !mode.timed) return;
+    // One read under the guard: the inputs and the approval are checked
+    // against the content stored now, so a person's save that commits
+    // meanwhile is checked as stored, not as the copy loaded before it.
+    // The package a run uses: the automation's own first, as the start
+    // passes it, so a refusal comes before the If Command, not after it.
+    const automationPackage = await this.automationPipelinePackage(activity);
+    const current = await readApprovedStoredUserPipeline(
+      action.pipelineId,
+      automationPackage === undefined
+        ? undefined
+        : { digest: automationPackage.digest },
+    );
+    if (current === undefined)
+      throw new ScheduledWorkflowRefusal(SCHEDULE_UNAPPROVED_WORKFLOW_MESSAGE);
+    const currentEvent = scheduleRunEvent(getTriggerTypes(current.content.on));
+    if (currentEvent === 'dispatch') return;
+    if (currentEvent === 'unsupported')
+      throw new ScheduledWorkflowRefusal(SCHEDULE_DISPATCH_REQUIRED_MESSAGE);
+    // Its saved inputs meet the Workflow trigger's when the schedule is
+    // created, edited or enabled, so a timed fire never fails on one.
+    if (!mode.running) {
+      // As the executor resolves them: model aliases normalized.
+      const declared = executorInputDefs(current.content, 'workflow');
+      const unknown = Object.keys(action.inputs ?? {}).find(
+        (name) => declared[name] === undefined,
+      );
+      if (unknown !== undefined)
+        throw new ScheduledWorkflowRefusal(
+          `This schedule's input "${unknown}" isn't one the workflow's Workflow trigger declares. Remove it, or add it to the trigger.`,
+        );
+      // And the executor's own checks: required inputs and their types.
+      try {
+        resolvePipelineInputs(declared, action.inputs);
+      } catch (error) {
+        throw new ScheduledWorkflowRefusal(
+          error instanceof Error
+            ? error.message
+            : "This schedule's inputs don't meet the workflow's Workflow trigger.",
+        );
+      }
+    }
+    // A paused schedule may wait for the approval, as a packaged install's
+    // does before its package is attached; enabling it and each timed fire
+    // need it.
+    if (!mode.running && !activity.enabled) return;
+    if (current.packageUnreadable)
+      throw new ScheduledWorkflowRefusal(SCHEDULE_UNREADABLE_PACKAGE_MESSAGE);
+    if (!current.approved)
+      throw new ScheduledWorkflowRefusal(
+        automationPackage === undefined
+          ? SCHEDULE_UNAPPROVED_WORKFLOW_MESSAGE
+          : SCHEDULE_AUTOMATION_PACKAGE_WORKFLOW_MESSAGE,
+      );
+  }
+
+  /**
+   * The package an automation's own install brought that its pipeline runs
+   * with. CAN-7285: another schedule of an installed workflow page runs with
+   * its owner's bundled package, as CAN-6065 runs it with the owner's
+   * install.
+   */
+  private async automationPipelinePackage(
+    activity: ScheduledActivity,
+  ): Promise<
+    Awaited<ReturnType<typeof resolveInstalledAutomationPipelinePackage>>
+  > {
+    const packageHolder = bundledPackageHolder(
+      (await this.ensureFile()).activities,
+      activity,
+    );
+    return packageHolder?.installedFrom?.bundledPipelineLocalId !== undefined
+      ? resolveInstalledAutomationPipelinePackage(
+          packageHolder.id,
+          packageHolder.installedFrom.bundledPipelineLocalId,
+          packageHolder.installedFrom.capabilityPackage,
+        )
+      : undefined;
+  }
+
   private async targetCompatibilityRefusal(
     activity: ScheduledActivity,
     savedContext?: string,
@@ -2585,8 +2832,17 @@ export class AutomationsService {
     activity: ScheduledActivity,
     running = false,
     savedContext?: string,
+    /** A timed fire (not a Run now): it needs a person's approval (CAN-5782). */
+    timed = false,
   ): Promise<void> {
     const action = activity.action;
+    // CAN-5782: a timed fire that comes due while a save of its workflow
+    // holds the schedule guard waits for the save, so it reads the
+    // committed definition, not the one the save is replacing.
+    if (timed && action.type === 'worktree_pipeline')
+      await withPipelineScheduleGuard(action.pipelineId, () =>
+        Promise.resolve(),
+      );
     if (action.type === 'pipeline_execution_resume') {
       const result = resolveLocalAutomationTargetRequirement(
         action,
@@ -2609,7 +2865,12 @@ export class AutomationsService {
       action.type === 'worktree_pipeline' &&
       pipelineTarget?.kind === 'global'
     )
-      return this.assertGlobalPipelineCompatibility(activity, action, running);
+      return this.assertGlobalPipelineCompatibility(
+        activity,
+        action,
+        running,
+        timed,
+      );
     let kind: unknown;
     let workspaceId: string | undefined;
     let pipelineCwd: string | undefined;
@@ -2803,10 +3064,21 @@ export class AutomationsService {
           }
           if (refusal) throw new Error(refusal);
         }
+        if (
+          running &&
+          activity.ifCommand?.trim() &&
+          selection.pipelinePreferenceLocator?.source === 'user'
+        ) {
+          const refusal = pipelineMarkerRefusalMessage(
+            selection.pipelinePreferenceLocator.value,
+          );
+          if (refusal) throw new Error(refusal);
+        }
       }
-      if (!getTriggerTypes(pipeline.on).includes('dispatch')) {
-        throw new Error('Workflow does not support dispatch triggers.');
-      }
+      await this.assertScheduleTriggers(activity, action, pipeline, {
+        running,
+        timed,
+      });
       const resolved = resolveLocalAutomationTargetRequirement(
         action,
         kind,
@@ -2892,6 +3164,7 @@ export class AutomationsService {
     activity: ScheduledActivity,
     action: PipelineAutomationAction,
     running: boolean,
+    timed: boolean,
   ): Promise<void> {
     const owner = await globalAutomationOwner(activity.executionContext);
     if ('error' in owner) throw new Error(owner.error);
@@ -2915,6 +3188,12 @@ export class AutomationsService {
           )) !== owner.context
         )
           throw new Error(PIPELINE_TARGET_OWNER_MISMATCH_ERROR);
+        if (running && activity.ifCommand?.trim()) {
+          const refusal = pipelineMarkerRefusalMessage(
+            selection.pipelinePreferenceLocator.value,
+          );
+          if (refusal) throw new Error(refusal);
+        }
       }
       // The run's final authorization happens in the main start path once its
       // scratch folder exists; only the definition is checked here.
@@ -2943,8 +3222,10 @@ export class AutomationsService {
         if (refusal) throw new Error(refusal);
       }
     }
-    if (!getTriggerTypes(pipeline.on).includes('dispatch'))
-      throw new Error('Workflow does not support dispatch triggers.');
+    await this.assertScheduleTriggers(activity, action, pipeline, {
+      running,
+      timed,
+    });
     const resolved = resolveLocalAutomationTargetRequirement(
       action,
       undefined,
@@ -3155,6 +3436,14 @@ export class AutomationsService {
    * `trusted` carries facts only main may record, never the request body:
    * an agent marker object sets it, `null` clears it, `undefined` leaves it.
    */
+  /**
+   * CAN-5782: a create holds the schedule guard of the user pipeline it
+   * targets from its trigger check through its write, as a save of that
+   * pipeline holds it from its schedule check through its write, so neither
+   * passes on a state the other is replacing. The guard is taken inside the
+   * mutation queue: nothing that holds a schedule guard waits for the queue,
+   * so the order can't cycle.
+   */
   async create(
     request: AutomationCreateRequest,
     trusted: AutomationTrustedCreate = {},
@@ -3162,224 +3451,262 @@ export class AutomationsService {
     const validationError = validateAutomationCreateRequest(request);
     if (validationError) return { ok: false, error: validationError };
 
-    return this.enqueueMutation(async () => {
-      if (trusted.authorize && !(await trusted.authorize()))
-        return { ok: false, error: 'Automation creation was not authorized.' };
-      if (request.action.type === 'standalone_prompt')
-        await assertCoworkWorkspaceRootPresent(request.action.chatProjectId);
-      if (request.action.type === 'worktree_session_prompt')
-        await assertCoworkChatRootPresent(
-          request.action.workspaceId,
-          request.action.worktreeId,
-        );
-      const releaseTarget =
-        request.enabled === false
-          ? (): void => undefined
-          : reserveAutomationTargetStart(request.action);
-      try {
-        const file = await this.ensureFile();
-        const resumeAction =
-          request.action.type === 'pipeline_execution_resume'
-            ? request.action
-            : null;
-        if (resumeAction) {
-          const requestedIds = [...resumeAction.statusReasonIds].sort();
-          const existing = file.activities.find((candidate) => {
-            if (
-              !candidate.enabled ||
-              candidate.action.type !== 'pipeline_execution_resume' ||
-              candidate.action.executionId !== resumeAction.executionId ||
-              candidate.action.provider !== resumeAction.provider
-            ) {
-              return false;
-            }
-            const candidateIds = [...candidate.action.statusReasonIds].sort();
-            return (
-              requestedIds.length === candidateIds.length &&
-              requestedIds.every((id, index) => id === candidateIds[index])
+    return this.enqueueMutation(() =>
+      withScheduleGuards(
+        [scheduleGuardPipelineId(request.action)],
+        async () => {
+          if (trusted.authorize && !(await trusted.authorize()))
+            return {
+              ok: false,
+              error: 'Automation creation was not authorized.',
+            };
+          if (request.action.type === 'standalone_prompt')
+            await assertCoworkWorkspaceRootPresent(
+              request.action.chatProjectId,
             );
-          });
-          if (existing) {
-            return {
-              ok: true,
-              activity: cloneActivity(existing),
-              created: false,
-            };
-          }
-        }
-        let action = normalizeAutomationAction(request.action);
-        const gated = isUsageResumeAction(action);
-        if (isUsageResumeAction(action)) {
-          if (trusted.agentScheduledSend)
-            return { ok: false, error: USAGE_RESUME_INELIGIBLE };
-          const target = usageResumeTarget(action);
-          const entry = findUsageResumeEntry(
-            await desktopUsageResumeGate.readRegistry(),
-            target,
-          );
-          const binding = usageResumeBinding(entry);
-          if (
-            !binding ||
-            binding.detectedAt > Date.now() ||
-            (action.usageResumeInterruption &&
-              !matchesUsageResumeBinding(
-                action.usageResumeInterruption,
-                binding,
-              ))
-          ) {
-            return { ok: false, error: USAGE_RESUME_INELIGIBLE };
-          }
-          const existing = file.activities.find(
-            (candidate) =>
-              candidate.enabled &&
-              firesLocally(candidate) &&
-              candidate.action.type === 'worktree_session_prompt' &&
-              candidate.action.purpose === 'usage_limit_resume' &&
-              isDeepStrictEqual(usageResumeTarget(candidate.action), target) &&
-              (isUsageResumeAction(candidate.action)
-                ? matchesUsageResumeBinding(
-                    candidate.action.usageResumeInterruption,
-                    binding,
-                  )
-                : binding.detectedAt <= Date.parse(candidate.createdAt)),
-          );
-          if (existing)
-            return {
-              ok: true,
-              activity: cloneActivity(existing),
-              created: false,
-            };
-          action = { ...action, usageResumeInterruption: binding };
-        }
-        const now = new Date();
-        const timestamp = now.toISOString();
-        const dependencies = request.dependencies
-          ? normalizeAutomationDependencies(request.dependencies)
-          : undefined;
-        const activity: ScheduledActivity = {
-          version: 1,
-          id: randomUUID(),
-          name: request.name.trim(),
-          enabled: request.enabled !== false,
-          schedule: gated
-            ? capUsageResumeSchedule(request.schedule, now.getTime())
-            : request.schedule,
-          action,
-          ...(request.targetRequirement
-            ? { targetRequirement: request.targetRequirement }
-            : {}),
-          ...(request.ifCommand && request.ifCommand.trim().length > 0
-            ? { ifCommand: request.ifCommand }
-            : {}),
-          ...(request.installedFrom
-            ? { installedFrom: request.installedFrom }
-            : {}),
-          ...(dependencies ? { dependencies } : {}),
-          ...(trusted.agentAuthor ? { agentAuthor: trusted.agentAuthor } : {}),
-          createdAt: timestamp,
-          updatedAt: timestamp,
-          failureCount: 0,
-          ...(trusted.agentScheduledSend
-            ? {
-                agentScheduledSend: structuredClone(trusted.agentScheduledSend),
+          if (request.action.type === 'worktree_session_prompt')
+            await assertCoworkChatRootPresent(
+              request.action.workspaceId,
+              request.action.worktreeId,
+            );
+          const releaseTarget =
+            request.enabled === false
+              ? (): void => undefined
+              : reserveAutomationTargetStart(request.action);
+          try {
+            const file = await this.ensureFile();
+            const resumeAction =
+              request.action.type === 'pipeline_execution_resume'
+                ? request.action
+                : null;
+            if (resumeAction) {
+              const requestedIds = [...resumeAction.statusReasonIds].sort();
+              const existing = file.activities.find((candidate) => {
+                if (
+                  !candidate.enabled ||
+                  candidate.action.type !== 'pipeline_execution_resume' ||
+                  candidate.action.executionId !== resumeAction.executionId ||
+                  candidate.action.provider !== resumeAction.provider
+                ) {
+                  return false;
+                }
+                const candidateIds = [
+                  ...candidate.action.statusReasonIds,
+                ].sort();
+                return (
+                  requestedIds.length === candidateIds.length &&
+                  requestedIds.every((id, index) => id === candidateIds[index])
+                );
+              });
+              if (existing) {
+                return {
+                  ok: true,
+                  activity: cloneActivity(existing),
+                  created: false,
+                };
               }
-            : {}),
-        };
-        // A pipeline with no project runs as an explicit owner, resolved before
-        // its target is checked and never rebound to a destination.
-        const globalOwner = isGlobalPipelineAutomationAction(activity.action)
-          ? await automationCreateOwner(
-              trusted.owner ?? request.executionContext,
+            }
+            let action = normalizeAutomationAction(request.action);
+            const gated = isUsageResumeAction(action);
+            if (isUsageResumeAction(action)) {
+              if (trusted.agentScheduledSend)
+                return { ok: false, error: USAGE_RESUME_INELIGIBLE };
+              const target = usageResumeTarget(action);
+              const entry = findUsageResumeEntry(
+                await desktopUsageResumeGate.readRegistry(),
+                target,
+              );
+              const binding = usageResumeBinding(entry);
+              if (
+                !binding ||
+                binding.detectedAt > Date.now() ||
+                (action.usageResumeInterruption &&
+                  !matchesUsageResumeBinding(
+                    action.usageResumeInterruption,
+                    binding,
+                  ))
+              ) {
+                return { ok: false, error: USAGE_RESUME_INELIGIBLE };
+              }
+              const existing = file.activities.find(
+                (candidate) =>
+                  candidate.enabled &&
+                  firesLocally(candidate) &&
+                  candidate.action.type === 'worktree_session_prompt' &&
+                  candidate.action.purpose === 'usage_limit_resume' &&
+                  isDeepStrictEqual(
+                    usageResumeTarget(candidate.action),
+                    target,
+                  ) &&
+                  (isUsageResumeAction(candidate.action)
+                    ? matchesUsageResumeBinding(
+                        candidate.action.usageResumeInterruption,
+                        binding,
+                      )
+                    : binding.detectedAt <= Date.parse(candidate.createdAt)),
+              );
+              if (existing)
+                return {
+                  ok: true,
+                  activity: cloneActivity(existing),
+                  created: false,
+                };
+              action = { ...action, usageResumeInterruption: binding };
+            }
+            const now = new Date();
+            const timestamp = now.toISOString();
+            const dependencies = request.dependencies
+              ? normalizeAutomationDependencies(request.dependencies)
+              : undefined;
+            const activity: ScheduledActivity = {
+              version: 1,
+              id: randomUUID(),
+              name: request.name.trim(),
+              enabled: request.enabled !== false,
+              schedule: gated
+                ? capUsageResumeSchedule(request.schedule, now.getTime())
+                : request.schedule,
+              action,
+              ...(request.targetRequirement
+                ? { targetRequirement: request.targetRequirement }
+                : {}),
+              ...(request.ifCommand && request.ifCommand.trim().length > 0
+                ? { ifCommand: request.ifCommand }
+                : {}),
+              ...(request.installedFrom
+                ? { installedFrom: request.installedFrom }
+                : {}),
+              ...(dependencies ? { dependencies } : {}),
+              ...(trusted.agentAuthor
+                ? { agentAuthor: trusted.agentAuthor }
+                : {}),
+              createdAt: timestamp,
+              updatedAt: timestamp,
+              failureCount: 0,
+              ...(trusted.agentScheduledSend
+                ? {
+                    agentScheduledSend: structuredClone(
+                      trusted.agentScheduledSend,
+                    ),
+                  }
+                : {}),
+            };
+            // A pipeline with no project runs as an explicit owner, resolved before
+            // its target is checked and never rebound to a destination.
+            const globalOwner = isGlobalPipelineAutomationAction(
+              activity.action,
             )
-          : undefined;
-        if (globalOwner) {
-          if ('error' in globalOwner)
-            return { ok: false, error: globalOwner.error };
-          activity.executionContext = globalOwner.context ?? 'personal';
-        }
-        // CAN-6065: an agent's schedule only joins a workflow it may run as.
-        const scheduledPipeline = scheduledUserPipelineId(activity);
-        const addedRefusal =
-          scheduledPipeline === undefined
-            ? undefined
-            : addedScheduleRefusal(
+              ? await automationCreateOwner(
+                  trusted.owner ?? request.executionContext,
+                )
+              : undefined;
+            if (globalOwner) {
+              if ('error' in globalOwner)
+                return { ok: false, error: globalOwner.error };
+              activity.executionContext = globalOwner.context ?? 'personal';
+            }
+            // CAN-6065: an agent's schedule only joins a workflow it may run as.
+            const scheduledPipeline = scheduledUserPipelineId(activity);
+            const addedRefusal =
+              scheduledPipeline === undefined
+                ? undefined
+                : addedScheduleRefusal(
+                    file.activities,
+                    scheduledPipeline,
+                    activity.agentAuthor,
+                  );
+            if (addedRefusal) return { ok: false, error: addedRefusal };
+            // CAN-6065: an Orchestrator pipeline is hidden by its own flag
+            // before it takes another schedule; one that didn't persist refuses.
+            if (
+              scheduledPipeline !== undefined &&
+              !hideOrchestratorPipelineForSchedule(
                 file.activities,
                 scheduledPipeline,
-                activity.agentAuthor,
+              )
+            )
+              return { ok: false, error: WORKFLOW_RELEASE_FAILED };
+            const destinationRefusal =
+              await this.workflowScheduleDestinationRefusal(activity);
+            if (destinationRefusal)
+              return { ok: false, error: destinationRefusal };
+            const targetRefusal =
+              await this.targetCompatibilityRefusal(activity);
+            if (targetRefusal) return { ok: false, error: targetRefusal };
+            // Every automation gets an owner while organization projects are on,
+            // whether or not it starts enabled.
+            const owner =
+              globalOwner ??
+              (await automationCreateOwner(request.executionContext));
+            if ('error' in owner) return { ok: false, error: owner.error };
+            const context = owner.context;
+            if (context !== undefined && !globalOwner) {
+              const bindingContext = await bindingContextForAction(
+                activity.action,
+                context,
               );
-        if (addedRefusal) return { ok: false, error: addedRefusal };
-        // CAN-6065: an Orchestrator pipeline is hidden by its own flag
-        // before it takes another schedule; one that didn't persist refuses.
-        if (
-          scheduledPipeline !== undefined &&
-          !hideOrchestratorPipelineForSchedule(
-            file.activities,
-            scheduledPipeline,
-          )
-        )
-          return { ok: false, error: WORKFLOW_RELEASE_FAILED };
-        const destinationRefusal =
-          await this.workflowScheduleDestinationRefusal(
-            activity,
-            file.activities,
-          );
-        if (destinationRefusal) return { ok: false, error: destinationRefusal };
-        const targetRefusal = await this.targetCompatibilityRefusal(activity);
-        if (targetRefusal) return { ok: false, error: targetRefusal };
-        // Every automation gets an owner while organization projects are on,
-        // whether or not it starts enabled.
-        const owner =
-          globalOwner ??
-          (await automationCreateOwner(request.executionContext));
-        if ('error' in owner) return { ok: false, error: owner.error };
-        const context = owner.context;
-        if (context !== undefined && !globalOwner) {
-          const bindingContext = await bindingContextForAction(
-            activity.action,
-            context,
-          );
-          // Refuse before persisting: the first run would only be denied.
-          if (activity.enabled) {
-            const refusal = await automationContextRefusal(
-              activity.action,
-              bindingContext,
-              'enable',
-            );
-            if (refusal) return { ok: false, error: refusal };
+              // Refuse before persisting: the first run would only be denied.
+              if (activity.enabled) {
+                const refusal = await automationContextRefusal(
+                  activity.action,
+                  bindingContext,
+                  'enable',
+                );
+                if (refusal) return { ok: false, error: refusal };
+              }
+              activity.executionContext = bindingContext;
+            }
+            // Before preflight, so a public install is checked as the owner it is saved with.
+            applyPublicInstallContext(activity, context);
+            if (activity.enabled) {
+              const refusal = await this.enablingBackgroundRefusal(
+                activity,
+                activity.executionContext,
+              );
+              if (refusal) return { ok: false, error: refusal };
+            }
+            await assertAutomationContext(activity);
+            activity.nextRunAt = nextRunForEnabledActivity(activity, file, now);
+            file.activities.push(activity);
+            // CAN-7285: an install owns the bundled pipeline it saved.
+            claimInstalledPipeline(file.activities, activity);
+            try {
+              await this.persistAndNotify(file);
+            } catch (error) {
+              if (gated) file.activities.pop();
+              throw error;
+            }
+            if (scheduledPipeline !== undefined)
+              markSharedWorkflowPage(file.activities, scheduledPipeline);
+            registerAutomationInstall(activity);
+            return {
+              ok: true,
+              activity: cloneActivity(activity),
+              created: true,
+            };
+          } finally {
+            releaseTarget();
           }
-          activity.executionContext = bindingContext;
-        }
-        // Before preflight, so a public install is checked as the owner it is saved with.
-        applyPublicInstallContext(activity, context);
-        if (activity.enabled) {
-          const refusal = await this.enablingBackgroundRefusal(
-            activity,
-            activity.executionContext,
-          );
-          if (refusal) return { ok: false, error: refusal };
-        }
-        await assertAutomationContext(activity);
-        activity.nextRunAt = nextRunForEnabledActivity(activity, file, now);
-        file.activities.push(activity);
-        // CAN-7285: an install owns the bundled pipeline it saved.
-        claimInstalledPipeline(file.activities, activity);
-        try {
-          await this.persistAndNotify(file);
-        } catch (error) {
-          if (gated) file.activities.pop();
-          throw error;
-        }
-        if (scheduledPipeline !== undefined)
-          markSharedWorkflowPage(file.activities, scheduledPipeline);
-        registerAutomationInstall(activity);
-        return { ok: true, activity: cloneActivity(activity), created: true };
-      } finally {
-        releaseTarget();
-      }
-    });
+        },
+      ),
+    );
   }
 
-  async update(
+  /**
+   * CAN-5782: an update holds the schedule guards of the user pipelines the
+   * record targets before and after it, as {@link create} does, taken inside
+   * the mutation queue from the record as it is there.
+   */
+  update(
+    request: AutomationUpdateRequest,
+    authorize?: (activity: ScheduledActivity) => Promise<boolean>,
+    callerContext?: WorkspaceContext,
+    trusted: AutomationTrustedUpdate = {},
+  ): Promise<AutomationMutationResponse> {
+    return this.updateUnguarded(request, authorize, callerContext, trusted);
+  }
+
+  private async updateUnguarded(
     request: AutomationUpdateRequest,
     authorize?: (activity: ScheduledActivity) => Promise<boolean>,
     callerContext?: WorkspaceContext,
@@ -3443,10 +3770,10 @@ export class AutomationsService {
     // written; a refusal or failure before then puts it back (CAN-5465).
     const regeneration: { saved?: OwnedPipelineReplacement; written: boolean } =
       { written: false };
-    const rollBackUnwritten = async (): Promise<void> => {
-      if (regeneration.saved && !regeneration.written)
-        await rollBackOwnedPipeline(regeneration.saved);
-    };
+    const rollBackUnwritten = (): Promise<boolean> =>
+      regeneration.saved && !regeneration.written
+        ? rollBackOwnedPipeline(regeneration.saved)
+        : Promise.resolve(true);
     const mutate = async (): Promise<AutomationMutationResponse> => {
       const file = await this.ensureFile();
       const activity = file.activities.find((entry) => entry.id === request.id);
@@ -3574,6 +3901,13 @@ export class AutomationsService {
           return { ok: false, error: WORKFLOW_RELEASE_FAILED };
       }
       const effectiveAction = normalizedRequestedAction ?? activity.action;
+      // CAN-5782: an agent's update makes the agent the author, so the
+      // target this fresh row keeps must declare `dispatch`, whatever the
+      // patch changes.
+      if (trusted.agentAuthor) {
+        const refusal = agentDispatchTargetRefusal(effectiveAction);
+        if (refusal) return { ok: false, error: refusal };
+      }
       const sharedUpdateRebinds =
         request.installedFrom !== undefined &&
         normalizedRequestedAction !== undefined &&
@@ -3591,10 +3925,8 @@ export class AutomationsService {
           scheduleInputsOf(activity.action),
         )
       ) {
-        const refusal = await this.workflowScheduleDestinationRefusal(
-          candidate,
-          file.activities,
-        );
+        const refusal =
+          await this.workflowScheduleDestinationRefusal(candidate);
         if (refusal) return { ok: false, error: refusal };
       }
       // A pipeline with no project keeps the owner it was saved with, also
@@ -3879,14 +4211,37 @@ export class AutomationsService {
       }
     };
     return this.enqueueMutation(async () => {
-      try {
-        const response = await mutate();
-        await rollBackUnwritten();
-        return response;
-      } catch (error) {
-        await rollBackUnwritten();
-        throw error;
-      }
+      // CAN-5782: the guards of the record's target as it is here, in the
+      // queue, and of the one it moves to.
+      const fresh = (await this.ensureFile()).activities.find(
+        (activity) => activity.id === request.id,
+      );
+      return withScheduleGuards(
+        [
+          scheduleGuardPipelineId(fresh?.action),
+          scheduleGuardPipelineId(request.action),
+        ],
+        async () => {
+          try {
+            const response = await mutate();
+            if (!(await rollBackUnwritten()) && !response.ok)
+              return {
+                ...response,
+                error: `${response.error} The previous workflow could not be restored.`,
+              };
+            return response;
+          } catch (error) {
+            if (!(await rollBackUnwritten()))
+              throw Object.assign(
+                new Error(
+                  `${error instanceof Error ? error.message : String(error)} The previous workflow could not be restored.`,
+                ),
+                { cause: error },
+              );
+            throw error;
+          }
+        },
+      );
     });
   }
 
@@ -3912,7 +4267,7 @@ export class AutomationsService {
         if (!current || !(await authorize(cloneActivity(current))))
           return { ok: false, error: 'Activity not found.' };
       }
-      // CAN-5782: Delete on a workflow page's Library row removes the whole
+      // CAN-5782: Delete on a workflow's Library row removes the whole
       // workflow in this one mutation, so no run starts and no schedule
       // changes between its parts.
       const requested = file.activities.find(
@@ -3932,11 +4287,7 @@ export class AutomationsService {
         request.workflow === true && requested !== undefined
           ? scheduledUserPipelineId(requested)
           : undefined;
-      if (
-        requested !== undefined &&
-        workflowPipelineId !== undefined &&
-        isWorkflowPagePipeline(file.activities, workflowPipelineId)
-      )
+      if (requested !== undefined && workflowPipelineId !== undefined)
         return await this.deleteWorkflowPage(
           file,
           requested,
@@ -4070,7 +4421,7 @@ export class AutomationsService {
   }
 
   /**
-   * Deletes a workflow page (CAN-5782), inside the caller's mutation: every
+   * Deletes a workflow (CAN-5782), inside the caller's mutation: every
    * schedule that runs `pipelineId`, and the pipeline. A schedule the caller
    * can't reach, or one that is running, refuses it before anything
    * changes. The pipeline goes first, so a refusal there leaves the
@@ -4083,7 +4434,28 @@ export class AutomationsService {
     authorize: ((activity: ScheduledActivity) => Promise<boolean>) | undefined,
     callerContext: WorkspaceContext | undefined,
   ): Promise<AutomationMutationResponse> {
-    const schedules = pipelineSchedules(file.activities, pipelineId);
+    // A sourceless schedule tied to a project may run its project's workflow
+    // of that ID instead: it goes only when it runs this one, and stays when
+    // that can't be told (CAN-5782). The owner the pipeline names is its own.
+    // One tied to a project whose workflow of that ID is missing falls back
+    // to this one, so it goes too.
+    const owner = pipelineOwnerRecord(file.activities, pipelineId);
+    const listed = new Set(pipelineSchedules(file.activities, pipelineId));
+    const schedules: ScheduledActivity[] = [];
+    for (const schedule of file.activities) {
+      const { action } = schedule;
+      const candidate =
+        listed.has(schedule) ||
+        (action.type === 'worktree_pipeline' &&
+          action.pipelineSource === undefined &&
+          action.pipelineId === pipelineId);
+      if (!candidate) continue;
+      if (
+        schedule === owner ||
+        (await this.sourcelessScheduleRuns(schedule)) === 'stored'
+      )
+        schedules.push(schedule);
+    }
     for (const schedule of schedules) {
       if (authorize && !(await authorize(cloneActivity(schedule))))
         return { ok: false, error: 'Activity not found.' };
@@ -4138,11 +4510,14 @@ export class AutomationsService {
    * Replaces a chat automation's action with the owned pipeline `save`
    * stores (CAN-4551), in one write. The automation keeps its ID, name,
    * trigger, gate command, enabled state and agent author. When the rewrite
-   * fails after the pipeline is saved, the pipeline is rolled back.
+   * fails after the pipeline is saved, the pipeline is rolled back. With
+   * `expectedUpdatedAt`, only that revision converts: one another write
+   * changed meanwhile is left as it is.
    */
   async replaceWithOwnedPipeline(
     activityId: string,
     save: (activity: ScheduledActivity) => Promise<OwnedPipelineReplacement>,
+    options: { expectedUpdatedAt?: string } = {},
   ): Promise<OwnedPipelineReplaceResponse> {
     return this.enqueueMutation<OwnedPipelineReplaceResponse>(async () => {
       const file = await this.ensureFile();
@@ -4155,6 +4530,15 @@ export class AutomationsService {
           ok: false,
           error: 'Activity not found.',
           failure: { stage: 'not_found' },
+        };
+      if (
+        options.expectedUpdatedAt !== undefined &&
+        activity.updatedAt !== options.expectedUpdatedAt
+      )
+        return {
+          ok: false,
+          error: 'This automation changed while it was being converted.',
+          failure: { stage: 'changed' },
         };
       if (isUsageResumeAction(activity.action)) {
         const error = new Error(
@@ -4197,10 +4581,13 @@ export class AutomationsService {
         await this.writeFile(file);
       } catch (error) {
         file.activities[index] = activity;
-        await rollBackOwnedPipeline(replacement);
+        const restored = await rollBackOwnedPipeline(replacement);
+        const message = error instanceof Error ? error.message : String(error);
         return {
           ok: false,
-          error: error instanceof Error ? error.message : String(error),
+          error: restored
+            ? message
+            : `${message} The previous workflow could not be restored.`,
           failure: { stage: 'automations_write' },
         };
       }
@@ -4416,6 +4803,8 @@ export class AutomationsService {
     request: AutomationRunNowRequest,
     authorize?: (activity: ScheduledActivity) => Promise<boolean>,
     callerContext?: WorkspaceContext,
+    /** An agent asked for it (`automation.run_now`): it runs only as `dispatch`. */
+    caller?: { readonly agent: true },
   ): Promise<AutomationMutationResponse> {
     if (!isRecord(request) || typeof request.id !== 'string') {
       return { ok: false, error: 'Automation id is required.' };
@@ -4440,6 +4829,22 @@ export class AutomationsService {
         return {
           ok: false as const,
           error: 'Activity is already running.',
+        };
+      }
+      // A convertible chat automation runs only as its workflow (deferred
+      // item 2). One that hasn't converted is refused before a run exists, so
+      // the refusal can't spend an occurrence the due check is holding.
+      if (refusesNativeChatDispatch(activity)) {
+        logMainProcessError(
+          'A convertible chat automation reached the native chat dispatch',
+          {
+            operation: 'dispatch-unconverted-chat-automation',
+            actionType: activity.action.type,
+          },
+        );
+        return {
+          ok: false as const,
+          error: UNCONVERTED_CHAT_AUTOMATION_MESSAGE,
         };
       }
       // An automation that's on runs in the context saved when it was turned
@@ -4519,6 +4924,12 @@ export class AutomationsService {
       }
     });
     if (!prepared.ok) return prepared;
+    const agentRun = caller?.agent === true;
+    if (agentRun)
+      this.agentRunActivities.set(
+        prepared.activityId,
+        (this.agentRunActivities.get(prepared.activityId) ?? 0) + 1,
+      );
     try {
       const run = await this.finishRun(
         prepared.activityId,
@@ -4526,10 +4937,25 @@ export class AutomationsService {
         prepared.enabledIntentRevision,
         true,
       );
-      return run
-        ? { ok: true, run: cloneRun(run) }
-        : { ok: false, error: 'Run was not found.' };
+      if (!run) return { ok: false, error: 'Run was not found.' };
+      // CAN-5782: a schedule refusal (a skipped run with no gate reason) is
+      // an error to whoever asked for the run, not a run that happened; the
+      // history keeps the skipped record.
+      if (run.status === 'skipped' && run.skipReason === undefined)
+        return {
+          ok: false,
+          error: run.error ?? 'This workflow could not run.',
+        };
+      return { ok: true, run: cloneRun(run) };
     } finally {
+      // Only the agent run that counted itself uncounts itself.
+      if (agentRun) {
+        const remaining =
+          (this.agentRunActivities.get(prepared.activityId) ?? 1) - 1;
+        if (remaining > 0)
+          this.agentRunActivities.set(prepared.activityId, remaining);
+        else this.agentRunActivities.delete(prepared.activityId);
+      }
       prepared.releaseTarget();
     }
   }
@@ -4633,6 +5059,23 @@ export class AutomationsService {
               activity.action.type === 'worktree_session_prompt' &&
               isWorktreeSessionPromptTargetBusy(activity.action)
             ) {
+              continue;
+            }
+            // The native chat dispatch refuses a convertible chat automation
+            // (deferred item 2), so a due one the startup migration or its
+            // save hasn't converted yet stays pending instead of being used
+            // up; it runs as its workflow once converted.
+            if (refusesNativeChatDispatch(activity)) {
+              if (!this.unconvertedDueHoldsLogged.has(activity.id)) {
+                this.unconvertedDueHoldsLogged.add(activity.id);
+                logMainProcessWarn(
+                  'Held a due chat automation until it moves to its workflow',
+                  {
+                    operation: 'hold-unconverted-chat-automation',
+                    actionType: activity.action.type,
+                  },
+                );
+              }
               continue;
             }
             const trigger = triggerForScheduledOccurrence(
@@ -5025,6 +5468,9 @@ export class AutomationsService {
   ): Promise<ScheduledActivityRun | null> {
     let ifCommandOutput: string | undefined;
     let ifCommandError: string | undefined;
+    // A schedule refusal before the If Command runs skips the occurrence;
+    // after it, the run fails, so the condition never runs twice (CAN-5782).
+    let ifCommandRan = false;
     try {
       const storedActivity = (await this.ensureFile()).activities.find(
         (entry) => entry.id === activityId,
@@ -5089,8 +5535,26 @@ export class AutomationsService {
           );
       }
 
+      // A convertible chat automation that couldn't convert is refused before
+      // its If command runs, so the command never runs for a refused run and
+      // a skip can't hide the refusal (deferred item 2).
+      if (refusesNativeChatDispatch(activity)) {
+        logMainProcessError(
+          'A convertible chat automation reached the native chat dispatch',
+          {
+            operation: 'dispatch-unconverted-chat-automation',
+            actionType: activity.action.type,
+          },
+        );
+        throw new UnconvertedChatAutomationError();
+      }
       if (activity.ifCommand && activity.ifCommand.trim().length > 0) {
-        await this.assertTargetCompatibility(activity, true);
+        await this.assertTargetCompatibility(
+          activity,
+          true,
+          undefined,
+          !manual,
+        );
         const controller =
           this.cancellableRuns.get(runId) ?? new AbortController();
         const abortIfCommand = (): void => {
@@ -5106,6 +5570,7 @@ export class AutomationsService {
         } finally {
           this.ifCommandAbortHandlers.delete(abortIfCommand);
         }
+        ifCommandRan = true;
         const mayDispatch = await this.closeCancellableWindow(
           activityId,
           runId,
@@ -5162,6 +5627,13 @@ export class AutomationsService {
         ifCommandError,
       });
     } catch (error) {
+      if (error instanceof ScheduledWorkflowRefusal && !ifCommandRan) {
+        return await this.completeRun(activityId, runId, {
+          status: 'skipped',
+          message: error.message,
+          ...(ifCommandOutput === undefined ? {} : { ifCommandOutput }),
+        });
+      }
       if (!(error instanceof SharedPipelineReviewRequiredError)) {
         reportMainAppError(error, { source: 'automation.run' });
       }
@@ -5494,7 +5966,19 @@ export class AutomationsService {
     background = false,
     runId: string = randomUUID(),
   ): Promise<NonNullable<ScheduledActivityRun['result']>> {
-    await this.assertTargetCompatibility(activity, true);
+    await this.assertTargetCompatibility(activity, true, undefined, background);
+    // A chat automation that converts runs only as its workflow; the native
+    // chat dispatch below serves the ones that stay native.
+    if (refusesNativeChatDispatch(activity)) {
+      logMainProcessError(
+        'A convertible chat automation reached the native chat dispatch',
+        {
+          operation: 'dispatch-unconverted-chat-automation',
+          actionType: activity.action.type,
+        },
+      );
+      throw new UnconvertedChatAutomationError();
+    }
     const executionContext = backgroundExecutionContextEnabled()
       ? activity.executionContext
       : undefined;
@@ -5514,19 +5998,9 @@ export class AutomationsService {
             activity.installedFrom?.capabilityPackage,
           )
         : undefined;
-    // CAN-7285: another schedule of an installed workflow page runs with its
-    // owner's bundled package, as CAN-6065 runs it with the owner's install.
-    const packageHolder =
-      action.type === 'worktree_pipeline'
-        ? bundledPackageHolder((await this.ensureFile()).activities, activity)
-        : undefined;
     const automationPipelinePackage =
-      packageHolder?.installedFrom?.bundledPipelineLocalId !== undefined
-        ? await resolveInstalledAutomationPipelinePackage(
-            packageHolder.id,
-            packageHolder.installedFrom.bundledPipelineLocalId,
-            packageHolder.installedFrom.capabilityPackage,
-          )
+      action.type === 'worktree_pipeline'
+        ? await this.automationPipelinePackage(activity)
         : undefined;
     // A converted install's package is verified before its run starts, as
     // its native prompt's was; the generated send step applies it (CAN-5479).
@@ -5690,6 +6164,7 @@ export class AutomationsService {
             automationDispatch: {
               version: 1,
               automationName: activity.name,
+              ...automationSharedConnectionWrites(activity),
               // The quick prompt always focused its chat in the window.
               presentation: 'foreground',
               executionContext: executionContext ?? 'personal',
@@ -5841,6 +6316,7 @@ export class AutomationsService {
             automationDispatch: {
               version: 1,
               automationName: activity.name,
+              ...automationSharedConnectionWrites(activity),
               // The native Cowork send never kept the active tab, on Run now
               // or a scheduled run.
               presentation: 'foreground',
@@ -6008,6 +6484,7 @@ export class AutomationsService {
                 automationDispatch: {
                   version: 1,
                   automationName: activity.name,
+                  ...automationSharedConnectionWrites(activity),
                   presentation: background ? 'background' : 'foreground',
                   executionContext: executionContext ?? 'personal',
                   ...(packageOverlay ? { packageOverlay } : {}),
@@ -6168,11 +6645,11 @@ export class AutomationsService {
               workspaceId,
               pipelineExecutionPreferences(action),
             );
-          if (
-            !getTriggerTypes(pipelineSelection.pipeline.on).includes('dispatch')
-          ) {
-            throw new Error('Workflow does not support dispatch triggers.');
-          }
+          this.assertRunnableTriggers(
+            pipelineSelection.pipeline,
+            activity.id,
+            identity,
+          );
           const pipelineExecutionId = await this.startAutomationPipeline({
             action,
             selection: pipelineSelection,
@@ -6471,6 +6948,7 @@ export class AutomationsService {
               automationDispatch: {
                 version: 1,
                 automationName: activity.name,
+                ...automationSharedConnectionWrites(activity),
                 presentation: background ? 'background' : 'foreground',
                 executionContext: executionContext ?? 'personal',
               },
@@ -6601,9 +7079,11 @@ export class AutomationsService {
       workspaceId,
       pipelineExecutionPreferences(action),
     );
-    if (!getTriggerTypes(pipelineSelection.pipeline.on).includes('dispatch')) {
-      throw new Error('Workflow does not support dispatch triggers.');
-    }
+    this.assertRunnableTriggers(
+      pipelineSelection.pipeline,
+      activityId,
+      identity,
+    );
     // Fail fast with a clear message for worktree-only pipelines instead of
     // letting the executor's scope gate fail the run after it starts.
     // Shared pipelines carry a synthetic content stub here; their real scope
@@ -6691,9 +7171,11 @@ export class AutomationsService {
       workspaceId,
       pipelineExecutionPreferences(action),
     );
-    if (!getTriggerTypes(pipelineSelection.pipeline.on).includes('dispatch')) {
-      throw new Error('Workflow does not support dispatch triggers.');
-    }
+    this.assertRunnableTriggers(
+      pipelineSelection.pipeline,
+      activity.id,
+      identity,
+    );
     const pipelineExecutionId = await this.startAutomationPipeline({
       action,
       selection: pipelineSelection,
@@ -6748,9 +7230,11 @@ export class AutomationsService {
     identity: AutomationRunIdentity,
   ): Promise<NonNullable<ScheduledActivityRun['result']>> {
     const pipelineSelection = await this.resolvePipelineSelection(action, '');
-    if (!getTriggerTypes(pipelineSelection.pipeline.on).includes('dispatch')) {
-      throw new Error('Workflow does not support dispatch triggers.');
-    }
+    this.assertRunnableTriggers(
+      pipelineSelection.pipeline,
+      activity.id,
+      identity,
+    );
     const pipelineExecutionId = await this.startAutomationPipeline({
       action,
       selection: pipelineSelection,
@@ -6802,6 +7286,15 @@ export class AutomationsService {
           : { childPipelineAuthorizations: args.childPipelineAuthorizations }),
         initiationSource: 'automation',
         ...args.identity,
+        // An agent's run starts as `dispatch`; the start handler refuses it
+        // unless the definition it admits declares it (CAN-5782). Any other
+        // schedule's event is chosen there, from that definition.
+        ...(this.requiresDispatch(
+          args.activityId,
+          args.identity?.agentOrigin !== undefined,
+        )
+          ? { eventName: 'dispatch' as const }
+          : {}),
         ...(selection.pipelineFilePath
           ? { pipelineFilePath: selection.pipelineFilePath }
           : {}),
@@ -6831,6 +7324,10 @@ export class AutomationsService {
           action.pipelineName,
         );
       }
+      // CAN-5782: final admission refused what the schedule may run, so the
+      // occurrence settles by the scheduler's skip rules.
+      if (result.errorCode === SCHEDULED_WORKFLOW_REFUSAL_CODE)
+        throw new ScheduledWorkflowRefusal(result.error);
       if (selection.sharedPipeline)
         await this.rejectSharedPipelineDispatchFailure(
           args.activityId,
@@ -7045,23 +7542,91 @@ export class AutomationsService {
     );
   }
 
+  /**
+   * Whether a sourceless pipeline schedule's fire finds a project workflow
+   * before the stored user one, looking where its fire looks (CAN-5782). A
+   * place that can't be read counts as not found, so the editor's save check
+   * still weighs the schedule.
+   */
+  async sourcelessScheduleFindsProjectPipeline(
+    activity: ScheduledActivity,
+  ): Promise<boolean> {
+    return (await this.sourcelessScheduleRuns(activity)) === 'project';
+  }
+
+  /**
+   * What a pipeline schedule's fire runs, for a sourceless one tied to a
+   * project (CAN-5782): its project's workflow of that ID (`project`), the
+   * stored user one (`stored`), or `unknown` when where it looks can't be
+   * read or is only made at run time (a new worktree). Any other schedule
+   * runs what its source names (`stored`).
+   */
+  async sourcelessScheduleRuns(
+    activity: ScheduledActivity,
+  ): Promise<'project' | 'stored' | 'unknown'> {
+    const { action } = activity;
+    if (
+      action.type !== 'worktree_pipeline' ||
+      action.pipelineSource !== undefined
+    )
+      return 'stored';
+    const target = resolveAutomationPipelineTarget(action);
+    if (!target) return 'unknown';
+    if (target.kind === 'global') return 'stored';
+    try {
+      const { items } = await readAllSidebarItems();
+      const workspace = items.find((item) => item.id === target.workspaceId);
+      if (!workspace) return 'unknown';
+      // A run in a new worktree reads the checkout it creates from a branch,
+      // not any files on disk now, so nothing here says what it finds.
+      if (target.kind === 'new_worktree' && workspace.type !== 'cowork')
+        return 'unknown';
+      const checkoutId =
+        workspace.type === 'cowork' || target.kind !== 'task'
+          ? undefined
+          : target.taskId;
+      let cwd: string | undefined;
+      if (checkoutId) {
+        cwd = this.resolveWorktreeCwd(workspace.id, checkoutId, action.repoId);
+      } else {
+        // The project folder a project-folder or Cowork run reads.
+        const root = projectRootPipelineCwd(workspace, action.repoId);
+        cwd = 'sourceRepoPath' in root ? root.sourceRepoPath : root.cwd;
+      }
+      if (!cwd) return 'unknown';
+      // Read only: unlike the fire's discovery, this never reconciles or
+      // prunes share links, so a refused save changes nothing. It lists only
+      // documents that pass the run's normalization, as the fire's discovery
+      // does, so a broken project file isn't taken for the schedule's
+      // workflow. A read the bounds cut short is unknown.
+      const { pipelines, truncated } = await readProjectPipelinesWithinBounds(
+        cwd,
+        UNATTENDED_PROJECT_DISCOVERY_LIMITS,
+        'full',
+      );
+      if (pipelines.some((pipeline) => namesProjectPipeline(action, pipeline)))
+        return 'project';
+      return truncated ? 'unknown' : 'stored';
+    } catch {
+      return 'unknown';
+    }
+  }
+
   private async resolveProjectPipeline(
     action: Extract<AutomationAction, { type: 'worktree_pipeline' }>,
     cwd: string,
   ): Promise<{ pipeline: Pipeline; pipelineFilePath: string } | null> {
-    const pipelines = await discoverProjectPipelines(cwd);
-    const pipelineInfo = pipelines.find(
-      (pipeline) =>
-        pipeline.id === action.pipelineId ||
-        (action.projectPipelineFilename !== undefined &&
-          pipeline.filename === action.projectPipelineFilename),
-    );
+    const pipelineInfo = await findProjectPipelineInfo(action, cwd);
     if (!pipelineInfo?.filePath) {
       return null;
     }
-    if (!(pipelineInfo.triggerTypes ?? []).includes('dispatch')) {
-      throw new Error('Workflow does not support dispatch triggers.');
-    }
+    const projectEvent = scheduleRunEvent(pipelineInfo.triggerTypes ?? []);
+    if (projectEvent === 'unsupported')
+      throw new ScheduledWorkflowRefusal(SCHEDULE_DISPATCH_REQUIRED_MESSAGE);
+    // A project file is written outside the editor's save, so nothing marks a
+    // person's approval of it (CAN-5782).
+    if (projectEvent === 'workflow')
+      throw new ScheduledWorkflowRefusal(SCHEDULE_PROJECT_WORKFLOW_MESSAGE);
     return {
       pipeline: await loadProjectPipelineFromDisk(pipelineInfo.filePath),
       pipelineFilePath: pipelineInfo.filePath,
@@ -7093,9 +7658,8 @@ export class AutomationsService {
     ) {
       throw new Error('Workflow is not a stored workflow.');
     }
-    if (!getTriggerTypes(data.content.on).includes('dispatch')) {
-      throw new Error('Workflow does not support dispatch triggers.');
-    }
+    if (scheduleRunEvent(getTriggerTypes(data.content.on)) === 'unsupported')
+      throw new ScheduledWorkflowRefusal(SCHEDULE_DISPATCH_REQUIRED_MESSAGE);
     return {
       pipeline: data.content,
       storedPipelineRemoteId: data.info.remoteId ?? data.info.id,
@@ -8482,6 +9046,34 @@ export class AutomationsService {
     });
     return next;
   }
+}
+
+/** The user pipeline whose schedule guard a write of `action` takes. */
+function scheduleGuardPipelineId(action: unknown): string | undefined {
+  if (
+    !isRecord(action) ||
+    action.type !== 'worktree_pipeline' ||
+    typeof action.pipelineId !== 'string'
+  )
+    return undefined;
+  const source = action.pipelineSource;
+  return source === undefined || source === 'user'
+    ? action.pipelineId
+    : undefined;
+}
+
+/** Runs `fn` holding each named guard, taken in one order to avoid cycles. */
+function withScheduleGuards<T>(
+  pipelineIds: readonly (string | undefined)[],
+  fn: () => Promise<T>,
+): Promise<T> {
+  const ids = [
+    ...new Set(pipelineIds.filter((id): id is string => id !== undefined)),
+  ].sort();
+  return ids.reduceRight<() => Promise<T>>(
+    (inner, id) => () => withPipelineScheduleGuard(id, inner),
+    fn,
+  )();
 }
 
 let singleton: AutomationsService | null = null;

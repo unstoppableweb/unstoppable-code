@@ -1,6 +1,6 @@
 'use client';
 
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import {
   useId,
   type ButtonHTMLAttributes,
@@ -9,11 +9,11 @@ import {
   type RefObject,
 } from 'react';
 import { MoreHorizontalIcon } from '../icons/AppIcons';
-import { ActionMenuRowStyle } from './ActionMenuItems';
-import { FloatingMenu } from './FloatingMenu';
+import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
+import { FloatingMenu } from '../primitives/FloatingMenu';
 import { SidebarNavRow } from './SidebarNavRow';
-import { SIDEBAR_LIST_ICON_CLASSNAME } from './sidebar-item-classes';
-import { Tooltip } from './Tooltip';
+import { SIDEBAR_LIST_ICON_CLASSNAME } from '../primitives/sidebar-item-classes';
+import { Tooltip } from '../primitives/Tooltip';
 
 export interface SidebarMoreControlProps {
   readonly open: boolean;

@@ -1,5 +1,6 @@
 import { isWatchDelegatesCompatibilityName } from '@canopy/desktop-shared/node/delegation/watch-delegates-tombstone';
 import { isAgentSecretRequestsEnabled } from '../agent-secrets/feature-gate';
+import { unattendedPluginOptions } from './turn-account-resolution';
 import { openOpenCodeExecutionForWorkerRun } from '../agent-runs/opencode-worker-runtime';
 import { assertAgentWorkerContext } from '../agent-runs/agent-worker-context';
 import { resolveSessionAiCreditsAttribution } from './ai-credits-routing';
@@ -617,9 +618,7 @@ export class OpenCodeProvider implements AgentProvider {
                   sessionId: key,
                   packageOverlay: opts.packageOverlay,
                   preferences: context.preferences,
-                  ...(opts.accountResolution
-                    ? { accountResolution: opts.accountResolution }
-                    : {}),
+                  ...unattendedPluginOptions(opts),
                   inheritedCursorCapabilities: inherited,
                   ...(inheritedPluginRefs.length > 0
                     ? { inheritedPluginRefs }

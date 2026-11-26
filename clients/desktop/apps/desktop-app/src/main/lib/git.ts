@@ -93,6 +93,10 @@ import {
 import { getEnhancedEnv } from '@canopy/execution-engine/pipelines/config-paths';
 import { withGitRequestContextEnv } from '@canopy/desktop-shared/node/git-request-context';
 import {
+  assertScopedWorktreeAddAttributes,
+  scopedWorktreeAddLaunch,
+} from './git-attribute-source-scope';
+import {
   getCurrentBranch,
   getCurrentBranchDisplayName,
   getRemoteDefaultBranch,
@@ -233,14 +237,21 @@ async function runGit(
     disableReplaceObjects?: boolean;
     nonInteractive?: boolean;
     skipLfsSmudge?: boolean;
+    /** Checked before the executable lookup and again right before the launch; never kills a started Git. */
+    beforeLaunch?: AbortSignal;
   },
 ): Promise<string> {
   await assertWorkingDirectoryAvailable(cwd);
+  options?.beforeLaunch?.throwIfAborted();
+  const scopedAttributeCheck = assertScopedWorktreeAddAttributes(cwd, args);
+  if (scopedAttributeCheck) await scopedAttributeCheck;
+  const scoped = scopedWorktreeAddLaunch(cwd, args);
   const launch = prepareBackgroundProcessLaunch(
     await getResolvedGitExecutableForSpawn(),
-    args,
+    scoped.args,
     options?.backgroundPriority === true,
   );
+  options?.beforeLaunch?.throwIfAborted();
   if (options?.stdin !== undefined) {
     const stdinInput = options.stdin;
     return new Promise((resolvePromise, reject) => {
@@ -249,7 +260,7 @@ async function runGit(
         launch.args,
         {
           cwd,
-          env: {
+          env: scoped.env({
             ...withGitRequestContextEnv(
               getEnhancedEnv({
                 includeCanopySecrets: false,
@@ -263,7 +274,7 @@ async function runGit(
               ? { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' }
               : {}),
             ...(options?.skipLfsSmudge ? { GIT_LFS_SKIP_SMUDGE: '1' } : {}),
-          },
+          }),
           maxBuffer: 1024 * 1024 * 8,
           timeout: options?.timeoutMs,
           signal: options?.signal,
@@ -308,7 +319,7 @@ async function runGit(
 
   const pending = execFileAsync(launch.command, launch.args, {
     cwd,
-    env: {
+    env: scoped.env({
       ...withGitRequestContextEnv(
         getEnhancedEnv({
           includeCanopySecrets: false,
@@ -322,7 +333,7 @@ async function runGit(
         ? { GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' }
         : {}),
       ...(options?.skipLfsSmudge ? { GIT_LFS_SKIP_SMUDGE: '1' } : {}),
-    },
+    }),
     maxBuffer: options?.maxBuffer ?? 1024 * 1024 * 8,
     timeout: options?.timeoutMs,
     signal: options?.signal,
@@ -1744,9 +1755,12 @@ export async function listIgnoredPathEntries(cwd: string): Promise<string[]> {
   });
 }
 
-export async function isGitRepo(dir: string): Promise<boolean> {
+export async function isGitRepo(
+  dir: string,
+  beforeLaunch?: AbortSignal,
+): Promise<boolean> {
   try {
-    await runGit(['rev-parse', '--git-dir'], dir);
+    await runGit(['rev-parse', '--git-dir'], dir, { beforeLaunch });
     return true;
   } catch {
     return false;
@@ -3055,6 +3069,43 @@ export async function validateBranchName(
   }
 }
 
+/** Rename takes a literal local branch name, not a previous-checkout expression. */
+export async function checkBranchNameForRename(
+  repoPath: string,
+  name: string,
+): Promise<'invalid-branch-name' | 'branch-unavailable' | null> {
+  // These branch-only restrictions are not checked on a fully qualified ref;
+  // NUL cannot be passed in argv at all.
+  if (name.startsWith('-') || name === 'HEAD' || name.includes('\0'))
+    return 'invalid-branch-name';
+  try {
+    // Full-ref validation exits 1 for invalid syntax. The --branch form exits
+    // 128, indistinguishable from an unreadable Git config or repository.
+    await runGit(['check-ref-format', `refs/heads/${name}`], repoPath);
+  } catch (error) {
+    if (getErrorExitCode(error) === 1) return 'invalid-branch-name';
+    throw error;
+  }
+  // An exact lookup also finds loose refs with different casing on a
+  // case-insensitive filesystem. A branch --list pattern would miss them.
+  for (const branch of [name, ...parentBranchNames(name)]) {
+    try {
+      await runGit(
+        ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`],
+        repoPath,
+      );
+      return 'branch-unavailable';
+    } catch (error) {
+      if (getErrorExitCode(error) !== 1) throw error;
+    }
+  }
+  const descendant = await runGit(
+    ['for-each-ref', '--count=1', '--format=%(refname)', `refs/heads/${name}/`],
+    repoPath,
+  );
+  return descendant ? 'branch-unavailable' : null;
+}
+
 export async function isBranchNameAvailable(
   repoPath: string,
   branchName: string,
@@ -3373,6 +3424,24 @@ export function createBranchAndCheckout(
     newBranchName,
     startPoint,
   );
+}
+
+/**
+ * The start point `createWorktree` would give a new branch, from local refs
+ * only: the local origin default branch (`origin/HEAD`, else `origin/main`,
+ * `master` or `develop`) when that ref exists, else HEAD. No fetch or remote
+ * lookup, so an archive restore can check it and then create its branch from
+ * exactly that ref.
+ */
+export async function resolveLocalDefaultStartPoint(
+  repoPath: string,
+): Promise<string> {
+  const defaultBranch = await getRemoteDefaultBranch(repoPath, {
+    allowNetwork: false,
+  });
+  return defaultBranch && (await doesRemoteBranchExist(repoPath, defaultBranch))
+    ? `refs/remotes/origin/${defaultBranch}`
+    : 'HEAD';
 }
 
 export async function createWorktree(

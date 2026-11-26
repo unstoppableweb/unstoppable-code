@@ -530,4 +530,131 @@ describe('preference helper qualification (CAN-4471)', () => {
       jest.useRealTimers();
     }
   });
+
+  it('derives the onboarding analytics decline in main, only in the consent-accepting commit', () => {
+    const context = {
+      loadError: null,
+      migrationTimestamp: (): string => '2026-01-01T00:00:00.000Z',
+    };
+    const fresh = normalizePreferences(undefined, 'persisted');
+    expect(fresh.usageAnalyticsDeclinedAtOnboarding).toBe(false);
+    const consent = {
+      legalConsentAcceptedAt: '2026-11-24T00:00:00.000Z',
+      legalConsentTosVersion: '1',
+      dataChoicesConfirmedAt: '2026-11-24T00:00:00.000Z',
+    };
+    // Accepting with Usage analytics turned off marks the decline.
+    const declined = mergePreferenceUpdate(
+      fresh,
+      {
+        ...consent,
+        usageData: { ...fresh.usageData, productAnalytics: false },
+      },
+      context,
+    );
+    expect(declined.usageAnalyticsDeclinedAtOnboarding).toBe(true);
+    expect(declined.dataChoicesConfirmedAt).toBe(
+      consent.dataChoicesConfirmedAt,
+    );
+    // Accepting with it left on does not, whatever the caller sends.
+    expect(
+      mergePreferenceUpdate(
+        fresh,
+        { ...consent, usageAnalyticsDeclinedAtOnboarding: true },
+        context,
+      ).usageAnalyticsDeclinedAtOnboarding,
+    ).toBe(false);
+    // Already off before the gate (an earlier Settings opt-out restored after
+    // a recovery): accepting keeps it an ordinary opt-out.
+    const alreadyOff = normalizePreferences(
+      { usageData: { ...fresh.usageData, productAnalytics: false } },
+      'persisted',
+    );
+    expect(
+      mergePreferenceUpdate(
+        alreadyOff,
+        { ...consent, usageData: alreadyOff.usageData },
+        context,
+      ).usageAnalyticsDeclinedAtOnboarding,
+    ).toBe(false);
+    // A later commit cannot set it either: only the accepting commit derives.
+    const accepted = mergePreferenceUpdate(fresh, consent, context);
+    expect(
+      mergePreferenceUpdate(
+        accepted,
+        {
+          usageData: { ...accepted.usageData, productAnalytics: false },
+          usageAnalyticsDeclinedAtOnboarding: true,
+        },
+        context,
+      ).usageAnalyticsDeclinedAtOnboarding,
+    ).toBe(false);
+    // A caller cannot clear it, but turning analytics on does.
+    expect(
+      mergePreferenceUpdate(
+        declined,
+        { usageAnalyticsDeclinedAtOnboarding: false },
+        context,
+      ).usageAnalyticsDeclinedAtOnboarding,
+    ).toBe(true);
+    const optedIn = mergePreferenceUpdate(
+      declined,
+      { usageData: { ...declined.usageData, productAnalytics: true } },
+      context,
+    );
+    expect(optedIn.usageAnalyticsDeclinedAtOnboarding).toBe(false);
+    // Normalization drops a stored flag that analytics on contradicts.
+    expect(
+      normalizePreferences(
+        { usageAnalyticsDeclinedAtOnboarding: true },
+        'persisted',
+      ).usageAnalyticsDeclinedAtOnboarding,
+    ).toBe(false);
+  });
+
+  it('merges organization sharing notices per key and keeps an empty map', () => {
+    const context = {
+      loadError: null,
+      migrationTimestamp: (): string => '2026-01-01T00:00:00.000Z',
+    };
+    const fresh = normalizePreferences(undefined, 'persisted');
+    expect(fresh).not.toHaveProperty('orgSharingNoticesSeen');
+    const seeded = mergePreferenceUpdate(
+      fresh,
+      { orgSharingNoticesSeen: {} },
+      context,
+    );
+    expect(seeded.orgSharingNoticesSeen).toEqual({});
+    expect(
+      normalizePreferences({ orgSharingNoticesSeen: {} }, 'persisted')
+        .orgSharingNoticesSeen,
+    ).toEqual({});
+    const first = mergePreferenceUpdate(
+      seeded,
+      { orgSharingNoticesSeen: { 'org-a': 'metadata' } },
+      context,
+    );
+    // A stale window writing another organization keeps the first entry.
+    const second = mergePreferenceUpdate(
+      first,
+      { orgSharingNoticesSeen: { 'org-b': 'plans,transcripts' } },
+      context,
+    );
+    expect(second.orgSharingNoticesSeen).toEqual({
+      'org-a': 'metadata',
+      'org-b': 'plans,transcripts',
+    });
+    // An incoming key replaces that organization's signature.
+    expect(
+      mergePreferenceUpdate(
+        second,
+        { orgSharingNoticesSeen: { 'org-a': 'metadata,plans' } },
+        context,
+      ).orgSharingNoticesSeen,
+    ).toEqual({ 'org-a': 'metadata,plans', 'org-b': 'plans,transcripts' });
+    // An unrelated save keeps the map.
+    expect(
+      mergePreferenceUpdate(second, {}, context).orgSharingNoticesSeen,
+    ).toEqual(second.orgSharingNoticesSeen);
+  });
 });

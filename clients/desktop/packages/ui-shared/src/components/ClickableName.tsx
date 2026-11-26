@@ -1,4 +1,4 @@
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 import type { JSX } from 'react';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 

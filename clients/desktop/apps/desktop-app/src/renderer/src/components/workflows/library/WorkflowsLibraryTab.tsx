@@ -781,6 +781,10 @@ export function WorkflowsLibraryTab({
                   scheduleCount: deleteScheduleCount,
                   running: deletingRunning,
                   callers: deleteCallers,
+                  deletesWorkflow:
+                    pendingDelete.target.kind === 'automation' &&
+                    pendingDelete.target.activity.workflowSchedule !==
+                      undefined,
                 })
           }
           confirmLabel="Delete"

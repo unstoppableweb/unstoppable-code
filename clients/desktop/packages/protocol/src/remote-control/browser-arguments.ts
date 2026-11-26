@@ -1,5 +1,12 @@
 import { ORG_REPOSITORY_OWNER_URL_MAX_LENGTH } from '../org-projects';
 import { REMOTE_PLUGIN_INSTALL_PROVIDERS } from '../plugins/remote-install';
+import {
+  BROWSER_SIGN_IN_MAX_COLUMNS,
+  BROWSER_SIGN_IN_MAX_ROWS,
+  BROWSER_SIGN_IN_PROVIDERS,
+  BROWSER_SIGN_IN_SESSION_ID_MAX_LENGTH,
+  isHarnessSignInCodeLine,
+} from './harness-setup';
 
 /**
  * Argument policies the host applies to browser controllers on top of the
@@ -10,6 +17,8 @@ import { REMOTE_PLUGIN_INSTALL_PROVIDERS } from '../plugins/remote-install';
  * - Repository owner lookup (CAN-7433): exactly `{ remoteUrl }`.
  * - Worktree discard description (CAN-7443, CAN-7444): `recovery` only on
  *   the first argument, as exactly the recovery request the adapter sends.
+ * - Archive record Set aside (CAN-7014): exactly one reviewed target with
+ *   project ID, operation UUID and revision, without filesystem addressing.
  * - Project and workspace deletion (CAN-7443, CAN-7444):
  *   `discardPendingRecovery` only on the first argument, as a bounded list of
  *   exactly `{ operationId, confirmation }` entries. The computer compares it
@@ -36,6 +45,7 @@ const PLUGINS_INSTALL_BUILT_IN_PLUGIN_CHANNEL =
  */
 export const BROWSER_PLUGIN_INSTALL_NAME_MAX_LENGTH = 256;
 const WORKTREE_DISCARD_DESCRIBE_CHANNEL = 'worktree:discard-describe';
+const WORKTREE_RECOVERY_SET_ASIDE_CHANNEL = 'worktree:recovery-set-aside';
 const WORKSPACE_DELETE_CHANNEL = 'workspace:delete';
 const PROJECT_DELETE_CHANNEL = 'project:delete';
 
@@ -149,6 +159,26 @@ function hasOwn(value: Record<string, unknown>, key: string): boolean {
 const BROWSER_RECOVERY_OPERATION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Exactly the reviewed target the adapter sends; no filesystem addressing. */
+function browserWorktreeRecoverySetAsideAllowed(
+  args: readonly unknown[],
+): boolean {
+  if (args.length !== 1) return false;
+  const [request] = args;
+  if (!isRecord(request)) return false;
+  return (
+    Object.keys(request).sort().join(',') ===
+      'operationId,revision,workspaceId' &&
+    typeof request.workspaceId === 'string' &&
+    request.workspaceId.length > 0 &&
+    request.workspaceId.length <= 512 &&
+    typeof request.operationId === 'string' &&
+    BROWSER_RECOVERY_OPERATION_ID_PATTERN.test(request.operationId) &&
+    typeof request.revision === 'string' &&
+    /^[a-f0-9]{64}$/.test(request.revision)
+  );
+}
+
 /**
  * A worktree recovery request, key for key: `intent` (`archive` or
  * `delete`) and `expectedCreatedAt` (a non-empty string or `null`) are
@@ -243,11 +273,180 @@ export function browserWorkspaceDeleteAllowed(
   );
 }
 
+const CODEX_LOGIN_START_CHANNEL = 'codex-login:start';
+const AUTH_TERMINAL_START_CHANNEL = 'auth-terminal:start';
+const AUTH_TERMINAL_WRITE_CHANNEL = 'auth-terminal:write';
+const AUTH_TERMINAL_STOP_CHANNEL = 'auth-terminal:stop';
+const CURSOR_CONNECT_CHANNEL = 'cursor-connection:connect';
+const CURSOR_CHANGE_ACCOUNT_CHANNEL = 'cursor-connection:change-account';
+const OPENCODE_CONNECT_CHANNEL = 'opencode-connection:connect';
+const OPENCODE_CANCEL_CHANNEL = 'opencode-connection:cancel';
+const ANTIGRAVITY_INSTALL_CHANNEL = 'antigravity-runtime:install';
+const ANTIGRAVITY_CANCEL_CHANNEL = 'antigravity-runtime:cancel';
+const PROVIDER_AUTH_STATUS_CHANNELS: readonly string[] = [
+  'settings:claude-auth-status',
+  'settings:codex-auth-status',
+];
+/** Harness setup channels a browser calls with no argument at all. */
+const HARNESS_NO_ARGUMENT_CHANNELS: readonly string[] = [
+  'antigravity-runtime:status',
+  'codex-login:cancel',
+  'codex-login:retry-verification',
+  'copilot-connection:account',
+  'copilot-connection:cancel',
+  'copilot-connection:change-account',
+  'copilot-connection:connect',
+  'copilot-connection:disconnect',
+  'copilot-connection:status',
+  'cursor-connection:account',
+  'cursor-connection:cancel',
+  'cursor-connection:disconnect',
+  'cursor-connection:status',
+  'opencode-connection:disconnect',
+  'opencode-connection:status',
+];
+
+/** A client operation id: what the adapter sends is a UUID. */
+function isBrowserOperationId(value: unknown): boolean {
+  return (
+    typeof value === 'string' &&
+    BROWSER_RECOVERY_OPERATION_ID_PATTERN.test(value)
+  );
+}
+
+/**
+ * Whether `value`'s own keys are exactly `keys`. Exported so the browser
+ * allowlist golden can pin it: a key containing a comma never stands in for
+ * two (CAN-6718 review).
+ */
+export function hasExactKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean {
+  // Element by element: a joined list would let `{ "cols,provider": … }`
+  // stand in for two keys.
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return (
+    actual.length === expected.length &&
+    actual.every((key, index) => key === expected[index])
+  );
+}
+
+function isBoundedInteger(value: unknown, max: number): boolean {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value > 0 &&
+    value <= max
+  );
+}
+
+function isSignInSessionId(value: unknown): boolean {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= BROWSER_SIGN_IN_SESSION_ID_MAX_LENGTH
+  );
+}
+
+/**
+ * Exactly `{ signInLink: true }`: the browser shows Cursor's sign-in link
+ * itself, so the computer never opens its own browser for it.
+ */
+function isCursorSignInClient(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ['signInLink']) &&
+    value.signInLink === true
+  );
+}
+
+/**
+ * `codex-login:start` as exactly `{ confirmPause, method:
+ * 'chatgptDeviceCode' }`. The browser method runs a callback on the computer
+ * and its URL carries the attempt's PKCE state, so a browser never starts it;
+ * the host's own owner check refuses it from any bridge too.
+ */
+export function browserCodexLoginStartAllowed(
+  args: readonly unknown[],
+): boolean {
+  if (args.length !== 1) return false;
+  const [request] = args;
+  return (
+    isRecord(request) &&
+    hasExactKeys(request, ['confirmPause', 'method']) &&
+    typeof request.confirmPause === 'boolean' &&
+    request.method === 'chatgptDeviceCode'
+  );
+}
+
+/**
+ * `auth-terminal:start` as exactly `{ provider, cols, rows }`, for one of the
+ * {@link BROWSER_SIGN_IN_PROVIDERS} and a bounded size. Each provider maps to
+ * one fixed command on the computer; `github` and `codex` are refused.
+ */
+export function browserSignInStartAllowed(args: readonly unknown[]): boolean {
+  if (args.length !== 1) return false;
+  const [request] = args;
+  if (
+    !isRecord(request) ||
+    !hasExactKeys(request, ['cols', 'provider', 'rows'])
+  )
+    return false;
+  const providers: readonly unknown[] = BROWSER_SIGN_IN_PROVIDERS;
+  return (
+    providers.includes(request.provider) &&
+    isBoundedInteger(request.cols, BROWSER_SIGN_IN_MAX_COLUMNS) &&
+    isBoundedInteger(request.rows, BROWSER_SIGN_IN_MAX_ROWS)
+  );
+}
+
+/**
+ * `auth-terminal:write` as exactly `{ sessionId, data }`, where `data` is one
+ * code line followed by Enter (`\r`): the line itself passes
+ * {@link isHarnessSignInCodeLine}, so it carries no escape sequence, no
+ * terminal signal such as Ctrl-C and no second line. Keystroke-by-keystroke
+ * terminal input is not a browser's to send.
+ */
+export function browserSignInWriteAllowed(args: readonly unknown[]): boolean {
+  if (args.length !== 1) return false;
+  const [request] = args;
+  if (!isRecord(request) || !hasExactKeys(request, ['data', 'sessionId']))
+    return false;
+  const { data } = request;
+  return (
+    isSignInSessionId(request.sessionId) &&
+    typeof data === 'string' &&
+    data.endsWith('\r') &&
+    isHarnessSignInCodeLine(data.slice(0, -1))
+  );
+}
+
+/** `auth-terminal:stop` as exactly `{ sessionId }`. */
+export function browserSignInStopAllowed(args: readonly unknown[]): boolean {
+  if (args.length !== 1) return false;
+  const [request] = args;
+  return (
+    isRecord(request) &&
+    hasExactKeys(request, ['sessionId']) &&
+    isSignInSessionId(request.sessionId)
+  );
+}
+
 /**
  * Whether a browser controller may invoke `channel` with `args`, beyond the
  * allowlist. Channels without a policy here pass. The installed-item status
  * read takes no argument, and each installed-item change exactly one request,
  * which the handler parses strictly.
+ *
+ * Harness setup (gap 1 of CAN-6718): status, connect, cancel, disconnect and
+ * account calls take no argument, except Cursor's connect, which takes
+ * exactly `{ signInLink: true }`; Cursor's account change takes exactly
+ * `'change'` or `'sign-in'`, then `{ signInLink: true }`; the Antigravity install and cancel exactly one
+ * operation id, and OpenCode's connect and cancel at most one; the auth
+ * status reads at most `{ forceRefresh }`; and the sign-in channels take the
+ * exact shapes above.
  */
 export function browserInvocationAllowed(
   channel: string,
@@ -267,10 +466,48 @@ export function browserInvocationAllowed(
       return browserBuiltInPluginInstallAllowed(args);
     case WORKTREE_DISCARD_DESCRIBE_CHANNEL:
       return browserWorktreeDiscardDescribeAllowed(args);
+    case WORKTREE_RECOVERY_SET_ASIDE_CHANNEL:
+      return browserWorktreeRecoverySetAsideAllowed(args);
     case WORKSPACE_DELETE_CHANNEL:
     case PROJECT_DELETE_CHANNEL:
       return browserWorkspaceDeleteAllowed(args);
+    case CODEX_LOGIN_START_CHANNEL:
+      return browserCodexLoginStartAllowed(args);
+    case AUTH_TERMINAL_START_CHANNEL:
+      return browserSignInStartAllowed(args);
+    case AUTH_TERMINAL_WRITE_CHANNEL:
+      return browserSignInWriteAllowed(args);
+    case AUTH_TERMINAL_STOP_CHANNEL:
+      return browserSignInStopAllowed(args);
+    case CURSOR_CONNECT_CHANNEL:
+      return args.length === 1 && isCursorSignInClient(args[0]);
+    case CURSOR_CHANGE_ACCOUNT_CHANNEL:
+      return (
+        args.length === 2 &&
+        (args[0] === 'change' || args[0] === 'sign-in') &&
+        isCursorSignInClient(args[1])
+      );
+    case ANTIGRAVITY_INSTALL_CHANNEL:
+    case ANTIGRAVITY_CANCEL_CHANNEL:
+      return args.length === 1 && isBrowserOperationId(args[0]);
+    case OPENCODE_CONNECT_CHANNEL:
+    case OPENCODE_CANCEL_CHANNEL:
+      return (
+        args.length === 0 ||
+        (args.length === 1 && isBrowserOperationId(args[0]))
+      );
     default:
+      if (HARNESS_NO_ARGUMENT_CHANNELS.includes(channel))
+        return args.length === 0;
+      if (PROVIDER_AUTH_STATUS_CHANNELS.includes(channel))
+        return (
+          args.length === 0 ||
+          (args.length === 1 &&
+            isRecord(args[0]) &&
+            hasOnlyKeys(args[0], ['forceRefresh']) &&
+            (args[0].forceRefresh === undefined ||
+              typeof args[0].forceRefresh === 'boolean'))
+        );
       return true;
   }
 }

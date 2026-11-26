@@ -21,7 +21,6 @@ import {
   ErrorBanner,
   FLOATING_MENU_GAP,
   FloatingMenu,
-  LoadingButton,
   Notice,
   PrivateMemoryCard,
   PageSearchField,
@@ -71,6 +70,7 @@ import {
   useSettingsBrand,
   useSettingsClient,
   useSettingsHost,
+  useSettingsNavigation,
   useSettingsPrivacy,
 } from '../host';
 import { ProjectSetupPanel } from '../../capability/project-setup/ProjectSetupPanel';
@@ -98,6 +98,10 @@ import {
 import { matchesProjectSearch } from './team-projects-display';
 import { openDesktopDeepLink } from './desktop-handoff';
 import { ProjectsSetupChecklist } from './team-projects-setup-checklist';
+import {
+  ArchiveDisconnectDialog,
+  type ArchiveDisconnectOffer,
+} from './team-projects-archive-offer';
 import {
   ORG_PROJECT_ROW_COLUMNS_CLASS,
   OrgProjectRow,
@@ -194,6 +198,9 @@ interface ManagedProject {
   ) => void;
   requestDelete: (project: OrgProjectSummary) => void;
   cancelDelete: () => void;
+  /** After an archive, the shared connections offered to disconnect. */
+  disconnectOffer: ArchiveDisconnectOffer | null;
+  closeDisconnectOffer: () => void;
 }
 
 /**
@@ -211,6 +218,8 @@ function useManagedProject(
   const [initialSection, setInitialSection] =
     useState<ProjectSection>('definition');
   const [deleting, setDeleting] = useState<OrgProjectSummary | null>(null);
+  const [disconnectOffer, setDisconnectOffer] =
+    useState<ArchiveDisconnectOffer | null>(null);
   const [busy, setBusy] = useState(false);
   const [stale, setStale] = useState(false);
   const [error, setError] = useState<SettingsFailure | null>(null);
@@ -329,18 +338,31 @@ function useManagedProject(
     reload,
     lifecycle: (project, action): void => {
       if (action === 'restore' && growthDisabled) return;
-      void mutate(project, (current) =>
-        applyOrganizationProjectLifecycle(client, detail.id, current.id, {
-          revision: current.revision,
-          action,
-        }),
-      );
+      void mutate(project, async (current) => {
+        const result = await applyOrganizationProjectLifecycle(
+          client,
+          detail.id,
+          current.id,
+          { revision: current.revision, action },
+        );
+        // An archive may leave shared connections no active project uses;
+        // the server lists them only for an owner or admin (CAN-6253).
+        const offered = result.sharedConnectionsToDisconnect ?? [];
+        if (action === 'archive' && offered.length > 0 && alive.current)
+          setDisconnectOffer({
+            projectName: result.name,
+            connections: offered,
+          });
+        return result;
+      });
     },
     requestDelete: (project): void => {
       setError(null);
       setDeleting(project);
     },
     cancelDelete: (): void => setDeleting(null),
+    disconnectOffer,
+    closeDisconnectOffer: (): void => setDisconnectOffer(null),
   };
 }
 
@@ -361,7 +383,7 @@ function ManagedProjectDialogs({
   agentsAndPipelinesEnabled,
   restoreFocusRef,
 }: ManagedProjectDialogsProps): JSX.Element {
-  const { selected, deleting } = managed;
+  const { selected, deleting, disconnectOffer } = managed;
   return (
     <>
       {selected && (
@@ -393,6 +415,14 @@ function ManagedProjectDialogs({
           restoreFocusRef={restoreFocusRef}
           onCancel={managed.cancelDelete}
           onConfirm={(): void => managed.lifecycle(deleting, 'delete')}
+        />
+      )}
+      {disconnectOffer && (
+        <ArchiveDisconnectDialog
+          organizationId={detail.id}
+          offer={disconnectOffer}
+          restoreFocusRef={restoreFocusRef}
+          onClose={managed.closeDisconnectOffer}
         />
       )}
     </>
@@ -1179,7 +1209,7 @@ function ProjectList({
           {/* Refresh from GitHub is a page action: the header holds it. */}
           <TeamPageHeaderActions>
             {repositoriesAvailable && (
-              <LoadingButton
+              <Button
                 size="compact"
                 variant="secondary"
                 data-testid="team-projects-refresh"
@@ -1190,7 +1220,7 @@ function ProjectList({
                 }}
               >
                 Refresh from GitHub
-              </LoadingButton>
+              </Button>
             )}
           </TeamPageHeaderActions>
           <PageSearchRow>
@@ -1319,7 +1349,7 @@ function ProjectList({
         </div>
       )}
       {memberCursor && !loading && (
-        <LoadingButton
+        <Button
           size="compact"
           data-testid="team-projects-load-more"
           loading={paging}
@@ -1329,7 +1359,7 @@ function ProjectList({
           }}
         >
           Load more
-        </LoadingButton>
+        </Button>
       )}
       {creating && managesProjects && (
         <TeamProjectsCreateDialog
@@ -1409,7 +1439,7 @@ function LocalProjectControls({
 }: LocalProjectControlsProps): JSX.Element | null {
   if (!localSetup)
     return runsOnDevice ? (
-      <LoadingButton
+      <Button
         size="compact"
         variant="secondary"
         data-testid={`team-projects-open-${project.id}`}
@@ -1418,7 +1448,7 @@ function LocalProjectControls({
         onClick={onOpenOnDesktop}
       >
         Open in {productName}
-      </LoadingButton>
+      </Button>
     ) : null;
   const failure =
     error ?? (status?.state === 'failed' ? (status.message ?? null) : null);
@@ -1443,7 +1473,7 @@ function LocalProjectControls({
       {usable &&
         !settingUp &&
         (status?.state === 'ready' ? (
-          <LoadingButton
+          <Button
             size="compact"
             variant="secondary"
             data-testid={`team-projects-open-${project.id}`}
@@ -1452,9 +1482,9 @@ function LocalProjectControls({
             onClick={onOpen}
           >
             Open
-          </LoadingButton>
+          </Button>
         ) : setUpAllowed ? (
-          <LoadingButton
+          <Button
             size="compact"
             variant="secondary"
             data-testid={`team-projects-set-up-${project.id}`}
@@ -1463,7 +1493,7 @@ function LocalProjectControls({
             onClick={onSetUp}
           >
             Set up
-          </LoadingButton>
+          </Button>
         ) : null)}
     </>
   );
@@ -1646,6 +1676,14 @@ function ProjectEditor({
     () => host.logger('settings.organization.project-setup'),
     [host],
   );
+  const navigation = useSettingsNavigation();
+  // As the Connectors page opens an organization sign-in.
+  const openSignIn = useCallback(
+    (signInPath: string): void => {
+      navigation.openExternal(new URL(signInPath, host.webOrigin()).toString());
+    },
+    [navigation, host],
+  );
   const { projectLocalSetup } = useOrganizationSettingsSlots();
   const localSetup = useMemo(
     () => projectLocalSetup?.(detail.id, project.id),
@@ -1725,7 +1763,7 @@ function ProjectEditor({
             details={error?.details}
           />
           {stale && (
-            <LoadingButton
+            <Button
               variant="secondary"
               size="compact"
               className="self-start"
@@ -1745,7 +1783,7 @@ function ProjectEditor({
               }}
             >
               Reload project
-            </LoadingButton>
+            </Button>
           )}
           <form
             className="flex flex-col gap-3"
@@ -1809,7 +1847,7 @@ function ProjectEditor({
               disabled={busy || stale}
               dataTestId="team-projects-private-memory"
             />
-            <LoadingButton
+            <Button
               type="submit"
               variant="secondary"
               size="compact"
@@ -1818,7 +1856,7 @@ function ProjectEditor({
               disabled={stale || !name.trim()}
             >
               Save changes
-            </LoadingButton>
+            </Button>
           </form>
           <section className="flex flex-col gap-2 text-s">
             <Heading level={3} variant="title">
@@ -1860,7 +1898,7 @@ function ProjectEditor({
               disabled={busy || stale}
               growthDisabled={growthDisabled}
             />
-            <LoadingButton
+            <Button
               variant="secondary"
               size="compact"
               className="self-start"
@@ -1874,7 +1912,7 @@ function ProjectEditor({
               }}
             >
               Save access
-            </LoadingButton>
+            </Button>
           </section>
           {/* The skills and plugins every member of the project gets
               (CAN-6239), saved on their own: a change applies at once, apart
@@ -1897,6 +1935,7 @@ function ProjectEditor({
               localSetup={localSetup}
               privacy={privacy}
               agentsAndPipelinesEnabled={agentsAndPipelinesEnabled}
+              openSignIn={openSignIn}
             />
           </section>
         </div>

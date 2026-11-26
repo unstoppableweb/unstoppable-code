@@ -13,11 +13,11 @@ import { REPLAY_BLOCK_CLASS, REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { AgentInstructionsMarkdown } from './AgentDefinitionSummary';
 import { CapabilityDetailLayout } from './CapabilityDetailLayout';
 import { ComponentSection } from './ComponentSection';
-import { DataTable } from './DataTable';
+import { DataTable } from '../primitives/DataTable';
 import { DetailFact } from './DetailFact';
 import { CustomizeInstalledList } from './CustomizeInstalledList';
 import { CustomizeInstalledRow } from './CustomizeInstalledRow';
-import { TabBar } from './TabBar';
+import { TabBar } from '../primitives/TabBar';
 import { MacbookIcon } from '../icons/AppIcons';
 import { HelpHint } from './HelpHint';
 import type { McpServerLogoProps } from './McpServerLogo';
@@ -45,7 +45,7 @@ export function sharedAgentDetailItems(
 }
 
 const DEFAULT_MODEL_HINT =
-  'The model this agent starts with. You can change it from the model menu while you chat.';
+  'The model this preset starts with. You can change it from the model menu while you chat.';
 
 const SOURCE_HINTS: Readonly<Partial<Record<string, string>>> = {
   Local: 'Saved on this computer. Only you can use it until you share it.',
@@ -347,7 +347,7 @@ export function AgentReadDetail({
                 ]}
                 value={tab}
                 onChange={setTab}
-                label="Agent details"
+                label="Model preset details"
                 panelId="agent-detail-panel"
                 dataTestId="agent-detail-tabs"
               />

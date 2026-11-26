@@ -99,6 +99,11 @@ export interface RuntimeModule {
   services?: readonly RuntimeService[];
   definitions: RuntimeModuleDefinitions;
   handlers: RuntimeModuleHandlers;
+  /**
+   * Minor schema revisions (protocol rule 5) the module serves above its
+   * operations' version 1 schemas; advertised on the manifest and handshake.
+   */
+  schemaRevisions?: Readonly<Record<string, number>>;
 }
 
 export function defineRuntimeModule<
@@ -170,6 +175,13 @@ export interface CreateRuntimeProfileGraphOptions {
    * its caller.
    */
   operationReceipts?: boolean;
+  /**
+   * Dispatch tags a caller principal may record or seal in one worker run,
+   * across every peer it opens (CAN-4733), or undefined for a principal held
+   * only by the run-wide bound. Unset, as the daemon composes its graphs
+   * until CAN-7201 gives its callers distinct principals.
+   */
+  maxDispatchTagsForPrincipal?: (principal: string) => number | undefined;
 }
 
 /**
@@ -210,16 +222,23 @@ function executorReceiptsFor(
   instructions: CanopyInstructionDefinitionMap,
   options: CreateRuntimeProfileGraphOptions,
 ): WorkerExecutorReceipts {
-  const { replayedKeyedInstructions } = options;
+  const { replayedKeyedInstructions, maxDispatchTagsForPrincipal } = options;
   const digest = digestKeyedInstructionKey;
+  const principalBound = maxDispatchTagsForPrincipal && {
+    maxDispatchTagsForPrincipal,
+  };
   if (replayedKeyedInstructions === undefined)
-    return createWorkerExecutorReceipts(instructions, { digest });
+    return createWorkerExecutorReceipts(instructions, {
+      digest,
+      ...principalBound,
+    });
   for (const name of replayedKeyedInstructions)
     if (instructions[name]?.idempotency !== 'keyed')
       throw new Error(`Replayed worker instruction ${name} must be keyed`);
   return createWorkerExecutorReceipts(instructions, {
     replay: keyedInstructionReplay(replayedKeyedInstructions),
     digest,
+    ...principalBound,
   });
 }
 
@@ -267,6 +286,7 @@ interface ComposedModules {
   handlers: RuntimeModuleHandlers;
   owners: RuntimeOperationOwner[];
   services: RuntimeService[];
+  schemaRevisions: Record<string, number>;
 }
 
 const KINDS = ['queries', 'instructions', 'streams'] as const;
@@ -306,8 +326,16 @@ function composeModules(
     handlers: { queries: {}, instructions: {}, streams: {} },
     owners: [],
     services: [],
+    schemaRevisions: {},
   };
-  for (const { name, plane, providerSdk, services = [], ...maps } of modules) {
+  for (const {
+    name,
+    plane,
+    providerSdk,
+    services = [],
+    schemaRevisions = {},
+    ...maps
+  } of modules) {
     if (profile !== 'core+worker' && profile !== plane)
       throw new Error(
         `Runtime profile ${profile} cannot host ${plane} module ${name}`,
@@ -336,6 +364,13 @@ function composeModules(
       operations.push(...names);
       Object.assign(composed.definitions[kind], maps.definitions[kind]);
       Object.assign(composed.handlers[kind], maps.handlers[kind]);
+    }
+    for (const [operation, revision] of Object.entries(schemaRevisions)) {
+      if (!operations.includes(operation))
+        throw new Error(
+          `Module ${name} cannot advertise a revision of ${operation}`,
+        );
+      composed.schemaRevisions[operation] = revision;
     }
     composed.owners.push({ name, plane, operations });
     composed.services.push(...services);
@@ -467,10 +502,15 @@ function scopedForwarders(
     forwarders.instructions,
     peerScopedIdempotency,
   );
+  // Dispatch tags are scoped on every forward, whether or not this graph
+  // answers receipt lookups: the worker refuses a tag the core did not scope.
   if (!options.operationReceipts)
     return {
       ...forwarders,
-      instructions: guardedInstructions(instructions, options.instructionGuard),
+      instructions: guardedInstructions(
+        scopeForwardedDispatchTags(instructions),
+        options.instructionGuard,
+      ),
     };
   return {
     ...forwarders,
@@ -653,6 +693,7 @@ export function createRuntimeProfileGraph(
     definitions: composed.definitions,
     owners: composed.owners,
     services: composed.services,
+    schemaRevisions: composed.schemaRevisions,
     principalFor: options.principalFor,
     phaseDeadlineMs: options.phaseDeadlineMs,
     // Runs after the operation registry validated the whole graph.

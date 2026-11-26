@@ -1,9 +1,11 @@
+import { ORCHESTRATOR_LABEL } from '@canopy/protocol';
 import {
   EXTERNAL_AGENT_TOOL_GROUPS,
   type ExternalAgentAccessSummary,
   type ExternalAgentActivityTarget,
   type ExternalAgentConfirmationClass,
   type ExternalAgentConnectionStatus,
+  type ExternalAgentConnectionSummary,
   type ExternalAgentServer,
   type ExternalAgentServerAddress,
   type ExternalAgentToolGroup,
@@ -103,7 +105,7 @@ function organizationLine(
  * and 2 devices." A Tasks row names the managed host and counts devices; it
  * never lists host codes.
  */
-export function accessSummaryLine(summary: ExternalAgentAccessSummary): string {
+function accessSummaryLine(summary: ExternalAgentAccessSummary): string {
   const lines: string[] = [];
   const hosts = hostsPhrase(summary);
   const reads = list(groupNouns(summary.read, hosts));
@@ -128,6 +130,26 @@ export function accessSummaryLine(summary: ExternalAgentAccessSummary): string {
   if (tasksGranted && hosts === '') lines.push('No hosts.');
 
   return lines.length === 0 ? 'No access.' : lines.join(' ');
+}
+
+/**
+ * A list row's access line. Slack's connection (CAN-7606) holds a placeholder
+ * policy that grants nothing over MCP: its messages reach the Orchestrator on
+ * the computer chosen in Connect Slack, so the row says that instead.
+ */
+export function connectionAccessLine(
+  connection: Pick<
+    ExternalAgentConnectionSummary,
+    'access' | 'firstPartyClient'
+  >,
+): string {
+  if (connection.firstPartyClient !== 'slack') {
+    return accessSummaryLine(connection.access);
+  }
+  const devices = deviceCount(connection.access.desktops);
+  // Connect Slack always stores exactly one computer; this is a fail-safe.
+  if (devices === '') return `Chats with ${ORCHESTRATOR_LABEL}.`;
+  return `Chats with ${ORCHESTRATOR_LABEL} on ${devices}.`;
 }
 
 export function connectionStatusLabel(

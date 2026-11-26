@@ -8,9 +8,9 @@ import {
   type RefObject,
 } from 'react';
 import type { DetailMoreMenuItem } from '@canopy/ui-shared/components/DetailMoreMenu';
-import { Button } from '@canopy/ui-shared/components/Button';
-import { ConfirmDialog } from '@canopy/ui-shared/components/ConfirmDialog';
-import { Tooltip } from '@canopy/ui-shared/components/Tooltip';
+import { Button } from '@canopy/ui-shared/primitives/Button';
+import { ConfirmDialog } from '@canopy/ui-shared/primitives/ConfirmDialog';
+import { Tooltip } from '@canopy/ui-shared/primitives/Tooltip';
 import { UnshareIcon } from '@canopy/ui-shared/icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {

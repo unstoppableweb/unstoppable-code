@@ -1,6 +1,6 @@
 'use client';
 
-import { Dot } from './Badge';
+import { Dot } from '../primitives/Badge';
 import { useCallback, useMemo, useRef, useState, type JSX } from 'react';
 import { ArchiveIcon, FilterIcon, TrashIcon } from '../icons/AppIcons';
 import {
@@ -10,7 +10,7 @@ import {
   PickerMenuOptionContent,
   PickerMenuOptionLabel,
   PickerMenuOptionLeading,
-} from './PickerMenu';
+} from '../primitives/PickerMenu';
 import { RailIconButton } from './RailIconButton';
 import {
   getArchivedContainerStateLabel,

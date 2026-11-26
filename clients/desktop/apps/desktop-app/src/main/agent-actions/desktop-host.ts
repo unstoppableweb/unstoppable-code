@@ -100,6 +100,10 @@ export const DESKTOP_AGENT_ACTION_HOST = defineAgentActionHost({
     // History actions mount on the Orchestrator; scoped chats use the injected tools.
     'chat-history',
     'cloud-chats',
+    // Reads of the Slack thread behind a Slack tab's request (CAN-7749).
+    // Mounts only in the Orchestrator, through desktop-slack-thread-port,
+    // and refuses outside a Slack tab.
+    'slack-thread',
   ],
   profiles: {
     worktree: {

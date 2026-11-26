@@ -2,9 +2,9 @@
 
 import { useEffect, useId, useRef, type JSX, type KeyboardEvent } from 'react';
 import { countLedgerCodePoints } from '../../lib/ledger-display';
-import { Button } from '../Button';
-import { TextArea, FieldError } from '../Field';
-import { useMediaQuery } from '../useMediaQuery';
+import { Button } from '../../primitives/Button';
+import { TextArea, FieldError } from '../../primitives/Field';
+import { useMediaQuery } from '../../primitives/useMediaQuery';
 import { LedgerActorAvatar } from './LedgerActorAvatar';
 import { LEDGER_FORM_LIMITS } from './LedgerEntryForm';
 import type { LedgerDensity } from './ledger-entry-slots';

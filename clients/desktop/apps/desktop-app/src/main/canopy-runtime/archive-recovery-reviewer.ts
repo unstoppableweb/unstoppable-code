@@ -15,7 +15,7 @@ function hasNonEmptySuffix(value: string, prefix: string): boolean {
 }
 
 /**
- * CAN-7444: who may resolve or finish an archive recovery entry. Exactly two
+ * CAN-7444, CAN-7014: who may resolve, finish or set aside an archive recovery entry. Exactly two
  * callers review one: the local desktop user, and a paired controller acting
  * through the remote-control bridge. The bridge is told apart by its
  * `remote-bridge:` client instance id, which only the bridge caller derivation

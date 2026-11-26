@@ -46,7 +46,7 @@ export interface CollectionMutationPorts {
   installPackage(
     snapshot: CollectionUpdateSnapshot,
     initial: CollectionConfig,
-    assertCurrent: () => Promise<void>,
+    assertCurrent: (expired?: () => boolean) => Promise<void>,
   ): Promise<{
     customSkills: Map<string, CollectionSkillRef>;
     skills: CollectionSkillRef[];
@@ -227,8 +227,17 @@ async function update(
       'The shared Collection has no verified revision.',
     );
   const effects: string[] = [];
-  const assertAuthorizedCurrent = async (): Promise<void> => {
+  const assertAuthorizedCurrent = async (
+    expired?: () => boolean,
+  ): Promise<void> => {
     await assertCurrent();
+    // A package install past its check budget has given up: fail closed
+    // instead of starting the live read.
+    if (expired?.())
+      throw new CollectionUpdateError(
+        'conflict',
+        "Couldn't re-check the package in time. Try again.",
+      );
     const latest = await host.live(source);
     if (
       latest.contentHash !== snapshot.contentHash ||

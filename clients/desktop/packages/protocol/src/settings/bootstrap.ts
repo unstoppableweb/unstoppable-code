@@ -63,6 +63,14 @@ export const settingsOrganizationBootstrapSchema = z.looseObject({
    * hosts then treat the state as unknown.
    */
   githubConnected: z.boolean().optional(),
+  /**
+   * The viewer may open the organization Transcripts page: an owner of a
+   * non-Personal organization with the release flag on. Sent as its own field,
+   * never as a `visibleTabs` entry, because shipped desktops reject a tab name
+   * they don't know (docs/organization-transcripts.md). Absent from older
+   * servers; hosts then show no Transcripts tab.
+   */
+  transcriptsEnabled: z.boolean().optional(),
   /** @deprecated Retained for shipped clients, which require it; the server always sends `null`: no organization lapses. */
   lapse: settingsOrganizationLapseSchema.nullable(),
 });

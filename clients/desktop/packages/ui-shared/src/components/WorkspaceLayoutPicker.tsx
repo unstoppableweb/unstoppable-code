@@ -1,7 +1,10 @@
 'use client';
 
 import type { JSX } from 'react';
-import { DropdownMenuControl, DropdownMenuItem } from './DropdownMenu';
+import {
+  DropdownMenuControl,
+  DropdownMenuItem,
+} from '../primitives/DropdownMenu';
 function IllustrationDivider({
   className,
   width,

@@ -1,4 +1,4 @@
-import { Stack } from './Stack';
+import { Stack } from '../primitives/Stack';
 import type { JSX, ReactNode } from 'react';
 import type {
   RemoteControlProviderUsageAccount,
@@ -12,7 +12,7 @@ import {
 } from './UsageGroup';
 import { ProviderUsageAccountRow } from './ProviderUsageAccountRow';
 import type { UsageIndicatorAccountSummaryProps } from './UsageIndicator';
-import { Disclosure } from './Disclosure';
+import { Disclosure } from '../primitives/Disclosure';
 
 const PASSIVE_SOURCE_LABEL = 'Reported by the account proxy';
 

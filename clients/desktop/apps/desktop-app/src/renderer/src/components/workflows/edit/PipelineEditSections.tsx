@@ -7,6 +7,7 @@ import {
   EMPTY_WORKFLOW_RUN_FILTERS,
   PipelineTriggers,
   type PipelineTriggerSchedules,
+  type PipelineTriggerWorkflowApproval,
   type WorkflowRunFilters,
 } from '@canopy/ui-app/workflows';
 import { Notice } from '@canopy/ui-shared/components';
@@ -45,6 +46,8 @@ export interface PipelineTriggerSectionProps {
   readonly onEditTriggers?: () => void;
   /** A workflow page's schedules, in place of its automations (CAN-5782). */
   readonly schedules?: PipelineTriggerSchedules;
+  /** A Workflow-only page's approval for its schedules (CAN-5782). */
+  readonly workflowApproval?: PipelineTriggerWorkflowApproval;
 }
 
 /**
@@ -61,6 +64,7 @@ export function PipelineTriggerSection({
   triggerTypes,
   onEditTriggers,
   schedules,
+  workflowApproval,
 }: PipelineTriggerSectionProps): JSX.Element {
   const projects = useProjectsStore((state) => state.projects);
   const hooks = useMemo(
@@ -100,6 +104,7 @@ export function PipelineTriggerSection({
       }
       {...(onEditTriggers ? { onEditStarts: onEditTriggers } : {})}
       {...(schedules ? { schedules } : {})}
+      {...(workflowApproval ? { workflowApproval } : {})}
     />
   );
 }

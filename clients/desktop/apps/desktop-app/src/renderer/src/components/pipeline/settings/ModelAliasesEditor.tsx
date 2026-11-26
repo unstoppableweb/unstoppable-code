@@ -6,6 +6,7 @@ import {
   resolvePipelineModelAliasLenient,
 } from '@canopy/pipeline-interop';
 import { AGENT_ALIAS_MODEL_SELECTION_ERROR } from '@/lib/pipelineModelAliases';
+import { MODEL_PRESET_LABEL } from '@canopy/ui-shared/lib/model-preset-labels';
 import { type JSX, useEffect, useState } from 'react';
 import type {
   PipelineAgentModelAliasDefaults,
@@ -103,7 +104,7 @@ function buildAliasSummary(alias: PipelineModelAlias): string {
     const defaults = getAgentDefaults(alias);
     const embedded = parseAgentRouteModelId(defaults.agent_id);
     const base = defaults.base ?? embedded?.baseModel;
-    secondary = `${alias.id} · ${embedded?.agentId ?? (defaults.agent_id || 'Agent')}${base ? ` · ${getModelDisplayName(resolvePipelineModelAliasLenient(base))}` : ''}`;
+    secondary = `${alias.id} · ${embedded?.agentId ?? (defaults.agent_id || MODEL_PRESET_LABEL)}${base ? ` · ${getModelDisplayName(resolvePipelineModelAliasLenient(base))}` : ''}`;
   } else {
     const base = getInlineDefaults(alias).base;
     secondary = `${alias.id} · ${base ? getModelDisplayName(base) : 'No base model'}`;
@@ -289,7 +290,7 @@ function ModelAliasItem({
                 options={[
                   { value: 'none', label: 'No default' },
                   { value: 'inline', label: 'Inline model' },
-                  { value: 'agent', label: 'Agent' },
+                  { value: 'agent', label: 'Model preset' },
                 ]}
                 disabled={readonly}
                 data-testid={`model-alias-${alias.id}-mode`}
@@ -388,7 +389,7 @@ function ModelAliasItem({
                     allowCopilot
                     allowOpenCode
                     placeholderLabel={placeholderLabel}
-                    triggerTooltip="Model for this agent alias"
+                    triggerTooltip="Model for this preset"
                     disabled={disabled}
                   />
                 )}

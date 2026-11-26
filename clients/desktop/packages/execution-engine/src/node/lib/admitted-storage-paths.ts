@@ -1,3 +1,4 @@
+import { realpath, stat } from 'node:fs/promises';
 import { basename, dirname, relative, resolve, sep } from 'node:path';
 import type {
   STORAGE_OWNERSHIP,
@@ -37,12 +38,20 @@ export const OWNERSHIP_OVERRIDE_NAMESPACE = 'pipeline_definitions';
 
 // Mirrors the rows' patterns in storage-ownership.yaml; a test compares them.
 const DATA_ROOT_FILES: ReadonlyMap<string, AdmittedStorageNamespace> = new Map([
+  ['.app-advisor-home-migration-state', 'app_managed_home_migration_state'],
+  ['.pipeline-editor-home-migration-state', 'app_managed_home_migration_state'],
   ['app-advisor-watchers.json', 'app_advisor_watchers'],
   ['app-advisor-watchers-canonical.json', 'app_advisor_watchers_canonical'],
+  ['cowork-migration.json', 'cowork_migration_map'],
+  ['cowork-migration.last-good.json', 'cowork_migration_map'],
+  ['data-dir-adopted.json', 'data_dir_adoption_marker'],
   ['preferences.json', 'preferences'],
   ['preferences.json.usage-data-denied.json', 'preferences'],
   ['preferences.last-good.json', 'preferences'],
   ['preferences.generation.json', 'preferences'],
+  ['client-preferences.json', 'client_preferences'],
+  ['client-preferences.last-good.json', 'client_preferences'],
+  ['client-preferences.generation.json', 'client_preferences'],
   ['migrations.json', 'startup_migrations'],
   ['migrations.last-good.json', 'startup_migrations'],
   ['pipeline-plugin-preferences.json', 'pipeline_plugin_preferences'],
@@ -63,7 +72,9 @@ function isPluginCachePath(target: string, dataRoot: string | null): boolean {
   );
 }
 const PREFERENCES_BACKUP = /^preferences\.backup-.+\.json$/;
+const CLIENT_PREFERENCES_BACKUP = /^client-preferences\.backup-.+\.json$/;
 const MIGRATIONS_DAMAGED = /^migrations\.damaged-.+\.json$/;
+const COWORK_MIGRATION_DAMAGED = /^cowork-migration\.damaged-.+\.json$/;
 const PIPELINE_PREFERENCES_DAMAGED =
   /^pipeline-plugin-preferences\.json\.damaged-.+$/;
 const PIPELINE_DEFINITION_FILE =
@@ -79,6 +90,81 @@ const APPROVALS_FILE = 'approvals.json';
 const APPROVALS_ROOTS = ['workspaces', 'app-workspaces'];
 const TERMINAL_RECORD_FILE =
   /^(terminal-state|terminal-presentation)\.json(?:\.damaged-[^/]+)?$/;
+const DAEMON_TERMINAL_RECORD_FILE =
+  /^(?:(?:record|import-source|tombstone)\.json|(?:record|legacy-terminal-state)\.json\.damaged-[^/]+)$/;
+const TERMINAL_RECORD_OUTBOX_FILE =
+  /^terminal-record-outbox(?:\.run-[^/]+)?\.json(?:\.damaged-[^/]+)?$/;
+
+function terminalRecordsRoot(targetPath: string): string | undefined {
+  const target = resolve(targetPath);
+  const name = basename(target);
+  return DAEMON_TERMINAL_RECORD_FILE.exec(name.toLowerCase())?.[0] ===
+    name.toLowerCase()
+    ? dirname(dirname(dirname(target)))
+    : undefined;
+}
+
+function terminalRecordCanonicalFile(targetPath: string): string {
+  const target = resolve(targetPath);
+  // Keep the opaque damaged-copy suffix; only the protected prefix is folded.
+  const name = basename(target).replace(
+    /^(?:record|import-source|tombstone|legacy-terminal-state)\.json(?:\.damaged-)?/i,
+    (prefix): string => prefix.toLowerCase(),
+  );
+  return resolve(dirname(target), name);
+}
+
+function sameFileIdentity(
+  left: { dev: number; ino: number },
+  right: { dev: number; ino: number },
+): boolean {
+  return left.ino !== 0 && left.dev === right.dev && left.ino === right.ino;
+}
+
+function terminalRecordNameMatches(
+  target: string,
+  resolvePath?: (path: string) => string,
+): boolean {
+  const canonical = terminalRecordCanonicalFile(target);
+  if (resolve(target) === canonical) return true;
+  try {
+    return (
+      resolvePath !== undefined &&
+      resolvePath(target) === resolvePath(canonical)
+    );
+  } catch {
+    // A case variant without proven file identity remains allowed.
+    return false;
+  }
+}
+
+function terminalRecordRow(
+  target: string,
+  dataRoot: string | null,
+  resolvePath?: (path: string) => string,
+): AdmittedStorageNamespace | undefined {
+  const recordsRoot = terminalRecordsRoot(target);
+  if (
+    recordsRoot === undefined ||
+    !terminalRecordNameMatches(target, resolvePath)
+  )
+    return undefined;
+  const registeredRoot =
+    dataRoot === null
+      ? resolve(dirname(recordsRoot), 'terminal-records')
+      : resolve(dataRoot, 'terminal-records');
+  if (recordsRoot === registeredRoot) return 'terminal_record';
+  try {
+    if (
+      resolvePath !== undefined &&
+      resolvePath(recordsRoot) === resolvePath(registeredRoot)
+    )
+      return 'terminal_record';
+  } catch {
+    // Unknown identity is not proof of ownership; preserve formerly allowed writes.
+  }
+  return undefined;
+}
 
 function mcpRow(
   target: string,
@@ -177,13 +263,19 @@ function isNativeArtifactPath(
 function dataRootFile(name: string): AdmittedStorageNamespace | undefined {
   return (
     DATA_ROOT_FILES.get(name) ??
-    (PREFERENCES_BACKUP.test(name)
-      ? 'preferences'
-      : MIGRATIONS_DAMAGED.test(name)
-        ? 'startup_migrations'
-        : PIPELINE_PREFERENCES_DAMAGED.test(name)
-          ? 'pipeline_plugin_preferences'
-          : undefined)
+    (TERMINAL_RECORD_OUTBOX_FILE.exec(name)?.[0] === name
+      ? 'terminal_record_outbox'
+      : PREFERENCES_BACKUP.test(name)
+        ? 'preferences'
+        : CLIENT_PREFERENCES_BACKUP.test(name)
+          ? 'client_preferences'
+          : MIGRATIONS_DAMAGED.test(name)
+            ? 'startup_migrations'
+            : COWORK_MIGRATION_DAMAGED.test(name)
+              ? 'cowork_migration_map'
+              : PIPELINE_PREFERENCES_DAMAGED.test(name)
+                ? 'pipeline_plugin_preferences'
+                : undefined)
   );
 }
 
@@ -207,6 +299,7 @@ export function isAdmittedStorageCandidate(targetPath: string): boolean {
   return (
     mcpRow(target, null) !== undefined ||
     codeReviewRow(target, null) !== undefined ||
+    terminalRecordsRoot(target) !== undefined ||
     isSlackConversationsPath(target, null) ||
     dataRootFile(name) !== undefined ||
     isPluginCachePath(target, null) ||
@@ -227,12 +320,13 @@ export function isAdmittedStorageCandidate(targetPath: string): boolean {
 /**
  * The curated row `targetPath` belongs to under the data or secure root.
  * A `null` root matches the rows' shapes under any folder. A path that
- * reaches the row through a symbolic link is not seen.
+ * reaches a terminal row through an alias needs the writer's identity check.
  */
 export function admittedStorageRowForPath(
   targetPath: string,
   dataRoot: string | null,
   secureDataRoot?: string | null,
+  resolvePath?: (path: string) => string,
 ): AdmittedStorageNamespace | undefined {
   const target = resolve(targetPath);
   const name = basename(target).toLowerCase();
@@ -241,6 +335,8 @@ export function admittedStorageRowForPath(
   if (mcp !== undefined) return mcp;
   const review = codeReviewRow(target, dataRoot);
   if (review !== undefined) return review;
+  const record = terminalRecordRow(target, dataRoot, resolvePath);
+  if (record !== undefined) return record;
   if (isSlackConversationsPath(target, dataRoot))
     return 'app_advisor_slack_conversations';
   if (isPluginCachePath(target, dataRoot)) return 'plugin_cache';
@@ -314,6 +410,32 @@ export function admittedStorageRowForPath(
   return matches ? 'workspace_approvals' : undefined;
 }
 
+/**
+ * Legacy shape checks, with root-bound terminal rows. The synchronous writer
+ * supplies its native canonical-path port; JS realpath preserves APFS casing.
+ */
+export function admittedStorageRowForSyncWrite(
+  targetPath: string,
+  resolvePath?: (path: string) => string,
+): AdmittedStorageNamespace | undefined {
+  const row = admittedStorageRowForPath(targetPath, null);
+  if (
+    row !== undefined &&
+    row !== 'terminal_record' &&
+    row !== 'terminal_record_outbox'
+  )
+    return row;
+  if (row === undefined && terminalRecordsRoot(targetPath) === undefined)
+    return row;
+  // Do not extend legacy shape-only refusals to user files named like the new
+  // terminal rows. Before canopy-paths registers a root, preserve their prior
+  // unfenced behavior; the writer still validates explicit owner claims.
+  const dataRoot = registeredCanopyDataRootResolver()?.();
+  return dataRoot === undefined
+    ? undefined
+    : admittedStorageRowForPath(targetPath, dataRoot, undefined, resolvePath);
+}
+
 // Loaded on the first candidate write: many suites mock canopy-paths with
 // factories that cannot run while atomic-file loads.
 interface StorageRoots {
@@ -361,9 +483,34 @@ export async function admittedStorageRowForWrite(
     if (dataRootResolver === loading) dataRootResolver = undefined;
     throw error;
   }
-  return admittedStorageRowForPath(
+  const dataRoot = roots.dataRoot();
+  const row = admittedStorageRowForPath(
     targetPath,
-    roots.dataRoot(),
+    dataRoot,
     roots.secureRoot?.(),
   );
+  if (row !== undefined) return row;
+  const recordsRoot = terminalRecordsRoot(targetPath);
+  if (recordsRoot !== undefined) {
+    try {
+      const canonical = terminalRecordCanonicalFile(targetPath);
+      if (
+        resolve(targetPath) !== canonical &&
+        !sameFileIdentity(await stat(targetPath), await stat(canonical))
+      )
+        return undefined;
+      if (
+        (await realpath(recordsRoot)) ===
+          (await realpath(resolve(dataRoot, 'terminal-records'))) ||
+        sameFileIdentity(
+          await stat(recordsRoot),
+          await stat(resolve(dataRoot, 'terminal-records')),
+        )
+      )
+        return 'terminal_record';
+    } catch {
+      // Unresolved identity must not fence a formerly allowed write.
+    }
+  }
+  return undefined;
 }

@@ -24,7 +24,10 @@ import {
   recordUsageDataRevocations,
   type ConsentJournal,
 } from './usage-data-consent-document';
-import { getUsageDataPolicy } from './usage-data-policy';
+import {
+  getUsageDataPolicy,
+  usageDataConsentStateOf,
+} from './usage-data-policy';
 import {
   type PreferencesData,
   type PreferencesLoadErrorDetails,
@@ -42,6 +45,8 @@ import { getResolvedCanopyDataDir } from '@canopy/execution-engine/canopy-paths'
 import { pruneDamagedCopies } from '@canopy/execution-engine/node/lib/damaged-copies';
 import { commitSuggestionsGate } from './suggestions-gate';
 import { publishCommittedPreferences } from './preferences-committed';
+import { applyOneWindowChoice, isOneWindowEnabled } from './one-window-switch';
+import { broadcastPreferencesChanged } from './preferences-broadcast';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { toShortcutPlatform } from '@canopy/desktop-shared/lib/global-shortcut-accelerator';
 import { installPreferencesNormalizationEnvironment } from '@canopy/desktop-shared/node/preferences/normalization-environment';
@@ -49,7 +54,9 @@ import { DEFAULT_PREFERENCES } from '@canopy/desktop-shared/node/preferences/def
 import { isRecord } from './type-guards';
 import { normalizePreferences } from '@canopy/desktop-shared/node/preferences/normalize-preferences';
 import {
+  CLIENT_LOCAL_PREFERENCE_KEYS,
   createPreferencesRepository,
+  preserveStoredKeys,
   type PreferencesDocument as PreferencesDocumentPort,
   type PreferencesDocumentSlot,
   type PreferencesAuthorityRead as RepositoryAuthorityRead,
@@ -59,6 +66,18 @@ import {
   type StoredPreferencesPayloadRead,
 } from '@canopy/core-runtime/node/preferences';
 import { DESKTOP_PREFERENCES_CODEC } from '@canopy/desktop-shared/node/preferences/desktop-preferences-codec';
+import {
+  mergeClientLocalPreferences,
+  splitPreferencesPatch,
+  storedClientLocalValues,
+  type ClientLocalPreferences,
+  type DomainPreferencesData,
+  type StoredDomainPreferences,
+} from '@canopy/desktop-shared/node/preferences/client-local-preferences';
+import {
+  createClientLocalPreferencesStore,
+  type LegacyClientLocalSource,
+} from './client-preferences-store';
 
 export { normalizePreferences } from '@canopy/desktop-shared/node/preferences/normalize-preferences';
 
@@ -333,7 +352,7 @@ function isMissingFileError(error: unknown): boolean {
 function approvalChange({
   previous,
   next,
-}: PreferencesChange<PreferencesData>): {
+}: PreferencesChange<DomainPreferencesData>): {
   globalRulesChanged: boolean;
   authorityChanged: boolean;
 } {
@@ -368,7 +387,16 @@ function notifyCopilotSelectionAuthority(
 ): void {
   for (const observer of copilotSelectionObservers) observer(change);
 }
-const preferencesHooks: PreferencesRepositoryHooks<PreferencesData> = {
+/**
+ * The merged view of a domain value, client-local part last (CAN-4472). Until
+ * the client-local document is ready its values aren't known, so callers that
+ * cache a merged value skip it then.
+ */
+function withClientLocal(domain: StoredDomainPreferences): PreferencesData {
+  return mergeClientLocalPreferences(domain, clientLocalPreferences.current());
+}
+
+const preferencesHooks: PreferencesRepositoryHooks<StoredDomainPreferences> = {
   beforeSave: async ({ previous, next }, document): Promise<void> => {
     if (
       copilotSelectionObservers.size > 0 &&
@@ -433,7 +461,9 @@ const preferencesHooks: PreferencesRepositoryHooks<PreferencesData> = {
     }
     if (previous.opencodeEnabled !== next.opencodeEnabled)
       openCodeEnabledRevision++;
-    rendererPreferencesCache = next;
+    rendererPreferencesCache = clientLocalPreferences.isReady()
+      ? withClientLocal(next)
+      : null;
     if (
       JSON.stringify(previous.disabledInstalledItems ?? []) !==
         JSON.stringify(next.disabledInstalledItems ?? []) ||
@@ -447,30 +477,95 @@ const preferencesHooks: PreferencesRepositoryHooks<PreferencesData> = {
   },
   onCommitted: (next) => {
     commitSuggestionsGate(next);
-    publishCommittedPreferences(next);
-    getUsageDataPolicy().setPreferences(next.usageData);
+    publishCommittedPreferences(withClientLocal(next));
+    // Every durable commit, whichever writer made it, carries the stored
+    // one-window choice, so main's read follows the file even when an
+    // earlier save's own callback never ran.
+    applyOneWindowChoice(next.oneWindowEnabled, arePreferencesUnconfirmed());
+    // Consent and choices from the same committed object, in one recompute.
+    getUsageDataPolicy().setStored(
+      next.usageData,
+      usageDataConsentStateOf(next),
+    );
   },
   onRecoveryLatched: () => {
     notifyCopilotSelectionAuthority({ kind: 'unavailable' });
     markGlobalApprovalRulesChanged();
     invalidateRendererPreferencesCache();
+    // The one-window switch reads off while unconfirmed; a switch that was
+    // on turns off now, and windows re-read it.
+    applyOneWindowChoice(undefined, true);
+    broadcastPreferencesChanged();
   },
   onRecovered: (restored) => {
     markGlobalApprovalRulesChanged();
-    rendererPreferencesCache = restored;
+    rendererPreferencesCache = clientLocalPreferences.isReady()
+      ? withClientLocal(restored)
+      : null;
+    applyOneWindowChoice(
+      restored.oneWindowEnabled,
+      arePreferencesUnconfirmed(),
+    );
   },
 };
-const preferencesRepository = createPreferencesRepository<PreferencesData>({
-  document: () => createDesktopPreferencesDocument(),
-  codec: DESKTOP_PREFERENCES_CODEC,
-  hooks: preferencesHooks,
-  log: {
-    error: (message, error) => {
-      // eslint-disable-next-line no-console
-      console.error(message, error);
+// The domain document keeps a frozen copy of whatever it stored for the
+// client-local keys and never writes them otherwise (CAN-4472): users who skip
+// releases still seed from it, in any order of writers.
+const preferencesRepository =
+  createPreferencesRepository<StoredDomainPreferences>({
+    document: () => createDesktopPreferencesDocument(),
+    codec: preserveStoredKeys(
+      DESKTOP_PREFERENCES_CODEC,
+      CLIENT_LOCAL_PREFERENCE_KEYS,
+    ),
+    hooks: preferencesHooks,
+    log: {
+      error: (message, error) => {
+        // eslint-disable-next-line no-console
+        console.error(message, error);
+      },
     },
+  });
+
+/** The seed source: the domain's own recovery verdict, never a bypass of it. */
+const legacyClientLocalSource: LegacyClientLocalSource = {
+  read: async () => {
+    const stored = await preferencesRepository.read('persisted');
+    if (preferencesRepository.isRecoveryLatched())
+      return { kind: 'pending', served: storedClientLocalValues(stored) };
+    if (!(await preferencesRepository.hasPersistedState()))
+      return { kind: 'missing' };
+    return { kind: 'read', values: storedClientLocalValues(stored) };
+  },
+};
+
+const clientLocalPreferences = createClientLocalPreferencesStore({
+  legacy: legacyClientLocalSource,
+  warn: (message, error) => {
+    // eslint-disable-next-line no-console
+    console.warn(message, error);
   },
 });
+
+/**
+ * Serializes writes across both documents. Reads don't wait on it: hook code
+ * that reads must never wait on a commit.
+ */
+let compositeWriteQueue: Promise<void> = Promise.resolve();
+function enqueueCompositeWrite<Result>(
+  operation: () => Promise<Result>,
+): Promise<Result> {
+  const result = compositeWriteQueue.then(operation);
+  compositeWriteQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+function hasKeys(patch: object): boolean {
+  return Object.keys(patch).length > 0;
+}
 
 const PREFERENCES_WRITER: AdmittedWriterTarget = {
   namespace: 'preferences',
@@ -505,7 +600,8 @@ async function writeTextFileAtomically(
 
 /** Execution projection only. Mutations must use the stored view in updatePreferencesFile. */
 export async function readPreferencesFile(): Promise<PreferencesData> {
-  return preferencesRepository.read('runtime');
+  await clientLocalPreferences.ready();
+  return withClientLocal(await preferencesRepository.read('runtime'));
 }
 
 export type PreferencesAuthorityRead = RepositoryAuthorityRead<PreferencesData>;
@@ -518,11 +614,20 @@ export type PreferencesAuthorityRead = RepositoryAuthorityRead<PreferencesData>;
 export async function readPreferencesFileDetailed(
   options: { includeServed?: boolean } = {},
 ): Promise<PreferencesAuthorityRead> {
-  return preferencesRepository.readAuthority(options);
+  await clientLocalPreferences.ready();
+  const read = await preferencesRepository.readAuthority(options);
+  return {
+    preferences: withClientLocal(read.preferences),
+    authority: read.authority,
+    ...(read.served === undefined
+      ? {}
+      : { served: withClientLocal(read.served) }),
+  };
 }
 
 async function readPersistedPreferencesFile(): Promise<PreferencesData> {
-  return preferencesRepository.read('persisted');
+  await clientLocalPreferences.ready();
+  return withClientLocal(await preferencesRepository.read('persisted'));
 }
 
 /**
@@ -569,11 +674,16 @@ export async function readPreferencesFileForRenderer(
   options?: PreferencesProjectionOptions,
 ): Promise<PreferencesLoadResult> {
   const persisted = await readPersistedPreferencesForRenderer();
-  if (options?.view === 'persisted') return persisted;
+  const mainState = {
+    ...(arePreferencesUnconfirmed() ? { __preferencesUnconfirmed: true } : {}),
+    __oneWindowEnabled: isOneWindowEnabled(),
+  };
+  if (options?.view === 'persisted') return { ...persisted, ...mainState };
   return {
     ...projectPreferencesForRuntime(rendererPreferencesCache ?? persisted),
     ...(persisted.__dataDir ? { __dataDir: persisted.__dataDir } : {}),
     ...(persisted.__error ? { __error: persisted.__error } : {}),
+    ...mainState,
   };
 }
 
@@ -662,11 +772,51 @@ function notificationOfferMigrationTimestamp(): string {
   return preferencesRepository.migrationTimestamp();
 }
 
+/**
+ * One save, split by document (CAN-4472): the domain part commits first, then
+ * the client-local part, so a domain refusal (a latch, a corrupt record)
+ * refuses the whole save with no client-local change, as before the split.
+ * `previous` and `next` are distinct merged values; `onCommitted` sees the
+ * merged commit once, in commit order, for every non-null patch.
+ */
 export async function updatePreferencesFileWithPrevious(
   updater: PreferencesUpdater,
   onCommitted?: PreferencesCommitObserver,
 ): Promise<{ previous: PreferencesData; next: PreferencesData }> {
-  return preferencesRepository.update(updater, onCommitted);
+  // Queued synchronously, as the engine queues its saves: from here quit's
+  // flush waits for this save, seed included.
+  return enqueueCompositeWrite(async () => {
+    await clientLocalPreferences.ready();
+    const clientBefore = clientLocalPreferences.current();
+    let clientPatch: Partial<ClientLocalPreferences> = {};
+    let patched = false;
+    const change = await preferencesRepository.update(async (latest) => {
+      const patch = await updater(
+        mergeClientLocalPreferences(latest, clientBefore),
+      );
+      if (patch === null) return null;
+      patched = true;
+      const split = splitPreferencesPatch(patch);
+      clientPatch = split.clientLocal;
+      // A purely client-local save leaves preferences.json untouched; an
+      // empty patch still saves it, as `stampGeneration` relies on.
+      return hasKeys(split.clientLocal) && !hasKeys(split.domain)
+        ? null
+        : split.domain;
+    });
+    const clientAfter = hasKeys(clientPatch)
+      ? await clientLocalPreferences.write(clientPatch)
+      : clientBefore;
+    const result = {
+      previous: mergeClientLocalPreferences(change.previous, clientBefore),
+      next: mergeClientLocalPreferences(change.next, clientAfter),
+    };
+    if (patched) {
+      rendererPreferencesCache = result.next;
+      onCommitted?.(result.next);
+    }
+    return result;
+  });
 }
 
 /**
@@ -674,7 +824,13 @@ export async function updatePreferencesFileWithPrevious(
  * saves queued meanwhile. Bounded, so a steady writer cannot hold quit open.
  */
 export async function flushPreferencesWrites(): Promise<void> {
-  return preferencesRepository.flush();
+  for (let round = 0; round < 5; round += 1) {
+    const queue = compositeWriteQueue;
+    await queue;
+    await preferencesRepository.flush();
+    await clientLocalPreferences.flush();
+    if (queue === compositeWriteQueue) return;
+  }
 }
 
 export type { PreferencesGenerationStamp } from '@canopy/core-runtime/node/preferences';
@@ -770,6 +926,8 @@ export function stopPreferencesGenerationStamp(): void {
 }
 
 export async function readLatestPreferencesFile(): Promise<PreferencesData> {
+  await clientLocalPreferences.ready();
+  await compositeWriteQueue;
   await preferencesRepository.idle();
   return rendererPreferencesCache ?? readPreferencesFile();
 }
@@ -815,6 +973,7 @@ export function acknowledgePreferencesLoadError(): void {
 export function resetPreferencesLoadErrorForTests(): void {
   stopPreferencesGenerationStamp();
   preferencesRepository.resetForTests();
+  clientLocalPreferences.resetForTests();
   preferencesRendererLoadOperation = null;
   markPreferencesAuthorityConfirmed();
   invalidateRendererPreferencesCache();

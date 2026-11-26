@@ -13,7 +13,10 @@ import type { ComponentsLabEntry } from './componentsLabCatalog';
 import type { ComponentsLabPage } from './componentsLabPages';
 import { LAB_TOC_SELECTOR } from './componentsLabParts';
 
-const SHARED_COMPONENTS_DIR = 'packages/ui-shared/src/components/';
+const SHARED_COMPONENT_DIRS = [
+  'packages/ui-shared/src/components/',
+  'packages/ui-shared/src/primitives/',
+];
 const SHARED_COMPONENTS_IMPORT = '@canopy/ui-shared/components';
 
 /**
@@ -46,7 +49,7 @@ function importLine(
   files: readonly string[],
 ): string | null {
   const fromFiles = files
-    .filter((file) => file.startsWith(SHARED_COMPONENTS_DIR))
+    .filter((file) => SHARED_COMPONENT_DIRS.some((dir) => file.startsWith(dir)))
     .map(baseName);
   const names = [...new Set([...components, ...fromFiles])].filter(
     (name) => name in SharedComponents,

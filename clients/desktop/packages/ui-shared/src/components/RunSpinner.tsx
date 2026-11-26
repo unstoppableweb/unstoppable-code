@@ -1,7 +1,7 @@
 'use client';
 
 import type { JSX } from 'react';
-import { CometSpinner } from './CometSpinner';
+import { CometSpinner } from '../primitives/CometSpinner';
 
 interface RunSpinnerProps {
   className?: string;

@@ -1,8 +1,9 @@
-import { TextLink } from './TextLink';
+import { TextLink } from '../primitives/TextLink';
 import type { JSX, ReactNode } from 'react';
+import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { COMPACT_ACTIVITY_ITEM_CLASS_NAME } from './activity-item-density';
-import { ControlButton, Button } from './Button';
-import { Surface } from './Surface';
+import { ControlButton, Button } from '../primitives/Button';
+import { Surface } from '../primitives/Surface';
 
 /** Hosts resolve identities; the shared row only renders the supplied control. */
 export type McpRowDestination =
@@ -67,6 +68,11 @@ export function McpManageRowSurface({
 
 export interface McpServerCardRowProps {
   readonly name: string;
+  /**
+   * Masks the name in session replay, for a name another person chose, such
+   * as an organization's shared connection.
+   */
+  readonly maskName?: boolean;
   readonly enabled: boolean;
   readonly destination?: McpRowDestination;
   readonly compact?: boolean;
@@ -80,7 +86,8 @@ export interface McpServerCardRowProps {
 }
 
 export function McpServerCardRow({
-  name,
+  name: rawName,
+  maskName = false,
   enabled,
   destination,
   compact = false,
@@ -91,6 +98,11 @@ export function McpServerCardRow({
   footer,
   actions,
 }: McpServerCardRowProps): JSX.Element {
+  const name = maskName ? (
+    <span className={REPLAY_MASK_CLASS}>{rawName}</span>
+  ) : (
+    rawName
+  );
   const nameClass = compact
     ? 'min-w-0 break-words fg-primary'
     : 'min-w-0 break-words text-s font-medium fg-primary';
@@ -118,7 +130,7 @@ export function McpServerCardRow({
             href={destination.href}
             target="_blank"
             rel="noopener"
-            aria-label={`${name} (opens in a new tab)`}
+            aria-label={`${rawName} (opens in a new tab)`}
             data-testid="mcp-servers-card-name"
           >
             {name}

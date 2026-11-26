@@ -16,9 +16,10 @@ import {
 } from '@tanstack/react-virtual';
 import { ChevronDownIcon, ChevronRightIcon } from '../../icons';
 import { FileDiff } from '../../icons/AppIcons';
-import { DisclosureToggle } from '../Disclosure';
-import { OverlayScrollArea } from '../OverlayScrollArea';
+import { DisclosureToggle } from '../../primitives/Disclosure';
+import { OverlayScrollArea } from '../../primitives/OverlayScrollArea';
 import { HAIRLINE_INSET_RING_CLASS } from '../../lib/row-chips';
+import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
 
 /** Git rows the list renders by index, so a long list mounts only those in view. */
 export interface TurnChangedFileRows {
@@ -45,6 +46,12 @@ export interface TurnFilesSummaryViewProps {
   readonly turnId?: string;
   /** A single file takes the header's content slot, without a duplicate row. */
   readonly singleFile?: ReactNode;
+  /**
+   * The type of the card's one file (`FileTypeIcon`), drawn in the header
+   * tile when the card holds a single file or output. Without it the tile
+   * shows the generic file glyph.
+   */
+  readonly fileIcon?: ReactNode;
   /** Git rows form their own list, separated from saved outputs by a hairline. */
   readonly changedFiles?: TurnChangedFileRows;
   /** Count stays available while a folded host defers its Git row elements. */
@@ -270,6 +277,7 @@ export function TurnFilesSummaryView({
   showFiles,
   turnId,
   singleFile,
+  fileIcon,
   changedFiles,
   changedFileCount,
   children,
@@ -341,7 +349,13 @@ export function TurnFilesSummaryView({
               aria-hidden="true"
               className="flex size-9 shrink-0 items-center justify-center rounded-sm bg-fg-primary/[0.06] fg-secondary [&_svg]:size-4"
             >
-              <FileDiff size="md" />
+              {fileIcon ? (
+                <span className={`inline-flex ${REPLAY_BLOCK_CLASS}`}>
+                  {fileIcon}
+                </span>
+              ) : (
+                <FileDiff size="md" />
+              )}
             </span>
           )}
           {singleFile ? (
@@ -352,7 +366,13 @@ export function TurnFilesSummaryView({
                 aria-hidden="true"
                 className="flex size-9 shrink-0 items-center justify-center rounded-sm bg-fg-primary/[0.06] fg-secondary [&_svg]:size-4"
               >
-                <FileDiff size="md" />
+                {fileIcon ? (
+                  <span className={`inline-flex ${REPLAY_BLOCK_CLASS}`}>
+                    {fileIcon}
+                  </span>
+                ) : (
+                  <FileDiff size="md" />
+                )}
               </span>
               {singleFile}
             </span>

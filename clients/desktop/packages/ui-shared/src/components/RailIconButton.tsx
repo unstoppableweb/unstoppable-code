@@ -5,8 +5,12 @@ import {
   type ReactNode,
 } from 'react';
 import type { AppIcon } from '../icons/AppIcons';
-import { ControlButton, Button, type ButtonVariant } from './Button';
-import { Tooltip } from './Tooltip';
+import {
+  ControlButton,
+  Button,
+  type ButtonVariant,
+} from '../primitives/Button';
+import { Tooltip } from '../primitives/Tooltip';
 
 /**
  * `neutral` brightens from tertiary to primary under the pointer. `section`

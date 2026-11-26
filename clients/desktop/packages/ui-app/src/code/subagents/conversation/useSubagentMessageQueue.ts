@@ -10,7 +10,6 @@ import {
   SUBAGENT_QUEUE_SEND_FAILED_LABEL,
   SUBAGENT_INTERRUPT_FAILED_LABEL,
   SUBAGENT_SEND_FAILED_LABEL,
-  subagentFailureWithReason,
 } from '@canopy/ui-shared';
 import type { SubagentMessageRequest, SubagentMessageResult } from '../types';
 import {
@@ -170,43 +169,41 @@ export function useSubagentMessageQueue({
               retryOperation: operation,
             }));
           } else {
-            store.setError(
-              key,
-              subagentFailureWithReason(failureLabel(operation), result.error),
-            );
+            store.setError(key, failureLabel(operation), result.error);
           }
           return;
         }
         const prefix = queuedDraftId
           ? SUBAGENT_QUEUE_SEND_FAILED_LABEL
           : failureLabel(operation);
-        const error = subagentFailureWithReason(prefix, result.error);
         if (queuedDraftId) {
           store.updateQueuedDraft(key, queuedDraftId, (queued) => ({
             ...queued,
             state: 'failed',
-            error,
+            error: prefix,
+            errorDetails: result.error,
             retryOnStatusChange: false,
             retryOperation: operation,
           }));
         } else {
-          store.setError(key, error);
+          store.setError(key, prefix, result.error);
         }
       } catch (error: unknown) {
         const prefix = queuedDraftId
           ? SUBAGENT_QUEUE_SEND_FAILED_LABEL
           : failureLabel(operation);
-        const formatted = subagentFailureWithReason(prefix, errorReason(error));
+        const reason = errorReason(error);
         if (queuedDraftId) {
           store.updateQueuedDraft(key, queuedDraftId, (queued) => ({
             ...queued,
             state: 'failed',
-            error: formatted,
+            error: prefix,
+            errorDetails: reason,
             retryOnStatusChange: false,
             retryOperation: operation,
           }));
         } else {
-          store.setError(key, formatted);
+          store.setError(key, prefix, reason);
         }
       } finally {
         store.endOperation(key);
@@ -325,10 +322,8 @@ export function useSubagentMessageQueue({
         store.updateQueuedDraft(key, queued.id, (current) => ({
           ...current,
           state: 'failed',
-          error: subagentFailureWithReason(
-            SUBAGENT_QUEUE_SEND_FAILED_LABEL,
-            control.error,
-          ),
+          error: SUBAGENT_QUEUE_SEND_FAILED_LABEL,
+          errorDetails: control.error,
           retryOnStatusChange: false,
           retryOperation: 'steer',
           deliveryOperationId: undefined,

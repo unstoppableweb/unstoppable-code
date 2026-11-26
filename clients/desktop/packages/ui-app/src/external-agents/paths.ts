@@ -9,7 +9,7 @@ export function externalAgentConfirmationPath(pendingActionId: string): string {
   return `${EXTERNAL_AGENTS_PATH}/confirm/${encodeURIComponent(pendingActionId)}`;
 }
 
-export const EXTERNAL_AGENTS_LABEL = 'External agents (MCP)';
+export const EXTERNAL_AGENTS_LABEL = 'External agents';
 
 /** The web page that offers the desktop app download. */
 export const DESKTOP_DOWNLOAD_PATH = '/download';

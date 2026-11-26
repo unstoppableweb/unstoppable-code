@@ -76,6 +76,9 @@ export const HOSTED_SETTINGS_PAGE_SKELETONS: {
   'organization.memory.graph': 'graph',
   'organization.memory.ops': 'table',
   'organization.memory.fact': 'spinner',
+  'organization.transcripts': 'table',
+  // A transcript's length and message mix aren't predictable.
+  'organization.transcripts.session': 'spinner',
   'organization.settings': 'form',
   'organization.invoice': 'table',
 };

@@ -1,8 +1,11 @@
 import { matchesRecordedDirectoryIdentity } from '@canopy/core-runtime/node/w5/recorded-directory-identity';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
 import { createHash } from 'node:crypto';
+import { constants, type Stats } from 'node:fs';
 import {
+  access,
   lstat,
+  open,
   readFile,
   readdir,
   readlink,
@@ -132,9 +135,79 @@ function missing(error: unknown): boolean {
   );
 }
 
+type ArchiveRecoveryInventoryMode = 'metadata' | 'contents';
+
+function unchangedRecoveryFile(expected: Stats, live: Stats): boolean {
+  return (
+    live.isFile() &&
+    live.nlink === 1 &&
+    live.dev === expected.dev &&
+    live.ino === expected.ino &&
+    live.birthtimeMs === expected.birthtimeMs &&
+    live.size === expected.size &&
+    live.mtimeMs === expected.mtimeMs &&
+    live.ctimeMs === expected.ctimeMs
+  );
+}
+
+function unchangedRecoveryMember(expected: Stats, live: Stats): boolean {
+  if (expected.isFile()) return unchangedRecoveryFile(expected, live);
+  return (
+    live.isSymbolicLink() === expected.isSymbolicLink() &&
+    live.isDirectory() === expected.isDirectory() &&
+    live.dev === expected.dev &&
+    live.ino === expected.ino &&
+    live.birthtimeMs === expected.birthtimeMs &&
+    live.mtimeMs === expected.mtimeMs &&
+    live.ctimeMs === expected.ctimeMs
+  );
+}
+
+async function hashRecoveryFile(
+  path: string,
+  expected: Stats,
+): Promise<{ size: number; digest: string }> {
+  const file = await open(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    if (!unchangedRecoveryFile(expected, await file.stat()))
+      throw new ArchiveRecoveryRefusedError('Recovery payload changed.');
+    // Bound memory and main-thread hashing work between asynchronous reads.
+    const buffer = Buffer.alloc(64 * 1024);
+    const hash = createHash('sha256');
+    let size = 0;
+    for (;;) {
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      size += bytesRead;
+      if (size > expected.size)
+        throw new ArchiveRecoveryRefusedError('Recovery payload changed.');
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+    if (
+      size !== expected.size ||
+      !unchangedRecoveryFile(expected, await file.stat()) ||
+      !unchangedRecoveryFile(expected, await lstat(path))
+    )
+      throw new ArchiveRecoveryRefusedError('Recovery payload changed.');
+    return { size, digest: hash.digest('hex') };
+  } finally {
+    await file.close();
+  }
+}
+
 /** Links inside the retained tree are evidence, never traversal targets. */
 export async function inventoryArchiveRecoveryTree(
   path: string,
+): Promise<z.infer<typeof archiveRecoveryInventorySchema> | null> {
+  return readArchiveRecoveryTree(path, 'contents');
+}
+
+async function readArchiveRecoveryTree(
+  path: string,
+  mode: ArchiveRecoveryInventoryMode,
 ): Promise<z.infer<typeof archiveRecoveryInventorySchema> | null> {
   const root = await lstat(path).catch((error: unknown) => {
     if (missing(error)) return null;
@@ -146,36 +219,90 @@ export async function inventoryArchiveRecoveryTree(
       'Recovery staging is not a canonical directory.',
     );
   const entries: z.infer<typeof archiveRecoveryInventorySchema>['entries'] = [];
-  const visit = async (directory: string, prefix: string): Promise<void> => {
-    for (const name of (await readdir(directory)).sort()) {
+  const visit = async (
+    directory: string,
+    prefix: string,
+    expected: Stats,
+  ): Promise<void> => {
+    await access(directory, constants.R_OK | constants.X_OK);
+    const names = (await readdir(directory)).sort();
+    const members: Stats[] = [];
+    for (const name of names) {
       const relative = prefix ? `${prefix}/${name}` : name;
       const child = join(directory, name);
       const info = await lstat(child);
+      members.push(info);
       if (info.isSymbolicLink())
         entries.push({
           path: relative,
           kind: 'symlink',
-          digest: archiveRecoveryDigest(await readlink(child)),
+          ...(mode === 'contents'
+            ? { digest: archiveRecoveryDigest(await readlink(child)) }
+            : {}),
         });
       else if (info.isDirectory()) {
         entries.push({ path: relative, kind: 'directory' });
-        await visit(child, relative);
+        await visit(child, relative, info);
       } else if (info.isFile() && info.nlink === 1) {
-        const contents = await readFile(child);
+        await access(child, constants.R_OK);
+        // Metadata evidence is rechecked with its directory's members below.
         entries.push({
           path: relative,
           kind: 'file',
-          size: contents.length,
-          digest: archiveRecoveryDigest(contents),
+          ...(mode === 'contents'
+            ? await hashRecoveryFile(child, info)
+            : { size: info.size }),
         });
       } else
         throw new ArchiveRecoveryRefusedError(
           'Unsupported or aliased recovery payload.',
         );
     }
+    // Linux timestamps are too coarse to reveal a member added, removed,
+    // replaced or resized during the visit, so recheck names and members.
+    if (!isDeepStrictEqual((await readdir(directory)).sort(), names))
+      throw new ArchiveRecoveryRefusedError('Recovery staging changed.');
+    for (const [index, name] of names.entries()) {
+      const member = await lstat(join(directory, name)).catch(
+        (error: unknown) => {
+          if (missing(error)) return null;
+          throw error;
+        },
+      );
+      const visited = members[index];
+      if (!member || !visited || !unchangedRecoveryMember(visited, member))
+        throw new ArchiveRecoveryRefusedError('Recovery staging changed.');
+    }
+    // File identity alone misses aliased ancestor directories.
+    const live = await lstat(directory);
+    if (
+      !live.isDirectory() ||
+      live.isSymbolicLink() ||
+      live.dev !== expected.dev ||
+      live.ino !== expected.ino ||
+      live.birthtimeMs !== expected.birthtimeMs ||
+      live.mtimeMs !== expected.mtimeMs ||
+      live.ctimeMs !== expected.ctimeMs
+    )
+      throw new ArchiveRecoveryRefusedError('Recovery staging changed.');
   };
-  await visit(path, '');
+  await visit(path, '', root);
   return { identity: `${root.dev}:${root.ino}:${root.birthtimeMs}`, entries };
+}
+
+function admissionInventory(
+  inventory: z.infer<typeof archiveRecoveryInventorySchema> | null,
+  mode: ArchiveRecoveryInventoryMode,
+): z.infer<typeof archiveRecoveryInventorySchema> | null {
+  if (!inventory || mode === 'contents') return inventory;
+  return {
+    ...inventory,
+    entries: inventory.entries.map(({ path, kind, size }) => ({
+      path,
+      kind,
+      size,
+    })),
+  };
 }
 
 function isReusedSourceSlot(
@@ -201,7 +328,8 @@ function assertRecoveryCopies(receipt: ArchiveRecoveryPreparation): void {
     record.worktreeId !== receipt.worktreeId ||
     record.createdAt !== receipt.createdAt ||
     record.operation !== 'worktree-archive' ||
-    record.state !== 'recovery-required'
+    // `active`: a crashed journal; admission proves it ownerless (CAN-7014).
+    (record.state !== 'recovery-required' && record.state !== 'active')
   )
     throw new ArchiveRecoveryRefusedError('Recovery source identity mismatch.');
   const slot = `${archiveRecoveryDigest(JSON.stringify([receipt.workspaceId, receipt.worktreeId]))}.json`;
@@ -351,13 +479,34 @@ export class ArchiveRecoveryStore {
     workspaceId: string,
     operationId: string,
   ): Promise<void> {
+    const plan = await this.inspectNormalization(workspaceId, operationId);
+    if (!plan) return;
+    const { directory, published, temporaryNames } = plan;
+    for (const name of temporaryNames) {
+      await unlink(join(directory, name));
+      await syncDirectory(directory);
+    }
+    if (!published) {
+      await rmdir(directory);
+      await syncDirectory(dirname(directory));
+    }
+  }
+
+  private async inspectNormalization(
+    workspaceId: string,
+    operationId: string,
+  ): Promise<{
+    directory: string;
+    published: boolean;
+    temporaryNames: string[];
+  } | null> {
     const directory = this.directory({ workspaceId, operationId });
     await this.assertOwnedPath(directory);
     const info = await lstat(directory).catch((error: unknown) => {
       if (missing(error)) return null;
       throw error;
     });
-    if (!info) return;
+    if (!info) return null;
     if (
       !info.isDirectory() ||
       info.isSymbolicLink() ||
@@ -430,18 +579,31 @@ export class ArchiveRecoveryStore {
           'Unaccounted recovery publication alias.',
         );
     }
-    for (const entry of files) {
-      if (!receiptTemporaryName.test(entry.name)) continue;
-      await unlink(join(directory, entry.name));
-      await syncDirectory(directory);
-    }
-    if (!published) {
-      await rmdir(directory);
-      await syncDirectory(dirname(directory));
-    }
+    return {
+      directory,
+      published,
+      temporaryNames: files
+        .filter((entry) => receiptTemporaryName.test(entry.name))
+        .map((entry) => entry.name),
+    };
+  }
+
+  /** Read-only admission for Keep/Release; the writer still rechecks before effects. */
+  public async assertWorkspaceNormalizable(workspaceId: string): Promise<void> {
+    for (const name of await this.normalizationOperationIds(workspaceId))
+      await this.inspectNormalization(workspaceId, name);
+    await this.supersededCancellations(workspaceId);
   }
 
   public async normalizeWorkspace(workspaceId: string): Promise<void> {
+    for (const name of await this.normalizationOperationIds(workspaceId))
+      await this.normalize(workspaceId, name);
+    await this.settleSupersededCancellations(workspaceId);
+  }
+
+  private async normalizationOperationIds(
+    workspaceId: string,
+  ): Promise<string[]> {
     const directory = join(
       this.dataRoot,
       'w5',
@@ -449,24 +611,35 @@ export class ArchiveRecoveryStore {
       id.parse(workspaceId),
     );
     await this.assertOwnedPath(directory);
-    const names = await readdir(directory).catch((error: unknown) => {
+    return readdir(directory).catch((error: unknown) => {
       if (missing(error)) return [];
       throw error;
     });
-    for (const name of names) await this.normalize(workspaceId, name);
-    await this.settleSupersededCancellations(workspaceId);
   }
 
   /** Exclusive writer only. Missing sources alone never prove another owner's completion. */
   private async settleSupersededCancellations(
     workspaceId: string,
   ): Promise<void> {
+    for (const receipt of await this.supersededCancellations(workspaceId)) {
+      // The completing journal remains the durable replay proof if unlink or directory removal is interrupted.
+      await unlink(join(this.directory(receipt), 'receipt.json'));
+      await syncDirectory(this.directory(receipt));
+      await rmdir(this.directory(receipt));
+      await syncDirectory(dirname(this.directory(receipt)));
+    }
+  }
+
+  private async supersededCancellations(
+    workspaceId: string,
+  ): Promise<ArchiveRecoveryReceipt[]> {
     const receipts = (await this.list(workspaceId)).filter(
       (receipt) => receipt.cancelled,
     );
-    if (!receipts.length) return;
+    if (!receipts.length) return [];
     const inspection = await inspectDestructiveJournals(this.dataRoot);
-    if (inspection.issues.length) return;
+    if (inspection.issues.length) return [];
+    const superseded: ArchiveRecoveryReceipt[] = [];
     for (const receipt of receipts) {
       const source = journalSchema.parse(receipt.sourceRecord);
       const sameIncarnation = (record: typeof source): boolean =>
@@ -530,37 +703,40 @@ export class ArchiveRecoveryStore {
         )
       )
         continue;
-      // The completing journal remains the durable replay proof if unlink or directory removal is interrupted.
-      await unlink(join(this.directory(receipt), 'receipt.json'));
-      await syncDirectory(this.directory(receipt));
-      await rmdir(this.directory(receipt));
-      await syncDirectory(dirname(this.directory(receipt)));
+      superseded.push(receipt);
     }
+    return superseded;
   }
 
   public async inspect(
     receipt: ArchiveRecoveryReceipt,
   ): Promise<ArchiveRecoveryInspection> {
+    return this.inspectEvidence(receipt, 'contents');
+  }
+
+  private async inspectEvidence(
+    receipt: ArchiveRecoveryReceipt,
+    mode: ArchiveRecoveryInventoryMode,
+  ): Promise<ArchiveRecoveryInspection> {
     const current = await this.read(receipt.workspaceId, receipt.operationId);
     if (!current || !isDeepStrictEqual(current, receipt))
       throw new ArchiveRecoveryRefusedError('Recovery receipt changed.');
     await this.assertOwnedPath(this.payloadPath(receipt));
-    const payload = await inventoryArchiveRecoveryTree(
-      this.payloadPath(receipt),
+    const payload = admissionInventory(
+      await readArchiveRecoveryTree(this.payloadPath(receipt), mode),
+      mode,
     );
-    const exact = matchesRecordedArchiveRecoveryInventory(
-      receipt.staging,
-      payload,
-    );
+    const recorded = admissionInventory(receipt.staging, mode);
+    const exact = matchesRecordedArchiveRecoveryInventory(recorded, payload);
     const subset =
       payload !== null &&
       matchesRecordedDirectoryIdentity(
-        receipt.staging?.identity,
+        recorded?.identity,
         payload.identity,
         hostOperatingSystem(),
       ) &&
       payload.entries.every((entry) =>
-        receipt.staging?.entries.some((original) =>
+        recorded?.entries.some((original) =>
           isDeepStrictEqual(entry, original),
         ),
       );
@@ -600,11 +776,12 @@ export class ArchiveRecoveryStore {
       reset = exact ? 'performed' : 'conflict';
     } else {
       await this.assertOwnedPath(this.stagingPath(receipt));
-      const staging = await inventoryArchiveRecoveryTree(
-        this.stagingPath(receipt),
+      const staging = admissionInventory(
+        await readArchiveRecoveryTree(this.stagingPath(receipt), mode),
+        mode,
       );
       if (
-        matchesRecordedArchiveRecoveryInventory(receipt.staging, staging) &&
+        matchesRecordedArchiveRecoveryInventory(recorded, staging) &&
         payload === null
       )
         reset = 'unperformed';
@@ -784,10 +961,31 @@ export class ArchiveRecoveryStore {
     return receipts;
   }
 
-  public async prepare(
+  /** Metadata-only offer admission; never returns evidence usable by the writer. */
+  public async readOfferPreparation(
     input: ArchiveRecoveryPreparation,
-  ): Promise<ArchiveRecoveryReceipt> {
-    await this.normalize(input.workspaceId, input.operationId);
+  ): Promise<{ existing: ArchiveRecoveryReceipt | null }> {
+    const { existing } = await this.readPreparation(input, 'metadata');
+    return { existing };
+  }
+
+  /** Execution and selected-entry checks read exact contents, unlike passive offers. */
+  public async readAdmittedPreparation(
+    input: ArchiveRecoveryPreparation,
+  ): Promise<{
+    receipt: ArchiveRecoveryReceipt;
+    existing: ArchiveRecoveryReceipt | null;
+  }> {
+    return this.readPreparation(input, 'contents');
+  }
+
+  private async readPreparation(
+    input: ArchiveRecoveryPreparation,
+    mode: ArchiveRecoveryInventoryMode,
+  ): Promise<{
+    receipt: ArchiveRecoveryReceipt;
+    existing: ArchiveRecoveryReceipt | null;
+  }> {
     const preparation = preparationSchema.parse(input);
     assertRecoveryCopies(preparation);
     const existing = await this.read(input.workspaceId, input.operationId);
@@ -803,41 +1001,58 @@ export class ArchiveRecoveryStore {
             },
             preparation,
           ) ||
-          !(await this.inspect(existing)).effectFree
+          !(await this.inspectEvidence(existing, mode)).effectFree
         )
           throw new ArchiveRecoveryRefusedError(
             'Cancelled resolution evidence changed.',
           );
-        // The admitted replacement retains the same protection in one durable write.
-        const replacement: ArchiveRecoveryReceipt = {
-          ...preparation,
-          version: 1,
-          stage: 'prepared',
-          staging: existing.staging,
+        return {
+          existing,
+          receipt: {
+            ...preparation,
+            version: 1,
+            stage: 'prepared',
+            staging: existing.staging,
+          },
         };
-        await writeFileAtomically(
-          join(this.directory(existing), 'receipt.json'),
-          JSON.stringify(replacement),
-          { durable: true, mode: 0o600 },
-        );
-        return replacement;
       }
       if (!isDeepStrictEqual(saved, preparation))
         throw new ArchiveRecoveryRefusedError(
           'Conflicting archive resolution intent.',
         );
-      return existing;
+      return { existing, receipt: existing };
     }
     await this.assertOwnedPath(this.directory(preparation));
     await this.assertOwnedPath(this.stagingPath(preparation));
-    const receipt: ArchiveRecoveryReceipt = {
-      ...preparation,
-      version: 1,
-      stage: 'prepared',
-      staging: await inventoryArchiveRecoveryTree(
-        this.stagingPath(preparation),
-      ),
+    return {
+      existing,
+      receipt: {
+        ...preparation,
+        version: 1,
+        stage: 'prepared',
+        staging: await readArchiveRecoveryTree(
+          this.stagingPath(preparation),
+          mode,
+        ),
+      },
     };
+  }
+
+  public async prepare(
+    input: ArchiveRecoveryPreparation,
+  ): Promise<ArchiveRecoveryReceipt> {
+    await this.normalize(input.workspaceId, input.operationId);
+    const { receipt, existing } = await this.readAdmittedPreparation(input);
+    if (existing) {
+      if (!existing.cancelled) return existing;
+      // The admitted replacement retains the same protection in one durable write.
+      await writeFileAtomically(
+        join(this.directory(existing), 'receipt.json'),
+        JSON.stringify(receipt),
+        { durable: true, mode: 0o600 },
+      );
+      return receipt;
+    }
     await createDirectoryDurably(this.directory(receipt), {
       dataRoot: this.dataRoot,
     });

@@ -5,6 +5,7 @@ import {
   lstat,
   mkdir,
   readdir,
+  readFile,
   rename,
   rmdir,
   unlink,
@@ -14,6 +15,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import {
   LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN,
+  journalSchema,
   LifecycleJournalQuarantineRequestSchema,
   type LifecycleJournalEntryMatch,
   type LifecycleJournalInspection,
@@ -38,6 +40,7 @@ import {
   lifecycleJournalSlotName,
   withExclusiveLifecycleJournalAccess,
   withSharedLifecycleJournalAccess,
+  setAsideLifecycleJournalPrefix,
 } from './w5-destructive-recovery';
 import { createSerialQueue } from './w5-file-store';
 
@@ -56,6 +59,7 @@ export class LifecycleJournalQuarantineRefusedError extends Error {
       | 'failed'
       | 'unconfirmed',
     message: string,
+    readonly reservationName?: string,
   ) {
     super(message);
     this.name = 'LifecycleJournalQuarantineRefusedError';
@@ -358,13 +362,103 @@ async function moveEntry(
   };
 }
 
+export interface LifecycleJournalMoveProgress {
+  renamed: boolean;
+  moved?: { originalName: string; quarantinedName: string };
+}
+
+/**
+ * CAN-7014: moves one readable journal file aside, bytes unchanged, when it
+ * still holds exactly `contents`. The caller holds exclusive journal access.
+ * Always by rename over a placeholder, never by hard link: a crash between a
+ * link and its rename leaves a two-link journal, which every journal scanner
+ * refuses on for the whole project. A crash here leaves at most an empty
+ * placeholder in the quarantine. Returns the quarantined name.
+ */
+export async function setAsideReadableLifecycleJournalFile(
+  name: string,
+  contents: Buffer,
+  progress: LifecycleJournalMoveProgress,
+): Promise<string> {
+  if (!LIFECYCLE_JOURNAL_ENTRY_NAME_PATTERN.test(name))
+    throw new LifecycleJournalQuarantineRefusedError('changed', CHANGED);
+  const directory = getW5DestructiveLifecycleDir();
+  const source = join(directory, name);
+  const stat = await lstat(source).catch((error: unknown) => {
+    if (hasCode(error, 'ENOENT')) return null;
+    throw error;
+  });
+  if (!stat)
+    throw new LifecycleJournalQuarantineRefusedError(
+      'missing',
+      'This record is no longer there, so nothing was moved.',
+    );
+  const identity = await lifecycleJournalEntryStatIdentity(source);
+  // The identity is re-read right before and after the rename below.
+  if (
+    !stat.isFile() ||
+    stat.nlink !== 1 ||
+    identity === null ||
+    !(await readFile(source)).equals(contents)
+  )
+    throw new LifecycleJournalQuarantineRefusedError('changed', CHANGED);
+  const record = journalSchema.parse(JSON.parse(contents.toString('utf8')));
+  if (record.operation !== 'worktree-archive' || !record.worktreeId)
+    throw new LifecycleJournalQuarantineRefusedError('changed', CHANGED);
+  const quarantine = await ensureQuarantineDirectory();
+  const destinationName = await renameEntry(
+    {
+      name,
+      identity,
+      source,
+      directory,
+      quarantine,
+      progress,
+      contents,
+      destinationPrefix: setAsideLifecycleJournalPrefix(
+        record.workspaceId,
+        record.worktreeId,
+      ),
+    },
+    stat,
+  );
+  await syncDirectory(quarantine);
+  await syncDirectory(directory);
+  logMainProcessWarn('W5 readable lifecycle journal entry set aside', {
+    name,
+    identity,
+    journalDirectory: directory,
+    destination: join(quarantine, destinationName),
+  });
+  return destinationName;
+}
+
 interface EntryMove {
   name: string;
   identity: string;
   source: string;
   directory: string;
   quarantine: string;
-  progress: { renamed: boolean };
+  progress: LifecycleJournalMoveProgress;
+  /** Only readable Set aside binds bytes; CAN-5335 keeps its unreadable-entry checks. */
+  contents?: Buffer;
+  destinationPrefix?: string;
+}
+
+async function matchesReviewedBytes(
+  path: string,
+  contents: Buffer,
+): Promise<boolean> {
+  try {
+    return (await readFile(path)).equals(contents);
+  } catch (error) {
+    // An unverified move needs the same cleanup or put-back as changed bytes.
+    logMainProcessWarn('W5 lifecycle journal byte verification failed', {
+      path,
+      error,
+    });
+    return false;
+  }
 }
 
 /** Collisions are retried under a new name; the first claim almost always wins. */
@@ -381,7 +475,7 @@ async function claimDestination(
   claim: (destination: string) => Promise<void>,
 ): Promise<string> {
   for (let attempt = 1; ; attempt += 1) {
-    const destinationName = quarantinedName(move.name);
+    const destinationName = `${move.destinationPrefix ?? ''}${quarantinedName(move.name)}`;
     try {
       await claim(join(move.quarantine, destinationName));
       return destinationName;
@@ -576,28 +670,39 @@ async function syncAfterPutBack(
  * over an existing name, so a directory there takes no placeholder.
  */
 async function renameEntry(move: EntryMove, stat: Stats): Promise<string> {
-  const { name, identity, source, quarantine, progress } = move;
+  const { name, source, quarantine, progress } = move;
   const isDirectory = stat.isDirectory();
   const placeholder = !isDirectory || hostOperatingSystem() !== 'win32';
   const destinationName = await claimDestination(move, async (destination) => {
     if (!placeholder) return;
-    if (isDirectory) await mkdir(destination, { mode: 0o700 });
-    else await writeFile(destination, '', { flag: 'wx', mode: 0o600 });
+    try {
+      if (isDirectory) await mkdir(destination, { mode: 0o700 });
+      else await writeFile(destination, '', { flag: 'wx', mode: 0o600 });
+    } catch (error) {
+      // EEXIST belongs to someone else. Any other failed creation may have
+      // left a reservation, but without its identity we cannot remove it.
+      if (
+        !hasCode(error, 'EEXIST') &&
+        !(await dropPlaceholder(destination, null))
+      )
+        throw reservationUnconfirmed(destination);
+      throw error;
+    }
   });
   const destination = join(quarantine, destinationName);
-  const claimed = placeholder ? await lstat(destination) : null;
-  // The narrowest window: re-check right before the atomic rename.
-  if ((await lifecycleJournalEntryStatIdentity(source)) !== identity) {
-    await dropPlaceholder(destination, claimed);
-    throw new LifecycleJournalQuarantineRefusedError('changed', CHANGED);
-  }
-  // Residual (by-path, no renameat2 NOREPLACE): another same-user process
-  // can still replace the source, caught below, or put a file at a file
-  // placeholder's name, which this rename replaces.
+  let claimed: Stats | null = null;
   try {
+    claimed = placeholder ? await lstat(destination) : null;
+    // The narrowest window: re-check right before the atomic rename.
+    if (!(await matchesReviewedEntry(source, move)))
+      throw new LifecycleJournalQuarantineRefusedError('changed', CHANGED);
+    // Residual (by-path, no renameat2 NOREPLACE): another same-user process
+    // can still replace the source, caught below, or put a file at a file
+    // placeholder's name, which this rename replaces.
     await rename(source, destination);
   } catch (error) {
-    await dropPlaceholder(destination, claimed);
+    if (placeholder && !(await dropPlaceholder(destination, claimed)))
+      throw reservationUnconfirmed(destination);
     // Moving a directory to another folder rewrites its `..` entry, which
     // needs write permission on it. Retrying can't help; changing it would.
     if (
@@ -618,7 +723,8 @@ async function renameEntry(move: EntryMove, stat: Stats): Promise<string> {
     throw error;
   }
   progress.renamed = true;
-  if ((await lifecycleJournalEntryStatIdentity(destination)) !== identity) {
+  progress.moved = { originalName: name, quarantinedName: destinationName };
+  if (!(await matchesReviewedEntry(destination, move))) {
     // Replaced inside the window: put back what was moved if its slot is
     // free. Residual: an external writer filling the slot after this check is
     // replaced; this process's saves wait for the move.
@@ -651,6 +757,34 @@ async function renameEntry(move: EntryMove, stat: Stats): Promise<string> {
   return destinationName;
 }
 
+async function matchesReviewedEntry(
+  path: string,
+  move: EntryMove,
+): Promise<boolean> {
+  try {
+    return (
+      (await lifecycleJournalEntryStatIdentity(path)) === move.identity &&
+      (!move.contents || (await matchesReviewedBytes(path, move.contents)))
+    );
+  } catch (error) {
+    logMainProcessWarn('W5 lifecycle journal identity verification failed', {
+      path,
+      error,
+    });
+    return false;
+  }
+}
+
+function reservationUnconfirmed(
+  destination: string,
+): LifecycleJournalQuarantineRefusedError {
+  return new LifecycleJournalQuarantineRefusedError(
+    'unconfirmed',
+    'The move could not be confirmed. A quarantine reservation may remain and keep saved recovery material protected. Ask support before changing it.',
+    basename(destination),
+  );
+}
+
 /**
  * Removes this move's own unused placeholder: an empty folder (`rmdir` fails
  * on any content) or an empty file still on the inode it was created on.
@@ -659,17 +793,25 @@ async function renameEntry(move: EntryMove, stat: Stats): Promise<string> {
 async function dropPlaceholder(
   destination: string,
   claimed: Stats | null,
-): Promise<void> {
-  if (!claimed) return;
+): Promise<boolean> {
+  let removed = false;
   try {
     const stat = await lstat(destination);
-    if (stat.dev !== claimed.dev || stat.ino !== claimed.ino) return;
+    if (!claimed || stat.dev !== claimed.dev || stat.ino !== claimed.ino)
+      return false;
     if (stat.isDirectory()) await rmdir(destination);
     else if (stat.isFile() && stat.size === 0) await unlink(destination);
+    else return false;
+    removed = true;
+    await syncDirectory(dirname(destination));
+    return true;
   } catch (error) {
-    logMainProcessWarn('W5 lifecycle journal quarantine left a placeholder', {
-      destination,
-      error,
-    });
+    // A missing entry is clean; a failed directory flush is not confirmed.
+    if (!removed && hasCode(error, 'ENOENT')) return true;
+    logMainProcessWarn(
+      'W5 lifecycle journal quarantine placeholder cleanup unconfirmed',
+      { destination, removed, error },
+    );
+    return false;
   }
 }

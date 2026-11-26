@@ -92,15 +92,19 @@ export function w5RecordPortTransportOver(
   run: W5RecordPortRunner,
 ): W5RecordPortTransport {
   return {
-    capture: (request) =>
+    capture: (request, signal) =>
       run({
         kind: 'query',
         operation: 'core.workspaceRecords.capture',
         run: (c) =>
-          c.query('core.workspaceRecords.capture', {
-            files: request.files.map((file) => ({ ...file })),
-            discoverWorkspaces: request.discoverWorkspaces,
-          }),
+          c.query(
+            'core.workspaceRecords.capture',
+            {
+              files: request.files.map((file) => ({ ...file })),
+              discoverWorkspaces: request.discoverWorkspaces,
+            },
+            { signal },
+          ),
       }),
     recovery: () =>
       run({

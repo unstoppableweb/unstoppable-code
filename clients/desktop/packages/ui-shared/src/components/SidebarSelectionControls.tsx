@@ -1,10 +1,10 @@
 'use client';
 
 import { useEffect, useRef, useState, type JSX } from 'react';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 import { RailIconButton } from './RailIconButton';
-import { DropdownMenuSurface } from './DropdownMenu';
-import { FloatingMenu } from './FloatingMenu';
+import { DropdownMenuSurface } from '../primitives/DropdownMenu';
+import { FloatingMenu } from '../primitives/FloatingMenu';
 import {
   WorktreeActionMenuItems,
   type WorktreeMenuItem,

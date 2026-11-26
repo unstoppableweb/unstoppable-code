@@ -1,4 +1,4 @@
-import { LoadingIndicator } from '../../../LoadingIndicatorStyle';
+import { LoadingIndicator } from '../../../../primitives/LoadingIndicatorStyle';
 import type { JSX, ReactNode } from 'react';
 import type {
   SubagentNode,
@@ -36,10 +36,10 @@ import {
   PickerMenuOptionLeading,
   PickerMenuSection,
   PickerMenuSectionLabel,
-} from '../../../PickerMenu';
+} from '../../../../primitives/PickerMenu';
 import { formatRelativeTime } from '../../../../lib/format-relative-time';
 import { REPLAY_MASK_CLASS } from '../../../../lib/replay-privacy';
-import { ThinkingSpinner } from '../../../ThinkingSpinner';
+import { ThinkingSpinner } from '../../../../primitives/ThinkingSpinner';
 import { ChatIcon, ChevronLeftMediumIcon } from '../../../../icons/AppIcons';
 import { HeaderActionButton } from '../../../HeaderActionButton';
 import { SubagentIcon } from '../../../../icons/SubagentIcon';

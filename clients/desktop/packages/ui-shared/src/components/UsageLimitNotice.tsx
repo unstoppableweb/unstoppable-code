@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 import { TimeslotIcon } from '../icons/AppIcons';
-import { Notice, type NoticeProps } from './Notice';
+import { Notice, type NoticeProps } from '../primitives/Notice';
 
 export interface UsageLimitNoticeProps extends Omit<
   NoticeProps,
@@ -25,7 +25,7 @@ export interface UsageLimitNoticeProps extends Omit<
 export function UsageLimitNotice({
   provider,
   children,
-  dismissLabel = 'Dismiss usage limit banner',
+  dismissLabel = 'Dismiss usage limit notice',
   purchaseStep,
   ...props
 }: UsageLimitNoticeProps): JSX.Element {

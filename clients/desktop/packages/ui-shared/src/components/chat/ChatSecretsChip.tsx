@@ -4,10 +4,10 @@ import { useId, useRef, useState, type JSX } from 'react';
 import { ChevronDownIcon, KeyIcon } from '../../icons/AppIcons';
 import { formatRelativeTime } from '../../lib/format-relative-time';
 import { REPLAY_BLOCK_CLASS } from '../../lib/replay-privacy';
-import { Button } from '../Button';
-import { Chip } from '../Chip';
-import { Notice, NoticeButton } from '../Notice';
-import { Popover } from '../Popover';
+import { Button } from '../../primitives/Button';
+import { Chip } from '../../primitives/Chip';
+import { Notice, NoticeButton } from '../../primitives/Notice';
+import { Popover } from '../../primitives/Popover';
 
 /** One secret a chat's agent holds: metadata only, never a value. */
 export interface ChatSecretsChipItem {

@@ -1,6 +1,6 @@
 'use client';
 
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import { ControlButton } from '@canopy/ui-shared/components';
 import { CompletedRunSurface } from '@canopy/ui-shared/components';
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
@@ -28,7 +28,7 @@ import { ChevronIcon } from '@canopy/ui-shared/icons';
 import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import { ScriptOutputModal } from './ScriptOutputModal';
 import { Divider, Surface } from '@canopy/ui-shared/components';
-import { Notice } from '@canopy/ui-shared/components/Notice';
+import { Notice } from '@canopy/ui-shared/primitives/Notice';
 
 export type ScriptsSectionLifecycle = 'setup' | 'launch' | 'teardown';
 export type ScriptsSectionTarget =

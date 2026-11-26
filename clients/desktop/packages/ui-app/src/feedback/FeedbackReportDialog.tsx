@@ -1,6 +1,6 @@
 'use client';
 
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import {
   useEffect,
   useRef,
@@ -27,7 +27,6 @@ import {
   Divider,
   Fact,
   FactList,
-  LoadingButton,
   Notice,
   Surface,
 } from '@canopy/ui-shared/components';
@@ -61,6 +60,8 @@ interface ContextRow {
   readonly label: string;
   readonly value: string;
   readonly masked?: boolean;
+  /** Failure text, such as command output, which replay must not record. */
+  readonly blocked?: boolean;
 }
 
 function joinParts(parts: ReadonlyArray<string | undefined>): string {
@@ -126,7 +127,11 @@ function FactRows({
     >
       {rows.map((row) => (
         <Fact key={row.label} label={row.label} fit="truncate">
-          {row.masked ? (
+          {row.blocked ? (
+            <span className={REPLAY_BLOCK_CLASS} data-dd-privacy="hidden">
+              {row.value}
+            </span>
+          ) : row.masked ? (
             <span className={REPLAY_MASK_CLASS}>{row.value}</span>
           ) : (
             row.value
@@ -152,6 +157,23 @@ function DisclosureSection({
   );
 }
 
+/** An explicit error wins; ordinary Bug feedback takes the remembered one. */
+function selectedReportError(
+  state: DraftState,
+  type: FeedbackDialogSubmission['type'],
+  explicitError: FeedbackReportError | undefined,
+  recentError: FeedbackReportError | undefined,
+): FeedbackReportError | undefined {
+  return (
+    explicitError ??
+    (type === 'bug' &&
+    state.status === 'ready' &&
+    state.draft.errorReports === true
+      ? recentError
+      : undefined)
+  );
+}
+
 /**
  * The form hosts mount for feedback and for error reports: it owns the draft,
  * the diagnostics snapshot and delivery, and hosts supply only the transport.
@@ -165,7 +187,8 @@ export function FeedbackReportDialog({
   openingDraft,
   onClose,
   initialReportType,
-  error,
+  error: explicitError,
+  recentError,
   telemetry,
   ownerDocument,
 }: FeedbackReportDialogContentProps): JSX.Element {
@@ -173,9 +196,30 @@ export function FeedbackReportDialog({
   const draftPromise = useRef<Promise<DraftState> | null>(null);
   const openingGeneration = useRef(0);
   const [form, setForm] = useState<FeedbackDialogSubmission>({
-    type: error ? 'bug' : (initialReportType ?? 'idea'),
+    type: explicitError ? 'bug' : (initialReportType ?? 'idea'),
     description: '',
   });
+  const [filedRequest, setFiledRequest] =
+    useState<FeedbackReportSubmission | null>(null);
+  function selectedError(
+    state: DraftState,
+    type: FeedbackDialogSubmission['type'],
+  ): FeedbackReportError | undefined {
+    return selectedReportError(state, type, explicitError, recentError);
+  }
+  function selectedTelemetry(
+    state: DraftState,
+  ): FeedbackReportTelemetry | undefined {
+    // Session links belong to error reports; ordinary feedback never gains them.
+    if (!explicitError) return undefined;
+    return (
+      telemetry ??
+      (state.status === 'ready' ? state.draft.telemetry : undefined)
+    );
+  }
+  const error = filedRequest
+    ? filedRequest.error
+    : selectedError(draft, form.type);
   const description = form.description;
   const inlineContents = client.diagnosticTextVisibility === 'inline';
   const [downloading, setDownloading] = useState(false);
@@ -184,10 +228,44 @@ export function FeedbackReportDialog({
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const [disclosureOpen, setDisclosureOpen] = useState(false);
   const diagnostics = useFeedbackDiagnostics(client);
+  const { discard: discardDiagnostics } = diagnostics;
+  const diagnosticsSelection = useRef({
+    type: form.type,
+    explicitReference: explicitError?.referenceId,
+  });
+  useEffect(() => {
+    const previous = diagnosticsSelection.current;
+    const explicitReference = explicitError?.referenceId;
+    if (
+      previous.type === form.type &&
+      previous.explicitReference === explicitReference
+    )
+      return;
+    diagnosticsSelection.current = { type: form.type, explicitReference };
+    // The archive's scope is its context and error; a type change that keeps
+    // both keeps the archive the person inspected.
+    if (
+      filedRequest ||
+      (previous.explicitReference === explicitReference &&
+        selectedReportError(
+          draft,
+          previous.type,
+          explicitError,
+          recentError,
+        ) === selectedReportError(draft, form.type, explicitError, recentError))
+    )
+      return;
+    discardDiagnostics();
+  }, [
+    form.type,
+    explicitError,
+    recentError,
+    draft,
+    filedRequest,
+    discardDiagnostics,
+  ]);
   // One per opening, retained across retries so nothing is filed twice.
   const [submissionId] = useState(() => crypto.randomUUID());
-  const [filedRequest, setFiledRequest] =
-    useState<FeedbackReportSubmission | null>(null);
   const [delivery, setDelivery] = useState<
     FeedbackReportResult['diagnosticsStatus'] | null
   >(null);
@@ -225,11 +303,9 @@ export function FeedbackReportDialog({
     diagnosticsSupported,
     draft,
   );
-  // Session links belong to error reports; ordinary feedback never gains them.
-  const reportTelemetry = error
-    ? (telemetry ??
-      (draft.status === 'ready' ? draft.draft.telemetry : undefined))
-    : undefined;
+  const reportTelemetry = filedRequest
+    ? filedRequest.telemetry
+    : selectedTelemetry(draft);
   const contextRows = [
     ...(error ? [{ label: 'Reference', value: error.referenceId }] : []),
     ...toContextRows(context),
@@ -286,9 +362,16 @@ export function FeedbackReportDialog({
     submission: FeedbackDialogSubmission,
   ): Promise<FeedbackReportSubmission> {
     const opening = openingGeneration.current;
+    const selection = diagnosticsSelection.current;
     // Sending before the draft settled still sends what the opening captured.
     const settled = (await draftPromise.current) ?? draft;
-    if (opening !== openingGeneration.current)
+    // A selection change may discard diagnostics before this wait finishes. Do not
+    // let the old request prepare an archive for the newly selected error.
+    if (
+      opening !== openingGeneration.current ||
+      selection !== diagnosticsSelection.current ||
+      selection.type !== submission.type
+    )
       throw new FeedbackSubmissionHeldError();
     const settledContext =
       settled.status === 'ready' ? settled.draft.context : {};
@@ -297,31 +380,36 @@ export function FeedbackReportDialog({
       diagnosticsSupported,
       settled,
     );
-    const settledTelemetry = error
-      ? (telemetry ??
-        (settled.status === 'ready' ? settled.draft.telemetry : undefined))
-      : undefined;
+    const settledError = selectedError(settled, submission.type);
+    const settledTelemetry = selectedTelemetry(settled);
     let snapshotId: string | undefined;
     if (includeDiagnostics && settledMode === 'snapshot') {
       if (diagnostics.state.status === 'expired')
         throw new FeedbackSubmissionHeldError();
       try {
         snapshotId = (
-          await diagnostics.ensure(diagnosticsScope(settledContext))
+          await diagnostics.ensure({
+            context: settledContext,
+            ...(settledError ? { error: settledError } : {}),
+          })
         ).id;
       } catch {
         // The block shows the failure; a different archive is never sent.
         throw new FeedbackSubmissionHeldError();
       }
     }
-    if (opening !== openingGeneration.current)
+    if (
+      opening !== openingGeneration.current ||
+      selection !== diagnosticsSelection.current ||
+      selection.type !== submission.type
+    )
       throw new FeedbackSubmissionHeldError();
     return {
       ...submission,
       context: settledContext,
       includeDiagnostics: includeDiagnostics && settledMode !== 'none',
       submissionId,
-      ...(error ? { error } : {}),
+      ...(settledError ? { error: settledError } : {}),
       ...(settledTelemetry ? { telemetry: settledTelemetry } : {}),
       ...(snapshotId ? { diagnosticsSnapshotId: snapshotId } : {}),
     };
@@ -331,17 +419,25 @@ export function FeedbackReportDialog({
     submission: FeedbackDialogSubmission,
   ): Promise<FeedbackReportResult> {
     const opening = openingGeneration.current;
+    const selection = diagnosticsSelection.current;
     const request = await prepareRequest(submission);
-    if (opening !== openingGeneration.current)
+    if (
+      opening !== openingGeneration.current ||
+      selection !== diagnosticsSelection.current
+    )
       throw new FeedbackSubmissionHeldError();
     try {
       const result = await client.submit(request);
+      // A changed selection may have prepared another scope during filing.
+      // Delivery retries belong only to the immutable request the host accepted.
+      if (selection !== diagnosticsSelection.current) diagnostics.discard();
       setFiledRequest(request);
       setDelivery(result.diagnosticsStatus ?? null);
       return result;
     } catch (err: unknown) {
       if (err instanceof FeedbackDiagnosticsExpiredError) {
-        diagnostics.markExpired();
+        if (request.diagnosticsSnapshotId)
+          diagnostics.markExpired(request.diagnosticsSnapshotId);
         throw new FeedbackSubmissionHeldError();
       }
       if (err instanceof FeedbackOutcomeUnknownError)
@@ -356,7 +452,7 @@ export function FeedbackReportDialog({
     const opening = openingGeneration.current;
     setDownloading(true);
     try {
-      // This is the same decoded request passed to the host's submit adapter.
+      // This is the decoded request passed to the host's submit adapter.
       // Transport encoding and the separately saved ZIP do not alter its trace.
       const request = await prepareRequest(form);
       if (opening !== openingGeneration.current)
@@ -368,7 +464,7 @@ export function FeedbackReportDialog({
       );
       const link = document.createElement('a');
       link.href = url;
-      link.download = `feedback-${error?.referenceId ?? submissionId}.json`;
+      link.download = `feedback-${request.error?.referenceId ?? submissionId}.json`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -382,18 +478,24 @@ export function FeedbackReportDialog({
   }
 
   async function retryDelivery(): Promise<void> {
+    const opening = openingGeneration.current;
     const request = filedRequest;
     if (!request || retryingDelivery) return;
     setRetryingDelivery(true);
     setDeliveryError(null);
     setSavedMessage(null);
+    // Only the snapshot this retry attached can expire; never a replacement.
+    let snapshotId: string | undefined;
     try {
       const needsReview = diagnostics.state.status !== 'ready';
       // An expired snapshot is replaced only by this explicit preparation.
       // Show the replacement before a second action attaches its exact bytes.
-      const snapshot = await diagnostics.ensure(
-        diagnosticsScope(request.context),
-      );
+      const snapshot = await diagnostics.ensure({
+        context: request.context,
+        ...(request.error ? { error: request.error } : {}),
+      });
+      if (opening !== openingGeneration.current) return;
+      snapshotId = snapshot.id;
       const retried: FeedbackReportSubmission = {
         ...request,
         diagnosticsSnapshotId: snapshot.id,
@@ -408,10 +510,10 @@ export function FeedbackReportDialog({
       setDeliveryRetried(true);
       setReviewingReplacement(false);
     } catch (err: unknown) {
-      if (err instanceof FeedbackDiagnosticsExpiredError)
-        diagnostics.markExpired();
+      if (err instanceof FeedbackDiagnosticsExpiredError && snapshotId)
+        diagnostics.markExpired(snapshotId);
       setDeliveryError(
-        `Couldn’t attach diagnostics. Your ${error ? 'report' : 'feedback'} is still filed.`,
+        `Couldn’t attach diagnostics. Your ${explicitError ? 'report' : 'feedback'} is still filed.`,
       );
     } finally {
       setRetryingDelivery(false);
@@ -421,9 +523,12 @@ export function FeedbackReportDialog({
   async function saveDiagnostics(): Promise<void> {
     setSaving(true);
     setSavedMessage(null);
+    // Only the snapshot this save used can expire; never a replacement.
+    let snapshotId: string | undefined;
     try {
       if (mode === 'snapshot' && client.saveDiagnostics) {
         const snapshot = await diagnostics.ensure(diagnosticsScope(context));
+        snapshotId = snapshot.id;
         await client.saveDiagnostics(snapshot.id);
         setSavedMessage(SAVED_COPY);
       } else if (client.saveCollectedDiagnostics) {
@@ -439,7 +544,7 @@ export function FeedbackReportDialog({
       }
     } catch (err: unknown) {
       if (err instanceof FeedbackDiagnosticsExpiredError) {
-        diagnostics.markExpired();
+        if (snapshotId) diagnostics.markExpired(snapshotId);
         return;
       }
       setSavedMessage(
@@ -501,10 +606,13 @@ export function FeedbackReportDialog({
       </p>
     ) : null;
 
+  const readySnapshot =
+    diagnostics.state.status === 'ready' ? diagnostics.state.snapshot : null;
+
   return (
     <FeedbackDialog
       appName={appName}
-      mode={error ? 'error' : 'feedback'}
+      mode={explicitError ? 'error' : 'feedback'}
       {...(initialReportType ? { initialReportType } : {})}
       onClose={onClose}
       ownerDocument={ownerDocument}
@@ -527,7 +635,7 @@ export function FeedbackReportDialog({
               data-testid="feedback-modal-delivery"
               actions={
                 filedRequest?.diagnosticsSnapshotId ? (
-                  <LoadingButton
+                  <Button
                     variant="secondary"
                     size="compact"
                     loading={retryingDelivery}
@@ -546,22 +654,24 @@ export function FeedbackReportDialog({
                       : reviewingReplacement
                         ? 'Attach diagnostics'
                         : 'Try again'}
-                  </LoadingButton>
+                  </Button>
                 ) : undefined
               }
             >
               {deliveryError ??
                 (reviewingReplacement && diagnostics.state.status === 'ready'
                   ? 'Review the new diagnostics below before attaching them. Your report is already filed.'
-                  : `Your ${error ? 'report' : 'feedback'} is filed, but its diagnostics couldn’t be attached.`)}
+                  : `Your ${explicitError ? 'report' : 'feedback'} is filed, but its diagnostics couldn’t be attached.`)}
             </Notice>
-            {reviewingReplacement && diagnostics.state.status === 'ready' ? (
+            {reviewingReplacement && readySnapshot ? (
               <>
                 <FeedbackDiagnosticsPreview
-                  key={diagnostics.state.snapshot.id}
+                  key={readySnapshot.id}
                   client={client}
-                  snapshot={diagnostics.state.snapshot}
-                  onExpired={diagnostics.markExpired}
+                  snapshot={readySnapshot}
+                  onExpired={(): void =>
+                    diagnostics.markExpired(readySnapshot.id)
+                  }
                 />
                 {saveCopyButton}
                 {savedNote}
@@ -668,7 +778,7 @@ export function FeedbackReportDialog({
                   : 'Couldn’t prepare diagnostics. Nothing was sent.'}
               </Notice>
             ) : null}
-            {mode === 'none' && error === undefined ? null : (
+            {!offersDiagnostics && error === undefined ? null : (
               <Disclosure
                 label="What gets sent"
                 open={disclosureOpen}
@@ -685,7 +795,7 @@ export function FeedbackReportDialog({
                       : null}
                   </p>
                   <div>
-                    <LoadingButton
+                    <Button
                       type="button"
                       variant="secondary"
                       size="compact"
@@ -698,7 +808,7 @@ export function FeedbackReportDialog({
                       data-testid="feedback-report-download"
                     >
                       Download report data
-                    </LoadingButton>
+                    </Button>
                   </div>
                   <FactRows
                     rows={[
@@ -712,7 +822,7 @@ export function FeedbackReportDialog({
                     ]}
                   />
                   <DisclosureSection
-                    heading={error ? 'Your answer' : 'Your description'}
+                    heading={explicitError ? 'Your answer' : 'Your description'}
                   >
                     <p
                       className={`whitespace-pre-wrap break-words text-xs fg-secondary ${REPLAY_BLOCK_CLASS}`}
@@ -735,7 +845,11 @@ export function FeedbackReportDialog({
                             label: 'When',
                             value: new Date(error.occurredAt).toISOString(),
                           },
-                          { label: 'Shown as', value: error.copy.title },
+                          {
+                            label: 'Shown as',
+                            value: error.copy.title,
+                            blocked: true,
+                          },
                         ]}
                         testId="feedback-modal-sent-error"
                       />
@@ -801,7 +915,7 @@ function DiagnosticsSection({
   readonly mode: Exclude<DiagnosticsMode, 'none'>;
   readonly included: boolean;
   readonly state: ReturnType<typeof useFeedbackDiagnostics>['state'];
-  readonly onExpired: () => void;
+  readonly onExpired: (snapshotId: string) => void;
   readonly saveAction: ReactNode;
 }): JSX.Element {
   if (!included)
@@ -813,17 +927,19 @@ function DiagnosticsSection({
         can’t be previewed here.
       </p>
     );
-  if (state.status === 'ready')
+  if (state.status === 'ready') {
+    const { snapshot } = state;
     return (
       <>
         <FeedbackDiagnosticsPreview
           client={client}
-          snapshot={state.snapshot}
-          onExpired={onExpired}
+          snapshot={snapshot}
+          onExpired={(): void => onExpired(snapshot.id)}
         />
         {saveAction}
       </>
     );
+  }
   if (state.status === 'preparing')
     return <p className="text-xs fg-secondary">Preparing diagnostics…</p>;
   return (

@@ -1,7 +1,7 @@
 'use client';
 
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
 import { Plus } from '@canopy/ui-shared/icons/AppIcons';
 import {

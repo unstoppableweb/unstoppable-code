@@ -1,5 +1,5 @@
 import { Surface } from '@canopy/ui-shared/components';
-import { Badge, type BadgeTone } from '@canopy/ui-shared/components/Badge';
+import { Badge, type BadgeTone } from '@canopy/ui-shared/primitives/Badge';
 import type { JSX, KeyboardEvent, MouseEvent } from 'react';
 import type { Notification } from '@/stores/toastStore';
 import { useToastStore } from '@/stores/toastStore';

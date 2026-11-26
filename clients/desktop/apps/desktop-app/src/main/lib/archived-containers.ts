@@ -84,7 +84,7 @@ import {
 } from './archived-container-git';
 import { runArchiveIoRequest } from '../archive/archive-io-runner';
 import { isWorkspaceWorktreeCurrent } from './workspace-persistence';
-import { hasUnresolvedDestructiveRecovery } from './w5-destructive-recovery';
+import { readDestructiveRecoveryProtection } from './w5-destructive-recovery';
 import { readWorkEntriesFile } from './cowork-work-entries-file';
 import { isWorkEntryWorkspace } from './workspace-registry';
 import { requestDesktopSessionSnapshotInvalidation } from '../services/desktop-session-snapshot-invalidation';
@@ -1298,6 +1298,7 @@ export async function purgeArchivedContainerAfterRestore(
   });
 }
 
+/** Caller holds the workspace archive operation lock throughout the sweep. */
 export async function removeIncompleteArchivedContainers(
   projectId: string,
   olderThanMs: number,
@@ -1306,6 +1307,8 @@ export async function removeIncompleteArchivedContainers(
   validateId(projectId, 'projectId');
   return withWorkspaceMutationLock(projectId, async () => {
     let removed = 0;
+    const recoveryProtection =
+      await readDestructiveRecoveryProtection(projectId);
     for (const entry of await safeReadDir(
       getArchivedContainersRootDir(projectId),
     )) {
@@ -1358,7 +1361,7 @@ export async function removeIncompleteArchivedContainers(
       }
       const info = await stat(directory).catch(() => null);
       if (!info || now - info.mtimeMs < olderThanMs) continue;
-      if (await hasUnresolvedDestructiveRecovery(projectId, entry.name)) {
+      if (recoveryProtection.protects(entry.name)) {
         continue;
       }
       const stagedGitState = await readFile(

@@ -48,7 +48,7 @@ export function settingsNavModelFromBootstrap(
         : {
             id: organization.id,
             name: organization.name,
-            visibleTabs: organization.visibleTabs,
+            visibleTabs: organizationVisibleTabsFromBootstrap(organization),
             disabledTabs: organization.disabledTabs,
             billingNeedsAttention: organization.billingNeedsAttention,
             viewerRole: organization.viewerRole,
@@ -70,6 +70,25 @@ export function settingsNavModelFromBootstrap(
       image: bootstrap.viewer.image ?? null,
     },
   };
+}
+
+/**
+ * The organization's rail tabs. The server never names `transcripts` in
+ * `visibleTabs` (shipped desktops reject a tab they don't know); it sends
+ * `transcriptsEnabled` instead, and the tab goes before Settings. An older
+ * server sends no field, so no tab shows. Hosts read tabs from a bootstrap
+ * through this, never from `visibleTabs` directly, so a route guard or a
+ * preload doesn't drop Transcripts.
+ */
+export function organizationVisibleTabsFromBootstrap(
+  organization: SettingsOrganizationBootstrap,
+): SettingsOrganizationBootstrap['visibleTabs'] {
+  const tabs = organization.visibleTabs;
+  if (organization.transcriptsEnabled !== true || tabs.includes('transcripts'))
+    return tabs;
+  const settingsIndex = tabs.indexOf('settings');
+  const at = settingsIndex === -1 ? tabs.length : settingsIndex;
+  return [...tabs.slice(0, at), 'transcripts', ...tabs.slice(at)];
 }
 
 /**

@@ -12,7 +12,7 @@ import {
   LinearInReviewIcon,
   LinearTodoIcon,
 } from '../icons/LinearStatusIcons';
-import { Skeleton } from './Skeleton';
+import { Skeleton } from '../primitives/Skeleton';
 import {
   ReferenceHoverCard,
   type ReferenceHoverCardIcon,

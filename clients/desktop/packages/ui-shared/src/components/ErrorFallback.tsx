@@ -3,9 +3,9 @@
 import { Component, type JSX, type ReactNode } from 'react';
 import type { AppErrorPresentation } from '@canopy/protocol/app-errors';
 import { recordReportUnavailable } from '../lib/report-unavailable';
-import { AppErrorDetails } from './AppErrorDetails';
-import { Disclosure } from './Disclosure';
-import { ErrorState } from './StatusBlocks';
+import { AppErrorDetails } from '../primitives/AppErrorDetails';
+import { Disclosure } from '../primitives/Disclosure';
+import { ErrorState } from '../primitives/StatusBlocks';
 
 /** The room a fallback frames. It never changes what was recorded. */
 export type ErrorFallbackLayout = 'window' | 'fill' | 'inline';

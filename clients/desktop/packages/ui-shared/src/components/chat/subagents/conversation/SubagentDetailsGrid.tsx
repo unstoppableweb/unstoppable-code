@@ -13,7 +13,7 @@ import { SubagentLineageDetails } from './SubagentLineageDetails';
 import { SubagentSetupDetails } from './SubagentSetupDetails';
 import { SubagentWorktreeDetails } from './SubagentWorktreeDetails';
 import { SubagentWorkflowDetails } from './SubagentWorkflowDetails';
-import { Heading } from '../../../Heading';
+import { Heading } from '../../../../primitives/Heading';
 
 export interface SubagentDetailsGridProps {
   readonly layout: 'columns' | 'stacked';

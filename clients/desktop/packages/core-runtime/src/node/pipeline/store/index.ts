@@ -6,6 +6,7 @@ export {
   type StoredPipelineLock,
   type StoredPipelineLockOptions,
   type StoredPipelinePath,
+  type StoredPipelineInfo,
   type StoredPipelineWriteRefusal,
   type StoredPipelineWriteResult,
   type StoredPipelineWriteOptions,
@@ -26,6 +27,7 @@ export {
   type PipelineLocalMetadataFile,
   type PipelineLocalMetadataFileStat,
   type PipelineLocalMetadataStore,
+  type PipelineLocalMetadataWriteOutcome,
 } from './local-metadata';
 export {
   createPipelineAssetStore,
@@ -37,11 +39,13 @@ export {
   type PipelineAssetStore,
 } from './assets';
 export {
+  PIPELINE_DEFINITION_INSTALLING_MESSAGE,
   PIPELINE_DEFINITION_REMOVED_MESSAGE,
   PIPELINE_DEFINITION_RESTORING_MESSAGE,
   PIPELINE_DEFINITION_UNCONFIRMED_MESSAGE,
   RUN_START_RECOVERY_WAIT_MS,
   createPipelineInstallJournal,
+  PipelineInstallCleanupPendingError,
   PipelineInstallJournalLeftForHostError,
   type PipelineInstallJournalHostPort,
   type PipelineDefinitionRecovery,
@@ -52,3 +56,32 @@ export {
   type PipelineInstallJournalIntent,
   type PipelineInstallJournalRecord,
 } from './install-journal';
+export {
+  OwnerRecordWriteError,
+  assertRowWritable,
+  ownerFlipRecordFile,
+  persistNamespaceBackupRecord,
+  readOwnerFlipRecord,
+  writeOwnerFlipRecord,
+  type OwnerFlipInput,
+  type OwnerRecordWriteErrorCode,
+  type OwnerRecordWriteOptions,
+} from '../../storage-records';
+export {
+  StorageRowOwnerError,
+  decideRowWrite,
+  type OwnerFlipRecord,
+  type OwnerFlipRecordRead,
+  type RowWriteDecision,
+} from '../../../storage/owner-records';
+export {
+  PIPELINE_DEFINITIONS_BACKUP_MEMBERS,
+  PIPELINE_DEFINITIONS_ROLLBACK_MIGRATION,
+  backupPipelineDefinitions,
+  restorePipelineDefinitionsBackup,
+  type PipelineDefinitionsBackupOptions,
+  type PipelineDefinitionsNewerLoss,
+  type PipelineDefinitionsRestoreOptions,
+  type PipelineDefinitionsRestoreResult,
+  type PipelineDefinitionsWriterLock,
+} from './definitions-backup';

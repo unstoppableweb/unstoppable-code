@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useId, type JSX, type RefObject } from 'react';
-import { PaneSheet } from './Sheet';
+import { PaneSheet } from '../primitives/Sheet';
 import {
   ChangeDiagramIcon,
   ChatIcon,
@@ -12,8 +12,8 @@ import {
 } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { HeaderActionButton } from './HeaderActionButton';
-import { SearchBar } from './SearchBar';
-import { ErrorBanner } from './StatusBlocks';
+import { SearchBar } from '../primitives/SearchBar';
+import { ErrorBanner } from '../primitives/StatusBlocks';
 
 /** Which focused surface the floating find bar searches. */
 export type FindSurfaceMode =

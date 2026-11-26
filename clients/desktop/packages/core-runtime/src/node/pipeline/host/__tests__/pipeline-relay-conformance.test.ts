@@ -5,6 +5,7 @@
 // pass. See docs/planning/2026-11-10-cloud-pipelines-relay-binding/README.md.
 import VECTORS from '../../../../../../protocol/src/pipeline-relay/fixtures/session-vectors.json';
 import {
+  WORKER_PIPELINE_OWNER_AGENT_ACTION_NOT_SENT_TEXT,
   WORKER_PIPELINE_PORTABLE_LAUNCH_HOST_MEMBERS,
   WORKER_PIPELINE_ROUTE_ID_PATTERN,
   WorkerPipelineExecutionStartParamsSchema,
@@ -834,6 +835,16 @@ describe('owner requests over a relay: the supervisor runner', () => {
         action: 'owner.codex.pluginRefs',
         selections: { pluginRefs: [{ marketplaceId: 'm', pluginName: 'p' }] },
       }),
+      // CAN-7742: nor does posting as this host's app: no action tools, and
+      // a call that never reached an owner posted nothing.
+      raise({ action: 'owner.agentActions.open', attemptKey: 'attempt-1' }),
+      raise({
+        action: 'owner.agentActions.call',
+        toolsKey: 'tools-1',
+        key: 'dispatch_action',
+        arguments: {},
+        invocationId: 'claude:toolu_1',
+      }),
     ]);
     expect(
       mcp.map((answer) =>
@@ -857,6 +868,22 @@ describe('owner requests over a relay: the supervisor runner', () => {
         result: {
           status: 'owner',
           value: { kind: 'codex.pluginRefs', selections: null, warnings: [] },
+        },
+      },
+      {
+        result: {
+          status: 'owner',
+          value: { kind: 'agentActions.open', tools: null },
+        },
+      },
+      {
+        result: {
+          status: 'owner',
+          value: {
+            kind: 'agentActions.call',
+            text: WORKER_PIPELINE_OWNER_AGENT_ACTION_NOT_SENT_TEXT,
+            isError: true,
+          },
         },
       },
     ]);

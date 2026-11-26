@@ -1,4 +1,3 @@
-import { ButtonLink } from '@canopy/ui-shared/components';
 import { useState, type JSX } from 'react';
 import {
   Badge,
@@ -63,7 +62,7 @@ function SelectableRows(): JSX.Element {
 
 function SignInLink(label: string): JSX.Element {
   return (
-    <ButtonLink
+    <Button
       href="#sign-in"
       variant="primary"
       size="lg"
@@ -71,7 +70,7 @@ function SignInLink(label: string): JSX.Element {
       data-testid="lab-guest-sign-in"
     >
       {label}
-    </ButtonLink>
+    </Button>
   );
 }
 

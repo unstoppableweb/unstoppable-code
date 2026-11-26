@@ -338,7 +338,7 @@ type ReadInput<K extends keyof SettingsReadMap> = SettingsReadMap[K]['input'];
 
 export const FACT_PAGE_MESSAGES: MemoryRequestMessages = {
   unexpected: 'Unexpected fact response',
-  fallback: 'Unable to load facts',
+  fallback: "Couldn't load facts",
 };
 
 /** One page of facts, or ranked search results when `q` is set. */
@@ -362,7 +362,7 @@ export function fetchMemoryFact(
     () => client.read('organization.memory.fact', { organizationId, factId }),
     {
       unexpected: 'Unexpected fact detail response',
-      fallback: 'Unable to load fact detail',
+      fallback: "Couldn't load fact detail",
     },
   );
 }
@@ -378,7 +378,7 @@ export function fetchMemoryFactsBatch(
         organizationId,
         factIds,
       }),
-    { unexpected: 'Unable to load facts', fallback: 'Unable to load facts' },
+    { unexpected: "Couldn't load facts", fallback: "Couldn't load facts" },
   );
 }
 
@@ -397,7 +397,7 @@ export function fetchMemoryFactSource(
       }),
     {
       unexpected: 'Unexpected transcript response',
-      fallback: 'Unable to load the source transcript',
+      fallback: "Couldn't load the source transcript",
     },
   );
 }
@@ -407,8 +407,8 @@ export function fetchMemoryGraph(
   input: ReadInput<'organization.memory.graph'>,
 ): Promise<ExplorerEntityGraph> {
   return memoryRequest(() => client.read('organization.memory.graph', input), {
-    unexpected: 'Unable to load graph',
-    fallback: 'Unable to load graph',
+    unexpected: "Couldn't load graph",
+    fallback: "Couldn't load graph",
   });
 }
 
@@ -419,7 +419,7 @@ export function fetchMemoryJobs(
 ): Promise<JobsPayload> {
   return memoryRequest(
     () => client.read('organization.memory.jobs', { organizationId, status }),
-    { unexpected: 'Unexpected jobs response', fallback: 'Unable to load jobs' },
+    { unexpected: 'Unexpected jobs response', fallback: "Couldn't load jobs" },
   );
 }
 
@@ -437,7 +437,7 @@ export function previewMemorySearch(
       }),
     {
       unexpected: 'Unexpected preview response',
-      fallback: 'Unable to preview retrieval',
+      fallback: "Couldn't preview retrieval",
     },
   );
 }

@@ -1,4 +1,4 @@
-import { Badge } from './Badge';
+import { Badge } from '../primitives/Badge';
 import {
   useEffect,
   useRef,
@@ -17,13 +17,16 @@ import {
 } from '../lib/plan-comments';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 import type { StatusGlyphState } from '../lib/status-glyph';
-import { Button } from './Button';
-import { DISPLAY_AVATAR_GLYPH_SIZE, DisplayAvatar } from './DisplayAvatar';
-import { RichHoverTooltip } from './RichHoverTooltip';
-import { Stack } from './Stack';
-import { Tooltip } from './Tooltip';
-import { StatusGlyph } from './StatusGlyph';
-import { isCoarsePointerNow, useMediaQuery } from './useMediaQuery';
+import { Button } from '../primitives/Button';
+import {
+  DISPLAY_AVATAR_GLYPH_SIZE,
+  DisplayAvatar,
+} from '../primitives/DisplayAvatar';
+import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
+import { Stack } from '../primitives/Stack';
+import { Tooltip } from '../primitives/Tooltip';
+import { StatusGlyph } from '../primitives/StatusGlyph';
+import { isCoarsePointerNow, useMediaQuery } from '../primitives/useMediaQuery';
 
 // ---------------------------------------------------------------------------
 // Shared, display-only plan review (comment thread) primitives — a GitHub

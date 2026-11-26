@@ -41,6 +41,7 @@ let cache: {
   marketplaces: MarketplaceInfo[];
 };
 jest.mock('../plugin-service', () => ({
+  getPluginUserMutationGeneration: (): number => 0,
   // A marketplace update as the service reports it (CAN-6817); the fixture
   // plugin folders are changed on disk by the test itself.
   updateMarketplace: (): Promise<unknown> =>

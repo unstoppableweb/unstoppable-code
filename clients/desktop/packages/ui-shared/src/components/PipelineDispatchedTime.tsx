@@ -4,7 +4,7 @@ import {
   formatTimingTimestamp,
   parseIsoToEpoch,
 } from '../lib/pipeline-timing-display';
-import { Tooltip } from './Tooltip';
+import { Tooltip } from '../primitives/Tooltip';
 
 export interface PipelineDispatchedTimeProps {
   /** ISO start of the run. */

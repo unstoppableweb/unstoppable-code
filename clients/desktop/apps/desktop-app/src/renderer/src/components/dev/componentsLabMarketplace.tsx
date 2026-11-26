@@ -11,6 +11,10 @@ import {
   Surface,
 } from '@canopy/ui-shared/components';
 import {
+  McpServersSectionBody,
+  type McpServersSectionItem,
+} from '@canopy/ui-app';
+import {
   SpecimenCell,
   SpecimenGrid,
   SpecimenPanel,
@@ -25,7 +29,7 @@ const KIND_LABELS: readonly { kind: UnifiedEntryKind; label: string }[] = [
   { kind: 'pipeline', label: 'Pipeline' },
   { kind: 'automation', label: 'Automation' },
   { kind: 'collection', label: 'Collection' },
-  { kind: 'agent', label: 'Agent' },
+  { kind: 'agent', label: 'Model preset' },
   { kind: 'blueprint', label: 'Project template' },
 ];
 
@@ -251,6 +255,75 @@ export function McpServerCardRowSpecimen(): JSX.Element {
         <SpecimenCell label="No destination renders nothing">
           <McpRowSettings destination={undefined} name="Linear" />
           <span className="text-2xs fg-tertiary">(nothing above)</span>
+        </SpecimenCell>
+      </SpecimenPanel>
+    </div>
+  );
+}
+
+const SHARED_ROW = {
+  source: 'shared',
+  enabled: true,
+  canConnect: false,
+} as const satisfies Partial<McpServersSectionItem>;
+
+/** Shared connection rows: every state, both sharers, a long name. */
+const SHARED_CONNECTION_ROWS: readonly McpServersSectionItem[] = [
+  {
+    ...SHARED_ROW,
+    key: 'connected',
+    displayName: 'Linear',
+    sharedBy: 'project',
+    authStatus: 'connected',
+    authStatusLabel: 'Connected',
+  },
+  {
+    ...SHARED_ROW,
+    key: 'needs-sign-in',
+    displayName: 'GitHub',
+    sharedBy: 'organization',
+    authStatus: 'not_connected',
+    authStatusLabel: 'Needs sign-in',
+  },
+  {
+    ...SHARED_ROW,
+    key: 'pending',
+    displayName: 'Notion',
+    sharedBy: 'project',
+    authStatus: 'not_connected',
+    authStatusLabel: 'Not signed in',
+  },
+  {
+    ...SHARED_ROW,
+    key: 'disconnected',
+    displayName: 'Atlassian Jira and Confluence for the platform team',
+    sharedBy: 'organization',
+    authStatus: 'not_configured',
+    authStatusLabel: 'Disconnected',
+  },
+];
+
+/** McpServersSectionBody's shared connection rows (CAN-6246). */
+export function McpSharedConnectionRowsSpecimen(): JSX.Element {
+  return (
+    <div className="flex flex-col gap-6">
+      <SpecimenPanel title="Shared connections">
+        <SpecimenCell
+          label="Connected, Needs sign-in, Not signed in, Disconnected; no action or destination"
+          wide
+        >
+          <McpServersSectionBody
+            servers={SHARED_CONNECTION_ROWS}
+            warnings={[]}
+            loading={false}
+            error={null}
+            connectingKey={null}
+            // Feeds only the proxy toggle, which shared rows never show. The
+            // Storybook catalog builds this file without the renderer alias.
+            brandAppName=""
+            proxyLogo={null}
+            onOpenDetails={noop}
+          />
         </SpecimenCell>
       </SpecimenPanel>
     </div>

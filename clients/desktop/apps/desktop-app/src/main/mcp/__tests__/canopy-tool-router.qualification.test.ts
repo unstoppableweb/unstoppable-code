@@ -202,6 +202,13 @@ describe('Canopy tool router (CAN-4125)', () => {
     expect(
       await call(fixture('worker-none'), displayName('save_memory')),
     ).toMatchObject({ error: { code: -32602 } });
+    // Only a pipeline agent route whose host set the field has the action
+    // tools (CAN-7742).
+    for (const name of ['worker-rw-ledger', 'worker-ro-pipeline-agent'])
+      for (const key of ['search_actions', 'dispatch_action'] as const)
+        expect(await call(fixture(name), displayName(key))).toMatchObject({
+          error: { code: -32602 },
+        });
     expect(
       (await call(fixture('native-sdk-bare'), displayName('add_ledger_entry')))
         .result,
@@ -348,6 +355,7 @@ describe('Canopy tool router (CAN-4125)', () => {
     [{ type: 'worktree.run_script', scriptId: 'test' }],
     [{ type: 'pipeline.execution_cancel', executionId: 'e' }],
     [{ type: 'pipeline.execution_resume', executionId: 'e' }],
+    [{ type: 'pull_request.review.publish', pullRequest: 'o/r#1' }],
   ])(
     'a worktree chat keys %o by the provider tool_use id, never the per-connection request id (CAN-5830)',
     async (action) => {
@@ -383,6 +391,51 @@ describe('Canopy tool router (CAN-4125)', () => {
       );
       expect(ids.slice(0, 3)).toEqual(['toolu_a', 'toolu_b', 'toolu_a']);
       expect(ids[3]).toMatch(/^[0-9a-f-]+:1$/);
+    },
+  );
+
+  it.each([['worker-rw-pipeline-agent'], ['ledger-subprocess-pipeline-agent']])(
+    'a pipeline agent route %s runs the action tools restricted to posting a review, for its execution (CAN-7742)',
+    async (name) => {
+      const router = new CanopyToolRouter({
+        interfaceRequests: fakeInterface(),
+      });
+      execute.mockResolvedValue({ text: 'ok' });
+      const route = fixture(name);
+      for (const [key, args] of [
+        ['search_actions', {}],
+        // Any other type still reaches the runtime, whose allowed types
+        // make the engine refuse it.
+        [
+          'dispatch_action',
+          { action: { type: 'pipeline.run', pipelineId: 'p' } },
+        ],
+        [
+          'dispatch_action',
+          {
+            action: { type: 'pull_request.review.publish' },
+            executionId: 'forged',
+          },
+        ],
+      ] as const)
+        await router.callTool(route, {
+          id: 3,
+          params: { name: displayName(key), arguments: args },
+          uiServer: false,
+        });
+      expect(execute).toHaveBeenCalledTimes(3);
+      for (const [, , runtime] of execute.mock.calls) {
+        expect(runtime.worktreeActionRuntime).toMatchObject({
+          projectId: 'p',
+          worktreeId: 'w',
+          // Never the route's own chat: the calls run under no real chat.
+          chatId: 'pipeline:e',
+          allowedActionTypes: ['pull_request.review.publish'],
+          pipelineExecutionId: 'e',
+        });
+        expect(runtime.worktreeActionRuntime?.getWindow()).toBeNull();
+        expect(runtime.worktreeWatcherRuntime).toBeUndefined();
+      }
     },
   );
 

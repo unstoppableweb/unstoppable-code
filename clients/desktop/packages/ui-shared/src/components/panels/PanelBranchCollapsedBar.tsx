@@ -1,4 +1,4 @@
-import { ControlButton } from '../Button';
+import { ControlButton } from '../../primitives/Button';
 import { useId, type JSX, type ReactNode } from 'react';
 import type {
   PanelCollapseEdge,
@@ -7,7 +7,7 @@ import type {
   PanelTabModel,
 } from '../../panels/registry-types';
 import { TitlebarIconButton } from '../TitlebarIconButton';
-import { Tooltip } from '../Tooltip';
+import { Tooltip } from '../../primitives/Tooltip';
 import { REPLAY_MASK_CLASS } from '../../lib/replay-privacy';
 import {
   ChevronRightMediumIcon,

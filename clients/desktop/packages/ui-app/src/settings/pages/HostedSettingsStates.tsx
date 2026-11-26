@@ -2,9 +2,9 @@
 
 import type { JSX, ReactNode } from 'react';
 import type { SettingsErrorCode } from '@canopy/protocol/settings';
-import { Button } from '@canopy/ui-shared/components/Button';
-import { ErrorBanner } from '@canopy/ui-shared/components/StatusBlocks';
-import { TRY_AGAIN_LABEL } from '@canopy/ui-shared/components/useRetry';
+import { Button } from '@canopy/ui-shared/primitives/Button';
+import { ErrorBanner } from '@canopy/ui-shared/primitives/StatusBlocks';
+import { TRY_AGAIN_LABEL } from '@canopy/ui-shared/primitives/useRetry';
 import { SettingsPageColumn } from '../layout/SettingsPageColumn';
 
 /**

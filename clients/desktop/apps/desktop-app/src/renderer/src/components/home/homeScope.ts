@@ -235,13 +235,17 @@ export function shouldRebindHomeToContext(
  * row that hosts it, so the row is never left rendering an empty band. It
  * shows when there is a choice to make, and when the context's Chats is the
  * only target, so the chip says where the chat will go and offers
- * "New project".
+ * "New project". It also shows while Home's notice about falling back from a
+ * project that failed to load is visible (CAN-7326), because that notice's
+ * Change project opens this picker.
  */
 export function shouldShowHomeWorkspacePicker(
   scope: Pick<HomeScope, 'projects' | 'cloudProjects' | 'onlyDefaultChats'>,
   workspaceId: string | null,
+  seedFallbackActive = false,
 ): boolean {
   return (
+    seedFallbackActive ||
     scope.cloudProjects.length > 0 ||
     hasWorkspaceChoice(scope.projects, workspaceId) ||
     scope.onlyDefaultChats

@@ -1,4 +1,5 @@
 import {
+  FeedbackArchiveSizeLimitError,
   FeedbackBundleBuilder,
   MAX_FILE_BYTES,
   normalizeZipPath,
@@ -63,6 +64,7 @@ import {
   STANDALONE_CHAT_PROJECT_ID,
   getModelHarnessAssignmentSnapshot,
   type FeedbackArea,
+  type FeedbackContextSnapshot,
   type FeedbackPrepareRequest,
   type FeedbackPrepareResponse,
   type FeedbackWorkspaceSelection,
@@ -93,7 +95,6 @@ import {
   getHookInvocationsDir,
   getMcpServersIndexFilePath,
   getPipelinePluginPreferencesFilePath,
-  getPreferencesFilePath,
   getWorkspaceChatHistoryConversationFilePath,
   getWorkspaceChatHistoryMetaFilePath,
   getWorkspaceChatHistoryRootDir,
@@ -102,6 +103,7 @@ import {
   getWorkspaceTrackedPlansFilePath,
   getWorktreeSummaryFilePath,
   getWorkspaceScriptRunDir,
+  preferencesReadPaths,
   w5RecordReadPaths,
 } from '../lib/paths';
 import { resolveCoworkWorkspaceId } from '../lib/cowork-migration-map';
@@ -298,9 +300,10 @@ export interface PrepareFeedbackBundleOptions {
   allowEmptyDescription?: boolean;
   bounded?: boolean;
   destination?: FeedbackBundleDestination;
-  /** Defaults to true. Snapshot preparation or legacy submit turns it off
-   * when dumps would push the bundle past its size limit. */
+  /** Defaults to true; oversized retries omit dumps. */
   includeCrashDumps?: boolean;
+  /** Only a failed oversized attempt may narrow scope or omit chat files. */
+  oversizedRetryContext?: FeedbackContextSnapshot;
 }
 
 export async function prepareFeedbackBundle(
@@ -322,7 +325,10 @@ export async function prepareFeedbackBundle(
       : FeedbackReportErrorSchema.parse(request.error);
   const preparedAtDate = new Date();
   const preparedAt = preparedAtDate.toISOString();
-  const builder = new FeedbackBundleBuilder(options?.bounded);
+  const builder = new FeedbackBundleBuilder(
+    options?.bounded,
+    options?.oversizedRetryContext !== undefined,
+  );
   let reservedOutput: ReservedFeedbackOutput | null = null;
 
   try {
@@ -330,6 +336,7 @@ export async function prepareFeedbackBundle(
       builder,
       normalized,
       options?.includeCrashDumps ?? true,
+      options?.oversizedRetryContext,
     );
     const harnessSnapshot = getModelHarnessAssignmentSnapshot();
     builder.addManifest({
@@ -547,6 +554,7 @@ async function collectFeedbackFiles(
   builder: FeedbackBundleBuilder,
   request: NormalizedFeedbackRequest,
   includeDumps: boolean,
+  oversizedRetryContext?: FeedbackContextSnapshot,
 ): Promise<CollectedFeedbackFiles> {
   await includeCoreDiagnostics(builder);
   const [{ readConsolidationState }, { resolveLocalMemoryScope }] =
@@ -600,7 +608,11 @@ async function collectFeedbackFiles(
     await includeWorktreeChatDetails(builder, request.workspaceSelections);
   }
   if (request.area === 'chat' && request.includeChatDetails) {
-    await includeStandaloneChatDetails(builder, request.chatProjectIds);
+    await includeStandaloneChatDetails(
+      builder,
+      request.chatProjectIds,
+      oversizedRetryContext,
+    );
   }
   return { crashDumps };
 }
@@ -625,8 +637,8 @@ async function includeCoreDiagnostics(
     { sourceRoot: dataDir, scrub: 'json-document' },
   );
   await builder.addFileIfSafe(
-    getPreferencesFilePath(),
-    dataRelativeZipPath(getPreferencesFilePath()),
+    preferencesReadPaths.document(),
+    dataRelativeZipPath(preferencesReadPaths.document()),
     { sourceRoot: dataDir },
   );
   await builder.addFileIfSafe(
@@ -1499,6 +1511,7 @@ async function includeCanonicalChatDetails(
   const options = {
     sourceRoot: dataDir,
     allowChatContent: true,
+    omitForSize: true,
     excludedZipPathPrefixes: [
       dataRelativeZipPath(join(directory, 'visual-staging')),
     ],
@@ -1530,6 +1543,7 @@ async function addLegacyChatTabsIfCurrent(
   await builder.addFileIfSafe(tabsPath, dataRelativeZipPath(tabsPath), {
     sourceRoot: getDataDir(),
     allowChatContent: true,
+    omitForSize: true,
   });
 }
 
@@ -1909,20 +1923,45 @@ function sanitizePipelinePath(value: string | undefined): string | undefined {
 async function includeStandaloneChatDetails(
   builder: FeedbackBundleBuilder,
   chatProjectIds: string[],
+  oversizedRetryContext?: FeedbackContextSnapshot,
 ): Promise<void> {
   await Promise.all(
     chatProjectIds.map(async (chatProjectId) => {
       const workspaceId = resolveCoworkWorkspaceId(chatProjectId);
+      const registeredWorkEntryIds = await listWorkEntryIds(workspaceId);
+      const reportingEntry = oversizedRetryContext
+        ? reportingWorkEntry(
+            workspaceId,
+            oversizedRetryContext,
+            registeredWorkEntryIds,
+          )
+        : undefined;
       // One tab file per work entry, plus the legacy pre-entry home.json.
-      const tabWorktreeIds = [
-        ...(await listWorkEntryIds(workspaceId)),
+      const tabWorktreeIds = new Set([
+        ...registeredWorkEntryIds,
         COWORK_HOME_WORKTREE_ID,
-      ];
+      ]);
       for (const worktreeId of tabWorktreeIds) {
         const chatTabsFilePath = getWorkspaceChatTabsFilePath(
           workspaceId,
           worktreeId,
         );
+        // Pre-entry chats remain in home storage, even with a captured entry.
+        if (
+          reportingEntry !== undefined &&
+          worktreeId !== reportingEntry &&
+          worktreeId !== COWORK_HOME_WORKTREE_ID
+        ) {
+          const root = dirname(dirname(chatTabsFilePath));
+          for (const path of [
+            join(root, 'chat-storage-v2', worktreeId),
+            join(root, 'chat-storage-manifests', `${worktreeId}.json`),
+            chatTabsFilePath,
+          ]) {
+            builder.recordSkipped(dataRelativeZipPath(path), 'policy-excluded');
+          }
+          continue;
+        }
         await includeCanonicalChatDetails(
           builder,
           dirname(dirname(chatTabsFilePath)),
@@ -1963,6 +2002,33 @@ async function includeStandaloneChatDetails(
       selectedProjectIds.has(entry.projectId)
     );
   });
+}
+
+function reportingWorkEntry(
+  workspaceId: string,
+  context: FeedbackContextSnapshot,
+  registeredWorkEntryIds: readonly string[],
+): string | undefined {
+  if (
+    isFeedbackScopeId(context.worktreeId) &&
+    registeredWorkEntryIds.includes(context.worktreeId) &&
+    resolveCoworkWorkspaceId(
+      context.workspaceId ?? context.chatProjectId ?? '',
+    ) === workspaceId
+  ) {
+    return context.worktreeId;
+  }
+  return undefined;
+}
+
+function isFeedbackScopeId(value: string | undefined): value is string {
+  if (!value) return false;
+  try {
+    validateId(value, 'feedback scope');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function includeStandaloneChatHistory(
@@ -2030,7 +2096,7 @@ async function includeStandaloneChatHistory(
       await builder.addFileIfSafe(
         conversationFilePath,
         dataRelativeZipPath(conversationFilePath),
-        { sourceRoot: dataDir, allowChatContent: true },
+        { sourceRoot: dataDir, allowChatContent: true, omitForSize: true },
       );
     }),
   );
@@ -2040,6 +2106,8 @@ async function includeMatchingTranscripts(
   builder: FeedbackBundleBuilder,
   matches: (entry: AgentAuditEntry) => boolean,
 ): Promise<void> {
+  if (builder.hasReachedCollectionLimit()) return;
+  const overContents = new Set<string>();
   const auditDir = getAgentObservabilityAuditDir();
   let entries: Dirent<string>[];
   try {
@@ -2049,6 +2117,7 @@ async function includeMatchingTranscripts(
   }
 
   for (const entry of entries) {
+    if (builder.hasReachedCollectionLimit()) return;
     if (!entry.isFile() || !entry.name.endsWith('.jsonl')) {
       continue;
     }
@@ -2066,6 +2135,7 @@ async function includeMatchingTranscripts(
     source.on('error', () => lines.close());
     try {
       for await (const line of lines) {
+        if (builder.hasReachedCollectionLimit()) return;
         if (line.trim().length === 0) {
           continue;
         }
@@ -2077,22 +2147,32 @@ async function includeMatchingTranscripts(
         ) {
           continue;
         }
+        let zipPath: string | undefined;
         try {
           const transcriptPath = getAgentObservabilityTranscriptFilePath({
             id: auditEntry.id,
             eventType: auditEntry.eventType,
             startedAt: auditEntry.startedAt,
           });
-          await builder.addFileIfSafe(
-            transcriptPath,
-            dataRelativeZipPath(transcriptPath),
-            { sourceRoot: getDataDir(), allowTranscript: true },
-          );
-        } catch {
-          continue;
+          zipPath = dataRelativeZipPath(transcriptPath);
+          if (overContents.has(zipPath)) continue;
+          await builder.addFileIfSafe(transcriptPath, zipPath, {
+            sourceRoot: getDataDir(),
+            allowTranscript: true,
+            omitForSize: true,
+          });
+          if (builder.hasReachedCollectionLimit()) return;
+        } catch (error) {
+          if (!(error instanceof FeedbackArchiveSizeLimitError)) continue;
+          // As in base, a transcript past the byte budget is skipped while
+          // smaller later ones may fit. Entry limits still reach the retry.
+          if (error.kind !== 'contents' || zipPath === undefined) throw error;
+          overContents.add(zipPath);
+          builder.recordSkipped(zipPath, 'too-large');
         }
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof FeedbackArchiveSizeLimitError) throw error;
       // Unreadable audit logs do not prevent collecting other diagnostics.
     } finally {
       lines.close();

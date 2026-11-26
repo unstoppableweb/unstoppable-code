@@ -4,8 +4,8 @@ import type { JSX } from 'react';
 import type { WorkEntryAutoDeleteRowState } from '@canopy/protocol';
 import { ArchiveIcon, TrashIcon } from '../icons/AppIcons';
 import { RailIconButton } from './RailIconButton';
-import { Dot } from './Badge';
-import { ActionTooltip } from './ActionTooltip';
+import { Dot } from '../primitives/Badge';
+import { ActionTooltip } from '../primitives/ActionTooltip';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 
 export interface SidebarAutoDeleteBadgeProps {

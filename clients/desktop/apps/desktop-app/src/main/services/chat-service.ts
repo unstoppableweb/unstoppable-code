@@ -3736,6 +3736,16 @@ export async function cancelWorktreeChat(
  */
 export async function cancelWorktreeChatTurn(
   request: ChatCancelRequest & { turnId: string },
+  /**
+   * `runningTurnOnly`: stop only the turn running now, the first message
+   * waiting for Git setup included; a message still in the queue answers
+   * `turn_not_active` and the queue is left as it is (CAN-7854). Ending the
+   * running turn lets the queue move on as when the turn ends by itself: the
+   * next message was accepted while its sender was authorized. Checking the
+   * sender's pairing again when a queued message is released belongs to
+   * CAN-7877, with the queue's other writes and dispatches.
+   */
+  options: { runningTurnOnly?: boolean } = {},
 ): Promise<{ ok: true; outcome: 'stop_requested' | 'turn_not_active' }> {
   validateId(request.projectId, 'projectId');
   validateId(request.worktreeId, 'worktreeId');
@@ -3763,12 +3773,29 @@ export async function cancelWorktreeChatTurn(
     return { ok: true, outcome: 'stop_requested' };
   }
   if (queue.runningTurnUserMessageId(target) === request.turnId) {
-    // Claimed by the queue but not yet marked active by its provider: stop it
-    // the moment it is, by its own identity, never another turn.
-    requestChatTurnCancel(key, request.turnId);
+    // A first send waiting for Git setup has no provider turn to stop. As the
+    // window's Stop does, cancel just this send, which ends its turn and never
+    // reaches a provider. Release the queue it holds only once that end is
+    // saved; until then setup completion releases it, as before.
+    const waiting = await getChatStateService().cancelSendAwaitingWorktreeSetup(
+      { ...target, userMessageId: request.turnId },
+    );
+    if (waiting === 'not_waiting') {
+      // Claimed by the queue but not yet marked active by its provider: stop
+      // it the moment it is, by its own identity, never another turn.
+      requestChatTurnCancel(key, request.turnId);
+    } else if (
+      waiting === 'ended' &&
+      queue.runningTurnUserMessageId(target) === request.turnId
+    ) {
+      queue.onTurnTerminal(target, 'cancelled', request.turnId);
+    }
     return { ok: true, outcome: 'stop_requested' };
   }
-  if (!queue.holdsUserMessage(target, request.turnId)) {
+  if (
+    options.runningTurnOnly === true ||
+    !queue.holdsUserMessage(target, request.turnId)
+  ) {
     return { ok: true, outcome: 'turn_not_active' };
   }
   // A turn still waiting in the queue has not started; withdrawing it stops it

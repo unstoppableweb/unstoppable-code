@@ -142,6 +142,7 @@ describe('secure files: Windows ACL receipts', () => {
       expect(result).toEqual({
         state: 'unverifiable',
         reason: 'path changed during permission check',
+        cause: 'path_changed',
       });
     },
   );
@@ -156,6 +157,93 @@ describe('secure files: Windows ACL receipts', () => {
     expect((await secure.permissions({ ...BASE, path: target })).state).toBe(
       'unverifiable',
     );
+  });
+});
+
+describe('secure files: Windows ACL receipts accepting foreign trustees (CAN-7915)', () => {
+  const OTHER = 'S-1-5-21-1-2-3-1002';
+  const accept = { foreignTrustees: 'accept' } as const;
+  const accepted = (
+    ...trustees: string[]
+  ): Runtime.PlatformPermissionResult => ({
+    state: 'private',
+    accepted: { cause: 'accepted_foreign_trustee', trustees },
+  });
+
+  it.each<[string, string, Runtime.PlatformPermissionResult]>([
+    [
+      'a broad group',
+      receipt({ aces: allow(USER, 'S-1-5-11') }),
+      accepted('S-1-5-11'),
+    ],
+    [
+      'repeated trustees once each',
+      receipt({ aces: [...allow(OTHER, USER, 'S-1-1-0', OTHER), denyAll] }),
+      accepted(OTHER, 'S-1-1-0'),
+    ],
+    [
+      'only privileged trustees',
+      receipt({ aces: privileged }),
+      { state: 'private' },
+    ],
+  ])('admits %s', async (_name, output, expected) => {
+    expect(await check(accept, output)).toEqual(expected);
+    expect(evaluateWindowsAcl(output, 'file', 'accept')).toEqual(expected);
+  });
+
+  it.each<[string, string, Runtime.PlatformPermissionCause]>([
+    [
+      'another owner',
+      receipt({ owner: OTHER, aces: allow(OTHER) }),
+      'foreign_owner',
+    ],
+    ['a null DACL', receipt({ dacl: false, aces: [] }), 'null_dacl'],
+    [
+      'a reparse point',
+      receipt({ reparse: true, aces: allow(OTHER) }),
+      'reparse_point',
+    ],
+    ['a directory receipt', receipt({ directory: true }), 'wrong_kind'],
+    [
+      'a later ACE without a SID',
+      receipt({ aces: [...allow(OTHER), { type: 0, sid: null }] }),
+      'unverifiable',
+    ],
+    [
+      'a later conditional ACE',
+      receipt({ aces: [...allow(OTHER), { type: 9, sid: OTHER }] }),
+      'unverifiable',
+    ],
+    ['a missing identity', receipt({ user: null }), 'unverifiable'],
+    ['malformed output', '{"user":', 'unverifiable'],
+  ])('still refuses %s', async (_name, output, cause) => {
+    const result = await check(accept, output);
+    expect(result.state).not.toBe('private');
+    expect(result).toMatchObject({ cause });
+  });
+
+  it('stays strict unless the request opts in', async () => {
+    const broad = receipt({ aces: allow(USER, OTHER) });
+    const strict = {
+      state: 'insecure',
+      reason: `ACL grants access to ${OTHER}`,
+      cause: 'foreign_trustee',
+    };
+    expect(await check({}, broad)).toEqual(strict);
+    expect(await check({ foreignTrustees: 'refuse' }, broad)).toEqual(strict);
+    expect(evaluateWindowsAcl(broad, 'file')).toEqual(strict);
+  });
+
+  it('still refuses links and never repairs on restrict', async () => {
+    const before = (await fs.stat(target)).mode;
+    const broad = receipt({ aces: allow(USER, OTHER) });
+    expect(await check({ ...accept, action: 'restrict' }, broad)).toEqual(
+      accepted(OTHER),
+    );
+    expect((await fs.stat(target)).mode).toBe(before);
+    await fs.link(target, path.join(dir, 'second'));
+    expect(await check(accept, broad)).toMatchObject({ cause: 'hard_link' });
+    expect(reads).toEqual([]);
   });
 });
 
@@ -261,7 +349,22 @@ async function nativeAclFlow(): Promise<void> {
   expect(await result(token, 'file')).toEqual({
     state: 'insecure',
     reason: 'ACL grants access to S-1-5-11',
+    cause: 'foreign_trustee',
   });
+  // CAN-7915: an opted-in caller starts anyway, and nothing on disk changes.
+  const before = await run(icacls, [token]);
+  expect(
+    await secure.permissions({
+      ...BASE,
+      path: token,
+      action: 'restrict',
+      foreignTrustees: 'accept',
+    }),
+  ).toEqual({
+    state: 'private',
+    accepted: { cause: 'accepted_foreign_trustee', trustees: ['S-1-5-11'] },
+  });
+  expect((await run(icacls, [token])).stdout).toBe(before.stdout);
 }
 
 describe('secure files: native Windows ACL', () => {

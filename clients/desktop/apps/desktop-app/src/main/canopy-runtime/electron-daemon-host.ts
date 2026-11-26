@@ -1,4 +1,5 @@
 import { prepareCanopySecureStorage } from '@canopy/desktop-shared/node/build-storage-startup';
+import { onInternalRootTrusteesAccepted } from '@canopy/core-platform/build-storage-startup';
 import {
   ELECTRON_MIGRATION_ROLE,
   createElectronMigrationLaunch,
@@ -8,6 +9,10 @@ import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { logMainProcessWarn } from '../lib/main-process-logging';
 import { createDaemonStartDiagnostics } from './daemon-start-diagnostics';
+import {
+  type AcceptedPathRole,
+  reportAcceptedForeignTrustees,
+} from './accepted-foreign-trustees';
 import { app } from 'electron';
 import { BRAND } from '@canopy/brand/current';
 import {
@@ -19,6 +24,7 @@ import {
   canopyEndpointRepairRequiredError,
   canopyLaunchDetails,
   connectCanopyClient,
+  type CanopyLaunchDetails,
   createCanopyDaemonHostLaunch,
   createDaemonOwnerCredential,
   createRecoverableCanopyStartupClaim,
@@ -36,6 +42,7 @@ import {
   WINDOWS_PROCESS_FILE,
   windowsPrincipalObserver,
 } from '@canopy/core-platform';
+import type { PlatformPermissionResult } from '@canopy/core-runtime';
 import {
   createCanopyStartupClaimPort,
   type CanopyStartupClaimPort,
@@ -44,9 +51,12 @@ import {
   CanopyEndpointRepairRequiredError,
   recoverStaleCanopyDaemonEndpoint,
 } from '@canopy/core-runtime/node';
+import { resolveSecureDataDir } from '@canopy/core-runtime/node/secure-data-dir';
 import { daemonName, type CanopyRuntimeMode } from '@canopy/protocol/brand';
 import {
   CanopyRuntimeDescriptorSchema,
+  CORE_CLOUD_ACCOUNT_CUSTODY_INSTRUCTION_DEFINITIONS,
+  CORE_CLOUD_ACCOUNT_CUSTODY_QUERY_DEFINITIONS,
   CORE_EXECUTION_STREAMS,
   CORE_INTEGRATION_CREDENTIAL_INSTRUCTIONS,
   CORE_TRANSPORT_QUERY_DEFINITIONS,
@@ -73,6 +83,9 @@ import {
   WORKER_SCRIPT_STREAM_DEFINITIONS,
   WORKER_TERMINAL_INSTRUCTION_DEFINITIONS,
   WORKER_TERMINAL_QUERY_DEFINITIONS,
+  WORKER_TERMINAL_RECORD_INSTRUCTION_DEFINITIONS,
+  WORKER_TERMINAL_RECORD_LIFECYCLE_INSTRUCTION_DEFINITIONS,
+  WORKER_TERMINAL_RECORD_QUERY_DEFINITIONS,
   WORKER_TERMINAL_SESSION_INSTRUCTION_DEFINITIONS,
   WORKER_TERMINAL_STREAM_DEFINITIONS,
 } from '@canopy/protocol/canopy-core';
@@ -110,6 +123,9 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
     // CAN-5501: typed client only; production selects none and has no Git grant.
     'worker.git.branch.list':
       WORKER_QUERY_DEFINITIONS['worker.git.branch.list'],
+    // CAN-4729: worktree health on macOS and Linux, codes only.
+    'worker.git.worktree.health.get':
+      WORKER_QUERY_DEFINITIONS['worker.git.worktree.health.get'],
     // W6g's record port (CAN-5528): served only by a W5 qualification daemon,
     // so production's manifest refuses each call capability_unavailable.
     ...CORE_WORKSPACE_RECORDS_QUERY_DEFINITIONS,
@@ -126,6 +142,9 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
     // Orphaned Claude terminals after a main crash (CAN-5097).
     'worker.terminal.list':
       WORKER_TERMINAL_QUERY_DEFINITIONS['worker.terminal.list'],
+    // The worktree terminal record's history (CAN-7051); a daemon without it
+    // is not used for records.
+    ...WORKER_TERMINAL_RECORD_QUERY_DEFINITIONS,
     // Eligible local window workflows without model steps (CAN-5086).
     'worker.pipeline.execution.get':
       WORKER_PIPELINE_QUERY_DEFINITIONS['worker.pipeline.execution.get'],
@@ -143,16 +162,28 @@ export const ELECTRON_DAEMON_DEFINITIONS = {
     // CAN-5092 S1b: typing only; production daemons do not serve workflow
     // definitions, so the manifest refuses each call capability_unavailable.
     ...PIPELINE_DEFINITION_QUERY_DEFINITIONS,
+    // CAN-6997: typing only until account authority activation is selected;
+    // a daemon not holding the account refuses each call.
+    ...CORE_CLOUD_ACCOUNT_CUSTODY_QUERY_DEFINITIONS,
   },
   instructions: {
     // CAN-5908: typing only; no production entry route is selected.
     ...WORKER_FILESYSTEM_ENTRY_INSTRUCTION_DEFINITIONS,
     ...CORE_INTEGRATION_CREDENTIAL_INSTRUCTIONS,
+    // CAN-6997: provisioning the daemon's own account from this app's
+    // sign-in; typing only until account authority is selected.
+    'core.integration.cloudAccount.provision':
+      CORE_CLOUD_ACCOUNT_CUSTODY_INSTRUCTION_DEFINITIONS[
+        'core.integration.cloudAccount.provision'
+      ],
     ...CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
     ...CORE_WORKSPACE_RECORDS_INSTRUCTION_DEFINITIONS,
     // Eligible local window terminals (CAN-5088).
     ...WORKER_TERMINAL_INSTRUCTION_DEFINITIONS,
     ...WORKER_TERMINAL_SESSION_INSTRUCTION_DEFINITIONS,
+    // The worktree terminal record (CAN-7051).
+    ...WORKER_TERMINAL_RECORD_INSTRUCTION_DEFINITIONS,
+    ...WORKER_TERMINAL_RECORD_LIFECYCLE_INSTRUCTION_DEFINITIONS,
     // And its renderer worktree builds (CAN-5089).
     'worker.codeGraph.build':
       WORKER_CODE_GRAPH_INSTRUCTION_DEFINITIONS['worker.codeGraph.build'],
@@ -283,13 +314,19 @@ const LOCKED_CHECK_REASONS: ReadonlySet<string> = new Set(
   ['EPERM', 'EBUSY', 'EACCES'].map((code) => `${CHECK_FAILED}${code}`),
 );
 
-/** The allowlisted errno a `check failed: <ERRNO>` reason names; never the reason text. */
+/**
+ * The allowlisted errno a `check failed: <ERRNO>` reason names, or else the
+ * closed cause; never the reason text, which can name a SID. A failed check
+ * keeps its errno only, so its step stays the wrapper's (CAN-7137).
+ */
 const permissionCheckDetails = (
-  reason: string,
-): Readonly<Record<string, string | number>> =>
-  reason.startsWith(CHECK_FAILED)
-    ? canopyLaunchDetails({ errno: reason.slice(CHECK_FAILED.length) })
-    : {};
+  result: Extract<PlatformPermissionResult, { readonly reason: string }>,
+): CanopyLaunchDetails =>
+  result.reason.startsWith(CHECK_FAILED)
+    ? canopyLaunchDetails({ errno: result.reason.slice(CHECK_FAILED.length) })
+    : result.cause
+      ? { privacy: result.cause }
+      : {};
 
 /** Fixed install or build location only; empty when neither is defined. */
 export function selectWindowsProcessPath(
@@ -301,6 +338,26 @@ export function selectWindowsProcessPath(
   return typeof __CANOPY_WINDOWS_PROCESS_SOURCE_PATH__ === 'string'
     ? __CANOPY_WINDOWS_PROCESS_SOURCE_PATH__
     : '';
+}
+
+function e2eCloudAccountEnvironment(
+  os: string,
+): Readonly<Record<string, string>> {
+  const bus = process.env.DBUS_SESSION_BUS_ADDRESS;
+  const fixture = process.env.CANOPY_E2E_DAEMON_CLOUD_ACCOUNT === '1';
+  return {
+    ...(fixture ? { CANOPY_E2E_DAEMON_CLOUD_ACCOUNT: '1' } : {}),
+    ...(process.env.CANOPY_E2E_CLOUD_BASE_URL
+      ? { CANOPY_E2E_CLOUD_BASE_URL: process.env.CANOPY_E2E_CLOUD_BASE_URL }
+      : {}),
+    ...(fixture &&
+    os === 'linux' &&
+    bus &&
+    bus.length <= 4096 &&
+    /^unix:path=\/[a-zA-Z0-9_./%+-]+(?:,guid=[a-fA-F0-9]{32})?$/.test(bus)
+      ? { DBUS_SESSION_BUS_ADDRESS: bus }
+      : {}),
+  };
 }
 
 /** A desktop consumer of a daemon stream or lease eviction threw (CAN-7116). */
@@ -355,6 +412,10 @@ export async function createElectronDaemonHost(
   };
 }> {
   const os = hostPlatformOperatingSystem();
+  // Import-time startup checks hold their accepted nodes until this sink exists.
+  onInternalRootTrusteesAccepted(({ path, role, acceptance }) =>
+    reportAcceptedForeignTrustees(path, role, acceptance),
+  );
   // One selection serves both process inspection and the authority principal.
   const windowsProcessPath =
     os === 'win32' ? selectWindowsProcessPath(inputs) : undefined;
@@ -384,25 +445,43 @@ export async function createElectronDaemonHost(
     (app.isPackaged
       ? join(getBundledBinDir(), name)
       : resolve('dist/core-daemon', name));
+  /** The last refusal logged, so each read before a latch adds no line. */
+  let loggedRefusal: string | undefined;
+  /** CAN-7915: only the data root, `runtime/` and its files admit other accounts. */
+  const acceptedPathRole = (
+    path: string,
+    kind: 'file' | 'directory',
+  ): AcceptedPathRole | undefined => {
+    if (kind === 'file')
+      return dirname(path) === runtimeDirectory ? 'runtime_file' : undefined;
+    if (path === dataRoot) return 'data_root';
+    return path === runtimeDirectory ? 'runtime' : undefined;
+  };
   async function privatePath(
     path: string,
     kind: 'file' | 'directory',
     signal?: AbortSignal,
   ): Promise<void> {
-    let details: Readonly<Record<string, string | number>> = {};
+    let details: CanopyLaunchDetails = {};
+    const role = acceptedPathRole(path, kind);
     for (let attempt = 1; attempt <= 3; attempt++) {
       const result = await platform.secureFiles.permissions({
         path,
         kind,
         action: kind === 'directory' ? 'restrict' : 'verify',
         mode: 'owner-only',
+        foreignTrustees: role ? 'accept' : 'refuse',
       });
-      if (result.state === 'private') return;
+      if (result.state === 'private') {
+        if (role && result.accepted)
+          reportAcceptedForeignTrustees(path, role, result.accepted);
+        return;
+      }
       if (kind === 'file' && result.reason === 'check failed: ENOENT')
         throw Object.assign(new Error('Core runtime file is absent.'), {
           code: 'ENOENT',
         });
-      details = permissionCheckDetails(result.reason);
+      details = permissionCheckDetails(result);
       // A Windows file lock retries inside the same three attempts, on
       // core-client's shared private-file lock backoff.
       if (
@@ -422,6 +501,17 @@ export async function createElectronDaemonHost(
       )
         break;
     }
+    // Feedback bundles copy main.log: it gets the path and closed cause, never
+    // the reason, which can name a SID (CAN-7917).
+    const refusal = `${kind}\0${path}\0${details.privacy ?? ''}`;
+    if (refusal !== loggedRefusal) {
+      loggedRefusal = refusal;
+      logMainProcessWarn('Core runtime permissions are not private', {
+        path,
+        kind,
+        cause: details.privacy ?? 'unknown',
+      });
+    }
     throw unavailable('Core runtime permissions are not private.', details);
   }
   const prepareRuntime = async (signal: AbortSignal): Promise<void> => {
@@ -434,8 +524,39 @@ export async function createElectronDaemonHost(
     if ((await realpath(runtimeDirectory)) !== runtimeDirectory)
       throw unavailable('Core runtime directory is not canonical.');
     await privatePath(runtimeDirectory, 'directory');
+    observeSecureStorageTrustees();
     await prepareEndpoint();
     signal.throwIfAborted();
+  };
+  let secureStorageObserved = false;
+  /**
+   * Warn-only, once per launch: the daemon's vault checks `secure-storage/`
+   * itself and has no local log. Never awaited and never refuses (CAN-7915).
+   */
+  const observeSecureStorageTrustees = (): void => {
+    if (os !== 'win32' || secureStorageObserved) return;
+    secureStorageObserved = true;
+    const path = resolveSecureDataDir({
+      dataRoot,
+      environment: process.env,
+    }).path;
+    void platform.secureFiles
+      .permissions({
+        path,
+        kind: 'directory',
+        mode: 'owner-only',
+        action: 'verify',
+        foreignTrustees: 'accept',
+      })
+      .then((result) => {
+        if (result.state === 'private' && result.accepted)
+          reportAcceptedForeignTrustees(
+            path,
+            'secure_storage',
+            result.accepted,
+          );
+      })
+      .catch(() => undefined);
   };
   /** A long data root's socket alias, checked before every connect (CAN-5694). */
   const prepareEndpoint = async (): Promise<void> => {
@@ -517,7 +638,18 @@ export async function createElectronDaemonHost(
     runtimeMode,
     executable,
     platform: os,
-    supervision: platform.supervision,
+    supervision: __CANOPY_E2E__
+      ? {
+          ...platform.supervision,
+          // The ordinary child filter deliberately strips product settings.
+          // Only this test build may add these non-secret fixture inputs
+          // after filtering; neither an upstream key nor the rest of env passes.
+          childEnvironment: (request): Readonly<Record<string, string>> => ({
+            ...platform.supervision.childEnvironment(request),
+            ...e2eCloudAccountEnvironment(os),
+          }),
+        }
+      : platform.supervision,
     ownedChildren: diagnostics
       ? diagnostics.wrap(ownedChildren)
       : ownedChildren,
@@ -557,10 +689,12 @@ export async function createElectronDaemonHost(
         },
       },
     }),
-    environmentSource: getEnhancedEnv({
-      includeCanopySecrets: false,
-      environment: false,
-    }),
+    environmentSource: {
+      ...getEnhancedEnv({
+        includeCanopySecrets: false,
+        environment: false,
+      }),
+    },
     prepareRuntime,
     expectedEndpoint: {
       kind: address.kind === 'unix-socket' ? 'socket' : 'pipe',

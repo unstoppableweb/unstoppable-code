@@ -19,11 +19,38 @@ export interface AutomationTurnFacts {
  */
 export function turnAccountResolution(
   turn: AutomationTurnFacts,
-): Pick<AgentSessionOptions, 'accountResolution'> {
-  return turn.automationDispatch !== undefined ||
-    turn.automationName !== undefined
-    ? { accountResolution: 'unattended' }
-    : {};
+): Pick<AgentSessionOptions, 'accountResolution' | 'sharedConnectionWrites'> {
+  if (
+    turn.automationDispatch === undefined &&
+    turn.automationName === undefined
+  )
+    return {};
+  // Its project's shared connections answer it with a scheduled claim
+  // (CAN-6252), limited to the writes its automation allowed.
+  const writes = turn.automationDispatch?.sharedConnectionWrites;
+  return {
+    accountResolution: 'unattended',
+    ...(writes === undefined ? {} : { sharedConnectionWrites: writes }),
+  };
+}
+
+/** A session's unattended facts for plugin resolution, when it has them. */
+export function unattendedPluginOptions(
+  opts: Pick<
+    AgentSessionOptions,
+    'accountResolution' | 'sharedConnectionWrites'
+  >,
+): {
+  accountResolution?: 'unattended';
+  sharedConnectionWrites?: Readonly<Record<string, readonly string[]>>;
+} {
+  if (opts.accountResolution !== 'unattended') return {};
+  return {
+    accountResolution: 'unattended',
+    ...(opts.sharedConnectionWrites === undefined
+      ? {}
+      : { sharedConnectionWrites: opts.sharedConnectionWrites }),
+  };
 }
 
 /**
@@ -32,7 +59,17 @@ export function turnAccountResolution(
  * the other's resolved connectors.
  */
 export function accountResolutionSignature(
-  opts: Pick<AgentSessionOptions, 'accountResolution'>,
+  opts: Pick<
+    AgentSessionOptions,
+    'accountResolution' | 'sharedConnectionWrites'
+  >,
 ): string {
-  return opts.accountResolution === 'unattended' ? '@unattended' : '';
+  if (opts.accountResolution !== 'unattended') return '';
+  // Two automations with different allowed writes never share a session.
+  const writes = opts.sharedConnectionWrites;
+  if (writes === undefined) return '@unattended';
+  const canonical = Object.keys(writes)
+    .sort()
+    .map((id) => [id, [...(writes[id] ?? [])].sort()]);
+  return `@unattended:${JSON.stringify(canonical)}`;
 }

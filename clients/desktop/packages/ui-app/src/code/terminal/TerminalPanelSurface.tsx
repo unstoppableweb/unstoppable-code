@@ -323,7 +323,7 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
         );
       } catch (error: unknown) {
         if (!lifetime || lifetime.isCurrent())
-          reportFailure(error, 'Unable to start terminal', origin.current);
+          reportFailure(error, "Couldn't start the terminal.", origin.current);
         throw error;
       } finally {
         setStarting(false);
@@ -407,7 +407,7 @@ export const TerminalPanelSurface = memo(function TerminalPanelSurface({
         setPaneRevision((value) => value + 1);
       } catch (error: unknown) {
         if (!lifetime || lifetime.isCurrent())
-          reportFailure(error, 'Unable to restart terminal', origin);
+          reportFailure(error, "Couldn't restart the terminal.", origin);
         throw error;
       } finally {
         setRestarting(false);

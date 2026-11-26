@@ -12,7 +12,7 @@ import type { ExplorerFactDetail } from '@canopy/protocol/settings/organization-
 import { withPrivacyClass } from '../account/privacy-class';
 import { SettingsLink, useSettingsPrivacy } from '../host';
 import { Surface } from '@canopy/ui-shared/components';
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 
 interface FactDetailDrawerProps {
   orgId: string;

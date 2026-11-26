@@ -13,7 +13,7 @@
 //  - opens the shared `WatcherManagementModal` on click, which handles all
 //    jump and delete interactions.
 
-import { Button } from '@canopy/ui-shared/components/Button';
+import { Button } from '@canopy/ui-shared/primitives/Button';
 import { useCallback, useEffect, useMemo, useState, type JSX } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { AppAdvisorWatcherSummary } from '@canopy/desktop-shared/types';

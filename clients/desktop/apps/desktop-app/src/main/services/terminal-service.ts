@@ -587,7 +587,8 @@ async function restoreDaemonTerminal(
   request: TerminalRestoreRequest,
   route: DaemonTerminalRouteContext,
 ): Promise<TerminalSession | null> {
-  const persisted = terminalPersistenceStore.getPersistedTerminalEntry(
+  // Metadata only: a daemon that keeps the record replays its own history.
+  const persisted = terminalPersistenceStore.getTerminalMetadata(
     request.terminalId,
   );
   if (
@@ -605,7 +606,28 @@ async function restoreDaemonTerminal(
     route,
   );
   if (!target) return null;
-  const scrollback = persisted.scrollbackLines.join('\n');
+  // An older daemon still takes the history with the restore. The source is
+  // chosen, prepared and dispatched on one session.
+  const bound = await routing.negotiateDaemonRestore();
+  const recorded = bound.records;
+  if (
+    recorded &&
+    !(await terminalPersistenceStore.prepareDaemonRestore(request.terminalId))
+  )
+    return null;
+  const release = recorded
+    ? (): void => undefined
+    : await terminalPersistenceStore.prefetchPersistedEntry(request.terminalId);
+  const scrollback = recorded
+    ? ''
+    : (terminalPersistenceStore
+        .getPersistedTerminalEntry(request.terminalId)
+        ?.scrollbackLines.join('\n') ?? '');
+  release();
+  const current = terminalPersistenceStore.getTerminalMetadata(
+    request.terminalId,
+  );
+  if (!current || current.revision !== persisted.revision) return null;
   const directory = routing.daemonRestoreDirectory(
     target.rootPath,
     session.cwd,
@@ -614,8 +636,13 @@ async function restoreDaemonTerminal(
     const restored = await withWorkspaceTargetRuntimeStartReservation(
       session.projectId,
       session.worktreeId,
-      () =>
-        routing.getDaemonTerminals().recreate({
+      (): Promise<TerminalSession | null> => {
+        const current = terminalPersistenceStore.getTerminalMetadata(
+          request.terminalId,
+        );
+        if (!current || current.revision !== persisted.revision)
+          return Promise.resolve(null);
+        return routing.recreateDaemonTerminal(bound, {
           terminalId: request.terminalId,
           projectId: session.projectId,
           worktreeId: session.worktreeId,
@@ -638,8 +665,10 @@ async function restoreDaemonTerminal(
           ...(session.initialCommand !== undefined && {
             initialCommand: session.initialCommand,
           }),
-        }),
+        });
+      },
     );
+    if (!restored) return null;
     routing.noteDaemonTerminalServed();
     return restored;
   } catch (error) {
@@ -743,10 +772,20 @@ export async function restoreTerminalForRenderer(
         if (restored) return restored;
       } else recordDaemonRoute('terminals', 'caller');
     }
-    return workerTerminal.restore({
-      terminalId: request.terminalId,
-      cols: request.cols,
-      rows: request.rows,
+    return withPrefetchedHistory(request.terminalId, () => {
+      // Adoption can finish while preparation or history prefetch is awaiting.
+      const currentDaemon = workerTerminal.daemonTerminals;
+      if (currentDaemon?.has(request.terminalId))
+        return currentDaemon.reattach(
+          request.terminalId,
+          request.cols,
+          request.rows,
+        );
+      return workerTerminal.restore({
+        terminalId: request.terminalId,
+        cols: request.cols,
+        rows: request.rows,
+      });
     });
   }
   recordDaemonRoute('terminals', 'shared_container');
@@ -803,17 +842,47 @@ export async function restoreTerminalForRenderer(
       const values = (
         await readSharedContainerRunEnvironment(session.worktreeId)
       ).filter((entry) => declared.has(entry.key));
-      return workerTerminal.restore({
-        terminalId: request.terminalId,
-        cols: request.cols,
-        rows: request.rows,
-        environment: buildSharedContainerRunEnv(
-          session.worktreeId,
-          Object.fromEntries(values.map((entry) => [entry.key, entry.value])),
-        ),
-      });
+      return withPrefetchedHistory(request.terminalId, () =>
+        workerTerminal.restore({
+          terminalId: request.terminalId,
+          cols: request.cols,
+          rows: request.rows,
+          environment: buildSharedContainerRunEnv(
+            session.worktreeId,
+            Object.fromEntries(values.map((entry) => [entry.key, entry.value])),
+          ),
+        }),
+      );
     },
   );
+}
+
+/**
+ * Runs an in-process restore with the terminal's history seeded from the
+ * record (CAN-7051): main keeps no output of terminals that are not live.
+ * A live terminal needs none.
+ */
+async function withPrefetchedHistory<T>(
+  terminalId: string,
+  restore: () => T,
+): Promise<T> {
+  if (workerTerminal.get(terminalId)) return restore();
+  const release =
+    await terminalPersistenceStore.prefetchPersistedEntry(terminalId);
+  try {
+    const session =
+      terminalPersistenceStore.getPersistedTerminalEntry(terminalId)?.session ??
+      terminalPersistenceStore.getTerminalMetadata(terminalId)?.session;
+    if (session)
+      assertNotSplitLocked(
+        session.projectId,
+        session.worktreeId,
+        'restoring a terminal',
+      );
+    return restore();
+  } finally {
+    release();
+  }
 }
 
 export async function listTerminalProfiles(): Promise<TerminalShellProfile[]> {

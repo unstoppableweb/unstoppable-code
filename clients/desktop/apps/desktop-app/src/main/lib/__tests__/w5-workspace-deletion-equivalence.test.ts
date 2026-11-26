@@ -12,7 +12,22 @@ import type {
 } from '@canopy/desktop-shared/node/archive-recovery-store';
 import type { ArchiveRecoverySettlementPorts } from '../archive-recovery-settlement';
 import type { WorktreeRecoveryResolveParams } from '@canopy/protocol/canopy-core';
-import type { WorktreeRecoveryDescription } from '@canopy/protocol/remote-control/shell/worktree-recovery';
+import {
+  CORE_WORKTREE_RECOVERY_QUERIES,
+  CORE_WORKTREE_RECOVERY_INSTRUCTIONS,
+  type CanopyCallerDescriptor,
+} from '@canopy/protocol/canopy-core';
+import {
+  createCanopyDispatcher,
+  type CanopyDispatcher,
+} from '@canopy/core-runtime';
+import { createCoreWorktreeRecoveryAdapter } from '../../canopy-runtime/core-worktree-recovery-adapter';
+import { LOCAL_DESKTOP_AUTHORITY_ID } from '../../canopy-runtime/desktop-runtime-identity';
+import {
+  worktreeRecoveryOfferedActions,
+  type WorktreeRecoveryDescription,
+  type WorktreeRecoveryOfferedAction,
+} from '@canopy/protocol/remote-control/shell/worktree-recovery';
 import {
   journalSchema,
   type DestructiveRecoveryRecord,
@@ -32,7 +47,10 @@ jest.mock('../workspace-record-decision-port', () => {
   );
   return {
     ...actual,
-    applyWorkspaceIndexRemoval: jest.fn(actual.applyWorkspaceIndexRemoval),
+    applyWorkspaceIndexRemoval: jest.fn(
+      (...args: Parameters<typeof actual.applyWorkspaceIndexRemoval>) =>
+        actual.applyWorkspaceIndexRemoval(...args),
+    ),
   };
 });
 jest.mock('../post-archive-sync', () => ({
@@ -64,6 +82,7 @@ jest.mock('../../chat-search/service', () => ({
     deleteWorkspaceDocs: jest.fn(() => Promise.resolve()),
     deleteWorktreeDocs: jest.fn(() => Promise.resolve()),
     worktreeContainerArchived: jest.fn(() => Promise.resolve()),
+    worktreeContainerRestored: jest.fn(() => Promise.resolve()),
   })),
 }));
 jest.mock('../../ledger/lifecycle', () => ({
@@ -98,18 +117,24 @@ jest.mock('../desktop-telemetry', () => ({
 let mockArchiveIoFault:
   | ((request: ArchiveIoOperationRequest) => void)
   | undefined;
+/** Runs after a worker request succeeds; a throw loses its response. */
+let mockArchiveIoAfter:
+  | ((request: ArchiveIoOperationRequest) => void)
+  | undefined;
 jest.mock('../../archive/archive-io-runner', () => ({
   // Replace Electron utility-process transport with the real filesystem engine.
   runArchiveIoRequest: async (
     request: ArchiveIoOperationRequest,
   ): Promise<ArchiveIoResultMap[ArchiveIoOperationType]> => {
     mockArchiveIoFault?.(request);
-    return jest
+    const result = await jest
       .requireActual<typeof ArchiveEngine>('../../archive/archive-io-engine')
       .executeArchiveIoRequest(request, new AbortController().signal, {
         progress: () => {},
         child: { started: () => {}, exited: () => {} },
       });
+    mockArchiveIoAfter?.(request);
+    return result;
   },
 }));
 jest.mock('../../cost-index/lifecycle', () => ({
@@ -129,7 +154,7 @@ import type {
 } from '../../archive/archive-io-protocol';
 import type * as ArchiveEngine from '../../archive/archive-io-engine';
 import { execFileSync } from 'node:child_process';
-import {
+import fs, {
   existsSync,
   linkSync,
   lstatSync,
@@ -140,16 +165,21 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { devNull } from 'node:os';
 import fsPromises from 'node:fs/promises';
 import {
   DEFAULT_COWORK_WORKSPACE_ID,
   STANDALONE_CHAT_PROJECT_ID,
   type ArchivedContainerManifest,
 } from '@canopy/desktop-shared/types';
-import { W5CommitLogHost } from '../../w5-commit-log/commit-log-host';
+import {
+  W5CommitLogHost,
+  W5CommitLogHostError,
+} from '../../w5-commit-log/commit-log-host';
 import {
   W5CommitLog,
   fingerprintW5File,
@@ -180,14 +210,36 @@ import { getAppAdvisorWatcherService } from '../../app-advisor/watchers';
 import { setDelegationActivity } from '../../agents/delegation/activity';
 import * as sessionManager from '../../agents/session-manager';
 import * as hostPlatform from '@canopy/core-platform/host-platform';
+import * as recordedDirectoryIdentity from '@canopy/core-runtime/node/w5/recorded-directory-identity';
 import * as instrumentation from '@canopy/desktop-instrumentation/electron/main';
 import * as coworkWorkEntries from '../cowork-work-entries';
 import { acquireWorkspaceDeletionLease } from '../../services/split-lock-service';
 import * as atomicFile from '../atomic-file';
 import {
+  findCompletedDestructiveArchive,
   isInterruptedIndexRemovalDeletion,
   readDestructiveRecovery,
+  replayJournaledTerminalRetirements,
+  lifecycleJournalSlotName,
 } from '../w5-destructive-recovery';
+import {
+  terminalPersistenceStore,
+  TerminalPersistenceStore,
+} from '../../terminal/persistence';
+import {
+  panelLayoutPersistenceStore,
+  PanelLayoutPersistenceStore,
+} from '../../panels/persistence';
+import type { SerializablePanelLayoutFile } from '@canopy/protocol/panels';
+import { TerminalRecordOutbox } from '../../terminal/record-outbox';
+import {
+  daemonTerminalRecordClient,
+  type TerminalRecordClientPort,
+} from '../../terminal/record-client';
+import {
+  TerminalRecordAuthority,
+  TerminalRecordRepository,
+} from '@canopy/core-runtime/node/terminal/record';
 import {
   prepareWorkspaceBrowserRetirement,
   commitTaskBrowserRetirement,
@@ -196,12 +248,21 @@ import {
 import { setBrowserService } from '../../browser/browser-service-registry';
 import { BrowserRetirementTimeoutError } from '../browser-retirement-deadline';
 import { cleanupPersistedWorktreeData } from '../worktree-data-cleanup';
+import * as treeRemoval from '../remove-tree-without-asar';
+import * as leasedAtomicFile from '@canopy/execution-engine/node/lib/atomic-file';
+import {
+  captureDirectoryEffects,
+  directoryEffectsAdmitted,
+  drainDirectoryEffects,
+  DIRECTORY_EFFECT_DRAIN_BOUND_MS,
+} from '../directory-effect-admission';
 import { commitArchivedContainer } from '../archived-containers';
 import { workspaceRootPayloadDigest } from '../archived-container-git';
 import {
   getArchivedContainerDir,
   getArchivedContainersRootDir,
   getW5DestructiveLifecycleDir,
+  getW5QuarantinedLifecycleDir,
   getWorkspaceDir,
   getWorktreeDataDir,
   getWorktreeBrowserStateFilePath,
@@ -300,6 +361,7 @@ function addCowork(id: string, config: Record<string, unknown> = {}): void {
 
 beforeEach(() => {
   mockArchiveIoFault = undefined;
+  mockArchiveIoAfter = undefined;
   resetChatStateServiceForTests();
   if (!originalWatcherFactory)
     throw new Error('Watcher fixture factory missing');
@@ -436,6 +498,501 @@ it('retains verified files-only recovery after a permission refusal and retries 
   expect(await readArchivedContainerRecoveryJournal('a', 'one')).toMatchObject({
     phase: 'removed',
   });
+});
+
+const panel: SerializablePanelLayoutFile = {
+  version: 1,
+  activeGroupId: 'g',
+  mostRecentActiveGroupIds: ['g'],
+  grid: {
+    orientation: 0,
+    width: 800,
+    height: 600,
+    root: {
+      type: 'leaf',
+      groupId: 'g',
+      panels: [],
+      activePanelId: null,
+      size: 1,
+    },
+  },
+};
+
+/** A real in-process terminal record authority, always reachable. */
+function inProcessTerminalRecords(dataRoot: string): TerminalRecordClientPort {
+  const authority = new TerminalRecordAuthority({
+    repository: new TerminalRecordRepository({
+      dataRoot,
+      flushDirectorySync: (): undefined => undefined,
+    }),
+    installDebounceMs: 1,
+  });
+  const reach = <T>(run: () => T): Promise<T> => Promise.resolve().then(run);
+  return {
+    available: () => Promise.resolve(true),
+    peekAvailable: () => true,
+    open: (client) => reach(() => authority.open(client)),
+    historyRead: (params) => reach(() => authority.historyRead(params)),
+    apply: (params) => reach(() => authority.apply(params)),
+    retire: (params) => reach(() => authority.retire(params)),
+    shutdown: (signal) =>
+      reach(() => {
+        authority.shutdown(signal);
+      }),
+  };
+}
+
+describe('CAN-7051 workspace terminal retirement', () => {
+  beforeEach(() => {
+    jest
+      .spyOn(daemonTerminalRecordClient, 'available')
+      .mockResolvedValue(false);
+  });
+
+  it('R9 late first drawer reads and panel saves after retirement capture do not recreate a deleted workspace', async () => {
+    const remove = directoryRemoval.removeWorkspaceNonW5Children;
+    const records = inProcessTerminalRecords(join(dir, 'terminal-records'));
+    const seeded = new TerminalPersistenceStore({
+      records,
+      outbox: new TerminalRecordOutbox(() => join(dir, 'seed-outbox')),
+    });
+    seeded.registerLiveSession({
+      id: 'seeded',
+      projectId: 'b',
+      worktreeId: 'late-first-read',
+      shell: '/bin/zsh',
+      shellBasename: 'zsh',
+      cwd: '/workspace',
+      createdAt: 1,
+    });
+    seeded.appendTerminalOutput(
+      'b',
+      'late-first-read',
+      'seeded',
+      Buffer.from('kept'),
+    );
+    await seeded.drainAll();
+    seeded.markAllLiveTerminalsExited('app-quit');
+    const local = new TerminalPersistenceStore({
+      records,
+      outbox: new TerminalRecordOutbox(getCanopyDataDir),
+    });
+    jest
+      .spyOn(directoryRemoval, 'removeWorkspaceNonW5Children')
+      .mockImplementation(async (id) => {
+        await remove(id);
+        if (id !== 'b') return;
+        const frozen = (await readDestructiveRecovery(id))
+          ?.terminalRecordRetirement;
+        const view = await local.loadWorktreeState(id, 'late-first-read');
+        expect(view.terminals.map((entry) => entry.session.id)).toEqual([
+          'seeded',
+        ]);
+        panelLayoutPersistenceStore.saveWorktreeLayout(
+          id,
+          'late-first-read',
+          panel,
+        );
+        panelLayoutPersistenceStore.flushAllSync();
+        await local.drainAll();
+        expect(existsSync(getWorktreeDataDir(id, 'late-first-read'))).toBe(
+          false,
+        );
+        expect(
+          (await readDestructiveRecovery(id))?.terminalRecordRetirement,
+        ).toEqual(frozen);
+      });
+    await deleteWorkspace({
+      workspaceId: 'b',
+      source: 'shared_container_fork',
+    });
+    panelLayoutPersistenceStore.flushAllSync();
+    local.markAllLiveTerminalsExited('app-quit');
+    expect(existsSync(getWorkspaceDir('b'))).toBe(false);
+  });
+
+  it('R9 panel saves during terminal retirement and physical worktree removal cannot resurrect metadata', async () => {
+    const retire = terminalPersistenceStore.retireTerminalRecord.bind(
+      terminalPersistenceStore,
+    );
+    jest
+      .spyOn(terminalPersistenceStore, 'retireTerminalRecord')
+      .mockImplementation(async (params) => {
+        panelLayoutPersistenceStore.saveWorktreeLayout(
+          'b',
+          'r9-worktree',
+          panel,
+        );
+        return retire(params);
+      });
+    const remove = treeRemoval.removeTreeWithoutAsar;
+    let reached: () => void = () => undefined;
+    const reachedRemoval = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    jest
+      .spyOn(treeRemoval, 'removeTreeWithoutAsar')
+      .mockImplementation(async (...args) => {
+        if (String(args[0]) === getWorktreeDataDir('b', 'r9-worktree')) {
+          reached();
+          await gate;
+        }
+        return remove(...args);
+      });
+    // The actual worktree-data remover runs, not the producer golden's removal mock.
+    const cleanup = cleanupPersistedWorktreeData('b', 'r9-worktree');
+    try {
+      await reachedRemoval;
+      panelLayoutPersistenceStore.saveWorktreeLayout('b', 'r9-worktree', panel);
+      panelLayoutPersistenceStore.flushAllSync();
+      // Before the remover runs, which would erase an admitted write.
+      expect(
+        existsSync(
+          join(getWorktreeDataDir('b', 'r9-worktree'), 'panel-layout.json'),
+        ),
+      ).toBe(false);
+      release();
+      await cleanup;
+      panelLayoutPersistenceStore.flushAllSync();
+      expect(existsSync(getWorktreeDataDir('b', 'r9-worktree'))).toBe(false);
+    } finally {
+      release();
+      await cleanup;
+    }
+  });
+
+  it('R9 worktree cleanup waits one bound for a stalled terminal fence, which recreates nothing', async () => {
+    const worktreeId = 'stalled-fence';
+    const path = getWorktreeDataDir('b', worktreeId);
+    const fence = join(path, 'terminal-state.json');
+    const local = new TerminalPersistenceStore({
+      records: inProcessTerminalRecords(join(dir, 'terminal-records')),
+      outbox: new TerminalRecordOutbox(() => join(dir, 'stalled-outbox')),
+    });
+    let reached: () => void = () => undefined;
+    const stalled = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const install = leasedAtomicFile.writeFileAtomically;
+    jest
+      .spyOn(leasedAtomicFile, 'writeFileAtomically')
+      .mockImplementation(async (...args) => {
+        await install(...args);
+        if (String(args[0]) === fence) {
+          reached();
+          await gate;
+        }
+      });
+    let retiring = 0;
+    jest
+      .spyOn(terminalPersistenceStore, 'retireTerminalRecord')
+      .mockImplementation((params) => {
+        retiring = Date.now();
+        return local.retireTerminalRecord(params);
+      });
+    let removing = 0;
+    const remove = treeRemoval.removeTreeWithoutAsar;
+    jest
+      .spyOn(treeRemoval, 'removeTreeWithoutAsar')
+      .mockImplementation(async (...args) => {
+        if (String(args[0]) === path && removing === 0) removing = Date.now();
+        return remove(...args);
+      });
+    local.registerLiveSession({
+      id: 'stalled',
+      projectId: 'b',
+      worktreeId,
+      shell: '/bin/zsh',
+      shellBasename: 'zsh',
+      cwd: '/workspace',
+      createdAt: 1,
+    });
+    const draining = local.drainAll();
+    try {
+      // The fence's install landed; its lease has not settled.
+      await stalled;
+      await cleanupPersistedWorktreeData('b', worktreeId);
+      // Retirement's drain and the removal boundary's share one bound.
+      expect(removing - retiring).toBeGreaterThanOrEqual(
+        DIRECTORY_EFFECT_DRAIN_BOUND_MS - 10,
+      );
+      expect(removing - retiring).toBeLessThan(
+        DIRECTORY_EFFECT_DRAIN_BOUND_MS * 1.5,
+      );
+      expect(existsSync(path)).toBe(false);
+    } finally {
+      release();
+      await draining;
+    }
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it.each(['applied', 'refused'] as const)(
+    'R9 a superseding deletion that is %s releases the interrupted uncertain removal fence',
+    async (retry) => {
+      jest
+        .spyOn(host, 'commit')
+        .mockRejectedValueOnce(
+          new W5CommitLogHostError('outcome-unknown', 'lost reply'),
+        );
+      await expect(
+        deleteWorkspace({ workspaceId: 'b', source: 'shared_container_fork' }),
+      ).rejects.toThrow();
+      const interrupted = await readDestructiveRecovery('b');
+      if (!interrupted) throw new Error('Expected an interrupted deletion');
+      await expect(
+        isInterruptedIndexRemovalDeletion(interrupted),
+      ).resolves.toBe(true);
+      const reused = getWorktreeDataDir('b', 'reused');
+      // The unanswered removal keeps the project's metadata writes fenced.
+      expect(directoryEffectsAdmitted(captureDirectoryEffects(reused))).toBe(
+        false,
+      );
+      if (retry === 'refused')
+        jest
+          .spyOn(directoryRemoval, 'removeWorkspaceNonW5Children')
+          .mockRejectedValueOnce(new Error('refused after withdrawal'));
+      const superseding = deleteWorkspace({
+        workspaceId: 'b',
+        source: 'portal',
+        supersedeInterruptedDeletion: interrupted.operationId,
+      });
+      if (retry === 'applied')
+        await expect(superseding).resolves.toMatchObject({ removed: 'code' });
+      else
+        await expect(superseding).rejects.toThrow('refused after withdrawal');
+      // Either answer settles the predecessor: the id's metadata is writable.
+      expect(directoryEffectsAdmitted(captureDirectoryEffects(reused))).toBe(
+        true,
+      );
+      panelLayoutPersistenceStore.saveWorktreeLayout('b', 'reused', panel);
+      panelLayoutPersistenceStore.flushAllSync();
+      expect(existsSync(join(reused, 'panel-layout.json'))).toBe(true);
+    },
+  );
+
+  it('R9 same-ID panel reuse needs no terminal revival, while old timers stay revoked', async () => {
+    const path = getWorktreeDataDir('b', 'panel-only-reuse');
+    const old = new PanelLayoutPersistenceStore();
+    const successor = new PanelLayoutPersistenceStore();
+    const timers = jest.spyOn(global, 'setTimeout');
+    try {
+      old.saveWorktreeLayout('b', 'panel-only-reuse', panel);
+      const oldTimer = timers.mock.calls.at(-1)?.[0];
+      const scheduled = timers.mock.results.at(-1);
+      if (scheduled?.type !== 'return' || typeof oldTimer !== 'function')
+        throw new Error('Missing old panel timer');
+      // Keep the queued write for the epoch check, but invoke its callback ourselves.
+      clearTimeout(scheduled.value);
+      await cleanupPersistedWorktreeData('b', 'panel-only-reuse');
+      expect(existsSync(path)).toBe(false);
+      mkdirSync(path, { recursive: true });
+      successor.saveWorktreeLayout('b', 'panel-only-reuse', panel, false);
+      successor.flushAllSync();
+      const file = join(path, 'panel-layout.json');
+      const bytes = readFileSync(file, 'utf8');
+      const parsed: unknown = JSON.parse(bytes);
+      expect(parsed).toEqual(
+        expect.objectContaining({ hasUserChanges: false }),
+      );
+      oldTimer();
+      expect(readFileSync(file, 'utf8')).toBe(bytes);
+    } finally {
+      old.cancelPendingWrite('b', 'panel-only-reuse');
+      successor.cancelPendingWrite('b', 'panel-only-reuse');
+      timers.mockRestore();
+      await drainDirectoryEffects(path);
+    }
+  });
+
+  it.each(['done', 'pending'] as const)(
+    'R11 workspace retirement is journaled before cleanup; an outbox failure replays only after a done removal: %s removal',
+    async (completion) => {
+      let intent: DestructiveRecoveryRecord['terminalRecordRetirement'];
+      const prepare = directoryRemoval.removeWorkspaceNonW5Children;
+      jest
+        .spyOn(directoryRemoval, 'removeWorkspaceNonW5Children')
+        .mockImplementation(async (id) => {
+          intent = (await readDestructiveRecovery(id))
+            ?.terminalRecordRetirement;
+          expect(intent).toMatchObject({ projectId: 'b' });
+          await prepare(id);
+        });
+      const activate = jest.spyOn(
+        terminalPersistenceStore,
+        'retirePreparedTerminalRecord',
+      );
+      const writing = jest
+        .spyOn(TerminalRecordOutbox.prototype, 'write')
+        .mockRejectedValue(new Error('outbox full'));
+      await expect(
+        deleteWorkspace({ workspaceId: 'b', source: 'shared_container_fork' }),
+      ).resolves.toMatchObject({ removed: 'code' });
+      expect(activate).toHaveBeenCalledWith(intent);
+      expect(await activate.mock.results[0]?.value).toBe(false);
+      const record = await readDestructiveRecovery('b');
+      if (!record || !intent) throw new Error('Missing durable retirement');
+      expect(record.terminalRecordRetirement).toEqual(intent);
+      expect(indexIds()).not.toContain('b');
+      if (completion === 'pending') {
+        const removal = record.steps.find(
+          (step) => step.phase === 'canonical-index-removal',
+        );
+        if (!removal) throw new Error('Missing removal step');
+        removal.state = 'pending';
+        record.state = 'recovery-required';
+        writeFileSync(
+          join(getW5DestructiveLifecycleDir(), lifecycleJournalSlotName('b')),
+          JSON.stringify(record),
+        );
+      }
+      writing.mockRestore();
+      const replay = jest.spyOn(
+        terminalPersistenceStore,
+        'replayTerminalRecordRetirement',
+      );
+      if (completion === 'pending') {
+        // Absent canonical records do not prove W5 applied this removal: only
+        // the step's completion save does. Without it the intent leaks.
+        expect(indexIds()).not.toContain('b');
+        expect(
+          (await workspacePersistence.readWorkspaceConfigDetailed('b'))
+            .authority,
+        ).toBe('absent');
+        await replayJournaledTerminalRetirements();
+        expect(replay).not.toHaveBeenCalled();
+        expect(await readDestructiveRecovery('b')).toEqual(record);
+        return;
+      }
+      await replayJournaledTerminalRetirements();
+      expect(replay).toHaveBeenCalledWith(intent);
+      expect(
+        (await readDestructiveRecovery('b'))?.terminalRecordRetirement,
+      ).toBeUndefined();
+      expect(
+        (await new TerminalRecordOutbox(getCanopyDataDir).read()).outbox
+          .retirements,
+      ).toContainEqual(intent);
+    },
+  );
+
+  it('RF5 boot replays valid terminal retirements despite an unrelated unreadable journal', async () => {
+    const writing = jest
+      .spyOn(TerminalRecordOutbox.prototype, 'write')
+      .mockRejectedValue(new Error('outbox full'));
+    await deleteWorkspace({
+      workspaceId: 'b',
+      source: 'shared_container_fork',
+    });
+    const intent = (await readDestructiveRecovery('b'))
+      ?.terminalRecordRetirement;
+    expect(intent).toMatchObject({ projectId: 'b' });
+    writing.mockRestore();
+    writeFileSync(
+      join(getW5DestructiveLifecycleDir(), lifecycleJournalSlotName('broken')),
+      '{bad journal',
+    );
+    const replay = jest.spyOn(
+      terminalPersistenceStore,
+      'replayTerminalRecordRetirement',
+    );
+    const { reconcileGitPendingWorktrees } =
+      await import('../worktree-boot-recovery');
+    await expect(reconcileGitPendingWorktrees()).rejects.toThrow();
+    expect(replay).toHaveBeenCalledWith(intent);
+    expect(
+      (await readDestructiveRecovery('b'))?.terminalRecordRetirement,
+    ).toBeUndefined();
+  });
+
+  it.each(['cowork-admission', 'canonical-removal'] as const)(
+    'does not activate or replay terminal retirement after refused %s',
+    async (failure) => {
+      const id = failure === 'cowork-admission' ? 'o' : 'b';
+      if (failure === 'cowork-admission')
+        addCowork(id, { externalPath: getWorkspaceDir(id) });
+      else
+        decisions.mockRejectedValueOnce(new Error('before canonical removal'));
+      const activate = jest.spyOn(
+        terminalPersistenceStore,
+        'retirePreparedTerminalRecord',
+      );
+      const replay = jest.spyOn(
+        terminalPersistenceStore,
+        'replayTerminalRecordRetirement',
+      );
+      await expect(
+        deleteWorkspace({ workspaceId: id, source: 'shared_container_fork' }),
+      ).rejects.toThrow();
+      const before = await readDestructiveRecovery(id);
+      expect(before?.terminalRecordRetirement).toMatchObject({ projectId: id });
+      expect(indexIds()).toContain(id);
+      expect(activate).not.toHaveBeenCalled();
+      await replayJournaledTerminalRetirements();
+      expect(replay).not.toHaveBeenCalled();
+      expect(await readDestructiveRecovery(id)).toEqual(before);
+      if (failure === 'canonical-removal') {
+        jest
+          .spyOn(sidebarItems, 'readWorkspaceIndexStoredDetailed')
+          .mockRejectedValue(new Error('index unavailable'));
+        await replayJournaledTerminalRetirements();
+        expect(replay).not.toHaveBeenCalled();
+        expect(await readDestructiveRecovery(id)).toEqual(before);
+      }
+    },
+  );
+
+  it.each(['present', 'unreadable', 'absent'] as const)(
+    'does not replay a refused unindexed deletion with a %s manifest',
+    async (manifest) => {
+      writeFileSync(
+        join(root, 'index.json'),
+        JSON.stringify({
+          version: 1,
+          workspaces: readIndex().filter((entry) => entry.id !== 'b'),
+        }),
+      );
+      __resetSidebarItemsStateForTests();
+      decisions.mockRejectedValueOnce(new Error('before canonical removal'));
+      await expect(
+        deleteWorkspace({ workspaceId: 'b', source: 'shared_container_fork' }),
+      ).rejects.toThrow('before canonical removal');
+      const record = await readDestructiveRecovery('b');
+      expect(record?.terminalRecordRetirement).toMatchObject({
+        projectId: 'b',
+      });
+      expect(record?.steps).toContainEqual({
+        phase: 'canonical-index-removal',
+        state: 'pending',
+        code: 'Error',
+      });
+      expect(indexIds()).not.toContain('b');
+      const detail =
+        await workspacePersistence.readWorkspaceConfigDetailed('b');
+      expect(detail.authority).toBe('ok');
+      // W5 refused: the canonical worktree list survives whatever the manifest reads.
+      expect(existsSync(join(root, 'b', 'worktrees.json'))).toBe(true);
+      if (manifest !== 'present')
+        jest
+          .spyOn(workspacePersistence, 'readWorkspaceConfigDetailed')
+          .mockResolvedValue({ ...detail, authority: manifest });
+      const replay = jest.spyOn(
+        terminalPersistenceStore,
+        'replayTerminalRecordRetirement',
+      );
+      await replayJournaledTerminalRetirements();
+      expect(replay).not.toHaveBeenCalled();
+      expect(await readDestructiveRecovery('b')).toEqual(record);
+    },
+  );
 });
 
 describe('CAN-6899 live-state teardown failure', () => {
@@ -2314,6 +2871,10 @@ describe('W6c2 index removal decisions', () => {
 
 describe('W6c2 post-effect conflict', () => {
   it('a revision advance at the Cowork index commit keeps the teardown and requires recovery', async () => {
+    const retirement = jest.spyOn(
+      terminalPersistenceStore,
+      'retirePreparedTerminalRecord',
+    );
     const [current] = await readW5Revisions([
       { kind: 'workspace', workspaceId: 'c' },
     ]);
@@ -2376,6 +2937,7 @@ describe('W6c2 post-effect conflict', () => {
     expect(commitWatchers).not.toHaveBeenCalled();
     expect(releaseWatchers).toHaveBeenCalledWith('c');
     expect(indexIds()).toContain('c');
+    expect(retirement).not.toHaveBeenCalled();
     expect(existsSync(join(root, 'c', 'workspace.json'))).toBe(true);
     const record = await readDestructiveRecovery('c');
     expect(record?.state).toBe('recovery-required');
@@ -2392,6 +2954,14 @@ describe('W6c2 post-effect conflict', () => {
     expect(
       record?.steps.filter((step) => step.phase === 'session-teardown'),
     ).toHaveLength(2);
+    // A definite W5 refusal settles as abandoned: the surviving project's
+    // metadata saves are admitted again.
+    expect(directoryEffectsAdmitted(captureDirectoryEffects(homeData))).toBe(
+      true,
+    );
+    panelLayoutPersistenceStore.saveWorktreeLayout('c', 'home', panel);
+    panelLayoutPersistenceStore.flushAllSync();
+    expect(existsSync(join(homeData, 'panel-layout.json'))).toBe(true);
     await expect(deleteWorkspace(request)).rejects.toMatchObject({
       reason: 'recovery-required',
     });
@@ -4460,9 +5030,14 @@ describe('CAN-6478 lifecycle retention', () => {
     }
   });
 
-  it.each([false, true])(
-    'new resolution diagnosis uses authoritative parent pending classification: %s',
-    async (pending) => {
+  it.each([
+    { state: 'recovery-required', pending: false, cleanupRequired: false },
+    { state: 'recovery-required', pending: true, cleanupRequired: false },
+    { state: 'completed', pending: false, cleanupRequired: false },
+    { state: 'completed', pending: false, cleanupRequired: true },
+  ])(
+    'new resolution diagnosis uses authoritative parent pending classification: $state, pending=$pending, cleanup=$cleanupRequired',
+    async ({ state, pending, cleanupRequired }) => {
       const { store, receipt, git, ref, oid } = await completedRecoveryHold();
       const { renameSync } = await import('node:fs');
       const { randomUUID } = await import('node:crypto');
@@ -4485,7 +5060,8 @@ describe('CAN-6478 lifecycle retention', () => {
           operationId: parentId,
           operation: 'workspace-delete',
           workspaceId: 'a',
-          state: 'recovery-required',
+          state,
+          cleanupRequired,
           directoryIdentity: identity,
           ownedPaths: [],
           steps: pending
@@ -4498,7 +5074,7 @@ describe('CAN-6478 lifecycle retention', () => {
           (record) => record.operationId === parentId,
         ),
       ).toBe(pending);
-      const { listWorktreeRecovery } =
+      const { listWorktreeRecovery, describeWorktreeRecovery } =
         await import('../worktree-recovery-description');
       const diagnosis = (
         await listWorktreeRecovery({
@@ -4508,8 +5084,51 @@ describe('CAN-6478 lifecycle retention', () => {
       ).entries[0]?.diagnosis;
       expect(diagnosis?.verdict).toBe(pending ? 'refused' : 'release');
       if (!diagnosis) throw new Error('No diagnosis');
+      const standalone = await describeWorktreeRecovery(
+        {
+          workspaceId: 'a',
+          worktreeId: receipt.worktreeId,
+          expectedCreatedAt: receipt.createdAt,
+          intent: 'archive',
+          operationId: receipt.operationId,
+        },
+        undefined,
+      );
+      expect(standalone.diagnosis?.verdict).toBe(diagnosis.verdict);
       const { resolveWorktreeArchive } =
         await import('../worktree-archive-resolution');
+      if (!pending) {
+        // A refresh's cached offer must not admit writes after a blocker appears.
+        const path = join(getW5DestructiveLifecycleDir(), parentId + '.json');
+        const original = readFileSync(path, 'utf8');
+        const parent = journalSchema.parse(JSON.parse(original));
+        writeFileSync(
+          path,
+          JSON.stringify({
+            ...parent,
+            state: 'recovery-required',
+            steps: [{ phase: 'workspace-directory-removal', state: 'pending' }],
+          }),
+        );
+        expect(
+          await resolveWorktreeArchive({
+            workspaceId: 'a',
+            operationId: receipt.operationId,
+            revision: diagnosis.revision,
+            action: 'release',
+          }),
+        ).toMatchObject({ status: 'refused' });
+        expect(await store.read('a', receipt.operationId)).toBeNull();
+        for (const copy of receipt.copies)
+          expect(
+            readFileSync(
+              join(getW5DestructiveLifecycleDir(), copy.name),
+              'utf8',
+            ),
+          ).toBe(JSON.stringify(source));
+        expect(git('rev-parse', ref)).toBe(oid);
+        writeFileSync(path, original);
+      }
       expect(
         await resolveWorktreeArchive({
           workspaceId: 'a',
@@ -4821,6 +5440,7 @@ describe('CAN-6478 lifecycle retention', () => {
           verdict: 'release',
           check: 'pre-quarantine-row-and-checkout-absent',
         });
+        expect(await offeredActions(receipt.operationId)).toEqual(['release']);
         const { resolveWorktreeArchive } =
           await import('../worktree-archive-resolution');
         expect(
@@ -4887,6 +5507,12 @@ describe('CAN-6478 lifecycle retention', () => {
         verdict: 'refused',
         check: 'identity-unverified',
       });
+      // q-31 a: these same-kind two-copy variants are excluded until CAN-7284.
+      expect(
+        await offeredActions(receipt.operationId, [
+          { copies: 2, check: 'identity-unverified' },
+        ]),
+      ).toEqual([]);
       const { resolveWorktreeArchive } =
         await import('../worktree-archive-resolution');
       expect(
@@ -4985,5 +5611,3405 @@ describe('CAN-6478 lifecycle retention', () => {
         undefined,
       );
     });
+  });
+
+  // CAN-7014: what the shared dialog offers, on a host that has every action.
+  const RECOVERY_HOST = { canResolve: true, canSetAside: true } as const;
+  const RECOVERY_USER: CanopyCallerDescriptor = {
+    principalId: 'local-desktop-user',
+    clientInstanceId: 'archive-recovery-golden',
+    authorityId: LOCAL_DESKTOP_AUTHORITY_ID,
+    interfaceKind: 'desktop',
+    grants: ['core.worktree.read', 'core.worktree.write'],
+  };
+
+  function recoveryRuntime(): CanopyDispatcher<
+    typeof CORE_WORKTREE_RECOVERY_QUERIES,
+    Pick<
+      typeof CORE_WORKTREE_RECOVERY_INSTRUCTIONS,
+      'core.worktree.recovery.setAside'
+    >,
+    Record<never, never>
+  > {
+    const adapter = createCoreWorktreeRecoveryAdapter();
+    const list = adapter.queries?.['core.worktree.recovery.list'];
+    const setAside = adapter.instructions?.['core.worktree.recovery.setAside'];
+    if (!list || !setAside)
+      throw new Error('Recovery adapter is not installed');
+    return createCanopyDispatcher({
+      profile: 'core',
+      definitions: {
+        queries: CORE_WORKTREE_RECOVERY_QUERIES,
+        instructions: {
+          'core.worktree.recovery.setAside':
+            CORE_WORKTREE_RECOVERY_INSTRUCTIONS[
+              'core.worktree.recovery.setAside'
+            ],
+        },
+        streams: {},
+      },
+      handlers: {
+        queries: { 'core.worktree.recovery.list': list },
+        instructions: { 'core.worktree.recovery.setAside': setAside },
+        streams: {},
+      },
+    });
+  }
+
+  async function assertOfferedActionsAdmitted(
+    entry: WorktreeRecoveryDescription,
+  ): Promise<void> {
+    const actions = worktreeRecoveryOfferedActions(entry, RECOVERY_HOST);
+    const { readArchiveJournalOperations } =
+      await import('../stranded-archive-journals');
+    const scan = await readArchiveJournalOperations('a');
+    const operation = scan.operations.find(
+      (candidate) =>
+        candidate.record.operationId === entry.diagnosis?.operationId,
+    );
+    if (!operation || !entry.diagnosis || !operation.record.worktreeId)
+      throw new Error('No exact action admission target');
+    const worktreeId = operation.record.worktreeId;
+    const { assertNoArchiveResolution } =
+      await import('../archive-recovery-refs');
+    // Run the writers' read-only admission, not a second assertion of their offers.
+    for (const action of actions) {
+      switch (action) {
+        case 'keep-worktree':
+        case 'release': {
+          const { archiveRecoveryStore } =
+            await import('../archive-recovery-refs');
+          const { readArchiveResolutionPreparation } =
+            await import('../worktree-archive-resolution-admission');
+          await archiveRecoveryStore().assertWorkspaceNormalizable('a');
+          await readArchiveResolutionPreparation(operation, action);
+          break;
+        }
+        case 'finish': {
+          await assertNoArchiveResolution('a', worktreeId);
+          const { readAdmittedFinishOperation } =
+            await import('../worktree-recovery-finish');
+          await readAdmittedFinishOperation({
+            workspaceId: 'a',
+            operationId: operation.record.operationId,
+            revision: entry.diagnosis.revision,
+          });
+          break;
+        }
+        case 'retry': {
+          await assertNoArchiveResolution('a', worktreeId);
+          const {
+            canAdmitInterruptedArchive,
+            readBlockingDestructiveRecoveries,
+            readDestructiveRecovery,
+          } = await import('../w5-destructive-recovery');
+          const { findWorktreeArchiveSourceRefusal } =
+            await import('../worktree-service');
+          const { assertWorktreeRemovalAdmitted } =
+            await import('../worktree-discard-admission');
+          assertWorktreeRemovalAdmitted(
+            'a',
+            worktreeId,
+            'archiving the worktree',
+          );
+          if (!operation.record.createdAt) throw new Error('No incarnation');
+          const config =
+            await workspacePersistence.readWorkspaceConfigDetailed('a');
+          if (config.authority !== 'ok' || config.config.type === 'cowork')
+            throw new Error('No archive source configuration');
+          expect(
+            await findWorktreeArchiveSourceRefusal(
+              'a',
+              [worktreeId],
+              config.config.type,
+            ),
+          ).toBeUndefined();
+          expect(await readDestructiveRecovery('a', worktreeId)).toEqual(
+            operation.record,
+          );
+          expect(
+            (
+              await readBlockingDestructiveRecoveries('a', worktreeId, true)
+            ).filter(
+              (record) => record.operationId !== operation.record.operationId,
+            ),
+          ).toEqual([]);
+          expect(
+            await canAdmitInterruptedArchive(operation.record, {
+              operation: 'worktree-archive',
+              worktreeId,
+              createdAt: operation.record.createdAt,
+            }),
+          ).toBe(true);
+          break;
+        }
+        case 'discard': {
+          await assertNoArchiveResolution('a', worktreeId);
+          const { describeWorktreeDiscard } =
+            await import('../worktree-discard');
+          const { assertWorktreeDiscardAdmitted } =
+            await import('../worktree-discard-admission');
+          assertWorktreeDiscardAdmitted('a', worktreeId);
+          expect(
+            await describeWorktreeDiscard('a', worktreeId, {
+              includeRecoveryDiagnosis: false,
+              recovery: {
+                intent: 'archive',
+                expectedCreatedAt: operation.record.createdAt ?? null,
+                operationId: operation.record.operationId,
+              },
+            }),
+          ).toMatchObject({ status: 'discardable' });
+          break;
+        }
+        case 'set-aside': {
+          const { setAsideAction } =
+            await import('../worktree-recovery-description');
+          expect(
+            await setAsideAction(
+              { workspaceId: 'a', worktreeId },
+              operation,
+              scan.operations,
+            ),
+          ).toEqual({ eligible: true });
+          break;
+        }
+      }
+    }
+  }
+
+  /** Exercises the query adapter and checks each offered action's writer admission. */
+  async function offeredActions(
+    operationId: string,
+    buttonlessMultiCopyExceptions: readonly {
+      copies: number;
+      check: string;
+    }[] = [],
+  ): Promise<WorktreeRecoveryOfferedAction[]> {
+    const runtime = recoveryRuntime();
+    const listed = await runtime
+      .query(
+        'core.worktree.recovery.list',
+        { workspaceId: 'a' },
+        { caller: RECOVERY_USER },
+      )
+      .finally(() => runtime.shutdown());
+    expect(listed.check).toBe('ok');
+    // q-31 a / CAN-7284: list each multi-copy exception; any new buttonless
+    // shape, including a single-copy entry, still fails this invariant.
+    expect(
+      listed.entries
+        .filter(
+          (entry) =>
+            worktreeRecoveryOfferedActions(entry, RECOVERY_HOST).length === 0,
+        )
+        .map((entry) => ({
+          copies: entry.diagnosis?.copies ?? 0,
+          check: entry.diagnosis?.check ?? entry.check,
+        })),
+    ).toEqual(buttonlessMultiCopyExceptions);
+    expect(
+      buttonlessMultiCopyExceptions.every((entry) => entry.copies > 1),
+    ).toBe(true);
+    for (const entry of listed.entries)
+      await assertOfferedActionsAdmitted(entry);
+    const entry = listed.entries.find(
+      (candidate) => candidate.diagnosis?.operationId === operationId,
+    );
+    if (!entry) throw new Error('The seeded record is not listed');
+    return worktreeRecoveryOfferedActions(entry, RECOVERY_HOST);
+  }
+
+  describe('CAN-7014 every single-copy archive recovery entry offers a button (multi-copy exclusions: CAN-7284)', () => {
+    const statIdentity = (path: string): string => {
+      const info = lstatSync(path);
+      return `${info.dev}:${info.ino}:${info.birthtimeMs}`;
+    };
+    const drifted = (identity: string): string => {
+      const [device, ...rest] = identity.split(':');
+      return [String(Number(device) + 1), ...rest].join(':');
+    };
+    const checkout = (): string => join(root, 'a', 'worktrees', 'one');
+    const PRE_GIT_CAPTURE = [
+      { phase: 'teardown-script', state: 'done' },
+      { phase: 'live-state-teardown', state: 'done' },
+      { phase: 'retained-payload-capture', state: 'failed' },
+    ];
+    // worktreeRecoveryFixture.mjs's default: no owned paths, failed Git capture.
+    const SEEDER_DEFAULT_STEPS = [
+      { phase: 'live-state-teardown', state: 'done' },
+      { phase: 'retained-payload-capture', state: 'done' },
+      { phase: 'git-capture', state: 'failed' },
+    ];
+    const SET_ASIDE_STEPS = [
+      ...SEEDER_DEFAULT_STEPS.slice(0, 2),
+      { phase: 'git-capture', state: 'done' },
+      { phase: 'checkout-quarantine', state: 'done' },
+      { phase: 'git-worktree-removal', state: 'failed' },
+    ];
+
+    function retentionManifest(
+      containerId: string,
+      oid: string,
+    ): Extract<ArchivedContainerManifest, { version: 2 }> {
+      const manifest = archivedManifest('a', containerId);
+      manifest.gitState.repositories.push({
+        repoId: '__single_repo__',
+        repoName: 'repo',
+        relativePath: '.',
+        referenceRepoPath: repo,
+        comparisonBaseCommit: oid,
+        headCommit: oid,
+        indexSnapshotCommit: oid,
+        worktreeSnapshotCommit: oid,
+        snapshotRef: `refs/app/archived-containers/a/${containerId}/__single_repo__`,
+      });
+      if (
+        manifest.gitChanges.status !== 'complete' ||
+        !manifest.pullRequestMetadata
+      )
+        throw new Error('Missing capture metadata');
+      manifest.gitChanges.repositories.push({
+        repoId: '__single_repo__',
+        repoName: 'repo',
+        fileCount: 0,
+        insertions: 0,
+        deletions: 0,
+      });
+      manifest.pullRequestMetadata.repositories.push({
+        repoId: '__single_repo__',
+        repoName: 'repo',
+        status: 'complete',
+        pullRequest: null,
+      });
+      return manifest;
+    }
+
+    async function strand(
+      overrides: Record<string, unknown> = {},
+    ): Promise<{ operationId: string; copies: Map<string, string> }> {
+      const { randomUUID } = await import('node:crypto');
+      const { lifecycleJournalSlotName } =
+        await import('../w5-destructive-recovery');
+      const row = (await workspacePersistence.readWorkspaceWorktrees('a')).find(
+        (entry) => entry.id === 'one',
+      );
+      const operationId = randomUUID();
+      const contents = JSON.stringify({
+        version: 1,
+        operationId,
+        operation: 'worktree-archive',
+        workspaceId: 'a',
+        worktreeId: 'one',
+        createdAt: row?.createdAt ?? '2026-11-01T00:00:00.000Z',
+        state: 'recovery-required',
+        directoryIdentity: statIdentity(getWorkspaceDir('a')),
+        steps: [{ phase: 'git-capture', state: 'failed' }],
+        ownedPaths: existsSync(checkout())
+          ? [{ path: checkout(), identity: statIdentity(checkout()) }]
+          : [],
+        ...overrides,
+      });
+      mkdirSync(getW5DestructiveLifecycleDir(), { recursive: true });
+      const copies = new Map<string, string>();
+      const name = lifecycleJournalSlotName('a', 'one');
+      writeFileSync(join(getW5DestructiveLifecycleDir(), name), contents);
+      copies.set(name, contents);
+      return { operationId, copies };
+    }
+
+    async function removeOne(): Promise<void> {
+      execFileSync('git', ['-C', repo, 'worktree', 'remove', checkout()]);
+      await workspacePersistence.removeWorkspaceWorktrees(
+        'a',
+        (entry) => entry.id === 'one',
+      );
+    }
+
+    async function strandFinish(
+      state = 'recovery-required',
+    ): Promise<{ operationId: string; copies: Map<string, string> }> {
+      const row = (await workspacePersistence.readWorkspaceWorktrees('a')).find(
+        (entry) => entry.id === 'one',
+      );
+      if (!row) throw new Error('No original row');
+      await removeOne();
+      const oid = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], {
+        encoding: 'utf8',
+      }).trim();
+      const manifest = retentionManifest('one', oid);
+      execFileSync('git', [
+        '-C',
+        repo,
+        'update-ref',
+        'refs/app/archived-containers/a/one/__single_repo__',
+        oid,
+      ]);
+      manifest.createdAt = row.createdAt;
+      manifest.originalWorktree = row;
+      const directory = getArchivedContainerDir('a', 'one');
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(
+        join(directory, 'container.json'),
+        JSON.stringify(manifest),
+      );
+      const { readArchivedContainerManifestIncludingExpired } =
+        await import('../archived-containers');
+      expect(
+        await readArchivedContainerManifestIncludingExpired('a', 'one'),
+      ).toEqual(manifest);
+      return strand({
+        state,
+        ...(state === 'completed' ? { cleanupRequired: true } : {}),
+        createdAt: row.createdAt,
+        ownedPaths: [],
+        steps: [
+          ...[
+            'git-worktree-removal',
+            'quarantine-directory-removal',
+            'pipeline-cleanup',
+            'retained-manifest-commit',
+            'git-capture-completion',
+          ].map((phase) => ({ phase, state: 'done' })),
+          { phase: 'canonical-row-removal', state: 'failed' },
+          ...(state === 'completed'
+            ? [{ phase: 'turn-diff-cleanup', state: 'failed' }]
+            : []),
+        ],
+      });
+    }
+
+    it.each([
+      'keep-worktree',
+      'release',
+      'finish',
+      'retry',
+      'discard',
+      'set-aside',
+    ])(
+      'offered actions pass their writer admission (%s fixture)',
+      async (action) => {
+        if (action === 'release' || action === 'set-aside') await removeOne();
+        const { operationId, copies } =
+          action === 'finish'
+            ? await strandFinish()
+            : await strand({
+                ...(action === 'retry'
+                  ? {
+                      steps: [
+                        ...PRE_GIT_CAPTURE.slice(0, -1),
+                        { phase: 'retained-payload-capture', state: 'pending' },
+                      ],
+                    }
+                  : {}),
+                ...(action === 'discard' ? { ownedPaths: [] } : {}),
+                ...(action === 'set-aside' ? { steps: SET_ASIDE_STEPS } : {}),
+              });
+        expect(await offeredActions(operationId)).toContain(action);
+        if (action !== 'set-aside') return;
+        const before = canonicalImages();
+        const runtime = recoveryRuntime();
+        try {
+          const listed = await runtime.query(
+            'core.worktree.recovery.list',
+            { workspaceId: 'a', operationId },
+            { caller: RECOVERY_USER },
+          );
+          expect(listed.check).toBe('ok');
+          const entry = listed.entries[0];
+          if (!entry?.diagnosis) throw new Error('No diagnosis');
+          expect(worktreeRecoveryOfferedActions(entry, RECOVERY_HOST)).toEqual([
+            'set-aside',
+          ]);
+          const result = await runtime.instruction(
+            'core.worktree.recovery.setAside',
+            {
+              workspaceId: 'a',
+              operationId,
+              revision: entry.diagnosis.revision,
+            },
+            { caller: RECOVERY_USER },
+          );
+          expect(result).toMatchObject({ status: 'set-aside', operationId });
+          if (result.status !== 'set-aside')
+            throw new Error('Set aside refused');
+          expect(copies.size).toBe(1);
+          expect(result.quarantinedNames).toHaveLength(1);
+          expect(result.putBackCopies).toHaveLength(1);
+          for (const [name, contents] of copies) {
+            const moved = result.putBackCopies.find(
+              (copy) => copy.originalName === name,
+            );
+            if (!moved) throw new Error('No quarantined copy');
+            expect(result.quarantinedNames).toContain(moved.quarantinedName);
+            expect(existsSync(join(getW5DestructiveLifecycleDir(), name))).toBe(
+              false,
+            );
+            expect(
+              readFileSync(
+                join(getW5QuarantinedLifecycleDir(), moved.quarantinedName),
+              ),
+            ).toEqual(Buffer.from(contents));
+          }
+          expect(canonicalImages()).toEqual(before);
+        } finally {
+          await runtime.shutdown();
+        }
+      },
+    );
+
+    it.each(['active', 'recovery-required', 'completed'])(
+      'a readable blocking receipt withdraws Finish, not Set aside (%s)',
+      async (state) => {
+        const { operationId, copies } = await strandFinish(state);
+        expect(await offeredActions(operationId)).toEqual(['finish']);
+        const { archiveRecoveryStore, assertNoArchiveResolution } =
+          await import('../archive-recovery-refs');
+        const { randomUUID } = await import('node:crypto');
+        const store = archiveRecoveryStore();
+        const receipt = await store.prepare({
+          workspaceId: 'a',
+          worktreeId: 'one',
+          operationId: randomUUID(),
+          action: 'release',
+          revision: 'a'.repeat(64),
+          createdAt: '2026-11-01T00:00:00.000Z',
+          copies: [],
+          sourceRecord: {},
+          repositories: [],
+          capture: 'none',
+        });
+        await expect(assertNoArchiveResolution('a', 'one')).rejects.toThrow();
+        const { listWorktreeRecovery } =
+          await import('../worktree-recovery-description');
+        const { finishWorktreeRecovery } =
+          await import('../worktree-recovery-finish');
+        const { setAsideWorktreeRecovery } =
+          await import('../worktree-recovery-set-aside');
+        const listed = await listWorktreeRecovery({
+          workspaceId: 'a',
+          operationId,
+        });
+        expect(listed.check).toBe('ok');
+        const entry = listed.entries[0];
+        if (!entry?.diagnosis) throw new Error('No diagnosis');
+        expect(entry.diagnosis.check).toBe('resolution-pending');
+        expect(await offeredActions(operationId)).toEqual(['set-aside']);
+        const request = {
+          workspaceId: 'a',
+          operationId,
+          revision: entry.diagnosis.revision,
+        };
+        const before = canonicalImages();
+        expect(await finishWorktreeRecovery(request)).toMatchObject({
+          status: 'refused',
+        });
+        for (const [name, contents] of copies)
+          expect(
+            readFileSync(join(getW5DestructiveLifecycleDir(), name), 'utf8'),
+          ).toBe(contents);
+        expect(await setAsideWorktreeRecovery(request)).toMatchObject({
+          status: 'set-aside',
+          operationId,
+        });
+        expect(canonicalImages()).toEqual(before);
+        expect(await store.read('a', receipt.operationId)).toEqual(receipt);
+      },
+    );
+
+    it.each(['active', 'recovery-required', 'completed'])(
+      'an unreadable sibling receipt withdraws Finish, not Set aside (%s)',
+      async (state) => {
+        const { operationId, copies } = await strandFinish(state);
+        expect(await offeredActions(operationId)).toEqual(['finish']);
+        const { archiveRecoveryStore } =
+          await import('../archive-recovery-refs');
+        const { randomUUID } = await import('node:crypto');
+        const unrelated = archiveRecoveryStore().directory({
+          workspaceId: 'a',
+          operationId: randomUUID(),
+        });
+        mkdirSync(unrelated, { recursive: true });
+        writeFileSync(join(unrelated, 'receipt.json'), '{');
+        const { listWorktreeRecovery } =
+          await import('../worktree-recovery-description');
+        const { finishWorktreeRecovery } =
+          await import('../worktree-recovery-finish');
+        const { setAsideWorktreeRecovery } =
+          await import('../worktree-recovery-set-aside');
+        const manifestFile = join(
+          getArchivedContainerDir('a', 'one'),
+          'container.json',
+        );
+        const manifestBefore = readFileSync(manifestFile);
+        const before = canonicalImages();
+        const listed = await listWorktreeRecovery({
+          workspaceId: 'a',
+          operationId,
+        });
+        expect(listed.check).toBe('ok');
+        expect(listed.unreadableEvidence).toBe('receipts');
+        const entry = listed.entries[0];
+        if (!entry?.diagnosis) throw new Error('No diagnosis');
+        expect(worktreeRecoveryOfferedActions(entry, RECOVERY_HOST)).toEqual([
+          'set-aside',
+        ]);
+        await assertOfferedActionsAdmitted(entry);
+        const request = {
+          workspaceId: 'a',
+          operationId,
+          revision: entry.diagnosis.revision,
+        };
+        expect(await finishWorktreeRecovery(request)).toMatchObject({
+          status: 'refused',
+        });
+        for (const [name, contents] of copies)
+          expect(
+            readFileSync(join(getW5DestructiveLifecycleDir(), name), 'utf8'),
+          ).toBe(contents);
+        expect(await setAsideWorktreeRecovery(request)).toMatchObject({
+          status: 'set-aside',
+          operationId,
+        });
+        expect(canonicalImages()).toEqual(before);
+        expect(readFileSync(manifestFile)).toEqual(manifestBefore);
+        expect(readFileSync(join(unrelated, 'receipt.json'), 'utf8')).toBe('{');
+      },
+    );
+
+    it.each(
+      ['active', 'recovery-required'].flatMap((state) =>
+        ['retry', 'discard'].map((action) => ({ state, action })),
+      ),
+    )(
+      'an unreadable sibling receipt withdraws Retry and Discard ($state, $action)',
+      async ({ state, action }) => {
+        const { operationId } = await strand({
+          state,
+          ...(action === 'retry'
+            ? {
+                steps: [
+                  { phase: 'teardown-script', state: 'done' },
+                  { phase: 'live-state-teardown', state: 'pending' },
+                ],
+              }
+            : { ownedPaths: [] }),
+        });
+        expect(await offeredActions(operationId)).toContain(action);
+        const { archiveRecoveryStore, assertNoArchiveResolution } =
+          await import('../archive-recovery-refs');
+        const { randomUUID } = await import('node:crypto');
+        const unrelated = archiveRecoveryStore().directory({
+          workspaceId: 'a',
+          operationId: randomUUID(),
+        });
+        mkdirSync(unrelated, { recursive: true });
+        writeFileSync(join(unrelated, 'receipt.json'), '{');
+        // Both writers run this read-only gate before taking over the journal.
+        await expect(assertNoArchiveResolution('a', 'one')).rejects.toThrow();
+        const runtime = recoveryRuntime();
+        const listed = await runtime
+          .query(
+            'core.worktree.recovery.list',
+            { workspaceId: 'a', operationId },
+            { caller: RECOVERY_USER },
+          )
+          .finally(() => runtime.shutdown());
+        expect(listed.check).toBe('ok');
+        expect(listed.unreadableEvidence).toBe('receipts');
+        const entry = listed.entries[0];
+        if (!entry?.diagnosis) throw new Error('No diagnosis');
+        expect(worktreeRecoveryOfferedActions(entry, RECOVERY_HOST)).toEqual([
+          'set-aside',
+        ]);
+        await assertOfferedActionsAdmitted(entry);
+        const images = canonicalImages();
+        const { setAsideWorktreeRecovery } =
+          await import('../worktree-recovery-set-aside');
+        expect(
+          await setAsideWorktreeRecovery({
+            workspaceId: 'a',
+            operationId,
+            revision: entry.diagnosis.revision,
+          }),
+        ).toMatchObject({ status: 'set-aside', operationId });
+        expect(canonicalImages()).toEqual(images);
+        expect(existsSync(checkout())).toBe(true);
+        expect(readFileSync(join(unrelated, 'receipt.json'), 'utf8')).toBe('{');
+      },
+    );
+
+    it('an unreadable source repository withdraws Release before publication', async () => {
+      await removeOne();
+      const { operationId } = await strand({ steps: PRE_GIT_CAPTURE });
+      expect(await offeredActions(operationId)).toEqual(['release']);
+      const { archiveRecoveryStore } = await import('../archive-recovery-refs');
+      const store = archiveRecoveryStore();
+      const config = join(root, 'a', 'workspace.json');
+      const contents = JSON.stringify({
+        version: 1,
+        type: 'single-repo',
+        repoPath: join(dir, 'missing-repo'),
+        repos: [],
+      });
+      writeFileSync(config, contents);
+      const { listWorktreeRecovery } =
+        await import('../worktree-recovery-description');
+      const listed = await listWorktreeRecovery({
+        workspaceId: 'a',
+        operationId,
+      });
+      const entry = listed.entries[0];
+      if (!entry?.diagnosis) throw new Error('No diagnosis');
+      expect(entry.diagnosis.check).toBe('resolution-not-admitted');
+      expect(await offeredActions(operationId)).toEqual(['set-aside']);
+      expect(await store.read('a', operationId)).toBeNull();
+      expect(readFileSync(config, 'utf8')).toBe(contents);
+    });
+
+    it('Keep: the listed, verified live checkout', async () => {
+      const { operationId } = await strand();
+      expect(await offeredActions(operationId)).toContain('keep-worktree');
+    });
+
+    it.each(
+      (['keep-worktree', 'release'] as const).flatMap((action) =>
+        [false, true].map((cancelled) => ({ action, cancelled })),
+      ),
+    )(
+      'passive $action offers never open payloads (cancelled: $cancelled)',
+      async ({ action, cancelled }) => {
+        if (action === 'release') await removeOne();
+        const { operationId } = await strand();
+        const { archiveRecoveryStore } =
+          await import('../archive-recovery-refs');
+        const journals = await import('../stranded-archive-journals');
+        const { readArchiveJournalOperations } = journals;
+        const { readArchiveResolutionPreparation } =
+          await import('../worktree-archive-resolution-admission');
+        const { archiveRecoveryDigest } =
+          await import('@canopy/desktop-shared/node/archive-recovery-store');
+        const { resolveWorktreeArchive } =
+          await import('../worktree-archive-resolution');
+        const store = archiveRecoveryStore();
+        const staged = getArchivedContainerDir('a', 'one');
+        const payload = join(staged, 'files', 'saved.bin');
+        const contents = Buffer.alloc(128 * 1024 + 7, 0xa5);
+        mkdirSync(dirname(payload), { recursive: true });
+        writeFileSync(payload, contents);
+        if (cancelled) {
+          const operation = (
+            await readArchiveJournalOperations('a')
+          ).operations.find(
+            (entry) => entry.record.operationId === operationId,
+          );
+          if (!operation) throw new Error('No source journal');
+          await store.cancel(
+            await store.prepare(
+              await readArchiveResolutionPreparation(operation, action),
+            ),
+          );
+        }
+        const read = jest.spyOn(fsPromises, 'readFile');
+        const open = jest.spyOn(fsPromises, 'open');
+        const stream = jest.spyOn(fs, 'createReadStream');
+        const syncRead = jest.spyOn(fs, 'readFileSync');
+        const syncOpen = jest.spyOn(fs, 'openSync');
+        const journalScan = jest.spyOn(
+          journals,
+          'readArchiveJournalOperations',
+        );
+        const runtime = recoveryRuntime();
+        try {
+          const listed = await runtime.query(
+            'core.worktree.recovery.list',
+            { workspaceId: 'a' },
+            { caller: RECOVERY_USER },
+          );
+          const entry = listed.entries[0];
+          if (!entry?.diagnosis) throw new Error('No diagnosis');
+          // A listed live checkout can also be discarded; Keep is not exclusive.
+          expect(worktreeRecoveryOfferedActions(entry, RECOVERY_HOST)).toEqual(
+            action === 'keep-worktree' ? [action, 'discard'] : [action],
+          );
+          expect(journalScan).toHaveBeenCalledTimes(1);
+          expect(read.mock.calls.filter(([path]) => path === payload)).toEqual(
+            [],
+          );
+          expect(open.mock.calls.filter(([path]) => path === payload)).toEqual(
+            [],
+          );
+          expect(
+            stream.mock.calls.filter(([path]) => path === payload),
+          ).toEqual([]);
+          expect(
+            syncRead.mock.calls.filter(([path]) => path === payload),
+          ).toEqual([]);
+          expect(
+            syncOpen.mock.calls.filter(([path]) => path === payload),
+          ).toEqual([]);
+          // Execution must still read and hash the exact staged bytes.
+          expect(
+            await resolveWorktreeArchive({
+              workspaceId: 'a',
+              operationId,
+              revision: entry.diagnosis.revision,
+              action,
+            }),
+          ).toMatchObject({
+            status:
+              action === 'keep-worktree'
+                ? 'worktree-kept'
+                : 'attempt-withdrawn',
+          });
+          expect(
+            open.mock.calls.filter(([path]) => path === payload).length,
+          ).toBeGreaterThan(0);
+          expect(
+            (await store.read('a', operationId))?.staging?.entries,
+          ).toContainEqual({
+            path: 'files/saved.bin',
+            kind: 'file',
+            size: contents.length,
+            digest: archiveRecoveryDigest(contents),
+          });
+        } finally {
+          await runtime.shutdown();
+          read.mockRestore();
+          open.mockRestore();
+          stream.mockRestore();
+          syncRead.mockRestore();
+          syncOpen.mockRestore();
+          journalScan.mockRestore();
+        }
+      },
+    );
+
+    it('Check again and Set aside recover from same-size cancelled-payload drift', async () => {
+      await removeOne();
+      const { operationId } = await strand();
+      const { archiveRecoveryStore } = await import('../archive-recovery-refs');
+      const { readArchiveJournalOperations } =
+        await import('../stranded-archive-journals');
+      const { readArchiveResolutionPreparation } =
+        await import('../worktree-archive-resolution-admission');
+      const { resolveWorktreeArchive } =
+        await import('../worktree-archive-resolution');
+      const { describeWorktreeDiscard } = await import('../worktree-discard');
+      const store = archiveRecoveryStore();
+      const payload = join(getArchivedContainerDir('a', 'one'), 'saved.bin');
+      mkdirSync(dirname(payload), { recursive: true });
+      writeFileSync(payload, 'original');
+      const operation = (
+        await readArchiveJournalOperations('a')
+      ).operations.find((entry) => entry.record.operationId === operationId);
+      if (!operation) throw new Error('No source journal');
+      const cancelled = await store.cancel(
+        await store.prepare(
+          await readArchiveResolutionPreparation(operation, 'release'),
+        ),
+      );
+      writeFileSync(payload, 'replaced');
+      const runtime = recoveryRuntime();
+      try {
+        const listed = await runtime.query(
+          'core.worktree.recovery.list',
+          { workspaceId: 'a', operationId },
+          { caller: RECOVERY_USER },
+        );
+        const entry = listed.entries[0];
+        if (!entry?.diagnosis) throw new Error('No diagnosis');
+        // Passive lists remain metadata-only, even for a named operation.
+        expect(worktreeRecoveryOfferedActions(entry, RECOVERY_HOST)).toEqual([
+          'release',
+        ]);
+        expect(
+          await resolveWorktreeArchive({
+            workspaceId: 'a',
+            operationId,
+            revision: entry.diagnosis.revision,
+            action: 'release',
+          }),
+        ).toMatchObject({ status: 'refused' });
+        expect(await store.read('a', operationId)).toEqual(cancelled);
+        expect(readFileSync(payload, 'utf8')).toBe('replaced');
+        writeFileSync(payload, 'different length');
+        const changed = await runtime.query(
+          'core.worktree.recovery.list',
+          { workspaceId: 'a', operationId },
+          { caller: RECOVERY_USER },
+        );
+        expect(changed.entries[0]?.diagnosis?.verdict).not.toBe('release');
+        writeFileSync(payload, 'replaced');
+        // The dialog's Check again command inspects only this entry exactly.
+        const checked = await describeWorktreeDiscard('a', 'one', {
+          recovery: {
+            intent: 'archive',
+            expectedCreatedAt: operation.record.createdAt ?? null,
+            operationId,
+          },
+        });
+        const recovery = checked.recovery;
+        if (!recovery?.diagnosis) throw new Error('No rechecked diagnosis');
+        expect(worktreeRecoveryOfferedActions(recovery, RECOVERY_HOST)).toEqual(
+          ['set-aside'],
+        );
+        expect(recovery.diagnosis.revision).toBe(entry.diagnosis.revision);
+        for (const copy of operation.sources)
+          expect(
+            readFileSync(
+              join(getW5DestructiveLifecycleDir(), copy.name),
+              'utf8',
+            ),
+          ).toBe(copy.contents);
+        const before = canonicalImages();
+        const result = await runtime.instruction(
+          'core.worktree.recovery.setAside',
+          {
+            workspaceId: 'a',
+            operationId,
+            revision: recovery.diagnosis.revision,
+          },
+          { caller: RECOVERY_USER },
+        );
+        expect(result).toMatchObject({ status: 'set-aside', operationId });
+        if (result.status !== 'set-aside') throw new Error('Set aside refused');
+        const [quarantinedName] = result.quarantinedNames;
+        const [source] = operation.sources;
+        if (!quarantinedName || !source) throw new Error('No quarantined copy');
+        expect(
+          readFileSync(
+            join(getW5QuarantinedLifecycleDir(), quarantinedName),
+            'utf8',
+          ),
+        ).toBe(source.contents);
+        expect(
+          existsSync(join(getW5DestructiveLifecycleDir(), source.name)),
+        ).toBe(false);
+        expect(canonicalImages()).toEqual(before);
+        expect(await store.read('a', operationId)).toEqual(cancelled);
+        expect(readFileSync(payload, 'utf8')).toBe('replaced');
+      } finally {
+        await runtime.shutdown();
+      }
+    });
+
+    it.each(['recovery-required', 'active'])(
+      'Release: row and checkout absent before Git capture (%s)',
+      async (state) => {
+        await removeOne();
+        const { operationId } = await strand({ state, steps: PRE_GIT_CAPTURE });
+        expect(await offeredActions(operationId)).toEqual(['release']);
+        const { listWorktreeRecovery } =
+          await import('../worktree-recovery-description');
+        const { resolveWorktreeArchive } =
+          await import('../worktree-archive-resolution');
+        const review = (
+          await listWorktreeRecovery({ workspaceId: 'a', operationId })
+        ).entries[0]?.diagnosis;
+        if (!review) throw new Error('No diagnosis');
+        expect(
+          await resolveWorktreeArchive({
+            workspaceId: 'a',
+            operationId,
+            revision: review.revision,
+            action: 'release',
+          }),
+        ).toMatchObject({ status: 'attempt-withdrawn' });
+      },
+    );
+
+    it.each(
+      ['active', 'recovery-required'].flatMap((state) =>
+        ['release', 'keep-worktree'].flatMap((action) =>
+          ['malformed', 'not-a-file', 'artifact'].map((shape) => ({
+            state,
+            action,
+            shape,
+          })),
+        ),
+      ),
+    )(
+      'receipt normalization gates $action for $state ($shape)',
+      async ({ state, action, shape }) => {
+        if (action === 'release') await removeOne();
+        const { operationId, copies } = await strand({ state });
+        const { listWorktreeRecovery } =
+          await import('../worktree-recovery-description');
+        const { setAsideWorktreeRecovery } =
+          await import('../worktree-recovery-set-aside');
+        const { archiveRecoveryStore } =
+          await import('../archive-recovery-refs');
+        const { randomUUID } = await import('node:crypto');
+        const store = archiveRecoveryStore();
+        // The same record offers Keep/Release while the workspace is readable.
+        const before = (
+          await listWorktreeRecovery({ workspaceId: 'a', operationId })
+        ).entries[0];
+        expect(before?.diagnosis?.verdict).toBe(action);
+        if (!before) throw new Error('No recovery entry');
+        expect(worktreeRecoveryOfferedActions(before, RECOVERY_HOST)).toEqual([
+          action,
+        ]);
+        const unrelatedId = randomUUID();
+        const unrelated = store.directory({
+          workspaceId: 'a',
+          operationId: unrelatedId,
+        });
+        mkdirSync(unrelated, { recursive: true });
+        const evidence = join(
+          unrelated,
+          shape === 'artifact' ? 'unknown' : 'receipt.json',
+        );
+        if (shape === 'not-a-file') mkdirSync(evidence);
+        else writeFileSync(evidence, '{');
+        const images = canonicalImages();
+        const runtime = recoveryRuntime();
+        const listed = await runtime
+          .query(
+            'core.worktree.recovery.list',
+            { workspaceId: 'a', operationId },
+            { caller: RECOVERY_USER },
+          )
+          .finally(() => runtime.shutdown());
+        expect(listed.check).toBe('ok');
+        expect(listed.unreadableEvidence).toBe('receipts');
+        const entry = listed.entries[0];
+        if (!entry?.diagnosis) throw new Error('No diagnosis');
+        expect(entry.destination.kind).toBe('recovery');
+        expect(entry.diagnosis.verdict).not.toBe(action);
+        expect(entry.diagnosis.check).toBe('recovery-receipts-unreadable');
+        const offered = worktreeRecoveryOfferedActions(entry, RECOVERY_HOST);
+        expect(offered).not.toContain(action);
+        expect(offered.length).toBeGreaterThan(0);
+        // A description must not normalize or rewrite any journal or receipt.
+        for (const [name, contents] of copies)
+          expect(
+            readFileSync(join(getW5DestructiveLifecycleDir(), name), 'utf8'),
+          ).toBe(contents);
+        expect(await store.read('a', operationId)).toBeNull();
+        if (action === 'release') {
+          expect(offered).toEqual(['set-aside']);
+          expect(
+            await setAsideWorktreeRecovery({
+              workspaceId: 'a',
+              operationId,
+              revision: entry.diagnosis.revision,
+            }),
+          ).toMatchObject({ status: 'set-aside', operationId });
+        }
+        expect(canonicalImages()).toEqual(images);
+        expect(readdirSync(unrelated)).toEqual([
+          shape === 'artifact' ? 'unknown' : 'receipt.json',
+        ]);
+        if (shape === 'not-a-file')
+          expect(lstatSync(evidence).isDirectory()).toBe(true);
+        else expect(readFileSync(evidence, 'utf8')).toBe('{');
+      },
+    );
+
+    it('workspace receipt admission is shared only within each recovery list', async () => {
+      await removeOne();
+      const { copies } = await strand({ state: 'active' });
+      const [contents] = copies.values();
+      if (!contents) throw new Error('No source journal');
+      const source = journalSchema.parse(JSON.parse(contents));
+      const { randomUUID } = await import('node:crypto');
+      const { lifecycleJournalSlotName } =
+        await import('../w5-destructive-recovery');
+      // Match a real large attention list, without creating more checkouts.
+      for (let index = 1; index < 38; index += 1) {
+        const worktreeId = `absent-${index}`;
+        writeFileSync(
+          join(
+            getW5DestructiveLifecycleDir(),
+            lifecycleJournalSlotName('a', worktreeId),
+          ),
+          JSON.stringify({
+            ...source,
+            operationId: randomUUID(),
+            worktreeId,
+          }),
+        );
+      }
+      const { ArchiveRecoveryStore: Store } =
+        await import('@canopy/desktop-shared/node/archive-recovery-store');
+      const { archiveRecoveryStore } = await import('../archive-recovery-refs');
+      const { describeWorktreeRecovery } =
+        await import('../worktree-recovery-description');
+      const archivedGit = await import('../archived-container-git');
+      const recoveryRefs = await import('../archive-recovery-refs');
+      const unrelated = archiveRecoveryStore().directory({
+        workspaceId: 'a',
+        operationId: randomUUID(),
+      });
+      const runtime = recoveryRuntime();
+      const preflight = jest.spyOn(
+        Store.prototype,
+        'assertWorkspaceNormalizable',
+      );
+      const receiptScan = jest.spyOn(recoveryRefs, 'readArchiveRecoveryHolds');
+      const repositories = jest.spyOn(
+        archivedGit,
+        'inspectArchiveRecoveryRepositories',
+      );
+      const journalRead = jest.spyOn(fsPromises, 'readFile');
+      const journalFiles = readdirSync(getW5DestructiveLifecycleDir()).filter(
+        (name) => name.endsWith('.json'),
+      );
+      try {
+        for (const damaged of [false, true, false]) {
+          if (damaged) {
+            mkdirSync(unrelated, { recursive: true });
+            writeFileSync(join(unrelated, 'receipt.json'), '{');
+          } else rmSync(unrelated, { recursive: true, force: true });
+          preflight.mockClear();
+          receiptScan.mockClear();
+          repositories.mockClear();
+          journalRead.mockClear();
+          const listed = await runtime.query(
+            'core.worktree.recovery.list',
+            { workspaceId: 'a' },
+            { caller: RECOVERY_USER },
+          );
+          expect(listed.check).toBe('ok');
+          expect(listed.unreadableEvidence).toBe(
+            damaged ? 'receipts' : undefined,
+          );
+          expect(listed.entries).toHaveLength(38);
+          for (const entry of listed.entries) {
+            expect(entry.diagnosis?.check).toBe(
+              damaged
+                ? 'recovery-receipts-unreadable'
+                : 'pre-quarantine-row-and-checkout-absent',
+            );
+            expect(
+              worktreeRecoveryOfferedActions(entry, RECOVERY_HOST),
+            ).toEqual([damaged ? 'set-aside' : 'release']);
+          }
+          // Bound workspace-wide I/O, including a failed inspection, per call.
+          expect(preflight).toHaveBeenCalledTimes(1);
+          expect(receiptScan).toHaveBeenCalledTimes(1);
+          // Ref namespaces differ per worktree; inspect each candidate only once.
+          expect(repositories).toHaveBeenCalledTimes(damaged ? 0 : 38);
+          // Two reads for validated journal bytes, one for blocking evidence;
+          // neither scan may grow with the number of offered resolutions.
+          const journalReads = journalRead.mock.calls.filter(
+            ([path]) =>
+              typeof path === 'string' &&
+              dirname(path) === getW5DestructiveLifecycleDir(),
+          ).length;
+          expect(journalReads).toBeGreaterThanOrEqual(journalFiles.length);
+          expect(journalReads).toBeLessThanOrEqual(3 * journalFiles.length);
+        }
+        // Standalone descriptions must inspect afresh as well.
+        preflight.mockClear();
+        mkdirSync(unrelated, { recursive: true });
+        writeFileSync(join(unrelated, 'receipt.json'), '{');
+        const described = await describeWorktreeRecovery(
+          {
+            workspaceId: 'a',
+            worktreeId: 'one',
+            expectedCreatedAt: source.createdAt ?? null,
+            intent: 'archive',
+            operationId: source.operationId,
+          },
+          undefined,
+        );
+        expect(described.diagnosis?.check).toBe('recovery-receipts-unreadable');
+        expect(
+          worktreeRecoveryOfferedActions(described, RECOVERY_HOST),
+        ).toEqual(['set-aside']);
+        expect(preflight).toHaveBeenCalledTimes(1);
+      } finally {
+        preflight.mockRestore();
+        receiptScan.mockRestore();
+        repositories.mockRestore();
+        journalRead.mockRestore();
+        await runtime.shutdown();
+      }
+    });
+
+    it('an unverifiable listed checkout still offers its eligible Discard', async () => {
+      const { operationId } = await strand({
+        directoryIdentity: `unverifiable:${statIdentity(getWorkspaceDir('a'))}`,
+        ownedPaths: [
+          {
+            path: checkout(),
+            identity: `unverifiable:${statIdentity(checkout())}`,
+          },
+        ],
+      });
+      expect(await offeredActions(operationId)).toEqual(['discard']);
+    });
+
+    it('a crashed `active` archive reads as recovery-required (q-26 2a)', async () => {
+      const { operationId } = await strand({
+        state: 'active',
+        steps: [
+          { phase: 'teardown-script', state: 'done' },
+          { phase: 'live-state-teardown', state: 'pending' },
+        ],
+      });
+      expect(await offeredActions(operationId)).toEqual(
+        expect.arrayContaining(['keep-worktree', 'retry']),
+      );
+      expect(await offeredActions(operationId)).not.toContain('set-aside');
+      // Keep executes on the crashed journal and stops it blocking the worktree.
+      const { listWorktreeRecovery } =
+        await import('../worktree-recovery-description');
+      const { resolveWorktreeArchive } =
+        await import('../worktree-archive-resolution');
+      const review = (
+        await listWorktreeRecovery({ workspaceId: 'a', operationId })
+      ).entries[0]?.diagnosis;
+      if (!review) throw new Error('No diagnosis');
+      expect(
+        await resolveWorktreeArchive({
+          workspaceId: 'a',
+          operationId,
+          revision: review.revision,
+          action: 'keep-worktree',
+        }),
+      ).toMatchObject({ status: 'worktree-kept' });
+      const { readBlockingDestructiveRecoveries } =
+        await import('../w5-destructive-recovery');
+      expect(await readBlockingDestructiveRecoveries('a', 'one')).toEqual([]);
+    });
+
+    it("the Electron seeder's default shape offers Discard, not Set aside", async () => {
+      const { operationId, copies } = await strand({
+        steps: SEEDER_DEFAULT_STEPS,
+        ownedPaths: [],
+      });
+      expect(await offeredActions(operationId)).toEqual(['discard']);
+      const { readArchiveJournalOperations } =
+        await import('../stranded-archive-journals');
+      const { setAsideWorktreeRecovery } =
+        await import('../worktree-recovery-set-aside');
+      const review = (await readArchiveJournalOperations('a')).operations.find(
+        (entry) => entry.record.operationId === operationId,
+      );
+      if (!review) throw new Error('No diagnosis');
+      expect(
+        await setAsideWorktreeRecovery({
+          workspaceId: 'a',
+          operationId,
+          revision: review.revision,
+        }),
+      ).toEqual({ status: 'refused', operationId, check: 'not-eligible' });
+      for (const [name, contents] of copies)
+        expect(
+          readFileSync(join(getW5DestructiveLifecycleDir(), name), 'utf8'),
+        ).toBe(contents);
+    });
+
+    it('live delegates leave Set aside available instead of a busy Discard', async () => {
+      const { operationId } = await strand({
+        steps: SEEDER_DEFAULT_STEPS,
+        ownedPaths: [],
+      });
+      const { describeWorktreeDiscard, discardWorktree } =
+        await import('../worktree-discard');
+      const { describeWorktreeRecovery, listWorktreeRecovery } =
+        await import('../worktree-recovery-description');
+      const { setAsideWorktreeRecovery } =
+        await import('../worktree-recovery-set-aside');
+      const discard = await describeWorktreeDiscard('a', 'one');
+      expect(discard.status).toBe('discardable');
+      expect(await offeredActions(operationId)).toEqual(['discard']);
+      const before = canonicalImages();
+      setDelegationActivity('can7014-busy', 'a/one/chat-a', 1);
+      try {
+        expect(await offeredActions(operationId)).toEqual(['set-aside']);
+        const described = await describeWorktreeRecovery(
+          {
+            workspaceId: 'a',
+            worktreeId: 'one',
+            expectedCreatedAt: discard.createdAt,
+            intent: 'archive',
+            operationId,
+          },
+          discard,
+        );
+        expect(described.actions.discard.eligible).toBe(false);
+        expect(
+          worktreeRecoveryOfferedActions(described, RECOVERY_HOST),
+        ).toEqual(['set-aside']);
+        // A confirmation obtained before delegates started still refuses.
+        expect(
+          await discardWorktree({
+            workspaceId: 'a',
+            worktreeId: 'one',
+            confirmation: discard.confirmation,
+            source: 'desktop-ui',
+          }),
+        ).toMatchObject({ status: 'refused', reason: 'busy' });
+        setDelegationActivity('can7014-busy', 'a/one/chat-a', 0);
+        expect(await offeredActions(operationId)).toEqual(['discard']);
+        setDelegationActivity('can7014-busy', 'a/one/chat-a', 1);
+        expect(await offeredActions(operationId)).toEqual(['set-aside']);
+        const review = (
+          await listWorktreeRecovery({ workspaceId: 'a', operationId })
+        ).entries[0]?.diagnosis;
+        if (!review) throw new Error('No diagnosis');
+        expect(
+          await setAsideWorktreeRecovery({
+            workspaceId: 'a',
+            operationId,
+            revision: review.revision,
+          }),
+        ).toMatchObject({ status: 'set-aside', operationId });
+        expect(canonicalImages()).toEqual(before);
+        expect(existsSync(checkout())).toBe(true);
+      } finally {
+        setDelegationActivity('can7014-busy', 'a/one/chat-a', 0);
+      }
+    });
+
+    it('rechecks the reviewed copy before moving it', async () => {
+      await removeOne();
+      const { operationId, copies } = await strand({ steps: SET_ASIDE_STEPS });
+      expect(await offeredActions(operationId)).toEqual(['set-aside']);
+      const { readArchiveJournalOperations } =
+        await import('../stranded-archive-journals');
+      const { setAsideWorktreeRecovery } =
+        await import('../worktree-recovery-set-aside');
+      const recovery = await import('../w5-destructive-recovery');
+      const review = (await readArchiveJournalOperations('a')).operations.find(
+        (entry) => entry.record.operationId === operationId,
+      );
+      if (!review || review.sources.length !== 1)
+        throw new Error('Expected one reviewed copy');
+      const copy = review.sources[0];
+      if (!copy) throw new Error('No copy');
+      const changed = `${copy.contents}\n`;
+      const exclusive = recovery.withExclusiveLifecycleJournalAccess;
+      const lock = jest
+        .spyOn(recovery, 'withExclusiveLifecycleJournalAccess')
+        .mockImplementationOnce((work) =>
+          exclusive(async () => {
+            // Same parsed record, different reviewed bytes, just before the exclusive scan.
+            writeFileSync(
+              join(getW5DestructiveLifecycleDir(), copy.name),
+              changed,
+            );
+            return work();
+          }),
+        );
+      try {
+        expect(
+          await setAsideWorktreeRecovery({
+            workspaceId: 'a',
+            operationId,
+            revision: review.revision,
+          }),
+        ).toEqual({
+          status: 'refused',
+          operationId,
+          check: 'revision-changed',
+        });
+        for (const [name, contents] of copies)
+          expect(
+            readFileSync(join(getW5DestructiveLifecycleDir(), name), 'utf8'),
+          ).toBe(name === copy.name ? changed : contents);
+        expect(existsSync(getW5QuarantinedLifecycleDir())).toBe(false);
+      } finally {
+        lock.mockRestore();
+      }
+    });
+
+    it('Set aside is independent of an unrelated unreadable receipt', async () => {
+      await removeOne();
+      const { operationId } = await strand({ steps: SET_ASIDE_STEPS });
+      const { readArchiveJournalOperations } =
+        await import('../stranded-archive-journals');
+      const { setAsideWorktreeRecovery } =
+        await import('../worktree-recovery-set-aside');
+      const { archiveRecoveryStore } = await import('../archive-recovery-refs');
+      const { randomUUID } = await import('node:crypto');
+      const review = (await readArchiveJournalOperations('a')).operations[0];
+      if (!review) throw new Error('No review');
+      const unrelated = archiveRecoveryStore().directory({
+        workspaceId: 'a',
+        operationId: randomUUID(),
+      });
+      mkdirSync(unrelated, { recursive: true });
+      writeFileSync(join(unrelated, 'receipt.json'), '{');
+      expect(
+        await setAsideWorktreeRecovery({
+          workspaceId: 'a',
+          operationId,
+          revision: review.revision,
+        }),
+      ).toMatchObject({ status: 'set-aside' });
+      expect(readFileSync(join(unrelated, 'receipt.json'), 'utf8')).toBe('{');
+    });
+
+    it.each(['malformed', 'not-a-file'])(
+      'receipt read failures do not send the project to unreadable journal review (%s)',
+      async (shape) => {
+        const { operationId } = await strand();
+        const { archiveRecoveryStore } =
+          await import('../archive-recovery-refs');
+        const selected = archiveRecoveryStore().directory({
+          workspaceId: 'a',
+          operationId,
+        });
+        mkdirSync(selected, { recursive: true });
+        if (shape === 'malformed')
+          writeFileSync(join(selected, 'receipt.json'), '{');
+        else mkdirSync(join(selected, 'receipt.json'));
+        const runtime = recoveryRuntime();
+        try {
+          const listed = await runtime.query(
+            'core.worktree.recovery.list',
+            { workspaceId: 'a' },
+            { caller: RECOVERY_USER },
+          );
+          expect(listed.check).toBe('ok');
+          expect(listed.unreadableEvidence).toBe('receipts');
+          const selectedEntry = listed.entries.find(
+            (entry) => entry.diagnosis?.operationId === operationId,
+          );
+          expect(selectedEntry?.diagnosis?.verdict).not.toBe('keep-worktree');
+          expect(selectedEntry?.actions.setAside?.eligible).toBe(false);
+          writeFileSync(
+            join(getW5DestructiveLifecycleDir(), `${operationId}.json`),
+            '{',
+          );
+          const unreadable = await runtime.query(
+            'core.worktree.recovery.list',
+            { workspaceId: 'a' },
+            { caller: RECOVERY_USER },
+          );
+          expect(unreadable.check).toBe('journal-evidence-unreadable');
+        } finally {
+          await runtime.shutdown();
+        }
+      },
+    );
+
+    it.each([undefined, false, true])(
+      'exact-ID description excludes only settled completed records (debt: %s)',
+      async (cleanupRequired) => {
+        await removeOne();
+        const { operationId } = await strand({
+          state: 'completed',
+          cleanupRequired,
+        });
+        const { describeWorktreeRecovery } =
+          await import('../worktree-recovery-description');
+        const description = await describeWorktreeRecovery(
+          {
+            workspaceId: 'a',
+            worktreeId: 'one',
+            expectedCreatedAt: null,
+            intent: 'archive',
+            operationId,
+          },
+          undefined,
+        );
+        expect(description.actions.setAside?.eligible).toBe(
+          cleanupRequired === true,
+        );
+      },
+    );
+
+    it('Set aside keeps an expired archive and its Git snapshots through retention sweeps', async () => {
+      await removeOne();
+      const { operationId, copies } = await strand({ steps: SET_ASIDE_STEPS });
+      const { listWorktreeRecovery } =
+        await import('../worktree-recovery-description');
+      const { setAsideWorktreeRecovery } =
+        await import('../worktree-recovery-set-aside');
+      const { purgeExpiredArchivedContainersForWorkspace } =
+        await import('../archived-container-retention');
+      const { hasUnresolvedDestructiveRecovery } =
+        await import('../w5-destructive-recovery');
+      const git = (...args: string[]): string =>
+        execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
+      const oid = git('rev-parse', 'HEAD');
+      const ref = 'refs/app/archived-containers/a/one/__single_repo__';
+      git('update-ref', ref, oid);
+      await commitArchivedContainer(retentionManifest('one', oid));
+      const saved = join(getArchivedContainerDir('a', 'one'), 'saved.txt');
+      writeFileSync(saved, 'saved work');
+      const now = Date.parse('2100-01-01T00:00:00.000Z');
+      expect(await purgeExpiredArchivedContainersForWorkspace('a', now)).toBe(
+        0,
+      );
+      const review = (
+        await listWorktreeRecovery({ workspaceId: 'a', operationId })
+      ).entries[0]?.diagnosis;
+      if (!review) throw new Error('No diagnosis');
+      const result = await setAsideWorktreeRecovery({
+        workspaceId: 'a',
+        operationId,
+        revision: review.revision,
+      });
+      expect(result.status).toBe('set-aside');
+      if (result.status !== 'set-aside') throw new Error('Not set aside');
+      expect(await purgeExpiredArchivedContainersForWorkspace('a', now)).toBe(
+        0,
+      );
+      expect(readFileSync(saved, 'utf8')).toBe('saved work');
+      expect(git('rev-parse', ref)).toBe(oid);
+      expect(await hasUnresolvedDestructiveRecovery('a', 'other')).toBe(false);
+      expect(await hasUnresolvedDestructiveRecovery('other', 'one')).toBe(
+        false,
+      );
+      // A damaged hold must refuse purge, not quietly lose its protection.
+      const heldName = result.quarantinedNames[0];
+      if (!heldName) throw new Error('No quarantined record');
+      const heldPath = join(getW5QuarantinedLifecycleDir(), heldName);
+      const heldBytes = readFileSync(heldPath);
+      writeFileSync(heldPath, '{');
+      expect(await purgeExpiredArchivedContainersForWorkspace('a', now)).toBe(
+        0,
+      );
+      expect(git('rev-parse', ref)).toBe(oid);
+      writeFileSync(heldPath, heldBytes);
+      // Put-back restores the original recovery fence; only settlement releases it.
+      expect(result.putBackCopies).toHaveLength(1);
+      for (const [name] of copies) {
+        const moved = result.putBackCopies.find(
+          (entry) => entry.originalName === name,
+        );
+        if (!moved) throw new Error('A journal copy mapping was lost');
+        renameSync(
+          join(getW5QuarantinedLifecycleDir(), moved.quarantinedName),
+          join(getW5DestructiveLifecycleDir(), moved.originalName),
+        );
+      }
+      expect(await hasUnresolvedDestructiveRecovery('a', 'one')).toBe(true);
+      expect(await purgeExpiredArchivedContainersForWorkspace('a', now)).toBe(
+        0,
+      );
+      for (const [name, contents] of copies) {
+        const record: unknown = JSON.parse(contents);
+        if (typeof record !== 'object' || record === null)
+          throw new Error('No record');
+        writeFileSync(
+          join(getW5DestructiveLifecycleDir(), name),
+          JSON.stringify({
+            ...record,
+            state: 'completed',
+            cleanupRequired: false,
+          }),
+        );
+      }
+      // CAN-5335 unreadable quarantine entries are not retention holds.
+      writeFileSync(
+        join(getW5QuarantinedLifecycleDir(), 'unreadable-record.json'),
+        '{',
+      );
+      expect(await hasUnresolvedDestructiveRecovery('a', 'one')).toBe(false);
+      expect(await purgeExpiredArchivedContainersForWorkspace('a', now)).toBe(
+        1,
+      );
+      expect(existsSync(saved)).toBe(false);
+      expect(git('for-each-ref', '--format=%(refname)', ref)).toBe('');
+    });
+
+    it.each(['malformed', 'empty', 'not-a-file', 'symlink'] as const)(
+      'a %s Set aside hold protects only its project/worktree',
+      async (shape) => {
+        await removeOne();
+        const { operationId } = await strand({ steps: SET_ASIDE_STEPS });
+        const { listWorktreeRecovery } =
+          await import('../worktree-recovery-description');
+        const { setAsideWorktreeRecovery } =
+          await import('../worktree-recovery-set-aside');
+        const { hasUnresolvedDestructiveRecovery } =
+          await import('../w5-destructive-recovery');
+        const review = (
+          await listWorktreeRecovery({ workspaceId: 'a', operationId })
+        ).entries[0]?.diagnosis;
+        if (!review) throw new Error('No diagnosis');
+        const result = await setAsideWorktreeRecovery({
+          workspaceId: 'a',
+          operationId,
+          revision: review.revision,
+        });
+        if (result.status !== 'set-aside') throw new Error('Not set aside');
+        const heldName = result.quarantinedNames[0];
+        if (!heldName) throw new Error('No quarantined record');
+        // The damaged entry alone must hold retention; there is no sibling copy.
+        expect(result.quarantinedNames).toHaveLength(1);
+        const heldPath = join(getW5QuarantinedLifecycleDir(), heldName);
+        rmSync(heldPath);
+        if (shape === 'not-a-file') mkdirSync(heldPath);
+        else if (shape === 'symlink')
+          symlinkSync(join(root, 'missing-hold'), heldPath);
+        else writeFileSync(heldPath, shape === 'empty' ? '' : '{');
+        expect(readdirSync(getW5QuarantinedLifecycleDir())).toEqual([heldName]);
+        expect(await hasUnresolvedDestructiveRecovery('a', 'one')).toBe(true);
+        expect(await hasUnresolvedDestructiveRecovery('a')).toBe(true);
+        expect(await hasUnresolvedDestructiveRecovery('a', 'other')).toBe(
+          false,
+        );
+        expect(await hasUnresolvedDestructiveRecovery('other', 'one')).toBe(
+          false,
+        );
+        expect(await hasUnresolvedDestructiveRecovery('other')).toBe(false);
+        const { purgeExpiredArchivedContainersForWorkspace } =
+          await import('../archived-container-retention');
+        const { reconcileArchivedGitRefsForWorkspace } =
+          await import('../archived-container-git');
+        const git = (...args: string[]): string =>
+          execFileSync('git', ['-C', repo, ...args], {
+            encoding: 'utf8',
+          }).trim();
+        const oid = git('rev-parse', 'HEAD');
+        await commitArchivedContainer(retentionManifest('one', oid));
+        await commitArchivedContainer(retentionManifest('other', oid));
+        const saved = join(getArchivedContainerDir('a', 'one'), 'saved.txt');
+        writeFileSync(saved, 'saved work');
+        const heldRef = 'refs/app/archived-containers/a/one/__single_repo__';
+        const unpublishedRef = 'refs/app/archived-containers/a/one/unpublished';
+        const otherRef = 'refs/app/archived-containers/a/other/__single_repo__';
+        git('update-ref', heldRef, oid);
+        git('update-ref', unpublishedRef, oid);
+        git('update-ref', otherRef, oid);
+        expect(
+          await purgeExpiredArchivedContainersForWorkspace(
+            'a',
+            Date.parse('2100-01-01T00:00:00.000Z'),
+          ),
+        ).toBe(1);
+        expect(readFileSync(saved, 'utf8')).toBe('saved work');
+        expect(existsSync(getArchivedContainerDir('a', 'other'))).toBe(false);
+        await reconcileArchivedGitRefsForWorkspace('a');
+        expect(git('for-each-ref', '--format=%(objectname)', heldRef)).toBe(
+          oid,
+        );
+        // No manifest or descriptor protects this ref; only the damaged hold does.
+        expect(
+          git('for-each-ref', '--format=%(objectname)', unpublishedRef),
+        ).toBe(oid);
+        expect(git('for-each-ref', '--format=%(objectname)', otherRef)).toBe(
+          '',
+        );
+        expect(
+          result.quarantinedNames.every((name) => name.length <= 255),
+        ).toBe(true);
+      },
+    );
+
+    it.each(['quarantine', 'journal'])(
+      'Set aside reports the moved mapping after a failed %s flush',
+      async (folder) => {
+        await removeOne();
+        const { operationId, copies } = await strand({
+          steps: SET_ASIDE_STEPS,
+        });
+        const { listWorktreeRecovery } =
+          await import('../worktree-recovery-description');
+        const { setAsideWorktreeRecovery } =
+          await import('../worktree-recovery-set-aside');
+        const review = (
+          await listWorktreeRecovery({ workspaceId: 'a', operationId })
+        ).entries[0]?.diagnosis;
+        if (!review) throw new Error('No diagnosis');
+        const open = fsPromises.open;
+        const rename = fsPromises.rename;
+        let moved = false;
+        const flushDirectory =
+          folder === 'quarantine'
+            ? getW5QuarantinedLifecycleDir()
+            : getW5DestructiveLifecycleDir();
+        const renameSpy = jest
+          .spyOn(fsPromises, 'rename')
+          .mockImplementation(async (...args) => {
+            await rename(...args);
+            if (
+              typeof args[0] === 'string' &&
+              dirname(args[0]) === getW5DestructiveLifecycleDir()
+            )
+              moved = true;
+          });
+        const openSpy = jest
+          .spyOn(fsPromises, 'open')
+          .mockImplementation(async (...args) => {
+            if (moved && args[0] === flushDirectory)
+              throw Object.assign(new Error('Injected post-rename flush'), {
+                code: 'EIO',
+              });
+            return open(...args);
+          });
+        try {
+          const result = await setAsideWorktreeRecovery({
+            workspaceId: 'a',
+            operationId,
+            revision: review.revision,
+          });
+          const [quarantinedName] = readdirSync(getW5QuarantinedLifecycleDir());
+          const [originalName, contents] = [...copies][0] ?? [];
+          if (!quarantinedName || !originalName || !contents)
+            throw new Error('No moved journal');
+          expect(result).toEqual({
+            status: 'interrupted',
+            operationId,
+            check: 'unconfirmed',
+            moved: {
+              originalName,
+              quarantinedName,
+              journalLocationLabel: '<data>/w5/destructive-lifecycles',
+              quarantineLocationLabel: '<data>/w5/quarantined-lifecycles',
+            },
+          });
+          expect(
+            existsSync(join(getW5DestructiveLifecycleDir(), originalName)),
+          ).toBe(false);
+          expect(
+            readFileSync(
+              join(getW5QuarantinedLifecycleDir(), quarantinedName),
+              'utf8',
+            ),
+          ).toBe(contents);
+        } finally {
+          openSpy.mockRestore();
+          renameSpy.mockRestore();
+        }
+      },
+    );
+
+    it('a crash-left Set aside reservation holds only its subject until authorized cleanup', async () => {
+      await removeOne();
+      const { copies } = await strand({ steps: SET_ASIDE_STEPS });
+      const [name, contents] = [...copies][0] ?? [];
+      if (!name || !contents) throw new Error('No source copy');
+      const { setAsideReadableLifecycleJournalFile } =
+        await import('../w5-lifecycle-journal-quarantine');
+      const {
+        withExclusiveLifecycleJournalAccess,
+        hasUnresolvedDestructiveRecovery,
+      } = await import('../w5-destructive-recovery');
+      const write = fsPromises.writeFile;
+      const interrupted = jest
+        .spyOn(fsPromises, 'writeFile')
+        .mockImplementationOnce(async (...args) => {
+          await write(...args);
+          throw new Error('Injected interruption after destination claim');
+        });
+      try {
+        await expect(
+          withExclusiveLifecycleJournalAccess(() =>
+            setAsideReadableLifecycleJournalFile(name, Buffer.from(contents), {
+              renamed: false,
+            }),
+          ),
+        ).rejects.toMatchObject({
+          reason: 'unconfirmed',
+          reservationName: expect.stringContaining('set-aside-') as unknown,
+        });
+      } finally {
+        interrupted.mockRestore();
+      }
+      const leftovers = readdirSync(getW5QuarantinedLifecycleDir());
+      expect(leftovers).toHaveLength(1);
+      const placeholder = leftovers[0];
+      if (!placeholder) throw new Error('No reserved destination');
+      expect(
+        readFileSync(join(getW5QuarantinedLifecycleDir(), placeholder)),
+      ).toEqual(Buffer.alloc(0));
+      for (const [sourceName, sourceContents] of copies) {
+        expect(
+          readFileSync(
+            join(getW5DestructiveLifecycleDir(), sourceName),
+            'utf8',
+          ),
+        ).toBe(sourceContents);
+        writeFileSync(
+          join(getW5DestructiveLifecycleDir(), sourceName),
+          JSON.stringify({
+            ...journalSchema.parse(JSON.parse(sourceContents)),
+            state: 'completed',
+            cleanupRequired: false,
+          }),
+        );
+      }
+      // An empty reservation is indistinguishable from a truncated held journal.
+      expect(await hasUnresolvedDestructiveRecovery('a', 'one')).toBe(true);
+      expect(await hasUnresolvedDestructiveRecovery('a', 'other')).toBe(false);
+      expect(await hasUnresolvedDestructiveRecovery('other')).toBe(false);
+      // Simulate authorized offline removal after proving the live copy settled.
+      rmSync(join(getW5QuarantinedLifecycleDir(), placeholder));
+      expect(await hasUnresolvedDestructiveRecovery('a', 'one')).toBe(false);
+    });
+
+    it('unknown unscoped Set aside evidence still fails retention closed', async () => {
+      const { hasUnresolvedDestructiveRecovery } =
+        await import('../w5-destructive-recovery');
+      mkdirSync(getW5QuarantinedLifecycleDir(), { recursive: true });
+      for (const name of [
+        'set-aside-unscoped.json',
+        `set-aside-${'a'.repeat(64)}-unknown.json`,
+      ]) {
+        const path = join(getW5QuarantinedLifecycleDir(), name);
+        writeFileSync(path, '{');
+        expect(await hasUnresolvedDestructiveRecovery('a', 'one')).toBe(true);
+        expect(await hasUnresolvedDestructiveRecovery('other')).toBe(true);
+        rmSync(path);
+      }
+    });
+
+    it('Set aside preserves unpublished Git snapshots during retention reconciliation', async () => {
+      await removeOne();
+      const { operationId } = await strand({ steps: SET_ASIDE_STEPS });
+      const { listWorktreeRecovery } =
+        await import('../worktree-recovery-description');
+      const { setAsideWorktreeRecovery } =
+        await import('../worktree-recovery-set-aside');
+      const { reconcileArchivedGitRefsForWorkspace } =
+        await import('../archived-container-git');
+      const git = (...args: string[]): string =>
+        execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
+      const oid = git('rev-parse', 'HEAD');
+      const ref = 'refs/app/archived-containers/a/one/__single_repo__';
+      git('update-ref', ref, oid);
+      await reconcileArchivedGitRefsForWorkspace('a');
+      expect(git('for-each-ref', '--format=%(objectname)', ref)).toBe(oid);
+      const review = (
+        await listWorktreeRecovery({ workspaceId: 'a', operationId })
+      ).entries[0]?.diagnosis;
+      if (!review) throw new Error('No diagnosis');
+      expect(
+        await setAsideWorktreeRecovery({
+          workspaceId: 'a',
+          operationId,
+          revision: review.revision,
+        }),
+      ).toMatchObject({ status: 'set-aside' });
+      const unrelated = 'refs/app/archived-containers/a/other/__single_repo__';
+      git('update-ref', unrelated, oid);
+      await reconcileArchivedGitRefsForWorkspace('a');
+      expect(git('for-each-ref', '--format=%(objectname)', ref)).toBe(oid);
+      expect(git('for-each-ref', '--format=%(objectname)', unrelated)).toBe('');
+    });
+
+    it('an unreadable selected receipt refuses without misclassifying journal evidence', async () => {
+      await removeOne();
+      const { operationId, copies } = await strand({ steps: SET_ASIDE_STEPS });
+      const { readArchiveJournalOperations } =
+        await import('../stranded-archive-journals');
+      const { setAsideWorktreeRecovery } =
+        await import('../worktree-recovery-set-aside');
+      const { archiveRecoveryStore } = await import('../archive-recovery-refs');
+      const review = (await readArchiveJournalOperations('a')).operations[0];
+      if (!review) throw new Error('No review');
+      const selected = archiveRecoveryStore().directory({
+        workspaceId: 'a',
+        operationId,
+      });
+      mkdirSync(selected, { recursive: true });
+      writeFileSync(join(selected, 'receipt.json'), '{');
+      expect(
+        await setAsideWorktreeRecovery({
+          workspaceId: 'a',
+          operationId,
+          revision: review.revision,
+        }),
+      ).toEqual({ status: 'refused', operationId, check: 'not-eligible' });
+      for (const [name, contents] of copies)
+        expect(
+          readFileSync(join(getW5DestructiveLifecycleDir(), name), 'utf8'),
+        ).toBe(contents);
+    });
+
+    it.each(['before review', 'preflight', 'before rename'])(
+      'rejects raw-byte drift with identical decoded UTF-8 (%s)',
+      async (when) => {
+        await removeOne();
+        const { operationId, copies } = await strand({
+          steps: SET_ASIDE_STEPS,
+          outcome: 'RAW_BYTE_MARKER',
+        });
+        const raw = (contents: string, byte: number): Buffer => {
+          const [before, after] = contents.split('RAW_BYTE_MARKER');
+          if (before === undefined || after === undefined)
+            throw new Error('No marker');
+          return Buffer.concat([
+            Buffer.from(before),
+            Buffer.from([byte]),
+            Buffer.from(after),
+          ]);
+        };
+        const [name, contents] =
+          [...copies].sort(([a], [b]) => a.localeCompare(b))[0] ?? [];
+        if (!name || !contents) throw new Error('No copy');
+        const path = join(getW5DestructiveLifecycleDir(), name);
+        const original = raw(contents, 0x80);
+        const changed = raw(contents, 0x81);
+        expect(original.toString('utf8')).toBe(changed.toString('utf8'));
+        writeFileSync(path, original);
+        const { readArchiveJournalOperations } =
+          await import('../stranded-archive-journals');
+        const { setAsideWorktreeRecovery } =
+          await import('../worktree-recovery-set-aside');
+        const recovery = await import('../w5-destructive-recovery');
+        const quarantine = await import('../w5-lifecycle-journal-quarantine');
+        const review = (await readArchiveJournalOperations('a')).operations[0];
+        if (!review) throw new Error('No review');
+        let restore = (): void => {};
+        if (when === 'before review') writeFileSync(path, changed);
+        else if (when === 'preflight') {
+          const exclusive = recovery.withExclusiveLifecycleJournalAccess;
+          const spy = jest
+            .spyOn(recovery, 'withExclusiveLifecycleJournalAccess')
+            .mockImplementationOnce((work) =>
+              exclusive(async () => {
+                writeFileSync(path, changed);
+                return work();
+              }),
+            );
+          restore = (): void => spy.mockRestore();
+        } else {
+          const move = quarantine.setAsideReadableLifecycleJournalFile;
+          const spy = jest
+            .spyOn(quarantine, 'setAsideReadableLifecycleJournalFile')
+            .mockImplementationOnce((...args) => {
+              writeFileSync(path, changed);
+              return move(...args);
+            });
+          restore = (): void => spy.mockRestore();
+        }
+        try {
+          expect(
+            await setAsideWorktreeRecovery({
+              workspaceId: 'a',
+              operationId,
+              revision: review.revision,
+            }),
+          ).toEqual({
+            status: 'refused',
+            operationId,
+            check: 'revision-changed',
+          });
+          expect(readFileSync(path)).toEqual(changed);
+          for (const [otherName, otherContents] of copies)
+            if (otherName !== name)
+              expect(
+                readFileSync(
+                  join(getW5DestructiveLifecycleDir(), otherName),
+                  'utf8',
+                ),
+              ).toBe(otherContents);
+        } finally {
+          restore();
+        }
+      },
+    );
+
+    it.each([
+      'identity stat',
+      'reservation stat',
+      'rename',
+      'cleanup unlink',
+      'cleanup sync EIO',
+      'cleanup sync ENOENT',
+      'replacement',
+    ])(
+      'a caught reservation failure cleans only its own placeholder or reports it (%s)',
+      async (failure) => {
+        await removeOne();
+        const { operationId, copies } = await strand({
+          steps: SET_ASIDE_STEPS,
+        });
+        const { readArchiveJournalOperations } =
+          await import('../stranded-archive-journals');
+        const { setAsideWorktreeRecovery } =
+          await import('../worktree-recovery-set-aside');
+        const review = (await readArchiveJournalOperations('a')).operations[0];
+        if (!review) throw new Error('No review');
+        const write = fsPromises.writeFile;
+        const stat = fsPromises.lstat;
+        const unlink = fsPromises.unlink;
+        const rename = fsPromises.rename;
+        const open = fsPromises.open;
+        let reserved: string | null = null;
+        let failed = false;
+        let removed = false;
+        const injected = Object.assign(
+          new Error('Injected reservation failure'),
+          { code: 'EIO' },
+        );
+        const writeSpy = jest
+          .spyOn(fsPromises, 'writeFile')
+          .mockImplementation(async (...args) => {
+            await write(...args);
+            if (
+              typeof args[0] === 'string' &&
+              dirname(args[0]) === getW5QuarantinedLifecycleDir()
+            )
+              reserved = args[0];
+          });
+        const statSpy = jest
+          .spyOn(fsPromises, 'lstat')
+          .mockImplementation(async (...args) => {
+            if (
+              reserved &&
+              !failed &&
+              ((failure === 'reservation stat' && args[0] === reserved) ||
+                (failure !== 'reservation stat' &&
+                  typeof args[0] === 'string' &&
+                  dirname(args[0]) === getW5DestructiveLifecycleDir()))
+            ) {
+              failed = true;
+              if (failure === 'replacement') {
+                const replacement = join(
+                  getW5QuarantinedLifecycleDir(),
+                  'replacement.tmp',
+                );
+                writeFileSync(replacement, 'replacement stays');
+                renameSync(replacement, reserved);
+              }
+              if (failure !== 'rename') throw injected;
+            }
+            return stat(...args);
+          });
+        const unlinkSpy = jest
+          .spyOn(fsPromises, 'unlink')
+          .mockImplementation(async (...args) => {
+            if (failure === 'cleanup unlink' && args[0] === reserved)
+              throw injected;
+            await unlink(...args);
+            if (args[0] === reserved) removed = true;
+          });
+        const openSpy = jest
+          .spyOn(fsPromises, 'open')
+          .mockImplementation(async (...args) => {
+            if (
+              removed &&
+              failure.startsWith('cleanup sync') &&
+              args[0] === getW5QuarantinedLifecycleDir()
+            )
+              throw Object.assign(new Error('Injected cleanup sync failure'), {
+                code: failure === 'cleanup sync ENOENT' ? 'ENOENT' : 'EIO',
+              });
+            return open(...args);
+          });
+        const renameSpy = jest
+          .spyOn(fsPromises, 'rename')
+          .mockImplementation(async (...args) => {
+            if (failure === 'rename' && args[1] === reserved) throw injected;
+            return rename(...args);
+          });
+        try {
+          const result = await setAsideWorktreeRecovery({
+            workspaceId: 'a',
+            operationId,
+            revision: review.revision,
+          });
+          expect(failed).toBe(true);
+          const leftovers = readdirSync(getW5QuarantinedLifecycleDir());
+          if (failure === 'identity stat' || failure === 'rename') {
+            expect(result.status).toBe('refused');
+            expect(leftovers).toEqual([]);
+          } else {
+            expect(leftovers).toHaveLength(
+              failure.startsWith('cleanup sync') ? 0 : 1,
+            );
+            expect(result).toMatchObject({
+              status: 'interrupted',
+              check: 'unconfirmed',
+              reservation: {
+                quarantinedName: expect.stringContaining(
+                  'set-aside-',
+                ) as unknown,
+                quarantineLocationLabel: '<data>/w5/quarantined-lifecycles',
+              },
+            });
+            if (result.status !== 'interrupted' || !result.reservation)
+              throw new Error('Missing reservation report');
+            expect(
+              join(
+                getW5QuarantinedLifecycleDir(),
+                result.reservation.quarantinedName,
+              ),
+            ).toBe(reserved);
+            if (failure === 'replacement')
+              expect(
+                readFileSync(
+                  join(getW5QuarantinedLifecycleDir(), leftovers[0] ?? ''),
+                  'utf8',
+                ),
+              ).toBe('replacement stays');
+          }
+          for (const [name, contents] of copies)
+            expect(
+              readFileSync(join(getW5DestructiveLifecycleDir(), name), 'utf8'),
+            ).toBe(contents);
+        } finally {
+          writeSpy.mockRestore();
+          statSpy.mockRestore();
+          unlinkSpy.mockRestore();
+          renameSpy.mockRestore();
+          openSpy.mockRestore();
+        }
+      },
+    );
+
+    it.each(['before rename', 'after rename', 'after rename identity stat'])(
+      'a failed final evidence check leaves the journal in place and no placeholder (%s)',
+      async (when) => {
+        await removeOne();
+        const { copies } = await strand({ steps: SET_ASIDE_STEPS });
+        const [name, contents] = [...copies][0] ?? [];
+        if (!name || !contents) throw new Error('No copy');
+        const source = join(getW5DestructiveLifecycleDir(), name);
+        const fs = fsPromises;
+        const quarantine = await import('../w5-lifecycle-journal-quarantine');
+        const write = fs.writeFile;
+        const rename = fs.rename;
+        const read = jest.spyOn(fs, 'readFile');
+        const stat = jest.spyOn(fs, 'lstat');
+        const failRead = (): void => {
+          const error = new Error('Injected final evidence check failure');
+          if (when === 'after rename identity stat')
+            stat.mockRejectedValueOnce(error);
+          else read.mockRejectedValueOnce(error);
+        };
+        const writeSpy = jest
+          .spyOn(fs, 'writeFile')
+          .mockImplementationOnce(async (...args) => {
+            await write(...args);
+            if (when === 'before rename') failRead();
+          });
+        const renameSpy = jest
+          .spyOn(fs, 'rename')
+          .mockImplementationOnce(async (...args) => {
+            await rename(...args);
+            if (when.startsWith('after rename')) failRead();
+          });
+        const progress = { renamed: false };
+        try {
+          await expect(
+            quarantine.setAsideReadableLifecycleJournalFile(
+              name,
+              Buffer.from(contents),
+              progress,
+            ),
+          ).rejects.toThrow();
+          expect(existsSync(source)).toBe(true);
+          expect(readFileSync(source, 'utf8')).toBe(contents);
+          expect(progress.renamed).toBe(false);
+          expect(readdirSync(getW5QuarantinedLifecycleDir())).toEqual([]);
+        } finally {
+          writeSpy.mockRestore();
+          renameSpy.mockRestore();
+          read.mockRestore();
+          stat.mockRestore();
+        }
+      },
+    );
+
+    it.each(['valid UTF-8', 'invalid UTF-8'])(
+      'preserves the receipt text contract and moves exact reviewed bytes (%s)',
+      async (encoding) => {
+        await removeOne();
+        const { operationId, copies } = await strand({
+          steps: SET_ASIDE_STEPS,
+          outcome: '日本語🦦',
+        });
+        const expected = new Map<string, Buffer>();
+        for (const [name, contents] of copies) {
+          const [before, after] = contents.split('日本語🦦');
+          if (before === undefined || after === undefined)
+            throw new Error('No marker');
+          // Keep the invalid sequence inside a JSON string, which remains readable.
+          const persisted =
+            encoding === 'valid UTF-8'
+              ? Buffer.from(contents)
+              : Buffer.concat([
+                  Buffer.from(before),
+                  Buffer.from([0x80]),
+                  Buffer.from(after),
+                ]);
+          writeFileSync(join(getW5DestructiveLifecycleDir(), name), persisted);
+          expected.set(name, persisted);
+        }
+        const { createHash } = await import('node:crypto');
+        const { readArchiveJournalOperations } =
+          await import('../stranded-archive-journals');
+        const { setAsideWorktreeRecovery } =
+          await import('../worktree-recovery-set-aside');
+        const review = (await readArchiveJournalOperations('a')).operations[0];
+        if (!review) throw new Error('No review');
+        const legacy = createHash('sha256');
+        for (const source of review.sources) {
+          legacy
+            .update(source.name)
+            .update('\0')
+            .update(source.contents)
+            .update('\0');
+          expect(source.digest).toBe(
+            createHash('sha256').update(source.contents).digest('hex'),
+          );
+        }
+        if (encoding === 'valid UTF-8')
+          expect(review.revision).toBe(legacy.digest('hex'));
+        else expect(review.revision).not.toBe(legacy.digest('hex'));
+        const result = await setAsideWorktreeRecovery({
+          workspaceId: 'a',
+          operationId,
+          revision: review.revision,
+        });
+        if (result.status !== 'set-aside')
+          throw new Error(`Not set aside: ${result.status}`);
+        for (const [name, bytes] of expected) {
+          const destination = result.quarantinedNames.find((entry) =>
+            entry.endsWith(`-${name}`),
+          );
+          if (!destination) throw new Error('Lost copy');
+          expect(
+            readFileSync(join(getW5QuarantinedLifecycleDir(), destination)),
+          ).toEqual(bytes);
+        }
+      },
+    );
+
+    it('a drifted device keeps Keep where device drift is tolerated and offers Set aside elsewhere', async () => {
+      const recorded = [
+        statIdentity(getWorkspaceDir('a')),
+        statIdentity(checkout()),
+      ];
+      const { operationId } = await strand({
+        directoryIdentity: drifted(recorded[0] ?? ''),
+        ownedPaths: [
+          { path: checkout(), identity: drifted(recorded[1] ?? '') },
+        ],
+      });
+      // CAN-7638: macOS, and Linux with a recorded birth time, accept a
+      // device-only difference; Windows and birth-time-less Linux stay exact.
+      const tolerated =
+        process.platform === 'darwin' ||
+        (process.platform === 'linux' &&
+          recorded.every((identity) => Number(identity.split(':')[2]) !== 0));
+      expect(await offeredActions(operationId)).toEqual(
+        tolerated ? ['keep-worktree', 'discard'] : ['set-aside'],
+      );
+    });
+
+    it('a drifted device under the device-exact rule offers only Set aside on every runner', async () => {
+      // Jest runs on Linux and macOS, which both tolerate drift; apply the
+      // Windows rule so the Set aside fallback stays covered.
+      const matches =
+        recordedDirectoryIdentity.matchesRecordedDirectoryIdentity;
+      const exact = jest
+        .spyOn(recordedDirectoryIdentity, 'matchesRecordedDirectoryIdentity')
+        .mockImplementation((recorded, live) =>
+          matches(recorded, live, 'win32'),
+        );
+      const { operationId } = await strand({
+        directoryIdentity: drifted(statIdentity(getWorkspaceDir('a'))),
+        ownedPaths: [
+          { path: checkout(), identity: drifted(statIdentity(checkout())) },
+        ],
+      });
+      expect(await offeredActions(operationId)).toEqual(['set-aside']);
+      expect(exact).toHaveBeenCalled();
+    });
+
+    it('an unlisted archive past Git capture offers only Set aside, and moves it aside bytes unchanged', async () => {
+      await removeOne();
+      const { operationId, copies } = await strand({
+        steps: SET_ASIDE_STEPS,
+      });
+      expect(await offeredActions(operationId)).toEqual(['set-aside']);
+      const { listWorktreeRecovery } =
+        await import('../worktree-recovery-description');
+      const { setAsideWorktreeRecovery } =
+        await import('../worktree-recovery-set-aside');
+      const { readBlockingDestructiveRecoveries } =
+        await import('../w5-destructive-recovery');
+      const review = (
+        await listWorktreeRecovery({ workspaceId: 'a', operationId })
+      ).entries[0]?.diagnosis;
+      if (!review) throw new Error('No diagnosis');
+      expect(
+        (await readBlockingDestructiveRecoveries('a', 'one')).map(
+          (entry) => entry.operationId,
+        ),
+      ).toContain(operationId);
+
+      // A stale review moves nothing.
+      expect(
+        await setAsideWorktreeRecovery({
+          workspaceId: 'a',
+          operationId,
+          revision: '0'.repeat(64),
+        }),
+      ).toEqual({ status: 'refused', operationId, check: 'revision-changed' });
+      // An unfinished Keep/Release on the same copies keeps them in place.
+      const { archiveRecoveryStore } = await import('../archive-recovery-refs');
+      const { readArchiveJournalOperations } =
+        await import('../stranded-archive-journals');
+      const source = (await readArchiveJournalOperations('a')).operations.find(
+        (entry) => entry.record.operationId === operationId,
+      );
+      if (!source) throw new Error('No source journal');
+      const store = archiveRecoveryStore();
+      const receipt = await store.prepare({
+        workspaceId: 'a',
+        worktreeId: 'one',
+        operationId,
+        action: 'release',
+        revision: review.revision,
+        createdAt: source.record.createdAt ?? '',
+        copies: source.sources,
+        sourceRecord: source.record,
+        repositories: [],
+        capture: 'none',
+      });
+      expect(
+        (await listWorktreeRecovery({ workspaceId: 'a', operationId }))
+          .entries[0]?.actions.setAside,
+      ).toEqual({ eligible: false, reason: 'not-admitted' });
+      expect(
+        await setAsideWorktreeRecovery({
+          workspaceId: 'a',
+          operationId,
+          revision: review.revision,
+        }),
+      ).toEqual({
+        status: 'refused',
+        operationId,
+        check: 'resolution-pending',
+      });
+      rmSync(store.directory(receipt), { recursive: true });
+      // A live owner keeps its journal.
+      const recovery = await import('../w5-destructive-recovery');
+      const owned = jest
+        .spyOn(recovery, 'isDestructiveRecoveryOwnerless')
+        .mockReturnValue(false);
+      expect(
+        await setAsideWorktreeRecovery({
+          workspaceId: 'a',
+          operationId,
+          revision: review.revision,
+        }),
+      ).toEqual({ status: 'refused', operationId, check: 'not-eligible' });
+      owned.mockRestore();
+      for (const [name, contents] of copies)
+        expect(
+          readFileSync(join(getW5DestructiveLifecycleDir(), name), 'utf8'),
+        ).toBe(contents);
+
+      const runtime = recoveryRuntime();
+      const result = await runtime
+        .instruction(
+          'core.worktree.recovery.setAside',
+          { workspaceId: 'a', operationId, revision: review.revision },
+          { caller: RECOVERY_USER },
+        )
+        .finally(() => runtime.shutdown());
+      expect(result).toMatchObject({
+        status: 'set-aside',
+        operationId,
+        quarantineLocationLabel: '<data>/w5/quarantined-lifecycles',
+        journalLocationLabel: '<data>/w5/destructive-lifecycles',
+      });
+      if (result.status !== 'set-aside') throw new Error('Not set aside');
+      expect(result.quarantinedNames).toHaveLength(copies.size);
+      expect(result.putBackCopies).toHaveLength(copies.size);
+      const quarantined = readdirSync(getW5QuarantinedLifecycleDir());
+      expect(quarantined.sort()).toEqual([...result.quarantinedNames].sort());
+      for (const [name, contents] of copies) {
+        expect(existsSync(join(getW5DestructiveLifecycleDir(), name))).toBe(
+          false,
+        );
+        const moved = quarantined.find((entry) => entry.endsWith(`-${name}`));
+        if (!moved) throw new Error(`${name} was not quarantined`);
+        expect(result.putBackCopies).toContainEqual({
+          originalName: name,
+          quarantinedName: moved,
+        });
+        // Bytes unchanged and a single link: nothing a scanner refuses on.
+        const path = join(getW5QuarantinedLifecycleDir(), moved);
+        expect(readFileSync(path, 'utf8')).toBe(contents);
+        expect(lstatSync(path).nlink).toBe(1);
+      }
+      expect(
+        (await listWorktreeRecovery({ workspaceId: 'a' })).entries.some(
+          (entry) => entry.diagnosis?.operationId === operationId,
+        ),
+      ).toBe(false);
+      expect(await readBlockingDestructiveRecoveries('a', 'one')).toEqual([]);
+      // Replaying the same review finds nothing left to move.
+      expect(
+        await setAsideWorktreeRecovery({
+          workspaceId: 'a',
+          operationId,
+          revision: review.revision,
+        }),
+      ).toEqual({ status: 'refused', operationId, check: 'revision-changed' });
+    });
+
+    // These are the explicit exceptions to the every-entry invariant (q-31 a).
+    // CAN-7284 owns multi-copy Set aside, including mixed archive/delete copies.
+    it.each([
+      { shape: 'consistent archive copies', check: 'quarantine-unqualified' },
+      {
+        shape: 'conflicting archive copies',
+        check: 'conflicting-journal-copies',
+      },
+      {
+        shape: 'mixed archive/delete copies',
+        check: 'conflicting-journal-copies',
+      },
+      {
+        shape: 'settled/unfinished archive copies',
+        check: 'conflicting-journal-copies',
+      },
+    ])(
+      'excludes $shape: no Set aside offer or execution',
+      async ({ shape, check }) => {
+        await removeOne();
+        const { operationId, copies } = await strand({
+          steps: SET_ASIDE_STEPS,
+        });
+        const original = [...copies.values()][0];
+        if (!original) throw new Error('No original journal');
+        const contents = JSON.stringify({
+          ...journalSchema.parse(JSON.parse(original)),
+          ...(shape === 'conflicting archive copies'
+            ? { outcome: 'different' }
+            : {}),
+          ...(shape === 'mixed archive/delete copies'
+            ? { operation: 'worktree-delete' }
+            : {}),
+          ...(shape === 'settled/unfinished archive copies'
+            ? { state: 'completed', cleanupRequired: false }
+            : {}),
+        });
+        const historyName = `${operationId}.json`;
+        writeFileSync(
+          join(getW5DestructiveLifecycleDir(), historyName),
+          contents,
+        );
+        copies.set(historyName, contents);
+        expect(
+          await offeredActions(operationId, [{ copies: 2, check }]),
+        ).toEqual([]);
+        const { readArchiveJournalOperations } =
+          await import('../stranded-archive-journals');
+        const { setAsideWorktreeRecovery } =
+          await import('../worktree-recovery-set-aside');
+        const quarantine = await import('../w5-lifecycle-journal-quarantine');
+        const review = (
+          await readArchiveJournalOperations('a')
+        ).operations.find((entry) => entry.record.operationId === operationId);
+        if (!review) throw new Error('No diagnosis');
+        expect(review.copies).toBe(2);
+        expect(review.consistent).toBe(shape === 'consistent archive copies');
+        const move = jest.spyOn(
+          quarantine,
+          'setAsideReadableLifecycleJournalFile',
+        );
+        try {
+          expect(
+            await setAsideWorktreeRecovery({
+              workspaceId: 'a',
+              operationId,
+              revision: review.revision,
+            }),
+          ).toEqual({
+            status: 'refused',
+            operationId,
+            check: 'not-eligible',
+          });
+          expect(move).not.toHaveBeenCalled();
+        } finally {
+          move.mockRestore();
+        }
+        for (const [name, bytes] of copies)
+          expect(
+            readFileSync(join(getW5DestructiveLifecycleDir(), name), 'utf8'),
+          ).toBe(bytes);
+        expect(existsSync(getW5QuarantinedLifecycleDir())).toBe(false);
+      },
+    );
+
+    it.each([
+      { when: 'before review', operation: 'worktree-archive' },
+      { when: 'before review', operation: 'worktree-delete' },
+      { when: 'under exclusive access', operation: 'worktree-archive' },
+      { when: 'under exclusive access', operation: 'worktree-delete' },
+    ])(
+      'a second $operation copy appearing $when refuses without moving either copy',
+      async ({ when, operation }) => {
+        await removeOne();
+        const { operationId, copies } = await strand({
+          steps: SET_ASIDE_STEPS,
+        });
+        expect(await offeredActions(operationId)).toEqual(['set-aside']);
+        const { readArchiveJournalOperations } =
+          await import('../stranded-archive-journals');
+        const { setAsideWorktreeRecovery } =
+          await import('../worktree-recovery-set-aside');
+        const recovery = await import('../w5-destructive-recovery');
+        const review = (await readArchiveJournalOperations('a')).operations[0];
+        const contents = [...copies.values()][0];
+        if (!review || !contents) throw new Error('No review');
+        const appearedContents = JSON.stringify({
+          ...journalSchema.parse(JSON.parse(contents)),
+          operation,
+        });
+        const history = join(
+          getW5DestructiveLifecycleDir(),
+          `${operationId}.json`,
+        );
+        const exclusive = recovery.withExclusiveLifecycleJournalAccess;
+        const lock = jest.spyOn(
+          recovery,
+          'withExclusiveLifecycleJournalAccess',
+        );
+        if (when === 'before review') writeFileSync(history, appearedContents);
+        else
+          lock.mockImplementationOnce((work) =>
+            exclusive(async () => {
+              writeFileSync(history, appearedContents);
+              return work();
+            }),
+          );
+        try {
+          expect(
+            await setAsideWorktreeRecovery({
+              workspaceId: 'a',
+              operationId,
+              revision: review.revision,
+            }),
+          ).toEqual({
+            status: 'refused',
+            operationId,
+            check: 'revision-changed',
+          });
+          expect(readFileSync(history, 'utf8')).toBe(appearedContents);
+          for (const [name, bytes] of copies)
+            expect(
+              readFileSync(join(getW5DestructiveLifecycleDir(), name), 'utf8'),
+            ).toBe(bytes);
+          expect(existsSync(getW5QuarantinedLifecycleDir())).toBe(false);
+        } finally {
+          lock.mockRestore();
+        }
+      },
+    );
+
+    it.each(['pre-Git-capture with files', 'completed'])(
+      'Set aside executes for %s without touching working files',
+      async (shape) => {
+        const kept = join(checkout(), 'kept.txt');
+        if (shape === 'completed') await removeOne();
+        else writeFileSync(kept, 'working files stay');
+        const { operationId, copies } = await strand(
+          shape === 'completed'
+            ? { state: 'completed', cleanupRequired: true }
+            : {
+                steps: PRE_GIT_CAPTURE,
+                ownedPaths: [{ path: checkout(), identity: '1:2:3' }],
+              },
+        );
+        expect(await offeredActions(operationId)).toEqual(['set-aside']);
+        const runtime = recoveryRuntime();
+        const rename = jest.spyOn(fsPromises, 'rename');
+        try {
+          const listed = await runtime.query(
+            'core.worktree.recovery.list',
+            { workspaceId: 'a', operationId },
+            { caller: RECOVERY_USER },
+          );
+          const diagnosis = listed.entries[0]?.diagnosis;
+          if (!diagnosis) throw new Error('No reviewed journal');
+          const result = await runtime.instruction(
+            'core.worktree.recovery.setAside',
+            { workspaceId: 'a', operationId, revision: diagnosis.revision },
+            { caller: RECOVERY_USER },
+          );
+          expect(result.status).toBe('set-aside');
+          if (result.status !== 'set-aside') throw new Error('Not set aside');
+          expect(
+            rename.mock.calls.filter(
+              ([source, destination]) =>
+                typeof source === 'string' &&
+                dirname(source) === getW5DestructiveLifecycleDir() &&
+                typeof destination === 'string' &&
+                dirname(destination) === getW5QuarantinedLifecycleDir(),
+            ),
+          ).toHaveLength(1);
+          for (const [name, contents] of copies) {
+            const moved = result.quarantinedNames.find((entry) =>
+              entry.endsWith(`-${name}`),
+            );
+            if (!moved) throw new Error('A journal copy was lost');
+            expect(
+              readFileSync(join(getW5QuarantinedLifecycleDir(), moved), 'utf8'),
+            ).toBe(contents);
+          }
+          expect(
+            (
+              await runtime.query(
+                'core.worktree.recovery.list',
+                { workspaceId: 'a', operationId },
+                { caller: RECOVERY_USER },
+              )
+            ).entries,
+          ).toEqual([]);
+          if (shape !== 'completed')
+            expect(readFileSync(kept, 'utf8')).toBe('working files stay');
+        } finally {
+          rename.mockRestore();
+          await runtime.shutdown();
+        }
+      },
+    );
+  });
+});
+
+describe('CAN-6776 Git snapshot refusals', () => {
+  const checkout = (): string => join(root, 'a', 'worktrees', 'one');
+  const git = (cwd: string, ...args: string[]): string =>
+    execFileSync(
+      'git',
+      [
+        '-C',
+        cwd,
+        '-c',
+        'user.name=Test',
+        '-c',
+        'user.email=test@example.com',
+        '-c',
+        'commit.gpgsign=false',
+        '-c',
+        'protocol.file.allow=always',
+        ...args,
+      ],
+      {
+        encoding: 'utf8',
+        stdio: 'pipe',
+        // An installed Git LFS's `filter.lfs.process` would outrank the
+        // fixture's own LFS clean and smudge commands.
+        env: {
+          ...process.env,
+          GIT_CONFIG_GLOBAL: devNull,
+          GIT_CONFIG_NOSYSTEM: '1',
+        },
+      },
+    ).trim();
+  /** Every file below `path` with its bytes, skipping Git metadata. */
+  const files = (path: string): Record<string, string> => {
+    const entries: Record<string, string> = {};
+    const walk = (dir: string, prefix: string): void => {
+      for (const name of readdirSync(dir).sort()) {
+        if (name === '.git') continue;
+        const full = join(dir, name);
+        const rel = `${prefix}${name}`;
+        if (lstatSync(full).isDirectory()) walk(full, `${rel}/`);
+        else entries[rel] = readFileSync(full).toString('base64');
+      }
+    };
+    walk(path, '');
+    return entries;
+  };
+  const encoded = (text: string): string =>
+    Buffer.from(text, 'utf8').toString('base64');
+  async function archive(): Promise<{ warnings: string[] }> {
+    const { archiveSingleRepoWorktree } = await import('../worktree-service');
+    return archiveSingleRepoWorktree({
+      workspaceId: 'a',
+      worktreeId: 'one',
+      repoPath: repo,
+    });
+  }
+  async function readManifest(): Promise<ArchivedContainerManifest> {
+    const { isArchivedContainerManifest } =
+      await import('@canopy/desktop-shared/lib/archived-container-contracts');
+    const value: unknown = JSON.parse(
+      readFileSync(
+        join(getArchivedContainerDir('a', 'one'), 'container.json'),
+        'utf8',
+      ),
+    );
+    if (!isArchivedContainerManifest(value))
+      throw new Error('Invalid archive manifest');
+    return value;
+  }
+  async function restore(): Promise<{ path: string; warnings: string[] }> {
+    const { restoreArchivedContainer } =
+      await import('../archived-container-restore');
+    const restored = await restoreArchivedContainer('a', 'one');
+    if (!restored.restoredWorktreeId)
+      throw new Error('Restore created no worktree');
+    return {
+      path: join(root, 'a', 'worktrees', restored.restoredWorktreeId),
+      warnings: restored.warnings,
+    };
+  }
+  async function journal(): Promise<DestructiveRecoveryRecord | null> {
+    return readDestructiveRecovery('a', 'one');
+  }
+  /** The saved completion record, which a missing journal never satisfies. */
+  async function completedArchive(): Promise<DestructiveRecoveryRecord> {
+    const completed = await findCompletedDestructiveArchive('a', 'one');
+    if (!completed) throw new Error('No completed archive record');
+    return completed;
+  }
+  /** Committed transforming attributes; LFS drivers are left unconfigured. */
+  function commitTransformingAttributes(): void {
+    writeFileSync(
+      join(checkout(), '.gitattributes'),
+      '* text=auto eol=lf\n*.bin filter=lfs diff=lfs merge=lfs -text\n',
+    );
+    writeFileSync(join(checkout(), 'crlf.txt'), 'one\r\ntwo\r\n');
+    writeFileSync(join(checkout(), 'asset.bin'), 'payload-1');
+    git(checkout(), '-c', 'filter.lfs.clean=cat', 'add', '-A');
+    git(checkout(), '-c', 'filter.lfs.clean=cat', 'commit', '-q', '-m', 'eol');
+  }
+  /** From here on, any LFS filter Git runs in the repository fails it. */
+  function failLfsFilters(): void {
+    git(repo, 'config', 'filter.lfs.required', 'true');
+    // Repository config outranks an installed Git LFS's process driver.
+    git(repo, 'config', 'filter.lfs.process', 'false');
+    git(repo, 'config', 'filter.lfs.clean', 'false');
+    git(repo, 'config', 'filter.lfs.smudge', 'false');
+  }
+  /** A fake installed Git that reports `version` and runs the real one. */
+  function useGitVersionForCapture(version: string): void {
+    const wrapper = join(dir, 'old-git');
+    writeFileSync(
+      wrapper,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "git version ${version}"; exit 0; fi\nexec git "$@"\n`,
+      { mode: 0o755 },
+    );
+    mockArchiveIoFault = (request): void => {
+      if (request.type === 'capture-git')
+        request.input.git.executable = wrapper;
+    };
+  }
+
+  it('archives transforming attributes losslessly and restores every byte without running their filters', async () => {
+    commitTransformingAttributes();
+    // Stat-clean CRLF bytes whose index blob is the normalized LF form.
+    const past = new Date('2020-01-01T00:00:00Z');
+    utimesSync(join(checkout(), 'crlf.txt'), past, past);
+    git(checkout(), '-c', 'filter.lfs.clean=cat', 'update-index', '--refresh');
+    // Staged and unstaged changes, a same-sized LFS edit, untracked bytes.
+    writeFileSync(join(checkout(), 'staged.txt'), 'staged\r\n');
+    git(checkout(), '-c', 'filter.lfs.clean=cat', 'add', 'staged.txt');
+    writeFileSync(join(checkout(), 'staged.txt'), 'staged edit\r\n');
+    writeFileSync(join(checkout(), 'asset.bin'), 'payload-2');
+    writeFileSync(join(checkout(), 'notes.txt'), 'notes\r\n');
+    failLfsFilters();
+    const before = files(checkout());
+    const index = git(checkout(), 'ls-files', '-s');
+    expect(before['crlf.txt']).toBe(encoded('one\r\ntwo\r\n'));
+
+    await archive();
+    expect(existsSync(checkout())).toBe(false);
+    const archived = await readManifest();
+    if (archived.version !== 2) throw new Error('Expected a Git archive');
+    // Builds before CAN-6776 accept only version 1 and so refuse to restore
+    // it with the repository's attributes.
+    expect(archived.gitState.version).toBe(2);
+    const [repository] = archived.gitState.repositories;
+    expect(repository?.attributePolicy).toBe('ignore-in-tree-attributes');
+    if (!repository) throw new Error('Missing archived repository');
+    expect(
+      git(
+        repo,
+        'cat-file',
+        'blob',
+        `${repository.worktreeSnapshotCommit}:crlf.txt`,
+      ),
+    ).toBe('one\r\ntwo');
+
+    const restored = await restore();
+    expect(files(restored.path)).toEqual(before);
+    expect(git(restored.path, 'ls-files', '-s')).toBe(index);
+    // Still at the archived commit, the kept branch is reused.
+    expect(git(restored.path, 'symbolic-ref', '--short', 'HEAD')).toBe('old');
+    expect(restored.warnings.join('\n')).not.toContain('could not be reused');
+  });
+
+  it('keeps Git-state version 1 for an archive without an attribute policy', async () => {
+    writeFileSync(join(checkout(), 'notes.txt'), 'notes\n');
+    await archive();
+    const archived = await readManifest();
+    if (archived.version !== 2) throw new Error('Expected a Git archive');
+    expect(archived.gitState.version).toBe(1);
+    expect(archived.gitState.repositories[0]?.attributePolicy).toBeUndefined();
+  });
+
+  it('restores at the archived commit on a new branch, every byte intact, when the kept branch has advanced', async () => {
+    // A clean checkout whose CRLF bytes sit over the normalized LF index blob.
+    commitTransformingAttributes();
+    const before = files(checkout());
+    expect(before['crlf.txt']).toBe(encoded('one\r\ntwo\r\n'));
+    const index = git(checkout(), 'ls-files', '-s');
+    await archive();
+    const archived = await readManifest();
+    if (archived.version !== 2) throw new Error('Expected a Git archive');
+    const [repository] = archived.gitState.repositories;
+    if (!repository) throw new Error('Missing archived repository');
+    expect(repository.attributePolicy).toBe('ignore-in-tree-attributes');
+    // The kept branch then edits the same line of that file.
+    const advance = join(dir, 'advance');
+    git(repo, 'worktree', 'add', '-q', advance, 'old');
+    writeFileSync(join(advance, 'crlf.txt'), 'one\ntwo later\n');
+    git(advance, 'commit', '-q', '-am', 'later');
+    git(repo, 'worktree', 'remove', '--force', advance);
+    const branchTip = git(repo, 'rev-parse', 'refs/heads/old');
+
+    const restored = await restore();
+    expect(files(restored.path)).toEqual(before);
+    expect(git(restored.path, 'ls-files', '-s')).toBe(index);
+    expect(git(restored.path, 'symbolic-ref', '--short', 'HEAD')).toBe('old-2');
+    expect(git(restored.path, 'rev-parse', 'HEAD')).toBe(repository.headCommit);
+    expect(git(repo, 'rev-parse', 'refs/heads/old')).toBe(branchTip);
+    expect(restored.warnings).toContain(
+      'Local branch "old" could not be reused because it has new commits since this worktree was archived; restored as "old-2" to preserve the existing branch.',
+    );
+  });
+
+  it('refuses and rolls back a restore whose kept branch moves after the branch check, keeping the branch and the archive', async () => {
+    commitTransformingAttributes();
+    const before = files(checkout());
+    await archive();
+    const snapshot = await import('../git-tree-snapshot');
+    const reconstruct = snapshot.restoreIndexAndWorkingTreeSnapshot;
+    let movedTip = '';
+    // The branch gains a commit once the reused destination is checked out.
+    const race = jest
+      .spyOn(snapshot, 'restoreIndexAndWorkingTreeSnapshot')
+      .mockImplementation(async (args) => {
+        const head = git(args.repoPath, 'rev-parse', 'HEAD');
+        movedTip = git(
+          args.repoPath,
+          'commit-tree',
+          `${head}^{tree}`,
+          '-p',
+          head,
+          '-m',
+          'later',
+        );
+        git(args.repoPath, 'update-ref', 'HEAD', movedTip, head);
+        return reconstruct(args);
+      });
+    const { readWorkspaceWorktrees } = await import('../workspace-persistence');
+    const rows = async (): Promise<string[]> =>
+      (await readWorkspaceWorktrees('a')).map((entry) => entry.id).sort();
+    const tracked = await rows();
+    const worktrees = readdirSync(join(root, 'a', 'worktrees')).sort();
+    const registered = git(repo, 'worktree', 'list', '--porcelain');
+    try {
+      await expect(restore()).rejects.toMatchObject({
+        code: 'GIT_CAPTURE_TRANSFORMING_ATTRIBUTE',
+      });
+    } finally {
+      race.mockRestore();
+    }
+    expect(movedTip).not.toBe('');
+    expect(git(repo, 'rev-parse', 'refs/heads/old')).toBe(movedTip);
+    expect(await rows()).toEqual(tracked);
+    expect(readdirSync(join(root, 'a', 'worktrees')).sort()).toEqual(worktrees);
+    expect(git(repo, 'worktree', 'list', '--porcelain')).toBe(registered);
+    expect((await readManifest()).restoredTo).toBeUndefined();
+
+    const restored = await restore();
+    expect(files(restored.path)).toEqual(before);
+    expect(git(restored.path, 'symbolic-ref', '--short', 'HEAD')).toBe('old-2');
+  });
+
+  it('refuses a restore before reserving its destination when an external filter now applies to a path the project default gained', async () => {
+    commitTransformingAttributes();
+    writeFileSync(join(checkout(), 'crlf.txt'), 'one\r\ntwo\r\nthree\r\n');
+    const before = files(checkout());
+    await archive();
+    // With the archived branch gone and the recorded base rewritten, the
+    // destination starts from the project default: a history with a path no
+    // snapshot has.
+    git(repo, 'branch', '-D', 'old');
+    git(repo, 'checkout', '-q', '--orphan', 'rewritten');
+    writeFileSync(join(repo, 'later.dat'), 'later');
+    git(repo, 'add', 'later.dat');
+    git(repo, 'commit', '-q', '-m', 'later');
+    git(repo, 'branch', '-D', 'main');
+    git(repo, 'branch', '-m', 'main');
+    mkdirSync(join(repo, '.git', 'info'), { recursive: true });
+    writeFileSync(
+      join(repo, '.git', 'info', 'attributes'),
+      'later.dat filter=lfs\n',
+    );
+    failLfsFilters();
+    const { readWorkspaceWorktrees } = await import('../workspace-persistence');
+    const rows = async (): Promise<string[]> =>
+      (await readWorkspaceWorktrees('a')).map((entry) => entry.id).sort();
+    const tracked = await rows();
+    const worktrees = readdirSync(join(root, 'a', 'worktrees')).sort();
+    const registered = git(repo, 'worktree', 'list', '--porcelain');
+    const branches = git(repo, 'for-each-ref', 'refs/heads');
+
+    await expect(restore()).rejects.toMatchObject({
+      code: 'GIT_CAPTURE_EXTERNAL_TRANSFORMING_ATTRIBUTE',
+    });
+    expect(await rows()).toEqual(tracked);
+    expect(readdirSync(join(root, 'a', 'worktrees')).sort()).toEqual(worktrees);
+    expect(git(repo, 'worktree', 'list', '--porcelain')).toBe(registered);
+    expect(git(repo, 'for-each-ref', 'refs/heads')).toBe(branches);
+    expect((await readManifest()).restoredTo).toBeUndefined();
+
+    rmSync(join(repo, '.git', 'info', 'attributes'));
+    const after = files((await restore()).path);
+    for (const [path, bytes] of Object.entries(before))
+      expect([path, after[path]]).toEqual([path, bytes]);
+  });
+
+  it('starts a restore from the base branch its check read when that branch is named like another commit', async () => {
+    commitTransformingAttributes();
+    const before = files(checkout());
+    // A commit with a path an external filter transforms, and a base branch
+    // named after its id that points at main instead.
+    const other = join(dir, 'other');
+    git(repo, 'worktree', 'add', '-q', '-b', 'elsewhere', other, 'main');
+    writeFileSync(join(other, 'later.dat'), 'later');
+    git(other, 'add', 'later.dat');
+    git(other, 'commit', '-q', '-m', 'elsewhere');
+    git(repo, 'worktree', 'remove', '--force', other);
+    const elsewhere = git(repo, 'rev-parse', 'refs/heads/elsewhere');
+    git(repo, 'branch', elsewhere, 'main');
+    await workspacePersistence.updateWorkspaceWorktree('a', 'one', (row) => ({
+      ...row,
+      trackedBaseBranch: elsewhere,
+    }));
+    await archive();
+    const archived = await readManifest();
+    if (archived.version !== 2) throw new Error('Expected a Git archive');
+    expect(archived.gitState.repositories[0]).toMatchObject({
+      attributePolicy: 'ignore-in-tree-attributes',
+      comparisonBaseBranch: elsewhere,
+      baseBranchCommit: git(repo, 'rev-parse', 'refs/heads/main'),
+    });
+    // The kept branch is gone, so the destination starts from that base.
+    git(repo, 'branch', '-D', 'old');
+    mkdirSync(join(repo, '.git', 'info'), { recursive: true });
+    writeFileSync(
+      join(repo, '.git', 'info', 'attributes'),
+      'later.dat filter=lfs\n',
+    );
+    failLfsFilters();
+
+    const restored = await restore();
+    expect(files(restored.path)).toEqual(before);
+    const row = (await workspacePersistence.readWorkspaceWorktrees('a')).find(
+      (entry) => restored.path.endsWith(entry.id),
+    );
+    expect(row?.trackedBaseBranch).toBe(elsewhere);
+  });
+
+  /**
+   * A submodule whose only change is an untracked file its config hides, in
+   * the submodule itself or, with `nested`, in a submodule of it.
+   */
+  function addSubmoduleHidingUntrackedFile(nested = false): void {
+    const library = join(dir, 'library');
+    mkdirSync(library);
+    git(library, 'init', '-q', '-b', 'main');
+    writeFileSync(join(library, 'lib.txt'), 'lib\n');
+    git(library, 'add', 'lib.txt');
+    if (nested) {
+      const inner = join(dir, 'inner');
+      mkdirSync(inner);
+      git(inner, 'init', '-q', '-b', 'main');
+      writeFileSync(join(inner, 'inner.txt'), 'inner\n');
+      git(inner, 'add', 'inner.txt');
+      git(inner, 'commit', '-q', '-m', 'inner');
+      git(library, 'submodule', 'add', '-q', inner, 'inner');
+    }
+    git(library, 'commit', '-q', '-m', 'lib');
+    git(checkout(), 'submodule', 'add', '-q', library, 'vendor/lib');
+    git(checkout(), 'submodule', 'update', '-q', '--init', '--recursive');
+    git(checkout(), 'commit', '-q', '-m', 'submodule');
+    const submodule = join(checkout(), 'vendor', 'lib');
+    const hiding = nested ? join(submodule, 'inner') : submodule;
+    git(hiding, 'config', 'status.showUntrackedFiles', 'no');
+    writeFileSync(join(hiding, 'private-name-hidden.txt'), 'only copy\n');
+    expect(git(submodule, 'status', '--porcelain')).toBe('');
+    expect(
+      git(
+        checkout(),
+        'status',
+        '--porcelain',
+        '--ignore-submodules=none',
+        '-uno',
+      ),
+    ).toBe('');
+  }
+
+  it.each([
+    [
+      'conflicts',
+      'GIT_CAPTURE_CONFLICTS',
+      (): void => {
+        writeFileSync(join(checkout(), 'shared.txt'), 'base\n');
+        git(checkout(), 'add', 'shared.txt');
+        git(checkout(), 'commit', '-q', '-m', 'base');
+        git(checkout(), 'branch', 'other');
+        writeFileSync(join(checkout(), 'shared.txt'), 'ours\n');
+        git(checkout(), 'commit', '-qam', 'ours');
+        git(checkout(), 'checkout', '-q', 'other');
+        writeFileSync(join(checkout(), 'shared.txt'), 'theirs\n');
+        git(checkout(), 'commit', '-qam', 'theirs');
+        git(checkout(), 'checkout', '-q', 'old');
+        expect(() => git(checkout(), 'merge', '-q', 'other')).toThrow();
+      },
+    ],
+    [
+      'intent-to-add',
+      'GIT_CAPTURE_INTENT_TO_ADD',
+      (): void => {
+        writeFileSync(join(checkout(), 'later.txt'), 'later\n');
+        git(checkout(), 'add', '-N', 'later.txt');
+      },
+    ],
+    [
+      'a dirty submodule',
+      'GIT_CAPTURE_DIRTY_SUBMODULE',
+      (): void => {
+        const library = join(dir, 'library');
+        mkdirSync(library);
+        git(library, 'init', '-q', '-b', 'main');
+        writeFileSync(join(library, 'lib.txt'), 'lib\n');
+        git(library, 'add', 'lib.txt');
+        git(library, 'commit', '-q', '-m', 'lib');
+        git(checkout(), 'submodule', 'add', '-q', library, 'vendor/lib');
+        git(checkout(), 'commit', '-q', '-m', 'submodule');
+        writeFileSync(join(checkout(), 'vendor', 'lib', 'lib.txt'), 'dirty\n');
+      },
+    ],
+    [
+      'an untracked file in a submodule',
+      'GIT_CAPTURE_DIRTY_SUBMODULE',
+      (): void => {
+        const library = join(dir, 'library');
+        mkdirSync(library);
+        git(library, 'init', '-q', '-b', 'main');
+        writeFileSync(join(library, 'lib.txt'), 'lib\n');
+        git(library, 'add', 'lib.txt');
+        git(library, 'commit', '-q', '-m', 'lib');
+        git(checkout(), 'submodule', 'add', '-q', library, 'vendor/lib');
+        git(checkout(), 'commit', '-q', '-m', 'submodule');
+        writeFileSync(
+          join(checkout(), 'vendor', 'lib', 'private-name-untracked.txt'),
+          'only copy\n',
+        );
+      },
+    ],
+    [
+      'an untracked file in a submodule whose config hides untracked files',
+      'GIT_CAPTURE_DIRTY_SUBMODULE',
+      (): void => addSubmoduleHidingUntrackedFile(),
+    ],
+    [
+      'an untracked file in a submodule whose config hides untracked files, under in-tree transforming attributes',
+      'GIT_CAPTURE_DIRTY_SUBMODULE',
+      (): void => {
+        commitTransformingAttributes();
+        addSubmoduleHidingUntrackedFile();
+      },
+    ],
+    [
+      'an untracked file in a nested submodule whose config hides untracked files, under in-tree transforming attributes',
+      'GIT_CAPTURE_DIRTY_SUBMODULE',
+      (): void => {
+        commitTransformingAttributes();
+        addSubmoduleHidingUntrackedFile(true);
+      },
+    ],
+    [
+      'a submodule edit only its own filter shows, under in-tree transforming attributes',
+      'GIT_CAPTURE_DIRTY_SUBMODULE',
+      (): void => {
+        // A size-preserving filter, so Git must rehash the edit to see it.
+        const rot13 = 'tr a-zA-Z n-za-mN-ZA-M';
+        const library = join(dir, 'library');
+        mkdirSync(library);
+        git(library, 'init', '-q', '-b', 'main');
+        writeFileSync(join(library, '.gitattributes'), '*.dat filter=rot13\n');
+        writeFileSync(join(library, 'lib.dat'), 'hello\n');
+        git(library, '-c', `filter.rot13.clean=${rot13}`, 'add', '-A');
+        git(library, 'commit', '-q', '-m', 'lib');
+        commitTransformingAttributes();
+        git(
+          checkout(),
+          '-c',
+          `filter.rot13.smudge=${rot13}`,
+          'submodule',
+          'add',
+          '-q',
+          library,
+          'vendor/lib',
+        );
+        git(checkout(), 'commit', '-q', '-m', 'submodule');
+        const submodule = join(checkout(), 'vendor', 'lib');
+        git(submodule, 'config', 'filter.rot13.clean', rot13);
+        git(submodule, 'config', 'filter.rot13.smudge', rot13);
+        // Raw bytes equal to the stored blob, with a new mtime: dirty only
+        // through the submodule's own filter.
+        writeFileSync(join(submodule, 'lib.dat'), 'uryyb\n');
+        const past = new Date('2020-01-01T00:00:00Z');
+        utimesSync(join(submodule, 'lib.dat'), past, past);
+        expect(git(submodule, 'status', '--porcelain')).toBe('M lib.dat');
+        // A recursive status under the outer repository's attribute source
+        // misses it.
+        expect(
+          execFileSync(
+            'git',
+            [
+              'status',
+              '--porcelain',
+              '--ignore-submodules=none',
+              '-uno',
+              '--',
+              'vendor/lib',
+            ],
+            {
+              cwd: checkout(),
+              encoding: 'utf8',
+              env: {
+                ...process.env,
+                GIT_ATTR_SOURCE: git(
+                  checkout(),
+                  'hash-object',
+                  '-t',
+                  'tree',
+                  devNull,
+                ),
+                GIT_OPTIONAL_LOCKS: '0',
+              },
+            },
+          ),
+        ).toBe('');
+        failLfsFilters();
+      },
+    ],
+    [
+      'an untracked nested repository',
+      'GIT_CAPTURE_NESTED_REPOSITORY',
+      (): void => {
+        mkdirSync(join(checkout(), 'private-name-nested'));
+        git(join(checkout(), 'private-name-nested'), 'init', '-q');
+        writeFileSync(
+          join(checkout(), 'private-name-nested', 'inner.txt'),
+          'inner\n',
+        );
+      },
+    ],
+    [
+      'an embedded repository containing outer files',
+      'GIT_CAPTURE_NESTED_REPOSITORY',
+      (): void => {
+        mkdirSync(join(checkout(), 'private-name-embedded'));
+        writeFileSync(
+          join(checkout(), 'private-name-embedded', 'outer.txt'),
+          'outer\n',
+        );
+        git(checkout(), 'add', 'private-name-embedded/outer.txt');
+        git(checkout(), 'commit', '-q', '-m', 'outer');
+        git(join(checkout(), 'private-name-embedded'), 'init', '-q');
+      },
+    ],
+    [
+      'an external transforming attribute',
+      'GIT_CAPTURE_EXTERNAL_TRANSFORMING_ATTRIBUTE',
+      (): void => {
+        writeFileSync(
+          join(checkout(), 'private-name-external.txt'),
+          'external\r\n',
+        );
+        mkdirSync(join(repo, '.git', 'info'), { recursive: true });
+        writeFileSync(join(repo, '.git', 'info', 'attributes'), '* text\n');
+      },
+    ],
+    [
+      'a same-sized edit under an external filter whose required clean fails',
+      'GIT_CAPTURE_EXTERNAL_TRANSFORMING_ATTRIBUTE',
+      (): void => {
+        writeFileSync(join(checkout(), 'private-name.bin'), 'size-1');
+        git(checkout(), 'add', 'private-name.bin');
+        git(checkout(), 'commit', '-q', '-m', 'blob');
+        writeFileSync(join(checkout(), 'private-name.bin'), 'size-2');
+        mkdirSync(join(repo, '.git', 'info'), { recursive: true });
+        writeFileSync(
+          join(repo, '.git', 'info', 'attributes'),
+          '*.bin filter=lfs\n',
+        );
+        failLfsFilters();
+      },
+    ],
+    [
+      'in-tree transforming attributes on Git older than 2.41',
+      'GIT_CAPTURE_TRANSFORMING_ATTRIBUTE',
+      (): void => {
+        commitTransformingAttributes();
+        failLfsFilters();
+        writeFileSync(join(checkout(), 'crlf.txt'), 'one\r\ntwo\r\nthree\r\n');
+        useGitVersionForCapture('2.40.1 (Apple Git-143)');
+      },
+    ],
+  ])(
+    'archives files only, keeping the branch, for %s',
+    async (_name, code, arrange) => {
+      arrange();
+      const before = files(checkout());
+      const branchTip = git(repo, 'rev-parse', 'refs/heads/old');
+      const logged = jest.mocked(
+        (await import('../main-process-logging')).logMainProcessWarn,
+      );
+
+      const archived = await archive();
+      expect(archived.warnings).toContain(
+        'Recovered remaining files without Git history or staging. Branches were preserved.',
+      );
+      expect(existsSync(checkout())).toBe(false);
+      expect(git(repo, 'rev-parse', 'refs/heads/old')).toBe(branchTip);
+      const manifest = await readManifest();
+      if (manifest.version !== 3) throw new Error('Expected files-only');
+      expect(manifest.recovery.kind).toBe('files-only');
+      expect((await completedArchive()).state).toBe('completed');
+      // The local log names the refusal without a repository path.
+      const refusal = logged.mock.calls.find(
+        ([message]) =>
+          message ===
+          'Worktree archive Git capture refused; retaining files only',
+      );
+      expect(refusal?.[1]).toMatchObject({ code });
+      expect(JSON.stringify(refusal?.[1])).not.toMatch(
+        /private-name|\.gitattributes|crlf\.txt|later\.txt|\/private\/|\/tmp\//,
+      );
+      mockArchiveIoFault = undefined;
+
+      const restored = await restore();
+      expect(restored.warnings).toContain(
+        'Restored the remaining files. Git history and staging are not restored automatically; saved Git metadata is kept separately.',
+      );
+      const after = files(restored.path);
+      for (const [path, bytes] of Object.entries(before))
+        expect([path, after[path]]).toEqual([path, bytes]);
+    },
+  );
+
+  it('retries an archive an earlier build left stopped in its Git capture', async () => {
+    commitTransformingAttributes();
+    writeFileSync(join(checkout(), 'crlf.txt'), 'one\r\ntwo\r\nthree\r\n');
+    const before = files(checkout());
+    // The capture published its descriptor, then the archive failed the way
+    // a refusal did before CAN-6776: a plain error with no snapshot code.
+    mockArchiveIoAfter = (request): void => {
+      if (request.type === 'capture-git')
+        throw new Error(
+          'Cannot archive a worktree with a transforming Git attribute "text": crlf.txt',
+        );
+    };
+    await expect(archive()).rejects.toThrow('transforming Git attribute');
+    mockArchiveIoAfter = undefined;
+    const stuck = await journal();
+    expect(stuck?.state).toBe('recovery-required');
+    expect(stuck?.steps.at(-1)).toMatchObject({
+      phase: 'git-capture',
+      state: 'pending',
+    });
+    // A raw failure is never taken as a refusal: nothing was archived.
+    expect(files(checkout())).toEqual(before);
+    expect(
+      existsSync(join(getArchivedContainerDir('a', 'one'), 'container.json')),
+    ).toBe(false);
+    if (!stuck) throw new Error('Missing journal');
+    const { listWorktreeRecovery } =
+      await import('../worktree-recovery-description');
+    const [entry] = (
+      await listWorktreeRecovery({
+        workspaceId: 'a',
+        operationId: stuck.operationId,
+      })
+    ).entries;
+    expect(entry?.actions.retry).toEqual({ eligible: true });
+    // A capture that keeps failing keeps its discard escape hatch.
+    const { describeWorktreeDiscard } = await import('../worktree-discard');
+    expect((await describeWorktreeDiscard('a', 'one')).status).toBe(
+      'discardable',
+    );
+
+    await archive();
+    expect(existsSync(checkout())).toBe(false);
+    const archived = await readManifest();
+    if (archived.version !== 2) throw new Error('Expected a Git archive');
+    expect(archived.gitState.repositories[0]?.attributePolicy).toBe(
+      'ignore-in-tree-attributes',
+    );
+    expect((await completedArchive()).supersedesArchives).toContain(
+      stuck.operationId,
+    );
+    expect(files((await restore()).path)).toEqual(before);
+  });
+
+  it('finishes files only on retry when an earlier build stopped on a refusal that still applies', async () => {
+    writeFileSync(join(checkout(), 'later.txt'), 'later\n');
+    git(checkout(), 'add', '-N', 'later.txt');
+    const before = files(checkout());
+    const branchTip = git(repo, 'rev-parse', 'refs/heads/old');
+    // Builds before CAN-6776 failed the archive on this refusal.
+    mockArchiveIoFault = (request): void => {
+      if (request.type === 'capture-git')
+        throw new Error(
+          'Cannot archive files marked intent-to-add. Stage or unstage them first.',
+        );
+    };
+    await expect(archive()).rejects.toThrow('intent-to-add');
+    mockArchiveIoFault = undefined;
+    const stuck = await journal();
+    expect(stuck?.steps.at(-1)).toMatchObject({
+      phase: 'git-capture',
+      state: 'pending',
+    });
+    if (!stuck) throw new Error('Missing journal');
+
+    const archived = await archive();
+    expect(archived.warnings).toContain(
+      'Recovered remaining files without Git history or staging. Branches were preserved.',
+    );
+    const manifest = await readManifest();
+    if (manifest.version !== 3) throw new Error('Expected files-only');
+    expect(git(repo, 'rev-parse', 'refs/heads/old')).toBe(branchTip);
+    expect((await completedArchive()).supersedesArchives).toContain(
+      stuck.operationId,
+    );
+    const after = files((await restore()).path);
+    for (const [path, bytes] of Object.entries(before))
+      expect([path, after[path]]).toEqual([path, bytes]);
+  });
+
+  it('finishes files only on retry when a crash stopped the archive in its Git capture', async () => {
+    writeFileSync(join(checkout(), 'later.txt'), 'later\n');
+    git(checkout(), 'add', '-N', 'later.txt');
+    mockArchiveIoFault = (request): void => {
+      if (request.type === 'capture-git') throw new Error('capture failed');
+    };
+    await expect(archive()).rejects.toThrow('capture failed');
+    mockArchiveIoFault = undefined;
+    const stuck = await journal();
+    if (!stuck) throw new Error('Missing journal');
+    // A crash leaves the journal `active` with no running owner.
+    for (const name of readdirSync(getW5DestructiveLifecycleDir())) {
+      const path = join(getW5DestructiveLifecycleDir(), name);
+      const parsed = journalSchema.parse(
+        JSON.parse(readFileSync(path, 'utf8')),
+      );
+      if (parsed.operationId === stuck.operationId)
+        writeFileSync(path, JSON.stringify({ ...parsed, state: 'active' }));
+    }
+
+    const archived = await archive();
+    expect(archived.warnings).toContain(
+      'Recovered remaining files without Git history or staging. Branches were preserved.',
+    );
+    const manifest = await readManifest();
+    if (manifest.version !== 3) throw new Error('Expected files-only');
+    expect((await completedArchive()).supersedesArchives).toContain(
+      stuck.operationId,
+    );
+  });
+
+  it('keeps refusing a stopped capture to a delete that retains no archive', async () => {
+    mockArchiveIoFault = (request): void => {
+      if (request.type === 'capture-git') throw new Error('capture failed');
+    };
+    await expect(archive()).rejects.toThrow('capture failed');
+    mockArchiveIoFault = undefined;
+    const stuck = await journal();
+    const before = files(checkout());
+    const branchTip = git(repo, 'rev-parse', 'refs/heads/old');
+    const { archiveSingleRepoWorktree } = await import('../worktree-service');
+
+    await expect(
+      archiveSingleRepoWorktree({
+        workspaceId: 'a',
+        worktreeId: 'one',
+        repoPath: repo,
+        retainAsArchivedContainer: false,
+      }),
+    ).rejects.toThrow('needs manual recovery');
+    expect(files(checkout())).toEqual(before);
+    expect(git(repo, 'rev-parse', 'refs/heads/old')).toBe(branchTip);
+    expect(await journal()).toEqual(stuck);
+  });
+
+  it('reuses a ready capture on retry by revalidating it under its recorded attribute policy', async () => {
+    commitTransformingAttributes();
+    writeFileSync(join(checkout(), 'crlf.txt'), 'one\r\ntwo\r\nthree\r\n');
+    // The capture completed, then its response was lost.
+    mockArchiveIoAfter = (request): void => {
+      if (request.type === 'complete-git-capture')
+        throw new Error('lost response');
+    };
+    await expect(archive()).rejects.toThrow('lost response');
+    mockArchiveIoAfter = undefined;
+    const { getArchivedContainerGitStateStagedPath } = await import('../paths');
+    const staged = z
+      .object({
+        version: z.number(),
+        status: z.string(),
+        repositories: z.array(
+          z.object({ snapshotRef: z.string(), attributePolicy: z.string() }),
+        ),
+      })
+      .parse(
+        JSON.parse(
+          readFileSync(
+            getArchivedContainerGitStateStagedPath('a', 'one'),
+            'utf8',
+          ),
+        ),
+      );
+    expect(staged.status).toBe('ready');
+    // An earlier build that resumed this descriptor would publish it as a
+    // version 1 archive; at version 2 it refuses the descriptor instead.
+    expect(staged.version).toBe(2);
+
+    await archive();
+    const archived = await readManifest();
+    if (archived.version !== 2) throw new Error('Expected a Git archive');
+    expect(archived.gitState.repositories[0]).toMatchObject({
+      snapshotRef: staged.repositories[0]?.snapshotRef,
+      attributePolicy: 'ignore-in-tree-attributes',
+    });
+  });
+
+  it('refuses to retry a stopped capture recorded for another incarnation', async () => {
+    mockArchiveIoFault = (request): void => {
+      if (request.type === 'capture-git') throw new Error('capture failed');
+    };
+    await expect(archive()).rejects.toThrow('capture failed');
+    mockArchiveIoFault = undefined;
+    const stuck = await journal();
+    if (!stuck) throw new Error('Missing journal');
+    for (const name of readdirSync(getW5DestructiveLifecycleDir())) {
+      const path = join(getW5DestructiveLifecycleDir(), name);
+      const parsed = journalSchema.parse(
+        JSON.parse(readFileSync(path, 'utf8')),
+      );
+      if (parsed.operationId !== stuck.operationId) continue;
+      writeFileSync(
+        path,
+        JSON.stringify({ ...parsed, createdAt: '2000-01-01T00:00:00.000Z' }),
+      );
+    }
+    const before = files(checkout());
+    await expect(archive()).rejects.toThrow();
+    expect(files(checkout())).toEqual(before);
+    expect(
+      existsSync(join(getArchivedContainerDir('a', 'one'), 'container.json')),
+    ).toBe(false);
   });
 });

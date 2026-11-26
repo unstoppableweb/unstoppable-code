@@ -16,6 +16,7 @@ import {
   type UnifiedPluginEntry,
 } from '@canopy/ui-shared';
 import { customizeRowAction } from './customizeRowAction';
+import { hasCuratedPluginInstallEvidence } from './unifiedPluginEntries';
 import { ChevronLeftMediumIcon } from '@canopy/ui-shared/icons/AppIcons';
 import {
   Badge,
@@ -78,17 +79,29 @@ export interface PluginCatalogDetailModel {
  * `installed`; its managed per-provider install status says whether a harness
  * has it. Any other plugin, or one whose status is not reported, is not added
  * exactly when its entry says `available`.
+ * New Customize's curated detail also recognizes the recorded harness installs
+ * that its All search reads.
  */
 export function pluginNotAddedYet({
   state,
   plugin,
+  useCuratedInstallEvidence = false,
 }: {
   readonly state: UnifiedPluginEntry['state'];
+  readonly useCuratedInstallEvidence?: boolean;
   readonly plugin: Pick<
     PluginInfo,
-    'curated' | 'builtIn' | 'externalSource' | 'parked' | 'globalInstallStatus'
+    | 'curated'
+    | 'builtIn'
+    | 'externalSource'
+    | 'parked'
+    | 'globalInstallStatus'
+    | 'codexCompatDisabled'
+    | 'harnessInstalls'
   >;
 }): boolean {
+  if (useCuratedInstallEvidence)
+    return !hasCuratedPluginInstallEvidence(plugin);
   const status = plugin.globalInstallStatus;
   if (
     plugin.parked !== true &&

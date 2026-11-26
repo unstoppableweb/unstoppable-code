@@ -13,6 +13,25 @@ jest.mock('../../lib/native-crash-policy', () => ({
   },
 }));
 
+// A save the remote bridge replays for a paired computer comes from this
+// sender; every other sender is a window on this computer.
+const mockPairedBridgeSenderId = 99;
+jest.mock('../../remote-control/host/bridge-window', () => ({
+  resolveRemoteBridgeSender: (
+    sender: { id?: number } | undefined,
+  ): string | null =>
+    sender?.id === mockPairedBridgeSenderId ? 'paired-computer' : null,
+}));
+
+const mockReleaseFlavor: { value: 'stable' | 'rc' | 'internal' } = {
+  value: 'stable',
+};
+jest.mock('../../lib/app-identity', () => ({
+  ...jest.requireActual<typeof AppIdentityModule>('../../lib/app-identity'),
+  getCanopyReleaseFlavor: (): 'stable' | 'rc' | 'internal' =>
+    mockReleaseFlavor.value,
+}));
+
 type Handler = (event: unknown, ...args: unknown[]) => Promise<unknown>;
 const mockHandlers = new Map<string, Handler>();
 jest.mock('../register', () => ({
@@ -24,14 +43,17 @@ jest.mock('../register', () => ({
 const mockStore: {
   preferences: PreferencesData;
   commits: Array<Partial<PreferencesData>>;
+  unconfirmed: boolean;
 } = {
   preferences: DEFAULT_PREFERENCES,
   commits: [],
+  unconfirmed: false,
 };
 jest.mock('../../lib/preferences-store', () => ({
   ...jest.requireActual<typeof PreferencesStoreModule>(
     '../../lib/preferences-store',
   ),
+  arePreferencesUnconfirmed: (): boolean => mockStore.unconfirmed,
   readPreferencesFile: (): Promise<PreferencesData> =>
     Promise.resolve({ ...mockStore.preferences }),
   readLatestPreferencesFile: (): Promise<PreferencesData> =>
@@ -63,6 +85,12 @@ import {
   type PreferencesData,
 } from '@canopy/desktop-shared/types';
 import type * as PreferencesStoreModule from '../../lib/preferences-store';
+import type * as AppIdentityModule from '../../lib/app-identity';
+import {
+  applyOneWindowChoice,
+  isOneWindowEnabled,
+  onOneWindowEnabledChanged,
+} from '../../lib/one-window-switch';
 import { nativeCrashAnnotation } from '../../lib/native-crash-policy';
 import {
   registerPreferenceHandlers,
@@ -72,6 +100,8 @@ import {
 beforeEach(() => {
   mockStore.preferences = { ...DEFAULT_PREFERENCES, navigationMode: 'code' };
   mockStore.commits = [];
+  mockStore.unconfirmed = false;
+  mockReleaseFlavor.value = 'stable';
   mockHandlers.clear();
   registerPreferenceHandlers();
 });
@@ -221,5 +251,71 @@ describe("the window's preferences save as a shared owner (CAN-6004)", () => {
     expect(seen).toEqual(['code']);
     expect(mockStore.commits).toEqual([]);
     expect(mockStore.preferences.navigationMode).toBe('code');
+  });
+});
+
+describe("this computer's one-window switch (CAN-7755)", () => {
+  const localWindow = { sender: { id: 1 } };
+  const pairedComputer = { sender: { id: mockPairedBridgeSenderId } };
+
+  beforeEach(() => {
+    // Main's read lives for the process; start each case from startup's
+    // "no choice" in this case's build.
+    applyOneWindowChoice(undefined, false);
+  });
+
+  it("main's read follows each committed save, and a paired computer's save never changes it", async () => {
+    const handler = mockHandlers.get(IPC_CHANNELS.preferencesSave);
+    if (!handler) throw new Error('preferences:save is not registered');
+    const heard: boolean[] = [];
+    const stop = onOneWindowEnabledChanged((enabled) => heard.push(enabled));
+    try {
+      await handler(localWindow, { oneWindowEnabled: true });
+      expect(mockStore.preferences.oneWindowEnabled).toBe(true);
+      expect(isOneWindowEnabled()).toBe(true);
+
+      await handler(pairedComputer, {
+        oneWindowEnabled: false,
+        navigationMode: 'work',
+      });
+      expect(mockStore.commits.at(-1)).toEqual({ navigationMode: 'work' });
+      expect(mockStore.preferences.oneWindowEnabled).toBe(true);
+      expect(isOneWindowEnabled()).toBe(true);
+
+      await handler(localWindow, { oneWindowEnabled: false });
+      expect(isOneWindowEnabled()).toBe(false);
+      expect(heard.slice(-2)).toEqual([true, false]);
+    } finally {
+      stop();
+    }
+  });
+
+  it.each([
+    ['internal', true],
+    ['rc', false],
+    ['stable', false],
+  ] as const)(
+    'without a choice a %s build reads %s, and a choice overrides it',
+    async (flavor, byDefault) => {
+      mockReleaseFlavor.value = flavor;
+      await savePreferencesPatch({ navigationMode: 'work' });
+      expect(mockStore.preferences.oneWindowEnabled).toBeUndefined();
+      expect(isOneWindowEnabled()).toBe(byDefault);
+      await savePreferencesPatch({ oneWindowEnabled: !byDefault });
+      expect(isOneWindowEnabled()).toBe(!byDefault);
+    },
+  );
+
+  it('reads off while preferences are unconfirmed, even with a choice on an internal build', async () => {
+    mockReleaseFlavor.value = 'internal';
+    await savePreferencesPatch({ oneWindowEnabled: true });
+    expect(isOneWindowEnabled()).toBe(true);
+    // A failed recovery latched: the stored values aren't the person's.
+    mockStore.unconfirmed = true;
+    await savePreferencesPatch({ navigationMode: 'work' });
+    expect(isOneWindowEnabled()).toBe(false);
+    mockStore.unconfirmed = false;
+    await savePreferencesPatch({ navigationMode: 'code' });
+    expect(isOneWindowEnabled()).toBe(true);
   });
 });

@@ -73,6 +73,7 @@ import { isNonPublicIpAddress } from './network-address';
 import { writeMcpOAuthCallbackPage } from './oauth-callback-page';
 import { getCanopyCloudBaseUrl } from '../canopy-cloud/config';
 import { noteMcpEgressHost } from '../local-only/mcp-egress-hosts';
+import { reserveServerPort } from '../lib/loopback-listeners';
 
 const OAUTH_STATE_TTL_MS = 10 * 60_000;
 
@@ -340,6 +341,8 @@ function startFixedCallbackServer(port: number): Promise<Server> {
     };
     server.once('error', onError);
     server.once('listening', onListening);
+    // Remote Control never tunnels to the callback (CAN-7679).
+    reserveServerPort(server);
     // Bound to IPv4 loopback although `buildVendorRedirectUri` advertises
     // `localhost`. The advertised host is not ours to choose — it has to match
     // what the vendor registered, and that is the shape the reference client

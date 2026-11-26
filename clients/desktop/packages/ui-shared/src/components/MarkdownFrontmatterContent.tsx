@@ -1,11 +1,11 @@
 import { type JSX } from 'react';
 
 import { Markdown, type MarkdownProps } from './Markdown';
-import { EmptyStateText, ErrorBanner } from './StatusBlocks';
-import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
+import { EmptyStateText, ErrorBanner } from '../primitives/StatusBlocks';
+import { CenteredLoadingSpinner } from '../primitives/CenteredLoadingSpinner';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
 import { DocumentProse } from './DocumentProse';
-import { Divider } from './Surface';
+import { Divider } from '../primitives/Surface';
 import {
   FrontmatterBlock,
   visibleFrontmatterEntries,

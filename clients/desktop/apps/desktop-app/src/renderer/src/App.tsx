@@ -86,6 +86,7 @@ import { RemoteAccessHost } from './components/remote-access/RemoteAccessHost';
 import { RepoRulesModalHost } from './components/repo-rules/RepoRulesModalHost';
 import { ScriptActionsDesktopHost } from './components/script-actions/ScriptActionsDesktopHost';
 import { DataSharingOptInSheetHost } from './components/settings/DataSharingOptInSheetHost';
+import { OrgSharingRequirementNoticeHost } from './components/settings/OrgSharingRequirementNoticeHost';
 import { ChatShareHost } from './components/share/ChatShareHost';
 import { CloudReachBackApprovalHost } from './components/mcp/CloudReachBackApprovalHost';
 import { PublicShareDispatchHost } from './components/share/PublicShareDispatchHost';
@@ -130,6 +131,7 @@ import { APP_BOTTOM_STATUS_HOST_ID } from './hooks/useAppBottomStatusHost';
 import { useAutoArchiveNotifications } from './hooks/useAutoArchiveNotifications';
 import { useBillingLaneRuntimeSync } from './hooks/useBillingLaneRuntimeSync';
 import { useChatEventSubscriptions } from './hooks/useChatEventSubscriptions';
+import { useDetectedPlansSubscription } from './hooks/useDetectedPlansSubscription';
 import { useGlobalShortcuts } from './hooks/useGlobalShortcuts';
 import { useModelUnlockReturn } from './hooks/useModelUnlockReturn';
 import { usePipelineCompletionToasts } from './hooks/usePipelineCompletionToasts';
@@ -448,6 +450,7 @@ function preferencesWithoutNavigation(preferences: object): string {
 
 function App(): JSX.Element {
   useChatEventSubscriptions();
+  useDetectedPlansSubscription();
   // Declares the chats this window shows (and showed recently) to main.
   useChatInterestDeclaration('main');
   useStaleChatCatchUp(staleChatCatchUpHost);
@@ -720,31 +723,13 @@ function App(): JSX.Element {
     (s) => s.request !== null,
   );
 
-  // Hydrate the feature-flag store on mount and subscribe to broadcast
-  // updates so renderer reads always reflect the latest main-process
-  // verdict. Errors are swallowed by the store and logged; this effect
-  // must never block render. The unsubscribe in the cleanup keeps the
-  // listener count steady across React strict-mode remounts.
-  useEffect(() => {
-    void useFeatureFlagsStore.getState().hydrate();
-    const unsubscribe = window.api.featureFlags.onSnapshotChanged(
-      (snapshot) => {
-        useFeatureFlagsStore.getState().setSnapshot(snapshot);
-      },
-    );
-    // Electron main has no network-change event, so the renderer's `online`
-    // tells main to retry a failed LaunchDarkly start right away instead of
-    // waiting out its backoff (CAN-3511). Healthy snapshots skip the call.
-    const retryUnavailableFlags = (): void => {
-      if (useFeatureFlagsStore.getState().snapshot.status !== 'error') return;
-      void window.api.featureFlags.refreshContext().catch(() => undefined);
-    };
-    window.addEventListener('online', retryUnavailableFlags);
-    return (): void => {
-      unsubscribe();
-      window.removeEventListener('online', retryUnavailableFlags);
-    };
-  }, []);
+  // Follow the feature-flag store on mount: the IPC snapshot and its
+  // broadcasts, core's flags through core.featureFlag (CAN-4181 F5) and the
+  // `online` LaunchDarkly retry, so renderer reads always reflect the latest
+  // main-process verdict. Errors are swallowed by the store and logged; this
+  // effect must never block render. The stop in the cleanup keeps one
+  // follower across React strict-mode remounts.
+  useEffect(() => useFeatureFlagsStore.getState().follow(), []);
 
   // Tooltips, hover cards and resize handles marked to draw above in-app
   // browser pages are copied into a native layer over the live page.
@@ -1499,6 +1484,7 @@ function App(): JSX.Element {
     return (
       <Suspense fallback={<AppLoadingScreen />}>
         <LegalConsentGate
+          preferences={loadedPreferences}
           onAccepted={(): void => setLegalConsentAccepted(true)}
         />
       </Suspense>
@@ -1885,7 +1871,7 @@ function App(): JSX.Element {
                 {
                   title: REMOTE_CONTROL_LABEL,
                   subtitle: `Sign in to ${brandText.appName} Cloud to enable ${REMOTE_CONTROL_LABEL}.`,
-                  toastMessage: `You're connected. You can now enable ${REMOTE_CONTROL_LABEL}.`,
+                  toastMessage: `You're signed in. You can now turn on ${REMOTE_CONTROL_LABEL}.`,
                 },
                 () => {
                   useNavigationStore.getState().openRemoteControlDialog();
@@ -1948,6 +1934,7 @@ function App(): JSX.Element {
       <CloudConnectGate />
       <ShareInstallModalHost />
       <DataSharingOptInSheetHost />
+      <OrgSharingRequirementNoticeHost />
       <PublicShareDispatchHost />
       <BranchFromConfirmationModalHost />
       <BaseBranchChangeConfirmationModalHost />

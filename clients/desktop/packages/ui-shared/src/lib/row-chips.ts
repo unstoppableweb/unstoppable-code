@@ -111,22 +111,6 @@ export const SECONDARY_SURFACE_OPEN_CLASS =
 export const SECONDARY_SURFACE_CLASS = `${SECONDARY_SURFACE_SHELL_CLASS} ${SECONDARY_SURFACE_HOVER_CLASS}`;
 
 /**
- * The 28px labelled secondary button used by Marketplace cards (`Add`) and
- * by any control that must read as the same thing, such as the empty
- * Collections tab's `Add collection`. Composes {@link SECONDARY_SURFACE_CLASS}
- * with the card recipe's radius, inset, and 12px label so the two never
- * drift apart.
- */
-export const SECONDARY_ACTION_BUTTON_CLASS = `focus-ring inline-flex h-7 shrink-0 items-center rounded-md px-2.5 text-xs font-medium fg-primary transition-colors pointer-coarse:h-11 ${SECONDARY_SURFACE_CLASS}`;
-
-/**
- * The 28px square icon-only sibling of {@link SECONDARY_ACTION_BUTTON_CLASS}
- * (the header `Open in` app segment, a detail page's Share). Same shell, no
- * inset, centred glyph.
- */
-export const SECONDARY_ICON_BUTTON_CLASS = `focus-ring inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md fg-primary transition-colors pointer-coarse:h-11 pointer-coarse:w-11 ${SECONDARY_SURFACE_CLASS}`;
-
-/**
  * Ink tones for a control on {@link SECONDARY_SURFACE_CLASS}. The tone never
  * changes the surface: a warning Retry, a destructive Start over, and an
  * accent git action are all the same quaternary shell with different text.

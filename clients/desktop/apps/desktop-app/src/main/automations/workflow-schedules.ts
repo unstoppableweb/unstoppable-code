@@ -1,11 +1,12 @@
 /**
  * Workflow schedules (CAN-5782): the automation records that run one user
- * pipeline, shown together on its Workflow page. A converted chat
- * automation's pipeline (CAN-4551) is a workflow page; so is one kept after
- * its owner marker was cleared (`workflowPage`).
+ * pipeline, shown together on its Workflow page. Every user workflow has the
+ * same page and can take schedules, whether it was converted from a chat
+ * automation (CAN-4551) or made as a workflow.
  *
- * The first schedule keeps the owner marker while it exists and still runs
- * the pipeline. Extra schedules are plain records that target the pipeline.
+ * A converted automation's schedule keeps the owner marker while it exists
+ * and still runs the pipeline. Extra schedules are plain records that target
+ * the pipeline.
  * CAN-6065: every schedule runs as the first one does. An Orchestrator
  * pipeline is hidden from agents by its own `agentHidden` flag before it
  * takes another schedule; an agent's grant is the pipeline's, honored for
@@ -13,6 +14,8 @@
  * the owner, whose package every schedule resolves, and moves to the next
  * schedule when the owner is removed.
  */
+import { isWorkflowOnlyTriggerTypes } from '@canopy/desktop-shared/lib/schedule-run-event';
+import { scheduleApprovalFacts } from '../pipelines/pipeline-person-approval';
 import type {
   AutomationAction,
   ScheduledActivity,
@@ -27,11 +30,15 @@ import type {
   PipelinePackageRef,
   PipelineWorkflowPageInfo,
   WorkflowScheduleValues,
+  PipelineDistributionMode,
 } from '@canopy/protocol/pipelines';
 import { resolveChildPipelineRef } from '@canopy/desktop-shared/node/pipelines/child-pipeline-ref';
 import { logMainProcessError } from '../lib/main-process-logging';
 import { isRecord } from '../lib/type-guards';
-import { getStoredPipelineBySource } from '../pipelines/pipeline-service';
+import {
+  getStoredPipelineBySource,
+  readStoredPipelineRevision,
+} from '../pipelines/pipeline-service';
 import {
   markUserPipelineAgentHidden,
   markUserPipelineWorkflowPage,
@@ -68,7 +75,9 @@ export const KEEP_PIPELINE_REFUSED =
 /**
  * The user pipeline a record runs, if it runs one. An action with no
  * `pipelineSource` runs the stored pipeline of its id when no project one
- * matches, so it counts when that id carries workflow facts.
+ * matches: it counts when it runs with no project and a user workflow has
+ * that id (CAN-5782: whatever made the workflow), or when that id carries
+ * workflow facts.
  */
 export function scheduledUserPipelineId(
   activity: Pick<ScheduledActivity, 'action'>,
@@ -78,9 +87,21 @@ export function scheduledUserPipelineId(
   if (action.pipelineSource === 'user') return action.pipelineId;
   if (action.pipelineSource !== undefined) return undefined;
   const metadata = userPipelineMetadata(action.pipelineId);
-  return metadata.ownerAutomationId !== undefined ||
+  if (
+    metadata.ownerAutomationId !== undefined ||
     metadata.workflowPage === true ||
     metadata.agentHidden === true
+  )
+    return action.pipelineId;
+  // A `global` target runs with no project whatever `workspaceId` holds,
+  // as the scheduler reads it; a record with neither has none either. A
+  // record tied to a project looks for its project's workflow first, which
+  // only its fire resolves.
+  const noProject =
+    action.target?.kind === 'global' ||
+    (action.target === undefined && action.workspaceId === undefined);
+  return noProject &&
+    readStoredPipelineRevision(action.pipelineId)?.source === 'user'
     ? action.pipelineId
     : undefined;
 }
@@ -134,18 +155,6 @@ export function pipelineOwnerRecord(
   );
 }
 
-/** Whether the pipeline is a workflow page. */
-export function isWorkflowPagePipeline(
-  activities: readonly ScheduledActivity[],
-  pipelineId: string,
-  metadata: PipelineLocalMetadata = userPipelineMetadata(pipelineId),
-): boolean {
-  return (
-    metadata.workflowPage === true ||
-    pipelineOwnerRecord(activities, pipelineId, metadata) !== undefined
-  );
-}
-
 /**
  * Whether an agent wrote the pipeline and main granted its runs authority
  * (CAN-5479). A person's own grant protects nothing on their runs, so it
@@ -159,7 +168,7 @@ export function isAgentGrantedPipeline(
   );
 }
 
-/** The installed owner of a workflow page, whose install its schedules run with. */
+/** The installed owner of a workflow, whose install its schedules run with. */
 export function installedPipelineOwner(
   activities: readonly ScheduledActivity[],
   pipelineId: string,
@@ -172,8 +181,8 @@ export function installedPipelineOwner(
 /**
  * The refusal for a schedule written by `author` (an agent, else a person)
  * starting to target `pipelineId` (create or retarget), or `undefined`.
- * CAN-6065: a workflow page takes any number of schedules, except an
- * agent's on a page someone installed or another agent was granted.
+ * CAN-6065: a workflow takes any number of schedules, except an agent's on
+ * one someone installed or another agent was granted.
  */
 export function addedScheduleRefusal(
   activities: readonly ScheduledActivity[],
@@ -182,8 +191,6 @@ export function addedScheduleRefusal(
 ): string | undefined {
   if (author === undefined) return undefined;
   const metadata = userPipelineMetadata(pipelineId);
-  if (!isWorkflowPagePipeline(activities, pipelineId, metadata))
-    return undefined;
   if (
     isAgentGrantedPipeline(metadata) &&
     !runsAsAuthor(author, metadata.agentAuthor)
@@ -337,13 +344,12 @@ export async function handOffInstall(
 
 /**
  * After a write that left `pipelineId` with more than one schedule, marks
- * it a workflow page, so it stays one when its owner goes.
+ * its workflow, so a sourceless schedule still finds it when its owner goes.
  */
 export function markSharedWorkflowPage(
   activities: readonly ScheduledActivity[],
   pipelineId: string,
 ): void {
-  if (!isWorkflowPagePipeline(activities, pipelineId)) return;
   if (pipelineSchedules(activities, pipelineId).length > 1)
     markUserPipelineWorkflowPage(pipelineId);
 }
@@ -361,13 +367,11 @@ export function claimInstalledPipeline(
   activity: ScheduledActivity,
 ): boolean {
   const { action } = activity;
-  // Only a `global` schedule opens on its Workflow page (CAN-5782); one bound
-  // to a project or task keeps its workflow listed on its own until that
-  // page has a per-schedule Where it runs.
+  // Wherever it runs: every user workflow's page edits each schedule's
+  // destination (CAN-5782), so a project or task target claims it too.
   if (
     action.type !== 'worktree_pipeline' ||
     action.pipelineSource !== 'user' ||
-    action.target?.kind !== 'global' ||
     activity.installedFrom?.bundledPipelineLocalId !== action.pipelineId
   )
     return false;
@@ -396,30 +400,55 @@ export function claimInstalledPipeline(
 }
 
 /**
- * CAN-7285: whether a workflow reads input `key` only inside its steps'
- * `run` scripts, as text such as a tracker key. Any other reference (a
- * step's `with` or `target`, a job's own fields, the workflow's `env`), or
- * none at all, is not text only, so where it runs is still checked.
+ * CAN-7285: whether a workflow reads input `key` only as data its steps
+ * use, such as a tracker key: inside a `run` script or an `if:` condition (a
+ * step's or a job's), or through an `env` variable (the workflow's, a job's
+ * or a step's) that no other field reads back as `env.NAME`. Any other
+ * reference (a step's `with` or `target`, a job's other fields), or none at
+ * all, is not, so where it runs is still checked.
  */
 export function usesInputOnlyInRunScripts(
   pipeline: unknown,
   key: string,
 ): boolean {
   // Dot or bracket access, as the executor resolves both.
-  const reference = new RegExp(
-    `\\$\\{\\{[^}]*\\binputs(?:\\.${key}\\b|\\[\\s*['"]${key}['"]\\s*\\])[^}]*\\}\\}`,
-  );
-  const references = (value: unknown): boolean => {
+  const access = (scope: string, rawName: string): string => {
+    const name = rawName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return `\\b${scope}(?:\\.${name}\\b|\\[\\s*['"]${name}['"]\\s*\\])`;
+  };
+  const pattern = (scope: string, name: string): RegExp =>
+    new RegExp(`\\$\\{\\{[^}]*${access(scope, name)}[^}]*\\}\\}`);
+  const input = pattern('inputs', key);
+  // An `if:` is an expression on its own, with or without `${{ }}`.
+  const bareInput = new RegExp(access('inputs', key));
+  const mentions = (value: unknown, reference: RegExp): boolean => {
     if (typeof value === 'string') return reference.test(value);
-    if (Array.isArray(value)) return value.some(references);
-    if (isRecord(value)) return Object.values(value).some(references);
+    if (Array.isArray(value))
+      return value.some((entry) => mentions(entry, reference));
+    if (isRecord(value))
+      return Object.values(value).some((entry) => mentions(entry, reference));
     return false;
   };
   if (!isRecord(pipeline)) return false;
-  let inRun = false;
+  // Every field the workflow's runs read, with whether it is run text or an
+  // env layer (whose variables a run script reads by name).
+  const fields: { kind: 'run' | 'if' | 'env' | 'other'; value: unknown }[] = [];
+  const add = (field: string, value: unknown, inStep = false): void => {
+    fields.push({
+      kind:
+        field === 'if'
+          ? 'if'
+          : inStep && field === 'run'
+            ? 'run'
+            : field === 'env'
+              ? 'env'
+              : 'other',
+      value,
+    });
+  };
   for (const [field, value] of Object.entries(pipeline)) {
     if (field !== 'jobs') {
-      if (references(value)) return false;
+      add(field, value);
       continue;
     }
     if (!isRecord(value)) return false;
@@ -427,50 +456,57 @@ export function usesInputOnlyInRunScripts(
       if (!isRecord(job)) continue;
       for (const [jobField, jobValue] of Object.entries(job)) {
         if (jobField !== 'steps') {
-          if (references(jobValue)) return false;
+          add(jobField, jobValue);
           continue;
         }
         if (!Array.isArray(jobValue)) continue;
         for (const step of jobValue) {
           if (!isRecord(step)) continue;
-          for (const [stepField, stepValue] of Object.entries(step)) {
-            if (stepField === 'run') inRun ||= references(stepValue);
-            else if (references(stepValue)) return false;
-          }
+          for (const [stepField, stepValue] of Object.entries(step))
+            add(stepField, stepValue, true);
         }
       }
     }
   }
-  return inRun;
+  // The env variables that carry the input.
+  const carriers = new Set<string>();
+  for (const field of fields) {
+    if (field.kind !== 'env' || !isRecord(field.value)) continue;
+    for (const [name, value] of Object.entries(field.value))
+      if (mentions(value, input)) carriers.add(name);
+  }
+  let read = false;
+  for (const field of fields) {
+    if (field.kind === 'run') {
+      read ||= mentions(field.value, input);
+      continue;
+    }
+    if (field.kind === 'if') {
+      read ||= mentions(field.value, bareInput);
+      continue;
+    }
+    // An env value that reads the input, or another carrier, stays text.
+    if (field.kind === 'env') continue;
+    if (mentions(field.value, input)) return false;
+    for (const name of carriers)
+      if (mentions(field.value, pattern('env', name))) return false;
+  }
+  return read || carriers.size > 0;
 }
 
 /**
  * CAN-7285: brings an installed automation's owner marker in line with
- * {@link claimInstalledPipeline}. It claims the bundled pipeline when the
- * install qualifies; when the install owns it but its target is no longer
- * `global`, it clears the marker and keeps the pipeline, so the workflow
- * shows its own row again. A pipeline another record also runs is left as
- * it is. Returns whether the marker changed.
+ * {@link claimInstalledPipeline}: it claims the bundled pipeline when the
+ * install qualifies. A destination change keeps the marker (CAN-5782): the
+ * workflow's page shows every schedule wherever it runs, and the schedules
+ * added there inherit the install through it. Returns whether the marker
+ * changed.
  */
 export function reconcileInstalledPipelineOwner(
   activities: readonly ScheduledActivity[],
   activity: ScheduledActivity,
 ): boolean {
-  if (claimInstalledPipeline(activities, activity)) return true;
-  const { action } = activity;
-  if (
-    action.type !== 'worktree_pipeline' ||
-    action.pipelineSource !== 'user' ||
-    action.target?.kind === 'global' ||
-    activity.installedFrom?.bundledPipelineLocalId !== action.pipelineId ||
-    userPipelineMetadata(action.pipelineId).ownerAutomationId !== activity.id ||
-    isSharedByOtherSchedules(activities, activity, action.pipelineId)
-  )
-    return false;
-  setUserPipelineOwnerAutomation(action.pipelineId, null);
-  return (
-    userPipelineMetadata(action.pipelineId).ownerAutomationId === undefined
-  );
+  return claimInstalledPipeline(activities, activity);
 }
 
 /**
@@ -611,9 +647,9 @@ export interface KeptWorkflowPipeline {
 }
 
 /**
- * What deleting `activity` with `keepPipeline` keeps: only the last schedule
- * of a workflow page keeps anything this way (another schedule keeps the
- * pipeline anyway).
+ * What deleting `activity` with `keepPipeline` keeps: only a workflow's last
+ * schedule keeps anything this way (another schedule keeps the pipeline
+ * anyway).
  */
 export function keptWorkflowPipeline(
   activities: readonly ScheduledActivity[],
@@ -625,7 +661,6 @@ export function keptWorkflowPipeline(
   const pipelineId = scheduledUserPipelineId(activity);
   if (
     pipelineId === undefined ||
-    !isWorkflowPagePipeline(activities, pipelineId) ||
     isSharedByOtherSchedules(activities, activity, pipelineId)
   )
     return undefined;
@@ -648,14 +683,12 @@ export function keepLastScheduleValues(
   });
 }
 
-/** The facts the pipeline list carries for a workflow page, if it is one. */
+/** The facts the pipeline list carries for a user workflow's page. */
 export function workflowPageInfo(
   activities: readonly ScheduledActivity[],
   pipelineId: string,
-): PipelineWorkflowPageInfo | undefined {
+): PipelineWorkflowPageInfo {
   const metadata = userPipelineMetadata(pipelineId);
-  if (!isWorkflowPagePipeline(activities, pipelineId, metadata))
-    return undefined;
   const empty = pipelineSchedules(activities, pipelineId).length === 0;
   return {
     ...(isAgentGrantedPipeline(metadata) ? { agentGranted: true } : {}),
@@ -716,21 +749,53 @@ function calledUserPipelineIds(pipelineId: string): ReadonlySet<string> {
 }
 
 /**
- * Phase 09: per user pipeline, how many workflow pages call it. Only the
- * workflow pages' definitions are read.
+ * What each user pipeline calls, by its id, cached per stored revision so a
+ * list reads each definition once until it changes.
  */
-function workflowCallerCounts(
-  activities: readonly ScheduledActivity[],
-  userIds: readonly string[],
-): ReadonlyMap<string, number> {
-  const counts = new Map<string, number>();
-  const ids = new Set(userIds);
-  for (const id of userIds) {
-    if (!isWorkflowPagePipeline(activities, id)) continue;
-    for (const called of calledUserPipelineIds(id))
-      if (ids.has(called)) counts.set(called, (counts.get(called) ?? 0) + 1);
+const calledCache = new Map<
+  string,
+  { readonly version: string; readonly called: ReadonlySet<string> }
+>();
+
+function calledByRow(row: PipelineInfo): ReadonlySet<string> {
+  const version = `${String(row.revision ?? 0)}:${row.updatedAt}`;
+  const cached = calledCache.get(row.id);
+  if (cached?.version === version) return cached.called;
+  const called = calledUserPipelineIds(row.id);
+  calledCache.set(row.id, { version, called });
+  return called;
+}
+
+/**
+ * Per user pipeline, how many user workflows call it (`all`), and how many of
+ * those declare the Workflow trigger (`workflowTrigger`).
+ */
+function workflowCallerCounts(rows: readonly PipelineInfo[]): {
+  readonly all: ReadonlyMap<string, number>;
+  readonly workflowTrigger: ReadonlyMap<string, number>;
+} {
+  const all = new Map<string, number>();
+  const workflowTrigger = new Map<string, number>();
+  const users = rows.filter((row) => row.source === 'user');
+  const ids = new Set(users.map((row) => row.id));
+  for (const [id] of calledCache) if (!ids.has(id)) calledCache.delete(id);
+  for (const row of users) {
+    const declaresWorkflow = (row.triggerTypes ?? []).includes('workflow');
+    for (const called of calledByRow(row)) {
+      if (!ids.has(called)) continue;
+      all.set(called, (all.get(called) ?? 0) + 1);
+      if (declaresWorkflow)
+        workflowTrigger.set(called, (workflowTrigger.get(called) ?? 0) + 1);
+    }
   }
-  return counts;
+  return { all, workflowTrigger };
+}
+
+/** How a package install runs: packaged unless marked definition-only. */
+function installedDistributionMode(
+  mode: PipelineDistributionMode | undefined,
+): PipelineDistributionMode {
+  return mode === 'definition_only' ? 'definition_only' : 'package';
 }
 
 /** The pipeline list's user rows with their workflow-page facts. */
@@ -739,22 +804,71 @@ export async function withWorkflowPageInfo(
 ): Promise<PipelineInfo[]> {
   if (!rows.some((row) => row.source === 'user')) return rows;
   const activities = await storedActivities();
-  const callers = workflowCallerCounts(
-    activities,
-    rows.flatMap((row) => (row.source === 'user' ? [row.id] : [])),
+  const { all: callers, workflowTrigger: triggerCallers } =
+    workflowCallerCounts(rows);
+  // CAN-5782: a pipeline-owned package install, which the stored index
+  // leaves out, so Settings never offers a trigger edit that would break the
+  // install's YAML pin.
+  const { listPackageInstalls } =
+    await import('../pipelines/pipeline-package-service');
+  const installs = new Map(
+    (await listPackageInstalls().catch(() => [])).map((record) => [
+      record.localPipelineId,
+      // A record with no mode runs as packaged, as the run's resolver reads
+      // every mode but definition_only (older records carry none).
+      installedDistributionMode(record.distributionMode),
+    ]),
   );
-  return rows.map((row) => {
-    if (row.source !== 'user') return row;
-    const workflowPage = workflowPageInfo(activities, row.id);
-    const workflowCallers = callers.get(row.id);
-    return workflowPage || workflowCallers
-      ? {
-          ...row,
-          ...(workflowPage ? { workflowPage } : {}),
-          ...(workflowCallers ? { workflowCallers } : {}),
-        }
-      : row;
-  });
+  return Promise.all(
+    rows.map(async (rawRow) => {
+      if (rawRow.source !== 'user') return rawRow;
+      const installedMode = installs.get(rawRow.id);
+      const row =
+        rawRow.distributionMode === undefined && installedMode !== undefined
+          ? { ...rawRow, distributionMode: installedMode }
+          : rawRow;
+      const page = workflowPageInfo(activities, row.id);
+      // CAN-5782: a workflow whose only trigger is Workflow shows whether its
+      // saved content is approved for its schedules' timed runs.
+      const facts = isWorkflowOnlyTriggerTypes(row.triggerTypes ?? ['dispatch'])
+        ? await scheduleApprovalFacts(row.id)
+        : undefined;
+      // A schedule that runs it with its automation install's own package
+      // is refused whatever the approval says, as the scheduler refuses it.
+      const automationPackage =
+        facts !== undefined &&
+        pipelineSchedules(activities, row.id).some((activity) => {
+          // Only a holder with its own capability package resolves one; an
+          // inline install's bundled ID alone runs on the ordinary approval.
+          const installed = bundledPackageHolder(
+            activities,
+            activity,
+          )?.installedFrom;
+          return (
+            installed?.bundledPipelineLocalId !== undefined &&
+            installed.capabilityPackage !== undefined
+          );
+        });
+      const scheduleApproval =
+        facts === undefined
+          ? undefined
+          : automationPackage
+            ? { ...facts, approved: false, automationPackage: true as const }
+            : facts;
+      const workflowPage = {
+        ...page,
+        ...(scheduleApproval ? { scheduleApproval } : {}),
+      };
+      const workflowCallers = callers.get(row.id);
+      const workflowTriggerCallers = triggerCallers.get(row.id);
+      return {
+        ...row,
+        workflowPage,
+        ...(workflowCallers ? { workflowCallers } : {}),
+        ...(workflowTriggerCallers ? { workflowTriggerCallers } : {}),
+      };
+    }),
+  );
 }
 
 export const WORKFLOW_DUPLICATE_FAILED =
@@ -775,7 +889,7 @@ export async function workflowPageDuplicateRefusal(
 }
 
 /**
- * Duplicate of a workflow page: the copy opens as one, with no agent marker
+ * Duplicate of a user workflow: the copy opens with no agent marker
  * (core copies none), Orchestrator hiding kept, its first schedule's run
  * values (or the kept ones) for Add schedule, and the plugin preferences a
  * conversion keeps under the pipeline's id, which core doesn't copy.
@@ -786,7 +900,6 @@ export async function copyWorkflowPageFacts(
 ): Promise<boolean> {
   const activities = await storedActivities();
   const metadata = userPipelineMetadata(sourceId);
-  if (!isWorkflowPagePipeline(activities, sourceId, metadata)) return true;
   const owner = pipelineOwnerRecord(activities, sourceId, metadata);
   const first = owner ?? pipelineSchedules(activities, sourceId)[0];
   const lastScheduleValues =
@@ -816,7 +929,7 @@ export async function copyWorkflowPageFacts(
 }
 
 /**
- * Decision 6: a workflow page's name is its schedules' name. A name-only
+ * Decision 6: a workflow's name is its schedules' name. A name-only
  * write keeps each record's author; a record that refuses it keeps its name
  * and is logged.
  */
@@ -833,7 +946,6 @@ export async function copyWorkflowNameToSchedules(
     logMainProcessError('Failed to rename a workflow’s schedules', error);
     return;
   }
-  if (!isWorkflowPagePipeline(activities, pipelineId)) return;
   const { getAutomationsService } = await import('./service');
   const service = getAutomationsService();
   for (const schedule of pipelineSchedules(activities, pipelineId)) {

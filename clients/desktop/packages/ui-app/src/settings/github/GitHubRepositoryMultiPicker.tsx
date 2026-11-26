@@ -1,6 +1,6 @@
 'use client';
 
-import { Dot } from '@canopy/ui-shared/components/Badge';
+import { Dot } from '@canopy/ui-shared/primitives/Badge';
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
 import {
   Button,
@@ -9,7 +9,6 @@ import {
   CopyDetailsButton,
   DelayedLoadingPlaceholder,
   FloatingPickerMenu,
-  LoadingButton,
   Notice,
   PickerMenuOption,
   PickerMenuOptionCheck,
@@ -565,7 +564,7 @@ export function GitHubRepositoryMultiPicker({
       <p aria-live="polite">{selected.length} selected</p>
       {capped && <Notice>Select up to {maxSelected} repositories.</Notice>}
       {page.nextCursor && (
-        <LoadingButton
+        <Button
           variant="secondary"
           size="compact"
           className="self-start"
@@ -577,7 +576,7 @@ export function GitHubRepositoryMultiPicker({
           }}
         >
           Load more
-        </LoadingButton>
+        </Button>
       )}
     </section>
   );

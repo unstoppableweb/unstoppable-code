@@ -1,4 +1,4 @@
-import { ControlButton } from './Button';
+import { ControlButton } from '../primitives/Button';
 
 import type { CSSProperties, JSX, ReactNode, Ref } from 'react';
 import {
@@ -6,13 +6,9 @@ import {
   type ChatComposerOverflowMenuProps,
 } from './ChatComposerOverflowMenu';
 import { FoldReveal } from './FoldReveal';
-import { Tooltip } from './Tooltip';
-
-export type ChatComposerToolbarChipActiveTone =
-  | 'default'
-  | 'warning'
-  | 'accent'
-  | 'status-active';
+import { Tooltip } from '../primitives/Tooltip';
+import type { ChatComposerToolbarChipActiveTone } from '../primitives/control-button-shared';
+export type { ChatComposerToolbarChipActiveTone } from '../primitives/control-button-shared';
 
 /**
  * Controlled-component contract for a single composer chip (plugins, model,
@@ -403,7 +399,7 @@ export function ChatComposerToolbar({
  * hardware (DESIGN.md), untouched on a mouse. One string so the model picker,
  * the thinking control and the toolbar chip cannot drift apart.
  */
-export { CAPSULE_TOUCH_FLOOR_CLASS } from './control-button-shared';
+export { CAPSULE_TOUCH_FLOOR_CLASS } from '../primitives/control-button-shared';
 
 export function ChatComposerToolbarChip({
   buttonRef,

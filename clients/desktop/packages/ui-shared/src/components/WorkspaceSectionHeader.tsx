@@ -1,6 +1,6 @@
-import { ListRowFrame } from './ListRow';
-import { ControlButton } from './Button';
-import { Dot } from './Badge';
+import { ListRowFrame } from '../primitives/ListRow';
+import { ControlButton } from '../primitives/Button';
+import { Dot } from '../primitives/Badge';
 import {
   useCallback,
   useRef,
@@ -10,9 +10,15 @@ import {
   type PointerEvent,
   type ReactNode,
 } from 'react';
-import { DropdownMenuItem, DropdownMenuItemIcon } from './DropdownMenu';
-import { ActionMenuRowStyle } from './ActionMenuItems';
-import { FloatingMenu, FloatingMenuPointAnchor } from './FloatingMenu';
+import {
+  DropdownMenuItem,
+  DropdownMenuItemIcon,
+} from '../primitives/DropdownMenu';
+import { ActionMenuRowStyle } from '../primitives/ActionMenuItems';
+import {
+  FloatingMenu,
+  FloatingMenuPointAnchor,
+} from '../primitives/FloatingMenu';
 import {
   CHAT_UNIT_LABEL,
   CHAT_UNIT_LABEL_PLURAL,
@@ -33,11 +39,11 @@ import {
 import { CloudBackendIcon } from '../icons/CloudBackendIcon';
 import { DeviceBackendIcon } from '../icons/DeviceBackendIcon';
 import { RailIconButton } from './RailIconButton';
-import { RichHoverTooltip } from './RichHoverTooltip';
-import { useMediaQuery } from './useMediaQuery';
+import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
+import { useMediaQuery } from '../primitives/useMediaQuery';
 import { ProjectAvatarBadge } from './ProjectAvatarBadge';
 import { WorkspaceIconDisclosureSwap } from './WorkspaceIconDisclosureSwap';
-import { SIDEBAR_ROW_TRAILING_CELL_CLASSNAME } from './sidebar-item-classes';
+import { SIDEBAR_ROW_TRAILING_CELL_CLASSNAME } from '../primitives/sidebar-item-classes';
 import { SidebarPinnedBadge, SIDEBAR_PINNED_LABEL } from './SidebarPinnedBadge';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';
 import { useSidebarHeaderRest } from '../lib/useSidebarHeaderRest';
@@ -711,7 +717,7 @@ export function WorkspaceSectionHeader({
 
   const nameLabel = (
     <span
-      className={`${REPLAY_MASK_CLASS} min-w-0 truncate ${textScale === 'sidebar' ? 'text-s font-normal' : 'text-m font-semibold'} leading-snug ${isMultiRepo && textScale !== 'sidebar' ? 'fg-info' : nameTone === 'secondary' ? 'fg-secondary transition-colors group-hover/sidebar-item:fg-primary' : 'fg-primary'}`}
+      className={`${REPLAY_MASK_CLASS} min-w-0 truncate-fade ${textScale === 'sidebar' ? 'text-s font-normal' : 'text-m font-semibold'} leading-snug ${isMultiRepo && textScale !== 'sidebar' ? 'fg-info' : nameTone === 'secondary' ? 'fg-secondary transition-colors group-hover/sidebar-item:fg-primary' : 'fg-primary'}`}
       title={displayName}
     >
       {displayName}

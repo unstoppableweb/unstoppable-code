@@ -5,7 +5,7 @@ import {
 } from '@canopy/protocol/canopy-core';
 import {
   OperationCancelRefusedError,
-  type OperationService,
+  type OperationServicePort,
 } from '../operations/service';
 
 import {
@@ -86,9 +86,9 @@ export interface HookChatClaimRequest {
 
 /** Start claims remain receipted after their saved outcomes expire. */
 export class HookChatClaims {
-  private readonly operations: OperationService;
+  private readonly operations: OperationServicePort;
 
-  constructor(options: { operations: OperationService }) {
+  constructor(options: { operations: OperationServicePort }) {
     this.operations = options.operations;
     this.operations.registerDomain({
       domain: HOOK_CHAT_CLAIM_DOMAIN,

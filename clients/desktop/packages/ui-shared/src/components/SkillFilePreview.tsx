@@ -1,8 +1,8 @@
-import { CodeBlock } from './CodeBlock';
-import { Stack } from './Stack';
+import { CodeBlock } from '../primitives/CodeBlock';
+import { Stack } from '../primitives/Stack';
 import type { JSX } from 'react';
-import { EmptyStateText, ErrorBanner } from './StatusBlocks';
-import { CenteredLoadingSpinner } from './CenteredLoadingSpinner';
+import { EmptyStateText, ErrorBanner } from '../primitives/StatusBlocks';
+import { CenteredLoadingSpinner } from '../primitives/CenteredLoadingSpinner';
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
 import { SkillMarkdownBody } from './SkillFileExplorer';
 

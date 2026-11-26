@@ -1,4 +1,4 @@
-import { Stack } from './Stack';
+import { Stack } from '../primitives/Stack';
 import {
   useId,
   useState,
@@ -6,9 +6,9 @@ import {
   type JSX,
   type ReactNode,
 } from 'react';
-import { TextInput } from './Field';
+import { TextInput } from '../primitives/Field';
 import { SettingsRowsRow, SettingsRowsSubRow } from './settings/SettingsRows';
-import { ToggleSwitch } from './ToggleSwitch';
+import { ToggleSwitch } from '../primitives/ToggleSwitch';
 
 export interface AutoArchiveSettingsControlProps {
   readonly enabled: boolean;

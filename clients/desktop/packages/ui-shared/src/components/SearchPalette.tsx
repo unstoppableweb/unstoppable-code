@@ -1,5 +1,5 @@
 import type { JSX, ReactNode } from 'react';
-import { SegmentedControl } from './SegmentedControl';
+import { SegmentedControl } from '../primitives/SegmentedControl';
 
 /** One scope of a search palette: a tab along its bottom edge. */
 export interface SearchPaletteScope<T extends string> {

@@ -33,8 +33,13 @@ import {
   assertAdmittedWriter,
   isStorageOutcomeUnknownError,
   type StorageOwnershipRow,
+  type StorageTransitionOwner,
   type StorageWriterPrincipal,
 } from '../../../storage';
+import {
+  decideRowWrite,
+  parseOwnerFlipRecord,
+} from '../../../storage/owner-records';
 import { damagedCopyPath } from '../../damaged-copies';
 
 /** A write's admission claim: the namespace, the writer and its module (CAN-5092). */
@@ -102,6 +107,12 @@ export interface PipelineDefinitionStoreEnvironment {
   defaultWriter(): StorageWriterPrincipal;
   /** The module a write claims for admission. */
   readonly writerModule: string;
+  /**
+   * The definitions row's owner record (CAN-7690). Every write reads it under
+   * the writer lock and is refused when it names another owner or can't be
+   * read; with no record, the compiled ownership table decides.
+   */
+  ownerFlipRecordPath?(): string;
 }
 
 function safeReadFile(filePath: string): string | null {
@@ -133,7 +144,10 @@ export type StoredPipelineWriteRefusal =
   | 'index_unreadable'
   | 'index_damaged'
   | 'busy'
-  | 'io';
+  | 'finalization_failed'
+  | 'finalization_unconfirmed'
+  | 'io'
+  | 'owner_moved';
 
 export type StoredPipelineWriteResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -141,9 +155,19 @@ export type StoredPipelineWriteResult<T> =
       readonly ok: false;
       readonly reason: StoredPipelineWriteRefusal;
       readonly message: string;
+      /** For `owner_moved`: the owner that keeps the definitions now. */
+      readonly owner?: StorageTransitionOwner;
     };
 
+export type StoredPipelineInfo = PipelineInfo & { readonly revision: number };
+
 export interface StoredPipelineWriteOptions {
+  /** Trusted host precondition checked before publication under the writer lock. */
+  readonly prepare?: (id: string) => StoredPipelineWriteResult<() => void>;
+  /** Trusted host effect that must succeed under the writer lock. */
+  readonly finalize?: (
+    saved: StoredPipelineInfo,
+  ) => StoredPipelineWriteResult<void>;
   readonly createId?: string;
   readonly expectedRevision?: number | null;
   readonly requireExisting?: boolean;
@@ -162,7 +186,8 @@ interface RawIndex {
 }
 
 type IndexRead =
-  | { status: 'ok' | 'missing'; raw: RawIndex }
+  | { status: 'ok'; raw: RawIndex; bytes: string }
+  | { status: 'missing'; raw: RawIndex }
   | { status: 'newer'; raw: RawIndex; hasPipelineArray: boolean }
   | { status: 'damaged'; bytes: string; rebuilt: RawIndex }
   | { status: 'unreadable'; code: string };
@@ -212,12 +237,19 @@ export interface PipelineDefinitionStore {
     context: StoredPipelineWriterContext,
     run: () => T,
   ) => T;
+  /** Runs a synchronous definition or sidecar write under the shared lock. */
+  readonly withStoredPipelineDefinitionLock: <T>(
+    run: () => StoredPipelineWriteResult<T>,
+  ) => StoredPipelineWriteResult<T>;
   /**
    * Runs `run` with user id lookups sharing one read of the index (CAN-7087).
    * The snapshot holds only while `run` executes synchronously, and a write
    * through the store drops it.
    */
   readonly withStoredPipelineIndexSnapshot: <T>(run: () => T) => T;
+  readonly findStoredUserPipelineIdByFilename: (
+    filename: string,
+  ) => string | undefined;
   readonly listStoredPipelines: () => IPCResult<PipelineInfo[]>;
   readonly getStoredPipeline: (id: string) => IPCResult<PipelineData>;
   readonly getStoredPipelineBySource: (
@@ -259,11 +291,11 @@ export interface PipelineDefinitionStore {
   readonly writeStoredPipeline: (
     input: PipelineSaveInput,
     options?: StoredPipelineWriteOptions,
-  ) => StoredPipelineWriteResult<PipelineInfo>;
+  ) => StoredPipelineWriteResult<StoredPipelineInfo>;
   readonly saveStoredPipeline: (
     input: PipelineSaveInput,
     trustedCreate?: { id: string },
-  ) => IPCResult<PipelineInfo>;
+  ) => IPCResult<StoredPipelineInfo>;
   /** Persist the author-side cloud link beside a stored user pipeline. */
   readonly writeStoredPipelineRemoteMetadata: (
     id: string,
@@ -484,23 +516,60 @@ export function createPipelineDefinitionStore(
   function refused(
     reason: StoredPipelineWriteRefusal,
     message: string,
+    owner?: StorageTransitionOwner,
   ): {
     readonly ok: false;
     readonly reason: StoredPipelineWriteRefusal;
     readonly message: string;
+    readonly owner?: StorageTransitionOwner;
   } {
-    return { ok: false, reason, message };
+    return owner === undefined
+      ? { ok: false, reason, message }
+      : { ok: false, reason, message, owner };
+  }
+
+  /** A file's text, or the code of the error that kept it from being read. */
+  function readTextFile(
+    filePath: string,
+  ): { readonly text: string } | { readonly code: string } {
+    try {
+      return { text: readFileSync(filePath, 'utf8') };
+    } catch (error) {
+      return { code: errorCode(error) };
+    }
+  }
+
+  /**
+   * The refusal for a write whose writer the definitions row's owner record
+   * doesn't name (CAN-7690); undefined when the write may go ahead.
+   */
+  function ownerRefusal(): ReturnType<typeof refused> | undefined {
+    const recordPath = env.ownerFlipRecordPath?.();
+    if (recordPath === undefined) return undefined;
+    const read = readTextFile(recordPath);
+    const decision = decideRowWrite(
+      'text' in read
+        ? parseOwnerFlipRecord(read.text, 'pipeline_definitions')
+        : read.code === 'ENOENT'
+          ? { kind: 'absent' }
+          : {
+              kind: 'unreadable',
+              reason: `The owner record could not be read (${read.code}).`,
+            },
+      writerContext?.writer ?? env.defaultWriter(),
+    );
+    return decision.allowed
+      ? undefined
+      : refused('owner_moved', decision.message, decision.owner);
   }
 
   function readRawIndex(): IndexRead {
-    let bytes: string;
-    try {
-      bytes = readFileSync(userPipelineIndexPath(), 'utf8');
-    } catch (error) {
-      return errorCode(error) === 'ENOENT'
+    const read = readTextFile(userPipelineIndexPath());
+    if (!('text' in read))
+      return read.code === 'ENOENT'
         ? { status: 'missing', raw: { rest: {}, entries: [] } }
-        : { status: 'unreadable', code: errorCode(error) };
-    }
+        : { status: 'unreadable', code: read.code };
+    const bytes = read.text;
     let value: unknown;
     try {
       value = JSON.parse(bytes);
@@ -529,7 +598,7 @@ export function createPipelineDefinitionStore(
       return { status: 'damaged', bytes, rebuilt: rebuildIndexFromDocuments() };
     }
     const { pipelines, ...rest } = value;
-    return { status: 'ok', raw: { rest, entries: pipelines } };
+    return { status: 'ok', raw: { rest, entries: pipelines }, bytes };
   }
 
   function visibleEntries(
@@ -696,7 +765,7 @@ export function createPipelineDefinitionStore(
       );
   }
 
-  function installDurably(filePath: string, data: string): void {
+  function installDurably(filePath: string, data: string): boolean {
     try {
       env.installUserFile(userFileName(filePath), data, {
         namespace: 'pipeline_definitions',
@@ -704,11 +773,13 @@ export function createPipelineDefinitionStore(
         module: env.writerModule,
         ...(writerContext && { ownership: writerContext.ownership }),
       });
+      return true;
     } catch (error) {
       if (!isStorageOutcomeUnknownError(error)) throw error;
       process.stderr.write(
         `[pipelines] ${filePath} installed, but its folder flush failed: ${errorMessage(error)}\n`,
       );
+      return false;
     }
   }
 
@@ -740,7 +811,7 @@ export function createPipelineDefinitionStore(
         () => {
           writerLockDepth += 1;
           try {
-            return operation();
+            return ownerRefusal() ?? operation();
           } finally {
             writerLockDepth -= 1;
           }
@@ -1310,7 +1381,7 @@ export function createPipelineDefinitionStore(
   function writeStoredPipeline(
     input: PipelineSaveInput,
     options: StoredPipelineWriteOptions = {},
-  ): StoredPipelineWriteResult<PipelineInfo> {
+  ): StoredPipelineWriteResult<StoredPipelineInfo> {
     try {
       assertWriterContext();
     } catch (error) {
@@ -1344,6 +1415,9 @@ export function createPipelineDefinitionStore(
     }
     return withDefinitionLock(() => {
       let undo: (() => void) | undefined;
+      let restoreIndex: (() => void) | undefined;
+      let restorePreparation: (() => void) | undefined;
+      let finalizing = false;
       try {
         const read = readRawIndex();
         if (read.status === 'unreadable')
@@ -1356,6 +1430,10 @@ export function createPipelineDefinitionStore(
             'index_newer',
             'The workflow list was saved by a newer version of the app. Update the app to change workflows.',
           );
+        const finalize = options.finalize;
+        const indexPath = userPipelineIndexPath();
+        const previousIndex =
+          finalize && read.status !== 'missing' ? read.bytes : null;
         const raw = read.status === 'damaged' ? read.rebuilt : read.raw;
         const visible = visibleEntries(raw);
         const existing = visible.find((entry) => entry.id === requested);
@@ -1425,6 +1503,8 @@ export function createPipelineDefinitionStore(
         }
         const previousBytes =
           existing && onDisk ? onDisk.toString('utf8') : null;
+        if (finalize && existing && previousBytes === null)
+          return refused('io', 'The previous workflow could not be read.');
         // Only a document holding exactly this create's bytes is adopted.
         const adopted =
           adoptable &&
@@ -1437,19 +1517,25 @@ export function createPipelineDefinitionStore(
           );
         if (read.status === 'damaged')
           installDurably(damagedCopyPath(userPipelineIndexPath()), read.bytes);
+        const prepared = options.prepare?.(id);
+        if (prepared && !prepared.ok) return prepared;
+        // An adopted document can survive without its index entry.
+        if (!adopted) restorePreparation = prepared?.value;
         if (!adopted) installDurably(filePath, yamlContent);
         undo = adopted
           ? undefined
           : existing
             ? previousBytes === null
               ? undefined
-              : (): void => installDurably(filePath, previousBytes)
+              : (): void => {
+                  installDurably(filePath, previousBytes);
+                }
             : (): void => env.removeUserFile(userFileName(filePath));
         const now = new Date().toISOString();
         const curatedOrigin = parseCuratedOrigin(
           input.curatedOrigin ?? existing?.curatedOrigin,
         );
-        const entry: PipelineIndexEntry = {
+        const entry: PipelineIndexEntry & { revision: number } = {
           id,
           name: input.name,
           filename,
@@ -1471,25 +1557,56 @@ export function createPipelineDefinitionStore(
           scopes,
         };
         const next = replaceRawEntry(raw, entry);
-        installDurably(
-          userPipelineIndexPath(),
+        const indexConfirmed = installDurably(
+          indexPath,
           JSON.stringify({ ...next.rest, pipelines: next.entries }, null, 2),
         );
-        if (read.status === 'damaged') env.pruneDamagedIndexCopies();
-        return {
-          ok: true,
-          value: { ...entry, source: 'user', readonly: false },
+        const saved: StoredPipelineInfo = {
+          ...entry,
+          source: 'user',
+          readonly: false,
         };
-      } catch (error) {
-        const message = errorMessage(error);
-        if (undo) {
-          try {
-            undo();
-          } catch (undoError) {
-            return refused('io', `${message}; ${errorMessage(undoError)}`);
+        if (finalize) {
+          restoreIndex =
+            previousIndex === null
+              ? (): void => env.removeUserFile(userFileName(indexPath))
+              : (): void => {
+                  installDurably(indexPath, previousIndex);
+                };
+          finalizing = true;
+          // The document and index share a directory. Confirm their publication
+          // before a host effect can change which metadata applies to them.
+          if (!indexConfirmed) env.flushUserDirectory();
+          const finalized = finalize(saved);
+          if (!finalized.ok) {
+            // The host could not undo its effect. Keep the confirmed revision
+            // instead of restoring a definition whose prior metadata may be gone.
+            if (finalized.reason === 'finalization_unconfirmed')
+              return finalized;
+            throw new Error(finalized.message);
           }
         }
-        return refused('io', message);
+        if (read.status === 'damaged') env.pruneDamagedIndexCopies();
+        return { ok: true, value: saved };
+      } catch (error) {
+        const message = errorMessage(error);
+        try {
+          undo?.();
+          restoreIndex?.();
+          if (finalizing || (restorePreparation && (undo || restoreIndex)))
+            env.flushUserDirectory();
+          else if (undo || restoreIndex) flushRemovedDocuments();
+          restorePreparation?.();
+        } catch (undoError) {
+          return refused(
+            finalizing ? 'finalization_unconfirmed' : 'io',
+            `${message} The previous workflow state could not be restored: ${errorMessage(undoError)}`,
+          );
+        }
+        return refused(
+          finalizing ? 'finalization_failed' : 'io',
+          finalizing ? `${message} The workflow change was undone.` : message,
+        );
       }
     });
   }
@@ -1497,7 +1614,7 @@ export function createPipelineDefinitionStore(
   function saveStoredPipeline(
     input: PipelineSaveInput,
     trustedCreate?: { id: string },
-  ): IPCResult<PipelineInfo> {
+  ): IPCResult<StoredPipelineInfo> {
     return toIPCResult(
       writeStoredPipeline(
         input,
@@ -1747,7 +1864,10 @@ export function createPipelineDefinitionStore(
   return {
     readStoredPipelineIndexStatus,
     withStoredPipelineWriter,
+    withStoredPipelineDefinitionLock: withDefinitionLock,
     withStoredPipelineIndexSnapshot,
+    findStoredUserPipelineIdByFilename: (filename) =>
+      readIndex().pipelines.find((entry) => entry.filename === filename)?.id,
     listStoredPipelines,
     getStoredPipeline,
     getStoredPipelineBySource,

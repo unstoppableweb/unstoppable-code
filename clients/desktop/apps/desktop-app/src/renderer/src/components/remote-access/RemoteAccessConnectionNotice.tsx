@@ -270,8 +270,9 @@ export function RemoteAccessConnectionNotice(): JSX.Element | null {
         className="pointer-events-auto"
         data-testid="remote-access-connection-notice"
         data-state="reconnecting"
+        detail="Trying again…"
       >
-        {host.error ? `${host.error} Trying again…` : 'Trying again…'}
+        {host.error ?? null}
       </Notice>
     );
   }

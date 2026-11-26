@@ -1,16 +1,16 @@
-import { TextLink } from './TextLink';
-import { Badge } from './Badge';
-import { Stack } from './Stack';
+import { TextLink } from '../primitives/TextLink';
+import { Badge } from '../primitives/Badge';
+import { Stack } from '../primitives/Stack';
 import type { JSX } from 'react';
 
 import { DelayedLoadingPlaceholder } from './DelayedLoadingPlaceholder';
-import { Skeleton } from './Skeleton';
-import { EmptyStateText, ErrorBanner } from './StatusBlocks';
-import { Surface } from './Surface';
-import { Fact, FactList } from './FactList';
+import { Skeleton } from '../primitives/Skeleton';
+import { EmptyStateText, ErrorBanner } from '../primitives/StatusBlocks';
+import { Surface } from '../primitives/Surface';
+import { Fact, FactList } from '../primitives/FactList';
 import { pluginDisplayAuthor } from '../lib/official-marketplace-products';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
-import { Heading } from './Heading';
+import { Heading } from '../primitives/Heading';
 
 // ---------------------------------------------------------------------------
 // Narrow structural prop types

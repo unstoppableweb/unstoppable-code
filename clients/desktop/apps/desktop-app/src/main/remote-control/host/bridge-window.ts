@@ -44,6 +44,10 @@ export interface HostBridge {
 interface BridgeRecord {
   controllerDeviceId: string;
   exactWorktreeBaseBranch: boolean;
+  /** Whether the bridge's session still holds its pairing (CAN-7872). */
+  isAuthorized: () => boolean;
+  /** Whether the bridge serves a one-window session (CAN-7854). */
+  oneWindow: boolean;
   onReady: () => void;
   onResult: (message: unknown) => void;
 }
@@ -84,6 +88,31 @@ export function resolveRemoteBridgeSender(sender: {
 }
 
 /**
+ * For a call a remote controller's bridge replays, a check that its send or
+ * new chat may still commit: false once the bridge is gone or its session
+ * lost its pairing (CAN-7872). Undefined for this computer's own windows,
+ * whose sends are not held to it.
+ */
+export function remoteBridgeCommitGuard(sender: {
+  id: number;
+}): (() => boolean) | undefined {
+  const id = sender.id;
+  const record = bridgesByWebContentsId.get(id);
+  if (!record) return undefined;
+  return (): boolean =>
+    bridgesByWebContentsId.get(id) === record && record.isAuthorized();
+}
+
+/**
+ * Whether a call comes from a one-window session's bridge (CAN-7854): its
+ * exact-turn Stop stops only the running turn. False for this computer's own
+ * windows and every other controller's bridge.
+ */
+export function remoteBridgeIsOneWindow(sender: { id: number }): boolean {
+  return bridgesByWebContentsId.get(sender.id)?.oneWindow === true;
+}
+
+/**
  * Local windows and bridges whose desktop or browser controller negotiated
  * the exact mode use the exact catalogue.
  */
@@ -112,6 +141,10 @@ export async function createBridgeWindow(options: {
   controllerDeviceId: string;
   exactWorktreeBaseBranch: boolean;
   preloadPath: string;
+  /** The owning session's authorization, checked before a send commits. */
+  isAuthorized: () => boolean;
+  /** Whether the owning session is a one-window session. */
+  oneWindow: boolean;
 }): Promise<HostBridge> {
   installIpcListeners();
   const window = new BrowserWindow({
@@ -163,6 +196,8 @@ export async function createBridgeWindow(options: {
   bridgesByWebContentsId.set(webContentsId, {
     controllerDeviceId: options.controllerDeviceId,
     exactWorktreeBaseBranch: options.exactWorktreeBaseBranch,
+    isAuthorized: options.isAuthorized,
+    oneWindow: options.oneWindow,
     onReady: () => markReady(),
     onResult: (message) => {
       if (!isRecord(message) || typeof message.id !== 'number') return;

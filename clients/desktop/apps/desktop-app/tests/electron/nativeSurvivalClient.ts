@@ -19,11 +19,18 @@ const loadObserverModule: ObserverModuleLoader = tsRequire;
 
 interface ObserverDefinitions {
   queries: typeof Runtime.CANOPY_RUNTIME_QUERY_DEFINITIONS &
-    typeof Protocol.WORKER_PIPELINE_QUERY_DEFINITIONS;
+    typeof Protocol.WORKER_PIPELINE_QUERY_DEFINITIONS &
+    typeof Protocol.CORE_CLOUD_ACCOUNT_CUSTODY_QUERY_DEFINITIONS;
   instructions: typeof Protocol.CORE_TRANSPORT_INSTRUCTION_DEFINITIONS &
     Pick<
       typeof Protocol.WORKER_PIPELINE_INSTRUCTION_DEFINITIONS,
       'worker.pipeline.execution.cancel'
+    > &
+    typeof Protocol.CORE_CLOUD_ACCOUNT_CUSTODY_INSTRUCTION_DEFINITIONS &
+    Pick<
+      typeof Protocol.CORE_CLOUD_ACCOUNT_INSTRUCTION_DEFINITIONS,
+      | 'core.integration.cloudAccount.connectWithKey'
+      | 'core.integration.cloudAccount.disconnect'
     >;
   streams: typeof Protocol.WORKER_PIPELINE_STREAM_DEFINITIONS;
 }
@@ -59,9 +66,19 @@ export async function openNativeObserver(
     queries: {
       ...runtime.CANOPY_RUNTIME_QUERY_DEFINITIONS,
       ...protocol.WORKER_PIPELINE_QUERY_DEFINITIONS,
+      ...protocol.CORE_CLOUD_ACCOUNT_CUSTODY_QUERY_DEFINITIONS,
     },
     instructions: {
       ...protocol.CORE_TRANSPORT_INSTRUCTION_DEFINITIONS,
+      ...protocol.CORE_CLOUD_ACCOUNT_CUSTODY_INSTRUCTION_DEFINITIONS,
+      'core.integration.cloudAccount.connectWithKey':
+        protocol.CORE_CLOUD_ACCOUNT_INSTRUCTION_DEFINITIONS[
+          'core.integration.cloudAccount.connectWithKey'
+        ],
+      'core.integration.cloudAccount.disconnect':
+        protocol.CORE_CLOUD_ACCOUNT_INSTRUCTION_DEFINITIONS[
+          'core.integration.cloudAccount.disconnect'
+        ],
       'worker.pipeline.execution.cancel':
         protocol.WORKER_PIPELINE_INSTRUCTION_DEFINITIONS[
           'worker.pipeline.execution.cancel'

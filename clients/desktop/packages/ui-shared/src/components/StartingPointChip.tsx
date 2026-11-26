@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
-import { Chip } from './Chip';
-import { Tooltip } from './Tooltip';
+import { Chip } from '../primitives/Chip';
+import { Tooltip } from '../primitives/Tooltip';
 
 export interface StartingPointChipProps {
   /** The starting point's name, the chip's label. */

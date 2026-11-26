@@ -6,6 +6,7 @@ export * from './bootstrap';
 export * from './events';
 export * from './account';
 export * from './account-delegation';
+export * from './account-slack-link';
 export * from './account-digests';
 export * from './account-github';
 export * from './github-review-approvals';

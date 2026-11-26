@@ -192,18 +192,21 @@ const stagingTargets =
       });
 if (stagingTargets?.length === 0)
   throw new Error('--targets needs at least one core daemon target.');
+if (stagingTargets && process.env.CANOPY_E2E_BUILD === '1')
+  throw new Error('E2E core daemon builds cannot stage packaging targets.');
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const rootPackage = createRequire(import.meta.url)(join(root, 'package.json'));
 const brand = loadBrand(process.env.CANOPY_BRAND ?? 'canopy');
 const identity = daemonBuildIdentity({ brand, version: rootPackage.version });
-// Staging builds keep their intermediates apart, so dist/core-daemon (the E2E
-// and smoke input) only ever holds a host build.
+// Never let a test-enabled daemon become the development/production binary.
 const outDir = join(
   root,
   ...(stagingTargets
     ? ['.cache', 'core-daemon-staging']
-    : ['dist', 'core-daemon']),
+    : process.env.CANOPY_E2E_BUILD === '1'
+      ? ['.cache', 'e2e-core-daemon-build']
+      : ['dist', 'core-daemon']),
 );
 const bundlePath = join(outDir, 'main.bundle.js');
 const blobPath = join(outDir, 'sea-prep.blob');
@@ -371,6 +374,9 @@ try {
     metafile: true,
     define: {
       __CANOPY_COMPILED_RUNTIME__: 'true',
+      // CAN-6997: the Cloud account E2E composition also needs its runtime
+      // opt-in; production selection stays off.
+      __CANOPY_E2E__: JSON.stringify(process.env.CANOPY_E2E_BUILD === '1'),
       __CANOPY_NATIVE_ARTIFACT_CATALOG__: JSON.stringify(
         encodeNativeVaultCatalog(nativeCatalog),
       ),
@@ -379,6 +385,28 @@ try {
       ...daemonSecureDirectoryDefines({ brand }),
       __CANOPY_DAEMON_BUILD_COWORK_DIR_NAME__: JSON.stringify(
         brand.storage.projectConfigDirNames[0],
+      ),
+      // CAN-6997: the Cloud the account services verify keys against; null in
+      // a local-only build or when no base URL is configured.
+      __CANOPY_DAEMON_CLOUD_ENDPOINT__: JSON.stringify(
+        readCloudBaseUrlForBundle(process.env)
+          ? {
+              baseUrl: readCloudBaseUrlForBundle(process.env),
+              wellKnownNamespace: brand.web.wellKnownNamespace,
+              apiNamespace: brand.web.apiNamespace,
+            }
+          : null,
+      ),
+      // CAN-6997: an E2E build only may re-point the daemon's Cloud at launch,
+      // as the app does with CANOPY_E2E_CLOUD_BASE_URL; other builds define
+      // null, so the branch and the variable name are eliminated.
+      __CANOPY_DAEMON_E2E_CLOUD__: JSON.stringify(
+        process.env.CANOPY_E2E_BUILD === '1'
+          ? {
+              wellKnownNamespace: brand.web.wellKnownNamespace,
+              apiNamespace: brand.web.apiNamespace,
+            }
+          : null,
       ),
       ...daemonIdentityDefines(identity),
     },

@@ -1,6 +1,13 @@
+import { join } from 'node:path';
+import {
+  beginDirectoryDeletion,
+  directoryRemovalOutcome,
+  drainDirectoryEffects,
+} from './directory-effect-admission';
 import { rm } from 'node:fs/promises';
 import { CODE_REVIEW_CHAT_PROJECT_ID } from '@canopy/desktop-shared/types';
 import { removePersistedWorktreeDataDirectory } from '@canopy/desktop-shared/node/lib/worktree-data-cleanup';
+import { terminalPersistenceStore } from '../terminal/persistence';
 import { getChatStateService } from '../services/chat-state-service';
 import { getChatSearchService } from '../chat-search/service';
 import { cleanupWorktreeChatPluginDirs } from '../plugins/plugin-cleanup';
@@ -37,6 +44,34 @@ export async function retireCodeReviewTarget(
   scopeKey: string,
   owner: CodeReviewTargetEntry,
 ): Promise<void> {
+  const path = join(
+    getWorktreeDataRootDir(CODE_REVIEW_CHAT_PROJECT_ID),
+    scopeKey,
+  );
+  const directory = beginDirectoryDeletion(path);
+  let committed = false;
+  try {
+    await retireCodeReviewTargetWithDirectory(
+      registryPath,
+      scopeKey,
+      owner,
+      () => {
+        committed = true;
+      },
+    );
+  } finally {
+    directory.settle(
+      committed ? await directoryRemovalOutcome(path) : 'abandoned',
+    );
+  }
+}
+
+async function retireCodeReviewTargetWithDirectory(
+  registryPath: string,
+  scopeKey: string,
+  owner: CodeReviewTargetEntry,
+  onCommitted: () => void,
+): Promise<void> {
   const scope = {
     projectId: CODE_REVIEW_CHAT_PROJECT_ID,
     worktreeId: scopeKey,
@@ -67,6 +102,7 @@ export async function retireCodeReviewTarget(
     assertIdentity();
     await service.runWithScopeDeletion(scope, async () => {
       await service.deleteScope(scope);
+      onCommitted();
       assertIdentity();
       try {
         await getChatSearchService().deleteWorktreeDocs(
@@ -88,6 +124,12 @@ export async function retireCodeReviewTarget(
       // eslint-disable-next-line admitted-writers/no-unadmitted-write -- Removes only the captured attachment directory, never registry.json; remove when cleanup no longer resolves the registry identity.
       await rm(attachments, { recursive: true, force: true });
       assertIdentity();
+      // The worktree's terminal record goes with its data (CAN-7051).
+      await terminalPersistenceStore.retireTerminalRecord({
+        projectId: scope.projectId,
+        worktreeId: scopeKey,
+      });
+      await drainDirectoryEffects(join(worktreeDataRootDir, scopeKey));
       await removePersistedWorktreeDataDirectory(scope.projectId, scopeKey, {
         worktreeDataRootDir,
         removeTree: removeTreeWithoutAsar,

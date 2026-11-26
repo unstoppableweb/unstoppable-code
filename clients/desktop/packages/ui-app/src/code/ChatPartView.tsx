@@ -1,5 +1,5 @@
 'use client';
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import { isClaudeAiCreditsFallbackErrorCode } from '@canopy/protocol/llm-gateway';
 import {
   readCodexAccountModelAccessFailure,

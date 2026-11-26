@@ -17,6 +17,7 @@ import type {
   AccountProxySignInOpenParams,
 } from '../remote-protocol';
 import { RpcPublicError } from '../transport/rpc-peer';
+import { reserveLoopbackPort } from '../../lib/loopback-listeners';
 
 /**
  * Where each provider sends the browser back after sign-in: the fixed
@@ -127,6 +128,8 @@ interface Listener {
   readonly provider: AccountProxySignInProvider;
   readonly port: number;
   readonly servers: Server[];
+  /** Keeps web preview off the callback port while the listener holds it. */
+  readonly releasePort: () => void;
   timer: ReturnType<typeof setTimeout> | null;
   forwarding: boolean;
   closed: boolean;
@@ -303,6 +306,9 @@ export class RemoteAccountProxySignIns {
       provider,
       port,
       servers: [],
+      // Reserved before binding: a paired computer's web preview never
+      // reaches the callback (CAN-7679).
+      releasePort: reserveLoopbackPort(port),
       timer: null,
       forwarding: false,
       closed: false,
@@ -445,6 +451,7 @@ export class RemoteAccountProxySignIns {
   private close(listener: Listener): void {
     if (listener.closed) return;
     listener.closed = true;
+    listener.releasePort();
     if (listener.timer) clearTimeout(listener.timer);
     listener.timer = null;
     for (const server of listener.servers) {

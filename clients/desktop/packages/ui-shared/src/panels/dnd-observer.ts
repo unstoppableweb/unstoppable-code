@@ -6,7 +6,7 @@
 // Adapted from VS Code OSS: src/vs/base/browser/dom.ts (DragAndDropObserver,
 // IDragAndDropObserverCallbacks). Upstream commit c4632cac (2026-06-30).
 
-import { Disposable, type IDisposable, toDisposable } from './disposable';
+import { Disposable, type IDisposable, toDisposable } from '../lib/disposable';
 
 /**
  * Callbacks for {@link DragAndDropObserver}. This is the framework-agnostic

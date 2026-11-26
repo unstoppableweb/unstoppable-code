@@ -1,5 +1,6 @@
 import { resolveWorktreeTargetIds } from '../lib/resolve-worktree';
 import { getWorkspaceType } from '../lib/workspace-registry';
+import { workspaceManifestReadable } from '../lib/worktree-health';
 import { createDaemonGitRoute, type DaemonGitRoute } from './daemon-git-route';
 import {
   getElectronDaemonCallerLifetime,
@@ -15,7 +16,7 @@ import { resolveRepository } from './worker-git-adapter';
 let route: DaemonGitRoute | undefined;
 
 /**
- * Selects branch list on macOS and Linux (CAN-4729) under the shared
+ * Selects branch list and worktree health on macOS and Linux (CAN-4729) under the shared
  * background-service rule (CAN-5541); constructing the route makes no contact.
  */
 export function getDesktopDaemonGitRoute(): DaemonGitRoute {
@@ -38,6 +39,7 @@ export function getDesktopDaemonGitRoute(): DaemonGitRoute {
         lifetime: getElectronDaemonCallerLifetime(),
         workspaceType: getWorkspaceType,
         resolveWorktreeTargetIds,
+        workspaceManifestReadable,
         ...inputs,
       }),
     record: (reason) => recordDaemonRoute('git_reads', reason),

@@ -10,6 +10,11 @@ import {
   keyedOperationErrorSchema,
 } from '../shared';
 
+export const CloudMemoryProjectBindingSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('none') }),
+  z.strictObject({ kind: z.literal('tracked'), projectId: z.uuid() }),
+]);
+
 export const CloudMemoryConsentSchema = z.strictObject({
   revision: z.number().int().min(1),
   allowed: z.boolean(),

@@ -275,6 +275,7 @@ export function createGitTabFailedLoadPreferences(): PreferencesData {
     showDiagnosticsPill: true,
     onboardingCompleted: [],
     releaseHighlightsLastSeenVersion: null,
+    usageAnalyticsDeclinedAtOnboarding: false,
     usageData: {
       productAnalytics: true,
       sessionReplay: true,

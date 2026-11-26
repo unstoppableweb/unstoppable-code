@@ -2,7 +2,7 @@
 
 import type { JSX } from 'react';
 import { TimeslotIcon } from '../icons/AppIcons';
-import { Notice, NoticeButton } from './Notice';
+import { Notice, NoticeButton } from '../primitives/Notice';
 import {
   MODEL_LIBRARY_UNLOCK_COPY,
   modelLibraryPendingBody,
@@ -19,9 +19,8 @@ export interface ModelUnlockPendingNoticeProps {
   readonly checking?: boolean;
   readonly onCheckNow: () => void;
   /**
-   * Stop tracking this purchase. Offered only once automatic checks have
-   * stopped: while they run, the notice is the only cue that a purchase is
-   * still being followed, so it cannot be dismissed.
+   * Stop tracking this purchase, from the close icon. Offered in both phases:
+   * `detail` says that closing stops tracking but keeps the purchase.
    */
   readonly onDismiss?: () => void;
   readonly dataTestId?: string;
@@ -44,7 +43,6 @@ export function ModelUnlockPendingNotice({
   dataTestId = 'model-unlock-pending-notice',
 }: ModelUnlockPendingNoticeProps): JSX.Element {
   const waiting = phase === 'waiting';
-  const dismiss = waiting ? undefined : onDismiss;
   return (
     <Notice
       intent={waiting ? 'neutral' : 'attention'}
@@ -58,11 +56,11 @@ export function ModelUnlockPendingNotice({
           ? MODEL_LIBRARY_UNLOCK_COPY.pendingTitle
           : MODEL_LIBRARY_UNLOCK_COPY.timedOutTitle
       }
-      {...(dismiss === undefined
+      {...(onDismiss === undefined
         ? {}
         : {
             detail: MODEL_LIBRARY_UNLOCK_COPY.dismissHelp,
-            onDismiss: dismiss,
+            onDismiss,
             dismissLabel: MODEL_LIBRARY_UNLOCK_COPY.dismissPaymentAction,
             dismissTestId: 'model-unlock-pending-dismiss',
           })}

@@ -28,7 +28,7 @@ function normalize(text: string): string {
 }
 
 /** The slot-less transcript message: its text as Markdown. */
-function MarkdownTranscriptMessage({
+export function MarkdownTranscriptMessage({
   message,
 }: MemoryTranscriptMessageProps): JSX.Element {
   return (

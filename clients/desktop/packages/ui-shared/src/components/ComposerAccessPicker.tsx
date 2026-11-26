@@ -4,12 +4,15 @@ import {
   DropdownMenuItem,
   DropdownMenuItemIcon,
   type DropdownMenuItemIconTone,
-} from './DropdownMenu';
-import { FloatingMenu, COMPOSER_ROW_MENU_GAP } from './FloatingMenu';
+} from '../primitives/DropdownMenu';
+import {
+  FloatingMenu,
+  COMPOSER_ROW_MENU_GAP,
+} from '../primitives/FloatingMenu';
 import { FoldReveal } from './FoldReveal';
-import { PickerTrigger, PickerTriggerChevron } from './PickerMenu';
-import { Inline } from './Stack';
-import { Tooltip } from './Tooltip';
+import { PickerTrigger, PickerTriggerChevron } from '../primitives/PickerMenu';
+import { Inline } from '../primitives/Stack';
+import { Tooltip } from '../primitives/Tooltip';
 import { CheckIcon, type AppIcon } from '../icons/AppIcons';
 
 export interface ComposerAccessOption<Value extends string> {

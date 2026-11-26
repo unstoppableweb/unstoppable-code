@@ -161,6 +161,15 @@ export function ScheduledAutomationsNoticeView({
   // The shown text is an answer main gave or an IPC failure it already
   // recorded, so the dialog must not record it again. Reset with `pauseError`.
   const [pauseErrorRecorded, setPauseErrorRecorded] = useState(false);
+  // The close icon hides the notice until the schedule changes.
+  const scheduleKey = recurring
+    .map((automation) => `${automation.automationId}@${automation.scheduledAt}`)
+    .join('|');
+  const [dismissedKey, setDismissedKey] = useState<string | null>(null);
+  const dismiss = useCallback(
+    (): void => setDismissedKey(scheduleKey),
+    [scheduleKey],
+  );
 
   const single = recurring.length === 1 ? recurring[0] : undefined;
   const singleId = single?.automationId;
@@ -225,7 +234,7 @@ export function ScheduledAutomationsNoticeView({
     }
   }, [onPause, pauseId]);
 
-  if (recurring.length === 0) return null;
+  if (recurring.length === 0 || dismissedKey === scheduleKey) return null;
 
   const first = recurring[0];
   const nextLabel = first ? formatScheduledSendLabel(first.scheduledAt) : null;
@@ -238,6 +247,8 @@ export function ScheduledAutomationsNoticeView({
         icon={<ScheduleIcon size={16} aria-hidden="true" />}
         title={`${recurring.length} recurring automations`}
         data-testid="chat-input-scheduled-automations-notice"
+        onDismiss={dismiss}
+        dismissTestId="scheduled-automations-dismiss"
         actions={
           <NoticeButton
             variant="secondary"
@@ -284,6 +295,8 @@ export function ScheduledAutomationsNoticeView({
         // after the click, so it needs its own live region to be announced.
         detail={runError ?? undefined}
         announceDetail
+        onDismiss={dismiss}
+        dismissTestId="scheduled-automations-dismiss"
         actions={
           <>
             <NoticeButton

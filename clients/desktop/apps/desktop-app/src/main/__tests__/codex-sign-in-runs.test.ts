@@ -116,9 +116,15 @@ jest.mock('../auth/provider-auth-state', () => ({
     return value;
   },
 }));
+const mockRecordGrant = jest.fn<Promise<void>, [string, string]>(() =>
+  Promise.resolve(),
+);
 jest.mock('../lib/usage-limited-chats-registry', () => ({
   hasCodexAuthenticationGrant: (): Promise<boolean> => Promise.resolve(true),
-  recordCodexAuthenticationGrant: (): Promise<void> => Promise.resolve(),
+  recordCodexAuthenticationGrant: (
+    attemptId: string,
+    fingerprint: string,
+  ): Promise<void> => mockRecordGrant(attemptId, fingerprint),
   revokeCodexAuthenticationGrant: (): Promise<void> => Promise.resolve(),
 }));
 
@@ -153,6 +159,7 @@ beforeEach(() => {
   pauseReleases = 0;
   pausePromise = null;
   mockWarn.mockReset();
+  mockRecordGrant.mockClear();
   manager = new CodexLoginManager();
   states = [];
   manager.onState((state) => states.push(state));
@@ -297,6 +304,59 @@ it('cancel settles the run as cancelled after the session closes', async () => {
   await manager.finish('cancelled');
   expect(await closedAtSettle).toMatchObject({ status: 'cancelled' });
   expect(closedWhenSettled).toBe(1);
+});
+
+// CAN-6718 review: an attempt nobody is left to finish (its window went
+// away, or a remote attempt ended) is checked like a cancel, and closed
+// without a verified account when that check fails, as on a signed-out host,
+// instead of staying open.
+it('abandoning a waiting attempt on a signed-out host closes it', async () => {
+  accountVerifies = false;
+  manager.start({ method: 'chatgpt', confirmPause: false });
+  await until(() => states.at(-1)?.phase === 'waiting');
+  const [parent] = await signInRuns();
+  if (!parent) throw new Error('No parent');
+  await expect(manager.abandon()).resolves.toMatchObject({
+    phase: 'complete',
+    outcome: 'cancelled',
+  });
+  expect(session.closed).toBe(1);
+  expect(pauseReleases).toBe(1);
+  expect(await settled(parent.operationId)).toMatchObject({
+    status: 'cancelled',
+  });
+});
+
+// A signed-in account still grants the work the attempt paused, so that work
+// can resume under the same attempt.
+it('abandoning a waiting attempt on a signed-in host grants its paused work', async () => {
+  activeWork = 1;
+  pausedChats = 1;
+  manager.start({ method: 'chatgpt', confirmPause: true });
+  await until(() => states.at(-1)?.phase === 'waiting');
+  const attemptId = states.at(-1)?.attemptId;
+  await expect(manager.abandon()).resolves.toMatchObject({
+    phase: 'complete',
+    outcome: 'cancelled',
+    activeWorkCount: 1,
+  });
+  expect(mockRecordGrant).toHaveBeenCalledWith(attemptId, 'fingerprint');
+});
+
+it('abandoning an attempt that failed verification keeps its outcome', async () => {
+  accountVerifies = false;
+  manager.start({ method: 'chatgpt', confirmPause: false });
+  await until(() => states.at(-1)?.phase === 'waiting');
+  // The device code expired: the login reports failure, and verifying the
+  // signed-out account fails too.
+  session.complete(false);
+  await until(() => states.at(-1)?.phase === 'verification-failed');
+  await expect(manager.abandon()).resolves.toMatchObject({
+    phase: 'complete',
+    outcome: 'failed',
+  });
+  expect(session.closed).toBe(1);
+  expect(pauseReleases).toBe(1);
 });
 
 it('a confirmed relaunch runs inside the same sign-in run', async () => {

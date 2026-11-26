@@ -3,9 +3,9 @@ import {
   ChevronDownMediumIcon,
   ChevronRightMediumIcon,
 } from '../icons/AppIcons';
-import { ControlButton } from './Button';
-import { Heading } from './Heading';
-import { Divider } from './Surface';
+import { ControlButton } from '../primitives/Button';
+import { Heading } from '../primitives/Heading';
+import { Divider } from '../primitives/Surface';
 
 export interface CustomizeSectionProps {
   /** Stable DOM id; also the target of `#customize-section-<id>` anchors. */

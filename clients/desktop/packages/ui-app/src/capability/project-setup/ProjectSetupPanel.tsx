@@ -44,6 +44,7 @@ import {
 } from '../../settings/errors';
 import type { SettingsLogger } from '../../settings/host/settings-host';
 import {
+  PROJECT_SETUP_SOURCE_LABEL,
   projectSetupSectionKinds,
   projectSetupCandidates,
   projectSetupRows,
@@ -55,6 +56,17 @@ import {
   type ProjectSetupState,
   type ProjectSetupWrite,
 } from './project-setup-model';
+import {
+  withConnectorAdded,
+  withConnectorDefaultSwitched,
+  withConnectorLimit,
+  withConnectorRemoved,
+} from './project-connectors-model';
+import {
+  PROJECT_CONNECTOR_ADD_KEY,
+  ProjectConnectorsSection,
+  projectConnectorLimitKey,
+} from './ProjectConnectorsSection';
 import { ProjectLocalSections } from './ProjectLocalSections';
 import type { ProjectLocalSetupPort } from './project-local-setup';
 
@@ -116,11 +128,11 @@ const SECTION_COPY: Record<
     none: 'No other plugins are shared with the organization.',
   },
   agent: {
-    title: 'Agents',
-    empty: 'No agents in this project yet',
-    add: 'Add agent',
-    search: 'Search agents',
-    none: 'No other agents are shared with the organization.',
+    title: 'Model presets',
+    empty: 'No model presets in this project yet',
+    add: 'Add model preset',
+    search: 'Search model presets',
+    none: 'No other model presets are shared with the organization.',
   },
   // The `pipeline` kind is shown as a workflow, as the Workflows library
   // and Customize name it.
@@ -131,12 +143,6 @@ const SECTION_COPY: Record<
     search: 'Search workflows',
     none: 'No other workflows are shared with the organization.',
   },
-};
-
-/** The quiet provenance line under each row's name. */
-const SOURCE_LABEL: Record<ProjectSetupRow['source'], string> = {
-  organization: 'Organization default',
-  project: 'Added to this project',
 };
 
 export interface ProjectSetupPanelProps {
@@ -162,6 +168,12 @@ export interface ProjectSetupPanelProps {
   readonly agentsAndPipelinesEnabled?: boolean;
   /** Session-replay privacy for commands; inert where replay is off. */
   readonly privacy?: SettingsReplayPrivacy;
+  /**
+   * Opens an organization sign-in (a same-origin web path) in the browser,
+   * for "Share with this project" (CAN-6251). A host without one doesn't
+   * offer it.
+   */
+  readonly openSignIn?: (signInPath: string) => void;
 }
 
 /**
@@ -178,6 +190,7 @@ export function ProjectSetupPanel({
   logger,
   localSetup,
   privacy,
+  openSignIn,
   agentsAndPipelinesEnabled = false,
 }: ProjectSetupPanelProps): JSX.Element {
   const [state, setState] = useState<ProjectSetupState | null>(null);
@@ -237,11 +250,18 @@ export function ProjectSetupPanel({
     };
   }, [client, projectId, logger, loadAttempt]);
 
+  /**
+   * Saves one change, built from the setup as it stands; resolves whether it
+   * saved. A connector change also needs `connectors.canEdit`.
+   */
   const save = async (
     key: string,
     write: (current: ProjectSetupState) => ProjectSetupWrite,
-  ): Promise<void> => {
-    if (state === null || pending !== null || stale || !state.canEdit) return;
+    permitted: (current: ProjectSetupState) => boolean = (current) =>
+      current.canEdit,
+  ): Promise<boolean> => {
+    if (state === null || pending !== null || stale || !permitted(state))
+      return false;
     setPending(key);
     setSaveError(null);
     const readAt = generation.current;
@@ -253,6 +273,7 @@ export function ProjectSetupPanel({
         idempotencyKey: crypto.randomUUID(),
       });
       if (readAt === generation.current) setState(saved);
+      return true;
     } catch (error) {
       if (logger) logSettingsError(logger, 'update project setup', error);
       setSaveError(
@@ -273,6 +294,7 @@ export function ProjectSetupPanel({
         setStale(true);
         reload();
       }
+      return false;
     } finally {
       setPending(null);
     }
@@ -303,6 +325,8 @@ export function ProjectSetupPanel({
   }
 
   const editable = state.canEdit && !stale && pending === null;
+  const editsConnectors = (current: ProjectSetupState): boolean =>
+    current.connectors?.canEdit === true;
 
   return (
     <div className="flex flex-col gap-8" data-testid="project-setup-panel">
@@ -359,6 +383,51 @@ export function ProjectSetupPanel({
           }
         />
       ))}
+      {/* Absent from a server from before shared connections. */}
+      {state.connectors !== undefined && (
+        <ProjectConnectorsSection
+          client={client}
+          organizationId={state.organizationId}
+          projectId={projectId}
+          connectors={state.connectors}
+          setupCanEdit={state.canEdit}
+          disabled={!editable || !state.connectors.canEdit}
+          pendingKey={pending}
+          saveError={saveError}
+          logger={logger}
+          onSwitch={(row, on) =>
+            void save(
+              row.key,
+              (current) => withConnectorDefaultSwitched(current, row.ref, on),
+              editsConnectors,
+            )
+          }
+          onRemove={(row) =>
+            void save(
+              row.key,
+              (current) => withConnectorRemoved(current, row.ref),
+              editsConnectors,
+            )
+          }
+          onAdd={(item) =>
+            void save(
+              PROJECT_CONNECTOR_ADD_KEY,
+              (current) => withConnectorAdded(current, item.ref),
+              editsConnectors,
+            )
+          }
+          onLimit={(row, limit) =>
+            save(
+              projectConnectorLimitKey(row),
+              (current) => withConnectorLimit(current, row.ref, limit),
+              editsConnectors,
+            )
+          }
+          {...(openSignIn === undefined
+            ? {}
+            : { openSignIn, onShared: reload })}
+        />
+      )}
       <ProjectLocalSections port={localSetup} privacy={privacy} />
     </div>
   );
@@ -455,7 +524,7 @@ function ProjectSetupRowView({
           className="text-xs text-pretty fg-secondary"
           data-testid={`project-setup-source-${row.testKey}`}
         >
-          {SOURCE_LABEL[row.source]}
+          {PROJECT_SETUP_SOURCE_LABEL[row.source]}
         </p>
         {detail !== null && (
           <p className="line-clamp-2 text-xs text-pretty fg-tertiary">

@@ -1,5 +1,5 @@
-import { Stack } from './Stack';
-import { Surface } from './Surface';
+import { Stack } from '../primitives/Stack';
+import { Surface } from '../primitives/Surface';
 import type { JSX, ReactNode } from 'react';
 import { ChevronRightMediumIcon } from '../icons/AppIcons';
 import { REPLAY_MASK_CLASS } from '../lib/replay-privacy';

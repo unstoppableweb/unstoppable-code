@@ -65,8 +65,11 @@ function OutboxCardNotice({
   card,
 }: {
   readonly card: HomeOutboxCard;
-}): JSX.Element {
+}): JSX.Element | null {
   const { entry, state } = card;
+  // Closing the checking notice hides it until the check settles.
+  const [checkingHidden, setCheckingHidden] = useState(false);
+  if (state !== 'checking' && checkingHidden) setCheckingHidden(false);
   const title = useTaskTitle(entry.destination);
   const movable = useHomeComposerStore(
     () => state === 'returned' && canMoveIntoNewTask(entry.workspaceId),
@@ -186,12 +189,15 @@ function OutboxCardNotice({
         </Notice>
       );
     case 'checking':
+      if (checkingHidden) return null;
       return (
         <Notice
           data-testid={testId}
           intent="neutral"
           className="pointer-events-auto"
           title="Checking your earlier message"
+          onDismiss={(): void => setCheckingHidden(true)}
+          dismissTestId="home-outbox-checking-dismiss"
           actions={<CopyButton text={entry.text} />}
         >
           {quoted}

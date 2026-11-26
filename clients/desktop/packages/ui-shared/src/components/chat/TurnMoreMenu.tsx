@@ -1,14 +1,14 @@
 import { useId, useRef, type JSX, type ReactNode } from 'react';
 import { MoreHorizontalIcon } from '../../icons/AppIcons';
-import { Button } from '../Button';
+import { Button } from '../../primitives/Button';
 import { CLEAN_ICON_BUTTON_VARIANT } from '../chat-look';
 import {
   DropdownMenuRowStyleProvider,
   QUIET_MENU_ROW_STYLE,
-} from '../DropdownMenu';
-import { FLOATING_MENU_GAP, FloatingMenu } from '../FloatingMenu';
+} from '../../primitives/DropdownMenu';
+import { FLOATING_MENU_GAP, FloatingMenu } from '../../primitives/FloatingMenu';
 import { TurnFeedbackAsMenuItemsContext } from '../TurnFeedbackControl';
-import { Tooltip } from '../Tooltip';
+import { Tooltip } from '../../primitives/Tooltip';
 
 /**
  * The clean chat look's "…" at the end of a reply's action row, after the

@@ -26,6 +26,7 @@ import { getRemoteChannelDisposition } from '@canopy/desktop-shared/remote-contr
 import { IPC_CHANNELS } from '@canopy/desktop-shared/types';
 import type { HostedFirstPartyClient } from '@canopy/protocol/remote-control';
 import type {
+  PairedComputerState,
   RemoteControlForgetDeviceRequest,
   RemoteControlOpenPairingWindowResult,
   RemoteControlPairingEvent,
@@ -49,13 +50,23 @@ import {
   parseFileOpenTarget,
   remoteImageForLocalOpen,
 } from './client/remote-file-opens';
+import {
+  PairedComputerConnections,
+  type PairedComputerHold,
+  type PairedComputerListener,
+  type WindowlessSessionPolicy,
+} from './client/paired-computer-connections';
+import { pairedComputerState } from './client/paired-computer-state';
 import type { RemoteControlWindows } from './client/remote-windows';
 import { encodeBase64Url, type DeviceKeyPair } from './crypto/device-key';
 import type {
   RemoteControlDiagnostic,
   RemoteRelayStoppedDiagnostic,
 } from './diagnostics';
-import type { RemoteSurface } from '@canopy/desktop-shared/remote-control/surfaces';
+import {
+  REMOTE_SURFACES,
+  type RemoteSurface,
+} from '@canopy/desktop-shared/remote-control/surfaces';
 import type { RemoteAppAdvisorSurface } from './host/app-advisor-surface';
 import type { HostBridge } from './host/bridge-window';
 import type { RemoteCoreAccess } from './host/remote-core-access';
@@ -78,6 +89,8 @@ import {
 } from './host/host-session';
 import type { MainWindowPushSource } from './host/main-window-pushes';
 import type { RemoteUploadStore } from './host/uploads';
+import { TunnelBudget, TunnelDialer } from './host/tunnel-dialer';
+import type { RemoteWebPreviewStore } from './remote-web-preview-store';
 import {
   upsertPairedDevice,
   type PairedDevice,
@@ -172,6 +185,19 @@ export interface RemoteControlServiceDeps {
   platform: DevicePlatform;
   /** Called when whether paired computers may update this one changes. */
   onRemoteUpdatesAllowedChange?: () => void;
+  /**
+   * Web preview: this computer's consent (CAN-7712), saved in its own file,
+   * and the `canopy-remote-web-preview` flag (CAN-7705). Without it web
+   * preview is off: hello never advertises it and no stream is dialed.
+   */
+  webPreview?: {
+    store: RemoteWebPreviewStore;
+    flag: {
+      isEnabled(): boolean;
+      /** Told whenever the evaluated flags change; returns the removal. */
+      onChange(listener: () => void): () => void;
+    };
+  };
   /** This computer's version; sessions need the same protocol on both sides. */
   version: RemoteVersion;
   /**
@@ -183,6 +209,13 @@ export interface RemoteControlServiceDeps {
     controllerDeviceId: string,
     surface: RemoteSurface,
     exactWorktreeBaseBranch: boolean,
+    /**
+     * The session's authorization: a send or new chat its bridge replays
+     * commits only while it holds (CAN-7872).
+     */
+    isAuthorized: () => boolean,
+    /** Whether the session is a one-window session (CAN-7854). */
+    oneWindow: boolean,
   ) => Promise<HostBridge>;
   /**
    * The App Advisor window a controller shows for this computer, made per
@@ -243,6 +276,14 @@ export interface RemoteControlServiceDeps {
     forward: (callback: AccountProxySignInCallbackParams) => Promise<void>;
   }) => AccountProxySignInListener;
   windows: RemoteControlWindows;
+  /**
+   * The hello profile and channel list of the main process's own session
+   * with a paired computer (`holdComputer`), separate from that computer's
+   * window. Absent, no such session opens and every channel is refused:
+   * the window's full tunnel is never offered this way. Main passes it, and
+   * later `setWindowlessSession`, only while the one-window switch is on.
+   */
+  windowlessSession?: WindowlessSessionPolicy;
   broadcastState: (state: RemoteControlState) => void;
   /**
    * The inventory sync setting loaded or changed (CAN-5986). Main drives the
@@ -260,12 +301,22 @@ export interface RemoteControlServiceDeps {
   webOrigin: () => string;
   /** How long a pairing link stays valid; tests shorten it. */
   pairingWindowMs?: number;
+  /** How long a Connect Slack pairing expectation stays armed; tests shorten it. */
+  expectedPairingMs?: number;
   /** Delay before retrying an opt-in migration that could not read Portal. */
   migrationRetryMs?: number;
   log?: (message: string, context?: unknown) => void;
   now?: () => number;
   /** How long a discovery request keeps the relay up; tests shorten it. */
   discoveryWindowMs?: number;
+}
+
+/** See `RemoteControlService.armExpectedPairing` (CAN-7606). */
+interface ExpectedPairing {
+  readonly account: string;
+  readonly controllerDeviceId: string;
+  readonly expiresAt: number;
+  readonly timer: ReturnType<typeof setTimeout>;
 }
 
 /** The wake-lock holders a host takes; the desktop's wake-lock service. */
@@ -277,6 +328,10 @@ export interface RemoteWakeLock {
 const DISCOVERY_WINDOW_MS = 5 * 60_000;
 const PAIRING_DECISION_TIMEOUT_MS = 3 * 60_000;
 const PAIRING_WINDOW_MS = 10 * 60_000;
+/** How long a Connect Slack pairing expectation stays armed (CAN-7606). */
+const EXPECTED_PAIRING_MS = 2 * 60_000;
+/** How often a wait for relay presence re-checks it. */
+const ACCEPTING_POLL_MS = 200;
 const PAIRING_SECRET_BYTES = 32;
 const MIGRATION_RETRY_MS = 60_000;
 /** One holder for every hosted session: held while any is live. */
@@ -483,6 +538,10 @@ export class RemoteControlService {
     RemoteAppAdvisorSurface
   >();
   private readonly connections = new Map<string, RemoteHostConnection>();
+  /** Sessions held without a window; see `holdComputer`. */
+  private readonly windowless: PairedComputerConnections;
+  /** Paired computers being unpaired; no windowless hold until it settles. */
+  private readonly unpairingHosts = new Set<string>();
   private readonly incoming = new Map<string, IncomingPairingEntry>();
   private outgoing: OutgoingPairingEntry | null = null;
   /**
@@ -498,6 +557,28 @@ export class RemoteControlService {
     allowRemoteUpdates: boolean;
   } = { allowIncoming: false, allowRemoteUpdates: false };
   private lastRemoteUpdatesAllowed = false;
+  private lastWebPreviewAllowed = false;
+  /**
+   * Each desktop session's current tunnel dialer. Revoking web preview
+   * closes it; a session that never carried preview gets a fresh one, so it
+   * serves again once preview is allowed again.
+   */
+  private readonly webPreviewDialers = new Map<
+    RemoteHostSession,
+    { dialer: TunnelDialer; create: () => TunnelDialer }
+  >();
+  private readonly stopWatchingWebPreviewFlag: (() => void) | null;
+  /**
+   * Each paired computer's web preview limits, shared by its sessions and
+   * kept across reconnects, by attributed device.
+   */
+  private readonly webPreviewBudgets = new Map<string, TunnelBudget>();
+  /**
+   * Paired computers whose pairing is being narrowed, with the number of
+   * narrowings in flight: their preview opens are refused until each save
+   * settles, whatever the cached pairing still says.
+   */
+  private readonly webPreviewPaused = new Map<string, number>();
   /** Whether the first settings read reported the inventory sync setting. */
   private inventorySyncSettingLoaded = false;
   private inventoryDeleteStatus: RemoteControlInventoryDeleteStatus = 'idle';
@@ -527,12 +608,32 @@ export class RemoteControlService {
   >();
   /** The last pairing window was spent by a proof (not expired or closed). */
   private pairingWindowConsumed = false;
+  /**
+   * The one hosted pairing this computer's own Connect Slack click expects
+   * (CAN-7606): memory only, bound to the signed-in account and the
+   * account's hosted root relay device, single use, two minutes.
+   */
+  private expectedPairing: ExpectedPairing | null = null;
   private migrationTimer: ReturnType<typeof setTimeout> | null = null;
   private identityCache: { deviceId: string; publicKey: string } | null = null;
   private broadcastScheduled = false;
   private disposed = false;
+  /** The relay is stopping; its windowless sessions are closing. */
+  private stoppingRelay = false;
 
-  constructor(private readonly deps: RemoteControlServiceDeps) {}
+  constructor(private readonly deps: RemoteControlServiceDeps) {
+    this.windowless = new PairedComputerConnections({
+      policy: deps.windowlessSession ?? null,
+      version: deps.version,
+      ...(deps.release ? { release: deps.release } : {}),
+      ...(deps.log ? { log: deps.log } : {}),
+      connect: (computer): Promise<SecureSession> =>
+        this.connectControl(computer),
+    });
+    this.stopWatchingWebPreviewFlag =
+      deps.webPreview?.flag.onChange(() => this.noteWebPreviewAllowed()) ??
+      null;
+  }
 
   private now(): number {
     return this.deps.now?.() ?? Date.now();
@@ -654,6 +755,8 @@ export class RemoteControlService {
     this.migrationTimer = null;
     this.endPairingWindow('disabled');
     this.stopRelay({ cause: 'dispose' });
+    this.stopWatchingWebPreviewFlag?.();
+    this.deps.webPreview?.store.dispose();
   }
 
   // -------------------------------------------------------------------------
@@ -721,6 +824,8 @@ export class RemoteControlService {
     Awaited<ReturnType<RemoteAccessStore['read']>>
   > {
     const settings = await this.deps.store.read();
+    // Loads the consent once; it is read from its store from then on.
+    await this.deps.webPreview?.store.read();
     this.setSettingsCache({
       allowIncoming: settings.allowIncoming,
       allowRemoteUpdates: this.remoteUpdatesSetting(settings),
@@ -800,6 +905,8 @@ export class RemoteControlService {
       },
       onPeersChange: () => {
         this.retryHostConnections();
+        // A held computer that is still connecting may have gone offline.
+        this.windowless.noteStatesChanged();
         this.scheduleBroadcast();
       },
       onDiagnostic: (remoteRelayConnection) => {
@@ -870,6 +977,8 @@ export class RemoteControlService {
       const timer = setTimeout(() => {
         this.presenceGraceTimers.delete(session);
         this.presenceGrace.set(session, false);
+        // A held computer still reconnecting now reads offline.
+        this.windowless.noteStatesChanged();
         this.scheduleBroadcast();
       }, HOST_PRESENCE_GRACE_MS);
       timer.unref?.();
@@ -893,9 +1002,20 @@ export class RemoteControlService {
     this.connections.forEach((connection, deviceId) => {
       if (online.has(deviceId)) connection.retryNow();
     });
+    this.windowless.retryNow((deviceId) => online.has(deviceId));
   }
 
   private stopRelay(stop: RelayStop): void {
+    // Windows that held a paired computer hear remote-control-off, not idle.
+    this.stoppingRelay = true;
+    try {
+      this.stopRelayNow(stop);
+    } finally {
+      this.stoppingRelay = false;
+    }
+  }
+
+  private stopRelayNow(stop: RelayStop): void {
     if (this.relay) {
       const remoteRelayStopped: RemoteRelayStoppedDiagnostic = {
         ...stop,
@@ -913,7 +1033,11 @@ export class RemoteControlService {
       this.deps.windows.close(deviceId);
     }
     this.connections.clear();
+    this.windowless.closeAll();
     this.endPairingWindow('disabled');
+    // Sign-out, an account change, quit: the expectation never outlives the
+    // relay it was armed under.
+    this.clearExpectedPairing();
     for (const session of Array.from(this.hostSessions))
       session.close('shutdown');
     this.setHostWakeLock(false);
@@ -1030,6 +1154,9 @@ export class RemoteControlService {
         : null,
       allowIncoming: settings.allowIncoming,
       allowRemoteUpdates: this.remoteUpdatesSetting(settings),
+      allowWebPreview: this.deps.webPreview?.store.peek() ?? false,
+      webPreviewChoiceUnread:
+        this.deps.webPreview?.store.choiceUnread() ?? false,
       inventorySyncEnabled: settings.inventorySyncEnabled ?? true,
       inventoryDeleteStatus: this.inventoryDeleteStatus,
       hosts: settings.pairedHosts.map((host) => {
@@ -1178,6 +1305,7 @@ export class RemoteControlService {
   private setSettingsCache(next: RemoteControlService['settingsCache']): void {
     this.settingsCache = next;
     this.noteRemoteUpdatesAllowed();
+    this.noteWebPreviewAllowed();
   }
 
   private noteRemoteUpdatesAllowed(): void {
@@ -1185,6 +1313,113 @@ export class RemoteControlService {
     if (allowed === this.lastRemoteUpdatesAllowed) return;
     this.lastRemoteUpdatesAllowed = allowed;
     this.deps.onRemoteUpdatesAllowedChange?.();
+  }
+
+  /**
+   * Paired desktop controllers may open this computer's local web servers
+   * now: Allow incoming, this computer's consent and the flag are all on.
+   */
+  webPreviewAllowed(): boolean {
+    const webPreview = this.deps.webPreview;
+    return (
+      webPreview !== undefined &&
+      this.disallowingIncoming === 0 &&
+      this.settingsCache.allowIncoming &&
+      webPreview.store.peek() &&
+      webPreview.flag.isEnabled()
+    );
+  }
+
+  /**
+   * Revokes web preview when it stops being allowed. Every stream resets at
+   * once and no new one is dialed, and a session that carried preview ends
+   * without resume (`RemoteHostSession.endWithoutResume`), so nothing it
+   * held for a resume is replayed; its controller reconnects to a hello that
+   * offers no preview. Frames already handed to the relay still drain. When
+   * Allow incoming turned off, `endAllControl` ends every session instead,
+   * so each controller still hears it was revoked, and none of those
+   * sessions resumes either (`RemoteHostSession.end`).
+   */
+  private noteWebPreviewAllowed(): void {
+    const allowed = this.webPreviewAllowed();
+    if (allowed === this.lastWebPreviewAllowed) return;
+    this.lastWebPreviewAllowed = allowed;
+    if (allowed) return;
+    const endingAllControl =
+      this.disallowingIncoming > 0 || !this.settingsCache.allowIncoming;
+    for (const [hostSession, entry] of Array.from(this.webPreviewDialers)) {
+      entry.dialer.close();
+      if (endingAllControl) continue;
+      // The session's own record, not the dialer's: a narrowing may have
+      // given it a fresh dialer after it carried preview.
+      if (hostSession.carriedPreviewData) {
+        this.webPreviewDialers.delete(hostSession);
+        hostSession.endWithoutResume();
+      } else {
+        entry.dialer = entry.create();
+      }
+    }
+  }
+
+  private webPreviewBudget(deviceId: string): TunnelBudget {
+    let budget = this.webPreviewBudgets.get(deviceId);
+    if (!budget) {
+      budget = new TunnelBudget();
+      this.webPreviewBudgets.set(deviceId, budget);
+    }
+    return budget;
+  }
+
+  /**
+   * Resets every preview stream of one paired computer's sessions now and
+   * refuses its opens until the returned resume is called. A session that
+   * carried preview ends without resume; any other gets a fresh dialer, which still checks authorization and that preview is
+   * allowed on every open once resumed.
+   */
+  private pauseWebPreviewFor(deviceId: string): () => void {
+    this.webPreviewPaused.set(
+      deviceId,
+      (this.webPreviewPaused.get(deviceId) ?? 0) + 1,
+    );
+    for (const [hostSession, entry] of Array.from(this.webPreviewDialers)) {
+      if (hostSession.controllerDeviceId !== deviceId) continue;
+      entry.dialer.close();
+      if (hostSession.carriedPreviewData) {
+        // It may hold preview bytes for a resume: it ends now, without
+        // resume, whether or not the narrowing saves.
+        this.webPreviewDialers.delete(hostSession);
+        hostSession.endWithoutResume();
+      } else {
+        entry.dialer = entry.create();
+      }
+    }
+    return (): void => {
+      const left = (this.webPreviewPaused.get(deviceId) ?? 1) - 1;
+      if (left > 0) this.webPreviewPaused.set(deviceId, left);
+      else this.webPreviewPaused.delete(deviceId);
+    };
+  }
+
+  /**
+   * This computer's web preview consent (CAN-7712). Turning it off applies
+   * at once, before the save, and holds even if the save fails, until an
+   * opt-in saves; turning it on counts only once saved.
+   */
+  async setAllowWebPreview(allow: boolean): Promise<RemoteControlState> {
+    const webPreview = this.deps.webPreview;
+    if (!webPreview) throw new Error('Web preview is not available.');
+    const saving = webPreview.store.set(allow);
+    // An opt-out already reads as off; revoke before the save settles.
+    this.noteWebPreviewAllowed();
+    try {
+      await saving;
+    } finally {
+      this.noteWebPreviewAllowed();
+      // The Settings switch hears that a failed opt-out holds, though the
+      // call fails.
+      this.scheduleBroadcast();
+    }
+    return this.snapshot();
   }
 
   /** A paired controller's name, or null for a device this one doesn't know. */
@@ -1400,6 +1635,7 @@ export class RemoteControlService {
       // forget such a refusal once this computer comes back.
       this.relay?.announce();
       this.endPairingWindow('disabled');
+      this.clearExpectedPairing();
       this.endAllControl();
     }
     try {
@@ -1420,6 +1656,10 @@ export class RemoteControlService {
     request: RemoteControlForgetDeviceRequest,
   ): Promise<RemoteControlState> {
     if (request.role === 'host') {
+      // Cut the windowless session off before the save, and keep new holds,
+      // calls and sends out while it is pending (CAN-7756).
+      this.unpairingHosts.add(request.deviceId);
+      this.windowless.close(request.deviceId);
       try {
         await this.deps.store.update((current) => ({
           ...current,
@@ -1432,6 +1672,8 @@ export class RemoteControlService {
         // too, even if saving failed.
         this.connections.get(request.deviceId)?.release();
         this.connections.delete(request.deviceId);
+        this.windowless.close(request.deviceId);
+        this.unpairingHosts.delete(request.deviceId);
         this.deps.windows.close(request.deviceId);
       }
     } else {
@@ -1695,6 +1937,21 @@ export class RemoteControlService {
     record: PairedDevice,
     kind: Exclude<DeviceKind, 'desktop'>,
   ): Promise<boolean> {
+    // Preview streams of the wider profile stop now, and no new one opens
+    // until the save settles: until then the cached pairing may still say
+    // desktop.
+    const resumePreview = this.pauseWebPreviewFor(record.deviceId);
+    try {
+      return await this.saveNarrowing(record, kind);
+    } finally {
+      resumePreview();
+    }
+  }
+
+  private async saveNarrowing(
+    record: PairedDevice,
+    kind: Exclude<DeviceKind, 'desktop'>,
+  ): Promise<boolean> {
     let narrowed = false;
     try {
       await this.deps.store.update((current) => {
@@ -1800,6 +2057,22 @@ export class RemoteControlService {
     return record !== undefined && deviceKindOrDefault(record) === grant.kind;
   }
 
+  /**
+   * Whether a live session may still commit a send or new chat its
+   * controller started (CAN-7872): it has not ended and keeps its authority.
+   */
+  private sessionStillServes(
+    hostSession: RemoteHostSession,
+    session: SecureSession,
+  ): boolean {
+    return (
+      this.hostSessions.has(hostSession) &&
+      // Ending (a disconnect draining its last replies): it no longer serves.
+      !session.isEnding &&
+      this.sessionStillAuthorized(session)
+    );
+  }
+
   private handleIncomingSession(session: SecureSession): void {
     if (session.purpose === 'pair') {
       this.handleIncomingPairing(session);
@@ -1813,13 +2086,39 @@ export class RemoteControlService {
     }
     const attributedDeviceId = grant.rootDeviceId ?? session.peerDeviceId;
     let appAdvisor: RemoteAppAdvisorSurface | null = null;
+    // Web preview serves desktop controllers only; the host session refuses
+    // the method to every other kind before it reaches the dialer. It adds
+    // no IPC channel or agent tool, so it has no agent action surface; the
+    // CAN-7705 security review and inventory record that disposition.
+    const webPreview =
+      grant.kind === 'desktop' && this.deps.webPreview
+        ? {
+            tunnelOpen: (
+              ...args: Parameters<TunnelDialer['open']>
+            ): ReturnType<TunnelDialer['open']> => {
+              const entry = this.webPreviewDialers.get(hostSession);
+              return entry
+                ? entry.dialer.open(...args)
+                : Promise.resolve({ ok: false, code: 'unavailable' });
+            },
+            webPreview: { allowed: (): boolean => this.webPreviewAllowed() },
+            // One stream ceiling for the session, its hello and its dialer:
+            // the paired computer's budget.
+            tunnelMaxStreams:
+              this.webPreviewBudget(attributedDeviceId).limits.maxStreams,
+          }
+        : {};
     const hostSession = new RemoteHostSession({
+      ...webPreview,
       session,
       createBridge: (surface, exactWorktreeBaseBranch): Promise<HostBridge> =>
         this.deps.createBridge(
           session.peerDeviceId,
           surface,
           exactWorktreeBaseBranch,
+          (): boolean => this.sessionStillServes(hostSession, session),
+          // Bridges start after the hello, which fixes the session's mode.
+          hostSession.isOneWindow,
         ),
       onAppAdvisorWindowState: (state): void => appAdvisor?.applyState(state),
       mainWindowPushes: this.deps.mainWindowPushes,
@@ -1853,6 +2152,8 @@ export class RemoteControlService {
           });
         }
         this.sessionEndReasons.delete(hostSession);
+        this.webPreviewDialers.get(hostSession)?.dialer.close();
+        this.webPreviewDialers.delete(hostSession);
         this.hostSessions.delete(hostSession);
         this.setHostWakeLock(this.hostSessions.size > 0);
         this.appAdvisorSurfaces.delete(hostSession);
@@ -1880,6 +2181,7 @@ export class RemoteControlService {
                 attributedDeviceId,
                 session.peerDeviceId,
                 grant.firstPartyClient,
+                (): boolean => this.sessionStillServes(hostSession, session),
               ),
             ...(grant.firstPartyClient === undefined
               ? {}
@@ -1895,6 +2197,21 @@ export class RemoteControlService {
     });
     if (hostSession.rpc.isClosed) return;
     this.hostSessions.add(hostSession);
+    if (grant.kind === 'desktop' && this.deps.webPreview) {
+      const create = (): TunnelDialer =>
+        new TunnelDialer({
+          kind: grant.kind,
+          isAuthorized: (): boolean =>
+            !this.webPreviewPaused.has(session.peerDeviceId) &&
+            this.sessionStillAuthorized(session),
+          allowed: (): boolean => this.webPreviewAllowed(),
+          budget: this.webPreviewBudget(attributedDeviceId),
+          deps: {
+            log: (message, fields): void => this.deps.log?.(message, fields),
+          },
+        });
+      this.webPreviewDialers.set(hostSession, { dialer: create(), create });
+    }
     this.setHostWakeLock(true);
     this.telemetry({
       event: 'session_start',
@@ -1938,6 +2255,7 @@ export class RemoteControlService {
     rootDeviceId: string,
     sessionDeviceId: string,
     firstPartyClient: HostedFirstPartyClient | undefined,
+    canCommit: () => boolean,
   ): Promise<unknown> {
     const dispatch = this.deps.dispatchHostedChatCommand;
     const root = this.deps.store
@@ -1966,6 +2284,7 @@ export class RemoteControlService {
       rootDeviceId,
       sessionDeviceId,
       ...(firstPartyClient === undefined ? {} : { firstPartyClient }),
+      canCommit,
     });
   }
 
@@ -1977,10 +2296,52 @@ export class RemoteControlService {
     return session ? (this.appAdvisorSurfaces.get(session) ?? null) : null;
   }
 
-  /** The live session behind a bridge, for its dialog requests. */
+  /**
+   * The live session that owns a bridge, for the bridge's dialog, App
+   * Advisor and sign-in requests. A controller can hold several sessions,
+   * such as its window's and a windowless one (CAN-7756), each with its own
+   * bridges, so the controller alone does not say which one asked.
+   * One-window sessions (CAN-7758) have no window for these requests, so a
+   * bridge of one gets none: the request is answered here as cancelled.
+   */
+  hostSessionForBridge(sender: { id: number }): RemoteHostSession | null {
+    for (const session of Array.from(this.hostSessions)) {
+      if (!session.servesControllerWindows) continue;
+      for (const surface of REMOTE_SURFACES) {
+        const window = session.bridgeWindow(surface);
+        if (
+          window &&
+          !window.isDestroyed() &&
+          window.webContents.id === sender.id
+        ) {
+          return session;
+        }
+      }
+    }
+    return null;
+  }
+
+  /** The App Advisor window of the session that owns a bridge. */
+  appAdvisorSurfaceForBridge(sender: {
+    id: number;
+  }): RemoteAppAdvisorSurface | null {
+    const session = this.hostSessionForBridge(sender);
+    return session ? (this.appAdvisorSurfaces.get(session) ?? null) : null;
+  }
+
+  /**
+   * A live session of the controller that serves its windows, for requests
+   * not tied to a bridge. One-window sessions (CAN-7758) have no window for
+   * them, so only a session whose hello confirmed the separate window per
+   * computer is returned.
+   */
   hostSessionForController(deviceId: string): RemoteHostSession | null {
     for (const session of Array.from(this.hostSessions)) {
-      if (session.controllerDeviceId === deviceId) return session;
+      if (
+        session.controllerDeviceId === deviceId &&
+        session.servesControllerWindows
+      )
+        return session;
     }
     return null;
   }
@@ -2212,6 +2573,17 @@ export class RemoteControlService {
     admission: PairingAdmission,
     pairingId: string,
   ): Promise<boolean> {
+    // Checked before the request is listed in `incoming` or any pairing event
+    // is emitted, so an expected pairing never shows a prompt or a code.
+    if (this.takeExpectedPairing(session, grant)) {
+      return this.approveExpectedPairing(
+        session,
+        rpc,
+        request,
+        grant,
+        admission,
+      );
+    }
     const telemetry = beginPairingTelemetry(this.deps.recordPairing, {
       pairing_kind: 'computer_incoming',
       pairing_entry: 'incoming_prompt',
@@ -2324,6 +2696,169 @@ export class RemoteControlService {
     fail(pairingFailureFor(ended));
     this.emitPairingEvent({ type: 'request-ended', pairingId, outcome: ended });
     return false;
+  }
+
+  // -------------------------------------------------------------------------
+  // Connect Slack: the one expected hosted pairing (CAN-7606)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Arms the expectation that the account's hosted root `controllerDeviceId`
+   * is about to pair this computer, replacing any earlier one. The next
+   * hosted pairing from exactly that device, under the account signed in
+   * now, while Allow incoming is on and within two minutes, is approved with
+   * no prompt. Null when no account is signed in. `clear` disarms it unless
+   * a later arm replaced it.
+   */
+  armExpectedPairing(controllerDeviceId: string): { clear(): void } | null {
+    const account = this.deps.signedInAccount();
+    if (account === null || controllerDeviceId.length === 0) return null;
+    this.clearExpectedPairing();
+    const ttlMs = this.deps.expectedPairingMs ?? EXPECTED_PAIRING_MS;
+    const timer = setTimeout(() => {
+      if (this.expectedPairing === armed) this.clearExpectedPairing();
+    }, ttlMs);
+    timer.unref?.();
+    const armed: ExpectedPairing = {
+      account,
+      controllerDeviceId,
+      expiresAt: this.now() + ttlMs,
+      timer,
+    };
+    this.expectedPairing = armed;
+    return {
+      clear: (): void => {
+        if (this.expectedPairing === armed) this.clearExpectedPairing();
+      },
+    };
+  }
+
+  private clearExpectedPairing(): void {
+    const armed = this.expectedPairing;
+    if (!armed) return;
+    clearTimeout(armed.timer);
+    this.expectedPairing = null;
+  }
+
+  /**
+   * Consumes the expectation for a pairing request from its bound device and
+   * says whether that request is the expected one. A request from any other
+   * device leaves it armed. Consumed before deciding, so a second request
+   * from the same device, or one after a refusal, gets the normal prompt.
+   */
+  private takeExpectedPairing(
+    session: SecureSession,
+    grant: SessionGrant,
+  ): boolean {
+    const armed = this.expectedPairing;
+    if (!armed || session.peerDeviceId !== armed.controllerDeviceId) {
+      return false;
+    }
+    this.clearExpectedPairing();
+    return (
+      this.now() < armed.expiresAt &&
+      armed.account === this.deps.signedInAccount() &&
+      grant.kindAuthenticated &&
+      grant.kind === 'hosted' &&
+      this.incomingAllowed()
+    );
+  }
+
+  /** Pins an expected hosted pairing: no prompt, no code shown. */
+  private async approveExpectedPairing(
+    session: SecureSession,
+    rpc: RpcPeer,
+    request: PairRequestParams,
+    grant: SessionGrant,
+    admission: PairingAdmission,
+  ): Promise<boolean> {
+    let persisted = false;
+    try {
+      persisted =
+        !rpc.isClosed &&
+        (await this.persistController(
+          session,
+          rpc,
+          request,
+          grant.kind,
+          admission,
+        ));
+    } catch (error) {
+      this.telemetry({
+        event: 'pairing_fail',
+        device_kind: grant.kind,
+        pair_method: 'expected',
+        failure_reason: 'persist_failed',
+      });
+      throw error;
+    }
+    if (!persisted) {
+      this.telemetry({
+        event: 'pairing_fail',
+        device_kind: grant.kind,
+        pair_method: 'expected',
+        failure_reason: 'cancelled',
+      });
+      return false;
+    }
+    this.telemetry({
+      event: 'device_add',
+      device_kind: grant.kind,
+      pair_method: 'expected',
+    });
+    this.emitPairingEvent({
+      type: 'paired',
+      deviceId: session.peerDeviceId,
+      name: request.name,
+      kind: grant.kind,
+      method: 'expected',
+    });
+    this.scheduleBroadcast();
+    return true;
+  }
+
+  /** This computer's relay device ID, creating its key on first use. */
+  async thisRelayDeviceId(): Promise<string> {
+    return (await this.ensureIdentity()).deviceId;
+  }
+
+  /** Whether this computer holds a pairing with a hosted controller. */
+  hasHostedController(): boolean {
+    return (
+      this.deps.store
+        .peek()
+        ?.pairedControllers.some(
+          (controller) => deviceKindOrDefault(controller) === 'hosted',
+        ) ?? false
+    );
+  }
+
+  /**
+   * Resolves true once the relay is connected with Allow incoming on, which
+   * is when the relay lists this computer as accepting Remote Control; false
+   * after `timeoutMs` or when `signal` aborts.
+   */
+  async waitUntilAcceptingRemoteControl(
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const deadline = this.now() + Math.max(0, timeoutMs);
+    for (;;) {
+      if (
+        this.relay !== null &&
+        this.relayStatus === 'connected' &&
+        this.incomingAllowed()
+      ) {
+        return true;
+      }
+      if (this.disposed || signal?.aborted || this.now() >= deadline) {
+        return false;
+      }
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, ACCEPTING_POLL_MS);
+        timer.unref?.();
+      });
+    }
   }
 
   async respondToPairing(
@@ -2501,22 +3036,7 @@ export class RemoteControlService {
       version: this.deps.version,
       ...(this.deps.release ? { release: this.deps.release } : {}),
       ...(this.deps.log ? { log: this.deps.log } : {}),
-      connect: (): Promise<SecureSession> => {
-        const sessions = this.sessions;
-        if (!sessions) {
-          return Promise.reject(
-            classifyError(
-              new Error('Remote control is turned off.'),
-              'external.state_changed',
-            ),
-          );
-        }
-        return sessions.connect({
-          peerDeviceId: host.deviceId,
-          purpose: 'control',
-          pinnedPeerPublicKey: host.publicKey,
-        });
-      },
+      connect: (): Promise<SecureSession> => this.connectControl(host),
       onPush: (channel, args, surface) =>
         this.deps.windows.deliverPush(host.deviceId, channel, args, surface),
       onAppAdvisorWindow: (params) =>
@@ -2545,6 +3065,137 @@ export class RemoteControlService {
     });
     this.connections.set(host.deviceId, connection);
     return connection;
+  }
+
+  private connectControl(host: {
+    deviceId: string;
+    publicKey: string;
+  }): Promise<SecureSession> {
+    const sessions = this.sessions;
+    if (!sessions) {
+      return Promise.reject(
+        classifyError(
+          new Error('Remote control is turned off.'),
+          'external.state_changed',
+        ),
+      );
+    }
+    return sessions.connect({
+      peerDeviceId: host.deviceId,
+      purpose: 'control',
+      pinnedPeerPublicKey: host.publicKey,
+    });
+  }
+
+  /**
+   * Opens this computer's own session with a paired computer, without a
+   * window, or joins the one already open. It is separate from the
+   * computer's window, which keeps its own session. It reconnects and
+   * resumes as the window's does, and stays until every hold is released,
+   * the computer is unpaired, remote control stops or the app quits. Calls
+   * and sends go through `invokeComputer` and `sendToComputer`; what the
+   * computer reports reaches `onComputerEvent`. Refused unless
+   * `windowlessSession` was given.
+   */
+  async holdComputer(deviceId: string): Promise<PairedComputerHold> {
+    this.assertCanHold();
+    await this.deps.store.read();
+    // The cache, not the read: an unpairing that started during the read
+    // has already left it.
+    const host = this.unpairingHosts.has(deviceId)
+      ? undefined
+      : this.deps.store
+          .peek()
+          ?.pairedHosts.find((entry) => entry.deviceId === deviceId);
+    if (!host) {
+      throw classifyError(
+        new Error('That computer is not paired.'),
+        'external.state_changed',
+      );
+    }
+    // Remote control may have stopped during the read.
+    this.assertCanHold();
+    return this.windowless.hold(host);
+  }
+
+  private assertCanHold(): void {
+    if (this.disposed || !this.sessions) {
+      throw classifyError(
+        new Error('Remote control is turned off.'),
+        'external.state_changed',
+      );
+    }
+  }
+
+  /**
+   * Calls a channel the windowless policy allows on a held computer.
+   * `stillWanted` is asked again right before dispatch; false sends nothing.
+   */
+  invokeComputer(
+    deviceId: string,
+    channel: string,
+    args: unknown[],
+    stillWanted?: () => boolean,
+  ): Promise<unknown> {
+    return this.windowless.invoke(deviceId, channel, args, stillWanted);
+  }
+
+  /** Sends to a held computer; see `invokeComputer`. */
+  sendToComputer(
+    deviceId: string,
+    channel: string,
+    args: unknown[],
+    stillWanted?: () => boolean,
+  ): void {
+    this.windowless.send(deviceId, channel, args, stillWanted);
+  }
+
+  /**
+   * Pushes, reconnects and closes of every windowless session, each tagged
+   * with its computer. Returns the removal.
+   */
+  onComputerEvent(listener: PairedComputerListener): () => void {
+    return this.windowless.addListener(listener);
+  }
+
+  /** Closes every windowless session, as the app quits. */
+  closeWindowlessConnections(): void {
+    this.windowless.closeAll();
+  }
+
+  /**
+   * Turns windowless sessions on with `policy`, or off with null (the
+   * one-window switch, CAN-7761). Either way every open one closes and its
+   * holds are dropped, reported to `onComputerEvent` as `closed`.
+   */
+  setWindowlessSession(policy: WindowlessSessionPolicy | null): void {
+    this.windowless.setPolicy(policy);
+  }
+
+  /**
+   * A paired computer's state for the main window: why it can't be used
+   * (with both versions when one needs an update), or what it serves. From
+   * memory only: the pairing cache, presence and the held connection.
+   */
+  computerState(deviceId: string): PairedComputerState {
+    const paired =
+      !this.unpairingHosts.has(deviceId) &&
+      (this.deps.store
+        .peek()
+        ?.pairedHosts.some((host) => host.deviceId === deviceId) ??
+        false);
+    const peer = this.relay?.peers.find((entry) => entry.deviceId === deviceId);
+    return pairedComputerState({
+      oneWindowOn: this.windowless.enabled,
+      remoteControlOn:
+        !this.disposed && !this.stoppingRelay && this.sessions !== null,
+      paired,
+      online:
+        (peer !== undefined && peer.acceptsRemoteControl) ||
+        this.inPresenceGrace(deviceId),
+      connection: this.windowless.connectionState(deviceId),
+      local: this.deps.version,
+    });
   }
 
   private connectionForDevice(deviceId: string): RemoteHostConnection {

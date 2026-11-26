@@ -1,5 +1,6 @@
 import { CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT } from '@canopy/desktop-shared/constants/canopy-cloud';
 import type { CanopyCloudAccountPublicState } from '@canopy/desktop-shared/types';
+import { clearRecentUserVisibleError } from '@canopy/ui-shared/lib';
 
 /**
  * Why `CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT` fired, as an additive
@@ -79,7 +80,10 @@ if (
   typeof window.addEventListener === 'function'
 ) {
   window.addEventListener(CANOPY_CLOUD_ACCOUNT_CHANGED_EVENT, (event): void => {
-    if (mayChangeCanopyCloudIdentity(event)) identityGeneration += 1;
+    if (mayChangeCanopyCloudIdentity(event)) {
+      identityGeneration += 1;
+      clearRecentUserVisibleError();
+    }
   });
 }
 

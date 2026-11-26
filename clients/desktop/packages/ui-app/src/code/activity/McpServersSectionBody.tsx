@@ -2,11 +2,13 @@
 
 import { ControlButton } from '@canopy/ui-shared/components';
 import { type JSX, type ReactNode } from 'react';
+import { REPLAY_BLOCK_CLASS } from '@canopy/ui-shared/lib/replay-privacy';
 import {
   mcpAuthConnectLabel,
   mcpAuthStatusBadgeClass,
   mcpRequirementUnknown,
   mcpRowSecondaryText,
+  mcpRowSecondaryTextNamesAccount,
   mcpSignInStatusLabel,
   type McpCardAuthStatus,
   type McpCardDisplayServer,
@@ -16,7 +18,6 @@ import {
   Button,
   DelayedLoadingPlaceholder,
   EmptyStateText,
-  LoadingButton,
   MCP_SIGN_IN_WAITING_LABEL,
   McpServerCardRow,
   McpRowSettings,
@@ -189,6 +190,11 @@ export function McpServersSectionBody({
           data-testid="mcp-servers-card-list"
         >
           {servers.map((server) => {
+            // A shared connection is managed in its project's settings, not
+            // on this computer, so its row opens nothing here. It has no
+            // action either, so even a compact row keeps its source and state.
+            const shared = server.source === 'shared';
+            const compactRow = compact && !shared;
             const authConnectLabel = mcpAuthConnectLabel(
               server.authStatus,
               server.canRefresh,
@@ -236,6 +242,7 @@ export function McpServersSectionBody({
               <McpServerCardRow
                 key={server.key}
                 name={server.displayName}
+                maskName={shared}
                 footer={
                   rowExtraLayout === 'footer'
                     ? renderRowExtra?.(server)
@@ -244,17 +251,19 @@ export function McpServersSectionBody({
                 enabled={server.enabled}
                 compact={compact}
                 destination={
-                  getRowNavigation?.(server) ??
-                  (onOpenDetails === undefined
+                  shared
                     ? undefined
-                    : {
-                        kind: 'button',
-                        onActivate: (): void => onOpenDetails(server),
-                      })
+                    : (getRowNavigation?.(server) ??
+                      (onOpenDetails === undefined
+                        ? undefined
+                        : {
+                            kind: 'button',
+                            onActivate: (): void => onOpenDetails(server),
+                          }))
                 }
                 status={
                   <>
-                    {compact &&
+                    {compactRow &&
                     signInUrl === undefined &&
                     !server.waitingForSignIn ? (
                       compactStatusInk === null ? null : (
@@ -344,7 +353,7 @@ export function McpServersSectionBody({
                       server.canConnect &&
                       connectLabel &&
                       onConnect !== undefined && (
-                        <LoadingButton
+                        <Button
                           type="button"
                           variant="primary"
                           size="compact"
@@ -369,11 +378,11 @@ export function McpServersSectionBody({
                           {server.waitingForSignIn
                             ? MCP_SIGN_IN_WAITING_LABEL
                             : connectLabel}
-                        </LoadingButton>
+                        </Button>
                       )}
                     {server.canDisconnect === true &&
                       onDisconnect !== undefined && (
-                        <LoadingButton
+                        <Button
                           type="button"
                           variant="secondary"
                           size="compact"
@@ -384,26 +393,19 @@ export function McpServersSectionBody({
                           data-testid="mcp-servers-card-disconnect"
                         >
                           Disconnect
-                        </LoadingButton>
+                        </Button>
                       )}
                   </>
                 }
               >
-                {compact ? null : (
-                  <p
-                    className="truncate text-2xs fg-secondary"
-                    title={mcpRowSecondaryText(server)}
-                  >
-                    {mcpRowSecondaryText(server)}
-                  </p>
-                )}
+                {compactRow ? null : <McpRowSecondaryLine server={server} />}
                 {server.authStatus === 'error' && server.lastError && (
                   <p className="pt-1">
                     <StatusLabel size="2xs">{server.lastError}</StatusLabel>
                   </p>
                 )}
                 <McpRowSettings
-                  destination={getRowSettings?.(server)}
+                  destination={shared ? undefined : getRowSettings?.(server)}
                   name={server.displayName}
                 />
                 {rowExtraLayout === 'footer' ? null : renderRowExtra?.(server)}
@@ -430,6 +432,30 @@ export function McpServersSectionBody({
         </p>
       )}
     </>
+  );
+}
+
+/** The row's "source · context" line under its name. */
+function McpRowSecondaryLine({
+  server,
+}: {
+  readonly server: McpServersSectionItem;
+}): JSX.Element {
+  const text = mcpRowSecondaryText(server);
+  if (!mcpRowSecondaryTextNamesAccount(server)) {
+    return (
+      <p className="truncate text-2xs fg-secondary" title={text}>
+        {text}
+      </p>
+    );
+  }
+  // A name the person gave the account or configuration, often an email.
+  return (
+    <p className="truncate text-2xs fg-secondary">
+      <span className={REPLAY_BLOCK_CLASS} title={text}>
+        {text}
+      </span>
+    </p>
   );
 }
 

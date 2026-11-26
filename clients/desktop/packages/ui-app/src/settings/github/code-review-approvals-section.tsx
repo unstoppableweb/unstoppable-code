@@ -6,6 +6,7 @@ import {
   ErrorBanner,
   Heading,
   Notice,
+  NoticeButton,
   SegmentedControl,
   SettingsRowsGroup,
   SettingsRowsRow,
@@ -130,14 +131,12 @@ export function CodeReviewApprovalsSection({
         <Notice
           intent="attention"
           actions={
-            <Button
-              size="compact"
-              variant="secondary"
+            <NoticeButton
               onClick={controller.reload}
               data-testid="code-review-approvals-reload"
             >
               Try again
-            </Button>
+            </NoticeButton>
           }
         >
           {loadError?.copy}

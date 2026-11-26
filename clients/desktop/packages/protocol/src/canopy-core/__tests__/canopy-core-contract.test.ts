@@ -15,6 +15,24 @@ import {
   CoreFeedbackSubmitParamsSchema,
   CoreFeedbackTurnUpdateParamsSchema,
 } from '../core/feedback';
+import {
+  CONFIG_DOCUMENT_DROPPED_KEYS,
+  CONFIG_DOCUMENT_PROTECTED_KEYS,
+  CONFIG_DOCUMENT_REFUSED_KEYS,
+  CORE_CONFIG_COMMITTED_EVENT,
+  CORE_CONFIG_DOCUMENT_INSTRUCTION_DEFINITIONS,
+  CORE_CONFIG_DOCUMENT_QUERY_DEFINITIONS,
+  CORE_CONFIG_EVENT_FAMILY,
+  CORE_CONFIG_EVENT_NAMES,
+  CORE_CONFIG_INVALIDATED_EVENT,
+  CoreConfigCommittedPayloadSchema,
+  CoreConfigInvalidatedPayloadSchema,
+} from '../core/config/document';
+import {
+  CONFIG_GRANTS,
+  CORE_CONFIG_INSTRUCTION_DEFINITIONS,
+  CORE_CONFIG_QUERY_DEFINITIONS,
+} from '../core/config/operations';
 import { z } from 'zod';
 
 import {
@@ -138,6 +156,7 @@ type _QueryNamesAreExact = Expect<
     | 'core.chat.snapshot.get'
     | 'core.chat.list'
     | 'core.chat.locate'
+    | 'core.chat.directory.list'
     | 'core.workspace.list'
     | 'core.workspace.get'
     | 'core.workspace.sharedMultiRepo.prepare'
@@ -239,6 +258,7 @@ type _CoreNamesAreExact = Expect<
     | 'core.chat.send.receipt'
     | 'core.chat.list'
     | 'core.chat.locate'
+    | 'core.chat.directory.list'
     | 'core.workspace.list'
     | 'core.workspace.get'
     | 'core.workspace.sharedMultiRepo.prepare'
@@ -341,6 +361,7 @@ const typedHandlers: Pick<
   | 'core.chat.snapshot.get'
   | 'core.chat.list'
   | 'core.chat.locate'
+  | 'core.chat.directory.list'
   | 'core.chat.transcript.page'
   | 'core.chat.transcript.search'
   | 'core.chat.toolOutput.read'
@@ -360,6 +381,7 @@ const typedHandlers: Pick<
   }),
   'core.chat.list': () => ({ items: [], nextCursor: null }),
   'core.chat.locate': () => ({ worktreeId: null, archivedInWorktreeId: null }),
+  'core.chat.directory.list': () => ({ live: [], archivedChatIds: [] }),
   'core.chat.transcript.page': () => ({
     messages: [],
     totalMessages: 0,
@@ -1439,6 +1461,7 @@ describe('universal Canopy query registry', () => {
       'core.chat.snapshot.get',
       'core.chat.list',
       'core.chat.locate',
+      'core.chat.directory.list',
       'core.chat.transcript.page',
       'core.chat.transcript.search',
       'core.chat.toolOutput.read',
@@ -2337,6 +2360,7 @@ describe('common request and error contracts', () => {
       'core.bots.get',
       'core.bots.list',
       'core.chat.content.read',
+      'core.chat.directory.list',
       'core.chat.list',
       'core.chat.locate',
       'core.chat.send.receipt',
@@ -3621,5 +3645,212 @@ describe('core.feedback.* contract (CAN-4171 B2)', () => {
       expect(
         submit.result.safeParse({ recorded: true, feedback }).success,
       ).toBe(false);
+  });
+});
+
+describe('core.config preferences document contract (CAN-7926)', () => {
+  const queries = CORE_CONFIG_DOCUMENT_QUERY_DEFINITIONS;
+  const instructions = CORE_CONFIG_DOCUMENT_INSTRUCTION_DEFINITIONS;
+  const get = queries['core.config.document.get'];
+  const legacy = queries['core.config.legacyClientLocal.get'];
+  const update = instructions['core.config.document.update'];
+  const ownerUpdate = instructions['core.config.document.ownerUpdate'];
+  const acknowledge = instructions['core.config.loadError.acknowledge'];
+  const REVISION = `sha256:${'a'.repeat(64)}`;
+  const KEYED = { _meta: { idempotencyKey: 'save-1' } };
+  const AT = '2026-11-25T00:00:00.000Z';
+  const LOAD_ERROR = {
+    timestamp: AT,
+    reason: 'parse',
+    backedUp: true,
+    restored: true,
+  };
+  const DOCUMENT = {
+    revision: REVISION,
+    value: { theme: 'dark', usageData: { chats: true } },
+    enforcedPaths: [],
+    loadError: null,
+  };
+
+  it('defines five desktop-only operations with their grants, outside every composed registry', () => {
+    expect(Object.keys(queries).sort()).toEqual([
+      'core.config.document.get',
+      'core.config.legacyClientLocal.get',
+    ]);
+    expect(Object.keys(instructions).sort()).toEqual([
+      'core.config.document.ownerUpdate',
+      'core.config.document.update',
+      'core.config.loadError.acknowledge',
+    ]);
+    for (const definition of [get, legacy]) {
+      expect(definition.kind).toBe('query');
+      expect(definition.requiredGrants).toEqual([CONFIG_GRANTS.read]);
+    }
+    expect(update.idempotency).toBe('keyed');
+    expect(update.requiredGrants).toEqual(['core.config.document.write']);
+    expect(ownerUpdate.idempotency).toBe('keyed');
+    expect(ownerUpdate.requiredGrants).toEqual(['core.config.document.own']);
+    // The notice belongs to the app shell: the owner path (T29).
+    expect(acknowledge.idempotency).toBe('inherent');
+    expect(acknowledge.requiredGrants).toEqual(['core.config.document.own']);
+    for (const [name, definition] of [
+      ...Object.entries(queries),
+      ...Object.entries(instructions),
+    ]) {
+      expect(definition.placement).toBe('core-only');
+      // Writes never reuse the per-namespace write grant.
+      expect(definition.requiredGrants).not.toContain(CONFIG_GRANTS.write);
+      for (const registry of [
+        CANOPY_QUERY_DEFINITIONS,
+        CANOPY_INSTRUCTION_DEFINITIONS,
+        CORE_CONFIG_QUERY_DEFINITIONS,
+        CORE_CONFIG_INSTRUCTION_DEFINITIONS,
+      ])
+        expect(name in registry).toBe(false);
+    }
+  });
+
+  it('refuses or drops every protected key on the open path, and names them once', () => {
+    expect(CONFIG_DOCUMENT_REFUSED_KEYS).toEqual([
+      'approvalDefaults',
+      'claudeModAdmissions',
+      'claudeModsDisabled',
+      'accountProxyConnection',
+      'copilotAccount',
+    ]);
+    expect(CONFIG_DOCUMENT_DROPPED_KEYS).toEqual([
+      'suggestions',
+      'copilotEnabled',
+      'copilotVaultSelection',
+      'disabledInstalledItems',
+      'parkedCodexPlugins',
+      'pendingInstalledItemUninstalls',
+      'nativeProviderAccounts',
+      'globalApprovalRules',
+      'accountProxyLocalRoutingStrategy',
+      'terminalSettingsRevision',
+    ]);
+    expect(new Set(CONFIG_DOCUMENT_PROTECTED_KEYS).size).toBe(15);
+    expect(
+      update.error.safeParse({
+        kind: 'invalid_argument',
+        message: 'protected',
+        code: 'core.config.protectedKey',
+        retry: { kind: 'never' },
+      }).success,
+    ).toBe(true);
+    // The owner path runs no save rule, so it has no refusal to report.
+    expect(
+      ownerUpdate.error.safeParse({
+        kind: 'invalid_argument',
+        message: 'protected',
+        code: 'core.config.protectedKey',
+        retry: { kind: 'never' },
+      }).success,
+    ).toBe(false);
+    expect(
+      update.result.parse({ ...DOCUMENT, dropped: ['suggestions'] }).dropped,
+    ).toEqual(['suggestions']);
+    expect(update.result.safeParse(DOCUMENT).success).toBe(false);
+    expect(ownerUpdate.result.parse(DOCUMENT)).toEqual(DOCUMENT);
+  });
+
+  it('takes a non-empty keyed patch with an optional content revision', () => {
+    for (const definition of [update, ownerUpdate]) {
+      for (const params of [
+        { ...KEYED, patch: { theme: 'dark' } },
+        {
+          ...KEYED,
+          patch: { approvalDefaults: {} },
+          expectedRevision: REVISION,
+        },
+      ])
+        expect(definition.params.safeParse(params).success).toBe(true);
+      for (const params of [
+        { ...KEYED, patch: {} },
+        { patch: { theme: 'dark' } },
+        { ...KEYED, patch: { __error: {} } },
+        { ...KEYED, patch: { Theme: 'dark' } },
+        { ...KEYED, patch: { theme: 'dark' }, expectedRevision: 3 },
+        { ...KEYED, patch: { theme: 'dark' }, expectedRevision: 'sha256:A' },
+        { ...KEYED, patch: { theme: 'dark' }, namespace: 'agent' },
+        {
+          ...KEYED,
+          patch: Object.fromEntries(
+            Array.from({ length: 1025 }, (_, index) => [`key${index}`, 1]),
+          ),
+        },
+      ])
+        expect(definition.params.safeParse(params).success).toBe(false);
+    }
+  });
+
+  it('reads the document with a content revision and a path-free load error', () => {
+    expect(get.params.safeParse({}).success).toBe(true);
+    expect(get.params.safeParse({ namespace: 'git' }).success).toBe(false);
+    expect(get.result.parse(DOCUMENT)).toEqual(DOCUMENT);
+    expect(
+      get.result.parse({ ...DOCUMENT, loadError: LOAD_ERROR }).loadError,
+    ).toEqual(LOAD_ERROR);
+    for (const result of [
+      { ...DOCUMENT, revision: 7 },
+      { ...DOCUMENT, loadError: undefined },
+      { ...DOCUMENT, loadError: { ...LOAD_ERROR, reason: 'missing' } },
+    ])
+      expect(get.result.safeParse(result).success).toBe(false);
+  });
+
+  it('reads legacy client-local values as read, missing or pending', () => {
+    for (const result of [
+      { kind: 'read', values: { theme: 'dark' } },
+      { kind: 'missing' },
+      { kind: 'pending', served: {} },
+    ])
+      expect(legacy.result.parse(result)).toEqual(result);
+    for (const result of [
+      { kind: 'read' },
+      { kind: 'missing', values: {} },
+      { kind: 'pending', values: {} },
+      { kind: 'absent' },
+    ])
+      expect(legacy.result.safeParse(result).success).toBe(false);
+  });
+
+  it('acknowledges the named load error only', () => {
+    expect(acknowledge.params.safeParse({ timestamp: AT }).success).toBe(true);
+    expect(acknowledge.params.safeParse({}).success).toBe(false);
+    expect(
+      acknowledge.result.parse({ acknowledged: false, loadError: LOAD_ERROR }),
+    ).toEqual({ acknowledged: false, loadError: LOAD_ERROR });
+  });
+
+  it('defines committed and invalidated events in the core.config family', () => {
+    expect(CORE_CONFIG_EVENT_FAMILY).toBe('core.config');
+    expect(CORE_CONFIG_EVENT_NAMES).toEqual([
+      CORE_CONFIG_COMMITTED_EVENT,
+      CORE_CONFIG_INVALIDATED_EVENT,
+    ]);
+    expect(CORE_CONFIG_COMMITTED_EVENT).toBe('core.config.committed');
+    expect(CORE_CONFIG_INVALIDATED_EVENT).toBe('core.config.invalidated');
+    const committed = {
+      commit: 'preferences:1',
+      previousRevision: REVISION,
+      revision: `sha256:${'b'.repeat(64)}`,
+      keys: ['theme'],
+    };
+    expect(CoreConfigCommittedPayloadSchema.parse(committed)).toEqual(
+      committed,
+    );
+    expect(
+      CoreConfigCommittedPayloadSchema.safeParse({ ...committed, revision: 2 })
+        .success,
+    ).toBe(false);
+    expect(
+      CoreConfigInvalidatedPayloadSchema.parse({ reason: 'recovered' }),
+    ).toEqual({ reason: 'recovered' });
+    expect(
+      CoreConfigInvalidatedPayloadSchema.safeParse({ reason: 'applied' })
+        .success,
+    ).toBe(false);
   });
 });

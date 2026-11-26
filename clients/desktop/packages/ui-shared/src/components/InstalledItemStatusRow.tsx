@@ -23,8 +23,8 @@ import {
   type RemovalVerb,
 } from '../lib/customize-row-copy';
 import { MoreHorizontalIcon, TrashIcon } from '../icons/AppIcons';
-import { Button } from './Button';
-import { Skeleton } from './Skeleton';
+import { Button } from '../primitives/Button';
+import { Skeleton } from '../primitives/Skeleton';
 import { DetailPageActions } from './DetailActionBar';
 import {
   DetailMoreMenu,
@@ -32,13 +32,13 @@ import {
   focusMenuTrigger,
   useDetailMoreItems,
 } from './DetailMoreMenu';
-import { DropdownMenuItem } from './DropdownMenu';
-import { FLOATING_MENU_GAP, FloatingMenu } from './FloatingMenu';
+import { DropdownMenuItem } from '../primitives/DropdownMenu';
+import { FLOATING_MENU_GAP, FloatingMenu } from '../primitives/FloatingMenu';
 import {
   InstalledItemStatusPicker,
   InstalledItemStatusUnavailable,
 } from './InstalledItemStatusPicker';
-import { Notice } from './Notice';
+import { Notice } from '../primitives/Notice';
 import { useItemStateMarks } from './ItemStateMark';
 import {
   DETAIL_FACT_GRID_CLASS,
@@ -46,9 +46,9 @@ import {
 } from './DetailFact';
 import { IconCircleQuestionmark } from '../icons/AppGlyphs.generated';
 import { ArrowUpRightIcon } from '../icons/AppIcons';
-import { ErrorBanner } from './StatusBlocks';
-import { Tooltip } from './Tooltip';
-import { DataTable } from './DataTable';
+import { ErrorBanner } from '../primitives/StatusBlocks';
+import { Tooltip } from '../primitives/Tooltip';
+import { DataTable } from '../primitives/DataTable';
 import { UninstallConfirmDialog } from './UninstallConfirmDialog';
 import { REPLAY_BLOCK_CLASS } from '../lib/replay-privacy';
 

@@ -1,4 +1,4 @@
-import { CodeBlock } from '@canopy/ui-shared/components/CodeBlock';
+import { CodeBlock } from '@canopy/ui-shared/primitives/CodeBlock';
 import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import {
   formatTimingTimestamp,

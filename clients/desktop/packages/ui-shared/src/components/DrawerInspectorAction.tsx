@@ -1,5 +1,5 @@
 import { forwardRef, type ButtonHTMLAttributes, type JSX } from 'react';
-import { Button } from './Button';
+import { Button } from '../primitives/Button';
 
 export interface DrawerInspectorActionProps extends Omit<
   ButtonHTMLAttributes<HTMLButtonElement>,

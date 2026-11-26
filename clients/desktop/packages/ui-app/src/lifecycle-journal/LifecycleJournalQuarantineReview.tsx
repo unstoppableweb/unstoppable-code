@@ -6,7 +6,7 @@ import type {
   LifecycleJournalQuarantineResult,
   LifecycleJournalUnreadableEntry,
 } from '@canopy/protocol/remote-control/shell/lifecycle-journal';
-import { ConfirmDialog } from '@canopy/ui-shared/components/ConfirmDialog';
+import { ConfirmDialog } from '@canopy/ui-shared/primitives/ConfirmDialog';
 import { Fact, FactList } from '@canopy/ui-shared/components';
 import {
   REPLAY_BLOCK_CLASS,

@@ -2,12 +2,23 @@ import { execFile, spawn } from 'node:child_process';
 import { posix, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hostOperatingSystem } from '@canopy/core-platform/host-platform';
-import { app, shell } from 'electron';
+import { app, shell, type HandlerDetails } from 'electron';
 import { isE2eBuild } from './e2e-gate';
 import { getE2eExternalOpenCaptureUrl } from './e2e-mock-control-plane';
 import { logMainProcessError } from './main-process-logging';
 
 const LOOP_GUARD_TTL_MS = 10_000;
+
+/**
+ * Whether a window open came from ⌘+click (Ctrl+click on Windows and Linux),
+ * which Chromium reports as a background tab. Such links skip the built-in
+ * browser setting and open in the system browser (CAN-6378).
+ */
+export function isOpenExternallyClick(
+  details: Pick<HandlerDetails, 'disposition'>,
+): boolean {
+  return details.disposition === 'background-tab';
+}
 const externalOpenLoopGuards = new Map<
   string,
   {

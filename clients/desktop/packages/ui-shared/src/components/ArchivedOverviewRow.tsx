@@ -1,13 +1,13 @@
 'use client';
 
-import { ListRowFrame } from './ListRow';
-import { archivedOverviewRowClassName } from './control-button-shared';
-export { ARCHIVED_ROW_ACTIONS_RESERVE_WIDE } from './control-button-shared';
-import { ControlButton } from './Button';
+import { ListRowFrame } from '../primitives/ListRow';
+import { archivedOverviewRowClassName } from '../primitives/control-button-shared';
+export { ARCHIVED_ROW_ACTIONS_RESERVE_WIDE } from '../primitives/control-button-shared';
+import { ControlButton } from '../primitives/Button';
 import { useId, type JSX, type ReactNode } from 'react';
 import { ArchivedStateIcon } from '../icons/ArchivedStateIcon';
-import { LoadingSpinner } from './LoadingSpinner';
-import { RichHoverTooltip } from './RichHoverTooltip';
+import { LoadingSpinner } from '../primitives/LoadingSpinner';
+import { RichHoverTooltip } from '../primitives/RichHoverTooltip';
 import {
   getArchivedContainerStateLabel,
   type ArchivedContainerState,

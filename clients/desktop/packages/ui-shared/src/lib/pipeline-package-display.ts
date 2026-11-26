@@ -4,6 +4,7 @@ import type {
   PipelinePackageSummary,
 } from '@canopy/protocol/pipelines';
 import { SCHEDULED_WORKFLOW_ITEM_LABEL } from './workflow-labels';
+import { MODEL_PRESET_LABEL } from './model-preset-labels';
 
 /**
  * Pure display helpers for self-contained pipeline packages, shared by the
@@ -66,7 +67,7 @@ const KIND_LABELS: Record<PipelinePackageResource['kind'], string> = {
   file_asset: 'Files',
   pipeline_definition: 'Workflow',
   automation_definition: SCHEDULED_WORKFLOW_ITEM_LABEL,
-  agent_definition: 'Agent',
+  agent_definition: MODEL_PRESET_LABEL,
   hook_definition: 'Hook',
 };
 

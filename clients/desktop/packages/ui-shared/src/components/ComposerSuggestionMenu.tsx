@@ -1,7 +1,10 @@
 'use client';
 
 import type { JSX, ReactNode, RefObject } from 'react';
-import { FloatingMenu, type FloatingMenuProps } from './FloatingMenu';
+import {
+  FloatingMenu,
+  type FloatingMenuProps,
+} from '../primitives/FloatingMenu';
 
 export interface ComposerSuggestionMenuProps {
   readonly open: boolean;

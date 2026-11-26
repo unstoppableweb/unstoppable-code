@@ -1,6 +1,6 @@
 'use client';
 
-import { Badge } from '@canopy/ui-shared/components/Badge';
+import { Badge } from '@canopy/ui-shared/primitives/Badge';
 import { useMemo, type JSX, type ReactNode } from 'react';
 import {
   selectAwaitingApprovalWorktrees,

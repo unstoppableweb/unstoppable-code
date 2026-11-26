@@ -1,5 +1,5 @@
-import { CodeBlock } from './CodeBlock';
-import { Stack } from './Stack';
+import { CodeBlock } from '../primitives/CodeBlock';
+import { Stack } from '../primitives/Stack';
 import type { JSX } from 'react';
 import {
   impliedTargetContexts,
@@ -22,9 +22,9 @@ import {
   AUTOMATION_PACKAGE_DEPENDENCIES_INCLUDED_NOTE,
   AUTOMATION_PACKAGE_NOT_BUNDLED_NOTE,
 } from '../lib/pipeline-package-display';
-import { Badge } from './Badge';
-import { Heading } from './Heading';
-import { Surface } from './Surface';
+import { Badge } from '../primitives/Badge';
+import { Heading } from '../primitives/Heading';
+import { Surface } from '../primitives/Surface';
 
 export interface AutomationDefinitionSummaryProps {
   automation: SharedAutomationDocument;

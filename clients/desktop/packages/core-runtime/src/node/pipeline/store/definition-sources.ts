@@ -13,6 +13,7 @@ import {
 import type {
   PipelineDefinitionStore,
   StoredPipelineWriteResult,
+  StoredPipelineWriteOptions,
 } from './definitions-store';
 
 /*
@@ -24,6 +25,9 @@ import type {
 export interface StoredPipelineDefinitionPortOptions {
   /** A user definition's saved local owner; `null` when it has none. */
   owner?(definitionId: string): string | null;
+  prepare?: StoredPipelineWriteOptions['prepare'];
+  /** Host-only finalizer for the current write invocation. */
+  finalize?: StoredPipelineWriteOptions['finalize'];
 }
 
 function isoTimestamp(value: string | undefined): string | null {
@@ -161,16 +165,18 @@ function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-function storeFailure(error: string | undefined, fallback: string): Error {
-  return new PipelineDefinitionSourceError(
-    'core.pipeline.sourceUnavailable',
-    error || fallback,
-  );
-}
-
 function refusalError(
   result: Extract<StoredPipelineWriteResult<unknown>, { ok: false }>,
 ): Error {
+  // Another owner keeps the definitions now, or its record can't be read
+  // (CAN-7690): the details name the owner, so a client can say who.
+  if (result.reason === 'owner_moved')
+    return new PipelineDefinitionSourceError(
+      'core.pipeline.targetUnavailable',
+      result.message,
+      undefined,
+      { namespaceId: 'pipeline_definitions', owner: result.owner ?? null },
+    );
   const code =
     result.reason === 'revision_conflict'
       ? 'core.pipeline.revisionConflict'
@@ -179,7 +185,7 @@ function refusalError(
         : result.reason === 'read_only'
           ? 'core.pipeline.definitionReadOnly'
           : 'core.pipeline.sourceUnavailable';
-  return new PipelineDefinitionSourceError(code, result.message);
+  return new PipelineDefinitionSourceError(code, result.message, result);
 }
 
 /**
@@ -215,14 +221,16 @@ export function createStoredPipelineDefinitionWriter(
             content: write.pipeline,
             rawContent: write.text,
           },
-          write.definitionId === null
-            ? write.createId === undefined
-              ? {}
-              : { createId: write.createId }
-            : {
-                expectedRevision: write.expectedRevision,
-                requireExisting: true,
-              },
+          {
+            ...(write.definitionId === null
+              ? { createId: write.createId }
+              : {
+                  expectedRevision: write.expectedRevision,
+                  requireExisting: true,
+                }),
+            prepare: options.prepare,
+            finalize: options.finalize,
+          },
         );
         if (!saved.ok) throw refusalError(saved);
         // The save committed: answer from its entry and the bytes written,
@@ -246,7 +254,7 @@ export function createStoredPipelineDefinitionWriter(
                 .data?.find((info) => info.id === copy.origin.definitionId)
                 ?.curatedOrigin
             : undefined;
-        const saved = store.saveStoredPipeline(
+        const saved = store.writeStoredPipeline(
           {
             name: copy.name,
             description: copy.description,
@@ -255,12 +263,15 @@ export function createStoredPipelineDefinitionWriter(
             rawContent: copy.text,
             ...(curatedOrigin ? { curatedOrigin } : {}),
           },
-          { id: copy.definitionId },
+          {
+            createId: copy.definitionId,
+            prepare: options.prepare,
+            finalize: options.finalize,
+          },
         );
-        if (!saved.success || !saved.data)
-          throw storeFailure(saved.error, 'Failed to copy the workflow');
+        if (!saved.ok) throw refusalError(saved);
         return Promise.resolve({
-          ...storedEntry(saved.data, 'user', options, () => null),
+          ...storedEntry(saved.value, 'user', options, () => null),
           format: 'yaml',
           text: copy.text,
         });
